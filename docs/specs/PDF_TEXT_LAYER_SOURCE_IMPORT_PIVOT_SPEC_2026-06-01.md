@@ -1379,34 +1379,288 @@ First implementation target:
 
 Next implementation plan after PR-I2a:
 
-1. **PR-I2b. Relation-Anchored Formatting Restore**
-   - Goal: make final restore consume explicit source-to-target relations
-     produced by assembly/cleanup (`origin_paragraph_ids`, split/merge/shared
-     target metadata) instead of adding more text-containment fallbacks.
-   - First diagnostic step: extend formatting diagnostics with relation coverage
-     classes for the remaining `38/42` failures:
-     `image_heading_shared_target`, `heading_body_shared_target`,
-     `body_merge_shared_target`, `list_or_definition_shared_target`,
-     and `real_uncovered`.
-   - Implementation step: for high-confidence recorded relations, mark covered
-     source paragraphs and shared target paragraphs without applying unsafe
-     styles to mixed targets. For example, a target that contains both image and
-     heading should be counted as covered, while style application remains
-     conservative.
-   - Acceptance: source/target effective unmapped counts decrease because
-     relation evidence explains N-to-M drift; images remain `12/12`; no verifier
-     verdict is used as a gate; no document-specific strings or new cleanup
-     operations are added.
-2. **PR-I2c. Formatting Application On Proven Relations**
-   - Start only after PR-I2b reduces false-unmapped noise enough to identify real
-     formatting loss.
+1. **PR-I2b. Relation/Residual Diagnostic Probe**
+   - Goal: do **not** implement new coverage yet. Prove what the remaining
+     `38/42` actually is after PR-I2a and prevent another matcher-side slice
+     from chasing the wrong layer.
+   - Current empirical facts from the PR-I2a proof/review:
+     `relation_ids=0/135`, so relation-backed formatting restore has no recorded
+     structural facts to consume today; and the residual source failures are
+     mostly single-origin lost matches (`29/38`) rather than true N-to-M
+     aggregation (`9/38`).
+   - Diagnostic sub-slice:
+     - report `relation_id_populated_count` / total source units;
+     - split residual unmapped sources into `single_origin_lost_match`,
+       `true_aggregate_unmapped`, `image_or_placeholder_accounted_elsewhere`,
+       and `real_uncovered`;
+     - report whether each single-origin source still has a stable
+       `paragraph_id` / generated-registry entry and whether the target miss is
+       caused by text reshaping, cleanup rewrite, or missing target text;
+     - trace id survival across the handoff stages for the residual
+       single-origin failures:
+       source `paragraph_id` -> translation marker/generated registry ->
+       cleanup block identity (`paragraph_id` / `merged_paragraph_ids`) ->
+       rebuilt Markdown/DOCX restore diagnostics. The probe must name the first
+       stage where the hard id is no longer available, so PR-I2c knows where to
+       insert the rebuild-only sidecar rather than guessing;
+     - keep `image_anchor_contained` / `image_heading_shared_target` as narrow
+       fallback diagnostics only.
+   - Expected result: likely negative for relation-backed coverage. That is a
+     valid PR-I2b outcome because it proves the next fix belongs upstream in the
+     cleanup/rebuild handoff, not in another substring matcher.
+   - Acceptance: no style application changes, no new substring thresholds, no
+     verifier gate, no document-specific literals, and a clear residual table
+     that can drive PR-I2c.
+   - Local implementation, 2026-06-13:
+     `formatting_transfer.py` now emits diagnostic-only
+     `relation_identity_population` and
+     `unmapped_source_residual_diagnostics` in restore diagnostics. The residual
+     diagnostics classify unmapped sources into `single_origin_lost_match`,
+     `true_aggregate_unmapped`, `image_or_placeholder_accounted_elsewhere`, and
+     `real_uncovered`, and record `first_missing_identity_stage` for sampled
+     sources. This does not change mapping, style application, DOCX rebuild, or
+     acceptance thresholds.
+   - Focused test:
+     `tests/test_format_restoration.py::test_formatting_diagnostics_classify_residual_unmapped_identity_gaps`.
+   - Next proof readout: inspect the latest restore diagnostics from the
+     chapter-region profile and verify whether `relation_id_populated_count`
+     remains near zero and whether `single_origin_lost_match` dominates the
+     residual. If yes, proceed to PR-I2c; if true aggregates dominate instead,
+     revisit relation population before hard-id work.
+   - PR-I2b proof, 2026-06-13:
+     `20260613T_pr_i2b_residual_probe` completed the chapter-region
+     comparison-only profile. It produced two restore diagnostics:
+     - pre-cleanup restore diagnostics: `source=135`, `target=111`,
+       `mapped=84`, `unmapped_source=28`, `unmapped_target=27`,
+       `relation_id_populated_count=0/135`, residual
+       `single_origin_lost_match=18`, `true_aggregate_unmapped=10`,
+       `first_missing_identity_stage=rebuilt_docx_restore_match_missing` for
+       all residual samples;
+     - post-cleanup/final restore diagnostics: `source=135`, `target=123`,
+       `mapped=76`, `unmapped_source=41`, `unmapped_target=47`,
+       `relation_id_populated_count=0/135`, residual
+       `single_origin_lost_match=30`, `true_aggregate_unmapped=11`,
+       `first_missing_identity_stage=rebuilt_docx_restore_match_missing` for
+       all residual samples.
+     Acceptance still fails only deterministic formatting thresholds:
+     `formatting_diagnostics_threshold=41`, `unmapped_source_threshold=41 > 12`,
+     `unmapped_target_threshold=47 > 6`.
+   - PR-I2b decision: the diagnostic probe confirms the plan correction.
+     Relation-backed restore cannot be the next main fix because relation facts
+     are empty (`0/135`), and the final-pass residual is dominated by
+     single-origin lost matches (`30/41`) whose source id and generated-registry
+     entry exist but are not available as hard keys in rebuilt DOCX restore.
+     Proceed to PR-I2c.
+2. **PR-I2c. Ordered Rebuild-Text Sidecar For Restore**
+   - Goal: improve the reader-cleanup rebuild handoff by carrying rebuild-only
+     target paragraph indexes from ordered exact-text alignment inside the
+     cleaned/generated Markdown domain.
+   - Architectural caveat: this is not a true embedded paragraph-id marker
+     through rebuild. The final restore consumes a sidecar key, but the sidecar
+     binding is still established by ordered normalized-text equality between
+     generated-registry text and rebuilt Markdown blocks. A future true id-marker
+     path must carry `paragraph_id` through rebuild without text equality.
+   - Scope:
+     - preserve `paragraph_id` / source identity for cleanup blocks and rebuilt
+       Markdown/DOCX paragraphs on a rebuild-only sidecar path;
+     - extend the existing identity infrastructure
+       (`_build_reader_cleanup_block_identity_metadata`,
+       cleanup-block `paragraph_id`, `merged_paragraph_ids`, generated registry)
+       instead of introducing a parallel id system;
+     - define split/merge propagation explicitly: split operations carry the
+       parent id into child identity metadata, while merge operations carry an
+       ordered `origin_paragraph_ids` / `merged_paragraph_ids` list;
+     - keep reader-facing Markdown and final DOCX free of visible internal
+       markers;
+     - support cleanup disabled, cleanup noop, and cleanup changed paths;
+     - target the dominant residual first: single-origin lost matches.
+   - Non-goals: do not add cleanup operations, do not tune the LLM prompt, do
+     not infer identities with broad containment rules, and do not apply styles
+     to mixed/shared targets until relation facts are explicit.
+   - Acceptance: single-origin lost-match count drops materially, images remain
+     `12/12`, final DOCX remains openable, deterministic unmapped metrics
+     improve, mapping strategy shifts from text-derived recovery toward
+     id-key recovery for the formerly unmapped single-origin set, and there are
+     zero new false matches among the already mapped source paragraphs.
+   - Follow-up for true aggregates: populate explicit relation facts during
+     assembly/cleanup before attempting relation-backed formatting coverage.
+   - Local implementation, 2026-06-13:
+     `_rebuild_docx_for_markdown` now builds a rebuild-only formatting registry
+     by attaching exact ordered `target_paragraph_indexes` to generated registry
+     entries before formatting restore. `formatting_transfer.py` uses those
+     indexes as `paragraph_id_rebuild_key` before later text-based matching,
+     only when a primary paragraph id has exactly one valid, still-free target
+     index. The sidecar is not written to reader-facing Markdown, not sent to
+     the model, and not persisted into the final DOCX.
+   - Post-review hardening, 2026-06-13:
+     the ordered alignment now uses a local candidate pointer and commits the
+     shared `search_start_index` only after a full multi-block entry match, so a
+     partial failed entry cannot cascade-skip later registry entries. Restore
+     diagnostics also report `rebuild_key_mapping_quality`, a diagnostic-only
+     false-map check for suspicious rebuild-key role/style mismatches.
+   - Focused tests:
+     `tests/test_format_restoration.py::test_formatting_diagnostics_use_rebuild_identity_key_before_text_matching`;
+     `tests/test_document_pipeline.py::test_rebuild_identity_formatting_registry_attaches_target_indexes_without_visible_markers`;
+     `tests/test_document_pipeline.py::test_rebuild_docx_for_markdown_prefers_cleanup_formatting_registry_override`.
+   - PR-I2c proof, 2026-06-13:
+     `20260613T_pr_i2c_rebuild_identity_key_proof` completed the chapter-region
+     comparison-only profile after adding an advisory reader-verifier timeout.
+     The timeout fix is harness-only: if the LLM verifier stalls, the deterministic
+     report still finishes with `reader_verifier_status=failed` and
+     `verifier_reason=execution_timeout`; verifier output remains advisory and is
+     not an acceptance gate.
+   - Proof result:
+     - final restore diagnostics improved from PR-I2b `mapped=76`,
+       `unmapped_source=41`, `unmapped_target=47` to PR-I2c `mapped=89`,
+       `unmapped_source=29`, `unmapped_target=36`;
+     - final `mapping_strategy_counts` now include
+       `paragraph_id_rebuild_key=73`, proving the rebuild sidecar path is
+       reached by the real document path rather than only by unit tests;
+     - residual final unmapped source categories shifted from
+       `single_origin_lost_match=30`, `true_aggregate_unmapped=11` to
+       `single_origin_lost_match=25`, `true_aggregate_unmapped=3`,
+       `real_uncovered=1`;
+     - images remain stable through the run (`12/12` image anchors in restore
+       strategy and final DOCX image reinsertion remains available);
+     - acceptance still fails deterministic formatting gates:
+       `formatting_diagnostics_threshold=29`, `unmapped_source_threshold=29 > 12`,
+       `unmapped_target_threshold=36 > 6`.
+   - PR-I2c decision: the ordered rebuild-text sidecar is the correct layer for
+     this partial improvement and should be kept, but it does not close PR-I2 and
+     should not be described as eliminating text-determinism. The remaining
+     blocker is mixed residual coverage: single-origin targets that still lack
+     rebuild-key coverage, true aggregate relations that need explicit relation
+     facts, and target-side over-fragment / merge cases. Do not add more
+     text-containment matching as the next step.
+     Continue with PR-I2d, the closable-vs-dissolved residual classifier, which
+     decides whether the embedded id-marker (PR-I2e) is worth building before any
+     style application (PR-I2f).
+3. **PR-I2d. Closable-vs-Dissolved Residual Classifier (diagnostic-only)**
+   - Rationale: PR-I2c proved the rebuild sidecar reaches the real path
+     (`paragraph_id_rebuild_key=73`) but left `single_origin_lost_match=25`,
+     `true_aggregate_unmapped=3`, `real_uncovered=1` and still fails thresholds
+     (`29 > 12`, `36 > 6`). More ordered text-alignment will not move these: by
+     definition they are where in-domain text equality already failed. The next
+     dollar of work must go into a true embedded `paragraph_id` marker — but that
+     is an expensive layer (carry id through cleanup split/merge -> invisible
+     attribute in rebuild -> read back at restore), and part of the residual may
+     have no 1:1 target at all. Do not start the marker before classifying.
+   - Goal: split the residual (`25` single-origin + `3` aggregate + `1`
+     real_uncovered) into three actionable classes, diagnostic-only, no style
+     application, no new substring thresholds, no mapping change:
+     - `target_exists_text_align_missed`: a corresponding target paragraph exists
+       (e.g. `target_candidate_indexes_containing_registry_text` is non-empty)
+       but ordered text equality missed it. **Closable by a true embedded
+       id-marker.** This is the only class that justifies the marker.
+     - `target_occupied_by_mapped_neighbor`: registry text is present, but only
+       in a target already mapped to a neighboring source. This is not
+       marker-closable as a new 1:1 target.
+     - `target_absent_or_unproven`: no free target candidate and no bounded
+       mapped-neighbor evidence. This remains unproven absence until I2g or a
+       future full proof provides stronger coverage evidence.
+     - `true_aggregate_relation_gap`: needs explicit relation facts populated
+       upstream first (`relation_ids=0/135` today), not a new matcher.
+   - Decision gate (the whole point of I2d): only begin the embedded-id-marker
+     work if `target_exists_text_align_missed` is a material fraction of the
+     residual. If the residual is dominated by `dissolved`, the marker is wasted
+     effort and the honest next step is a documented product limitation plus
+     relation population for the aggregates.
+   - Acceptance: a residual classification table in restore diagnostics, no DOCX
+     behavior change, no style application, no verifier gate, no document-specific
+     literals.
+   - Local implementation, 2026-06-13:
+     restore diagnostics now include
+     `unmapped_source_residual_diagnostics.residual_closability_diagnostics`.
+     The live diagnostic classifies the full unmapped source set and reports the
+     embedded-marker upper bound as the count of
+     `target_exists_text_align_missed`. The helper
+     `scripts/classify-formatting-residuals.py` can classify an existing report
+     without rerunning the pipeline; for old I2c reports this is explicitly
+     `sample_based` because those artifacts saved only residual samples.
+     Post-review hardening refined the marker upper bound to count only
+     candidates on unmapped/free target paragraphs; candidates already occupied
+     by mapped targets are not marker-closable. Running the helper on
+     `tests/artifacts/real_document_pipeline/lietaer_pdf_chapter_region_report.json`
+     selected the final restore diagnostics and produced the current
+     sample-based split: `target_exists_text_align_missed=7`,
+     `target_absent_or_unproven=14`, `true_aggregate_relation_gap=3`,
+     `real_uncovered=1`; `embedded_marker_upper_bound_count=7`.
+4. **PR-I2g. Role-Aware Effective Formatting Coverage Diagnostic**
+   - Rationale: content survival is not the same as formatting survival. A body
+     paragraph dissolved into a neighboring body target can be format-neutral,
+     but a heading/list dissolved into a body target is still a formatting loss.
+   - Goal: add diagnostic-only effective counts that separate raw unmapped
+     source count from role-aware formatting coverage:
+     - use containment only as evidence/measurement, never as a new mapping or
+       style-application rule;
+     - count `proven_dissolved` only when registry text is contained in an
+       already mapped neighboring target within a bounded source window;
+     - credit only format-neutral cases, currently body source -> body target;
+     - keep heading/list/caption/toc dissolved into body as formatting loss even
+       when text survived.
+   - Local implementation, 2026-06-13:
+     live diagnostics now include
+     `unmapped_source_residual_diagnostics.effective_formatting_coverage_diagnostics`
+     with `evidence_basis=registry_text_contained_in_already_mapped_neighbor_target`,
+     `source_neighbor_window=3`, role-credit rule text, per-class counts, and
+     `format_neutral_creditable_count`. The offline helper reports the same
+     sample-based effective counts for old reports. On the current I2c report,
+     sample-based effective credit is `0`; the old artifact has no proven
+     body->body neighbor containment in saved samples.
+   - Acceptance: no DOCX behavior change, no mapping change, no style
+     application; a future proof run can answer whether the deterministic gate
+     is failing because of real formatting loss or because it still expects 1:1
+     body mappings after legitimate N-to-M translation.
+5. **PR-I2h. Fuzzy Coverage Evidence Collector (measurement-only)**
+   - Rationale: exact containment is a weak evidence collector for translated
+     text. `target_absent_or_unproven` can mean "content lost", but it can also
+     mean "content survived after paraphrase/boundary shift and exact substring
+     failed". Do not run a full LLM proof just to rediscover this limitation.
+   - Goal: strengthen coverage measurement without changing mapping, styling, or
+     DOCX output:
+     - keep exact containment as strongest evidence;
+     - add token-overlap / sequence-similarity evidence between registry text and
+       already mapped neighboring targets;
+     - keep the bounded source-neighbor window and role-aware credit from I2g;
+     - never use fuzzy evidence to assign `paragraph_id_rebuild_key` or apply
+       formatting.
+   - Local implementation, 2026-06-13:
+     live diagnostics and `scripts/classify-formatting-residuals.py` now use
+     `registry_text_exact_or_fuzzy_overlap_in_already_mapped_neighbor_target`.
+     The fuzzy rule requires exact containment, or token overlap `>=0.62` with
+     at least `4` common tokens, or token overlap `>=0.8` with at least `2`
+     common tokens, or sequence ratio `>=0.75` for longer text. Evidence samples
+     record `evidence_type`, score, token overlap, sequence ratio, and token
+     counts. Focused tests prove body->body fuzzy evidence is creditable while
+     heading->body fuzzy evidence remains formatting loss.
+   - Current old-report replay:
+     running the helper on
+     `tests/artifacts/real_document_pipeline/lietaer_pdf_chapter_region_report.json`
+     still reports `format_neutral_creditable_count=0` and
+     `embedded_marker_upper_bound_count=7`. This is sample/preview-based for the
+     old artifact, so it is a conservative offline signal rather than a full
+     proof. The next expensive proof should wait until behavior or gate semantics
+     changes, not merely to collect deterministic diagnostics.
+6. **PR-I2e. True Embedded Id-Marker (only if PR-I2d/I2g/I2h justify it)**
+   - Conditional on PR-I2d showing a material `target_exists_text_align_missed`
+     fraction after excluding occupied targets, and on PR-I2g/I2h showing that
+     marker work is more valuable than role-aware gate semantics/relation
+     population.
+     Carry `paragraph_id` through cleanup split/merge into the rebuild as an
+     invisible attribute and read it back at restore, removing text equality from
+     the binding (the thing PR-I2c did *not* do). Reuse the existing cleanup
+     identity infrastructure; do not add a parallel id system.
+7. **PR-I2f. Formatting Application On Proven Relations**
+   - Start only after identity/relations are reliable (PR-I2e and/or explicit
+     relation facts for true aggregates).
    - Apply heading/list/caption/run styling only where the relation is
-     unambiguous and the target is not a mixed paragraph that would be corrupted
-     by a single Word style.
-3. **PR-CLEANUP0**
-   - Keep blocked until PR-I2b/PR-I2c define which runtime surfaces are actually
-     unused. Verifier config can be marked validation-only, but do not delete
-     proof harnesses or safety guards while formatting restore is still moving.
+     unambiguous and the target is not a mixed paragraph that a single Word style
+     would corrupt.
+8. **PR-CLEANUP0**
+   - Keep blocked until PR-I2b/PR-I2c/PR-I2d/PR-I2g/PR-I2h/PR-I2e/PR-I2f define which runtime
+     surfaces are actually unused. Verifier config can be marked validation-only,
+     but do not delete proof harnesses or safety guards while formatting restore
+     is still moving.
    - Status: real split-heading continuation defects are partially reduced by
      the source fix above. Remaining samples still include legitimate chapter/
      section headings, so the gate now prefers unit-aware evidence when

@@ -93,6 +93,7 @@ REAL_DOCUMENT_ARTIFACT_ROOT = PROJECT_ROOT / "tests" / "artifacts" / "real_docum
 FORMATTING_DIAGNOSTICS_DIR = PROJECT_ROOT / ".run" / "formatting_diagnostics"
 HEARTBEAT_INTERVAL_SECONDS = 15.0
 READER_VERIFIER_DEFAULT_SELECTOR = "openrouter:google/gemini-3-flash-preview"
+READER_VERIFIER_TIMEOUT_SECONDS = 180.0
 READER_VERIFIER_TARGET_DOCUMENT_PROFILE_ID = "lietaer-pdf-chapter-region-core"
 READER_VERIFIER_TARGET_RUN_PROFILE_ID = "ui-parity-translate-simple-reader-cleanup-comparison-only"
 _ALLOWED_READER_VERIFIER_VERDICTS = frozenset({"cleaned_better", "raw_better", "mixed", "unclear"})
@@ -3157,6 +3158,19 @@ def _classify_reader_verifier_runtime_failure(exc: Exception) -> str:
     return "execution_failed"
 
 
+def _reader_verifier_timeout_seconds() -> float:
+    raw_value = os.environ.get("DOCXAI_READER_VERIFIER_TIMEOUT_SECONDS", "").strip()
+    if not raw_value:
+        return READER_VERIFIER_TIMEOUT_SECONDS
+    try:
+        timeout_seconds = float(raw_value)
+    except ValueError:
+        return READER_VERIFIER_TIMEOUT_SECONDS
+    if timeout_seconds <= 0:
+        return READER_VERIFIER_TIMEOUT_SECONDS
+    return timeout_seconds
+
+
 def _run_reader_verifier(
     *,
     run_id: str,
@@ -3298,36 +3312,62 @@ def _run_reader_verifier(
             evidence_path=evidence_path,
             evidence_payload=evidence_payload,
         )
-    try:
-        client = get_client_for_model_selector(
-            requested_selector,
-            "responses_text",
-            config_like=app_config,
-        )
-        raw_response = generate_markdown_block(
-            client=client,
-            model=resolved_selector.model_id,
-            system_prompt=_build_reader_verifier_system_prompt(),
-            target_text=json.dumps(evidence_payload, ensure_ascii=False, indent=2),
-            context_before="",
-            context_after="",
-            max_retries=max(1, max_retries),
-            expected_paragraph_ids=None,
-            marker_mode=False,
-        )
-        return _parse_reader_verifier_completed_review(
-            raw_response=raw_response,
-            run_id=run_id,
-            document_profile_id=document_profile_id,
-            run_profile_id=run_profile_id,
-            requested_selector=requested_selector,
-            canonical_selector=resolved_selector.canonical_selector,
-            provider=resolved_selector.provider,
-            model_id=resolved_selector.model_id,
-            evidence_path=evidence_path,
-            evidence_payload=evidence_payload,
-        )
-    except Exception as exc:
+    def _execute_verifier_request() -> dict[str, object]:
+        try:
+            client = get_client_for_model_selector(
+                requested_selector,
+                "responses_text",
+                config_like=app_config,
+            )
+            raw_response = generate_markdown_block(
+                client=client,
+                model=resolved_selector.model_id,
+                system_prompt=_build_reader_verifier_system_prompt(),
+                target_text=json.dumps(evidence_payload, ensure_ascii=False, indent=2),
+                context_before="",
+                context_after="",
+                max_retries=max(1, max_retries),
+                expected_paragraph_ids=None,
+                marker_mode=False,
+            )
+            return _parse_reader_verifier_completed_review(
+                raw_response=raw_response,
+                run_id=run_id,
+                document_profile_id=document_profile_id,
+                run_profile_id=run_profile_id,
+                requested_selector=requested_selector,
+                canonical_selector=resolved_selector.canonical_selector,
+                provider=resolved_selector.provider,
+                model_id=resolved_selector.model_id,
+                evidence_path=evidence_path,
+                evidence_payload=evidence_payload,
+            )
+        except Exception as exc:
+            return _build_reader_verifier_non_success_review(
+                run_id=run_id,
+                document_profile_id=document_profile_id,
+                run_profile_id=run_profile_id,
+                requested_selector=requested_selector,
+                canonical_selector=resolved_selector.canonical_selector,
+                provider=resolved_selector.provider,
+                model_id=resolved_selector.model_id,
+                verifier_status="failed",
+                verifier_reason=_classify_reader_verifier_runtime_failure(exc),
+                verifier_detail=str(exc),
+                evidence_path=evidence_path,
+                evidence_payload=evidence_payload,
+            )
+
+    result_holder: dict[str, object] = {}
+
+    def _worker() -> None:
+        result_holder["review"] = _execute_verifier_request()
+
+    timeout_seconds = _reader_verifier_timeout_seconds()
+    worker = threading.Thread(target=_worker, name="reader-verifier-review", daemon=True)
+    worker.start()
+    worker.join(timeout=timeout_seconds)
+    if worker.is_alive():
         return _build_reader_verifier_non_success_review(
             run_id=run_id,
             document_profile_id=document_profile_id,
@@ -3337,11 +3377,28 @@ def _run_reader_verifier(
             provider=resolved_selector.provider,
             model_id=resolved_selector.model_id,
             verifier_status="failed",
-            verifier_reason=_classify_reader_verifier_runtime_failure(exc),
-            verifier_detail=str(exc),
+            verifier_reason="execution_timeout",
+            verifier_detail=f"Reader verifier exceeded {timeout_seconds:.1f}s advisory timeout.",
             evidence_path=evidence_path,
             evidence_payload=evidence_payload,
         )
+    review = result_holder.get("review")
+    if isinstance(review, Mapping):
+        return dict(review)
+    return _build_reader_verifier_non_success_review(
+        run_id=run_id,
+        document_profile_id=document_profile_id,
+        run_profile_id=run_profile_id,
+        requested_selector=requested_selector,
+        canonical_selector=resolved_selector.canonical_selector,
+        provider=resolved_selector.provider,
+        model_id=resolved_selector.model_id,
+        verifier_status="failed",
+        verifier_reason="execution_failed",
+        verifier_detail="Reader verifier worker finished without a review payload.",
+        evidence_path=evidence_path,
+        evidence_payload=evidence_payload,
+    )
 
 
 def _write_reader_verifier_artifacts(

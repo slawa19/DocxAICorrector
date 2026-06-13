@@ -5275,7 +5275,39 @@ def test_rebuild_docx_for_markdown_prefers_cleanup_formatting_registry_override(
         generated_paragraph_registry=override_registry,
     )
 
-    assert preserve_calls == [override_registry]
+    assert preserve_calls == [
+        [{"block_index": 1, "paragraph_id": "p0001", "text": "Cleaned", "target_paragraph_indexes": [0]}]
+    ]
+
+
+def test_rebuild_identity_formatting_registry_attaches_target_indexes_without_visible_markers():
+    registry = document_pipeline_late_phases._build_rebuild_identity_formatting_registry(
+        markdown_text="# Translated Heading\n\nTranslated body",
+        generated_paragraph_registry=[
+            {"paragraph_id": "p0001", "text": "# Translated Heading"},
+            {"paragraph_id": "p0002", "text": "Translated body"},
+        ],
+    )
+
+    assert registry == [
+        {"paragraph_id": "p0001", "text": "# Translated Heading", "target_paragraph_indexes": [0]},
+        {"paragraph_id": "p0002", "text": "Translated body", "target_paragraph_indexes": [1]},
+    ]
+
+
+def test_rebuild_identity_formatting_registry_rolls_back_partial_multiblock_match():
+    registry = document_pipeline_late_phases._build_rebuild_identity_formatting_registry(
+        markdown_text="First block\n\nNext stable block",
+        generated_paragraph_registry=[
+            {"paragraph_id": "p0001", "text": "First block\n\nMissing continuation"},
+            {"paragraph_id": "p0002", "text": "Next stable block"},
+        ],
+    )
+
+    assert registry == [
+        {"paragraph_id": "p0001", "text": "First block\n\nMissing continuation"},
+        {"paragraph_id": "p0002", "text": "Next stable block", "target_paragraph_indexes": [1]},
+    ]
 
 
 def test_reader_cleanup_lineage_rebuild_harness_accepts_runtime_lineage_artifact(tmp_path):

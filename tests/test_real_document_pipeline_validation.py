@@ -3,6 +3,7 @@ import importlib.util
 import io
 import json
 import os
+import time
 from io import BytesIO
 from pathlib import Path
 from contextlib import redirect_stdout
@@ -3636,6 +3637,67 @@ def test_run_reader_verifier_failure_surfaces_pre_audit_remaining_issues(tmp_pat
     assert review["verifier_reason"] == "execution_failed"
     assert review["remaining_issues"][0]["category"] == "page_furniture_inline"
     assert review["issue_summary_by_category"]["page_furniture_inline"] == 1
+    assert review["verifier_canonical_selector"] == "openrouter:google/gemini-3-flash-preview"
+
+
+def test_run_reader_verifier_timeout_surfaces_pre_audit_remaining_issues(tmp_path, monkeypatch) -> None:
+    validation = _load_validation_module()
+
+    evidence_path = tmp_path / "reader_quality_evidence.json"
+    evidence_path.write_text("{}", encoding="utf-8")
+    evidence_payload = {
+        **_reader_verifier_test_evidence_payload(pre_audit_issue_counts={"heading_fused_with_body": 1}),
+        "base_artifacts_present": True,
+    }
+
+    monkeypatch.setattr(
+        validation,
+        "describe_provider_availability",
+        lambda selector, app_config=None: SimpleNamespace(
+            enabled=True,
+            has_api_key=True,
+            error_message=None,
+            selector=SimpleNamespace(
+                canonical_selector="openrouter:google/gemini-3-flash-preview",
+                provider="openrouter",
+                model_id="google/gemini-3-flash-preview",
+            ),
+        ),
+    )
+    monkeypatch.setattr(
+        validation,
+        "resolve_model_selector",
+        lambda *args, **kwargs: SimpleNamespace(
+            canonical_selector="openrouter:google/gemini-3-flash-preview",
+            provider="openrouter",
+            model_id="google/gemini-3-flash-preview",
+        ),
+    )
+    monkeypatch.setattr(validation, "get_client_for_model_selector", lambda *args, **kwargs: object())
+
+    def _slow_generate_markdown_block(**kwargs):
+        time.sleep(0.2)
+        return "{}"
+
+    monkeypatch.setattr(validation, "generate_markdown_block", _slow_generate_markdown_block)
+    monkeypatch.setenv("DOCXAI_READER_VERIFIER_TIMEOUT_SECONDS", "0.01")
+
+    review = validation._run_reader_verifier(
+        run_id="run-1",
+        document_profile_id="lietaer-pdf-chapter-region-core",
+        run_profile_id="ui-parity-translate-simple-reader-cleanup-comparison-only",
+        app_config=object(),
+        runtime_app_config={},
+        validation_mode={"comparison_only_validation": True},
+        evidence_payload=evidence_payload,
+        evidence_path=evidence_path,
+        max_retries=1,
+    )
+
+    assert review["verifier_status"] == "failed"
+    assert review["verifier_reason"] == "execution_timeout"
+    assert review["remaining_issues"][0]["category"] == "heading_fused_with_body"
+    assert review["issue_summary_by_category"]["heading_fused_with_body"] == 1
     assert review["verifier_canonical_selector"] == "openrouter:google/gemini-3-flash-preview"
 
 

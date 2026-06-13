@@ -160,21 +160,80 @@ def _rebuild_docx_for_markdown(
     processed_image_assets: Sequence[Any],
     generated_paragraph_registry: Sequence[Mapping[str, object]] | None = None,
 ) -> bytes:
+    formatting_registry = (
+        generated_paragraph_registry
+        if generated_paragraph_registry is not None
+        else state.generated_paragraph_registry or None
+    )
+    rebuild_identity_registry = _build_rebuild_identity_formatting_registry(
+        markdown_text=markdown_text,
+        generated_paragraph_registry=formatting_registry,
+    )
     docx_bytes = dependencies.convert_markdown_to_docx_bytes(markdown_text)
     if context.source_paragraphs:
-        formatting_registry = (
-            generated_paragraph_registry
-            if generated_paragraph_registry is not None
-            else state.generated_paragraph_registry or None
-        )
         docx_bytes = dependencies.preserve_source_paragraph_properties(
             docx_bytes,
             context.source_paragraphs,
-            formatting_registry,
+            rebuild_identity_registry or formatting_registry,
         )
     if processed_image_assets:
         docx_bytes = dependencies.reinsert_inline_images(docx_bytes, processed_image_assets)
     return docx_bytes
+
+
+def _build_rebuild_identity_formatting_registry(
+    *,
+    markdown_text: str,
+    generated_paragraph_registry: Sequence[Mapping[str, object]] | None,
+) -> list[dict[str, object]] | None:
+    """Attach rebuild-only target paragraph indexes to formatting registry entries.
+
+    The indexes are a sidecar for final DOCX restore. They are not written into
+    reader-facing Markdown, not sent to the model, and not persisted into the
+    final DOCX. Matching is intentionally exact and ordered: if a registry entry
+    cannot be aligned to the rebuilt Markdown blocks, that entry is left without
+    target indexes and the formatter falls back to its existing conservative
+    strategies.
+    """
+    if not generated_paragraph_registry:
+        return None
+
+    markdown_blocks = build_cleanup_blocks(markdown_text)
+    if not markdown_blocks:
+        return [dict(entry) for entry in generated_paragraph_registry if isinstance(entry, Mapping)]
+
+    registry_entries = [dict(entry) for entry in generated_paragraph_registry if isinstance(entry, Mapping)]
+    target_indexes_by_registry_index: dict[int, list[int]] = {}
+    search_start_index = 0
+
+    for registry_index, entry in enumerate(registry_entries):
+        entry_text = str(entry.get("text") or "").strip()
+        entry_blocks = build_cleanup_blocks(entry_text)
+        if not entry_blocks:
+            continue
+
+        matched_indexes: list[int] = []
+        candidate_search_start_index = search_start_index
+        for entry_block in entry_blocks:
+            for markdown_index in range(candidate_search_start_index, len(markdown_blocks)):
+                if markdown_blocks[markdown_index].normalized_text == entry_block.normalized_text:
+                    matched_indexes.append(markdown_index)
+                    candidate_search_start_index = markdown_index + 1
+                    break
+            else:
+                matched_indexes = []
+                break
+
+        if matched_indexes:
+            target_indexes_by_registry_index[registry_index] = matched_indexes
+            search_start_index = candidate_search_start_index
+
+    if not target_indexes_by_registry_index:
+        return registry_entries
+
+    for registry_index, target_indexes in target_indexes_by_registry_index.items():
+        registry_entries[registry_index]["target_paragraph_indexes"] = target_indexes
+    return registry_entries
 
 
 def _cleanup_block_index(block_id: object) -> int | None:

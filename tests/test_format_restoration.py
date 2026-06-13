@@ -496,6 +496,455 @@ def test_build_output_formatting_diagnostics_summarizes_unmapped_roles_and_sampl
     ]
 
 
+def test_formatting_diagnostics_classify_residual_unmapped_identity_gaps():
+    source_paragraphs = [
+        ParagraphUnit(
+            paragraph_id="p0001",
+            text="Stable source paragraph",
+            role="body",
+            structural_role="body",
+            role_confidence="heuristic",
+        ),
+        ParagraphUnit(
+            paragraph_id="p0002",
+            text="Single origin paragraph",
+            role="body",
+            structural_role="body",
+            role_confidence="heuristic",
+            origin_raw_indexes=[2],
+            origin_raw_texts=["Single origin paragraph"],
+        ),
+        ParagraphUnit(
+            paragraph_id="p0003",
+            text="Merged source paragraph",
+            role="body",
+            structural_role="body",
+            role_confidence="heuristic",
+            origin_raw_indexes=[3, 4],
+            origin_raw_texts=["Merged source", "paragraph"],
+        ),
+        ParagraphUnit(
+            paragraph_id="p0004",
+            text="Registry missing paragraph",
+            role="body",
+            structural_role="body",
+            role_confidence="heuristic",
+        ),
+        ParagraphUnit(
+            paragraph_id="p0005",
+            text="[[DOCX_IMAGE_img_001]]",
+            role="image",
+            structural_role="image",
+            asset_id="img_001",
+        ),
+    ]
+    target_doc = Document()
+    target_doc.add_paragraph("Stable source paragraph")
+    target_doc.add_paragraph("Unrelated translated target")
+
+    diagnostics = _build_output_formatting_diagnostics(
+        source_paragraphs,
+        list(target_doc.paragraphs),
+        document=target_doc,
+        generated_paragraph_registry=[
+            {"paragraph_id": "p0001", "text": "Stable source paragraph"},
+            {"paragraph_id": "p0002", "text": "Translated single origin paragraph"},
+            {"paragraph_id": "p0003", "text": "Translated merged source paragraph"},
+            {"paragraph_id": "p0005", "text": "[[DOCX_IMAGE_img_001]]"},
+        ],
+    )
+
+    assert diagnostics["unmapped_source_ids"] == ["p0002", "p0003", "p0004", "p0005"]
+    assert diagnostics["relation_identity_population"] == {
+        "source_count": 5,
+        "relation_id_populated_count": 0,
+        "relation_id_missing_count": 5,
+    }
+    residual = cast(dict[str, object], diagnostics["unmapped_source_residual_diagnostics"])
+    assert residual["category_counts"] == {
+        "image_or_placeholder_accounted_elsewhere": 1,
+        "real_uncovered": 1,
+        "single_origin_lost_match": 1,
+        "true_aggregate_unmapped": 1,
+    }
+    assert residual["first_missing_identity_stage_counts"] == {
+        "rebuilt_docx_restore_match_missing": 3,
+        "translation_marker_or_generated_registry_missing": 1,
+    }
+    assert residual["residual_closability_diagnostics"] == {
+        "classification_basis": "full_unmapped_source_set",
+        "counts": {
+            "image_or_placeholder_accounted_elsewhere": 1,
+            "real_uncovered": 1,
+            "target_absent_or_unproven": 1,
+            "true_aggregate_relation_gap": 1,
+        },
+        "embedded_marker_upper_bound_count": 0,
+        "embedded_marker_upper_bound_class": "target_exists_text_align_missed",
+        "embedded_marker_upper_bound_note": "Counts only candidates on unmapped/free target paragraphs.",
+    }
+    assert residual["effective_formatting_coverage_diagnostics"] == {
+        "classification_basis": "full_unmapped_source_set",
+        "evidence_basis": "registry_text_exact_or_fuzzy_overlap_in_already_mapped_neighbor_target",
+        "source_neighbor_window": 3,
+        "fuzzy_evidence_rule": (
+            "exact containment, or token overlap >=0.62 with >=4 common tokens, "
+            "or token overlap >=0.8 with >=2 common tokens, or sequence ratio >=0.75 for longer text"
+        ),
+        "role_credit_rule": "Only body source dissolved into body target is format-neutral credit.",
+        "counts": {
+            "image_or_placeholder_accounted_elsewhere": 1,
+            "real_uncovered": 1,
+            "true_aggregate_relation_gap": 1,
+            "unproven_or_marker_closable": 1,
+        },
+        "format_neutral_creditable_count": 0,
+    }
+
+    samples = cast(list[dict[str, object]], residual["samples"])
+    sample_by_id = {str(sample["paragraph_id"]): sample for sample in samples}
+    assert sample_by_id["p0002"]["residual_category"] == "single_origin_lost_match"
+    assert sample_by_id["p0002"]["residual_closability_class"] == "target_absent_or_unproven"
+    assert sample_by_id["p0002"]["effective_formatting_coverage_class"] == "unproven_or_marker_closable"
+    assert sample_by_id["p0002"]["first_missing_identity_stage"] == "rebuilt_docx_restore_match_missing"
+    assert sample_by_id["p0002"]["generated_registry_entry_available"] is True
+    assert sample_by_id["p0004"]["residual_category"] == "real_uncovered"
+    assert sample_by_id["p0004"]["first_missing_identity_stage"] == "translation_marker_or_generated_registry_missing"
+
+
+def test_formatting_diagnostics_classify_marker_closable_residual_when_target_text_exists():
+    source_paragraphs = [
+        ParagraphUnit(
+            paragraph_id="p0001",
+            text="Chapter eight",
+            role="heading",
+            structural_role="heading",
+            role_confidence="heuristic",
+        )
+    ]
+    target_doc = Document()
+    target_doc.add_paragraph("Предисловие ## Глава восьмая")
+
+    diagnostics = _build_output_formatting_diagnostics(
+        source_paragraphs,
+        list(target_doc.paragraphs),
+        document=target_doc,
+        generated_paragraph_registry=[
+            {
+                "paragraph_id": "p0001",
+                "text": "## Глава восьмая",
+            },
+        ],
+    )
+
+    residual = cast(dict[str, object], diagnostics["unmapped_source_residual_diagnostics"])
+    assert residual["category_counts"] == {"single_origin_lost_match": 1}
+    assert residual["residual_closability_diagnostics"] == {
+        "classification_basis": "full_unmapped_source_set",
+        "counts": {"target_exists_text_align_missed": 1},
+        "embedded_marker_upper_bound_count": 1,
+        "embedded_marker_upper_bound_class": "target_exists_text_align_missed",
+        "embedded_marker_upper_bound_note": "Counts only candidates on unmapped/free target paragraphs.",
+    }
+    samples = cast(list[dict[str, object]], residual["samples"])
+    assert samples[0]["residual_closability_class"] == "target_exists_text_align_missed"
+    assert samples[0]["target_candidate_indexes_containing_registry_text"] == [0]
+    assert samples[0]["free_target_candidate_indexes_containing_registry_text"] == [0]
+
+
+def test_formatting_diagnostics_credit_body_dissolved_into_mapped_neighbor_body_target():
+    source_paragraphs = [
+        ParagraphUnit(
+            paragraph_id="p0001",
+            text="Anchor source",
+            role="body",
+            structural_role="body",
+            role_confidence="heuristic",
+        ),
+        ParagraphUnit(
+            paragraph_id="p0002",
+            text="Dissolved body source",
+            role="body",
+            structural_role="body",
+            role_confidence="heuristic",
+        ),
+    ]
+    target_doc = Document()
+    target_doc.add_paragraph("Anchor translated. Dissolved body translated.")
+
+    diagnostics = _build_output_formatting_diagnostics(
+        source_paragraphs,
+        list(target_doc.paragraphs),
+        document=target_doc,
+        generated_paragraph_registry=[
+            {
+                "paragraph_id": "p0001",
+                "text": "Anchor translated. Dissolved body translated.",
+                "target_paragraph_indexes": [0],
+            },
+            {
+                "paragraph_id": "p0002",
+                "text": "Dissolved body translated.",
+            },
+        ],
+    )
+
+    residual = cast(dict[str, object], diagnostics["unmapped_source_residual_diagnostics"])
+    assert residual["residual_closability_diagnostics"]["counts"] == {"target_occupied_by_mapped_neighbor": 1}
+    assert residual["residual_closability_diagnostics"]["embedded_marker_upper_bound_count"] == 0
+    assert residual["effective_formatting_coverage_diagnostics"]["counts"] == {
+        "format_neutral_body_dissolved_creditable": 1
+    }
+    assert residual["effective_formatting_coverage_diagnostics"]["format_neutral_creditable_count"] == 1
+    sample = cast(list[dict[str, object]], residual["samples"])[0]
+    assert sample["residual_closability_class"] == "target_occupied_by_mapped_neighbor"
+    assert sample["effective_formatting_coverage_class"] == "format_neutral_body_dissolved_creditable"
+    assert sample["occupied_neighbor_candidate_evidence"] == [
+        {
+            "target_index": 0,
+            "mapped_source_index": 0,
+            "source_distance": 1,
+            "evidence_type": "exact_contains",
+            "score": 1.0,
+            "token_overlap_ratio": 1.0,
+        }
+    ]
+
+
+def test_formatting_diagnostics_credit_body_with_fuzzy_neighbor_evidence():
+    source_paragraphs = [
+        ParagraphUnit(
+            paragraph_id="p0001",
+            text="Anchor source",
+            role="body",
+            structural_role="body",
+            role_confidence="heuristic",
+        ),
+        ParagraphUnit(
+            paragraph_id="p0002",
+            text="Dissolved body source",
+            role="body",
+            structural_role="body",
+            role_confidence="heuristic",
+        ),
+    ]
+    target_doc = Document()
+    target_doc.add_paragraph("Anchor translated. The dissolved body idea was translated nearby.")
+
+    diagnostics = _build_output_formatting_diagnostics(
+        source_paragraphs,
+        list(target_doc.paragraphs),
+        document=target_doc,
+        generated_paragraph_registry=[
+            {
+                "paragraph_id": "p0001",
+                "text": "Anchor translated. The dissolved body idea was translated nearby.",
+                "target_paragraph_indexes": [0],
+            },
+            {
+                "paragraph_id": "p0002",
+                "text": "Dissolved body translated.",
+            },
+        ],
+    )
+
+    residual = cast(dict[str, object], diagnostics["unmapped_source_residual_diagnostics"])
+    assert residual["effective_formatting_coverage_diagnostics"]["counts"] == {
+        "format_neutral_body_dissolved_creditable": 1
+    }
+    sample = cast(list[dict[str, object]], residual["samples"])[0]
+    assert sample["effective_formatting_coverage_class"] == "format_neutral_body_dissolved_creditable"
+    evidence = cast(list[dict[str, object]], sample["occupied_neighbor_candidate_evidence"])[0]
+    assert evidence["evidence_type"] == "fuzzy_token_overlap"
+    assert evidence["target_index"] == 0
+
+
+def test_formatting_diagnostics_do_not_credit_heading_dissolved_into_body_target():
+    source_paragraphs = [
+        ParagraphUnit(
+            paragraph_id="p0001",
+            text="Anchor source",
+            role="body",
+            structural_role="body",
+            role_confidence="heuristic",
+        ),
+        ParagraphUnit(
+            paragraph_id="p0002",
+            text="Source heading",
+            role="heading",
+            structural_role="heading",
+            role_confidence="heuristic",
+            heading_level=2,
+        ),
+    ]
+    target_doc = Document()
+    target_doc.add_paragraph("Anchor translated. Translated heading.")
+
+    diagnostics = _build_output_formatting_diagnostics(
+        source_paragraphs,
+        list(target_doc.paragraphs),
+        document=target_doc,
+        generated_paragraph_registry=[
+            {
+                "paragraph_id": "p0001",
+                "text": "Anchor translated. Translated heading.",
+                "target_paragraph_indexes": [0],
+            },
+            {
+                "paragraph_id": "p0002",
+                "text": "Translated heading.",
+            },
+        ],
+    )
+
+    residual = cast(dict[str, object], diagnostics["unmapped_source_residual_diagnostics"])
+    assert residual["residual_closability_diagnostics"]["counts"] == {"target_occupied_by_mapped_neighbor": 1}
+    assert residual["effective_formatting_coverage_diagnostics"]["counts"] == {
+        "content_survived_but_format_role_lost": 1
+    }
+    assert residual["effective_formatting_coverage_diagnostics"]["format_neutral_creditable_count"] == 0
+    sample = cast(list[dict[str, object]], residual["samples"])[0]
+    assert sample["source_format_role"] == "heading"
+    assert sample["effective_formatting_coverage_class"] == "content_survived_but_format_role_lost"
+
+
+def test_formatting_diagnostics_do_not_credit_heading_with_fuzzy_body_evidence():
+    source_paragraphs = [
+        ParagraphUnit(
+            paragraph_id="p0001",
+            text="Anchor source",
+            role="body",
+            structural_role="body",
+            role_confidence="heuristic",
+        ),
+        ParagraphUnit(
+            paragraph_id="p0002",
+            text="Source heading",
+            role="heading",
+            structural_role="heading",
+            role_confidence="heuristic",
+            heading_level=2,
+        ),
+    ]
+    target_doc = Document()
+    target_doc.add_paragraph("Anchor translated. The translated heading idea appears inline.")
+
+    diagnostics = _build_output_formatting_diagnostics(
+        source_paragraphs,
+        list(target_doc.paragraphs),
+        document=target_doc,
+        generated_paragraph_registry=[
+            {
+                "paragraph_id": "p0001",
+                "text": "Anchor translated. The translated heading idea appears inline.",
+                "target_paragraph_indexes": [0],
+            },
+            {
+                "paragraph_id": "p0002",
+                "text": "Translated heading.",
+            },
+        ],
+    )
+
+    residual = cast(dict[str, object], diagnostics["unmapped_source_residual_diagnostics"])
+    assert residual["effective_formatting_coverage_diagnostics"]["counts"] == {
+        "content_survived_but_format_role_lost": 1
+    }
+    sample = cast(list[dict[str, object]], residual["samples"])[0]
+    assert sample["effective_formatting_coverage_class"] == "content_survived_but_format_role_lost"
+    evidence = cast(list[dict[str, object]], sample["occupied_neighbor_candidate_evidence"])[0]
+    assert evidence["evidence_type"] == "fuzzy_token_overlap"
+
+
+def test_formatting_diagnostics_use_rebuild_identity_key_before_text_matching():
+    source_paragraphs = [
+        ParagraphUnit(
+            paragraph_id="p0001",
+            text="Original source text",
+            role="body",
+            structural_role="body",
+            role_confidence="heuristic",
+        ),
+        ParagraphUnit(
+            paragraph_id="p0002",
+            text="Second source text",
+            role="body",
+            structural_role="body",
+            role_confidence="heuristic",
+        ),
+    ]
+    target_doc = Document()
+    target_doc.add_paragraph("Translated first paragraph that no text matcher can recover")
+    target_doc.add_paragraph("Translated second paragraph that also changed")
+
+    diagnostics = _build_output_formatting_diagnostics(
+        source_paragraphs,
+        list(target_doc.paragraphs),
+        document=target_doc,
+        generated_paragraph_registry=[
+            {
+                "paragraph_id": "p0001",
+                "text": "Translated first paragraph that no text matcher can recover",
+                "target_paragraph_indexes": [0],
+            },
+            {
+                "paragraph_id": "p0002",
+                "text": "Translated second paragraph that also changed",
+                "target_paragraph_indexes": [1],
+            },
+        ],
+    )
+
+    assert diagnostics["mapped_count"] == 2
+    assert diagnostics["unmapped_source_ids"] == []
+    assert diagnostics["unmapped_target_indexes"] == []
+    assert diagnostics["mapping_strategy_counts"] == {"paragraph_id_rebuild_key": 2}
+    assert diagnostics["rebuild_key_mapping_quality"] == {
+        "strategy": "paragraph_id_rebuild_key",
+        "mapped_count": 2,
+        "suspicious_count": 0,
+        "suspicious_counts": {},
+        "samples": [],
+    }
+
+
+def test_formatting_diagnostics_report_suspicious_rebuild_key_role_mismatch():
+    source_paragraphs = [
+        ParagraphUnit(
+            paragraph_id="p0001",
+            text="Body source text",
+            role="body",
+            structural_role="body",
+            role_confidence="heuristic",
+        )
+    ]
+    target_doc = Document()
+    target_paragraph = target_doc.add_paragraph("Translated text")
+    target_paragraph.style = "Heading 2"
+
+    diagnostics = _build_output_formatting_diagnostics(
+        source_paragraphs,
+        list(target_doc.paragraphs),
+        document=target_doc,
+        generated_paragraph_registry=[
+            {
+                "paragraph_id": "p0001",
+                "text": "Translated text",
+                "target_paragraph_indexes": [0],
+            },
+        ],
+    )
+
+    quality = cast(dict[str, object], diagnostics["rebuild_key_mapping_quality"])
+    assert quality["mapped_count"] == 1
+    assert quality["suspicious_count"] == 1
+    assert quality["suspicious_counts"] == {"non_heading_source_to_heading_target": 1}
+    samples = cast(list[dict[str, object]], quality["samples"])
+    assert samples[0]["paragraph_id"] == "p0001"
+    assert samples[0]["mapped_target_index"] == 0
+    assert samples[0]["target_heading_level"] == 2
+
+
 def test_mapping_reports_accepted_merged_sources_in_diagnostics():
     source_paragraphs = [
         ParagraphUnit(
