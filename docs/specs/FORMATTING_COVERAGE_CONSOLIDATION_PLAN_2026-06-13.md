@@ -217,6 +217,23 @@ sidecar). Do not lose the pre-cleanup baseline.
 
 **Depends on:** PR-FC3 to verify cheaply.
 
+**Local implementation note (2026-06-13):**
+- The pipeline now carries a lazy `base_docx_builder` through `DocxBuildPhaseResult`.
+  When reader cleanup is enabled, the pre-cleanup DOCX is not built eagerly.
+  Changed-cleanup runs build the final post-cleanup DOCX once; cleanup-disabled
+  and cleanup-noop/fallback paths still materialize exactly one base DOCX.
+- Regression coverage in `tests/test_document_pipeline.py` asserts the one-build
+  invariant for disabled, changed-cleanup, and fallback/noop paths.
+- The pre-cleanup mapping baseline is now carried as
+  `translation_quality_report.pre_cleanup_formatting_baseline`, labelled
+  `classification=diagnostic_only` and
+  `mapping_basis=ordered_exact_text_rebuild_sidecar`. This preserves pre-cleanup
+  observability without writing a formatted intermediate or incrementing
+  `formatting_diagnostics_artifact_count`.
+- FC4 status: complete for the code path. The next proof artifact should verify
+  the expected single final formatting diagnostic on the real cleanup-enabled
+  profile.
+
 ## PR-FC5. Embedded Id-Marker — conditional, likely dropped
 
 **Intent:** the only thing that closes `target_exists_text_align_missed` without

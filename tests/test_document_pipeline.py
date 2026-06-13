@@ -214,6 +214,51 @@ def test_run_document_processing_happy_path_updates_runtime_state():
     assert len(progress_calls) == 3
 
 
+def test_run_document_processing_builds_docx_once_when_reader_cleanup_disabled():
+    runtime = _build_runtime_capture()
+    converted_markdown_inputs = []
+
+    def convert_markdown_to_docx_bytes(markdown_text):
+        converted_markdown_inputs.append(markdown_text)
+        return markdown_text.encode("utf-8")
+
+    result = _run_processing(
+        runtime,
+        app_config={"reader_cleanup_enabled": False},
+        generate_markdown_block=lambda **kwargs: "final block",
+        convert_markdown_to_docx_bytes=convert_markdown_to_docx_bytes,
+    )
+
+    assert result == "succeeded"
+    assert runtime["state"]["latest_markdown"] == "final block"
+    assert runtime["state"]["latest_docx_bytes"] == b"final block"
+    assert converted_markdown_inputs == ["final block"]
+
+
+def test_pre_cleanup_formatting_baseline_is_diagnostic_only_rebuild_identity_snapshot():
+    baseline = document_pipeline_late_phases._build_pre_cleanup_formatting_baseline(
+        markdown_text="Intro translated\n\nBody translated",
+        generated_paragraph_registry=[
+            {"paragraph_id": "p0001", "text": "Intro translated"},
+            {"paragraph_id": "p0002", "text": "Missing source"},
+        ],
+    )
+
+    assert baseline == {
+        "stage": "pre_reader_cleanup_rebuild_identity",
+        "classification": "diagnostic_only",
+        "mapping_basis": "ordered_exact_text_rebuild_sidecar",
+        "status": "computed",
+        "source_count": 2,
+        "target_count": 2,
+        "mapped_count": 1,
+        "unmapped_source_count": 1,
+        "unmapped_target_count": 1,
+        "unmapped_source_ids": ["p0002"],
+        "unmapped_target_indexes": [1],
+    }
+
+
 def test_run_document_processing_passes_text_transform_context_to_system_prompt_loader():
     runtime = _build_runtime_capture()
     captured = {}
@@ -1601,6 +1646,7 @@ def test_run_document_processing_applies_reader_cleanup_and_saves_raw_markdown_r
     runtime = _build_runtime_capture()
     events, log_event = _capture_log_events()
     artifact_calls = {}
+    converted_markdown_inputs = []
 
     def generate_markdown_block(**kwargs):
         if kwargs["system_prompt"].startswith("You are cleaning translated book Markdown"):
@@ -1629,6 +1675,10 @@ def test_run_document_processing_applies_reader_cleanup_and_saves_raw_markdown_r
             "markdown_path": str(tmp_path / "final.result.md"),
             "docx_path": str(tmp_path / "final.result.docx"),
         }
+
+    def convert_markdown_to_docx_bytes(markdown_text):
+        converted_markdown_inputs.append(markdown_text)
+        return markdown_text.encode("utf-8")
 
     result = document_pipeline.run_document_processing(
         uploaded_file="report.docx",
@@ -1672,7 +1722,7 @@ def test_run_document_processing_applies_reader_cleanup_and_saves_raw_markdown_r
         generate_markdown_block=generate_markdown_block,
         process_document_images=lambda **kwargs: [],
         inspect_placeholder_integrity=_inspect_placeholder_integrity,
-        convert_markdown_to_docx_bytes=lambda markdown_text: markdown_text.encode("utf-8"),
+        convert_markdown_to_docx_bytes=convert_markdown_to_docx_bytes,
         preserve_source_paragraph_properties=lambda docx_bytes, paragraphs, generated_paragraph_registry=None: docx_bytes,
         reinsert_inline_images=lambda docx_bytes, image_assets: docx_bytes,
         write_ui_result_artifacts=write_ui_result_artifacts,
@@ -1681,6 +1731,7 @@ def test_run_document_processing_applies_reader_cleanup_and_saves_raw_markdown_r
     assert result == "succeeded"
     assert runtime["state"]["latest_markdown"] == "Intro\n\nBody paragraph\n\nOutro"
     assert runtime["state"]["latest_docx_bytes"] == b"Intro\n\nBody paragraph\n\nOutro"
+    assert converted_markdown_inputs == ["Intro\n\nBody paragraph\n\nOutro"]
     assert artifact_calls["kwargs"]["markdown_text"] == "Intro\n\nBody paragraph\n\nOutro"
     info_events = [event for event in events if event["level"] == logging.INFO]
     saved_event = next(event for event in info_events if event["event_id"] == "ui_result_artifacts_saved")
@@ -1688,6 +1739,121 @@ def test_run_document_processing_applies_reader_cleanup_and_saves_raw_markdown_r
     assert "reader_cleanup_report_path" in saved_event["context"]["artifact_paths"]
     cleanup_event = next(event for event in info_events if event["event_id"] == "reader_cleanup_applied")
     assert cleanup_event["context"]["accepted_delete_block_count"] == 2
+
+
+def test_run_document_processing_records_pre_cleanup_formatting_baseline_without_extra_docx_build(
+    tmp_path: Path,
+    monkeypatch,
+):
+    runtime = _build_runtime_capture()
+    converted_markdown_inputs = []
+    quality_dir = tmp_path / "quality_reports"
+    monkeypatch.setattr(document_pipeline_late_phases, "QUALITY_REPORTS_DIR", quality_dir)
+
+    def generate_markdown_block(**kwargs):
+        if kwargs["system_prompt"].startswith("You are cleaning translated book Markdown"):
+            payload = json.loads(kwargs["target_text"])
+            return json.dumps(
+                {
+                    "cleanup_operations": [
+                        {
+                            "id": block["id"],
+                            "text_hash": block["text_hash"],
+                            "operation": "delete_block",
+                            "reason": "repeated_running_header",
+                            "confidence": "high",
+                            "evidence_before": "Header",
+                            "expected_after_preview": "",
+                            "safety_note": "Test fixture deletes only the repeated running header block.",
+                        }
+                        for block in payload["blocks"]
+                        if block["text"] == "Header"
+                    ],
+                    "warnings": [],
+                },
+                ensure_ascii=False,
+            )
+        return kwargs["target_text"]
+
+    def convert_markdown_to_docx_bytes(markdown_text):
+        converted_markdown_inputs.append(markdown_text)
+        return markdown_text.encode("utf-8")
+
+    result = document_pipeline.run_document_processing(
+        uploaded_file="report.docx",
+        jobs=[
+            {"target_text": "Intro", "context_before": "", "context_after": "Header", "target_chars": 5, "context_chars": 6, "narration_include": True},
+            {"target_text": "Header", "context_before": "Intro", "context_after": "Body", "target_chars": 6, "context_chars": 4, "narration_include": True},
+            {"target_text": "Body", "context_before": "Header", "context_after": "Header", "target_chars": 4, "context_chars": 12, "narration_include": True},
+            {"target_text": "Header", "context_before": "Body", "context_after": "Outro", "target_chars": 6, "context_chars": 9, "narration_include": True},
+            {"target_text": "Outro", "context_before": "Header", "context_after": "", "target_chars": 5, "context_chars": 6, "narration_include": True},
+        ],
+        source_paragraphs=[
+            ParagraphUnit(text="Intro", role="body", paragraph_id="p0001"),
+            ParagraphUnit(text="Header", role="body", paragraph_id="p0002"),
+            ParagraphUnit(text="Body", role="body", paragraph_id="p0003"),
+            ParagraphUnit(text="Header", role="body", paragraph_id="p0004"),
+            ParagraphUnit(text="Outro", role="body", paragraph_id="p0005"),
+        ],
+        image_assets=[],
+        image_mode="safe",
+        app_config={
+            "reader_cleanup_enabled": True,
+            "reader_cleanup_policy": "advisory",
+            "reader_cleanup_chunk_size": 50,
+            "reader_cleanup_max_delete_block_ratio": 0.8,
+            "reader_cleanup_max_delete_char_ratio": 0.8,
+        },
+        model="gpt-5.4-translate",
+        max_retries=1,
+        processing_operation="translate",
+        source_language="en",
+        target_language="ru",
+        on_progress=lambda **kwargs: None,
+        runtime=runtime,
+        resolve_uploaded_filename=lambda uploaded_file: str(uploaded_file),
+        get_client=lambda: object(),
+        ensure_pandoc_available=lambda: None,
+        load_system_prompt=lambda **kwargs: f"system:{kwargs['operation']}",
+        log_event=lambda *args, **kwargs: None,
+        present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
+        emit_state=_emit_state,
+        emit_finalize=_emit_finalize,
+        emit_activity=_emit_activity,
+        emit_log=_emit_log,
+        emit_status=_emit_status,
+        should_stop_processing=lambda runtime: False,
+        generate_markdown_block=generate_markdown_block,
+        process_document_images=lambda **kwargs: [],
+        inspect_placeholder_integrity=_inspect_placeholder_integrity,
+        convert_markdown_to_docx_bytes=convert_markdown_to_docx_bytes,
+        preserve_source_paragraph_properties=lambda docx_bytes, paragraphs, generated_paragraph_registry=None: docx_bytes,
+        reinsert_inline_images=lambda docx_bytes, image_assets: docx_bytes,
+        write_ui_result_artifacts=lambda **kwargs: {
+            "markdown_path": str(tmp_path / "final.result.md"),
+            "docx_path": str(tmp_path / "final.result.docx"),
+        },
+    )
+
+    assert result == "succeeded"
+    assert converted_markdown_inputs == ["Intro\n\nBody\n\nOutro"]
+    report_files = list(quality_dir.glob("*.json"))
+    assert len(report_files) == 1
+    quality_payload = json.loads(report_files[0].read_text(encoding="utf-8"))
+    assert quality_payload["formatting_diagnostics_artifact_count"] == 0
+    assert quality_payload["pre_cleanup_formatting_baseline"] == {
+        "stage": "pre_reader_cleanup_rebuild_identity",
+        "classification": "diagnostic_only",
+        "mapping_basis": "ordered_exact_text_rebuild_sidecar",
+        "status": "missing_registry",
+        "source_count": 0,
+        "target_count": 5,
+        "mapped_count": 0,
+        "unmapped_source_count": 0,
+        "unmapped_target_count": 5,
+        "unmapped_source_ids": [],
+        "unmapped_target_indexes": [0, 1, 2, 3, 4],
+    }
 
 
 def test_run_document_processing_reader_cleanup_uses_exact_raw_markdown_for_sidecar_and_hashes(tmp_path: Path):
@@ -1923,6 +2089,7 @@ def test_run_document_processing_preserves_base_result_when_reader_cleanup_fails
     runtime = _build_runtime_capture()
     events, log_event = _capture_log_events()
     artifact_calls = {}
+    converted_markdown_inputs = []
 
     def generate_markdown_block(**kwargs):
         if kwargs["system_prompt"].startswith("You are cleaning translated book Markdown"):
@@ -1932,6 +2099,10 @@ def test_run_document_processing_preserves_base_result_when_reader_cleanup_fails
     def write_ui_result_artifacts(**kwargs):
         artifact_calls["kwargs"] = dict(kwargs)
         return {"markdown_path": "/tmp/report.result.md", "docx_path": "/tmp/report.result.docx"}
+
+    def convert_markdown_to_docx_bytes(markdown_text):
+        converted_markdown_inputs.append(markdown_text)
+        return markdown_text.encode("utf-8")
 
     result = document_pipeline.run_document_processing(
         uploaded_file="report.docx",
@@ -1962,7 +2133,7 @@ def test_run_document_processing_preserves_base_result_when_reader_cleanup_fails
         generate_markdown_block=generate_markdown_block,
         process_document_images=lambda **kwargs: [],
         inspect_placeholder_integrity=_inspect_placeholder_integrity,
-        convert_markdown_to_docx_bytes=lambda markdown_text: markdown_text.encode("utf-8"),
+        convert_markdown_to_docx_bytes=convert_markdown_to_docx_bytes,
         preserve_source_paragraph_properties=lambda docx_bytes, paragraphs, generated_paragraph_registry=None: docx_bytes,
         reinsert_inline_images=lambda docx_bytes, image_assets: docx_bytes,
         write_ui_result_artifacts=write_ui_result_artifacts,
@@ -1971,6 +2142,7 @@ def test_run_document_processing_preserves_base_result_when_reader_cleanup_fails
     assert result == "succeeded"
     assert runtime["state"]["latest_markdown"] == "block"
     assert runtime["state"]["latest_docx_bytes"] == b"block"
+    assert converted_markdown_inputs == ["block"]
     assert artifact_calls["kwargs"]["markdown_text"] == "block"
     info_events = [event for event in events if event["level"] == logging.INFO]
     noop_event = next(event for event in info_events if event["event_id"] == "reader_cleanup_noop")
@@ -5234,8 +5406,8 @@ def test_reader_cleanup_postprocess_prefers_assembly_formatting_registry_over_st
     assert cleaned_docx_bytes == b"Intro\n\n[[DOCX_IMAGE_img_001]]\n\nBody paragraph"
     assert report is not None
     assert preserve_calls == [[
-        {"block_index": 1, "paragraph_id": "p0001", "text": "Intro"},
-        {"block_index": 3, "paragraph_id": "p0003", "text": "Body paragraph"},
+        {"block_index": 1, "paragraph_id": "p0001", "text": "Intro", "target_paragraph_indexes": [0]},
+        {"block_index": 3, "paragraph_id": "p0003", "text": "Body paragraph", "target_paragraph_indexes": [2]},
     ]]
     applied_event = next(event for event in log_events if event["event_id"] == "reader_cleanup_applied")
     assert applied_event["context"]["formatting_lineage_status"] == "derived"

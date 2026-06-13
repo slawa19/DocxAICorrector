@@ -911,13 +911,18 @@ def _run_docx_build_phase(
     if phase_result is None:
         return None
     return DocxBuildPhaseResult(
-        docx_bytes=phase_result["docx_bytes"],
-        final_markdown=str(phase_result.get("final_markdown") or ""),
+        docx_bytes=cast(bytes | None, phase_result.get("docx_bytes")),
+        final_markdown=str(phase_result.get("runtime_display_markdown") or phase_result.get("final_markdown") or ""),
         latest_result_notice=phase_result["latest_result_notice"],
         formatting_diagnostics_artifacts=list(phase_result.get("formatting_diagnostics_artifacts") or []),
+        pre_cleanup_formatting_baseline=cast(
+            Mapping[str, object] | None,
+            phase_result.get("pre_cleanup_formatting_baseline"),
+        ),
         assembly_entries=list(phase_result.get("assembly_entries") or []),
         result_manifest=cast(Mapping[str, object] | None, phase_result.get("result_manifest")),
         processed_image_assets=list(cast(Sequence[ImageAssetLike], phase_result.get("processed_image_assets") or [])),
+        base_docx_builder=cast(Callable[[], bytes] | None, phase_result.get("base_docx_builder")),
     )
 
 
@@ -937,9 +942,12 @@ def _finalize_processing_success(
         state=state,
         docx_phase={
             "docx_bytes": docx_phase.docx_bytes,
+            "base_docx_builder": docx_phase.base_docx_builder,
             "final_markdown": docx_phase.final_markdown,
+            "runtime_display_markdown": docx_phase.final_markdown,
             "latest_result_notice": docx_phase.latest_result_notice,
             "formatting_diagnostics_artifacts": list(docx_phase.formatting_diagnostics_artifacts),
+            "pre_cleanup_formatting_baseline": docx_phase.pre_cleanup_formatting_baseline,
             "assembly_entries": list(docx_phase.assembly_entries),
             "result_manifest": docx_phase.result_manifest,
             "processed_image_assets": list(docx_phase.processed_image_assets),

@@ -296,13 +296,15 @@ class ImageProcessingPhaseResult:
 
 @dataclass(frozen=True)
 class DocxBuildPhaseResult:
-    docx_bytes: bytes
+    docx_bytes: bytes | None
     final_markdown: str
     latest_result_notice: dict[str, str] | None
     formatting_diagnostics_artifacts: list[str] = field(default_factory=list)
+    pre_cleanup_formatting_baseline: Mapping[str, object] | None = None
     assembly_entries: list[Mapping[str, object]] = field(default_factory=list)
     result_manifest: Mapping[str, object] | None = None
     processed_image_assets: list[ImageAssetLike] = field(default_factory=list)
+    base_docx_builder: Callable[[], bytes] | None = None
 
 
 @dataclass(frozen=True)

@@ -181,6 +181,73 @@ def _rebuild_docx_for_markdown(
     return docx_bytes
 
 
+def _resolve_docx_phase_bytes(docx_phase: Mapping[str, object]) -> bytes:
+    docx_bytes = docx_phase.get("docx_bytes")
+    if isinstance(docx_bytes, bytes):
+        return docx_bytes
+    builder = docx_phase.get("base_docx_builder")
+    if callable(builder):
+        resolved_docx_bytes = builder()
+        if isinstance(docx_phase, dict):
+            docx_phase["docx_bytes"] = resolved_docx_bytes
+        return resolved_docx_bytes
+    return b""
+
+
+def _build_pre_cleanup_formatting_baseline(
+    *,
+    markdown_text: str,
+    generated_paragraph_registry: Sequence[Mapping[str, object]] | None,
+) -> dict[str, object] | None:
+    target_blocks = build_cleanup_blocks(markdown_text)
+    if not generated_paragraph_registry:
+        return {
+            "stage": "pre_reader_cleanup_rebuild_identity",
+            "classification": "diagnostic_only",
+            "mapping_basis": "ordered_exact_text_rebuild_sidecar",
+            "status": "missing_registry",
+            "source_count": 0,
+            "target_count": len(target_blocks),
+            "mapped_count": 0,
+            "unmapped_source_count": 0,
+            "unmapped_target_count": len(target_blocks),
+            "unmapped_source_ids": [],
+            "unmapped_target_indexes": list(range(len(target_blocks))),
+        }
+    aligned_registry = _build_rebuild_identity_formatting_registry(
+        markdown_text=markdown_text,
+        generated_paragraph_registry=generated_paragraph_registry,
+    )
+    if aligned_registry is None:
+        aligned_registry = [dict(entry) for entry in generated_paragraph_registry]
+    mapped_target_indexes: set[int] = set()
+    unmapped_source_ids: list[str] = []
+    mapped_count = 0
+    for entry in aligned_registry:
+        target_indexes = entry.get("target_paragraph_indexes")
+        paragraph_id = str(entry.get("paragraph_id") or "").strip()
+        if isinstance(target_indexes, list) and target_indexes:
+            mapped_count += 1
+            mapped_target_indexes.update(index for index in target_indexes if isinstance(index, int))
+        elif paragraph_id:
+            unmapped_source_ids.append(paragraph_id)
+    target_count = len(target_blocks)
+    unmapped_target_indexes = [index for index in range(target_count) if index not in mapped_target_indexes]
+    return {
+        "stage": "pre_reader_cleanup_rebuild_identity",
+        "classification": "diagnostic_only",
+        "mapping_basis": "ordered_exact_text_rebuild_sidecar",
+        "status": "computed",
+        "source_count": len(aligned_registry),
+        "target_count": target_count,
+        "mapped_count": mapped_count,
+        "unmapped_source_count": len(unmapped_source_ids),
+        "unmapped_target_count": len(unmapped_target_indexes),
+        "unmapped_source_ids": unmapped_source_ids,
+        "unmapped_target_indexes": unmapped_target_indexes,
+    }
+
+
 def _build_rebuild_identity_formatting_registry(
     *,
     markdown_text: str,
@@ -786,17 +853,25 @@ def _run_reader_cleanup_postprocess(
     state: Any,
     cleanup_input_markdown: str,
     runtime_display_markdown: str,
-    base_docx_bytes: bytes,
+    base_docx_bytes: bytes | None,
     job_count: int,
     processed_image_assets: Sequence[Any],
     formatting_registry: Sequence[Mapping[str, object]] | None = None,
+    base_docx_builder: Callable[[], bytes] | None = None,
 ) -> tuple[str, bytes, dict[str, object] | None, str | None, dict[str, str] | None]:
+    def _base_docx_bytes() -> bytes:
+        if base_docx_bytes is not None:
+            return base_docx_bytes
+        if base_docx_builder is not None:
+            return base_docx_builder()
+        return b""
+
     if not _should_run_reader_cleanup(context=context):
-        return runtime_display_markdown, base_docx_bytes, None, None, None
+        return runtime_display_markdown, _base_docx_bytes(), None, None, None
 
     config = resolve_reader_cleanup_config(app_config=context.app_config, fallback_model=context.model)
     if not config.enabled:
-        return runtime_display_markdown, base_docx_bytes, None, None, None
+        return runtime_display_markdown, _base_docx_bytes(), None, None, None
     if config.drop_back_matter:
         dependencies.log_event(
             logging.WARNING,
@@ -1011,7 +1086,7 @@ def _run_reader_cleanup_postprocess(
                 cleanup_identity_image_gap_count=cleanup_identity_diagnostics.get("image_gap_count"),
                 cleanup_identity_text_gap_count=cleanup_identity_diagnostics.get("text_gap_count"),
             )
-            return runtime_display_markdown, base_docx_bytes, cleanup_result.report_payload, cleanup_result.raw_markdown, None
+            return runtime_display_markdown, _base_docx_bytes(), cleanup_result.report_payload, cleanup_result.raw_markdown, None
 
         cleaned_runtime_display_markdown = _normalize_final_markdown_for_runtime_display(cleanup_result.cleaned_markdown)
         cleanup_formatting_registry, cleanup_formatting_lineage = _derive_reader_cleanup_generated_paragraph_registry(
@@ -1132,13 +1207,13 @@ def _run_reader_cleanup_postprocess(
             )
         emitters.emit_state(
             context.runtime,
-            latest_docx_bytes=base_docx_bytes,
+            latest_docx_bytes=_base_docx_bytes(),
             latest_markdown=runtime_display_markdown,
             latest_narration_text=None,
             latest_result_notice=result_notice,
             last_error=error_message,
         )
-        return runtime_display_markdown, base_docx_bytes, cast(dict[str, object] | None, strict_report), strict_raw_markdown, result_notice
+        return runtime_display_markdown, _base_docx_bytes(), cast(dict[str, object] | None, strict_report), strict_raw_markdown, result_notice
 
 
 def _serialize_assembly_decisions(decisions: Sequence[object], *, limit: int = 20) -> list[dict[str, object]]:
@@ -1409,6 +1484,7 @@ def _build_translation_quality_report(
     final_markdown: str,
     formatting_diagnostics_artifacts: Sequence[str],
     assembly_result: Any | None = None,
+    pre_cleanup_formatting_baseline: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     normalized_quality_markdown = _normalize_final_markdown_for_quality_gate(final_markdown)
     display_hygiene_markdown = _normalize_final_markdown_for_display_hygiene_reporting(final_markdown)
@@ -1639,6 +1715,9 @@ def _build_translation_quality_report(
         "toc_body_concat_structure_detected": authority_fields.get("toc_body_concat_structure_detected", False),
         "toc_body_concat_gate_source": authority_fields.get("toc_body_concat_gate_source", "legacy_markdown"),
         "formatting_diagnostics_artifact_count": len(formatting_diagnostics_artifacts),
+        "pre_cleanup_formatting_baseline": dict(pre_cleanup_formatting_baseline)
+        if isinstance(pre_cleanup_formatting_baseline, Mapping)
+        else None,
         "final_markdown_chars": len(normalized_quality_markdown),
         "quality_status": quality_status,
         "gate_reasons": gate_reasons,
@@ -2294,8 +2373,13 @@ def run_docx_build_phase(
     emitters.emit_activity(context.runtime, "Все блоки готовы. Начата сборка итогового DOCX.")
     context.on_progress(preview_title="Текущий Markdown")
     build_started_at_epoch = time.time()
+    processed_image_assets = image_phase["processed_image_assets"]
+    docx_bytes_cache: bytes | None = None
 
-    try:
+    def _build_base_docx_bytes() -> bytes:
+        nonlocal docx_bytes_cache
+        if docx_bytes_cache is not None:
+            return docx_bytes_cache
         docx_bytes = dependencies.convert_markdown_to_docx_bytes(runtime_display_markdown)
         if context.source_paragraphs:
             docx_bytes = call_docx_restorer_with_optional_registry_fn(
@@ -2304,9 +2388,24 @@ def run_docx_build_phase(
                 context.source_paragraphs,
                 assembly_registry or state.generated_paragraph_registry or None,
             )
-        processed_image_assets = image_phase["processed_image_assets"]
         if processed_image_assets:
             docx_bytes = dependencies.reinsert_inline_images(docx_bytes, processed_image_assets)
+        docx_bytes_cache = docx_bytes
+        return docx_bytes
+
+    docx_bytes: bytes | None = None
+    should_defer_base_docx_build = _should_run_reader_cleanup(context=context)
+    pre_cleanup_formatting_baseline = (
+        _build_pre_cleanup_formatting_baseline(
+            markdown_text=runtime_display_markdown,
+            generated_paragraph_registry=assembly_registry or state.generated_paragraph_registry or None,
+        )
+        if should_defer_base_docx_build
+        else None
+    )
+    try:
+        if not should_defer_base_docx_build:
+            docx_bytes = _build_base_docx_bytes()
     except Exception as exc:
         error_message = dependencies.present_error(
             "docx_build_failed",
@@ -2337,10 +2436,12 @@ def run_docx_build_phase(
         return None
 
     latest_result_notice: dict[str, str] | None = None
-    formatting_diagnostics_artifacts = collect_recent_formatting_diagnostics_artifacts(
-        since_epoch_seconds=build_started_at_epoch,
-        diagnostics_dir=diagnostics_dir,
-    )
+    formatting_diagnostics_artifacts: Sequence[str] = []
+    if docx_bytes is not None:
+        formatting_diagnostics_artifacts = collect_recent_formatting_diagnostics_artifacts(
+            since_epoch_seconds=build_started_at_epoch,
+            diagnostics_dir=diagnostics_dir,
+        )
     if formatting_diagnostics_artifacts:
         severity, activity_message, user_summary = build_formatting_diagnostics_user_feedback(
             formatting_diagnostics_artifacts
@@ -2366,7 +2467,7 @@ def run_docx_build_phase(
             artifact_paths=formatting_diagnostics_artifacts,
         )
 
-    if not docx_bytes:
+    if docx_bytes is not None and not docx_bytes:
         critical_message = dependencies.present_error(
             "empty_docx_bytes",
             RuntimeError("Сборка DOCX завершилась без содержимого файла."),
@@ -2396,8 +2497,10 @@ def run_docx_build_phase(
 
     return {
         "docx_bytes": docx_bytes,
+        "base_docx_builder": _build_base_docx_bytes,
         "runtime_display_markdown": runtime_display_markdown,
         "latest_result_notice": latest_result_notice,
+        "pre_cleanup_formatting_baseline": pre_cleanup_formatting_baseline,
         "formatting_diagnostics_artifacts": list(formatting_diagnostics_artifacts),
         "assembly_entries": list(assembly_result.entries),
         "result_manifest": result_manifest,
@@ -2435,6 +2538,7 @@ def finalize_processing_success(
         final_markdown=gate_input_markdown,
         formatting_diagnostics_artifacts=formatting_diagnostics_artifacts,
         assembly_result=assembly_result,
+        pre_cleanup_formatting_baseline=cast(Mapping[str, object] | None, docx_phase.get("pre_cleanup_formatting_baseline")),
     )
     if quality_report.get("quality_status") == "warn":
         docx_phase = dict(docx_phase)
@@ -2467,7 +2571,7 @@ def finalize_processing_success(
         emitters.emit_state(
             context.runtime,
             latest_markdown=runtime_display_markdown,
-            latest_docx_bytes=docx_phase["docx_bytes"],
+            latest_docx_bytes=_resolve_docx_phase_bytes(docx_phase),
             latest_narration_text=None,
             latest_result_notice={
                 "level": "error",
@@ -2508,12 +2612,14 @@ def finalize_processing_success(
         state=state,
         cleanup_input_markdown=gate_input_markdown,
         runtime_display_markdown=runtime_display_markdown,
-        base_docx_bytes=cast(bytes, docx_phase["docx_bytes"]),
+        base_docx_bytes=cast(bytes | None, docx_phase.get("docx_bytes")),
         job_count=job_count,
         processed_image_assets=cast(Sequence[Any], docx_phase.get("processed_image_assets") or []),
         formatting_registry=build_generated_paragraph_registry_from_entries(assembly_result.entries),
+        base_docx_builder=cast(Callable[[], bytes] | None, docx_phase.get("base_docx_builder")),
     )
-    if final_docx_bytes != docx_phase["docx_bytes"] or runtime_display_markdown != _resolve_runtime_display_markdown(
+    current_docx_bytes = docx_phase.get("docx_bytes")
+    if not isinstance(current_docx_bytes, bytes) or final_docx_bytes != current_docx_bytes or runtime_display_markdown != _resolve_runtime_display_markdown(
         docx_phase=docx_phase,
         fallback_markdown=gate_input_markdown,
     ):
@@ -2544,7 +2650,7 @@ def finalize_processing_success(
             narration_error_message = error_message
             emitters.emit_state(
                 context.runtime,
-                latest_docx_bytes=docx_phase["docx_bytes"],
+                latest_docx_bytes=_resolve_docx_phase_bytes(docx_phase),
                 latest_markdown=runtime_display_markdown,
                 latest_narration_text=None,
                 latest_result_notice=docx_phase["latest_result_notice"],
@@ -2596,7 +2702,7 @@ def finalize_processing_success(
                 narration_error_message = error_message
                 emitters.emit_state(
                     context.runtime,
-                    latest_docx_bytes=docx_phase["docx_bytes"],
+                    latest_docx_bytes=_resolve_docx_phase_bytes(docx_phase),
                     latest_markdown=runtime_display_markdown,
                     latest_narration_text=None,
                     latest_result_notice=docx_phase["latest_result_notice"],
@@ -2633,7 +2739,7 @@ def finalize_processing_success(
                 )
     emitters.emit_state(
         context.runtime,
-        latest_docx_bytes=docx_phase["docx_bytes"],
+        latest_docx_bytes=_resolve_docx_phase_bytes(docx_phase),
         latest_markdown=runtime_display_markdown,
         latest_narration_text=narration_text,
         latest_result_notice=docx_phase["latest_result_notice"],
@@ -2652,7 +2758,7 @@ def finalize_processing_success(
         artifact_writer_kwargs = {
             "source_name": context.uploaded_filename,
             "markdown_text": runtime_display_markdown,
-            "docx_bytes": docx_phase["docx_bytes"],
+            "docx_bytes": _resolve_docx_phase_bytes(docx_phase),
             "assembly_mode": reassembly_plan.assembly_mode,
             "result_manifest": docx_phase.get("result_manifest")
             or build_reassembly_result_manifest(
