@@ -248,6 +248,7 @@ def test_pre_cleanup_formatting_baseline_is_diagnostic_only_rebuild_identity_sna
         "stage": "pre_reader_cleanup_rebuild_identity",
         "classification": "diagnostic_only",
         "mapping_basis": "ordered_exact_text_rebuild_sidecar",
+        "metric_scope": "sidecar_only_proxy",
         "status": "computed",
         "source_count": 2,
         "target_count": 2,
@@ -1845,6 +1846,7 @@ def test_run_document_processing_records_pre_cleanup_formatting_baseline_without
         "stage": "pre_reader_cleanup_rebuild_identity",
         "classification": "diagnostic_only",
         "mapping_basis": "ordered_exact_text_rebuild_sidecar",
+        "metric_scope": "sidecar_only_proxy",
         "status": "missing_registry",
         "source_count": 0,
         "target_count": 5,
@@ -1854,6 +1856,96 @@ def test_run_document_processing_records_pre_cleanup_formatting_baseline_without
         "unmapped_source_ids": [],
         "unmapped_target_indexes": [0, 1, 2, 3, 4],
     }
+
+
+def test_run_document_processing_fails_on_empty_lazy_docx_after_reader_cleanup_noop():
+    runtime = _build_runtime_capture()
+
+    result = document_pipeline.run_document_processing(
+        uploaded_file="report.docx",
+        jobs=[{"target_text": "block", "context_before": "", "context_after": "", "target_chars": 5, "context_chars": 0, "narration_include": True}],
+        source_paragraphs=[],
+        image_assets=[],
+        image_mode="safe",
+        app_config={"reader_cleanup_enabled": True, "reader_cleanup_policy": "advisory"},
+        model="gpt-5.4",
+        max_retries=1,
+        processing_operation="translate",
+        source_language="en",
+        target_language="ru",
+        on_progress=lambda **kwargs: None,
+        runtime=runtime,
+        resolve_uploaded_filename=lambda uploaded_file: str(uploaded_file),
+        get_client=lambda: object(),
+        ensure_pandoc_available=lambda: None,
+        load_system_prompt=lambda **kwargs: f"system:{kwargs['operation']}",
+        log_event=lambda *args, **kwargs: None,
+        present_error=lambda code, exc, title, **kwargs: f"{code}:{title}: {exc}",
+        emit_state=_emit_state,
+        emit_finalize=_emit_finalize,
+        emit_activity=_emit_activity,
+        emit_log=_emit_log,
+        emit_status=_emit_status,
+        should_stop_processing=lambda runtime: False,
+        generate_markdown_block=lambda **kwargs: json.dumps({"cleanup_operations": [], "warnings": []}, ensure_ascii=False)
+        if kwargs["system_prompt"].startswith("You are cleaning translated book Markdown")
+        else "block",
+        process_document_images=lambda **kwargs: [],
+        inspect_placeholder_integrity=_inspect_placeholder_integrity,
+        convert_markdown_to_docx_bytes=lambda markdown_text: b"",
+        preserve_source_paragraph_properties=lambda docx_bytes, paragraphs, generated_paragraph_registry=None: docx_bytes,
+        reinsert_inline_images=lambda docx_bytes, image_assets: docx_bytes,
+    )
+
+    assert result == "failed"
+    assert "empty_docx_bytes" in runtime["state"]["last_error"]
+    assert runtime["state"]["latest_docx_bytes"] is None
+
+
+def test_run_document_processing_fails_on_empty_lazy_docx_before_cleanup_quality_gate():
+    runtime = _build_runtime_capture()
+
+    result = document_pipeline.run_document_processing(
+        uploaded_file="report.docx",
+        jobs=[{"target_text": "block", "context_before": "", "context_after": "", "target_chars": 5, "context_chars": 0, "narration_include": True}],
+        source_paragraphs=[],
+        image_assets=[],
+        image_mode="safe",
+        app_config={
+            "reader_cleanup_enabled": True,
+            "reader_cleanup_policy": "advisory",
+            "translation_output_quality_gate_policy": "strict",
+        },
+        model="gpt-5.4",
+        max_retries=1,
+        processing_operation="translate",
+        source_language="en",
+        target_language="ru",
+        on_progress=lambda **kwargs: None,
+        runtime=runtime,
+        resolve_uploaded_filename=lambda uploaded_file: str(uploaded_file),
+        get_client=lambda: object(),
+        ensure_pandoc_available=lambda: None,
+        load_system_prompt=lambda **kwargs: f"system:{kwargs['operation']}",
+        log_event=lambda *args, **kwargs: None,
+        present_error=lambda code, exc, title, **kwargs: f"{code}:{title}: {exc}",
+        emit_state=_emit_state,
+        emit_finalize=_emit_finalize,
+        emit_activity=_emit_activity,
+        emit_log=_emit_log,
+        emit_status=_emit_status,
+        should_stop_processing=lambda runtime: False,
+        generate_markdown_block=lambda **kwargs: "Заключение……29 Введение",
+        process_document_images=lambda **kwargs: [],
+        inspect_placeholder_integrity=_inspect_placeholder_integrity,
+        convert_markdown_to_docx_bytes=lambda markdown_text: b"",
+        preserve_source_paragraph_properties=lambda docx_bytes, paragraphs, generated_paragraph_registry=None: docx_bytes,
+        reinsert_inline_images=lambda docx_bytes, image_assets: docx_bytes,
+    )
+
+    assert result == "failed"
+    assert "empty_docx_bytes" in runtime["state"]["last_error"]
+    assert "translation_quality_gate_failed" not in runtime["state"]["last_error"]
 
 
 def test_run_document_processing_reader_cleanup_uses_exact_raw_markdown_for_sidecar_and_hashes(tmp_path: Path):
@@ -4783,6 +4875,52 @@ def test_build_translation_quality_report_exposes_structure_unit_unmapped_basis_
     assert report["unit_unmapped_source_gate_source"] == "topology_unit"
     assert report["unit_unmapped_target_gate_source"] == "topology_unit"
     assert report["unmapped_source_count"] == 1
+
+
+def test_build_translation_quality_report_uses_role_aware_effective_unmapped_source_count(monkeypatch):
+    monkeypatch.setattr(
+        document_pipeline_late_phases,
+        "_load_formatting_diagnostics_payloads",
+        lambda artifact_paths: [
+            {
+                "unmapped_source_ids": ["p0001", "p0002", "p0003"],
+                "unmapped_target_indexes": [],
+                "source_count": 3,
+                "target_count": 2,
+                "source_registry": [
+                    {"paragraph_id": "p0001", "source_index": 0, "role": "body", "structural_role": "body", "text_preview": "Body one"},
+                    {"paragraph_id": "p0002", "source_index": 1, "role": "body", "structural_role": "body", "text_preview": "Body two"},
+                    {"paragraph_id": "p0003", "source_index": 2, "role": "body", "structural_role": "body", "text_preview": "Body three"},
+                ],
+                "unmapped_source_residual_diagnostics": {
+                    "effective_formatting_coverage_diagnostics": {
+                        "format_neutral_creditable_count": 2,
+                    }
+                },
+            }
+        ],
+    )
+
+    report = document_pipeline_late_phases._build_translation_quality_report(
+        context=SimpleNamespace(
+            app_config={"translation_output_quality_gate_policy": "strict"},
+            processing_operation="translate",
+            uploaded_filename="report.docx",
+            translation_domain="general",
+            document_map=None,
+            document_topology_projection=None,
+        ),
+        final_markdown="Body one\n\nBody two",
+        formatting_diagnostics_artifacts=["ignored.json"],
+    )
+
+    assert report["raw_unmapped_source_paragraph_count"] == 3
+    assert report["filtered_unmapped_source_count"] == 3
+    assert report["format_neutral_creditable_count"] == 2
+    assert report["effective_unmapped_source_count"] == 1
+    assert report["unmapped_source_count_basis"] == "role_aware_formatting_coverage"
+    assert report["unmapped_source_count"] == 1
+    assert report["worst_unmapped_source_count"] == 1
 
 
 def test_run_document_processing_logs_compact_block_plan_summary_at_info() -> None:

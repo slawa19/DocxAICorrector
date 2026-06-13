@@ -39,6 +39,9 @@ from docxaicorrector.pipeline.reassembly import (
     load_segment_result_records,
 )
 from docxaicorrector.processing.preparation import humanize_quality_gate_reasons
+from docxaicorrector.validation.formatting_coverage import (
+    resolve_role_aware_formatting_unmapped_source_summary,
+)
 from docxaicorrector.reader_cleanup_mvp import (
     build_cleanup_blocks,
     build_reader_cleanup_global_plan_system_prompt,
@@ -194,6 +197,61 @@ def _resolve_docx_phase_bytes(docx_phase: Mapping[str, object]) -> bytes:
     return b""
 
 
+def _build_empty_docx_failure_result(
+    *,
+    context: Any,
+    dependencies: Any,
+    emitters: Any,
+    runtime_display_markdown: str,
+    job_count: int,
+) -> PipelineResult:
+    critical_message = dependencies.present_error(
+        "empty_docx_bytes",
+        RuntimeError("Сборка DOCX завершилась без содержимого файла."),
+        "Критическая ошибка сборки DOCX",
+        filename=context.uploaded_filename,
+    )
+    emitters.emit_state(
+        context.runtime,
+        last_error=critical_message,
+        latest_docx_bytes=None,
+        latest_narration_text=None,
+    )
+    return emit_failed_result(
+        emitters=emitters,
+        runtime=context.runtime,
+        finalize_stage="Критическая ошибка",
+        detail=critical_message,
+        progress=1.0,
+        activity_message="DOCX собран без содержимого.",
+        block_index=job_count,
+        block_count=job_count,
+        target_chars=len(runtime_display_markdown),
+        context_chars=0,
+        log_details=critical_message,
+    )
+
+
+def _validate_nonempty_docx_bytes_or_fail(
+    *,
+    context: Any,
+    dependencies: Any,
+    emitters: Any,
+    runtime_display_markdown: str,
+    job_count: int,
+    docx_bytes: bytes,
+) -> PipelineResult | None:
+    if docx_bytes:
+        return None
+    return _build_empty_docx_failure_result(
+        context=context,
+        dependencies=dependencies,
+        emitters=emitters,
+        runtime_display_markdown=runtime_display_markdown,
+        job_count=job_count,
+    )
+
+
 def _build_pre_cleanup_formatting_baseline(
     *,
     markdown_text: str,
@@ -205,6 +263,7 @@ def _build_pre_cleanup_formatting_baseline(
             "stage": "pre_reader_cleanup_rebuild_identity",
             "classification": "diagnostic_only",
             "mapping_basis": "ordered_exact_text_rebuild_sidecar",
+            "metric_scope": "sidecar_only_proxy",
             "status": "missing_registry",
             "source_count": 0,
             "target_count": len(target_blocks),
@@ -237,6 +296,7 @@ def _build_pre_cleanup_formatting_baseline(
         "stage": "pre_reader_cleanup_rebuild_identity",
         "classification": "diagnostic_only",
         "mapping_basis": "ordered_exact_text_rebuild_sidecar",
+        "metric_scope": "sidecar_only_proxy",
         "status": "computed",
         "source_count": len(aligned_registry),
         "target_count": target_count,
@@ -1526,6 +1586,10 @@ def _build_translation_quality_report(
         formatting_payload=latest_payload if isinstance(latest_payload, Mapping) else None,
         assembly_result=assembly_result,
     )
+    role_aware_summary = resolve_role_aware_formatting_unmapped_source_summary(payloads)
+    authoritative_unmapped_source_basis = str(
+        authority_fields.get("unmapped_source_count_basis") or "legacy_paragraph"
+    ).strip().lower() or "legacy_paragraph"
     false_fragment_heading_samples, false_fragment_heading_gate_source = _resolve_false_fragment_heading_gate_samples(
         raw_samples=raw_false_fragment_heading_samples,
         entry_samples=entry_false_fragment_heading_samples,
@@ -1551,6 +1615,10 @@ def _build_translation_quality_report(
         raw_count_key="raw_unmapped_source_paragraph_count",
         structure_count_key="structure_unit_unmapped_source_count",
     )
+    if authoritative_unmapped_source_basis not in {"topology_unit", "accepted_aggregation_legacy"} and role_aware_summary is not None:
+        authority_fields = dict(authority_fields)
+        authority_fields["unmapped_source_count_basis"] = "role_aware_formatting_coverage"
+        worst_unmapped_source_count = int(role_aware_summary["effective_unmapped_source_count"])
     effective_unmapped_target_count = _effective_authoritative_unmapped_count(
         authority_fields,
         basis_key="unmapped_target_count_basis",
@@ -1636,6 +1704,9 @@ def _build_translation_quality_report(
         "unmapped_target_count": effective_unmapped_target_count,
         "worst_unmapped_source_count": worst_unmapped_source_count,
         "raw_unmapped_source_paragraph_count": authority_fields.get("raw_unmapped_source_paragraph_count", len(unmapped_source_ids) if isinstance(unmapped_source_ids, list) else 0),
+        "filtered_unmapped_source_count": role_aware_summary.get("filtered_unmapped_source_count") if role_aware_summary else None,
+        "format_neutral_creditable_count": role_aware_summary.get("format_neutral_creditable_count") if role_aware_summary else 0,
+        "effective_unmapped_source_count": role_aware_summary.get("effective_unmapped_source_count") if role_aware_summary else None,
         "raw_unmapped_target_paragraph_count": authority_fields.get("raw_unmapped_target_paragraph_count", len(unmapped_target_indexes) if isinstance(unmapped_target_indexes, list) else 0),
         "structure_unit_total_count": authority_fields.get("structure_unit_total_count"),
         "structure_unit_unmapped_source_count": authority_fields.get("structure_unit_unmapped_source_count"),
@@ -1715,6 +1786,9 @@ def _build_translation_quality_report(
         "toc_body_concat_structure_detected": authority_fields.get("toc_body_concat_structure_detected", False),
         "toc_body_concat_gate_source": authority_fields.get("toc_body_concat_gate_source", "legacy_markdown"),
         "formatting_diagnostics_artifact_count": len(formatting_diagnostics_artifacts),
+        "role_aware_formatting_coverage_note": (
+            role_aware_summary.get("counting_note") if role_aware_summary else None
+        ),
         "pre_cleanup_formatting_baseline": dict(pre_cleanup_formatting_baseline)
         if isinstance(pre_cleanup_formatting_baseline, Mapping)
         else None,
@@ -2468,30 +2542,12 @@ def run_docx_build_phase(
         )
 
     if docx_bytes is not None and not docx_bytes:
-        critical_message = dependencies.present_error(
-            "empty_docx_bytes",
-            RuntimeError("Сборка DOCX завершилась без содержимого файла."),
-            "Критическая ошибка сборки DOCX",
-            filename=context.uploaded_filename,
-        )
-        emitters.emit_state(
-            context.runtime,
-            last_error=critical_message,
-            latest_docx_bytes=None,
-            latest_narration_text=None,
-        )
-        emit_failed_result(
+        _build_empty_docx_failure_result(
+            context=context,
+            dependencies=dependencies,
             emitters=emitters,
-            runtime=context.runtime,
-            finalize_stage="Критическая ошибка",
-            detail=critical_message,
-            progress=1.0,
-            activity_message="DOCX собран без содержимого.",
-            block_index=job_count,
-            block_count=job_count,
-            target_chars=len(runtime_display_markdown),
-            context_chars=0,
-            log_details=critical_message,
+            runtime_display_markdown=runtime_display_markdown,
+            job_count=job_count,
         )
         return None
 
@@ -2559,6 +2615,17 @@ def finalize_processing_success(
         )
     if quality_report.get("quality_status") == "fail":
         gate_reasons = list(cast(Sequence[str], quality_report.get("gate_reasons") or []))
+        resolved_docx_bytes = _resolve_docx_phase_bytes(docx_phase)
+        empty_docx_failure = _validate_nonempty_docx_bytes_or_fail(
+            context=context,
+            dependencies=dependencies,
+            emitters=emitters,
+            runtime_display_markdown=runtime_display_markdown,
+            job_count=job_count,
+            docx_bytes=resolved_docx_bytes,
+        )
+        if empty_docx_failure is not None:
+            return empty_docx_failure
         error_message = dependencies.present_error(
             "translation_quality_gate_failed",
             RuntimeError(_format_translation_quality_gate_failure_message(gate_reasons)),
@@ -2571,7 +2638,7 @@ def finalize_processing_success(
         emitters.emit_state(
             context.runtime,
             latest_markdown=runtime_display_markdown,
-            latest_docx_bytes=_resolve_docx_phase_bytes(docx_phase),
+            latest_docx_bytes=resolved_docx_bytes,
             latest_narration_text=None,
             latest_result_notice={
                 "level": "error",
@@ -2618,6 +2685,16 @@ def finalize_processing_success(
         formatting_registry=build_generated_paragraph_registry_from_entries(assembly_result.entries),
         base_docx_builder=cast(Callable[[], bytes] | None, docx_phase.get("base_docx_builder")),
     )
+    empty_docx_failure = _validate_nonempty_docx_bytes_or_fail(
+        context=context,
+        dependencies=dependencies,
+        emitters=emitters,
+        runtime_display_markdown=runtime_display_markdown,
+        job_count=job_count,
+        docx_bytes=final_docx_bytes,
+    )
+    if empty_docx_failure is not None:
+        return empty_docx_failure
     current_docx_bytes = docx_phase.get("docx_bytes")
     if not isinstance(current_docx_bytes, bytes) or final_docx_bytes != current_docx_bytes or runtime_display_markdown != _resolve_runtime_display_markdown(
         docx_phase=docx_phase,

@@ -125,6 +125,9 @@ must stay counted even when content survives.
 - Target-side threshold remains raw paragraph count for now and exposes
   `count_basis`; no target-side role-aware credit is invented without a separate
   target coverage diagnostic.
+- The same role-aware summary is now shared by the product
+  `translation_quality_report`, structural validation, and the Lietaer proof
+  runner instead of living only in the proof harness.
 
 ## PR-FC2. Stronger Coverage Evidence Collector (measurement-only)
 
@@ -157,6 +160,10 @@ content.
   application.
 - Focused tests cover both sides of the role-aware rule: fuzzy body->body is
   creditable, while fuzzy heading->body remains formatting loss.
+- Exact/free-target evidence still drives marker closability
+  (`target_exists_text_align_missed`), while fuzzy/overlap evidence drives
+  role-aware coverage credit. These counters are intentionally different and are
+  not directly comparable.
 
 ## PR-FC3. No-LLM Diagnostic Replay Harness — build first
 
@@ -184,13 +191,18 @@ are validated cheaply.
 - Future restore diagnostics now persist full `residual_rows` in addition to the
   capped `samples` preview. This makes no-LLM replay possible without relying on
   the sample limit.
-- `scripts/classify-formatting-residuals.py` uses `residual_rows` when present
-  and reports `classification_basis=full_residual_rows`; for older artifacts
-  such as `20260613T_pr_i2c_rebuild_identity_key_proof`, it falls back to
-  `classification_basis=saved_residual_samples` / `sample_based=true`.
-  Therefore the old report remains a conservative replay signal, while the next
-  live/proof artifact will be replayable as a full-set diagnostic without model
-  calls.
+- `scripts/classify-formatting-residuals.py --replay` now recomputes restore
+  diagnostics from the saved final DOCX with current mapping code and no model
+  call. When no source DOCX is supplied, it reconstructs source paragraphs from
+  the saved `source_registry` preview and labels the result
+  `source_reconstruction_basis=saved_source_registry_preview`.
+- Replay output now also labels fidelity against the saved report
+  (`replay_fidelity` plus saved/replayed source counts), so older artifacts do
+  not masquerade as exact historical parity when the available source artifact
+  differs from the saved source paragraph set.
+- Plain non-replay mode still supports legacy report inspection from saved
+  `residual_rows` / `samples`, but that path is now explicitly a viewer for
+  baked diagnostics rather than the primary FC3 verification path.
 
 ## PR-FC4. Single Final DOCX Build
 
@@ -226,7 +238,8 @@ sidecar). Do not lose the pre-cleanup baseline.
   invariant for disabled, changed-cleanup, and fallback/noop paths.
 - The pre-cleanup mapping baseline is now carried as
   `translation_quality_report.pre_cleanup_formatting_baseline`, labelled
-  `classification=diagnostic_only` and
+  `classification=diagnostic_only`,
+  `metric_scope=sidecar_only_proxy`, and
   `mapping_basis=ordered_exact_text_rebuild_sidecar`. This preserves pre-cleanup
   observability without writing a formatted intermediate or incrementing
   `formatting_diagnostics_artifact_count`.

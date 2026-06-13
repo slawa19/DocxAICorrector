@@ -44,6 +44,9 @@ from docxaicorrector.processing.processing_service import clone_processing_servi
 from docxaicorrector.structure.layout_signals import derive_layout_signals
 from docxaicorrector.structure.topology import apply_document_map_topology
 from docxaicorrector.validation.common import build_validation_event_logger, build_validation_runtime_config
+from docxaicorrector.validation.formatting_coverage import (
+    resolve_role_aware_formatting_unmapped_source_summary,
+)
 from docxaicorrector.validation.profiles import (
     DocumentProfile,
     RunProfile,
@@ -190,6 +193,13 @@ def _merge_translation_quality_report_metrics(
     translation_quality_report: Mapping[str, object],
 ) -> None:
     for key in (
+        "unmapped_source_count_basis",
+        "worst_unmapped_source_count",
+        "raw_unmapped_source_paragraph_count",
+        "filtered_unmapped_source_count",
+        "format_neutral_creditable_count",
+        "effective_unmapped_source_count",
+        "role_aware_formatting_coverage_note",
         "bullet_heading_count",
         "bullet_heading_gate_source",
         "bullet_heading_classification",
@@ -1567,6 +1577,9 @@ def run_structural_passthrough_validation(
             ),
         }
     )
+    role_aware_summary = resolve_role_aware_formatting_unmapped_source_summary(canonical_formatting_payloads)
+    if role_aware_summary is not None:
+        metrics.update(role_aware_summary)
     metrics.update(
         _build_markdown_quality_metrics(
             latest_markdown=latest_markdown,
@@ -2535,6 +2548,8 @@ def _build_structural_checks(
     unmapped_source_actual = (
         _as_int(metrics, "structure_unit_unmapped_source_count")
         if unmapped_source_gate_source in {"topology_unit", "accepted_aggregation_legacy"}
+        else _as_int(metrics, "effective_unmapped_source_count")
+        if unmapped_source_gate_source == "role_aware_formatting_coverage"
         else _as_int(metrics, "max_unmapped_source_paragraphs")
     )
     unmapped_target_gate_source = str(

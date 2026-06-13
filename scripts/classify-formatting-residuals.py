@@ -11,11 +11,20 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import sys
 from difflib import SequenceMatcher
 from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Any
 
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+SRC_ROOT = PROJECT_ROOT / "src"
+if str(SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(SRC_ROOT))
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from docxaicorrector.validation.formatting_replay import replay_formatting_diagnostics_from_report
 
 def _iter_restore_diagnostics(value: Any, path: str = "$") -> Iterable[tuple[str, Mapping[str, Any]]]:
     if isinstance(value, Mapping):
@@ -303,6 +312,46 @@ def _summarize_diagnostic(path: str, diagnostic: Mapping[str, Any]) -> dict[str,
     }
 
 
+def _build_replayed_summary(
+    *,
+    report_json: Path,
+    diagnostic_index: int,
+    source_docx_path: Path | None,
+    target_docx_path: Path | None,
+) -> dict[str, Any]:
+    replay_payload = replay_formatting_diagnostics_from_report(
+        report_path=report_json,
+        diagnostic_index=diagnostic_index,
+        source_docx_path=source_docx_path,
+        target_docx_path=target_docx_path,
+    )
+    replayed_diagnostics = replay_payload["replayed_diagnostics"]
+    if not isinstance(replayed_diagnostics, Mapping):
+        raise ValueError("Replay helper returned invalid replayed_diagnostics payload.")
+    summary = _summarize_diagnostic("$.replayed_diagnostics", replayed_diagnostics)
+    summary.update(
+        {
+            "report_path": replay_payload.get("report_path"),
+            "target_docx_path": replay_payload.get("target_docx_path"),
+            "source_docx_path": replay_payload.get("source_docx_path"),
+            "source_reconstruction_basis": replay_payload.get("source_reconstruction_basis"),
+            "replay_scope": replay_payload.get("replay_scope"),
+            "replay_mode": replay_payload.get("replay_mode"),
+            "replay_fidelity": replay_payload.get("replay_fidelity"),
+            "replay_fidelity_note": replay_payload.get("replay_fidelity_note"),
+            "saved_source_count": replay_payload.get("saved_source_count"),
+            "replayed_source_count": replay_payload.get("replayed_source_count"),
+            "saved_diagnostic_stage": replay_payload.get("saved_diagnostic_stage"),
+            "saved_mapped_count": replay_payload.get("saved_mapped_count"),
+            "saved_unmapped_source_count": replay_payload.get("saved_unmapped_source_count"),
+            "saved_unmapped_target_count": replay_payload.get("saved_unmapped_target_count"),
+            "classification_basis": "replayed_restore_diagnostics",
+            "sample_based": False,
+        }
+    )
+    return summary
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("report_json", type=Path, help="Existing real-document report JSON")
@@ -313,16 +362,56 @@ def main() -> int:
         help="Which restore diagnostics block to print. Default: -1 (last/final). Use --all for every block.",
     )
     parser.add_argument("--all", action="store_true", help="Print summaries for every restore diagnostics block")
+    parser.add_argument(
+        "--replay",
+        action="store_true",
+        help="Recompute formatting diagnostics from the saved final DOCX with current restore mapping code (no LLM).",
+    )
+    parser.add_argument(
+        "--source-docx",
+        type=Path,
+        default=None,
+        help="Optional source DOCX path. If omitted, replay reconstructs source paragraphs from saved source_registry previews.",
+    )
+    parser.add_argument(
+        "--target-docx",
+        type=Path,
+        default=None,
+        help="Optional target DOCX override. Default: output_artifacts.docx_path from the report.",
+    )
     args = parser.parse_args()
 
-    payload = json.loads(args.report_json.read_text(encoding="utf-8"))
-    summaries = [_summarize_diagnostic(path, diagnostic) for path, diagnostic in _iter_restore_diagnostics(payload)]
-    if args.all:
-        result: Any = summaries
+    if args.replay:
+        if args.all:
+            payload = json.loads(args.report_json.read_text(encoding="utf-8"))
+            saved_summaries = [_summarize_diagnostic(path, diagnostic) for path, diagnostic in _iter_restore_diagnostics(payload)]
+            if not saved_summaries:
+                raise SystemExit(f"No restore diagnostics found in {args.report_json}")
+            result = [
+                _build_replayed_summary(
+                    report_json=args.report_json,
+                    diagnostic_index=index,
+                    source_docx_path=args.source_docx,
+                    target_docx_path=args.target_docx,
+                )
+                for index, _summary in enumerate(saved_summaries)
+            ]
+        else:
+            result = _build_replayed_summary(
+                report_json=args.report_json,
+                diagnostic_index=args.diagnostic_index,
+                source_docx_path=args.source_docx,
+                target_docx_path=args.target_docx,
+            )
     else:
-        if not summaries:
-            raise SystemExit(f"No restore diagnostics found in {args.report_json}")
-        result = summaries[args.diagnostic_index]
+        payload = json.loads(args.report_json.read_text(encoding="utf-8"))
+        summaries = [_summarize_diagnostic(path, diagnostic) for path, diagnostic in _iter_restore_diagnostics(payload)]
+        if args.all:
+            result = summaries
+        else:
+            if not summaries:
+                raise SystemExit(f"No restore diagnostics found in {args.report_json}")
+            result = summaries[args.diagnostic_index]
     print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
     return 0
 
