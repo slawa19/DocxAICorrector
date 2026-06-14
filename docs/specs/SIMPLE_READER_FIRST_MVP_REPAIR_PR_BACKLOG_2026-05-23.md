@@ -1587,12 +1587,36 @@ Current local implementation note:
   - Unblocked only for deprecation/cleanup planning after PR-I1c-ACCEPT; PR-I2
     remains the next product-critical slice. Remove or deprecate only the
     runtime cleanup surface that the accepted working contract proves unused.
-  - Candidate surfaces: `reader_cleanup_global_plan_enabled` runtime global plan,
-    runtime anchor-repair pass, and `reader_verifier_*` runtime config fields
-    that are validation/replay-only rather than production gates.
+  - **Scope correction (2026-06-14, from FC7):** only the validation/replay-only
+    `reader_verifier_*` runtime fields (`reader_verifier_model`,
+    `reader_verifier_emit_summary`) were genuinely dead and were removed in FC7.
+    `reader_cleanup_global_plan_enabled` and the anchor-repair pass
+    (`reader_cleanup_anchor_repair_enabled` / `reader_cleanup_anchor_targets`)
+    are **live off-by-default feature flags** with real runtime code paths
+    (`reader_cleanup_mvp/service.py`, `late_phases.py`) — NOT dead surface. Do
+    not remove them; doing so is a behavioural cleanup refactor, out of scope.
   - Preserve validation/replay harness evidence paths and cheap safety gates
     (`max_delete_*`, protected-block guards). Do not touch legacy `.doc`
     LibreOffice support.
+- **PR-I2 STATUS (2026-06-14): mapping work hit its ceiling; consolidated into
+  the FC iteration.** See `docs/specs/FORMATTING_COVERAGE_CONSOLIDATION_PLAN_2026-06-13.md`.
+  Outcome of FC1-FC8 (code-complete, all touched test files green; one final
+  live-proof still pending, blocked locally on optional `pdfminer.six`):
+  - Root cause reframed: the `<=12` 1:1 unmapped threshold was the wrong target
+    for an N-to-M pipeline. Gate is now **role-aware coverage** (heading/list/
+    caption role-loss counts; body legitimately dissolved into a body neighbor
+    with evidence is credited), shared between production `structural.py` and the
+    proof runner via `validation/formatting_coverage.py`.
+  - FC2 added measurement-only fuzzy coverage evidence; FC3 added a real no-LLM
+    restore replay (`validation/formatting_replay.py`); FC4 collapsed the double
+    DOCX build to a single post-cleanup build with a diagnostic-only pre-cleanup
+    baseline; FC5 dropped the embedded id-marker (optimistic upper bound `7`
+    cannot pass the gate); FC6 made the verifier off-by-default/advisory; FC7
+    removed only the dead verifier config surface.
+  - Mapping baseline reached `mapped=89`, raw `29/36` unmapped before role-aware
+    accounting; residual is dominated by dissolved/aggregate, not lost formatting.
+  - Remaining hard PR-I2 gate (below) is superseded by the role-aware basis; the
+    historical `56`/`48`/`15` blocker numbers are pre-FC and kept for lineage.
 - PR-I2 formatting preservation first diagnostic:
   - Active next after PR-I1c-ACCEPT.
   - Diagnostic artifact:
