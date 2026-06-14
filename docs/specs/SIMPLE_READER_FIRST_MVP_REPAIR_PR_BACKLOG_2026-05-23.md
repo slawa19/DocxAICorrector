@@ -1599,7 +1599,7 @@ Current local implementation note:
     (`max_delete_*`, protected-block guards). Do not touch legacy `.doc`
     LibreOffice support.
 - **PR-I2 STATUS (2026-06-14): mapping work hit its ceiling; consolidated into
-  the FC iteration.** See `docs/specs/FORMATTING_COVERAGE_CONSOLIDATION_PLAN_2026-06-13.md`.
+  the FC iteration.** See `docs/archive/specs/FORMATTING_COVERAGE_CONSOLIDATION_PLAN_2026-06-13.md`.
   Outcome of FC1-FC8 (code-complete, all touched test files green; one final
   live-proof still pending, blocked locally on optional `pdfminer.six`):
   - Root cause reframed: the `<=12` 1:1 unmapped threshold was the wrong target

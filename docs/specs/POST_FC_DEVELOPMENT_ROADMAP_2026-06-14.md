@@ -6,7 +6,7 @@ Owner surface: whole pipeline (import -> translate -> cleanup -> rebuild ->
 restore -> validate), proof harness, corpus
 Reviewer: plan author reviews each work-stream result and returns findings.
 Related (read before starting):
-`docs/specs/FORMATTING_COVERAGE_CONSOLIDATION_PLAN_2026-06-13.md`,
+`docs/archive/specs/FORMATTING_COVERAGE_CONSOLIDATION_PLAN_2026-06-13.md`,
 `docs/specs/SIMPLE_READER_FIRST_MVP_REPAIR_PR_BACKLOG_2026-05-23.md`,
 `docs/specs/PDF_TEXT_LAYER_SOURCE_IMPORT_PIVOT_SPEC_2026-06-01.md`,
 `docs/specs/READER_CLEANUP_MODEL_STRATEGY_EXPERIMENTS_2026-05-30.md`
@@ -23,16 +23,22 @@ how perfect one chapter excerpt looks.
 
 - Translation, reader cleanup (PR-H0 readable-draft boundary), PDF text-layer
   import, image preservation (12/12), and id-first lineage all work.
-- The long-standing formatting blocker (PR-I2) is **code-complete**: the gate is
-  now role-aware coverage (heading/list/caption role loss counts; body
-  legitimately dissolved into a body neighbor with evidence is credited), shared
-  between production `validation/structural.py` and the proof runner via
-  `validation/formatting_coverage.py`.
+- The long-standing formatting blocker (PR-I2) is **closed for the
+  chapter-region proof**. The matcher handles role-compatible body/list fuzzy
+  mapping, image-heading DOCX reconstruction is fixed upstream, and clean
+  restore now emits an auditable role-aware `formatting_diagnostics` payload.
 - A no-LLM restore replay exists (`validation/formatting_replay.py`) — use it.
-- Mapping ceiling: `mapped=89`, raw `29/36` unmapped before role-aware
-  accounting; residual dominated by dissolved/aggregate, not lost formatting.
-- **Not done:** the FC iteration's final live proof (blocked locally on optional
-  `pdfminer.six`). The whole role-aware reframe is validated on **one** document
+- Superseded proof `20260614T_wsmap_bounded_mapping_proof` passed acceptance but
+  reviewer spot-check found it was a hollow pass: six chapter/title headings
+  were credited while rendered as `Body Text`, and `p0072` was falsely reported
+  as role-loss despite being present in `Heading 1`.
+- Fresh proof `20260614T_wsmap_auditable_role_aware_proof_v4` passed acceptance
+  with DOCX openable, images `12/12`, `formatting_diagnostics` length `1`,
+  `final_generated_paragraph_registry=123`,
+  `unmapped_source_count_basis=role_aware_formatting_coverage`, raw/effective
+  source residual `0/0`, raw target residual `0`, and no-LLM replay residual
+  `0/0`.
+- **Not done:** the role-aware reframe is validated on **one** document
   (Lietaer chapter-region) only.
 
 ## Working Rules (non-negotiable — these are the lessons of the last iteration)
@@ -89,6 +95,34 @@ and "Done" lines below and returns findings before the next work-stream starts.
 proof reveals a real bug, stop and report rather than patching blind.
 
 **Done:** proof artifact recorded with the numbers above; FC spec archived.
+
+**Superseded 2026-06-14:** `20260614T_wsmap_bounded_mapping_proof`
+(`tests/artifacts/real_document_pipeline/runs/20260614T_wsmap_bounded_mapping_proof/lietaer_pdf_chapter_region_report.json`)
+passed acceptance with `failed_checks=[]`. The report has
+`unmapped_source_count_basis=role_aware_formatting_coverage`,
+`formatting_diagnostics` length `1`, DOCX openable, images `12/12`,
+`final_generated_paragraph_registry=123`, raw source/target residual `1/0`,
+and the sole effective residual is `p0072`
+(`content_survived_but_format_role_lost`). Reviewer spot-check rejected this
+artifact because `p0026`, `p0076`, `p0077`, `p0092`, `p0093`, and `p0094` were
+actually rendered as `Body Text` in the DOCX. The FC spec was already archived
+to `docs/archive/specs/FORMATTING_COVERAGE_CONSOLIDATION_PLAN_2026-06-13.md`,
+but WS-1 remains open until a fresh artifact satisfies the role-aware proof
+requirements without false heading credit.
+
+**Completed 2026-06-14:** `20260614T_wsmap_auditable_role_aware_proof_v4`
+(`tests/artifacts/real_document_pipeline/runs/20260614T_wsmap_auditable_role_aware_proof_v4/lietaer_pdf_chapter_region_report.json`)
+passed acceptance with `failed_checks=[]`. The report has
+`formatting_diagnostics` length `1`, `formatting_diagnostics_paths` length `1`,
+`unmapped_source_count_basis=role_aware_formatting_coverage`,
+`role_aware_effective_unmapped_source_count=0`,
+`raw_unmapped_source_paragraph_count=0`,
+`raw_unmapped_target_paragraph_count=0`, DOCX openable, images `12/12`, and
+`final_generated_paragraph_registry=123`. No-LLM replay on the same report
+returns `source_reconstruction_basis=final_generated_paragraph_registry`,
+`unmapped_source_count=0`, `unmapped_target_count=0`. The archived FC spec
+remains at
+`docs/archive/specs/FORMATTING_COVERAGE_CONSOLIDATION_PLAN_2026-06-13.md`.
 
 # WS-MAP. Fix the Real Loss Stage: Restore/Mapping (highest priority)
 
@@ -158,8 +192,37 @@ and is simpler.
 role losses, with zero false pairs; gate refocused on role loss; full relevant
 test files green.
 
-**Then WS-2 and WS-3 run on a matcher that no longer drops present-but-unmapped
-text.**
+**Progress 2026-06-14:** MAP-1 is valid. Bounded registry fuzzy mapping covers
+the reviewed body/list set (`p0042`, `p0059`, `p0060`, `p0119`,
+`p0120-p0126`, etc.) with role-compatible targets and no false pairs in the
+spot-check. MAP-2/MAP-3 false heading credit was fixed after reviewer feedback:
+heading credit now requires heading-format targets, and body-style text presence
+is counted as role loss instead of coverage.
+
+**Fresh proof 2026-06-14:** `20260614T_wsmap_heading_role_repair_proof_v3`
+(`tests/artifacts/real_document_pipeline/runs/20260614T_wsmap_heading_role_repair_proof_v3/lietaer_pdf_chapter_region_report.json`)
+passed acceptance with DOCX openable, images `12/12`, translation quality
+`pass`, and `final_generated_paragraph_registry=123`. Manual DOCX spot-check:
+`p0026 "Глава восьмая" -> Heading 2`, `p0050 "Глава девятая" -> Heading 2`,
+`p0076 "Глава десятая" -> Heading 2`, `p0077 "ИСТИНА И ПОСЛЕДСТВИЯ" ->
+Heading 1`, `p0092 "Глава одиннадцатая" -> Heading 2`, `p0093 "УПРАВЛЕНИЕ И
+МЫ, ГРАЖДАНЕ" -> Heading 1`, `p0094 "Будущее из глубины веков?" -> Heading 1`,
+and `p0072 "ЧАСТЬ ТРЕТЬЯ ПЕРЕОСМЫСЛЕНИЕ ДЕНЕГ" -> Heading 1`.
+
+**Audit repair 2026-06-14:** clean restore now persists a reviewable restore
+diagnostics artifact; replay can also reconstruct diagnostics from
+`runtime.state.final_generated_paragraph_registry` and the saved final DOCX when
+saved formatting diagnostics are absent or source-language-only. Fresh proof
+`20260614T_wsmap_auditable_role_aware_proof_v4` records raw/effective source
+residual `0/0`, raw target residual `0`, and no-LLM replay residual `0/0`.
+
+Full-file tests after the repair: `tests/test_document_pipeline.py`
+`142 passed`, `tests/test_format_restoration.py` `80 passed`,
+`tests/test_validation_formatting_replay.py` `7 passed`, and
+`tests/test_real_document_pipeline_validation.py` `90 passed`.
+
+**Ready for review before WS-2.** WS-2 and WS-3 still start only after reviewer
+accepts this auditable WS-MAP/WS-1 closure.
 
 # WS-2. Generalize the Role-Aware Gate Beyond One Document
 
@@ -188,6 +251,61 @@ document.
 
 **Done:** role-aware gate validated (or corrected) on >=3 documents with a
 documented safe threshold and zero unexplained false credits.
+
+**Progress 2026-06-14:** WS-2 found and fixed a cross-document authority bug.
+On `lietaer-pdf-full-benchmark`, the restore diagnostic already had a
+role-aware residual classification, but the translation-quality authority still
+preferred `topology_unit` for source coverage. That masked a large source-side
+role-aware residual (`102 raw / 100 effective` in the first full probe) behind a
+small topology-unit count. The source-side authority now uses
+`role_aware_formatting_coverage` whenever a role-aware formatting diagnostic is
+available; topology-unit authority remains available for target-side counts and
+structural diagnostics.
+
+Fresh WS-2 proof runs after this correction:
+
+| Profile | Run | Acceptance | Failed checks | Source | Mapped | Target | Raw source | Effective source | Credit | Raw target | Source basis | Images |
+| --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |
+| `lietaer-pdf-chapter-region-core` | `20260614T_ws2_chapter_region_role_aware_probe_v5` | pass | `[]` | 135 | 134 | 134 | 0 | 0 | 0 | 0 | `role_aware_formatting_coverage` | 12/12 |
+| `lietaer-pdf-first-20-benchmark` | `20260614T_ws2_first20_role_aware_probe_v3` | fail | `false_fragment_headings_present` | 48 | 43 | 43 | 0 | 0 | 0 | 0 | `role_aware_formatting_coverage` | 1/1 |
+| `lietaer-core` | `20260614T_ws2_lietaer_core_role_aware_probe_v2` | fail | `centered_short_paragraphs_preserved` | 62 | 58 | 58 | 0 | 0 | 0 | 0 | `role_aware_formatting_coverage` | 7/7 |
+| `lietaer-pdf-full-benchmark` | `20260614T_ws2_full_benchmark_role_aware_probe_v2` | fail | `formatting_diagnostics_threshold`, `unmapped_source_threshold`, `false_fragment_headings_present` | 1215 | 794 | 874 | 88 | 85 | 3 | 80 | `role_aware_formatting_coverage` | 55/55 |
+
+Full-benchmark residual classes in the fresh role-aware artifact:
+`content_survived_but_format_role_lost=35`,
+`unproven_or_marker_closable=36`, `true_aggregate_relation_gap=14`,
+`format_neutral_body_dissolved_creditable=3`.
+
+Spot-check result:
+- Heading mappings: `bad_heading_mappings=0` across all four fresh reports.
+- Format-neutral credits: only full-benchmark has credits (`3`), all body
+  year-fragment credits into `Normal` targets (`p0646`, `p0659`, `p0764`); no
+  heading/list/caption credit found.
+- List mappings: chapter-region `19/19`, `lietaer-core 3/3`, and full-benchmark
+  `237/237` have list restoration decisions (`kept_existing_target_numbering`
+  or `restored`). Direct DOCX index spot-checks were cross-checked against
+  nearby raw paragraphs because target registry indexes omit some empty
+  paragraphs.
+- No unexplained false credit was found in the checked set.
+
+No-LLM replay was run as secondary evidence. It reports
+`source_reconstruction_basis=final_generated_paragraph_registry` for
+chapter-region (`0/0`) and saved source registry replay for first-20/core/full.
+Replay is useful as a current-code cross-check, but the authoritative WS-2
+counts above are the in-pipeline diagnostics.
+
+Full-file tests after the WS-2 authority correction:
+`tests/test_document_pipeline.py` `142 passed`,
+`tests/test_real_document_pipeline_validation.py` `90 passed`,
+`tests/test_format_restoration.py` `80 passed`, and
+`tests/test_validation_formatting_replay.py` `7 passed`.
+
+**WS-2 review conclusion:** the role-aware gate is now generalized beyond the
+chapter-region proof and is not tuned to one document. It passes the short
+documents and fails the full benchmark honestly, with measured residuals instead
+of a topology-unit masked pass. The next work-stream must treat the full-book
+`85` effective source residuals and `false_fragment_headings_present=1` as the
+starting failure catalog, not as a gate issue.
 
 # WS-3. Full-Book End-to-End Run
 

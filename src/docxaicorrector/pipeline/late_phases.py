@@ -89,6 +89,10 @@ class ReaderCleanupPostprocessResult:
     final_generated_paragraph_registry: Sequence[Mapping[str, object]] | None
 _BULLET_MARKDOWN_HEADING_PATTERN = re.compile(r"(?m)^\s{0,3}#{1,6}\s*[\u2022\u25cf\u25e6\u2023*\-]\s*$")
 _DOCX_IMAGE_PLACEHOLDER_PATTERN = re.compile(r"^\[\[DOCX_IMAGE_[A-Za-z0-9_]+\]\]$")
+_DOCX_IMAGE_HEADING_CONCAT_PATTERN = re.compile(
+    r"^(?P<indent>\s*)(?P<placeholder>\[\[DOCX_IMAGE_[A-Za-z0-9_]+\]\])\s+(?P<text>\S.*)$"
+)
+_MARKDOWN_HEADING_LINE_PATTERN = re.compile(r"^\s*(?P<marker>#{1,6})\s+(?P<text>\S.*)$")
 
 
 def _format_translation_quality_gate_failure_message(gate_reasons: Sequence[str]) -> str:
@@ -135,6 +139,64 @@ def _normalize_final_markdown_for_runtime_display(text: str) -> str:
     if "\n" not in normalized and "\n\n" in text:
         return text
     return normalized
+
+
+def _normalize_heading_match_text(text: str) -> str:
+    normalized = re.sub(r"[^\w]+", " ", text, flags=re.UNICODE).strip().lower()
+    return re.sub(r"\s+", " ", normalized)
+
+
+def _registry_heading_markdown_lines(
+    generated_paragraph_registry: Sequence[Mapping[str, object]] | None,
+) -> list[tuple[str, str]]:
+    heading_lines: list[tuple[str, str]] = []
+    for entry in generated_paragraph_registry or []:
+        text = str(entry.get("text") or entry.get("generated_text") or "").strip()
+        match = _MARKDOWN_HEADING_LINE_PATTERN.match(text)
+        if match is None:
+            continue
+        heading_text = str(match.group("text") or "").strip()
+        normalized_heading = _normalize_heading_match_text(heading_text)
+        if not normalized_heading:
+            continue
+        heading_lines.append((normalized_heading, f"{match.group('marker')} {heading_text}"))
+    return heading_lines
+
+
+def _restore_image_heading_lines_from_registry(
+    markdown_text: str,
+    generated_paragraph_registry: Sequence[Mapping[str, object]] | None,
+) -> str:
+    heading_lines = _registry_heading_markdown_lines(generated_paragraph_registry)
+    if not heading_lines:
+        return markdown_text
+
+    restored_lines: list[str] = []
+    changed = False
+    for raw_line in markdown_text.splitlines():
+        match = _DOCX_IMAGE_HEADING_CONCAT_PATTERN.match(raw_line.rstrip())
+        if match is None:
+            restored_lines.append(raw_line.rstrip())
+            continue
+
+        concat_text = str(match.group("text") or "")
+        normalized_concat = _normalize_heading_match_text(concat_text)
+        matched_headings: list[str] = []
+        for normalized_heading, heading_markdown in heading_lines:
+            if normalized_heading in normalized_concat and heading_markdown not in matched_headings:
+                matched_headings.append(heading_markdown)
+        if not matched_headings:
+            restored_lines.append(raw_line.rstrip())
+            continue
+
+        restored_lines.append(f"{match.group('indent')}{match.group('placeholder')}")
+        restored_lines.append("")
+        restored_lines.extend(f"{match.group('indent')}{heading}" for heading in matched_headings)
+        changed = True
+
+    if not changed:
+        return markdown_text
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(restored_lines)).strip()
 
 
 def _resolve_runtime_display_markdown(*, docx_phase: Mapping[str, object], fallback_markdown: str) -> str:
@@ -1170,6 +1232,14 @@ def _run_reader_cleanup_postprocess(
             block_metadata_by_index=cleanup_identity_metadata,
         )
         if not cleanup_result.changed:
+            runtime_display_markdown = _restore_image_heading_lines_from_registry(
+                runtime_display_markdown,
+                base_final_generated_registry,
+            )
+            base_final_generated_registry = _resolve_final_generated_paragraph_registry(
+                markdown_text=runtime_display_markdown,
+                generated_paragraph_registry=active_formatting_registry,
+            )
             stats = cast(Mapping[str, object], cleanup_result.report_payload.get("stats") or {})
             dependencies.log_event(
                 logging.INFO,
@@ -1199,12 +1269,15 @@ def _run_reader_cleanup_postprocess(
                 final_generated_paragraph_registry=base_final_generated_registry,
             )
 
-        cleaned_runtime_display_markdown = _normalize_final_markdown_for_runtime_display(cleanup_result.cleaned_markdown)
         cleanup_formatting_registry, cleanup_formatting_lineage = _derive_reader_cleanup_generated_paragraph_registry(
             generated_paragraph_registry=active_formatting_registry,
             cleanup_report=cleanup_result.report_payload,
             raw_markdown=cleanup_result.raw_markdown,
             cleanup_block_metadata_by_index=cleanup_identity_metadata,
+        )
+        cleaned_runtime_display_markdown = _restore_image_heading_lines_from_registry(
+            _normalize_final_markdown_for_runtime_display(cleanup_result.cleaned_markdown),
+            cleanup_formatting_registry,
         )
         docx_rebuild_markdown = _build_docx_rebuild_markdown_after_reader_cleanup(
             raw_markdown=cleanup_result.raw_markdown,
@@ -1212,6 +1285,18 @@ def _run_reader_cleanup_postprocess(
             accepted_delete_block_ids=cleanup_result.accepted_delete_block_ids,
             cleanup_block_metadata_by_index=cleanup_identity_metadata,
             generated_paragraph_registry=cleanup_formatting_registry,
+        )
+        preliminary_final_generated_registry = _resolve_final_generated_paragraph_registry(
+            markdown_text=docx_rebuild_markdown,
+            generated_paragraph_registry=cleanup_formatting_registry,
+        )
+        docx_rebuild_markdown = _restore_image_heading_lines_from_registry(
+            docx_rebuild_markdown,
+            preliminary_final_generated_registry,
+        )
+        cleaned_runtime_display_markdown = _restore_image_heading_lines_from_registry(
+            cleaned_runtime_display_markdown,
+            preliminary_final_generated_registry,
         )
         cleanup_lineage_artifact_path = _write_reader_cleanup_lineage_artifact(
             filename=context.uploaded_filename,
@@ -1230,11 +1315,11 @@ def _run_reader_cleanup_postprocess(
             dependencies=dependencies,
             state=state,
             processed_image_assets=processed_image_assets,
-            generated_paragraph_registry=cleanup_formatting_registry,
+            generated_paragraph_registry=preliminary_final_generated_registry,
         )
         final_generated_registry = _resolve_final_generated_paragraph_registry(
             markdown_text=docx_rebuild_markdown,
-            generated_paragraph_registry=cleanup_formatting_registry,
+            generated_paragraph_registry=preliminary_final_generated_registry,
         )
         emitters.emit_state(
             context.runtime,
@@ -1686,7 +1771,7 @@ def _build_translation_quality_report(
         raw_count_key="raw_unmapped_source_paragraph_count",
         structure_count_key="structure_unit_unmapped_source_count",
     )
-    if authoritative_unmapped_source_basis not in {"topology_unit", "accepted_aggregation_legacy"} and role_aware_summary is not None:
+    if role_aware_summary is not None:
         authority_fields = dict(authority_fields)
         authority_fields["unmapped_source_count_basis"] = "role_aware_formatting_coverage"
         worst_unmapped_source_count = int(role_aware_summary["effective_unmapped_source_count"])
@@ -2176,7 +2261,11 @@ def run_image_processing_phase(
     )
     _log_boundary_recovery_diagnostics(dependencies=dependencies, context=context, assembly_result=assembly_result)
     final_markdown = assembly_result.final_markdown
-    runtime_display_markdown = _normalize_final_markdown_for_runtime_display(final_markdown)
+    assembly_registry = build_generated_paragraph_registry_from_entries(assembly_result.entries)
+    runtime_display_markdown = _restore_image_heading_lines_from_registry(
+        _normalize_final_markdown_for_runtime_display(final_markdown),
+        assembly_registry or state.generated_paragraph_registry or None,
+    )
     emitters.emit_state(context.runtime, latest_markdown=runtime_display_markdown)
     try:
         image_client = initialization.openai_client
@@ -2503,7 +2592,10 @@ def run_docx_build_phase(
                 translated_segment_count=sum(1 for value in selected_with_context_result.segment_provenance_by_id.values() if value == "translated"),
                 source_segment_count=sum(1 for value in selected_with_context_result.segment_provenance_by_id.values() if value == "source"),
             )
-    runtime_display_markdown = _normalize_final_markdown_for_runtime_display(final_markdown)
+    runtime_display_markdown = _restore_image_heading_lines_from_registry(
+        _normalize_final_markdown_for_runtime_display(final_markdown),
+        assembly_registry or state.generated_paragraph_registry or None,
+    )
     emitters.emit_status(
         context.runtime,
         stage="Сборка DOCX",

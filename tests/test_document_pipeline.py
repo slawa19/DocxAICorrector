@@ -3930,6 +3930,24 @@ def test_normalize_final_markdown_for_runtime_display_splits_placeholder_from_ch
     assert normalized == "This page intentionally left blank\n\nChapter Nine STRATEGIES FOR NGO S"
 
 
+def test_restore_image_heading_lines_from_registry_splits_placeholder_and_heading_markers():
+    restored = document_pipeline_late_phases._restore_image_heading_lines_from_registry(
+        "[[DOCX_IMAGE_img_009]] Глава десятая ИСТИНА И ПОСЛЕДСТВИЯ\n\nBody",
+        [
+            {"paragraph_id": "p0076", "text": "## Глава десятая"},
+            {"paragraph_id": "p0077", "text": "# ИСТИНА И ПОСЛЕДСТВИЯ"},
+        ],
+    )
+
+    assert restored == "[[DOCX_IMAGE_img_009]]\n\n## Глава десятая\n# ИСТИНА И ПОСЛЕДСТВИЯ\n\nBody"
+
+
+def test_restore_image_heading_lines_from_registry_leaves_unbacked_concat_unchanged():
+    markdown = "[[DOCX_IMAGE_img_009]] Глава десятая ИСТИНА И ПОСЛЕДСТВИЯ"
+
+    assert document_pipeline_late_phases._restore_image_heading_lines_from_registry(markdown, []) == markdown
+
+
 def test_build_translation_quality_report_classifies_placeholder_heading_concat_as_display_hygiene_with_raw_observability():
     report = document_pipeline_late_phases._build_translation_quality_report(
         context=SimpleNamespace(
@@ -4829,11 +4847,23 @@ def test_run_document_processing_quality_report_keeps_candidate_page_artifact_no
     assert payload["document_map_compound_toc_split_hint_count"] == 0
 
 
-def test_build_translation_quality_report_exposes_structure_unit_unmapped_basis_without_raw_override(monkeypatch):
+def test_build_translation_quality_report_prefers_role_aware_source_basis_over_topology_unit(monkeypatch):
     monkeypatch.setattr(
         document_pipeline_late_phases,
         "_load_formatting_diagnostics_payloads",
-        lambda artifact_paths: [{"unmapped_source_ids": ["p0000", "p0001"], "unmapped_target_indexes": [], "source_count": 2, "target_count": 2}],
+        lambda artifact_paths: [
+            {
+                "unmapped_source_ids": ["p0000", "p0001"],
+                "unmapped_target_indexes": [],
+                "source_count": 2,
+                "target_count": 2,
+                "unmapped_source_residual_diagnostics": {
+                    "effective_formatting_coverage_diagnostics": {
+                        "format_neutral_creditable_count": 0,
+                    }
+                },
+            }
+        ],
     )
 
     report = document_pipeline_late_phases._build_translation_quality_report(
@@ -4870,11 +4900,11 @@ def test_build_translation_quality_report_exposes_structure_unit_unmapped_basis_
     assert report["raw_unmapped_target_paragraph_count"] == 0
     assert report["structure_unit_unmapped_source_count"] == 1
     assert report["structure_unit_unmapped_target_count"] == 0
-    assert report["unmapped_source_count_basis"] == "topology_unit"
+    assert report["unmapped_source_count_basis"] == "role_aware_formatting_coverage"
     assert report["unmapped_target_count_basis"] == "topology_unit"
     assert report["unit_unmapped_source_gate_source"] == "topology_unit"
     assert report["unit_unmapped_target_gate_source"] == "topology_unit"
-    assert report["unmapped_source_count"] == 1
+    assert report["unmapped_source_count"] == 2
 
 
 def test_build_translation_quality_report_uses_role_aware_effective_unmapped_source_count(monkeypatch):
@@ -5569,6 +5599,60 @@ def test_reader_cleanup_postprocess_prefers_assembly_formatting_registry_over_st
     assert lineage_payload["active_formatting_registry"] == assembly_registry
     assert lineage_payload["cleanup_identity_diagnostics"]["text_gap_count"] == 0
     assert lineage_payload["cleanup_formatting_lineage"]["status"] == "derived"
+
+
+def test_reader_cleanup_noop_restores_image_heading_concats_from_registry():
+    runtime = _build_runtime_capture()
+    raw_markdown = "[[DOCX_IMAGE_img_001]] Глава восьмая\n\nBody paragraph"
+    assembly_registry = [
+        {"block_index": 1, "paragraph_id": "p0026", "text": "## Глава восьмая"},
+        {"block_index": 2, "paragraph_id": "p0027", "text": "Body paragraph"},
+    ]
+
+    result = document_pipeline_late_phases._run_reader_cleanup_postprocess(
+        context=SimpleNamespace(
+            processing_operation="translate",
+            app_config={
+                "reader_cleanup_enabled": True,
+                "reader_cleanup_policy": "advisory",
+                "reader_cleanup_chunk_size": 500,
+                "reader_cleanup_max_delete_block_ratio": 0.8,
+                "reader_cleanup_max_delete_char_ratio": 0.8,
+            },
+            model="anthropic:claude-sonnet-4-6",
+            max_retries=1,
+            uploaded_filename="report.docx",
+            runtime=runtime,
+            source_paragraphs=[ParagraphUnit(text="Chapter Eight", role="heading", paragraph_id="p0026")],
+        ),
+        dependencies=SimpleNamespace(
+            get_client=lambda: object(),
+            generate_markdown_block=lambda **kwargs: json.dumps({"cleanup_operations": [], "warnings": []}),
+            convert_markdown_to_docx_bytes=lambda markdown_text: markdown_text.encode("utf-8"),
+            preserve_source_paragraph_properties=lambda docx_bytes, paragraphs, generated_paragraph_registry=None: docx_bytes,
+            reinsert_inline_images=lambda docx_bytes, image_assets: docx_bytes,
+            log_event=lambda *args, **kwargs: None,
+            present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
+        ),
+        emitters=SimpleNamespace(
+            emit_activity=lambda *args, **kwargs: None,
+            emit_state=lambda *args, **kwargs: None,
+        ),
+        state=SimpleNamespace(generated_paragraph_registry=[]),
+        cleanup_input_markdown=raw_markdown,
+        runtime_display_markdown=raw_markdown,
+        base_docx_bytes=None,
+        base_docx_builder=None,
+        job_count=1,
+        processed_image_assets=[],
+        formatting_registry=assembly_registry,
+    )
+
+    assert result.markdown == "[[DOCX_IMAGE_img_001]]\n\n## Глава восьмая\n\nBody paragraph"
+    assert result.final_generated_paragraph_registry == [
+        {"block_index": 1, "paragraph_id": "p0026", "text": "## Глава восьмая", "target_paragraph_indexes": [1]},
+        {"block_index": 2, "paragraph_id": "p0027", "text": "Body paragraph", "target_paragraph_indexes": [2]},
+    ]
 
 
 def test_reader_cleanup_postprocess_persists_final_generated_registry_in_runtime_state(

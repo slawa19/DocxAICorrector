@@ -215,6 +215,103 @@ def test_replay_formatting_diagnostics_from_report_uses_explicit_source_docx_ove
     assert replayed["replay_fidelity"] == "source_count_mismatch_vs_saved_report"
 
 
+def test_replay_formatting_diagnostics_from_report_reconstructs_from_final_generated_registry(tmp_path: Path):
+    target_docx_path = tmp_path / "target.docx"
+    document = Document()
+    document.add_paragraph("Глава восьмая", style="Heading 2")
+    document.add_paragraph("Body translated")
+    buffer = BytesIO()
+    document.save(buffer)
+    target_docx_path.write_bytes(buffer.getvalue())
+
+    report_path = tmp_path / "report.json"
+    report_payload = {
+        "output_artifacts": {"docx_path": str(target_docx_path)},
+        "formatting_diagnostics": [],
+        "runtime": {
+            "state": {
+                "final_generated_paragraph_registry": [
+                    {"paragraph_id": "p0001", "text": "## Глава восьмая", "target_paragraph_indexes": [0]},
+                    {"paragraph_id": "p0002", "text": "Body translated", "target_paragraph_indexes": [1]},
+                ]
+            }
+        },
+    }
+    report_path.write_text(json.dumps(report_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    replayed = replay_formatting_diagnostics_from_report(report_path=report_path)
+
+    assert replayed["source_reconstruction_basis"] == "final_generated_paragraph_registry"
+    assert replayed["replay_fidelity"] == "current_output_registry_replay"
+    assert replayed["saved_source_count"] == 2
+    assert replayed["replayed_source_count"] == 2
+    assert replayed["saved_mapped_count"] is None
+    assert replayed["replayed_diagnostics"]["mapped_count"] == 2
+    assert replayed["replayed_summary"]["unmapped_source_count"] == 0
+    role_aware_summary = replayed["replayed_summary"]["role_aware_summary"]
+    assert role_aware_summary is None or role_aware_summary["effective_unmapped_source_count"] == 0
+
+
+def test_replay_formatting_diagnostics_prefers_final_registry_over_source_language_preview(tmp_path: Path):
+    target_docx_path = tmp_path / "target.docx"
+    document = Document()
+    document.add_paragraph("СОДЕРЖАНИЕ", style="Heading 1")
+    document.add_paragraph("Предисловие")
+    buffer = BytesIO()
+    document.save(buffer)
+    target_docx_path.write_bytes(buffer.getvalue())
+
+    report_path = tmp_path / "report.json"
+    report_payload = {
+        "output_artifacts": {"docx_path": str(target_docx_path)},
+        "formatting_diagnostics": [
+            {
+                "stage": "restore",
+                "mapped_count": 2,
+                "unmapped_source_ids": [],
+                "unmapped_target_indexes": [],
+                "source_registry": [
+                    {
+                        "paragraph_id": "p0001",
+                        "source_index": 0,
+                        "text_preview": "contents",
+                        "role": "heading",
+                        "structural_role": "heading",
+                        "heading_level": 1,
+                    },
+                    {
+                        "paragraph_id": "p0002",
+                        "source_index": 1,
+                        "text_preview": "foreword",
+                        "role": "body",
+                        "structural_role": "body",
+                    },
+                ],
+                "target_registry": [
+                    {"target_index": 0, "text_preview": "СОДЕРЖАНИЕ", "heading_level": 1},
+                    {"target_index": 1, "text_preview": "Предисловие"},
+                ],
+            }
+        ],
+        "runtime": {
+            "state": {
+                "final_generated_paragraph_registry": [
+                    {"paragraph_id": "p0001", "text": "# СОДЕРЖАНИЕ", "target_paragraph_indexes": [0]},
+                    {"paragraph_id": "p0002", "text": "Предисловие", "target_paragraph_indexes": [1]},
+                ]
+            }
+        },
+    }
+    report_path.write_text(json.dumps(report_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    replayed = replay_formatting_diagnostics_from_report(report_path=report_path)
+
+    assert replayed["source_reconstruction_basis"] == "final_generated_paragraph_registry"
+    assert replayed["replay_fidelity"] == "current_output_registry_replay"
+    assert replayed["replayed_diagnostics"]["mapped_count"] == 2
+    assert replayed["replayed_summary"]["unmapped_source_count"] == 0
+
+
 def test_classify_formatting_residuals_replay_mode_reports_replayed_restore_diagnostics(tmp_path: Path):
     target_docx_path = tmp_path / "target.docx"
     target_docx_path.write_bytes(_build_docx_bytes(["Heading translated", "Body translated"]))

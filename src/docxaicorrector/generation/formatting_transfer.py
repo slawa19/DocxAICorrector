@@ -286,6 +286,22 @@ def _target_indexes_containing_candidate(
     return indexes
 
 
+def _target_indexes_containing_any_candidate(
+    target_paragraphs: Sequence[Paragraph],
+    candidate_texts: Sequence[str],
+    *,
+    limit: int = 5,
+) -> list[int]:
+    indexes: list[int] = []
+    for candidate_text in candidate_texts:
+        for target_index in _target_indexes_containing_candidate(target_paragraphs, candidate_text, limit=limit):
+            if target_index not in indexes:
+                indexes.append(target_index)
+                if len(indexes) >= limit:
+                    return indexes
+    return indexes
+
+
 def _classify_unmapped_source_residual(
     paragraph: ParagraphUnit,
     paragraph_id: str,
@@ -361,6 +377,10 @@ def _target_format_role(paragraph: Paragraph) -> str:
     return "body"
 
 
+def _target_has_heading_format(paragraph: Paragraph) -> bool:
+    return _extract_target_heading_level(paragraph) is not None
+
+
 def _text_coverage_evidence(candidate_text: str, target_text: str) -> dict[str, object] | None:
     normalized_candidate = _normalize_text_for_mapping(candidate_text)
     normalized_target = _normalize_text_for_mapping(target_text)
@@ -395,7 +415,7 @@ def _text_coverage_evidence(candidate_text: str, target_text: str) -> dict[str, 
 def _neighbor_candidate_evidence(
     *,
     source_index: int,
-    candidate_text: str,
+    candidate_texts: Sequence[str],
     target_paragraphs: Sequence[Paragraph],
     mapped_source_by_target: Mapping[int, int],
     source_window: int = 3,
@@ -407,9 +427,22 @@ def _neighbor_candidate_evidence(
         source_distance = abs(mapped_source_index - source_index)
         if source_distance > source_window:
             continue
-        text_evidence = _text_coverage_evidence(candidate_text, target_paragraphs[target_index].text)
-        if text_evidence is None:
+        text_evidence_candidates = [
+            candidate_evidence
+            for candidate_text in candidate_texts
+            if (candidate_evidence := _text_coverage_evidence(candidate_text, target_paragraphs[target_index].text))
+            is not None
+        ]
+        if not text_evidence_candidates:
             continue
+        text_evidence_candidates.sort(
+            key=lambda evidence: (
+                float(evidence.get("score", 0.0)),
+                float(evidence.get("token_overlap_ratio", 0.0)),
+            ),
+            reverse=True,
+        )
+        text_evidence = text_evidence_candidates[0]
         evidence.append(
             {
                 "target_index": target_index,
@@ -421,15 +454,61 @@ def _neighbor_candidate_evidence(
     return evidence
 
 
+def _occupied_candidate_evidence(
+    *,
+    target_candidate_indexes: Sequence[int],
+    candidate_texts: Sequence[str],
+    target_paragraphs: Sequence[Paragraph],
+    mapped_source_by_target: Mapping[int, int],
+    source_index: int,
+) -> list[dict[str, object]]:
+    evidence: list[dict[str, object]] = []
+    for target_index in target_candidate_indexes:
+        mapped_source_index = mapped_source_by_target.get(target_index)
+        if mapped_source_index is None:
+            continue
+        text_evidence_candidates = [
+            candidate_evidence
+            for candidate_text in candidate_texts
+            if (candidate_evidence := _text_coverage_evidence(candidate_text, target_paragraphs[target_index].text))
+            is not None
+        ]
+        if not text_evidence_candidates:
+            continue
+        text_evidence_candidates.sort(
+            key=lambda item: (
+                float(item.get("score", 0.0)),
+                float(item.get("token_overlap_ratio", 0.0)),
+            ),
+            reverse=True,
+        )
+        evidence.append(
+            {
+                "target_index": target_index,
+                "mapped_source_index": mapped_source_index,
+                "source_distance": abs(mapped_source_index - source_index),
+                **text_evidence_candidates[0],
+            }
+        )
+    return evidence
+
+
 def _classify_effective_formatting_coverage(
     *,
     residual_category: str,
     source_format_role: str,
     neighbor_evidence: Sequence[Mapping[str, object]],
+    occupied_candidate_evidence: Sequence[Mapping[str, object]],
+    target_candidate_indexes: Sequence[int],
     target_roles_by_index: Mapping[int, str],
 ) -> str:
     if residual_category == "single_origin_lost_match":
         if not neighbor_evidence:
+            if source_format_role != "body" and (
+                occupied_candidate_evidence
+                or any(target_roles_by_index.get(target_index) != source_format_role for target_index in target_candidate_indexes)
+            ):
+                return "content_survived_but_format_role_lost"
             return "unproven_or_marker_closable"
         if source_format_role == "body" and any(
             isinstance(evidence.get("target_index"), int)
@@ -478,6 +557,8 @@ def _build_unmapped_source_residual_diagnostics(
 
         registry_entry = generated_registry_by_id.get(paragraph_id)
         registry_text = _generated_registry_text(registry_entry)
+        registry_candidate_texts = _build_generated_registry_candidates(paragraph, registry_text) if registry_text else []
+        coverage_candidate_texts = registry_candidate_texts or [paragraph.text]
         relation_ids = list(relation_ids_by_paragraph.get(paragraph_id, ()))
         merged_ids = _generated_registry_merged_ids(registry_entry)
         category = _classify_unmapped_source_residual(
@@ -487,18 +568,25 @@ def _build_unmapped_source_residual_diagnostics(
             relation_ids_by_paragraph=relation_ids_by_paragraph,
         )
         category_counts[category] = category_counts.get(category, 0) + 1
-        target_candidate_indexes = _target_indexes_containing_candidate(
+        target_candidate_indexes = _target_indexes_containing_any_candidate(
             target_paragraphs,
-            registry_text or paragraph.text,
+            coverage_candidate_texts,
         )
         free_target_candidate_indexes = [
             target_index for target_index in target_candidate_indexes if target_index not in mapped_target_indexes
         ]
         neighbor_evidence = _neighbor_candidate_evidence(
             source_index=index,
-            candidate_text=registry_text or paragraph.text,
+            candidate_texts=coverage_candidate_texts,
             target_paragraphs=target_paragraphs,
             mapped_source_by_target=mapped_source_by_target,
+        )
+        occupied_candidate_evidence = _occupied_candidate_evidence(
+            target_candidate_indexes=target_candidate_indexes,
+            candidate_texts=coverage_candidate_texts,
+            target_paragraphs=target_paragraphs,
+            mapped_source_by_target=mapped_source_by_target,
+            source_index=index,
         )
         occupied_neighbor_candidate_indexes = [
             int(evidence["target_index"])
@@ -516,6 +604,8 @@ def _build_unmapped_source_residual_diagnostics(
             residual_category=category,
             source_format_role=source_format_role,
             neighbor_evidence=neighbor_evidence,
+            occupied_candidate_evidence=occupied_candidate_evidence,
+            target_candidate_indexes=target_candidate_indexes,
             target_roles_by_index=target_roles_by_index,
         )
         effective_coverage_counts[effective_coverage_class] = effective_coverage_counts.get(effective_coverage_class, 0) + 1
@@ -544,6 +634,7 @@ def _build_unmapped_source_residual_diagnostics(
             "relation_ids": relation_ids,
             "target_candidate_indexes_containing_registry_text": target_candidate_indexes,
             "free_target_candidate_indexes_containing_registry_text": free_target_candidate_indexes,
+            "occupied_candidate_evidence": occupied_candidate_evidence,
             "occupied_neighbor_candidate_evidence": neighbor_evidence,
             "origin_raw_text_count": len(paragraph.origin_raw_texts),
             "origin_raw_indexes": list(paragraph.origin_raw_indexes),
@@ -702,6 +793,181 @@ def _mapping_similarity_score(source_paragraph: ParagraphUnit, target_text: str)
     if source_paragraph.role == "heading" and len(target_text.split()) <= 18:
         score += 0.03
     return min(score, 1.0)
+
+
+def _token_set(text: str) -> set[str]:
+    return set(re.findall(r"\w+", text, flags=re.UNICODE))
+
+
+def _registry_candidate_mapping_evidence(
+    candidate_text: str,
+    target_text: str,
+    *,
+    source_format_role: str,
+) -> dict[str, object] | None:
+    normalized_candidate = _normalize_text_for_mapping(candidate_text)
+    normalized_target = _normalize_text_for_mapping(target_text)
+    if not normalized_candidate or not normalized_target:
+        return None
+
+    candidate_tokens = _token_set(normalized_candidate)
+    target_tokens = _token_set(normalized_target)
+    common_count = len(candidate_tokens & target_tokens) if candidate_tokens and target_tokens else 0
+    token_overlap_ratio = common_count / len(candidate_tokens) if candidate_tokens else 0.0
+    sequence_ratio = SequenceMatcher(None, normalized_candidate, normalized_target).ratio()
+    target_coverage_ratio = len(normalized_candidate) / max(len(normalized_target), 1)
+
+    evidence_type: str | None = None
+    if normalized_candidate == normalized_target:
+        evidence_type = "exact"
+    elif normalized_candidate in normalized_target:
+        if source_format_role == "heading":
+            evidence_type = "heading_exact_contained"
+        elif target_coverage_ratio >= 0.65:
+            evidence_type = "exact_contained"
+    elif sequence_ratio >= 0.92 or (common_count >= 3 and token_overlap_ratio >= 0.85 and target_coverage_ratio >= 0.65):
+        evidence_type = "bounded_fuzzy"
+
+    if evidence_type is None:
+        return None
+
+    return {
+        "evidence_type": evidence_type,
+        "score": round(max(sequence_ratio, token_overlap_ratio), 4),
+        "sequence_ratio": round(sequence_ratio, 4),
+        "token_overlap_ratio": round(token_overlap_ratio, 4),
+        "target_coverage_ratio": round(target_coverage_ratio, 4),
+        "common_token_count": common_count,
+        "candidate_token_count": len(candidate_tokens),
+        "candidate_char_count": len(normalized_candidate),
+    }
+
+
+def _registry_mapping_role_compatible(source_format_role: str, target_paragraph: Paragraph) -> bool:
+    target_role = _target_format_role(target_paragraph)
+    if source_format_role == "heading":
+        return _target_has_heading_format(target_paragraph)
+    if source_format_role in {"body", "toc", "epigraph", "attribution", "dedication"}:
+        return target_role != "heading"
+    if source_format_role == "list":
+        return target_role in {"body", "list"}
+    if source_format_role == "caption":
+        return target_role in {"body", "caption"}
+    return target_role != "heading"
+
+
+def _try_register_bounded_registry_mapping(
+    source_index: int,
+    source_paragraph: ParagraphUnit,
+    target_paragraphs: Sequence[Paragraph],
+    generated_registry_by_id: Mapping[str, Mapping[str, object]],
+    *,
+    mapped_target_by_source: dict[int, int],
+    strategy_by_source: dict[int, str],
+    available_target_indexes: set[int],
+    target_window: int = 28,
+) -> bool:
+    if source_index in mapped_target_by_source or source_paragraph.role == "image":
+        return False
+    paragraph_id = source_paragraph.paragraph_id
+    if not paragraph_id:
+        return False
+    generated_text = _generated_registry_text(generated_registry_by_id.get(paragraph_id))
+    if not generated_text:
+        return False
+
+    source_format_role = _source_format_role(source_paragraph)
+    registry_candidates = [
+        candidate
+        for candidate in _build_generated_registry_candidates(source_paragraph, generated_text)
+        if len(candidate) >= 8 or (source_format_role == "heading" and len(candidate) >= 4)
+    ]
+    if not registry_candidates:
+        return False
+
+    scored: list[tuple[float, int, dict[str, object]]] = []
+    for target_index in sorted(available_target_indexes):
+        if abs(target_index - source_index) > target_window:
+            continue
+        target_paragraph = target_paragraphs[target_index]
+        target_text = target_paragraph.text.strip()
+        if not target_text or IMAGE_PLACEHOLDER_PATTERN.search(target_text):
+            continue
+        if not _registry_mapping_role_compatible(source_format_role, target_paragraph):
+            continue
+
+        best_evidence: dict[str, object] | None = None
+        for candidate in registry_candidates:
+            evidence = _registry_candidate_mapping_evidence(
+                candidate,
+                target_text,
+                source_format_role=source_format_role,
+            )
+            if evidence is None:
+                continue
+            if best_evidence is None or (
+                float(evidence["score"]),
+                float(evidence["target_coverage_ratio"]),
+                int(evidence["candidate_char_count"]),
+            ) > (
+                float(best_evidence["score"]),
+                float(best_evidence["target_coverage_ratio"]),
+                int(best_evidence["candidate_char_count"]),
+            ):
+                best_evidence = evidence
+
+        if best_evidence is None:
+            continue
+        rank_score = (
+            float(best_evidence["score"])
+            + min(float(best_evidence["target_coverage_ratio"]), 1.0)
+            + min(int(best_evidence["candidate_char_count"]) / 1000.0, 0.5)
+        )
+        scored.append((rank_score, target_index, best_evidence))
+
+    if not scored:
+        return False
+
+    scored.sort(key=lambda item: (item[0], -item[1]), reverse=True)
+    best_score, best_target_index, best_evidence = scored[0]
+    if len(scored) > 1 and best_score - scored[1][0] < 0.08:
+        return False
+
+    if source_format_role == "heading":
+        strategy = "bounded_registry_heading_containment"
+    else:
+        strategy = "bounded_registry_fuzzy"
+    _register_mapping(
+        source_index,
+        best_target_index,
+        strategy,
+        mapped_target_by_source=mapped_target_by_source,
+        strategy_by_source=strategy_by_source,
+        available_target_indexes=available_target_indexes,
+    )
+    return True
+
+
+def _generated_registry_target_text_compatible(
+    source_paragraph: ParagraphUnit,
+    target_paragraph: Paragraph,
+    registry_entry: Mapping[str, object] | None,
+) -> bool:
+    generated_text = _generated_registry_text(registry_entry)
+    if not generated_text:
+        return False
+    source_format_role = _source_format_role(source_paragraph)
+    if not _registry_mapping_role_compatible(source_format_role, target_paragraph):
+        return False
+    return any(
+        _registry_candidate_mapping_evidence(
+            candidate,
+            target_paragraph.text,
+            source_format_role=source_format_role,
+        )
+        is not None
+        for candidate in _build_generated_registry_candidates(source_paragraph, generated_text)
+    )
 
 
 def _register_mapping(
@@ -938,6 +1204,8 @@ def _collect_accepted_aggregated_sources(
         target_text = target_paragraphs[target_index].text
         if not IMAGE_PLACEHOLDER_PATTERN.search(target_text):
             continue
+        if not _target_has_heading_format(target_paragraphs[target_index]):
+            continue
         target_normalized = _normalize_text_for_mapping(target_text)
         if not target_normalized:
             continue
@@ -976,6 +1244,63 @@ def _collect_accepted_aggregated_sources(
                     "anchor_source_index": anchor_source_index,
                     "anchor_paragraph_id": anchor_source.paragraph_id or f"p{anchor_source_index:04d}",
                     "target_text_preview": _paragraph_preview(target_text),
+                    "source_text_preview": _paragraph_preview(source_paragraph.text),
+                }
+            )
+
+    for anchor_source_index, target_index in sorted(mapped_target_by_source.items()):
+        if target_index < 0 or target_index >= len(target_paragraphs):
+            continue
+        if not _target_has_heading_format(target_paragraphs[target_index]):
+            continue
+        anchor_source = source_paragraphs[anchor_source_index]
+        anchor_structural_role = str(getattr(anchor_source, "structural_role", "") or "").strip().lower()
+        anchor_role = str(getattr(anchor_source, "role", "") or "").strip().lower()
+        if anchor_role != "heading" and anchor_structural_role != "heading":
+            continue
+
+        target_normalized = _normalize_text_for_mapping(target_paragraphs[target_index].text)
+        if not target_normalized:
+            continue
+
+        window_start = max(0, anchor_source_index - 3)
+        window_end = min(len(source_paragraphs), anchor_source_index + 4)
+        for source_index in range(window_start, window_end):
+            if source_index == anchor_source_index:
+                continue
+            if source_index in mapped_source_indexes or source_index in accepted_source_indexes:
+                continue
+            source_paragraph = source_paragraphs[source_index]
+            structural_role = str(getattr(source_paragraph, "structural_role", "") or "").strip().lower()
+            role = str(getattr(source_paragraph, "role", "") or "").strip().lower()
+            if role != "heading" and structural_role != "heading":
+                continue
+
+            paragraph_id = source_paragraph.paragraph_id or f"p{source_index:04d}"
+            generated_text = _generated_registry_text(generated_registry_by_id.get(paragraph_id))
+            if not generated_text:
+                continue
+            matched_candidate = next(
+                (
+                    candidate
+                    for candidate in _build_generated_registry_candidates(source_paragraph, generated_text)
+                    if len(candidate) >= 5 and candidate in target_normalized
+                ),
+                "",
+            )
+            if not matched_candidate:
+                continue
+
+            accepted_source_indexes.add(source_index)
+            accepted_sources.append(
+                {
+                    "paragraph_id": paragraph_id,
+                    "source_index": source_index,
+                    "target_index": target_index,
+                    "kind": "heading_shared_target",
+                    "anchor_source_index": anchor_source_index,
+                    "anchor_paragraph_id": anchor_source.paragraph_id or f"p{anchor_source_index:04d}",
+                    "target_text_preview": _paragraph_preview(target_paragraphs[target_index].text),
                     "source_text_preview": _paragraph_preview(source_paragraph.text),
                 }
             )
@@ -1126,6 +1451,12 @@ def _map_source_target_paragraphs(
         target_index = target_indexes[0]
         if target_index not in available_target_indexes:
             continue
+        if not _generated_registry_target_text_compatible(
+            source_paragraph,
+            target_paragraphs[target_index],
+            registry_entry,
+        ):
+            continue
         _register_mapping(
             source_index,
             target_index,
@@ -1143,11 +1474,13 @@ def _map_source_target_paragraphs(
         if not generated_text:
             continue
         matching_target_indexes: set[int] = set()
+        source_format_role = _source_format_role(source_paragraph)
         for normalized_generated_text in _build_generated_registry_candidates(source_paragraph, generated_text):
             matching_target_indexes.update(
                 target_index
                 for target_index in target_indexes_by_normalized_text.get(normalized_generated_text, [])
                 if target_index in available_target_indexes
+                and _registry_mapping_role_compatible(source_format_role, target_paragraphs[target_index])
             )
         if len(matching_target_indexes) == 1:
             _register_mapping(
@@ -1218,8 +1551,11 @@ def _map_source_target_paragraphs(
         if not registry_candidates:
             continue
 
+        source_format_role = _source_format_role(source_paragraph)
         for target_index in sorted(available_target_indexes):
             if abs(target_index - source_index) > 3:
+                continue
+            if not _registry_mapping_role_compatible(source_format_role, target_paragraphs[target_index]):
                 continue
             score = max(
                 SequenceMatcher(None, candidate_text, _normalize_text_for_mapping(target_paragraphs[target_index].text)).ratio()
@@ -1329,6 +1665,17 @@ def _map_source_target_paragraphs(
                 strategy_by_source=strategy_by_source,
                 available_target_indexes=available_target_indexes,
             )
+
+    for source_index, source_paragraph in enumerate(source_paragraphs):
+        _try_register_bounded_registry_mapping(
+            source_index,
+            source_paragraph,
+            target_paragraphs,
+            generated_registry_by_id,
+            mapped_target_by_source=mapped_target_by_source,
+            strategy_by_source=strategy_by_source,
+            available_target_indexes=available_target_indexes,
+        )
 
     for source_index, source_paragraph in enumerate(source_paragraphs):
         if source_index in mapped_target_by_source or source_paragraph.role == "image":
@@ -1481,6 +1828,9 @@ def _map_source_target_paragraphs(
     accepted_split_target_indexes = {entry["target_index"] for entry in accepted_split_targets}
 
     diagnostics = {
+        "basis": "role_aware_formatting_coverage",
+        "unmapped_source_count_basis": "role_aware_formatting_coverage",
+        "counting_note": "filtered_raw_unmapped_source_count minus format_neutral_creditable_count, floored at zero",
         "source_count": len(source_paragraphs),
         "target_count": len(target_paragraphs),
         "mapped_count": len(mapping_pairs),
@@ -1711,10 +2061,8 @@ def apply_output_formatting(
     # whenever the AI added or removed even one paragraph in its output.
     diagnostics["list_restoration_decisions"] = _restore_list_numbering_for_mapped_paragraphs(document, mapping_pairs)
 
-    # Persisted diagnostics artifacts remain mismatch-only by contract; on the
-    # happy path, alignment decisions are still available in runtime logs.
+    artifact_path = _write_formatting_diagnostics_artifact("restore", diagnostics)
     if mismatch_detected:
-        artifact_path = _write_formatting_diagnostics_artifact("restore", diagnostics)
         log_event(
             logging.WARNING,
             mismatch_event_name,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Mapping, Sequence
 from io import BytesIO
 from pathlib import Path
@@ -17,6 +18,11 @@ from docxaicorrector.generation.formatting_transfer import (
 from docxaicorrector.validation.formatting_coverage import (
     resolve_role_aware_formatting_unmapped_source_summary,
 )
+
+
+_MARKDOWN_HEADING_PATTERN = re.compile(r"^\s*(?P<marker>#{1,6})\s+(?P<text>\S.*)$")
+_MARKDOWN_BULLET_PATTERN = re.compile(r"^\s*(?:[-*+]|\u2022)\s+(?P<text>\S.*)$")
+_DOCX_IMAGE_PLACEHOLDER_PATTERN = re.compile(r"^\s*\[\[DOCX_IMAGE_[A-Za-z0-9_]+\]\]\s*$")
 
 
 def _iter_report_search_roots(report_path: Path, report_payload: Mapping[str, object]) -> list[Path]:
@@ -141,6 +147,76 @@ def build_source_paragraphs_from_saved_registry(
     return paragraphs
 
 
+def _coerce_target_paragraph_indexes(value: object) -> list[int]:
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
+        return []
+    return [int(item) for item in value if isinstance(item, int)]
+
+
+def _build_source_paragraph_from_final_registry_entry(
+    entry: Mapping[str, object],
+    *,
+    fallback_index: int,
+) -> ParagraphUnit:
+    raw_text = str(entry.get("text") or entry.get("generated_text") or entry.get("text_preview") or "").strip()
+    text = raw_text
+    role = "body"
+    structural_role = "body"
+    heading_level: int | None = None
+    list_kind: str | None = None
+
+    heading_match = _MARKDOWN_HEADING_PATTERN.match(raw_text)
+    if heading_match is not None:
+        heading_level = len(str(heading_match.group("marker") or "#"))
+        text = str(heading_match.group("text") or "").strip()
+        role = "heading"
+        structural_role = "heading"
+    elif _DOCX_IMAGE_PLACEHOLDER_PATTERN.match(raw_text) is not None:
+        role = "image"
+        structural_role = "image"
+    else:
+        bullet_match = _MARKDOWN_BULLET_PATTERN.match(raw_text)
+        if bullet_match is not None:
+            text = str(bullet_match.group("text") or "").strip()
+            role = "list"
+            structural_role = "list_item"
+            list_kind = "bullet"
+
+    return ParagraphUnit(
+        text=text,
+        role=role,
+        structural_role=structural_role,
+        role_confidence="final_registry_replay",
+        paragraph_id=str(entry.get("paragraph_id") or f"p{fallback_index:04d}"),
+        source_index=fallback_index,
+        heading_level=heading_level,
+        list_kind=list_kind,
+    )
+
+
+def build_source_paragraphs_from_final_generated_registry(
+    generated_paragraph_registry: Sequence[Mapping[str, object]],
+) -> list[ParagraphUnit]:
+    paragraphs: list[ParagraphUnit] = []
+    for fallback_index, entry in enumerate(generated_paragraph_registry):
+        if not str(entry.get("paragraph_id") or "").strip() and not str(entry.get("text") or "").strip():
+            continue
+        paragraphs.append(_build_source_paragraph_from_final_registry_entry(entry, fallback_index=fallback_index))
+    return paragraphs
+
+
+def _select_final_generated_paragraph_registry(
+    report_payload: Mapping[str, object],
+) -> list[Mapping[str, object]]:
+    runtime = report_payload.get("runtime")
+    if not isinstance(runtime, Mapping):
+        return []
+    state = runtime.get("state")
+    if not isinstance(state, Mapping):
+        return []
+    return _coerce_mapping_sequence(state.get("final_generated_paragraph_registry"))
+
+
 def _saved_registry_preview_looks_source_language(
     source_registry: Sequence[Mapping[str, object]],
     target_registry: Sequence[Mapping[str, object]],
@@ -182,8 +258,9 @@ def replay_formatting_diagnostics_from_report(
 ) -> dict[str, object]:
     report_payload = load_report_payload(report_path)
     saved_payload = _select_formatting_payload(report_payload, diagnostic_index=diagnostic_index)
-    if saved_payload is None:
-        raise ValueError(f"No formatting_diagnostics found in {report_path}")
+    final_generated_registry = _select_final_generated_paragraph_registry(report_payload)
+    if saved_payload is None and not final_generated_registry:
+        raise ValueError(f"No formatting_diagnostics or final_generated_paragraph_registry found in {report_path}")
 
     output_artifacts = cast(Mapping[str, object], report_payload.get("output_artifacts") or {})
     resolved_target_docx_path = target_docx_path or resolve_report_artifact_path(
@@ -193,16 +270,27 @@ def replay_formatting_diagnostics_from_report(
     if resolved_target_docx_path is None or not resolved_target_docx_path.exists():
         raise FileNotFoundError("Target DOCX path for replay is missing.")
 
-    source_registry = _coerce_mapping_sequence(saved_payload.get("source_registry"))
+    source_registry = _coerce_mapping_sequence(saved_payload.get("source_registry")) if saved_payload is not None else []
+    saved_target_registry = _coerce_mapping_sequence(saved_payload.get("target_registry")) if saved_payload is not None else []
     resolved_source_docx_path = source_docx_path
     if resolved_source_docx_path is not None:
         if not resolved_source_docx_path.exists():
             raise FileNotFoundError(f"Explicit source_docx_path does not exist: {resolved_source_docx_path}")
         source_paragraphs, _ = extract_document_content_from_docx(BytesIO(resolved_source_docx_path.read_bytes()))
         source_reconstruction_basis = "source_docx_override"
+    elif (
+        source_registry
+        and final_generated_registry
+        and _saved_registry_preview_looks_source_language(source_registry, saved_target_registry)
+    ):
+        source_paragraphs = build_source_paragraphs_from_final_generated_registry(final_generated_registry)
+        source_reconstruction_basis = "final_generated_paragraph_registry"
     elif source_registry:
         source_paragraphs = build_source_paragraphs_from_saved_registry(source_registry)
         source_reconstruction_basis = "saved_source_registry_preview"
+    elif final_generated_registry:
+        source_paragraphs = build_source_paragraphs_from_final_generated_registry(final_generated_registry)
+        source_reconstruction_basis = "final_generated_paragraph_registry"
     else:
         resolved_source_docx_path = resolve_source_docx_from_report(
             report_path=report_path,
@@ -216,18 +304,29 @@ def replay_formatting_diagnostics_from_report(
 
     target_document = Document(str(resolved_target_docx_path))
     target_paragraphs = _collect_target_paragraphs(target_document)
-    saved_source_registry = _coerce_mapping_sequence(saved_payload.get("source_registry"))
-    saved_target_registry = _coerce_mapping_sequence(saved_payload.get("target_registry"))
-    saved_source_count = len(saved_source_registry)
+    saved_source_registry = _coerce_mapping_sequence(saved_payload.get("source_registry")) if saved_payload is not None else []
+    saved_source_count = len(saved_source_registry) or len(final_generated_registry)
     replayed_diagnostics = _build_output_formatting_diagnostics(
         source_paragraphs,
         target_paragraphs,
-        generated_paragraph_registry=None,
+        generated_paragraph_registry=final_generated_registry or None,
     )
     role_aware_summary = resolve_role_aware_formatting_unmapped_source_summary([replayed_diagnostics])
     replay_fidelity = "matched_saved_source_count"
     replay_fidelity_note = "Replayed source paragraph count matches the saved report source_registry count."
-    if saved_source_count and len(source_paragraphs) != saved_source_count:
+    if source_reconstruction_basis == "final_generated_paragraph_registry":
+        replay_fidelity = "current_output_registry_replay"
+        if saved_payload is None:
+            replay_fidelity_note = (
+                "Report did not include formatting_diagnostics; replay reconstructed current-code diagnostics "
+                "from runtime.state.final_generated_paragraph_registry and the saved final DOCX."
+            )
+        else:
+            replay_fidelity_note = (
+                "Saved source_registry preview appears to remain in the source language; replay reconstructed "
+                "current-code diagnostics from runtime.state.final_generated_paragraph_registry and the saved final DOCX."
+            )
+    elif saved_source_count and len(source_paragraphs) != saved_source_count:
         replay_fidelity = "source_count_mismatch_vs_saved_report"
         replay_fidelity_note = (
             "Current replay source paragraphs do not match the saved report source_registry count; "
@@ -253,10 +352,10 @@ def replay_formatting_diagnostics_from_report(
         "replay_fidelity_note": replay_fidelity_note,
         "saved_source_count": saved_source_count,
         "replayed_source_count": len(source_paragraphs),
-        "saved_diagnostic_stage": saved_payload.get("stage"),
-        "saved_mapped_count": saved_payload.get("mapped_count"),
-        "saved_unmapped_source_count": len(cast(Sequence[object], saved_payload.get("unmapped_source_ids") or [])),
-        "saved_unmapped_target_count": len(cast(Sequence[object], saved_payload.get("unmapped_target_indexes") or [])),
+        "saved_diagnostic_stage": saved_payload.get("stage") if saved_payload is not None else None,
+        "saved_mapped_count": saved_payload.get("mapped_count") if saved_payload is not None else None,
+        "saved_unmapped_source_count": len(cast(Sequence[object], saved_payload.get("unmapped_source_ids") or [])) if saved_payload is not None else None,
+        "saved_unmapped_target_count": len(cast(Sequence[object], saved_payload.get("unmapped_target_indexes") or [])) if saved_payload is not None else None,
         "replayed_diagnostics": replayed_diagnostics,
         "replayed_summary": {
             "mapped_count": replayed_diagnostics.get("mapped_count"),

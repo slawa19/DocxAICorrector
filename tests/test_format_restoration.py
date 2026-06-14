@@ -623,7 +623,7 @@ def test_formatting_diagnostics_classify_marker_closable_residual_when_target_te
         )
     ]
     target_doc = Document()
-    target_doc.add_paragraph("Предисловие ## Глава восьмая")
+    target_doc.add_paragraph("Предисловие ## Глава восьмая", style="Heading 2")
 
     diagnostics = _build_output_formatting_diagnostics(
         source_paragraphs,
@@ -637,19 +637,11 @@ def test_formatting_diagnostics_classify_marker_closable_residual_when_target_te
         ],
     )
 
-    residual = cast(dict[str, object], diagnostics["unmapped_source_residual_diagnostics"])
-    assert residual["category_counts"] == {"single_origin_lost_match": 1}
-    assert residual["residual_closability_diagnostics"] == {
-        "classification_basis": "full_unmapped_source_set",
-        "counts": {"target_exists_text_align_missed": 1},
-        "embedded_marker_upper_bound_count": 1,
-        "embedded_marker_upper_bound_class": "target_exists_text_align_missed",
-        "embedded_marker_upper_bound_note": "Counts only candidates on unmapped/free target paragraphs.",
-    }
-    samples = cast(list[dict[str, object]], residual["samples"])
-    assert samples[0]["residual_closability_class"] == "target_exists_text_align_missed"
-    assert samples[0]["target_candidate_indexes_containing_registry_text"] == [0]
-    assert samples[0]["free_target_candidate_indexes_containing_registry_text"] == [0]
+    source_registry = cast(list[dict[str, object]], diagnostics["source_registry"])
+    assert source_registry[0]["mapped_target_index"] == 0
+    assert source_registry[0]["mapping_strategy"] == "bounded_registry_heading_containment"
+    assert diagnostics["unmapped_source_ids"] == []
+    assert diagnostics["unmapped_target_indexes"] == []
 
 
 def test_formatting_diagnostics_keep_full_residual_rows_beyond_sample_limit():
@@ -792,6 +784,58 @@ def test_formatting_diagnostics_credit_body_with_fuzzy_neighbor_evidence():
     assert evidence["target_index"] == 0
 
 
+def test_formatting_diagnostics_credit_split_body_line_in_mapped_anchor_target():
+    source_paragraphs = [
+        ParagraphUnit(
+            paragraph_id="p0001",
+            text="Anchor source",
+            role="body",
+            structural_role="body",
+            role_confidence="heuristic",
+        ),
+        ParagraphUnit(
+            paragraph_id="p0002",
+            text="education the cost of education is a burden",
+            role="body",
+            structural_role="body",
+            role_confidence="heuristic",
+        ),
+    ]
+    target_doc = Document()
+    target_doc.add_paragraph(
+        "Расходы на образование обычно ложатся бременем на федеральный бюджет, создавая давление."
+    )
+
+    diagnostics = _build_output_formatting_diagnostics(
+        source_paragraphs,
+        list(target_doc.paragraphs),
+        document=target_doc,
+        generated_paragraph_registry=[
+            {
+                "paragraph_id": "p0001",
+                "text": "Расходы на образование обычно ложатся бременем на федеральный бюджет, создавая давление.",
+                "target_paragraph_indexes": [0],
+            },
+            {
+                "paragraph_id": "p0002",
+                "text": (
+                    "### ОБРАЗОВАНИЕ.\n"
+                    "Расходы на образование обычно ложатся бременем на федеральный бюджет и создают давление."
+                ),
+            },
+        ],
+    )
+
+    residual = cast(dict[str, object], diagnostics["unmapped_source_residual_diagnostics"])
+    assert residual["effective_formatting_coverage_diagnostics"]["counts"] == {
+        "format_neutral_body_dissolved_creditable": 1
+    }
+    sample = cast(list[dict[str, object]], residual["samples"])[0]
+    evidence = cast(list[dict[str, object]], sample["occupied_neighbor_candidate_evidence"])[0]
+    assert evidence["target_index"] == 0
+    assert evidence["evidence_type"] == "fuzzy_token_overlap"
+
+
 def test_formatting_diagnostics_do_not_credit_heading_dissolved_into_body_target():
     source_paragraphs = [
         ParagraphUnit(
@@ -889,6 +933,102 @@ def test_formatting_diagnostics_do_not_credit_heading_with_fuzzy_body_evidence()
     assert evidence["evidence_type"] == "fuzzy_token_overlap"
 
 
+def test_formatting_diagnostics_classify_heading_in_non_neighbor_occupied_target_as_role_loss():
+    source_paragraphs = [
+        ParagraphUnit(
+            paragraph_id="p0000",
+            text="table of contents anchor",
+            role="body",
+            structural_role="body",
+            role_confidence="heuristic",
+        ),
+        *[
+            ParagraphUnit(
+                paragraph_id=f"p000{index}",
+                text=f"intervening image {index}",
+                role="image",
+                structural_role="image",
+                role_confidence="heuristic",
+            )
+            for index in range(1, 5)
+        ],
+        ParagraphUnit(
+            paragraph_id="p0005",
+            text="chapter eight",
+            role="heading",
+            structural_role="heading",
+            role_confidence="heuristic",
+            heading_level=2,
+        ),
+    ]
+    target_doc = Document()
+    target_doc.add_paragraph("Глава восьмая и другие записи оглавления")
+
+    diagnostics = _build_output_formatting_diagnostics(
+        source_paragraphs,
+        list(target_doc.paragraphs),
+        document=target_doc,
+        generated_paragraph_registry=[
+            {
+                "paragraph_id": "p0000",
+                "text": "Глава восьмая и другие записи оглавления",
+                "target_paragraph_indexes": [0],
+            },
+            {
+                "paragraph_id": "p0005",
+                "text": "## Глава восьмая",
+            },
+        ],
+    )
+
+    residual = cast(dict[str, object], diagnostics["unmapped_source_residual_diagnostics"])
+    sample_by_id = {
+        str(sample["paragraph_id"]): sample
+        for sample in cast(list[dict[str, object]], residual["samples"])
+    }
+    heading_sample = sample_by_id["p0005"]
+    assert heading_sample["occupied_neighbor_candidate_evidence"] == []
+    occupied_evidence = cast(list[dict[str, object]], heading_sample["occupied_candidate_evidence"])
+    assert occupied_evidence[0]["target_index"] == 0
+    assert occupied_evidence[0]["mapped_source_index"] == 0
+    assert heading_sample["effective_formatting_coverage_class"] == "content_survived_but_format_role_lost"
+
+
+def test_formatting_diagnostics_classify_heading_in_free_body_target_as_role_loss():
+    source_paragraphs = [
+        ParagraphUnit(
+            paragraph_id="p0001",
+            text="chapter eight",
+            role="heading",
+            structural_role="heading",
+            role_confidence="heuristic",
+            heading_level=2,
+        ),
+    ]
+    target_doc = Document()
+    target_doc.add_paragraph("Глава восьмая")
+
+    diagnostics = _build_output_formatting_diagnostics(
+        source_paragraphs,
+        list(target_doc.paragraphs),
+        document=target_doc,
+        generated_paragraph_registry=[
+            {
+                "paragraph_id": "p0001",
+                "text": "## Глава восьмая",
+            },
+        ],
+    )
+
+    residual = cast(dict[str, object], diagnostics["unmapped_source_residual_diagnostics"])
+    assert residual["effective_formatting_coverage_diagnostics"]["counts"] == {
+        "content_survived_but_format_role_lost": 1
+    }
+    sample = cast(list[dict[str, object]], residual["samples"])[0]
+    assert sample["free_target_candidate_indexes_containing_registry_text"] == [0]
+    assert sample["effective_formatting_coverage_class"] == "content_survived_but_format_role_lost"
+
+
 def test_formatting_diagnostics_use_rebuild_identity_key_before_text_matching():
     source_paragraphs = [
         ParagraphUnit(
@@ -941,7 +1081,7 @@ def test_formatting_diagnostics_use_rebuild_identity_key_before_text_matching():
     }
 
 
-def test_formatting_diagnostics_report_suspicious_rebuild_key_role_mismatch():
+def test_formatting_diagnostics_reject_rebuild_key_role_mismatch():
     source_paragraphs = [
         ParagraphUnit(
             paragraph_id="p0001",
@@ -969,13 +1109,12 @@ def test_formatting_diagnostics_report_suspicious_rebuild_key_role_mismatch():
     )
 
     quality = cast(dict[str, object], diagnostics["rebuild_key_mapping_quality"])
-    assert quality["mapped_count"] == 1
-    assert quality["suspicious_count"] == 1
-    assert quality["suspicious_counts"] == {"non_heading_source_to_heading_target": 1}
-    samples = cast(list[dict[str, object]], quality["samples"])
-    assert samples[0]["paragraph_id"] == "p0001"
-    assert samples[0]["mapped_target_index"] == 0
-    assert samples[0]["target_heading_level"] == 2
+    assert quality["mapped_count"] == 0
+    assert quality["suspicious_count"] == 0
+    assert quality["suspicious_counts"] == {}
+    assert quality["samples"] == []
+    assert diagnostics["unmapped_source_ids"] == ["p0001"]
+    assert diagnostics["unmapped_target_indexes"] == [0]
 
 
 def test_mapping_reports_accepted_merged_sources_in_diagnostics():
@@ -1309,7 +1448,7 @@ def test_mapping_covers_heading_embedded_in_image_anchor_target():
         ),
     ]
     target_doc = Document()
-    target_doc.add_paragraph("[[DOCX_IMAGE_img_001]] Глава десятая")
+    target_doc.add_paragraph("[[DOCX_IMAGE_img_001]] Глава десятая", style="Heading 2")
     target_doc.add_paragraph("Непохожий текст")
 
     _, diagnostics = _map_source_target_paragraphs(
@@ -1336,6 +1475,90 @@ def test_mapping_covers_heading_embedded_in_image_anchor_target():
             "anchor_paragraph_id": "p0001",
             "target_text_preview": "[[DOCX_IMAGE_img_001]] Глава десятая",
             "source_text_preview": "Chapter Ten",
+        }
+    ]
+
+
+def test_mapping_does_not_cover_heading_embedded_in_body_image_anchor_target():
+    source_paragraphs = [
+        ParagraphUnit(
+            paragraph_id="p0001",
+            text="[[DOCX_IMAGE_img_001]]",
+            role="image",
+            structural_role="image",
+            asset_id="img_001",
+        ),
+        ParagraphUnit(
+            paragraph_id="p0002",
+            text="Chapter Ten",
+            role="heading",
+            structural_role="heading",
+            heading_level=2,
+        ),
+    ]
+    target_doc = Document()
+    target_doc.add_paragraph("[[DOCX_IMAGE_img_001]] Глава десятая")
+
+    _, diagnostics = _map_source_target_paragraphs(
+        source_paragraphs,
+        target_doc.paragraphs,
+        generated_paragraph_registry=[
+            {"paragraph_id": "p0002", "text": "## Глава десятая"},
+        ],
+    )
+
+    assert diagnostics["mapped_count"] == 1
+    assert diagnostics["mapping_strategy_counts"] == {"image_anchor_contained": 1}
+    assert diagnostics["unmapped_source_ids"] == ["p0002"]
+    residual = cast(dict[str, object], diagnostics["unmapped_source_residual_diagnostics"])
+    assert residual["effective_formatting_coverage_diagnostics"]["counts"] == {
+        "content_survived_but_format_role_lost": 1
+    }
+    assert diagnostics["accepted_aggregated_sources_count"] == 0
+
+
+def test_mapping_covers_multiple_headings_shared_in_heading_target_only():
+    source_paragraphs = [
+        ParagraphUnit(
+            paragraph_id="p0001",
+            text="Part Three",
+            role="heading",
+            structural_role="heading",
+            heading_level=1,
+        ),
+        ParagraphUnit(
+            paragraph_id="p0002",
+            text="Rethinking Money",
+            role="heading",
+            structural_role="heading",
+            heading_level=1,
+        ),
+    ]
+    target_doc = Document()
+    target_doc.add_paragraph("ЧАСТЬ ТРЕТЬЯ ПЕРЕОСМЫСЛЕНИЕ ДЕНЕГ", style="Heading 1")
+
+    _, diagnostics = _map_source_target_paragraphs(
+        source_paragraphs,
+        target_doc.paragraphs,
+        generated_paragraph_registry=[
+            {"paragraph_id": "p0001", "text": "# ЧАСТЬ ТРЕТЬЯ"},
+            {"paragraph_id": "p0002", "text": "# ПЕРЕОСМЫСЛЕНИЕ ДЕНЕГ"},
+        ],
+    )
+
+    assert diagnostics["mapped_count"] == 1
+    assert diagnostics["unmapped_source_ids"] == []
+    assert diagnostics["accepted_aggregated_sources_count"] == 1
+    assert diagnostics["accepted_aggregated_sources"] == [
+        {
+            "paragraph_id": "p0001",
+            "source_index": 0,
+            "target_index": 0,
+            "kind": "heading_shared_target",
+            "anchor_source_index": 1,
+            "anchor_paragraph_id": "p0002",
+            "target_text_preview": "ЧАСТЬ ТРЕТЬЯ ПЕРЕОСМЫСЛЕНИЕ ДЕНЕГ",
+            "source_text_preview": "Part Three",
         }
     ]
 
@@ -1375,6 +1598,181 @@ def test_mapping_normalizes_markdown_list_and_blockquote_prefixes_from_generated
     assert diagnostics["mapped_count"] == 2
     assert diagnostics["unmapped_source_ids"] == []
     assert diagnostics["unmapped_target_indexes"] == []
+
+
+def test_mapping_uses_bounded_registry_fuzzy_pass_for_translated_body_target():
+    source_paragraphs = [
+        ParagraphUnit(
+            paragraph_id=f"p{index:04d}",
+            text=f"Unrelated source {index}",
+            role="body",
+            structural_role="body",
+            role_confidence="heuristic",
+        )
+        for index in range(12)
+    ]
+    source_paragraphs.append(
+        ParagraphUnit(
+            paragraph_id="p0012",
+            text="education the cost of education is a burden usually carried at the federal level",
+            role="body",
+            structural_role="body",
+            role_confidence="heuristic",
+        )
+    )
+
+    target_doc = Document()
+    for index in range(4):
+        target_doc.add_paragraph(f"Нерелевантная цель {index}")
+    target_doc.add_paragraph("ОБРАЗОВАНИЕ.", style="Heading 3")
+    target_doc.add_paragraph(
+        "Расходы на образование обычно ложатся бременем на федеральный бюджет, создавая давление."
+    )
+
+    _, diagnostics = _map_source_target_paragraphs(
+        source_paragraphs,
+        target_doc.paragraphs,
+        generated_paragraph_registry=[
+            {
+                "paragraph_id": "p0012",
+                "text": (
+                    "### ОБРАЗОВАНИЕ.\n"
+                    "Расходы на образование обычно ложатся бременем на федеральный бюджет и создают давление."
+                ),
+            },
+        ],
+    )
+
+    source_registry = cast(list[dict[str, object]], diagnostics["source_registry"])
+    assert source_registry[12]["mapped_target_index"] == 5
+    assert source_registry[12]["mapping_strategy"] == "bounded_registry_fuzzy"
+    assert diagnostics["mapping_strategy_counts"] == {"bounded_registry_fuzzy": 1}
+    assert diagnostics["unmapped_target_indexes"] == [0, 1, 2, 3, 4]
+
+
+def test_mapping_bounded_registry_fuzzy_requires_unique_candidate():
+    source_paragraphs = [
+        ParagraphUnit(
+            paragraph_id="p0004",
+            text="a global reference currency",
+            role="list",
+            structural_role="list_item",
+            role_confidence="heuristic",
+            list_kind="bullet",
+        )
+    ]
+
+    target_doc = Document()
+    target_doc.add_paragraph("глобальная расчетная валютная единица")
+    target_doc.add_paragraph("глобальная расчетная валютная система")
+
+    _, diagnostics = _map_source_target_paragraphs(
+        source_paragraphs,
+        target_doc.paragraphs,
+        generated_paragraph_registry=[
+            {
+                "paragraph_id": "p0004",
+                "text": "• глобальная расчетная валюта",
+            },
+        ],
+    )
+
+    assert diagnostics["mapped_count"] == 0
+    assert diagnostics["mapping_strategy_counts"] == {}
+    assert diagnostics["unmapped_source_ids"] == ["p0004"]
+    assert diagnostics["unmapped_target_indexes"] == [0, 1]
+
+
+def test_mapping_rejects_stale_rebuild_key_before_registry_remap():
+    source_paragraphs = [
+        ParagraphUnit(
+            paragraph_id="p0001",
+            text="stale source",
+            role="body",
+            structural_role="body",
+            role_confidence="heuristic",
+        ),
+        ParagraphUnit(
+            paragraph_id="p0002",
+            text="correct source",
+            role="body",
+            structural_role="body",
+            role_confidence="heuristic",
+        ),
+    ]
+
+    target_doc = Document()
+    target_doc.add_paragraph("Правильный целевой абзац")
+
+    _, diagnostics = _map_source_target_paragraphs(
+        source_paragraphs,
+        target_doc.paragraphs,
+        generated_paragraph_registry=[
+            {
+                "paragraph_id": "p0001",
+                "text": "Устаревший целевой абзац",
+                "target_paragraph_indexes": [0],
+            },
+            {
+                "paragraph_id": "p0002",
+                "text": "Правильный целевой абзац",
+            },
+        ],
+    )
+
+    source_registry = cast(list[dict[str, object]], diagnostics["source_registry"])
+    assert source_registry[0]["mapped_target_index"] is None
+    assert source_registry[1]["mapped_target_index"] == 0
+    assert source_registry[1]["mapping_strategy"] == "paragraph_id_registry"
+    assert diagnostics["mapping_strategy_counts"] == {"paragraph_id_registry": 1}
+    assert diagnostics["unmapped_source_ids"] == ["p0001"]
+
+
+def test_mapping_recovers_heading_contained_in_larger_free_target():
+    source_paragraphs = [
+        ParagraphUnit(
+            paragraph_id=f"p{index:04d}",
+            text=f"Unrelated source {index}",
+            role="body",
+            structural_role="body",
+            role_confidence="heuristic",
+        )
+        for index in range(12)
+    ]
+    source_paragraphs.append(
+        ParagraphUnit(
+            paragraph_id="p0012",
+            text="an ancient future?",
+            role="heading",
+            structural_role="heading",
+            role_confidence="heuristic",
+            heading_level=2,
+        )
+    )
+
+    target_doc = Document()
+    for index in range(5):
+        target_doc.add_paragraph(f"Нерелевантная цель {index}")
+    target_doc.add_paragraph("Глава одиннадцатая УПРАВЛЕНИЕ И МЫ, ГРАЖДАНЕ Древнее будущее?", style="Heading 2")
+
+    _, diagnostics = _map_source_target_paragraphs(
+        source_paragraphs,
+        target_doc.paragraphs,
+        generated_paragraph_registry=[
+            {
+                "paragraph_id": "p0012",
+                "text": "# Древнее будущее?",
+            },
+        ],
+    )
+
+    source_registry = cast(list[dict[str, object]], diagnostics["source_registry"])
+    assert source_registry[12]["mapped_target_index"] == 5
+    assert source_registry[12]["mapping_strategy"] == "bounded_registry_heading_containment"
+    assert diagnostics["mapping_strategy_counts"] == {"bounded_registry_heading_containment": 1}
+    assert diagnostics["unmapped_source_ids"] == [
+        *(f"p{index:04d}" for index in range(12)),
+    ]
 
 
 def test_mapping_uses_local_gap_fallback_for_repeated_heading():
