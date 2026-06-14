@@ -316,24 +316,43 @@ note plus the upper-bound evidence.
 
 **Depends on:** none.
 
-## PR-FC7. PR-CLEANUP0 — Dormant Runtime Surface Removal
+## PR-FC7. PR-CLEANUP0 — Dead Verifier Surface Removal
 
-**Intent:** remove cleanup-adjacent runtime surface that is dormant in the
-shipping configuration, now safe because PR-FC1 stabilizes the formatting gate.
+**Intent:** remove cleanup-adjacent runtime surface that is genuinely dead (the
+proof-only verifier config), now safe because PR-FC1 stabilizes the formatting
+gate. Scoped down from the original "dormant surface" framing — see the scope
+correction below.
 
 **Changes (remove or deprecate only what the accepted contract does not use):**
-- global-plan pass (`reader_cleanup_global_plan_enabled` default false);
-- anchor-repair pass (empty `reader_cleanup_anchor_targets`);
 - runtime `reader_verifier_*` config whose scoring lives only in the proof
-  harness, not in `src/`.
+  harness, not in `src/` (`reader_verifier_model`, `reader_verifier_emit_summary`).
 
-**Verifiable result:**
-- Full test suite green; no runtime path references the removed config; reduced
-  code/runtime surface.
-- Proof harnesses and safety guards are untouched.
+**Scope correction (2026-06-14): the following are NOT dead surface — keep.**
+The original FC7/PR-CLEANUP0 list mislabelled these as dormant. They are
+off-by-default **feature flags with live runtime code paths**, not removable dead
+code:
+- `reader_cleanup_global_plan_enabled` — consumed by
+  `reader_cleanup_mvp/service.py` (gates the global-plan pass);
+- `reader_cleanup_anchor_repair_enabled` / `reader_cleanup_anchor_targets` —
+  consumed by `late_phases.py` (resolve anchor-repair targets).
+Removing them would be a behavioural refactor of the shipping cleanup mechanism,
+which the spec's own guardrail forbids while restore is moving. Do not "finish"
+FC7 by deleting them; FC7 is complete with the verifier-only surface removed.
+
+**Verifiable result (achieved 2026-06-14):**
+- `reader_verifier_model` / `reader_verifier_emit_summary` removed from `src/`
+  with zero dangling references; proof harness keeps its own local default
+  selector + explicit runtime override.
+- `test_config.py` 80 passed, `test_real_document_pipeline_validation.py`
+  90 passed, `test_document_pipeline.py` 139 passed; deterministic gate unchanged.
+- Live feature flags above intentionally retained; proof harnesses and safety
+  guards untouched.
+
+**Status: done (scoped to genuinely-dead verifier surface).**
 
 **Risk:** the backlog forbids cutting surface while restore is moving — this is
-why FC7 runs last, after FC1 settles the gate.
+why FC7 runs last, after FC1 settles the gate, and why the live cleanup flags
+were left in place.
 
 **Depends on:** PR-FC1 (gate stabilized).
 
