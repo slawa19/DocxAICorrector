@@ -100,8 +100,6 @@ FORMATTING_DIAGNOSTICS_DIR = PROJECT_ROOT / ".run" / "formatting_diagnostics"
 HEARTBEAT_INTERVAL_SECONDS = 15.0
 READER_VERIFIER_DEFAULT_SELECTOR = "openrouter:google/gemini-3-flash-preview"
 READER_VERIFIER_TIMEOUT_SECONDS = 180.0
-READER_VERIFIER_TARGET_DOCUMENT_PROFILE_ID = "lietaer-pdf-chapter-region-core"
-READER_VERIFIER_TARGET_RUN_PROFILE_ID = "ui-parity-translate-simple-reader-cleanup-comparison-only"
 _ALLOWED_READER_VERIFIER_VERDICTS = frozenset({"cleaned_better", "raw_better", "mixed", "unclear"})
 _ALLOWED_READER_VERIFIER_AUDIT_VERDICTS = frozenset(
     {"clean", "improved_but_has_remaining_issues", "unsafe_or_regressed", "unclear"}
@@ -2267,14 +2265,10 @@ def _resolve_reader_verifier_config(
     model_value = _get_config_value(runtime_app_config, "reader_verifier_model")
     if model_value is None:
         model_value = _get_config_value(app_config, "reader_verifier_model")
-    emit_summary_value = _get_config_value(runtime_app_config, "reader_verifier_emit_summary")
-    if emit_summary_value is None:
-        emit_summary_value = _get_config_value(app_config, "reader_verifier_emit_summary")
     model_selector = str(model_value or READER_VERIFIER_DEFAULT_SELECTOR).strip()
     return {
         "enabled": _coerce_bool(enabled_value, default=default_enabled),
         "model": model_selector,
-        "emit_summary": _coerce_bool(emit_summary_value, default=True),
     }
 
 

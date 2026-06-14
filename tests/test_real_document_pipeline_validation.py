@@ -1518,7 +1518,6 @@ def test_resolve_reader_verifier_config_is_off_by_default_for_proof_profiles() -
 
     assert config["enabled"] is False
     assert config["model"] == "openrouter:google/gemini-3-flash-preview"
-    assert config["emit_summary"] is True
 
 
 def test_resolve_reader_verifier_config_respects_explicit_opt_in_override() -> None:
@@ -1535,14 +1534,12 @@ def test_resolve_reader_verifier_config_respects_explicit_opt_in_override() -> N
         runtime_app_config={
             "reader_verifier_enabled": True,
             "reader_verifier_model": "anthropic:claude-sonnet-4-6",
-            "reader_verifier_emit_summary": False,
         },
     )
 
     assert config == {
         "enabled": True,
         "model": "anthropic:claude-sonnet-4-6",
-        "emit_summary": False,
     }
 
 

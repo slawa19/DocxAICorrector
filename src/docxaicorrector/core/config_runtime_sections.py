@@ -84,11 +84,6 @@ def resolve_semantic_validation_and_runtime_settings(
     if not isinstance(raw_reader_cleanup_model, str):
         raise RuntimeError(f"Некорректное поле reader_cleanup_model в {config_path}")
     reader_cleanup_model = raw_reader_cleanup_model.strip()
-    reader_verifier_model = parse_config_str_fn(
-        config_data,
-        "reader_verifier_model",
-        "openrouter:google/gemini-3-flash-preview",
-    )
     reader_cleanup_chunk_size = parse_config_int_fn(config_data, "reader_cleanup_chunk_size", 8000)
     reader_cleanup_overlap_blocks_before = parse_config_int_fn(
         config_data,
@@ -241,7 +236,6 @@ def resolve_semantic_validation_and_runtime_settings(
         ),
         "reader_cleanup_default": reader_cleanup_default,
         "reader_cleanup_model": reader_cleanup_model,
-        "reader_verifier_model": reader_verifier_model,
         "reader_cleanup_chunk_size": clamp_int_fn(reader_cleanup_chunk_size, minimum=3000, maximum=50000),
         "reader_cleanup_overlap_blocks_before": clamp_int_fn(
             reader_cleanup_overlap_blocks_before,

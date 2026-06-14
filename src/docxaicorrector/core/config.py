@@ -326,7 +326,6 @@ class AppConfig(Mapping[str, Any]):
     image_output_trim_max_loss_ratio: float
     reader_cleanup_default: bool = False
     reader_cleanup_model: str = ""
-    reader_verifier_model: str = "openrouter:google/gemini-3-flash-preview"
     reader_cleanup_chunk_size: int = 8000
     reader_cleanup_overlap_blocks_before: int = 3
     reader_cleanup_overlap_blocks_after: int = 3

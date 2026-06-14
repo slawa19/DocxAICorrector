@@ -121,7 +121,6 @@ def test_load_app_config_applies_env_overrides_and_clamps(monkeypatch):
     assert app_config["layout_artifact_cleanup_save_debug_artifacts"] is True
     assert app_config["reader_cleanup_default"] is False
     assert app_config["reader_cleanup_model"] == ""
-    assert app_config["reader_verifier_model"] == "openrouter:google/gemini-3-flash-preview"
     assert app_config["reader_cleanup_chunk_size"] == 8000
     assert app_config["reader_cleanup_overlap_blocks_before"] == 3
     assert app_config["reader_cleanup_overlap_blocks_after"] == 3
@@ -227,7 +226,6 @@ def test_load_app_config_exposes_image_validation_defaults(monkeypatch):
     assert app_config["image_output_trim_max_loss_ratio"] == 0.15
     assert app_config["reader_cleanup_default"] is False
     assert app_config["reader_cleanup_model"] == "anthropic:claude-sonnet-4-6"
-    assert app_config["reader_verifier_model"] == "anthropic:claude-sonnet-4-6"
     assert app_config["reader_cleanup_chunk_size"] == 8000
     assert app_config["reader_cleanup_overlap_blocks_before"] == 3
     assert app_config["reader_cleanup_overlap_blocks_after"] == 3
