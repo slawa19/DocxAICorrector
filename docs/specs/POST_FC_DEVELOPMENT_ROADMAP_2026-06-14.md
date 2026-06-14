@@ -90,6 +90,77 @@ proof reveals a real bug, stop and report rather than patching blind.
 
 **Done:** proof artifact recorded with the numbers above; FC spec archived.
 
+# WS-MAP. Fix the Real Loss Stage: Restore/Mapping (highest priority)
+
+**Forensic finding (2026-06-14, run `20260614T_ws1_fc_close_live_proof`):** the
+WS-1 proof failed the gate with 26 unmapped source / 32 unmapped target. A
+no-LLM stage trace of all 26 was run (translated text of each residual searched
+in the final DOCX by exact + fuzzy + token-overlap, and in the cleaned MD):
+
+| Stage | Lost |
+| --- | ---: |
+| Import (no id) | 0 |
+| Translation (no output) | 0 |
+| Cleanup (gone from MD) | 0 |
+| Conversion MD->DOCX (gone from DOCX) | 0 |
+| **Restore/Mapping (text present in final DOCX, not matched)** | **26** |
+
+**All 26 survive into the final DOCX.** Nothing is lost at translation, cleanup,
+or conversion. The failure is entirely the formatting-restore matcher being too
+strict: it maps source<->target by exact text equality, so it misses targets
+whose text is present but slightly merged/reworded (body/lists, fuzz 0.92-1.0)
+or where a heading's text is a substring blended into a larger target (headings,
+exact-substring present). The role-aware credit returned 0 because it measured
+the wrong relationship ("body dissolved into a *mapped neighbor*") while the real
+situation is "text present in its *own unmapped/blended* target".
+
+**Goal:** make the matcher connect source paragraphs to the targets that already
+contain their text, and refocus the gate on real role loss.
+
+**Scope:**
+- **MAP-1 (closes ~18/26): bounded fuzzy/containment mapping pass.** After the
+  existing exact strategies, add a pass that maps a still-unmapped source to a
+  still-free target when similarity is high (SequenceMatcher ratio >= ~0.92 OR
+  token-overlap >= ~0.85) AND exactly one such candidate exists, within a bounded
+  index window. This is a justified measurement->mapping step *because the text is
+  provably the same* — unlike past "guess by a fragment" heuristics.
+- **MAP-2 (closes headings, ~8): heading-containment recovery.** When a heading
+  source's text is an exact substring of a larger target, recognise it as a
+  blended heading: map it and transfer heading style, or record it as a genuine
+  role loss (split candidate). This is exactly the role loss the gate should
+  catch.
+- **MAP-3 (gate refocus): count role loss, not all unmapped.** After MAP-1/MAP-2
+  the remaining unmapped should be only real heading/list/caption role losses.
+  Refocus the gate on "is the structural role preserved" (the role-aware intent)
+  on the correct relationship (present-but-unmapped / blended), not
+  dissolved-in-neighbor.
+
+**Verifiable result (via no-LLM replay on the saved WS-1 artifact, then a fresh
+run):**
+- Stage trace re-run shows the Restore/Mapping count drop from `26` toward the
+  small set of genuine role losses; record the new number.
+- **Zero false pairs:** every new fuzzy/containment map is spot-checked to be the
+  correct target (role-compatible, same content); `rebuild_key_mapping_quality` /
+  a mapping-quality check reports no role/style mismatch among new maps.
+- Body/list residuals (the fuzz 0.96-1.0 set: p0042, p0059, p0060, p0119,
+  p0120-p0126, ...) become mapped; headings (p0026, p0072, p0094, ...) are either
+  mapped-with-heading-style or reported as explicit role loss.
+- `unmapped_target` falls correspondingly; final DOCX still openable, images
+  12/12, single restore pass.
+
+**Guardrails / non-goals:** do not touch translation/cleanup/conversion (proven
+loss-free). The fuzzy pass MUST require uniqueness + high threshold + spot-check;
+it must not become a broad guess-by-fragment matcher. Do not resurrect the
+embedded id-marker (FC5) — fuzzy mapping closes more (~18) than the marker (7)
+and is simpler.
+
+**Done:** Restore/Mapping residual reduced to a small, hand-checked set of real
+role losses, with zero false pairs; gate refocused on role loss; full relevant
+test files green.
+
+**Then WS-2 and WS-3 run on a matcher that no longer drops present-but-unmapped
+text.**
+
 # WS-2. Generalize the Role-Aware Gate Beyond One Document
 
 **Goal:** prove the role-aware reframe holds on more than the single excerpt
@@ -195,12 +266,21 @@ enforced; fragile returns converted.
 
 # Sequencing
 
-1. **WS-1** first (close the open iteration; small).
-2. **WS-2** next (trust the gate beyond one document before scaling on it).
-3. **WS-3** (the product goal: full book) — the largest chunk.
-4. **WS-4** falls out of WS-3 and is driven by its catalogue.
-5. **WS-5** runs alongside, prioritised whenever the inner loop gets expensive or
+1. **WS-1** first (close the open iteration; small). NOTE: the WS-1 proof already
+   ran and exposed the mapping issue below — WS-1 stays open until WS-MAP makes
+   the gate meaningful and the final proof passes.
+2. **WS-MAP** next and highest priority (fix the real loss stage: restore/mapping).
+   The forensic trace proved the 26 residual are present-but-unmapped, not lost in
+   translation/cleanup/conversion. Nothing downstream is trustworthy until the
+   matcher stops dropping them.
+3. **WS-2** (trust the gate beyond one document before scaling on it) — only after
+   WS-MAP, so it generalises a matcher that actually works.
+4. **WS-3** (the product goal: full book) — the largest chunk.
+5. **WS-4** falls out of WS-3 and is driven by its catalogue.
+6. **WS-5** runs alongside, prioritised whenever the inner loop gets expensive or
    a regression slips through.
 
-Do not start WS-3 before WS-2 confirms the gate generalises — otherwise a
-book-scale run is measured by a gate trusted on one excerpt.
+Do not start WS-2/WS-3 before WS-MAP: a book-scale run measured by a matcher that
+drops present-but-unmapped text would mislead. WS-1.5 ("lost vs reworded") is
+discharged by the WS-MAP forensic finding — nothing is lost, all 26 are
+present-but-unmapped.
