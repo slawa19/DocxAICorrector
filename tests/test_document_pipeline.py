@@ -5495,7 +5495,7 @@ def test_reader_cleanup_postprocess_prefers_assembly_formatting_registry_over_st
             ensure_ascii=False,
         )
 
-    cleaned_markdown, cleaned_docx_bytes, report, _raw, _notice, final_registry = document_pipeline_late_phases._run_reader_cleanup_postprocess(
+    result = document_pipeline_late_phases._run_reader_cleanup_postprocess(
         context=SimpleNamespace(
             processing_operation="translate",
             app_config={
@@ -5539,6 +5539,10 @@ def test_reader_cleanup_postprocess_prefers_assembly_formatting_registry_over_st
         processed_image_assets=[],
         formatting_registry=assembly_registry,
     )
+    cleaned_markdown = result.markdown
+    cleaned_docx_bytes = result.docx_bytes
+    report = result.report
+    final_registry = result.final_generated_paragraph_registry
 
     assert cleaned_markdown == "Intro\n\nBody paragraph"
     assert cleaned_docx_bytes == b"Intro\n\n[[DOCX_IMAGE_img_001]]\n\nBody paragraph"
@@ -5601,7 +5605,7 @@ def test_reader_cleanup_postprocess_persists_final_generated_registry_in_runtime
             ensure_ascii=False,
         )
 
-    document_pipeline_late_phases._run_reader_cleanup_postprocess(
+    result = document_pipeline_late_phases._run_reader_cleanup_postprocess(
         context=SimpleNamespace(
             processing_operation="translate",
             app_config={
@@ -5639,6 +5643,10 @@ def test_reader_cleanup_postprocess_persists_final_generated_registry_in_runtime
         formatting_registry=assembly_registry,
     )
 
+    assert result.final_generated_paragraph_registry == [
+        {"block_index": 1, "paragraph_id": "p0001", "text": "Intro", "target_paragraph_indexes": [0]},
+        {"block_index": 3, "paragraph_id": "p0003", "text": "Body paragraph", "target_paragraph_indexes": [2]},
+    ]
     assert runtime["state"]["final_generated_paragraph_registry"] == [
         {"block_index": 1, "paragraph_id": "p0001", "text": "Intro", "target_paragraph_indexes": [0]},
         {"block_index": 3, "paragraph_id": "p0003", "text": "Body paragraph", "target_paragraph_indexes": [2]},

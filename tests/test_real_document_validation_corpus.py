@@ -1036,19 +1036,19 @@ def test_validation_registry_declares_reader_cleanup_validation_profiles() -> No
     assert minimal.reader_cleanup_overlap_blocks_before == 3
     assert minimal.reader_cleanup_overlap_blocks_after == 3
     assert minimal.reader_cleanup_global_plan_enabled is False
-    assert minimal.reader_verifier_enabled is True
+    assert minimal.reader_verifier_enabled is False
     assert minimal.comparison_only_validation is True
 
     assert noop.processing_operation == "translate"
     assert noop.structure_recognition_mode == "off"
     assert noop.reader_cleanup_enabled is False
     assert noop.reader_cleanup_policy == "off"
-    assert noop.reader_verifier_enabled is True
+    assert noop.reader_verifier_enabled is False
     assert noop.comparison_only_validation is True
 
     assert source_cleanup_remove.processing_operation == "translate"
     assert source_cleanup_remove.reader_cleanup_enabled is True
-    assert source_cleanup_remove.reader_verifier_enabled is True
+    assert source_cleanup_remove.reader_verifier_enabled is False
     assert source_cleanup_remove.reader_cleanup_chunk_size == 8000
     assert source_cleanup_remove.reader_cleanup_overlap_blocks_before == 3
     assert source_cleanup_remove.reader_cleanup_overlap_blocks_after == 3

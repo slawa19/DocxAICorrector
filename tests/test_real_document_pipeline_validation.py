@@ -1502,6 +1502,50 @@ def test_resolve_validation_final_status_uses_comparison_only_success_criterion(
     )
 
 
+def test_resolve_reader_verifier_config_is_off_by_default_for_proof_profiles() -> None:
+    validation = _load_validation_module()
+
+    config = validation._resolve_reader_verifier_config(
+        validation_mode={
+            "comparison_only_validation": True,
+            "validation_run_type": "comparison_only",
+        },
+        document_profile_id="lietaer-pdf-chapter-region-core",
+        run_profile_id="ui-parity-translate-simple-reader-cleanup-comparison-only",
+        app_config=None,
+        runtime_app_config={},
+    )
+
+    assert config["enabled"] is False
+    assert config["model"] == "openrouter:google/gemini-3-flash-preview"
+    assert config["emit_summary"] is True
+
+
+def test_resolve_reader_verifier_config_respects_explicit_opt_in_override() -> None:
+    validation = _load_validation_module()
+
+    config = validation._resolve_reader_verifier_config(
+        validation_mode={
+            "comparison_only_validation": True,
+            "validation_run_type": "comparison_only",
+        },
+        document_profile_id="lietaer-pdf-chapter-region-core",
+        run_profile_id="ui-parity-translate-simple-reader-cleanup-comparison-only",
+        app_config=None,
+        runtime_app_config={
+            "reader_verifier_enabled": True,
+            "reader_verifier_model": "anthropic:claude-sonnet-4-6",
+            "reader_verifier_emit_summary": False,
+        },
+    )
+
+    assert config == {
+        "enabled": True,
+        "model": "anthropic:claude-sonnet-4-6",
+        "emit_summary": False,
+    }
+
+
 def test_load_reader_cleanup_evidence_extracts_artifacts_and_delete_stats(tmp_path) -> None:
     validation = _load_validation_module()
 
@@ -2150,6 +2194,7 @@ def test_main_comparison_only_reader_cleanup_reports_non_acceptance_artifacts_fo
         model="gpt-5.4",
         max_retries=1,
         comparison_only_validation=True,
+        reader_verifier_enabled=True,
     )
     registry = SimpleNamespace(
         get_document_profile=lambda profile_id: document_profile,
@@ -3627,7 +3672,7 @@ def test_run_reader_verifier_marks_model_resolution_failure_without_fallback(tmp
         document_profile_id="lietaer-pdf-chapter-region-core",
         run_profile_id="ui-parity-translate-simple-reader-cleanup-comparison-only",
         app_config=object(),
-        runtime_app_config={},
+        runtime_app_config={"reader_verifier_enabled": True},
         validation_mode={"comparison_only_validation": True},
         evidence_payload=evidence_payload,
         evidence_path=evidence_path,
@@ -3681,7 +3726,7 @@ def test_run_reader_verifier_failure_surfaces_pre_audit_remaining_issues(tmp_pat
         document_profile_id="lietaer-pdf-chapter-region-core",
         run_profile_id="ui-parity-translate-simple-reader-cleanup-comparison-only",
         app_config=object(),
-        runtime_app_config={},
+        runtime_app_config={"reader_verifier_enabled": True},
         validation_mode={"comparison_only_validation": True},
         evidence_payload=evidence_payload,
         evidence_path=evidence_path,
@@ -3742,7 +3787,7 @@ def test_run_reader_verifier_timeout_surfaces_pre_audit_remaining_issues(tmp_pat
         document_profile_id="lietaer-pdf-chapter-region-core",
         run_profile_id="ui-parity-translate-simple-reader-cleanup-comparison-only",
         app_config=object(),
-        runtime_app_config={},
+        runtime_app_config={"reader_verifier_enabled": True},
         validation_mode={"comparison_only_validation": True},
         evidence_payload=evidence_payload,
         evidence_path=evidence_path,
@@ -3922,11 +3967,16 @@ def test_main_comparison_only_reader_verifier_writes_artifacts_and_metadata(tmp_
             overrides={
                 "reader_cleanup_enabled": True,
                 "reader_cleanup_policy": "advisory",
+                "reader_verifier_enabled": True,
                 "structure_recognition_mode": "off",
             },
         ),
     )
-    monkeypatch.setattr(validation, "apply_runtime_resolution_to_app_config", lambda app_config, resolution: {})
+    monkeypatch.setattr(
+        validation,
+        "apply_runtime_resolution_to_app_config",
+        lambda app_config, resolution: {"reader_verifier_enabled": True},
+    )
     monkeypatch.setattr(
         validation,
         "evaluate_lietaer_acceptance",
@@ -4727,6 +4777,7 @@ def test_write_reader_verifier_artifacts_keeps_anchor_repair_diagnostic_only(tmp
             "reader_cleanup_enabled": True,
             "reader_cleanup_anchor_repair_enabled": True,
             "reader_cleanup_policy": "advisory",
+            "reader_verifier_enabled": True,
             "model": "gpt-5.4",
         },
         validation_mode={
@@ -5051,6 +5102,7 @@ def test_main_comparison_only_reader_verifier_failure_is_non_blocking(tmp_path, 
         model="gpt-5.4",
         max_retries=1,
         comparison_only_validation=True,
+        reader_verifier_enabled=True,
     )
     registry = SimpleNamespace(
         get_document_profile=lambda profile_id: document_profile,
@@ -5135,11 +5187,16 @@ def test_main_comparison_only_reader_verifier_failure_is_non_blocking(tmp_path, 
             overrides={
                 "reader_cleanup_enabled": True,
                 "reader_cleanup_policy": "advisory",
+                "reader_verifier_enabled": True,
                 "structure_recognition_mode": "off",
             },
         ),
     )
-    monkeypatch.setattr(validation, "apply_runtime_resolution_to_app_config", lambda app_config, resolution: {})
+    monkeypatch.setattr(
+        validation,
+        "apply_runtime_resolution_to_app_config",
+        lambda app_config, resolution: {"reader_verifier_enabled": True},
+    )
     monkeypatch.setattr(
         validation,
         "evaluate_lietaer_acceptance",

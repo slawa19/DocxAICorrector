@@ -3,6 +3,7 @@ import json
 import re
 import time
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, cast
 
@@ -76,6 +77,16 @@ QUALITY_REPORTS_DIR = Path(".run") / "quality_reports"
 QUALITY_REPORTS_MAX_AGE_SECONDS = 7 * 24 * 60 * 60
 QUALITY_REPORTS_MAX_COUNT = 100
 READER_CLEANUP_LINEAGE_DIR = Path(".run") / "reader_cleanup_lineage"
+
+
+@dataclass(frozen=True)
+class ReaderCleanupPostprocessResult:
+    markdown: str
+    docx_bytes: bytes
+    report: dict[str, object] | None
+    raw_markdown: str | None
+    result_notice: dict[str, str] | None
+    final_generated_paragraph_registry: Sequence[Mapping[str, object]] | None
 _BULLET_MARKDOWN_HEADING_PATTERN = re.compile(r"(?m)^\s{0,3}#{1,6}\s*[\u2022\u25cf\u25e6\u2023*\-]\s*$")
 _DOCX_IMAGE_PLACEHOLDER_PATTERN = re.compile(r"^\[\[DOCX_IMAGE_[A-Za-z0-9_]+\]\]$")
 
@@ -932,14 +943,7 @@ def _run_reader_cleanup_postprocess(
     processed_image_assets: Sequence[Any],
     formatting_registry: Sequence[Mapping[str, object]] | None = None,
     base_docx_builder: Callable[[], bytes] | None = None,
-) -> tuple[
-    str,
-    bytes,
-    dict[str, object] | None,
-    str | None,
-    dict[str, str] | None,
-    Sequence[Mapping[str, object]] | None,
-]:
+) -> ReaderCleanupPostprocessResult:
     def _base_docx_bytes() -> bytes:
         if base_docx_bytes is not None:
             return base_docx_bytes
@@ -954,11 +958,25 @@ def _run_reader_cleanup_postprocess(
     )
 
     if not _should_run_reader_cleanup(context=context):
-        return runtime_display_markdown, _base_docx_bytes(), None, None, None, base_final_generated_registry
+        return ReaderCleanupPostprocessResult(
+            markdown=runtime_display_markdown,
+            docx_bytes=_base_docx_bytes(),
+            report=None,
+            raw_markdown=None,
+            result_notice=None,
+            final_generated_paragraph_registry=base_final_generated_registry,
+        )
 
     config = resolve_reader_cleanup_config(app_config=context.app_config, fallback_model=context.model)
     if not config.enabled:
-        return runtime_display_markdown, _base_docx_bytes(), None, None, None, base_final_generated_registry
+        return ReaderCleanupPostprocessResult(
+            markdown=runtime_display_markdown,
+            docx_bytes=_base_docx_bytes(),
+            report=None,
+            raw_markdown=None,
+            result_notice=None,
+            final_generated_paragraph_registry=base_final_generated_registry,
+        )
     if config.drop_back_matter:
         dependencies.log_event(
             logging.WARNING,
@@ -1172,13 +1190,13 @@ def _run_reader_cleanup_postprocess(
                 cleanup_identity_image_gap_count=cleanup_identity_diagnostics.get("image_gap_count"),
                 cleanup_identity_text_gap_count=cleanup_identity_diagnostics.get("text_gap_count"),
             )
-            return (
-                runtime_display_markdown,
-                _base_docx_bytes(),
-                cleanup_result.report_payload,
-                cleanup_result.raw_markdown,
-                None,
-                base_final_generated_registry,
+            return ReaderCleanupPostprocessResult(
+                markdown=runtime_display_markdown,
+                docx_bytes=_base_docx_bytes(),
+                report=cleanup_result.report_payload,
+                raw_markdown=cleanup_result.raw_markdown,
+                result_notice=None,
+                final_generated_paragraph_registry=base_final_generated_registry,
             )
 
         cleaned_runtime_display_markdown = _normalize_final_markdown_for_runtime_display(cleanup_result.cleaned_markdown)
@@ -1266,13 +1284,13 @@ def _run_reader_cleanup_postprocess(
             cleaned_markdown_chars=len(cleaned_runtime_display_markdown),
             raw_markdown_chars=len(cleanup_result.raw_markdown),
         )
-        return (
-            cleaned_runtime_display_markdown,
-            cleaned_docx_bytes,
-            cleanup_result.report_payload,
-            cleanup_result.raw_markdown,
-            None,
-            final_generated_registry,
+        return ReaderCleanupPostprocessResult(
+            markdown=cleaned_runtime_display_markdown,
+            docx_bytes=cleaned_docx_bytes,
+            report=cleanup_result.report_payload,
+            raw_markdown=cleanup_result.raw_markdown,
+            result_notice=None,
+            final_generated_paragraph_registry=final_generated_registry,
         )
     except Exception as exc:
         error_message = dependencies.present_error(
@@ -1319,13 +1337,13 @@ def _run_reader_cleanup_postprocess(
             latest_result_notice=result_notice,
             last_error=error_message,
         )
-        return (
-            runtime_display_markdown,
-            _base_docx_bytes(),
-            cast(dict[str, object] | None, strict_report),
-            strict_raw_markdown,
-            result_notice,
-            base_final_generated_registry,
+        return ReaderCleanupPostprocessResult(
+            markdown=runtime_display_markdown,
+            docx_bytes=_base_docx_bytes(),
+            report=cast(dict[str, object] | None, strict_report),
+            raw_markdown=strict_raw_markdown,
+            result_notice=result_notice,
+            final_generated_paragraph_registry=base_final_generated_registry,
         )
 
 
@@ -2725,7 +2743,7 @@ def finalize_processing_success(
     reader_cleanup_report: dict[str, object] | None = None
     reader_cleanup_raw_markdown: str | None = None
     reader_cleanup_result_notice: dict[str, str] | None = None
-    runtime_display_markdown, final_docx_bytes, reader_cleanup_report, reader_cleanup_raw_markdown, reader_cleanup_result_notice, final_generated_paragraph_registry = _run_reader_cleanup_postprocess(
+    reader_cleanup_postprocess = _run_reader_cleanup_postprocess(
         context=context,
         dependencies=dependencies,
         emitters=emitters,
@@ -2738,6 +2756,12 @@ def finalize_processing_success(
         formatting_registry=build_generated_paragraph_registry_from_entries(assembly_result.entries),
         base_docx_builder=cast(Callable[[], bytes] | None, docx_phase.get("base_docx_builder")),
     )
+    runtime_display_markdown = reader_cleanup_postprocess.markdown
+    final_docx_bytes = reader_cleanup_postprocess.docx_bytes
+    reader_cleanup_report = reader_cleanup_postprocess.report
+    reader_cleanup_raw_markdown = reader_cleanup_postprocess.raw_markdown
+    reader_cleanup_result_notice = reader_cleanup_postprocess.result_notice
+    final_generated_paragraph_registry = reader_cleanup_postprocess.final_generated_paragraph_registry
     if final_generated_paragraph_registry is not None:
         docx_phase = dict(docx_phase)
         docx_phase["final_generated_paragraph_registry"] = final_generated_paragraph_registry

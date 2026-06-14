@@ -2257,10 +2257,10 @@ def _resolve_reader_verifier_config(
     app_config: object | None,
     runtime_app_config: Mapping[str, object],
 ) -> dict[str, object]:
-    default_enabled = bool(validation_mode.get("comparison_only_validation")) and (
-        document_profile_id == READER_VERIFIER_TARGET_DOCUMENT_PROFILE_ID
-        and run_profile_id == READER_VERIFIER_TARGET_RUN_PROFILE_ID
-    )
+    # FC6: verifier is explicit advisory evidence, not an auto-enabled step in
+    # proof/comparison runs. Matching profile ids no longer turn it on by
+    # default; profiles or runtime overrides must opt in intentionally.
+    default_enabled = False
     enabled_value = _get_config_value(runtime_app_config, "reader_verifier_enabled")
     if enabled_value is None:
         enabled_value = _get_config_value(app_config, "reader_verifier_enabled")
