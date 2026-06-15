@@ -259,12 +259,6 @@ def _skip_if_missing_real_document_source(source_path: Path) -> None:
     _require_or_skip_real_document_capability(f"missing real-document source: {source_path}")
 
 
-def test_registry_includes_end_times_pdf_regression_profile() -> None:
-    profile_ids = {profile.id for profile in REGISTRY.documents}
-
-    assert "end-times-pdf-core" in profile_ids
-
-
 def test_registry_documents_declare_required_core_fields_and_allowed_source_locations() -> None:
     run_profile_ids = {profile.id for profile in REGISTRY.run_profiles}
 
@@ -435,16 +429,6 @@ def test_skip_if_missing_real_document_source_fails_when_capabilities_are_requir
         _skip_if_missing_real_document_source(missing_source)
 
 
-def test_end_times_pdf_structural_run_profile_is_generic_structural_recovery() -> None:
-    document_profile = REGISTRY.get_document_profile("end-times-pdf-core")
-    run_profile = _resolve_structural_run_profile(document_profile)
-
-    assert run_profile.id == "ui-parity-pdf-structural-recovery"
-    assert document_profile.structural_expected_result == "pass"
-    assert document_profile.structural_expected_failed_checks == ()
-    assert document_profile.structural_optional_failed_checks == ()
-
-
 def test_lietaer_first20_structural_run_profile_is_ai_first_default() -> None:
     document_profile = REGISTRY.get_document_profile("lietaer-pdf-first-20-structure-core")
     run_profile = _resolve_structural_run_profile(document_profile)
@@ -546,26 +530,6 @@ def test_lietaer_full_benchmark_default_run_profile_enables_topology_projection(
     assert run_profile.structure_recognition_mode == "always"
     assert run_profile.structure_recovery_topology_projection_enabled is True
     assert run_profile.structure_recovery_topology_projection_binding_splits_enabled is True
-
-
-def test_end_times_pdf_structural_diagnostic_artifact_matches_current_contract() -> None:
-    artifact_path = Path("tests/artifacts/structural_diagnostics/end-times-pdf-core/structural_diagnostic.json")
-    payload = json.loads(artifact_path.read_text(encoding="utf-8"))
-    snapshot = payload["preparation_diagnostic_snapshot"]
-    document_profile = REGISTRY.get_document_profile("end-times-pdf-core")
-
-    assert payload["document_profile_id"] == "end-times-pdf-core"
-    assert payload["run_profile_id"] == "ui-parity-pdf-structural-recovery"
-    assert payload["validation_tier"] == "structural"
-    assert payload["validation_execution_mode"] == "passthrough"
-    assert payload["passed"] is True
-    assert payload["failed_checks"] == []
-    assert payload["preparation_error"] is None
-    assert snapshot["readiness_status"] == "ready"
-    assert snapshot["readiness_reasons"] == []
-    assert snapshot["quality_gate_status"] == "pass"
-    assert snapshot["quality_gate_reasons"] == []
-    assert snapshot["structure_ai_attempted"] is False
 
 
 def test_build_validation_processing_service_uses_real_client_factories(monkeypatch) -> None:

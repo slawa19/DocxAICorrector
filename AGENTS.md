@@ -15,17 +15,17 @@
 ```bash
 # 1) Preferred user-visible path in VS Code task
 # Task: Run Structural Preparation Diagnostic
-# Prompt 1: end-times-pdf-core
+# Prompt 1: lietaer-pdf-first-20-structure-core
 # Prompt 2: leave blank to use document_profile.structural_run_profile from corpus_registry.toml
 
 # 2) Direct WSL shell path with explicit run profile override
-bash scripts/run-structural-preparation-diagnostic.sh end-times-pdf-core --run-profile-id ui-parity-pdf-structural-recovery
+bash scripts/run-structural-preparation-diagnostic.sh lietaer-pdf-first-20-structure-core --run-profile-id ui-parity-pdf-structural-recovery
 
 # 3) File-capture fallback when stdout transport is fragile
-bash scripts/run-structural-preparation-diagnostic.sh end-times-pdf-core --run-profile-id ui-parity-pdf-structural-recovery > .run/end_times_structural_snapshot.json 2>&1
+bash scripts/run-structural-preparation-diagnostic.sh lietaer-pdf-first-20-structure-core --run-profile-id ui-parity-pdf-structural-recovery > .run/first20_structural_snapshot.json 2>&1
 
 # 4) Inspect saved snapshot in the same WSL shell
-tail -n 40 .run/end_times_structural_snapshot.json
+tail -n 40 .run/first20_structural_snapshot.json
 ```
 
 - Для task `Run Structural Preparation Diagnostic` второй prompt сейчас безопасно использовать пустым; явный `--run-profile-id ...` лучше задавать через прямой shell path выше, чтобы не зависеть от task quoting.
@@ -114,7 +114,7 @@ pytest tests/ -q
 - Для `real`, `spec`, `ui-parity`, `validation`, `quality-gate` и shell-script driven сценариев canonical path имеет абсолютный приоритет над debug path.
 - Если canonical path недоступен в текущем runtime, агент должен сообщить именно это ограничение, а не писать, что requested test был выполнен эквивалентно другим способом.
 - Для structural preparation snapshot path `scripts/run-structural-preparation-diagnostic.sh` и task `Run Structural Preparation Diagnostic` считаются preferred diagnostic entrypoints поверх ad-hoc `python -c`.
-- Если нужен persisted snapshot для последующего чтения, сохраняйте stdout CLI в workspace file вроде `.run/end_times_structural_snapshot.json`, а не во временный ad-hoc Python one-liner.
+- Если нужен persisted snapshot для последующего чтения, сохраняйте stdout CLI в workspace file вроде `.run/first20_structural_snapshot.json`, а не во временный ad-hoc Python one-liner.
 
 ### Если pytest output неполный или обрывается
 
