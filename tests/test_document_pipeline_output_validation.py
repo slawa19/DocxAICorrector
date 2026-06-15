@@ -1,3 +1,6 @@
+import json
+from pathlib import Path
+
 import pytest
 
 import docxaicorrector.pipeline._pipeline as document_pipeline
@@ -1531,8 +1534,10 @@ def test_run_document_processing_rejects_toc_body_concat_output():
     assert runtime["activity"][-1] == "Блок 1: отклонён из-за склейки TOC и body."
 
 
-def test_run_document_processing_rejects_english_residual_output():
+def test_run_document_processing_continues_on_english_residual_output_controlled_fallback(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
     runtime = _build_runtime_capture()
+    events = []
 
     result = document_pipeline.run_document_processing(
         uploaded_file="report.docx",
@@ -1555,7 +1560,7 @@ def test_run_document_processing_rejects_english_residual_output():
         get_client=lambda: object(),
         ensure_pandoc_available=lambda: None,
         load_system_prompt=lambda **_kw: "system",
-        log_event=lambda *args, **kwargs: None,
+        log_event=lambda *args, **kwargs: events.append((args, kwargs)),
         present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
         emit_state=_emit_state,
         emit_finalize=_emit_finalize,
@@ -1571,9 +1576,23 @@ def test_run_document_processing_rejects_english_residual_output():
         reinsert_inline_images=_reinsert_inline_images,
     )
 
-    assert result == "failed"
-    assert "english_residual_output" in runtime["state"]["last_error"]
-    assert runtime["activity"][-1] == "Блок 1: отклонён из-за английских остатков в результате."
+    assert result == "succeeded"
+    assert runtime["state"]["last_error"] == ""
+    assert runtime["state"]["processed_block_markdowns"] == ["Суд Judgment #1 уже начался."]
+    assert runtime["state"]["latest_docx_bytes"] == b"docx-bytes"
+    assert "Блок 1: сохранён с controlled fallback (english_residual_output)." in runtime["activity"]
+    assert {
+        "status": "WARN",
+        "details": "controlled_fallback:english_residual_output",
+    } in [{"status": entry["status"], "details": entry.get("details")} for entry in runtime["log"]]
+
+    artifact_path = Path(runtime["state"]["latest_controlled_block_fallback_artifact"])
+    artifact_payload = json.loads(artifact_path.read_text(encoding="utf-8"))
+
+    assert artifact_path.parent == Path(".run") / "block_fallbacks"
+    assert artifact_payload["output_classification"] == "english_residual_output"
+    assert artifact_payload["processed_chunk_preview"] == "Суд Judgment #1 уже начался."
+    assert any(args[1] == "block_controlled_fallback" for args, _kwargs in events)
 
 
 def test_validate_translated_toc_block_accepts_translated_toc_lines():

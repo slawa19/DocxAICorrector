@@ -5321,9 +5321,9 @@ def test_main_falls_back_to_prepared_snapshot_statuses_when_event_log_lacks_stru
         return SimpleNamespace(**values, to_dict=lambda: dict(values))
 
     document_profile = SimpleNamespace(
-        id="end-times-pdf-core",
-        artifact_prefix="end_times_pdf_validation",
-        output_basename="Are_We_In_The_End_Times_validated",
+        id="stub-structural-profile",
+        artifact_prefix="stub_structural_validation",
+        output_basename="Stub_structural_validated",
         max_unmapped_source_paragraphs=0,
         max_unmapped_target_paragraphs=0,
         require_no_toc_body_concat=True,
@@ -5437,14 +5437,14 @@ def test_main_falls_back_to_prepared_snapshot_statuses_when_event_log_lacks_stru
     monkeypatch.setattr(validation, "_print_terminal_completion_summary", lambda **kwargs: None)
     monkeypatch.setattr(validation.processing_service, "clone_processing_service", lambda **kwargs: _ValidationServiceStub(kwargs["log_event_fn"]))
 
-    monkeypatch.setenv("DOCXAI_REAL_DOCUMENT_PROFILE", "end-times-pdf-core")
+    monkeypatch.setenv("DOCXAI_REAL_DOCUMENT_PROFILE", "stub-structural-profile")
     monkeypatch.setenv("DOCXAI_REAL_DOCUMENT_RUN_PROFILE", "ui-parity-pdf-structural-recovery")
     monkeypatch.delenv("DOCXAI_REAL_DOCUMENT_REPEAT_COUNT_OVERRIDE", raising=False)
     monkeypatch.setenv("DOCXAI_REAL_DOCUMENT_FORCED_RUN_ID", "run-structured-fallback")
 
     validation.main()
 
-    report_path = tmp_path / "artifacts" / "runs" / "run-structured-fallback" / "end_times_pdf_validation_report.json"
+    report_path = tmp_path / "artifacts" / "runs" / "run-structured-fallback" / "stub_structural_validation_report.json"
     report = json.loads(report_path.read_text(encoding="utf-8"))
 
     assert report["preparation_diagnostic_snapshot"]["quality_gate_status"] == "pass"
@@ -5686,12 +5686,42 @@ def test_validation_progress_tracker_writes_progress_and_manifest(tmp_path) -> N
     )
 
     progress_payload = json.loads(progress_path.read_text(encoding="utf-8"))
+    latest_progress_payload = json.loads(latest_progress_path.read_text(encoding="utf-8"))
     latest_manifest = json.loads(latest_manifest_path.read_text(encoding="utf-8"))
 
     assert progress_payload["status"] == "completed"
     assert progress_payload["phase"] == "completed"
     assert progress_payload["acceptance_passed"] is True
     assert progress_payload["metrics"] == {"job_count": 4}
+    assert latest_progress_payload["run_id"] == "run-1"
+    assert latest_progress_payload["status"] == "completed"
     assert latest_manifest["run_id"] == "run-1"
     assert latest_manifest["status"] == "completed"
     assert latest_manifest["progress_json"] == str(progress_path).replace("\\", "/")
+
+
+def test_write_json_atomic_uses_run_dir_temp_for_latest_alias_retry(tmp_path, monkeypatch) -> None:
+    validation = _load_validation_module()
+
+    run_dir = tmp_path / "runs" / "run-1"
+    artifact_root = tmp_path / "artifacts"
+    latest_progress_path = artifact_root / "lietaer_validation_progress.json"
+    original_replace = Path.replace
+    replace_calls: list[tuple[Path, Path]] = []
+
+    def flaky_replace(self: Path, target: Path) -> Path:
+        replace_calls.append((self, target))
+        if len(replace_calls) == 1:
+            raise PermissionError("locked progress alias")
+        return original_replace(self, target)
+
+    monkeypatch.setattr(validation.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(Path, "replace", flaky_replace)
+
+    validation._write_json_atomic(latest_progress_path, {"status": "in_progress"}, temp_dir=run_dir)
+
+    assert len(replace_calls) == 2
+    assert replace_calls[0][0].parent == run_dir
+    assert replace_calls[0][1] == latest_progress_path
+    assert json.loads(latest_progress_path.read_text(encoding="utf-8")) == {"status": "in_progress"}
+    assert not list(artifact_root.glob("*.tmp"))

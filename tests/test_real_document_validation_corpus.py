@@ -560,7 +560,7 @@ def test_build_validation_processing_service_uses_real_client_factories(monkeypa
 
 
 def test_evaluate_structural_preparation_diagnostic_returns_snapshot_summary(monkeypatch) -> None:
-    document_profile = SimpleNamespace(id="end-times-pdf-core")
+    document_profile = SimpleNamespace(id="stub-structural-profile")
     run_profile = SimpleNamespace(id="ui-parity-pdf-structural-recovery")
 
     monkeypatch.setattr(
@@ -579,7 +579,7 @@ def test_evaluate_structural_preparation_diagnostic_returns_snapshot_summary(mon
     result = evaluate_structural_preparation_diagnostic(cast(Any, document_profile), cast(Any, run_profile))
 
     assert result == {
-        "document_profile_id": "end-times-pdf-core",
+        "document_profile_id": "stub-structural-profile",
         "run_profile_id": "ui-parity-pdf-structural-recovery",
         "validation_tier": "structural",
         "validation_execution_mode": "passthrough",
@@ -2106,7 +2106,7 @@ def test_structural_passthrough_surfaces_structure_repair_and_event_metrics(tmp_
     source_path.write_bytes(b"%PDF-1.4 sample")
 
     document_profile = SimpleNamespace(
-        id="end-times-pdf-core",
+        id="stub-structural-profile",
         resolved_source_path=lambda project_root=None: source_path,
         min_paragraphs=0,
         min_merged_groups=0,
@@ -2334,7 +2334,7 @@ def test_structural_passthrough_success_uses_prepared_context_when_event_log_lac
     source_path.write_bytes(b"%PDF-1.4 sample")
 
     document_profile = SimpleNamespace(
-        id="end-times-pdf-core",
+        id="stub-structural-profile",
         resolved_source_path=lambda project_root=None: source_path,
         min_paragraphs=0,
         min_merged_groups=0,
@@ -4449,7 +4449,7 @@ def test_structural_passthrough_failure_includes_preparation_diagnostic_snapshot
     source_path.write_bytes(b"%PDF-1.4 sample")
 
     document_profile = SimpleNamespace(
-        id="end-times-pdf-core",
+        id="stub-structural-profile",
         resolved_source_path=lambda project_root=None: source_path,
     )
     run_profile = SimpleNamespace(id="ui-parity-pdf-structural-recovery", image_mode="safe")
@@ -4601,7 +4601,7 @@ def test_structural_passthrough_failure_derives_snapshot_block_status_from_prepa
     source_path = source_dir / "sample.pdf"
     source_path.write_bytes(b"%PDF-1.4 sample")
 
-    document_profile = SimpleNamespace(id="end-times-pdf-core", resolved_source_path=lambda project_root=None: source_path)
+    document_profile = SimpleNamespace(id="stub-structural-profile", resolved_source_path=lambda project_root=None: source_path)
     run_profile = SimpleNamespace(id="ui-parity-pdf-structural-recovery", image_mode="safe")
 
     class _StructureRepairReport:
@@ -4698,7 +4698,7 @@ def test_structural_passthrough_failure_derives_detailed_snapshot_reasons_from_p
     source_path = source_dir / "sample.pdf"
     source_path.write_bytes(b"%PDF-1.4 sample")
 
-    document_profile = SimpleNamespace(id="end-times-pdf-core", resolved_source_path=lambda project_root=None: source_path)
+    document_profile = SimpleNamespace(id="stub-structural-profile", resolved_source_path=lambda project_root=None: source_path)
     run_profile = SimpleNamespace(id="ui-parity-pdf-structural-recovery", image_mode="safe")
 
     class _StructureRepairReport:
@@ -4836,7 +4836,7 @@ def test_structural_passthrough_prefers_saved_quality_report_authority_fields(tm
         encoding="utf-8",
     )
 
-    document_profile = SimpleNamespace(id="end-times-pdf-core", resolved_source_path=lambda project_root=None: source_path)
+    document_profile = SimpleNamespace(id="stub-structural-profile", resolved_source_path=lambda project_root=None: source_path)
     run_profile = SimpleNamespace(id="ui-parity-pdf-structural-recovery", image_mode="safe")
 
     class _StructureRepairReport:

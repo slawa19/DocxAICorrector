@@ -40,7 +40,7 @@ Corpus policy for this workflow:
 2. `lietaer-pdf-chapter-region-core` (`tests/sources/Rethinking-money-chapter-region-pages-10-11-and-156-217.pdf`) is the cheap non-contiguous proof slice for late-book Chapter 8-11 topology regressions that the first-20-pages slice cannot cover.
 3. `lietaer-core` is not the routine structure-recovery proof document for this workflow.
 4. `ui-parity-pdf-structural-recovery` is still a `full` tier translate profile with `structure_recognition_mode = "off"`; despite its name, it is not the default proof path for AI-first structure recognition.
-5. `tests/sources/The Value of Everything. Making and Taking in the Global Economy by Mariana Mazzucato (z-lib.org).pdf` exists in the repository, but it should not be treated as canonical structure evidence until a dedicated corpus entry with explicit structure expectations is registered.
+5. `mazzucato-pdf-full-benchmark` (`tests/sources/The Value of Everything. Making and Taking in the Global Economy by Mariana Mazzucato (z-lib.org).pdf`) is the non-Lietaer full-book PDF benchmark for WS-2 formatting-transfer generalization; it is not the routine structure-recovery proof path.
 
 ## Canonical Entry Points
 

@@ -178,7 +178,7 @@ class TestRecognitionRealInputs:
         image_bytes = _load_image_bytes(case["filename"])
 
         started_at = time.perf_counter()
-        result = analyze_image(image_bytes, model="gpt-4.1")
+        result = analyze_image(image_bytes, model="gpt-4.1", enable_vision=False)
         elapsed_seconds = time.perf_counter() - started_at
 
         assert result.image_type == case["expected_type"]
@@ -192,7 +192,7 @@ class TestRedrawRoutingRealInputs:
     @pytest.mark.parametrize("case", REAL_IMAGE_CASES, ids=lambda case: case["filename"])
     def test_routes_to_expected_processing_mode_without_full_app(self, monkeypatch, case):
         image_bytes = _load_image_bytes(case["filename"])
-        analysis_result = analyze_image(image_bytes, model="gpt-4.1")
+        analysis_result = analyze_image(image_bytes, model="gpt-4.1", enable_vision=False)
         requested_mode = _resolve_requested_mode(analysis_result)
 
         assert requested_mode == case["expected_mode"]

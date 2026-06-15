@@ -1,5 +1,8 @@
 import logging
+import json
 import time
+import uuid
+from pathlib import Path
 from typing import Any, Literal, TypeAlias
 
 from docxaicorrector.pipeline.job_results import persist_terminal_job_result
@@ -9,6 +12,45 @@ from docxaicorrector.pipeline.output_validation import validate_translated_toc_b
 PipelineResult: TypeAlias = Literal["succeeded", "failed", "stopped"]
 TOC_VALIDATION_RETRY_BUDGET = 2
 TOC_RETRY_HARDENING_ATTEMPT = 2
+CONTROLLED_BLOCK_REJECTION_KINDS = frozenset({"english_residual_output"})
+CONTROLLED_BLOCK_FALLBACK_DIR = Path(".run") / "block_fallbacks"
+
+
+def _safe_artifact_stem(value: str) -> str:
+    stem = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in value.strip())
+    return stem.strip("_")[:80] or "document"
+
+
+def _write_controlled_block_fallback_artifact(
+    *,
+    context: Any,
+    initialization: Any,
+    index: int,
+    rejection_kind: str,
+    target_text: str,
+    processed_chunk: str,
+) -> str | None:
+    payload = {
+        "schema_version": 1,
+        "filename": str(getattr(context, "uploaded_filename", "") or ""),
+        "block_index": index,
+        "block_count": initialization.job_count,
+        "fallback_kind": "controlled_processed_block_rejection",
+        "output_classification": rejection_kind,
+        "target_text_preview": target_text[:1000],
+        "processed_chunk_preview": processed_chunk[:1000],
+        "note": "Block output was retained so full-document assembly can continue; inspect this artifact before treating the block as clean.",
+    }
+    try:
+        CONTROLLED_BLOCK_FALLBACK_DIR.mkdir(parents=True, exist_ok=True)
+        artifact_path = (
+            CONTROLLED_BLOCK_FALLBACK_DIR
+            / f"{_safe_artifact_stem(str(getattr(context, 'uploaded_filename', '') or 'document'))}_block_{index}_{uuid.uuid4().hex[:8]}.json"
+        )
+        artifact_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        return str(artifact_path)
+    except OSError:
+        return None
 
 
 def _resolve_segment_status_payload(*, initialization: Any, index: int, status: str) -> tuple[dict[str, str], dict[str, float], str, str]:
@@ -783,6 +825,94 @@ def emit_block_completed(
     context.on_progress(preview_title="Текущий Markdown")
 
 
+def continue_controlled_processed_block_rejection(
+    *,
+    context: Any,
+    dependencies: Any,
+    emitters: Any,
+    state: Any,
+    initialization: Any,
+    index: int,
+    payload: Any,
+    processed_chunk: str,
+    rejection_kind: str,
+) -> None:
+    artifact_path = _write_controlled_block_fallback_artifact(
+        context=context,
+        initialization=initialization,
+        index=index,
+        rejection_kind=rejection_kind,
+        target_text=payload.target_text,
+        processed_chunk=processed_chunk,
+    )
+    state.processed_chunks.append(processed_chunk)
+    if payload.narration_include:
+        state.narration_chunks.append(processed_chunk)
+    else:
+        state.excluded_narration_block_count += 1
+    persist_terminal_job_result(
+        context=context,
+        dependencies=dependencies,
+        index=index,
+        status="controlled_fallback",
+        error_code=rejection_kind,
+        error_message="Controlled fallback retained rejected block output for full-document assembly.",
+    )
+    segment_status_by_id, segment_progress_by_id, active_segment_id, active_segment_title = _resolve_segment_status_payload(
+        initialization=initialization,
+        index=index,
+        status="completed_with_fallback",
+    )
+    latest_markdown = "\n\n".join(state.processed_chunks).strip()
+    emitters.emit_state(
+        context.runtime,
+        processed_block_markdowns=state.processed_chunks.copy(),
+        latest_markdown=latest_markdown,
+        processed_paragraph_registry=state.generated_paragraph_registry.copy(),
+        latest_controlled_block_fallback_artifact=artifact_path,
+    )
+    emitters.emit_status(
+        context.runtime,
+        stage="Блок сохранён с предупреждением",
+        detail=f"Блок {index} сохранён как controlled fallback: {rejection_kind}.",
+        current_block=index,
+        block_count=initialization.job_count,
+        target_chars=payload.target_chars,
+        context_chars=payload.context_chars,
+        segment_status_by_id=segment_status_by_id,
+        segment_progress_by_id=segment_progress_by_id,
+        active_segment_id=active_segment_id,
+        active_segment_title=active_segment_title,
+        progress=index / initialization.job_count,
+        is_running=True,
+    )
+    emitters.emit_activity(context.runtime, f"Блок {index}: сохранён с controlled fallback ({rejection_kind}).")
+    emitters.emit_log(
+        context.runtime,
+        status="WARN",
+        block_index=index,
+        block_count=initialization.job_count,
+        target_chars=payload.target_chars,
+        context_chars=payload.context_chars,
+        details=f"controlled_fallback:{rejection_kind}",
+    )
+    dependencies.log_event(
+        logging.WARNING,
+        "block_controlled_fallback",
+        "Блок сохранён с controlled fallback после quality rejection.",
+        filename=context.uploaded_filename,
+        block_index=index,
+        block_count=initialization.job_count,
+        target_chars=payload.target_chars,
+        context_chars=payload.context_chars,
+        output_classification=rejection_kind,
+        artifact_path=artifact_path,
+        input_preview=payload.target_text[:300],
+        output_preview=processed_chunk[:300],
+    )
+    context.on_progress(preview_title="Текущий Markdown")
+
+
 def process_single_block(
     *,
     context: Any,
@@ -851,6 +981,19 @@ def process_single_block(
 
     processed_block_status = classify_processed_block_fn(payload.target_text, processed_chunk)
     if processed_block_status != "valid":
+        if processed_block_status in CONTROLLED_BLOCK_REJECTION_KINDS:
+            continue_controlled_processed_block_rejection(
+                context=context,
+                dependencies=dependencies,
+                emitters=emitters,
+                state=state,
+                initialization=initialization,
+                index=index,
+                payload=payload,
+                processed_chunk=processed_chunk,
+                rejection_kind=processed_block_status,
+            )
+            return None
         return handle_processed_block_rejection_fn(
             context=context,
             dependencies=dependencies,

@@ -64,14 +64,16 @@ def test_get_client_reuses_singleton_instance(monkeypatch, tmp_path) -> None:
 
     monkeypatch.setattr(config, "ENV_PATH", dotenv_path)
     monkeypatch.setattr(config, "OpenAI", FakeOpenAI)
-    monkeypatch.setattr(config, "_CLIENT", None)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    config._CLIENT = None
+    config._CLIENTS_BY_PROVIDER.clear()
 
     try:
         first = config.get_client()
         second = config.get_client()
     finally:
         config._CLIENT = None
+        config._CLIENTS_BY_PROVIDER.clear()
 
     assert first is second
     assert len(created_instances) == 1

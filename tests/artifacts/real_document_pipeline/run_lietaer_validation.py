@@ -709,18 +709,20 @@ def _build_environment_snapshot() -> dict[str, object]:
     }
 
 
-def _write_json_atomic(path: Path, payload: Mapping[str, object]) -> None:
+def _write_json_atomic(path: Path, payload: Mapping[str, object], *, temp_dir: Path | None = None) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    temp_path = path.with_suffix(f"{path.suffix}.{uuid.uuid4().hex}.tmp")
+    resolved_temp_dir = temp_dir or path.parent
+    resolved_temp_dir.mkdir(parents=True, exist_ok=True)
+    temp_path = resolved_temp_dir / f"{path.name}.{uuid.uuid4().hex}.tmp"
     temp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    for attempt in range(5):
+    for attempt in range(20):
         try:
             temp_path.replace(path)
             break
         except PermissionError:
-            if attempt == 4:
+            if attempt == 19:
                 raise
-            time.sleep(0.1 * (attempt + 1))
+            time.sleep(min(2.0, 0.25 * (attempt + 1)))
     if temp_path.exists():
         temp_path.unlink(missing_ok=True)
 
@@ -1473,6 +1475,7 @@ class ValidationProgressTracker:
         started_at_utc: datetime,
     ) -> None:
         self.run_id = run_id
+        self.run_dir = run_dir
         self.progress_path = progress_path
         self.latest_progress_path = latest_progress_path
         self.latest_manifest_path = latest_manifest_path
@@ -1698,8 +1701,8 @@ class ValidationProgressTracker:
     def _write_locked(self) -> None:
         progress_payload = cast(Mapping[str, object], sanitize_for_json(dict(self.state)))
         _write_json_atomic(self.progress_path, progress_payload)
-        _write_json_atomic(self.latest_progress_path, progress_payload)
-        _write_json_atomic(self.latest_manifest_path, self._build_manifest_payload_locked())
+        _write_json_atomic(self.latest_progress_path, progress_payload, temp_dir=self.run_dir)
+        _write_json_atomic(self.latest_manifest_path, self._build_manifest_payload_locked(), temp_dir=self.run_dir)
 
     def _heartbeat_loop(self) -> None:
         while not self.stop_event.wait(HEARTBEAT_INTERVAL_SECONDS):
