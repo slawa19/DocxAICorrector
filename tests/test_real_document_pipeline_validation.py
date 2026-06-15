@@ -1044,7 +1044,7 @@ def test_evaluate_lietaer_acceptance_prefers_structure_unit_unmapped_basis_over_
         "formatting_diagnostics": [
             {
                 "unmapped_source_ids": ["p0003", "p0004"],
-                "unmapped_target_indexes": [12, 13],
+                "unmapped_target_indexes": [12, 13, 14],
                 "unmapped_target_residual_diagnostics": {
                     "split_accounting_creditable_count": 2,
                 },
@@ -1081,8 +1081,11 @@ def test_evaluate_lietaer_acceptance_prefers_structure_unit_unmapped_basis_over_
     assert by_name["unmapped_source_threshold"]["actual"] == 1
     assert by_name["unmapped_target_threshold"]["passed"] is True
     assert by_name["unmapped_target_threshold"]["actual"] == 1
-    assert by_name["unmapped_target_threshold"]["count_basis"] == "topology_unit"
-    assert by_name["unmapped_target_threshold"]["role_aware_effective_unmapped_target_count"] is None
+    assert by_name["unmapped_target_threshold"]["count_basis"] == "role_aware_formatting_coverage"
+    assert by_name["unmapped_target_threshold"]["raw_unmapped_target_count"] == 3
+    assert by_name["unmapped_target_threshold"]["role_aware_effective_unmapped_target_count"] == 1
+    assert by_name["unmapped_target_threshold"]["target_split_accounting_creditable_count"] == 2
+    assert by_name["unmapped_target_threshold"]["quality_unmapped_target_count"] == 1
 
 
 def test_evaluate_lietaer_acceptance_prefers_accepted_aggregation_legacy_basis_over_raw_counts() -> None:

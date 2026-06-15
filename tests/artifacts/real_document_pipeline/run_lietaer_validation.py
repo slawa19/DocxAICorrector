@@ -520,6 +520,21 @@ def _resolve_acceptance_unmapped_target_summary(
     formatting_diagnostics: Sequence[Mapping[str, object]],
     translation_quality_report: Mapping[str, object],
 ) -> dict[str, object]:
+    role_aware_target_summary = _resolve_role_aware_formatting_unmapped_target_summary(formatting_diagnostics)
+    if role_aware_target_summary is not None:
+        quality_count = _coerce_int(translation_quality_report.get("unmapped_target_count"))
+        return {
+            "actual": int(role_aware_target_summary["effective_unmapped_target_count"]),
+            "unmapped_target_count_basis": role_aware_target_summary["unmapped_target_count_basis"],
+            "raw_unmapped_target_count": int(role_aware_target_summary["raw_unmapped_target_count"]),
+            "role_aware_effective_unmapped_target_count": role_aware_target_summary.get(
+                "effective_unmapped_target_count"
+            ),
+            "quality_unmapped_target_count": quality_count,
+            "target_split_accounting_creditable_count": role_aware_target_summary.get(
+                "target_split_accounting_creditable_count"
+            ),
+        }
     count_basis = str(translation_quality_report.get("unmapped_target_count_basis") or "").strip().lower()
     if count_basis in {"topology_unit", "accepted_aggregation_legacy"}:
         actual = _coerce_int(
@@ -541,22 +556,13 @@ def _resolve_acceptance_unmapped_target_summary(
     raw_count = formatting_count
     actual = max(quality_count, formatting_count)
     summary_basis = translation_quality_report.get("unmapped_target_count_basis") or "raw_paragraph"
-    role_aware_target_summary = _resolve_role_aware_formatting_unmapped_target_summary(formatting_diagnostics)
-    if role_aware_target_summary is not None:
-        actual = int(role_aware_target_summary["effective_unmapped_target_count"])
-        raw_count = int(role_aware_target_summary["raw_unmapped_target_count"])
-        summary_basis = role_aware_target_summary["unmapped_target_count_basis"]
     return {
         "actual": actual,
         "unmapped_target_count_basis": summary_basis,
         "raw_unmapped_target_count": raw_count,
-        "role_aware_effective_unmapped_target_count": (
-            role_aware_target_summary.get("effective_unmapped_target_count") if role_aware_target_summary else None
-        ),
+        "role_aware_effective_unmapped_target_count": None,
         "quality_unmapped_target_count": quality_count,
-        "target_split_accounting_creditable_count": (
-            role_aware_target_summary.get("target_split_accounting_creditable_count") if role_aware_target_summary else 0
-        ),
+        "target_split_accounting_creditable_count": 0,
     }
 
 

@@ -1783,13 +1783,7 @@ def _build_translation_quality_report(
         raw_count_key="raw_unmapped_target_paragraph_count",
         structure_count_key="structure_unit_unmapped_target_count",
     )
-    authoritative_unmapped_target_basis = str(
-        authority_fields.get("unmapped_target_count_basis") or "legacy_paragraph"
-    ).strip().lower() or "legacy_paragraph"
-    if role_aware_target_summary is not None and authoritative_unmapped_target_basis not in {
-        "topology_unit",
-        "accepted_aggregation_legacy",
-    }:
+    if role_aware_target_summary is not None:
         authority_fields = dict(authority_fields)
         authority_fields["unmapped_target_count_basis"] = "role_aware_formatting_coverage"
         authority_fields["raw_unmapped_target_paragraph_count"] = int(

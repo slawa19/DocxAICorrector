@@ -4990,7 +4990,7 @@ def test_build_translation_quality_report_uses_role_aware_effective_unmapped_tar
     assert report["unmapped_target_count"] == 1
 
 
-def test_build_translation_quality_report_keeps_topology_target_basis_over_role_aware_target_count(monkeypatch):
+def test_build_translation_quality_report_prefers_role_aware_target_basis_over_topology_unit(monkeypatch):
     monkeypatch.setattr(
         document_pipeline_late_phases,
         "_load_formatting_diagnostics_payloads",
@@ -5035,8 +5035,9 @@ def test_build_translation_quality_report_keeps_topology_target_basis_over_role_
     assert report["raw_unmapped_target_paragraph_count"] == 3
     assert report["target_split_accounting_creditable_count"] == 2
     assert report["effective_unmapped_target_count"] == 1
-    assert report["unmapped_target_count_basis"] == "topology_unit"
-    assert report["unmapped_target_count"] == 3
+    assert report["structure_unit_unmapped_target_count"] == 3
+    assert report["unmapped_target_count_basis"] == "role_aware_formatting_coverage"
+    assert report["unmapped_target_count"] == 1
 
 
 def test_run_document_processing_logs_compact_block_plan_summary_at_info() -> None:
