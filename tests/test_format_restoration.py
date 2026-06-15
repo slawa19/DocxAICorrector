@@ -1600,6 +1600,36 @@ def test_mapping_normalizes_markdown_list_and_blockquote_prefixes_from_generated
     assert diagnostics["unmapped_target_indexes"] == []
 
 
+def test_mapping_normalizes_bold_markdown_list_number_from_generated_registry():
+    source_paragraphs = [
+        ParagraphUnit(
+            paragraph_id="p0001",
+            text="4. Terra cash-in",
+            role="list",
+            structural_role="list_item",
+            role_confidence="heuristic",
+            list_kind="ordered",
+        )
+    ]
+
+    target_doc = Document()
+    target_doc.add_paragraph("Обналичивание Terra")
+
+    _, diagnostics = _map_source_target_paragraphs(
+        source_paragraphs,
+        target_doc.paragraphs,
+        generated_paragraph_registry=[
+            {"paragraph_id": "p0001", "text": "- **4. Обналичивание Terra**"},
+        ],
+    )
+
+    source_registry = cast(list[dict[str, object]], diagnostics["source_registry"])
+    assert source_registry[0]["mapped_target_index"] == 0
+    assert source_registry[0]["mapping_strategy"] == "paragraph_id_registry"
+    assert diagnostics["unmapped_source_ids"] == []
+    assert diagnostics["unmapped_target_indexes"] == []
+
+
 def test_mapping_uses_bounded_registry_fuzzy_pass_for_translated_body_target():
     source_paragraphs = [
         ParagraphUnit(
@@ -1681,6 +1711,152 @@ def test_mapping_bounded_registry_fuzzy_requires_unique_candidate():
     assert diagnostics["mapping_strategy_counts"] == {}
     assert diagnostics["unmapped_source_ids"] == ["p0004"]
     assert diagnostics["unmapped_target_indexes"] == [0, 1]
+
+
+def test_mapping_uses_projected_registry_pass_when_book_scale_indexes_drift():
+    source_paragraphs = [
+        ParagraphUnit(
+            paragraph_id=f"p{index:04d}",
+            text=f"Unmapped filler {index}",
+            role="body",
+            structural_role="body",
+            role_confidence="heuristic",
+        )
+        for index in range(100)
+    ]
+    source_paragraphs[0] = ParagraphUnit(
+        paragraph_id="p0000",
+        text="Opening anchor",
+        role="body",
+        structural_role="body",
+        role_confidence="heuristic",
+    )
+    source_paragraphs[50] = ParagraphUnit(
+        paragraph_id="p0050",
+        text="4. Terra cash-in",
+        role="list",
+        structural_role="list_item",
+        role_confidence="heuristic",
+        list_kind="ordered",
+    )
+    source_paragraphs[99] = ParagraphUnit(
+        paragraph_id="p0099",
+        text="Closing anchor",
+        role="body",
+        structural_role="body",
+        role_confidence="heuristic",
+    )
+
+    target_doc = Document()
+    target_doc.add_paragraph("Открывающий якорь")
+    target_doc.add_paragraph("Промежуточная цель")
+    target_doc.add_paragraph("Обналичивание Terra для пользователей сегодня")
+    target_doc.add_paragraph("Закрывающий якорь")
+
+    _, diagnostics = _map_source_target_paragraphs(
+        source_paragraphs,
+        target_doc.paragraphs,
+        generated_paragraph_registry=[
+            {"paragraph_id": "p0000", "text": "Открывающий якорь"},
+            {"paragraph_id": "p0050", "text": "- **4. Обналичивание Terra для пользователей**"},
+            {"paragraph_id": "p0099", "text": "Закрывающий якорь"},
+        ],
+    )
+
+    source_registry = cast(list[dict[str, object]], diagnostics["source_registry"])
+    assert source_registry[50]["mapped_target_index"] == 2
+    assert source_registry[50]["mapping_strategy"] == "projected_registry_fuzzy"
+
+
+def test_projected_registry_pass_rejects_short_note_without_two_sided_anchors():
+    source_paragraphs = [
+        ParagraphUnit(
+            paragraph_id="p0000",
+            text="Opening anchor",
+            role="body",
+            structural_role="body",
+            role_confidence="heuristic",
+        ),
+        ParagraphUnit(
+            paragraph_id="p0001",
+            text="Ibid.",
+            role="body",
+            structural_role="body",
+            role_confidence="heuristic",
+        ),
+    ]
+
+    target_doc = Document()
+    target_doc.add_paragraph("Открывающий якорь")
+    target_doc.add_paragraph("Там же.")
+    target_doc.add_paragraph("Там же.")
+
+    _, diagnostics = _map_source_target_paragraphs(
+        source_paragraphs,
+        target_doc.paragraphs,
+        generated_paragraph_registry=[
+            {"paragraph_id": "p0000", "text": "Открывающий якорь"},
+            {"paragraph_id": "p0001", "text": "Там же."},
+        ],
+    )
+
+    source_registry = cast(list[dict[str, object]], diagnostics["source_registry"])
+    assert source_registry[1]["mapped_target_index"] is None
+    assert diagnostics["unmapped_source_ids"] == ["p0001"]
+
+
+def test_projected_registry_pass_rejects_sequence_only_positional_match():
+    source_paragraphs = [
+        ParagraphUnit(
+            paragraph_id=f"p{index:04d}",
+            text=f"Unmapped filler {index}",
+            role="body",
+            structural_role="body",
+            role_confidence="heuristic",
+        )
+        for index in range(100)
+    ]
+    source_paragraphs[0] = ParagraphUnit(
+        paragraph_id="p0000",
+        text="Opening anchor",
+        role="body",
+        structural_role="body",
+        role_confidence="heuristic",
+    )
+    source_paragraphs[50] = ParagraphUnit(
+        paragraph_id="p0050",
+        text="Generated text is near the target but not the same paragraph",
+        role="body",
+        structural_role="body",
+        role_confidence="heuristic",
+    )
+    source_paragraphs[99] = ParagraphUnit(
+        paragraph_id="p0099",
+        text="Closing anchor",
+        role="body",
+        structural_role="body",
+        role_confidence="heuristic",
+    )
+
+    target_doc = Document()
+    target_doc.add_paragraph("Открывающий якорь")
+    target_doc.add_paragraph("Промежуточная цель")
+    target_doc.add_paragraph("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa2")
+    target_doc.add_paragraph("Закрывающий якорь")
+
+    _, diagnostics = _map_source_target_paragraphs(
+        source_paragraphs,
+        target_doc.paragraphs,
+        generated_paragraph_registry=[
+            {"paragraph_id": "p0000", "text": "Открывающий якорь"},
+            {"paragraph_id": "p0050", "text": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1"},
+            {"paragraph_id": "p0099", "text": "Закрывающий якорь"},
+        ],
+    )
+
+    source_registry = cast(list[dict[str, object]], diagnostics["source_registry"])
+    assert source_registry[50]["mapped_target_index"] is None
+    assert "p0050" in diagnostics["unmapped_source_ids"]
 
 
 def test_mapping_rejects_stale_rebuild_key_before_registry_remap():

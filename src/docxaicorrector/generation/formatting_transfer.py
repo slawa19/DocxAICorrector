@@ -79,13 +79,35 @@ def _normalize_text_for_mapping(text: str) -> str:
     return normalized.strip().lower()
 
 
+def _is_list_source_paragraph(paragraph: ParagraphUnit) -> bool:
+    role = str(getattr(paragraph, "role", "") or "").strip().lower()
+    structural_role = str(getattr(paragraph, "structural_role", "") or "").strip().lower()
+    return role == "list" or structural_role in {"list", "list_item"} or bool(getattr(paragraph, "list_kind", None))
+
+
+def _strip_markdown_list_prefixes_for_mapping(text: str) -> str:
+    normalized = MARKDOWN_LINK_PATTERN.sub(r"\1", text.strip())
+    normalized = INLINE_HTML_TAG_PATTERN.sub("", normalized)
+    normalized = normalized.replace("***", "").replace("**", "").replace("*", "")
+    previous = ""
+    while previous != normalized:
+        previous = normalized
+        normalized = re.sub(r"^\s*(?:[-*+•]\s+|\d+[.)]\s+)", "", normalized).strip()
+    return normalized
+
+
 def _build_generated_registry_candidates(source_paragraph: ParagraphUnit, generated_text: str) -> list[str]:
     candidates: list[str] = []
+    include_list_marker_stripped_variants = _is_list_source_paragraph(source_paragraph)
 
     def add_candidate(text: str) -> None:
-        normalized = _normalize_text_for_mapping(text)
-        if normalized and normalized not in candidates:
-            candidates.append(normalized)
+        raw_candidates = [text]
+        if include_list_marker_stripped_variants:
+            raw_candidates.append(_strip_markdown_list_prefixes_for_mapping(text))
+        for raw_candidate in raw_candidates:
+            normalized = _normalize_text_for_mapping(raw_candidate)
+            if normalized and normalized not in candidates:
+                candidates.append(normalized)
 
     add_candidate(generated_text)
 
@@ -814,6 +836,12 @@ def _registry_candidate_mapping_evidence(
     target_tokens = _token_set(normalized_target)
     common_count = len(candidate_tokens & target_tokens) if candidate_tokens and target_tokens else 0
     token_overlap_ratio = common_count / len(candidate_tokens) if candidate_tokens else 0.0
+    target_token_overlap_ratio = common_count / len(target_tokens) if target_tokens else 0.0
+    token_jaccard_ratio = (
+        common_count / len(candidate_tokens | target_tokens)
+        if candidate_tokens and target_tokens
+        else 0.0
+    )
     sequence_ratio = SequenceMatcher(None, normalized_candidate, normalized_target).ratio()
     target_coverage_ratio = len(normalized_candidate) / max(len(normalized_target), 1)
 
@@ -836,6 +864,8 @@ def _registry_candidate_mapping_evidence(
         "score": round(max(sequence_ratio, token_overlap_ratio), 4),
         "sequence_ratio": round(sequence_ratio, 4),
         "token_overlap_ratio": round(token_overlap_ratio, 4),
+        "target_token_overlap_ratio": round(target_token_overlap_ratio, 4),
+        "token_jaccard_ratio": round(token_jaccard_ratio, 4),
         "target_coverage_ratio": round(target_coverage_ratio, 4),
         "common_token_count": common_count,
         "candidate_token_count": len(candidate_tokens),
@@ -865,7 +895,7 @@ def _try_register_bounded_registry_mapping(
     mapped_target_by_source: dict[int, int],
     strategy_by_source: dict[int, str],
     available_target_indexes: set[int],
-    target_window: int = 28,
+    target_window: int = 32,
 ) -> bool:
     if source_index in mapped_target_by_source or source_paragraph.role == "image":
         return False
@@ -941,6 +971,159 @@ def _try_register_bounded_registry_mapping(
         source_index,
         best_target_index,
         strategy,
+        mapped_target_by_source=mapped_target_by_source,
+        strategy_by_source=strategy_by_source,
+        available_target_indexes=available_target_indexes,
+    )
+    return True
+
+
+def _projected_registry_text_floor_satisfied(evidence: Mapping[str, object]) -> bool:
+    evidence_type = str(evidence.get("evidence_type") or "")
+    if evidence_type in {"exact", "exact_contained", "heading_exact_contained"}:
+        return True
+
+    token_jaccard_ratio = float(evidence.get("token_jaccard_ratio", 0.0) or 0.0)
+    token_overlap_ratio = float(evidence.get("token_overlap_ratio", 0.0) or 0.0)
+    target_token_overlap_ratio = float(evidence.get("target_token_overlap_ratio", 0.0) or 0.0)
+    sequence_ratio = float(evidence.get("sequence_ratio", 0.0) or 0.0)
+    target_coverage_ratio = float(evidence.get("target_coverage_ratio", 0.0) or 0.0)
+    return token_jaccard_ratio >= 0.5 or (
+        token_overlap_ratio >= 0.85
+        and target_token_overlap_ratio >= 0.5
+        and sequence_ratio >= 0.85
+        and target_coverage_ratio >= 0.65
+    )
+
+
+def _project_target_index_from_mapped_neighbors(
+    source_index: int,
+    mapped_target_by_source: Mapping[int, int],
+) -> tuple[float | None, tuple[int, int] | None, tuple[int, int] | None]:
+    previous_anchor: tuple[int, int] | None = None
+    next_anchor: tuple[int, int] | None = None
+    for mapped_source_index, mapped_target_index in sorted(mapped_target_by_source.items()):
+        if mapped_source_index < source_index:
+            previous_anchor = (mapped_source_index, mapped_target_index)
+        elif mapped_source_index > source_index:
+            next_anchor = (mapped_source_index, mapped_target_index)
+            break
+
+    if previous_anchor is not None and next_anchor is not None:
+        previous_source, previous_target = previous_anchor
+        next_source, next_target = next_anchor
+        source_span = next_source - previous_source
+        if source_span > 0:
+            ratio = (source_index - previous_source) / source_span
+            return previous_target + ((next_target - previous_target) * ratio), previous_anchor, next_anchor
+
+    if previous_anchor is not None:
+        previous_source, previous_target = previous_anchor
+        return float(previous_target + (source_index - previous_source)), previous_anchor, None
+    if next_anchor is not None:
+        next_source, next_target = next_anchor
+        return float(next_target - (next_source - source_index)), None, next_anchor
+    return None, None, None
+
+
+def _try_register_projected_registry_mapping(
+    source_index: int,
+    source_paragraph: ParagraphUnit,
+    target_paragraphs: Sequence[Paragraph],
+    generated_registry_by_id: Mapping[str, Mapping[str, object]],
+    *,
+    mapped_target_by_source: dict[int, int],
+    strategy_by_source: dict[int, str],
+    available_target_indexes: set[int],
+    projected_window: int = 18,
+) -> bool:
+    if source_index in mapped_target_by_source or source_paragraph.role == "image":
+        return False
+    paragraph_id = source_paragraph.paragraph_id
+    if not paragraph_id:
+        return False
+    generated_text = _generated_registry_text(generated_registry_by_id.get(paragraph_id))
+    if not generated_text:
+        return False
+
+    projected_target_index, previous_anchor, next_anchor = _project_target_index_from_mapped_neighbors(
+        source_index,
+        mapped_target_by_source,
+    )
+    if projected_target_index is None:
+        return False
+
+    source_format_role = _source_format_role(source_paragraph)
+    registry_candidates = [
+        candidate
+        for candidate in _build_generated_registry_candidates(source_paragraph, generated_text)
+        if len(candidate) >= 8 or (source_format_role == "heading" and len(candidate) >= 4)
+    ]
+    if not registry_candidates:
+        return False
+
+    scored: list[tuple[float, int, dict[str, object]]] = []
+    for target_index in sorted(available_target_indexes):
+        if abs(target_index - projected_target_index) > projected_window:
+            continue
+        if previous_anchor is not None and target_index < previous_anchor[1]:
+            continue
+        if next_anchor is not None and target_index > next_anchor[1]:
+            continue
+        target_paragraph = target_paragraphs[target_index]
+        target_text = target_paragraph.text.strip()
+        if not target_text or IMAGE_PLACEHOLDER_PATTERN.search(target_text):
+            continue
+        if not _registry_mapping_role_compatible(source_format_role, target_paragraph):
+            continue
+
+        best_evidence: dict[str, object] | None = None
+        for candidate in registry_candidates:
+            evidence = _registry_candidate_mapping_evidence(
+                candidate,
+                target_text,
+                source_format_role=source_format_role,
+            )
+            if evidence is None:
+                continue
+            if not _projected_registry_text_floor_satisfied(evidence):
+                continue
+            if best_evidence is None or (
+                float(evidence["score"]),
+                float(evidence["target_coverage_ratio"]),
+                int(evidence["candidate_char_count"]),
+            ) > (
+                float(best_evidence["score"]),
+                float(best_evidence["target_coverage_ratio"]),
+                int(best_evidence["candidate_char_count"]),
+            ):
+                best_evidence = evidence
+
+        if best_evidence is None:
+            continue
+        candidate_token_count = int(best_evidence.get("candidate_token_count", 0))
+        if candidate_token_count < 3 and (previous_anchor is None or next_anchor is None):
+            continue
+        projected_distance = abs(target_index - projected_target_index)
+        rank_score = (
+            float(best_evidence["score"])
+            + min(float(best_evidence["target_coverage_ratio"]), 1.0)
+            + max(0.0, (projected_window - projected_distance) / max(projected_window, 1)) * 0.25
+        )
+        scored.append((rank_score, target_index, best_evidence))
+
+    if not scored:
+        return False
+
+    scored.sort(key=lambda item: (item[0], -abs(item[1] - projected_target_index)), reverse=True)
+    best_score, best_target_index, _best_evidence = scored[0]
+    if len(scored) > 1 and best_score - scored[1][0] < 0.08:
+        return False
+
+    _register_mapping(
+        source_index,
+        best_target_index,
+        "projected_registry_fuzzy",
         mapped_target_by_source=mapped_target_by_source,
         strategy_by_source=strategy_by_source,
         available_target_indexes=available_target_indexes,
@@ -1668,6 +1851,17 @@ def _map_source_target_paragraphs(
 
     for source_index, source_paragraph in enumerate(source_paragraphs):
         _try_register_bounded_registry_mapping(
+            source_index,
+            source_paragraph,
+            target_paragraphs,
+            generated_registry_by_id,
+            mapped_target_by_source=mapped_target_by_source,
+            strategy_by_source=strategy_by_source,
+            available_target_indexes=available_target_indexes,
+        )
+
+    for source_index, source_paragraph in enumerate(source_paragraphs):
+        _try_register_projected_registry_mapping(
             source_index,
             source_paragraph,
             target_paragraphs,

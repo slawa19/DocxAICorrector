@@ -303,9 +303,80 @@ Full-file tests after the WS-2 authority correction:
 **WS-2 review conclusion:** the role-aware gate is now generalized beyond the
 chapter-region proof and is not tuned to one document. It passes the short
 documents and fails the full benchmark honestly, with measured residuals instead
-of a topology-unit masked pass. The next work-stream must treat the full-book
-`85` effective source residuals and `false_fragment_headings_present=1` as the
-starting failure catalog, not as a gate issue.
+of a topology-unit masked pass.
+
+**Reviewer correction / WS-MAP2 trigger:** independent forensic on the full-book
+`88` raw source residuals shows this is **not** an 85-defect product catalogue:
+`80/88` are present in the final DOCX and are matcher misses; only `8/88` are
+absent or heavily reworded, mostly small note fragments such as `ibid`/numbered
+notes. Therefore the full-book failure is a matcher-generalization gap, not a
+content-loss baseline. WS-3 must not start from "85 defects"; WS-MAP2 must first
+scale the present-but-unmapped matcher to book size.
+
+# WS-MAP2. Scale the Matcher to Full-Book Density
+
+**Goal:** reduce full-book present-but-unmapped residuals before treating the
+book-scale run as the WS-3 baseline.
+
+**Forensic finding (2026-06-14, run
+`20260614T_ws2_full_benchmark_role_aware_probe_v2`):**
+
+| Full-book residual class | Count |
+| --- | ---: |
+| Text present in final DOCX, matcher missed it | 80 |
+| Absent / heavily reworded, mostly note fragments | 8 |
+
+This is the same broad class as the chapter-region `26` Restore/Mapping misses,
+but the small-excerpt MAP-1 strategy does not scale: full books contain many
+near-duplicates (repeated list patterns, notes, `ibid`, page/index fragments),
+so strict candidate uniqueness rejects many otherwise safe mappings.
+
+**Scope:**
+- Generalize fuzzy/containment mapping for book density without adding
+  document-specific literals.
+- Prefer local uniqueness and local neighbourhood evidence over global
+  uniqueness where the final DOCX proves the text is present.
+- Add explicit mapping branches for the observed full-book classes:
+  `target_exists_text_align_missed` and `target_occupied_by_mapped_neighbor`,
+  preserving the role-by-target-style rule.
+- Keep role-sensitive safety: heading source maps only to heading-format target;
+  list source must have final target numbering/marker evidence; body-only
+  dissolved credits remain body-only.
+- Treat `ibid`/note numbering fragments as a separate note-handling bucket, not
+  broad content loss.
+
+**Verifiable result:**
+- No-LLM replay or fresh full-book proof shows raw/effective source residual
+  dropping from `88/85` toward the small note-fragment set.
+- A stage trace records present-but-unmapped -> mapped reduction and remaining
+  absent/note fragments.
+- Spot-checks on the new maps show zero false pairs across high-risk duplicate
+  areas (lists, notes, repeated headings, index-like entries).
+- Short-document proofs (`chapter-region`, `first-20`, `lietaer-core`) do not
+  regress.
+
+**Guardrails / non-goals:** no broad substring guessing, no full-book literals,
+no verifier-as-gate, no credit based only on text presence when role is lost.
+Do not proceed to WS-3 until the full-book residual is measured as mostly real
+or note-specific rather than matcher-missed.
+
+**Done:** full-book matcher residual is reduced to a small, hand-checked set of
+real absence/note fragments; the safe threshold is documented and full relevant
+test files are green.
+
+**2026-06-15 projected-pass guardrail correction:** reviewer forensic flagged
+that the projected matcher can only use local position as a search window, not
+as proof of identity. The implementation now requires an explicit text floor for
+`projected_registry_fuzzy`: exact/contained text evidence, or token Jaccard
+`>=0.50`, or high token overlap with matching target coverage and sequence
+ratio. A regression test covers the previous unsafe shape: two good positional
+anchors around a near-looking sequence-only target with no shared tokens must
+remain unmapped. Current offline replay audit against
+`20260614T_ws_map2_full_benchmark_projected_probe` reports
+`projected_registry_fuzzy=33` and `projected_bad_by_current_generated_text_floor=0`,
+but WS-MAP2 remains open until the same zero-false-pair rule is confirmed on a
+fresh in-pipeline full-book proof and the remaining residual bucket is classified
+with the reviewer-facing false-pair checker.
 
 # WS-3. Full-Book End-to-End Run
 
