@@ -409,6 +409,24 @@ role-aware bucket is now small and explicit: `23` raw source residuals, `3`
 format-neutral body dissolved credits, `20` effective residuals split across
 notes/year fragments and a few heading/title fragments.
 
+**2026-06-15 final full-book proof / WS-MAP2 closed:** a single canonical
+full-book run on commit `e4c850c` completed without another inner-loop series:
+`20260615T091759Z_1013_Rethinking-money_-How-new-currencies-turn-scarcity-into-prosperity-Bernard-Lietaer-Jacqui-Dunne`.
+The in-pipeline report passes acceptance with `failed_checks=[]` and records
+`basis=role_aware_formatting_coverage`, `source_count=1215`,
+`mapped_count=884`, `target_count=889`, `mapping_text_quality.checked_count=71`,
+and `mapping_text_quality.bad_pair_count=0`. Source-side formatting coverage is
+measured as `raw_unmapped_source=12`, `format_neutral_creditable_count=2`, and
+`role_aware_effective_unmapped_source_count=10` (`<=12`). Target-side residuals
+are reduced to five short note/year markers only:
+`unmapped_target_residual_diagnostics.counts={"short_note_or_marker": 5}`;
+the role-aware diagnostic target residual is therefore `5` (`<=6`), while the
+acceptance gate also reports `unmapped_target_threshold actual=0` on
+`topology_unit` authority. The translation-quality gate is `pass`,
+`false_fragment_heading_count=0`, the DOCX is openable/zip-valid, and the output
+contains `55` inline shapes. WS-MAP2 is closed: the full-book matcher residual
+is now a small, auditable note-fragment set with zero text-quality bad pairs.
+
 # WS-3. Full-Book End-to-End Run
 
 **Goal:** move from excerpt to a full book — the actual product target.
