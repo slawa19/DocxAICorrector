@@ -4953,6 +4953,92 @@ def test_build_translation_quality_report_uses_role_aware_effective_unmapped_sou
     assert report["worst_unmapped_source_count"] == 1
 
 
+def test_build_translation_quality_report_uses_role_aware_effective_unmapped_target_count(monkeypatch):
+    monkeypatch.setattr(
+        document_pipeline_late_phases,
+        "_load_formatting_diagnostics_payloads",
+        lambda artifact_paths: [
+            {
+                "unmapped_source_ids": [],
+                "unmapped_target_indexes": [1, 2, 3],
+                "source_count": 2,
+                "target_count": 5,
+                "unmapped_target_residual_diagnostics": {
+                    "split_accounting_creditable_count": 2,
+                },
+            }
+        ],
+    )
+
+    report = document_pipeline_late_phases._build_translation_quality_report(
+        context=SimpleNamespace(
+            app_config={"translation_output_quality_gate_policy": "strict"},
+            processing_operation="translate",
+            uploaded_filename="report.docx",
+            translation_domain="general",
+            document_map=None,
+            document_topology_projection=None,
+        ),
+        final_markdown="Body one\n\nBody two",
+        formatting_diagnostics_artifacts=["ignored.json"],
+    )
+
+    assert report["raw_unmapped_target_paragraph_count"] == 3
+    assert report["target_split_accounting_creditable_count"] == 2
+    assert report["effective_unmapped_target_count"] == 1
+    assert report["unmapped_target_count_basis"] == "role_aware_formatting_coverage"
+    assert report["unmapped_target_count"] == 1
+
+
+def test_build_translation_quality_report_keeps_topology_target_basis_over_role_aware_target_count(monkeypatch):
+    monkeypatch.setattr(
+        document_pipeline_late_phases,
+        "_load_formatting_diagnostics_payloads",
+        lambda artifact_paths: [
+            {
+                "unmapped_source_ids": [],
+                "unmapped_target_indexes": [1, 2, 3],
+                "source_count": 2,
+                "target_count": 5,
+                "unmapped_target_residual_diagnostics": {
+                    "split_accounting_creditable_count": 2,
+                },
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        document_pipeline_late_phases,
+        "_derive_translation_quality_authority_fields",
+        lambda **kwargs: {
+            "raw_unmapped_source_paragraph_count": 0,
+            "raw_unmapped_target_paragraph_count": 3,
+            "structure_unit_unmapped_source_count": 0,
+            "structure_unit_unmapped_target_count": 3,
+            "unmapped_source_count_basis": "legacy_paragraph",
+            "unmapped_target_count_basis": "topology_unit",
+        },
+    )
+
+    report = document_pipeline_late_phases._build_translation_quality_report(
+        context=SimpleNamespace(
+            app_config={"translation_output_quality_gate_policy": "strict"},
+            processing_operation="translate",
+            uploaded_filename="report.docx",
+            translation_domain="general",
+            document_map=None,
+            document_topology_projection=None,
+        ),
+        final_markdown="Body one\n\nBody two",
+        formatting_diagnostics_artifacts=["ignored.json"],
+    )
+
+    assert report["raw_unmapped_target_paragraph_count"] == 3
+    assert report["target_split_accounting_creditable_count"] == 2
+    assert report["effective_unmapped_target_count"] == 1
+    assert report["unmapped_target_count_basis"] == "topology_unit"
+    assert report["unmapped_target_count"] == 3
+
+
 def test_run_document_processing_logs_compact_block_plan_summary_at_info() -> None:
     runtime = _build_runtime_capture()
     events, log_event = _capture_log_events()

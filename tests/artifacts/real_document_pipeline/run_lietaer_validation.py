@@ -80,6 +80,7 @@ from docxaicorrector.validation.formatting_coverage import (
     filter_benign_unmapped_source_ids as _filter_benign_unmapped_source_ids,
     resolve_filtered_formatting_unmapped_source_count as _resolve_filtered_formatting_unmapped_source_count,
     resolve_role_aware_formatting_unmapped_source_summary as _resolve_role_aware_formatting_unmapped_source_summary,
+    resolve_role_aware_formatting_unmapped_target_summary as _resolve_role_aware_formatting_unmapped_target_summary,
 )
 from docxaicorrector.validation.profiles import (
     apply_runtime_resolution_to_app_config,
@@ -506,17 +507,57 @@ def _resolve_acceptance_unmapped_target_count(
     formatting_diagnostics: Sequence[Mapping[str, object]],
     translation_quality_report: Mapping[str, object],
 ) -> int:
+    return int(
+        _resolve_acceptance_unmapped_target_summary(
+            formatting_diagnostics=formatting_diagnostics,
+            translation_quality_report=translation_quality_report,
+        )["actual"]
+    )
+
+
+def _resolve_acceptance_unmapped_target_summary(
+    *,
+    formatting_diagnostics: Sequence[Mapping[str, object]],
+    translation_quality_report: Mapping[str, object],
+) -> dict[str, object]:
     count_basis = str(translation_quality_report.get("unmapped_target_count_basis") or "").strip().lower()
     if count_basis in {"topology_unit", "accepted_aggregation_legacy"}:
-        return _coerce_int(
+        actual = _coerce_int(
             translation_quality_report.get(
                 "structure_unit_unmapped_target_count",
                 translation_quality_report.get("unmapped_target_count"),
             )
         )
+        return {
+            "actual": actual,
+            "unmapped_target_count_basis": count_basis,
+            "raw_unmapped_target_count": _max_payload_list_length(formatting_diagnostics, "unmapped_target_indexes"),
+            "role_aware_effective_unmapped_target_count": None,
+            "quality_unmapped_target_count": _coerce_int(translation_quality_report.get("unmapped_target_count")),
+            "target_split_accounting_creditable_count": 0,
+        }
     quality_count = _coerce_int(translation_quality_report.get("unmapped_target_count"))
     formatting_count = _max_payload_list_length(formatting_diagnostics, "unmapped_target_indexes")
-    return max(quality_count, formatting_count)
+    raw_count = formatting_count
+    actual = max(quality_count, formatting_count)
+    summary_basis = translation_quality_report.get("unmapped_target_count_basis") or "raw_paragraph"
+    role_aware_target_summary = _resolve_role_aware_formatting_unmapped_target_summary(formatting_diagnostics)
+    if role_aware_target_summary is not None:
+        actual = int(role_aware_target_summary["effective_unmapped_target_count"])
+        raw_count = int(role_aware_target_summary["raw_unmapped_target_count"])
+        summary_basis = role_aware_target_summary["unmapped_target_count_basis"]
+    return {
+        "actual": actual,
+        "unmapped_target_count_basis": summary_basis,
+        "raw_unmapped_target_count": raw_count,
+        "role_aware_effective_unmapped_target_count": (
+            role_aware_target_summary.get("effective_unmapped_target_count") if role_aware_target_summary else None
+        ),
+        "quality_unmapped_target_count": quality_count,
+        "target_split_accounting_creditable_count": (
+            role_aware_target_summary.get("target_split_accounting_creditable_count") if role_aware_target_summary else 0
+        ),
+    }
 
 
 def _build_toc_body_concat_provenance_details(
@@ -5190,10 +5231,11 @@ def evaluate_lietaer_acceptance(
         translation_quality_report=translation_quality_report,
     )
     explicit_unmapped_source_count = int(unmapped_source_summary["actual"])
-    explicit_unmapped_target_count = _resolve_acceptance_unmapped_target_count(
+    unmapped_target_summary = _resolve_acceptance_unmapped_target_summary(
         formatting_diagnostics=formatting_diagnostics,
         translation_quality_report=translation_quality_report,
     )
+    explicit_unmapped_target_count = int(unmapped_target_summary["actual"])
     add_check(
         "formatting_diagnostics_threshold",
         explicit_unmapped_source_count <= mismatch_threshold and total_caption_heading_conflicts == 0,
@@ -5226,7 +5268,15 @@ def evaluate_lietaer_acceptance(
         actual=explicit_unmapped_target_count,
         allowed=unmapped_target_threshold,
         unmapped_target_count=explicit_unmapped_target_count,
-        count_basis=translation_quality_report.get("unmapped_target_count_basis") or "raw_paragraph",
+        count_basis=unmapped_target_summary.get("unmapped_target_count_basis"),
+        raw_unmapped_target_count=unmapped_target_summary.get("raw_unmapped_target_count"),
+        role_aware_effective_unmapped_target_count=unmapped_target_summary.get(
+            "role_aware_effective_unmapped_target_count"
+        ),
+        target_split_accounting_creditable_count=unmapped_target_summary.get(
+            "target_split_accounting_creditable_count"
+        ),
+        quality_unmapped_target_count=unmapped_target_summary.get("quality_unmapped_target_count"),
     )
 
     if translation_quality_report:

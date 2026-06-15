@@ -42,6 +42,7 @@ from docxaicorrector.pipeline.reassembly import (
 from docxaicorrector.processing.preparation import humanize_quality_gate_reasons
 from docxaicorrector.validation.formatting_coverage import (
     resolve_role_aware_formatting_unmapped_source_summary,
+    resolve_role_aware_formatting_unmapped_target_summary,
 )
 from docxaicorrector.reader_cleanup_mvp import (
     build_cleanup_blocks,
@@ -1743,6 +1744,7 @@ def _build_translation_quality_report(
         assembly_result=assembly_result,
     )
     role_aware_summary = resolve_role_aware_formatting_unmapped_source_summary(payloads)
+    role_aware_target_summary = resolve_role_aware_formatting_unmapped_target_summary(payloads)
     authoritative_unmapped_source_basis = str(
         authority_fields.get("unmapped_source_count_basis") or "legacy_paragraph"
     ).strip().lower() or "legacy_paragraph"
@@ -1781,6 +1783,19 @@ def _build_translation_quality_report(
         raw_count_key="raw_unmapped_target_paragraph_count",
         structure_count_key="structure_unit_unmapped_target_count",
     )
+    authoritative_unmapped_target_basis = str(
+        authority_fields.get("unmapped_target_count_basis") or "legacy_paragraph"
+    ).strip().lower() or "legacy_paragraph"
+    if role_aware_target_summary is not None and authoritative_unmapped_target_basis not in {
+        "topology_unit",
+        "accepted_aggregation_legacy",
+    }:
+        authority_fields = dict(authority_fields)
+        authority_fields["unmapped_target_count_basis"] = "role_aware_formatting_coverage"
+        authority_fields["raw_unmapped_target_paragraph_count"] = int(
+            role_aware_target_summary["raw_unmapped_target_count"]
+        )
+        effective_unmapped_target_count = int(role_aware_target_summary["effective_unmapped_target_count"])
     prepared_paragraph_count = getattr(context, "paragraph_count", None) or getattr(context, "total_paragraphs", None)
     if isinstance(prepared_paragraph_count, int) and prepared_paragraph_count > 0:
         if source_paragraph_count is None:
@@ -1863,6 +1878,16 @@ def _build_translation_quality_report(
         "filtered_unmapped_source_count": role_aware_summary.get("filtered_unmapped_source_count") if role_aware_summary else None,
         "format_neutral_creditable_count": role_aware_summary.get("format_neutral_creditable_count") if role_aware_summary else 0,
         "effective_unmapped_source_count": role_aware_summary.get("effective_unmapped_source_count") if role_aware_summary else None,
+        "target_split_accounting_creditable_count": (
+            role_aware_target_summary.get("target_split_accounting_creditable_count")
+            if role_aware_target_summary
+            else 0
+        ),
+        "effective_unmapped_target_count": (
+            role_aware_target_summary.get("effective_unmapped_target_count")
+            if role_aware_target_summary
+            else None
+        ),
         "raw_unmapped_target_paragraph_count": authority_fields.get("raw_unmapped_target_paragraph_count", len(unmapped_target_indexes) if isinstance(unmapped_target_indexes, list) else 0),
         "structure_unit_total_count": authority_fields.get("structure_unit_total_count"),
         "structure_unit_unmapped_source_count": authority_fields.get("structure_unit_unmapped_source_count"),

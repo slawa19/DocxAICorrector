@@ -274,6 +274,133 @@ def _build_unmapped_target_samples(
     return samples
 
 
+def _build_unmapped_target_residual_diagnostics(
+    source_paragraphs: Sequence[ParagraphUnit],
+    target_paragraphs: Sequence[Paragraph],
+    unmapped_target_indexes: Sequence[int],
+    *,
+    generated_registry_by_id: Mapping[str, Mapping[str, object]],
+    mapped_target_by_source: Mapping[int, int],
+    accepted_aggregated_sources: Sequence[Mapping[str, object]],
+    limit: int = 25,
+) -> dict[str, object]:
+    accepted_anchor_by_source: dict[int, list[Mapping[str, object]]] = {}
+    for accepted_source in accepted_aggregated_sources:
+        source_index = accepted_source.get("source_index")
+        target_index = accepted_source.get("target_index")
+        if isinstance(source_index, int) and isinstance(target_index, int):
+            accepted_anchor_by_source.setdefault(source_index, []).append(accepted_source)
+
+    rows: list[dict[str, object]] = []
+    samples: list[dict[str, object]] = []
+    classification_counts: dict[str, int] = {}
+
+    for target_index in unmapped_target_indexes:
+        if target_index < 0 or target_index >= len(target_paragraphs):
+            continue
+        target_paragraph = target_paragraphs[target_index]
+        normalized_target = _normalize_text_for_mapping(target_paragraph.text)
+        target_tokens = re.findall(r"\w+", normalized_target, flags=re.UNICODE)
+        target_format_role = _target_format_role(target_paragraph)
+        best_source: dict[str, object] | None = None
+        classification = "spurious_or_unproven"
+
+        if len(target_tokens) < 5:
+            classification = "short_note_or_marker"
+        else:
+            for source_index, source_paragraph in enumerate(source_paragraphs):
+                paragraph_id = source_paragraph.paragraph_id or f"p{source_index:04d}"
+                generated_text = _generated_registry_text(generated_registry_by_id.get(paragraph_id))
+                if not generated_text:
+                    continue
+                evidence = _text_coverage_evidence(normalized_target, generated_text)
+                if evidence is None:
+                    continue
+                candidate = {
+                    "paragraph_id": paragraph_id,
+                    "source_index": source_index,
+                    "source_format_role": _source_format_role(source_paragraph),
+                    "mapped_target_index": mapped_target_by_source.get(source_index),
+                    "evidence": evidence,
+                    "source_text_preview": _paragraph_preview(source_paragraph.text),
+                }
+                if best_source is None:
+                    best_source = candidate
+                    continue
+                best_evidence = cast(Mapping[str, object], best_source["evidence"])
+                if (
+                    float(evidence.get("token_overlap_ratio", 0.0)),
+                    float(evidence.get("score", 0.0)),
+                    int(evidence.get("common_token_count", 0) or 0),
+                ) > (
+                    float(best_evidence.get("token_overlap_ratio", 0.0)),
+                    float(best_evidence.get("score", 0.0)),
+                    int(best_evidence.get("common_token_count", 0) or 0),
+                ):
+                    best_source = candidate
+
+            if best_source is not None:
+                source_index = int(best_source["source_index"])
+                mapped_anchor = best_source.get("mapped_target_index")
+                anchors: list[dict[str, object]] = []
+                if isinstance(mapped_anchor, int):
+                    anchors.append({"target_index": mapped_anchor, "kind": "mapped_source_target"})
+                for accepted_anchor in accepted_anchor_by_source.get(source_index, []):
+                    accepted_target_index = accepted_anchor.get("target_index")
+                    if isinstance(accepted_target_index, int):
+                        anchors.append(
+                            {
+                                "target_index": accepted_target_index,
+                                "kind": accepted_anchor.get("kind") or "accepted_aggregated_source",
+                            }
+                        )
+                if any(abs(int(anchor["target_index"]) - target_index) == 1 for anchor in anchors):
+                    classification = "split_accounting"
+                    best_source["split_anchor_targets"] = anchors
+                elif isinstance(mapped_anchor, int):
+                    classification = "matcher_miss"
+
+        classification_counts[classification] = classification_counts.get(classification, 0) + 1
+        row: dict[str, object] = {
+            "target_index": target_index,
+            "target_format_role": target_format_role,
+            "target_text_preview": _paragraph_preview(target_paragraph.text),
+            "residual_class": classification,
+            "target_token_count": len(target_tokens),
+        }
+        if best_source is not None:
+            evidence = cast(Mapping[str, object], best_source.get("evidence") or {})
+            row.update(
+                {
+                    "best_source_paragraph_id": best_source.get("paragraph_id"),
+                    "best_source_index": best_source.get("source_index"),
+                    "best_source_format_role": best_source.get("source_format_role"),
+                    "best_source_mapped_target_index": best_source.get("mapped_target_index"),
+                    "best_source_text_preview": best_source.get("source_text_preview"),
+                    "text_evidence_type": evidence.get("evidence_type"),
+                    "text_evidence_score": evidence.get("score"),
+                    "text_evidence_token_overlap_ratio": evidence.get("token_overlap_ratio"),
+                    "split_anchor_targets": best_source.get("split_anchor_targets", []),
+                }
+            )
+        rows.append(row)
+        if len(samples) < limit:
+            samples.append(row)
+
+    return {
+        "classification_basis": "full_unmapped_target_set",
+        "evidence_basis": "target_registry text contained/fuzzy-covered by generated source registry text",
+        "split_accounting_rule": (
+            "Credit only unmapped target paragraphs whose text is covered by a source registry entry "
+            "and that sit directly adjacent to that source's mapped or accepted aggregate target."
+        ),
+        "counts": dict(sorted(classification_counts.items())),
+        "split_accounting_creditable_count": classification_counts.get("split_accounting", 0),
+        "residual_rows": rows,
+        "samples": samples,
+    }
+
+
 def _count_relation_id_population(
     relation_ids_by_paragraph: Mapping[str, Sequence[str]],
     source_count: int,
@@ -2469,6 +2596,14 @@ def _map_source_target_paragraphs(
     diagnostics["unmapped_target_samples"] = _build_unmapped_target_samples(
         target_paragraphs,
         cast(Sequence[int], diagnostics["unmapped_target_indexes"]),
+    )
+    diagnostics["unmapped_target_residual_diagnostics"] = _build_unmapped_target_residual_diagnostics(
+        source_paragraphs,
+        target_paragraphs,
+        cast(Sequence[int], diagnostics["unmapped_target_indexes"]),
+        generated_registry_by_id=generated_registry_by_id,
+        mapped_target_by_source=mapped_target_by_source,
+        accepted_aggregated_sources=accepted_aggregated_sources,
     )
     diagnostics["relation_identity_population"] = _count_relation_id_population(
         relation_ids_by_paragraph,

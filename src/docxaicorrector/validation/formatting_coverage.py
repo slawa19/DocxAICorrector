@@ -171,6 +171,15 @@ def formatting_payload_format_neutral_creditable_count(payload: Mapping[str, obj
     return max(0, _coerce_int(effective.get("format_neutral_creditable_count"), default=0))
 
 
+def formatting_payload_target_split_accounting_creditable_count(payload: Mapping[str, object]) -> int | None:
+    residual = payload.get("unmapped_target_residual_diagnostics")
+    if not isinstance(residual, Mapping):
+        return None
+    if "split_accounting_creditable_count" not in residual:
+        return None
+    return max(0, _coerce_int(residual.get("split_accounting_creditable_count"), default=0))
+
+
 def resolve_role_aware_formatting_unmapped_source_summary(
     formatting_diagnostics: Sequence[Mapping[str, object]],
 ) -> dict[str, object] | None:
@@ -203,4 +212,36 @@ def resolve_role_aware_formatting_unmapped_source_summary(
         "unmapped_source_count_basis": "role_aware_formatting_coverage",
         "payload_count": len(summaries),
         "counting_note": "filtered_raw_unmapped_source_count minus format_neutral_creditable_count, floored at zero",
+    }
+
+
+def resolve_role_aware_formatting_unmapped_target_summary(
+    formatting_diagnostics: Sequence[Mapping[str, object]],
+) -> dict[str, object] | None:
+    summaries: list[dict[str, object]] = []
+    for payload in formatting_diagnostics:
+        creditable_count = formatting_payload_target_split_accounting_creditable_count(payload)
+        if creditable_count is None:
+            continue
+        raw_indexes = payload.get("unmapped_target_indexes")
+        raw_count = len(raw_indexes) if isinstance(raw_indexes, Sequence) and not isinstance(raw_indexes, (str, bytes, bytearray)) else 0
+        effective_count = max(raw_count - creditable_count, 0)
+        summaries.append(
+            {
+                "raw_unmapped_target_count": raw_count,
+                "target_split_accounting_creditable_count": creditable_count,
+                "effective_unmapped_target_count": effective_count,
+                "benign_reduction_applied": creditable_count > 0,
+            }
+        )
+
+    if not summaries:
+        return None
+
+    max_summary = max(summaries, key=lambda item: int(item["effective_unmapped_target_count"]))
+    return {
+        **max_summary,
+        "unmapped_target_count_basis": "role_aware_formatting_coverage",
+        "payload_count": len(summaries),
+        "counting_note": "raw_unmapped_target_count minus split_accounting_creditable_count, floored at zero",
     }

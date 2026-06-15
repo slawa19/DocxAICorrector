@@ -1045,6 +1045,9 @@ def test_evaluate_lietaer_acceptance_prefers_structure_unit_unmapped_basis_over_
             {
                 "unmapped_source_ids": ["p0003", "p0004"],
                 "unmapped_target_indexes": [12, 13],
+                "unmapped_target_residual_diagnostics": {
+                    "split_accounting_creditable_count": 2,
+                },
             }
         ],
         "translation_quality_report": {
@@ -1078,6 +1081,8 @@ def test_evaluate_lietaer_acceptance_prefers_structure_unit_unmapped_basis_over_
     assert by_name["unmapped_source_threshold"]["actual"] == 1
     assert by_name["unmapped_target_threshold"]["passed"] is True
     assert by_name["unmapped_target_threshold"]["actual"] == 1
+    assert by_name["unmapped_target_threshold"]["count_basis"] == "topology_unit"
+    assert by_name["unmapped_target_threshold"]["role_aware_effective_unmapped_target_count"] is None
 
 
 def test_evaluate_lietaer_acceptance_prefers_accepted_aggregation_legacy_basis_over_raw_counts() -> None:
@@ -1192,6 +1197,54 @@ def test_evaluate_lietaer_acceptance_uses_role_aware_effective_formatting_source
     assert by_name["unmapped_source_threshold"]["raw_worst_unmapped_source_count"] == 3
     assert by_name["unmapped_source_threshold"]["count_basis"] == "role_aware_formatting_coverage"
     assert by_name["unmapped_source_threshold"]["format_neutral_creditable_count"] == 2
+
+
+def test_evaluate_lietaer_acceptance_uses_role_aware_effective_formatting_target_count() -> None:
+    validation = _load_validation_module()
+
+    source_doc = Document()
+    source_doc.add_paragraph("Один абзац")
+    output_doc = Document()
+    output_doc.add_paragraph("Один абзац")
+
+    report = {
+        "result": "succeeded",
+        "output_artifacts": {
+            "output_docx_openable": True,
+            "output_contains_placeholder_markup": False,
+        },
+        "formatting_diagnostics": [
+            {
+                "unmapped_source_ids": [],
+                "unmapped_target_indexes": [1, 2, 3],
+                "unmapped_target_residual_diagnostics": {
+                    "split_accounting_creditable_count": 2,
+                },
+            }
+        ],
+        "translation_quality_report": {
+            "worst_unmapped_source_count": 0,
+            "unmapped_source_count": 0,
+            "unmapped_target_count": 3,
+            "toc_body_concat_detected": False,
+        },
+    }
+
+    acceptance = validation.evaluate_lietaer_acceptance(
+        report,
+        source_docx_bytes=_docx_bytes(source_doc),
+        output_docx_bytes=_docx_bytes(output_doc),
+        mismatch_threshold=0,
+        unmapped_target_threshold=1,
+    )
+
+    by_name = {check["name"]: check for check in acceptance["checks"]}
+    assert by_name["unmapped_target_threshold"]["passed"] is True
+    assert by_name["unmapped_target_threshold"]["actual"] == 1
+    assert by_name["unmapped_target_threshold"]["raw_unmapped_target_count"] == 3
+    assert by_name["unmapped_target_threshold"]["role_aware_effective_unmapped_target_count"] == 1
+    assert by_name["unmapped_target_threshold"]["target_split_accounting_creditable_count"] == 2
+    assert by_name["unmapped_target_threshold"]["count_basis"] == "role_aware_formatting_coverage"
 
 
 def test_evaluate_lietaer_acceptance_emits_required_no_toc_body_concat_check() -> None:

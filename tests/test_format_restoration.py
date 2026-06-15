@@ -409,6 +409,85 @@ def test_build_output_formatting_diagnostics_uses_real_mapping_instead_of_tail_c
     assert len(cast(list[dict[str, object]], diagnostics["accepted_split_targets"])) == 1
 
 
+def test_formatting_diagnostics_credit_adjacent_generated_target_tail_as_split_accounting():
+    source_paragraphs = [
+        ParagraphUnit(
+            paragraph_id="p0083",
+            text=(
+                "How it really works For each deposit that any bank receives, it is entitled "
+                "to create new money by making a loan."
+            ),
+            role="heading",
+            structural_role="heading",
+            heading_level=1,
+            role_confidence="ai",
+        )
+    ]
+    generated_registry = [
+        {
+            "paragraph_id": "p0083",
+            "text": (
+                "# Как это работает на самом деле\n"
+                "С каждого полученного депозита банк имеет право создавать новые деньги, "
+                "выдавая клиенту кредит."
+            ),
+        }
+    ]
+
+    target_doc = Document()
+    target_doc.add_paragraph("Как это работает на самом деле", style="Heading 1")
+    target_doc.add_paragraph(
+        "С каждого полученного депозита банк имеет право создавать новые деньги, выдавая клиенту кредит."
+    )
+
+    diagnostics = _build_output_formatting_diagnostics(
+        source_paragraphs,
+        list(target_doc.paragraphs),
+        document=target_doc,
+        generated_paragraph_registry=generated_registry,
+    )
+
+    assert diagnostics["unmapped_source_ids"] == []
+    assert diagnostics["unmapped_target_indexes"] == [1]
+    target_residual = cast(dict[str, object], diagnostics["unmapped_target_residual_diagnostics"])
+    assert target_residual["counts"] == {"split_accounting": 1}
+    assert target_residual["split_accounting_creditable_count"] == 1
+    row = cast(list[dict[str, object]], target_residual["residual_rows"])[0]
+    assert row["target_index"] == 1
+    assert row["residual_class"] == "split_accounting"
+    assert row["best_source_paragraph_id"] == "p0083"
+    assert row["best_source_mapped_target_index"] == 0
+
+
+def test_formatting_diagnostics_do_not_credit_short_year_target_as_split_accounting():
+    source_paragraphs = [
+        ParagraphUnit(
+            paragraph_id="p0465",
+            text="Anchor paragraph with a trailing date.",
+            role="body",
+            structural_role="body",
+            role_confidence="heuristic",
+        )
+    ]
+    generated_registry = [{"paragraph_id": "p0465", "text": "Опорный абзац.\n2011 г."}]
+
+    target_doc = Document()
+    target_doc.add_paragraph("Опорный абзац.")
+    target_doc.add_paragraph("2011 г.")
+
+    diagnostics = _build_output_formatting_diagnostics(
+        source_paragraphs,
+        list(target_doc.paragraphs),
+        document=target_doc,
+        generated_paragraph_registry=generated_registry,
+    )
+
+    assert diagnostics["unmapped_target_indexes"] == [1]
+    target_residual = cast(dict[str, object], diagnostics["unmapped_target_residual_diagnostics"])
+    assert target_residual["counts"] == {"short_note_or_marker": 1}
+    assert target_residual["split_accounting_creditable_count"] == 0
+
+
 def test_build_output_formatting_diagnostics_maps_symbol_only_carryover_marker():
     source_paragraphs = [
         ParagraphUnit(
