@@ -9,6 +9,7 @@ import sys
 import threading
 import traceback
 import hashlib
+import errno
 from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
@@ -170,6 +171,21 @@ _READER_VERIFIER_MODEL_FIELDS = frozenset(
         "simple_user_next_step",
     }
 )
+_TERMINAL_OUTPUT_DISABLED = False
+
+
+def _safe_terminal_print(*args: object, **kwargs: object) -> None:
+    global _TERMINAL_OUTPUT_DISABLED
+    if _TERMINAL_OUTPUT_DISABLED:
+        return
+    try:
+        print(*args, **kwargs)
+    except BrokenPipeError:
+        _TERMINAL_OUTPUT_DISABLED = True
+    except OSError as exc:
+        if exc.errno != errno.EPIPE:
+            raise
+        _TERMINAL_OUTPUT_DISABLED = True
 
 
 class UploadedFileStub:
@@ -1269,7 +1285,7 @@ def _print_terminal_completion_summary(*, report: Mapping[str, object], final_st
     validation_mode = cast(Mapping[str, object], report.get("validation_mode") or {})
     failed_checks = _as_string_list(acceptance.get("failed_checks"))
     translation_quality_report = cast(Mapping[str, object], report.get("translation_quality_report") or {})
-    print(
+    _safe_terminal_print(
         "[summary] "
         f"status={final_status} "
         f"result={report.get('result')} "
@@ -1278,7 +1294,7 @@ def _print_terminal_completion_summary(*, report: Mapping[str, object], final_st
         f"run_id={cast(Mapping[str, object], report.get('run') or {}).get('run_id')}",
         flush=True,
     )
-    print(
+    _safe_terminal_print(
         "[artifacts] "
         f"report={output_artifacts.get('report_json')} "
         f"summary={output_artifacts.get('summary_txt')} "
@@ -1286,7 +1302,7 @@ def _print_terminal_completion_summary(*, report: Mapping[str, object], final_st
         flush=True,
     )
     if translation_quality_report:
-        print(
+        _safe_terminal_print(
             "[translation_quality] "
             + " ".join(
                 part
@@ -1380,7 +1396,7 @@ def _print_terminal_completion_summary(*, report: Mapping[str, object], final_st
             flush=True,
         )
     if failed_checks:
-        print(f"[acceptance] failed_checks={','.join(str(item) for item in failed_checks)}", flush=True)
+        _safe_terminal_print(f"[acceptance] failed_checks={','.join(str(item) for item in failed_checks)}", flush=True)
 
 
 class ValidationProgressTracker:
@@ -1521,7 +1537,7 @@ class ValidationProgressTracker:
                     metrics=metrics,
                 )
         if line:
-            print(line, flush=True)
+            _safe_terminal_print(line, flush=True)
 
     def finalize(
         self,
@@ -1559,7 +1575,7 @@ class ValidationProgressTracker:
                 elapsed_seconds=elapsed_seconds,
                 metrics={"result": result, "acceptance_passed": acceptance_passed},
             )
-        print(line, flush=True)
+        _safe_terminal_print(line, flush=True)
 
     def _build_manifest_payload_locked(self) -> dict[str, object]:
         return {
@@ -5396,7 +5412,7 @@ def _apply_repeat_count_override(run_profile, repeat_count_override: str):
     try:
         repeat_count = max(1, int(repeat_count_override))
     except ValueError:
-        print(
+        _safe_terminal_print(
             f"[warning] invalid DOCXAI_REAL_DOCUMENT_REPEAT_COUNT_OVERRIDE={repeat_count_override!r}; using profile default {run_profile.repeat_count}",
             flush=True,
         )

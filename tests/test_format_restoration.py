@@ -1813,6 +1813,144 @@ def test_projected_registry_pass_rejects_short_note_without_two_sided_anchors():
     assert diagnostics["unmapped_source_ids"] == ["p0001"]
 
 
+def test_unique_registry_text_floor_maps_long_free_target_outside_bounded_window():
+    source_paragraphs = [
+        ParagraphUnit(
+            paragraph_id=f"p{index:04d}",
+            text=f"Unmapped filler {index}",
+            role="body",
+            structural_role="body",
+            role_confidence="heuristic",
+        )
+        for index in range(80)
+    ]
+    source_paragraphs[39] = ParagraphUnit(
+        paragraph_id="p0039",
+        text="neighbor duplicate claim",
+        role="list",
+        structural_role="list_item",
+        role_confidence="heuristic",
+        list_kind="ordered",
+    )
+    source_paragraphs[70] = ParagraphUnit(
+        paragraph_id="p0070",
+        text="6. Henk Van Arkel, interview with Jacqui Dunne, December 16, 2011",
+        role="list",
+        structural_role="list_item",
+        role_confidence="heuristic",
+        list_kind="ordered",
+    )
+
+    target_doc = Document()
+    target_doc.add_paragraph("Хенк Ван Аркель, интервью с Джеки Данн, 16 декабря 2011 года.")
+    for index in range(1, 40):
+        target_doc.add_paragraph(f"Нерелевантная цель {index}")
+    target_doc.add_paragraph("Хенк Ван Аркель, интервью с Джеки Данн, 16 декабря 2011 года.")
+
+    _, diagnostics = _map_source_target_paragraphs(
+        source_paragraphs,
+        target_doc.paragraphs,
+        generated_paragraph_registry=[
+            {
+                "paragraph_id": "p0039",
+                "text": "Хенк Ван Аркель, интервью с Джеки Данн, 16 декабря 2011 г.",
+            },
+            {
+                "paragraph_id": "p0070",
+                "text": "6. Хенк Ван Аркель, интервью с Джеки Данн, 16 декабря 2011 года.",
+            },
+        ],
+    )
+
+    source_registry = cast(list[dict[str, object]], diagnostics["source_registry"])
+    assert source_registry[70]["mapped_target_index"] == 0
+    assert source_registry[70]["mapping_strategy"] == "registry_free_target_text_floor"
+    assert source_registry[39]["mapped_target_index"] == 40
+    assert source_registry[39]["mapping_strategy"] == "paragraph_id_registry_similarity"
+    assert diagnostics["mapping_text_quality"]["bad_pair_count"] == 0
+    assert diagnostics["mapping_text_quality"]["strategy_counts"] == {
+        "paragraph_id_registry_similarity": 1,
+        "registry_free_target_text_floor": 1,
+    }
+    assert diagnostics["unmapped_target_indexes"] == list(range(1, 40))
+
+
+def test_unique_registry_text_floor_rejects_ambiguous_short_note_targets():
+    source_paragraphs = [
+        ParagraphUnit(
+            paragraph_id="p0001",
+            text="11. Ibid.",
+            role="list",
+            structural_role="list_item",
+            role_confidence="heuristic",
+            list_kind="ordered",
+        )
+    ]
+
+    target_doc = Document()
+    target_doc.add_paragraph("Там же.")
+    target_doc.add_paragraph("Там же.")
+
+    _, diagnostics = _map_source_target_paragraphs(
+        source_paragraphs,
+        target_doc.paragraphs,
+        generated_paragraph_registry=[
+            {"paragraph_id": "p0001", "text": "11. Там же."},
+        ],
+    )
+
+    source_registry = cast(list[dict[str, object]], diagnostics["source_registry"])
+    assert source_registry[0]["mapped_target_index"] is None
+    assert diagnostics["mapping_strategy_counts"] == {}
+    assert diagnostics["unmapped_source_ids"] == ["p0001"]
+    assert diagnostics["unmapped_target_indexes"] == [0, 1]
+
+
+def test_repeated_note_sequence_maps_only_equal_source_and_target_counts():
+    source_paragraphs = [
+        ParagraphUnit(
+            paragraph_id="p0001",
+            text="11. Ibid.",
+            role="list",
+            structural_role="list_item",
+            role_confidence="heuristic",
+            list_kind="ordered",
+        ),
+        ParagraphUnit(
+            paragraph_id="p0002",
+            text="12. Ibid.",
+            role="list",
+            structural_role="list_item",
+            role_confidence="heuristic",
+            list_kind="ordered",
+        ),
+    ]
+
+    target_doc = Document()
+    target_doc.add_paragraph("Там же.")
+    target_doc.add_paragraph("Там же.")
+
+    _, diagnostics = _map_source_target_paragraphs(
+        source_paragraphs,
+        target_doc.paragraphs,
+        generated_paragraph_registry=[
+            {"paragraph_id": "p0001", "text": "11. Там же."},
+            {"paragraph_id": "p0002", "text": "12. Там же."},
+        ],
+    )
+
+    source_registry = cast(list[dict[str, object]], diagnostics["source_registry"])
+    assert source_registry[0]["mapped_target_index"] == 0
+    assert source_registry[0]["mapping_strategy"] == "registry_repeated_note_sequence"
+    assert source_registry[1]["mapped_target_index"] == 1
+    assert source_registry[1]["mapping_strategy"] == "registry_repeated_note_sequence"
+    assert diagnostics["mapping_strategy_counts"] == {"registry_repeated_note_sequence": 2}
+    assert diagnostics["mapping_text_quality"]["bad_pair_count"] == 0
+    assert diagnostics["mapping_text_quality"]["strategy_counts"] == {
+        "registry_repeated_note_sequence": 2
+    }
+
+
 def test_projected_registry_pass_rejects_sequence_only_positional_match():
     source_paragraphs = [
         ParagraphUnit(

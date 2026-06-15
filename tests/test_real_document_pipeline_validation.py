@@ -5558,6 +5558,23 @@ def test_print_terminal_completion_summary_is_concise() -> None:
     assert "processed_block_markdowns" not in output
 
 
+def test_safe_terminal_print_disables_output_after_broken_pipe(monkeypatch) -> None:
+    validation = _load_validation_module()
+    calls: list[tuple[object, ...]] = []
+
+    def broken_print(*args, **kwargs):
+        calls.append(args)
+        raise BrokenPipeError()
+
+    monkeypatch.setattr(validation, "print", broken_print, raising=False)
+
+    validation._safe_terminal_print("first", flush=True)
+    validation._safe_terminal_print("second", flush=True)
+
+    assert calls == [("first",)]
+    assert validation._TERMINAL_OUTPUT_DISABLED is True
+
+
 def test_validation_progress_tracker_writes_progress_and_manifest(tmp_path) -> None:
     validation = _load_validation_module()
 

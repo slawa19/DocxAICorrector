@@ -301,6 +301,29 @@ def _normalize_heading_text(text: str) -> str:
     return lowered.strip(" \t\r\n\"'“”‘’«»()[]{}:;,.!?-–—")
 
 
+def _normalize_repeated_heading_phrase(text: str) -> str:
+    stripped = text.strip()
+    match = _MARKDOWN_HEADING_PREFIX_PATTERN.match(stripped)
+    if match is None:
+        return stripped
+
+    marker = match.group(1)
+    heading_text = stripped[match.end() :].strip()
+    words = heading_text.split()
+    if len(words) < 4 or len(words) % 2 != 0:
+        return stripped
+
+    midpoint = len(words) // 2
+    left_words = words[:midpoint]
+    right_words = words[midpoint:]
+    left_normalized = _normalize_heading_text(" ".join(left_words))
+    right_normalized = _normalize_heading_text(" ".join(right_words))
+    if not left_normalized or left_normalized != right_normalized:
+        return stripped
+
+    return f"{marker} {' '.join(left_words)}"
+
+
 def _is_continuation_like_previous_line(line: str) -> bool:
     stripped = line.strip()
     if not stripped:
@@ -629,6 +652,7 @@ def _normalize_entry_text(entry: FinalAssemblyEntry) -> str:
 def _normalize_final_entry_text(text: str) -> str:
     # Assembly stays close to recovered source-backed text. Display-only cleanup runs later.
     normalized = normalize_mixed_script_markdown(text)
+    normalized = _normalize_repeated_heading_phrase(normalized)
     return normalized.strip()
 
 
@@ -704,6 +728,41 @@ def _normalize_final_entry_list_fragments(entries: Sequence[FinalAssemblyEntry])
     return tuple(normalized_entries)
 
 
+def _dedupe_repeated_real_heading_cluster_tokens(entries: Sequence[FinalAssemblyEntry]) -> tuple[FinalAssemblyEntry, ...]:
+    if not entries:
+        return ()
+
+    deduped: list[FinalAssemblyEntry] = []
+    heading_cluster_seen: set[str] = set()
+    heading_cluster_length = 0
+
+    for entry in entries:
+        if _entry_is_heading(entry) and _entry_has_source_heading_signal(entry):
+            heading_text = _trim_heading_prefix(entry.text)
+            normalized_heading = _normalize_heading_text(heading_text)
+            token_count = len(normalized_heading.split())
+            if (
+                heading_cluster_length > 0
+                and normalized_heading
+                and token_count <= 3
+                and normalized_heading in heading_cluster_seen
+            ):
+                heading_cluster_length += 1
+                continue
+            deduped.append(entry)
+            if normalized_heading:
+                heading_cluster_seen.add(normalized_heading)
+            heading_cluster_length += 1
+            continue
+
+        deduped.append(entry)
+        if _entry_body_text(entry):
+            heading_cluster_seen = set()
+            heading_cluster_length = 0
+
+    return tuple(deduped)
+
+
 def _apply_final_entry_post_normalization(entries: Sequence[FinalAssemblyEntry]) -> tuple[FinalAssemblyEntry, ...]:
     normalized_entries: list[FinalAssemblyEntry] = []
     for entry in entries:
@@ -729,7 +788,8 @@ def _apply_final_entry_post_normalization(entries: Sequence[FinalAssemblyEntry])
                 merged_paragraph_ids=entry.merged_paragraph_ids,
             )
         )
-    return _normalize_final_entry_list_fragments(tuple(normalized_entries))
+    normalized_entries = list(_normalize_final_entry_list_fragments(tuple(normalized_entries)))
+    return _dedupe_repeated_real_heading_cluster_tokens(tuple(normalized_entries))
 
 
 def _coerce_source_paragraph_id(paragraph: object) -> str:

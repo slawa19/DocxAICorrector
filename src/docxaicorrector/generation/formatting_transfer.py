@@ -804,6 +804,8 @@ TEXT_VERIFIED_MAPPING_STRATEGIES = {
     "bounded_registry_heading_containment",
     "paragraph_id_registry_similarity",
     "projected_registry_fuzzy",
+    "registry_repeated_note_sequence",
+    "registry_free_target_text_floor",
 }
 
 
@@ -1241,6 +1243,170 @@ def _try_register_projected_registry_mapping(
         available_target_indexes=available_target_indexes,
     )
     return True
+
+
+def _try_register_unique_registry_text_floor_mapping(
+    source_index: int,
+    source_paragraph: ParagraphUnit,
+    target_paragraphs: Sequence[Paragraph],
+    generated_registry_by_id: Mapping[str, Mapping[str, object]],
+    *,
+    mapped_target_by_source: dict[int, int],
+    strategy_by_source: dict[int, str],
+    available_target_indexes: set[int],
+) -> bool:
+    if source_index in mapped_target_by_source or source_paragraph.role == "image":
+        return False
+    paragraph_id = source_paragraph.paragraph_id
+    if not paragraph_id:
+        return False
+    generated_text = _generated_registry_text(generated_registry_by_id.get(paragraph_id))
+    if not generated_text:
+        return False
+
+    source_format_role = _source_format_role(source_paragraph)
+    registry_candidates = [
+        candidate
+        for candidate in _build_generated_registry_candidates(source_paragraph, generated_text)
+        if (
+            len(candidate) >= 24
+            and len(_token_set(candidate)) >= 5
+        )
+        or (
+            source_format_role == "heading"
+            and len(candidate) >= 4
+            and len(_token_set(candidate)) >= 1
+        )
+    ]
+    if not registry_candidates:
+        return False
+
+    scored: list[tuple[float, int, dict[str, object]]] = []
+    for target_index in sorted(available_target_indexes):
+        target_paragraph = target_paragraphs[target_index]
+        target_text = target_paragraph.text.strip()
+        if not target_text or IMAGE_PLACEHOLDER_PATTERN.search(target_text):
+            continue
+        if not _registry_mapping_role_compatible(source_format_role, target_paragraph):
+            continue
+
+        best_evidence: dict[str, object] | None = None
+        for candidate in registry_candidates:
+            evidence = _registry_candidate_mapping_evidence(
+                candidate,
+                target_text,
+                source_format_role=source_format_role,
+            )
+            if evidence is None:
+                continue
+            if _mapping_text_floor_is_bad(_mapping_text_floor_quality(candidate, target_text)):
+                continue
+            if best_evidence is None or (
+                float(evidence["score"]),
+                float(evidence["target_coverage_ratio"]),
+                int(evidence["candidate_char_count"]),
+            ) > (
+                float(best_evidence["score"]),
+                float(best_evidence["target_coverage_ratio"]),
+                int(best_evidence["candidate_char_count"]),
+            ):
+                best_evidence = evidence
+
+        if best_evidence is None:
+            continue
+        rank_score = (
+            float(best_evidence["score"])
+            + min(float(best_evidence["target_coverage_ratio"]), 1.0)
+            + min(int(best_evidence["candidate_char_count"]) / 1000.0, 0.5)
+        )
+        scored.append((rank_score, target_index, best_evidence))
+
+    if len(scored) != 1:
+        return False
+
+    _register_mapping(
+        source_index,
+        scored[0][1],
+        "registry_free_target_text_floor",
+        mapped_target_by_source=mapped_target_by_source,
+        strategy_by_source=strategy_by_source,
+        available_target_indexes=available_target_indexes,
+    )
+    return True
+
+
+def _note_marker_key(text: str) -> str:
+    normalized = _normalize_text_for_mapping(text).strip(" \t\r\n\"'“”‘’«»()[]{}:;,.!?-–—")
+    return normalized if normalized in {"ibid", "там же"} else ""
+
+
+def _register_repeated_note_sequence_mappings(
+    source_paragraphs: Sequence[ParagraphUnit],
+    target_paragraphs: Sequence[Paragraph],
+    generated_registry_by_id: Mapping[str, Mapping[str, object]],
+    *,
+    mapped_target_by_source: dict[int, int],
+    strategy_by_source: dict[int, str],
+    available_target_indexes: set[int],
+) -> None:
+    source_indexes_by_key: dict[str, list[int]] = {}
+    for source_index, source_paragraph in enumerate(source_paragraphs):
+        if source_index in mapped_target_by_source or source_paragraph.role == "image":
+            continue
+        if not _is_list_source_paragraph(source_paragraph):
+            continue
+        paragraph_id = source_paragraph.paragraph_id
+        if not paragraph_id:
+            continue
+        generated_text = _generated_registry_text(generated_registry_by_id.get(paragraph_id))
+        if not generated_text:
+            continue
+        note_key = next(
+            (
+                key
+                for candidate in _build_generated_registry_candidates(source_paragraph, generated_text)
+                if (key := _note_marker_key(candidate))
+            ),
+            "",
+        )
+        if not note_key:
+            continue
+        source_indexes_by_key.setdefault(note_key, []).append(source_index)
+
+    if not source_indexes_by_key:
+        return
+
+    target_indexes_by_key: dict[str, list[int]] = {}
+    for target_index in sorted(available_target_indexes):
+        if target_index >= len(target_paragraphs):
+            continue
+        target_paragraph = target_paragraphs[target_index]
+        target_text = target_paragraph.text.strip()
+        if not target_text or IMAGE_PLACEHOLDER_PATTERN.search(target_text):
+            continue
+        note_key = _note_marker_key(target_text)
+        if not note_key:
+            continue
+        target_indexes_by_key.setdefault(note_key, []).append(target_index)
+
+    for note_key, source_indexes in sorted(source_indexes_by_key.items()):
+        target_indexes = target_indexes_by_key.get(note_key, [])
+        if len(source_indexes) != len(target_indexes):
+            continue
+        for source_index, target_index in zip(sorted(source_indexes), sorted(target_indexes), strict=True):
+            source_format_role = _source_format_role(source_paragraphs[source_index])
+            if not _registry_mapping_role_compatible(source_format_role, target_paragraphs[target_index]):
+                break
+        else:
+            for source_index, target_index in zip(sorted(source_indexes), sorted(target_indexes), strict=True):
+                _register_mapping(
+                    source_index,
+                    target_index,
+                    "registry_repeated_note_sequence",
+                    mapped_target_by_source=mapped_target_by_source,
+                    strategy_by_source=strategy_by_source,
+                    available_target_indexes=available_target_indexes,
+                )
 
 
 def _generated_registry_target_text_compatible(
@@ -2006,6 +2172,26 @@ def _map_source_target_paragraphs(
         )
 
     for source_index, source_paragraph in enumerate(source_paragraphs):
+        _try_register_unique_registry_text_floor_mapping(
+            source_index,
+            source_paragraph,
+            target_paragraphs,
+            generated_registry_by_id,
+            mapped_target_by_source=mapped_target_by_source,
+            strategy_by_source=strategy_by_source,
+            available_target_indexes=available_target_indexes,
+        )
+
+    _register_repeated_note_sequence_mappings(
+        source_paragraphs,
+        target_paragraphs,
+        generated_registry_by_id,
+        mapped_target_by_source=mapped_target_by_source,
+        strategy_by_source=strategy_by_source,
+        available_target_indexes=available_target_indexes,
+    )
+
+    for source_index, source_paragraph in enumerate(source_paragraphs):
         if source_index in mapped_target_by_source or source_paragraph.role == "image":
             continue
 
@@ -2081,18 +2267,18 @@ def _map_source_target_paragraphs(
         for source_index, target_index in sorted(mapped_target_by_source.items())
     ]
 
-    accepted_split_targets = _collect_accepted_split_targets(
-        source_paragraphs,
-        target_paragraphs,
-        mapped_target_by_source,
-        generated_registry_by_id,
-    )
     accepted_merged_sources = _collect_accepted_merged_sources(
         source_paragraphs,
         target_paragraphs,
         mapped_target_by_source,
     )
     accepted_aggregated_sources = _collect_accepted_aggregated_sources(
+        source_paragraphs,
+        target_paragraphs,
+        mapped_target_by_source,
+        generated_registry_by_id,
+    )
+    accepted_split_targets = _collect_accepted_split_targets(
         source_paragraphs,
         target_paragraphs,
         mapped_target_by_source,

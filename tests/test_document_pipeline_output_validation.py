@@ -1318,6 +1318,82 @@ def test_collect_false_fragment_heading_samples_from_entries_does_not_report_dem
     assert samples == []
 
 
+def test_assemble_final_markdown_dedupes_adjacent_repeated_heading_phrase():
+    assembly_result = document_pipeline_output_validation.assemble_final_markdown(
+        processed_chunks=[
+            "## ПЕРЕОСМЫСЛИВАЯ ДЕНЬГИ ПЕРЕОСМЫСЛИВАЯ ДЕНЬГИ",
+        ],
+        generated_paragraph_registry=[
+            {
+                "block_index": 1,
+                "paragraph_id": "title",
+                "text": "## ПЕРЕОСМЫСЛИВАЯ ДЕНЬГИ ПЕРЕОСМЫСЛИВАЯ ДЕНЬГИ",
+            },
+        ],
+        source_paragraphs=[
+            _make_paragraph_stub("title", 0, role="heading", structural_role="heading", heading_level=1),
+        ],
+    )
+
+    assert assembly_result.final_markdown == "## ПЕРЕОСМЫСЛИВАЯ ДЕНЬГИ"
+    assert assembly_result.entries[0].text == "## ПЕРЕОСМЫСЛИВАЯ ДЕНЬГИ"
+    assert (
+        document_pipeline_output_validation.collect_false_fragment_heading_samples_from_entries(
+            assembly_result.entries
+        )
+        == []
+    )
+
+
+def test_assemble_final_markdown_dedupes_repeated_short_heading_inside_title_cluster():
+    assembly_result = document_pipeline_output_validation.assemble_final_markdown(
+        processed_chunks=[
+            "## ПЕРЕОСМЫСЛИВАЯ",
+            "# ДЕНЬГИ",
+            "# ПЕРЕОСМЫСЛЕНИЕ",
+            "# ДЕНЬГИ",
+            "# КАК НОВЫЕ ВАЛЮТЫ ПРЕВРАЩАЮТ ДЕФИЦИТ В ПРОЦВЕТАНИЕ",
+            "# Бернар Лиетар и Джеки Данн",
+        ],
+        generated_paragraph_registry=[
+            {"block_index": 1, "paragraph_id": "title-1", "text": "## ПЕРЕОСМЫСЛИВАЯ"},
+            {"block_index": 2, "paragraph_id": "title-2", "text": "# ДЕНЬГИ"},
+            {"block_index": 3, "paragraph_id": "title-3", "text": "# ПЕРЕОСМЫСЛЕНИЕ"},
+            {"block_index": 4, "paragraph_id": "title-4", "text": "# ДЕНЬГИ"},
+            {
+                "block_index": 5,
+                "paragraph_id": "subtitle",
+                "text": "# КАК НОВЫЕ ВАЛЮТЫ ПРЕВРАЩАЮТ ДЕФИЦИТ В ПРОЦВЕТАНИЕ",
+            },
+            {"block_index": 6, "paragraph_id": "authors", "text": "# Бернар Лиетар и Джеки Данн"},
+        ],
+        source_paragraphs=[
+            _make_paragraph_stub("title-1", 0, role="heading", structural_role="heading", heading_level=2),
+            _make_paragraph_stub("title-2", 1, role="heading", structural_role="heading", heading_level=1),
+            _make_paragraph_stub("title-3", 2, role="heading", structural_role="heading", heading_level=1),
+            _make_paragraph_stub("title-4", 3, role="heading", structural_role="heading", heading_level=1),
+            _make_paragraph_stub("subtitle", 4, role="heading", structural_role="heading", heading_level=1),
+            _make_paragraph_stub("authors", 5, role="heading", structural_role="heading", heading_level=1),
+        ],
+    )
+
+    assert "# ДЕНЬГИ" in assembly_result.final_markdown
+    assert assembly_result.final_markdown.count("# ДЕНЬГИ") == 1
+    assert [entry.paragraph_id for entry in assembly_result.entries] == [
+        "title-1",
+        "title-2",
+        "title-3",
+        "subtitle",
+        "authors",
+    ]
+    assert (
+        document_pipeline_output_validation.collect_false_fragment_heading_samples_from_entries(
+            assembly_result.entries
+        )
+        == []
+    )
+
+
 def test_run_document_processing_accepts_heading_only_output_for_plaintext_banner_input():
     runtime = _build_runtime_capture()
 
