@@ -799,6 +799,118 @@ def _build_rebuild_key_mapping_quality_diagnostics(
     }
 
 
+TEXT_VERIFIED_MAPPING_STRATEGIES = {
+    "bounded_registry_fuzzy",
+    "bounded_registry_heading_containment",
+    "paragraph_id_registry_similarity",
+    "projected_registry_fuzzy",
+}
+
+
+def _mapping_text_floor_quality(candidate_text: str, target_text: str) -> dict[str, object]:
+    normalized_candidate = _normalize_text_for_mapping(candidate_text)
+    normalized_target = _normalize_text_for_mapping(target_text)
+    candidate_tokens = _token_set(normalized_candidate)
+    target_tokens = _token_set(normalized_target)
+    common_count = len(candidate_tokens & target_tokens) if candidate_tokens and target_tokens else 0
+    token_jaccard_ratio = (
+        common_count / len(candidate_tokens | target_tokens)
+        if candidate_tokens and target_tokens
+        else 0.0
+    )
+    token_overlap_ratio = common_count / len(candidate_tokens) if candidate_tokens else 0.0
+    target_token_overlap_ratio = common_count / len(target_tokens) if target_tokens else 0.0
+    exact_or_contains = bool(
+        normalized_candidate
+        and normalized_target
+        and (normalized_candidate == normalized_target or normalized_candidate in normalized_target)
+    )
+    return {
+        "exact_or_contains": exact_or_contains,
+        "token_jaccard_ratio": round(token_jaccard_ratio, 4),
+        "token_overlap_ratio": round(token_overlap_ratio, 4),
+        "target_token_overlap_ratio": round(target_token_overlap_ratio, 4),
+        "common_token_count": common_count,
+        "candidate_token_count": len(candidate_tokens),
+        "target_token_count": len(target_tokens),
+    }
+
+
+def _mapping_text_floor_is_bad(quality: Mapping[str, object]) -> bool:
+    return not (
+        bool(quality.get("exact_or_contains"))
+        or float(quality.get("token_jaccard_ratio", 0.0) or 0.0) >= 0.5
+        or float(quality.get("token_overlap_ratio", 0.0) or 0.0) >= 0.85
+        or float(quality.get("target_token_overlap_ratio", 0.0) or 0.0) >= 0.85
+    )
+
+
+def _build_mapping_text_quality_diagnostics(
+    source_paragraphs: Sequence[ParagraphUnit],
+    target_paragraphs: Sequence[Paragraph],
+    mapped_target_by_source: Mapping[int, int],
+    strategy_by_source: Mapping[int, str],
+    generated_registry_by_id: Mapping[str, Mapping[str, object]],
+    *,
+    limit: int = 25,
+) -> dict[str, object]:
+    checked_count = 0
+    bad_pair_count = 0
+    strategy_counts: dict[str, int] = {}
+    bad_strategy_counts: dict[str, int] = {}
+    samples: list[dict[str, object]] = []
+
+    for source_index, target_index in sorted(mapped_target_by_source.items()):
+        strategy = strategy_by_source.get(source_index)
+        if strategy not in TEXT_VERIFIED_MAPPING_STRATEGIES:
+            continue
+        if source_index >= len(source_paragraphs) or target_index >= len(target_paragraphs):
+            continue
+        source_paragraph = source_paragraphs[source_index]
+        paragraph_id = source_paragraph.paragraph_id or f"p{source_index:04d}"
+        source_text = _generated_registry_text(generated_registry_by_id.get(paragraph_id)) or source_paragraph.text
+        target_paragraph = target_paragraphs[target_index]
+        quality = _mapping_text_floor_quality(source_text, target_paragraph.text)
+
+        checked_count += 1
+        strategy_counts[strategy] = strategy_counts.get(strategy, 0) + 1
+        if not _mapping_text_floor_is_bad(quality):
+            continue
+
+        bad_pair_count += 1
+        bad_strategy_counts[strategy] = bad_strategy_counts.get(strategy, 0) + 1
+        if len(samples) >= limit:
+            continue
+        samples.append(
+            {
+                "paragraph_id": paragraph_id,
+                "source_index": source_paragraph.source_index if source_paragraph.source_index >= 0 else source_index,
+                "mapped_target_index": target_index,
+                "mapping_strategy": strategy,
+                "source_role": source_paragraph.role,
+                "target_style_name": _target_paragraph_style_name(target_paragraph),
+                "source_text_preview": _paragraph_preview(source_text),
+                "target_text_preview": _paragraph_preview(target_paragraph.text),
+                **quality,
+            }
+        )
+
+    return {
+        "indexing_basis": "formatting_diagnostics.target_registry[mapped_target_index]",
+        "source_text_basis": "runtime.state.final_generated_paragraph_registry when available; source paragraph text fallback",
+        "strategy_filter": sorted(TEXT_VERIFIED_MAPPING_STRATEGIES),
+        "checked_count": checked_count,
+        "bad_pair_count": bad_pair_count,
+        "strategy_counts": dict(sorted(strategy_counts.items())),
+        "bad_strategy_counts": dict(sorted(bad_strategy_counts.items())),
+        "bad_pair_rule": (
+            "bad when not exact/contained, token_jaccard < 0.50, "
+            "source_token_overlap < 0.85, and target_token_overlap < 0.85"
+        ),
+        "samples": samples,
+    }
+
+
 def _mapping_similarity_score(source_paragraph: ParagraphUnit, target_text: str) -> float:
     source_text = _normalize_text_for_mapping(source_paragraph.text)
     normalized_target = _normalize_text_for_mapping(target_text)
@@ -1735,17 +1847,39 @@ def _map_source_target_paragraphs(
             continue
 
         source_format_role = _source_format_role(source_paragraph)
+        if source_format_role == "heading":
+            continue
         for target_index in sorted(available_target_indexes):
             if abs(target_index - source_index) > 3:
                 continue
             if not _registry_mapping_role_compatible(source_format_role, target_paragraphs[target_index]):
                 continue
-            score = max(
-                SequenceMatcher(None, candidate_text, _normalize_text_for_mapping(target_paragraphs[target_index].text)).ratio()
+            evidence_candidates = [
+                evidence
                 for candidate_text in registry_candidates
+                if (
+                    evidence := _registry_candidate_mapping_evidence(
+                        candidate_text,
+                        target_paragraphs[target_index].text,
+                        source_format_role=source_format_role,
+                    )
+                )
+                is not None
+            ]
+            if not evidence_candidates:
+                continue
+            best_evidence = max(
+                evidence_candidates,
+                key=lambda evidence: (
+                    float(evidence["score"]),
+                    float(evidence["target_coverage_ratio"]),
+                    int(evidence["common_token_count"]),
+                ),
             )
-            if score >= 0.75:
-                scored_candidates.append((score, target_index))
+            if not _projected_registry_text_floor_satisfied(best_evidence):
+                continue
+            score = float(best_evidence["score"]) + min(float(best_evidence["target_coverage_ratio"]), 1.0)
+            scored_candidates.append((score, target_index))
 
         if not scored_candidates:
             continue
@@ -2130,6 +2264,13 @@ def _map_source_target_paragraphs(
         target_paragraphs,
         mapped_target_by_source,
         strategy_by_source,
+    )
+    diagnostics["mapping_text_quality"] = _build_mapping_text_quality_diagnostics(
+        source_paragraphs,
+        target_paragraphs,
+        mapped_target_by_source,
+        strategy_by_source,
+        generated_registry_by_id,
     )
     diagnostics["unmapped_source_role_counts"] = _build_unmapped_source_role_counts(
         source_paragraphs,

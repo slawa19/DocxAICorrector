@@ -1549,18 +1549,20 @@ def test_mapping_covers_multiple_headings_shared_in_heading_target_only():
     assert diagnostics["mapped_count"] == 1
     assert diagnostics["unmapped_source_ids"] == []
     assert diagnostics["accepted_aggregated_sources_count"] == 1
-    assert diagnostics["accepted_aggregated_sources"] == [
-        {
-            "paragraph_id": "p0001",
-            "source_index": 0,
-            "target_index": 0,
-            "kind": "heading_shared_target",
-            "anchor_source_index": 1,
-            "anchor_paragraph_id": "p0002",
-            "target_text_preview": "ЧАСТЬ ТРЕТЬЯ ПЕРЕОСМЫСЛЕНИЕ ДЕНЕГ",
-            "source_text_preview": "Part Three",
-        }
-    ]
+    source_registry = cast(list[dict[str, object]], diagnostics["source_registry"])
+    directly_mapped_ids = {
+        entry["paragraph_id"]
+        for entry in source_registry
+        if entry["mapped_target_index"] == 0
+    }
+    accepted_ids = {
+        entry["paragraph_id"]
+        for entry in cast(list[dict[str, object]], diagnostics["accepted_aggregated_sources"])
+    }
+    assert directly_mapped_ids | accepted_ids == {"p0001", "p0002"}
+    assert diagnostics["accepted_aggregated_sources"][0]["kind"] == "heading_shared_target"
+    assert diagnostics["accepted_aggregated_sources"][0]["target_index"] == 0
+    assert diagnostics["accepted_aggregated_sources"][0]["target_text_preview"] == "ЧАСТЬ ТРЕТЬЯ ПЕРЕОСМЫСЛЕНИЕ ДЕНЕГ"
 
 
 def test_mapping_normalizes_markdown_list_and_blockquote_prefixes_from_generated_registry():
@@ -1766,6 +1768,12 @@ def test_mapping_uses_projected_registry_pass_when_book_scale_indexes_drift():
     source_registry = cast(list[dict[str, object]], diagnostics["source_registry"])
     assert source_registry[50]["mapped_target_index"] == 2
     assert source_registry[50]["mapping_strategy"] == "projected_registry_fuzzy"
+    assert diagnostics["mapping_text_quality"]["indexing_basis"] == (
+        "formatting_diagnostics.target_registry[mapped_target_index]"
+    )
+    assert diagnostics["mapping_text_quality"]["checked_count"] == 1
+    assert diagnostics["mapping_text_quality"]["bad_pair_count"] == 0
+    assert diagnostics["mapping_text_quality"]["strategy_counts"] == {"projected_registry_fuzzy": 1}
 
 
 def test_projected_registry_pass_rejects_short_note_without_two_sided_anchors():
@@ -1857,6 +1865,34 @@ def test_projected_registry_pass_rejects_sequence_only_positional_match():
     source_registry = cast(list[dict[str, object]], diagnostics["source_registry"])
     assert source_registry[50]["mapped_target_index"] is None
     assert "p0050" in diagnostics["unmapped_source_ids"]
+
+
+def test_registry_similarity_rejects_short_numeric_year_fragment_mismatch():
+    source_paragraphs = [
+        ParagraphUnit(
+            paragraph_id="p0001",
+            text="2011.",
+            role="body",
+            structural_role="body",
+            role_confidence="heuristic",
+        )
+    ]
+
+    target_doc = Document()
+    target_doc.add_paragraph("2012 г.")
+
+    _, diagnostics = _map_source_target_paragraphs(
+        source_paragraphs,
+        target_doc.paragraphs,
+        generated_paragraph_registry=[
+            {"paragraph_id": "p0001", "text": "2011 г."},
+        ],
+    )
+
+    source_registry = cast(list[dict[str, object]], diagnostics["source_registry"])
+    assert source_registry[0]["mapped_target_index"] is None
+    assert diagnostics["unmapped_source_ids"] == ["p0001"]
+    assert diagnostics["unmapped_target_indexes"] == [0]
 
 
 def test_mapping_rejects_stale_rebuild_key_before_registry_remap():

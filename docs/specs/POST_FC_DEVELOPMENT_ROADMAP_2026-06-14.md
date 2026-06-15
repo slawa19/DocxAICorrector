@@ -378,6 +378,37 @@ but WS-MAP2 remains open until the same zero-false-pair rule is confirmed on a
 fresh in-pipeline full-book proof and the remaining residual bucket is classified
 with the reviewer-facing false-pair checker.
 
+**2026-06-15 canonical false-pair checker:** reviewer and agent agreed that
+false-pair audits must use matcher indexing:
+`formatting_diagnostics.target_registry[mapped_target_index]`, never raw
+`doc.paragraphs[mapped_target_index]`. The offline classifier now emits
+`mapping_text_quality` for every reviewable diagnostic, including clean
+diagnostics without residual rows. It compares `final_generated_paragraph_registry`
+text against the target registry preview and reports checked/bad pairs for all
+text-verified strategies. The same pass exposed one historical
+`paragraph_id_registry_similarity` year-fragment false pair (`2011 г.` ->
+`2012 г.`) in the saved full-book report, so that fallback now uses the same
+registry evidence/text-floor and skips heading sources. Current-code replay of
+`20260614T_ws_map2_full_benchmark_projected_probe` reports
+`mapping_text_quality.checked_count=65`, `bad_pair_count=0`, and
+`projected_registry_fuzzy=37`.
+
+**2026-06-15 fresh embedded-quality proof:** run
+`20260615T_ws_map2_full_benchmark_embedded_quality` proves the false-pair audit
+is now in the in-pipeline artifact, not only in offline replay:
+`source_count=1215`, `mapped_count=869`, `target_count=888`,
+`raw_unmapped_source=23`, `effective_unmapped_source=20`,
+`unmapped_target_actual=0`, `mapping_text_quality.checked_count=66`,
+`bad_pair_count=0`, `bad_strategy_counts={}`. Strategy counts:
+`bounded_registry_fuzzy=48`, `bounded_registry_heading_containment=6`,
+`paragraph_id_registry_similarity=4`, `projected_registry_fuzzy=8`,
+`image_anchor=54`, `image_anchor_contained=1`. Acceptance still fails on
+`formatting_diagnostics_threshold`, `unmapped_source_threshold`, and
+`false_fragment_headings_present`, so WS-MAP2 remains open. The remaining
+role-aware bucket is now small and explicit: `23` raw source residuals, `3`
+format-neutral body dissolved credits, `20` effective residuals split across
+notes/year fragments and a few heading/title fragments.
+
 # WS-3. Full-Book End-to-End Run
 
 **Goal:** move from excerpt to a full book — the actual product target.

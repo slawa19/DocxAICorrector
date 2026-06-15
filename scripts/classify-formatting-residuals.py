@@ -24,7 +24,15 @@ if str(SRC_ROOT) not in sys.path:
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from docxaicorrector.validation.formatting_replay import replay_formatting_diagnostics_from_report
+from docxaicorrector.validation.formatting_replay import load_report_payload, replay_formatting_diagnostics_from_report
+
+TEXT_VERIFIED_MAPPING_STRATEGIES = {
+    "bounded_registry_fuzzy",
+    "bounded_registry_heading_containment",
+    "paragraph_id_registry_similarity",
+    "projected_registry_fuzzy",
+}
+
 
 def _iter_restore_diagnostics(value: Any, path: str = "$") -> Iterable[tuple[str, Mapping[str, Any]]]:
     if isinstance(value, Mapping):
@@ -36,6 +44,33 @@ def _iter_restore_diagnostics(value: Any, path: str = "$") -> Iterable[tuple[str
     elif isinstance(value, list):
         for index, child in enumerate(value):
             yield from _iter_restore_diagnostics(child, f"{path}[{index}]")
+
+
+def _iter_reviewable_diagnostics(value: Any, path: str = "$") -> Iterable[tuple[str, Mapping[str, Any]]]:
+    yielded_paths: set[str] = set()
+    restore_diagnostics = list(_iter_restore_diagnostics(value, path))
+    for diagnostic_path, diagnostic in restore_diagnostics:
+        yielded_paths.add(diagnostic_path)
+        yield diagnostic_path, diagnostic
+    if restore_diagnostics:
+        return
+
+    if isinstance(value, Mapping):
+        if isinstance(value.get("source_registry"), list) and isinstance(value.get("target_registry"), list):
+            yielded_paths.add(path)
+            yield path, value
+            return
+        for key, child in value.items():
+            child_path = f"{path}.{key}"
+            if child_path in yielded_paths:
+                continue
+            yield from _iter_reviewable_diagnostics(child, child_path)
+    elif isinstance(value, list):
+        for index, child in enumerate(value):
+            child_path = f"{path}[{index}]"
+            if child_path in yielded_paths:
+                continue
+            yield from _iter_reviewable_diagnostics(child, child_path)
 
 
 def _mapped_source_by_target(diagnostic: Mapping[str, Any]) -> dict[int, int]:
@@ -84,6 +119,168 @@ def _target_previews_by_index(diagnostic: Mapping[str, Any]) -> dict[int, str]:
     return previews
 
 
+def _final_generated_text_by_id(report_payload: Mapping[str, Any] | None) -> dict[str, str]:
+    if report_payload is None:
+        return {}
+    runtime = report_payload.get("runtime")
+    if not isinstance(runtime, Mapping):
+        return {}
+    state = runtime.get("state")
+    if not isinstance(state, Mapping):
+        return {}
+    registry = state.get("final_generated_paragraph_registry")
+    if not isinstance(registry, list):
+        return {}
+    generated: dict[str, str] = {}
+    for entry in registry:
+        if not isinstance(entry, Mapping):
+            continue
+        paragraph_id = entry.get("paragraph_id")
+        text = entry.get("text")
+        if isinstance(paragraph_id, str) and isinstance(text, str):
+            generated[paragraph_id] = text
+    return generated
+
+
+def _token_quality(candidate_text: str, target_text: str) -> dict[str, Any]:
+    normalized_candidate = _normalize_mapping_text(candidate_text)
+    normalized_target = _normalize_mapping_text(target_text)
+    candidate_tokens = set(re.findall(r"\w+", normalized_candidate, flags=re.UNICODE))
+    target_tokens = set(re.findall(r"\w+", normalized_target, flags=re.UNICODE))
+    common_count = len(candidate_tokens & target_tokens) if candidate_tokens and target_tokens else 0
+    token_jaccard_ratio = (
+        common_count / len(candidate_tokens | target_tokens)
+        if candidate_tokens and target_tokens
+        else 0.0
+    )
+    token_overlap_ratio = common_count / len(candidate_tokens) if candidate_tokens else 0.0
+    target_token_overlap_ratio = common_count / len(target_tokens) if target_tokens else 0.0
+    exact_or_contains = bool(
+        normalized_candidate
+        and normalized_target
+        and (normalized_candidate == normalized_target or normalized_candidate in normalized_target)
+    )
+    return {
+        "exact_or_contains": exact_or_contains,
+        "token_jaccard_ratio": round(token_jaccard_ratio, 4),
+        "token_overlap_ratio": round(token_overlap_ratio, 4),
+        "target_token_overlap_ratio": round(target_token_overlap_ratio, 4),
+        "common_token_count": common_count,
+        "candidate_token_count": len(candidate_tokens),
+        "target_token_count": len(target_tokens),
+    }
+
+
+def _mapping_text_quality(
+    diagnostic: Mapping[str, Any],
+    *,
+    report_payload: Mapping[str, Any] | None = None,
+    limit: int = 25,
+) -> dict[str, Any]:
+    embedded_quality = diagnostic.get("mapping_text_quality")
+    if isinstance(embedded_quality, Mapping):
+        result = dict(embedded_quality)
+        result.setdefault("quality_source", "in_pipeline_diagnostic")
+        return result
+
+    source_registry = diagnostic.get("source_registry")
+    target_registry = diagnostic.get("target_registry")
+    if not isinstance(source_registry, list) or not isinstance(target_registry, list):
+        return {
+            "indexing_basis": "formatting_diagnostics.target_registry[mapped_target_index]",
+            "strategy_filter": sorted(TEXT_VERIFIED_MAPPING_STRATEGIES),
+            "checked_count": 0,
+            "bad_pair_count": 0,
+            "skipped_reason": "source_registry_or_target_registry_missing",
+            "samples": [],
+        }
+
+    targets_by_index: dict[int, Mapping[str, Any]] = {}
+    for fallback_index, entry in enumerate(target_registry):
+        if not isinstance(entry, Mapping):
+            continue
+        target_index = entry.get("target_index", fallback_index)
+        if isinstance(target_index, int):
+            targets_by_index[target_index] = entry
+
+    generated_by_id = _final_generated_text_by_id(report_payload)
+    checked_count = 0
+    bad_pair_count = 0
+    strategy_counts: dict[str, int] = {}
+    bad_strategy_counts: dict[str, int] = {}
+    samples: list[dict[str, Any]] = []
+
+    for fallback_source_index, entry in enumerate(source_registry):
+        if not isinstance(entry, Mapping):
+            continue
+        strategy = entry.get("mapping_strategy")
+        if strategy not in TEXT_VERIFIED_MAPPING_STRATEGIES:
+            continue
+        target_index = entry.get("mapped_target_index")
+        if not isinstance(target_index, int):
+            continue
+        target = targets_by_index.get(target_index)
+        if target is None:
+            continue
+        paragraph_id = entry.get("paragraph_id")
+        source_text = (
+            generated_by_id.get(paragraph_id)
+            if isinstance(paragraph_id, str)
+            else None
+        ) or entry.get("generated_text_preview") or entry.get("text_preview") or ""
+        target_text = target.get("text_preview") or ""
+        if not isinstance(source_text, str) or not isinstance(target_text, str):
+            continue
+
+        checked_count += 1
+        strategy_name = str(strategy)
+        strategy_counts[strategy_name] = strategy_counts.get(strategy_name, 0) + 1
+        quality = _token_quality(source_text, target_text)
+        is_bad = not (
+            quality["exact_or_contains"]
+            or quality["token_jaccard_ratio"] >= 0.5
+            or quality["token_overlap_ratio"] >= 0.85
+            or quality["target_token_overlap_ratio"] >= 0.85
+        )
+        if not is_bad:
+            continue
+
+        bad_pair_count += 1
+        bad_strategy_counts[strategy_name] = bad_strategy_counts.get(strategy_name, 0) + 1
+        if len(samples) >= limit:
+            continue
+        samples.append(
+            {
+                "paragraph_id": paragraph_id or f"p{fallback_source_index:04d}",
+                "source_index": entry.get("source_index", fallback_source_index),
+                "mapped_target_index": target_index,
+                "mapping_strategy": strategy,
+                "source_role": entry.get("role"),
+                "target_style_name": target.get("style_name"),
+                "source_text_preview": _paragraph_preview(source_text),
+                "target_text_preview": _paragraph_preview(target_text),
+                **quality,
+            }
+        )
+
+    return {
+        "indexing_basis": "formatting_diagnostics.target_registry[mapped_target_index]",
+        "source_text_basis": (
+            "runtime.state.final_generated_paragraph_registry when available; source_registry preview fallback"
+        ),
+        "strategy_filter": sorted(TEXT_VERIFIED_MAPPING_STRATEGIES),
+        "checked_count": checked_count,
+        "bad_pair_count": bad_pair_count,
+        "strategy_counts": dict(sorted(strategy_counts.items())),
+        "bad_strategy_counts": dict(sorted(bad_strategy_counts.items())),
+        "bad_pair_rule": (
+            "bad when not exact/contained, token_jaccard < 0.50, "
+            "source_token_overlap < 0.85, and target_preview_token_overlap < 0.85"
+        ),
+        "samples": samples,
+    }
+
+
 def _source_format_role(sample: Mapping[str, Any]) -> str:
     role = str(sample.get("role") or "").strip().lower()
     structural_role = str(sample.get("structural_role") or "").strip().lower()
@@ -102,6 +299,22 @@ def _source_format_role(sample: Mapping[str, Any]) -> str:
 
 def _normalize_text(text: str) -> str:
     return re.sub(r"\s+", " ", text.casefold()).strip()
+
+
+def _normalize_mapping_text(text: str) -> str:
+    normalized = text.strip()
+    normalized = re.sub(r"^(?:>\s*)+", "", normalized)
+    normalized = re.sub(r"^#{1,6}\s+", "", normalized)
+    normalized = re.sub(r"^(?:[-*+•]\s+|\d+[.)]\s+)", "", normalized)
+    normalized = re.sub(r"\s+", " ", normalized)
+    return normalized.casefold().strip()
+
+
+def _paragraph_preview(text: str, *, limit: int = 120) -> str:
+    normalized = re.sub(r"\s+", " ", text).strip()
+    if len(normalized) <= limit:
+        return normalized
+    return normalized[: limit - 1].rstrip() + "…"
 
 
 def _text_coverage_evidence(candidate_text: str, target_text: str) -> dict[str, Any] | None:
@@ -259,7 +472,12 @@ def _count_effective_classes(
     return dict(sorted(counts.items()))
 
 
-def _summarize_diagnostic(path: str, diagnostic: Mapping[str, Any]) -> dict[str, Any]:
+def _summarize_diagnostic(
+    path: str,
+    diagnostic: Mapping[str, Any],
+    *,
+    report_payload: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
     residual = diagnostic.get("unmapped_source_residual_diagnostics")
     if not isinstance(residual, Mapping):
         residual = {}
@@ -309,6 +527,7 @@ def _summarize_diagnostic(path: str, diagnostic: Mapping[str, Any]) -> dict[str,
         "effective_formatting_coverage_note": (
             "Only body source with exact/fuzzy evidence in an already mapped neighbor body target is credited."
         ),
+        "mapping_text_quality": _mapping_text_quality(diagnostic, report_payload=report_payload),
     }
 
 
@@ -328,7 +547,12 @@ def _build_replayed_summary(
     replayed_diagnostics = replay_payload["replayed_diagnostics"]
     if not isinstance(replayed_diagnostics, Mapping):
         raise ValueError("Replay helper returned invalid replayed_diagnostics payload.")
-    summary = _summarize_diagnostic("$.replayed_diagnostics", replayed_diagnostics)
+    report_payload = load_report_payload(report_json)
+    summary = _summarize_diagnostic(
+        "$.replayed_diagnostics",
+        replayed_diagnostics,
+        report_payload=report_payload,
+    )
     summary.update(
         {
             "report_path": replay_payload.get("report_path"),
@@ -384,7 +608,10 @@ def main() -> int:
     if args.replay:
         if args.all:
             payload = json.loads(args.report_json.read_text(encoding="utf-8"))
-            saved_summaries = [_summarize_diagnostic(path, diagnostic) for path, diagnostic in _iter_restore_diagnostics(payload)]
+            saved_summaries = [
+                _summarize_diagnostic(path, diagnostic, report_payload=payload)
+                for path, diagnostic in _iter_reviewable_diagnostics(payload)
+            ]
             if not saved_summaries:
                 raise SystemExit(f"No restore diagnostics found in {args.report_json}")
             result = [
@@ -405,7 +632,10 @@ def main() -> int:
             )
     else:
         payload = json.loads(args.report_json.read_text(encoding="utf-8"))
-        summaries = [_summarize_diagnostic(path, diagnostic) for path, diagnostic in _iter_restore_diagnostics(payload)]
+        summaries = [
+            _summarize_diagnostic(path, diagnostic, report_payload=payload)
+            for path, diagnostic in _iter_reviewable_diagnostics(payload)
+        ]
         if args.all:
             result = summaries
         else:

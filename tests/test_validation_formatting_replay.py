@@ -369,3 +369,73 @@ def test_classify_formatting_residuals_replay_mode_reports_replayed_restore_diag
     assert payload["saved_mapped_count"] == 0
     assert payload["mapped_count"] == 2
     assert payload["unmapped_source_count"] == 0
+
+
+def test_classify_formatting_residuals_reports_mapping_text_quality_with_target_registry_indexing(tmp_path: Path):
+    report_path = tmp_path / "report.json"
+    report_payload = {
+        "runtime": {
+            "state": {
+                "final_generated_paragraph_registry": [
+                    {
+                        "paragraph_id": "p0001",
+                        "text": "Переведенный абзац совпадает с target registry",
+                    }
+                ]
+            }
+        },
+        "formatting_diagnostics": [
+            {
+                "stage": "post_cleanup",
+                "source_count": 1,
+                "target_count": 2,
+                "mapped_count": 1,
+                "unmapped_source_ids": [],
+                "unmapped_target_indexes": [0],
+                "source_registry": [
+                    {
+                        "paragraph_id": "p0001",
+                        "source_index": 0,
+                        "text_preview": "Original English paragraph that would fail a raw-language checker",
+                        "role": "body",
+                        "structural_role": "body",
+                        "mapped_target_index": 1,
+                        "mapping_strategy": "projected_registry_fuzzy",
+                    }
+                ],
+                "target_registry": [
+                    {
+                        "target_index": 0,
+                        "text_preview": "Unrelated raw DOCX paragraph at another collected index",
+                        "style_name": "Normal",
+                    },
+                    {
+                        "target_index": 1,
+                        "text_preview": "Переведенный абзац совпадает с target registry",
+                        "style_name": "Normal",
+                    },
+                ],
+            }
+        ],
+    }
+    report_path.write_text(json.dumps(report_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "scripts/classify-formatting-residuals.py",
+            str(report_path),
+        ],
+        cwd=Path(__file__).resolve().parents[1],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    payload = json.loads(completed.stdout)
+
+    quality = payload["mapping_text_quality"]
+    assert quality["indexing_basis"] == "formatting_diagnostics.target_registry[mapped_target_index]"
+    assert quality["source_text_basis"].startswith("runtime.state.final_generated_paragraph_registry")
+    assert quality["checked_count"] == 1
+    assert quality["bad_pair_count"] == 0
+    assert quality["strategy_counts"] == {"projected_registry_fuzzy": 1}
