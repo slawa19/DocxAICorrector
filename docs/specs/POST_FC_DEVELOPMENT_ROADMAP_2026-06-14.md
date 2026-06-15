@@ -504,6 +504,40 @@ enforced; fragile returns converted.
 
 # Sequencing
 
+**Re-sequencing decision (2026-06-15): reliability before the big-book matcher
+proof.** WS-MAP/WS-MAP2 are closed (matcher generalised, full-book Lietaer passes
+role-aware on source and target, bad_pairs=0). WS-2's first non-Lietaer pass on
+two DOCX docs was a clean-residual smoke (matcher not exercised). The real WS-2
+test — Mazzucato **PDF** full book — was registered and runs, but three full-book
+runs failed before producing a final DOCX/diagnostics, and **not on the matcher**:
+(1) progress-JSON `PermissionError` on WSL (atomic temp written to the parent
+dir, rename races), and (2) `english_residual_output` aborting the entire run on
+a single bad block at 94–97%. Small excerpts are not representative; the product
+goal is full books. So the order is now:
+
+- **WS-4-NOW (reliability) before the WS-2 big-book matcher proof.** Fix the two
+  blockers so a full book completes and yields final DOCX + formatting
+  diagnostics, then run the matcher audit on the completed book.
+  - **Fix A — progress-write:** write the atomic temp file in the **same run
+    directory** as the target (not the parent), so the rename is same-dir and
+    does not race/permission-fail on WSL. Backoff is a band-aid; fix the path.
+    Verifiable: a full-book run no longer aborts on progress write.
+  - **Fix B — one bad block must not abort the book.** Extend the PR-R0
+    controlled-fallback to `english_residual_output` (and siblings): after retries
+    are exhausted, emit a **visible** fallback artifact/flag for that block and
+    **continue**, so the document still finishes with a final DOCX + diagnostics.
+    Do not hide the bad block — surface it. Verifiable: a run with a deliberately
+    un-translatable block completes, the block is flagged in artifacts, and DOCX +
+    formatting diagnostics are produced.
+  - **Cost discipline:** unit-test both fixes (simulate the permission error and a
+    residual block) BEFORE spending a full-book LLM run. Full-book runs are
+    ~20–35 min — use ONE to confirm, not to iterate.
+- **Then the WS-2 matcher audit on the completed Mazzucato full book:** role-aware
+  basis on source AND target, `bad_pair_count=0` (canonical target_registry
+  indexing), residual forensic (present-but-unmapped vs absent), credit
+  spot-check by **containment** (target ⊆ source), images stable, single restore
+  pass.
+
 1. **WS-1** first (close the open iteration; small). NOTE: the WS-1 proof already
    ran and exposed the mapping issue below — WS-1 stays open until WS-MAP makes
    the gate meaningful and the final proof passes.
