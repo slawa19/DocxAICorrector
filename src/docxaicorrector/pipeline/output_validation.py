@@ -134,6 +134,8 @@ class FinalAssemblyEntry:
     used_fallback: bool = False
     generated_heading_kind: GeneratedHeadingKind | None = None
     merged_paragraph_ids: tuple[str, ...] = ()
+    controlled_fallback: bool = False
+    controlled_fallback_kind: str | None = None
 
 
 @dataclass(frozen=True)
@@ -679,6 +681,8 @@ def _normalize_final_entry_list_fragments(entries: Sequence[FinalAssemblyEntry])
             used_fallback=entry.used_fallback,
             generated_heading_kind=entry.generated_heading_kind,
             merged_paragraph_ids=entry.merged_paragraph_ids,
+            controlled_fallback=entry.controlled_fallback,
+            controlled_fallback_kind=entry.controlled_fallback_kind,
         )
 
     for index, entry in enumerate(list(normalized_entries)):
@@ -786,6 +790,8 @@ def _apply_final_entry_post_normalization(entries: Sequence[FinalAssemblyEntry])
                 used_fallback=entry.used_fallback,
                 generated_heading_kind=entry.generated_heading_kind,
                 merged_paragraph_ids=entry.merged_paragraph_ids,
+                controlled_fallback=entry.controlled_fallback,
+                controlled_fallback_kind=entry.controlled_fallback_kind,
             )
         )
     normalized_entries = list(_normalize_final_entry_list_fragments(tuple(normalized_entries)))
@@ -910,6 +916,8 @@ def _build_recovery_entry(
         used_fallback=entry.used_fallback,
         generated_heading_kind=generated_heading_kind,
         merged_paragraph_ids=_entry_paragraph_ids(entry),
+        controlled_fallback=entry.controlled_fallback,
+        controlled_fallback_kind=entry.controlled_fallback_kind,
     )
 
 
@@ -1168,6 +1176,8 @@ def _merge_entry_pair(left: FinalAssemblyEntry, right: FinalAssemblyEntry) -> Fi
         used_fallback=left.used_fallback or right.used_fallback,
         generated_heading_kind=None,
         merged_paragraph_ids=_merge_paragraph_ids(left, right),
+        controlled_fallback=left.controlled_fallback or right.controlled_fallback,
+        controlled_fallback_kind=left.controlled_fallback_kind or right.controlled_fallback_kind,
     )
 
 
@@ -1300,6 +1310,12 @@ def assemble_final_markdown(
                     from_registry=True,
                     used_fallback=False,
                     merged_paragraph_ids=(paragraph_id,) if paragraph_id else (),
+                    controlled_fallback=bool(entry.get("controlled_fallback")),
+                    controlled_fallback_kind=(
+                        str(entry.get("controlled_fallback_kind"))
+                        if isinstance(entry.get("controlled_fallback_kind"), str)
+                        else None
+                    ),
                 )
             )
 
@@ -1496,6 +1512,10 @@ def build_generated_paragraph_registry_from_entries(entries: Sequence[FinalAssem
         merged_ids = list(_entry_paragraph_ids(entry))
         if len(merged_ids) > 1:
             payload["merged_paragraph_ids"] = merged_ids
+        if entry.controlled_fallback:
+            payload["controlled_fallback"] = True
+            if entry.controlled_fallback_kind:
+                payload["controlled_fallback_kind"] = entry.controlled_fallback_kind
         registry.append(payload)
     return registry
 

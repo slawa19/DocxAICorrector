@@ -1687,12 +1687,95 @@ def _resolve_false_fragment_heading_gate_samples(
 def _resolve_list_fragment_regression_gate_samples(
     *,
     raw_samples: Sequence[object],
+    final_markdown: str,
+    assembly_entries: Sequence[object],
     source_backed_entry_authority: bool,
     topology_projection_supported: bool,
 ) -> tuple[list[object], str]:
     if source_backed_entry_authority and topology_projection_supported:
         return [], "topology_projection"
+    if source_backed_entry_authority and assembly_entries:
+        entry_by_line = _build_source_backed_entry_by_markdown_line(
+            final_markdown=final_markdown,
+            assembly_entries=assembly_entries,
+        )
+        source_backed_list_texts = _build_source_backed_list_entry_texts(assembly_entries)
+        unresolved_samples = [
+            sample
+            for sample in raw_samples
+            if not _is_source_backed_list_sample(
+                sample=sample,
+                entry_by_line=entry_by_line,
+                source_backed_list_texts=source_backed_list_texts,
+            )
+        ]
+        return unresolved_samples, "entry_assembly"
     return list(raw_samples), "legacy_markdown"
+
+
+def _build_source_backed_entry_by_markdown_line(
+    *,
+    final_markdown: str,
+    assembly_entries: Sequence[object],
+) -> dict[int, object]:
+    entry_by_nonempty_line_index: dict[int, object] = {}
+    for index, entry in enumerate(assembly_entries, start=1):
+        entry_by_nonempty_line_index[index] = entry
+
+    entry_by_line: dict[int, object] = {}
+    nonempty_index = 0
+    for line_number, raw_line in enumerate(final_markdown.splitlines(), start=1):
+        if not raw_line.strip():
+            continue
+        nonempty_index += 1
+        entry = entry_by_nonempty_line_index.get(nonempty_index)
+        if entry is not None:
+            entry_by_line[line_number] = entry
+    return entry_by_line
+
+
+def _normalize_list_fragment_sample_text(text: str) -> str:
+    text = re.sub(r"^\s*[-*]\s+", "", text.strip())
+    text = re.sub(r"\s+", " ", text)
+    return text.strip().lower()
+
+
+def _is_source_backed_list_entry(entry: object) -> bool:
+    return (
+        bool(getattr(entry, "from_registry", False))
+        and not bool(getattr(entry, "used_fallback", False))
+        and str(getattr(entry, "list_kind", "") or "").strip().lower() in {"ordered", "unordered", "list"}
+    )
+
+
+def _build_source_backed_list_entry_texts(assembly_entries: Sequence[object]) -> set[str]:
+    return {
+        normalized
+        for entry in assembly_entries
+        if _is_source_backed_list_entry(entry)
+        for normalized in [_normalize_list_fragment_sample_text(str(getattr(entry, "text", "") or ""))]
+        if normalized
+    }
+
+
+def _is_source_backed_list_sample(
+    *,
+    sample: object,
+    entry_by_line: Mapping[int, object],
+    source_backed_list_texts: set[str],
+) -> bool:
+    sample_text = str(getattr(sample, "text", "") or "").split(" || ", maxsplit=1)[0]
+    normalized_sample_text = _normalize_list_fragment_sample_text(sample_text)
+    if normalized_sample_text and normalized_sample_text in source_backed_list_texts:
+        return True
+
+    line = getattr(sample, "line", None)
+    if not isinstance(line, int):
+        return False
+    entry = entry_by_line.get(line)
+    if entry is None:
+        return False
+    return _is_source_backed_list_entry(entry)
 
 
 def _build_translation_quality_report(
@@ -1755,6 +1838,8 @@ def _build_translation_quality_report(
     )
     list_fragment_regression_samples, list_fragment_regression_gate_source = _resolve_list_fragment_regression_gate_samples(
         raw_samples=raw_list_fragment_regression_samples,
+        final_markdown=final_markdown,
+        assembly_entries=assembly_entries,
         source_backed_entry_authority=source_backed_entry_authority,
         topology_projection_supported=bool(authority_fields.get("topology_projection_supported", False)),
     )

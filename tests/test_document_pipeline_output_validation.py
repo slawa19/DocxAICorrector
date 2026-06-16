@@ -1397,6 +1397,36 @@ def test_assemble_final_markdown_dedupes_repeated_short_heading_inside_title_clu
     )
 
 
+def test_assemble_final_markdown_preserves_controlled_fallback_registry_metadata():
+    assembly_result = document_pipeline_output_validation.assemble_final_markdown(
+        processed_chunks=["Evans bibliography entry."],
+        generated_paragraph_registry=[
+            {
+                "block_index": 1,
+                "paragraph_id": "p1",
+                "text": "Evans bibliography entry.",
+                "controlled_fallback": True,
+                "controlled_fallback_kind": "english_residual_output",
+            }
+        ],
+        source_paragraphs=[],
+    )
+
+    assert assembly_result.entries[0].controlled_fallback is True
+    assert assembly_result.entries[0].controlled_fallback_kind == "english_residual_output"
+    assert document_pipeline_output_validation.build_generated_paragraph_registry_from_entries(
+        assembly_result.entries
+    ) == [
+        {
+            "block_index": 1,
+            "paragraph_id": "p1",
+            "text": "Evans bibliography entry.",
+            "controlled_fallback": True,
+            "controlled_fallback_kind": "english_residual_output",
+        }
+    ]
+
+
 def test_run_document_processing_accepts_heading_only_output_for_plaintext_banner_input():
     runtime = _build_runtime_capture()
 
@@ -1547,6 +1577,7 @@ def test_run_document_processing_continues_on_english_residual_output_controlled
             "context_after": "",
             "target_chars": 36,
             "context_chars": 0,
+            "paragraph_ids": ["p1"],
         }],
         source_paragraphs=[],
         image_assets=[],
@@ -1579,6 +1610,15 @@ def test_run_document_processing_continues_on_english_residual_output_controlled
     assert result == "succeeded"
     assert runtime["state"]["last_error"] == ""
     assert runtime["state"]["processed_block_markdowns"] == ["Суд Judgment #1 уже начался."]
+    assert runtime["state"]["processed_paragraph_registry"] == [
+        {
+            "block_index": 1,
+            "paragraph_id": "p1",
+            "text": "Суд Judgment #1 уже начался.",
+            "controlled_fallback": True,
+            "controlled_fallback_kind": "english_residual_output",
+        }
+    ]
     assert runtime["state"]["latest_docx_bytes"] == b"docx-bytes"
     assert "Блок 1: сохранён с controlled fallback (english_residual_output)." in runtime["activity"]
     assert {

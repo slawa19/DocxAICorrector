@@ -19,6 +19,7 @@ from docxaicorrector.core.models import ParagraphUnit, RelationNormalizationRepo
 from docxaicorrector.document._document import build_document_text, extract_document_content_from_docx
 from docxaicorrector.generation.formatting_transfer import (
     _build_output_formatting_diagnostics,
+    _build_unmapped_target_residual_diagnostics,
     _map_source_target_paragraphs,
     _apply_minimal_caption_formatting,
     _apply_minimal_image_formatting,
@@ -486,6 +487,51 @@ def test_formatting_diagnostics_do_not_credit_short_year_target_as_split_account
     target_residual = cast(dict[str, object], diagnostics["unmapped_target_residual_diagnostics"])
     assert target_residual["counts"] == {"short_note_or_marker": 1}
     assert target_residual["split_accounting_creditable_count"] == 0
+
+
+def test_unmapped_target_residual_credits_controlled_fallback_covered_text_without_anchor():
+    source_paragraphs = [
+        ParagraphUnit(
+            paragraph_id="p1129",
+            text="Evans, Embedded Autonomy bibliography entry.",
+            role="body",
+            structural_role="body",
+            role_confidence="heuristic",
+        )
+    ]
+    target_doc = Document()
+    target_doc.add_paragraph(
+        "Evans, P., Embedded Autonomy: States and Industrial Transformation "
+        "(Princeton, NJ: University Press, 1995)."
+    )
+
+    diagnostics = _build_unmapped_target_residual_diagnostics(
+        source_paragraphs,
+        list(target_doc.paragraphs),
+        [0],
+        generated_registry_by_id={
+            "p1129": {
+                "text": (
+                    "Evans, P., Embedded Autonomy: States and Industrial Transformation "
+                    "(Princeton, NJ: University Press, 1995)."
+                ),
+                "controlled_fallback": True,
+                "controlled_fallback_kind": "english_residual_output",
+                "block_index": 225,
+            }
+        },
+        mapped_target_by_source={},
+        accepted_aggregated_sources=[],
+    )
+
+    assert diagnostics["counts"] == {"controlled_fallback_covered": 1}
+    assert diagnostics["split_accounting_creditable_count"] == 1
+    assert diagnostics["split_accounting_only_creditable_count"] == 0
+    assert diagnostics["controlled_fallback_creditable_count"] == 1
+    row = cast(list[dict[str, object]], diagnostics["residual_rows"])[0]
+    assert row["residual_class"] == "controlled_fallback_covered"
+    assert row["controlled_fallback_kind"] == "english_residual_output"
+    assert row["controlled_fallback_block_index"] == 225
 
 
 def test_build_output_formatting_diagnostics_maps_symbol_only_carryover_marker():

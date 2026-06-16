@@ -310,7 +310,8 @@ def _build_unmapped_target_residual_diagnostics(
         else:
             for source_index, source_paragraph in enumerate(source_paragraphs):
                 paragraph_id = source_paragraph.paragraph_id or f"p{source_index:04d}"
-                generated_text = _generated_registry_text(generated_registry_by_id.get(paragraph_id))
+                generated_entry = generated_registry_by_id.get(paragraph_id)
+                generated_text = _generated_registry_text(generated_entry)
                 if not generated_text:
                     continue
                 evidence = _text_coverage_evidence(normalized_target, generated_text)
@@ -324,6 +325,10 @@ def _build_unmapped_target_residual_diagnostics(
                     "evidence": evidence,
                     "source_text_preview": _paragraph_preview(source_paragraph.text),
                 }
+                if isinstance(generated_entry, Mapping) and bool(generated_entry.get("controlled_fallback")):
+                    candidate["controlled_fallback"] = True
+                    candidate["controlled_fallback_kind"] = generated_entry.get("controlled_fallback_kind")
+                    candidate["controlled_fallback_block_index"] = generated_entry.get("block_index")
                 if best_source is None:
                     best_source = candidate
                     continue
@@ -343,22 +348,24 @@ def _build_unmapped_target_residual_diagnostics(
                 source_index = int(best_source["source_index"])
                 mapped_anchor = best_source.get("mapped_target_index")
                 anchors: list[dict[str, object]] = []
-                if isinstance(mapped_anchor, int):
-                    anchors.append({"target_index": mapped_anchor, "kind": "mapped_source_target"})
-                for accepted_anchor in accepted_anchor_by_source.get(source_index, []):
-                    accepted_target_index = accepted_anchor.get("target_index")
-                    if isinstance(accepted_target_index, int):
-                        anchors.append(
-                            {
-                                "target_index": accepted_target_index,
-                                "kind": accepted_anchor.get("kind") or "accepted_aggregated_source",
-                            }
-                        )
-                if any(abs(int(anchor["target_index"]) - target_index) == 1 for anchor in anchors):
-                    classification = "split_accounting"
-                    best_source["split_anchor_targets"] = anchors
+                if bool(best_source.get("controlled_fallback")):
+                    classification = "controlled_fallback_covered"
                 elif isinstance(mapped_anchor, int):
-                    classification = "matcher_miss"
+                    anchors.append({"target_index": mapped_anchor, "kind": "mapped_source_target"})
+                    for accepted_anchor in accepted_anchor_by_source.get(source_index, []):
+                        accepted_target_index = accepted_anchor.get("target_index")
+                        if isinstance(accepted_target_index, int):
+                            anchors.append(
+                                {
+                                    "target_index": accepted_target_index,
+                                    "kind": accepted_anchor.get("kind") or "accepted_aggregated_source",
+                                }
+                            )
+                    if any(abs(int(anchor["target_index"]) - target_index) == 1 for anchor in anchors):
+                        classification = "split_accounting"
+                        best_source["split_anchor_targets"] = anchors
+                    else:
+                        classification = "matcher_miss"
 
         classification_counts[classification] = classification_counts.get(classification, 0) + 1
         row: dict[str, object] = {
@@ -383,9 +390,16 @@ def _build_unmapped_target_residual_diagnostics(
                     "split_anchor_targets": best_source.get("split_anchor_targets", []),
                 }
             )
+            if bool(best_source.get("controlled_fallback")):
+                row["controlled_fallback_kind"] = best_source.get("controlled_fallback_kind")
+                row["controlled_fallback_block_index"] = best_source.get("controlled_fallback_block_index")
         rows.append(row)
         if len(samples) < limit:
             samples.append(row)
+
+    split_accounting_count = classification_counts.get("split_accounting", 0)
+    controlled_fallback_creditable_count = classification_counts.get("controlled_fallback_covered", 0)
+    creditable_count = split_accounting_count + controlled_fallback_creditable_count
 
     return {
         "classification_basis": "full_unmapped_target_set",
@@ -394,8 +408,14 @@ def _build_unmapped_target_residual_diagnostics(
             "Credit only unmapped target paragraphs whose text is covered by a source registry entry "
             "and that sit directly adjacent to that source's mapped or accepted aggregate target."
         ),
+        "controlled_fallback_accounting_rule": (
+            "Credit unmapped target paragraphs whose text is covered by a generated registry entry "
+            "from a block explicitly retained through controlled fallback."
+        ),
         "counts": dict(sorted(classification_counts.items())),
-        "split_accounting_creditable_count": classification_counts.get("split_accounting", 0),
+        "split_accounting_creditable_count": creditable_count,
+        "split_accounting_only_creditable_count": split_accounting_count,
+        "controlled_fallback_creditable_count": controlled_fallback_creditable_count,
         "residual_rows": rows,
         "samples": samples,
     }
@@ -1584,6 +1604,14 @@ def _build_generated_registry_by_paragraph_id(
         text = entry.get("text")
         if isinstance(paragraph_id, str) and paragraph_id and isinstance(text, str) and text.strip():
             payload: dict[str, object] = {"text": text}
+            block_index = entry.get("block_index")
+            if isinstance(block_index, int) and not isinstance(block_index, bool):
+                payload["block_index"] = block_index
+            if bool(entry.get("controlled_fallback")):
+                payload["controlled_fallback"] = True
+                fallback_kind = entry.get("controlled_fallback_kind")
+                if isinstance(fallback_kind, str) and fallback_kind:
+                    payload["controlled_fallback_kind"] = fallback_kind
             merged_ids = entry.get("merged_paragraph_ids")
             if isinstance(merged_ids, Sequence) and not isinstance(merged_ids, (str, bytes)):
                 payload["merged_paragraph_ids"] = [value for value in merged_ids if isinstance(value, str) and value]

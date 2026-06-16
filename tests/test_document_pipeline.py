@@ -4722,6 +4722,184 @@ def test_build_translation_quality_report_keeps_list_fragment_markdown_observabi
     ]
 
 
+def test_build_translation_quality_report_credits_source_backed_numbered_references_without_topology():
+    final_markdown = (
+        "2. Goldman Sachs Annual Report, 2010.\n\n"
+        "14. Forbes, 2017."
+    )
+    assembly_result = document_pipeline_output_validation.FinalMarkdownAssemblyResult(
+        final_markdown=final_markdown,
+        entries=(
+            document_pipeline_output_validation.FinalAssemblyEntry(
+                text="2. Goldman Sachs Annual Report, 2010.",
+                block_index=1,
+                paragraph_id="p1",
+                source_index=0,
+                role="list",
+                structural_role="list",
+                list_kind="ordered",
+                from_registry=True,
+            ),
+            document_pipeline_output_validation.FinalAssemblyEntry(
+                text="14. Forbes, 2017.",
+                block_index=1,
+                paragraph_id="p2",
+                source_index=1,
+                role="list",
+                structural_role="list",
+                list_kind="ordered",
+                from_registry=True,
+            ),
+        ),
+        diagnostics=document_pipeline_output_validation.FinalAssemblyDiagnostics(),
+    )
+
+    report = document_pipeline_late_phases._build_translation_quality_report(
+        context=SimpleNamespace(
+            app_config={"translation_output_quality_gate_policy": "strict"},
+            processing_operation="translate",
+            uploaded_filename="report.docx",
+            translation_domain="general",
+        ),
+        final_markdown=final_markdown,
+        formatting_diagnostics_artifacts=[],
+        assembly_result=assembly_result,
+    )
+
+    assert report["quality_status"] == "pass"
+    assert report["gate_reasons"] == []
+    assert report["list_fragment_regression_count"] == 0
+    assert report["list_fragment_regression_samples"] == []
+    assert report["list_fragment_regression_gate_source"] == "entry_assembly"
+    assert report["raw_list_fragment_regression_count"] == 2
+
+
+def test_build_translation_quality_report_keeps_standalone_numeric_continuation_after_reference_credit():
+    final_markdown = (
+        "26. Барба и де Виво, «Взгляд на финансы как на непроизводительный труд», с.\n\n"
+        "1491.\n\n"
+        "27. Хаттон и Кент, «Рынок валютных деривативов», с. 225."
+    )
+    assembly_result = document_pipeline_output_validation.FinalMarkdownAssemblyResult(
+        final_markdown=final_markdown,
+        entries=(
+            document_pipeline_output_validation.FinalAssemblyEntry(
+                text="26. Барба и де Виво, «Взгляд на финансы как на непроизводительный труд», с.",
+                block_index=1,
+                paragraph_id="p1",
+                source_index=0,
+                role="list",
+                structural_role="list",
+                list_kind="ordered",
+                from_registry=True,
+            ),
+            document_pipeline_output_validation.FinalAssemblyEntry(
+                text="1491.",
+                block_index=1,
+                paragraph_id="p2",
+                source_index=1,
+                role="body",
+                structural_role="body",
+                from_registry=True,
+            ),
+            document_pipeline_output_validation.FinalAssemblyEntry(
+                text="27. Хаттон и Кент, «Рынок валютных деривативов», с. 225.",
+                block_index=1,
+                paragraph_id="p3",
+                source_index=2,
+                role="list",
+                structural_role="list",
+                list_kind="ordered",
+                from_registry=True,
+            ),
+        ),
+        diagnostics=document_pipeline_output_validation.FinalAssemblyDiagnostics(),
+    )
+
+    report = document_pipeline_late_phases._build_translation_quality_report(
+        context=SimpleNamespace(
+            app_config={"translation_output_quality_gate_policy": "strict"},
+            processing_operation="translate",
+            uploaded_filename="report.docx",
+            translation_domain="general",
+        ),
+        final_markdown=final_markdown,
+        formatting_diagnostics_artifacts=[],
+        assembly_result=assembly_result,
+    )
+
+    assert report["quality_status"] == "fail"
+    assert report["gate_reasons"] == ["list_fragment_regressions_present"]
+    assert report["list_fragment_regression_count"] == 1
+    assert report["list_fragment_regression_samples"] == [
+        {
+            "line": 3,
+            "text": "1491.",
+            "reason": "list_fragment_regressions_present",
+        }
+    ]
+    assert report["list_fragment_regression_gate_source"] == "entry_assembly"
+    assert report["raw_list_fragment_regression_count"] == 2
+
+
+def test_build_translation_quality_report_credits_source_backed_reference_by_exact_text_when_line_offsets_drift():
+    final_markdown = (
+        "Intro paragraph that shifts assembly offsets.\n\n"
+        "2. Goldman Sachs Annual Report, 2010.\n\n"
+        "1491."
+    )
+    assembly_result = document_pipeline_output_validation.FinalMarkdownAssemblyResult(
+        final_markdown=final_markdown,
+        entries=(
+            document_pipeline_output_validation.FinalAssemblyEntry(
+                text="2. Goldman Sachs Annual Report, 2010.",
+                block_index=1,
+                paragraph_id="p1",
+                source_index=0,
+                role="list",
+                structural_role="list",
+                list_kind="ordered",
+                from_registry=True,
+            ),
+            document_pipeline_output_validation.FinalAssemblyEntry(
+                text="1490–1491.",
+                block_index=1,
+                paragraph_id="p2",
+                source_index=1,
+                role="body",
+                structural_role="body",
+                from_registry=True,
+            ),
+        ),
+        diagnostics=document_pipeline_output_validation.FinalAssemblyDiagnostics(),
+    )
+
+    report = document_pipeline_late_phases._build_translation_quality_report(
+        context=SimpleNamespace(
+            app_config={"translation_output_quality_gate_policy": "strict"},
+            processing_operation="translate",
+            uploaded_filename="report.docx",
+            translation_domain="general",
+        ),
+        final_markdown=final_markdown,
+        formatting_diagnostics_artifacts=[],
+        assembly_result=assembly_result,
+    )
+
+    assert report["quality_status"] == "fail"
+    assert report["gate_reasons"] == ["list_fragment_regressions_present"]
+    assert report["list_fragment_regression_count"] == 1
+    assert report["list_fragment_regression_samples"] == [
+        {
+            "line": 5,
+            "text": "1491.",
+            "reason": "list_fragment_regressions_present",
+        }
+    ]
+    assert report["list_fragment_regression_gate_source"] == "entry_assembly"
+    assert report["raw_list_fragment_regression_count"] == 2
+
+
 def test_run_document_processing_warns_on_advisory_structural_markdown_quality_gate(tmp_path, monkeypatch):
     runtime = _build_runtime_capture()
     quality_dir = tmp_path / "quality_reports"

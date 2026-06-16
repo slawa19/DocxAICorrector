@@ -745,6 +745,36 @@ def append_marker_registry_entries(
     )
 
 
+def append_controlled_fallback_registry_entries(
+    *,
+    context: Any,
+    dependencies: Any,
+    state: Any,
+    initialization: Any,
+    index: int,
+    payload: Any,
+    processed_chunk: str,
+    rejection_kind: str,
+    append_marker_registry_entries_fn: Any,
+) -> None:
+    if payload.job_kind != "llm" or not payload.paragraph_ids:
+        return
+
+    before_count = len(state.generated_paragraph_registry)
+    append_marker_registry_entries_fn(
+        context=context,
+        dependencies=dependencies,
+        state=state,
+        initialization=initialization,
+        index=index,
+        payload=payload,
+        processed_chunk=processed_chunk,
+    )
+    for entry in state.generated_paragraph_registry[before_count:]:
+        entry["controlled_fallback"] = True
+        entry["controlled_fallback_kind"] = rejection_kind
+
+
 def emit_block_completed(
     *,
     context: Any,
@@ -836,6 +866,7 @@ def continue_controlled_processed_block_rejection(
     payload: Any,
     processed_chunk: str,
     rejection_kind: str,
+    append_marker_registry_entries_fn: Any,
 ) -> None:
     artifact_path = _write_controlled_block_fallback_artifact(
         context=context,
@@ -850,6 +881,29 @@ def continue_controlled_processed_block_rejection(
         state.narration_chunks.append(processed_chunk)
     else:
         state.excluded_narration_block_count += 1
+    try:
+        append_controlled_fallback_registry_entries(
+            context=context,
+            dependencies=dependencies,
+            state=state,
+            initialization=initialization,
+            index=index,
+            payload=payload,
+            processed_chunk=processed_chunk,
+            rejection_kind=rejection_kind,
+            append_marker_registry_entries_fn=append_marker_registry_entries_fn,
+        )
+    except Exception as exc:
+        dependencies.log_event(
+            logging.WARNING,
+            "controlled_fallback_registry_build_failed",
+            "Не удалось собрать marker registry для controlled fallback блока.",
+            filename=context.uploaded_filename,
+            block_index=index,
+            block_count=initialization.job_count,
+            rejection_kind=rejection_kind,
+            error_message=str(exc),
+        )
     persist_terminal_job_result(
         context=context,
         dependencies=dependencies,
@@ -992,6 +1046,7 @@ def process_single_block(
                 payload=payload,
                 processed_chunk=processed_chunk,
                 rejection_kind=processed_block_status,
+                append_marker_registry_entries_fn=append_marker_registry_entries_fn,
             )
             return None
         return handle_processed_block_rejection_fn(
