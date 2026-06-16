@@ -3909,6 +3909,39 @@ def test_build_translation_quality_report_flags_bullet_marker_headings_in_strict
     ]
 
 
+def test_build_translation_quality_report_counts_capped_legacy_hygiene_samples(monkeypatch):
+    samples = [
+        SimpleNamespace(line=index + 1, text=f"## ● {index}", reason="bullet_marker_heading")
+        for index in range(10)
+    ]
+    monkeypatch.setattr(
+        document_pipeline_late_phases,
+        "collect_bullet_heading_samples",
+        lambda markdown_text: list(samples),
+    )
+
+    report = document_pipeline_late_phases._build_translation_quality_report(
+        context=SimpleNamespace(
+            app_config={"translation_output_quality_gate_policy": "strict"},
+            processing_operation="translate",
+            uploaded_filename="report.docx",
+            translation_domain="general",
+            paragraph_count=2000,
+        ),
+        final_markdown="Bullet headings",
+        formatting_diagnostics_artifacts=[],
+    )
+
+    assert report["quality_status"] == "warn"
+    assert report["gate_reasons"] == ["bullet_marker_headings_review_required"]
+    assert report["bullet_heading_count"] == 10
+    assert report["formatting_review_required_count"] == 10
+    review_items = cast(list[dict[str, object]], report["formatting_review_items"])
+    assert len(review_items) == 8
+    assert review_items[0]["aggregate_count"] == 10
+    assert [item["count"] for item in review_items] == [0] * 8
+
+
 @pytest.mark.parametrize(
     "markdown_text",
     [
