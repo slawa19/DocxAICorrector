@@ -4581,6 +4581,17 @@ def _load_translation_quality_report(event_log: Sequence[Mapping[str, object]]) 
     return payload, _path_for_report(candidate)
 
 
+def _translation_quality_reason_is_review_only(
+    translation_quality_report: Mapping[str, object],
+    *,
+    reason: str,
+) -> bool:
+    gate_reasons = translation_quality_report.get("gate_reasons")
+    if not isinstance(gate_reasons, Sequence) or isinstance(gate_reasons, (str, bytes)):
+        return False
+    return reason in {str(item) for item in gate_reasons}
+
+
 def _extract_ui_result_artifact_paths(event_log: Sequence[Mapping[str, object]]) -> dict[str, str]:
     for event in reversed(event_log):
         if str(event.get("event_id") or "") != "ui_result_artifacts_saved":
@@ -5314,10 +5325,22 @@ def evaluate_lietaer_acceptance(
         )
         add_check(
             "list_fragment_regressions_present",
-            _coerce_int(translation_quality_report.get("list_fragment_regression_count")) == 0,
+            _coerce_int(translation_quality_report.get("list_fragment_regression_count")) == 0
+            or _translation_quality_reason_is_review_only(
+                translation_quality_report,
+                reason="list_fragment_regressions_review_required",
+            ),
             list_fragment_regression_count=translation_quality_report.get("list_fragment_regression_count"),
             list_fragment_regression_gate_source=translation_quality_report.get("list_fragment_regression_gate_source"),
             raw_list_fragment_regression_count=translation_quality_report.get("raw_list_fragment_regression_count"),
+            review_reason=(
+                "list_fragment_regressions_review_required"
+                if _translation_quality_reason_is_review_only(
+                    translation_quality_report,
+                    reason="list_fragment_regressions_review_required",
+                )
+                else None
+            ),
         )
         add_check(
             "mixed_script_terms_present",

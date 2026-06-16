@@ -1634,6 +1634,18 @@ def _apply_quality_gate_reason(
     return quality_status
 
 
+def _apply_quality_review_reason(
+    *,
+    quality_status: str,
+    gate_reasons: list[str],
+    reason: str,
+) -> str:
+    if quality_status != "fail":
+        quality_status = "warn"
+    gate_reasons.append(reason)
+    return quality_status
+
+
 def _serialize_quality_samples(samples: Sequence[object], *, limit: int = 8) -> list[dict[str, object]]:
     serialized: list[dict[str, object]] = []
     for sample in list(samples)[:limit]:
@@ -1778,6 +1790,117 @@ def _is_source_backed_list_sample(
     return _is_source_backed_list_entry(entry)
 
 
+_STANDALONE_NUMERIC_CONTINUATION_PATTERN = re.compile(r"^\s*\d{1,6}\.\s*$")
+_BACK_MATTER_REVIEW_LIST_FRAGMENT_LIMIT = 3
+_ROLE_AWARE_UNMAPPED_SOURCE_REVIEW_RATIO = 0.01
+
+
+def _is_standalone_numeric_continuation_sample(sample: object) -> bool:
+    text = str(getattr(sample, "text", "") or "").strip()
+    return bool(_STANDALONE_NUMERIC_CONTINUATION_PATTERN.fullmatch(text))
+
+
+def _is_reviewable_list_fragment_residue(
+    *,
+    samples: Sequence[object],
+    gate_source: str,
+) -> bool:
+    if gate_source != "entry_assembly":
+        return False
+    if not samples or len(samples) > _BACK_MATTER_REVIEW_LIST_FRAGMENT_LIMIT:
+        return False
+    return all(_is_standalone_numeric_continuation_sample(sample) for sample in samples)
+
+
+def _build_formatting_review_item(
+    *,
+    reason: str,
+    label: str,
+    sample: Mapping[str, object] | None = None,
+    count: int = 1,
+    severity: str = "review",
+) -> dict[str, object]:
+    item: dict[str, object] = {
+        "reason": reason,
+        "label": label,
+        "count": count,
+        "severity": severity,
+    }
+    if sample:
+        item["sample"] = dict(sample)
+    return item
+
+
+def _effective_formatting_coverage_diagnostics(payload: Mapping[str, object]) -> Mapping[str, object]:
+    residual = payload.get("unmapped_source_residual_diagnostics")
+    if not isinstance(residual, Mapping):
+        return {}
+    effective = residual.get("effective_formatting_coverage_diagnostics")
+    if not isinstance(effective, Mapping):
+        return {}
+    return effective
+
+
+def _effective_formatting_coverage_counts(payload: Mapping[str, object]) -> Mapping[str, object]:
+    counts = _effective_formatting_coverage_diagnostics(payload).get("counts")
+    return counts if isinstance(counts, Mapping) else {}
+
+
+def _effective_formatting_coverage_samples_by_class(
+    payload: Mapping[str, object],
+    *,
+    coverage_class: str,
+    limit: int = 8,
+) -> list[Mapping[str, object]]:
+    residual = payload.get("unmapped_source_residual_diagnostics")
+    if not isinstance(residual, Mapping):
+        return []
+    samples = residual.get("samples")
+    if not isinstance(samples, Sequence) or isinstance(samples, (str, bytes)):
+        return []
+    selected: list[Mapping[str, object]] = []
+    for sample in samples:
+        if not isinstance(sample, Mapping):
+            continue
+        if str(sample.get("effective_formatting_coverage_class") or "") != coverage_class:
+            continue
+        selected.append(sample)
+        if len(selected) >= limit:
+            break
+    return selected
+
+
+def _serialize_role_loss_sample(sample: Mapping[str, object]) -> dict[str, object]:
+    text = sample.get("text_preview") or sample.get("generated_text_preview") or ""
+    return {
+        "line": None,
+        "text": text,
+        "reason": "content_survived_but_format_role_lost",
+        "role": sample.get("role"),
+        "structural_role": sample.get("structural_role"),
+    }
+
+
+def _is_reviewable_role_aware_unmapped_source_residue(
+    *,
+    count: int,
+    source_total: object,
+    basis: str,
+    coverage_counts: Mapping[str, object],
+) -> bool:
+    if count <= 0 or basis != "role_aware_formatting_coverage":
+        return False
+    try:
+        role_loss_count = int(coverage_counts.get("content_survived_but_format_role_lost") or 0)
+    except (TypeError, ValueError):
+        role_loss_count = 0
+    if role_loss_count > 0:
+        return False
+    if not isinstance(source_total, int) or source_total <= 0:
+        return False
+    return (count / source_total) <= _ROLE_AWARE_UNMAPPED_SOURCE_REVIEW_RATIO
+
+
 def _build_translation_quality_report(
     *,
     context: Any,
@@ -1797,6 +1920,7 @@ def _build_translation_quality_report(
     policy = _resolve_translation_quality_gate_policy(context=context)
     quality_status = "pass"
     gate_reasons: list[str] = []
+    formatting_review_items: list[dict[str, object]] = []
     bullet_heading_samples = collect_bullet_heading_samples(normalized_quality_markdown)
     raw_bullet_heading_samples = collect_bullet_heading_samples(final_markdown)
     bullet_heading_count = len(bullet_heading_samples)
@@ -1884,13 +2008,74 @@ def _build_translation_quality_report(
     if context.processing_operation == "translate":
         basis = str(authority_fields.get("unmapped_source_count_basis") or "legacy_paragraph").strip().lower() or "legacy_paragraph"
         effective_source_total = source_paragraph_count
+        effective_coverage_counts = (
+            _effective_formatting_coverage_counts(latest_payload)
+            if isinstance(latest_payload, Mapping)
+            else {}
+        )
+        try:
+            role_loss_count = int(effective_coverage_counts.get("content_survived_but_format_role_lost") or 0)
+        except (TypeError, ValueError):
+            role_loss_count = 0
         if basis == "topology_unit":
             structure_unit_total_count = authority_fields.get("structure_unit_total_count")
             if isinstance(structure_unit_total_count, int) and structure_unit_total_count > 0:
                 effective_source_total = structure_unit_total_count
         if policy == "strict" and worst_unmapped_source_count > 0:
-            quality_status = "fail"
-            gate_reasons.append("unmapped_source_paragraphs_present")
+            if basis == "role_aware_formatting_coverage" and role_loss_count > 0:
+                quality_status = _apply_quality_review_reason(
+                    quality_status=quality_status,
+                    gate_reasons=gate_reasons,
+                    reason="role_loss_review_required",
+                )
+                role_loss_samples = (
+                    _effective_formatting_coverage_samples_by_class(
+                        latest_payload,
+                        coverage_class="content_survived_but_format_role_lost",
+                    )
+                    if isinstance(latest_payload, Mapping)
+                    else []
+                )
+                if role_loss_samples:
+                    for sample in role_loss_samples:
+                        formatting_review_items.append(
+                            _build_formatting_review_item(
+                                reason="role_loss_review_required",
+                                label="Структурный абзац стал обычным текстом",
+                                sample=_serialize_role_loss_sample(sample),
+                                severity="fix",
+                            )
+                        )
+                else:
+                    formatting_review_items.append(
+                        _build_formatting_review_item(
+                            reason="role_loss_review_required",
+                            label="Структурные абзацы требуют ручной правки",
+                            count=role_loss_count,
+                            severity="fix",
+                        )
+                    )
+            elif _is_reviewable_role_aware_unmapped_source_residue(
+                count=worst_unmapped_source_count,
+                source_total=effective_source_total,
+                basis=basis,
+                coverage_counts=effective_coverage_counts,
+            ):
+                quality_status = _apply_quality_review_reason(
+                    quality_status=quality_status,
+                    gate_reasons=gate_reasons,
+                    reason="unmapped_source_paragraphs_review_required",
+                )
+                formatting_review_items.append(
+                    _build_formatting_review_item(
+                        reason="unmapped_source_paragraphs_review_required",
+                        label="Абзацы без явного соответствия оригиналу",
+                        count=worst_unmapped_source_count,
+                    )
+                )
+            else:
+                quality_status = "fail"
+                gate_reasons.append("unmapped_source_paragraphs_present")
         elif policy == "advisory" and worst_unmapped_source_count > 0:
             if isinstance(effective_source_total, int) and effective_source_total > 0 and (worst_unmapped_source_count / effective_source_total) > 0.01:
                 quality_status = "warn"
@@ -1924,12 +2109,31 @@ def _build_translation_quality_report(
                 reason="residual_bullet_glyphs_present",
             )
         if list_fragment_regression_samples:
-            quality_status = _apply_quality_gate_reason(
-                quality_status=quality_status,
-                gate_reasons=gate_reasons,
-                policy=policy,
-                reason="list_fragment_regressions_present",
-            )
+            if _is_reviewable_list_fragment_residue(
+                samples=list_fragment_regression_samples,
+                gate_source=list_fragment_regression_gate_source,
+            ):
+                serialized_samples = _serialize_quality_samples(list_fragment_regression_samples)
+                quality_status = _apply_quality_review_reason(
+                    quality_status=quality_status,
+                    gate_reasons=gate_reasons,
+                    reason="list_fragment_regressions_review_required",
+                )
+                for sample in serialized_samples:
+                    formatting_review_items.append(
+                        _build_formatting_review_item(
+                            reason="list_fragment_regressions_review_required",
+                            label="Одиночный номер в сносках или библиографии",
+                            sample=sample,
+                        )
+                    )
+            else:
+                quality_status = _apply_quality_gate_reason(
+                    quality_status=quality_status,
+                    gate_reasons=gate_reasons,
+                    policy=policy,
+                    reason="list_fragment_regressions_present",
+                )
         if mixed_script_samples:
             quality_status = _apply_quality_gate_reason(
                 quality_status=quality_status,
@@ -2055,6 +2259,8 @@ def _build_translation_quality_report(
         "final_markdown_chars": len(normalized_quality_markdown),
         "quality_status": quality_status,
         "gate_reasons": gate_reasons,
+        "formatting_review_required_count": len(formatting_review_items),
+        "formatting_review_items": formatting_review_items,
         "formatting_diagnostics_artifact_paths": list(formatting_diagnostics_artifacts),
         "boundary_recovery": {
             "accepted_merges": getattr(getattr(assembly_result, "diagnostics", None), "accepted_merges", 0),
@@ -2209,12 +2415,19 @@ def _build_result_quality_warning(
     quality_status = str(quality_report.get("quality_status", "") or "")
     if quality_status not in {"warn", "fail"}:
         return None
-    return {
+    warning = {
         "kind": "translation_quality_gate",
         "quality_status": quality_status,
         "gate_reasons": list(cast(Sequence[str], quality_report.get("gate_reasons") or [])),
         "message": str((latest_result_notice or {}).get("message", "") or ""),
     }
+    formatting_review_items = list(cast(Sequence[object], quality_report.get("formatting_review_items") or []))
+    if formatting_review_items:
+        warning["formatting_review_items"] = formatting_review_items
+        warning["formatting_review_required_count"] = int(
+            quality_report.get("formatting_review_required_count") or len(formatting_review_items)
+        )
+    return warning
 
 
 def _build_quality_gate_activity_message(gate_reasons: Sequence[str]) -> str:
@@ -2864,10 +3077,16 @@ def finalize_processing_success(
         pre_cleanup_formatting_baseline=cast(Mapping[str, object] | None, docx_phase.get("pre_cleanup_formatting_baseline")),
     )
     if quality_report.get("quality_status") == "warn":
+        review_count = int(quality_report.get("formatting_review_required_count") or 0)
+        warning_message = (
+            f"Готово. {review_count} абзацев требуют проверки оформления. Подробности: formatting_review.txt"
+            if review_count > 0
+            else "Результат собран, но quality report зафиксировал document-level structural warnings."
+        )
         docx_phase = dict(docx_phase)
         docx_phase["latest_result_notice"] = {
             "level": "warning",
-            "message": "Результат собран, но quality report зафиксировал document-level structural warnings.",
+            "message": warning_message,
         }
     quality_report_path = _write_quality_report_artifact(source_name=context.uploaded_filename, payload=quality_report)
     if quality_report_path is not None:

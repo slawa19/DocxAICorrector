@@ -50,6 +50,74 @@ def _build_ui_result_stem(source_name: str, *, created_at: float | None = None) 
     return f"{timestamp}_{stem}.result"
 
 
+def _truncate_review_text(value: object, *, limit: int = 160) -> str:
+    text = " ".join(str(value or "").split())
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - 1)].rstrip() + "…"
+
+
+def _build_formatting_review_text(
+    *,
+    source_name: str,
+    quality_warning: Mapping[str, object] | None,
+    created_at: float | None,
+) -> str:
+    timestamp = datetime.fromtimestamp(time.time() if created_at is None else created_at).isoformat(timespec="seconds")
+    items = list(quality_warning.get("formatting_review_items") or []) if quality_warning else []
+    review_count = int((quality_warning or {}).get("formatting_review_required_count") or len(items) or 0)
+    fix_count = sum(
+        int(item.get("count") or 1)
+        for item in items
+        if isinstance(item, Mapping) and str(item.get("severity") or "review") == "fix"
+    )
+    manual_review_count = max(review_count - fix_count, 0)
+    lines = [
+        f"Проверка оформления — {Path(source_name).name or 'document'}",
+        f"Дата: {timestamp}",
+        f"Итог: {fix_count} на правку / {manual_review_count} на проверку",
+        "",
+        "Что значат пометки: [ПРОВЕРКА] — желательно открыть место в DOCX и проверить оформление.",
+        "",
+        "-" * 70,
+    ]
+    if not items:
+        lines.extend(
+            [
+                "[OK] Расхождений оформления для ручной проверки не найдено.",
+                "-" * 70,
+                "Всего: ПРАВКА 0 · ПРОВЕРКА 0 · КРИТ 0",
+            ]
+        )
+        return "\n".join(lines) + "\n"
+
+    for index, item in enumerate(items, start=1):
+        if not isinstance(item, Mapping):
+            continue
+        marker = "[ПРАВКА]" if str(item.get("severity") or "review") == "fix" else "[ПРОВЕРКА]"
+        label = _truncate_review_text(item.get("label") or "Абзац требует проверки оформления", limit=100)
+        sample = item.get("sample")
+        sample_text = ""
+        if isinstance(sample, Mapping):
+            sample_text = _truncate_review_text(sample.get("text"), limit=180)
+        count = int(item.get("count") or 1)
+        lines.append(f"{marker} {label}")
+        if sample_text:
+            lines.append(f"  В выводе: «{sample_text}»")
+        elif count > 1:
+            lines.append(f"  Количество: {count}")
+        lines.append("  Как проверить: найдите этот фрагмент в DOCX и убедитесь, что стиль и позиция сохранены.")
+        if index != len(items):
+            lines.append("")
+    lines.extend(
+        [
+            "-" * 70,
+            f"Всего: ПРАВКА {fix_count} · ПРОВЕРКА {manual_review_count} · КРИТ 0",
+        ]
+    )
+    return "\n".join(lines) + "\n"
+
+
 def write_ui_result_artifacts(
     *,
     source_name: str,
@@ -70,6 +138,7 @@ def write_ui_result_artifacts(
     tts_path = output_dir / f"{artifact_stem}.tts.txt"
     meta_path = output_dir / f"{artifact_stem}.meta.json"
     manifest_path = output_dir / f"{artifact_stem}.manifest.json"
+    formatting_review_path = output_dir / f"{artifact_stem}.formatting_review.txt"
 
     meta_payload: dict[str, object] = {"version": 1}
     if assembly_mode is not None:
@@ -85,6 +154,15 @@ def write_ui_result_artifacts(
         docx_path.write_bytes(docx_bytes)
         if narration_text is not None:
             tts_path.write_text(narration_text, encoding="utf-8")
+        if quality_warning:
+            formatting_review_path.write_text(
+                _build_formatting_review_text(
+                    source_name=source_name,
+                    quality_warning=quality_warning,
+                    created_at=created_at,
+                ),
+                encoding="utf-8",
+            )
         if write_meta:
             meta_path.write_text(
                 json.dumps(meta_payload, ensure_ascii=False, indent=2),
@@ -107,6 +185,8 @@ def write_ui_result_artifacts(
                 meta_path.unlink()
             if manifest_path.exists():
                 manifest_path.unlink()
+            if formatting_review_path.exists():
+                formatting_review_path.unlink()
         except OSError:
             pass
         raise
@@ -125,6 +205,8 @@ def write_ui_result_artifacts(
         artifact_paths["tts_text_path"] = str(tts_path)
     if write_meta:
         artifact_paths["metadata_path"] = str(meta_path)
+    if quality_warning:
+        artifact_paths["formatting_review_path"] = str(formatting_review_path)
     if result_manifest is not None:
         artifact_paths["manifest_path"] = str(manifest_path)
     return artifact_paths

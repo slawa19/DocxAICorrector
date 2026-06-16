@@ -4828,8 +4828,8 @@ def test_build_translation_quality_report_keeps_standalone_numeric_continuation_
         assembly_result=assembly_result,
     )
 
-    assert report["quality_status"] == "fail"
-    assert report["gate_reasons"] == ["list_fragment_regressions_present"]
+    assert report["quality_status"] == "warn"
+    assert report["gate_reasons"] == ["list_fragment_regressions_review_required"]
     assert report["list_fragment_regression_count"] == 1
     assert report["list_fragment_regression_samples"] == [
         {
@@ -4840,6 +4840,20 @@ def test_build_translation_quality_report_keeps_standalone_numeric_continuation_
     ]
     assert report["list_fragment_regression_gate_source"] == "entry_assembly"
     assert report["raw_list_fragment_regression_count"] == 2
+    assert report["formatting_review_required_count"] == 1
+    assert report["formatting_review_items"] == [
+        {
+            "reason": "list_fragment_regressions_review_required",
+            "label": "Одиночный номер в сносках или библиографии",
+            "count": 1,
+            "severity": "review",
+            "sample": {
+                "line": 3,
+                "text": "1491.",
+                "reason": "list_fragment_regressions_present",
+            },
+        }
+    ]
 
 
 def test_build_translation_quality_report_credits_source_backed_reference_by_exact_text_when_line_offsets_drift():
@@ -4886,8 +4900,8 @@ def test_build_translation_quality_report_credits_source_backed_reference_by_exa
         assembly_result=assembly_result,
     )
 
-    assert report["quality_status"] == "fail"
-    assert report["gate_reasons"] == ["list_fragment_regressions_present"]
+    assert report["quality_status"] == "warn"
+    assert report["gate_reasons"] == ["list_fragment_regressions_review_required"]
     assert report["list_fragment_regression_count"] == 1
     assert report["list_fragment_regression_samples"] == [
         {
@@ -4898,6 +4912,7 @@ def test_build_translation_quality_report_credits_source_backed_reference_by_exa
     ]
     assert report["list_fragment_regression_gate_source"] == "entry_assembly"
     assert report["raw_list_fragment_regression_count"] == 2
+    assert report["formatting_review_required_count"] == 1
 
 
 def test_run_document_processing_warns_on_advisory_structural_markdown_quality_gate(tmp_path, monkeypatch):
@@ -5129,6 +5144,138 @@ def test_build_translation_quality_report_uses_role_aware_effective_unmapped_sou
     assert report["unmapped_source_count_basis"] == "role_aware_formatting_coverage"
     assert report["unmapped_source_count"] == 1
     assert report["worst_unmapped_source_count"] == 1
+
+
+def test_build_translation_quality_report_warns_on_small_role_aware_unmapped_source_residue(monkeypatch):
+    monkeypatch.setattr(
+        document_pipeline_late_phases,
+        "_load_formatting_diagnostics_payloads",
+        lambda artifact_paths: [
+            {
+                "unmapped_source_ids": [f"p{index:04d}" for index in range(8)],
+                "unmapped_target_indexes": [],
+                "source_count": 1140,
+                "target_count": 1135,
+                "source_registry": [
+                    {
+                        "paragraph_id": f"p{index:04d}",
+                        "source_index": index,
+                        "role": "body",
+                        "structural_role": "body",
+                        "text_preview": f"Body {index}",
+                    }
+                    for index in range(8)
+                ],
+                "unmapped_source_residual_diagnostics": {
+                    "effective_formatting_coverage_diagnostics": {
+                        "format_neutral_creditable_count": 0,
+                    }
+                },
+            }
+        ],
+    )
+
+    report = document_pipeline_late_phases._build_translation_quality_report(
+        context=SimpleNamespace(
+            app_config={"translation_output_quality_gate_policy": "strict"},
+            processing_operation="translate",
+            uploaded_filename="report.docx",
+            translation_domain="general",
+            document_map=None,
+            document_topology_projection=None,
+        ),
+        final_markdown="Body",
+        formatting_diagnostics_artifacts=["ignored.json"],
+    )
+
+    assert report["quality_status"] == "warn"
+    assert report["gate_reasons"] == ["unmapped_source_paragraphs_review_required"]
+    assert report["unmapped_source_count_basis"] == "role_aware_formatting_coverage"
+    assert report["unmapped_source_count"] == 8
+    assert report["formatting_review_required_count"] == 1
+    assert report["formatting_review_items"] == [
+        {
+            "reason": "unmapped_source_paragraphs_review_required",
+            "label": "Абзацы без явного соответствия оригиналу",
+            "count": 8,
+            "severity": "review",
+        }
+    ]
+
+
+def test_build_translation_quality_report_surfaces_role_loss_as_fix_not_generic_review(monkeypatch):
+    monkeypatch.setattr(
+        document_pipeline_late_phases,
+        "_load_formatting_diagnostics_payloads",
+        lambda artifact_paths: [
+            {
+                "unmapped_source_ids": ["p0001"],
+                "unmapped_target_indexes": [],
+                "source_count": 1140,
+                "target_count": 1139,
+                "source_registry": [
+                    {
+                        "paragraph_id": "p0001",
+                        "source_index": 1,
+                        "role": "heading",
+                        "structural_role": "heading",
+                        "text_preview": "Chapter 10",
+                    }
+                ],
+                "unmapped_source_residual_diagnostics": {
+                    "effective_formatting_coverage_diagnostics": {
+                        "counts": {
+                            "content_survived_but_format_role_lost": 1,
+                        },
+                        "format_neutral_creditable_count": 0,
+                    },
+                    "samples": [
+                        {
+                            "paragraph_id": "p0001",
+                            "source_index": 1,
+                            "role": "heading",
+                            "structural_role": "heading",
+                            "text_preview": "Chapter 10",
+                            "effective_formatting_coverage_class": "content_survived_but_format_role_lost",
+                        }
+                    ],
+                },
+            }
+        ],
+    )
+
+    report = document_pipeline_late_phases._build_translation_quality_report(
+        context=SimpleNamespace(
+            app_config={"translation_output_quality_gate_policy": "strict"},
+            processing_operation="translate",
+            uploaded_filename="report.docx",
+            translation_domain="general",
+            document_map=None,
+            document_topology_projection=None,
+        ),
+        final_markdown="Chapter 10 inline body text",
+        formatting_diagnostics_artifacts=["ignored.json"],
+    )
+
+    assert report["quality_status"] == "warn"
+    assert report["gate_reasons"] == ["role_loss_review_required"]
+    assert report["unmapped_source_count_basis"] == "role_aware_formatting_coverage"
+    assert report["unmapped_source_count"] == 1
+    assert report["formatting_review_items"] == [
+        {
+            "reason": "role_loss_review_required",
+            "label": "Структурный абзац стал обычным текстом",
+            "count": 1,
+            "severity": "fix",
+            "sample": {
+                "line": None,
+                "text": "Chapter 10",
+                "reason": "content_survived_but_format_role_lost",
+                "role": "heading",
+                "structural_role": "heading",
+            },
+        }
+    ]
 
 
 def test_build_translation_quality_report_uses_role_aware_effective_unmapped_target_count(monkeypatch):

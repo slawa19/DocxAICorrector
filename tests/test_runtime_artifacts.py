@@ -87,9 +87,13 @@ def test_write_ui_result_artifacts_persists_machine_readable_quality_warning(tmp
     )
 
     metadata_path = Path(artifact_paths["metadata_path"])
+    formatting_review_path = Path(artifact_paths["formatting_review_path"])
 
     assert metadata_path.parent == tmp_path
     assert metadata_path.name.endswith(".result.meta.json")
+    assert formatting_review_path.parent == tmp_path
+    assert formatting_review_path.name.endswith(".result.formatting_review.txt")
+    assert "Проверка оформления — report.docx" in formatting_review_path.read_text(encoding="utf-8")
     assert json.loads(metadata_path.read_text(encoding="utf-8")) == {
         "version": 1,
         "quality_warning": {
@@ -99,6 +103,63 @@ def test_write_ui_result_artifacts_persists_machine_readable_quality_warning(tmp
             "message": "Paragraph mapping drift detected.",
         },
     }
+
+
+def test_write_ui_result_artifacts_persists_human_readable_formatting_review(tmp_path):
+    artifact_paths = write_ui_result_artifacts(
+        source_name="report.docx",
+        markdown_text="body",
+        docx_bytes=b"docx-bytes",
+        quality_warning={
+            "quality_status": "warn",
+            "gate_reasons": ["list_fragment_regressions_review_required"],
+            "formatting_review_required_count": 1,
+            "formatting_review_items": [
+                {
+                    "label": "Одиночный номер в сносках или библиографии",
+                    "sample": {"text": "1489."},
+                }
+            ],
+        },
+        output_dir=tmp_path,
+        created_at=1_766_636_465.0,
+    )
+
+    review_path = Path(artifact_paths["formatting_review_path"])
+    review_text = review_path.read_text(encoding="utf-8")
+
+    assert review_path.name.endswith(".result.formatting_review.txt")
+    assert "[ПРОВЕРКА] Одиночный номер в сносках или библиографии" in review_text
+    assert "В выводе: «1489.»" in review_text
+    assert "Всего: ПРАВКА 0 · ПРОВЕРКА 1 · КРИТ 0" in review_text
+
+
+def test_write_ui_result_artifacts_marks_role_loss_review_items_as_fix(tmp_path):
+    artifact_paths = write_ui_result_artifacts(
+        source_name="report.docx",
+        markdown_text="body",
+        docx_bytes=b"docx-bytes",
+        quality_warning={
+            "quality_status": "warn",
+            "gate_reasons": ["role_loss_review_required"],
+            "formatting_review_required_count": 1,
+            "formatting_review_items": [
+                {
+                    "severity": "fix",
+                    "label": "Структурный абзац стал обычным текстом",
+                    "sample": {"text": "Chapter 10"},
+                }
+            ],
+        },
+        output_dir=tmp_path,
+        created_at=1_766_636_465.0,
+    )
+
+    review_text = Path(artifact_paths["formatting_review_path"]).read_text(encoding="utf-8")
+
+    assert "[ПРАВКА] Структурный абзац стал обычным текстом" in review_text
+    assert "В выводе: «Chapter 10»" in review_text
+    assert "Всего: ПРАВКА 1 · ПРОВЕРКА 0 · КРИТ 0" in review_text
 
 
 def test_write_ui_result_artifacts_records_assembly_mode_in_meta(tmp_path):
@@ -207,6 +268,7 @@ def test_write_ui_result_artifacts_prunes_old_result_family_atomically(tmp_path,
         ".tts.txt": "old narration",
         ".meta.json": json.dumps({"version": 1, "assembly_mode": "selected_chapters"}),
         ".manifest.json": json.dumps({"schema_version": 1, "segments": []}),
+        ".formatting_review.txt": "old review",
     }.items():
         path = tmp_path / f"{old_stem}{suffix}"
         if isinstance(content, bytes):
@@ -230,9 +292,10 @@ def test_write_ui_result_artifacts_prunes_old_result_family_atomically(tmp_path,
     remaining_names = sorted(path.name for path in tmp_path.iterdir() if path.is_file())
 
     assert not any(name.startswith(old_stem) for name in remaining_names)
-    assert len(new_family_names) == 5
+    assert len(new_family_names) == 6
     assert all(name.endswith(suffix) for name, suffix in zip(new_family_names, [
         ".result.docx",
+        ".result.formatting_review.txt",
         ".result.manifest.json",
         ".result.md",
         ".result.meta.json",

@@ -360,6 +360,51 @@ def test_evaluate_lietaer_acceptance_uses_authoritative_structural_markdown_coun
     assert by_name["list_fragment_regressions_present"]["raw_list_fragment_regression_count"] == 1
 
 
+def test_evaluate_lietaer_acceptance_tolerates_review_only_list_fragment_residue() -> None:
+    validation = _load_validation_module()
+
+    report = {
+        "result": "succeeded",
+        "output_artifacts": {
+            "output_docx_openable": True,
+            "output_contains_placeholder_markup": False,
+        },
+        "formatting_diagnostics": [],
+        "translation_quality_report": {
+            "bullet_heading_count": 0,
+            "false_fragment_heading_count": 0,
+            "residual_bullet_glyph_count": 0,
+            "list_fragment_regression_count": 1,
+            "list_fragment_regression_gate_source": "entry_assembly",
+            "raw_list_fragment_regression_count": 47,
+            "mixed_script_term_count": 0,
+            "theology_style_deterministic_issue_count": 0,
+            "toc_body_concat_detected": False,
+            "quality_status": "warn",
+            "gate_reasons": ["list_fragment_regressions_review_required"],
+            "formatting_review_items": [
+                {
+                    "reason": "list_fragment_regressions_review_required",
+                    "label": "Одиночный номер в сносках или библиографии",
+                    "sample": {
+                        "line": 42,
+                        "text": "1489.",
+                        "reason": "list_fragment_regressions_present",
+                    },
+                }
+            ],
+        },
+    }
+
+    acceptance = validation.evaluate_lietaer_acceptance(report)
+    by_name = {check["name"]: check for check in acceptance["checks"]}
+
+    assert "list_fragment_regressions_present" not in acceptance["failed_checks"]
+    assert by_name["list_fragment_regressions_present"]["passed"] is True
+    assert by_name["list_fragment_regressions_present"]["review_reason"] == "list_fragment_regressions_review_required"
+    assert by_name["list_fragment_regressions_present"]["list_fragment_regression_count"] == 1
+
+
 def test_evaluate_lietaer_acceptance_ignores_centered_heading_alignment_for_minimal_formatter_contract() -> None:
     validation = _load_validation_module()
 

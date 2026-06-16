@@ -76,6 +76,7 @@ _UI_RESULT_GROUP_SUFFIXES = (
     ".result.manifest.json",
     ".result.meta.json",
     ".result.tts.txt",
+    ".result.formatting_review.txt",
     ".result.docx",
     ".result.md",
 )
