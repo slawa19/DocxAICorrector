@@ -5301,6 +5301,12 @@ def evaluate_lietaer_acceptance(
 
     if translation_quality_report:
         add_check(
+            "translation_quality_report_not_failed",
+            str(translation_quality_report.get("quality_status") or "").strip().lower() != "fail",
+            quality_status=translation_quality_report.get("quality_status"),
+            gate_reasons=translation_quality_report.get("gate_reasons"),
+        )
+        add_check(
             "bullet_marker_headings_present",
             _coerce_int(translation_quality_report.get("bullet_heading_count")) == 0,
             bullet_heading_count=translation_quality_report.get("bullet_heading_count"),

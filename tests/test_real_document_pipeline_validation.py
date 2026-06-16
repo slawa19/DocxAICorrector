@@ -405,6 +405,40 @@ def test_evaluate_lietaer_acceptance_tolerates_review_only_list_fragment_residue
     assert by_name["list_fragment_regressions_present"]["list_fragment_regression_count"] == 1
 
 
+def test_evaluate_lietaer_acceptance_fails_failed_translation_quality_report() -> None:
+    validation = _load_validation_module()
+
+    report = {
+        "result": "succeeded",
+        "output_artifacts": {
+            "output_docx_openable": True,
+            "output_contains_placeholder_markup": False,
+        },
+        "formatting_diagnostics": [],
+        "translation_quality_report": {
+            "quality_status": "fail",
+            "gate_reasons": ["role_loss_above_manual_review_threshold"],
+            "bullet_heading_count": 0,
+            "false_fragment_heading_count": 0,
+            "residual_bullet_glyph_count": 0,
+            "list_fragment_regression_count": 0,
+            "mixed_script_term_count": 0,
+            "theology_style_deterministic_issue_count": 0,
+            "toc_body_concat_detected": False,
+        },
+    }
+
+    acceptance = validation.evaluate_lietaer_acceptance(report)
+    by_name = {check["name"]: check for check in acceptance["checks"]}
+
+    assert acceptance["passed"] is False
+    assert "translation_quality_report_not_failed" in acceptance["failed_checks"]
+    assert by_name["translation_quality_report_not_failed"]["quality_status"] == "fail"
+    assert by_name["translation_quality_report_not_failed"]["gate_reasons"] == [
+        "role_loss_above_manual_review_threshold"
+    ]
+
+
 def test_evaluate_lietaer_acceptance_ignores_centered_heading_alignment_for_minimal_formatter_contract() -> None:
     validation = _load_validation_module()
 

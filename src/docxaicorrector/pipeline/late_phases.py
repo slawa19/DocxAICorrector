@@ -1793,6 +1793,10 @@ def _is_source_backed_list_sample(
 _STANDALONE_NUMERIC_CONTINUATION_PATTERN = re.compile(r"^\s*\d{1,6}\.\s*$")
 _BACK_MATTER_REVIEW_LIST_FRAGMENT_LIMIT = 3
 _ROLE_AWARE_UNMAPPED_SOURCE_REVIEW_RATIO = 0.01
+_ROLE_LOSS_MANUAL_REVIEW_MAX_COUNT = 10
+_ROLE_LOSS_MANUAL_REVIEW_MAX_RATIO = 0.05
+_LEGACY_HYGIENE_MANUAL_REVIEW_MAX_COUNT = 10
+_LEGACY_HYGIENE_MANUAL_REVIEW_MAX_RATIO = 0.01
 
 
 def _is_standalone_numeric_continuation_sample(sample: object) -> bool:
@@ -1829,6 +1833,17 @@ def _build_formatting_review_item(
     if sample:
         item["sample"] = dict(sample)
     return item
+
+
+def _formatting_review_required_count(items: Sequence[Mapping[str, object]]) -> int:
+    count = 0
+    for item in items:
+        try:
+            value = item.get("aggregate_count") if "aggregate_count" in item else item.get("count", 1)
+            count += max(0, int(value))
+        except (TypeError, ValueError):
+            count += 1
+    return count
 
 
 def _effective_formatting_coverage_diagnostics(payload: Mapping[str, object]) -> Mapping[str, object]:
@@ -1899,6 +1914,63 @@ def _is_reviewable_role_aware_unmapped_source_residue(
     if not isinstance(source_total, int) or source_total <= 0:
         return False
     return (count / source_total) <= _ROLE_AWARE_UNMAPPED_SOURCE_REVIEW_RATIO
+
+
+def _is_role_loss_within_manual_review_threshold(
+    *,
+    role_loss_count: int,
+    source_total: object,
+) -> bool:
+    if role_loss_count <= 0:
+        return False
+    if role_loss_count > _ROLE_LOSS_MANUAL_REVIEW_MAX_COUNT:
+        return False
+    if not isinstance(source_total, int) or source_total <= 0:
+        return True
+    return (role_loss_count / source_total) <= _ROLE_LOSS_MANUAL_REVIEW_MAX_RATIO
+
+
+def _is_legacy_hygiene_within_manual_review_threshold(
+    *,
+    count: int,
+    source_total: object,
+) -> bool:
+    if count <= 0:
+        return False
+    if count > _LEGACY_HYGIENE_MANUAL_REVIEW_MAX_COUNT:
+        return False
+    if not isinstance(source_total, int) or source_total <= 0:
+        return True
+    return (count / source_total) <= _LEGACY_HYGIENE_MANUAL_REVIEW_MAX_RATIO
+
+
+def _apply_manual_review_or_fail(
+    *,
+    quality_status: str,
+    gate_reasons: list[str],
+    policy: str,
+    reason: str,
+    fail_reason: str,
+    count: int,
+    source_total: object,
+) -> tuple[str, str]:
+    if policy != "strict":
+        quality_status = _apply_quality_review_reason(
+            quality_status=quality_status,
+            gate_reasons=gate_reasons,
+            reason=reason,
+        )
+        return quality_status, reason
+    if _is_legacy_hygiene_within_manual_review_threshold(count=count, source_total=source_total):
+        quality_status = _apply_quality_review_reason(
+            quality_status=quality_status,
+            gate_reasons=gate_reasons,
+            reason=reason,
+        )
+        return quality_status, reason
+    quality_status = "fail"
+    gate_reasons.append(fail_reason)
+    return quality_status, fail_reason
 
 
 def _build_translation_quality_report(
@@ -2023,11 +2095,19 @@ def _build_translation_quality_report(
                 effective_source_total = structure_unit_total_count
         if policy == "strict" and worst_unmapped_source_count > 0:
             if basis == "role_aware_formatting_coverage" and role_loss_count > 0:
-                quality_status = _apply_quality_review_reason(
-                    quality_status=quality_status,
-                    gate_reasons=gate_reasons,
-                    reason="role_loss_review_required",
+                role_loss_within_manual_review = _is_role_loss_within_manual_review_threshold(
+                    role_loss_count=role_loss_count,
+                    source_total=effective_source_total,
                 )
+                if role_loss_within_manual_review:
+                    quality_status = _apply_quality_review_reason(
+                        quality_status=quality_status,
+                        gate_reasons=gate_reasons,
+                        reason="role_loss_review_required",
+                    )
+                else:
+                    quality_status = "fail"
+                    gate_reasons.append("role_loss_above_manual_review_threshold")
                 role_loss_samples = (
                     _effective_formatting_coverage_samples_by_class(
                         latest_payload,
@@ -2038,18 +2118,38 @@ def _build_translation_quality_report(
                 )
                 if role_loss_samples:
                     for sample in role_loss_samples:
+                        aggregate_count = (
+                            role_loss_count
+                            if role_loss_count > len(role_loss_samples)
+                            and not any(
+                                str(item.get("reason") or "").startswith("role_loss_")
+                                for item in formatting_review_items
+                            )
+                            else None
+                        )
                         formatting_review_items.append(
                             _build_formatting_review_item(
-                                reason="role_loss_review_required",
+                                reason=(
+                                    "role_loss_review_required"
+                                    if role_loss_within_manual_review
+                                    else "role_loss_above_manual_review_threshold"
+                                ),
                                 label="Структурный абзац стал обычным текстом",
                                 sample=_serialize_role_loss_sample(sample),
+                                count=0 if role_loss_count > len(role_loss_samples) else 1,
                                 severity="fix",
                             )
                         )
+                        if aggregate_count is not None:
+                            formatting_review_items[-1]["aggregate_count"] = aggregate_count
                 else:
                     formatting_review_items.append(
                         _build_formatting_review_item(
-                            reason="role_loss_review_required",
+                            reason=(
+                                "role_loss_review_required"
+                                if role_loss_within_manual_review
+                                else "role_loss_above_manual_review_threshold"
+                            ),
                             label="Структурные абзацы требуют ручной правки",
                             count=role_loss_count,
                             severity="fix",
@@ -2081,19 +2181,50 @@ def _build_translation_quality_report(
                 quality_status = "warn"
                 gate_reasons.append("unmapped_source_paragraphs_above_advisory_threshold")
         if bullet_heading_count > 0:
-            quality_status = _apply_quality_gate_reason(
+            quality_status, bullet_heading_reason = _apply_manual_review_or_fail(
                 quality_status=quality_status,
                 gate_reasons=gate_reasons,
                 policy=policy,
-                reason="bullet_marker_headings_present",
+                reason="bullet_marker_headings_review_required",
+                fail_reason="bullet_marker_headings_present",
+                count=bullet_heading_count,
+                source_total=effective_source_total,
             )
+            for sample in _serialize_quality_samples(bullet_heading_samples):
+                formatting_review_items.append(
+                    _build_formatting_review_item(
+                        reason=bullet_heading_reason,
+                        label="Маркер списка попал в заголовок",
+                        sample=sample,
+                        severity="fix",
+                    )
+                )
         if toc_body_concat_detected:
-            quality_status = _apply_quality_gate_reason(
-                quality_status=quality_status,
-                gate_reasons=gate_reasons,
-                policy=policy,
-                reason="toc_body_concatenation_detected",
-            )
+            if bool(authority_fields.get("toc_body_concat_structure_detected", False)):
+                quality_status = _apply_quality_gate_reason(
+                    quality_status=quality_status,
+                    gate_reasons=gate_reasons,
+                    policy=policy,
+                    reason="toc_body_concatenation_detected",
+                )
+            else:
+                quality_status = _apply_quality_review_reason(
+                    quality_status=quality_status,
+                    gate_reasons=gate_reasons,
+                    reason="toc_body_concatenation_review_required",
+                )
+                formatting_review_items.append(
+                    _build_formatting_review_item(
+                        reason="toc_body_concatenation_review_required",
+                        label="Возможная строка оглавления склеилась с текстом",
+                        sample={
+                            "line": None,
+                            "text": final_markdown,
+                            "reason": "toc_body_concatenation_detected",
+                        },
+                        severity="fix",
+                    )
+                )
         if false_fragment_heading_samples:
             quality_status = _apply_quality_gate_reason(
                 quality_status=quality_status,
@@ -2102,12 +2233,23 @@ def _build_translation_quality_report(
                 reason="false_fragment_headings_present",
             )
         if residual_bullet_glyph_samples:
-            quality_status = _apply_quality_gate_reason(
+            quality_status, residual_bullet_reason = _apply_manual_review_or_fail(
                 quality_status=quality_status,
                 gate_reasons=gate_reasons,
                 policy=policy,
-                reason="residual_bullet_glyphs_present",
+                reason="residual_bullet_glyphs_review_required",
+                fail_reason="residual_bullet_glyphs_present",
+                count=len(residual_bullet_glyph_samples),
+                source_total=effective_source_total,
             )
+            for sample in _serialize_quality_samples(residual_bullet_glyph_samples):
+                formatting_review_items.append(
+                    _build_formatting_review_item(
+                        reason=residual_bullet_reason,
+                        label="Остался лишний маркер списка",
+                        sample=sample,
+                    )
+                )
         if list_fragment_regression_samples:
             if _is_reviewable_list_fragment_residue(
                 samples=list_fragment_regression_samples,
@@ -2135,12 +2277,23 @@ def _build_translation_quality_report(
                     reason="list_fragment_regressions_present",
                 )
         if mixed_script_samples:
-            quality_status = _apply_quality_gate_reason(
+            quality_status, mixed_script_reason = _apply_manual_review_or_fail(
                 quality_status=quality_status,
                 gate_reasons=gate_reasons,
                 policy=policy,
-                reason="mixed_script_terms_present",
+                reason="mixed_script_terms_review_required",
+                fail_reason="mixed_script_terms_present",
+                count=len(mixed_script_samples),
+                source_total=effective_source_total,
             )
+            for sample in _serialize_quality_samples(mixed_script_samples):
+                formatting_review_items.append(
+                    _build_formatting_review_item(
+                        reason=mixed_script_reason,
+                        label="Слово содержит символы из разных алфавитов",
+                        sample=sample,
+                    )
+                )
         if theology_style_samples:
             quality_status = "warn" if quality_status == "pass" else quality_status
 
@@ -2259,7 +2412,7 @@ def _build_translation_quality_report(
         "final_markdown_chars": len(normalized_quality_markdown),
         "quality_status": quality_status,
         "gate_reasons": gate_reasons,
-        "formatting_review_required_count": len(formatting_review_items),
+        "formatting_review_required_count": _formatting_review_required_count(formatting_review_items),
         "formatting_review_items": formatting_review_items,
         "formatting_diagnostics_artifact_paths": list(formatting_diagnostics_artifacts),
         "boundary_recovery": {
@@ -2428,6 +2581,22 @@ def _build_result_quality_warning(
             quality_report.get("formatting_review_required_count") or len(formatting_review_items)
         )
     return warning
+
+
+def _russian_paragraph_word(count: int) -> str:
+    count_abs = abs(count)
+    if 11 <= count_abs % 100 <= 14:
+        return "абзацев"
+    last_digit = count_abs % 10
+    if last_digit == 1:
+        return "абзац"
+    if 2 <= last_digit <= 4:
+        return "абзаца"
+    return "абзацев"
+
+
+def _russian_requires_word(count: int) -> str:
+    return "требует" if abs(count) % 10 == 1 and abs(count) % 100 != 11 else "требуют"
 
 
 def _build_quality_gate_activity_message(gate_reasons: Sequence[str]) -> str:
@@ -3079,7 +3248,9 @@ def finalize_processing_success(
     if quality_report.get("quality_status") == "warn":
         review_count = int(quality_report.get("formatting_review_required_count") or 0)
         warning_message = (
-            f"Готово. {review_count} абзацев требуют проверки оформления. Подробности: formatting_review.txt"
+            f"Готово. {review_count} {_russian_paragraph_word(review_count)} "
+            f"{_russian_requires_word(review_count)} проверки оформления. "
+            "Подробности: formatting_review.txt"
             if review_count > 0
             else "Результат собран, но quality report зафиксировал document-level structural warnings."
         )

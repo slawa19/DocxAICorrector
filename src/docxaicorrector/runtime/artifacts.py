@@ -67,7 +67,7 @@ def _build_formatting_review_text(
     items = list(quality_warning.get("formatting_review_items") or []) if quality_warning else []
     review_count = int((quality_warning or {}).get("formatting_review_required_count") or len(items) or 0)
     fix_count = sum(
-        int(item.get("count") or 1)
+        int(item.get("aggregate_count") if "aggregate_count" in item else item.get("count", 1))
         for item in items
         if isinstance(item, Mapping) and str(item.get("severity") or "review") == "fix"
     )
@@ -100,7 +100,7 @@ def _build_formatting_review_text(
         sample_text = ""
         if isinstance(sample, Mapping):
             sample_text = _truncate_review_text(sample.get("text"), limit=180)
-        count = int(item.get("count") or 1)
+        count = int(item.get("aggregate_count") if "aggregate_count" in item else item.get("count", 1))
         lines.append(f"{marker} {label}")
         if sample_text:
             lines.append(f"  В выводе: «{sample_text}»")

@@ -3888,12 +3888,25 @@ def test_build_translation_quality_report_flags_bullet_marker_headings_in_strict
         formatting_diagnostics_artifacts=[],
     )
 
-    assert report["quality_status"] == "fail"
-    assert report["gate_reasons"] == ["bullet_marker_headings_present"]
+    assert report["quality_status"] == "warn"
+    assert report["gate_reasons"] == ["bullet_marker_headings_review_required"]
     assert report["bullet_heading_count"] == 1
     assert report["bullet_heading_gate_source"] == "legacy_markdown"
     assert report["bullet_heading_classification"] == "markdown_gate"
     assert report["raw_bullet_heading_count"] == 1
+    assert report["formatting_review_items"] == [
+        {
+            "reason": "bullet_marker_headings_review_required",
+            "label": "Маркер списка попал в заголовок",
+            "count": 1,
+            "severity": "fix",
+            "sample": {
+                "line": 1,
+                "text": "## ●",
+                "reason": "bullet_marker_heading",
+            },
+        }
+    ]
 
 
 @pytest.mark.parametrize(
@@ -3917,9 +3930,11 @@ def test_build_translation_quality_report_detects_toc_body_concat_across_leader_
         formatting_diagnostics_artifacts=[],
     )
 
-    assert report["quality_status"] == "fail"
-    assert report["gate_reasons"] == ["toc_body_concatenation_detected"]
+    assert report["quality_status"] == "warn"
+    assert report["gate_reasons"] == ["toc_body_concatenation_review_required"]
     assert report["toc_body_concat_detected"] is True
+    assert report["formatting_review_items"][0]["reason"] == "toc_body_concatenation_review_required"
+    assert report["formatting_review_items"][0]["severity"] == "fix"
 
 
 def test_normalize_final_markdown_for_runtime_display_splits_placeholder_from_chapter_heading():
@@ -4056,7 +4071,7 @@ def test_build_translation_quality_report_exposes_new_residual_quality_metrics_a
     assert report["gate_reasons"] == [
         "false_fragment_headings_present",
         "list_fragment_regressions_present",
-        "mixed_script_terms_present",
+        "mixed_script_terms_review_required",
     ]
     assert report["bullet_heading_count"] == 0
     assert report["false_fragment_heading_count"] == 2
@@ -4548,7 +4563,7 @@ def test_run_document_processing_quality_report_uses_same_final_markdown_as_runt
     assert payload["final_markdown_chars"] == len(final_markdown)
     assert payload["false_fragment_heading_count"] == 0
 
-def test_run_document_processing_fails_on_strict_structural_markdown_quality_gate(tmp_path, monkeypatch):
+def test_run_document_processing_warns_on_legacy_markdown_toc_concat_quality_gate(tmp_path, monkeypatch):
     runtime = _build_runtime_capture()
     quality_dir = tmp_path / "quality_reports"
     monkeypatch.setattr(document_pipeline_late_phases, "collect_recent_formatting_diagnostics_artifacts", lambda since_epoch_seconds, diagnostics_dir: [])
@@ -4561,17 +4576,20 @@ def test_run_document_processing_fails_on_strict_structural_markdown_quality_gat
         generate_markdown_block=lambda **kwargs: "Заключение........ 29 Введение",
     )
 
-    assert result == "failed"
-    assert "translation_quality_gate_failed" in runtime["state"]["last_error"]
+    assert result == "succeeded"
+    assert runtime["state"]["last_error"] == ""
     assert runtime["state"]["latest_docx_bytes"] == b"docx-bytes"
     report_files = list(quality_dir.glob("*.json"))
     assert len(report_files) == 1
     payload = json.loads(report_files[0].read_text(encoding="utf-8"))
-    assert payload["quality_status"] == "fail"
-    assert payload["gate_reasons"] == ["toc_body_concatenation_detected"]
+    assert payload["quality_status"] == "warn"
+    assert payload["gate_reasons"] == ["toc_body_concatenation_review_required"]
     assert payload["bullet_heading_count"] == 0
     assert payload["toc_body_concat_detected"] is True
-    assert runtime["activity"][-1] == "Итоговый перевод отклонён quality gate: toc_body_concatenation_detected."
+    assert runtime["state"]["latest_result_notice"] == {
+        "level": "warning",
+        "message": "Готово. 1 абзац требует проверки оформления. Подробности: formatting_review.txt",
+    }
 
 
 def test_build_translation_quality_report_flags_suspicious_heading_repetition_without_intervening_body():
@@ -4933,14 +4951,14 @@ def test_run_document_processing_warns_on_advisory_structural_markdown_quality_g
     assert result == "succeeded"
     assert runtime["state"]["latest_result_notice"] == {
         "level": "warning",
-        "message": "Результат собран, но quality report зафиксировал document-level structural warnings.",
+        "message": "Готово. 1 абзац требует проверки оформления. Подробности: formatting_review.txt",
     }
-    assert artifact_calls["kwargs"]["quality_warning"]["gate_reasons"] == ["toc_body_concatenation_detected"]
+    assert artifact_calls["kwargs"]["quality_warning"]["gate_reasons"] == ["toc_body_concatenation_review_required"]
     report_files = list(quality_dir.glob("*.json"))
     assert len(report_files) == 1
     payload = json.loads(report_files[0].read_text(encoding="utf-8"))
     assert payload["quality_status"] == "warn"
-    assert payload["gate_reasons"] == ["toc_body_concatenation_detected"]
+    assert payload["gate_reasons"] == ["toc_body_concatenation_review_required"]
     assert payload["toc_body_concat_detected"] is True
 
 
@@ -5025,12 +5043,12 @@ def test_run_document_processing_quality_report_keeps_candidate_page_artifact_no
         generate_markdown_block=lambda **kwargs: "Заключение........ 29 Введение",
     )
 
-    assert result == "failed"
+    assert result == "succeeded"
     report_files = list(quality_dir.glob("*.json"))
     assert len(report_files) == 1
     payload = json.loads(report_files[0].read_text(encoding="utf-8"))
-    assert payload["quality_status"] == "fail"
-    assert payload["gate_reasons"] == ["toc_body_concatenation_detected"]
+    assert payload["quality_status"] == "warn"
+    assert payload["gate_reasons"] == ["toc_body_concatenation_review_required"]
     assert payload["toc_body_concat_gate_source"] == "legacy_markdown"
     assert payload["toc_body_concat_markdown_detected"] is True
     assert payload["toc_body_concat_structure_detected"] is False
@@ -5192,7 +5210,7 @@ def test_build_translation_quality_report_warns_on_small_role_aware_unmapped_sou
     assert report["gate_reasons"] == ["unmapped_source_paragraphs_review_required"]
     assert report["unmapped_source_count_basis"] == "role_aware_formatting_coverage"
     assert report["unmapped_source_count"] == 8
-    assert report["formatting_review_required_count"] == 1
+    assert report["formatting_review_required_count"] == 8
     assert report["formatting_review_items"] == [
         {
             "reason": "unmapped_source_paragraphs_review_required",
@@ -5276,6 +5294,72 @@ def test_build_translation_quality_report_surfaces_role_loss_as_fix_not_generic_
             },
         }
     ]
+
+
+def test_build_translation_quality_report_fails_large_role_loss_set(monkeypatch):
+    role_loss_ids = [f"p{index:04d}" for index in range(11)]
+    monkeypatch.setattr(
+        document_pipeline_late_phases,
+        "_load_formatting_diagnostics_payloads",
+        lambda artifact_paths: [
+            {
+                "unmapped_source_ids": role_loss_ids,
+                "unmapped_target_indexes": [],
+                "source_count": 1000,
+                "target_count": 989,
+                "source_registry": [
+                    {
+                        "paragraph_id": paragraph_id,
+                        "source_index": index,
+                        "role": "heading",
+                        "structural_role": "heading",
+                        "text_preview": f"Chapter {index}",
+                    }
+                    for index, paragraph_id in enumerate(role_loss_ids)
+                ],
+                "unmapped_source_residual_diagnostics": {
+                    "effective_formatting_coverage_diagnostics": {
+                        "counts": {
+                            "content_survived_but_format_role_lost": 11,
+                        },
+                        "format_neutral_creditable_count": 0,
+                    },
+                    "samples": [
+                        {
+                            "paragraph_id": paragraph_id,
+                            "source_index": index,
+                            "role": "heading",
+                            "structural_role": "heading",
+                            "text_preview": f"Chapter {index}",
+                            "effective_formatting_coverage_class": "content_survived_but_format_role_lost",
+                        }
+                        for index, paragraph_id in enumerate(role_loss_ids)
+                    ],
+                },
+            }
+        ],
+    )
+
+    report = document_pipeline_late_phases._build_translation_quality_report(
+        context=SimpleNamespace(
+            app_config={"translation_output_quality_gate_policy": "strict"},
+            processing_operation="translate",
+            uploaded_filename="report.docx",
+            translation_domain="general",
+            document_map=None,
+            document_topology_projection=None,
+        ),
+        final_markdown="Many headings collapsed into body text",
+        formatting_diagnostics_artifacts=["ignored.json"],
+    )
+
+    assert report["quality_status"] == "fail"
+    assert report["gate_reasons"] == ["role_loss_above_manual_review_threshold"]
+    assert report["formatting_review_required_count"] == 11
+    review_items = cast(list[dict[str, object]], report["formatting_review_items"])
+    assert all(item["severity"] == "fix" for item in review_items)
+    assert all(item["reason"] == "role_loss_above_manual_review_threshold" for item in review_items)
+    assert review_items[0]["aggregate_count"] == 11
 
 
 def test_build_translation_quality_report_uses_role_aware_effective_unmapped_target_count(monkeypatch):
