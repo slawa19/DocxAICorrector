@@ -24,6 +24,7 @@ build/
 *.egg-info/
 .idea/
 .kilo/
+.kilocodemodes
 .history/
 .vscode/*
 !.vscode/tasks.json

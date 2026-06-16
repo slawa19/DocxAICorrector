@@ -64,6 +64,11 @@ user cannot distinguish from real defects. **Done:** running 3 dissimilar books
 surfaces no new stale-gate failure; every gate is either unit-aware or documented
 as tolerant.
 
+The severity model for the legacy-hygiene gates currently lives as hand-copied
+code blocks (see *Architecture Hygiene* below); extracting it into a single
+table makes this audit a glance over data rather than a reverse-engineering of
+five near-identical branches. Do that extraction as part of this item.
+
 ### 2. Reliability completeness — generalise the controlled-fallback contract
 
 We fixed two specific block-abort causes. A robust stream needs the
@@ -125,6 +130,45 @@ Run 2–3 more full, dissimilar books to confirm reliability + matcher + gates h
 across types. This is validation, not a blocker; it is also what exposes the
 remaining stale gates for item 1. Use small no-LLM replays for diagnostics; spend
 a full-book LLM run only to confirm.
+
+## Runs Alongside: Architecture Hygiene (secondary, opportunistic)
+
+Secondary to the five items, but tracked so it is not lost. The constraint:
+decompose **only inside an iteration that is already editing the code in
+question** for a functional reason — never as a standalone "big refactor" that
+displaces the main task (book reliability). Every change is behaviour-preserving:
+full test files green before and after.
+
+Findings (measured 2026-06-16):
+
+- `src/docxaicorrector/pipeline/late_phases.py` is a **3871-line** module.
+  `_build_translation_quality_report` alone is **474 lines** and is edited on
+  nearly every gate iteration — it grows by accretion.
+- The five legacy-hygiene gates inside it (`bullet_heading`, `false_fragment`,
+  `residual_bullet`, `mixed_script`, and the near-identical `role_loss`) repeat
+  one hand-copied block: classify via `_apply_manual_review_or_fail` → serialize
+  samples → loop-append `_build_formatting_review_item` → set `count=0`/
+  `aggregate_count` on the first item when samples are capped. The same
+  capping/aggregate invariant is duplicated a sixth time in
+  `runtime/artifacts.py`. This duplication is the **source of the report ↔
+  `formatting_review.txt` divergence bugs** fixed across the last iterations: any
+  rule change must be re-applied in six places or the totals drift.
+
+Task A — **extract `_emit_hygiene_gate`** (do within item 1, while these blocks
+are open). One helper encapsulates classify + status update + capped-sample
+emission + `aggregate_count`. Each of the five gates collapses to a single call;
+the severity model (`reason_review`, `reason_fail`, threshold per gate) becomes a
+table — single-sourced, directly serving the item-1 audit. The capping invariant
+lives in one place; `runtime/artifacts.py` stays a pure consumer of
+`aggregate_count`, not a second implementation. **Done:** five blocks become five
+calls; no behaviour change; the six duplicate count/aggregate sites become one.
+
+Task B — **split the quality-report cluster** out of `late_phases.py` into
+`pipeline/quality_report.py` (`_build_translation_quality_report`,
+`_derive_translation_quality_authority_fields`, the severity table, review-item
+rendering). Larger move; **deferred** — do it opportunistically when that cluster
+is next open for a functional change, not for its own sake, and not while item 2
+(controlled-fallback) is the active priority.
 
 ## Then: UI
 
