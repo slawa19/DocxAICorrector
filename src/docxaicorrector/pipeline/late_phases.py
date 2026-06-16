@@ -2226,12 +2226,28 @@ def _build_translation_quality_report(
                     )
                 )
         if false_fragment_heading_samples:
-            quality_status = _apply_quality_gate_reason(
+            quality_status, false_fragment_reason = _apply_manual_review_or_fail(
                 quality_status=quality_status,
                 gate_reasons=gate_reasons,
                 policy=policy,
-                reason="false_fragment_headings_present",
+                reason="false_fragment_headings_review_required",
+                fail_reason="false_fragment_headings_present",
+                count=len(false_fragment_heading_samples),
+                source_total=effective_source_total,
             )
+            serialized_false_fragment_samples = _serialize_quality_samples(false_fragment_heading_samples)
+            for sample_index, sample in enumerate(serialized_false_fragment_samples):
+                formatting_review_items.append(
+                    _build_formatting_review_item(
+                        reason=false_fragment_reason,
+                        label="Фрагмент текста выглядит как ложный заголовок",
+                        sample=sample,
+                        count=0 if len(false_fragment_heading_samples) > len(serialized_false_fragment_samples) else 1,
+                        severity="fix",
+                    )
+                )
+                if sample_index == 0 and len(false_fragment_heading_samples) > len(serialized_false_fragment_samples):
+                    formatting_review_items[-1]["aggregate_count"] = len(false_fragment_heading_samples)
         if residual_bullet_glyph_samples:
             quality_status, residual_bullet_reason = _apply_manual_review_or_fail(
                 quality_status=quality_status,

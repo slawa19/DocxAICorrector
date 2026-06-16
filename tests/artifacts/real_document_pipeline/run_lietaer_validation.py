@@ -5308,7 +5308,11 @@ def evaluate_lietaer_acceptance(
         )
         add_check(
             "bullet_marker_headings_present",
-            _coerce_int(translation_quality_report.get("bullet_heading_count")) == 0,
+            _coerce_int(translation_quality_report.get("bullet_heading_count")) == 0
+            or _translation_quality_reason_is_review_only(
+                translation_quality_report,
+                reason="bullet_marker_headings_review_required",
+            ),
             bullet_heading_count=translation_quality_report.get("bullet_heading_count"),
             bullet_heading_gate_source=translation_quality_report.get("bullet_heading_gate_source"),
             bullet_heading_classification=translation_quality_report.get("bullet_heading_classification"),
@@ -5316,14 +5320,22 @@ def evaluate_lietaer_acceptance(
         )
         add_check(
             "false_fragment_headings_present",
-            _coerce_int(translation_quality_report.get("false_fragment_heading_count")) == 0,
+            _coerce_int(translation_quality_report.get("false_fragment_heading_count")) == 0
+            or _translation_quality_reason_is_review_only(
+                translation_quality_report,
+                reason="false_fragment_headings_review_required",
+            ),
             false_fragment_heading_count=translation_quality_report.get("false_fragment_heading_count"),
             false_fragment_heading_gate_source=translation_quality_report.get("false_fragment_heading_gate_source"),
             raw_false_fragment_heading_count=translation_quality_report.get("raw_false_fragment_heading_count"),
         )
         add_check(
             "residual_bullet_glyphs_present",
-            _coerce_int(translation_quality_report.get("residual_bullet_glyph_count")) == 0,
+            _coerce_int(translation_quality_report.get("residual_bullet_glyph_count")) == 0
+            or _translation_quality_reason_is_review_only(
+                translation_quality_report,
+                reason="residual_bullet_glyphs_review_required",
+            ),
             residual_bullet_glyph_count=translation_quality_report.get("residual_bullet_glyph_count"),
             residual_bullet_glyph_gate_source=translation_quality_report.get("residual_bullet_glyph_gate_source"),
             residual_bullet_glyph_classification=translation_quality_report.get("residual_bullet_glyph_classification"),
@@ -5350,7 +5362,11 @@ def evaluate_lietaer_acceptance(
         )
         add_check(
             "mixed_script_terms_present",
-            _coerce_int(translation_quality_report.get("mixed_script_term_count")) == 0,
+            _coerce_int(translation_quality_report.get("mixed_script_term_count")) == 0
+            or _translation_quality_reason_is_review_only(
+                translation_quality_report,
+                reason="mixed_script_terms_review_required",
+            ),
             mixed_script_term_count=translation_quality_report.get("mixed_script_term_count"),
             mixed_script_term_gate_source=translation_quality_report.get("mixed_script_term_gate_source"),
             mixed_script_term_classification=translation_quality_report.get("mixed_script_term_classification"),

@@ -405,6 +405,43 @@ def test_evaluate_lietaer_acceptance_tolerates_review_only_list_fragment_residue
     assert by_name["list_fragment_regressions_present"]["list_fragment_regression_count"] == 1
 
 
+def test_evaluate_lietaer_acceptance_tolerates_review_only_legacy_hygiene_residue() -> None:
+    validation = _load_validation_module()
+
+    report = {
+        "result": "succeeded",
+        "output_artifacts": {
+            "output_docx_openable": True,
+            "output_contains_placeholder_markup": False,
+        },
+        "formatting_diagnostics": [],
+        "translation_quality_report": {
+            "quality_status": "warn",
+            "gate_reasons": [
+                "false_fragment_headings_review_required",
+                "mixed_script_terms_review_required",
+            ],
+            "bullet_heading_count": 0,
+            "false_fragment_heading_count": 1,
+            "false_fragment_heading_gate_source": "legacy_markdown",
+            "raw_false_fragment_heading_count": 1,
+            "residual_bullet_glyph_count": 0,
+            "list_fragment_regression_count": 0,
+            "mixed_script_term_count": 1,
+            "mixed_script_term_gate_source": "legacy_markdown",
+            "mixed_script_term_classification": "non_structural_hygiene",
+            "raw_mixed_script_term_count": 1,
+            "theology_style_deterministic_issue_count": 0,
+            "toc_body_concat_detected": False,
+        },
+    }
+
+    acceptance = validation.evaluate_lietaer_acceptance(report)
+
+    assert "false_fragment_headings_present" not in acceptance["failed_checks"]
+    assert "mixed_script_terms_present" not in acceptance["failed_checks"]
+
+
 def test_evaluate_lietaer_acceptance_fails_failed_translation_quality_report() -> None:
     validation = _load_validation_module()
 

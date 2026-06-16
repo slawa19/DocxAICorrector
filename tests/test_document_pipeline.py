@@ -3706,14 +3706,14 @@ def test_run_document_processing_keeps_false_fragment_cleanup_display_only_after
         ),
     )
 
-    assert result == "failed"
+    assert result == "succeeded"
     assert "## (Матфея 24:36)" not in runtime["state"]["latest_markdown"]
     assert "## Спутники? Ракеты?)" not in runtime["state"]["latest_markdown"]
     report_files = list(quality_dir.glob("*.json"))
     assert len(report_files) == 1
     payload = json.loads(report_files[0].read_text(encoding="utf-8"))
-    assert payload["quality_status"] == "fail"
-    assert payload["gate_reasons"] == ["false_fragment_headings_present"]
+    assert payload["quality_status"] == "warn"
+    assert payload["gate_reasons"] == ["false_fragment_headings_review_required"]
     assert payload["false_fragment_heading_count"] == 2
     assert payload["scripture_reference_heading_count"] == 1
 
@@ -3751,13 +3751,13 @@ def test_run_document_processing_quality_report_uses_pre_display_gate_input_for_
         ),
     )
 
-    assert result == "failed"
+    assert result == "succeeded"
     assert "## Великая скорбь\n\n." not in runtime["state"]["latest_markdown"]
     report_files = list(quality_dir.glob("*.json"))
     assert len(report_files) == 1
     payload = json.loads(report_files[0].read_text(encoding="utf-8"))
-    assert payload["quality_status"] == "fail"
-    assert payload["gate_reasons"] == ["false_fragment_headings_present"]
+    assert payload["quality_status"] == "warn"
+    assert payload["gate_reasons"] == ["false_fragment_headings_review_required"]
     assert payload["false_fragment_heading_count"] == 1
 
 
@@ -4069,7 +4069,7 @@ def test_build_translation_quality_report_exposes_new_residual_quality_metrics_a
 
     assert report["quality_status"] == "fail"
     assert report["gate_reasons"] == [
-        "false_fragment_headings_present",
+        "false_fragment_headings_review_required",
         "list_fragment_regressions_present",
         "mixed_script_terms_review_required",
     ]
@@ -4226,8 +4226,8 @@ def test_build_translation_quality_report_flags_raw_false_fragment_without_entry
         formatting_diagnostics_artifacts=[],
     )
 
-    assert report["quality_status"] == "fail"
-    assert report["gate_reasons"] == ["false_fragment_headings_present"]
+    assert report["quality_status"] == "warn"
+    assert report["gate_reasons"] == ["false_fragment_headings_review_required"]
     assert report["false_fragment_heading_count"] == 1
     assert report["false_fragment_heading_gate_source"] == "legacy_markdown"
     assert report["raw_false_fragment_heading_count"] == 1
@@ -4238,6 +4238,41 @@ def test_build_translation_quality_report_flags_raw_false_fragment_without_entry
             "reason": "inline_term_heading_present",
         }
     ]
+    assert report["formatting_review_items"][0]["reason"] == "false_fragment_headings_review_required"
+    assert report["formatting_review_items"][0]["severity"] == "fix"
+
+
+def test_build_translation_quality_report_fails_large_false_fragment_heading_set(monkeypatch):
+    samples = [
+        SimpleNamespace(
+            line=index + 1,
+            text=f"## Fragment {index}",
+            reason="inline_term_heading_present",
+        )
+        for index in range(11)
+    ]
+    monkeypatch.setattr(
+        document_pipeline_late_phases,
+        "collect_false_fragment_heading_samples",
+        lambda markdown_text: list(samples),
+    )
+
+    report = document_pipeline_late_phases._build_translation_quality_report(
+        context=SimpleNamespace(
+            app_config={"translation_output_quality_gate_policy": "strict"},
+            processing_operation="translate",
+            uploaded_filename="report.docx",
+            translation_domain="general",
+            paragraph_count=1000,
+        ),
+        final_markdown="Fragments",
+        formatting_diagnostics_artifacts=[],
+    )
+
+    assert report["quality_status"] == "fail"
+    assert report["gate_reasons"] == ["false_fragment_headings_present"]
+    assert report["false_fragment_heading_count"] == 11
+    assert report["formatting_review_required_count"] == 11
 
 
 def test_build_translation_quality_report_allows_opening_chapter_marker_followed_by_title_heading():
@@ -4275,8 +4310,8 @@ def test_build_translation_quality_report_flags_scripture_reference_false_headin
         formatting_diagnostics_artifacts=[],
     )
 
-    assert report["quality_status"] == "fail"
-    assert report["gate_reasons"] == ["false_fragment_headings_present"]
+    assert report["quality_status"] == "warn"
+    assert report["gate_reasons"] == ["false_fragment_headings_review_required"]
     assert report["false_fragment_heading_count"] == 1
     assert report["scripture_reference_heading_count"] == 1
     assert report["scripture_reference_heading_samples"] == [
@@ -4608,8 +4643,8 @@ def test_build_translation_quality_report_flags_suspicious_heading_repetition_wi
         formatting_diagnostics_artifacts=[],
     )
 
-    assert report["quality_status"] == "fail"
-    assert report["gate_reasons"] == ["false_fragment_headings_present"]
+    assert report["quality_status"] == "warn"
+    assert report["gate_reasons"] == ["false_fragment_headings_review_required"]
     assert report["suspicious_heading_repetition_count"] == 1
     assert report["suspicious_heading_repetition_samples"] == [
         {

@@ -23,6 +23,7 @@ dist/
 build/
 *.egg-info/
 .idea/
+.kilo/
 .history/
 .vscode/*
 !.vscode/tasks.json

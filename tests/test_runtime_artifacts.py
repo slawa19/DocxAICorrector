@@ -162,6 +162,46 @@ def test_write_ui_result_artifacts_marks_role_loss_review_items_as_fix(tmp_path)
     assert "Всего: ПРАВКА 1 · ПРОВЕРКА 0 · КРИТ 0" in review_text
 
 
+def test_write_ui_result_artifacts_uses_aggregate_count_for_capped_role_loss_samples(tmp_path):
+    artifact_paths = write_ui_result_artifacts(
+        source_name="report.docx",
+        markdown_text="body",
+        docx_bytes=b"docx-bytes",
+        quality_warning={
+            "quality_status": "fail",
+            "gate_reasons": ["role_loss_above_manual_review_threshold"],
+            "formatting_review_required_count": 11,
+            "formatting_review_items": [
+                {
+                    "severity": "fix",
+                    "label": "Структурный абзац стал обычным текстом",
+                    "aggregate_count": 11,
+                    "count": 0,
+                    "sample": {"text": "Chapter 0"},
+                },
+                *[
+                    {
+                        "severity": "fix",
+                        "label": "Структурный абзац стал обычным текстом",
+                        "count": 0,
+                        "sample": {"text": f"Chapter {index}"},
+                    }
+                    for index in range(1, 8)
+                ],
+            ],
+        },
+        output_dir=tmp_path,
+        created_at=1_766_636_465.0,
+    )
+
+    review_text = Path(artifact_paths["formatting_review_path"]).read_text(encoding="utf-8")
+
+    assert "[ПРАВКА] Структурный абзац стал обычным текстом" in review_text
+    assert "В выводе: «Chapter 0»" in review_text
+    assert "В выводе: «Chapter 7»" in review_text
+    assert "Всего: ПРАВКА 11 · ПРОВЕРКА 0 · КРИТ 0" in review_text
+
+
 def test_write_ui_result_artifacts_records_assembly_mode_in_meta(tmp_path):
     artifact_paths = write_ui_result_artifacts(
         source_name="report.docx",

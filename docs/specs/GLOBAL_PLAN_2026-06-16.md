@@ -74,6 +74,24 @@ hits a new abort cause and never reaches a result to display. **Done:** a book
 with several deliberately un-producible blocks finishes with a complete DOCX, and
 every fallback is visible in artifacts (no silent loss).
 
+Pre-implementation classification table:
+
+| Block failure class | Decision | Contract |
+| --- | --- | --- |
+| `empty_response` / `empty_processed_block` after retry budget | `fallback_continue` | Emit a controlled-fallback block, event, and artifact; keep paragraph IDs/registry visible; final DOCX must still be produced. |
+| `english_residual_output` after retry budget | `fallback_continue` | Emit a controlled-fallback block, event, and artifact; do not count it as lost formatting when the content is present, but surface it for translation review. |
+| `heading_only_output`, `bullet_heading_output`, `toc_body_concat` after retry budget | `fallback_continue` | Treat as generated-output rejection only when the original block payload and paragraph IDs are intact; surface the fallback block for manual review. |
+| Missing provider/client/configuration, including OpenAI image-client setup failures | `fail` | Infrastructure/configuration failure; no translation fallback may pretend the requested phase succeeded. |
+| Missing source segment, missing translated segment, or `final_translated_book_incomplete` | `fail` | Assembly invariant failure; continuing would silently drop content. |
+| Marker registry build failure or missing paragraph registry/anchors | `fail` | Fallback cannot be safely anchored or accounted for. |
+| Invalid processing job, corrupted input block, source extraction/preparation failure | `fail` | The block substrate is not trustworthy enough to preserve. |
+| User stop/cancel | `stopped` | Preserve explicit stopped state, not controlled fallback. |
+
+Implementation rule: controlled fallback is allowed only when the original block
+payload, paragraph IDs, and target/source accounting substrate are intact. Every
+fallback path must emit a user-visible artifact and must be distinguishable from a
+successful translation block in logs, diagnostics, and `formatting_review.txt`.
+
 ### 3. Acceptance tolerance and meaning
 
 Exact-zero residual on a 1140-paragraph book's back matter (notes, bibliography,
