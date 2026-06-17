@@ -926,6 +926,120 @@ def test_run_document_processing_passes_machine_readable_quality_warning_to_arti
     }
 
 
+def test_run_document_processing_hard_fails_large_role_loss_with_formatting_review_items(tmp_path, monkeypatch):
+    runtime = _build_runtime_capture()
+    diagnostics_dir = tmp_path / "formatting_diagnostics"
+    quality_dir = tmp_path / "quality_reports"
+    role_loss_ids = [f"p{index:04d}" for index in range(11)]
+
+    monkeypatch.setattr(document_pipeline, "FORMATTING_DIAGNOSTICS_DIR", diagnostics_dir)
+    monkeypatch.setattr(document_pipeline_late_phases, "QUALITY_REPORTS_DIR", quality_dir)
+
+    diagnostics_dir.mkdir(parents=True, exist_ok=True)
+    quality_dir.mkdir(parents=True, exist_ok=True)
+
+    def preserve_with_role_loss_artifact(docx_bytes, paragraphs, generated_paragraph_registry=None):
+        (diagnostics_dir / "restore_role_loss.json").write_text(
+            json.dumps(
+                {
+                    "stage": "restore",
+                    "unmapped_source_ids": role_loss_ids,
+                    "unmapped_target_indexes": [],
+                    "source_count": 1000,
+                    "target_count": 989,
+                    "source_registry": [
+                        {
+                            "paragraph_id": paragraph_id,
+                            "source_index": index,
+                            "role": "heading",
+                            "structural_role": "heading",
+                            "text_preview": f"Chapter {index}",
+                        }
+                        for index, paragraph_id in enumerate(role_loss_ids)
+                    ],
+                    "unmapped_source_residual_diagnostics": {
+                        "effective_formatting_coverage_diagnostics": {
+                            "counts": {
+                                "content_survived_but_format_role_lost": 11,
+                            },
+                            "format_neutral_creditable_count": 0,
+                        },
+                        "samples": [
+                            {
+                                "paragraph_id": paragraph_id,
+                                "source_index": index,
+                                "role": "heading",
+                                "structural_role": "heading",
+                                "text_preview": f"Chapter {index}",
+                                "effective_formatting_coverage_class": "content_survived_but_format_role_lost",
+                            }
+                            for index, paragraph_id in enumerate(role_loss_ids)
+                        ],
+                    },
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        return docx_bytes
+
+    result = document_pipeline.run_document_processing(
+        uploaded_file="report.docx",
+        jobs=[{"target_text": "block", "context_before": "", "context_after": "", "target_chars": 5, "context_chars": 0}],
+        source_paragraphs=[
+            ParagraphUnit(text=f"Chapter {index}", role="heading", structural_role="heading", paragraph_id=paragraph_id)
+            for index, paragraph_id in enumerate(role_loss_ids)
+        ],
+        image_assets=[],
+        image_mode="safe",
+        app_config={"translation_output_quality_gate_policy": "strict"},
+        model="gpt-5.4",
+        max_retries=1,
+        processing_operation="translate",
+        on_progress=lambda **kwargs: None,
+        runtime=runtime,
+        resolve_uploaded_filename=lambda uploaded_file: str(uploaded_file),
+        get_client=lambda: object(),
+        ensure_pandoc_available=lambda: None,
+        load_system_prompt=lambda **_kw: "system",
+        log_event=lambda *args, **kwargs: None,
+        present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
+        emit_state=_emit_state,
+        emit_finalize=_emit_finalize,
+        emit_activity=_emit_activity,
+        emit_log=_emit_log,
+        emit_status=_emit_status,
+        should_stop_processing=lambda runtime: False,
+        generate_markdown_block=lambda **kwargs: "Many headings collapsed into body text",
+        process_document_images=lambda **kwargs: [],
+        inspect_placeholder_integrity=_inspect_placeholder_integrity,
+        convert_markdown_to_docx_bytes=lambda markdown_text: b"docx-bytes",
+        preserve_source_paragraph_properties=preserve_with_role_loss_artifact,
+        reinsert_inline_images=lambda docx_bytes, image_assets: docx_bytes,
+    )
+
+    report_files = list(quality_dir.glob("*.json"))
+    assert result == "failed"
+    assert runtime["finalize"][-1][0] == "Критическая ошибка качества перевода"
+    assert runtime["finalize"][-1][3] == "error"
+    assert runtime["state"]["latest_result_notice"] == {
+        "level": "error",
+        "message": "Результат заблокирован document-level quality gate.",
+    }
+    assert "role loss above manual review threshold" in runtime["state"]["last_error"]
+    assert len(report_files) == 1
+
+    quality_report = json.loads(report_files[0].read_text(encoding="utf-8"))
+    assert quality_report["quality_status"] == "fail"
+    assert quality_report["gate_reasons"] == ["role_loss_above_manual_review_threshold"]
+    assert quality_report["formatting_review_required_count"] == 11
+    review_items = quality_report["formatting_review_items"]
+    assert len(review_items) == 8
+    assert review_items[0]["aggregate_count"] == 11
+    assert all(item["severity"] == "fix" for item in review_items)
+    assert all(item["label"] == "Структурный абзац стал обычным текстом" for item in review_items)
+
+
 def test_run_document_processing_preserves_final_translated_book_output_mode_in_manifest(monkeypatch):
     runtime = _build_runtime_capture()
     captured = {}

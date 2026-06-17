@@ -16,6 +16,8 @@ from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docxaicorrector.core.models import LayoutArtifactCleanupDecision, LayoutArtifactCleanupReport
 from docxaicorrector.core.models import ParagraphUnit
+import docxaicorrector.pipeline._pipeline as document_pipeline
+import docxaicorrector.pipeline.late_phases as document_pipeline_late_phases
 
 
 PNG_BYTES = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aK3cAAAAASUVORK5CYII=")
@@ -474,6 +476,154 @@ def test_evaluate_lietaer_acceptance_fails_failed_translation_quality_report() -
     assert by_name["translation_quality_report_not_failed"]["gate_reasons"] == [
         "role_loss_above_manual_review_threshold"
     ]
+
+
+def test_prod_pipeline_quality_report_matches_validation_harness_replay_basis(tmp_path, monkeypatch) -> None:
+    validation = _load_validation_module()
+    diagnostics_dir = tmp_path / "formatting_diagnostics"
+    quality_dir = tmp_path / "quality_reports"
+    diagnostics_dir.mkdir(parents=True, exist_ok=True)
+    quality_dir.mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setattr(document_pipeline, "FORMATTING_DIAGNOSTICS_DIR", diagnostics_dir)
+    monkeypatch.setattr(document_pipeline_late_phases, "QUALITY_REPORTS_DIR", quality_dir)
+
+    runtime = {"state": {}, "finalize": [], "activity": [], "log": [], "status": []}
+
+    def _emit_state(runtime, **values):
+        runtime.setdefault("state", {}).update(values)
+
+    def _emit_finalize(runtime, stage, detail, progress, terminal_kind=None):
+        runtime.setdefault("finalize", []).append((stage, detail, progress, terminal_kind))
+
+    def _emit_activity(runtime, message):
+        runtime.setdefault("activity", []).append(message)
+
+    def _emit_log(runtime, **payload):
+        runtime.setdefault("log", []).append(payload)
+
+    def _emit_status(runtime, **payload):
+        runtime.setdefault("status", []).append(payload)
+
+    def _preserve_with_role_aware_diagnostics(docx_bytes, paragraphs, generated_paragraph_registry=None):
+        (diagnostics_dir / "restore_replay.json").write_text(
+            json.dumps(
+                {
+                    "stage": "restore",
+                    "source_count": 2,
+                    "target_count": 2,
+                    "mapped_count": 1,
+                    "unmapped_source_ids": ["p0001"],
+                    "unmapped_target_indexes": [1],
+                    "unmapped_source_residual_diagnostics": {
+                        "effective_formatting_coverage_diagnostics": {
+                            "counts": {
+                                "format_neutral_body_residue": 1,
+                            },
+                            "format_neutral_creditable_count": 1,
+                        },
+                        "samples": [
+                            {
+                                "paragraph_id": "p0001",
+                                "source_index": 1,
+                                "role": "body",
+                                "structural_role": "body",
+                                "text_preview": "Small note",
+                                "effective_formatting_coverage_class": "format_neutral_body_residue",
+                            }
+                        ],
+                    },
+                    "unmapped_target_residual_diagnostics": {
+                        "split_accounting_creditable_count": 1,
+                        "controlled_fallback_creditable_count": 1,
+                        "counts": {"controlled_fallback_covered": 1},
+                        "residual_rows": [
+                            {
+                                "target_index": 1,
+                                "target_text_preview": "Fallback paragraph",
+                                "residual_class": "controlled_fallback_covered",
+                                "controlled_fallback_kind": "english_residual_output",
+                                "controlled_fallback_block_index": 7,
+                            }
+                        ],
+                    },
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        return docx_bytes
+
+    result = document_pipeline.run_document_processing(
+        uploaded_file="report.docx",
+        jobs=[{"target_text": "block", "context_before": "", "context_after": "", "target_chars": 5, "context_chars": 0}],
+        source_paragraphs=[ParagraphUnit(text="Body", role="body", structural_role="body", paragraph_id="p0000")],
+        image_assets=[],
+        image_mode="safe",
+        app_config={"translation_output_quality_gate_policy": "strict"},
+        model="gpt-5.4",
+        max_retries=1,
+        processing_operation="translate",
+        on_progress=lambda **kwargs: None,
+        runtime=runtime,
+        resolve_uploaded_filename=lambda uploaded_file: str(uploaded_file),
+        get_client=lambda: object(),
+        ensure_pandoc_available=lambda: None,
+        load_system_prompt=lambda **_kw: "system",
+        log_event=lambda *args, **kwargs: None,
+        present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
+        emit_state=_emit_state,
+        emit_finalize=_emit_finalize,
+        emit_activity=_emit_activity,
+        emit_log=_emit_log,
+        emit_status=_emit_status,
+        should_stop_processing=lambda runtime: False,
+        generate_markdown_block=lambda **kwargs: "Processed block",
+        process_document_images=lambda **kwargs: [],
+        inspect_placeholder_integrity=lambda markdown_text, image_assets: {},
+        convert_markdown_to_docx_bytes=lambda markdown_text: b"docx-bytes",
+        preserve_source_paragraph_properties=_preserve_with_role_aware_diagnostics,
+        reinsert_inline_images=lambda docx_bytes, image_assets: docx_bytes,
+    )
+
+    quality_report_files = list(quality_dir.glob("*.json"))
+    assert result == "succeeded"
+    assert len(quality_report_files) == 1
+    prod_quality_report = json.loads(quality_report_files[0].read_text(encoding="utf-8"))
+
+    benchmark_report = {
+        "result": "succeeded",
+        "output_artifacts": {
+            "output_docx_openable": True,
+            "output_contains_placeholder_markup": False,
+        },
+        "formatting_diagnostics": [json.loads((diagnostics_dir / "restore_replay.json").read_text(encoding="utf-8"))],
+        "translation_quality_report": prod_quality_report,
+    }
+
+    source_doc = Document()
+    source_doc.add_paragraph("Body")
+    output_doc = Document()
+    output_doc.add_paragraph("Processed block")
+
+    acceptance = validation.evaluate_lietaer_acceptance(
+        benchmark_report,
+        source_docx_bytes=_docx_bytes(source_doc),
+        output_docx_bytes=_docx_bytes(output_doc),
+        mismatch_threshold=0,
+        unmapped_target_threshold=0,
+    )
+    by_name = {check["name"]: check for check in acceptance["checks"]}
+
+    assert acceptance["passed"] is True
+    assert by_name["translation_quality_report_not_failed"]["quality_status"] == prod_quality_report["quality_status"]
+    assert by_name["translation_quality_report_not_failed"]["gate_reasons"] == prod_quality_report["gate_reasons"]
+    assert by_name["unmapped_source_threshold"]["count_basis"] == prod_quality_report["unmapped_source_count_basis"]
+    assert by_name["unmapped_target_threshold"]["count_basis"] == prod_quality_report["unmapped_target_count_basis"]
+    assert prod_quality_report["quality_status"] == "warn"
+    assert prod_quality_report["gate_reasons"] == ["controlled_fallback_blocks_review_required"]
+    assert prod_quality_report["unmapped_source_count_basis"] == "role_aware_formatting_coverage"
+    assert prod_quality_report["unmapped_target_count_basis"] == "role_aware_formatting_coverage"
 
 
 def test_evaluate_lietaer_acceptance_ignores_centered_heading_alignment_for_minimal_formatter_contract() -> None:
