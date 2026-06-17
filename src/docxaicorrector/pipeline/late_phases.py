@@ -1940,6 +1940,82 @@ def _serialize_role_loss_sample(sample: Mapping[str, object]) -> dict[str, objec
     }
 
 
+def _controlled_fallback_review_samples(payload: Mapping[str, object], *, limit: int = 8) -> tuple[int, list[dict[str, object]]]:
+    residual = payload.get("unmapped_target_residual_diagnostics")
+    if not isinstance(residual, Mapping):
+        return 0, []
+    count = 0
+    try:
+        count = int(residual.get("controlled_fallback_creditable_count") or 0)
+    except (TypeError, ValueError):
+        count = 0
+    counts = residual.get("counts")
+    if count <= 0 and isinstance(counts, Mapping):
+        try:
+            count = int(counts.get("controlled_fallback_covered") or 0)
+        except (TypeError, ValueError):
+            count = 0
+    rows = residual.get("residual_rows")
+    if not isinstance(rows, Sequence) or isinstance(rows, (str, bytes)):
+        rows = residual.get("samples")
+    samples: list[dict[str, object]] = []
+    if isinstance(rows, Sequence) and not isinstance(rows, (str, bytes)):
+        for row in rows:
+            if not isinstance(row, Mapping):
+                continue
+            if row.get("residual_class") != "controlled_fallback_covered":
+                continue
+            samples.append(
+                {
+                    "text": row.get("target_text_preview"),
+                    "reason": "controlled_fallback_covered",
+                    "controlled_fallback_kind": row.get("controlled_fallback_kind"),
+                    "controlled_fallback_block_index": row.get("controlled_fallback_block_index"),
+                }
+            )
+            if len(samples) >= limit:
+                break
+    return max(count, len(samples)), samples
+
+
+def _emit_controlled_fallback_review_items(
+    *,
+    quality_status: str,
+    gate_reasons: list[str],
+    formatting_review_items: list[dict[str, object]],
+    count: int,
+    samples: Sequence[Mapping[str, object]],
+) -> str:
+    if count <= 0:
+        return quality_status
+    quality_status = _apply_quality_review_reason(
+        quality_status=quality_status,
+        gate_reasons=gate_reasons,
+        reason="controlled_fallback_blocks_review_required",
+    )
+    if samples:
+        use_aggregate = count > len(samples)
+        for sample_index, sample in enumerate(samples):
+            item = _build_formatting_review_item(
+                reason="controlled_fallback_blocks_review_required",
+                label="Блок сохранён через controlled fallback",
+                sample=sample,
+                count=0 if use_aggregate else 1,
+            )
+            if sample_index == 0 and use_aggregate:
+                item["aggregate_count"] = count
+            formatting_review_items.append(item)
+    else:
+        formatting_review_items.append(
+            _build_formatting_review_item(
+                reason="controlled_fallback_blocks_review_required",
+                label="Блоки сохранены через controlled fallback",
+                count=count,
+            )
+        )
+    return quality_status
+
+
 def _is_reviewable_role_aware_unmapped_source_residue(
     *,
     count: int,
@@ -2253,6 +2329,17 @@ def _build_translation_quality_report(
             if isinstance(effective_source_total, int) and effective_source_total > 0 and (worst_unmapped_source_count / effective_source_total) > 0.01:
                 quality_status = "warn"
                 gate_reasons.append("unmapped_source_paragraphs_above_advisory_threshold")
+        if isinstance(latest_payload, Mapping):
+            controlled_fallback_review_count, controlled_fallback_review_samples = _controlled_fallback_review_samples(
+                latest_payload
+            )
+            quality_status = _emit_controlled_fallback_review_items(
+                quality_status=quality_status,
+                gate_reasons=gate_reasons,
+                formatting_review_items=formatting_review_items,
+                count=controlled_fallback_review_count,
+                samples=controlled_fallback_review_samples,
+            )
         if bullet_heading_count > 0:
             quality_status, _ = _emit_hygiene_gate(
                 quality_status=quality_status,

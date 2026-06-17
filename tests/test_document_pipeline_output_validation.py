@@ -1,9 +1,11 @@
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 import docxaicorrector.pipeline._pipeline as document_pipeline
+import docxaicorrector.pipeline.block_execution as block_execution
 import docxaicorrector.pipeline.output_validation as document_pipeline_output_validation
 
 
@@ -1633,6 +1635,334 @@ def test_run_document_processing_continues_on_english_residual_output_controlled
     assert artifact_payload["output_classification"] == "english_residual_output"
     assert artifact_payload["processed_chunk_preview"] == "Суд Judgment #1 уже начался."
     assert any(args[1] == "block_controlled_fallback" for args, _kwargs in events)
+
+
+@pytest.mark.parametrize(
+    ("job", "generated_markdown", "expected_kind", "expected_markdown"),
+    [
+        (
+            {
+                "target_text": "Исходный абзац сохранён как fallback.",
+                "context_before": "",
+                "context_after": "",
+                "target_chars": 37,
+                "context_chars": 0,
+                "paragraph_ids": ["p1"],
+            },
+            "   ",
+            "empty_processed_block",
+            "Исходный абзац сохранён как fallback.",
+        ),
+        (
+            {
+                "target_text": "Первый абзац с нормальным содержанием.",
+                "context_before": "",
+                "context_after": "",
+                "target_chars": 36,
+                "context_chars": 0,
+                "paragraph_ids": ["p1"],
+            },
+            "Суд Judgment #1 уже начался.",
+            "english_residual_output",
+            "Суд Judgment #1 уже начался.",
+        ),
+        (
+            {
+                "target_text": "# Заголовок\n\nЭто полноценный абзац с несколькими словами и знаками препинания.",
+                "context_before": "",
+                "context_after": "",
+                "target_chars": 71,
+                "context_chars": 0,
+                "paragraph_ids": ["p1"],
+            },
+            "# Heading only",
+            "heading_only_output",
+            "# Heading only",
+        ),
+        (
+            {
+                "target_text": "Этот абзац должен остаться обычным текстом, а не маркером списка.",
+                "context_before": "",
+                "context_after": "",
+                "target_chars": 66,
+                "context_chars": 0,
+                "paragraph_ids": ["p1"],
+            },
+            "## ●",
+            "bullet_heading_output",
+            "## ●",
+        ),
+        (
+            {
+                "target_text": "Содержание\n\nВведение ........ 1\n\nЗаключение ........ 29",
+                "context_before": "",
+                "context_after": "",
+                "target_chars": 54,
+                "context_chars": 0,
+                "paragraph_ids": ["p1"],
+            },
+            "Заключение ........ 29 Марка 13:13 Введение",
+            "toc_body_concat",
+            "Заключение ........ 29 Марка 13:13 Введение",
+        ),
+    ],
+)
+def test_run_document_processing_continues_on_controlled_fallback_classes(
+    tmp_path,
+    monkeypatch,
+    job,
+    generated_markdown,
+    expected_kind,
+    expected_markdown,
+):
+    monkeypatch.chdir(tmp_path)
+    runtime = _build_runtime_capture()
+    events = []
+
+    result = document_pipeline.run_document_processing(
+        uploaded_file="report.docx",
+        jobs=[job],
+        source_paragraphs=[],
+        image_assets=[],
+        image_mode="safe",
+        app_config={},
+        model="gpt-5.4",
+        max_retries=1,
+        on_progress=lambda **kwargs: None,
+        runtime=runtime,
+        resolve_uploaded_filename=lambda uploaded_file: str(uploaded_file),
+        get_client=lambda: object(),
+        ensure_pandoc_available=lambda: None,
+        load_system_prompt=lambda **_kw: "system",
+        log_event=lambda *args, **kwargs: events.append((args, kwargs)),
+        present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
+        emit_state=_emit_state,
+        emit_finalize=_emit_finalize,
+        emit_activity=_emit_activity,
+        emit_log=_emit_log,
+        emit_status=_emit_status,
+        should_stop_processing=lambda runtime: False,
+        generate_markdown_block=lambda **kwargs: generated_markdown,
+        process_document_images=lambda **kwargs: [],
+        inspect_placeholder_integrity=_inspect_placeholder_integrity,
+        convert_markdown_to_docx_bytes=_convert_markdown_to_docx_bytes,
+        preserve_source_paragraph_properties=lambda docx_bytes, paragraphs, generated_paragraph_registry=None: docx_bytes,
+        reinsert_inline_images=_reinsert_inline_images,
+    )
+
+    assert result == "succeeded"
+    assert runtime["state"]["last_error"] == ""
+    assert runtime["state"]["processed_block_markdowns"] == [expected_markdown]
+    assert runtime["state"]["processed_paragraph_registry"] == [
+        {
+            "block_index": 1,
+            "paragraph_id": "p1",
+            "text": expected_markdown,
+            "controlled_fallback": True,
+            "controlled_fallback_kind": expected_kind,
+        }
+    ]
+    assert runtime["state"]["latest_docx_bytes"] == b"docx-bytes"
+    assert f"Блок 1: сохранён с controlled fallback ({expected_kind})." in runtime["activity"]
+    assert {
+        "status": "WARN",
+        "details": f"controlled_fallback:{expected_kind}",
+    } in [{"status": entry["status"], "details": entry.get("details")} for entry in runtime["log"]]
+
+    artifact_path = Path(runtime["state"]["latest_controlled_block_fallback_artifact"])
+    artifact_payload = json.loads(artifact_path.read_text(encoding="utf-8"))
+
+    assert artifact_path.parent == Path(".run") / "block_fallbacks"
+    assert artifact_payload["output_classification"] == expected_kind
+    assert artifact_payload["processed_chunk_preview"] == expected_markdown
+    assert any(args[1] == "block_controlled_fallback" for args, _kwargs in events)
+
+
+def test_run_document_processing_fails_controlled_fallback_when_paragraph_substrate_is_corrupted(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    runtime = _build_runtime_capture()
+    events = []
+
+    result = document_pipeline.run_document_processing(
+        uploaded_file="report.docx",
+        jobs=[{
+            "target_text": "# Заголовок\n\nЭто полноценный абзац с несколькими словами и знаками препинания.",
+            "context_before": "",
+            "context_after": "",
+            "target_chars": 71,
+            "context_chars": 0,
+            "paragraph_ids": ["p1", "p2"],
+        }],
+        source_paragraphs=[],
+        image_assets=[],
+        image_mode="safe",
+        app_config={},
+        model="gpt-5.4",
+        max_retries=1,
+        on_progress=lambda **kwargs: None,
+        runtime=runtime,
+        resolve_uploaded_filename=lambda uploaded_file: str(uploaded_file),
+        get_client=lambda: object(),
+        ensure_pandoc_available=lambda: None,
+        load_system_prompt=lambda **_kw: "system",
+        log_event=lambda *args, **kwargs: events.append((args, kwargs)),
+        present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
+        emit_state=_emit_state,
+        emit_finalize=_emit_finalize,
+        emit_activity=_emit_activity,
+        emit_log=_emit_log,
+        emit_status=_emit_status,
+        should_stop_processing=lambda runtime: False,
+        generate_markdown_block=lambda **kwargs: "# Heading only",
+        process_document_images=lambda **kwargs: [],
+        inspect_placeholder_integrity=_inspect_placeholder_integrity,
+        convert_markdown_to_docx_bytes=_convert_markdown_to_docx_bytes,
+        preserve_source_paragraph_properties=lambda docx_bytes, paragraphs, generated_paragraph_registry=None: docx_bytes,
+        reinsert_inline_images=_reinsert_inline_images,
+    )
+
+    assert result == "failed"
+    assert "heading_only_output" in runtime["state"]["last_error"]
+    assert "latest_controlled_block_fallback_artifact" not in runtime["state"]
+    assert not any(args[1] == "block_controlled_fallback" for args, _kwargs in events)
+
+
+def test_run_document_processing_continues_when_multiple_controlled_fallback_blocks_are_emitted(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    runtime = _build_runtime_capture()
+    events = []
+    generated_outputs = iter([
+        "   ",
+        "Суд Judgment #1 уже начался.",
+        "# Heading only",
+        "## ●",
+        "Заключение ........ 29 Марка 13:13 Введение",
+    ])
+
+    result = document_pipeline.run_document_processing(
+        uploaded_file="report.docx",
+        jobs=[
+            {
+                "target_text": "Исходный абзац сохранён как fallback.",
+                "context_before": "",
+                "context_after": "",
+                "target_chars": 37,
+                "context_chars": 0,
+                "paragraph_ids": ["p1"],
+            },
+            {
+                "target_text": "Первый абзац с нормальным содержанием.",
+                "context_before": "",
+                "context_after": "",
+                "target_chars": 36,
+                "context_chars": 0,
+                "paragraph_ids": ["p2"],
+            },
+            {
+                "target_text": "# Заголовок\n\nЭто полноценный абзац с несколькими словами и знаками препинания.",
+                "context_before": "",
+                "context_after": "",
+                "target_chars": 71,
+                "context_chars": 0,
+                "paragraph_ids": ["p3"],
+            },
+            {
+                "target_text": "Этот абзац должен остаться обычным текстом, а не маркером списка.",
+                "context_before": "",
+                "context_after": "",
+                "target_chars": 66,
+                "context_chars": 0,
+                "paragraph_ids": ["p4"],
+            },
+            {
+                "target_text": "Содержание\n\nВведение ........ 1\n\nЗаключение ........ 29",
+                "context_before": "",
+                "context_after": "",
+                "target_chars": 54,
+                "context_chars": 0,
+                "paragraph_ids": ["p5"],
+            },
+        ],
+        source_paragraphs=[],
+        image_assets=[],
+        image_mode="safe",
+        app_config={},
+        model="gpt-5.4",
+        max_retries=1,
+        on_progress=lambda **kwargs: None,
+        runtime=runtime,
+        resolve_uploaded_filename=lambda uploaded_file: str(uploaded_file),
+        get_client=lambda: object(),
+        ensure_pandoc_available=lambda: None,
+        load_system_prompt=lambda **_kw: "system",
+        log_event=lambda *args, **kwargs: events.append((args, kwargs)),
+        present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
+        emit_state=_emit_state,
+        emit_finalize=_emit_finalize,
+        emit_activity=_emit_activity,
+        emit_log=_emit_log,
+        emit_status=_emit_status,
+        should_stop_processing=lambda runtime: False,
+        generate_markdown_block=lambda **kwargs: next(generated_outputs),
+        process_document_images=lambda **kwargs: [],
+        inspect_placeholder_integrity=_inspect_placeholder_integrity,
+        convert_markdown_to_docx_bytes=_convert_markdown_to_docx_bytes,
+        preserve_source_paragraph_properties=lambda docx_bytes, paragraphs, generated_paragraph_registry=None: docx_bytes,
+        reinsert_inline_images=_reinsert_inline_images,
+    )
+
+    expected_kinds = [
+        "empty_processed_block",
+        "english_residual_output",
+        "heading_only_output",
+        "bullet_heading_output",
+        "toc_body_concat",
+    ]
+
+    assert result == "succeeded"
+    assert runtime["state"]["latest_docx_bytes"] == b"docx-bytes"
+    assert [entry["controlled_fallback_kind"] for entry in runtime["state"]["processed_paragraph_registry"]] == expected_kinds
+    assert [args[1] for args, _kwargs in events].count("block_controlled_fallback") == 5
+    artifact_payloads = [
+        json.loads(path.read_text(encoding="utf-8"))
+        for path in sorted((Path(".run") / "block_fallbacks").glob("report_docx_block_*.json"))
+    ]
+    assert [payload["output_classification"] for payload in artifact_payloads] == expected_kinds
+
+
+@pytest.mark.parametrize(
+    "rejection_kind",
+    [
+        "missing_provider_client",
+        "missing_provider_configuration",
+        "missing_source_segment",
+        "missing_translated_segment",
+        "final_translated_book_incomplete",
+        "marker_registry_failure",
+        "marker_anchor_failure",
+        "invalid_processing_job",
+        "corrupted_block",
+        "source_extraction_failure",
+    ],
+)
+def test_block_failure_classifier_keeps_hard_fail_classes_out_of_controlled_fallback(rejection_kind):
+    payload = SimpleNamespace(
+        job_kind="llm",
+        paragraph_ids=["p1"],
+        target_text="Исходный абзац.",
+        target_text_with_markers="Исходный абзац.",
+    )
+
+    decision = block_execution.classify_processed_block_failure_decision(
+        rejection_kind=rejection_kind,
+        payload=payload,
+        processed_chunk="Обработанный абзац.",
+        build_processed_paragraph_registry_entries_fn=lambda **_kwargs: [
+            {"paragraph_id": "p1", "text": "Обработанный абзац."}
+        ],
+    )
+
+    assert decision == {"decision": "fail", "fallback_kind": rejection_kind}
 
 
 def test_validate_translated_toc_block_accepts_translated_toc_lines():

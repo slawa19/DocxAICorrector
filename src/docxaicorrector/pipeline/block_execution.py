@@ -12,7 +12,24 @@ from docxaicorrector.pipeline.output_validation import validate_translated_toc_b
 PipelineResult: TypeAlias = Literal["succeeded", "failed", "stopped"]
 TOC_VALIDATION_RETRY_BUDGET = 2
 TOC_RETRY_HARDENING_ATTEMPT = 2
-CONTROLLED_BLOCK_REJECTION_KINDS = frozenset({"english_residual_output"})
+CONTROLLED_BLOCK_FAILURE_POLICY: dict[str, dict[str, str]] = {
+    "empty": {"decision": "fallback_continue", "fallback_kind": "empty_processed_block"},
+    "empty_processed_block": {"decision": "fallback_continue", "fallback_kind": "empty_processed_block"},
+    "english_residual_output": {"decision": "fallback_continue", "fallback_kind": "english_residual_output"},
+    "heading_only_output": {"decision": "fallback_continue", "fallback_kind": "heading_only_output"},
+    "bullet_heading_output": {"decision": "fallback_continue", "fallback_kind": "bullet_heading_output"},
+    "toc_body_concat": {"decision": "fallback_continue", "fallback_kind": "toc_body_concat"},
+    "missing_provider_client": {"decision": "fail"},
+    "missing_provider_configuration": {"decision": "fail"},
+    "missing_source_segment": {"decision": "fail"},
+    "missing_translated_segment": {"decision": "fail"},
+    "final_translated_book_incomplete": {"decision": "fail"},
+    "marker_registry_failure": {"decision": "fail"},
+    "marker_anchor_failure": {"decision": "fail"},
+    "invalid_processing_job": {"decision": "fail"},
+    "corrupted_block": {"decision": "fail"},
+    "source_extraction_failure": {"decision": "fail"},
+}
 CONTROLLED_BLOCK_FALLBACK_DIR = Path(".run") / "block_fallbacks"
 
 
@@ -51,6 +68,70 @@ def _write_controlled_block_fallback_artifact(
         return str(artifact_path)
     except OSError:
         return None
+
+
+def _fallback_markdown_for_processed_block_rejection(*, payload: Any, processed_chunk: str, rejection_kind: str) -> str:
+    if rejection_kind in {"empty", "empty_processed_block"}:
+        return str(getattr(payload, "target_text", "") or "").strip()
+    return processed_chunk
+
+
+def _has_intact_controlled_fallback_substrate(
+    *,
+    payload: Any,
+    fallback_markdown: str,
+    build_processed_paragraph_registry_entries_fn: Any,
+) -> bool:
+    paragraph_ids = getattr(payload, "paragraph_ids", None)
+    if getattr(payload, "job_kind", None) != "llm":
+        return False
+    if not isinstance(paragraph_ids, list) or not paragraph_ids:
+        return False
+    if not str(getattr(payload, "target_text", "") or "").strip():
+        return False
+    if not str(getattr(payload, "target_text_with_markers", "") or "").strip():
+        return False
+    if not fallback_markdown.strip():
+        return False
+    try:
+        build_processed_paragraph_registry_entries_fn(
+            block_index=0,
+            paragraph_ids=paragraph_ids,
+            processed_chunk=fallback_markdown,
+        )
+    except Exception:
+        return False
+    return True
+
+
+def classify_processed_block_failure_decision(
+    *,
+    rejection_kind: str,
+    payload: Any,
+    processed_chunk: str,
+    build_processed_paragraph_registry_entries_fn: Any,
+) -> dict[str, str]:
+    policy = CONTROLLED_BLOCK_FAILURE_POLICY.get(rejection_kind, {"decision": "fail"})
+    decision = str(policy.get("decision") or "fail")
+    fallback_kind = str(policy.get("fallback_kind") or rejection_kind)
+    if decision != "fallback_continue":
+        return {"decision": decision, "fallback_kind": fallback_kind}
+    fallback_markdown = _fallback_markdown_for_processed_block_rejection(
+        payload=payload,
+        processed_chunk=processed_chunk,
+        rejection_kind=fallback_kind,
+    )
+    if not _has_intact_controlled_fallback_substrate(
+        payload=payload,
+        fallback_markdown=fallback_markdown,
+        build_processed_paragraph_registry_entries_fn=build_processed_paragraph_registry_entries_fn,
+    ):
+        return {"decision": "fail", "fallback_kind": fallback_kind}
+    return {
+        "decision": "fallback_continue",
+        "fallback_kind": fallback_kind,
+        "fallback_markdown": fallback_markdown,
+    }
 
 
 def _resolve_segment_status_payload(*, initialization: Any, index: int, status: str) -> tuple[dict[str, str], dict[str, float], str, str]:
@@ -1035,7 +1116,13 @@ def process_single_block(
 
     processed_block_status = classify_processed_block_fn(payload.target_text, processed_chunk)
     if processed_block_status != "valid":
-        if processed_block_status in CONTROLLED_BLOCK_REJECTION_KINDS:
+        rejection_decision = classify_processed_block_failure_decision(
+            rejection_kind=processed_block_status,
+            payload=payload,
+            processed_chunk=processed_chunk,
+            build_processed_paragraph_registry_entries_fn=build_processed_paragraph_registry_entries,
+        )
+        if rejection_decision["decision"] == "fallback_continue":
             continue_controlled_processed_block_rejection(
                 context=context,
                 dependencies=dependencies,
@@ -1044,8 +1131,8 @@ def process_single_block(
                 initialization=initialization,
                 index=index,
                 payload=payload,
-                processed_chunk=processed_chunk,
-                rejection_kind=processed_block_status,
+                processed_chunk=rejection_decision["fallback_markdown"],
+                rejection_kind=rejection_decision["fallback_kind"],
                 append_marker_registry_entries_fn=append_marker_registry_entries_fn,
             )
             return None

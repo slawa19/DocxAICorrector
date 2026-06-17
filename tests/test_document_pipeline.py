@@ -5467,6 +5467,70 @@ def test_build_translation_quality_report_uses_role_aware_effective_unmapped_tar
     assert report["unmapped_target_count"] == 1
 
 
+def test_build_translation_quality_report_surfaces_controlled_fallback_target_credit_for_review(monkeypatch):
+    monkeypatch.setattr(
+        document_pipeline_late_phases,
+        "_load_formatting_diagnostics_payloads",
+        lambda artifact_paths: [
+            {
+                "unmapped_source_ids": [],
+                "unmapped_target_indexes": [225],
+                "source_count": 1140,
+                "target_count": 1140,
+                "unmapped_target_residual_diagnostics": {
+                    "counts": {"controlled_fallback_covered": 1},
+                    "split_accounting_creditable_count": 1,
+                    "controlled_fallback_creditable_count": 1,
+                    "residual_rows": [
+                        {
+                            "target_index": 225,
+                            "target_text_preview": "Bibliography fallback block",
+                            "residual_class": "controlled_fallback_covered",
+                            "controlled_fallback_kind": "english_residual_output",
+                            "controlled_fallback_block_index": 225,
+                        }
+                    ],
+                },
+            }
+        ],
+    )
+
+    report = document_pipeline_late_phases._build_translation_quality_report(
+        context=SimpleNamespace(
+            app_config={"translation_output_quality_gate_policy": "strict"},
+            processing_operation="translate",
+            uploaded_filename="report.docx",
+            translation_domain="general",
+            document_map=None,
+            document_topology_projection=None,
+        ),
+        final_markdown="Body one\n\nBody two",
+        formatting_diagnostics_artifacts=["ignored.json"],
+    )
+
+    assert report["quality_status"] == "warn"
+    assert report["gate_reasons"] == ["controlled_fallback_blocks_review_required"]
+    assert report["raw_unmapped_target_paragraph_count"] == 1
+    assert report["target_split_accounting_creditable_count"] == 1
+    assert report["effective_unmapped_target_count"] == 0
+    assert report["unmapped_target_count"] == 0
+    assert report["formatting_review_required_count"] == 1
+    assert report["formatting_review_items"] == [
+        {
+            "reason": "controlled_fallback_blocks_review_required",
+            "label": "Блок сохранён через controlled fallback",
+            "count": 1,
+            "severity": "review",
+            "sample": {
+                "text": "Bibliography fallback block",
+                "reason": "controlled_fallback_covered",
+                "controlled_fallback_kind": "english_residual_output",
+                "controlled_fallback_block_index": 225,
+            },
+        }
+    ]
+
+
 def test_build_translation_quality_report_prefers_role_aware_target_basis_over_topology_unit(monkeypatch):
     monkeypatch.setattr(
         document_pipeline_late_phases,
