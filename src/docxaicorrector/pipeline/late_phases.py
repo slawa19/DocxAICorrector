@@ -1809,6 +1809,16 @@ class _HygieneGateSpec:
     empty_label: str | None = None
 
 
+@dataclass(frozen=True)
+class _UntranslatedStructuralSample:
+    line: int | None
+    text: str
+    reason: str
+    role: str | None = None
+    structural_role: str | None = None
+    paragraph_id: str | None = None
+
+
 _HYGIENE_GATE_SPECS: dict[str, _HygieneGateSpec] = {
     "role_loss": _HygieneGateSpec(
         review_reason="role_loss_review_required",
@@ -1841,6 +1851,83 @@ _HYGIENE_GATE_SPECS: dict[str, _HygieneGateSpec] = {
         label="Слово содержит символы из разных алфавитов",
     ),
 }
+
+
+_LATIN_LETTER_PATTERN = re.compile(r"[A-Za-z]")
+_LATIN_WORD_PATTERN = re.compile(r"\b[A-Za-z][A-Za-z'’-]{2,}\b")
+_CYRILLIC_LETTER_PATTERN = re.compile(r"[А-Яа-яЁё]")
+_MARKDOWN_STRUCTURAL_PREFIX_PATTERN = re.compile(r"^\s*(?:#{1,6}\s+|>\s+|[-*]\s+|\d+\.\s+)+")
+
+
+def _strip_structural_markdown_prefix(text: str) -> str:
+    stripped = str(text or "").strip()
+    return _MARKDOWN_STRUCTURAL_PREFIX_PATTERN.sub("", stripped).strip()
+
+
+def _is_untranslated_structural_text(text: str) -> bool:
+    stripped = _strip_structural_markdown_prefix(text)
+    if not stripped or _CYRILLIC_LETTER_PATTERN.search(stripped):
+        return False
+    letters = [char for char in stripped if char.isalpha()]
+    if not letters:
+        return False
+    latin_letters = [char for char in letters if _LATIN_LETTER_PATTERN.fullmatch(char)]
+    if len(latin_letters) / len(letters) < 0.8:
+        return False
+    latin_words = _LATIN_WORD_PATTERN.findall(stripped)
+    if len(latin_words) >= 2:
+        return True
+    if len(latin_words) == 1:
+        word = latin_words[0]
+        return len(word) >= 6 and word.isupper()
+    return False
+
+
+def _collect_untranslated_structural_samples(
+    *,
+    final_markdown: str,
+    assembly_entries: Sequence[object],
+) -> list[_UntranslatedStructuralSample]:
+    if not assembly_entries:
+        return []
+    nonempty_line_numbers = [
+        line_number
+        for line_number, raw_line in enumerate(final_markdown.splitlines(), start=1)
+        if raw_line.strip()
+    ]
+    samples: list[_UntranslatedStructuralSample] = []
+    for index, entry in enumerate(assembly_entries):
+        role = str(getattr(entry, "role", "") or "").strip().lower()
+        structural_role = str(getattr(entry, "structural_role", "") or "").strip().lower()
+        if role not in {"heading", "caption"} and structural_role not in {"heading", "caption"}:
+            continue
+        if bool(getattr(entry, "controlled_fallback", False)):
+            continue
+        text = str(getattr(entry, "text", "") or "").strip()
+        if not _is_untranslated_structural_text(text):
+            continue
+        samples.append(
+            _UntranslatedStructuralSample(
+                line=nonempty_line_numbers[index] if index < len(nonempty_line_numbers) else None,
+                text=text,
+                reason="untranslated_structural_text",
+                role=role or None,
+                structural_role=structural_role or None,
+                paragraph_id=str(getattr(entry, "paragraph_id", "") or "") or None,
+            )
+        )
+    return samples
+
+
+def _serialize_untranslated_structural_sample(sample: object) -> Mapping[str, object]:
+    return {
+        "line": getattr(sample, "line", None),
+        "text": getattr(sample, "text", None),
+        "reason": getattr(sample, "reason", None),
+        "role": getattr(sample, "role", None),
+        "structural_role": getattr(sample, "structural_role", None),
+        "paragraph_id": getattr(sample, "paragraph_id", None),
+    }
 
 
 def _is_standalone_numeric_continuation_sample(sample: object) -> bool:
@@ -2199,6 +2286,10 @@ def _build_translation_quality_report(
     raw_mixed_script_samples = collect_mixed_script_samples(final_markdown)
     mixed_script_samples = list(raw_mixed_script_samples)
     recovered_heading_entries = collect_recovered_heading_entries(assembly_entries) if assembly_entries and not assembly_uses_fallback else []
+    untranslated_structural_samples = _collect_untranslated_structural_samples(
+        final_markdown=final_markdown,
+        assembly_entries=assembly_entries,
+    )
     translation_domain = str(getattr(context, "translation_domain", "") or context.app_config.get("translation_domain", "general") or "general")
     raw_theology_style_samples = (
         collect_theology_style_issue_samples(normalized_quality_markdown)
@@ -2436,6 +2527,28 @@ def _build_translation_quality_report(
                 source_total=effective_source_total,
                 samples=mixed_script_samples,
             )
+        if untranslated_structural_samples:
+            quality_status = _apply_quality_review_reason(
+                quality_status=quality_status,
+                gate_reasons=gate_reasons,
+                reason="untranslated_structural_text_review_required",
+            )
+            serialized_samples = [
+                dict(_serialize_untranslated_structural_sample(sample))
+                for sample in untranslated_structural_samples[:8]
+            ]
+            use_aggregate = len(untranslated_structural_samples) > len(serialized_samples)
+            for sample_index, sample in enumerate(serialized_samples):
+                item = _build_formatting_review_item(
+                    reason="untranslated_structural_text_review_required",
+                    label="Структурный элемент остался на исходном языке",
+                    sample=sample,
+                    count=0 if use_aggregate else 1,
+                    severity="review",
+                )
+                if sample_index == 0 and use_aggregate:
+                    item["aggregate_count"] = len(untranslated_structural_samples)
+                formatting_review_items.append(item)
         if theology_style_samples:
             quality_status = "warn" if quality_status == "pass" else quality_status
 
@@ -2534,6 +2647,12 @@ def _build_translation_quality_report(
         "raw_mixed_script_term_count": len(raw_mixed_script_samples),
         "mixed_script_term_samples": _serialize_quality_samples(mixed_script_samples),
         "raw_mixed_script_term_samples": _serialize_quality_samples(raw_mixed_script_samples),
+        "untranslated_structural_text_count": len(untranslated_structural_samples),
+        "untranslated_structural_text_samples": [
+            dict(_serialize_untranslated_structural_sample(sample))
+            for sample in untranslated_structural_samples[:8]
+        ],
+        "untranslated_structural_text_classification": "structural_translation_review",
         "theology_style_deterministic_issue_count": len(theology_style_samples),
         "theology_style_deterministic_issue_source": "legacy_markdown",
         "theology_style_deterministic_issue_classification": "domain_style_advisory",

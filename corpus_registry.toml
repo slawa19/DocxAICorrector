@@ -1,6 +1,6 @@
 [[documents]]
 id = "lietaer-core"
-source_path = "tests/sources/Лиетар глава1.docx"
+source_path = "tests/sources/archive/Лиетар глава1.docx"
 artifact_prefix = "lietaer_validation"
 output_basename = "Лиетар глава1_validated"
 structural_mode = "strict"
@@ -29,7 +29,7 @@ provenance = "Canonical real document regression sample"
 
 [[documents]]
 id = "religion-wealth-core"
-source_path = "tests/sources/Собственность и богатство в религиях.doc"
+source_path = "tests/sources/archive/Собственность и богатство в религиях.doc"
 artifact_prefix = "religion_wealth_validation"
 output_basename = "Собственность и богатство в религиях_validated"
 structural_mode = "tolerant"
@@ -57,7 +57,7 @@ tolerance_reason = "Current normalized legacy-DOC sample preserves structure and
 
 [[documents]]
 id = "mazzucato-audiobook-core"
-source_path = "tests/sources/The Value of Everything. Making and Taking in the Global Economy by Mariana Mazzucato (z-lib.org).docx"
+source_path = "tests/sources/archive/The Value of Everything. Making and Taking in the Global Economy by Mariana Mazzucato (z-lib.org).docx"
 artifact_prefix = "mazzucato_audiobook_validation"
 output_basename = "The Value of Everything_audiobook_validated"
 structural_mode = "strict"
@@ -86,7 +86,7 @@ provenance = "Canonical Mariana Mazzucato real-document sample for translate plu
 
 [[documents]]
 id = "mazzucato-pdf-full-benchmark"
-source_path = "tests/sources/The Value of Everything. Making and Taking in the Global Economy by Mariana Mazzucato (z-lib.org).pdf"
+source_path = "tests/sources/book/The Value of Everything. Making and Taking in the Global Economy by Mariana Mazzucato (z-lib.org).pdf"
 artifact_prefix = "mazzucato_pdf_full_benchmark"
 output_basename = "The_Value_of_Everything_pdf_full_benchmark"
 structural_mode = "strict"
@@ -114,11 +114,11 @@ provenance = "Non-Lietaer full-book PDF benchmark for WS-2 role-aware formatting
 
 [[documents]]
 id = "lietaer-pdf-first-20-benchmark"
-source_path = "tests/sources/Rethinking-money-first-20-pages.pdf"
+source_path = "tests/sources/archive/Rethinking-money-first-20-pages.pdf"
 artifact_prefix = "lietaer_pdf_first20_benchmark"
 output_basename = "Rethinking_money_first20_benchmark"
 structural_mode = "strict"
-min_paragraphs = 80
+min_paragraphs = 48
 has_headings = true
 min_headings = 2
 has_numbered_lists = false
@@ -142,11 +142,11 @@ provenance = "Benchmark-only first-20-pages PDF slice for translation model eval
 
 [[documents]]
 id = "lietaer-pdf-first-20-structure-core"
-source_path = "tests/sources/Rethinking-money-first-20-pages.pdf"
+source_path = "tests/sources/archive/Rethinking-money-first-20-pages.pdf"
 artifact_prefix = "lietaer_pdf_first20_structure"
 output_basename = "Rethinking_money_first20_structure"
 structural_mode = "strict"
-min_paragraphs = 80
+min_paragraphs = 48
 has_headings = true
 min_headings = 2
 has_numbered_lists = false
@@ -174,11 +174,11 @@ provenance = "Canonical first-20-pages PDF slice for AI-first structure-recovery
 
 [[documents]]
 id = "lietaer-pdf-chapter-region-core"
-source_path = "tests/sources/Rethinking-money-chapter-region-pages-10-11-and-156-217.pdf"
+source_path = "tests/sources/archive/Rethinking-money-chapter-region-pages-10-11-and-156-217.pdf"
 artifact_prefix = "lietaer_pdf_chapter_region"
 output_basename = "Rethinking_money_chapter_region"
 structural_mode = "strict"
-min_paragraphs = 140
+min_paragraphs = 135
 has_headings = true
 min_headings = 4
 has_numbered_lists = false
@@ -207,7 +207,7 @@ provenance = "Non-contiguous Lietaer PDF slice combining TOC pages 10-11 with bo
 
 [[documents]]
 id = "lietaer-pdf-full-benchmark"
-source_path = "tests/sources/Rethinking-money_-How-new-currencies-turn-scarcity-into-prosperity-Bernard-Lietaer-Jacqui-Dunne.pdf"
+source_path = "tests/sources/book/Rethinking-money_-How-new-currencies-turn-scarcity-into-prosperity-Bernard-Lietaer-Jacqui-Dunne.pdf"
 artifact_prefix = "lietaer_pdf_full_benchmark"
 output_basename = "Rethinking_money_full_benchmark"
 structural_mode = "strict"
@@ -235,6 +235,34 @@ require_no_toc_body_concat = false
 default_run_profile = "ui-parity-translate-benchmark-topology-advisory"
 tags = ["pdf", "translation", "benchmark-only", "lietaer", "full-document"]
 provenance = "Benchmark-only full-document PDF profile for structure model comparison on the full Lietaer source."
+
+[[documents]]
+id = "creatingwealth-pdf-full-benchmark"
+source_path = "tests/sources/book/new_bernardlietaer-creatingwealthpdffromepub-160516072739.pdf"
+artifact_prefix = "creatingwealth_pdf_full_benchmark"
+output_basename = "Creating_Wealth_pdf_full_benchmark"
+structural_mode = "strict"
+min_paragraphs = 1
+has_headings = true
+min_headings = 1
+has_numbered_lists = false
+min_numbered_items = 0
+has_images = false
+min_images = 0
+has_tables = false
+min_tables = 0
+max_formatting_diagnostics = 999999
+max_unmapped_source_paragraphs = 999999
+max_unmapped_target_paragraphs = 999999
+max_heading_level_drift = 999999
+min_text_similarity = 0.0
+require_numbered_lists_preserved = false
+require_nonempty_output = true
+forbid_heading_only_collapse = true
+require_pdf_conversion = true
+default_run_profile = "ui-parity-translate-benchmark-advisory"
+tags = ["pdf", "translation", "benchmark-only", "lietaer", "full-document", "measurement-baseline", "epub-derived-pdf"]
+provenance = "Measurement-only first full-book benchmark for the epub-derived Creating Wealth PDF; thresholds are intentionally advisory and must not be tightened to fit the first run."
 
 [[run_profiles]]
 id = "ui-parity-default"

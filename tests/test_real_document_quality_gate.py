@@ -25,7 +25,7 @@ def _load_json(path: Path) -> dict:
 
 def test_real_document_quality_gate_passes_and_updates_latest_manifest() -> None:
     project_root = Path(__file__).resolve().parents[1]
-    source_path = project_root / "tests" / "sources" / "Лиетар глава1.docx"
+    source_path = project_root / "tests" / "sources" / "archive" / "Лиетар глава1.docx"
     latest_manifest_path = project_root / "tests" / "artifacts" / "real_document_pipeline" / "lietaer_validation_latest.json"
 
     if not source_path.exists():

@@ -104,9 +104,14 @@ controlled-fallback blocks) is neither achievable nor the right bar. **Do:**
 define the product acceptance bar — a small, explicit tolerance for back-matter /
 notes / fallback edge cases, and credit controlled-fallback blocks whose content
 is present. **Why before UI:** otherwise acceptance is perpetually red on good
-books and the UI cannot show a meaningful pass/fail. **Done:** a clean full book
-passes; a book with a real structural loss (e.g. a heading rendered as body)
-fails with a short, hand-checkable list.
+books and the UI cannot show a meaningful pass/fail. The verdict must be
+format-aware **and** flagging-untranslated: a structural element whose formatting
+survives but whose text remains in the source language (for example an English
+heading in a Russian translation) must surface for review instead of silently
+passing as role-aware coverage. **Done:** a clean full book passes; a book with a
+real structural loss (e.g. a heading rendered as body) fails with a short,
+hand-checkable list; untranslated structural headings/captions produce a visible
+review item rather than a silent pass.
 
 ### 4. Harness ↔ production parity
 

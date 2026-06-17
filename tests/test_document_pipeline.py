@@ -992,7 +992,7 @@ def test_run_document_processing_hard_fails_large_role_loss_with_formatting_revi
         ],
         image_assets=[],
         image_mode="safe",
-        app_config={"translation_output_quality_gate_policy": "strict"},
+        app_config={"translation_output_quality_gate_policy": "strict", "enable_paragraph_markers": True},
         model="gpt-5.4",
         max_retries=1,
         processing_operation="translate",
@@ -3808,7 +3808,7 @@ def test_run_document_processing_keeps_false_fragment_cleanup_display_only_after
 
     result = _run_processing(
         runtime,
-        app_config={"translation_output_quality_gate_policy": "strict"},
+        app_config={"translation_output_quality_gate_policy": "strict", "enable_paragraph_markers": True},
         processing_operation="translate",
         generate_markdown_block=lambda **kwargs: (
             "Христос предупреждает нас\n\n"
@@ -3990,6 +3990,74 @@ def test_run_document_processing_normalizes_mixed_script_before_quality_gate(tmp
     assert payload["mixed_script_term_count"] == 0
 
 
+def test_run_document_processing_flags_untranslated_structural_heading_for_review(tmp_path, monkeypatch):
+    runtime = _build_runtime_capture()
+    quality_dir = tmp_path / "quality_reports"
+    monkeypatch.setattr(document_pipeline_late_phases, "collect_recent_formatting_diagnostics_artifacts", lambda since_epoch_seconds, diagnostics_dir: [])
+    monkeypatch.setattr(document_pipeline_late_phases, "QUALITY_REPORTS_DIR", quality_dir)
+
+    result = _run_processing(
+        runtime,
+        app_config={"translation_output_quality_gate_policy": "strict", "enable_paragraph_markers": True},
+        processing_operation="translate",
+        source_paragraphs=[
+            ParagraphUnit(
+                text="The Competitive Society",
+                role="heading",
+                structural_role="heading",
+                heading_level=2,
+                paragraph_id="p0001",
+            )
+        ],
+        jobs=[
+            {
+                "target_text": "The Competitive Society",
+                "target_text_with_markers": "[[DOCX_PARA_p0001]]\nThe Competitive Society",
+                "context_before": "",
+                "context_after": "",
+                "target_chars": 23,
+                "context_chars": 0,
+                "paragraph_ids": ["p0001"],
+            }
+        ],
+        generate_markdown_block=lambda **kwargs: "## The Competitive Society",
+        write_ui_result_artifacts=lambda **kwargs: {
+            "markdown_path": "/tmp/final.result.md",
+            "docx_path": "/tmp/final.result.docx",
+            "formatting_review_path": "/tmp/final.result.formatting_review.txt",
+        },
+    )
+
+    assert result == "succeeded"
+    assert runtime["state"]["latest_result_notice"] == {
+        "level": "warning",
+        "message": "Готово. 1 абзац требует проверки оформления. Подробности: formatting_review.txt",
+    }
+    report_files = list(quality_dir.glob("*.json"))
+    assert len(report_files) == 1
+    payload = json.loads(report_files[0].read_text(encoding="utf-8"))
+    assert payload["quality_status"] == "warn"
+    assert payload["gate_reasons"] == ["untranslated_structural_text_review_required"]
+    assert payload["untranslated_structural_text_count"] == 1
+    assert payload["formatting_review_required_count"] == 1
+    assert payload["formatting_review_items"] == [
+        {
+            "reason": "untranslated_structural_text_review_required",
+            "label": "Структурный элемент остался на исходном языке",
+            "count": 1,
+            "severity": "review",
+            "sample": {
+                "line": 1,
+                "text": "## The Competitive Society",
+                "reason": "untranslated_structural_text",
+                "role": "heading",
+                "structural_role": "heading",
+                "paragraph_id": "p0001",
+            },
+        }
+    ]
+
+
 def test_build_translation_quality_report_flags_bullet_marker_headings_in_strict_translate_mode():
     report = document_pipeline_late_phases._build_translation_quality_report(
         context=SimpleNamespace(
@@ -4054,6 +4122,86 @@ def test_build_translation_quality_report_counts_capped_legacy_hygiene_samples(m
     assert len(review_items) == 8
     assert review_items[0]["aggregate_count"] == 10
     assert [item["count"] for item in review_items] == [0] * 8
+
+
+def test_build_translation_quality_report_flags_untranslated_structural_heading_but_not_proper_name():
+    assembly_result = document_pipeline_output_validation.FinalMarkdownAssemblyResult(
+        final_markdown="## The Competitive Society\n\n## Terra\n\nПереведённый текст.",
+        entries=(
+            document_pipeline_output_validation.FinalAssemblyEntry(
+                text="## The Competitive Society",
+                block_index=1,
+                paragraph_id="p1",
+                source_index=0,
+                role="heading",
+                structural_role="heading",
+                heading_level=2,
+                from_registry=True,
+            ),
+            document_pipeline_output_validation.FinalAssemblyEntry(
+                text="## Terra",
+                block_index=1,
+                paragraph_id="p2",
+                source_index=1,
+                role="heading",
+                structural_role="heading",
+                heading_level=2,
+                from_registry=True,
+            ),
+            document_pipeline_output_validation.FinalAssemblyEntry(
+                text="Переведённый текст.",
+                block_index=1,
+                paragraph_id="p3",
+                source_index=2,
+                role="body",
+                structural_role="body",
+                from_registry=True,
+            ),
+        ),
+        diagnostics=document_pipeline_output_validation.FinalAssemblyDiagnostics(),
+    )
+
+    report = document_pipeline_late_phases._build_translation_quality_report(
+        context=SimpleNamespace(
+            app_config={"translation_output_quality_gate_policy": "strict"},
+            processing_operation="translate",
+            uploaded_filename="report.docx",
+            translation_domain="general",
+        ),
+        final_markdown=assembly_result.final_markdown,
+        formatting_diagnostics_artifacts=[],
+        assembly_result=assembly_result,
+    )
+
+    assert report["quality_status"] == "warn"
+    assert report["gate_reasons"] == ["untranslated_structural_text_review_required"]
+    assert report["untranslated_structural_text_count"] == 1
+    assert report["untranslated_structural_text_samples"] == [
+        {
+            "line": 1,
+            "text": "## The Competitive Society",
+            "reason": "untranslated_structural_text",
+            "role": "heading",
+            "structural_role": "heading",
+            "paragraph_id": "p1",
+        }
+    ]
+    assert report["formatting_review_items"] == [
+        {
+            "reason": "untranslated_structural_text_review_required",
+            "label": "Структурный элемент остался на исходном языке",
+            "count": 1,
+            "severity": "review",
+            "sample": {
+                "line": 1,
+                "text": "## The Competitive Society",
+                "reason": "untranslated_structural_text",
+                "role": "heading",
+                "structural_role": "heading",
+                "paragraph_id": "p1",
+            },
+        }
+    ]
 
 
 @pytest.mark.parametrize(

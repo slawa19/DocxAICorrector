@@ -27,7 +27,7 @@ def _load_json(path: Path) -> dict:
 
 def test_lietaer_real_validation_uses_canonical_ai_profile() -> None:
     project_root = Path(__file__).resolve().parents[1]
-    source_path = project_root / "tests" / "sources" / "Лиетар глава1.docx"
+    source_path = project_root / "tests" / "sources" / "archive" / "Лиетар глава1.docx"
     latest_manifest_path = project_root / "tests" / "artifacts" / "real_document_pipeline" / "lietaer_validation_latest.json"
 
     if not source_path.exists():

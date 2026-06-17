@@ -1037,7 +1037,7 @@ def test_reader_cleanup_comparison_only_target_document_is_chapter_region_pdf() 
 
     assert document_profile.id == "lietaer-pdf-chapter-region-core"
     assert resolved_source.as_posix().endswith(
-        "tests/sources/Rethinking-money-chapter-region-pages-10-11-and-156-217.pdf"
+        "tests/sources/archive/Rethinking-money-chapter-region-pages-10-11-and-156-217.pdf"
     )
 
 

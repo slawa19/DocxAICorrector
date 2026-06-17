@@ -59,7 +59,7 @@ def _run_validation(project_root: Path, *, run_profile_id: str) -> dict:
 )
 def test_real_document_translate_plus_audiobook_postprocess_sanity() -> None:
     project_root = Path(__file__).resolve().parents[1]
-    source_path = project_root / "tests" / "sources" / "The Value of Everything. Making and Taking in the Global Economy by Mariana Mazzucato (z-lib.org).docx"
+    source_path = project_root / "tests" / "sources" / "archive" / "The Value of Everything. Making and Taking in the Global Economy by Mariana Mazzucato (z-lib.org).docx"
 
     if not source_path.exists():
         pytest.skip(f"missing real-document source: {source_path}")
