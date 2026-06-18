@@ -637,6 +637,10 @@ def test_build_markdown_quality_metrics_collects_detector_advisories_without_fai
     assert metrics["adjacent_h1_without_body_count"] == 1
     assert metrics["pdf_blank_page_marker_leakage_threshold"] is None
     assert metrics["pdf_blank_page_marker_leakage_samples"][0]["reason"] == "blank_page_marker_visible_in_output"
+    audit = metrics["quality_gate_audit_classifications"]
+    assert audit["pdf_blank_page_marker_leakage"]["verdict"] == "unit_aware"
+    assert audit["inline_page_furniture_leakage"]["verdict"] == "unit_aware"
+    assert audit["heading_body_concat_detected"]["verdict"] == "tolerant"
 
 
 def test_build_structural_checks_serializes_strict_detector_threshold_fields_when_configured() -> None:

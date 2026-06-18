@@ -44,6 +44,7 @@ from docxaicorrector.validation.formatting_coverage import (
     resolve_role_aware_formatting_unmapped_source_summary,
     resolve_role_aware_formatting_unmapped_target_summary,
 )
+from docxaicorrector.validation.quality_gate_audit import quality_gate_audit_classifications_payload
 from docxaicorrector.reader_cleanup_mvp import (
     build_cleanup_blocks,
     build_reader_cleanup_global_plan_system_prompt,
@@ -2808,6 +2809,7 @@ def _build_translation_quality_report(
         "toc_body_concat_markdown_detected": authority_fields.get("toc_body_concat_markdown_detected", False),
         "toc_body_concat_structure_detected": authority_fields.get("toc_body_concat_structure_detected", False),
         "toc_body_concat_gate_source": authority_fields.get("toc_body_concat_gate_source", "legacy_markdown"),
+        "quality_gate_audit_classifications": quality_gate_audit_classifications_payload(),
         "formatting_diagnostics_artifact_count": len(formatting_diagnostics_artifacts),
         "role_aware_formatting_coverage_note": (
             role_aware_summary.get("counting_note") if role_aware_summary else None

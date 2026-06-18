@@ -43,6 +43,46 @@ Mazzucato The Value of Everything — PDF):
 Net: we moved from "formatting is lost" to "two full dissimilar books pass
 through with a meaningful, audited gate."
 
+## Update — 2026-06-18 (validation findings + refocus)
+
+Eyes-on validation of the reader-cleanup post-pass (faithful replay, live model,
+production prompt/config) over all three frozen books changed the picture. Record
+these and refocus accordingly:
+
+- **P0 fidelity blocker — reader-cleanup destroys image anchors.** The post-pass
+  deletes/drops `[[DOCX_IMAGE_img_*]]` anchors: Creating Wealth 62→42 (20 via
+  `delete_block reason=extraction_artifact`), Lietaer 55→18 (37 distinct IDs lost
+  with **no** logged op — silent), Mazzucato 40→35. This is in the raw→cleaned
+  **markdown** transform, not a harness artifact. So the "images preserved (34–62)"
+  claim above holds only for the BASELINE path (reader-cleanup OFF). **Reader-cleanup
+  must not be enabled in production until this is fixed** (protect image anchors from
+  delete_block; preserve them through join/normalize/assembly with an audit trail;
+  unit test = zero image-ID loss).
+- **reclassify_role validated: correct & safe but marginal.** 3 accepted ops / 3
+  books, all eyes-on-correct (1 epigraph-author demote, 2 part-subtitle promotes),
+  zero body over-promotion. The motivating cases are **already solved by the importer**
+  self-calibration work (2ab9a22/916dac3): "THE MERCANTILISTS"/"GDP" are already
+  headings; the epigraph-author false-positives are gone. **The "19 vs 75" heading-gap
+  premise in the PDF-heading section below is therefore STALE** — re-measure before
+  treating it as open. A minor apply-guard recall gap remains (bold/letter-spaced
+  lines rejected by exact-preview match); low ROI, defer.
+- **Reliability harden landed (committed e6bcdf2):** reader-cleanup now fails loudly
+  on auth/credential errors under any policy and on an all-chunks-failed ratio gate,
+  instead of reporting a clean no-op. (Root cause it fixed: a 75/75-failed run that
+  silently reported `stage_status=completed`.)
+- **Evaluation discipline (re-confirmed):** cross-language heading P/R/F1 vs the
+  English FineReader refs is invalid for Russian output (≈0.01, deltas in noise) —
+  use FineReader as a recall guide + manual false-positive typing only, per the
+  Generalization section's own rule. Clean metrics twice hid real defects (silent
+  auth pass; image deletion); only opening the artifact caught them.
+
+**Refocus (agreed 2026-06-18).** Reader-cleanup is an OFF-by-default enhancement, not
+a UI-blocker, and is now image-blocked; stop polishing it (and stop re-running the same
+three books). Return to the real path to UI: items 1–4 below — make the gate trustworthy
+(item 1) and go for **breadth** (2–3 NEW, differently-formatted books, which is what
+exposes the remaining stale gates). Reader-cleanup prod-enablement is parked behind the
+P0 image fix.
+
 ## Remaining Work Before Returning to UI
 
 The UI surfaces results to users, so before UI work the pipeline must (a) reliably

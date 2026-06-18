@@ -4330,6 +4330,74 @@ def test_build_translation_quality_report_detects_toc_body_concat_across_leader_
     assert report["formatting_review_items"][0]["severity"] == "fix"
 
 
+def test_build_translation_quality_report_exposes_quality_gate_audit_classifications():
+    report = document_pipeline_late_phases._build_translation_quality_report(
+        context=SimpleNamespace(
+            app_config={"translation_output_quality_gate_policy": "strict"},
+            processing_operation="translate",
+            uploaded_filename="report.docx",
+            translation_domain="general",
+        ),
+        final_markdown="## ●\n\nЗаключение ........ 29 Введение",
+        formatting_diagnostics_artifacts=[],
+    )
+
+    audit = report["quality_gate_audit_classifications"]
+    assert audit["bullet_heading"]["verdict"] == "unit_aware"
+    assert audit["bullet_heading"]["severity_model"] == "legacy_hygiene_fix_review_threshold"
+    assert audit["toc_body_concat"]["verdict"] == "unit_aware"
+    assert audit["toc_body_concat"]["severity_model"] == "structure_evidence_required_else_review"
+    assert audit["mixed_script_term"]["verdict"] == "tolerant"
+    assert audit["heading_body_concat_detected"]["verdict"] == "tolerant"
+
+
+def test_build_translation_quality_report_keeps_source_backed_scripture_heading_out_of_false_fragment_gate():
+    assembly_result = document_pipeline_output_validation.FinalMarkdownAssemblyResult(
+        final_markdown="## (Матфея 24:36)\n\nХристос вернётся как вор в ночи.",
+        entries=(
+            document_pipeline_output_validation.FinalAssemblyEntry(
+                text="## (Матфея 24:36)",
+                block_index=1,
+                paragraph_id="p1",
+                source_index=0,
+                role="heading",
+                structural_role="heading",
+                heading_level=2,
+                boundary_source="source_style",
+                from_registry=True,
+            ),
+            document_pipeline_output_validation.FinalAssemblyEntry(
+                text="Христос вернётся как вор в ночи.",
+                block_index=1,
+                paragraph_id="p2",
+                source_index=1,
+                role="body",
+                structural_role="body",
+                from_registry=True,
+            ),
+        ),
+        diagnostics=document_pipeline_output_validation.FinalAssemblyDiagnostics(),
+    )
+
+    report = document_pipeline_late_phases._build_translation_quality_report(
+        context=SimpleNamespace(
+            app_config={"translation_output_quality_gate_policy": "strict"},
+            processing_operation="translate",
+            uploaded_filename="report.docx",
+            translation_domain="general",
+        ),
+        final_markdown=assembly_result.final_markdown,
+        formatting_diagnostics_artifacts=[],
+        assembly_result=assembly_result,
+    )
+
+    assert report["quality_status"] == "pass"
+    assert report["false_fragment_heading_count"] == 0
+    assert report["scripture_reference_heading_count"] == 0
+    assert report["raw_false_fragment_heading_count"] == 1
+    assert report["quality_gate_audit_classifications"]["scripture_reference_heading"]["verdict"] == "tolerant"
+
+
 def test_normalize_final_markdown_for_runtime_display_splits_placeholder_from_chapter_heading():
     normalized = document_pipeline_late_phases._normalize_final_markdown_for_runtime_display(
         "This page intentionally left blank Chapter Nine STRATEGIES FOR NGO S"

@@ -54,6 +54,7 @@ from docxaicorrector.validation.profiles import (
     load_validation_registry,
     resolve_runtime_resolution,
 )
+from docxaicorrector.validation.quality_gate_audit import quality_gate_audit_classifications_payload
 from docxaicorrector.processing.preparation import flatten_structure_repair_metrics
 
 
@@ -156,6 +157,7 @@ def _build_markdown_quality_metrics(
         "h1_epigraph_attribution_pattern_count": detector_counts.get("h1_epigraph_attribution_pattern", 0),
         "h1_epigraph_attribution_pattern_threshold": None,
         "h1_epigraph_attribution_pattern_samples": detector_samples.get("h1_epigraph_attribution_pattern", []),
+        "quality_gate_audit_classifications": quality_gate_audit_classifications_payload(),
     }
 
 
