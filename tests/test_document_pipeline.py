@@ -4345,10 +4345,11 @@ def test_build_translation_quality_report_exposes_quality_gate_audit_classificat
     audit = report["quality_gate_audit_classifications"]
     assert audit["bullet_heading"]["verdict"] == "unit_aware"
     assert audit["bullet_heading"]["severity_model"] == "legacy_hygiene_fix_review_threshold"
-    assert audit["toc_body_concat"]["verdict"] == "unit_aware"
+    assert audit["toc_body_concat"]["verdict"] == "tolerant"
     assert audit["toc_body_concat"]["severity_model"] == "structure_evidence_required_else_review"
     assert audit["mixed_script_term"]["verdict"] == "tolerant"
     assert audit["heading_body_concat_detected"]["verdict"] == "tolerant"
+    assert audit["inline_page_furniture_leakage"]["verdict"] == "unit_aware_after_structural_label_exemption"
 
 
 def test_build_translation_quality_report_keeps_source_backed_scripture_heading_out_of_false_fragment_gate():

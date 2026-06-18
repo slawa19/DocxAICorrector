@@ -20,6 +20,17 @@ _NUMBERED_APPENDIX_OR_INDEX_PATTERN = re.compile(r"^(?:appendix|index)\b(?:\s+[A
 _TITLE_CASE_OR_ALL_CAPS_WORD_PATTERN = re.compile(r"[A-Za-zА-Яа-яЁё]+")
 _CHAPTER_TOKEN_PATTERN = re.compile(r"\b(?:chapter|глава|part|section)\b", re.IGNORECASE)
 _LEADING_NUMBERING_PATTERN = re.compile(r"^(?:\d+|[ivxlcdm]+)\b", re.IGNORECASE)
+_STRUCTURAL_NUMBERED_LABEL_PATTERN = re.compile(
+    r"^\s*(?:#{1,6}\s+)?(?:chapter|глава|part|section|book|volume|том|часть|раздел)\s+"
+    r"(?:\d{1,3}|[ivxlcdm]{1,8})\.?\s*$",
+    re.IGNORECASE,
+)
+_ORDERED_SECTION_LABEL_PATTERN = re.compile(r"^\s*(?:#{1,6}\s+)?\d{1,2}[.)]\s+\S.{0,80}$")
+_CAPTION_OR_BOX_LABEL_PATTERN = re.compile(
+    r"^\s*(?:#{1,6}\s+)?(?:fig\s*ure|fig\.?|рис\.?|table|табл\.?|box|блок)\s+"
+    r"[A-ZА-Я]?\d{1,3}(?:[.\-:]\d{1,3})?(?:\.|(?:\s*[:—–-]\s*|\s+).{0,120})$",
+    re.IGNORECASE,
+)
 _QUOTE_LIKE_LINE_PATTERN = re.compile(r"^(?:>|[\"'«“”].+[\"'»“”])")
 _ATTRIBUTION_DASH_PATTERN = re.compile(
     r"^(?:--|—)\s*[A-ZА-ЯЁ][A-Za-zА-Яа-яЁё'’.\-]*(?:\s+[A-ZА-ЯЁ][A-Za-zА-Яа-яЁё'’.\-]*){0,4},\s*[A-Za-zА-Яа-яЁё][^!?\n]{1,80}$"
@@ -290,6 +301,8 @@ def _detect_inline_page_furniture_reason(
         return None
     if _DOTTED_PAGE_RANGE_PATTERN.search(visible_text) or _BIBLIOGRAPHY_CITATION_PATTERN.search(visible_text):
         return None
+    if _looks_like_short_structural_label(visible_text):
+        return None
     match = _INLINE_PAGE_NUMBER_TOKEN_PATTERN.search(visible_text)
     if match is None or len(visible_text) > 80:
         return None
@@ -302,6 +315,15 @@ def _detect_inline_page_furniture_reason(
         if repeated_running_header_candidates.get(candidate, 0) >= 3:
             return "page_number_island_with_repeated_running_header_context"
     return None
+
+
+def _looks_like_short_structural_label(text: str) -> bool:
+    stripped = text.strip()
+    if _STRUCTURAL_NUMBERED_LABEL_PATTERN.match(stripped):
+        return True
+    if _ORDERED_SECTION_LABEL_PATTERN.match(stripped):
+        return True
+    return bool(_CAPTION_OR_BOX_LABEL_PATTERN.match(stripped))
 
 
 def _normalize_running_header_candidate(text: str) -> str | None:

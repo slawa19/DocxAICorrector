@@ -74,6 +74,37 @@ def test_collect_structure_quality_detector_samples_preserves_d4_and_d5_exclusio
     assert "h1_epigraph_attribution_pattern" not in detector_ids
 
 
+def test_collect_structure_quality_detector_samples_exempts_structural_numbered_labels_from_inline_furniture() -> None:
+    markdown = """Chapter I
+Why this Report, Now?
+
+Chapter II
+Making Economic Paradigms Explicit
+
+Chapter III
+Monetary and Banking Instability
+
+Глава 1
+Почему этот отчёт сейчас?
+
+Глава 2
+Экономические парадигмы
+
+Глава 3
+Денежная и банковская нестабильность
+
+Figure 2.5: Ideological polarisation between communism and capitalism.
+Fig ure 5.3: U S money supply, in trillions of U S dollars.
+Figure 8.4.
+Box 4.1 — Eric Beinhocker and the Misclassification of Economics
+5. Conclusion
+"""
+
+    detector_ids = {sample.detector_id for sample in collect_structure_quality_detector_samples(markdown)}
+
+    assert "inline_page_furniture_leakage" not in detector_ids
+
+
 def test_summarize_structure_quality_detectors_returns_counts_and_capped_samples() -> None:
     markdown = """# Chapter One
 # Chapter Two

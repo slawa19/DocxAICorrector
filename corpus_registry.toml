@@ -264,6 +264,34 @@ default_run_profile = "ui-parity-translate-benchmark-advisory"
 tags = ["pdf", "translation", "benchmark-only", "lietaer", "full-document", "epub-derived-pdf"]
 provenance = "Full-book epub-derived PDF benchmark. Unmapped thresholds use a finite roughly-one-percent product bar, not the invalid first-run vacuum thresholds."
 
+[[documents]]
+id = "money-sustainability-pdf-full-heldout"
+source_path = "tests/sources/book/bernardlietaer-moneyandsustainabilitypdffromepub-160516072426.pdf"
+artifact_prefix = "money_sustainability_pdf_full_heldout"
+output_basename = "Money_Sustainability_pdf_full_heldout"
+structural_mode = "strict"
+min_paragraphs = 1
+has_headings = true
+min_headings = 1
+has_numbered_lists = false
+min_numbered_items = 0
+has_images = true
+min_images = 1
+has_tables = false
+min_tables = 0
+max_formatting_diagnostics = 12
+max_unmapped_source_paragraphs = 16
+max_unmapped_target_paragraphs = 16
+max_heading_level_drift = 2
+min_text_similarity = 0.0
+require_numbered_lists_preserved = false
+require_nonempty_output = true
+forbid_heading_only_collapse = true
+require_pdf_conversion = true
+default_run_profile = "ui-parity-translate-benchmark-advisory-image-safe-no-cleanup"
+tags = ["pdf", "translation", "held-out", "lietaer", "full-document", "epub-derived-pdf"]
+provenance = "Held-out full-book epub-derived PDF benchmark for Money and Sustainability Stage 2 baseline validation."
+
 [[run_profiles]]
 id = "ui-parity-default"
 tier = "full"
@@ -339,6 +367,22 @@ target_language = "ru"
 audiobook_postprocess_enabled = false
 enable_paragraph_markers = true
 translation_output_quality_gate_policy = "advisory"
+repeat_count = 1
+
+[[run_profiles]]
+id = "ui-parity-translate-benchmark-advisory-image-safe-no-cleanup"
+tier = "full"
+mode = "regression"
+processing_operation = "translate"
+source_language = "auto"
+target_language = "ru"
+image_mode = "safe"
+audiobook_postprocess_enabled = false
+enable_paragraph_markers = true
+translation_output_quality_gate_policy = "advisory"
+reader_cleanup_enabled = false
+reader_cleanup_policy = "off"
+reader_verifier_enabled = false
 repeat_count = 1
 
 [[run_profiles]]
