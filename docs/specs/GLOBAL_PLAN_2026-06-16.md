@@ -179,6 +179,50 @@ rendering). Larger move; **deferred** — do it opportunistically when that clus
 is next open for a functional change, not for its own sake, and not while item 2
 (controlled-fallback) is the active priority.
 
+## PDF Source Conversion — heading-detection gap & converter alternatives
+
+Findings (measured 2026-06-18, manual review of produced DOCX vs FineReader
+references in `tests/sources/book/*.docx`; experiment artifacts under
+`.run/layout_parser_experiment/` and `.run/current_conversion_check/`).
+
+**Paragraph segmentation is solved; do not swap the importer.** The earlier
+catastrophe (epub→pdf Creating Wealth produced 19,557-char concatenated blobs and
+~12% untranslated body) was rooted in `build_paragraph_units_from_text_spans`,
+not the DOCX writer. The first-line-indent fix brought all three books to near the
+FineReader reference: % of text in oversized (>2000) blocks is 1.8% (Creating
+Wealth) / 0.0% / 0.0%, with text fidelity 0.99–1.0 and images preserved (34–62).
+A rigorous re-bench (`measure_v2.py`, severity-aware metric `pct_chars_in_gt2000`)
+confirmed no tested OSS parser beats it: Docling 66.9% in giants + 0.76 fidelity
+(its default OCR path mangles a digital PDF), PyMuPDF blocks 2.2% but no roles,
+pymupdf4llm 39.7% + 237 spurious headings + 8% text loss, Marker timed out.
+
+**Converter alternatives — brief verdict.** The 2025–2026 frontier (MinerU,
+olmOCR, dots.mocr, Qwen-VL-class) is VLM-based, optimised for *scanned/complex*
+documents (tables, formulas, multilingual) at GPU cost and with text-fidelity
+risk. Our books are *clean digital PDFs* where the only hard part is structure, so
+these are overkill and a fidelity downgrade now. Keep them in reserve: MinerU for
+future complex tables; olmOCR/dots.mocr only if scanned books (no text layer)
+appear. FineReader-class quality is real, but FineReader's own DOCX export drops
+all images (0 vs our 34–62).
+
+**Open defect — heading/subheading detection (metrics hid it).** Manual DOCX
+comparison against the FineReader references shows `current` flattens section
+*subheadings* into body: Mazzucato detects **19** headings vs FineReader's **75**;
+Rethinking Money **62** vs **129** — roughly half to two-thirds of real
+subheadings lost. Root cause: `_looks_like_heading_candidate` keys on font *size*,
+so small-caps subheadings at body size (e.g. "THE MERCANTILISTS: TRADE AND
+TREASURE", "GDP: A SOCIAL CONVENTION") slip through. The same root produces
+Creating Wealth's 3 residual >2000 blocks: inline list subheadings
+(`Employment / Education / Child Care`, `Paper and Coins / Electronic Media`) the
+detector misses and therefore merges. No experiment metric caught this —
+`heading_count` alone looked fine; only heading **recall vs the FineReader
+ground-truth** exposes it. **Do:** strengthen heading detection in
+`logical_import.py` with case/style cues (all-caps/small-caps, standalone short
+line, indentation), not size alone; measure heading-recall against the three
+FineReader references and confirm by hand that subheadings stop leaking into body
+and the Creating Wealth lists split. **Why before UI:** lost section hierarchy is
+a visible formatting-preservation failure in the very output the UI surfaces.
+
 ## Then: UI
 
 Once items 1–4 are solid, return to UI. The first UI slice is already specified:

@@ -87,6 +87,122 @@ def test_build_paragraph_units_preserves_heading_list_and_formatting_signals() -
     ]
 
 
+def test_build_paragraph_units_detects_body_sized_small_caps_subheading() -> None:
+    spans = [
+        _span(1, "the subjective nature of the preferences in the", top=100, bottom=112, x0=72),
+        _span(1, "economy.", top=114, bottom=126, x0=72),
+        _span(
+            1,
+            "THE MERCANTILISTS: TRADE AND TREASURE",
+            top=150,
+            bottom=162,
+            x0=175,
+            font_size=8,
+        ),
+        _span(1, "Since ancient times, humanity has divided its economic", top=180, bottom=192, x0=72),
+        _span(1, "activity into productive and unproductive types.", top=194, bottom=206, x0=72),
+    ]
+
+    result = build_paragraph_units_from_text_spans(spans)
+
+    assert [paragraph.role for paragraph in result.paragraphs] == [
+        "body",
+        "heading",
+        "body",
+    ]
+    assert result.paragraphs[1].text == "THE MERCANTILISTS: TRADE AND TREASURE"
+
+
+def test_build_paragraph_units_detects_short_inline_subheading_between_body_lines() -> None:
+    spans = [
+        _span(1, "The time currency also created stronger", top=100, bottom=112, x0=50),
+        _span(1, "community ties.", top=114, bottom=126, x0=50),
+        _span(1, "Employment", top=128, bottom=140, x0=50),
+        _span(1, "The first LETS systems originated in Canada in northern regions", top=142, bottom=154, x0=50),
+        _span(1, "aiming specifically at currency scarcity in areas.", top=156, bottom=168, x0=50),
+    ]
+
+    result = build_paragraph_units_from_text_spans(spans)
+
+    assert [paragraph.role for paragraph in result.paragraphs] == [
+        "body",
+        "heading",
+        "body",
+    ]
+    assert [paragraph.text for paragraph in result.paragraphs] == [
+        "The time currency also created stronger community ties.",
+        "Employment",
+        "The first LETS systems originated in Canada in northern regions aiming specifically at currency scarcity in areas.",
+    ]
+
+
+def test_build_paragraph_units_does_not_promote_left_margin_bold_sentence_to_heading() -> None:
+    spans = [
+        _span(1, "Important update continued in the same paragraph", top=100, bottom=112, x0=50, bold=True),
+        _span(1, "with normal body text on the next line.", top=114, bottom=126, x0=50),
+    ]
+
+    result = build_paragraph_units_from_text_spans(spans)
+
+    assert [paragraph.role for paragraph in result.paragraphs] == ["body"]
+    assert result.paragraphs[0].text == (
+        "Important update continued in the same paragraph with normal body text on the next line."
+    )
+
+
+def test_build_paragraph_units_keeps_dash_attribution_out_of_headings() -> None:
+    spans = [
+        _span(1, "A thoughtful sentence closes the praise.", top=100, bottom=112, x0=50),
+        _span(1, "— Jane Example, author of Useful Systems", top=130, bottom=142, x0=150),
+        _span(1, "The next paragraph starts normally after the quote.", top=170, bottom=182, x0=50),
+    ]
+
+    result = build_paragraph_units_from_text_spans(spans)
+
+    assert [paragraph.role for paragraph in result.paragraphs] == ["body", "body", "body"]
+    assert result.paragraphs[1].text == "— Jane Example, author of Useful Systems"
+
+
+def test_build_paragraph_units_classifies_figure_line_as_caption_not_heading() -> None:
+    spans = [
+        _span(1, "FIGURE 2.3. The Corporate Process", top=100, bottom=112, x0=160),
+        _span(1, "Normal body text follows the figure caption.", top=140, bottom=152, x0=50),
+    ]
+
+    result = build_paragraph_units_from_text_spans(spans)
+
+    assert [paragraph.role for paragraph in result.paragraphs] == ["caption", "body"]
+    assert result.paragraphs[0].structural_role == "caption"
+    assert result.paragraphs[0].style_name == "PDF Caption"
+
+
+def test_build_paragraph_units_keeps_location_signature_line_out_of_headings() -> None:
+    spans = [
+        _span(1, "The foreword ends with a short sign-off.", top=100, bottom=112, x0=50),
+        _span(1, "Northcote, Australia", top=140, bottom=152, x0=180),
+        _span(1, "A regular paragraph starts on the following line.", top=180, bottom=192, x0=50),
+    ]
+
+    result = build_paragraph_units_from_text_spans(spans)
+
+    assert [paragraph.role for paragraph in result.paragraphs] == ["body", "body", "body"]
+    assert result.paragraphs[1].text == "Northcote, Australia"
+
+
+def test_build_paragraph_units_does_not_keep_glued_toc_heading_as_heading() -> None:
+    spans = [
+        _span(1, "Preface by Dennis Meadows", top=100, bottom=112, x0=95),
+        _span(1, "Foreword by Hunter Lovins", top=114, bottom=126, x0=95),
+        _span(1, "Acknowledgments Introduction: Cities And Economies", top=128, bottom=140, x0=95),
+        _span(1, "Body text starts after the front matter list.", top=180, bottom=192, x0=50),
+    ]
+
+    result = build_paragraph_units_from_text_spans(spans)
+
+    assert all(paragraph.role == "body" for paragraph in result.paragraphs)
+    assert result.paragraphs[0].text.startswith("Preface by Dennis Meadows")
+
+
 def test_build_paragraph_units_merges_multiline_heading_into_single_heading() -> None:
     spans = [
         _span(1, "Глава восьмая", top=80, bottom=98, font_size=16, bold=True),
