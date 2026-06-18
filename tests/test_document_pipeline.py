@@ -2591,7 +2591,7 @@ def test_run_document_processing_reader_cleanup_strict_failure_preserves_base_re
     report_path = tmp_path / "report.reader_cleanup_report.json"
     assert raw_sidecar_path.read_text(encoding="utf-8") == "block"
     report_payload = json.loads(report_path.read_text(encoding="utf-8"))
-    assert report_payload["stage_status"] == "failed_preserved_base_result"
+    assert report_payload["stage_status"] == "failed"
     assert report_payload["failure"]["kind"] == "chunk_failed"
 
 

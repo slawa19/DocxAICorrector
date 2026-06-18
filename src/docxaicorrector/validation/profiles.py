@@ -94,6 +94,7 @@ class RunProfile:
     reader_cleanup_drop_back_matter: bool | None = None
     reader_cleanup_max_delete_block_ratio: float | None = None
     reader_cleanup_max_delete_char_ratio: float | None = None
+    reader_cleanup_max_failed_chunk_ratio: float | None = None
     reader_cleanup_max_consecutive_deleted_blocks: int | None = None
     reader_cleanup_max_deleted_block_chars: int | None = None
     reader_cleanup_policy: str | None = None
@@ -281,6 +282,7 @@ def resolve_runtime_resolution(app_config, run_profile: RunProfile) -> RuntimeRe
         "reader_cleanup_drop_back_matter": run_profile.reader_cleanup_drop_back_matter,
         "reader_cleanup_max_delete_block_ratio": run_profile.reader_cleanup_max_delete_block_ratio,
         "reader_cleanup_max_delete_char_ratio": run_profile.reader_cleanup_max_delete_char_ratio,
+        "reader_cleanup_max_failed_chunk_ratio": run_profile.reader_cleanup_max_failed_chunk_ratio,
         "reader_cleanup_max_consecutive_deleted_blocks": run_profile.reader_cleanup_max_consecutive_deleted_blocks,
         "reader_cleanup_max_deleted_block_chars": run_profile.reader_cleanup_max_deleted_block_chars,
         "reader_cleanup_policy": run_profile.reader_cleanup_policy,
@@ -358,6 +360,8 @@ def resolve_runtime_resolution(app_config, run_profile: RunProfile) -> RuntimeRe
         app_config_overrides["reader_cleanup_max_delete_block_ratio"] = run_profile.reader_cleanup_max_delete_block_ratio
     if run_profile.reader_cleanup_max_delete_char_ratio is not None:
         app_config_overrides["reader_cleanup_max_delete_char_ratio"] = run_profile.reader_cleanup_max_delete_char_ratio
+    if run_profile.reader_cleanup_max_failed_chunk_ratio is not None:
+        app_config_overrides["reader_cleanup_max_failed_chunk_ratio"] = run_profile.reader_cleanup_max_failed_chunk_ratio
     if run_profile.reader_cleanup_max_consecutive_deleted_blocks is not None:
         app_config_overrides[
             "reader_cleanup_max_consecutive_deleted_blocks"
@@ -515,6 +519,7 @@ def _build_run_profile(payload: Any) -> RunProfile:
         reader_cleanup_drop_back_matter=_optional_bool(payload, "reader_cleanup_drop_back_matter"),
         reader_cleanup_max_delete_block_ratio=_optional_float(payload, "reader_cleanup_max_delete_block_ratio"),
         reader_cleanup_max_delete_char_ratio=_optional_float(payload, "reader_cleanup_max_delete_char_ratio"),
+        reader_cleanup_max_failed_chunk_ratio=_optional_float(payload, "reader_cleanup_max_failed_chunk_ratio"),
         reader_cleanup_max_consecutive_deleted_blocks=_optional_int(payload, "reader_cleanup_max_consecutive_deleted_blocks"),
         reader_cleanup_max_deleted_block_chars=_optional_int(payload, "reader_cleanup_max_deleted_block_chars"),
         reader_cleanup_policy=_optional_reader_cleanup_policy(payload, "reader_cleanup_policy"),

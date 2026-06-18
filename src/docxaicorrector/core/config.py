@@ -330,6 +330,7 @@ class AppConfig(Mapping[str, Any]):
     reader_cleanup_overlap_blocks_before: int = 3
     reader_cleanup_overlap_blocks_after: int = 3
     reader_cleanup_global_plan_enabled: bool = False
+    reader_cleanup_max_failed_chunk_ratio: float = 1.0
 
     def __getitem__(self, key: str) -> object:
         try:
@@ -1018,6 +1019,7 @@ def _resolve_semantic_validation_and_runtime_settings(
         parse_bool_env_fn=parse_bool_env,
         parse_float_env_fn=parse_float_env,
         parse_int_env_fn=parse_int_env,
+        parse_optional_str_env_fn=parse_optional_str_env,
         clamp_score_fn=clamp_score,
         clamp_int_fn=_clamp_int,
         clamp_float_fn=_clamp_float,

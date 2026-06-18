@@ -201,6 +201,40 @@ def test_evaluate_lietaer_acceptance_passes_for_clean_structural_output(tmp_path
     assert acceptance["failed_checks"] == []
 
 
+def test_evaluate_lietaer_acceptance_fails_on_reader_cleanup_failed_stage() -> None:
+    validation = _load_validation_module()
+
+    source_doc = Document()
+    source_doc.add_paragraph("Body")
+    output_doc = Document()
+    output_doc.add_paragraph("Body")
+    report = {
+        "result": "succeeded",
+        "output_artifacts": {
+            "output_docx_openable": True,
+            "output_contains_placeholder_markup": False,
+        },
+        "formatting_diagnostics": [],
+        "reader_cleanup_evidence": {
+            "stage_status": "failed",
+            "failed_chunk_count": 75,
+            "cleanup_chunk_count": 75,
+        },
+    }
+
+    acceptance = validation.evaluate_lietaer_acceptance(
+        report,
+        source_docx_bytes=_docx_bytes(source_doc),
+        output_docx_bytes=_docx_bytes(output_doc),
+    )
+    by_name = {check["name"]: check for check in acceptance["checks"]}
+
+    assert acceptance["passed"] is False
+    assert "reader_cleanup_stage_completed" in acceptance["failed_checks"]
+    assert by_name["reader_cleanup_stage_completed"]["stage_status"] == "failed"
+    assert by_name["reader_cleanup_stage_completed"]["failed_chunk_ratio"] == 1.0
+
+
 def test_evaluate_lietaer_acceptance_fails_on_translation_quality_report_residual_defects() -> None:
     validation = _load_validation_module()
 

@@ -261,6 +261,17 @@ def test_load_app_config_applies_translation_second_pass_env_overrides(monkeypat
     assert app_config["translation_second_pass_model"] == "gpt-5.4"
 
 
+def test_load_app_config_applies_reader_cleanup_env_overrides(monkeypatch):
+    monkeypatch.setattr(config, "CONFIG_PATH", config.CONFIG_PATH.parent / "__missing_config__.toml")
+    monkeypatch.setenv("DOCX_AI_READER_CLEANUP_MODEL", "openrouter:anthropic/claude-haiku-4.5")
+    monkeypatch.setenv("DOCX_AI_READER_CLEANUP_ENABLED", "true")
+
+    app_config = config.load_app_config()
+
+    assert app_config["reader_cleanup_model"] == "openrouter:anthropic/claude-haiku-4.5"
+    assert app_config["reader_cleanup_default"] is True
+
+
 def test_load_app_config_resolves_audiobook_defaults_from_text_model(monkeypatch):
     monkeypatch.setattr(config, "CONFIG_PATH", config.CONFIG_PATH.parent / "__missing_config__.toml")
 

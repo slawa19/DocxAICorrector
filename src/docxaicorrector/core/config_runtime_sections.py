@@ -16,6 +16,7 @@ def resolve_semantic_validation_and_runtime_settings(
     parse_bool_env_fn: Any,
     parse_float_env_fn: Any,
     parse_int_env_fn: Any,
+    parse_optional_str_env_fn: Any,
     clamp_score_fn: Any,
     clamp_int_fn: Any,
     clamp_float_fn: Any,
@@ -80,10 +81,15 @@ def resolve_semantic_validation_and_runtime_settings(
         10.0,
     )
     reader_cleanup_default = parse_config_bool_fn(config_data, "reader_cleanup_default", False)
+    # Env override: enable the reader-cleanup post-pass per environment (e.g. production) without editing config.
+    reader_cleanup_default = parse_bool_env_fn("DOCX_AI_READER_CLEANUP_ENABLED", reader_cleanup_default)
     raw_reader_cleanup_model = config_data.get("reader_cleanup_model", "")
     if not isinstance(raw_reader_cleanup_model, str):
         raise RuntimeError(f"Некорректное поле reader_cleanup_model в {config_path}")
     reader_cleanup_model = raw_reader_cleanup_model.strip()
+    # Env override: point the post-pass at any provider/model (e.g. a cheaper Haiku via OpenRouter)
+    # without touching config or the run profile; falls back to the config value when unset.
+    reader_cleanup_model = parse_optional_str_env_fn("DOCX_AI_READER_CLEANUP_MODEL") or reader_cleanup_model
     reader_cleanup_chunk_size = parse_config_int_fn(config_data, "reader_cleanup_chunk_size", 8000)
     reader_cleanup_overlap_blocks_before = parse_config_int_fn(
         config_data,
@@ -99,6 +105,11 @@ def resolve_semantic_validation_and_runtime_settings(
         config_data,
         "reader_cleanup_global_plan_enabled",
         False,
+    )
+    reader_cleanup_max_failed_chunk_ratio = parse_config_float_fn(
+        config_data,
+        "reader_cleanup_max_failed_chunk_ratio",
+        1.0,
     )
 
     image_mode_default = parse_image_mode_fn(
@@ -248,6 +259,11 @@ def resolve_semantic_validation_and_runtime_settings(
             maximum=20,
         ),
         "reader_cleanup_global_plan_enabled": reader_cleanup_global_plan_enabled,
+        "reader_cleanup_max_failed_chunk_ratio": clamp_float_fn(
+            reader_cleanup_max_failed_chunk_ratio,
+            minimum=0.0,
+            maximum=1.0,
+        ),
     }
 
 

@@ -47,6 +47,39 @@ def _delete_block_operation(
     return payload
 
 
+def _reclassify_role_operation(
+    block: Any,
+    *,
+    target_role: str,
+    expected_after_preview: str,
+    confidence: str = "high",
+    reason: str = "role_assignment_correction",
+) -> dict[str, Any]:
+    if isinstance(block, dict):
+        block_id = str(block["id"])
+        text_hash = str(block["text_hash"])
+        text = str(block.get("text") or "")
+    else:
+        block_id = str(block.block_id)
+        text_hash = str(block.text_hash)
+        text = str(block.text)
+    return {
+        "id": block_id,
+        "text_hash": text_hash,
+        "operation": "reclassify_role",
+        "reason": reason,
+        "confidence": confidence,
+        "evidence_before": text,
+        "expected_after_preview": expected_after_preview,
+        "safety_note": "Change only the local role marker; preserve visible text.",
+        "target_role": target_role,
+    }
+
+
+class _FakeAuthError(Exception):
+    status_code = 401
+
+
 def test_build_cleanup_blocks_assigns_stable_ids_and_hashes() -> None:
     blocks = build_cleanup_blocks("# Heading\n\nPage 1\n\nBody paragraph")
 
@@ -75,6 +108,19 @@ def test_resolve_reader_cleanup_config_accepts_overlap_and_string_global_plan_fl
     assert config.overlap_blocks_before == 3
     assert config.overlap_blocks_after == 3
     assert config.global_plan_enabled is False
+    assert config.max_reclassify_block_ratio == 0.05
+
+
+def test_resolve_reader_cleanup_config_accepts_reclassify_cap() -> None:
+    config = resolve_reader_cleanup_config(
+        app_config={
+            "reader_cleanup_enabled": True,
+            "reader_cleanup_max_reclassify_block_ratio": 0.12,
+        },
+        fallback_model="fallback:model",
+    )
+
+    assert config.max_reclassify_block_ratio == 0.12
 
 
 def test_resolve_reader_cleanup_config_defaults_to_canonical_small_overlap_shape() -> None:
@@ -371,6 +417,104 @@ def test_run_reader_cleanup_rejects_invalid_schema_in_advisory_mode() -> None:
     assert any("reader_cleanup_chunk_failed" in warning for warning in result.report_payload["warnings"])
 
 
+@pytest.mark.parametrize("policy", ["advisory", "strict"])
+def test_run_reader_cleanup_auth_error_raises_in_any_policy(policy: str) -> None:
+    markdown = "Intro\n\nBody paragraph"
+
+    with pytest.raises(ReaderCleanupStageError) as exc_info:
+        run_reader_cleanup(
+            markdown_text=markdown,
+            config=ReaderCleanupConfig(enabled=True, policy=policy),
+            operation_provider=lambda payload, chunk_index, chunk_count: (_ for _ in ()).throw(
+                _FakeAuthError("unauthorized")
+            ),
+        )
+
+    report_payload = exc_info.value.report_payload
+    assert report_payload["stage_status"] == "failed"
+    assert report_payload["changed"] is False
+    assert report_payload["failure"]["kind"] == "auth_or_credential_error"
+    assert report_payload["failure"]["status_code"] == 401
+    assert report_payload["stats"]["failed_chunk_count"] == 1
+    assert report_payload["chunk_results"][0]["failure_kind"] == "auth_or_credential_error"
+
+
+def test_run_reader_cleanup_all_chunks_failed_exceeds_default_ratio_gate() -> None:
+    markdown = "Intro\n\nPage 1\n\nBody paragraph"
+
+    result = run_reader_cleanup(
+        markdown_text=markdown,
+        config=ReaderCleanupConfig(enabled=True, policy="advisory", chunk_size=6, overlap_blocks_before=0, overlap_blocks_after=0),
+        operation_provider=lambda payload, chunk_index, chunk_count: (_ for _ in ()).throw(TimeoutError("timeout")),
+    )
+
+    assert result.changed is False
+    assert result.cleaned_markdown == markdown
+    assert result.report_payload["stage_status"] == "failed"
+    assert result.report_payload["failure"]["kind"] == "failed_chunk_ratio_exceeded"
+    assert result.report_payload["failure"]["failed_chunk_ratio"] == 1.0
+    assert result.report_payload["stats"]["cleanup_chunk_count"] == 3
+    assert result.report_payload["stats"]["failed_chunk_count"] == 3
+    assert result.report_payload["accepted_cleanup_operations"] == []
+    assert any(
+        str(warning).startswith("reader_cleanup_failed_chunk_ratio_exceeded:")
+        for warning in result.report_payload["warnings"]
+    )
+
+
+def test_run_reader_cleanup_partial_chunk_failure_below_default_ratio_stays_completed() -> None:
+    markdown = "Intro\n\nPage 1\n\nBody paragraph"
+
+    def operation_provider(payload: dict[str, Any], chunk_index: int, chunk_count: int) -> str:
+        if chunk_index == 3:
+            raise TimeoutError("timeout")
+        operations = [
+            _delete_block_operation(block, reason="page_number")
+            for block in payload["blocks"]
+            if block["text"] == "Page 1"
+        ]
+        return json.dumps({"cleanup_operations": operations, "warnings": []}, ensure_ascii=False)
+
+    result = run_reader_cleanup(
+        markdown_text=markdown,
+        config=ReaderCleanupConfig(
+            enabled=True,
+            policy="advisory",
+            chunk_size=6,
+            overlap_blocks_before=0,
+            overlap_blocks_after=0,
+            max_delete_block_ratio=0.8,
+            max_delete_char_ratio=0.8,
+        ),
+        operation_provider=operation_provider,
+    )
+
+    assert result.changed is True
+    assert result.cleaned_markdown == "Intro\n\nBody paragraph"
+    assert result.report_payload["stage_status"] == "completed"
+    assert result.report_payload["stats"]["cleanup_chunk_count"] == 3
+    assert result.report_payload["stats"]["failed_chunk_count"] == 1
+    assert result.report_payload["accepted_delete_blocks"][0]["raw_text_preview"] == "Page 1"
+
+
+def test_run_reader_cleanup_clean_noop_stays_completed() -> None:
+    markdown = "Intro\n\nBody paragraph"
+
+    result = run_reader_cleanup(
+        markdown_text=markdown,
+        config=ReaderCleanupConfig(enabled=True, policy="advisory"),
+        operation_provider=lambda payload, chunk_index, chunk_count: json.dumps(
+            {"cleanup_operations": [], "warnings": []},
+            ensure_ascii=False,
+        ),
+    )
+
+    assert result.changed is False
+    assert result.cleaned_markdown == markdown
+    assert result.report_payload["stage_status"] == "completed"
+    assert result.report_payload["stats"]["failed_chunk_count"] == 0
+
+
 def test_reader_cleanup_schema_repair_prompt_forbids_rewritten_markdown() -> None:
     prompt = build_reader_cleanup_schema_repair_system_prompt()
 
@@ -402,6 +546,11 @@ def test_reader_cleanup_system_prompt_mentions_anchor_repair_constraints() -> No
     assert "do not use join_fragmented_paragraph or delete_block as a substitute for that cleanup" in prompt
     assert "For inline endnote/page marker artifacts inside prose" in prompt
     assert "exact deleted span in noise_substring" in prompt
+    assert "reclassify_role" in prompt
+    assert "target_role as one of heading, body, attribution, caption" in prompt
+    assert "Do not assign heading_level, hierarchy, anchors, or cross-chunk structure" in prompt
+    assert "ALL-CAPS short text after a heading may be attribution" in prompt
+    assert "Figure/Table/Рис./Таблица/Источник lines are caption" in prompt
     assert "For duplicate semantic heading text repeated inline" in prompt
     assert "operation_selection_targets lists a duplicate_semantic_heading_text candidate" in prompt
     assert "operation_selection_targets lists a side_heading_island_candidate" in prompt
@@ -456,6 +605,165 @@ def test_reader_cleanup_system_prompt_forbids_title_subtitle_as_heading_body() -
     assert "short subtitle, subtitle question, or epigraph-like line rather than narrative prose" in prompt
     assert "do not force normalize_heading_boundary unless actual narrative prose starts after them" in prompt
     assert "TOC-like rows are not heading/body prose" in prompt
+
+
+def test_run_reader_cleanup_reclassifies_body_subheading_to_markdown_heading() -> None:
+    markdown = "Intro paragraph\n\nTHE MERCANTILISTS: TRADE AND TREASURE\n\nBody paragraph\n\nOutro paragraph"
+
+    result = run_reader_cleanup(
+        markdown_text=markdown,
+        config=ReaderCleanupConfig(enabled=True, max_reclassify_block_ratio=0.5),
+        operation_provider=lambda payload, chunk_index, chunk_count: json.dumps(
+            {
+                "cleanup_operations": [
+                    _reclassify_role_operation(
+                        block,
+                        target_role="heading",
+                        expected_after_preview="## THE MERCANTILISTS: TRADE AND TREASURE",
+                        reason="semantic_heading",
+                    )
+                    for block in payload["blocks"]
+                    if block["text"] == "THE MERCANTILISTS: TRADE AND TREASURE"
+                ],
+                "warnings": [],
+            },
+            ensure_ascii=False,
+        ),
+    )
+
+    assert result.changed is True
+    assert result.cleaned_markdown == (
+        "Intro paragraph\n\n## THE MERCANTILISTS: TRADE AND TREASURE\n\nBody paragraph\n\nOutro paragraph"
+    )
+    assert build_cleanup_blocks(result.cleaned_markdown)[1].is_heading is True
+    accepted = result.report_payload["accepted_cleanup_operations"]
+    assert accepted[0]["operation"] == "reclassify_role"
+    assert accepted[0]["target_role"] == "heading"
+    assert accepted[0]["after_state"] == "role_reclassified_to_heading"
+
+
+def test_run_reader_cleanup_reclassifies_heading_attribution_to_body_markdown() -> None:
+    markdown = "Intro paragraph\n\n# VIRGIL\n\nQuoted paragraph body.\n\nOutro paragraph"
+
+    result = run_reader_cleanup(
+        markdown_text=markdown,
+        config=ReaderCleanupConfig(enabled=True, max_reclassify_block_ratio=0.5),
+        operation_provider=lambda payload, chunk_index, chunk_count: json.dumps(
+            {
+                "cleanup_operations": [
+                    _reclassify_role_operation(
+                        block,
+                        target_role="attribution",
+                        expected_after_preview="VIRGIL",
+                        reason="semantic_attribution",
+                    )
+                    for block in payload["blocks"]
+                    if block["text"] == "# VIRGIL"
+                ],
+                "warnings": [],
+            },
+            ensure_ascii=False,
+        ),
+    )
+
+    assert result.changed is True
+    assert result.cleaned_markdown == "Intro paragraph\n\nVIRGIL\n\nQuoted paragraph body.\n\nOutro paragraph"
+    assert build_cleanup_blocks(result.cleaned_markdown)[1].is_heading is False
+    accepted = result.report_payload["accepted_cleanup_operations"]
+    assert accepted[0]["target_role"] == "attribution"
+    assert accepted[0]["after_state"] == "role_reclassified_to_attribution"
+
+
+def test_run_reader_cleanup_reclassifies_heading_caption_to_body_markdown() -> None:
+    markdown = "Intro paragraph\n\n# FIGURE 1. Productive and unproductive investment\n\nBody paragraph\n\nOutro paragraph"
+
+    result = run_reader_cleanup(
+        markdown_text=markdown,
+        config=ReaderCleanupConfig(enabled=True, max_reclassify_block_ratio=0.5),
+        operation_provider=lambda payload, chunk_index, chunk_count: json.dumps(
+            {
+                "cleanup_operations": [
+                    _reclassify_role_operation(
+                        block,
+                        target_role="caption",
+                        expected_after_preview="FIGURE 1. Productive and unproductive investment",
+                        reason="semantic_caption",
+                    )
+                    for block in payload["blocks"]
+                    if block["text"].startswith("# FIGURE 1.")
+                ],
+                "warnings": [],
+            },
+            ensure_ascii=False,
+        ),
+    )
+
+    assert result.changed is True
+    assert "# FIGURE" not in result.cleaned_markdown
+    accepted = result.report_payload["accepted_cleanup_operations"]
+    assert accepted[0]["target_role"] == "caption"
+
+
+def test_run_reader_cleanup_rejects_invalid_reclassify_direction() -> None:
+    markdown = "Intro paragraph\n\nFIGURE 1. Productive and unproductive investment\n\nBody paragraph\n\nOutro paragraph"
+
+    result = run_reader_cleanup(
+        markdown_text=markdown,
+        config=ReaderCleanupConfig(enabled=True, max_reclassify_block_ratio=0.5),
+        operation_provider=lambda payload, chunk_index, chunk_count: json.dumps(
+            {
+                "cleanup_operations": [
+                    _reclassify_role_operation(
+                        block,
+                        target_role="caption",
+                        expected_after_preview="FIGURE 1. Productive and unproductive investment",
+                        reason="semantic_caption",
+                    )
+                    for block in payload["blocks"]
+                    if block["text"].startswith("FIGURE 1.")
+                ],
+                "warnings": [],
+            },
+            ensure_ascii=False,
+        ),
+    )
+
+    assert result.changed is False
+    ignored = result.report_payload["ignored_cleanup_operations"]
+    assert ignored[0]["ignored_reason"] == "reclassify_source_role_incompatible"
+    assert ignored[0]["target_role"] == "caption"
+
+
+def test_run_reader_cleanup_caps_reclassify_role_operations() -> None:
+    markdown = "Intro paragraph\n\nFIRST MISSED SUBHEADING\n\nSECOND MISSED SUBHEADING\n\nBody paragraph\n\nOutro paragraph"
+
+    result = run_reader_cleanup(
+        markdown_text=markdown,
+        config=ReaderCleanupConfig(enabled=True, max_reclassify_block_ratio=0.3),
+        operation_provider=lambda payload, chunk_index, chunk_count: json.dumps(
+            {
+                "cleanup_operations": [
+                    _reclassify_role_operation(
+                        block,
+                        target_role="heading",
+                        expected_after_preview=f"## {block['text']}",
+                        reason="semantic_heading",
+                    )
+                    for block in payload["blocks"]
+                    if str(block["text"]).endswith("MISSED SUBHEADING")
+                ],
+                "warnings": [],
+            },
+            ensure_ascii=False,
+        ),
+    )
+
+    assert result.changed is True
+    assert result.cleaned_markdown.count("## ") == 1
+    assert result.report_payload["stats"]["accepted_reclassify_role_count"] == 1
+    ignored = result.report_payload["ignored_cleanup_operations"]
+    assert ignored[0]["ignored_reason"] == "reclassify_global_safety_limit_exceeded"
+    assert ignored[0]["target_role"] == "heading"
 
 
 def test_reader_cleanup_schema_repair_prompt_mentions_fragmented_anchor_join_safety() -> None:
@@ -739,10 +1047,10 @@ def test_run_reader_cleanup_repair_failure_stays_fail_closed_in_strict_mode() ->
             config=ReaderCleanupConfig(enabled=True, policy="strict"),
             operation_provider=operation_provider,
             repair_provider=repair_provider,
-        )
+    )
 
     report_payload = exc_info.value.report_payload
-    assert report_payload["stage_status"] == "failed_preserved_base_result"
+    assert report_payload["stage_status"] == "failed"
     assert report_payload["chunk_results"][0]["repair_attempted"] is True
     assert report_payload["chunk_results"][0]["repair_status"] == "failed"
     assert any("reader_cleanup_schema_repair_failed:1:" in warning for warning in report_payload["warnings"])
@@ -5272,7 +5580,7 @@ def test_run_reader_cleanup_strict_failure_raises_with_reviewable_report() -> No
 
     report_payload = exc_info.value.report_payload
     assert exc_info.value.raw_markdown == markdown
-    assert report_payload["stage_status"] == "failed_preserved_base_result"
+    assert report_payload["stage_status"] == "failed"
     assert report_payload["changed"] is False
     assert report_payload["failure"]["kind"] == "chunk_failed"
     assert report_payload["stats"]["failed_chunk_count"] == 1

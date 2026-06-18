@@ -301,6 +301,9 @@ def build_app_config_payload(
         "reader_cleanup_global_plan_enabled": semantic_validation_runtime_settings[
             "reader_cleanup_global_plan_enabled"
         ],
+        "reader_cleanup_max_failed_chunk_ratio": semantic_validation_runtime_settings[
+            "reader_cleanup_max_failed_chunk_ratio"
+        ],
     }
 
 

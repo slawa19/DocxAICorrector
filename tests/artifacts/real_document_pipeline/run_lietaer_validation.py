@@ -5170,8 +5170,25 @@ def evaluate_lietaer_acceptance(
     output_artifacts = cast(Mapping[str, object], report.get("output_artifacts") or {})
     formatting_diagnostics = cast(Sequence[Mapping[str, object]], report.get("formatting_diagnostics") or [])
     translation_quality_report = cast(Mapping[str, object], report.get("translation_quality_report") or {})
+    reader_cleanup_evidence = cast(Mapping[str, object], report.get("reader_cleanup_evidence") or {})
 
     add_check("pipeline_succeeded", result == "succeeded", result=result)
+    reader_cleanup_stage_status = str(reader_cleanup_evidence.get("stage_status") or "").strip()
+    reader_cleanup_failed_chunk_count = _coerce_int(reader_cleanup_evidence.get("failed_chunk_count"))
+    reader_cleanup_chunk_count = _coerce_int(reader_cleanup_evidence.get("cleanup_chunk_count"))
+    reader_cleanup_failure_ratio = (
+        0.0
+        if reader_cleanup_chunk_count <= 0
+        else round(reader_cleanup_failed_chunk_count / reader_cleanup_chunk_count, 6)
+    )
+    add_check(
+        "reader_cleanup_stage_completed",
+        not reader_cleanup_stage_status or reader_cleanup_stage_status.lower() == "completed",
+        stage_status=reader_cleanup_stage_status or None,
+        failed_chunk_count=reader_cleanup_failed_chunk_count,
+        cleanup_chunk_count=reader_cleanup_chunk_count,
+        failed_chunk_ratio=reader_cleanup_failure_ratio,
+    )
     add_check(
         "output_docx_openable",
         bool(output_artifacts.get("output_docx_openable")),

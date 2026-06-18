@@ -5,7 +5,7 @@ import json
 import re
 import time
 from collections import Counter
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, cast
@@ -43,7 +43,10 @@ _ALLOWED_OPERATIONS = {
     "remove_inline_noise",
     "join_fragmented_paragraph",
     "normalize_heading_boundary",
+    "reclassify_role",
 }
+_ALLOWED_RECLASSIFY_TARGET_ROLES = {"heading", "body", "attribution", "caption"}
+_RECLASSIFY_MARKDOWN_HEADING_PREFIX = "## "
 _TOP_LEVEL_RESPONSE_FIELDS = {"cleanup_operations", "delete_blocks", "warnings"}
 _BLOCK_RESPONSE_FIELDS = {"id", "text_hash", "reason", "confidence"}
 _OPERATION_RESPONSE_FIELDS = {
@@ -63,6 +66,7 @@ _OPERATION_RESPONSE_FIELDS = {
     "heading_substring",
     "body_substring",
     "post_body_continuation",
+    "target_role",
 }
 _SAFE_CONFIDENCE_INFERENCE = {
     "page_number": "page_number",
@@ -164,6 +168,8 @@ class ReaderCleanupConfig:
     drop_back_matter: bool = False
     max_delete_block_ratio: float = 0.03
     max_delete_char_ratio: float = 0.05
+    max_reclassify_block_ratio: float = 0.05
+    max_failed_chunk_ratio: float = 1.0
     max_consecutive_deleted_blocks: int = 3
     max_deleted_block_chars: int = 300
     policy: CleanupPolicy = "advisory"
@@ -228,6 +234,7 @@ class CleanupOperation:
     heading_substring: str = ""
     body_substring: str = ""
     post_body_continuation: str = ""
+    target_role: str = ""
 
 
 class ReaderCleanupStageError(RuntimeError):
@@ -298,6 +305,14 @@ def resolve_reader_cleanup_config(*, app_config: Mapping[str, object], fallback_
         drop_back_matter=bool(app_config.get("reader_cleanup_drop_back_matter", False)),
         max_delete_block_ratio=_coerce_float(app_config.get("reader_cleanup_max_delete_block_ratio", 0.03), default=0.03),
         max_delete_char_ratio=_coerce_float(app_config.get("reader_cleanup_max_delete_char_ratio", 0.05), default=0.05),
+        max_reclassify_block_ratio=_coerce_float(
+            app_config.get("reader_cleanup_max_reclassify_block_ratio", 0.05),
+            default=0.05,
+        ),
+        max_failed_chunk_ratio=_coerce_float(
+            app_config.get("reader_cleanup_max_failed_chunk_ratio", 1.0),
+            default=1.0,
+        ),
         max_consecutive_deleted_blocks=_coerce_int(
             app_config.get("reader_cleanup_max_consecutive_deleted_blocks", 3),
             default=3,
@@ -340,11 +355,15 @@ def build_reader_cleanup_system_prompt() -> str:
         "Return JSON only with top-level fields cleanup_operations and warnings.\n"
         "Return only a single valid JSON object. Do not wrap it in markdown fences. Do not add prose before or after JSON.\n"
         'For no-op chunks, return exactly {"cleanup_operations":[],"warnings":[]} or the same object with string warnings.\n'
-        "Allowed operations are delete_block, extract_side_heading_and_reattach_body, split_block, remove_inline_noise, join_fragmented_paragraph, and normalize_heading_boundary.\n"
+        "Allowed operations are delete_block, extract_side_heading_and_reattach_body, split_block, remove_inline_noise, join_fragmented_paragraph, normalize_heading_boundary, and reclassify_role.\n"
         "If response_contract.allowed_operations lists fewer operations, obey that narrower contract and skip any cleanup that needs an operation outside it.\n"
         "Only blocks listed in editable_block_ids are mutation targets; readonly_context_blocks_before and readonly_context_blocks_after are context only and must not be edited.\n"
         "Do not reconstruct TOC or chapters as a structure-recognition task. Do not change semantic order or remove semantic content.\n"
-        "For extract_side_heading_and_reattach_body, split_block, remove_inline_noise, join_fragmented_paragraph, and normalize_heading_boundary, provide only the minimal exact-match diff fields, not a rewritten document.\n"
+        "For extract_side_heading_and_reattach_body, split_block, remove_inline_noise, join_fragmented_paragraph, normalize_heading_boundary, and reclassify_role, provide only the minimal exact-match diff fields, not a rewritten document.\n"
+        "Use reclassify_role only for local role correction inside this chunk: heading to body, attribution, or caption; or body/paragraph to heading. Do not assign heading_level, hierarchy, anchors, or cross-chunk structure.\n"
+        "For reclassify_role, include target_role as one of heading, body, attribution, caption. expected_after_preview must be the exact single-block Markdown after changing only the role marker.\n"
+        "For reclassify_role to heading, add only the standard Markdown heading marker to the existing block text. For reclassify_role to body, attribution, or caption, remove the Markdown heading marker and preserve the exact visible text.\n"
+        "Role rules for reclassify_role: ALL-CAPS short text after a heading may be attribution rather than another heading; text starting with an em dash or en dash followed by a name is attribution; Figure/Table/Рис./Таблица/Источник lines are caption; a short topic-introducing line may be heading when the surrounding prose shows it starts a new topic.\n"
         "Use delete_block only for non-semantic PDF/OCR/layout noise: repeated running headers, footers, "
         "page numbers, blank-page markers, orphaned footnote markers, and obvious extraction artifacts.\n"
         "Do not delete a standalone numeric block such as '8' or '12' by page_number reason unless nearby page-boundary context, repeated header/footer evidence, or explicit page-label evidence makes it safe.\n"
@@ -376,7 +395,7 @@ def build_reader_cleanup_system_prompt() -> str:
         "Preserve chapters, headings, normal paragraphs, lists, quotes, footnote bodies, bibliography, "
         "index, and TOC unless the chunk payload explicitly marks them safe to delete.\n"
         "Each cleanup_operations item must contain id, text_hash, operation, reason, confidence, evidence_before, expected_after_preview, and safety_note. Never omit confidence.\n"
-        "extract_side_heading_and_reattach_body must include pre_body_stub, heading_substring, and post_body_continuation; split_block must include split_substrings; remove_inline_noise must include noise_substring; join_fragmented_paragraph must include next_id and next_text_hash; normalize_heading_boundary must include heading_substring and body_substring.\n"
+        "extract_side_heading_and_reattach_body must include pre_body_stub, heading_substring, and post_body_continuation; split_block must include split_substrings; remove_inline_noise must include noise_substring; join_fragmented_paragraph must include next_id and next_text_hash; normalize_heading_boundary must include heading_substring and body_substring; reclassify_role must include target_role.\n"
         "For normalize_heading_boundary, use an exact heading prefix from the current block and copy body_substring verbatim as the full semantic body remainder after that boundary, not just a teaser; do not rewrite, retranslate, shorten, reorder, or normalize punctuation on either side.\n"
         "Use normalize_heading_boundary only when the heading is an exact prefix and body_substring is the exact full remaining semantic body text inside the same block.\n"
         "If a block starts with page number plus running-header prefix plus prose, always propose remove_inline_noise for the exact non-semantic prefix first.\n"
@@ -446,7 +465,7 @@ def build_reader_cleanup_schema_repair_system_prompt() -> str:
         "You may only correct schema and field mistakes inside cleanup_operations and warnings.\n"
         "Repair every invalid cleanup operation item in the response, not only the first broken one.\n"
         "If the original response uses legacy delete_blocks, convert it into cleanup_operations with full audit fields instead of preserving the legacy shortcut.\n"
-        "Keep the allowed operations unchanged: delete_block, split_block, remove_inline_noise, join_fragmented_paragraph, and normalize_heading_boundary.\n"
+        "Keep the allowed operations unchanged: delete_block, split_block, remove_inline_noise, join_fragmented_paragraph, normalize_heading_boundary, and reclassify_role.\n"
         "Do not invent new block ids, text hashes, or rewritten text. Use only exact ids and text_hash values already present in the request.\n"
         "If pass_name is anchor_repair, keep the repaired response limited to anchor_targets, anchor_window_block_ids, editable_block_ids, and exact evidence already present in the request.\n"
         "Drop or repair any operation that targets a readonly_context block instead of an editable_block_id.\n"
@@ -461,7 +480,7 @@ def build_reader_cleanup_schema_repair_system_prompt() -> str:
         "Do not widen remove_inline_noise to consume a semantic heading after a numeric running-header prefix; keep exact prefix removal separate from normalize_heading_boundary.\n"
         "Do not keep a repaired remove_inline_noise operation when its noise_substring combines a page-like number with semantic section-title text; preserve the title and drop the deletion if no exact structural operation is available.\n"
         "If the original response already isolates a title-case running-header island with connector words or acronyms plus a trailing page number, keep it as remove_inline_noise instead of widening the substring into neighboring prose.\n"
-        "split_block must include split_substrings; remove_inline_noise must include noise_substring; join_fragmented_paragraph must include next_id and next_text_hash; normalize_heading_boundary must include heading_substring and body_substring.\n"
+        "split_block must include split_substrings; remove_inline_noise must include noise_substring; join_fragmented_paragraph must include next_id and next_text_hash; normalize_heading_boundary must include heading_substring and body_substring; reclassify_role must include target_role.\n"
         "For normalize_heading_boundary, keep exact copied substrings only; never invent a cleaner heading or shortened body.\n"
         "If one block needs composed cleanup, keep each operation separate and fully populated instead of merging them into rewritten Markdown.\n"
         "If an operation cannot be repaired safely, drop it and add a warning instead of inventing content."
@@ -683,10 +702,12 @@ def run_reader_cleanup(
         except Exception as exc:
             warning = f"reader_cleanup_chunk_failed:{chunk.chunk_index}:{exc}"
             elapsed_ms = round((time.perf_counter() - started_at) * 1000, 3)
+            is_auth_failure = _is_auth_or_credential_error(exc)
             chunk_results.append(
                 {
                     "chunk_index": chunk.chunk_index,
                     "status": "failed",
+                    "failure_kind": "auth_or_credential_error" if is_auth_failure else "chunk_failed",
                     "target_block_count": len(chunk.blocks),
                     "target_chars": sum(block.char_count for block in chunk.blocks),
                     "readonly_context_before_count": len(chunk.context_before_blocks),
@@ -723,7 +744,8 @@ def run_reader_cleanup(
                 }
             )
             warnings.append(warning)
-            if config.policy == "strict":
+            if is_auth_failure or config.policy == "strict":
+                failure_kind = "auth_or_credential_error" if is_auth_failure else "chunk_failed"
                 report_payload = _build_reader_cleanup_report_payload(
                     raw_markdown=raw_markdown,
                     config=config,
@@ -738,13 +760,14 @@ def run_reader_cleanup(
                     changed=False,
                     model_resolution=model_resolution,
                     failure={
-                        "kind": "chunk_failed",
+                        "kind": failure_kind,
                         "chunk_index": chunk.chunk_index,
                         "error_message": str(exc),
+                        "status_code": _extract_http_status_code(exc),
                     },
                 )
                 raise ReaderCleanupStageError(
-                    f"reader_cleanup_chunk_failed:{chunk.chunk_index}:{exc}",
+                    f"reader_cleanup_{failure_kind}:{chunk.chunk_index}:{exc}",
                     report_payload=report_payload,
                     raw_markdown=raw_markdown,
                 ) from exc
@@ -779,6 +802,39 @@ def run_reader_cleanup(
                 "repair_error": repair_error,
                 "request_payload_char_count": request_payload_char_count,
             }
+        )
+
+    failure_ratio = _failed_chunk_ratio(chunk_results)
+    if _failed_chunk_ratio_exceeds_threshold(chunk_results=chunk_results, config=config):
+        warnings.append(
+            "reader_cleanup_failed_chunk_ratio_exceeded:"
+            f"{failure_ratio:.6f}:threshold={config.max_failed_chunk_ratio:.6f}"
+        )
+        report_payload = _build_reader_cleanup_report_payload(
+            raw_markdown=raw_markdown,
+            config=config,
+            blocks=blocks,
+            global_plan=global_plan,
+            warnings=warnings,
+            accepted_delete_blocks=[],
+            accepted_cleanup_operations=[],
+            ignored_cleanup_operations=ignored_cleanup_operations,
+            chunk_results=chunk_results,
+            deleted_char_count=0,
+            changed=False,
+            model_resolution=model_resolution,
+            failure={
+                "kind": "failed_chunk_ratio_exceeded",
+                "failed_chunk_ratio": failure_ratio,
+                "max_failed_chunk_ratio": config.max_failed_chunk_ratio,
+            },
+        )
+        return ReaderCleanupResult(
+            changed=False,
+            raw_markdown=raw_markdown,
+            cleaned_markdown=raw_markdown,
+            report_payload=report_payload,
+            accepted_delete_block_ids=(),
         )
 
     cleaned_markdown, accepted_ids, accepted_cleanup_operations, ignored = _apply_cleanup_operations(
@@ -1400,6 +1456,13 @@ def _build_chunk_request_payload(
                 "delete_block": sorted(_ALLOWED_DELETE_REASONS),
                 "extract_side_heading_and_reattach_body": ["heading_fused_with_body", "extraction_artifact"],
                 "remove_inline_noise": sorted(_REMOVE_INLINE_NOISE_REASON_GUIDANCE),
+                "reclassify_role": [
+                    "semantic_heading",
+                    "semantic_body",
+                    "semantic_attribution",
+                    "semantic_caption",
+                    "role_assignment_correction",
+                ],
             },
             "operation_specific_fields": {
                 "extract_side_heading_and_reattach_body": [
@@ -1411,7 +1474,9 @@ def _build_chunk_request_payload(
                 "remove_inline_noise": ["noise_substring"],
                 "join_fragmented_paragraph": ["next_id", "next_text_hash"],
                 "normalize_heading_boundary": ["heading_substring", "body_substring"],
+                "reclassify_role": ["target_role"],
             },
+            "allowed_reclassify_target_roles": sorted(_ALLOWED_RECLASSIFY_TARGET_ROLES),
             "allowed_confidence": ["low", "medium", "high"],
             "example": {
                 "cleanup_operations": [
@@ -1898,6 +1963,9 @@ def _build_cleanup_stats(
     proposed_delete_block_count = sum(
         _coerce_int(entry.get("proposed_delete_block_count"), default=0, minimum=0) for entry in chunk_results
     )
+    accepted_reclassify_role_count = sum(
+        1 for entry in accepted_cleanup_operations if entry.get("operation") == "reclassify_role"
+    )
     return {
         "raw_block_count": len(blocks),
         "raw_char_count": len(raw_markdown),
@@ -1907,11 +1975,62 @@ def _build_cleanup_stats(
         "proposed_delete_block_count": proposed_delete_block_count,
         "accepted_cleanup_operation_count": len(accepted_cleanup_operations),
         "accepted_delete_block_count": len(accepted_delete_blocks),
+        "accepted_reclassify_role_count": accepted_reclassify_role_count,
         "ignored_cleanup_operation_count": len(ignored_cleanup_operations),
         "ignored_delete_block_count": len(ignored_cleanup_operations),
         "deleted_non_whitespace_char_count": deleted_char_count,
         "deleted_char_ratio": 0.0 if total_non_whitespace_chars <= 0 else round(deleted_char_count / total_non_whitespace_chars, 6),
     }
+
+
+def _extract_http_status_code(exc: BaseException) -> int | None:
+    visited: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in visited:
+        visited.add(id(current))
+        status_code = getattr(current, "status_code", None)
+        if isinstance(status_code, int):
+            return status_code
+        response = getattr(current, "response", None)
+        response_status_code = getattr(response, "status_code", None)
+        if isinstance(response_status_code, int):
+            return response_status_code
+        current = current.__cause__ or current.__context__
+    return None
+
+
+def _is_auth_or_credential_error(exc: BaseException) -> bool:
+    status_code = _extract_http_status_code(exc)
+    if status_code in {401, 403}:
+        return True
+    return any(type(current).__name__ in {"AuthenticationError", "PermissionDeniedError"} for current in _iter_exception_chain(exc))
+
+
+def _iter_exception_chain(exc: BaseException) -> Iterator[BaseException]:
+    visited: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in visited:
+        visited.add(id(current))
+        yield current
+        current = current.__cause__ or current.__context__
+
+
+def _failed_chunk_ratio(chunk_results: Sequence[Mapping[str, object]]) -> float:
+    if not chunk_results:
+        return 0.0
+    failed_chunk_count = sum(1 for entry in chunk_results if entry.get("status") == "failed")
+    return failed_chunk_count / len(chunk_results)
+
+
+def _failed_chunk_ratio_exceeds_threshold(
+    *,
+    chunk_results: Sequence[Mapping[str, object]],
+    config: ReaderCleanupConfig,
+) -> bool:
+    if not chunk_results:
+        return False
+    threshold = min(1.0, max(0.0, float(config.max_failed_chunk_ratio)))
+    return _failed_chunk_ratio(chunk_results) >= threshold
 
 
 def _serialize_cleanup_settings(config: ReaderCleanupConfig) -> dict[str, object]:
@@ -1922,6 +2041,8 @@ def _serialize_cleanup_settings(config: ReaderCleanupConfig) -> dict[str, object
         "overlap_blocks_after": config.overlap_blocks_after,
         "global_plan_enabled": config.global_plan_enabled,
         "allowed_operations": sorted(config.allowed_operations),
+        "max_reclassify_block_ratio": config.max_reclassify_block_ratio,
+        "max_failed_chunk_ratio": config.max_failed_chunk_ratio,
     }
 
 
@@ -1955,7 +2076,7 @@ def _build_reader_cleanup_report_payload(
         "policy": config.policy,
         "model": config.model,
         "cleanup_settings": _serialize_cleanup_settings(config),
-        "stage_status": "failed_preserved_base_result" if failure is not None else "completed",
+        "stage_status": "failed" if failure is not None else "completed",
         "changed": changed,
         "warnings": list(warnings),
         "stats": stats,
@@ -2573,6 +2694,12 @@ def _parse_cleanup_response(
             raise RuntimeError(f"reader_cleanup_unknown_reason:{reason}")
         if confidence not in _ALLOWED_CONFIDENCE:
             raise RuntimeError(f"reader_cleanup_unknown_confidence:{confidence}")
+        target_role = str(normalized_item.get("target_role") or "").strip().lower()
+        if operation_name == "reclassify_role":
+            if not target_role:
+                raise RuntimeError(f"reader_cleanup_operation_missing_required_field:{block_id}:target_role")
+            if target_role not in _ALLOWED_RECLASSIFY_TARGET_ROLES:
+                raise RuntimeError(f"reader_cleanup_unknown_target_role:{target_role}")
         split_substrings = normalized_item.get("split_substrings")
         readonly_context_block = (readonly_context_blocks or {}).get(block_id)
         if block_id not in editable_blocks:
@@ -2600,6 +2727,7 @@ def _parse_cleanup_response(
                 heading_substring=str(normalized_item.get("heading_substring") or ""),
                 body_substring=str(normalized_item.get("body_substring") or ""),
                 post_body_continuation=str(normalized_item.get("post_body_continuation") or ""),
+                target_role=target_role,
             )
             ignored_operations.append(
                 {
@@ -2658,6 +2786,7 @@ def _parse_cleanup_response(
                     heading_substring=str(normalized_item.get("heading_substring") or ""),
                     body_substring=str(normalized_item.get("body_substring") or ""),
                     post_body_continuation=str(normalized_item.get("post_body_continuation") or ""),
+                    target_role=target_role,
                 )
                 ignored_operations.append(
                     {
@@ -2708,6 +2837,7 @@ def _parse_cleanup_response(
                 heading_substring=str(normalized_item.get("heading_substring") or ""),
                 body_substring=str(normalized_item.get("body_substring") or ""),
                 post_body_continuation=str(normalized_item.get("post_body_continuation") or ""),
+                target_role=target_role,
             )
         )
 
@@ -2753,6 +2883,11 @@ def _recover_expected_after_preview(
         if next_block.text_hash != next_text_hash:
             return None
         return f"{current_text.rstrip()} {next_block.text.lstrip()}"
+    if operation_name == "reclassify_role":
+        target_role = str(normalized_item.get("target_role") or "").strip().lower()
+        if target_role not in _ALLOWED_RECLASSIFY_TARGET_ROLES:
+            return None
+        return _reclassify_role_expected_markdown(current_text=current_text, target_role=target_role)
     return None
 
 
@@ -2968,6 +3103,8 @@ def _apply_cleanup_operations(
     rewritten_blocks: list[str | None] = [block.text for block in blocks]
     operations_by_index = _canonicalize_cleanup_operation_sequence(blocks=blocks, operations=operations)
     allowed_operations = _allowed_operations_for_config(config)
+    accepted_reclassify_count = 0
+    max_reclassify_count = _max_allowed_reclassify_operations(blocks=blocks, config=config)
 
     for _, _, _, operation, sequence_decision in operations_by_index:
         block = _block_by_id(blocks, operation.block_id)
@@ -2977,6 +3114,16 @@ def _apply_cleanup_operations(
                     **_serialize_cleanup_operation(operation=operation, block=block),
                     "chunk_index": operation.chunk_index,
                     "ignored_reason": "operation_not_allowed_by_cleanup_contract",
+                    **({"sequence_decision": sequence_decision} if sequence_decision else {}),
+                }
+            )
+            continue
+        if operation.operation == "reclassify_role" and accepted_reclassify_count >= max_reclassify_count:
+            ignored.append(
+                {
+                    **_serialize_cleanup_operation(operation=operation, block=block),
+                    "chunk_index": operation.chunk_index,
+                    "ignored_reason": "reclassify_global_safety_limit_exceeded",
                     **({"sequence_decision": sequence_decision} if sequence_decision else {}),
                 }
             )
@@ -3040,6 +3187,8 @@ def _apply_cleanup_operations(
                 "confidence": operation.confidence,
                 "chunk_index": operation.chunk_index,
             }
+        if operation.operation == "reclassify_role":
+            accepted_reclassify_count += 1
         accepted_cleanup_operations.append(
             {
                 **_serialize_cleanup_operation(operation=operation, block=block),
@@ -3182,6 +3331,16 @@ def _apply_single_operation_to_blocks(
             return False, "", ignore_reason or "heading_boundary_not_applicable"
         rewritten_blocks[block.index] = applied_text
         return True, "heading_boundary_normalized", None
+    if operation.operation == "reclassify_role":
+        applied_text, ignore_reason = _apply_reclassify_role_to_text(
+            current_text=current_text,
+            block=block,
+            operation=operation,
+        )
+        if applied_text is None:
+            return False, "", ignore_reason or "reclassify_role_not_applicable"
+        rewritten_blocks[block.index] = applied_text
+        return True, f"role_reclassified_to_{operation.target_role}", None
     return False, "", "unsupported_operation"
 
 
@@ -3348,6 +3507,46 @@ def _apply_heading_boundary_to_text(
     if remainder and len(re.sub(r"\s+", "", remainder)) > 12:
         return None, "heading_boundary_unaccounted_text"
     return f"{heading}\n\n{body}", None
+
+
+def _apply_reclassify_role_to_text(
+    *,
+    current_text: str,
+    block: CleanupBlock,
+    operation: CleanupOperation,
+) -> tuple[str | None, str | None]:
+    target_role = operation.target_role.strip().lower()
+    if target_role not in _ALLOWED_RECLASSIFY_TARGET_ROLES:
+        return None, "reclassify_target_role_invalid"
+    if "\n" in current_text.strip():
+        return None, "reclassify_multiline_block_unsupported"
+    expected = _reclassify_role_expected_markdown(current_text=current_text, target_role=target_role)
+    if expected is None:
+        return None, "reclassify_role_not_applicable"
+    if operation.expected_after_preview.strip() != expected:
+        return None, "reclassify_expected_after_preview_mismatch"
+    if target_role == "heading" and block.is_heading:
+        return None, "reclassify_role_noop"
+    if target_role != "heading" and not block.is_heading:
+        return None, "reclassify_source_role_incompatible"
+    if _strip_markdown_heading_marker(current_text) != _strip_markdown_heading_marker(expected):
+        return None, "reclassify_would_change_visible_text"
+    return expected, None
+
+
+def _reclassify_role_expected_markdown(*, current_text: str, target_role: str) -> str | None:
+    visible_text = _strip_markdown_heading_marker(current_text).strip()
+    if not visible_text:
+        return None
+    if target_role == "heading":
+        return f"{_RECLASSIFY_MARKDOWN_HEADING_PREFIX}{visible_text}"
+    if target_role in {"body", "attribution", "caption"}:
+        return visible_text
+    return None
+
+
+def _strip_markdown_heading_marker(text: str) -> str:
+    return re.sub(r"^\s*#{1,6}\s+", "", str(text or "").strip(), count=1)
 
 
 def _is_safe_inline_noise_substring(*, noise: str, current_text: str, reason: str) -> bool:
@@ -3649,6 +3848,14 @@ def _violates_global_safety(
     return longest_run > config.max_consecutive_deleted_blocks
 
 
+def _max_allowed_reclassify_operations(*, blocks: Sequence[CleanupBlock], config: ReaderCleanupConfig) -> int:
+    ratio = max(0.0, config.max_reclassify_block_ratio)
+    if ratio <= 0.0 or not blocks:
+        return 0
+    count = int(len(blocks) * ratio)
+    return max(1, count)
+
+
 def _build_protected_block_ids(*, blocks: Sequence[CleanupBlock], keep_toc: bool) -> set[str]:
     protected_ids: set[str] = set()
     nonempty_blocks = [block for block in blocks if block.text.strip()]
@@ -3675,6 +3882,8 @@ def _validate_operation(
         return "text_hash_mismatch"
     if operation.confidence == "low":
         return "low_confidence"
+    if operation.operation == "reclassify_role":
+        return _validate_reclassify_role_operation(block=block, operation=operation, protected_ids=protected_ids)
     if operation.operation != "delete_block":
         if block.kind == "footnote_body":
             return "footnote_body_protected"
@@ -3718,6 +3927,32 @@ def _validate_operation(
         return "standalone_number_delete_requires_page_context"
     if block.char_count > config.max_deleted_block_chars:
         return "block_char_limit_exceeded"
+    return None
+
+
+def _validate_reclassify_role_operation(
+    *,
+    block: CleanupBlock,
+    operation: CleanupOperation,
+    protected_ids: set[str],
+) -> str | None:
+    target_role = operation.target_role.strip().lower()
+    if target_role not in _ALLOWED_RECLASSIFY_TARGET_ROLES:
+        return "reclassify_target_role_invalid"
+    if block.kind == "footnote_body":
+        return "footnote_body_protected"
+    if block.is_toc_like:
+        return "toc_protected"
+    if block.block_id in protected_ids:
+        return "protected_block"
+    if target_role == "heading":
+        if block.is_heading:
+            return "reclassify_role_noop"
+        if block.kind not in {"paragraph", "blockquote"}:
+            return "reclassify_source_kind_incompatible"
+        return None
+    if not block.is_heading:
+        return "reclassify_source_role_incompatible"
     return None
 
 
@@ -3809,8 +4044,10 @@ def _same_block_operation_phase(*, operation_name: str, seen_split: bool) -> int
         return 4
     if operation_name == "join_fragmented_paragraph":
         return 5
-    if operation_name == "delete_block":
+    if operation_name == "reclassify_role":
         return 6
+    if operation_name == "delete_block":
+        return 7
     return 99
 
 
@@ -4052,6 +4289,8 @@ def _serialize_cleanup_operation(*, operation: CleanupOperation, block: CleanupB
         payload["body_substring"] = operation.body_substring
     if operation.post_body_continuation:
         payload["post_body_continuation"] = operation.post_body_continuation
+    if operation.target_role:
+        payload["target_role"] = operation.target_role
     return payload
 
 
