@@ -223,6 +223,65 @@ FineReader references and confirm by hand that subheadings stop leaking into bod
 and the Creating Wealth lists split. **Why before UI:** lost section hierarchy is
 a visible formatting-preservation failure in the very output the UI surfaces.
 
+## Generalization of structure detection (self-calibration over heuristics)
+
+Empirical trigger (2026-06-18): heading detection hit the heuristic ceiling. After
+suppressing dash-attribution / FIGURE-caption / location-byline false positives,
+Creating Wealth precision-vs-FineReader moved only 0.083→0.091. Manual review of the
+220 predicted headings shows why: (a) most ARE real subheadings the coarse FineReader
+Creating Wealth export (23 labels, vs 75/129 for Mazzucato/Rethinking) simply omitted
+— so that precision number is mostly a weak-reference artifact, not over-detection;
+(b) the genuine residual false positives are all-caps epigraph **author names**
+("VIRGIL", "MARSHALL MCLUHAN", "BARTHOLD GEORG NIEBUHR") which are **typographically
+identical** to real all-caps subheadings ("THE CORE ECONOMY") and separable only by
+**meaning**. No typographic hand-rule can fix that tail; more rules just overfit our
+three books. This is the rule against doc-specific literals (Working Rule #7) in
+spirit: absolute thresholds tuned on a tiny corpus are doc-specific in disguise.
+
+**Principle — replace accreting absolute thresholds with PER-DOCUMENT
+self-calibration.** A PDF text layer has no semantic structure; inference is
+unavoidable, so the question is "our general heuristics vs a learned model", and the
+generalizing move is to measure each book's own typography first, then judge relative
+to it:
+
+- **Profile-first.** Measure the document's distributions (body font mode, body
+  left-margin mode, body leading, line-length distribution, body case usage) before
+  classifying; judge every line **relative** to that profile, never against absolute
+  constants. `median_font_size` and repeated-furniture detection already do this in
+  part — extend it to all features.
+- **Heading levels by clustering** style-signatures (size, weight, case, isolation),
+  not thresholds: largest/most-frequent cluster = body; higher clusters = heading
+  levels; small/distinct = caption. Auto-discovers each book's hierarchy.
+- **Paragraph boundaries:** auto-detect which convention the book uses (first-line
+  indent / inter-paragraph spacing / neither) and add **line-fill ratio** (short last
+  line + return to left margin) — the near-universal, indent-independent end-of-
+  paragraph signal that was missing on the epub→pdf case.
+- **Small, GENERAL negative-convention set only** (dash-attribution, FIGURE/TABLE,
+  page furniture). Never per-book patches.
+- **Intra-document consistency:** same style-signature → same role throughout; flag
+  outliers.
+- **Confidence-gated escalation for the ceiling.** Where a line is genuinely
+  ambiguous (all-caps author-name vs all-caps subheading), do not force a typographic
+  guess — decide conservatively or escalate the low-confidence minority to a
+  semantic/LM check or review. ML is a fallback for the ambiguous tail, not a
+  wholesale replacement; paragraph segmentation stays homegrown (faithful, cheap).
+
+**Validation discipline (else "universal" is self-deception):**
+- Tune ONE global score/clustering on a corpus; never per-book thresholds.
+- Validate on **held-out** books not used for tuning (the FineReader DOCX set is a
+  ground-truth corpus; keep some books validation-only).
+- Success metric = the **spread** of recall/precision across books, not the average —
+  stable on any book, not excellent on three.
+- The FineReader references are themselves uneven (Creating Wealth 23 vs 75/129) — use
+  them as a recall guide and corpus, but confirm precision by manual false-positive
+  typing, not the raw score.
+- **Tripwire:** the first new book needing a fresh typographic hand-rule is the signal
+  the heuristic tail is exhausted and the ambiguous case belongs to the semantic/ML
+  fallback.
+
+This is a redesign of the importer's classification core; do it incrementally under
+held-out validation, not as more patches.
+
 ## Then: UI
 
 Once items 1–4 are solid, return to UI. The first UI slice is already specified:

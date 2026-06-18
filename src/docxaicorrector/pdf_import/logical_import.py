@@ -59,8 +59,36 @@ class PdfSourceImportResult:
 
 @dataclass(frozen=True)
 class _PdfHeadingLayoutProfile:
-    median_font_size: float | None
+    body_font_size: float | None
     body_left_x0: float | None
+    body_leading: float | None
+    body_uppercase_ratio: float
+    body_title_word_ratio: float
+    clusters: tuple["_PdfStyleCluster", ...] = ()
+    heading_cluster_ids: frozenset[int] = frozenset()
+    ambiguous_cluster_ids: frozenset[int] = frozenset()
+    heading_prominence_threshold: float = 0.0
+
+
+@dataclass(frozen=True)
+class _PdfStyleSignature:
+    vector: tuple[float, ...]
+    prominence: float
+    font_ratio: float
+    indent_units: float
+    isolation_units: float
+    uppercase_delta: float
+    title_delta: float
+    shortness: float
+    boundary_context: float
+
+
+@dataclass(frozen=True)
+class _PdfStyleCluster:
+    cluster_id: int
+    size: int
+    center: tuple[float, ...]
+    prominence: float
 
 
 def build_paragraph_units_from_text_spans(
@@ -68,19 +96,12 @@ def build_paragraph_units_from_text_spans(
 ) -> PdfSourceImportResult:
     normalized_spans = [span for span in spans if _normalize_text(span.text)]
     repeated_furniture_keys = _detect_repeated_page_furniture_keys(tuple(normalized_spans))
-    font_sizes = [
-        span.font_size
-        for span in normalized_spans
-        if isinstance(span.font_size, (int, float)) and span.font_size > 0
-        and _span_furniture_key(span) not in repeated_furniture_keys
-        and not _looks_like_page_number(span)
-    ]
-    median_font_size = float(median(font_sizes)) if font_sizes else None
+    ordered_spans = sorted(normalized_spans, key=lambda item: (item.page_number, item.top, item.x0))
     layout_profile = _build_heading_layout_profile(
-        normalized_spans,
+        ordered_spans,
         repeated_furniture_keys=repeated_furniture_keys,
-        median_font_size=median_font_size,
     )
+    median_font_size = layout_profile.body_font_size
 
     emitted: list[ParagraphUnit] = []
     pending_body_spans: list[PdfTextSpan] = []
@@ -105,7 +126,6 @@ def build_paragraph_units_from_text_spans(
             )
             pending_heading_spans = []
 
-    ordered_spans = sorted(normalized_spans, key=lambda item: (item.page_number, item.top, item.x0))
     for span_index, span in enumerate(ordered_spans):
         if _span_furniture_key(span) in repeated_furniture_keys:
             skipped_repeated_page_furniture_count += 1
@@ -205,9 +225,28 @@ def _build_heading_layout_profile(
     spans: list[PdfTextSpan],
     *,
     repeated_furniture_keys: set[tuple[str, str]],
-    median_font_size: float | None,
 ) -> _PdfHeadingLayoutProfile:
+    sentence_font_sizes = [
+        float(span.font_size)
+        for span in spans
+        if isinstance(span.font_size, (int, float))
+        and span.font_size > 0
+        and _span_furniture_key(span) not in repeated_furniture_keys
+        and not _looks_like_page_number(span)
+        and _normalize_text(span.text).rstrip().endswith((".", "!", "?"))
+        and len(_words(_normalize_text(span.text))) >= 2
+    ]
+    font_sizes = [
+        float(span.font_size)
+        for span in spans
+        if isinstance(span.font_size, (int, float))
+        and span.font_size > 0
+        and _span_furniture_key(span) not in repeated_furniture_keys
+        and not _looks_like_page_number(span)
+    ]
+    body_font_size = _mode_font_size(sentence_font_sizes) or _mode_font_size(font_sizes)
     body_left_candidates: list[float] = []
+    body_case_candidates: list[tuple[float, float]] = []
     for span in spans:
         text = _normalize_text(span.text)
         if not text:
@@ -219,15 +258,72 @@ def _build_heading_layout_profile(
         words = _words(text)
         if len(words) < 7:
             continue
-        if median_font_size and span.font_size:
-            ratio = float(span.font_size) / median_font_size
+        if body_font_size and span.font_size:
+            ratio = float(span.font_size) / body_font_size
             if ratio < 0.75 or ratio > 1.25:
                 continue
         body_left_candidates.append(float(span.x0))
+        body_case_candidates.append((_uppercase_ratio(text), _title_word_ratio(words)))
     body_left_x0 = float(median(body_left_candidates)) if body_left_candidates else None
-    return _PdfHeadingLayoutProfile(
-        median_font_size=median_font_size,
+    body_leading = _estimate_body_leading(
+        spans,
+        repeated_furniture_keys=repeated_furniture_keys,
+        body_font_size=body_font_size,
+    )
+    body_uppercase_ratio = (
+        float(median([item[0] for item in body_case_candidates])) if body_case_candidates else 0.0
+    )
+    body_title_word_ratio = (
+        float(median([item[1] for item in body_case_candidates])) if body_case_candidates else 0.0
+    )
+    base_profile = _PdfHeadingLayoutProfile(
+        body_font_size=body_font_size,
         body_left_x0=body_left_x0,
+        body_leading=body_leading,
+        body_uppercase_ratio=body_uppercase_ratio,
+        body_title_word_ratio=body_title_word_ratio,
+    )
+    signatures: list[_PdfStyleSignature] = []
+    for index, span in enumerate(spans):
+        if not _is_style_cluster_input(span, repeated_furniture_keys=repeated_furniture_keys):
+            continue
+        signatures.append(
+            _style_signature(
+                span,
+                layout_profile=base_profile,
+                previous_span=_nearest_content_span(
+                    spans,
+                    index,
+                    direction=-1,
+                    repeated_furniture_keys=repeated_furniture_keys,
+                ),
+                next_span=_nearest_content_span(
+                    spans,
+                    index,
+                    direction=1,
+                    repeated_furniture_keys=repeated_furniture_keys,
+                ),
+            )
+        )
+    clusters = _cluster_style_signatures(signatures)
+    heading_prominence_threshold = _otsu_prominence_threshold(
+        [signature.prominence for signature in signatures]
+    )
+    heading_cluster_ids, ambiguous_cluster_ids = _select_heading_clusters(
+        clusters,
+        signatures,
+        heading_prominence_threshold=heading_prominence_threshold,
+    )
+    return _PdfHeadingLayoutProfile(
+        body_font_size=body_font_size,
+        body_left_x0=body_left_x0,
+        body_leading=body_leading,
+        body_uppercase_ratio=body_uppercase_ratio,
+        body_title_word_ratio=body_title_word_ratio,
+        clusters=clusters,
+        heading_cluster_ids=heading_cluster_ids,
+        ambiguous_cluster_ids=ambiguous_cluster_ids,
+        heading_prominence_threshold=heading_prominence_threshold,
     )
 
 
@@ -252,6 +348,318 @@ def _nearest_content_span(
     return None
 
 
+def _mode_font_size(font_sizes: list[float]) -> float | None:
+    if not font_sizes:
+        return None
+    buckets: dict[float, int] = {}
+    for font_size in font_sizes:
+        bucket = round(float(font_size) * 2.0) / 2.0
+        buckets[bucket] = buckets.get(bucket, 0) + 1
+    return max(buckets.items(), key=lambda item: (item[1], -abs(item[0])))[0]
+
+
+def _estimate_body_leading(
+    spans: list[PdfTextSpan],
+    *,
+    repeated_furniture_keys: set[tuple[str, str]],
+    body_font_size: float | None,
+) -> float | None:
+    deltas: list[float] = []
+    previous: PdfTextSpan | None = None
+    for span in spans:
+        text = _normalize_text(span.text)
+        if not text or len(_words(text)) < 6:
+            continue
+        if _span_furniture_key(span) in repeated_furniture_keys:
+            continue
+        if _looks_like_page_number(span) or _looks_like_toc_entry(span) or _looks_like_caption(span):
+            continue
+        if body_font_size and span.font_size:
+            ratio = float(span.font_size) / body_font_size
+            if ratio < 0.8 or ratio > 1.2:
+                continue
+        if previous is not None and previous.page_number == span.page_number:
+            delta = float(span.top) - float(previous.top)
+            if delta > 0:
+                deltas.append(delta)
+        previous = span
+    if deltas:
+        return float(median(deltas))
+    return body_font_size * 1.2 if body_font_size else None
+
+
+def _is_style_cluster_input(
+    span: PdfTextSpan,
+    *,
+    repeated_furniture_keys: set[tuple[str, str]],
+) -> bool:
+    text = _normalize_text(span.text)
+    if not text:
+        return False
+    if _span_furniture_key(span) in repeated_furniture_keys:
+        return False
+    if _looks_like_page_number(span) or _looks_like_blank_page_notice(span):
+        return False
+    if _BULLET_PATTERN.match(text) or _ORDERED_LIST_PATTERN.match(text):
+        return False
+    if _looks_like_toc_entry(span) or _looks_like_caption(span):
+        return False
+    if _looks_like_non_heading_front_matter_line(span):
+        return False
+    return True
+
+
+def _style_signature(
+    span: PdfTextSpan,
+    *,
+    layout_profile: _PdfHeadingLayoutProfile,
+    previous_span: PdfTextSpan | None,
+    next_span: PdfTextSpan | None,
+) -> _PdfStyleSignature:
+    text = _normalize_text(span.text)
+    words = _words(text)
+    word_count = max(1, len(words))
+    body_font_size = layout_profile.body_font_size or span.font_size or 10.0
+    font_ratio = float(span.font_size or body_font_size) / float(body_font_size)
+    font_up = max(0.0, min(2.5, font_ratio - 1.0))
+    font_down = max(0.0, min(1.0, 1.0 - font_ratio))
+    body_leading = layout_profile.body_leading or body_font_size * 1.2
+    indent_units = 0.0
+    if layout_profile.body_left_x0 is not None:
+        indent_units = max(0.0, min(4.0, (float(span.x0) - layout_profile.body_left_x0) / body_leading))
+    previous_gap = 0.0
+    next_gap = 0.0
+    if previous_span is not None and previous_span.page_number == span.page_number:
+        previous_gap = max(0.0, float(span.top) - float(previous_span.bottom))
+    if next_span is not None and next_span.page_number == span.page_number:
+        next_gap = max(0.0, float(next_span.top) - float(span.bottom))
+    isolation_units = max(0.0, min(4.0, (previous_gap + next_gap) / body_leading))
+    uppercase_ratio = _uppercase_ratio(text)
+    title_word_ratio = _title_word_ratio(words)
+    uppercase_delta = max(0.0, uppercase_ratio - layout_profile.body_uppercase_ratio)
+    title_delta = max(0.0, title_word_ratio - layout_profile.body_title_word_ratio)
+    shortness = max(0.0, 1.0 - min(word_count, 14) / 14.0)
+    boundary_context = _boundary_context_score(span, previous_span=previous_span, next_span=next_span)
+    bold = 1.0 if span.is_bold else 0.0
+    italic = 1.0 if span.is_italic else 0.0
+    vector = (
+        font_up,
+        font_down,
+        indent_units,
+        isolation_units,
+        uppercase_delta,
+        title_delta,
+        shortness,
+        bold,
+        italic,
+        boundary_context,
+    )
+    prominence = (
+        font_up * 2.0
+        + font_down * 0.7
+        + indent_units * 0.7
+        + isolation_units * 0.8
+        + uppercase_delta * 1.2
+        + title_delta * 0.7
+        + shortness * 0.7
+        + bold * 0.8
+        + italic * 0.3
+        + boundary_context * 0.8
+    )
+    return _PdfStyleSignature(
+        vector=vector,
+        prominence=prominence,
+        font_ratio=font_ratio,
+        indent_units=indent_units,
+        isolation_units=isolation_units,
+        uppercase_delta=uppercase_delta,
+        title_delta=title_delta,
+        shortness=shortness,
+        boundary_context=boundary_context,
+    )
+
+
+def _boundary_context_score(
+    span: PdfTextSpan,
+    *,
+    previous_span: PdfTextSpan | None,
+    next_span: PdfTextSpan | None,
+) -> float:
+    if next_span is None or next_span.page_number != span.page_number:
+        return 0.0
+    next_text = _normalize_text(next_span.text)
+    if len(_words(next_text)) < 4:
+        return 0.0
+    if _BULLET_PATTERN.match(next_text) or _ORDERED_LIST_PATTERN.match(next_text):
+        return 0.0
+    if previous_span is None or previous_span.page_number != span.page_number:
+        return 0.5
+    previous_text = _normalize_text(previous_span.text)
+    if previous_text and previous_text[-1] in _TERMINAL_SENTENCE_PUNCTUATION:
+        return 1.0
+    return 0.0
+
+
+def _cluster_style_signatures(
+    signatures: list[_PdfStyleSignature],
+) -> tuple[_PdfStyleCluster, ...]:
+    if not signatures:
+        return ()
+    cluster_count = min(6, len(signatures), max(3, int(len(signatures) ** 0.5 // 8) + 2))
+    ordered = sorted(signatures, key=lambda item: item.prominence)
+    centers = [
+        ordered[min(len(ordered) - 1, round(index * (len(ordered) - 1) / max(1, cluster_count - 1)))].vector
+        for index in range(cluster_count)
+    ]
+    assignments = [0] * len(signatures)
+    for _ in range(20):
+        changed = False
+        for index, signature in enumerate(signatures):
+            cluster_id = _nearest_center_id(signature.vector, centers)
+            if assignments[index] != cluster_id:
+                assignments[index] = cluster_id
+                changed = True
+        new_centers: list[tuple[float, ...]] = []
+        for cluster_id in range(cluster_count):
+            vectors = [
+                signature.vector
+                for signature, assignment in zip(signatures, assignments)
+                if assignment == cluster_id
+            ]
+            if not vectors:
+                new_centers.append(centers[cluster_id])
+                continue
+            new_centers.append(
+                tuple(sum(vector[item] for vector in vectors) / len(vectors) for item in range(len(vectors[0])))
+            )
+        centers = new_centers
+        if not changed:
+            break
+    clusters: list[_PdfStyleCluster] = []
+    for cluster_id, center in enumerate(centers):
+        members = [
+            signature
+            for signature, assignment in zip(signatures, assignments)
+            if assignment == cluster_id
+        ]
+        if not members:
+            continue
+        clusters.append(
+            _PdfStyleCluster(
+                cluster_id=cluster_id,
+                size=len(members),
+                center=center,
+                prominence=float(median([member.prominence for member in members])),
+            )
+        )
+    return tuple(clusters)
+
+
+def _nearest_center_id(vector: tuple[float, ...], centers: list[tuple[float, ...]]) -> int:
+    return min(
+        range(len(centers)),
+        key=lambda index: sum((vector[item] - centers[index][item]) ** 2 for item in range(len(vector))),
+    )
+
+
+def _select_heading_clusters(
+    clusters: tuple[_PdfStyleCluster, ...],
+    signatures: list[_PdfStyleSignature],
+    *,
+    heading_prominence_threshold: float,
+) -> tuple[frozenset[int], frozenset[int]]:
+    if not clusters or not signatures:
+        return frozenset(), frozenset()
+    body_cluster_id = min(clusters, key=lambda cluster: (cluster.prominence, -cluster.size)).cluster_id
+    heading_ids: set[int] = set()
+    ambiguous_ids: set[int] = set()
+    for cluster in clusters:
+        if cluster.cluster_id == body_cluster_id:
+            continue
+        if cluster.prominence < heading_prominence_threshold:
+            continue
+        heading_ids.add(cluster.cluster_id)
+        if _cluster_is_ambiguous_caps_or_short_label(cluster):
+            ambiguous_ids.add(cluster.cluster_id)
+    return frozenset(heading_ids), frozenset(ambiguous_ids)
+
+
+def _otsu_prominence_threshold(values: list[float]) -> float:
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    if len(ordered) < 3:
+        return ordered[-1]
+    total_sum = sum(ordered)
+    total_count = len(ordered)
+    best_index = 0
+    best_variance = -1.0
+    left_sum = 0.0
+    for index, value in enumerate(ordered[:-1], start=1):
+        left_sum += value
+        right_count = total_count - index
+        if right_count <= 0:
+            break
+        left_mean = left_sum / index
+        right_mean = (total_sum - left_sum) / right_count
+        variance = index * right_count * (left_mean - right_mean) ** 2
+        if variance > best_variance:
+            best_variance = variance
+            best_index = index
+    return (ordered[best_index - 1] + ordered[best_index]) / 2.0
+
+
+def _cluster_is_ambiguous_caps_or_short_label(cluster: _PdfStyleCluster) -> bool:
+    center = cluster.center
+    font_up, font_down, indent_units, isolation_units, uppercase_delta, title_delta, shortness = center[:7]
+    has_typographic_separation = font_up > 0.2 or font_down > 0.2 or indent_units > 1.0 or isolation_units > 0.8
+    is_short_case_only = shortness > 0.7 and (uppercase_delta > 0.5 or title_delta > 0.5)
+    return is_short_case_only and not has_typographic_separation
+
+
+def _nearest_style_cluster(
+    signature: _PdfStyleSignature,
+    clusters: tuple[_PdfStyleCluster, ...],
+) -> _PdfStyleCluster | None:
+    if not clusters:
+        return None
+    return min(
+        clusters,
+        key=lambda cluster: sum(
+            (signature.vector[item] - cluster.center[item]) ** 2
+            for item in range(len(signature.vector))
+        ),
+    )
+
+
+def _ambiguous_signature_has_structural_support(signature: _PdfStyleSignature) -> bool:
+    if signature.font_ratio >= 1.12 or signature.font_ratio <= 0.82:
+        return True
+    if signature.indent_units >= 1.0:
+        return True
+    if signature.isolation_units >= 0.8:
+        return True
+    if signature.boundary_context >= 1.0 and signature.title_delta >= 0.5:
+        return True
+    return False
+
+
+def _signature_has_heading_support(signature: _PdfStyleSignature) -> bool:
+    if signature.font_ratio >= 1.12 or signature.font_ratio <= 0.82:
+        return True
+    if signature.isolation_units >= 0.8 and (
+        signature.uppercase_delta >= 0.45 or signature.title_delta >= 0.45
+    ):
+        return True
+    if signature.indent_units >= 1.0 and (signature.uppercase_delta >= 0.45 or signature.title_delta >= 0.45):
+        return True
+    if signature.boundary_context >= 1.0 and signature.title_delta >= 0.45 and signature.shortness >= 0.55:
+        return True
+    if signature.boundary_context >= 1.0 and signature.uppercase_delta >= 0.55:
+        return True
+    return False
+
+
 def _looks_like_pdf_heading_candidate(
     span: PdfTextSpan,
     *,
@@ -267,31 +675,23 @@ def _looks_like_pdf_heading_candidate(
         return False
     if _has_terminal_sentence_punctuation(text):
         return False
-    font_ratio = _font_ratio(span, layout_profile.median_font_size)
-    uppercase_ratio = _uppercase_ratio(text)
-    title_word_ratio = _title_word_ratio(words)
-    strong_indent = _strong_heading_indent(span, layout_profile)
-    standalone_context = _looks_like_standalone_heading_context(
+    signature = _style_signature(
         span,
+        layout_profile=layout_profile,
         previous_span=previous_span,
         next_span=next_span,
     )
-
-    if font_ratio is not None and font_ratio >= 1.18:
-        return True
-    if span.is_bold and uppercase_ratio >= 0.55:
-        return True
-    if span.is_bold and strong_indent and len(words) <= 8:
-        return True
-    if span.is_bold and len(words) <= 4 and standalone_context:
-        return True
-    if uppercase_ratio >= 0.72 and len(words) <= 10:
-        return strong_indent or standalone_context
-    if title_word_ratio >= 0.65 and len(words) <= 6 and strong_indent:
-        return True
-    if title_word_ratio >= 0.75 and len(words) <= 3 and standalone_context:
-        return True
-    return False
+    cluster = _nearest_style_cluster(signature, layout_profile.clusters)
+    if cluster is None or cluster.cluster_id not in layout_profile.heading_cluster_ids:
+        return (
+            signature.prominence >= layout_profile.heading_prominence_threshold
+            and _signature_has_heading_support(signature)
+        )
+    if not _signature_has_heading_support(signature):
+        return False
+    if cluster.cluster_id in layout_profile.ambiguous_cluster_ids:
+        return _ambiguous_signature_has_structural_support(signature)
+    return True
 
 
 def _words(text: str) -> list[str]:

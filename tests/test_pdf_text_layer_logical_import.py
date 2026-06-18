@@ -113,6 +113,44 @@ def test_build_paragraph_units_detects_body_sized_small_caps_subheading() -> Non
     assert result.paragraphs[1].text == "THE MERCANTILISTS: TRADE AND TREASURE"
 
 
+def test_build_paragraph_units_separates_heading_levels_by_style_clusters() -> None:
+    spans = [
+        _span(1, "Body line one keeps the dominant document style", top=100, bottom=112, x0=50),
+        _span(1, "body line two keeps the dominant document style", top=114, bottom=126, x0=50),
+        _span(1, "Body line three keeps the dominant document style.", top=128, bottom=140, x0=50),
+        _span(1, "PART ONE", top=180, bottom=202, x0=150, font_size=18, bold=True),
+        _span(1, "LOCAL ECONOMICS", top=210, bottom=232, x0=160, font_size=18, bold=True),
+        _span(1, "Body text resumes with the dominant document style.", top=270, bottom=282, x0=50),
+        _span(1, "A Systems Perspective", top=320, bottom=334, x0=180, font_size=10),
+        _span(1, "Another body line follows the clustered subheading.", top=360, bottom=372, x0=50),
+    ]
+
+    result = build_paragraph_units_from_text_spans(spans)
+
+    assert [paragraph.role for paragraph in result.paragraphs] == [
+        "body",
+        "heading",
+        "body",
+        "heading",
+        "body",
+    ]
+    assert result.paragraphs[1].text == "PART ONE LOCAL ECONOMICS"
+    assert result.paragraphs[3].text == "A Systems Perspective"
+
+
+def test_build_paragraph_units_is_conservative_for_ambiguous_caps_line() -> None:
+    spans = [
+        _span(1, "The quotation continues across the current line", top=100, bottom=112, x0=50),
+        _span(1, "ALDO LEOPOLD", top=114, bottom=126, x0=50),
+        _span(1, "without enough layout separation to prove a heading.", top=128, bottom=140, x0=50),
+    ]
+
+    result = build_paragraph_units_from_text_spans(spans)
+
+    assert [paragraph.role for paragraph in result.paragraphs] == ["body"]
+    assert "ALDO LEOPOLD" in result.paragraphs[0].text
+
+
 def test_build_paragraph_units_detects_short_inline_subheading_between_body_lines() -> None:
     spans = [
         _span(1, "The time currency also created stronger", top=100, bottom=112, x0=50),
@@ -193,7 +231,14 @@ def test_build_paragraph_units_does_not_keep_glued_toc_heading_as_heading() -> N
     spans = [
         _span(1, "Preface by Dennis Meadows", top=100, bottom=112, x0=95),
         _span(1, "Foreword by Hunter Lovins", top=114, bottom=126, x0=95),
-        _span(1, "Acknowledgments Introduction: Cities And Economies", top=128, bottom=140, x0=95),
+        _span(
+            1,
+            "Acknowledgments Introduction: Cities And Economies Conclusion: Toward A Monetary Democracy "
+            "Appendix: The Community Currency How-To Manual",
+            top=128,
+            bottom=140,
+            x0=95,
+        ),
         _span(1, "Body text starts after the front matter list.", top=180, bottom=192, x0=50),
     ]
 
