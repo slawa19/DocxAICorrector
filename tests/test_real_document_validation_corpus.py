@@ -1906,6 +1906,48 @@ def test_build_structural_checks_enforces_pdf_translation_quality_specific_const
     assert by_name["translation_domain_required"]["passed"] is True
 
 
+def test_build_structural_checks_rejects_effectively_infinite_acceptance_thresholds() -> None:
+    document_profile = SimpleNamespace(
+        max_formatting_diagnostics=999999,
+        max_unmapped_source_paragraphs=999999,
+        max_unmapped_target_paragraphs=999999,
+        max_heading_level_drift=999999,
+        min_text_similarity=0.95,
+        require_numbered_lists_preserved=False,
+        require_nonempty_output=True,
+        forbid_heading_only_collapse=False,
+        require_toc_detected=False,
+        require_pdf_conversion=False,
+        require_no_bullet_headings=False,
+        require_no_toc_body_concat=False,
+        require_translation_domain=None,
+    )
+    metrics = {
+        "formatting_diagnostics_count": 0,
+        "max_unmapped_source_paragraphs": 0,
+        "max_unmapped_target_paragraphs": 0,
+        "heading_level_drift": 0,
+        "text_similarity": 0.99,
+        "heading_only_output_detected": False,
+    }
+    output_artifacts = {"output_docx_openable": True, "output_visible_text_chars": 100}
+
+    checks = real_document_validation_structural._build_structural_checks(
+        document_profile=cast(Any, document_profile),
+        result="succeeded",
+        metrics=metrics,
+        output_artifacts=output_artifacts,
+    )
+
+    by_name = {check["name"]: check for check in checks}
+    assert by_name["max_unmapped_source_paragraphs_not_sentinel"]["passed"] is False
+    assert by_name["max_unmapped_target_paragraphs_not_sentinel"]["passed"] is False
+    assert by_name["max_formatting_diagnostics_not_sentinel"]["passed"] is False
+    failed_checks = [check["name"] for check in checks if not bool(check["passed"])]
+    assert "max_unmapped_source_paragraphs_not_sentinel" in failed_checks
+    assert "max_unmapped_target_paragraphs_not_sentinel" in failed_checks
+
+
 def test_build_structural_checks_requires_bounded_toc_and_source_boundary_repair_for_pdf_constraints() -> None:
     document_profile = SimpleNamespace(
         max_formatting_diagnostics=5,

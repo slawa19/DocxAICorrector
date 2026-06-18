@@ -102,6 +102,8 @@ _REASON_LABELS: dict[str, str] = {
     "heading_count_far_below_toc_expectation": "заголовков значительно меньше, чем ожидается по оглавлению",
     "high_risk_without_structure_repair": "документ высокого риска не прошёл structural repair",
     "untranslated_structural_text_review_required": "структурные элементы остались на исходном языке",
+    "untranslated_body_text_review_required": "фрагменты основного текста остались на исходном языке",
+    "untranslated_body_text_above_threshold": "слишком большой объём основного текста остался на исходном языке",
 }
 
 

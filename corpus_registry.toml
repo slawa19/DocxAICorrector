@@ -251,18 +251,18 @@ has_images = false
 min_images = 0
 has_tables = false
 min_tables = 0
-max_formatting_diagnostics = 999999
-max_unmapped_source_paragraphs = 999999
-max_unmapped_target_paragraphs = 999999
-max_heading_level_drift = 999999
+max_formatting_diagnostics = 12
+max_unmapped_source_paragraphs = 16
+max_unmapped_target_paragraphs = 16
+max_heading_level_drift = 2
 min_text_similarity = 0.0
 require_numbered_lists_preserved = false
 require_nonempty_output = true
 forbid_heading_only_collapse = true
 require_pdf_conversion = true
 default_run_profile = "ui-parity-translate-benchmark-advisory"
-tags = ["pdf", "translation", "benchmark-only", "lietaer", "full-document", "measurement-baseline", "epub-derived-pdf"]
-provenance = "Measurement-only first full-book benchmark for the epub-derived Creating Wealth PDF; thresholds are intentionally advisory and must not be tightened to fit the first run."
+tags = ["pdf", "translation", "benchmark-only", "lietaer", "full-document", "epub-derived-pdf"]
+provenance = "Full-book epub-derived PDF benchmark. Unmapped thresholds use a finite roughly-one-percent product bar, not the invalid first-run vacuum thresholds."
 
 [[run_profiles]]
 id = "ui-parity-default"

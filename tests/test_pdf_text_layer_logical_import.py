@@ -10,6 +10,7 @@ def _span(
     *,
     top: float,
     bottom: float,
+    x0: float = 50,
     font_size: float = 10,
     bold: bool = False,
     italic: bool = False,
@@ -17,7 +18,7 @@ def _span(
     return PdfTextSpan(
         page_number=page,
         text=text,
-        x0=50,
+        x0=x0,
         top=top,
         x1=450,
         bottom=bottom,
@@ -151,6 +152,22 @@ def test_build_paragraph_units_does_not_merge_toc_entries_into_large_body_blob()
     assert result.paragraphs[2].structural_role == "toc_entry"
     assert result.paragraphs[4].structural_role == "toc_entry"
     assert result.paragraphs[-1].text == "First normal body line continues as one paragraph."
+
+
+def test_build_paragraph_units_splits_body_on_first_line_indent_boundary() -> None:
+    spans = [
+        _span(1, "First paragraph starts here and continues", top=100, bottom=112, x0=64),
+        _span(1, "on the next line without a first-line indent.", top=114, bottom=126, x0=50),
+        _span(1, "Second paragraph begins with a first-line indent.", top=128, bottom=140, x0=64),
+        _span(1, "and then continues on the left margin.", top=142, bottom=154, x0=50),
+    ]
+
+    result = build_paragraph_units_from_text_spans(spans)
+
+    assert [paragraph.text for paragraph in result.paragraphs] == [
+        "First paragraph starts here and continues on the next line without a first-line indent.",
+        "Second paragraph begins with a first-line indent. and then continues on the left margin.",
+    ]
 
 
 def test_build_paragraph_units_skips_generic_blank_page_notices() -> None:

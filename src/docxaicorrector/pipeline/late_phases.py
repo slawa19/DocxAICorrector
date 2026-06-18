@@ -1797,6 +1797,10 @@ _ROLE_LOSS_MANUAL_REVIEW_MAX_COUNT = 10
 _ROLE_LOSS_MANUAL_REVIEW_MAX_RATIO = 0.05
 _LEGACY_HYGIENE_MANUAL_REVIEW_MAX_COUNT = 10
 _LEGACY_HYGIENE_MANUAL_REVIEW_MAX_RATIO = 0.01
+_UNTRANSLATED_BODY_MIN_CHARS = 280
+_UNTRANSLATED_BODY_MIN_LATIN_WORDS = 30
+_UNTRANSLATED_BODY_FAIL_MIN_CHARS = 2000
+_UNTRANSLATED_BODY_FAIL_RATIO = 0.02
 
 
 @dataclass(frozen=True)
@@ -1817,6 +1821,7 @@ class _UntranslatedStructuralSample:
     role: str | None = None
     structural_role: str | None = None
     paragraph_id: str | None = None
+    char_count: int = 0
 
 
 _HYGIENE_GATE_SPECS: dict[str, _HygieneGateSpec] = {
@@ -1857,6 +1862,11 @@ _LATIN_LETTER_PATTERN = re.compile(r"[A-Za-z]")
 _LATIN_WORD_PATTERN = re.compile(r"\b[A-Za-z][A-Za-z'’-]{2,}\b")
 _CYRILLIC_LETTER_PATTERN = re.compile(r"[А-Яа-яЁё]")
 _MARKDOWN_STRUCTURAL_PREFIX_PATTERN = re.compile(r"^\s*(?:#{1,6}\s+|>\s+|[-*]\s+|\d+\.\s+)+")
+_URL_OR_DOMAIN_PATTERN = re.compile(r"(?:https?://|www\.|\b[A-Za-z0-9.-]+\.(?:com|org|net|edu|gov|info|io|co)\b)", re.IGNORECASE)
+_BIBLIOGRAPHY_LIKE_PATTERN = re.compile(
+    r"(?:\b(?:doi|isbn|issn|references|bibliography|press|journal|vol\.|pp\.)\b|\(\d{4}\)|\b\d{4}\b)",
+    re.IGNORECASE,
+)
 
 
 def _strip_structural_markdown_prefix(text: str) -> str:
@@ -1881,6 +1891,45 @@ def _is_untranslated_structural_text(text: str) -> bool:
         word = latin_words[0]
         return len(word) >= 6 and word.isupper()
     return False
+
+
+def _latin_letter_ratio(text: str) -> float:
+    letters = [char for char in text if char.isalpha()]
+    if not letters:
+        return 0.0
+    latin_letters = [char for char in letters if _LATIN_LETTER_PATTERN.fullmatch(char)]
+    return len(latin_letters) / len(letters)
+
+
+def _is_bibliography_or_url_dominant_text(text: str) -> bool:
+    stripped = _strip_structural_markdown_prefix(text)
+    if not stripped:
+        return False
+    if _URL_OR_DOMAIN_PATTERN.search(stripped):
+        words = _LATIN_WORD_PATTERN.findall(stripped)
+        return len(words) < 40
+    bibliography_hits = len(_BIBLIOGRAPHY_LIKE_PATTERN.findall(stripped))
+    if bibliography_hits >= 3:
+        return True
+    lines = [line.strip() for line in stripped.splitlines() if line.strip()]
+    if lines and sum(1 for line in lines if re.match(r"^\s*(?:\[\d+\]|\d+[.)])\s+", line)) / len(lines) >= 0.5:
+        return True
+    return False
+
+
+def _is_untranslated_body_text(text: str) -> bool:
+    stripped = _strip_structural_markdown_prefix(text)
+    if len(stripped) < _UNTRANSLATED_BODY_MIN_CHARS:
+        return False
+    if _CYRILLIC_LETTER_PATTERN.search(stripped):
+        return False
+    if _is_bibliography_or_url_dominant_text(stripped):
+        return False
+    if _latin_letter_ratio(stripped) < 0.8:
+        return False
+    if len(_LATIN_WORD_PATTERN.findall(stripped)) < _UNTRANSLATED_BODY_MIN_LATIN_WORDS:
+        return False
+    return True
 
 
 def _collect_untranslated_structural_samples(
@@ -1914,6 +1963,44 @@ def _collect_untranslated_structural_samples(
                 role=role or None,
                 structural_role=structural_role or None,
                 paragraph_id=str(getattr(entry, "paragraph_id", "") or "") or None,
+                char_count=len(_strip_structural_markdown_prefix(text)),
+            )
+        )
+    return samples
+
+
+def _collect_untranslated_body_samples(
+    *,
+    final_markdown: str,
+    assembly_entries: Sequence[object],
+) -> list[_UntranslatedStructuralSample]:
+    if not assembly_entries:
+        return []
+    nonempty_line_numbers = [
+        line_number
+        for line_number, raw_line in enumerate(final_markdown.splitlines(), start=1)
+        if raw_line.strip()
+    ]
+    samples: list[_UntranslatedStructuralSample] = []
+    for index, entry in enumerate(assembly_entries):
+        role = str(getattr(entry, "role", "") or "").strip().lower()
+        structural_role = str(getattr(entry, "structural_role", "") or "").strip().lower()
+        if role in {"heading", "caption"} or structural_role in {"heading", "caption"}:
+            continue
+        if bool(getattr(entry, "controlled_fallback", False)):
+            continue
+        text = str(getattr(entry, "text", "") or "").strip()
+        if not _is_untranslated_body_text(text):
+            continue
+        samples.append(
+            _UntranslatedStructuralSample(
+                line=nonempty_line_numbers[index] if index < len(nonempty_line_numbers) else None,
+                text=text,
+                reason="untranslated_body_text",
+                role=role or None,
+                structural_role=structural_role or None,
+                paragraph_id=str(getattr(entry, "paragraph_id", "") or "") or None,
+                char_count=len(_strip_structural_markdown_prefix(text)),
             )
         )
     return samples
@@ -1927,6 +2014,7 @@ def _serialize_untranslated_structural_sample(sample: object) -> Mapping[str, ob
         "role": getattr(sample, "role", None),
         "structural_role": getattr(sample, "structural_role", None),
         "paragraph_id": getattr(sample, "paragraph_id", None),
+        "char_count": getattr(sample, "char_count", 0),
     }
 
 
@@ -2290,6 +2378,16 @@ def _build_translation_quality_report(
         final_markdown=final_markdown,
         assembly_entries=assembly_entries,
     )
+    untranslated_body_samples = _collect_untranslated_body_samples(
+        final_markdown=final_markdown,
+        assembly_entries=assembly_entries,
+    )
+    untranslated_body_char_count = sum(int(getattr(sample, "char_count", 0) or 0) for sample in untranslated_body_samples)
+    untranslated_body_ratio = (
+        untranslated_body_char_count / max(len(_strip_structural_markdown_prefix(final_markdown)), 1)
+        if untranslated_body_char_count > 0
+        else 0.0
+    )
     translation_domain = str(getattr(context, "translation_domain", "") or context.app_config.get("translation_domain", "general") or "general")
     raw_theology_style_samples = (
         collect_theology_style_issue_samples(normalized_quality_markdown)
@@ -2549,6 +2647,45 @@ def _build_translation_quality_report(
                 if sample_index == 0 and use_aggregate:
                     item["aggregate_count"] = len(untranslated_structural_samples)
                 formatting_review_items.append(item)
+        if untranslated_body_samples:
+            untranslated_body_fail = (
+                untranslated_body_char_count >= _UNTRANSLATED_BODY_FAIL_MIN_CHARS
+                and untranslated_body_ratio >= _UNTRANSLATED_BODY_FAIL_RATIO
+            )
+            reason = (
+                "untranslated_body_text_above_threshold"
+                if untranslated_body_fail
+                else "untranslated_body_text_review_required"
+            )
+            if untranslated_body_fail:
+                quality_status = _apply_quality_gate_reason(
+                    quality_status=quality_status,
+                    gate_reasons=gate_reasons,
+                    policy=policy,
+                    reason=reason,
+                )
+            else:
+                quality_status = _apply_quality_review_reason(
+                    quality_status=quality_status,
+                    gate_reasons=gate_reasons,
+                    reason=reason,
+                )
+            serialized_samples = [
+                dict(_serialize_untranslated_structural_sample(sample))
+                for sample in untranslated_body_samples[:8]
+            ]
+            use_aggregate = len(untranslated_body_samples) > len(serialized_samples)
+            for sample_index, sample in enumerate(serialized_samples):
+                item = _build_formatting_review_item(
+                    reason=reason,
+                    label="Фрагмент основного текста остался на исходном языке",
+                    sample=sample,
+                    count=0 if use_aggregate else 1,
+                    severity="fix" if untranslated_body_fail else "review",
+                )
+                if sample_index == 0 and use_aggregate:
+                    item["aggregate_count"] = len(untranslated_body_samples)
+                formatting_review_items.append(item)
         if theology_style_samples:
             quality_status = "warn" if quality_status == "pass" else quality_status
 
@@ -2653,6 +2790,14 @@ def _build_translation_quality_report(
             for sample in untranslated_structural_samples[:8]
         ],
         "untranslated_structural_text_classification": "structural_translation_review",
+        "untranslated_body_text_count": len(untranslated_body_samples),
+        "untranslated_body_text_chars": untranslated_body_char_count,
+        "untranslated_body_text_ratio": round(untranslated_body_ratio, 4),
+        "untranslated_body_text_samples": [
+            dict(_serialize_untranslated_structural_sample(sample))
+            for sample in untranslated_body_samples[:8]
+        ],
+        "untranslated_body_text_classification": "body_translation_completeness",
         "theology_style_deterministic_issue_count": len(theology_style_samples),
         "theology_style_deterministic_issue_source": "legacy_markdown",
         "theology_style_deterministic_issue_classification": "domain_style_advisory",

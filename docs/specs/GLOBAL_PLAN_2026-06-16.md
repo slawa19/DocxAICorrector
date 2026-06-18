@@ -108,10 +108,14 @@ books and the UI cannot show a meaningful pass/fail. The verdict must be
 format-aware **and** flagging-untranslated: a structural element whose formatting
 survives but whose text remains in the source language (for example an English
 heading in a Russian translation) must surface for review instead of silently
-passing as role-aware coverage. **Done:** a clean full book passes; a book with a
-real structural loss (e.g. a heading rendered as body) fails with a short,
-hand-checkable list; untranslated structural headings/captions produce a visible
-review item rather than a silent pass.
+passing as role-aware coverage. Large body-text regions left in the source
+language are a translation-completeness failure, not a formatting warning. Profiles
+must also use finite acceptance thresholds; sentinel/vacuum thresholds are
+provisional/fail and must not report `acceptance_passed=true`. **Done:** a clean
+full book passes; a book with a real structural loss (e.g. a heading rendered as
+body) fails with a short, hand-checkable list; untranslated structural
+headings/captions produce a visible review item; large untranslated body residue
+hard-fails.
 
 ### 4. Harness ↔ production parity
 

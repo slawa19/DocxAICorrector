@@ -2540,6 +2540,7 @@ def _build_structural_checks(
     metrics: Mapping[str, object],
     output_artifacts: Mapping[str, object],
 ) -> list[dict[str, object]]:
+    sentinel_threshold_checks = _build_sentinel_threshold_checks(document_profile)
     unmapped_source_gate_source = str(
         metrics.get("unmapped_source_count_basis")
         or metrics.get("unit_unmapped_source_gate_source")
@@ -2563,6 +2564,7 @@ def _build_structural_checks(
         else _as_int(metrics, "max_unmapped_target_paragraphs")
     )
     checks = [
+        *sentinel_threshold_checks,
         {"name": "pipeline_succeeded", "passed": result == "succeeded", "result": result},
         {
             "name": "output_docx_openable",
@@ -2786,6 +2788,31 @@ def _build_structural_checks(
             }
         )
     return checks
+
+
+def _build_sentinel_threshold_checks(document_profile: DocumentProfile) -> list[dict[str, object]]:
+    threshold_fields = {
+        "max_formatting_diagnostics": document_profile.max_formatting_diagnostics,
+        "max_unmapped_source_paragraphs": document_profile.max_unmapped_source_paragraphs,
+        "max_unmapped_target_paragraphs": document_profile.max_unmapped_target_paragraphs,
+        "max_heading_level_drift": document_profile.max_heading_level_drift,
+    }
+    return [
+        {
+            "name": f"{field_name}_not_sentinel",
+            "passed": not _is_effectively_infinite_threshold(value),
+            "actual": value,
+            "maximum_allowed_threshold": 100000,
+        }
+        for field_name, value in threshold_fields.items()
+    ]
+
+
+def _is_effectively_infinite_threshold(value: object) -> bool:
+    try:
+        return int(value) >= 100000
+    except (TypeError, ValueError):
+        return False
 
 
 def _check_minimum(name: str, actual: int, minimum: int) -> dict[str, object]:

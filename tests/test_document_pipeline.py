@@ -4053,9 +4053,63 @@ def test_run_document_processing_flags_untranslated_structural_heading_for_revie
                 "role": "heading",
                 "structural_role": "heading",
                 "paragraph_id": "p0001",
+                "char_count": 23,
             },
         }
     ]
+
+
+def test_run_document_processing_fails_large_untranslated_body_text(tmp_path, monkeypatch):
+    runtime = _build_runtime_capture()
+    quality_dir = tmp_path / "quality_reports"
+    monkeypatch.setattr(document_pipeline_late_phases, "collect_recent_formatting_diagnostics_artifacts", lambda since_epoch_seconds, diagnostics_dir: [])
+    monkeypatch.setattr(document_pipeline_late_phases, "QUALITY_REPORTS_DIR", quality_dir)
+    untranslated_body = (
+        "This framework has been tested using years of quantitative data collected about how biomass "
+        "flows through natural ecosystems. Natural ecosystems are large complex flow networks that "
+        "show how resilience and efficiency interact across many scales. "
+    ) * 12
+
+    result = _run_processing(
+        runtime,
+        app_config={"translation_output_quality_gate_policy": "strict", "enable_paragraph_markers": True},
+        processing_operation="translate",
+        source_paragraphs=[
+            ParagraphUnit(
+                text="Исходный русский абзац для проверки.",
+                role="body",
+                structural_role="body",
+                paragraph_id="p0001",
+            )
+        ],
+        jobs=[
+            {
+                "target_text": "Исходный русский абзац для проверки.",
+                "target_text_with_markers": "[[DOCX_PARA_p0001]]\nИсходный русский абзац для проверки.",
+                "context_before": "",
+                "context_after": "",
+                "target_chars": 36,
+                "context_chars": 0,
+                "paragraph_ids": ["p0001"],
+            }
+        ],
+        generate_markdown_block=lambda **kwargs: untranslated_body,
+        write_ui_result_artifacts=lambda **kwargs: {
+            "markdown_path": "/tmp/final.result.md",
+            "docx_path": "/tmp/final.result.docx",
+            "formatting_review_path": "/tmp/final.result.formatting_review.txt",
+        },
+    )
+
+    assert result == "failed"
+    report_files = list(quality_dir.glob("*.json"))
+    assert len(report_files) == 1
+    payload = json.loads(report_files[0].read_text(encoding="utf-8"))
+    assert payload["quality_status"] == "fail"
+    assert payload["gate_reasons"] == ["untranslated_body_text_above_threshold"]
+    assert payload["untranslated_body_text_count"] == 1
+    assert payload["untranslated_body_text_chars"] > 2000
+    assert payload["formatting_review_items"][0]["severity"] == "fix"
 
 
 def test_build_translation_quality_report_flags_bullet_marker_headings_in_strict_translate_mode():
@@ -4184,6 +4238,7 @@ def test_build_translation_quality_report_flags_untranslated_structural_heading_
             "role": "heading",
             "structural_role": "heading",
             "paragraph_id": "p1",
+            "char_count": 23,
         }
     ]
     assert report["formatting_review_items"] == [
@@ -4199,9 +4254,52 @@ def test_build_translation_quality_report_flags_untranslated_structural_heading_
                 "role": "heading",
                 "structural_role": "heading",
                 "paragraph_id": "p1",
+                "char_count": 23,
             },
         }
     ]
+
+
+def test_build_translation_quality_report_fails_large_untranslated_body_text():
+    untranslated_body = (
+        "This framework has been tested using years of quantitative data collected about how biomass "
+        "flows through natural ecosystems. Natural ecosystems are large complex flow networks that "
+        "show how resilience and efficiency interact across many scales. "
+    ) * 12
+    assembly_result = document_pipeline_output_validation.FinalMarkdownAssemblyResult(
+        final_markdown=untranslated_body,
+        entries=(
+            document_pipeline_output_validation.FinalAssemblyEntry(
+                text=untranslated_body,
+                block_index=1,
+                paragraph_id="p1",
+                source_index=0,
+                role="body",
+                structural_role="body",
+                from_registry=True,
+            ),
+        ),
+        diagnostics=document_pipeline_output_validation.FinalAssemblyDiagnostics(),
+    )
+
+    report = document_pipeline_late_phases._build_translation_quality_report(
+        context=SimpleNamespace(
+            app_config={"translation_output_quality_gate_policy": "strict"},
+            processing_operation="translate",
+            uploaded_filename="report.docx",
+            translation_domain="general",
+        ),
+        final_markdown=assembly_result.final_markdown,
+        formatting_diagnostics_artifacts=[],
+        assembly_result=assembly_result,
+    )
+
+    assert report["quality_status"] == "fail"
+    assert report["gate_reasons"] == ["untranslated_body_text_above_threshold"]
+    assert report["untranslated_body_text_count"] == 1
+    assert report["untranslated_body_text_chars"] > 2000
+    assert report["untranslated_body_text_ratio"] == 1.0
+    assert report["formatting_review_items"][0]["severity"] == "fix"
 
 
 @pytest.mark.parametrize(

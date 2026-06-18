@@ -27,6 +27,8 @@ _BLANK_PAGE_NOTICE_PATTERN = re.compile(
     r"страниц[аы]\s+(?:намеренно|умышленно)\s+оставлен[аы]\s+пуст(?:ой|ая|ые|ыми|а|ы)?)\.?$",
     re.IGNORECASE,
 )
+_TERMINAL_SENTENCE_PUNCTUATION = ".!?;:»”\"'"
+_OPENING_TEXT_BOUNDARY_CHARS = "\"“‘'«"
 
 
 @dataclass(frozen=True)
@@ -153,11 +155,31 @@ def _can_merge_body_span(previous: PdfTextSpan, current: PdfTextSpan) -> bool:
         return False
     if _looks_like_toc_entry(previous) or _looks_like_toc_entry(current):
         return False
+    if _looks_like_body_paragraph_indent_boundary(previous, current):
+        return False
     previous_font_size = previous.font_size if isinstance(previous.font_size, (int, float)) else 10.0
     current_font_size = current.font_size if isinstance(current.font_size, (int, float)) else previous_font_size
     vertical_gap = max(0.0, float(current.top) - float(previous.bottom))
     max_gap = max(8.0, min(previous_font_size, current_font_size) * 1.25)
     return vertical_gap <= max_gap
+
+
+def _looks_like_body_paragraph_indent_boundary(previous: PdfTextSpan, current: PdfTextSpan) -> bool:
+    previous_text = _normalize_text(previous.text)
+    current_text = _normalize_text(current.text)
+    if not previous_text or not current_text:
+        return False
+    previous_x0 = float(previous.x0)
+    current_x0 = float(current.x0)
+    indent_delta = current_x0 - previous_x0
+    if indent_delta >= 8.0:
+        return True
+    if current_x0 < 12.0 or abs(indent_delta) > 3.0:
+        return False
+    if previous_text[-1] not in _TERMINAL_SENTENCE_PUNCTUATION:
+        return False
+    first_char = current_text[0]
+    return first_char in _OPENING_TEXT_BOUNDARY_CHARS or first_char.isupper()
 
 
 def _can_merge_heading_span(previous: PdfTextSpan, current: PdfTextSpan) -> bool:
