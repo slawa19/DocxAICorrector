@@ -151,6 +151,65 @@ def test_build_paragraph_units_is_conservative_for_ambiguous_caps_line() -> None
     assert "ALDO LEOPOLD" in result.paragraphs[0].text
 
 
+def test_build_paragraph_units_rejects_long_body_like_heading_candidate() -> None:
+    spans = [
+        _span(1, "Body style line establishes the normal line length.", top=100, bottom=112, x0=50),
+        _span(1, "Another body style line establishes the normal line length.", top=114, bottom=126, x0=50),
+        _span(
+            1,
+            "This Capitalized Line Is Much Longer Than The Document Body Tail And Therefore Is Body Text",
+            top=170,
+            bottom=182,
+            x0=150,
+        ),
+        _span(1, "Short body line follows after the long fragment.", top=220, bottom=232, x0=50),
+    ]
+
+    result = build_paragraph_units_from_text_spans(spans)
+
+    assert all(paragraph.role == "body" for paragraph in result.paragraphs)
+    assert any("Much Longer" in paragraph.text for paragraph in result.paragraphs)
+
+
+def test_build_paragraph_units_rejects_mid_sentence_heading_candidate() -> None:
+    spans = [
+        _span(1, "The body sentence deliberately continues", top=100, bottom=112, x0=50),
+        _span(1, "through a line that starts lowercase", top=114, bottom=126, x0=50),
+        _span(1, "and ends as ordinary prose.", top=128, bottom=140, x0=50),
+    ]
+
+    result = build_paragraph_units_from_text_spans(spans)
+
+    assert [paragraph.role for paragraph in result.paragraphs] == ["body"]
+    assert "starts lowercase" in result.paragraphs[0].text
+
+
+def test_build_paragraph_units_rejects_epigraph_credit_year_line() -> None:
+    spans = [
+        _span(1, "Instability is part of the system.", top=100, bottom=112, x0=50),
+        _span(1, "Hyman Minsky, 19921", top=150, bottom=162, x0=180),
+        _span(1, "A real body paragraph resumes here.", top=190, bottom=202, x0=50),
+    ]
+
+    result = build_paragraph_units_from_text_spans(spans)
+
+    assert [paragraph.role for paragraph in result.paragraphs] == ["body", "body", "body"]
+    assert result.paragraphs[1].text == "Hyman Minsky, 19921"
+
+
+def test_build_paragraph_units_rejects_footnote_citation_tail_candidate() -> None:
+    spans = [
+        _span(1, "The citation begins in the previous line", top=100, bottom=112, x0=50),
+        _span(1, "[online]. cited October 23, 2010]. federalreserve.gov/releases", top=150, bottom=162, x0=130),
+        _span(1, "The next paragraph starts normally.", top=190, bottom=202, x0=50),
+    ]
+
+    result = build_paragraph_units_from_text_spans(spans)
+
+    assert all(paragraph.role == "body" for paragraph in result.paragraphs)
+    assert "federalreserve" in " ".join(paragraph.text for paragraph in result.paragraphs)
+
+
 def test_build_paragraph_units_detects_short_inline_subheading_between_body_lines() -> None:
     spans = [
         _span(1, "The time currency also created stronger", top=100, bottom=112, x0=50),

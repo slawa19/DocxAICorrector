@@ -31,6 +31,18 @@ _LOCATION_OR_SIGNATURE_LINE_PATTERN = re.compile(
     r"[A-ZА-Я][\wА-Яа-яЁё.'-]+(?:\s+[A-ZА-Я][\wА-Яа-яЁё.'-]+){0,2}$"
 )
 _BYLINE_PATTERN = re.compile(r"^by\s+[A-ZА-Я]", re.IGNORECASE)
+_EPIGRAPH_CREDIT_PATTERN = re.compile(
+    r"^[A-ZА-Я][\wА-Яа-яЁё.'-]+(?:\s+[A-ZА-Я][\wА-Яа-яЁё.'-]+){0,3}"
+    r"(?:,\s+[^,]{2,48})?,\s+(?:18|19|20)\d{2}\d{0,2}\.?$"
+)
+_EPIGRAPH_SOURCE_CREDIT_PATTERN = re.compile(
+    r"^[A-ZА-Я][\wА-Яа-яЁё.'-]+(?:\s+[A-ZА-Я][\wА-Яа-яЁё.'-]+){0,3},\s+"
+    r".*(?:\(\d{4}\)|\d{1,3})$"
+)
+_FOOTNOTE_OR_CITATION_TAIL_PATTERN = re.compile(
+    r"(?:\[\s*online\s*\]|https?://|www\.|(?:18|19|20)\d{2}\].*|[;,]\s*$)",
+    re.IGNORECASE,
+)
 _BLANK_PAGE_NOTICE_PATTERN = re.compile(
     r"^(?:this\s+page\s+(?:is\s+)?(?:intentionally|deliberately)\s+left\s+blank|"
     r"страниц[аы]\s+(?:намеренно|умышленно)\s+оставлен[аы]\s+пуст(?:ой|ая|ые|ыми|а|ы)?)\.?$",
@@ -62,11 +74,14 @@ class _PdfHeadingLayoutProfile:
     body_font_size: float | None
     body_left_x0: float | None
     body_leading: float | None
+    body_line_length_p75: float
+    body_line_length_p90: float
     body_uppercase_ratio: float
     body_title_word_ratio: float
     clusters: tuple["_PdfStyleCluster", ...] = ()
     heading_cluster_ids: frozenset[int] = frozenset()
     ambiguous_cluster_ids: frozenset[int] = frozenset()
+    repeated_display_text_keys: frozenset[str] = frozenset()
     heading_prominence_threshold: float = 0.0
 
 
@@ -246,6 +261,7 @@ def _build_heading_layout_profile(
     ]
     body_font_size = _mode_font_size(sentence_font_sizes) or _mode_font_size(font_sizes)
     body_left_candidates: list[float] = []
+    body_line_lengths: list[int] = []
     body_case_candidates: list[tuple[float, float]] = []
     for span in spans:
         text = _normalize_text(span.text)
@@ -263,8 +279,11 @@ def _build_heading_layout_profile(
             if ratio < 0.75 or ratio > 1.25:
                 continue
         body_left_candidates.append(float(span.x0))
+        body_line_lengths.append(len(text))
         body_case_candidates.append((_uppercase_ratio(text), _title_word_ratio(words)))
     body_left_x0 = float(median(body_left_candidates)) if body_left_candidates else None
+    body_line_length_p75 = _percentile(body_line_lengths, 0.75)
+    body_line_length_p90 = _percentile(body_line_lengths, 0.90)
     body_leading = _estimate_body_leading(
         spans,
         repeated_furniture_keys=repeated_furniture_keys,
@@ -280,9 +299,12 @@ def _build_heading_layout_profile(
         body_font_size=body_font_size,
         body_left_x0=body_left_x0,
         body_leading=body_leading,
+        body_line_length_p75=body_line_length_p75,
+        body_line_length_p90=body_line_length_p90,
         body_uppercase_ratio=body_uppercase_ratio,
         body_title_word_ratio=body_title_word_ratio,
     )
+    repeated_display_text_keys = _detect_repeated_display_text_keys(spans)
     signatures: list[_PdfStyleSignature] = []
     for index, span in enumerate(spans):
         if not _is_style_cluster_input(span, repeated_furniture_keys=repeated_furniture_keys):
@@ -318,11 +340,14 @@ def _build_heading_layout_profile(
         body_font_size=body_font_size,
         body_left_x0=body_left_x0,
         body_leading=body_leading,
+        body_line_length_p75=body_line_length_p75,
+        body_line_length_p90=body_line_length_p90,
         body_uppercase_ratio=body_uppercase_ratio,
         body_title_word_ratio=body_title_word_ratio,
         clusters=clusters,
         heading_cluster_ids=heading_cluster_ids,
         ambiguous_cluster_ids=ambiguous_cluster_ids,
+        repeated_display_text_keys=repeated_display_text_keys,
         heading_prominence_threshold=heading_prominence_threshold,
     )
 
@@ -356,6 +381,14 @@ def _mode_font_size(font_sizes: list[float]) -> float | None:
         bucket = round(float(font_size) * 2.0) / 2.0
         buckets[bucket] = buckets.get(bucket, 0) + 1
     return max(buckets.items(), key=lambda item: (item[1], -abs(item[0])))[0]
+
+
+def _percentile(values: list[int] | list[float], percentile: float) -> float:
+    if not values:
+        return 0.0
+    ordered = sorted(float(value) for value in values)
+    index = min(len(ordered) - 1, max(0, round(percentile * (len(ordered) - 1))))
+    return ordered[index]
 
 
 def _estimate_body_leading(
@@ -407,6 +440,29 @@ def _is_style_cluster_input(
     if _looks_like_non_heading_front_matter_line(span):
         return False
     return True
+
+
+def _detect_repeated_display_text_keys(spans: list[PdfTextSpan]) -> frozenset[str]:
+    counts: dict[str, int] = {}
+    for span in spans:
+        text = _normalize_text(span.text)
+        if not text or len(text) > 45:
+            continue
+        words = _words(text)
+        if not words or len(words) > 6:
+            continue
+        if _has_terminal_sentence_punctuation(text):
+            continue
+        key = _display_text_key(text)
+        if not key:
+            continue
+        counts[key] = counts.get(key, 0) + 1
+    return frozenset(key for key, count in counts.items() if count >= 3)
+
+
+def _display_text_key(text: str) -> str:
+    key = re.sub(r"[^\w\s]", " ", _normalize_text(text).lower(), flags=re.UNICODE)
+    return re.sub(r"\s+", " ", key).strip()
 
 
 def _style_signature(
@@ -571,10 +627,15 @@ def _select_heading_clusters(
     if not clusters or not signatures:
         return frozenset(), frozenset()
     body_cluster_id = min(clusters, key=lambda cluster: (cluster.prominence, -cluster.size)).cluster_id
+    max_heading_cluster_size = max(75, int(len(signatures) * 0.12))
     heading_ids: set[int] = set()
     ambiguous_ids: set[int] = set()
     for cluster in clusters:
         if cluster.cluster_id == body_cluster_id:
+            continue
+        if _looks_like_display_noise_cluster(cluster):
+            continue
+        if cluster.size > max_heading_cluster_size:
             continue
         if cluster.prominence < heading_prominence_threshold:
             continue
@@ -615,6 +676,13 @@ def _cluster_is_ambiguous_caps_or_short_label(cluster: _PdfStyleCluster) -> bool
     has_typographic_separation = font_up > 0.2 or font_down > 0.2 or indent_units > 1.0 or isolation_units > 0.8
     is_short_case_only = shortness > 0.7 and (uppercase_delta > 0.5 or title_delta > 0.5)
     return is_short_case_only and not has_typographic_separation
+
+
+def _looks_like_display_noise_cluster(cluster: _PdfStyleCluster) -> bool:
+    center = cluster.center
+    indent_units = center[2]
+    boundary_context = center[9]
+    return cluster.size > 150 and indent_units > 3.0 and boundary_context < 0.2
 
 
 def _nearest_style_cluster(
@@ -660,6 +728,127 @@ def _signature_has_heading_support(signature: _PdfStyleSignature) -> bool:
     return False
 
 
+def _violates_heading_sanity_invariants(
+    span: PdfTextSpan,
+    *,
+    layout_profile: _PdfHeadingLayoutProfile,
+    previous_span: PdfTextSpan | None,
+) -> bool:
+    text = _normalize_text(span.text)
+    if not text:
+        return True
+    if _is_longer_than_document_body_line_tail(span, text, layout_profile):
+        return True
+    if _starts_like_sentence_continuation(text):
+        return True
+    if _display_text_key(text) in layout_profile.repeated_display_text_keys:
+        return True
+    if _continues_previous_sentence(span, previous_span=previous_span, layout_profile=layout_profile):
+        return True
+    if _EPIGRAPH_CREDIT_PATTERN.match(text) or _EPIGRAPH_SOURCE_CREDIT_PATTERN.match(text):
+        return True
+    if _looks_like_footnote_or_citation_tail(text):
+        return True
+    return False
+
+
+def _is_longer_than_document_body_line_tail(
+    span: PdfTextSpan,
+    text: str,
+    layout_profile: _PdfHeadingLayoutProfile,
+) -> bool:
+    if layout_profile.body_line_length_p90 <= 0:
+        return False
+    if layout_profile.body_font_size and span.font_size:
+        font_ratio = float(span.font_size) / layout_profile.body_font_size
+        if font_ratio > 1.12:
+            return False
+        if 0.9 <= font_ratio <= 1.1 and layout_profile.body_line_length_p75 > 0:
+            return len(text) > layout_profile.body_line_length_p75
+    return len(text) > layout_profile.body_line_length_p90
+
+
+def _starts_like_sentence_continuation(text: str) -> bool:
+    stripped = text.lstrip()
+    if not stripped:
+        return True
+    first = stripped[0]
+    if first.islower():
+        return True
+    if first in ",.;:)]}»”":
+        return True
+    if first in "-–—" and not _DASH_ATTRIBUTION_PATTERN.match(stripped):
+        return True
+    return False
+
+
+def _continues_previous_sentence(
+    span: PdfTextSpan,
+    *,
+    previous_span: PdfTextSpan | None,
+    layout_profile: _PdfHeadingLayoutProfile,
+) -> bool:
+    if previous_span is None or previous_span.page_number != span.page_number:
+        return False
+    previous_text = _normalize_text(previous_span.text)
+    if not previous_text or previous_text[-1] in _TERMINAL_SENTENCE_PUNCTUATION:
+        return False
+    current_text = _normalize_text(span.text)
+    if _looks_like_consecutive_heading_style_lines(
+        current_text,
+        previous_text,
+        span=span,
+        previous_span=previous_span,
+        layout_profile=layout_profile,
+    ):
+        return False
+    if layout_profile.body_left_x0 is None:
+        return False
+    body_leading = layout_profile.body_leading or layout_profile.body_font_size or 10.0
+    current_x0 = float(span.x0)
+    previous_x0 = float(previous_span.x0)
+    near_body_left = abs(current_x0 - layout_profile.body_left_x0) <= body_leading * 0.75
+    near_previous_left = abs(current_x0 - previous_x0) <= body_leading * 0.75
+    return near_body_left or near_previous_left
+
+
+def _looks_like_consecutive_heading_style_lines(
+    current_text: str,
+    previous_text: str,
+    *,
+    span: PdfTextSpan,
+    previous_span: PdfTextSpan,
+    layout_profile: _PdfHeadingLayoutProfile,
+) -> bool:
+    current_words = _words(current_text)
+    previous_words = _words(previous_text)
+    if len(current_words) > 8 or len(previous_words) > 8:
+        return False
+    current_case = _uppercase_ratio(current_text) >= 0.65 or _title_word_ratio(current_words) >= 0.75
+    previous_case = _uppercase_ratio(previous_text) >= 0.65 or _title_word_ratio(previous_words) >= 0.75
+    if not (current_case and previous_case):
+        return False
+    if layout_profile.body_font_size and span.font_size and previous_span.font_size:
+        current_ratio = float(span.font_size) / layout_profile.body_font_size
+        previous_ratio = float(previous_span.font_size) / layout_profile.body_font_size
+        return current_ratio >= 1.08 or previous_ratio >= 1.08
+    return True
+
+
+def _looks_like_footnote_or_citation_tail(text: str) -> bool:
+    if _FOOTNOTE_OR_CITATION_TAIL_PATTERN.search(text):
+        return True
+    if re.search(r"\b(?:18|19|20)\d{2}\d{1,2}\b", text):
+        return True
+    if re.search(r"\b(?:18|19|20)\d{2}\b", text) and (
+        "," in text or "(" in text or ")" in text or ":" in text or len(_words(text)) <= 8
+    ):
+        return True
+    if re.search(r"\b\d{1,3}\)\s*$", text):
+        return True
+    return False
+
+
 def _looks_like_pdf_heading_candidate(
     span: PdfTextSpan,
     *,
@@ -674,6 +863,12 @@ def _looks_like_pdf_heading_candidate(
     if _looks_like_glued_heading_line(text):
         return False
     if _has_terminal_sentence_punctuation(text):
+        return False
+    if _violates_heading_sanity_invariants(
+        span,
+        layout_profile=layout_profile,
+        previous_span=previous_span,
+    ):
         return False
     signature = _style_signature(
         span,
