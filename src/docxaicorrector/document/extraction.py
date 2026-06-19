@@ -442,12 +442,23 @@ def _build_raw_paragraph(
     heading_level = explicit_heading_level
     heading_source = "explicit" if explicit_heading_level is not None else None
     if heading_level is None and not is_caption_style(normalized_style):
-        if is_probable_heading(paragraph, text, normalized_style):
+        if is_probable_heading(paragraph, text, normalized_style) or _is_markdown_strong_heading_candidate(
+            text,
+            normalized_style,
+        ):
             heading_level = infer_heuristic_heading_level(text)
             heading_source = "heuristic"
     role = classify_paragraph_role(text, style_name, heading_level=heading_level)
     list_metadata = _extract_paragraph_list_metadata(paragraph, text, style_name, role)
-    if role != "list" and list_metadata["list_kind"] is not None:
+    if (
+        role != "list"
+        and list_metadata["list_kind"] is not None
+        and not _should_preserve_heading_role_against_list_metadata(
+            role=role,
+            heading_level=heading_level,
+            text=text,
+        )
+    ):
         role = "list"
     if role == "list" and list_metadata.get("_is_typographic_emdash_bullet"):
         role = "body"
@@ -490,6 +501,31 @@ def _build_raw_paragraph(
         layout_origin=layout_origin,
         boundary_source="raw",
         boundary_confidence="explicit" if role_confidence == "explicit" else "high",
+    )
+
+
+def _should_preserve_heading_role_against_list_metadata(
+    *,
+    role: str,
+    heading_level: int | None,
+    text: str,
+) -> bool:
+    return role == "heading" and heading_level is not None and has_heading_text_signal(text)
+
+
+def _is_markdown_strong_heading_candidate(text: str, normalized_style: str) -> bool:
+    stripped_text = text.strip()
+    normalized_text = stripped_text.replace("**", "").replace("*", "").strip()
+    word_count = len(normalized_text.split())
+    if normalized_text.endswith(".") and word_count > 4:
+        return False
+    return (
+        stripped_text.startswith("**")
+        and stripped_text.endswith("**")
+        and not is_caption_style(normalized_style)
+        and 0 < len(normalized_text) <= 140
+        and word_count <= 18
+        and has_heading_text_signal(normalized_text)
     )
 
 

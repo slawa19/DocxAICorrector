@@ -162,7 +162,7 @@ def test_extraction_passes_legacy_structure_recovery_mode_to_helpers(tmp_path, m
     document_obj.save(source_path)
 
     monkeypatch.setattr(document_extraction, "_resolve_paragraph_boundary_normalization_settings", lambda: ("off", False))
-    monkeypatch.setattr(document_extraction, "_resolve_layout_artifact_cleanup_settings", lambda app_config=None: (True, 3, 80, False))
+    monkeypatch.setattr(document_extraction, "_resolve_layout_artifact_cleanup_settings", lambda app_config=None: (True, 3, 80, False, "legacy"))
     monkeypatch.setattr(document_extraction, "_resolve_relation_normalization_settings", lambda: (False, "phase2_default", (), False))
     monkeypatch.setattr(document_extraction, "_resolve_paragraph_boundary_ai_review_settings", lambda: (False, "off", 0, 0, 0, ""))
     monkeypatch.setattr(document_extraction, "build_paragraph_relations", lambda paragraphs, enabled_relation_kinds=(): ([], None))
@@ -191,6 +191,7 @@ def test_extraction_passes_legacy_structure_recovery_mode_to_helpers(tmp_path, m
         enabled=True,
         min_repeat_count=3,
         max_repeated_text_chars=80,
+        cleanup_mode="legacy",
         structure_recovery_enabled=False,
         structure_recovery_mode="legacy",
     ):
@@ -1250,6 +1251,60 @@ def test_extract_document_content_from_docx_detects_heading_from_inherited_style
     assert paragraphs[0].role == "heading"
     assert paragraphs[0].heading_source == "heuristic"
     assert paragraphs[0].heading_level == 2
+
+
+def test_extract_document_content_from_docx_preserves_numbered_section_heading_with_list_metadata():
+    doc = Document()
+    paragraph = doc.add_paragraph("2. Systemic crises: frequency, types and geographical spread", style="List Bullet")
+    paragraph.runs[0].bold = True
+    buffer = BytesIO()
+    doc.save(buffer)
+    buffer.seek(0)
+
+    paragraphs, _ = extract_document_content_from_docx(buffer)
+
+    assert len(paragraphs) == 1
+    assert paragraphs[0].role == "heading"
+    assert paragraphs[0].heading_source == "heuristic"
+    assert paragraphs[0].heading_level == 2
+    assert paragraphs[0].list_kind is not None
+    assert build_document_text(paragraphs) == "## **2. Systemic crises: frequency, types and geographical spread**"
+
+
+def test_extract_document_content_from_docx_recovers_markdown_bold_numbered_heading_with_list_metadata():
+    doc = Document()
+    paragraph = doc.add_paragraph("**3. The Sovereign Debt Squeeze**", style="List Number")
+    paragraph.runs[0].bold = False
+    buffer = BytesIO()
+    doc.save(buffer)
+    buffer.seek(0)
+
+    paragraphs, _ = extract_document_content_from_docx(buffer)
+
+    assert len(paragraphs) == 1
+    assert paragraphs[0].role == "heading"
+    assert paragraphs[0].heading_source == "heuristic"
+    assert paragraphs[0].heading_level == 2
+    assert paragraphs[0].list_kind == "ordered"
+    assert build_document_text(paragraphs).startswith("## ")
+    assert "3. The Sovereign Debt Squeeze" in build_document_text(paragraphs)
+
+
+def test_extract_document_content_from_docx_keeps_plain_numbered_list_item_as_list():
+    doc = Document()
+    doc.add_paragraph("This paragraph introduces an ordinary operational checklist.")
+    paragraph = doc.add_paragraph("Pay invoices within thirty days after each delivery.", style="List Number")
+    paragraph.runs[0].bold = False
+    doc.add_paragraph("The checklist continues with other ordinary administrative steps.")
+    buffer = BytesIO()
+    doc.save(buffer)
+    buffer.seek(0)
+
+    paragraphs, _ = extract_document_content_from_docx(buffer)
+
+    assert [item.role for item in paragraphs] == ["body", "list", "body"]
+    assert paragraphs[1].heading_level is None
+    assert paragraphs[1].list_kind == "ordered"
 
 
 def test_extract_document_content_from_docx_detects_heading_from_base_style_chain_alignment_with_text_signal():

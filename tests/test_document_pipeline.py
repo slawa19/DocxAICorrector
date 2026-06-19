@@ -2520,8 +2520,8 @@ def test_run_document_processing_reader_cleanup_preserves_docx_image_anchor_when
     )
 
     assert result == "succeeded"
-    assert runtime["state"]["latest_markdown"] == "Intro\n\nBody paragraph\n\nOutro"
-    assert artifact_calls["kwargs"]["markdown_text"] == "Intro\n\nBody paragraph\n\nOutro"
+    assert runtime["state"]["latest_markdown"] == "Intro\n\n[[DOCX_IMAGE_img_001]]\n\nBody paragraph\n\nOutro"
+    assert artifact_calls["kwargs"]["markdown_text"] == "Intro\n\n[[DOCX_IMAGE_img_001]]\n\nBody paragraph\n\nOutro"
     assert converted_markdown_inputs[-1] == "Intro\n\n[[DOCX_IMAGE_img_001]]\n\nBody paragraph\n\nOutro"
     assert runtime["state"]["latest_docx_bytes"] == b"Intro\n\n[[DOCX_IMAGE_img_001]]\n\nBody paragraph\n\nOutro|images=1"
 
@@ -6503,17 +6503,24 @@ def test_reader_cleanup_formatting_lineage_rejects_sparse_non_image_gap():
     assert derived_registry == registry
 
 
-def test_reader_cleanup_block_identity_metadata_does_not_leak_to_model_payload():
+def test_reader_cleanup_block_identity_metadata_is_serialized_to_model_payload():
     blocks = build_cleanup_blocks(
         "Intro",
-        block_metadata_by_index={0: {"paragraph_id": "p0001", "merged_paragraph_ids": ["p0001", "p0002"]}},
+        block_metadata_by_index={
+            0: {
+                "paragraph_id": "p0001",
+                "merged_paragraph_ids": ["p0001", "p0002"],
+                "layout_signals": {"font_size": 14.0, "centered": True},
+            }
+        },
     )
 
     assert blocks[0].paragraph_id == "p0001"
     assert blocks[0].merged_paragraph_ids == ("p0001", "p0002")
     payload = blocks[0].to_payload()
-    assert "paragraph_id" not in payload
-    assert "merged_paragraph_ids" not in payload
+    assert payload["paragraph_id"] == "p0001"
+    assert payload["merged_paragraph_ids"] == ["p0001", "p0002"]
+    assert cast(dict[str, object], payload["layout_signals"])["font_size"] == 14.0
 
 
 def test_reader_cleanup_block_identity_metadata_reports_id_match_and_gaps():
@@ -6528,9 +6535,15 @@ def test_reader_cleanup_block_identity_metadata_reports_id_match_and_gaps():
         generated_paragraph_registry=registry,
     )
 
-    assert metadata == {
-        0: {"paragraph_id": "p0001"},
-        2: {"paragraph_id": "p0003"},
+    assert metadata[0]["paragraph_id"] == "p0001"
+    assert metadata[0]["layout_signals"] == {
+        "standalone_short_line": True,
+        "looks_like_superscript_marker": False,
+    }
+    assert metadata[2]["paragraph_id"] == "p0003"
+    assert metadata[2]["layout_signals"] == {
+        "standalone_short_line": True,
+        "looks_like_superscript_marker": False,
     }
     assert diagnostics == {
         "status": "available",
@@ -6631,31 +6644,22 @@ def test_reader_cleanup_postprocess_prefers_assembly_formatting_registry_over_st
     report = result.report
     final_registry = result.final_generated_paragraph_registry
 
-    assert cleaned_markdown == "Intro\n\nBody paragraph"
-    assert cleaned_docx_bytes == b"Intro\n\n[[DOCX_IMAGE_img_001]]\n\nBody paragraph"
+    assert cleaned_markdown == raw_markdown
+    assert cleaned_docx_bytes == b"base-docx"
     assert report is not None
+    assert report["stats"]["accepted_delete_block_count"] == 0
+    assert report["image_reconciliation"]["before_image_id_count"] == 1
+    assert report["image_reconciliation"]["after_image_id_count"] == 1
     assert final_registry == [
         {"block_index": 1, "paragraph_id": "p0001", "text": "Intro", "target_paragraph_indexes": [0]},
         {"block_index": 3, "paragraph_id": "p0003", "text": "Body paragraph", "target_paragraph_indexes": [2]},
     ]
-    assert preserve_calls == [[
-        {"block_index": 1, "paragraph_id": "p0001", "text": "Intro", "target_paragraph_indexes": [0]},
-        {"block_index": 3, "paragraph_id": "p0003", "text": "Body paragraph", "target_paragraph_indexes": [2]},
-    ]]
-    applied_event = next(event for event in log_events if event["event_id"] == "reader_cleanup_applied")
-    assert applied_event["context"]["formatting_lineage_status"] == "derived"
-    assert applied_event["context"]["formatting_lineage_reason"] is None
-    assert applied_event["context"]["cleanup_identity_status"] == "available"
-    assert applied_event["context"]["cleanup_identity_id_matched_block_count"] == 2
-    assert applied_event["context"]["cleanup_identity_image_gap_count"] == 1
-    assert applied_event["context"]["cleanup_identity_text_gap_count"] == 0
-    lineage_artifact_path = Path(applied_event["context"]["reader_cleanup_lineage_artifact_path"])
-    assert lineage_artifact_path.exists()
-    lineage_payload = json.loads(lineage_artifact_path.read_text(encoding="utf-8"))
-    assert lineage_payload["stage"] == "reader_cleanup_lineage"
-    assert lineage_payload["active_formatting_registry"] == assembly_registry
-    assert lineage_payload["cleanup_identity_diagnostics"]["text_gap_count"] == 0
-    assert lineage_payload["cleanup_formatting_lineage"]["status"] == "derived"
+    assert preserve_calls == []
+    noop_event = next(event for event in log_events if event["event_id"] == "reader_cleanup_noop")
+    assert noop_event["context"]["cleanup_identity_status"] == "available"
+    assert noop_event["context"]["cleanup_identity_id_matched_block_count"] == 2
+    assert noop_event["context"]["cleanup_identity_image_gap_count"] == 1
+    assert noop_event["context"]["cleanup_identity_text_gap_count"] == 0
 
 
 def test_reader_cleanup_noop_restores_image_heading_concats_from_registry():
@@ -6788,10 +6792,7 @@ def test_reader_cleanup_postprocess_persists_final_generated_registry_in_runtime
         {"block_index": 1, "paragraph_id": "p0001", "text": "Intro", "target_paragraph_indexes": [0]},
         {"block_index": 3, "paragraph_id": "p0003", "text": "Body paragraph", "target_paragraph_indexes": [2]},
     ]
-    assert runtime["state"]["final_generated_paragraph_registry"] == [
-        {"block_index": 1, "paragraph_id": "p0001", "text": "Intro", "target_paragraph_indexes": [0]},
-        {"block_index": 3, "paragraph_id": "p0003", "text": "Body paragraph", "target_paragraph_indexes": [2]},
-    ]
+    assert "final_generated_paragraph_registry" not in runtime["state"]
 
 
 def test_rebuild_docx_for_markdown_prefers_cleanup_formatting_registry_override():

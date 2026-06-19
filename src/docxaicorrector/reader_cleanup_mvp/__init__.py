@@ -9,6 +9,7 @@ from .service import (
     resolve_reader_cleanup_config,
     run_reader_cleanup,
     run_reader_cleanup_anchor_repair,
+    run_reader_cleanup_reannotation,
     write_reader_cleanup_diagnostics,
 )
 
@@ -23,5 +24,6 @@ __all__ = [
     "resolve_reader_cleanup_config",
     "run_reader_cleanup",
     "run_reader_cleanup_anchor_repair",
+    "run_reader_cleanup_reannotation",
     "write_reader_cleanup_diagnostics",
 ]

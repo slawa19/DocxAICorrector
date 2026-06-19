@@ -386,6 +386,23 @@ reader_verifier_enabled = false
 repeat_count = 1
 
 [[run_profiles]]
+id = "ui-parity-translate-benchmark-advisory-image-safe-no-cleanup-chunk30000"
+tier = "full"
+mode = "regression"
+processing_operation = "translate"
+source_language = "auto"
+target_language = "ru"
+chunk_size = 30000
+image_mode = "safe"
+audiobook_postprocess_enabled = false
+enable_paragraph_markers = true
+translation_output_quality_gate_policy = "advisory"
+reader_cleanup_enabled = false
+reader_cleanup_policy = "off"
+reader_verifier_enabled = false
+repeat_count = 1
+
+[[run_profiles]]
 id = "ui-parity-translate-benchmark-advisory-chunk30000"
 tier = "full"
 mode = "regression"

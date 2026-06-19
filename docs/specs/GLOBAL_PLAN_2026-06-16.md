@@ -83,6 +83,62 @@ three books). Return to the real path to UI: items 1–4 below — make the gate
 exposes the remaining stale gates). Reader-cleanup prod-enablement is parked behind the
 P0 image fix.
 
+## Update — 2026-06-19 (reader-cleanup structural-fix redesign: study & make it work)
+
+Director steer (supersedes the 2026-06-18 "park/bias-away" lean): do NOT retire the AI
+cleanup, and do NOT slide into per-book deterministic patches — that overfitting is the
+flawed path. Structure judgment (headings/boundaries/lists) is a job the AI SHOULD do well;
+it underperforms because of how it is WIRED, not the approach. Eyes-on the shipped baseline
+DOCX (Money & Sustainability) showed obvious un-fixed defects: footnote markers glued to body
+(25/43/44), subheadings fused mid-paragraph ("Экономические последствия концентрации
+богатства", "Последствия для устойчивости"), broken lists/line-breaks. The shipped DOCX had
+cleanup OFF (image-safe); and even when ON (replay), cleanup spent 11/19 ops deleting images
+and caught only ~6 fusions. Two root causes, grounded and independent of model/prompt:
+- it runs POST-translation (judges Russian text; original typography lost);
+- its `block_metadata_by_index` hook (service.py:505) is fed only identity (late_phases passes
+  `cleanup_identity_metadata`) — ZERO layout signals (font size, standalone-short-line, indent,
+  superscript) that import already computed. It is structure-blind by construction.
+
+Eight levers, three phases. Plan to be updated as results land. **Cross-cutting acceptance (all
+phases):** no doc-specific literals (known defects are measurement targets, never hardcoded);
+generalization = SPREAD across books, not average; eyes-on the produced DOCX; never credit
+content-presence as format-presence; never silently lose content/anchors; full test files green;
+cheap no-re-translation replay to iterate, full-book LLM only to confirm.
+
+Phase 0 — safety + signal (cheap, low-risk, FIRST):
+- L6 Content/anchor reconciliation. Remove the prompt instruction+example that tell the model to
+  delete `[[DOCX_IMAGE_*]]` (service.py:449/453); hard-guard delete_block against image anchors
+  in code; post-pass reconcile image IDs in==out, re-insert/flag any drop. **Done:** no book (the
+  3 + Money & Sustainability) loses any image ID after cleanup; unit test; silent drops caught.
+- L5 Deterministic footnote markers at import. Trailing superscript / short-digit refs separated
+  generally (pdfminer superscript/size signal), not per-book. **Done:** markers like 25/43/44 no
+  longer glued to body; no stripping of real page-refs/quantities; precision held on 3 books.
+- L1 Enrich cleanup block metadata with layout signals (font size vs body mode, standalone-short-
+  line, indent, centered, superscript). **Done:** signals present in the chunk payload
+  (verifiable); no behaviour regression; enables Phase 1.
+
+Phase 1 — re-architect the AI pass + MEASURE (the core):
+- L3 Shift the AI from risky edit-ops (+exact-match guards that reject valid fixes) to role/
+  boundary RE-ANNOTATION → deterministic apply → content-containment verification (model judges
+  structure, code guarantees content safety).
+- L4 Specialized focused passes (heading-boundary, list-reassembly) instead of one omnibus prompt.
+- Measurement experiment (cheap replay over Money & Sustainability translated markdown, no
+  re-translation): matrix {current edit-ops vs re-annotation} × {haiku/sonnet/opus} × {±layout
+  signals}, scored against the KNOWN defect set (the fusions/list/footnotes above) + false
+  positives + image safety + cost. **Done:** a measured config→(caught / false-pos / images-
+  touched / cost) table; a chosen config catches the listed defects on this book with NO
+  regression on the 3 tuning books (heading precision not down; zero image loss; no content change
+  beyond structure/role).
+
+Phase 2 — bigger moves, ONLY if Phase 1 leaves material defects (reserve):
+- L2 Source-side pre-translation structural normalization (richest signal; fix once, before
+  translation scrambles it) — bounded/local, NOT the killed global DocumentMap.
+- L7 Verify-and-retry (LLM-judge) targeting the known defect classes (reader_verifier scaffold
+  exists, disabled).
+- L8 Vision (VLM over PDF page images) for the genuinely ambiguous tail only.
+- **Done:** each gated by held-out measurement + no per-book literals; pursue only what Phase-1
+  data justifies.
+
 ## Remaining Work Before Returning to UI
 
 The UI surfaces results to users, so before UI work the pipeline must (a) reliably

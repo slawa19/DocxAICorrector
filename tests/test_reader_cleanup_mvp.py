@@ -12,6 +12,7 @@ from docxaicorrector.reader_cleanup_mvp import (
     build_reader_cleanup_schema_repair_system_prompt,
     resolve_reader_cleanup_config,
     run_reader_cleanup,
+    run_reader_cleanup_reannotation,
     write_reader_cleanup_diagnostics,
 )
 
@@ -87,6 +88,40 @@ def test_build_cleanup_blocks_assigns_stable_ids_and_hashes() -> None:
     assert blocks[0].is_heading is True
     assert blocks[1].kind == "page_number"
     assert len({block.text_hash for block in blocks}) == 3
+
+
+def test_build_cleanup_blocks_serializes_layout_signals_to_payload() -> None:
+    blocks = build_cleanup_blocks(
+        "Short heading\n\nBody paragraph",
+        block_metadata_by_index={
+            0: {
+                "paragraph_id": "p1",
+                "layout_signals": {
+                    "font_size": 14.0,
+                    "body_font_size": 10.0,
+                    "centered": True,
+                    "superscript": False,
+                },
+            }
+        },
+    )
+
+    payload = blocks[0].to_payload()
+
+    assert payload["paragraph_id"] == "p1"
+    assert payload["layout_signals"] == {
+        "standalone_short_line": True,
+        "line_count": 1,
+        "word_count": 2,
+        "looks_like_superscript_marker": False,
+        "is_docx_image_anchor": False,
+        "docx_image_ids": [],
+        "detected_kind": "paragraph",
+        "font_size": 14.0,
+        "body_font_size": 10.0,
+        "centered": True,
+        "superscript": False,
+    }
 
 
 def test_resolve_reader_cleanup_config_accepts_overlap_and_string_global_plan_flag() -> None:
@@ -200,6 +235,128 @@ def test_reader_cleanup_allowed_operations_contract_filters_structural_operation
         if entry.get("operation") == "split_block"
     }
     assert ignored_reasons == {"operation_not_allowed_by_cleanup_contract"}
+
+
+def test_run_reader_cleanup_rejects_delete_block_for_docx_image_anchor() -> None:
+    markdown = "Intro\n\n[[DOCX_IMAGE_img_001]]\n\nOutro"
+
+    def provider(payload: dict[str, Any], chunk_index: int, chunk_count: int) -> str:
+        image_block = next(block for block in payload["blocks"] if block["text"] == "[[DOCX_IMAGE_img_001]]")
+        return json.dumps(
+            {
+                "cleanup_operations": [
+                    _delete_block_operation(image_block, reason="extraction_artifact", confidence="high"),
+                ],
+                "warnings": [],
+            },
+            ensure_ascii=False,
+        )
+
+    result = run_reader_cleanup(
+        markdown_text=markdown,
+        config=ReaderCleanupConfig(enabled=True, max_delete_block_ratio=0.8, max_delete_char_ratio=0.8),
+        operation_provider=provider,
+    )
+
+    assert result.cleaned_markdown == markdown
+    assert result.report_payload["stats"]["accepted_delete_block_count"] == 0
+    assert result.report_payload["image_reconciliation"]["before_image_id_count"] == 1
+    assert result.report_payload["image_reconciliation"]["after_image_id_count"] == 1
+    assert {
+        entry["ignored_reason"]
+        for entry in result.report_payload["ignored_cleanup_operations"]
+        if entry.get("id") == image_block_id(result.report_payload)
+    } == {"docx_image_anchor_protected"}
+
+
+def image_block_id(report_payload: dict[str, Any]) -> str:
+    for entry in report_payload["ignored_cleanup_operations"]:
+        if entry.get("raw_text_preview") == "[[DOCX_IMAGE_img_001]]":
+            return str(entry["id"])
+    return ""
+
+
+def test_run_reader_cleanup_preserves_image_ids_on_four_replay_books() -> None:
+    project_root = Path(__file__).resolve().parents[1]
+    markdown_paths = [
+        project_root
+        / ".run/reader_cleanup_faithful_replay/20260618T124238Z_faithful_reclassify_replay/creating_wealth/creating_wealth.faithful.raw.md",
+        project_root
+        / ".run/reader_cleanup_faithful_replay/20260618T124238Z_faithful_reclassify_replay/lietaer/lietaer.faithful.raw.md",
+        project_root
+        / ".run/reader_cleanup_faithful_replay/20260618T124238Z_faithful_reclassify_replay/mazzucato/mazzucato.faithful.raw.md",
+        project_root
+        / "tests/artifacts/real_document_pipeline/runs/20260618T195903Z_6156_bernardlietaer-moneyandsustainabilitypdffromepub-160516072426/Money_Sustainability_pdf_full_heldout.md",
+    ]
+
+    for markdown_path in markdown_paths:
+        markdown = markdown_path.read_text(encoding="utf-8")
+
+        def provider(payload: dict[str, Any], chunk_index: int, chunk_count: int) -> str:
+            return json.dumps(
+                {
+                    "cleanup_operations": [
+                        _delete_block_operation(block, reason="extraction_artifact", confidence="high")
+                        for block in payload["blocks"]
+                        if "[[DOCX_IMAGE_" in str(block.get("text") or "")
+                    ],
+                    "warnings": [],
+                },
+                ensure_ascii=False,
+            )
+
+        result = run_reader_cleanup(
+            markdown_text=markdown,
+            config=ReaderCleanupConfig(
+                enabled=True,
+                chunk_size=50000,
+                keep_toc=False,
+                max_delete_block_ratio=1.0,
+                max_delete_char_ratio=1.0,
+            ),
+            operation_provider=provider,
+        )
+
+        image_reconciliation = result.report_payload["image_reconciliation"]
+        assert image_reconciliation["before_image_id_count"] == image_reconciliation["after_image_id_count"], markdown_path
+        assert image_reconciliation["missing_image_ids"] == [], markdown_path
+        assert image_reconciliation["missing_after_repair"] == [], markdown_path
+
+
+def test_run_reader_cleanup_reannotation_applies_heading_body_boundary_with_containment() -> None:
+    markdown = "Intro\n\nEconomic consequences of wealth concentration Body starts here.\n\nOutro"
+    blocks = build_cleanup_blocks(markdown)
+    target = blocks[1]
+
+    def provider(payload: dict[str, Any], chunk_index: int, chunk_count: int) -> str:
+        block = next(item for item in payload["blocks"] if item["id"] == target.block_id)
+        return json.dumps(
+            {
+                "annotations": [
+                    {
+                        "id": block["id"],
+                        "text_hash": block["text_hash"],
+                        "role": "heading",
+                        "confidence": "high",
+                        "reason": "heading_body_boundary",
+                        "heading_text": "Economic consequences of wealth concentration",
+                        "body_text": "Body starts here.",
+                    }
+                ],
+                "warnings": [],
+            },
+            ensure_ascii=False,
+        )
+
+    result = run_reader_cleanup_reannotation(
+        markdown_text=markdown,
+        config=ReaderCleanupConfig(enabled=True),
+        annotation_provider=provider,
+    )
+
+    assert result.cleaned_markdown == "Intro\n\n## Economic consequences of wealth concentration\n\nBody starts here.\n\nOutro"
+    assert result.report_payload["mode"] == "reannotation"
+    assert result.report_payload["stats"]["accepted_cleanup_operation_count"] == 1
 
 
 def test_run_reader_cleanup_applies_safe_delete_operations() -> None:
@@ -1820,7 +1977,7 @@ def test_run_reader_cleanup_anchor_repair_reanchors_stale_page_caption_then_join
     ]
 
 
-def test_run_reader_cleanup_infers_missing_confidence_for_safe_extraction_artifact_delete() -> None:
+def test_run_reader_cleanup_rejects_missing_confidence_extraction_artifact_delete_for_image_anchor() -> None:
     markdown = "Intro\n\n[[DOCX_IMAGE_img_001]]\n\nBody paragraph\n\nOutro"
 
     result = run_reader_cleanup(
@@ -1843,10 +2000,17 @@ def test_run_reader_cleanup_infers_missing_confidence_for_safe_extraction_artifa
         ),
     )
 
-    assert result.changed is True
-    assert result.cleaned_markdown == "Intro\n\nBody paragraph\n\nOutro"
+    assert result.changed is False
+    assert result.cleaned_markdown == markdown
     assert "reader_cleanup_missing_confidence_inferred:b_000001:high" in result.report_payload["warnings"]
-    assert result.report_payload["stats"]["accepted_delete_block_count"] == 1
+    assert result.report_payload["stats"]["accepted_delete_block_count"] == 0
+    assert result.report_payload["image_reconciliation"]["before_image_id_count"] == 1
+    assert result.report_payload["image_reconciliation"]["after_image_id_count"] == 1
+    assert {
+        entry["ignored_reason"]
+        for entry in result.report_payload["ignored_cleanup_operations"]
+        if entry.get("id") == "b_000001"
+    } == {"docx_image_anchor_protected"}
 
 
 def test_run_reader_cleanup_rejects_incompatible_duplicate_operation_with_explicit_reason() -> None:

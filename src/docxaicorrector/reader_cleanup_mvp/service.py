@@ -46,6 +46,7 @@ _ALLOWED_OPERATIONS = {
     "reclassify_role",
 }
 _ALLOWED_RECLASSIFY_TARGET_ROLES = {"heading", "body", "attribution", "caption"}
+_ALLOWED_REANNOTATION_ROLES = {"heading", "body", "list_item", "caption", "footnote"}
 _RECLASSIFY_MARKDOWN_HEADING_PREFIX = "## "
 _TOP_LEVEL_RESPONSE_FIELDS = {"cleanup_operations", "delete_blocks", "warnings"}
 _BLOCK_RESPONSE_FIELDS = {"id", "text_hash", "reason", "confidence"}
@@ -83,6 +84,8 @@ _EXTRACTION_ARTIFACT_PATTERN = re.compile(
     r"^(?:\[\[DOCX_[A-Za-z0-9_]+\]\]|\[\[IMAGE_[A-Za-z0-9_]+\]\]|<\/?placeholder>|---+|===+)$",
     re.IGNORECASE,
 )
+_DOCX_IMAGE_PLACEHOLDER_PATTERN = re.compile(r"\[\[DOCX_IMAGE_[A-Za-z0-9_]+\]\]")
+_DOCX_IMAGE_PLACEHOLDER_ONLY_PATTERN = re.compile(r"^\s*\[\[DOCX_IMAGE_[A-Za-z0-9_]+\]\]\s*$")
 _SAFE_INLINE_NOISE_PATTERN = re.compile(
     r"^\s*(?:"
     r"(?:\(?\d{1,4}\)?|[Pp]age\s+\d{1,4}|стр\.\s*\d{1,4})"
@@ -190,9 +193,10 @@ class CleanupBlock:
     is_toc_like: bool
     paragraph_id: str | None = None
     merged_paragraph_ids: tuple[str, ...] = ()
+    layout_signals: Mapping[str, object] | None = None
 
     def to_payload(self) -> dict[str, object]:
-        return {
+        payload: dict[str, object] = {
             "id": self.block_id,
             "text_hash": self.text_hash,
             "kind": self.kind,
@@ -201,6 +205,13 @@ class CleanupBlock:
             "is_toc_like": self.is_toc_like,
             "text": self.text,
         }
+        if self.paragraph_id:
+            payload["paragraph_id"] = self.paragraph_id
+        if self.merged_paragraph_ids:
+            payload["merged_paragraph_ids"] = list(self.merged_paragraph_ids)
+        if self.layout_signals:
+            payload["layout_signals"] = dict(self.layout_signals)
+        return payload
 
 
 @dataclass(frozen=True)
@@ -251,6 +262,18 @@ class ReaderCleanupResult:
     cleaned_markdown: str
     report_payload: dict[str, Any]
     accepted_delete_block_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class ReannotationDecision:
+    block_id: str
+    text_hash: str
+    role: str
+    chunk_index: int
+    heading_text: str = ""
+    body_text: str = ""
+    confidence: CleanupConfidence = "medium"
+    reason: str = ""
 
 
 @dataclass(frozen=True)
@@ -364,6 +387,7 @@ def build_reader_cleanup_system_prompt() -> str:
         "For reclassify_role, include target_role as one of heading, body, attribution, caption. expected_after_preview must be the exact single-block Markdown after changing only the role marker.\n"
         "For reclassify_role to heading, add only the standard Markdown heading marker to the existing block text. For reclassify_role to body, attribution, or caption, remove the Markdown heading marker and preserve the exact visible text.\n"
         "Role rules for reclassify_role: ALL-CAPS short text after a heading may be attribution rather than another heading; text starting with an em dash or en dash followed by a name is attribution; Figure/Table/Рис./Таблица/Источник lines are caption; a short topic-introducing line may be heading when the surrounding prose shows it starts a new topic.\n"
+        "Image placeholders like [[DOCX_IMAGE_img_001]] are content anchors: do not delete, rename, split, join away, or otherwise change them.\n"
         "Use delete_block only for non-semantic PDF/OCR/layout noise: repeated running headers, footers, "
         "page numbers, blank-page markers, orphaned footnote markers, and obvious extraction artifacts.\n"
         "Do not delete a standalone numeric block such as '8' or '12' by page_number reason unless nearby page-boundary context, repeated header/footer evidence, or explicit page-label evidence makes it safe.\n"
@@ -446,11 +470,11 @@ def build_reader_cleanup_system_prompt() -> str:
         "- Anchor page furniture plus caption between sentence parts: remove exactly the page header and caption span, keep the lowercase prose continuation, then join the previous unfinished block to the cleaned anchor block with exact ids/hashes.\n"
         "A leading or inline number may be removed only when it is exact non-semantic page furniture or an orphan inline note marker; if the number is semantic content inside a sentence, date, quantity, title, or citation, keep it.\n"
         "Standalone numeric lines can be footnotes, citations, list markers, or semantic numbering; if page context is uncertain, keep them and add a warning.\n"
-        "For obvious non-semantic noise such as standalone page numbers or lines like [[DOCX_IMAGE_img_001]], "
+        "For obvious non-semantic noise such as standalone page numbers, "
         'use confidence="high" instead of omitting the field.\n'
         "Preserve normal narrative wording and avoid semantic rewriting.\n"
         "Example valid response: "
-        '{"cleanup_operations":[{"id":"b_000123","text_hash":"7f83b1657ff1fc53","operation":"delete_block","reason":"extraction_artifact","confidence":"high","evidence_before":"standalone image placeholder","expected_after_preview":"","safety_note":"non-semantic placeholder only"}],"warnings":[]}\n'
+        '{"cleanup_operations":[],"warnings":["preserved image placeholder anchor [[DOCX_IMAGE_img_001]]"]}\n'
         "If uncertain, keep the text and add a warning."
     )
 
@@ -516,6 +540,11 @@ def build_cleanup_blocks(
         metadata = block_metadata_by_index.get(index) if block_metadata_by_index is not None else None
         paragraph_id = None
         merged_paragraph_ids: tuple[str, ...] = ()
+        layout_signals: dict[str, object] = _derive_cleanup_block_layout_signals(
+            text=raw_block,
+            normalized_text=normalized_text,
+            kind=kind,
+        )
         if isinstance(metadata, Mapping):
             raw_paragraph_id = metadata.get("paragraph_id")
             if isinstance(raw_paragraph_id, str) and raw_paragraph_id.strip():
@@ -523,6 +552,9 @@ def build_cleanup_blocks(
             raw_merged_ids = metadata.get("merged_paragraph_ids")
             if isinstance(raw_merged_ids, Sequence) and not isinstance(raw_merged_ids, (str, bytes, bytearray)):
                 merged_paragraph_ids = tuple(str(value).strip() for value in raw_merged_ids if str(value).strip())
+            raw_layout_signals = metadata.get("layout_signals")
+            if isinstance(raw_layout_signals, Mapping):
+                layout_signals.update(_sanitize_layout_signals(raw_layout_signals))
         blocks.append(
             CleanupBlock(
                 index=index,
@@ -537,9 +569,60 @@ def build_cleanup_blocks(
                 is_toc_like=kind == "toc_like",
                 paragraph_id=paragraph_id,
                 merged_paragraph_ids=merged_paragraph_ids,
+                layout_signals=layout_signals,
             )
         )
     return blocks
+
+
+def _derive_cleanup_block_layout_signals(*, text: str, normalized_text: str, kind: str) -> dict[str, object]:
+    stripped = normalized_text.strip()
+    line_count = len([line for line in str(text or "").splitlines() if line.strip()])
+    visible_char_count = len(stripped)
+    word_count = len(re.findall(r"\S+", stripped))
+    digit_only = bool(re.fullmatch(r"\[?\d{1,3}\]?|\(\d{1,3}\)", stripped))
+    image_placeholder_ids = _extract_docx_image_placeholder_ids(stripped)
+    return {
+        "standalone_short_line": line_count <= 1 and 0 < visible_char_count <= 90,
+        "line_count": line_count,
+        "word_count": word_count,
+        "looks_like_superscript_marker": digit_only,
+        "is_docx_image_anchor": bool(image_placeholder_ids) and bool(_DOCX_IMAGE_PLACEHOLDER_ONLY_PATTERN.fullmatch(stripped)),
+        "docx_image_ids": image_placeholder_ids,
+        "detected_kind": kind,
+    }
+
+
+def _sanitize_layout_signals(raw_signals: Mapping[str, object]) -> dict[str, object]:
+    allowed_keys = {
+        "font_size",
+        "body_font_size",
+        "font_size_delta_from_body",
+        "font_size_ratio_to_body",
+        "standalone_short_line",
+        "indent",
+        "left_indent",
+        "first_line_indent",
+        "centered",
+        "alignment",
+        "superscript",
+        "looks_like_superscript_marker",
+        "line_count",
+        "word_count",
+        "is_docx_image_anchor",
+        "docx_image_ids",
+        "detected_kind",
+    }
+    sanitized: dict[str, object] = {}
+    for key, value in raw_signals.items():
+        normalized_key = str(key or "").strip()
+        if normalized_key not in allowed_keys:
+            continue
+        if isinstance(value, (str, int, float, bool)) or value is None:
+            sanitized[normalized_key] = value
+        elif isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+            sanitized[normalized_key] = [str(item) for item in value]
+    return sanitized
 
 
 def _select_cleanup_blocks(*, blocks: Sequence[CleanupBlock], keep_toc: bool) -> tuple[list[CleanupBlock], list[str]]:
@@ -849,6 +932,13 @@ def run_reader_cleanup(
         },
     )
     ignored_cleanup_operations.extend(ignored)
+    cleaned_markdown, image_reconciliation = _reconcile_docx_image_placeholders(
+        raw_markdown=raw_markdown,
+        cleaned_markdown=cleaned_markdown,
+        raw_blocks=blocks,
+    )
+    image_reconciliation_warnings = _image_reconciliation_warnings(image_reconciliation)
+    warnings.extend(image_reconciliation_warnings)
 
     accepted_delete_blocks: list[dict[str, object]] = []
     accepted_counts_by_chunk: Counter[int] = Counter()
@@ -894,6 +984,7 @@ def run_reader_cleanup(
         deleted_char_count=deleted_char_count,
         changed=cleaned_markdown != raw_markdown,
         model_resolution=model_resolution,
+        image_reconciliation=image_reconciliation,
     )
 
     if anchor_operation_provider is not None and anchor_targets:
@@ -912,6 +1003,16 @@ def run_reader_cleanup(
             raw_blocks=blocks,
             anchor_pass_result=anchor_pass_result,
         )
+        cleaned_markdown, image_reconciliation = _reconcile_docx_image_placeholders(
+            raw_markdown=raw_markdown,
+            cleaned_markdown=cleaned_markdown,
+            raw_blocks=blocks,
+        )
+        if image_reconciliation.get("missing_after_repair"):
+            report_payload.setdefault("warnings", [])
+            if isinstance(report_payload["warnings"], list):
+                report_payload["warnings"].extend(_image_reconciliation_warnings(image_reconciliation))
+        report_payload["image_reconciliation"] = image_reconciliation
 
     return ReaderCleanupResult(
         changed=cleaned_markdown != raw_markdown,
@@ -919,6 +1020,144 @@ def run_reader_cleanup(
         cleaned_markdown=cleaned_markdown,
         report_payload=report_payload,
         accepted_delete_block_ids=tuple(accepted_ids.keys()),
+    )
+
+
+def run_reader_cleanup_reannotation(
+    *,
+    markdown_text: str,
+    config: ReaderCleanupConfig,
+    annotation_provider: Callable[[dict[str, Any], int, int], str],
+    model_resolution: Mapping[str, object] | None = None,
+    block_metadata_by_index: Mapping[int, Mapping[str, object]] | None = None,
+) -> ReaderCleanupResult:
+    raw_markdown = str(markdown_text or "")
+    blocks = build_cleanup_blocks(raw_markdown, block_metadata_by_index=block_metadata_by_index)
+    cleanup_blocks, selection_warnings = _select_cleanup_blocks(blocks=blocks, keep_toc=config.keep_toc)
+    if not blocks:
+        report_payload = {
+            "version": 1,
+            "mode": "reannotation",
+            "policy": config.policy,
+            "model": config.model,
+            "cleanup_settings": _serialize_cleanup_settings(config),
+            "stage_status": "completed",
+            "changed": False,
+            "warnings": ["reader_cleanup_reannotation_skipped_empty_markdown"],
+            "stats": {"raw_block_count": 0, "cleanup_chunk_count": 0},
+            "accepted_cleanup_operations": [],
+            "accepted_delete_blocks": [],
+            "ignored_cleanup_operations": [],
+            "ignored_delete_blocks": [],
+            "chunk_results": [],
+            "model_resolution": dict(model_resolution or {}),
+            "image_reconciliation": {},
+        }
+        return ReaderCleanupResult(
+            changed=False,
+            raw_markdown=raw_markdown,
+            cleaned_markdown=raw_markdown,
+            report_payload=report_payload,
+            accepted_delete_block_ids=(),
+        )
+
+    chunks = _build_cleanup_chunks(
+        blocks=cleanup_blocks,
+        chunk_size=config.chunk_size,
+        overlap_blocks_before=config.overlap_blocks_before,
+        overlap_blocks_after=config.overlap_blocks_after,
+    )
+    warnings = list(selection_warnings)
+    decisions: list[ReannotationDecision] = []
+    ignored: list[dict[str, object]] = []
+    chunk_results: list[dict[str, object]] = []
+    for chunk in chunks:
+        payload = _build_reannotation_request_payload(chunk=chunk, config=config)
+        started_at = time.perf_counter()
+        raw_response = ""
+        try:
+            raw_response = annotation_provider(payload, chunk.chunk_index, len(chunks))
+            parsed_decisions, parsed_ignored, parsed_warnings = _parse_reannotation_response(
+                raw_response=raw_response,
+                editable_blocks={block.block_id: block for block in chunk.blocks},
+                chunk_index=chunk.chunk_index,
+            )
+            decisions.extend(parsed_decisions)
+            ignored.extend(parsed_ignored)
+            warnings.extend(parsed_warnings)
+            chunk_results.append(
+                {
+                    "chunk_index": chunk.chunk_index,
+                    "status": "completed",
+                    "target_block_count": len(chunk.blocks),
+                    "target_chars": sum(block.char_count for block in chunk.blocks),
+                    "elapsed_ms": round((time.perf_counter() - started_at) * 1000, 3),
+                    "proposed_reannotation_count": len(parsed_decisions) + len(parsed_ignored),
+                    "accepted_cleanup_operation_count": 0,
+                    "ignored_cleanup_operation_count": len(parsed_ignored),
+                    "request_payload_char_count": len(json.dumps(payload, ensure_ascii=False)),
+                }
+            )
+        except Exception as exc:
+            warning = f"reader_cleanup_reannotation_chunk_failed:{chunk.chunk_index}:{exc}"
+            warnings.append(warning)
+            chunk_results.append(
+                {
+                    "chunk_index": chunk.chunk_index,
+                    "status": "failed",
+                    "target_block_count": len(chunk.blocks),
+                    "target_chars": sum(block.char_count for block in chunk.blocks),
+                    "elapsed_ms": round((time.perf_counter() - started_at) * 1000, 3),
+                    "parse_error_message": str(exc),
+                    "raw_response_preview": str(raw_response or "")[:1000],
+                    "warning": warning,
+                }
+            )
+            if config.policy == "strict":
+                break
+
+    cleaned_markdown, accepted_operations, apply_ignored = _apply_reannotation_decisions(
+        raw_markdown=raw_markdown,
+        blocks=blocks,
+        decisions=decisions,
+    )
+    ignored.extend(apply_ignored)
+    cleaned_markdown, image_reconciliation = _reconcile_docx_image_placeholders(
+        raw_markdown=raw_markdown,
+        cleaned_markdown=cleaned_markdown,
+        raw_blocks=blocks,
+    )
+    warnings.extend(_image_reconciliation_warnings(image_reconciliation))
+    accepted_by_chunk = Counter(int(entry.get("chunk_index") or 0) for entry in accepted_operations)
+    ignored_by_chunk = Counter(int(entry.get("chunk_index") or 0) for entry in ignored if isinstance(entry.get("chunk_index"), int))
+    for chunk_result in chunk_results:
+        chunk_index = chunk_result.get("chunk_index")
+        if isinstance(chunk_index, int):
+            chunk_result["accepted_cleanup_operation_count"] = accepted_by_chunk.get(chunk_index, 0)
+            chunk_result["ignored_cleanup_operation_count"] = ignored_by_chunk.get(chunk_index, 0)
+
+    report_payload = _build_reader_cleanup_report_payload(
+        raw_markdown=raw_markdown,
+        config=config,
+        blocks=blocks,
+        global_plan={"mode": "reannotation"},
+        warnings=warnings,
+        accepted_delete_blocks=[],
+        accepted_cleanup_operations=accepted_operations,
+        ignored_cleanup_operations=ignored,
+        chunk_results=chunk_results,
+        deleted_char_count=0,
+        changed=cleaned_markdown != raw_markdown,
+        model_resolution={"mode": "reannotation", **dict(model_resolution or {})},
+        image_reconciliation=image_reconciliation,
+    )
+    report_payload["mode"] = "reannotation"
+    return ReaderCleanupResult(
+        changed=cleaned_markdown != raw_markdown,
+        raw_markdown=raw_markdown,
+        cleaned_markdown=cleaned_markdown,
+        report_payload=report_payload,
+        accepted_delete_block_ids=(),
     )
 
 
@@ -1512,6 +1751,80 @@ def _build_chunk_request_payload(
     return payload
 
 
+def _build_reannotation_request_payload(*, chunk: CleanupChunk, config: ReaderCleanupConfig) -> dict[str, object]:
+    return {
+        "mode": "reannotation",
+        "policy": config.policy,
+        "cleanup_settings": _serialize_cleanup_settings(config),
+        "output_format_requirements": {
+            "format": "single_json_object",
+            "markdown_fences_allowed": False,
+            "noop_response": {"annotations": [], "warnings": []},
+        },
+        "response_contract": {
+            "top_level_fields": ["annotations", "warnings"],
+            "required_annotation_fields": ["id", "text_hash", "role", "confidence", "reason"],
+            "allowed_roles": sorted(_ALLOWED_REANNOTATION_ROLES),
+            "optional_boundary_fields": ["heading_text", "body_text"],
+            "content_safety": "visible content must be preserved; only role markers and heading/body block boundaries may change",
+        },
+        "editable_block_ids": [block.block_id for block in chunk.blocks],
+        "context_before_preview": chunk.context_before[:240],
+        "context_after_preview": chunk.context_after[:240],
+        "blocks": [block.to_payload() for block in chunk.blocks],
+    }
+
+
+def _parse_reannotation_response(
+    *,
+    raw_response: str,
+    editable_blocks: Mapping[str, CleanupBlock],
+    chunk_index: int,
+) -> tuple[list[ReannotationDecision], list[dict[str, object]], list[str]]:
+    payload = _load_cleanup_response_object(raw_response)
+    if payload is None:
+        raise RuntimeError("reader_cleanup_reannotation_response_must_be_json_object")
+    annotations = payload.get("annotations")
+    if not isinstance(annotations, list):
+        raise RuntimeError("reader_cleanup_reannotation_annotations_must_be_list")
+    warnings = [str(item) for item in payload.get("warnings") or [] if str(item).strip()] if isinstance(payload.get("warnings"), list) else []
+    decisions: list[ReannotationDecision] = []
+    ignored: list[dict[str, object]] = []
+    for item in annotations:
+        if not isinstance(item, Mapping):
+            ignored.append({"chunk_index": chunk_index, "ignored_reason": "annotation_not_object"})
+            continue
+        block_id = str(item.get("id") or "").strip()
+        block = editable_blocks.get(block_id)
+        role = str(item.get("role") or "").strip()
+        text_hash = str(item.get("text_hash") or "").strip()
+        confidence = str(item.get("confidence") or "medium").strip().lower()
+        if block is None:
+            ignored.append({"chunk_index": chunk_index, "id": block_id, "ignored_reason": "unknown_block_id"})
+            continue
+        if text_hash != block.text_hash:
+            ignored.append({"chunk_index": chunk_index, **block.to_payload(), "ignored_reason": "text_hash_mismatch"})
+            continue
+        if role not in _ALLOWED_REANNOTATION_ROLES:
+            ignored.append({"chunk_index": chunk_index, **block.to_payload(), "ignored_reason": "role_invalid", "role": role})
+            continue
+        if confidence not in _ALLOWED_CONFIDENCE:
+            confidence = "medium"
+        decisions.append(
+            ReannotationDecision(
+                block_id=block_id,
+                text_hash=text_hash,
+                role=role,
+                chunk_index=chunk_index,
+                heading_text=str(item.get("heading_text") or "").strip(),
+                body_text=str(item.get("body_text") or "").strip(),
+                confidence=cast(CleanupConfidence, confidence),
+                reason=str(item.get("reason") or "role_boundary_reannotation").strip(),
+            )
+        )
+    return decisions, ignored, warnings
+
+
 def _allowed_operations_for_config(config: ReaderCleanupConfig) -> set[str]:
     return set(config.allowed_operations) if config.allowed_operations else set(_ALLOWED_OPERATIONS)
 
@@ -1983,6 +2296,86 @@ def _build_cleanup_stats(
     }
 
 
+def _extract_docx_image_placeholder_ids(text: str) -> list[str]:
+    ids: list[str] = []
+    for match in _DOCX_IMAGE_PLACEHOLDER_PATTERN.finditer(str(text or "")):
+        placeholder = match.group(0)
+        image_id = placeholder[len("[[DOCX_IMAGE_") : -len("]]")]
+        ids.append(image_id)
+    return ids
+
+
+def _docx_image_placeholder_counts(text: str) -> Counter[str]:
+    return Counter(_extract_docx_image_placeholder_ids(text))
+
+
+def _reconcile_docx_image_placeholders(
+    *,
+    raw_markdown: str,
+    cleaned_markdown: str,
+    raw_blocks: Sequence[CleanupBlock],
+) -> tuple[str, dict[str, object]]:
+    before_counts = _docx_image_placeholder_counts(raw_markdown)
+    after_counts = _docx_image_placeholder_counts(cleaned_markdown)
+    missing_ids = sorted((before_counts - after_counts).elements())
+    extra_ids = sorted((after_counts - before_counts).elements())
+    if not missing_ids:
+        return cleaned_markdown, {
+            "before_image_id_count": sum(before_counts.values()),
+            "after_image_id_count": sum(after_counts.values()),
+            "missing_image_ids": [],
+            "missing_after_repair": [],
+            "extra_image_ids": extra_ids,
+            "reinserted_image_ids": [],
+            "touched": bool(extra_ids),
+        }
+
+    missing_counter = Counter(missing_ids)
+    reinsertion_blocks: list[str] = []
+    for block in raw_blocks:
+        block_ids = _extract_docx_image_placeholder_ids(block.text)
+        if not block_ids:
+            continue
+        selected_ids: list[str] = []
+        for image_id in block_ids:
+            if missing_counter[image_id] <= 0:
+                continue
+            missing_counter[image_id] -= 1
+            selected_ids.append(image_id)
+        if selected_ids:
+            reinsertion_blocks.append("\n".join(f"[[DOCX_IMAGE_{image_id}]]" for image_id in selected_ids))
+
+    rebuilt = cleaned_markdown.strip()
+    if reinsertion_blocks:
+        rebuilt = "\n\n".join([part for part in [rebuilt, *reinsertion_blocks] if part.strip()])
+
+    reconciled_counts = _docx_image_placeholder_counts(rebuilt)
+    remaining_missing_ids = sorted((before_counts - reconciled_counts).elements())
+    return rebuilt, {
+        "before_image_id_count": sum(before_counts.values()),
+        "after_image_id_count": sum(reconciled_counts.values()),
+        "missing_image_ids": missing_ids,
+        "missing_after_repair": remaining_missing_ids,
+        "extra_image_ids": extra_ids,
+        "reinserted_image_ids": sorted((reconciled_counts - after_counts).elements()),
+        "touched": True,
+    }
+
+
+def _image_reconciliation_warnings(image_reconciliation: Mapping[str, object]) -> list[str]:
+    missing = [str(item) for item in image_reconciliation.get("missing_image_ids") or [] if str(item).strip()]
+    remaining = [str(item) for item in image_reconciliation.get("missing_after_repair") or [] if str(item).strip()]
+    extra = [str(item) for item in image_reconciliation.get("extra_image_ids") or [] if str(item).strip()]
+    warnings: list[str] = []
+    if missing:
+        warnings.append(f"reader_cleanup_image_ids_reinserted:{len(missing)}")
+    if remaining:
+        warnings.append(f"reader_cleanup_image_ids_missing_after_reconcile:{len(remaining)}")
+    if extra:
+        warnings.append(f"reader_cleanup_image_ids_extra_after_cleanup:{len(extra)}")
+    return warnings
+
+
 def _extract_http_status_code(exc: BaseException) -> int | None:
     visited: set[int] = set()
     current: BaseException | None = exc
@@ -2060,6 +2453,7 @@ def _build_reader_cleanup_report_payload(
     deleted_char_count: int,
     changed: bool,
     model_resolution: Mapping[str, object] | None = None,
+    image_reconciliation: Mapping[str, object] | None = None,
     failure: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     stats = _build_cleanup_stats(
@@ -2082,6 +2476,7 @@ def _build_reader_cleanup_report_payload(
         "stats": stats,
         "global_plan": dict(global_plan),
         "model_resolution": dict(model_resolution or {}),
+        "image_reconciliation": dict(image_reconciliation or {}),
         "accepted_cleanup_operations": list(accepted_cleanup_operations),
         "accepted_delete_blocks": list(accepted_delete_blocks),
         "ignored_cleanup_operations": list(ignored_cleanup_operations),
@@ -3225,6 +3620,111 @@ def _apply_cleanup_operations(
     return cleaned_markdown, accepted, accepted_cleanup_operations, ignored
 
 
+def _apply_reannotation_decisions(
+    *,
+    raw_markdown: str,
+    blocks: Sequence[CleanupBlock],
+    decisions: Sequence[ReannotationDecision],
+) -> tuple[str, list[dict[str, object]], list[dict[str, object]]]:
+    if not decisions:
+        return raw_markdown, [], []
+    rewritten_blocks = [block.text for block in blocks]
+    block_by_id = {block.block_id: block for block in blocks}
+    accepted: list[dict[str, object]] = []
+    ignored: list[dict[str, object]] = []
+    seen_block_ids: set[str] = set()
+    for decision in decisions:
+        block = block_by_id.get(decision.block_id)
+        if block is None:
+            ignored.append({"id": decision.block_id, "chunk_index": decision.chunk_index, "ignored_reason": "unknown_block_id"})
+            continue
+        if block.block_id in seen_block_ids:
+            ignored.append({**block.to_payload(), "chunk_index": decision.chunk_index, "ignored_reason": "duplicate_reannotation"})
+            continue
+        seen_block_ids.add(block.block_id)
+        replacement, operation_name, ignore_reason = _replacement_for_reannotation_decision(block=block, decision=decision)
+        if ignore_reason is not None or replacement is None:
+            ignored.append(
+                {
+                    **block.to_payload(),
+                    "chunk_index": decision.chunk_index,
+                    "operation": "reannotate_role_boundary",
+                    "role": decision.role,
+                    "ignored_reason": ignore_reason or "reannotation_not_applicable",
+                }
+            )
+            continue
+        if _visible_content_fingerprint(block.text) != _visible_content_fingerprint(replacement):
+            ignored.append(
+                {
+                    **block.to_payload(),
+                    "chunk_index": decision.chunk_index,
+                    "operation": operation_name,
+                    "role": decision.role,
+                    "ignored_reason": "visible_content_containment_failed",
+                    "expected_after_preview": replacement,
+                }
+            )
+            continue
+        if replacement == block.text:
+            continue
+        rewritten_blocks[block.index] = replacement
+        accepted.append(
+            {
+                **_serialize_delete_block(block=block, reason=decision.reason or "role_boundary_reannotation", confidence=decision.confidence),
+                "operation": operation_name,
+                "chunk_index": decision.chunk_index,
+                "target_role": decision.role,
+                "expected_after_preview": replacement,
+                "after_state": "reannotated",
+            }
+        )
+    if not accepted:
+        return raw_markdown, [], ignored
+    return "\n\n".join(block for block in rewritten_blocks if block.strip()), accepted, ignored
+
+
+def _replacement_for_reannotation_decision(
+    *,
+    block: CleanupBlock,
+    decision: ReannotationDecision,
+) -> tuple[str | None, str, str | None]:
+    if _DOCX_IMAGE_PLACEHOLDER_PATTERN.search(block.text):
+        return None, "reannotate_role_boundary", "docx_image_anchor_protected"
+    text = block.text.strip()
+    if decision.heading_text or decision.body_text:
+        heading = decision.heading_text.strip()
+        body = decision.body_text.strip()
+        if not heading or not body:
+            return None, "reannotate_heading_body_boundary", "boundary_parts_incomplete"
+        if not _normalize_block_text(text).startswith(_normalize_block_text(heading)):
+            return None, "reannotate_heading_body_boundary", "heading_not_exact_prefix"
+        expected_source = f"{heading}{body}"
+        if _visible_content_fingerprint(expected_source) != _visible_content_fingerprint(text):
+            joined_with_space = f"{heading} {body}"
+            if _visible_content_fingerprint(joined_with_space) != _visible_content_fingerprint(text):
+                return None, "reannotate_heading_body_boundary", "boundary_parts_do_not_cover_block"
+        return f"## {heading.lstrip('#').strip()}\n\n{body}", "reannotate_heading_body_boundary", None
+
+    visible = text.lstrip("#").strip()
+    if decision.role == "heading":
+        return f"## {visible}", "reannotate_role", None
+    if decision.role == "list_item":
+        return visible if re.match(r"^(?:[-*]|\d+\.)\s+", visible) else f"- {visible}", "reannotate_role", None
+    return visible, "reannotate_role", None
+
+
+def _visible_content_fingerprint(text: str) -> str:
+    lines = []
+    for line in str(text or "").replace("\r\n", "\n").replace("\r", "\n").splitlines():
+        stripped = line.strip()
+        stripped = re.sub(r"^#{1,6}\s+", "", stripped)
+        stripped = re.sub(r"^(?:[-*]|\d+\.)\s+", "", stripped)
+        if stripped:
+            lines.append(stripped)
+    return re.sub(r"\s+", "", " ".join(lines)).casefold()
+
+
 def _apply_single_operation_to_blocks(
     *,
     blocks: Sequence[CleanupBlock],
@@ -3892,6 +4392,8 @@ def _validate_operation(
         if block.block_id in protected_ids:
             return "protected_block"
         return None
+    if _DOCX_IMAGE_PLACEHOLDER_PATTERN.search(block.text):
+        return "docx_image_anchor_protected"
     if operation.reason == "page_number" and block.kind != "page_number":
         return "reason_kind_incompatible"
     if operation.reason == "blank_page_marker" and block.kind != "blank_page_marker":

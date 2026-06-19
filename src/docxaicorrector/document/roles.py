@@ -103,7 +103,7 @@ def infer_heuristic_heading_level(text: str) -> int:
     if re.match(r"^(?:раздел|section)\b", lower_text):
         return 2
 
-    numeric_match = re.match(r"^(\d+(?:\.\d+){0,4})(?:[\):]|\s)", normalized_text)
+    numeric_match = re.match(r"^(\d+(?:\.\d+){0,4})(?:[\).:]|\s)", normalized_text)
     if numeric_match is not None:
         return min(numeric_match.group(1).count(".") + 2, 6)
 
@@ -401,7 +401,7 @@ def _has_heading_text_signal(text: str) -> bool:
 
     if re.match(r"^(?:глава|раздел|часть|приложение|chapter|section|appendix)\b", lower_text):
         return True
-    if re.match(r"^\d+(?:\.\d+){0,4}(?:[\):]|\s)", stripped_text):
+    if re.match(r"^\d+(?:\.\d+){0,4}(?:[\).:]|\s)", stripped_text):
         return True
     if ":" in stripped_text and word_count <= 12 and not stripped_text.endswith("."):
         return True

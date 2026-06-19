@@ -497,18 +497,70 @@ def _dedupe_paragraph_ids(paragraph_ids: Sequence[object]) -> list[str]:
     return deduped
 
 
+def _coerce_optional_float(value: object) -> float | None:
+    try:
+        return float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+
+
+def _reader_cleanup_layout_signals_from_registry_entry(
+    *,
+    entry: Mapping[str, object],
+    normalized_text: str,
+) -> dict[str, object]:
+    raw_layout = entry.get("layout_signals")
+    signals: dict[str, object] = dict(raw_layout) if isinstance(raw_layout, Mapping) else {}
+    formatting = entry.get("formatting")
+    if isinstance(formatting, Mapping):
+        for source_key, target_key in {
+            "font_size": "font_size",
+            "body_font_size": "body_font_size",
+            "left_indent": "left_indent",
+            "first_line_indent": "first_line_indent",
+            "alignment": "alignment",
+            "centered": "centered",
+            "superscript": "superscript",
+        }.items():
+            if source_key in formatting and target_key not in signals:
+                signals[target_key] = formatting[source_key]
+
+    for source_key, target_key in {
+        "font_size": "font_size",
+        "body_font_size": "body_font_size",
+        "font_size_delta_from_body": "font_size_delta_from_body",
+        "font_size_ratio_to_body": "font_size_ratio_to_body",
+        "left_indent": "left_indent",
+        "indent": "indent",
+        "first_line_indent": "first_line_indent",
+        "alignment": "alignment",
+        "centered": "centered",
+        "superscript": "superscript",
+    }.items():
+        if source_key in entry and target_key not in signals:
+            signals[target_key] = entry[source_key]
+
+    font_size = _coerce_optional_float(signals.get("font_size"))
+    body_font_size = _coerce_optional_float(signals.get("body_font_size"))
+    if font_size is not None and body_font_size is not None and body_font_size > 0:
+        signals.setdefault("font_size_delta_from_body", round(font_size - body_font_size, 3))
+        signals.setdefault("font_size_ratio_to_body", round(font_size / body_font_size, 4))
+
+    alignment = str(signals.get("alignment") or "").strip().casefold()
+    if alignment:
+        signals.setdefault("centered", alignment == "center")
+    stripped = normalized_text.strip()
+    signals.setdefault("standalone_short_line", bool(stripped) and "\n" not in stripped and len(stripped) <= 90)
+    signals.setdefault("looks_like_superscript_marker", bool(re.fullmatch(r"\[?\d{1,3}\]?|\(\d{1,3}\)", stripped)))
+    return signals
+
+
 def _build_reader_cleanup_block_identity_metadata(
     *,
     raw_markdown: str,
     generated_paragraph_registry: Sequence[Mapping[str, object]] | None,
 ) -> tuple[dict[int, dict[str, object]], dict[str, object]]:
-    """Build diagnostic-only cleanup block identity metadata.
-
-    The metadata is deliberately not serialized into the model cleanup payload.
-    It lets the pipeline measure whether stable paragraph ids are available for
-    post-cleanup stitching while keeping reader-facing Markdown and prompt
-    behavior unchanged.
-    """
+    """Build cleanup block identity and layout metadata for payloads and stitching."""
     if not generated_paragraph_registry:
         return {}, {"status": "skipped", "reason": "missing_generated_paragraph_registry"}
 
@@ -541,10 +593,16 @@ def _build_reader_cleanup_block_identity_metadata(
             break
 
         paragraph_ids = _registry_entry_paragraph_ids(entry)
+        layout_signals = _reader_cleanup_layout_signals_from_registry_entry(
+            entry=entry,
+            normalized_text=expected_text,
+        )
         if paragraph_ids:
             metadata: dict[str, object] = {"paragraph_id": paragraph_ids[0]}
             if len(paragraph_ids) > 1:
                 metadata["merged_paragraph_ids"] = paragraph_ids
+            if layout_signals:
+                metadata["layout_signals"] = layout_signals
             metadata_by_index[raw_index] = metadata
             matched_count += 1
         else:
