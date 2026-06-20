@@ -313,7 +313,7 @@ def _split_trailing_superscript_marker_chars(chars: Sequence[object]) -> tuple[S
     marker_text = "".join(str(getattr(char, "get_text", lambda: "")() or "") for char in marker_chars).strip()
     if not before_text or not marker_text.isdigit():
         return None
-    if before_text[-1] not in ".!?:;)]}»”\"'":
+    if not _can_end_with_superscript_marker(before_text):
         return None
     body_baselines = [
         float(getattr(char, "y0", 0.0) or 0.0)
@@ -336,6 +336,14 @@ def _split_trailing_superscript_marker_chars(chars: Sequence[object]) -> tuple[S
     if float(median(marker_baselines)) < float(median(body_baselines)) + marker_font_size * 0.35:
         return None
     return before_chars, marker_chars
+
+
+def _can_end_with_superscript_marker(text: str) -> bool:
+    stripped = text.rstrip()
+    if not stripped:
+        return False
+    last_char = stripped[-1]
+    return last_char.isalpha() or last_char in ".!?:;)]}»”\"'"
 
 
 def _pdf_text_span_from_chars(

@@ -209,8 +209,20 @@ def build_paragraph_units_from_text_spans(
             pending_body_spans.append(span)
             continue
         if role == "heading":
-            _flush_body()
             _flush_list()
+            if len(pending_body_spans) == 1 and _can_prefix_heading_with_standalone_number(
+                pending_body_spans[0],
+                span,
+                layout_profile=layout_profile,
+            ):
+                prefix_span = pending_body_spans.pop()
+                if pending_heading_spans and not _can_merge_heading_span(
+                    pending_heading_spans[-1], prefix_span
+                ):
+                    _flush_heading()
+                pending_heading_spans.append(prefix_span)
+            else:
+                _flush_body()
             if pending_heading_spans and not _can_merge_heading_span(
                 pending_heading_spans[-1], span
             ):
@@ -1225,7 +1237,7 @@ def _span_is_tail_marker_for_text_span(
     if text_span is None or text_span.page_number != marker.page_number:
         return False
     text = _normalize_text(text_span.text)
-    if not text or text[-1] not in ".!?:;)]}»”\"'":
+    if not _can_attach_tail_footnote_marker(text):
         return False
     body_leading = layout_profile.body_leading or body_font_size * 1.2
     if float(marker.x0) < float(text_span.x1) - body_leading * 0.2:
@@ -1233,6 +1245,42 @@ def _span_is_tail_marker_for_text_span(
     if float(marker.top) > float(text_span.bottom) or float(marker.bottom) < float(text_span.top):
         return False
     return float(marker.bottom) <= float(text_span.bottom) - marker_font_size * 0.5
+
+
+def _can_attach_tail_footnote_marker(text: str) -> bool:
+    stripped = text.rstrip()
+    if not stripped:
+        return False
+    last_char = stripped[-1]
+    return last_char.isalpha() or last_char in ".!?:;)]}»”\"'"
+
+
+def _can_prefix_heading_with_standalone_number(
+    prefix_span: PdfTextSpan,
+    heading_span: PdfTextSpan,
+    *,
+    layout_profile: _PdfHeadingLayoutProfile,
+) -> bool:
+    prefix_text = _normalize_text(prefix_span.text)
+    if not re.fullmatch(r"\d{1,3}", prefix_text):
+        return False
+    if prefix_span.page_number != heading_span.page_number:
+        return False
+    prefix_font_size = prefix_span.font_size if isinstance(prefix_span.font_size, (int, float)) else None
+    heading_font_size = heading_span.font_size if isinstance(heading_span.font_size, (int, float)) else None
+    if not prefix_font_size or not heading_font_size:
+        return False
+    smaller = min(float(prefix_font_size), float(heading_font_size))
+    larger = max(float(prefix_font_size), float(heading_font_size))
+    if larger - smaller > max(0.5, smaller * 0.12):
+        return False
+    vertical_gap = float(heading_span.top) - float(prefix_span.bottom)
+    body_leading = layout_profile.body_leading or float(heading_font_size) * 1.2
+    if vertical_gap < 0 or vertical_gap > max(float(heading_font_size) * 1.5, body_leading * 2.5):
+        return False
+    prefix_center = (float(prefix_span.x0) + float(prefix_span.x1)) / 2.0
+    heading_padding = max(float(heading_font_size), (float(heading_span.x1) - float(heading_span.x0)) * 0.08)
+    return float(heading_span.x0) - heading_padding <= prefix_center <= float(heading_span.x1) + heading_padding
 
 
 def _looks_like_digit_only_small_span(

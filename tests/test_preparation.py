@@ -222,7 +222,7 @@ def test_prepare_document_for_processing_normalizes_layout_cleanup_cache_key(mon
 
     assert calls["count"] == 1
     assert first.prepared_source_key == second.prepared_source_key
-    assert first.prepared_source_key.endswith(":lc=1:2:80:flag:sr=off:srec=0:ai_first:c1:pv=1")
+    assert first.prepared_source_key.endswith(":lc=1:2:80:flag:sr=off:srec=0:ai_first:c1:pv=2")
 
 
 def test_prepare_document_for_processing_passes_app_config_to_extraction(monkeypatch):
@@ -1112,7 +1112,7 @@ def test_build_prepared_source_key_includes_normalization_mode():
         "report.docx:10:hash",
         6000,
         paragraph_boundary_normalization_mode="high_only",
-    ) == "report.docx:10:hash:6000:high_only:off:phase2_default:epigraph_attribution,image_caption,table_caption,toc_region:lc=1:3:80:sr=off:srec=0:ai_first:c1:pv=1"
+    ) == "report.docx:10:hash:6000:high_only:off:phase2_default:epigraph_attribution,image_caption,table_caption,toc_region:lc=1:3:80:sr=off:srec=0:ai_first:c1:pv=2"
 
 
 def test_build_prepared_source_key_adds_structure_recognition_suffix_when_enabled():
@@ -1121,7 +1121,7 @@ def test_build_prepared_source_key_adds_structure_recognition_suffix_when_enable
         6000,
         paragraph_boundary_normalization_mode="high_only",
         structure_recognition_enabled=True,
-    ) == "report.docx:10:hash:6000:high_only:off:phase2_default:epigraph_attribution,image_caption,table_caption,toc_region:lc=1:3:80:sr=always:srec=0:ai_first:c1:pv=1"
+    ) == "report.docx:10:hash:6000:high_only:off:phase2_default:epigraph_attribution,image_caption,table_caption,toc_region:lc=1:3:80:sr=always:srec=0:ai_first:c1:pv=2"
 
 
 def test_build_prepared_source_key_includes_auto_mode_and_validation_flag():
@@ -1131,7 +1131,7 @@ def test_build_prepared_source_key_includes_auto_mode_and_validation_flag():
         paragraph_boundary_normalization_mode="high_only",
         structure_recognition_mode="auto",
         structure_validation_enabled=False,
-    ) == "report.docx:10:hash:6000:high_only:off:phase2_default:epigraph_attribution,image_caption,table_caption,toc_region:lc=1:3:80:sr=auto:sv=0:srec=0:ai_first:c1:pv=1"
+    ) == "report.docx:10:hash:6000:high_only:off:phase2_default:epigraph_attribution,image_caption,table_caption,toc_region:lc=1:3:80:sr=auto:sv=0:srec=0:ai_first:c1:pv=2"
 
 
 def test_build_prepared_source_key_includes_translate_operation_suffix_when_not_default():
@@ -1140,7 +1140,7 @@ def test_build_prepared_source_key_includes_translate_operation_suffix_when_not_
         6000,
         processing_operation="translate",
         paragraph_boundary_normalization_mode="high_only",
-    ) == "report.docx:10:hash:6000:high_only:off:phase2_default:epigraph_attribution,image_caption,table_caption,toc_region:lc=1:3:80:sr=off:srec=0:ai_first:c1:op=translate:pv=1"
+    ) == "report.docx:10:hash:6000:high_only:off:phase2_default:epigraph_attribution,image_caption,table_caption,toc_region:lc=1:3:80:sr=off:srec=0:ai_first:c1:op=translate:pv=2"
 
 
 def test_build_structure_map_cache_key_uses_logical_index_coordinate():
@@ -1702,8 +1702,8 @@ def test_prepare_document_for_processing_cache_key_changes_with_ai_review_mode(m
 
     assert calls["count"] == 2
     assert list(session_state["preparation_cache"].keys()) == [
-        "report.docx:10:hash:6000:high_only:off:phase2_default:epigraph_attribution,image_caption,table_caption,toc_region:lc=1:3:80:flag:sr=off:srec=0:ai_first:c1:pv=1",
-        "report.docx:10:hash:6000:high_only:review_only:phase2_default:epigraph_attribution,image_caption,table_caption,toc_region:lc=1:3:80:flag:sr=off:srec=0:ai_first:c1:pv=1",
+        "report.docx:10:hash:6000:high_only:off:phase2_default:epigraph_attribution,image_caption,table_caption,toc_region:lc=1:3:80:flag:sr=off:srec=0:ai_first:c1:pv=2",
+        "report.docx:10:hash:6000:high_only:review_only:phase2_default:epigraph_attribution,image_caption,table_caption,toc_region:lc=1:3:80:flag:sr=off:srec=0:ai_first:c1:pv=2",
     ]
 
 
@@ -1750,7 +1750,7 @@ def test_prepare_document_for_processing_jobs_include_narration_metadata_without
 
     assert [job["narration_include"] for job in prepared.jobs] == [False, True]
     assert list(session_state["preparation_cache"].keys()) == [
-        "report.docx:10:hash:6000:high_only:off:phase2_default:epigraph_attribution,image_caption,table_caption,toc_region:lc=1:3:80:flag:sr=off:srec=0:ai_first:c1:pv=1"
+        "report.docx:10:hash:6000:high_only:off:phase2_default:epigraph_attribution,image_caption,table_caption,toc_region:lc=1:3:80:flag:sr=off:srec=0:ai_first:c1:pv=2"
     ]
 
 

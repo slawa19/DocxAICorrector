@@ -71,6 +71,30 @@ def test_pdfminer_line_split_detects_trailing_superscript_marker() -> None:
     assert "".join(char.get_text() for char in marker) == "2"
 
 
+def test_pdfminer_line_split_detects_attribution_trailing_superscript_marker() -> None:
+    chars = [
+        _FakePdfMinerChar("K", size=10, x0=10, x1=18, y0=100, y1=110),
+        _FakePdfMinerChar("o", size=10, x0=18, x1=26, y0=100, y1=110),
+        _FakePdfMinerChar("f", size=10, x0=26, x1=34, y0=100, y1=110),
+        _FakePdfMinerChar("i", size=10, x0=34, x1=38, y0=100, y1=110),
+        _FakePdfMinerChar(" ", size=10, x0=38, x1=42, y0=100, y1=110),
+        _FakePdfMinerChar("A", size=10, x0=42, x1=50, y0=100, y1=110),
+        _FakePdfMinerChar("n", size=10, x0=50, x1=58, y0=100, y1=110),
+        _FakePdfMinerChar("n", size=10, x0=58, x1=66, y0=100, y1=110),
+        _FakePdfMinerChar("a", size=10, x0=66, x1=74, y0=100, y1=110),
+        _FakePdfMinerChar("n", size=10, x0=74, x1=82, y0=100, y1=110),
+        _FakePdfMinerChar("2", size=4, x0=82, x1=84, y0=105, y1=109),
+        _FakePdfMinerChar("8", size=4, x0=84, x1=86, y0=105, y1=109),
+    ]
+
+    split = _split_trailing_superscript_marker_chars(chars)
+
+    assert split is not None
+    body, marker = split
+    assert "".join(char.get_text() for char in body) == "Kofi Annan"
+    assert "".join(char.get_text() for char in marker) == "28"
+
+
 def test_pdfminer_line_split_rejects_normal_trailing_number() -> None:
     chars = [
         _FakePdfMinerChar("2", size=10, x0=10, x1=15, y0=100, y1=110),

@@ -104,6 +104,22 @@ def test_build_paragraph_units_separates_superscript_footnote_marker() -> None:
     assert result.paragraphs[2].structural_role == "footnote"
 
 
+def test_build_paragraph_units_separates_attribution_superscript_footnote_marker() -> None:
+    spans = [
+        _span(1, "Body line establishes the normal document sentence.", top=70, bottom=82, x0=50, x1=430),
+        _span(1, "Kofi Annan, former UN Secretary-General", top=100, bottom=112, x0=50, x1=270),
+        _span(1, "28", top=101, bottom=106, x0=268, x1=274, font_size=4),
+        _span(1, "The following sentence starts a new paragraph.", top=130, bottom=142, x0=50, x1=420),
+    ]
+
+    result = build_paragraph_units_from_text_spans(spans)
+
+    assert [paragraph.role for paragraph in result.paragraphs] == ["body", "body", "footnote", "body"]
+    assert result.paragraphs[1].text == "Kofi Annan, former UN Secretary-General"
+    assert result.paragraphs[2].text == "28"
+    assert result.paragraphs[2].structural_role == "footnote"
+
+
 def test_build_paragraph_units_keeps_non_superscript_trailing_number_in_body() -> None:
     spans = [
         _span(1, "Body line establishes the normal document sentence.", top=70, bottom=82, x0=50, x1=430),
@@ -157,6 +173,20 @@ def test_build_paragraph_units_keeps_leading_chapter_number_with_heading() -> No
         _span(1, "Prior body sentence closes the previous chapter.", top=70, bottom=82, x0=50, x1=420),
         _span(1, "3 Measuring the Wealth of Nations", top=120, bottom=138, x0=50, x1=360, font_size=16, bold=True),
         _span(1, "What we measure affects what we do.", top=150, bottom=162, x0=50, x1=390),
+    ]
+
+    result = build_paragraph_units_from_text_spans(spans)
+
+    assert [paragraph.role for paragraph in result.paragraphs] == ["body", "heading", "body"]
+    assert result.paragraphs[1].rendered_text == "## 3 Measuring the Wealth of Nations"
+
+
+def test_build_paragraph_units_merges_standalone_leading_chapter_number_with_heading() -> None:
+    spans = [
+        _span(1, "Prior body sentence closes the previous chapter.", top=70, bottom=82, x0=50, x1=420),
+        _span(1, "3", top=110, bottom=126, x0=290, x1=301, font_size=16),
+        _span(1, "Measuring the Wealth of Nations", top=140, bottom=156, x0=157, x1=437, font_size=16),
+        _span(1, "What we measure affects what we do.", top=190, bottom=202, x0=50, x1=390),
     ]
 
     result = build_paragraph_units_from_text_spans(spans)

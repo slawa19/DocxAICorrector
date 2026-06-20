@@ -577,7 +577,7 @@ STRUCTURE_RECOVERY_COORDINATE_SCHEMA_VERSION = 1
 # separation, line-fill paragraph boundaries, heading/list segmentation, etc.). It is folded
 # into the prepared-source cache key so a full-pipeline run on a previously prepared book is
 # invalidated and re-imports with the new logic instead of reusing stale cached structure.
-PDF_IMPORT_PARAGRAPH_LOGIC_VERSION = 1
+PDF_IMPORT_PARAGRAPH_LOGIC_VERSION = 2
 
 
 def _build_structure_recognition_summary(
