@@ -245,22 +245,135 @@ def extract_pdf_text_spans_with_pdfminer(pdf_path: str | Path) -> list[PdfTextSp
                     y1=float(line.y1),
                     page_height=page_height,
                 )
-                spans.append(
-                    PdfTextSpan(
-                        page_number=page_index,
-                        text=text,
-                        x0=float(line.x0),
-                        top=top,
-                        x1=float(line.x1),
-                        bottom=bottom,
-                        page_height=page_height,
-                        font_name=font_name,
-                        font_size=float(font_size) if font_size else None,
-                        is_bold="bold" in font_name_lower or "black" in font_name_lower,
-                        is_italic="italic" in font_name_lower or "oblique" in font_name_lower,
+                trailing_superscript_split = _split_trailing_superscript_marker_chars(chars)
+                if trailing_superscript_split is None:
+                    spans.append(
+                        PdfTextSpan(
+                            page_number=page_index,
+                            text=text,
+                            x0=float(line.x0),
+                            top=top,
+                            x1=float(line.x1),
+                            bottom=bottom,
+                            page_height=page_height,
+                            font_name=font_name,
+                            font_size=float(font_size) if font_size else None,
+                            is_bold="bold" in font_name_lower or "black" in font_name_lower,
+                            is_italic="italic" in font_name_lower or "oblique" in font_name_lower,
+                        )
                     )
-                )
+                    continue
+                for segment_chars in trailing_superscript_split:
+                    span = _pdf_text_span_from_chars(
+                        segment_chars,
+                        page_number=page_index,
+                        page_height=page_height,
+                    )
+                    if span is not None:
+                        spans.append(span)
     return spans
+
+
+def _split_trailing_superscript_marker_chars(chars: Sequence[object]) -> tuple[Sequence[object], Sequence[object]] | None:
+    if len(chars) < 2:
+        return None
+    non_space_indexes = [
+        index
+        for index, char in enumerate(chars)
+        if str(getattr(char, "get_text", lambda: "")() or "").strip()
+    ]
+    if len(non_space_indexes) < 2:
+        return None
+    font_sizes = [
+        float(getattr(chars[index], "size", 0.0) or 0.0)
+        for index in non_space_indexes
+        if float(getattr(chars[index], "size", 0.0) or 0.0) > 0
+    ]
+    if not font_sizes:
+        return None
+    body_font_size = float(median(font_sizes))
+    tail_indexes: list[int] = []
+    for index in reversed(non_space_indexes):
+        char = chars[index]
+        text = str(getattr(char, "get_text", lambda: "")() or "")
+        char_size = float(getattr(char, "size", 0.0) or 0.0)
+        if text.isdigit() and char_size <= body_font_size * 0.62:
+            tail_indexes.append(index)
+            continue
+        break
+    if not tail_indexes:
+        return None
+    tail_indexes.reverse()
+    if len(tail_indexes) > 3:
+        return None
+    marker_start = tail_indexes[0]
+    before_chars = chars[:marker_start]
+    marker_chars = chars[marker_start:]
+    before_text = "".join(str(getattr(char, "get_text", lambda: "")() or "") for char in before_chars).rstrip()
+    marker_text = "".join(str(getattr(char, "get_text", lambda: "")() or "") for char in marker_chars).strip()
+    if not before_text or not marker_text.isdigit():
+        return None
+    if before_text[-1] not in ".!?:;)]}»”\"'":
+        return None
+    body_baselines = [
+        float(getattr(char, "y0", 0.0) or 0.0)
+        for char in before_chars
+        if str(getattr(char, "get_text", lambda: "")() or "").strip()
+    ]
+    marker_baselines = [
+        float(getattr(char, "y0", 0.0) or 0.0)
+        for char in marker_chars
+        if str(getattr(char, "get_text", lambda: "")() or "").strip()
+    ]
+    if not body_baselines or not marker_baselines:
+        return None
+    marker_font_sizes = [
+        float(getattr(char, "size", 0.0) or 0.0)
+        for char in marker_chars
+        if float(getattr(char, "size", 0.0) or 0.0) > 0
+    ]
+    marker_font_size = float(median(marker_font_sizes)) if marker_font_sizes else body_font_size
+    if float(median(marker_baselines)) < float(median(body_baselines)) + marker_font_size * 0.35:
+        return None
+    return before_chars, marker_chars
+
+
+def _pdf_text_span_from_chars(
+    chars: Sequence[object],
+    *,
+    page_number: int,
+    page_height: float | None,
+) -> PdfTextSpan | None:
+    text = "".join(str(getattr(char, "get_text", lambda: "")() or "") for char in chars).strip()
+    if not text:
+        return None
+    font_names = [str(getattr(char, "fontname", "") or "") for char in chars]
+    font_sizes = [
+        float(getattr(char, "size", 0.0) or 0.0)
+        for char in chars
+        if float(getattr(char, "size", 0.0) or 0.0) > 0
+    ]
+    font_name = _most_common(font_names)
+    font_name_lower = font_name.lower()
+    x0 = min(float(getattr(char, "x0", 0.0) or 0.0) for char in chars)
+    x1 = max(float(getattr(char, "x1", 0.0) or 0.0) for char in chars)
+    y0 = min(float(getattr(char, "y0", 0.0) or 0.0) for char in chars)
+    y1 = max(float(getattr(char, "y1", 0.0) or 0.0) for char in chars)
+    top, bottom = _pdfminer_top_origin_bounds(y0=y0, y1=y1, page_height=page_height)
+    font_size = float(median(font_sizes)) if font_sizes else None
+    return PdfTextSpan(
+        page_number=page_number,
+        text=text,
+        x0=x0,
+        top=top,
+        x1=x1,
+        bottom=bottom,
+        page_height=page_height,
+        font_name=font_name,
+        font_size=font_size,
+        is_bold="bold" in font_name_lower or "black" in font_name_lower,
+        is_italic="italic" in font_name_lower or "oblique" in font_name_lower,
+    )
 
 
 def _span_from_mapping(item: Mapping[str, object]) -> PdfTextSpan:

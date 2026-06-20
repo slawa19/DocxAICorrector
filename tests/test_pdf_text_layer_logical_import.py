@@ -11,6 +11,7 @@ def _span(
     top: float,
     bottom: float,
     x0: float = 50,
+    x1: float = 450,
     font_size: float = 10,
     bold: bool = False,
     italic: bool = False,
@@ -20,7 +21,7 @@ def _span(
         text=text,
         x0=x0,
         top=top,
-        x1=450,
+        x1=x1,
         bottom=bottom,
         page_height=800,
         font_name="SourceSerif-Bold" if bold else "SourceSerif",
@@ -84,6 +85,92 @@ def test_build_paragraph_units_preserves_heading_list_and_formatting_signals() -
         "p0001",
         "p0002",
         "p0003",
+    ]
+
+
+def test_build_paragraph_units_separates_superscript_footnote_marker() -> None:
+    spans = [
+        _span(1, "Body line establishes the normal document sentence.", top=70, bottom=82, x0=50, x1=430),
+        _span(1, "This sentence ends with a citation.", top=100, bottom=112, x0=50, x1=250),
+        _span(1, "2", top=101, bottom=106, x0=248, x1=252, font_size=4),
+        _span(1, "The following sentence starts a new paragraph.", top=130, bottom=142, x0=50, x1=420),
+    ]
+
+    result = build_paragraph_units_from_text_spans(spans)
+
+    assert [paragraph.role for paragraph in result.paragraphs] == ["body", "body", "footnote", "body"]
+    assert result.paragraphs[1].text == "This sentence ends with a citation."
+    assert result.paragraphs[2].text == "2"
+    assert result.paragraphs[2].structural_role == "footnote"
+
+
+def test_build_paragraph_units_keeps_non_superscript_trailing_number_in_body() -> None:
+    spans = [
+        _span(1, "Body line establishes the normal document sentence.", top=70, bottom=82, x0=50, x1=430),
+        _span(1, "Hyman Minsky, 19921", top=100, bottom=112, x0=50, x1=180),
+        _span(1, "A real body paragraph resumes here.", top=130, bottom=142, x0=50, x1=350),
+    ]
+
+    result = build_paragraph_units_from_text_spans(spans)
+
+    assert [paragraph.role for paragraph in result.paragraphs] == ["body", "body", "body"]
+    assert result.paragraphs[1].text == "Hyman Minsky, 19921"
+
+
+def test_build_paragraph_units_merges_ordered_list_continuation_lines() -> None:
+    spans = [
+        _span(1, "Body line establishes the normal document sentence.", top=70, bottom=82, x0=50, x1=430),
+        _span(1, "1. first item continues toward the right edge", top=100, bottom=112, x0=70, x1=420),
+        _span(1, "and finishes on the next physical line", top=114, bottom=126, x0=70, x1=300),
+        _span(1, "2. second item is separate", top=128, bottom=140, x0=70, x1=280),
+    ]
+
+    result = build_paragraph_units_from_text_spans(spans)
+
+    lists = [paragraph for paragraph in result.paragraphs if paragraph.role == "list"]
+    assert len(lists) == 2
+    assert lists[0].list_kind == "ordered"
+    assert lists[0].text == (
+        "1. first item continues toward the right edge and finishes on the next physical line"
+    )
+    assert lists[1].text == "2. second item is separate"
+
+
+def test_build_paragraph_units_classifies_numbered_display_line_as_heading() -> None:
+    spans = [
+        _span(1, "A body paragraph closes before the section.", top=70, bottom=82, x0=50, x1=420),
+        _span(
+            1,
+            "2. Short-Termism: Why the Future is Discounted",
+            top=110,
+            bottom=126,
+            x0=50,
+            x1=360,
+            font_size=12,
+            bold=True,
+        ),
+        _span(1, "The following paragraph begins after the heading.", top=132, bottom=144, x0=50, x1=430),
+    ]
+
+    result = build_paragraph_units_from_text_spans(spans)
+
+    assert [paragraph.role for paragraph in result.paragraphs] == ["body", "heading", "body"]
+    assert result.paragraphs[1].text == "2. Short-Termism: Why the Future is Discounted"
+
+
+def test_build_paragraph_units_splits_short_terminal_body_line_at_left_return() -> None:
+    spans = [
+        _span(1, "A full body line establishes the usual line width for this page.", top=70, bottom=82, x0=50, x1=430),
+        _span(1, "Short paragraph ends.", top=100, bottom=112, x0=50, x1=180),
+        _span(1, "Next paragraph begins with an uppercase word.", top=114, bottom=126, x0=50, x1=390),
+    ]
+
+    result = build_paragraph_units_from_text_spans(spans)
+
+    assert [paragraph.text for paragraph in result.paragraphs] == [
+        "A full body line establishes the usual line width for this page.",
+        "Short paragraph ends.",
+        "Next paragraph begins with an uppercase word.",
     ]
 
 

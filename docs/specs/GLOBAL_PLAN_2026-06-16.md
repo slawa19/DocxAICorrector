@@ -139,6 +139,85 @@ Phase 2 — bigger moves, ONLY if Phase 1 leaves material defects (reserve):
 - **Done:** each gated by held-out measurement + no per-book literals; pursue only what Phase-1
   data justifies.
 
+## Formatting Transfer Contract — BINDING (re-affirmed 2026-06-20)
+
+The "what exactly do we transfer" requirement had drifted into archive. Canonical source:
+`docs/archive/specs/TOC_TRANSLATION_AND_MINIMAL_FORMATTING_SPEC_2026-04-21.md` §8.3 (now lineage);
+its minimal-formatting policy is PROMOTED here to ACTIVE and binding. This bounds all further
+structure/formatting work — no feature may widen it without an explicit decision.
+
+KEEP by default (structure + inline emphasis):
+- headings + levels — rendered via TARGET reference-DOCX heading styles, NOT source geometry/size;
+- body paragraphs — target defaults; lists (ordered/unordered + nesting); tables (baseline readable);
+  images + captions;
+- inline emphasis: bold, italic, underline, superscript, subscript, hyperlinks, line breaks.
+
+DROP by default (the "source style zoo"):
+- source paragraph style names; source fonts, COLORS, FONT SIZES; tab stops, indents, spacing,
+  paragraph geometry; blind direct-alignment replay.
+
+WHITELIST exceptions only: center for image placeholders; narrow test-backed centered short
+non-heading paragraphs; baseline target table styling (Table Grid); list-numbering compat shims.
+
+Measured current state vs contract (code audit 2026-06-20):
+- Font COLOR: NOT applied to text by our code (`color` only in config/image modules; no
+  `font.color`/`RGBColor` in document/generation). Red squiggles in screenshots = Word spell-check;
+  heading colour = target template styles (compliant). No colour drift.
+- Font SIZE: source `font_size_pt` replayed ONLY on TOC lines
+  (`_restore_toc_run_formatting_for_mapped_pairs`, gated to toc_header/toc_entry), not body — one
+  borderline item to review, not a general zoo.
+- So real drift is small; the gap was that the contract was not ACTIVE or ENFORCED.
+
+Binding actions:
+1. This contract is the active reference; the archived spec stays as detailed lineage.
+2. Add an ENFORCEMENT test: output DOCX body/headings carry NO source colour/font/size/indent/
+   spacing; inline emphasis preserved; whitelist-only exceptions — so drift cannot silently return.
+3. Review the TOC font-size exception against the contract (keep as narrow TOC-readability
+   exception, or drop).
+
+Implication for structure/heading work (bounds further development):
+- Structure detection's job is to TAG role (heading/list/caption/footnote); RENDERING uses TARGET
+  styles. NO typography replay, NO size/colour machinery.
+- The 2026-06-19 post-pass experiments (0/4; target subheadings are typographically BODY-LIKE —
+  real-layout signals at the targets read font≈body, bold=false, indent≈0) CONFIRM typography is the
+  wrong lever: the residual is SEMANTIC role-tagging, not style transfer. This contract makes that
+  explicit — stop chasing typography; get role tags right and let target styles render.
+
+## Update — 2026-06-20b (shipped-DOCX defects classified: they are IMPORT-origin)
+
+Director's eyes-on the shipped Money & Sustainability DOCX flagged four defect classes. Each was
+checked against the PRE-translation imported markdown (`money_sustainability_imported.md`): all four
+are present BEFORE translation → they originate at IMPORT, not the post-pass. (The AI post-pass was
+never the right owner, and the 2026-06-19 experiments proved it dead for structure anyway.)
+
+Defect ledger:
+- A. Footnote markers glued to body (25/43/44). Pre-translation evidence: import lines 448/480/482/
+  486 end "...times.2", "...Rome.5", "...States.6", "...change.8". Origin: IMPORT (superscript refs
+  extracted as inline digits, not separated). Fix locus: import — deterministic footnote-marker
+  separation (general; pdfminer superscript/size), not per-book.
+- B. Subheadings fused / heading-role lost (e.g. "Short-Termism…", "Implications for sustainability").
+  Evidence: import line 1410 "2. Short-Termism: Why the Future is Discounted" is a STANDALONE line
+  but is NOT tagged as a heading (typography body-like) → renders as body. Origin: IMPORT heading-
+  role tagging miss — the standalone-LINE signal exists, but detection keys on body-like font.
+  Fix locus: import — tag standalone numbered/section lines as headings via line-structure +
+  semantics, NOT typography.
+- C. Body paragraphs fragmented mid-sentence. Origin: IMPORT paragraph segmentation on epub→pdf
+  (same mechanism as D). Fix locus: import — rejoin via line-fill-ratio / continuation signal.
+- D. Lists broken; items split / numbering lost. Evidence: import line 1376 item "1. …the upturns"
+  continues on the next line. Origin: IMPORT list-item segmentation. Fix locus: import — list-item
+  reassembly + ordered-intent preservation.
+
+Consequences:
+- The reader-cleanup structural-fix redesign (8-lever, 2026-06-19) is CLOSED for structure: the
+  post-pass cannot recover structure from translated, typographically-body-like text (0/4 incl. real
+  signals). KEPT: Phase 0 image safety (shipped, 43→43 on all 4 books). The structural levers
+  re-home to IMPORT.
+- Active direction for these defects: IMPORT-side segmentation + role-tagging, under the Formatting
+  Transfer Contract (tag role → render with target styles; no typography replay). This is the
+  existing "Generalization of structure detection" section, now with a concrete classified ledger.
+- Bounds: profile-first / line-structure signals + semantics for the body-like tail; NO per-book
+  literals; eyes-on the produced DOCX; measured held-out (spread across books).
+
 ## Remaining Work Before Returning to UI
 
 The UI surfaces results to users, so before UI work the pipeline must (a) reliably

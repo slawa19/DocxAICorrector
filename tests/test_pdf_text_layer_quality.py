@@ -7,6 +7,7 @@ from pathlib import Path
 from docxaicorrector.pdf_import.text_layer_quality import (
     PdfTextSpan,
     _pdfminer_top_origin_bounds,
+    _split_trailing_superscript_marker_chars,
     build_text_layer_quality_report,
     extract_pdf_text_spans_with_pdfminer,
     load_spans_json,
@@ -38,6 +39,47 @@ def _span(
         is_bold=bold,
         is_italic=italic,
     )
+
+
+class _FakePdfMinerChar:
+    def __init__(self, text: str, *, size: float, x0: float, x1: float, y0: float, y1: float) -> None:
+        self._text = text
+        self.size = size
+        self.x0 = x0
+        self.x1 = x1
+        self.y0 = y0
+        self.y1 = y1
+        self.fontname = "SourceSerif"
+
+    def get_text(self) -> str:
+        return self._text
+
+
+def test_pdfminer_line_split_detects_trailing_superscript_marker() -> None:
+    chars = [
+        _FakePdfMinerChar("O", size=10, x0=10, x1=18, y0=100, y1=110),
+        _FakePdfMinerChar("K", size=10, x0=18, x1=26, y0=100, y1=110),
+        _FakePdfMinerChar(".", size=10, x0=26, x1=29, y0=100, y1=110),
+        _FakePdfMinerChar("2", size=4, x0=28, x1=30, y0=105, y1=109),
+    ]
+
+    split = _split_trailing_superscript_marker_chars(chars)
+
+    assert split is not None
+    body, marker = split
+    assert "".join(char.get_text() for char in body) == "OK."
+    assert "".join(char.get_text() for char in marker) == "2"
+
+
+def test_pdfminer_line_split_rejects_normal_trailing_number() -> None:
+    chars = [
+        _FakePdfMinerChar("2", size=10, x0=10, x1=15, y0=100, y1=110),
+        _FakePdfMinerChar("0", size=10, x0=15, x1=20, y0=100, y1=110),
+        _FakePdfMinerChar("2", size=10, x0=20, x1=25, y0=100, y1=110),
+        _FakePdfMinerChar("6", size=10, x0=25, x1=30, y0=100, y1=110),
+    ]
+
+    assert _split_trailing_superscript_marker_chars(chars) is None
 
 
 def test_quality_report_filters_repeated_page_furniture_and_page_numbers() -> None:

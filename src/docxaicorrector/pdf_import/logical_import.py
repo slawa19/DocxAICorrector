@@ -73,6 +73,7 @@ class PdfSourceImportResult:
 class _PdfHeadingLayoutProfile:
     body_font_size: float | None
     body_left_x0: float | None
+    body_right_x1: float | None
     body_leading: float | None
     body_line_length_p75: float
     body_line_length_p90: float
@@ -121,6 +122,7 @@ def build_paragraph_units_from_text_spans(
     emitted: list[ParagraphUnit] = []
     pending_body_spans: list[PdfTextSpan] = []
     pending_heading_spans: list[PdfTextSpan] = []
+    pending_list_spans: list[PdfTextSpan] = []
     skipped_repeated_page_furniture_count = 0
     skipped_page_number_count = 0
     skipped_blank_page_notice_count = 0
@@ -141,11 +143,41 @@ def build_paragraph_units_from_text_spans(
             )
             pending_heading_spans = []
 
+    def _flush_list() -> None:
+        nonlocal pending_list_spans
+        if pending_list_spans:
+            emitted.append(
+                _paragraph_from_list_spans(
+                    pending_list_spans, median_font_size=median_font_size
+                )
+            )
+            pending_list_spans = []
+
     for span_index, span in enumerate(ordered_spans):
         if _span_furniture_key(span) in repeated_furniture_keys:
             skipped_repeated_page_furniture_count += 1
             continue
-        if _looks_like_page_number(span):
+        previous_content_span = _nearest_content_span(
+            ordered_spans,
+            span_index,
+            direction=-1,
+            repeated_furniture_keys=repeated_furniture_keys,
+        )
+        next_content_span = _nearest_content_span(
+            ordered_spans,
+            span_index,
+            direction=1,
+            repeated_furniture_keys=repeated_furniture_keys,
+        )
+        if (
+            _looks_like_page_number(span)
+            and not _looks_like_superscript_footnote_marker(
+                span,
+                previous_span=previous_content_span,
+                layout_profile=layout_profile,
+            )
+            and not _looks_like_small_numeric_note_marker(span, layout_profile=layout_profile)
+        ):
             skipped_page_number_count += 1
             continue
         if _looks_like_blank_page_notice(span):
@@ -154,44 +186,58 @@ def build_paragraph_units_from_text_spans(
         role = _classify_span_role(
             span,
             layout_profile=layout_profile,
-            previous_span=_nearest_content_span(
-                ordered_spans,
-                span_index,
-                direction=-1,
-                repeated_furniture_keys=repeated_furniture_keys,
-            ),
-            next_span=_nearest_content_span(
-                ordered_spans,
-                span_index,
-                direction=1,
-                repeated_furniture_keys=repeated_furniture_keys,
-            ),
+            previous_span=previous_content_span,
+            next_span=next_content_span,
         )
         if role == "body":
             _flush_heading()
-            if pending_body_spans and not _can_merge_body_span(pending_body_spans[-1], span):
+            if pending_list_spans:
+                if _can_merge_list_continuation_span(
+                    pending_list_spans[-1],
+                    span,
+                    layout_profile=layout_profile,
+                ):
+                    pending_list_spans.append(span)
+                    continue
+                _flush_list()
+            if pending_body_spans and not _can_merge_body_span(
+                pending_body_spans[-1],
+                span,
+                layout_profile=layout_profile,
+            ):
                 _flush_body()
             pending_body_spans.append(span)
             continue
         if role == "heading":
             _flush_body()
+            _flush_list()
             if pending_heading_spans and not _can_merge_heading_span(
                 pending_heading_spans[-1], span
             ):
                 _flush_heading()
             pending_heading_spans.append(span)
             continue
+        if role == "list":
+            _flush_body()
+            _flush_heading()
+            if pending_list_spans:
+                _flush_list()
+            pending_list_spans.append(span)
+            continue
         if role == "toc_entry":
             _flush_body()
             _flush_heading()
+            _flush_list()
             emitted.append(_paragraph_from_span(span, role=role, median_font_size=median_font_size))
             continue
         _flush_body()
         _flush_heading()
+        _flush_list()
         emitted.append(_paragraph_from_span(span, role=role, median_font_size=median_font_size))
 
     _flush_body()
     _flush_heading()
+    _flush_list()
 
     for logical_index, paragraph in enumerate(emitted):
         _assign_pdf_paragraph_identity(paragraph, logical_index)
@@ -218,8 +264,23 @@ def _classify_span_role(
     next_span: PdfTextSpan | None,
 ) -> str:
     text = _normalize_text(span.text)
+    if _ORDERED_LIST_PATTERN.match(text) and _looks_like_numbered_display_heading(
+        span,
+        layout_profile=layout_profile,
+        previous_span=previous_span,
+        next_span=next_span,
+    ):
+        return "heading"
     if _BULLET_PATTERN.match(text) or _ORDERED_LIST_PATTERN.match(text):
         return "list"
+    if _looks_like_superscript_footnote_marker(
+        span,
+        previous_span=previous_span,
+        layout_profile=layout_profile,
+    ):
+        return "footnote"
+    if _looks_like_small_numeric_note_marker(span, layout_profile=layout_profile):
+        return "footnote"
     if _looks_like_caption(span):
         return "caption"
     if _looks_like_toc_entry(span):
@@ -261,6 +322,7 @@ def _build_heading_layout_profile(
     ]
     body_font_size = _mode_font_size(sentence_font_sizes) or _mode_font_size(font_sizes)
     body_left_candidates: list[float] = []
+    body_right_candidates: list[float] = []
     body_line_lengths: list[int] = []
     body_case_candidates: list[tuple[float, float]] = []
     for span in spans:
@@ -279,9 +341,11 @@ def _build_heading_layout_profile(
             if ratio < 0.75 or ratio > 1.25:
                 continue
         body_left_candidates.append(float(span.x0))
+        body_right_candidates.append(float(span.x1))
         body_line_lengths.append(len(text))
         body_case_candidates.append((_uppercase_ratio(text), _title_word_ratio(words)))
     body_left_x0 = float(median(body_left_candidates)) if body_left_candidates else None
+    body_right_x1 = _percentile(body_right_candidates, 0.85) if body_right_candidates else None
     body_line_length_p75 = _percentile(body_line_lengths, 0.75)
     body_line_length_p90 = _percentile(body_line_lengths, 0.90)
     body_leading = _estimate_body_leading(
@@ -298,6 +362,7 @@ def _build_heading_layout_profile(
     base_profile = _PdfHeadingLayoutProfile(
         body_font_size=body_font_size,
         body_left_x0=body_left_x0,
+        body_right_x1=body_right_x1,
         body_leading=body_leading,
         body_line_length_p75=body_line_length_p75,
         body_line_length_p90=body_line_length_p90,
@@ -339,6 +404,7 @@ def _build_heading_layout_profile(
     return _PdfHeadingLayoutProfile(
         body_font_size=body_font_size,
         body_left_x0=body_left_x0,
+        body_right_x1=body_right_x1,
         body_leading=body_leading,
         body_line_length_p75=body_line_length_p75,
         body_line_length_p90=body_line_length_p90,
@@ -889,6 +955,40 @@ def _looks_like_pdf_heading_candidate(
     return True
 
 
+def _looks_like_numbered_display_heading(
+    span: PdfTextSpan,
+    *,
+    layout_profile: _PdfHeadingLayoutProfile,
+    previous_span: PdfTextSpan | None,
+    next_span: PdfTextSpan | None,
+) -> bool:
+    text = _normalize_text(span.text)
+    if not _ORDERED_LIST_PATTERN.match(text):
+        return False
+    words = _words(text)
+    if not words or len(words) > 12:
+        return False
+    body_font_size = layout_profile.body_font_size
+    font_size = span.font_size if isinstance(span.font_size, (int, float)) else None
+    font_ratio = (float(font_size) / body_font_size) if body_font_size and font_size else 1.0
+    if not (span.is_bold or font_ratio >= 1.08):
+        return False
+    body_leading = layout_profile.body_leading or body_font_size or font_size or 10.0
+    previous_gap = (
+        max(0.0, float(span.top) - float(previous_span.bottom))
+        if previous_span is not None and previous_span.page_number == span.page_number
+        else body_leading
+    )
+    next_gap = (
+        max(0.0, float(next_span.top) - float(span.bottom))
+        if next_span is not None and next_span.page_number == span.page_number
+        else body_leading
+    )
+    has_layout_break = previous_gap >= body_leading * 0.5 or next_gap >= body_leading * 0.25
+    has_display_case = _title_word_ratio(words) >= 0.35 or _uppercase_ratio(text) >= 0.35
+    return has_layout_break and has_display_case
+
+
 def _words(text: str) -> list[str]:
     return [word for word in re.split(r"\s+", text) if word]
 
@@ -1013,21 +1113,45 @@ def _looks_like_standalone_heading_context(
     return has_visual_gap or starts_new_body_line
 
 
-def _can_merge_body_span(previous: PdfTextSpan, current: PdfTextSpan) -> bool:
+def _can_merge_body_span(
+    previous: PdfTextSpan,
+    current: PdfTextSpan,
+    *,
+    layout_profile: _PdfHeadingLayoutProfile,
+) -> bool:
     if previous.page_number != current.page_number:
         return False
     if _looks_like_toc_entry(previous) or _looks_like_toc_entry(current):
         return False
-    if _looks_like_body_paragraph_indent_boundary(previous, current):
+    if _looks_like_body_paragraph_indent_boundary(previous, current, layout_profile=layout_profile):
         return False
     previous_font_size = previous.font_size if isinstance(previous.font_size, (int, float)) else 10.0
     current_font_size = current.font_size if isinstance(current.font_size, (int, float)) else previous_font_size
     vertical_gap = max(0.0, float(current.top) - float(previous.bottom))
-    max_gap = max(8.0, min(previous_font_size, current_font_size) * 1.25)
-    return vertical_gap <= max_gap
+    body_leading = layout_profile.body_leading or min(previous_font_size, current_font_size) * 1.2
+    max_gap = min(body_leading * 0.55, min(previous_font_size, current_font_size) * 1.25)
+    if vertical_gap > max_gap:
+        return False
+    previous_text = _normalize_text(previous.text)
+    current_text = _normalize_text(current.text)
+    if (
+        previous_text
+        and current_text
+        and previous_text[-1] in _TERMINAL_SENTENCE_PUNCTUATION
+        and _starts_like_new_body_sentence(current_text)
+        and _span_line_fill_ratio(previous, layout_profile) < 0.72
+        and _is_near_body_left(current, layout_profile)
+    ):
+        return False
+    return True
 
 
-def _looks_like_body_paragraph_indent_boundary(previous: PdfTextSpan, current: PdfTextSpan) -> bool:
+def _looks_like_body_paragraph_indent_boundary(
+    previous: PdfTextSpan,
+    current: PdfTextSpan,
+    *,
+    layout_profile: _PdfHeadingLayoutProfile,
+) -> bool:
     previous_text = _normalize_text(previous.text)
     current_text = _normalize_text(current.text)
     if not previous_text or not current_text:
@@ -1035,14 +1159,113 @@ def _looks_like_body_paragraph_indent_boundary(previous: PdfTextSpan, current: P
     previous_x0 = float(previous.x0)
     current_x0 = float(current.x0)
     indent_delta = current_x0 - previous_x0
-    if indent_delta >= 8.0:
+    body_leading = layout_profile.body_leading or layout_profile.body_font_size or 10.0
+    if indent_delta >= body_leading * 0.45:
         return True
-    if current_x0 < 12.0 or abs(indent_delta) > 3.0:
+    if layout_profile.body_left_x0 is None or not _is_near_body_left(current, layout_profile):
         return False
     if previous_text[-1] not in _TERMINAL_SENTENCE_PUNCTUATION:
         return False
     first_char = current_text[0]
     return first_char in _OPENING_TEXT_BOUNDARY_CHARS or first_char.isupper()
+
+
+def _starts_like_new_body_sentence(text: str) -> bool:
+    stripped = text.lstrip()
+    if not stripped:
+        return False
+    first_char = stripped[0]
+    return first_char in _OPENING_TEXT_BOUNDARY_CHARS or first_char.isupper()
+
+
+def _is_near_body_left(span: PdfTextSpan, layout_profile: _PdfHeadingLayoutProfile) -> bool:
+    if layout_profile.body_left_x0 is None:
+        return False
+    body_leading = layout_profile.body_leading or layout_profile.body_font_size or 10.0
+    return abs(float(span.x0) - layout_profile.body_left_x0) <= body_leading * 0.75
+
+
+def _span_line_fill_ratio(span: PdfTextSpan, layout_profile: _PdfHeadingLayoutProfile) -> float:
+    if layout_profile.body_left_x0 is not None and layout_profile.body_right_x1 is not None:
+        body_width = max(1.0, layout_profile.body_right_x1 - layout_profile.body_left_x0)
+        return max(0.0, min(1.25, (float(span.x1) - layout_profile.body_left_x0) / body_width))
+    if layout_profile.body_line_length_p75 > 0:
+        return max(0.0, min(1.25, len(_normalize_text(span.text)) / layout_profile.body_line_length_p75))
+    return 1.0
+
+
+def _can_merge_list_continuation_span(
+    previous: PdfTextSpan,
+    current: PdfTextSpan,
+    *,
+    layout_profile: _PdfHeadingLayoutProfile,
+) -> bool:
+    if previous.page_number != current.page_number:
+        return False
+    current_text = _normalize_text(current.text)
+    if not current_text or _BULLET_PATTERN.match(current_text) or _ORDERED_LIST_PATTERN.match(current_text):
+        return False
+    if _looks_like_superscript_footnote_marker(
+        current,
+        previous_span=previous,
+        layout_profile=layout_profile,
+    ):
+        return False
+    previous_font_size = previous.font_size if isinstance(previous.font_size, (int, float)) else 10.0
+    current_font_size = current.font_size if isinstance(current.font_size, (int, float)) else previous_font_size
+    body_leading = layout_profile.body_leading or min(previous_font_size, current_font_size) * 1.2
+    vertical_gap = max(0.0, float(current.top) - float(previous.bottom))
+    max_gap = min(body_leading * 0.55, min(previous_font_size, current_font_size) * 1.25)
+    if vertical_gap > max_gap:
+        return False
+    near_previous_indent = abs(float(current.x0) - float(previous.x0)) <= body_leading * 0.75
+    if not near_previous_indent:
+        return False
+    previous_text = _normalize_text(previous.text)
+    return (
+        _starts_like_sentence_continuation(current_text)
+        or not _has_terminal_sentence_punctuation(previous_text)
+        or _span_line_fill_ratio(previous, layout_profile) >= 0.72
+    )
+
+
+def _looks_like_superscript_footnote_marker(
+    span: PdfTextSpan,
+    *,
+    previous_span: PdfTextSpan | None,
+    layout_profile: _PdfHeadingLayoutProfile,
+) -> bool:
+    text = _normalize_text(span.text)
+    if not re.fullmatch(r"\d{1,3}", text):
+        return False
+    if previous_span is None or previous_span.page_number != span.page_number:
+        return False
+    body_font_size = layout_profile.body_font_size
+    marker_font_size = span.font_size if isinstance(span.font_size, (int, float)) else None
+    if not body_font_size or not marker_font_size or marker_font_size > body_font_size * 0.62:
+        return False
+    previous_text = _normalize_text(previous_span.text)
+    if not previous_text or previous_text[-1] not in ".!?:;)]}»”\"'":
+        return False
+    body_leading = layout_profile.body_leading or body_font_size * 1.2
+    if float(span.x0) < float(previous_span.x1) - body_leading * 0.2:
+        return False
+    if float(span.top) > float(previous_span.bottom) or float(span.bottom) < float(previous_span.top):
+        return False
+    return float(span.bottom) <= float(previous_span.bottom) - marker_font_size * 0.5
+
+
+def _looks_like_small_numeric_note_marker(
+    span: PdfTextSpan,
+    *,
+    layout_profile: _PdfHeadingLayoutProfile,
+) -> bool:
+    text = _normalize_text(span.text)
+    if not re.fullmatch(r"\d{1,3}", text):
+        return False
+    body_font_size = layout_profile.body_font_size
+    marker_font_size = span.font_size if isinstance(span.font_size, (int, float)) else None
+    return bool(body_font_size and marker_font_size and marker_font_size <= body_font_size * 0.62)
 
 
 def _can_merge_heading_span(previous: PdfTextSpan, current: PdfTextSpan) -> bool:
@@ -1131,6 +1354,38 @@ def _paragraph_from_heading_spans(
     )
 
 
+def _paragraph_from_list_spans(
+    spans: list[PdfTextSpan],
+    *,
+    median_font_size: float | None,
+) -> ParagraphUnit:
+    if len(spans) == 1:
+        return _paragraph_from_span(spans[0], role="list", median_font_size=median_font_size)
+    text = " ".join(_normalize_text(span.text) for span in spans)
+    first = spans[0]
+    return ParagraphUnit(
+        text=text,
+        role="list",
+        structural_role="list",
+        role_confidence="heuristic",
+        style_name=_style_name_for_role("list"),
+        heading_level=None,
+        heading_source=None,
+        list_kind="ordered" if _ORDERED_LIST_PATTERN.match(_normalize_text(first.text)) else "bullet",
+        list_level=0,
+        is_bold=all(span.is_bold for span in spans),
+        is_italic=all(span.is_italic for span in spans),
+        font_size_pt=_median_font_size(spans),
+        origin_raw_indexes=[_span_origin_index(span) for span in spans],
+        origin_raw_texts=[_normalize_text(span.text) for span in spans],
+        layout_origin="pdf_text_layer",
+        boundary_source="pdf_text_layer",
+        boundary_confidence="heuristic",
+        boundary_rationale="merged_pdf_list_continuation_spans",
+        source_index=_span_origin_index(first),
+    )
+
+
 def _paragraph_from_span(
     span: PdfTextSpan,
     *,
@@ -1186,6 +1441,8 @@ def _style_name_for_role(role: str) -> str:
         return "PDF Caption"
     if role == "toc_entry":
         return "PDF TOC Entry"
+    if role == "footnote":
+        return "PDF Footnote"
     return "PDF Body"
 
 

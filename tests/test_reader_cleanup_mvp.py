@@ -359,6 +359,73 @@ def test_run_reader_cleanup_reannotation_applies_heading_body_boundary_with_cont
     assert result.report_payload["stats"]["accepted_cleanup_operation_count"] == 1
 
 
+def test_run_reader_cleanup_reannotation_applies_exact_list_items_with_containment() -> None:
+    markdown = "Intro\n\n1. first item 2. second item 3. third item\n\nOutro"
+    target = build_cleanup_blocks(markdown)[1]
+
+    def provider(payload: dict[str, Any], chunk_index: int, chunk_count: int) -> str:
+        block = next(item for item in payload["blocks"] if item["id"] == target.block_id)
+        return json.dumps(
+            {
+                "annotations": [
+                    {
+                        "id": block["id"],
+                        "text_hash": block["text_hash"],
+                        "role": "list_item",
+                        "confidence": "high",
+                        "reason": "list_reassembly",
+                        "list_items": ["1. first item", "2. second item", "3. third item"],
+                    }
+                ],
+                "warnings": [],
+            },
+            ensure_ascii=False,
+        )
+
+    result = run_reader_cleanup_reannotation(
+        markdown_text=markdown,
+        config=ReaderCleanupConfig(enabled=True),
+        annotation_provider=provider,
+    )
+
+    assert result.cleaned_markdown == "Intro\n\n- first item\n- second item\n- third item\n\nOutro"
+    assert result.report_payload["stats"]["accepted_cleanup_operation_count"] == 1
+
+
+def test_run_reader_cleanup_reannotation_applies_exact_trailing_footnote_marker_with_containment() -> None:
+    markdown = "Intro\n\nThe sentence ends here.25\n\nOutro"
+    target = build_cleanup_blocks(markdown)[1]
+
+    def provider(payload: dict[str, Any], chunk_index: int, chunk_count: int) -> str:
+        block = next(item for item in payload["blocks"] if item["id"] == target.block_id)
+        return json.dumps(
+            {
+                "annotations": [
+                    {
+                        "id": block["id"],
+                        "text_hash": block["text_hash"],
+                        "role": "footnote",
+                        "confidence": "high",
+                        "reason": "trailing_footnote_marker",
+                        "body_text": "The sentence ends here.",
+                        "marker_text": "25",
+                    }
+                ],
+                "warnings": [],
+            },
+            ensure_ascii=False,
+        )
+
+    result = run_reader_cleanup_reannotation(
+        markdown_text=markdown,
+        config=ReaderCleanupConfig(enabled=True),
+        annotation_provider=provider,
+    )
+
+    assert result.cleaned_markdown == "Intro\n\nThe sentence ends here.\n\n25\n\nOutro"
+    assert result.report_payload["stats"]["accepted_cleanup_operation_count"] == 1
+
+
 def test_run_reader_cleanup_applies_safe_delete_operations() -> None:
     markdown = "Intro\n\nCompany Header\n\n10\n\nBody paragraph\n\nCompany Header\n\nOutro"
 

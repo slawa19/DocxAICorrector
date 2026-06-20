@@ -272,6 +272,8 @@ class ReannotationDecision:
     chunk_index: int
     heading_text: str = ""
     body_text: str = ""
+    marker_text: str = ""
+    list_items: tuple[str, ...] = ()
     confidence: CleanupConfidence = "medium"
     reason: str = ""
 
@@ -520,6 +522,31 @@ def build_reader_cleanup_global_plan_system_prompt() -> str:
         "Return fields repeated_noise_patterns, document_specific_running_headers, examples_do_not_delete, "
         "likely_heading_body_patterns, likely_fragmentation_patterns, and warnings.\n"
         "Each list item should be short and evidence-oriented. If uncertain, add a warning instead of inventing a pattern."
+    )
+
+
+def build_reader_cleanup_reannotation_system_prompt() -> str:
+    return (
+        "You re-annotate translated book Markdown structure. Return JSON only with top-level fields annotations and warnings.\n"
+        "Do not translate, rewrite, summarize, delete, reorder, or paraphrase visible content. Code will reject any visible-content change.\n"
+        "Your job is structure only: roles and exact local boundaries.\n"
+        "Allowed roles:\n"
+        "- heading: a standalone section/subsection title. Strong evidence: layout_signals show standalone_short_line, larger font_size or positive font_size_delta_from_body, centered/isolated line, or surrounding prose starts a new topic.\n"
+        "- body: normal narrative prose. This is the conservative default. If evidence is ambiguous, keep body and return no annotation.\n"
+        "- list_item: one item in an enumerated/bulleted list. Use only when exact item boundaries are visible from numbering, bullets, repeated indentation, or line breaks.\n"
+        "- caption: figure/table/source caption tied to nearby image/table context.\n"
+        "- footnote: a standalone note marker/body or a marker that layout_signals identify as superscript/short-digit note evidence.\n"
+        "Primary evidence is layout_signals in each block: font_size vs body_font_size, font_size_delta_from_body, standalone_short_line, indent/left_indent/first_line_indent, centered/alignment, superscript, and looks_like_superscript_marker.\n"
+        "Never infer heading/list/footnote from text alone when layout/context evidence is weak; default to body.\n"
+        "For heading fused with body, annotate the same block with role='heading', exact heading_text, and exact body_text. heading_text must be the full title prefix; body_text must be the full remaining prose.\n"
+        "For broken lists inside one block, annotate role='list_item' and list_items as exact item substrings that together cover the original visible text in order.\n"
+        "For a trailing footnote marker glued to prose, annotate role='footnote' with exact body_text and marker_text. Use this only for exact suffix markers supported by superscript/short-digit note evidence or strong nearby note context.\n"
+        "Preserve [[DOCX_IMAGE_*]] anchors exactly; do not annotate them unless warning that they are preserved.\n"
+        "Few-shot examples:\n"
+        "1. Fused heading/body: block text 'Economic effects of debt Money creation changes incentives.' with standalone_short_line/large font evidence for the prefix -> annotations:[{id,text_hash,role:'heading',confidence:'high',reason:'heading_body_boundary',heading_text:'Economic effects of debt',body_text:'Money creation changes incentives.'}]\n"
+        "2. Broken list: block text '1. first process 2. second process 3. third process' with list numbering evidence -> annotations:[{id,text_hash,role:'list_item',confidence:'high',reason:'list_reassembly',list_items:['1. first process','2. second process','3. third process']}]\n"
+        "3. Glued footnote marker: block text 'The sentence ends here.25' with superscript or short-digit marker evidence -> annotations:[{id,text_hash,role:'footnote',confidence:'high',reason:'trailing_footnote_marker',body_text:'The sentence ends here.',marker_text:'25'}]\n"
+        'For no-op chunks, return exactly {"annotations":[],"warnings":[]}.\n'
     )
 
 
@@ -1765,7 +1792,7 @@ def _build_reannotation_request_payload(*, chunk: CleanupChunk, config: ReaderCl
             "top_level_fields": ["annotations", "warnings"],
             "required_annotation_fields": ["id", "text_hash", "role", "confidence", "reason"],
             "allowed_roles": sorted(_ALLOWED_REANNOTATION_ROLES),
-            "optional_boundary_fields": ["heading_text", "body_text"],
+            "optional_boundary_fields": ["heading_text", "body_text", "marker_text", "list_items"],
             "content_safety": "visible content must be preserved; only role markers and heading/body block boundaries may change",
         },
         "editable_block_ids": [block.block_id for block in chunk.blocks],
@@ -1818,6 +1845,15 @@ def _parse_reannotation_response(
                 chunk_index=chunk_index,
                 heading_text=str(item.get("heading_text") or "").strip(),
                 body_text=str(item.get("body_text") or "").strip(),
+                marker_text=str(item.get("marker_text") or "").strip(),
+                list_items=tuple(
+                    str(value).strip()
+                    for value in cast(Sequence[object], item.get("list_items") or ())
+                    if str(value).strip()
+                )
+                if isinstance(item.get("list_items"), Sequence)
+                and not isinstance(item.get("list_items"), (str, bytes, bytearray))
+                else (),
                 confidence=cast(CleanupConfidence, confidence),
                 reason=str(item.get("reason") or "role_boundary_reannotation").strip(),
             )
@@ -3654,7 +3690,11 @@ def _apply_reannotation_decisions(
                 }
             )
             continue
-        if _visible_content_fingerprint(block.text) != _visible_content_fingerprint(replacement):
+        if not _reannotation_replacement_preserves_visible_content(
+            before=block.text,
+            after=replacement,
+            operation_name=operation_name,
+        ):
             ignored.append(
                 {
                     **block.to_payload(),
@@ -3692,6 +3732,10 @@ def _replacement_for_reannotation_decision(
     if _DOCX_IMAGE_PLACEHOLDER_PATTERN.search(block.text):
         return None, "reannotate_role_boundary", "docx_image_anchor_protected"
     text = block.text.strip()
+    if decision.list_items:
+        return _replacement_for_reannotation_list_items(block=block, decision=decision)
+    if decision.role == "footnote" and decision.marker_text:
+        return _replacement_for_reannotation_footnote_marker(block=block, decision=decision)
     if decision.heading_text or decision.body_text:
         heading = decision.heading_text.strip()
         body = decision.body_text.strip()
@@ -3714,6 +3758,49 @@ def _replacement_for_reannotation_decision(
     return visible, "reannotate_role", None
 
 
+def _reannotation_replacement_preserves_visible_content(*, before: str, after: str, operation_name: str) -> bool:
+    if operation_name == "reannotate_list_items":
+        return _list_visible_content_fingerprint(before) == _list_visible_content_fingerprint(after)
+    return _visible_content_fingerprint(before) == _visible_content_fingerprint(after)
+
+
+def _replacement_for_reannotation_list_items(
+    *,
+    block: CleanupBlock,
+    decision: ReannotationDecision,
+) -> tuple[str | None, str, str | None]:
+    items = [item.strip() for item in decision.list_items if item.strip()]
+    if not items:
+        return None, "reannotate_list_items", "list_items_empty"
+    source_fingerprint = _list_visible_content_fingerprint(block.text)
+    joined_items = " ".join(items)
+    if _list_visible_content_fingerprint(joined_items) != source_fingerprint:
+        return None, "reannotate_list_items", "list_items_do_not_cover_block"
+    rendered_items = []
+    for item in items:
+        stripped = re.sub(r"^(?:[-*]|\d+\.)\s+", "", item).strip()
+        rendered_items.append(f"- {stripped}")
+    return "\n".join(rendered_items), "reannotate_list_items", None
+
+
+def _replacement_for_reannotation_footnote_marker(
+    *,
+    block: CleanupBlock,
+    decision: ReannotationDecision,
+) -> tuple[str | None, str, str | None]:
+    marker = decision.marker_text.strip()
+    body = decision.body_text.strip()
+    if not marker or not body:
+        return None, "reannotate_footnote_marker", "footnote_marker_parts_incomplete"
+    normalized_text = _normalize_block_text(block.text)
+    if not normalized_text.endswith(marker):
+        return None, "reannotate_footnote_marker", "marker_not_exact_suffix"
+    prefix = normalized_text[: -len(marker)].rstrip()
+    if _visible_content_fingerprint(prefix) != _visible_content_fingerprint(body):
+        return None, "reannotate_footnote_marker", "footnote_body_not_exact_prefix"
+    return f"{body}\n\n{marker}", "reannotate_footnote_marker", None
+
+
 def _visible_content_fingerprint(text: str) -> str:
     lines = []
     for line in str(text or "").replace("\r\n", "\n").replace("\r", "\n").splitlines():
@@ -3723,6 +3810,12 @@ def _visible_content_fingerprint(text: str) -> str:
         if stripped:
             lines.append(stripped)
     return re.sub(r"\s+", "", " ".join(lines)).casefold()
+
+
+def _list_visible_content_fingerprint(text: str) -> str:
+    normalized = _normalize_block_text(text)
+    normalized = re.sub(r"(?:(?<=^)|(?<=\s))(?:[-*]|\d+\.)\s+", " ", normalized)
+    return re.sub(r"\s+", "", normalized).casefold()
 
 
 def _apply_single_operation_to_blocks(
