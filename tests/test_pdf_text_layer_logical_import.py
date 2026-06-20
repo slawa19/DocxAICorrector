@@ -136,28 +136,6 @@ def test_build_paragraph_units_merges_ordered_list_continuation_lines() -> None:
     assert lists[1].text == "2. second item is separate"
 
 
-def test_build_paragraph_units_classifies_numbered_display_line_as_heading() -> None:
-    spans = [
-        _span(1, "A body paragraph closes before the section.", top=70, bottom=82, x0=50, x1=420),
-        _span(
-            1,
-            "2. Short-Termism: Why the Future is Discounted",
-            top=110,
-            bottom=126,
-            x0=50,
-            x1=360,
-            font_size=12,
-            bold=True,
-        ),
-        _span(1, "The following paragraph begins after the heading.", top=132, bottom=144, x0=50, x1=430),
-    ]
-
-    result = build_paragraph_units_from_text_spans(spans)
-
-    assert [paragraph.role for paragraph in result.paragraphs] == ["body", "heading", "body"]
-    assert result.paragraphs[1].text == "2. Short-Termism: Why the Future is Discounted"
-
-
 def test_build_paragraph_units_splits_short_terminal_body_line_at_left_return() -> None:
     spans = [
         _span(1, "A full body line establishes the usual line width for this page.", top=70, bottom=82, x0=50, x1=430),
@@ -172,6 +150,32 @@ def test_build_paragraph_units_splits_short_terminal_body_line_at_left_return() 
         "Short paragraph ends.",
         "Next paragraph begins with an uppercase word.",
     ]
+
+
+def test_build_paragraph_units_keeps_leading_chapter_number_with_heading() -> None:
+    spans = [
+        _span(1, "Prior body sentence closes the previous chapter.", top=70, bottom=82, x0=50, x1=420),
+        _span(1, "3 Measuring the Wealth of Nations", top=120, bottom=138, x0=50, x1=360, font_size=16, bold=True),
+        _span(1, "What we measure affects what we do.", top=150, bottom=162, x0=50, x1=390),
+    ]
+
+    result = build_paragraph_units_from_text_spans(spans)
+
+    assert [paragraph.role for paragraph in result.paragraphs] == ["body", "heading", "body"]
+    assert result.paragraphs[1].rendered_text == "## 3 Measuring the Wealth of Nations"
+
+
+def test_build_paragraph_units_does_not_promote_small_digit_note_to_heading() -> None:
+    spans = [
+        _span(1, "A body line establishes the dominant document style.", top=70, bottom=82, x0=50, x1=430),
+        _span(1, "19", top=100, bottom=106, x0=300, x1=308, font_size=6),
+        _span(1, "The next paragraph resumes ordinary text.", top=130, bottom=142, x0=50, x1=390),
+    ]
+
+    result = build_paragraph_units_from_text_spans(spans)
+
+    assert all(paragraph.role != "heading" for paragraph in result.paragraphs)
+    assert any(paragraph.text == "19" for paragraph in result.paragraphs)
 
 
 def test_build_paragraph_units_detects_body_sized_small_caps_subheading() -> None:

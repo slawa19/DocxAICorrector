@@ -174,9 +174,9 @@ def build_paragraph_units_from_text_spans(
             and not _looks_like_superscript_footnote_marker(
                 span,
                 previous_span=previous_content_span,
+                next_span=next_content_span,
                 layout_profile=layout_profile,
             )
-            and not _looks_like_small_numeric_note_marker(span, layout_profile=layout_profile)
         ):
             skipped_page_number_count += 1
             continue
@@ -264,27 +264,21 @@ def _classify_span_role(
     next_span: PdfTextSpan | None,
 ) -> str:
     text = _normalize_text(span.text)
-    if _ORDERED_LIST_PATTERN.match(text) and _looks_like_numbered_display_heading(
-        span,
-        layout_profile=layout_profile,
-        previous_span=previous_span,
-        next_span=next_span,
-    ):
-        return "heading"
     if _BULLET_PATTERN.match(text) or _ORDERED_LIST_PATTERN.match(text):
         return "list"
     if _looks_like_superscript_footnote_marker(
         span,
         previous_span=previous_span,
+        next_span=next_span,
         layout_profile=layout_profile,
     ):
-        return "footnote"
-    if _looks_like_small_numeric_note_marker(span, layout_profile=layout_profile):
         return "footnote"
     if _looks_like_caption(span):
         return "caption"
     if _looks_like_toc_entry(span):
         return "toc_entry"
+    if _looks_like_digit_only_small_span(span, layout_profile=layout_profile):
+        return "body"
     if _looks_like_non_heading_front_matter_line(span):
         return "body"
     if _looks_like_pdf_heading_candidate(
@@ -955,40 +949,6 @@ def _looks_like_pdf_heading_candidate(
     return True
 
 
-def _looks_like_numbered_display_heading(
-    span: PdfTextSpan,
-    *,
-    layout_profile: _PdfHeadingLayoutProfile,
-    previous_span: PdfTextSpan | None,
-    next_span: PdfTextSpan | None,
-) -> bool:
-    text = _normalize_text(span.text)
-    if not _ORDERED_LIST_PATTERN.match(text):
-        return False
-    words = _words(text)
-    if not words or len(words) > 12:
-        return False
-    body_font_size = layout_profile.body_font_size
-    font_size = span.font_size if isinstance(span.font_size, (int, float)) else None
-    font_ratio = (float(font_size) / body_font_size) if body_font_size and font_size else 1.0
-    if not (span.is_bold or font_ratio >= 1.08):
-        return False
-    body_leading = layout_profile.body_leading or body_font_size or font_size or 10.0
-    previous_gap = (
-        max(0.0, float(span.top) - float(previous_span.bottom))
-        if previous_span is not None and previous_span.page_number == span.page_number
-        else body_leading
-    )
-    next_gap = (
-        max(0.0, float(next_span.top) - float(span.bottom))
-        if next_span is not None and next_span.page_number == span.page_number
-        else body_leading
-    )
-    has_layout_break = previous_gap >= body_leading * 0.5 or next_gap >= body_leading * 0.25
-    has_display_case = _title_word_ratio(words) >= 0.35 or _uppercase_ratio(text) >= 0.35
-    return has_layout_break and has_display_case
-
-
 def _words(text: str) -> list[str]:
     return [word for word in re.split(r"\s+", text) if word]
 
@@ -1224,7 +1184,6 @@ def _can_merge_list_continuation_span(
     previous_text = _normalize_text(previous.text)
     return (
         _starts_like_sentence_continuation(current_text)
-        or not _has_terminal_sentence_punctuation(previous_text)
         or _span_line_fill_ratio(previous, layout_profile) >= 0.72
     )
 
@@ -1233,29 +1192,50 @@ def _looks_like_superscript_footnote_marker(
     span: PdfTextSpan,
     *,
     previous_span: PdfTextSpan | None,
+    next_span: PdfTextSpan | None = None,
     layout_profile: _PdfHeadingLayoutProfile,
 ) -> bool:
     text = _normalize_text(span.text)
     if not re.fullmatch(r"\d{1,3}", text):
         return False
-    if previous_span is None or previous_span.page_number != span.page_number:
-        return False
     body_font_size = layout_profile.body_font_size
     marker_font_size = span.font_size if isinstance(span.font_size, (int, float)) else None
     if not body_font_size or not marker_font_size or marker_font_size > body_font_size * 0.62:
         return False
-    previous_text = _normalize_text(previous_span.text)
-    if not previous_text or previous_text[-1] not in ".!?:;)]}»”\"'":
+    return any(
+        _span_is_tail_marker_for_text_span(
+            marker=span,
+            text_span=candidate,
+            marker_font_size=marker_font_size,
+            body_font_size=body_font_size,
+            layout_profile=layout_profile,
+        )
+        for candidate in (previous_span, next_span)
+    )
+
+
+def _span_is_tail_marker_for_text_span(
+    *,
+    marker: PdfTextSpan,
+    text_span: PdfTextSpan | None,
+    marker_font_size: float,
+    body_font_size: float,
+    layout_profile: _PdfHeadingLayoutProfile,
+) -> bool:
+    if text_span is None or text_span.page_number != marker.page_number:
+        return False
+    text = _normalize_text(text_span.text)
+    if not text or text[-1] not in ".!?:;)]}»”\"'":
         return False
     body_leading = layout_profile.body_leading or body_font_size * 1.2
-    if float(span.x0) < float(previous_span.x1) - body_leading * 0.2:
+    if float(marker.x0) < float(text_span.x1) - body_leading * 0.2:
         return False
-    if float(span.top) > float(previous_span.bottom) or float(span.bottom) < float(previous_span.top):
+    if float(marker.top) > float(text_span.bottom) or float(marker.bottom) < float(text_span.top):
         return False
-    return float(span.bottom) <= float(previous_span.bottom) - marker_font_size * 0.5
+    return float(marker.bottom) <= float(text_span.bottom) - marker_font_size * 0.5
 
 
-def _looks_like_small_numeric_note_marker(
+def _looks_like_digit_only_small_span(
     span: PdfTextSpan,
     *,
     layout_profile: _PdfHeadingLayoutProfile,
@@ -1264,8 +1244,8 @@ def _looks_like_small_numeric_note_marker(
     if not re.fullmatch(r"\d{1,3}", text):
         return False
     body_font_size = layout_profile.body_font_size
-    marker_font_size = span.font_size if isinstance(span.font_size, (int, float)) else None
-    return bool(body_font_size and marker_font_size and marker_font_size <= body_font_size * 0.62)
+    span_font_size = span.font_size if isinstance(span.font_size, (int, float)) else None
+    return bool(body_font_size and span_font_size and span_font_size <= body_font_size * 0.82)
 
 
 def _can_merge_heading_span(previous: PdfTextSpan, current: PdfTextSpan) -> bool:
