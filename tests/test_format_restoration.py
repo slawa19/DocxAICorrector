@@ -3042,6 +3042,136 @@ def test_preserve_source_paragraph_properties_does_not_replay_source_specific_ta
     assert updated_doc.tables[0].style.name == "Table Grid"
 
 
+def test_formatting_contract_drops_source_geometry_and_size_for_body_and_headings():
+    unsafe_paragraph_properties_xml = (
+        '<w:pPr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+        '<w:pStyle w:val="SourceDecorativeStyle"/>'
+        '<w:spacing w:before="240" w:after="360" w:line="480" w:lineRule="exact"/>'
+        '<w:ind w:start="1440" w:firstLine="720"/>'
+        '<w:tabs><w:tab w:val="right" w:pos="7200"/></w:tabs>'
+        '<w:jc w:val="center"/>'
+        '</w:pPr>'
+    )
+    source_paragraphs = [
+        ParagraphUnit(
+            paragraph_id="p0000",
+            text="Contract heading",
+            role="heading",
+            heading_level=2,
+            style_name="SourceDecorativeStyle",
+            font_size_pt=22.0,
+            paragraph_properties_xml=unsafe_paragraph_properties_xml,
+        ),
+        ParagraphUnit(
+            paragraph_id="p0001",
+            text="Bold italic underline",
+            role="body",
+            style_name="SourceBodyDecorative",
+            font_size_pt=18.0,
+            paragraph_properties_xml=unsafe_paragraph_properties_xml,
+        ),
+    ]
+
+    target_doc = Document()
+    target_doc.add_paragraph("Contract heading", style="Heading 2")
+    target_body = target_doc.add_paragraph(style="Body Text")
+    bold_run = target_body.add_run("Bold")
+    bold_run.bold = True
+    target_body.add_run(" ")
+    italic_run = target_body.add_run("italic")
+    italic_run.italic = True
+    target_body.add_run(" ")
+    underline_run = target_body.add_run("underline")
+    underline_run.underline = True
+    target_buffer = BytesIO()
+    target_doc.save(target_buffer)
+
+    restored_doc = Document(
+        BytesIO(
+            apply_output_formatting(
+                target_buffer.getvalue(),
+                source_paragraphs,
+                generated_paragraph_registry=[
+                    {"paragraph_id": "p0000", "text": "Contract heading"},
+                    {"paragraph_id": "p0001", "text": "Bold italic underline"},
+                ],
+                mismatch_event_name="test_mismatch",
+                mismatch_log_message="test mismatch",
+            )
+        )
+    )
+
+    restored_heading = restored_doc.paragraphs[0]
+    restored_body = restored_doc.paragraphs[1]
+    for paragraph in (restored_heading, restored_body):
+        paragraph_properties = paragraph._p.pPr
+        assert paragraph_properties is None or paragraph_properties.find(qn("w:ind")) is None
+        assert paragraph_properties is None or paragraph_properties.find(qn("w:spacing")) is None
+        assert paragraph_properties is None or paragraph_properties.find(qn("w:tabs")) is None
+        assert paragraph_properties is None or paragraph_properties.find(qn("w:jc")) is None
+        assert paragraph.style is not None
+        assert paragraph.style.name != "SourceDecorativeStyle"
+        assert paragraph.style.name != "SourceBodyDecorative"
+        for run in paragraph.runs:
+            if not run.text.strip():
+                continue
+            assert run.font.size is None
+            assert run.font.name is None
+            assert run.font.color.rgb is None
+
+    restored_bold, _, restored_italic, _, restored_underline = restored_body.runs
+    assert restored_bold.bold is True
+    assert restored_italic.italic is True
+    assert restored_underline.underline is True
+
+
+def test_formatting_contract_allows_toc_font_size_without_geometry_replay():
+    source_paragraphs = [
+        ParagraphUnit(
+            paragraph_id="p0000",
+            text="Contents",
+            role="body",
+            structural_role="toc_entry",
+            role_confidence="heuristic",
+            font_size_pt=15.0,
+            paragraph_properties_xml=(
+                '<w:pPr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+                '<w:spacing w:before="240" w:after="360"/>'
+                '<w:ind w:start="1440"/>'
+                '<w:tabs><w:tab w:val="right" w:pos="7200"/></w:tabs>'
+                '<w:jc w:val="end"/>'
+                '</w:pPr>'
+            ),
+        ),
+    ]
+    target_doc = Document()
+    target_doc.add_paragraph("Contents", style="Body Text")
+    target_buffer = BytesIO()
+    target_doc.save(target_buffer)
+
+    restored_doc = Document(
+        BytesIO(
+            apply_output_formatting(
+                target_buffer.getvalue(),
+                source_paragraphs,
+                generated_paragraph_registry=[{"paragraph_id": "p0000", "text": "Contents"}],
+                mismatch_event_name="test_mismatch",
+                mismatch_log_message="test mismatch",
+            )
+        )
+    )
+
+    paragraph = restored_doc.paragraphs[0]
+    run = next(run for run in paragraph.runs if run.text.strip())
+    paragraph_properties = paragraph._p.pPr
+    assert run.font.size is not None and round(run.font.size.pt, 2) == 15.0
+    assert paragraph_properties is not None
+    assert paragraph_properties.find(qn("w:ind")) is None
+    assert paragraph_properties.find(qn("w:spacing")) is None
+    assert paragraph_properties.find(qn("w:tabs")) is None
+    assert paragraph_properties.find(qn("w:jc")) is None
+
+
 def test_prune_formatting_diagnostics_removes_oldest_and_preserves_newest(tmp_path):
     diagnostics_dir = tmp_path / "formatting_diagnostics"
     diagnostics_dir.mkdir()
