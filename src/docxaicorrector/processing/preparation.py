@@ -573,6 +573,11 @@ _DOCUMENT_MAP_PROVIDER_DEBUG_DIR = RUN_DIR / "document_map_provider_payloads"
 _DOCUMENT_MAP_POSTPROCESS_DEBUG_DIR = RUN_DIR / "document_map_postprocess_payloads"
 _DOCUMENT_TOPOLOGY_INPUT_DEBUG_DIR = RUN_DIR / "document_topology_inputs"
 STRUCTURE_RECOVERY_COORDINATE_SCHEMA_VERSION = 1
+# Bump whenever paragraph-import / text-layer segmentation logic changes (footnote-marker
+# separation, line-fill paragraph boundaries, heading/list segmentation, etc.). It is folded
+# into the prepared-source cache key so a full-pipeline run on a previously prepared book is
+# invalidated and re-imports with the new logic instead of reusing stale cached structure.
+PDF_IMPORT_PARAGRAPH_LOGIC_VERSION = 1
 
 
 def _build_structure_recognition_summary(
@@ -2507,6 +2512,7 @@ def build_prepared_source_key(
         f"{uploaded_file_token}:{chunk_size}:{paragraph_boundary_normalization_mode}:"
         f"{paragraph_boundary_ai_review_mode}:{relation_normalization_key}:lc={layout_artifact_cleanup_key}"
         f"{structure_recognition_suffix}{structure_recovery_suffix}{operation_suffix}"
+        f":pv={PDF_IMPORT_PARAGRAPH_LOGIC_VERSION}"
     )
 
 
