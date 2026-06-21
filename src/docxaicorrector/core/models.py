@@ -386,6 +386,7 @@ class StructureFallbackStats:
     structure_timeout_retry_succeeded_count: int = 0
     structure_timeout_retry_failed_count: int = 0
     structure_split_fallback_capped_descriptor_count: int = 0
+    structure_window_failed_descriptor_count: int = 0
 
     @classmethod
     def from_source(cls, source: object | None) -> "StructureFallbackStats":
@@ -405,6 +406,9 @@ class StructureFallbackStats:
             structure_split_fallback_capped_descriptor_count=int(
                 getattr(source, "structure_split_fallback_capped_descriptor_count", 0) or 0
             ),
+            structure_window_failed_descriptor_count=int(
+                getattr(source, "structure_window_failed_descriptor_count", 0) or 0
+            ),
         )
 
     def as_metrics(self) -> dict[str, int]:
@@ -416,6 +420,7 @@ class StructureFallbackStats:
             "structure_timeout_retry_succeeded_count": self.structure_timeout_retry_succeeded_count,
             "structure_timeout_retry_failed_count": self.structure_timeout_retry_failed_count,
             "structure_split_fallback_capped_descriptor_count": self.structure_split_fallback_capped_descriptor_count,
+            "structure_window_failed_descriptor_count": self.structure_window_failed_descriptor_count,
         }
 
 
@@ -445,6 +450,9 @@ class StructureRecognitionSummary:
     structure_primary_classified_count: int = 0
     structure_retry_classified_count: int = 0
     structure_split_fallback_classified_count: int = 0
+    structure_descriptor_count: int = 0
+    structure_missing_classification_count: int = 0
+    structure_classification_coverage_pct: int = 0
 
     @classmethod
     def from_source(cls, source: object | None) -> "StructureRecognitionSummary":
@@ -470,6 +478,11 @@ class StructureRecognitionSummary:
             structure_split_fallback_classified_count=int(
                 getattr(source, "structure_split_fallback_classified_count", 0) or 0
             ),
+            structure_descriptor_count=int(getattr(source, "structure_descriptor_count", 0) or 0),
+            structure_missing_classification_count=int(getattr(source, "structure_missing_classification_count", 0) or 0),
+            structure_classification_coverage_pct=int(
+                getattr(source, "structure_classification_coverage_pct", 0) or 0
+            ),
         )
 
     def as_progress_metrics(self, *, structure_map: "StructureMap | None" = None) -> dict[str, int]:
@@ -487,6 +500,12 @@ class StructureRecognitionSummary:
                     "structure_split_fallback_classified_count": self.structure_split_fallback_classified_count,
                 }
             )
+        if self.structure_descriptor_count:
+            metrics["structure_descriptor_count"] = self.structure_descriptor_count
+        if self.structure_missing_classification_count:
+            metrics["structure_missing_classification_count"] = self.structure_missing_classification_count
+        if self.structure_classification_coverage_pct:
+            metrics["structure_classification_coverage_pct"] = self.structure_classification_coverage_pct
         if self.ai_classified_count:
             metrics["ai_classified"] = self.ai_classified_count
         if self.ai_heading_count:
@@ -524,6 +543,9 @@ class StructureRecognitionSummary:
             "structure_primary_classified_count": self.structure_primary_classified_count,
             "structure_retry_classified_count": self.structure_retry_classified_count,
             "structure_split_fallback_classified_count": self.structure_split_fallback_classified_count,
+            "structure_descriptor_count": self.structure_descriptor_count,
+            "structure_missing_classification_count": self.structure_missing_classification_count,
+            "structure_classification_coverage_pct": self.structure_classification_coverage_pct,
             **self.fallback_stats.as_metrics(),
         }
 

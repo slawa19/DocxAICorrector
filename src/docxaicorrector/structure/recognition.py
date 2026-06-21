@@ -894,6 +894,7 @@ def build_structure_map(
                 raw_window_artifact_payloads=stage2_raw_window_payloads,
             )
         except Exception:
+            fallback_stats.structure_window_failed_descriptor_count += len(window)
             window_count += 1
             processed_windows += 1
             _emit_structure_progress(

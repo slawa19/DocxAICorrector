@@ -3443,6 +3443,92 @@ def test_run_structure_recognition_emits_neutral_split_progress_detail_and_metri
     assert split_payload["metrics"]["structure_total_windows"] == 1
 
 
+def test_run_structure_recognition_marks_partial_coverage_degraded(monkeypatch):
+    paragraphs = [_build_paragraph(source_index=index, text=f"Paragraph {index}") for index in range(4)]
+    events: list[tuple[int, str, dict[str, object]]] = []
+
+    def _fake_build_structure_map(
+        paragraphs,
+        *,
+        client,
+        model,
+        max_window_paragraphs,
+        overlap_paragraphs,
+        timeout,
+        document_map,
+        topology_projection,
+        preview_chars,
+        target_input_tokens,
+        timeout_retry_multiplier,
+        timeout_retry_max_seconds,
+        split_fallback_max_depth,
+        split_fallback_max_expansions,
+        progress_callback,
+        save_debug_artifacts=True,
+        artifact_cache_key=None,
+    ):
+        return StructureMap(
+            classifications={
+                0: ParagraphClassification(index=0, role="body", heading_level=None, confidence="high"),
+                1: ParagraphClassification(index=1, role="body", heading_level=None, confidence="high"),
+            },
+            model_used=model,
+            total_tokens_used=1,
+            processing_time_seconds=0.1,
+            window_count=2,
+            fallback_stats=StructureFallbackStats(structure_split_fallback_capped_descriptor_count=2),
+        )
+
+    def _fake_log_event(level, event, message, **context):
+        events.append((level, event, context))
+
+    monkeypatch.setattr(preparation, "build_structure_map", _fake_build_structure_map)
+    monkeypatch.setattr(preparation, "apply_structure_map", lambda *args, **kwargs: {"ai_classified": 2, "ai_headings": 0})
+    monkeypatch.setattr(preparation, "log_event", _fake_log_event)
+
+    structure_map, summary = preparation._run_structure_recognition(
+        paragraphs=paragraphs,
+        image_assets=[],
+        app_config={
+            "structure_recognition_model": "gpt-4o-mini",
+            "models": _build_runtime_model_registry(structure_recognition_model="gpt-4o-mini"),
+            "structure_recognition_max_window_paragraphs": 1800,
+            "structure_recognition_overlap_paragraphs": 50,
+            "structure_recognition_timeout_seconds": 60,
+            "structure_recognition_split_fallback_max_depth": 3,
+            "structure_recognition_split_fallback_max_expansions": 8,
+            "structure_recognition_min_confidence": "medium",
+            "structure_recognition_min_coverage_ratio": 0.95,
+            "structure_recognition_cache_enabled": False,
+            "structure_recognition_save_debug_artifacts": False,
+            "structure_recovery_enabled": False,
+            "structure_recovery_mode": "ai_first",
+        },
+        get_client_fn=lambda: object(),
+        progress_callback=None,
+        normalization_report=_build_report(raw=4, logical=4),
+        relation_report=None,
+        cleanup_report=None,
+        document_map=None,
+    )
+
+    coverage_event = next(event for event in events if event[1] == "structure_recognition_partial_coverage")
+
+    assert structure_map is not None
+    assert summary.ai_first_degraded is True
+    assert summary.fallback_stage == "stage2_structure_recognition_partial_coverage"
+    assert summary.structure_descriptor_count == 4
+    assert summary.structure_missing_classification_count == 2
+    assert summary.structure_classification_coverage_pct == 50
+    assert coverage_event[2]["descriptor_count"] == 4
+    assert coverage_event[2]["classified_count"] == 2
+    assert coverage_event[2]["missing_classification_count"] == 2
+    assert coverage_event[2]["dropped_or_capped_descriptor_count"] == 2
+    assert coverage_event[2]["coverage_ratio"] == 0.5
+    assert coverage_event[2]["coverage_threshold"] == 0.95
+    assert coverage_event[2]["ai_first_degraded"] is True
+
+
 def test_run_structure_recognition_preserves_first_reconcile_patch_indexes_after_targeted_recall(monkeypatch):
     paragraphs = [
         _build_paragraph(source_index=0, text="ГЛАВА 1"),

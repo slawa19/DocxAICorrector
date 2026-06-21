@@ -578,6 +578,29 @@ STRUCTURE_RECOVERY_COORDINATE_SCHEMA_VERSION = 1
 # into the prepared-source cache key so a full-pipeline run on a previously prepared book is
 # invalidated and re-imports with the new logic instead of reusing stale cached structure.
 PDF_IMPORT_PARAGRAPH_LOGIC_VERSION = 2
+STRUCTURE_RECOGNITION_MIN_COVERAGE_RATIO = 0.95
+
+
+def _count_structure_recognition_descriptors(paragraphs: Sequence[object]) -> int:
+    return sum(1 for paragraph in paragraphs if str(getattr(paragraph, "text", "") or "").strip())
+
+
+def _build_structure_coverage_metrics(
+    *,
+    descriptor_count: int,
+    classified_count: int,
+    dropped_or_capped_descriptor_count: int = 0,
+) -> dict[str, int | float]:
+    missing_count = max(descriptor_count - classified_count, 0)
+    coverage_ratio = 1.0 if descriptor_count <= 0 else classified_count / descriptor_count
+    return {
+        "structure_descriptor_count": descriptor_count,
+        "structure_classified_count": classified_count,
+        "structure_missing_classification_count": missing_count,
+        "structure_dropped_or_capped_descriptor_count": dropped_or_capped_descriptor_count,
+        "structure_classification_coverage_ratio": coverage_ratio,
+        "structure_classification_coverage_pct": int(round(coverage_ratio * 100)),
+    }
 
 
 def _build_structure_recognition_summary(
@@ -1406,6 +1429,7 @@ def _run_structure_recognition(
         )
 
     baseline = _capture_structure_baseline(paragraphs)
+    structure_descriptor_count = _count_structure_recognition_descriptors(paragraphs)
 
     def _degrade_ai_first(*, fallback_stage: str, reason: str, detail: str) -> tuple[None, StructureRecognitionSummary]:
         log_event(
@@ -1516,6 +1540,50 @@ def _run_structure_recognition(
                 reason=reason,
                 detail="AI-first provider path недоступен. Используются текущие правила.",
             )
+
+    coverage_threshold = float(
+        app_config.get(
+            "structure_recognition_min_coverage_ratio",
+            STRUCTURE_RECOGNITION_MIN_COVERAGE_RATIO,
+        )
+        or STRUCTURE_RECOGNITION_MIN_COVERAGE_RATIO
+    )
+    coverage_fallback_stats = StructureFallbackStats.from_source(None if structure_map is None else structure_map.fallback_stats)
+    dropped_or_capped_descriptor_count = (
+        coverage_fallback_stats.structure_split_fallback_capped_descriptor_count
+        + coverage_fallback_stats.structure_window_failed_descriptor_count
+    )
+    coverage_metrics = _build_structure_coverage_metrics(
+        descriptor_count=structure_descriptor_count,
+        classified_count=0 if structure_map is None else structure_map.classified_count,
+        dropped_or_capped_descriptor_count=dropped_or_capped_descriptor_count,
+    )
+    partial_coverage_degraded = bool(
+        structure_descriptor_count
+        and float(coverage_metrics["structure_classification_coverage_ratio"]) < coverage_threshold
+        and (dropped_or_capped_descriptor_count > 0 or document_map is None)
+    )
+    partial_coverage_reason = ""
+    if partial_coverage_degraded:
+        partial_coverage_reason = (
+            f"classified {coverage_metrics['structure_classified_count']}/"
+            f"{coverage_metrics['structure_descriptor_count']} structure descriptors "
+            f"(coverage={float(coverage_metrics['structure_classification_coverage_ratio']):.3f}, "
+            f"threshold={coverage_threshold:.3f})"
+        )
+        log_event(
+            logging.WARNING,
+            "structure_recognition_partial_coverage",
+            "AI-распознавание структуры вернуло неполное покрытие абзацев.",
+            descriptor_count=coverage_metrics["structure_descriptor_count"],
+            classified_count=coverage_metrics["structure_classified_count"],
+            missing_classification_count=coverage_metrics["structure_missing_classification_count"],
+            dropped_or_capped_descriptor_count=coverage_metrics["structure_dropped_or_capped_descriptor_count"],
+            coverage_ratio=coverage_metrics["structure_classification_coverage_ratio"],
+            coverage_threshold=coverage_threshold,
+            ai_first_degraded=True,
+            fallback_stage="stage2_structure_recognition_partial_coverage",
+        )
 
     if bool(app_config.get("structure_recognition_save_debug_artifacts", True)):
         effective_cache_key = cache_key
@@ -1751,6 +1819,17 @@ def _run_structure_recognition(
         applied_metrics=applied_metrics,
         divergence_metrics=divergence_metrics,
         structure_map=structure_map,
+    )
+    structure_summary = replace(
+        structure_summary,
+        ai_first_degraded=structure_summary.ai_first_degraded or partial_coverage_degraded,
+        fallback_stage=structure_summary.fallback_stage
+        or ("stage2_structure_recognition_partial_coverage" if partial_coverage_degraded else ""),
+        fallback_reason=structure_summary.fallback_reason or partial_coverage_reason,
+        document_map_present=structure_summary.document_map_present or document_map is not None,
+        structure_descriptor_count=int(coverage_metrics["structure_descriptor_count"]),
+        structure_missing_classification_count=int(coverage_metrics["structure_missing_classification_count"]),
+        structure_classification_coverage_pct=int(coverage_metrics["structure_classification_coverage_pct"]),
     )
     if structure_summary.ai_classified_count > 0:
         detail = (
