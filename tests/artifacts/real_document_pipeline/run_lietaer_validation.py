@@ -438,6 +438,7 @@ def _resolve_acceptance_unmapped_source_summary(
     *,
     formatting_diagnostics: Sequence[Mapping[str, object]],
     translation_quality_report: Mapping[str, object],
+    preparation_diagnostic_snapshot: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     count_basis = str(translation_quality_report.get("unmapped_source_count_basis") or "").strip().lower()
     if count_basis in {"topology_unit", "accepted_aggregation_legacy"}:
@@ -457,7 +458,9 @@ def _resolve_acceptance_unmapped_source_summary(
             "format_neutral_creditable_count": 0,
         }
 
-    role_aware_summary = _resolve_role_aware_formatting_unmapped_source_summary(formatting_diagnostics)
+    role_aware_summary = _resolve_role_aware_formatting_unmapped_source_summary(
+        formatting_diagnostics, preparation_diagnostic_snapshot
+    )
     if role_aware_summary is not None:
         return {
             "actual": int(role_aware_summary["effective_unmapped_source_count"]),
@@ -519,8 +522,11 @@ def _resolve_acceptance_unmapped_target_summary(
     *,
     formatting_diagnostics: Sequence[Mapping[str, object]],
     translation_quality_report: Mapping[str, object],
+    preparation_diagnostic_snapshot: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
-    role_aware_target_summary = _resolve_role_aware_formatting_unmapped_target_summary(formatting_diagnostics)
+    role_aware_target_summary = _resolve_role_aware_formatting_unmapped_target_summary(
+        formatting_diagnostics, preparation_diagnostic_snapshot
+    )
     if role_aware_target_summary is not None:
         quality_count = _coerce_int(translation_quality_report.get("unmapped_target_count"))
         return {
@@ -533,6 +539,21 @@ def _resolve_acceptance_unmapped_target_summary(
             "quality_unmapped_target_count": quality_count,
             "target_split_accounting_creditable_count": role_aware_target_summary.get(
                 "target_split_accounting_creditable_count"
+            ),
+            "passthrough_unmapped_target_count": role_aware_target_summary.get(
+                "passthrough_unmapped_target_count"
+            ),
+            "passthrough_target_category_counts": role_aware_target_summary.get(
+                "passthrough_target_category_counts"
+            ),
+            "passthrough_front_matter_target_count": role_aware_target_summary.get(
+                "passthrough_front_matter_target_count"
+            ),
+            "passthrough_page_furniture_target_count": role_aware_target_summary.get(
+                "passthrough_page_furniture_target_count"
+            ),
+            "front_matter_boundary_target_index": role_aware_target_summary.get(
+                "front_matter_boundary_target_index"
             ),
         }
     count_basis = str(translation_quality_report.get("unmapped_target_count_basis") or "").strip().lower()
@@ -5266,11 +5287,13 @@ def evaluate_lietaer_acceptance(
     unmapped_source_summary = _resolve_acceptance_unmapped_source_summary(
         formatting_diagnostics=formatting_diagnostics,
         translation_quality_report=translation_quality_report,
+        preparation_diagnostic_snapshot=preparation_diagnostic_snapshot,
     )
     explicit_unmapped_source_count = int(unmapped_source_summary["actual"])
     unmapped_target_summary = _resolve_acceptance_unmapped_target_summary(
         formatting_diagnostics=formatting_diagnostics,
         translation_quality_report=translation_quality_report,
+        preparation_diagnostic_snapshot=preparation_diagnostic_snapshot,
     )
     explicit_unmapped_target_count = int(unmapped_target_summary["actual"])
     add_check(
@@ -5284,6 +5307,13 @@ def evaluate_lietaer_acceptance(
         filtered_unmapped_source_count=unmapped_source_summary.get("filtered_unmapped_source_count"),
         format_neutral_creditable_count=unmapped_source_summary.get("format_neutral_creditable_count"),
         quality_unmapped_source_count=unmapped_source_summary.get("quality_unmapped_source_count"),
+        passthrough_unmapped_source_count=unmapped_source_summary.get("passthrough_unmapped_source_count"),
+        passthrough_source_category_counts=unmapped_source_summary.get("passthrough_source_category_counts"),
+        passthrough_front_matter_source_count=unmapped_source_summary.get("passthrough_front_matter_source_count"),
+        passthrough_bounded_toc_source_count=unmapped_source_summary.get("passthrough_bounded_toc_source_count"),
+        passthrough_page_furniture_source_count=unmapped_source_summary.get("passthrough_page_furniture_source_count"),
+        front_matter_boundary_source_index=unmapped_source_summary.get("front_matter_boundary_source_index"),
+        bounded_toc_region=unmapped_source_summary.get("bounded_toc_region"),
         mismatch_threshold=mismatch_threshold,
         caption_heading_conflicts=total_caption_heading_conflicts,
         artifact_count=len(formatting_diagnostics),
@@ -5298,6 +5328,10 @@ def evaluate_lietaer_acceptance(
         count_basis=unmapped_source_summary.get("unmapped_source_count_basis"),
         role_aware_effective_unmapped_source_count=unmapped_source_summary.get("effective_unmapped_source_count"),
         format_neutral_creditable_count=unmapped_source_summary.get("format_neutral_creditable_count"),
+        passthrough_unmapped_source_count=unmapped_source_summary.get("passthrough_unmapped_source_count"),
+        passthrough_front_matter_source_count=unmapped_source_summary.get("passthrough_front_matter_source_count"),
+        passthrough_bounded_toc_source_count=unmapped_source_summary.get("passthrough_bounded_toc_source_count"),
+        passthrough_page_furniture_source_count=unmapped_source_summary.get("passthrough_page_furniture_source_count"),
     )
     add_check(
         "unmapped_target_threshold",
@@ -5314,6 +5348,11 @@ def evaluate_lietaer_acceptance(
             "target_split_accounting_creditable_count"
         ),
         quality_unmapped_target_count=unmapped_target_summary.get("quality_unmapped_target_count"),
+        passthrough_unmapped_target_count=unmapped_target_summary.get("passthrough_unmapped_target_count"),
+        passthrough_target_category_counts=unmapped_target_summary.get("passthrough_target_category_counts"),
+        passthrough_front_matter_target_count=unmapped_target_summary.get("passthrough_front_matter_target_count"),
+        passthrough_page_furniture_target_count=unmapped_target_summary.get("passthrough_page_furniture_target_count"),
+        front_matter_boundary_target_index=unmapped_target_summary.get("front_matter_boundary_target_index"),
     )
 
     if translation_quality_report:
