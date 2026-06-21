@@ -1668,6 +1668,34 @@ def test_run_document_processing_continues_on_english_residual_output_controlled
         ),
         (
             {
+                "target_text": (
+                    "This source paragraph is long enough to represent a real untranslated fallback. "
+                    "It contains several English words and complete sentences, so retaining it byte for "
+                    "byte after a translate operation must be visible to reviewers instead of being "
+                    "reported as a normal successful translated block."
+                ),
+                "context_before": "",
+                "context_after": "",
+                "target_chars": 268,
+                "context_chars": 0,
+                "paragraph_ids": ["p1"],
+            },
+            (
+                "This source paragraph is long enough to represent a real untranslated fallback. "
+                "It contains several English words and complete sentences, so retaining it byte for "
+                "byte after a translate operation must be visible to reviewers instead of being "
+                "reported as a normal successful translated block."
+            ),
+            "source_text_fallback",
+            (
+                "This source paragraph is long enough to represent a real untranslated fallback. "
+                "It contains several English words and complete sentences, so retaining it byte for "
+                "byte after a translate operation must be visible to reviewers instead of being "
+                "reported as a normal successful translated block."
+            ),
+        ),
+        (
+            {
                 "target_text": "# Заголовок\n\nЭто полноценный абзац с несколькими словами и знаками препинания.",
                 "context_before": "",
                 "context_after": "",

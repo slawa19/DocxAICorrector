@@ -8,6 +8,7 @@ from typing import Any, Literal, TypeAlias
 ProcessedBlockStatus: TypeAlias = Literal[
     "valid",
     "empty",
+    "source_text_fallback",
     "heading_only_output",
     "bullet_heading_output",
     "toc_body_concat",
@@ -82,6 +83,8 @@ _CHAPTER_MARKER_LINE_PATTERN = re.compile(r"^(?:#{1,6}\s+)?(?:chapter|глава
 _INLINE_HEADING_FRAGMENT_MAX_WORDS = 6
 _INLINE_PARAGRAPH_FRAGMENT_MAX_WORDS = 12
 _INLINE_PARAGRAPH_FRAGMENT_MAX_CHARS = 100
+_SOURCE_TEXT_FALLBACK_MIN_CHARS = 120
+_SOURCE_TEXT_FALLBACK_MIN_ENGLISH_WORDS = 12
 
 
 @dataclass(frozen=True)
@@ -237,6 +240,8 @@ def input_has_body_text_signal(text: str) -> bool:
 def classify_processed_block(target_text: str, processed_chunk: str) -> ProcessedBlockStatus:
     if not processed_chunk.strip():
         return "empty"
+    if is_source_text_fallback_output(target_text=target_text, processed_chunk=processed_chunk):
+        return "source_text_fallback"
     if has_bullet_heading_output(processed_chunk):
         return "bullet_heading_output"
     if is_heading_only_markdown(processed_chunk) and input_has_body_text_signal(target_text):
@@ -246,6 +251,17 @@ def classify_processed_block(target_text: str, processed_chunk: str) -> Processe
     if has_unexplained_english_residuals(processed_chunk):
         return "english_residual_output"
     return "valid"
+
+
+def is_source_text_fallback_output(*, target_text: str, processed_chunk: str) -> bool:
+    if processed_chunk != target_text:
+        return False
+    stripped = target_text.strip()
+    if len(stripped) < _SOURCE_TEXT_FALLBACK_MIN_CHARS:
+        return False
+    if _CYRILLIC_CHAR_PATTERN.search(stripped):
+        return False
+    return len(_ENGLISH_WORD_PATTERN.findall(stripped)) >= _SOURCE_TEXT_FALLBACK_MIN_ENGLISH_WORDS
 
 
 def has_bullet_heading_output(text: str) -> bool:

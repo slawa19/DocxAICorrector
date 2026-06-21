@@ -15,6 +15,7 @@ TOC_RETRY_HARDENING_ATTEMPT = 2
 CONTROLLED_BLOCK_FAILURE_POLICY: dict[str, dict[str, str]] = {
     "empty": {"decision": "fallback_continue", "fallback_kind": "empty_processed_block"},
     "empty_processed_block": {"decision": "fallback_continue", "fallback_kind": "empty_processed_block"},
+    "source_text_fallback": {"decision": "fallback_continue", "fallback_kind": "source_text_fallback"},
     "english_residual_output": {"decision": "fallback_continue", "fallback_kind": "english_residual_output"},
     "heading_only_output": {"decision": "fallback_continue", "fallback_kind": "heading_only_output"},
     "bullet_heading_output": {"decision": "fallback_continue", "fallback_kind": "bullet_heading_output"},
