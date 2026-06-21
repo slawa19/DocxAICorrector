@@ -536,9 +536,14 @@ def _convert_pdf_text_layer_to_docx(*, filename: str, source_bytes: bytes) -> tu
             ("image", int(getattr(image, "source_index", 0)), index, image)
             for index, image in enumerate(image_objects)
         )
+        images_emitted = 0
+        images_dropped = 0
         for item_type, _source_index, _index, payload in sorted(content_items, key=lambda item: (item[1], item[0] == "paragraph", item[2])):
             if item_type == "image":
-                _append_pdf_image_to_docx(document, payload)
+                if _append_pdf_image_to_docx(document, payload):
+                    images_emitted += 1
+                else:
+                    images_dropped += 1
                 continue
             paragraph = payload
             _append_pdf_text_paragraph_to_docx(
@@ -558,6 +563,8 @@ def _convert_pdf_text_layer_to_docx(*, filename: str, source_bytes: bytes) -> tu
             span_count=len(spans),
             paragraph_count=len(import_result.paragraphs),
             image_count=len(image_objects),
+            images_emitted=images_emitted,
+            images_dropped=images_dropped,
             skipped_page_number_count=import_result.report.skipped_page_number_count,
             skipped_repeated_page_furniture_count=import_result.report.skipped_repeated_page_furniture_count,
             skipped_blank_page_notice_count=import_result.report.skipped_blank_page_notice_count,
@@ -604,21 +611,48 @@ def _append_pdf_text_paragraph_to_docx(document, paragraph, *, spans_by_origin_i
         docx_paragraph.add_run(paragraph.text)
 
 
-def _append_pdf_image_to_docx(document, image_object) -> None:
+def _append_pdf_image_to_docx(document, image_object) -> bool:
     image_bytes = getattr(image_object, "image_bytes", None)
     if not isinstance(image_bytes, bytes) or not image_bytes:
-        return
+        log_event(
+            logging.WARNING,
+            "pdf_text_layer_image_render_dropped",
+            "PDF image could not be emitted into DOCX.",
+            source_index=getattr(image_object, "source_index", None),
+            mime_type=getattr(image_object, "mime_type", None),
+            reason="empty_image_bytes",
+        )
+        return False
     try:
         _append_image_bytes_to_docx(document, image_bytes)
-        return
-    except Exception:
+        return True
+    except Exception as primary_exc:
         coerced_image_bytes = _coerce_image_bytes_for_docx(image_bytes)
         if coerced_image_bytes is None:
-            return
+            log_event(
+                logging.WARNING,
+                "pdf_text_layer_image_render_dropped",
+                "PDF image could not be emitted into DOCX.",
+                source_index=getattr(image_object, "source_index", None),
+                mime_type=getattr(image_object, "mime_type", None),
+                reason="docx_render_failed",
+                error_message=str(primary_exc),
+            )
+            return False
     try:
         _append_image_bytes_to_docx(document, coerced_image_bytes)
-    except Exception:
-        return
+        return True
+    except Exception as coerced_exc:
+        log_event(
+            logging.WARNING,
+            "pdf_text_layer_image_render_dropped",
+            "PDF image could not be emitted into DOCX.",
+            source_index=getattr(image_object, "source_index", None),
+            mime_type=getattr(image_object, "mime_type", None),
+            reason="coerced_docx_render_failed",
+            error_message=str(coerced_exc),
+        )
+        return False
 
 
 def _append_image_bytes_to_docx(document, image_bytes: bytes) -> None:

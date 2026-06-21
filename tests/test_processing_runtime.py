@@ -1845,6 +1845,77 @@ def test_pdf_text_layer_generated_docx_preserves_pdf_images_as_docx_placeholders
     assert image_assets[0].original_bytes == image_bytes
 
 
+def test_pdf_text_layer_generated_docx_counts_unrenderable_images_as_dropped(monkeypatch):
+    from docxaicorrector.pdf_import import images as pdf_images
+    from docxaicorrector.pdf_import import text_layer_quality
+
+    events: list[tuple[int, str, dict[str, object]]] = []
+    spans = [
+        PdfTextSpan(
+            page_number=1,
+            text="Text around failed image.",
+            x0=50,
+            top=100,
+            x1=450,
+            bottom=112,
+            page_height=800,
+            font_size=10,
+        )
+    ]
+    image_objects = [
+        PdfImageObject(
+            page_number=1,
+            x0=50,
+            top=150,
+            x1=150,
+            bottom=210,
+            page_height=800,
+            image_bytes=b"not-a-real-png",
+            mime_type="image/png",
+            source_index=150,
+        )
+    ]
+    monkeypatch.setattr(text_layer_quality, "extract_pdf_text_spans_with_pdfminer", lambda path: spans)
+    monkeypatch.setattr(pdf_images, "extract_pdf_images_with_pdfminer", lambda path: image_objects)
+    monkeypatch.setattr(
+        text_layer_quality,
+        "build_text_layer_quality_report",
+        lambda spans: SimpleNamespace(
+            decision="promising",
+            decision_reasons=(),
+            body_text_ratio=1.0,
+        ),
+    )
+    monkeypatch.setattr(
+        processing_runtime,
+        "log_event",
+        lambda level, event, message, **context: events.append((level, event, context)),
+    )
+
+    docx_bytes, backend = processing_runtime._convert_pdf_text_layer_to_docx(
+        filename="with-broken-image.pdf",
+        source_bytes=b"%PDF-1.4\n",
+    )
+    paragraphs, image_assets = extract_document_content_from_docx(
+        processing_runtime.build_in_memory_uploaded_file(
+            source_name="with-broken-image.docx",
+            source_bytes=docx_bytes,
+        )
+    )
+
+    drop_event = next(event for event in events if event[1] == "pdf_text_layer_image_render_dropped")
+    success_event = next(event for event in events if event[1] == "pdf_text_layer_import_succeeded")
+
+    assert backend == "pdf-text-layer"
+    assert [paragraph.text for paragraph in paragraphs] == ["Text around failed image."]
+    assert image_assets == []
+    assert drop_event[2]["source_index"] == 150
+    assert drop_event[2]["mime_type"] == "image/png"
+    assert success_event[2]["image_count"] == 1
+    assert success_event[2]["images_emitted"] == 0
+    assert success_event[2]["images_dropped"] == 1
+
+
 def test_pdf_text_layer_import_can_run_ocr_fallback_for_scanned_pdf(monkeypatch, tmp_path):
     from docxaicorrector.pdf_import import text_layer_quality
 
