@@ -218,6 +218,90 @@ Consequences:
 - Bounds: profile-first / line-structure signals + semantics for the body-like tail; NO per-book
   literals; eyes-on the produced DOCX; measured held-out (spread across books).
 
+## Update — 2026-06-20c (BINDING scope: main-content focus; B = test the existing pass first)
+
+Director scope decision (BINDING): TOC and source/reference regions (bibliography, notes pages) are
+PASS-THROUGH — detected and translated as-is, but EXCLUDED from structure/B work and from strict
+acceptance (not held to heading standards, do not fail the run). **Main content + its formatting is
+the focus.** This removes the hardest ambiguity (section-heading vs TOC-entry, which caused the
+deterministic regressions) and makes the Class-2 extraction garble (front-matter/biblio) and most
+unmapped-acceptance noise moot.
+
+B recon findings (verified by orchestrator):
+- The B candidate tail is FAR smaller than a naive "short standalone" count: e.g. Rethinking's 575
+  short lines are mostly WRAPPED BODY TEXT + back-matter (656/1449 short lines in the last quarter),
+  not subheadings. Real B candidates are narrow: ALL-CAPS-fused-with-body (CONCLUSION x4 Mazzucato),
+  `N. Title` followed by prose (Systemic Crises, Money), attribution-like — in MAIN content only.
+- A source-side, pre-translation, ROLE-ONLY structure-recognition pass ALREADY EXISTS
+  (preparation.py:2730/2821 -> _run_structure_recognition -> build_structure_map -> apply_structure_map;
+  roles heading/body/caption/attribution/toc_entry/...). It re-tags roles but CANNOT split a fused
+  heading/body block (apply_structure_map only sets role/heading_level — verified recognition.py:687-751).
+  This is NOT the killed structure-first tarpit (that was the global DocumentMap/topology); role-tagging
+  is bounded.
+
+Adjusted B plan (classify-before-BUILD):
+1. The forensic imports were NO-LLM (typography only) — which is WHY B is unfixed there. **FIRST TEST**
+   whether the existing AI structure_recognition pass, when ON, already tags the B cases correctly on
+   the 4 books (CONCLUSION/Systemic Crises -> heading; TOC rows -> toc_entry; no false-promote of
+   body/list), scoped to main content. This decides ENABLE-AND-EXTEND vs BUILD-NEW.
+2. A bounded SPLIT-prefix patch (heading_substring/body_substring + containment, applied at
+   import/source) is needed regardless for the fused cases (host can't split). Reuse the exact-substring
+   / containment idea from normalize_heading_boundary.
+3. Bounds: source-side, role-only, NO global DocumentMap/topology; candidate set is the NARROW tail
+   (ALL-CAPS-fused / N.Title-before-prose / attribution in MAIN content), NOT "every short line";
+   output role/split -> target styles; measured held-out + manual false-positive typing.
+
+**DECISION 2026-06-21 — B DEFERRED (cosmetic tail).** Measuring the existing AI structure_recognition
+on all 4 whole books surfaced the real signals: it DOES NOT SCALE (Rethinking classified only
+505/2255 = 22% before window/fallback gave up) and is EXPENSIVE (8-19 min/book), while fixing only a
+small subheading tail (8/14 standalone correct, 0/6 fused). Enabling that heavy pass is the wrong
+instrument for a minor cosmetic gain. B (some main-content subheadings render as body / glued to body)
+is hereby a KNOWN DEFERRED cosmetic tail — do NOT pour more in, do NOT enable the heavy non-scaling
+pass. Revisit only if B becomes must-have, and only with a LIGHT approach. The real defects (footnotes,
+paragraph/list breaks, images, formatting contract) are closed. Refocus: the items 1-4 path to UI.
+(Orchestrator note: on every expensive whole-book run, lead the review with the BIG cross-book signals
+— scale/reliability/cost — before any tail detail.)
+
+## Update — 2026-06-21b (Pipeline code-review defect ledger: "success while silently failing")
+
+A 4-subagent read-only review of the pipeline stages (import/prep; translation/block-exec;
+structure/cleanup/assembly; validation/acceptance/formatting) found a consistent class: a stage
+reports SUCCESS while silently failing, losing content, or not gating. This is the root of the
+"running blindly" pattern. Verify each (classify-before-fix) before fixing; #1 verified by orchestrator.
+
+TIER 1 — CRITICAL (production path; output actually wrong):
+1. [VERIFIED] Untranslated English block ships as "success". Exhausted-retry fallback returns the
+   source `target_text` (_generation.py:1050); `has_unexplained_english_residuals` returns False when
+   there is no Cyrillic (output_validation.py:270) → a pure-English fallback block classifies as
+   "valid" (block_execution.py:1117). Untranslated content in the Russian DOCX, green status, no signal.
+2. Structure recognition silently accepts partial coverage. window-fail `continue` (recognition.py:896),
+   split-cap returns [] (:1161), parser covers only returned indices (:1481); no coverage gate in
+   preparation.py. = the observed Rethinking 505/2255.
+3. Silent image loss. `_append_pdf_image_to_docx` (processing_runtime.py:607) swallows a render
+   failure; the success log counts `image_count` including images that never rendered.
+4. Quality gate is computed on the PRE-reader-cleanup markdown, but the shipped DOCX is the
+   POST-cleanup artifact (late_phases.py:3707 vs 3798) — the green verdict is earned on a different
+   artifact than what ships (worse when cleanup is ON).
+5. Quality-gate authority fields swallowed by bare-except (late_phases.py:2943) → on import failure,
+   fields default to absent/pass, downgrading a real structural defect to warn (scoped toc_body_concat/topology).
+
+TIER 2 — HIGH:
+6. origin-index collisions (logical_import.py:1507) — dense/two-column pages: wrong emphasis,
+   arbitrary image/text order, no uniqueness check.
+7. Assembly invariant checks COUNT not content (block_execution.py:1229) — controlled-fallback always
+   appends one chunk, so count matches even for an empty/English fallback; no content-presence check.
+8. Leakage fail-open (_generation.py:456) — last retry returns leaked neighbor text as valid.
+9. Harness structural validation does not gate on quality_status (structural.py:2538) — harness
+   `passed` can be green while the report says fail (harness↔prod divergence).
+
+TIER 3 (feature-gated: reader-cleanup OFF by default; or TOC-related, now pass-through → lower):
+reannotation path has no auth/ratio gate; `max_failed_chunk_ratio=1.0` tolerates 99% chunk failure;
+image reconcile appends lost anchors at document end; positional TOC fallback applies source font-size
+with no text evidence; TOC pPr uses a denylist not an allowlist.
+
+Priority: TIER 1 (esp. #1/#2/#3 — production path, lose/corrupt real content). These explain the
+"run blindly" pattern: a stage's green status was not trustworthy.
+
 ## Remaining Work Before Returning to UI
 
 The UI surfaces results to users, so before UI work the pipeline must (a) reliably
