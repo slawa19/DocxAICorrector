@@ -522,3 +522,96 @@ def test_build_paragraph_units_skips_generic_blank_page_notices() -> None:
 
     assert result.report.skipped_blank_page_notice_count == 2
     assert [paragraph.text for paragraph in result.paragraphs] == ["Actual body text."]
+
+
+def test_build_paragraph_units_merges_indented_soft_wrap_continuation() -> None:
+    # epub->pdf exports indent soft-wrapped continuation lines (justified word
+    # groups / hanging indents). The previous line ends mid-sentence (no terminal
+    # punctuation) and the continuation starts lowercase, so it must merge even
+    # though it is indented far to the right of the line it continues.
+    spans = [
+        _span(1, "It makes clear that awareness of this Missing Link", top=100, bottom=112, x0=5),
+        _span(1, "is an absolute imperative for", top=114, bottom=126, x0=178),
+    ]
+
+    result = build_paragraph_units_from_text_spans(spans)
+
+    assert [paragraph.text for paragraph in result.paragraphs] == [
+        "It makes clear that awareness of this Missing Link is an absolute imperative for",
+    ]
+
+
+def test_build_paragraph_units_merges_same_line_split_word_groups() -> None:
+    # Justified text can be emitted as several spans on the same visual line
+    # (identical top/bottom, increasing x0). They must collapse into one line.
+    spans = [
+        _span(1, "clear", top=100, bottom=112, x0=5, x1=38),
+        _span(1, "that awareness of", top=100, bottom=112, x0=47, x1=169),
+        _span(1, "this Missing Link", top=100, bottom=112, x0=178, x1=311),
+    ]
+
+    result = build_paragraph_units_from_text_spans(spans)
+
+    assert [paragraph.text for paragraph in result.paragraphs] == [
+        "clear that awareness of this Missing Link",
+    ]
+
+
+def test_build_paragraph_units_merges_soft_wrap_across_page_break() -> None:
+    # A sentence that does not finish at the bottom of one page and continues
+    # lowercase at the top of the next must merge across the page boundary.
+    spans = [
+        _span(1, "the gap between money", top=760, bottom=772, x0=20),
+        _span(2, "and sustainability lies elsewhere.", top=6, bottom=18, x0=5),
+    ]
+
+    result = build_paragraph_units_from_text_spans(spans)
+
+    assert [paragraph.text for paragraph in result.paragraphs] == [
+        "the gap between money and sustainability lies elsewhere.",
+    ]
+
+
+def test_build_paragraph_units_merges_hanging_indent_list_continuation() -> None:
+    # A bullet wraps with a hanging indent: the continuation line sits further
+    # right than the bullet line and continues it lowercase. It must stay part of
+    # the same list item, not split into a separate paragraph.
+    spans = [
+        _span(1, "- a description of the many problems we may expect from", top=100, bottom=112, x0=5),
+        _span(1, "financial systems", top=114, bottom=126, x0=25),
+    ]
+
+    result = build_paragraph_units_from_text_spans(spans)
+
+    assert [paragraph.role for paragraph in result.paragraphs] == ["list"]
+    assert result.paragraphs[0].text == (
+        "- a description of the many problems we may expect from financial systems"
+    )
+
+
+def test_build_paragraph_units_does_not_over_merge_real_boundaries() -> None:
+    # Real boundaries must stay separate even when lines are tightly spaced:
+    #  * a sentence-ending line followed by a new capitalised paragraph,
+    #  * a heading,
+    #  * the start of a new (numbered) list item.
+    spans = [
+        _span(1, "First paragraph ends with a full stop.", top=100, bottom=112, x0=50),
+        _span(1, "Second paragraph clearly starts new.", top=114, bottom=126, x0=50),
+        _span(1, "A SHORT HEADING", top=150, bottom=170, x0=50, font_size=18, bold=True),
+        _span(1, "1. First numbered list item starts here", top=200, bottom=212, x0=50),
+        _span(1, "2. Second numbered list item starts here", top=214, bottom=226, x0=50),
+    ]
+
+    result = build_paragraph_units_from_text_spans(spans)
+
+    texts = [paragraph.text for paragraph in result.paragraphs]
+    roles = [paragraph.role for paragraph in result.paragraphs]
+    # The two real paragraphs survive as their own, distinct units (not fused).
+    assert "First paragraph ends with a full stop." in texts
+    assert "Second paragraph clearly starts new." in texts
+    assert not any("full stop. Second paragraph" in t for t in texts)
+    assert "heading" in roles
+    # Both numbered list items survive as their own units (not merged).
+    list_texts = [t for t, r in zip(texts, roles) if r == "list"]
+    assert any(t.startswith("1.") for t in list_texts)
+    assert any(t.startswith("2.") for t in list_texts)

@@ -287,11 +287,18 @@ def _classify_span_role(
         return "footnote"
     if _looks_like_caption(span):
         return "caption"
-    if _looks_like_toc_entry(span):
+    soft_wrap_continuation = (
+        previous_span is not None
+        and previous_span.page_number == span.page_number
+        and _is_soft_wrap_continuation_pair(_normalize_text(previous_span.text), text)
+    )
+    if not soft_wrap_continuation and _looks_like_toc_entry(span):
         return "toc_entry"
     if _looks_like_digit_only_small_span(span, layout_profile=layout_profile):
         return "body"
     if _looks_like_non_heading_front_matter_line(span):
+        return "body"
+    if soft_wrap_continuation:
         return "body"
     if _looks_like_pdf_heading_candidate(
         span,
@@ -1085,27 +1092,63 @@ def _looks_like_standalone_heading_context(
     return has_visual_gap or starts_new_body_line
 
 
+def _is_soft_wrap_continuation_pair(previous_text: str, current_text: str) -> bool:
+    """Return True when the textual signal unambiguously marks a soft line wrap.
+
+    A soft wrap is when the previous line did *not* end a sentence (no terminal
+    punctuation) and the current line continues it (starts lowercase or with a
+    connecting/closing character). Real paragraph, heading and list-item starts
+    begin with an uppercase letter, an opening quote, a bullet or a number, so
+    this signal never fuses a genuine boundary. It is geometry-independent on
+    purpose: epub→pdf exports indent soft-wrapped continuations (hanging list
+    indents, justified word-group splits), which fools purely indent-based
+    boundary heuristics.
+    """
+    if not previous_text or not current_text:
+        return False
+    if previous_text[-1] in _TERMINAL_SENTENCE_PUNCTUATION:
+        return False
+    if _BULLET_PATTERN.match(current_text) or _ORDERED_LIST_PATTERN.match(current_text):
+        return False
+    return _starts_like_sentence_continuation(current_text)
+
+
 def _can_merge_body_span(
     previous: PdfTextSpan,
     current: PdfTextSpan,
     *,
     layout_profile: _PdfHeadingLayoutProfile,
 ) -> bool:
+    previous_text = _normalize_text(previous.text)
+    current_text = _normalize_text(current.text)
+    soft_wrap = _is_soft_wrap_continuation_pair(previous_text, current_text)
+    if not soft_wrap and (_looks_like_toc_entry(previous) or _looks_like_toc_entry(current)):
+        # A confirmed soft-wrap continuation (non-terminal previous line + lowercase
+        # start) is structurally incompatible with a real TOC entry, so it overrides
+        # a spurious TOC classification of running body prose.
+        return False
     if previous.page_number != current.page_number:
-        return False
-    if _looks_like_toc_entry(previous) or _looks_like_toc_entry(current):
-        return False
-    if _looks_like_body_paragraph_indent_boundary(previous, current, layout_profile=layout_profile):
+        # The only safe cross-page merge is a confirmed soft-wrap continuation:
+        # the previous page's last line did not finish a sentence and the next
+        # page's first line continues it lowercase. Page-relative geometry is not
+        # comparable across pages, so we rely solely on the textual signal here.
+        return soft_wrap
+    if not soft_wrap and _looks_like_body_paragraph_indent_boundary(
+        previous, current, layout_profile=layout_profile
+    ):
         return False
     previous_font_size = previous.font_size if isinstance(previous.font_size, (int, float)) else 10.0
     current_font_size = current.font_size if isinstance(current.font_size, (int, float)) else previous_font_size
     vertical_gap = max(0.0, float(current.top) - float(previous.bottom))
     body_leading = layout_profile.body_leading or min(previous_font_size, current_font_size) * 1.2
     max_gap = min(body_leading * 0.55, min(previous_font_size, current_font_size) * 1.25)
+    if soft_wrap:
+        # A confirmed soft-wrap continuation is a full text line, so allow up to a
+        # single body line of leading between the two lines (still rejecting the
+        # large block gaps that separate paragraphs).
+        max_gap = max(max_gap, body_leading * 1.1)
     if vertical_gap > max_gap:
         return False
-    previous_text = _normalize_text(previous.text)
-    current_text = _normalize_text(current.text)
     if (
         previous_text
         and current_text
@@ -1186,14 +1229,21 @@ def _can_merge_list_continuation_span(
     previous_font_size = previous.font_size if isinstance(previous.font_size, (int, float)) else 10.0
     current_font_size = current.font_size if isinstance(current.font_size, (int, float)) else previous_font_size
     body_leading = layout_profile.body_leading or min(previous_font_size, current_font_size) * 1.2
+    previous_text = _normalize_text(previous.text)
+    soft_wrap = _is_soft_wrap_continuation_pair(previous_text, current_text)
     vertical_gap = max(0.0, float(current.top) - float(previous.bottom))
     max_gap = min(body_leading * 0.55, min(previous_font_size, current_font_size) * 1.25)
+    if soft_wrap:
+        max_gap = max(max_gap, body_leading * 1.1)
     if vertical_gap > max_gap:
         return False
+    # A list item soft-wraps with a hanging indent: the continuation line is set
+    # further right than the bullet/number line. A confirmed continuation signal
+    # (non-terminal previous + lowercase start) therefore overrides the
+    # "near the previous indent" requirement, which only holds for flush wraps.
     near_previous_indent = abs(float(current.x0) - float(previous.x0)) <= body_leading * 0.75
-    if not near_previous_indent:
+    if not near_previous_indent and not soft_wrap:
         return False
-    previous_text = _normalize_text(previous.text)
     return (
         _starts_like_sentence_continuation(current_text)
         or _span_line_fill_ratio(previous, layout_profile) >= 0.72
