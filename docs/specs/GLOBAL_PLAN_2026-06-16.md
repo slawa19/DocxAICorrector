@@ -473,6 +473,28 @@ verifiable: the 7 Money chapter headings now come from import; lietaer/mazzucato
 **Task B** — disable the #2 cluster on the prod path + confirm via one full run that chapter headings survive
 (from import) and nothing breaks, then prune the now-dead code. A first.
 
+TASK A DONE & verified (merged 35b21dc): deterministic "Chapter N" heading detect in import. Money body gets
+exactly 9 chapter-opener headings (the 7 #2 used to promote, now from import); extra chapter lines promoted are
+in front-matter/TOC (pass-through). lietaer +13 (numeric chapter rows), mazzucato 0 false promotes. 46 tests pass.
+
+TASK B (B1) DONE & orchestrator-verified (merged 614ffd9): **#2 cluster DISABLED on prod via one reversible
+switch** — `config.toml [structure_recognition].mode = "auto"→"off"`, which short-circuits the single
+`should_run_ai` gate in `prepare_source` (preparation.py:2809), turning off structure recognition +
+timeout/retry/split-fallback + document_map + reconciliation + topology together. Reversible (mode="auto"/"always").
+Experimental profiles (`structural-ai-first-default`, `*topology-advisory`) set mode="always" explicitly →
+UNAFFECTED. Verified: no-LLM prep proof = structure client 0 calls, prep completes, 169 import heading roles
+flow through (incl. Chapter I–VII). Tests green (config 81, preparation 140, document_pipeline 160, structure_*
+suites). NOTE: `test_structure_recognition.py` has 14 PRE-EXISTING failures (identical on base 35b21dc, NOT from
+B; they live in the now-prod-dead split-fallback code → address in B2). Confirming full Money run with #2 OFF in
+flight (run_id `20260622T_money_no2`) — expected faster prep, output preserved.
+
+TASK B2 (deferred, director's call): prune the now-prod-dead #2 code — `structure/recognition.py`
+(build_structure_map, split-fallback/timeout-retry, apply_structure_map), `structure/document_map.py`,
+`structure/reconciliation.py`, `structure/topology.py`+`layout_signals.py`, and the preparation.py stage wrappers
+(`_run_structure_recognition`, `_run_document_map_stage`, `_run_document_topology_projection_stage`). NOT a bare
+delete — still used by the experimental #2 profiles; decide remove-with-exp-profiles vs keep-behind-flag. Do after
+the excursion, low priority. The 14 pre-existing recognition test failures fold into this.
+
 SECONDARY (after the main merge fix): "О"-heading amplification — ROOT CAUSE found & orchestrator-verified
 2026-06-22. Only 2 short headings at import (OCR "%"/"o"), but **10× Cyrillic "О" in the output**. They
 are a **REASSEMBLY bug**, not import/translation/structure: each "О" stands where a correctly-translated
