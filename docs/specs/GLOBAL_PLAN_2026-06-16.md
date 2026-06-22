@@ -409,6 +409,28 @@ running-header fragments correctly demoted to body — NO real chapter/section h
 pass. A confirming full Money run is in flight (run_id `20260622T_money_combined`) for end-to-end OUTPUT proof.
 After it: declare Money main-text status, then the queued effectiveness/dead-stage review (#2 first to assess).
 
+DONE & orchestrator-verified (2026-06-22, merged a4f9abb): **footnote boundary re-attach** — sentence-boundary
+markers become trailing superscripts on the preceding paragraph. Money standalone footnote digit-units
+**103→21**, 82 re-attached inline; **marker-conservation invariant proven (21+82=103, none lost/duplicated)**;
+heads/lists unchanged (no over-merge); lietaer/mazzucato intact; 42 import tests pass. The 21 left standalone
+are correct (epigraph attributions with no terminal punct, list/heading-preceded). Verified at import level
+(rigorous); end-to-end output confirmation folds into the next full run.
+
+=== MONEY MAIN-TEXT STATUS (2026-06-22) — dominant defects RESOLVED via import-stage fixes only ===
+Journey on the OUTPUT DOCX: sentence breaks **89→1**, numbered section headings **37 promoted to Heading**,
+footnote markers **73→~21** (re-attached as superscripts). Four import fixes (continuation-merge, footnote
+transparency, cross-role merge, numbered-heading promotion, boundary re-attach), ZERO changes to structure
+recognition or the gate. ACCEPTED remaining (worth-it verdict = not worth it / avoid infinite polishing):
+~10 numbered sub-points at body-font (no heading typography → unsafe to promote), 3 "О" reassembly
+caption-drops (Money-specific, low volume). KEY ARCHITECTURE FINDING: main-text structural quality was
+ENTIRELY an import-layer problem; **structure recognition / #2 contributed nothing to it** → strong input to
+the effectiveness review.
+
+NOW ENTERING (director-ordered): **pipeline effectiveness / dead-stage review** — #2 first (does the
+structure-recognition timeout/fallback machinery earn its keep, given main-text quality is import-driven?),
+then sweep for other idle/over-engineered stages with no measurable output effect, then a worth-it verdict on
+every residual. Goal: cut dead weight, no infinite polishing.
+
 SECONDARY (after the main merge fix): "О"-heading amplification — ROOT CAUSE found & orchestrator-verified
 2026-06-22. Only 2 short headings at import (OCR "%"/"o"), but **10× Cyrillic "О" in the output**. They
 are a **REASSEMBLY bug**, not import/translation/structure: each "О" stands where a correctly-translated
