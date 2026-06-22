@@ -485,8 +485,16 @@ Experimental profiles (`structural-ai-first-default`, `*topology-advisory`) set 
 UNAFFECTED. Verified: no-LLM prep proof = structure client 0 calls, prep completes, 169 import heading roles
 flow through (incl. Chapter I–VII). Tests green (config 81, preparation 140, document_pipeline 160, structure_*
 suites). NOTE: `test_structure_recognition.py` has 14 PRE-EXISTING failures (identical on base 35b21dc, NOT from
-B; they live in the now-prod-dead split-fallback code → address in B2). Confirming full Money run with #2 OFF in
-flight (run_id `20260622T_money_no2`) — expected faster prep, output preserved.
+B; they live in the now-prod-dead split-fallback code → address in B2). Confirming full Money run with #2 OFF DONE
+(run_id `20260622T_money_no2`), orchestrator-verified vs #2-ON (combined): **output PRESERVED and slightly
+better** — acceptance PASSED, headings 122→131 (import headings flow through cleaner), chapter headings
+present (21 "Глава", incl. real body openers I–IX), numbered-heading 37→36, sentence-breaks still 1,
+output_ratio 1.045, images 43/43, no text loss. **HONEST SURPRISE: NOT faster — ~9% SLOWER** (1605 vs 1473s):
+disabling #2 removed its semantic block grouping → translation ran with MORE, smaller blocks (335 vs 287) →
+more API calls. So #2 was not purely dead — its blocking aided translation batching efficiency. NET verdict:
+the #2 cut is justified on QUALITY + SIMPLICITY (output preserved, unstable LLM stage with timeout-failures
++ Defect-B poison risk removed) but gives NO speed win (slight loss). Possible future: a cheap deterministic
+batching to recover efficiency (parked, not pursued — anti-infinite-polishing).
 
 TASK B2 (deferred, director's call): prune the now-prod-dead #2 code — `structure/recognition.py`
 (build_structure_map, split-fallback/timeout-retry, apply_structure_map), `structure/document_map.py`,
