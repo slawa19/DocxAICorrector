@@ -615,3 +615,145 @@ def test_build_paragraph_units_does_not_over_merge_real_boundaries() -> None:
     list_texts = [t for t, r in zip(texts, roles) if r == "list"]
     assert any(t.startswith("1.") for t in list_texts)
     assert any(t.startswith("2.") for t in list_texts)
+
+
+# --- Rule 1: footnote-marker transparency -----------------------------------
+
+
+def test_build_paragraph_units_merges_prose_across_standalone_footnote_marker() -> None:
+    # A superscript footnote digit sits between the two halves of one sentence.
+    # The marker must be transparent to the merge: the prose joins across it, the
+    # marker survives inline at its original position, and there is no leftover
+    # standalone digit paragraph breaking the flow.
+    spans = [
+        _span(1, "Body text line one with a body sentence", top=100, bottom=112, x0=50, x1=300, font_size=12),
+        # superscript marker: small font, raised within the line (sorts after the
+        # body line it tail-attaches to), tucked at the right edge of the line.
+        _span(1, "12", top=101, bottom=106, x0=302, x1=309, font_size=6),
+        _span(1, "evolution which is bound to throw up results", top=120, bottom=132, x0=50, x1=300, font_size=12),
+    ]
+
+    result = build_paragraph_units_from_text_spans(spans)
+
+    texts = [paragraph.text for paragraph in result.paragraphs]
+    # Single fused body unit, marker kept inline, no standalone "12" paragraph.
+    assert texts == [
+        "Body text line one with a body sentence 12 evolution which is bound to throw up results",
+    ]
+    assert all(paragraph.text.strip() != "12" for paragraph in result.paragraphs)
+    assert result.paragraphs[0].role == "body"
+
+
+# --- Rule 2: cross-role continuation merge ----------------------------------
+
+
+def test_build_paragraph_units_merges_cross_role_soft_wrap_continuation() -> None:
+    # The first line is mis-clustered as a caption-like / list-like role at import,
+    # but it does not finish its sentence and the next line continues it lowercase.
+    # A real caption/list start never begins lowercase mid-sentence, so the two
+    # halves must fuse as a single body unit regardless of the role mismatch.
+    spans = [
+        # Looks like a figure caption (matches caption pattern) but is running prose
+        # that does not terminate: it must not block the lowercase continuation.
+        _span(1, "Figure 2.2 shows the impact of banking crises on government", top=100, bottom=112, x0=50, x1=300, font_size=10),
+        _span(1, "finances over the relevant decade.", top=114, bottom=126, x0=50, x1=300, font_size=10),
+    ]
+
+    result = build_paragraph_units_from_text_spans(spans)
+
+    assert [paragraph.text for paragraph in result.paragraphs] == [
+        "Figure 2.2 shows the impact of banking crises on government finances over the relevant decade.",
+    ]
+    assert result.paragraphs[0].role == "body"
+
+
+# --- Rule 3: numbered section-heading promotion -----------------------------
+
+
+def test_build_paragraph_units_promotes_numbered_section_heading() -> None:
+    # A standalone "N. Title" line set in a prominent heading font, surrounded by
+    # body prose (not part of a numbered run), is a numbered section heading.
+    spans = [
+        _span(1, "The previous section ends with a full stop.", top=100, bottom=112, x0=50, font_size=10),
+        _span(1, "2. Dealing with the Monetary System", top=150, bottom=168, x0=50, font_size=16, bold=True),
+        _span(1, "In order to spell out the economic paradigm we operate in.", top=200, bottom=212, x0=50, font_size=10),
+    ]
+
+    result = build_paragraph_units_from_text_spans(spans)
+
+    by_text = {paragraph.text: paragraph for paragraph in result.paragraphs}
+    heading = by_text["2. Dealing with the Monetary System"]
+    assert heading.role == "heading"
+    # A promoted numbered heading must not be tagged as an unordered/bullet list.
+    assert heading.list_kind is None
+
+
+def test_build_paragraph_units_does_not_promote_body_font_numbered_list() -> None:
+    # A consecutive numbered run set at body font is a genuine ordered list, even
+    # when each item is short and followed by body prose. It must stay an ordered
+    # list (never promoted to headings, never tagged unordered).
+    spans = [
+        _span(1, "The four key categories are as follows:", top=100, bottom=112, x0=50, font_size=10),
+        _span(1, "1. Respect and care for the community of life", top=120, bottom=132, x0=50, font_size=10),
+        _span(1, "2. Ecological integrity", top=134, bottom=146, x0=50, font_size=10),
+        _span(1, "3. Social and economic justice", top=148, bottom=160, x0=50, font_size=10),
+        _span(1, "4. Democracy, non-violence and peace", top=162, bottom=174, x0=50, font_size=10),
+        _span(1, "The reference material for our analysis follows.", top=190, bottom=202, x0=50, font_size=10),
+    ]
+
+    result = build_paragraph_units_from_text_spans(spans)
+
+    numbered = [
+        paragraph
+        for paragraph in result.paragraphs
+        if paragraph.text[:2] in {"1.", "2.", "3.", "4."}
+    ]
+    assert numbered, "expected the numbered items to survive as their own units"
+    assert all(paragraph.role == "list" for paragraph in numbered)
+    assert all(paragraph.list_kind == "ordered" for paragraph in numbered)
+    assert all(paragraph.list_kind != "unordered" for paragraph in numbered)
+
+
+def test_build_paragraph_units_does_not_promote_numbered_run_at_heading_font() -> None:
+    # Even at a prominent font, a *consecutive* numbered run (1., 2., 3.) is an
+    # ordered list (e.g. a table of contents chapter list), not a set of section
+    # headings. The consecutive-sibling guard must keep them as ordered list items.
+    spans = [
+        _span(1, "1. A Brief History of Value", top=100, bottom=118, x0=50, font_size=15, bold=True),
+        _span(1, "2. The Rise of the Marginalists", top=122, bottom=140, x0=50, font_size=15, bold=True),
+        _span(1, "3. Measuring the Wealth of Nations", top=144, bottom=162, x0=50, font_size=15, bold=True),
+    ]
+
+    result = build_paragraph_units_from_text_spans(spans)
+
+    roles = [paragraph.role for paragraph in result.paragraphs]
+    assert roles == ["list", "list", "list"]
+    assert all(paragraph.list_kind == "ordered" for paragraph in result.paragraphs)
+
+
+def test_build_paragraph_units_keeps_real_bullet_list_when_body_follows() -> None:
+    # A genuine bullet list item must not be fused with a following separate body
+    # paragraph merely because the item lacks terminal punctuation and the body
+    # line begins lowercase (anti-over-merge for explicit-marker list heads).
+    # Enough body context so the layout profile estimates a realistic ~14pt line
+    # leading; the bullet then sits a full blank line (large gap) above a separate
+    # body paragraph, which must not be swallowed as a hanging-indent continuation.
+    spans = [
+        _span(1, "A first running body line that establishes the document leading here.", top=40, bottom=54, x0=50, x1=430, font_size=10),
+        _span(1, "A second running body line that establishes the document leading here.", top=56, bottom=70, x0=50, x1=430, font_size=10),
+        _span(1, "A third running body line that establishes the document leading here.", top=72, bottom=86, x0=50, x1=430, font_size=10),
+        _span(1, "- bullet item without terminal punctuation", top=120, bottom=134, x0=50, x1=300, font_size=10),
+        _span(1, "A separate body paragraph that begins after a blank line.", top=180, bottom=194, x0=50, x1=400, font_size=10),
+    ]
+
+    result = build_paragraph_units_from_text_spans(spans)
+
+    roles = [paragraph.role for paragraph in result.paragraphs]
+    assert "list" in roles
+    bullet = next(p for p in result.paragraphs if p.role == "list")
+    assert bullet.text == "- bullet item without terminal punctuation"
+    # The separate body paragraph survives as its own body unit (not fused).
+    assert any(
+        p.role == "body" and p.text == "A separate body paragraph that begins after a blank line."
+        for p in result.paragraphs
+    )

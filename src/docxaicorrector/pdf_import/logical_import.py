@@ -121,6 +121,7 @@ def build_paragraph_units_from_text_spans(
 
     emitted: list[ParagraphUnit] = []
     pending_body_spans: list[PdfTextSpan] = []
+    pending_body_inline_markers: dict[int, list[str]] = {}
     pending_heading_spans: list[PdfTextSpan] = []
     pending_list_spans: list[PdfTextSpan] = []
     skipped_repeated_page_furniture_count = 0
@@ -128,10 +129,15 @@ def build_paragraph_units_from_text_spans(
     skipped_blank_page_notice_count = 0
 
     def _flush_body() -> None:
-        nonlocal pending_body_spans
+        nonlocal pending_body_spans, pending_body_inline_markers
         if pending_body_spans:
-            emitted.append(_paragraph_from_body_spans(pending_body_spans))
+            emitted.append(
+                _paragraph_from_body_spans(
+                    pending_body_spans, inline_markers=pending_body_inline_markers
+                )
+            )
             pending_body_spans = []
+            pending_body_inline_markers = {}
 
     def _flush_heading() -> None:
         nonlocal pending_heading_spans
@@ -236,6 +242,37 @@ def build_paragraph_units_from_text_spans(
                 _flush_list()
             pending_list_spans.append(span)
             continue
+        if role == "footnote":
+            # Rule 1: a superscript footnote marker is transparent to the body
+            # merge. When it interrupts a sentence (a body is pending whose last
+            # line has not ended), keep it inline at its position so the prose
+            # merges across it instead of being split by a standalone digit
+            # paragraph. Only a genuine mid-sentence interruption is inlined; a
+            # marker that follows a completed sentence (no pending body, or the
+            # pending body line already terminated) is still emitted as its own
+            # footnote unit, preserving the reference at a real sentence boundary.
+            if pending_body_spans and not pending_heading_spans and not pending_list_spans:
+                last_body_text = _normalize_text(pending_body_spans[-1].text)
+                next_continues = (
+                    next_content_span is not None
+                    and _is_soft_wrap_continuation_pair(
+                        last_body_text, _normalize_text(next_content_span.text)
+                    )
+                )
+                if (
+                    last_body_text
+                    and last_body_text[-1] not in _TERMINAL_SENTENCE_PUNCTUATION
+                    and next_continues
+                ):
+                    pending_body_inline_markers.setdefault(len(pending_body_spans) - 1, []).append(
+                        _normalize_text(span.text)
+                    )
+                    continue
+            _flush_body()
+            _flush_heading()
+            _flush_list()
+            emitted.append(_paragraph_from_span(span, role=role, median_font_size=median_font_size))
+            continue
         if role == "toc_entry":
             _flush_body()
             _flush_heading()
@@ -250,6 +287,8 @@ def build_paragraph_units_from_text_spans(
     _flush_body()
     _flush_heading()
     _flush_list()
+
+    emitted = _consolidate_cross_role_continuations(emitted)
 
     for logical_index, paragraph in enumerate(emitted):
         _assign_pdf_paragraph_identity(paragraph, logical_index)
@@ -268,6 +307,158 @@ def build_paragraph_units_from_text_spans(
     )
 
 
+_STANDALONE_FOOTNOTE_MARKER_PATTERN = re.compile(r"^\d{1,3}$")
+
+
+def _unit_is_standalone_footnote_marker(unit: ParagraphUnit) -> bool:
+    if unit.structural_role != "footnote" and unit.role != "footnote":
+        return False
+    return bool(_STANDALONE_FOOTNOTE_MARKER_PATTERN.match((unit.text or "").strip()))
+
+
+def _unit_can_lead_continuation(unit: ParagraphUnit) -> bool:
+    """A unit that may begin (be the head of) a soft-wrap continuation run.
+
+    TOC / index entries are excluded: they end with a page reference (``, 102`` /
+    ``69– 70``) and the next two-column entry can begin lowercase, which would
+    otherwise be mistaken for a sentence continuation and over-merge unrelated
+    index lines. Excluding them is the conservative choice (under-merge is safer
+    than over-merge); a handful of running-prose lines mis-tagged ``toc_entry``
+    therefore stay split rather than risk fusing a real index.
+
+    A unit that begins with an *explicit* bullet/number marker is also excluded:
+    a genuine list item legitimately ends without terminal punctuation, so the
+    following lowercase line may be a separate item rather than a wrapped
+    continuation. That case is geometry-sensitive and already owned by the
+    span-level list-continuation merge; re-deciding it here (without geometry)
+    would risk fusing two distinct list items, so we leave marker-led units to
+    that pass. Mis-clustered running prose (no explicit marker) still leads."""
+    if unit.structural_role == "toc_entry":
+        return False
+    if _unit_is_standalone_footnote_marker(unit):
+        return False
+    head_text = (unit.text or "").strip()
+    if _BULLET_PATTERN.match(head_text) or _ORDERED_LIST_PATTERN.match(head_text):
+        return False
+    return bool(head_text)
+
+
+def _unit_can_continue_run(unit: ParagraphUnit) -> bool:
+    """A unit that may be appended as a soft-wrap continuation.
+
+    The continuation half must not be a real TOC / index entry nor a standalone
+    footnote marker (handled inline separately)."""
+    if unit.structural_role == "toc_entry":
+        return False
+    if _unit_is_standalone_footnote_marker(unit):
+        return False
+    return bool((unit.text or "").strip())
+
+
+def _merge_continuation_units(units: list[ParagraphUnit], *, inline_markers: list[str]) -> ParagraphUnit:
+    """Fuse a run of prose units (Rule 2) into a single body unit.
+
+    ``inline_markers`` are footnote-marker texts that sat between halves of the
+    fused sentence (Rule 1); they are spliced back inline at their original
+    position so the marker survives without breaking the paragraph flow.
+    """
+    parts: list[str] = []
+    for index, unit in enumerate(units):
+        parts.append((unit.text or "").strip())
+        if index < len(inline_markers) and inline_markers[index]:
+            parts[-1] = f"{parts[-1]} {inline_markers[index]}".strip()
+    text = " ".join(part for part in parts if part)
+    origin_indexes: list[int] = []
+    origin_texts: list[str] = []
+    for unit in units:
+        origin_indexes.extend(unit.origin_raw_indexes or [])
+        origin_texts.extend(unit.origin_raw_texts or [])
+    first = units[0]
+    return ParagraphUnit(
+        text=text,
+        role="body",
+        structural_role="body",
+        role_confidence="heuristic",
+        style_name="PDF Body",
+        is_bold=all(unit.is_bold for unit in units),
+        is_italic=all(unit.is_italic for unit in units),
+        font_size_pt=first.font_size_pt,
+        origin_raw_indexes=origin_indexes,
+        origin_raw_texts=origin_texts,
+        layout_origin="pdf_text_layer",
+        boundary_source="pdf_text_layer",
+        boundary_confidence="heuristic",
+        boundary_rationale="merged_cross_role_soft_wrap_continuation",
+        source_index=first.source_index,
+        page_number=first.page_number,
+    )
+
+
+def _consolidate_cross_role_continuations(
+    units: list[ParagraphUnit],
+) -> list[ParagraphUnit]:
+    """Rules 1 & 2: merge soft-wrap continuations across role boundaries.
+
+    Walking the emitted units, whenever a unit's text does not end a sentence and
+    the next prose unit continues it lowercase, the pair is a soft-wrap that the
+    importer split because the two halves received different roles (body / list /
+    caption / heading). They are fused into one body unit. A standalone footnote
+    marker between the two halves is transparent: prose merges across it and the
+    marker is kept inline (Rule 1), so it no longer survives as a barrier digit
+    paragraph. This never fuses a genuine boundary, because a real heading / list
+    item / caption never *ends* without terminal punctuation followed by a
+    lowercase continuation.
+    """
+    if not units:
+        return units
+    result: list[ParagraphUnit] = []
+    index = 0
+    count = len(units)
+    while index < count:
+        current = units[index]
+        if not _unit_can_lead_continuation(current):
+            result.append(current)
+            index += 1
+            continue
+        run = [current]
+        inline_markers: list[str] = []
+        cursor = index
+        merged_any = False
+        while True:
+            # Look ahead past an optional standalone footnote marker.
+            marker_text = ""
+            lookahead = cursor + 1
+            if (
+                lookahead < count
+                and _unit_is_standalone_footnote_marker(units[lookahead])
+                and lookahead + 1 < count
+            ):
+                marker_text = (units[lookahead].text or "").strip()
+                next_index = lookahead + 1
+            else:
+                next_index = cursor + 1
+            if next_index >= count:
+                break
+            nxt = units[next_index]
+            if not _unit_can_continue_run(nxt):
+                break
+            if not _is_soft_wrap_continuation_pair(
+                (run[-1].text or "").strip(), (nxt.text or "").strip()
+            ):
+                break
+            inline_markers.append(marker_text)
+            run.append(nxt)
+            cursor = next_index
+            merged_any = True
+        if merged_any:
+            result.append(_merge_continuation_units(run, inline_markers=inline_markers))
+            index = cursor + 1
+        else:
+            result.append(current)
+            index += 1
+    return result
+
+
 def _classify_span_role(
     span: PdfTextSpan,
     *,
@@ -277,6 +468,16 @@ def _classify_span_role(
 ) -> str:
     text = _normalize_text(span.text)
     if _BULLET_PATTERN.match(text) or _ORDERED_LIST_PATTERN.match(text):
+        # Rule 3: a standalone ``N. Title`` line with heading typography that is not
+        # part of a consecutive numbered run is a numbered section heading, not a
+        # bullet/list item. Real ordered/bullet lists fall through to "list".
+        if _looks_like_numbered_section_heading(
+            span,
+            layout_profile=layout_profile,
+            previous_span=previous_span,
+            next_span=next_span,
+        ):
+            return "heading"
         return "list"
     if _looks_like_superscript_footnote_marker(
         span,
@@ -1092,6 +1293,100 @@ def _looks_like_standalone_heading_context(
     return has_visual_gap or starts_new_body_line
 
 
+_NUMBERED_SECTION_HEADING_PATTERN = re.compile(r"^(?P<number>\d{1,3})\.\s+(?P<title>[A-ZА-Я].*)$")
+
+
+def _numbered_line_number(text: str) -> int | None:
+    match = _ORDERED_LIST_PATTERN.match(text)
+    if not match:
+        return None
+    try:
+        return int(match.group("marker"))
+    except (TypeError, ValueError):
+        return None
+
+
+def _is_consecutive_numbered_sibling(
+    span: PdfTextSpan,
+    neighbour: PdfTextSpan | None,
+    *,
+    own_number: int,
+) -> bool:
+    """True when ``neighbour`` is part of the same ordered-list run as ``span``.
+
+    A genuine ordered list reads as ``1.``, ``2.``, ``3.`` … in sequence at the
+    same type size. We detect membership by an adjacent ordered-list line whose
+    number differs by exactly one and whose font size matches, so a numbered
+    *section heading* (isolated, surrounded by body prose) is never mistaken for
+    a list item and vice-versa.
+    """
+    if neighbour is None or neighbour.page_number != span.page_number:
+        return False
+    neighbour_number = _numbered_line_number(_normalize_text(neighbour.text))
+    if neighbour_number is None:
+        return False
+    if abs(neighbour_number - own_number) != 1:
+        return False
+    span_font = span.font_size if isinstance(span.font_size, (int, float)) else None
+    neighbour_font = neighbour.font_size if isinstance(neighbour.font_size, (int, float)) else None
+    if span_font and neighbour_font:
+        smaller = min(float(span_font), float(neighbour_font))
+        larger = max(float(span_font), float(neighbour_font))
+        if larger - smaller > max(0.5, smaller * 0.1):
+            return False
+    return True
+
+
+def _looks_like_numbered_section_heading(
+    span: PdfTextSpan,
+    *,
+    layout_profile: _PdfHeadingLayoutProfile,
+    previous_span: PdfTextSpan | None,
+    next_span: PdfTextSpan | None,
+) -> bool:
+    """Distinguish a numbered *section heading* (``N. Title``) from a list item.
+
+    Promotion is deliberately conservative (under-promotion is safer than
+    over-promotion): a ``N. Title`` line becomes a heading ONLY when it carries
+    genuine heading typography (prominent font relative to body) AND it is not
+    part of a consecutive numbered run (a real ordered list). Body-sized numbered
+    lines (e.g. lietaer sub-points styled at body size) and TOC chapter runs
+    (mazzucato ``1.``…``9.`` sequences) therefore stay classified as list items.
+    """
+    text = _normalize_text(span.text)
+    match = _NUMBERED_SECTION_HEADING_PATTERN.match(text)
+    if not match:
+        return False
+    own_number = int(match.group("number"))
+    title = match.group("title")
+    title_words = _words(title)
+    # Heading-shaped: short title, no terminal sentence punctuation on a long line,
+    # not a footnote/citation tail glued to a number.
+    if not title_words or len(title_words) > 16:
+        return False
+    if _looks_like_footnote_or_citation_tail(text):
+        return False
+    # A numbered section heading begins a section; the line after it is body prose
+    # (or another heading), never the next item of the same numbered run.
+    if _is_consecutive_numbered_sibling(span, previous_span, own_number=own_number):
+        return False
+    if _is_consecutive_numbered_sibling(span, next_span, own_number=own_number):
+        return False
+    # Require genuine heading typography: a prominent font relative to body. This
+    # is the signal that separates Money's real 16.5pt section headings from the
+    # body-sized numbered lines in other books (which must stay lists).
+    body_font_size = layout_profile.body_font_size
+    span_font_size = span.font_size if isinstance(span.font_size, (int, float)) else None
+    if not body_font_size or not span_font_size:
+        return False
+    if float(span_font_size) / float(body_font_size) < 1.12:
+        return False
+    # A real heading is not as long as a wrapped body line.
+    if _is_longer_than_document_body_line_tail(span, text, layout_profile):
+        return False
+    return True
+
+
 def _is_soft_wrap_continuation_pair(previous_text: str, current_text: str) -> bool:
     """Return True when the textual signal unambiguously marks a soft line wrap.
 
@@ -1215,8 +1510,6 @@ def _can_merge_list_continuation_span(
     *,
     layout_profile: _PdfHeadingLayoutProfile,
 ) -> bool:
-    if previous.page_number != current.page_number:
-        return False
     current_text = _normalize_text(current.text)
     if not current_text or _BULLET_PATTERN.match(current_text) or _ORDERED_LIST_PATTERN.match(current_text):
         return False
@@ -1231,6 +1524,13 @@ def _can_merge_list_continuation_span(
     body_leading = layout_profile.body_leading or min(previous_font_size, current_font_size) * 1.2
     previous_text = _normalize_text(previous.text)
     soft_wrap = _is_soft_wrap_continuation_pair(previous_text, current_text)
+    if previous.page_number != current.page_number:
+        # A list item can wrap across a page break. As with body merges, the only
+        # safe cross-page join is a confirmed soft-wrap continuation: the last
+        # line of the item on the previous page did not finish a sentence and the
+        # next page continues it lowercase. Page-relative geometry (gaps, indent)
+        # is not comparable across pages, so we rely solely on the textual signal.
+        return soft_wrap
     vertical_gap = max(0.0, float(current.top) - float(previous.bottom))
     max_gap = min(body_leading * 0.55, min(previous_font_size, current_font_size) * 1.25)
     if soft_wrap:
@@ -1376,8 +1676,18 @@ def _can_merge_heading_span(previous: PdfTextSpan, current: PdfTextSpan) -> bool
 
 
 
-def _paragraph_from_body_spans(spans: list[PdfTextSpan]) -> ParagraphUnit:
-    text = " ".join(_normalize_text(span.text) for span in spans)
+def _paragraph_from_body_spans(
+    spans: list[PdfTextSpan],
+    *,
+    inline_markers: dict[int, list[str]] | None = None,
+) -> ParagraphUnit:
+    inline_markers = inline_markers or {}
+    pieces: list[str] = []
+    for index, span in enumerate(spans):
+        pieces.append(_normalize_text(span.text))
+        for marker in inline_markers.get(index, []):
+            pieces.append(marker)
+    text = " ".join(piece for piece in pieces if piece)
     first = spans[0]
     return ParagraphUnit(
         text=text,
