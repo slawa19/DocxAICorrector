@@ -63,18 +63,6 @@ def _build_default_prepared_source_key(file_token: str, chunk_size: int = 6000) 
         paragraph_boundary_ai_review_mode=str(app_config.get("paragraph_boundary_ai_review_mode", "off") or "off"),
         relation_normalization_key=relation_key,
         layout_artifact_cleanup_key=preparation._resolve_layout_cleanup_cache_key(app_config),
-        structure_recognition_enabled=bool(app_config.get("structure_recognition_enabled", False)),
-        structure_recognition_mode=str(app_config.get("structure_recognition_mode", "") or ""),
-        structure_recovery_enabled=bool(app_config.get("structure_recovery_enabled", False)),
-        structure_recovery_mode=str(app_config.get("structure_recovery_mode", "ai_first") or "ai_first"),
-        structure_recovery_coordinate_schema_version=int(
-            app_config.get(
-                "structure_recovery_coordinate_schema_version",
-                preparation.STRUCTURE_RECOVERY_COORDINATE_SCHEMA_VERSION,
-            )
-            or preparation.STRUCTURE_RECOVERY_COORDINATE_SCHEMA_VERSION
-        ),
-        structure_validation_enabled=bool(app_config.get("structure_validation_enabled", True)),
     )
 
 

@@ -41,7 +41,6 @@ RELATION_NORMALIZATION_KIND_VALUES = (
     "epigraph_attribution",
     "toc_region",
 )
-STRUCTURE_RECOGNITION_MIN_CONFIDENCE_VALUES = ("medium", "high")
 VALID_HEURISTIC_ROLE_HINTS = frozenset({"body", "heading", "caption", "list"})
 VALID_HEURISTIC_STRUCTURAL_ROLE_HINTS = frozenset(
     {"body", "caption", "epigraph", "attribution", "toc_entry", "toc_header", "dedication"}

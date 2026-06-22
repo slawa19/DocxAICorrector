@@ -500,5 +500,4 @@ def resolve_model_registry_settings(
         "default_model": default_model,
         "models": models,
         "model_sources": model_sources,
-        "structure_recognition_config": structure_recognition_config,
     }

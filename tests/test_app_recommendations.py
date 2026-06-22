@@ -694,7 +694,6 @@ def test_main_places_recommended_text_settings_notice_inside_preparation_summary
 
     assert len(summary_calls) == 1
     assert summary_calls[0]["status_notes"] == [
-        "Структура: AI выключен, использованы текущие правила.",
         "После анализа файла приложение скорректировало текстовые настройки: "
         "режим: изменено с Литературное редактирование на Перевод; язык оригинала: изменено с en на Авто.",
     ]
