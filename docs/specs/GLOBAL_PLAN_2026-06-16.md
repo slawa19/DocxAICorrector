@@ -15,11 +15,12 @@ Active companions:
 
 ## ═══ NAVIGATION / RESUME POINT (read this first) — updated 2026-06-22 ═══
 
-**CURRENT EXCURSION (side-branch, director-ordered):** pipeline **effectiveness / dead-stage review** —
-cutting the structure-recognition (#2) machinery + other idle/over-engineered stages that don't affect the
-output. Detail in "Update — 2026-06-22" below. In progress: measuring #2's real contribution (7 promotions /
-15 role changes) eyes-on across 3 books before any big cut; Tier-1 dead config (topology projection,
-document_map/reconciliation = 0 patches) being prepped for removal.
+**EXCURSION COMPLETE (2026-06-22):** the effectiveness / dead-stage review is DONE — the
+structure-recognition (#2) feature was fully REMOVED (merged f4cc963: −29.5K lines, modules + config +
+experimental profiles + tests + docs). Value (chapter/numbered heading detection) lives in import now.
+Verified: full suite 1855 pass (only pre-existing pyright + env flakiness excluded), import unaffected,
+confirming Money run acceptance PASSED with output faithful to import roles. **WE ARE NOW BACK ON THE MAIN
+TRACK** → next is breadth validation (below). Detail in "Update — 2026-06-22".
 
 **MONEY MAIN-TEXT = CLOSED — do NOT re-polish.** Dominant body defects resolved via import-stage fixes
 (sentence breaks 89→1, 37 numbered headings promoted, footnotes 73→~21). Accepted residue: ~10 body-font
