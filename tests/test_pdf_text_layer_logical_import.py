@@ -88,7 +88,11 @@ def test_build_paragraph_units_preserves_heading_list_and_formatting_signals() -
     ]
 
 
-def test_build_paragraph_units_separates_superscript_footnote_marker() -> None:
+def test_build_paragraph_units_reattaches_boundary_superscript_footnote_marker() -> None:
+    # Rule 1b: a footnote marker that sits AFTER a completed sentence (the body
+    # before it ends with terminal punctuation) and BEFORE a fresh sentence is
+    # re-bound as a trailing Unicode superscript on the END of that sentence,
+    # rather than surviving as a standalone digit paragraph between the two.
     spans = [
         _span(1, "Body line establishes the normal document sentence.", top=70, bottom=82, x0=50, x1=430),
         _span(1, "This sentence ends with a citation.", top=100, bottom=112, x0=50, x1=250),
@@ -98,10 +102,13 @@ def test_build_paragraph_units_separates_superscript_footnote_marker() -> None:
 
     result = build_paragraph_units_from_text_spans(spans)
 
-    assert [paragraph.role for paragraph in result.paragraphs] == ["body", "body", "footnote", "body"]
-    assert result.paragraphs[1].text == "This sentence ends with a citation."
-    assert result.paragraphs[2].text == "2"
-    assert result.paragraphs[2].structural_role == "footnote"
+    # No standalone footnote-digit paragraph survives; the marker is folded into
+    # the tail of the sentence it references, with the sentence body unchanged.
+    assert [paragraph.role for paragraph in result.paragraphs] == ["body", "body", "body"]
+    assert result.paragraphs[1].text == "This sentence ends with a citation.²"
+    assert result.paragraphs[1].text.startswith("This sentence ends with a citation.")
+    assert all(paragraph.structural_role != "footnote" for paragraph in result.paragraphs)
+    assert all(paragraph.text.strip() != "2" for paragraph in result.paragraphs)
 
 
 def test_build_paragraph_units_separates_attribution_superscript_footnote_marker() -> None:
@@ -642,6 +649,78 @@ def test_build_paragraph_units_merges_prose_across_standalone_footnote_marker() 
     ]
     assert all(paragraph.text.strip() != "12" for paragraph in result.paragraphs)
     assert result.paragraphs[0].role == "body"
+
+
+# --- Rule 1b: sentence-boundary footnote re-attach --------------------------
+
+
+def test_build_paragraph_units_does_not_reattach_marker_after_heading() -> None:
+    # A footnote marker that follows a HEADING (not a completed body sentence)
+    # must NOT be re-bound: there is no pending body to attach to, so it is left
+    # as its own standalone footnote unit (under-attach is safer than mis-bind).
+    spans = [
+        _span(1, "CHAPTER SEVEN", top=70, bottom=92, x0=50, x1=260, font_size=18, bold=True),
+        _span(1, "7", top=71, bottom=76, x0=262, x1=266, font_size=4),
+        _span(1, "A real body paragraph resumes here with a full sentence.", top=120, bottom=132, x0=50, x1=420),
+    ]
+
+    result = build_paragraph_units_from_text_spans(spans)
+
+    roles = [paragraph.role for paragraph in result.paragraphs]
+    assert "heading" in roles
+    # The heading text is not polluted with the marker, and the marker survives
+    # as a standalone footnote unit rather than being bound to the heading.
+    heading = next(p for p in result.paragraphs if p.role == "heading")
+    assert heading.text == "CHAPTER SEVEN"
+    standalone = [p for p in result.paragraphs if p.text.strip() == "7"]
+    assert standalone, "marker after a heading must stay standalone, not be re-bound"
+    assert standalone[0].structural_role == "footnote"
+
+
+def test_build_paragraph_units_does_not_reattach_marker_after_unterminated_non_continuation() -> None:
+    # The body line before the marker does NOT end with terminal punctuation, and
+    # the next line does NOT continue it (it is a fresh capitalized sentence, not
+    # a lowercase soft-wrap). Neither the mid-sentence inline rule nor the
+    # boundary re-attach rule should fire: the marker stays standalone.
+    spans = [
+        _span(1, "An unterminated trailing fragment without a stop", top=100, bottom=112, x0=50, x1=300, font_size=10),
+        _span(1, "9", top=101, bottom=106, x0=302, x1=306, font_size=4),
+        _span(1, "Another Independent Sentence Begins Capitalized Here.", top=140, bottom=152, x0=50, x1=400, font_size=10),
+    ]
+
+    result = build_paragraph_units_from_text_spans(spans)
+
+    standalone = [p for p in result.paragraphs if p.text.strip() == "9"]
+    assert standalone, "marker after an unterminated non-continuation must stay standalone"
+    assert standalone[0].structural_role == "footnote"
+    # The unterminated fragment is not silently glued to the marker.
+    assert any(p.text == "An unterminated trailing fragment without a stop" for p in result.paragraphs)
+
+
+def test_build_paragraph_units_preserves_footnote_marker_count_on_reattach() -> None:
+    # Invariant: re-attaching boundary markers must NEVER lose a marker. The total
+    # footnote-marker count (inline-superscript + standalone) is unchanged; only
+    # the rendering (folded into a sentence tail vs. its own paragraph) changes.
+    spans = [
+        _span(1, "First sentence ends cleanly here.", top=70, bottom=82, x0=50, x1=250),
+        _span(1, "3", top=71, bottom=76, x0=252, x1=256, font_size=4),
+        _span(1, "Second sentence also ends cleanly here.", top=100, bottom=112, x0=50, x1=260),
+        _span(1, "4", top=101, bottom=106, x0=262, x1=266, font_size=4),
+        _span(1, "Third sentence rounds things out here.", top=130, bottom=142, x0=50, x1=250),
+    ]
+
+    result = build_paragraph_units_from_text_spans(spans)
+
+    # Both boundary markers (3, 4) are re-bound as trailing superscripts; none
+    # survives as a standalone digit, and both superscripts are present.
+    assert all(p.role == "body" for p in result.paragraphs)
+    assert all(p.text.strip() not in {"3", "4"} for p in result.paragraphs)
+    joined = " ".join(p.text for p in result.paragraphs)
+    assert "³" in joined and "⁴" in joined
+    # Exactly two markers survive, one per referenced sentence.
+    assert sum(joined.count(ch) for ch in ("³", "⁴")) == 2
+    assert result.paragraphs[0].text == "First sentence ends cleanly here.³"
+    assert result.paragraphs[1].text == "Second sentence also ends cleanly here.⁴"
 
 
 # --- Rule 2: cross-role continuation merge ----------------------------------

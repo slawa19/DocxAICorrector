@@ -247,10 +247,23 @@ def build_paragraph_units_from_text_spans(
             # merge. When it interrupts a sentence (a body is pending whose last
             # line has not ended), keep it inline at its position so the prose
             # merges across it instead of being split by a standalone digit
-            # paragraph. Only a genuine mid-sentence interruption is inlined; a
-            # marker that follows a completed sentence (no pending body, or the
-            # pending body line already terminated) is still emitted as its own
-            # footnote unit, preserving the reference at a real sentence boundary.
+            # paragraph.
+            #
+            # Rule 1b (sentence-boundary re-attach): a footnote reference that
+            # sits AFTER a completed sentence (the pending body's last line ends
+            # with terminal punctuation) is re-bound as a trailing marker on the
+            # END of that same sentence, instead of surviving as a standalone
+            # digit paragraph wedged between two sentences. This reuses the very
+            # same ``pending_body_inline_markers`` path as the mid-sentence case;
+            # the marker is never lost — it is spliced inline at the tail of the
+            # sentence it references. We only re-attach to a *pending body* unit
+            # (so we never cross a heading/image/page boundary, and never touch a
+            # footnote-DEFINITION block, which is emitted as its own unit and is
+            # not a ``pending_body_spans`` context). When there is no safe body to
+            # bind to — no pending body, a pending heading/list, or a body whose
+            # last line is neither terminated nor a soft-wrap continuation — the
+            # marker is left as its own standalone footnote unit (under-attach is
+            # safer than mis-binding).
             if pending_body_spans and not pending_heading_spans and not pending_list_spans:
                 last_body_text = _normalize_text(pending_body_spans[-1].text)
                 next_continues = (
@@ -259,10 +272,12 @@ def build_paragraph_units_from_text_spans(
                         last_body_text, _normalize_text(next_content_span.text)
                     )
                 )
-                if (
-                    last_body_text
-                    and last_body_text[-1] not in _TERMINAL_SENTENCE_PUNCTUATION
-                    and next_continues
+                last_body_terminated = bool(
+                    last_body_text and last_body_text[-1] in _TERMINAL_SENTENCE_PUNCTUATION
+                )
+                if last_body_text and (
+                    last_body_terminated
+                    or (last_body_text[-1] not in _TERMINAL_SENTENCE_PUNCTUATION and next_continues)
                 ):
                     pending_body_inline_markers.setdefault(len(pending_body_spans) - 1, []).append(
                         _normalize_text(span.text)
@@ -308,6 +323,16 @@ def build_paragraph_units_from_text_spans(
 
 
 _STANDALONE_FOOTNOTE_MARKER_PATTERN = re.compile(r"^\d{1,3}$")
+
+# A purely-numeric footnote marker that may be rendered as a trailing Unicode
+# superscript when re-attached to the end of a completed sentence.
+_SUPERSCRIPT_MARKER_DIGITS_PATTERN = re.compile(r"^\d{1,3}$")
+_SUPERSCRIPT_DIGIT_TABLE = str.maketrans("0123456789", "⁰¹²³⁴⁵⁶⁷⁸⁹")
+
+
+def _to_superscript_digits(digits: str) -> str:
+    """Render a short numeric footnote marker as Unicode superscript digits."""
+    return digits.translate(_SUPERSCRIPT_DIGIT_TABLE)
 
 
 def _unit_is_standalone_footnote_marker(unit: ParagraphUnit) -> bool:
@@ -1686,7 +1711,23 @@ def _paragraph_from_body_spans(
     for index, span in enumerate(spans):
         pieces.append(_normalize_text(span.text))
         for marker in inline_markers.get(index, []):
-            pieces.append(marker)
+            # A marker that re-attaches to the END of a completed sentence (the
+            # preceding piece ends with terminal punctuation) is a footnote
+            # reference for that sentence: render it as a trailing Unicode
+            # superscript glued directly to the sentence (no separating space)
+            # so the sentence body stays byte-identical and the marker reads as a
+            # footnote superscript rather than a stray digit. A marker that
+            # interrupts a sentence (preceding half not terminated) keeps its
+            # original inline, space-separated form so the prose flows across it.
+            previous_piece = pieces[-1] if pieces else ""
+            if (
+                previous_piece
+                and previous_piece[-1] in _TERMINAL_SENTENCE_PUNCTUATION
+                and _SUPERSCRIPT_MARKER_DIGITS_PATTERN.match(marker)
+            ):
+                pieces[-1] = f"{previous_piece.rstrip()}{_to_superscript_digits(marker)}"
+            else:
+                pieces.append(marker)
     text = " ".join(piece for piece in pieces if piece)
     first = spans[0]
     return ParagraphUnit(
