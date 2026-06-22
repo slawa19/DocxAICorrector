@@ -79,15 +79,6 @@ def test_prepare_run_context_updates_selected_token_and_prepared_key(monkeypatch
         image_assets=["img"],
         jobs=[{"target_text": "block", "target_chars": 5, "context_chars": 0}],
         prepared_source_key="report.docx:hash:6000",
-        structure_map={"kind": "structure-map"},
-        document_map_status="ai",
-        document_map_status_reason="",
-        ai_classified_count=3,
-        ai_heading_count=2,
-        ai_role_change_count=1,
-        ai_heading_promotion_count=1,
-        ai_heading_demotion_count=0,
-        ai_structural_role_change_count=1,
         normalization_report=SimpleNamespace(
             total_raw_paragraphs=3,
             total_logical_paragraphs=2,
@@ -119,15 +110,6 @@ def test_prepare_run_context_updates_selected_token_and_prepared_key(monkeypatch
     assert result.preparation_cached is False
     assert result.preparation_elapsed_seconds >= 0.0
     assert result.normalization_report is prepared_document.normalization_report
-    assert result.structure_map == {"kind": "structure-map"}
-    assert result.document_map_status == "ai"
-    assert result.document_map_status_reason == ""
-    assert result.ai_classified_count == 3
-    assert result.ai_heading_count == 2
-    assert result.ai_role_change_count == 1
-    assert result.ai_heading_promotion_count == 1
-    assert result.ai_heading_demotion_count == 0
-    assert result.ai_structural_role_change_count == 1
     assert session_state.selected_source_token == result.uploaded_file_token
     assert session_state.prepared_source_key == "report.docx:hash:6000"
     assert session_state.completed_source is None
@@ -394,8 +376,6 @@ def test_build_structure_manifest_payload_serializes_detected_segments():
     assert payload["detector_version"] == "chapter_segments_v1"
     assert payload["detector_config"] == {
         "chunk_size": 6000,
-        "structure_recognition_mode": "off",
-        "min_confidence": "medium",
     }
     assert payload["structure_fingerprint"] == "abc123def456"
     assert payload["summary"] == {
@@ -1074,14 +1054,14 @@ def test_prepare_run_context_for_background_uses_frozen_upload_payload(monkeypat
         image_mode="safe",
         keep_all_image_variants=True,
         processing_operation="audiobook",
-        app_config={"structure_recognition_mode": "always", "structure_recognition_enabled": True},
+        app_config={"translation_domain_default": "general", "reader_cleanup_default": True},
         prepare_document_for_processing_fn=lambda **kwargs: (captured.setdefault("prepare", kwargs), prepared_document)[1],
     )
 
     assert result.uploaded_filename == "report.docx"
     assert result.uploaded_file_bytes == b"abc"
     assert result.uploaded_file_token == payload.file_token
-    assert captured["prepare"]["app_config"] == {"structure_recognition_mode": "always", "structure_recognition_enabled": True}
+    assert captured["prepare"]["app_config"] == {"translation_domain_default": "general", "reader_cleanup_default": True}
     assert captured["prepare"]["processing_operation"] == "audiobook"
 
 
@@ -1118,7 +1098,7 @@ def test_prepare_run_context_for_background_uses_real_cache(monkeypatch):
 
     assert calls["extract"] == 1
     assert second.prepared_source_key.endswith(
-        ":6000:high_only:off:phase2_default:epigraph_attribution,image_caption,table_caption,toc_region:lc=1:3:80:sr=auto:sv=1:srec=1:ai_first:c1"
+        ":6000:high_only:off:phase2_default:epigraph_attribution,image_caption,table_caption,toc_region:lc=1:3:80:flag:pv=2"
     )
     assert second.preparation_cached is True
     assert second.preparation_stage == "Документ подготовлен"

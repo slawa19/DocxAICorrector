@@ -476,7 +476,7 @@ def _collect_heading_candidates(
         if toc_match is not None:
             evidence.append(
                 SegmentBoundaryEvidence(
-                    source="document_map",
+                    source="toc_title_match",
                     confidence="high" if _is_heading_candidate_from_applied_structure(paragraph, structure_phase=normalized_phase) else "medium",
                     details={"matched_title": toc_match},
                 )

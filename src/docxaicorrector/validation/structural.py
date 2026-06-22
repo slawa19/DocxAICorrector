@@ -42,7 +42,6 @@ from docxaicorrector.image.reinsertion import reinsert_inline_images
 from docxaicorrector.core.models import ParagraphBoundaryNormalizationReport, ParagraphUnit
 from docxaicorrector.processing.processing_service import clone_processing_service
 from docxaicorrector.structure.layout_signals import derive_layout_signals
-from docxaicorrector.structure.topology import apply_document_map_topology
 from docxaicorrector.validation.common import build_validation_event_logger, build_validation_runtime_config
 from docxaicorrector.validation.formatting_coverage import (
     resolve_role_aware_formatting_unmapped_source_summary,
@@ -1516,11 +1515,6 @@ def run_structural_passthrough_validation(
         prepared,
         app_config=runtime_config,
     )
-    _apply_topology_projection_snapshot_fallback(
-        preparation_diagnostic_snapshot,
-        prepared,
-        app_config=runtime_config,
-    )
     output_paragraphs = []
     output_image_assets = []
     if output_artifacts["output_docx_openable"]:
@@ -2148,53 +2142,6 @@ def _apply_prepared_snapshot_fields(
     )
     _apply_quality_gate_readiness_fallback(snapshot)
     _normalize_snapshot_or_metric_statuses(snapshot)
-
-
-def _apply_topology_projection_snapshot_fallback(
-    snapshot: dict[str, object],
-    prepared: object,
-    *,
-    app_config: Mapping[str, Any],
-) -> None:
-    current_topology_status = str(snapshot.get("document_topology_projection_status") or "").strip().lower()
-    if current_topology_status not in {"", "not_requested"}:
-        return
-    if not bool(app_config.get("structure_recovery_enabled", False)):
-        return
-    if not bool(app_config.get("structure_recovery_topology_projection_enabled", False)):
-        return
-    paragraphs = list(getattr(prepared, "paragraphs", []) or [])
-    document_map = getattr(prepared, "document_map", None)
-    if not paragraphs or document_map is None:
-        return
-    try:
-        layout_signals = None
-        if bool(app_config.get("structure_recovery_topology_projection_layout_signals_enabled", False)):
-            layout_signals = derive_layout_signals(
-                cast(Sequence[ParagraphUnit], paragraphs),
-                heading_ratio=float(app_config.get("structure_recovery_topology_projection_layout_signals_heading_ratio", 1.15) or 1.15),
-                short_line_chars=int(app_config.get("structure_recovery_topology_projection_layout_signals_short_line_chars", 80) or 80),
-                baseline_tolerance_pt=float(app_config.get("structure_recovery_topology_projection_layout_signals_baseline_tolerance_pt", 0.25) or 0.25),
-                min_tier_population=int(app_config.get("structure_recovery_topology_projection_layout_signals_min_tier_population", 2) or 2),
-            )
-            snapshot["document_topology_layout_signals"] = _build_layout_signals_snapshot_context(
-                layout_signals=layout_signals,
-                paragraphs=paragraphs,
-            )
-        projection = apply_document_map_topology(
-            paragraphs,
-            document_map,
-            app_config=app_config,
-            layout_signals=layout_signals,
-        )
-    except Exception:
-        return
-    snapshot["document_topology_projection"] = asdict(projection)
-    snapshot["document_topology_projection_status"] = "built" if projection.operations or projection.projected_units else "no_operations"
-    snapshot["document_topology_projection_status_reason"] = ""
-    _normalize_snapshot_or_metric_statuses(snapshot)
-
-
 def _apply_structure_validation_snapshot_fields(snapshot: dict[str, object], structure_validation_report: object) -> None:
     toc_region_bounded_count = getattr(structure_validation_report, "toc_region_bounded_count", None)
     if toc_region_bounded_count is not None and int(toc_region_bounded_count or 0) > _as_int(snapshot, "bounded_toc_region_count"):
@@ -3128,7 +3075,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     registry = load_validation_registry()
     document_profile = registry.get_document_profile(str(args.document_profile_id))
     run_profile_id = str(args.run_profile_id or getattr(document_profile, "structural_run_profile", "") or "").strip()
-    run_profile = registry.get_run_profile(run_profile_id) if run_profile_id else registry.get_run_profile("structural-passthrough-default")
+    run_profile = registry.get_run_profile(run_profile_id) if run_profile_id else registry.get_run_profile("ui-parity-translate-benchmark-advisory")
     payload = evaluate_structural_preparation_diagnostic(document_profile, run_profile)
     print(json.dumps(payload, ensure_ascii=False, indent=2))
     return 0

@@ -2935,10 +2935,11 @@ def _derive_translation_quality_authority_fields(
         "unit_unmapped_source_gate_source": "legacy_paragraph",
         "unit_unmapped_target_gate_source": "legacy_paragraph",
     }
-    document_map = getattr(context, "document_map", None)
-    topology_projection = getattr(context, "document_topology_projection", None)
+    # Structure recognition (#2) removed: no document map / topology projection is produced,
+    # so the structure-side TOC/topology gate fields keep their neutral defaults above and only
+    # the markdown-derived toc_body_concat detection and unit-aware unmapped fields run.
     source_paragraphs = cast(Sequence[object], getattr(context, "source_paragraphs", None) or ())
-    if formatting_payload is None and document_map is None and topology_projection is None:
+    if formatting_payload is None:
         return fields
     try:
         from docxaicorrector.validation import structural as structural_validation_runtime
@@ -2948,8 +2949,8 @@ def _derive_translation_quality_authority_fields(
         {
             key: value
             for key, value in structural_validation_runtime._derive_toc_body_concat_gate_fields(
-                document_map=document_map,
-                topology_projection=topology_projection,
+                document_map=None,
+                topology_projection=None,
                 markdown_detected=markdown_detected,
             ).items()
             if key
@@ -2958,24 +2959,9 @@ def _derive_translation_quality_authority_fields(
                 "toc_body_concat_markdown_detected",
                 "toc_body_concat_structure_detected",
                 "toc_body_concat_gate_source",
-                "topology_split_compound_toc_operation_count",
-                "topology_merge_heading_operation_count",
-                "document_map_compound_toc_split_hint_count",
             }
         }
     )
-    fields["document_map_toc_detected"] = bool(
-        structural_validation_runtime._has_high_confidence_bounded_document_map_toc_region(document_map)
-        or structural_validation_runtime._count_document_map_anchor_roles(document_map, role="toc_header")
-        or structural_validation_runtime._count_document_map_anchor_roles(document_map, role="toc_entry")
-    )
-    fields["topology_projection_supported"] = bool(
-        structural_validation_runtime._projection_has_units_or_operations(topology_projection)
-    )
-    fields["document_map_toc_region_count"] = (
-        1 if structural_validation_runtime._has_high_confidence_bounded_document_map_toc_region(document_map) else 0
-    )
-    fields["topology_toc_entry_count"] = structural_validation_runtime._count_topology_toc_entry_units(topology_projection)
     generated_paragraph_registry = None
     if assembly_result is not None:
         assembly_entries = tuple(getattr(assembly_result, "entries", ()) or ())
@@ -2983,7 +2969,7 @@ def _derive_translation_quality_authority_fields(
             generated_paragraph_registry = build_generated_paragraph_registry_from_entries(assembly_entries)
     unmapped_fields = structural_validation_runtime._derive_unit_aware_unmapped_fields(
         source_paragraphs=source_paragraphs,
-        topology_projection=topology_projection,
+        topology_projection=None,
         formatting_payload=formatting_payload,
         generated_paragraph_registry=generated_paragraph_registry,
     )

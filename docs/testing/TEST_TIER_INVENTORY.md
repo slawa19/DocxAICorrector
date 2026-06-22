@@ -22,7 +22,6 @@ This inventory is intentionally pragmatic:
 - `tests/test_docxaicorrector_bootstrap_package.py`
 - `tests/test_document_extraction.py`
 - `tests/test_document_layout_cleanup.py`
-- `tests/test_document_map.py`
 - `tests/test_document_pipeline.py`
 - `tests/test_document_pipeline_failures.py`
 - `tests/test_document_pipeline_output_validation.py`
@@ -42,10 +41,16 @@ This inventory is intentionally pragmatic:
 - `tests/test_message_formatting.py`
 - `tests/test_model_registry_sweep.py`
 - `tests/test_narration_markdown.py`
+- `tests/test_output_display_hygiene.py`
 - `tests/test_paragraph_boundary_normalization.py`
+- `tests/test_passthrough_unmapped_acceptance.py`
+- `tests/test_pdf_text_layer_logical_import.py`
+- `tests/test_pdf_text_layer_quality.py`
 - `tests/test_preparation.py`
 - `tests/test_processing_runtime.py`
 - `tests/test_processing_service.py`
+- `tests/test_reader_cleanup_mvp.py`
+- `tests/test_reader_cleanup_structural_matrix.py`
 - `tests/test_recommended_text_settings.py`
 - `tests/test_restart_store.py`
 - `tests/test_root_typing_stubs.py`
@@ -56,12 +61,12 @@ This inventory is intentionally pragmatic:
 - `tests/test_spec_image_level1.py`
 - `tests/test_startup_performance_contract.py`
 - `tests/test_state.py`
-- `tests/test_structure_recognition.py`
-- `tests/test_structure_reconciliation.py`
+- `tests/test_structure_layout_signals.py`
 - `tests/test_structure_review_panel.py`
 - `tests/test_structure_validation.py`
 - `tests/test_text_transform_assessment.py`
 - `tests/test_translation_domains.py`
+- `tests/test_validation_formatting_replay.py`
 - `tests/test_ui.py`
 - `tests/test_workflow_state.py`
 
@@ -83,6 +88,7 @@ This inventory is intentionally pragmatic:
 
 - `tests/test_image_integration.py`
 - `tests/test_pdf_candidate_benchmark_project.py`
+- `tests/test_pdf_import_backend_comparison.py`
 - `tests/test_real_document_pipeline_validation.py`
 - `tests/test_real_image_manifest.py`
 - `tests/test_real_image_pipeline.py`
@@ -97,7 +103,6 @@ This inventory is intentionally pragmatic:
 
 - `tests/test_real_document_audiobook_spec.py`
 - `tests/test_real_document_quality_gate.py`
-- `tests/test_real_document_structure_recognition_integration.py`
 
 ## Browser-UI
 

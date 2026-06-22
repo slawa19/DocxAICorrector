@@ -5,7 +5,6 @@ import docxaicorrector.processing.processing_runtime as processing_runtime
 import docxaicorrector.ui._app as app
 import docxaicorrector.ui.application_flow as application_flow
 import docxaicorrector.ui.compare_panel as compare_panel
-from docxaicorrector.core.models import StructureRecognitionSummary
 from docxaicorrector.core.models import StructureRepairReport
 from docxaicorrector.document.segments import DocumentContextProfile, DocumentSegment, GlossaryTerm, SegmentBoundaryEvidence, SegmentDetectionReport
 from docxaicorrector.pipeline.contracts import SegmentSelection
@@ -64,13 +63,6 @@ def _build_prepared_run_context(**overrides):
         "relation_report": None,
         "cleanup_report": None,
         "structure_repair_report": None,
-        "structure_map": None,
-        "structure_recognition_summary": StructureRecognitionSummary(),
-        "structure_validation_report": None,
-        "structure_recognition_mode": "off",
-        "structure_ai_attempted": False,
-        "document_map_status": "not_requested",
-        "document_map_status_reason": "",
         "segments": [],
         "segment_diagnostics": SegmentDetectionReport(),
         "structure_fingerprint": "",
@@ -171,20 +163,9 @@ def test_store_preparation_summary_uses_preparation_context_not_processing_statu
         "source_format": "docx",
         "conversion_backend": None,
         "quality_gate_status": "pass",
-        "ai_classified": 4,
-        "ai_headings": 2,
-        "ai_role_changes": 1,
-        "ai_heading_promotions": 1,
-        "ai_heading_demotions": 0,
-        "ai_structural_role_changes": 1,
-        "reconciliation_patches_applied": 0,
-        "reconciliation_locked_overrides_applied": 0,
-        "reconciliation_locked_overrides_skipped": 0,
-        "ai_first_degraded": 0,
         "elapsed": "1.2 c",
         "progress": 1.0,
         "status_notes": [
-            "Структура: AI выключен, использованы текущие правила.",
             "Восстановление структуры: списки 2, TOC-регионов 1, подсказок заголовков 3.",
             "Очистка: помечено 3 служебных элементов (2 номеров страниц, 1 повторяющихся колонтитулов, 0 пустых абзацев).",
         ],
@@ -887,8 +868,6 @@ def test_main_renders_preparation_summary_for_prepared_file(monkeypatch):
     assert summary_calls[0] == expected_summary
     assert summary_calls[0]["cached"] is True
     assert summary_calls[0]["block_count"] == 2
-    assert summary_calls[0]["ai_classified"] == 0
-    assert summary_calls[0]["ai_headings"] == 0
     assert summary_calls[0]["raw_paragraph_count"] == 4
     assert summary_calls[0]["logical_paragraph_count"] == 3
     assert summary_calls[0]["merged_group_count"] == 1
@@ -1049,47 +1028,6 @@ def test_main_ignores_stale_completed_result_for_different_uploaded_file(monkeyp
 
     assert len(summary_calls) == 1
     assert result_bundle_calls == []
-
-
-def test_store_preparation_summary_includes_auto_structure_status_note(monkeypatch):
-    session_state = SessionState()
-    prepared_run_context = _build_prepared_run_context(
-        structure_recognition_mode="auto",
-        structure_ai_attempted=True,
-        structure_map=object(),
-        structure_recognition_summary=StructureRecognitionSummary(ai_classified_count=6, ai_heading_count=2),
-        structure_validation_report=StructureValidationReport(
-            paragraph_count=50,
-            nonempty_paragraph_count=50,
-            explicit_heading_count=0,
-            heuristic_heading_count=0,
-            suspicious_short_body_count=8,
-            all_caps_body_count=0,
-            centered_body_count=0,
-            toc_like_sequence_count=1,
-            ambiguous_paragraph_count=8,
-            explicit_heading_density=0.0,
-            suspicious_short_body_ratio=0.16,
-            all_caps_or_centered_body_ratio=0.0,
-            escalation_recommended=True,
-            escalation_reasons=("low_explicit_heading_density", "toc_like_sequence_detected"),
-            isolated_marker_paragraph_count=0,
-            large_front_matter_block_risk=False,
-            toc_region_bounded_count=1,
-            expected_heading_candidates_from_toc=4,
-            structure_quality_risk_level="high",
-            readiness_status="ready_with_warnings",
-            readiness_reasons=(),
-        ),
-    )
-
-    monkeypatch.setattr(app.st, "session_state", session_state)
-
-    app._store_preparation_summary(prepared_run_context=prepared_run_context)
-
-    assert session_state.latest_preparation_summary["status_notes"] == [
-        "Структура: auto-режим, выполнена эскалация в AI; классифицировано 6 абзацев, найдено 2 заголовков. Причины: мало явных заголовков, обнаружен TOC-подобный фрагмент."
-    ]
 
 
 def test_store_preparation_summary_includes_exported_structure_manifest_path(monkeypatch):

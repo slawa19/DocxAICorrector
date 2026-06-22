@@ -1,7 +1,7 @@
 import docxaicorrector.core.config as config
 import docxaicorrector.document.semantic_blocks as semantic_blocks
 
-from docxaicorrector.core.models import DocumentBlock, DocumentMap, DocumentMapTocRegion, EmbeddedStructureHint, ParagraphRelation, ParagraphUnit
+from docxaicorrector.core.models import DocumentBlock, EmbeddedStructureHint, ParagraphRelation, ParagraphUnit
 from docxaicorrector.document._document import (
     build_editing_jobs,
     build_marker_wrapped_block_text,
@@ -602,45 +602,6 @@ def test_build_paragraph_relations_detects_text_only_toc_region_in_pre_ai_diagno
 
     assert [relation.relation_kind for relation in relations] == ["toc_region_candidate"]
     assert report.relation_counts == {"toc_region_candidate": 1}
-
-
-def test_build_paragraph_relations_projects_final_toc_region_from_document_map_authority():
-    paragraphs = [
-        ParagraphUnit(text="Contents", role="body", structural_role="body", paragraph_id="p0000", logical_index=0, source_index=0),
-        ParagraphUnit(text="Chapter 1........12", role="body", structural_role="body", paragraph_id="p0001", logical_index=1, source_index=1),
-        ParagraphUnit(text="Chapter 2........18", role="body", structural_role="body", paragraph_id="p0002", logical_index=2, source_index=2),
-    ]
-    document_map = DocumentMap(
-        body_start_logical_index=3,
-        toc_region=DocumentMapTocRegion(
-            start_logical_index=1,
-            end_logical_index=2,
-            header_logical_index=0,
-            entries=(),
-            confidence="high",
-        ),
-        outline=(),
-        paragraph_anchors={},
-        review_zones=(),
-        model_used="openrouter:test/document-map",
-        total_tokens_used=0,
-        processing_time_seconds=0.0,
-        sampled=False,
-        sampled_logical_indexes=(0, 1, 2),
-    )
-
-    relations, report = build_paragraph_relations(
-        paragraphs,
-        structure_phase="post_ai_final",
-        document_map=document_map,
-    )
-
-    assert [relation.relation_kind for relation in relations] == ["toc_region"]
-    assert relations[0].member_paragraph_ids == ("p0000", "p0001", "p0002")
-    assert relations[0].rationale == ("document_map_toc_region",)
-    assert report.relation_counts == {"toc_region": 1}
-    assert report.decisions[0].structure_source == "post_ai_final_document_map"
-    assert report.decisions[0].relation_kind == "toc_region"
 
 
 def test_semantic_block_units_allow_toc_region_candidate_grouping_only_in_pre_ai_diagnostic():

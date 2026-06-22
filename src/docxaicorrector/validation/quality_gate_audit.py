@@ -44,7 +44,7 @@ QUALITY_GATE_AUDIT_CLASSIFICATIONS: Mapping[str, Mapping[str, str]] = {
     },
     "toc_body_concat": {
         "verdict": "tolerant",
-        "evidence": "topology_projection_overrides_legacy_markdown_when_boundary_evidence_is_available",
+        "evidence": "markdown_boundary_heuristic_detects_toc_body_concatenation",
         "heldout_money_sustainability_class": "b_extraction_noise_front_matter_toc_compaction",
         "severity_model": "structure_evidence_required_else_review",
     },

@@ -438,12 +438,6 @@ def render_preparation_summary(summary: dict[str, Any] | None, target=None) -> N
         image_count = _to_int(summary.get("image_count"), default=0)
         source_chars = _to_int(summary.get("source_chars"), default=0)
         block_count = _to_int(summary.get("block_count"), default=0)
-        ai_classified = _to_int(summary.get("ai_classified"), default=0)
-        ai_headings = _to_int(summary.get("ai_headings"), default=0)
-        ai_role_changes = _to_int(summary.get("ai_role_changes"), default=0)
-        ai_heading_promotions = _to_int(summary.get("ai_heading_promotions"), default=0)
-        ai_heading_demotions = _to_int(summary.get("ai_heading_demotions"), default=0)
-        ai_structural_role_changes = _to_int(summary.get("ai_structural_role_changes"), default=0)
         structure_fingerprint = str(summary.get("structure_fingerprint") or "").strip()
         detector_version = str(summary.get("detector_version") or "").strip()
         segment_count = _to_int(summary.get("segment_count"), default=0)
@@ -469,14 +463,6 @@ def render_preparation_summary(summary: dict[str, Any] | None, target=None) -> N
                 f"{image_count} изображений | {source_chars} символов | {block_count} блоков"
             ),
         ]
-        if ai_classified:
-            meta_lines.append(f"Распознано AI: {ai_classified} | Заголовков: {ai_headings}")
-        if ai_role_changes or ai_heading_promotions or ai_heading_demotions or ai_structural_role_changes:
-            meta_lines.append(
-                "Расхождения с эвристикой: "
-                f"ролей {ai_role_changes} | +заголовков {ai_heading_promotions} | "
-                f"-заголовков {ai_heading_demotions} | структурных ролей {ai_structural_role_changes}"
-            )
         if structure_fingerprint:
             meta_lines.append(f"Structure fingerprint: {structure_fingerprint}")
         if detector_version:

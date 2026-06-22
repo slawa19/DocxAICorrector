@@ -10,7 +10,7 @@ Current default mapping:
 - additional document profile: `religion-wealth-core`
 - full run profile: `ui-parity-default`
 - soak run profile: `ui-parity-soak-3x`
-- structural run profile: `structural-passthrough-default`
+- structural run profile: `ui-parity-translate-benchmark-advisory`
 
 Current corpus notes:
 
@@ -39,7 +39,7 @@ Corpus policy for this workflow:
 1. `lietaer-pdf-first-20-structure-core` (`tests/sources/Rethinking-money-first-20-pages.pdf`) is the canonical fast PDF slice for routine structure iteration.
 2. `lietaer-pdf-chapter-region-core` (`tests/sources/Rethinking-money-chapter-region-pages-10-11-and-156-217.pdf`) is the cheap non-contiguous proof slice for late-book Chapter 8-11 topology regressions that the first-20-pages slice cannot cover.
 3. `lietaer-core` is not the routine structure-recovery proof document for this workflow.
-4. `ui-parity-pdf-structural-recovery` is still a `full` tier translate profile with `structure_recognition_mode = "off"`; despite its name, it is not the default proof path for AI-first structure recognition.
+4. `ui-parity-pdf-structural-recovery` is still a `full` tier translate profile; despite its name, structure recognition is deterministic (importer-driven) and there is no AI structure stage.
 5. `mazzucato-pdf-full-benchmark` (`tests/sources/The Value of Everything. Making and Taking in the Global Economy by Mariana Mazzucato (z-lib.org).pdf`) is the non-Lietaer full-book PDF benchmark for WS-2 formatting-transfer generalization; it is not the routine structure-recovery proof path.
 
 ## Canonical Entry Points

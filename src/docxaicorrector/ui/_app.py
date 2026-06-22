@@ -263,8 +263,6 @@ def _start_background_processing(
     include_toc: bool = False,
     source_paragraphs: list,
     image_assets: list,
-    document_map: object | None = None,
-    document_topology_projection: object | None = None,
     image_mode: str,
     app_config: dict[str, object],
     model: str,
@@ -291,8 +289,6 @@ def _start_background_processing(
         include_toc,
         source_paragraphs,
         image_assets,
-        document_map=None,
-        document_topology_projection=None,
         image_mode,
         app_config,
         model,
@@ -320,8 +316,6 @@ def _start_background_processing(
             include_toc=include_toc,
             source_paragraphs=source_paragraphs,
             image_assets=image_assets,
-            document_map=document_map,
-            document_topology_projection=document_topology_projection,
             image_mode=image_mode,
             app_config=app_config,
             document_context_prompt=document_context_prompt,
@@ -348,8 +342,6 @@ def _start_background_processing(
         include_toc=include_toc,
         source_paragraphs=source_paragraphs,
         image_assets=image_assets,
-        document_map=document_map,
-        document_topology_projection=document_topology_projection,
         image_mode=image_mode,
         app_config=app_config,
         model=model,
@@ -398,7 +390,6 @@ def _start_background_preparation(
 def _store_preparation_summary(*, prepared_run_context) -> None:
     elapsed_seconds = float(getattr(prepared_run_context, "preparation_elapsed_seconds", 0.0) or 0.0)
     elapsed = f"{elapsed_seconds:.1f} c" if elapsed_seconds > 0 else ""
-    structure_summary = application_flow.resolve_structure_recognition_summary(prepared_run_context)
     normalization_metrics = application_flow.flatten_normalization_metrics(
         getattr(prepared_run_context, "normalization_report", None)
     )
@@ -408,14 +399,13 @@ def _store_preparation_summary(*, prepared_run_context) -> None:
     cleanup_metrics = application_flow.flatten_layout_cleanup_metrics(
         getattr(prepared_run_context, "cleanup_report", None)
     )
-    structure_status_note = application_flow.build_structure_processing_status_note(prepared_run_context)
     cleanup_status_note = application_flow.build_layout_cleanup_status_note(
         getattr(prepared_run_context, "cleanup_report", None)
     )
     structure_repair_status_note = application_flow.build_structure_repair_status_note(
         getattr(prepared_run_context, "structure_repair_report", None)
     )
-    status_notes = [note for note in (structure_status_note, structure_repair_status_note, cleanup_status_note) if note]
+    status_notes = [note for note in (structure_repair_status_note, cleanup_status_note) if note]
     exported_manifest_path = str(getattr(prepared_run_context, "exported_structure_manifest_path", "") or "")
     if exported_manifest_path:
         status_notes.append(f"Structure manifest: {exported_manifest_path}")
@@ -431,7 +421,6 @@ def _store_preparation_summary(*, prepared_run_context) -> None:
         "block_count": len(prepared_run_context.jobs),
         "cached": bool(getattr(prepared_run_context, "preparation_cached", False)),
         "quality_gate_status": str(getattr(prepared_run_context, "quality_gate_status", "pass") or "pass"),
-        **structure_summary.as_preparation_summary_metrics(),
         "elapsed": elapsed,
         "progress": 1.0,
         "status_notes": status_notes,
@@ -1146,8 +1135,6 @@ def main() -> None:
             output_mode="legacy_full_document",
             source_paragraphs=paragraphs,
             image_assets=image_assets,
-            document_map=getattr(prepared_run_context, "document_map", None),
-            document_topology_projection=getattr(prepared_run_context, "document_topology_projection", None),
             image_mode=image_mode,
             app_config=app_config,
             document_context_prompt=document_context_prompt,
@@ -1185,8 +1172,6 @@ def main() -> None:
             include_toc=False,
             source_paragraphs=selected_processing_payload["source_paragraphs"],
             image_assets=selected_processing_payload["image_assets"],
-            document_map=getattr(prepared_run_context, "document_map", None),
-            document_topology_projection=getattr(prepared_run_context, "document_topology_projection", None),
             image_mode=image_mode,
             app_config=app_config,
             document_context_prompt=_build_document_context_prompt(
@@ -1232,8 +1217,6 @@ def main() -> None:
             include_toc=bool(selected_processing_payload["include_toc"]),
             source_paragraphs=paragraphs,
             image_assets=image_assets,
-            document_map=getattr(prepared_run_context, "document_map", None),
-            document_topology_projection=getattr(prepared_run_context, "document_topology_projection", None),
             image_mode=image_mode,
             app_config=app_config,
             document_context_prompt=_build_document_context_prompt(
@@ -1273,8 +1256,6 @@ def main() -> None:
             include_toc=False,
             source_paragraphs=retry_failed_payload["source_paragraphs"],
             image_assets=retry_failed_payload["image_assets"],
-            document_map=getattr(prepared_run_context, "document_map", None),
-            document_topology_projection=getattr(prepared_run_context, "document_topology_projection", None),
             image_mode=image_mode,
             app_config=app_config,
             document_context_prompt=_build_document_context_prompt(
@@ -1301,8 +1282,6 @@ def main() -> None:
             output_mode="legacy_full_document",
             source_paragraphs=paragraphs,
             image_assets=image_assets,
-            document_map=getattr(prepared_run_context, "document_map", None),
-            document_topology_projection=getattr(prepared_run_context, "document_topology_projection", None),
             image_mode=image_mode,
             app_config=app_config,
             document_context_prompt=document_context_prompt,
@@ -1325,8 +1304,6 @@ def main() -> None:
             output_mode="final_translated_book",
             source_paragraphs=paragraphs,
             image_assets=image_assets,
-            document_map=getattr(prepared_run_context, "document_map", None),
-            document_topology_projection=getattr(prepared_run_context, "document_topology_projection", None),
             image_mode=image_mode,
             app_config=app_config,
             document_context_prompt=document_context_prompt,

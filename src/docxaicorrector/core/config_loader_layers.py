@@ -23,8 +23,6 @@ class ResolvedAppConfigSections:
     paragraph_boundary_settings: Mapping[str, Any]
     layout_artifact_cleanup_settings: Mapping[str, Any]
     relation_normalization_settings: Mapping[str, Any]
-    structure_recognition_settings: Mapping[str, Any]
-    structure_recovery_settings: Mapping[str, Any]
     structure_validation_settings: Mapping[str, Any]
     semantic_validation_runtime_settings: Mapping[str, Any]
     image_output_settings: Mapping[str, Any]
@@ -38,8 +36,6 @@ def build_app_config_payload(
     paragraph_boundary_settings: Mapping[str, Any],
     layout_artifact_cleanup_settings: Mapping[str, Any],
     relation_normalization_settings: Mapping[str, Any],
-    structure_recognition_settings: Mapping[str, Any],
-    structure_recovery_settings: Mapping[str, Any],
     structure_validation_settings: Mapping[str, Any],
     output_font_settings: Mapping[str, Any],
     semantic_validation_runtime_settings: Mapping[str, Any],
@@ -101,115 +97,6 @@ def build_app_config_payload(
         ],
         "relation_normalization_save_debug_artifacts": relation_normalization_settings[
             "relation_normalization_save_debug_artifacts"
-        ],
-        "structure_recognition_mode": structure_recognition_settings["structure_recognition_mode"],
-        "structure_recognition_enabled": structure_recognition_settings["structure_recognition_enabled"],
-        "structure_recognition_model": models.structure_recognition,
-        "structure_recognition_max_window_paragraphs": structure_recognition_settings[
-            "structure_recognition_max_window_paragraphs"
-        ],
-        "structure_recognition_overlap_paragraphs": structure_recognition_settings[
-            "structure_recognition_overlap_paragraphs"
-        ],
-        "structure_recognition_timeout_seconds": structure_recognition_settings[
-            "structure_recognition_timeout_seconds"
-        ],
-        "structure_recognition_timeout_retry_multiplier": structure_recognition_settings[
-            "structure_recognition_timeout_retry_multiplier"
-        ],
-        "structure_recognition_timeout_retry_max_seconds": structure_recognition_settings[
-            "structure_recognition_timeout_retry_max_seconds"
-        ],
-        "structure_recognition_split_fallback_max_depth": structure_recognition_settings[
-            "structure_recognition_split_fallback_max_depth"
-        ],
-        "structure_recognition_split_fallback_max_expansions": structure_recognition_settings[
-            "structure_recognition_split_fallback_max_expansions"
-        ],
-        "structure_recognition_min_confidence": structure_recognition_settings["structure_recognition_min_confidence"],
-        "structure_recognition_cache_enabled": structure_recognition_settings["structure_recognition_cache_enabled"],
-        "structure_recognition_save_debug_artifacts": structure_recognition_settings[
-            "structure_recognition_save_debug_artifacts"
-        ],
-        "structure_recovery_enabled": structure_recovery_settings["structure_recovery_enabled"],
-        "structure_recovery_mode": structure_recovery_settings["structure_recovery_mode"],
-        "structure_recovery_coordinate_schema_version": structure_recovery_settings[
-            "structure_recovery_coordinate_schema_version"
-        ],
-        "structure_recovery_document_map_enabled": structure_recovery_settings[
-            "structure_recovery_document_map_enabled"
-        ],
-        "structure_recovery_document_map_model": structure_recovery_settings[
-            "structure_recovery_document_map_model"
-        ],
-        "structure_recovery_document_map_timeout_seconds": structure_recovery_settings[
-            "structure_recovery_document_map_timeout_seconds"
-        ],
-        "structure_recovery_document_map_max_input_paragraphs": structure_recovery_settings[
-            "structure_recovery_document_map_max_input_paragraphs"
-        ],
-        "structure_recovery_document_map_max_input_tokens": structure_recovery_settings[
-            "structure_recovery_document_map_max_input_tokens"
-        ],
-        "structure_recovery_document_map_preview_chars": structure_recovery_settings[
-            "structure_recovery_document_map_preview_chars"
-        ],
-        "structure_recovery_document_map_cache_enabled": structure_recovery_settings[
-            "structure_recovery_document_map_cache_enabled"
-        ],
-        "structure_recovery_document_map_save_debug_artifacts": structure_recovery_settings[
-            "structure_recovery_document_map_save_debug_artifacts"
-        ],
-        "structure_recovery_anchored_classification_max_window_paragraphs": structure_recovery_settings[
-            "structure_recovery_anchored_classification_max_window_paragraphs"
-        ],
-        "structure_recovery_anchored_classification_overlap_paragraphs": structure_recovery_settings[
-            "structure_recovery_anchored_classification_overlap_paragraphs"
-        ],
-        "structure_recovery_anchored_classification_preview_chars": structure_recovery_settings[
-            "structure_recovery_anchored_classification_preview_chars"
-        ],
-        "structure_recovery_anchored_classification_target_input_tokens": structure_recovery_settings[
-            "structure_recovery_anchored_classification_target_input_tokens"
-        ],
-        "structure_recovery_anchored_classification_min_confidence": structure_recovery_settings[
-            "structure_recovery_anchored_classification_min_confidence"
-        ],
-        "structure_recovery_topology_projection_enabled": structure_recovery_settings[
-            "structure_recovery_topology_projection_enabled"
-        ],
-        "structure_recovery_topology_projection_save_debug_artifacts": structure_recovery_settings[
-            "structure_recovery_topology_projection_save_debug_artifacts"
-        ],
-        "structure_recovery_topology_projection_binding_splits_enabled": structure_recovery_settings[
-            "structure_recovery_topology_projection_binding_splits_enabled"
-        ],
-        "structure_recovery_topology_projection_layout_signals_enabled": structure_recovery_settings[
-            "structure_recovery_topology_projection_layout_signals_enabled"
-        ],
-        "structure_recovery_topology_projection_layout_signals_heading_ratio": structure_recovery_settings[
-            "structure_recovery_topology_projection_layout_signals_heading_ratio"
-        ],
-        "structure_recovery_topology_projection_layout_signals_short_line_chars": structure_recovery_settings[
-            "structure_recovery_topology_projection_layout_signals_short_line_chars"
-        ],
-        "structure_recovery_topology_projection_layout_signals_baseline_tolerance_pt": structure_recovery_settings[
-            "structure_recovery_topology_projection_layout_signals_baseline_tolerance_pt"
-        ],
-        "structure_recovery_topology_projection_layout_signals_min_tier_population": structure_recovery_settings[
-            "structure_recovery_topology_projection_layout_signals_min_tier_population"
-        ],
-        "structure_recovery_reconciliation_targeted_enabled": structure_recovery_settings[
-            "structure_recovery_reconciliation_targeted_enabled"
-        ],
-        "structure_recovery_reconciliation_targeted_threshold": structure_recovery_settings[
-            "structure_recovery_reconciliation_targeted_threshold"
-        ],
-        "structure_recovery_reconciliation_targeted_max_paragraphs": structure_recovery_settings[
-            "structure_recovery_reconciliation_targeted_max_paragraphs"
-        ],
-        "structure_recovery_reconciliation_targeted_timeout_seconds": structure_recovery_settings[
-            "structure_recovery_reconciliation_targeted_timeout_seconds"
         ],
         "structure_validation_enabled": structure_validation_settings["structure_validation_enabled"],
         "structure_validation_min_paragraphs_for_auto_gate": structure_validation_settings[
@@ -362,8 +249,6 @@ def resolve_app_config_sections(
     resolve_paragraph_boundary_settings_fn: Callable[..., Mapping[str, Any]],
     resolve_layout_artifact_cleanup_settings_fn: Callable[..., Mapping[str, Any]],
     resolve_relation_normalization_settings_fn: Callable[..., Mapping[str, Any]],
-    resolve_structure_recognition_settings_fn: Callable[..., Mapping[str, Any]],
-    resolve_structure_recovery_settings_fn: Callable[..., Mapping[str, Any]],
     resolve_structure_validation_settings_fn: Callable[..., Mapping[str, Any]],
     resolve_semantic_validation_and_runtime_settings_fn: Callable[..., Mapping[str, Any]],
     resolve_image_output_settings_fn: Callable[..., Mapping[str, Any]],
@@ -389,13 +274,6 @@ def resolve_app_config_sections(
         ),
         relation_normalization_settings=resolve_relation_normalization_settings_fn(
             relation_normalization_config=optional_sections.relation_normalization_config,
-        ),
-        structure_recognition_settings=resolve_structure_recognition_settings_fn(
-            structure_recognition_config=model_registry_settings["structure_recognition_config"],
-        ),
-        structure_recovery_settings=resolve_structure_recovery_settings_fn(
-            config_data=config_data,
-            model_registry_settings=model_registry_settings,
         ),
         structure_validation_settings=resolve_structure_validation_settings_fn(
             structure_validation_config=optional_sections.structure_validation_config,

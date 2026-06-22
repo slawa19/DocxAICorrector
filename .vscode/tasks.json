@@ -315,7 +315,7 @@
 			"command": "bash",
 			"args": [
 				"-lc",
-				"export DOCXAI_REAL_DOCUMENT_PROFILE=lietaer-core; export DOCXAI_REAL_DOCUMENT_RUN_PROFILE=ui-parity-ai-default; bash scripts/run-real-document-validation.sh"
+				"export DOCXAI_REAL_DOCUMENT_PROFILE=lietaer-core; export DOCXAI_REAL_DOCUMENT_RUN_PROFILE=ui-parity-translate-benchmark-advisory; bash scripts/run-real-document-validation.sh"
 			],
 			"options": {
 				"shell": {
@@ -380,7 +380,7 @@
 			"command": "bash",
 			"args": [
 				"-lc",
-				"export DOCXAI_REAL_DOCUMENT_PROFILE=lietaer-pdf-full-benchmark; export DOCXAI_REAL_DOCUMENT_RUN_PROFILE=ui-parity-translate-benchmark-topology-advisory; bash scripts/run-real-document-validation.sh"
+				"export DOCXAI_REAL_DOCUMENT_PROFILE=lietaer-pdf-full-benchmark; export DOCXAI_REAL_DOCUMENT_RUN_PROFILE=ui-parity-translate-benchmark-advisory; bash scripts/run-real-document-validation.sh"
 			],
 			"options": {
 				"shell": {
@@ -520,7 +520,7 @@
 		{
 			"id": "structuralDiagnosticRunProfileArg",
 			"type": "promptString",
-			"description": "Optional literal CLI arg, e.g. --run-profile-id structural-passthrough-default",
+			"description": "Optional literal CLI arg, e.g. --run-profile-id ui-parity-translate-benchmark-advisory",
 			"default": ""
 		}
 	]

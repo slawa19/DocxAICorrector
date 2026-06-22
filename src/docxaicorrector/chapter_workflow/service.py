@@ -584,10 +584,6 @@ def build_structure_manifest_payload(*, prepared_run_context: object, app_config
         ),
         "detector_config": {
             "chunk_size": int(config.get("chunk_size", 0) or 0),
-            "structure_recognition_mode": str(
-                getattr(prepared_run_context, "structure_recognition_mode", "off") or "off"
-            ),
-            "min_confidence": str(config.get("structure_recognition_min_confidence", "medium") or "medium"),
         },
         "structure_fingerprint": str(getattr(prepared_run_context, "structure_fingerprint", "") or ""),
         "summary": {

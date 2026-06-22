@@ -9,7 +9,6 @@ from docxaicorrector.chapter_workflow.service import (
     export_structure_manifest as export_chapter_workflow_structure_manifest,
 )
 from docxaicorrector.document._document import summarize_boundary_normalization_metrics, validate_docx_source_bytes
-from docxaicorrector.core.models import StructureRecognitionSummary
 from docxaicorrector.document.segments import (
     CHAPTER_SEGMENTS_DETECTOR_VERSION,
     DocumentContextProfile,
@@ -18,7 +17,6 @@ from docxaicorrector.document.segments import (
 )
 from docxaicorrector.processing.preparation import (
     build_layout_cleanup_status_note,
-    build_structure_processing_status_note,
     build_structure_repair_status_note,
     emit_preparation_progress,
     humanize_quality_gate_reasons,
@@ -87,52 +85,12 @@ class PreparedRunContext:
     relation_report: object | None = None
     cleanup_report: object | None = None
     structure_repair_report: object | None = None
-    structure_map: object | None = None
-    structure_recognition_summary: StructureRecognitionSummary = field(default_factory=StructureRecognitionSummary)
-    structure_validation_report: object | None = None
-    structure_recognition_mode: str = "off"
-    structure_ai_attempted: bool = False
-    document_map: object | None = None
-    document_map_status: str = "not_requested"
-    document_map_status_reason: str = ""
-    document_topology_projection: object | None = None
-    document_topology_projection_status: str = "not_requested"
-    document_topology_projection_status_reason: str = ""
     quality_gate_status: str = "pass"
     quality_gate_reasons: tuple[str, ...] = ()
     translation_domain: str = "general"
     translation_domain_instructions: str = ""
     document_context_profile: DocumentContextProfile = field(default_factory=DocumentContextProfile)
     exported_structure_manifest_path: str = ""
-
-    @property
-    def ai_classified_count(self) -> int:
-        return self.structure_recognition_summary.ai_classified_count
-
-    @property
-    def ai_heading_count(self) -> int:
-        return self.structure_recognition_summary.ai_heading_count
-
-    @property
-    def ai_role_change_count(self) -> int:
-        return self.structure_recognition_summary.ai_role_change_count
-
-    @property
-    def ai_heading_promotion_count(self) -> int:
-        return self.structure_recognition_summary.ai_heading_promotion_count
-
-    @property
-    def ai_heading_demotion_count(self) -> int:
-        return self.structure_recognition_summary.ai_heading_demotion_count
-
-    @property
-    def ai_structural_role_change_count(self) -> int:
-        return self.structure_recognition_summary.ai_structural_role_change_count
-
-
-def resolve_structure_recognition_summary(source: object | None) -> StructureRecognitionSummary:
-    summary = getattr(source, "structure_recognition_summary", source)
-    return StructureRecognitionSummary.from_source(summary)
 
 
 def flatten_normalization_metrics(normalization_report) -> NormalizationMetrics:
@@ -416,7 +374,6 @@ def _build_quality_gate_warning_message(*, prepared_document) -> str:
 
 
 def _build_prepared_run_context(*, uploaded_filename: str, uploaded_file_bytes: bytes, uploaded_file_token: str, prepared_document, elapsed_seconds: float) -> PreparedRunContext:
-    structure_summary = resolve_structure_recognition_summary(prepared_document)
     quality_gate_status = str(getattr(prepared_document, "quality_gate_status", "pass") or "pass")
     preparation_detail = ""
     if quality_gate_status == "warning":
@@ -445,21 +402,6 @@ def _build_prepared_run_context(*, uploaded_filename: str, uploaded_file_bytes: 
         relation_report=getattr(prepared_document, "relation_report", None),
         cleanup_report=getattr(prepared_document, "cleanup_report", None),
         structure_repair_report=getattr(prepared_document, "structure_repair_report", None),
-        structure_map=getattr(prepared_document, "structure_map", None),
-        structure_recognition_summary=structure_summary,
-        structure_validation_report=getattr(prepared_document, "structure_validation_report", None),
-        structure_recognition_mode=str(getattr(prepared_document, "structure_recognition_mode", "off") or "off"),
-        structure_ai_attempted=bool(getattr(prepared_document, "structure_ai_attempted", False)),
-        document_map=getattr(prepared_document, "document_map", None),
-        document_map_status=str(getattr(prepared_document, "document_map_status", "not_requested") or "not_requested"),
-        document_map_status_reason=str(getattr(prepared_document, "document_map_status_reason", "") or ""),
-        document_topology_projection=getattr(prepared_document, "document_topology_projection", None),
-        document_topology_projection_status=str(
-            getattr(prepared_document, "document_topology_projection_status", "not_requested") or "not_requested"
-        ),
-        document_topology_projection_status_reason=str(
-            getattr(prepared_document, "document_topology_projection_status_reason", "") or ""
-        ),
         quality_gate_status=quality_gate_status,
         quality_gate_reasons=tuple(getattr(prepared_document, "quality_gate_reasons", ()) or ()),
         translation_domain=str(getattr(prepared_document, "translation_domain", "general") or "general"),

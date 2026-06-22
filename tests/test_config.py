@@ -59,44 +59,7 @@ def test_load_app_config_applies_env_overrides_and_clamps(monkeypatch):
     assert app_config["paragraph_boundary_normalization_enabled"] is True
     assert app_config["paragraph_boundary_normalization_mode"] == "high_only"
     assert app_config["paragraph_boundary_normalization_save_debug_artifacts"] is True
-    assert app_config["structure_recognition_mode"] == "off"
-    assert app_config["structure_recognition_enabled"] is False
-    assert app_config["structure_recognition_model"] == app_config["default_model"]
     assert models.structure_recognition == app_config["default_model"]
-    assert app_config["structure_recognition_max_window_paragraphs"] == 1800
-    assert app_config["structure_recognition_overlap_paragraphs"] == 50
-    assert app_config["structure_recognition_timeout_seconds"] == 60
-    assert app_config["structure_recognition_min_confidence"] == "medium"
-    assert app_config["structure_recognition_cache_enabled"] is True
-    assert app_config["structure_recognition_save_debug_artifacts"] is True
-    assert app_config["structure_recovery_enabled"] is True
-    assert app_config["structure_recovery_mode"] == "ai_first"
-    assert app_config["structure_recovery_coordinate_schema_version"] == 1
-    assert app_config["structure_recovery_document_map_enabled"] is True
-    assert app_config["structure_recovery_document_map_model"] == app_config["structure_recognition_model"]
-    assert app_config["structure_recovery_document_map_timeout_seconds"] == 120
-    assert app_config["structure_recovery_document_map_max_input_paragraphs"] == 6000
-    assert app_config["structure_recovery_document_map_max_input_tokens"] == 180000
-    assert app_config["structure_recovery_document_map_preview_chars"] == 120
-    assert app_config["structure_recovery_document_map_cache_enabled"] is True
-    assert app_config["structure_recovery_document_map_save_debug_artifacts"] is True
-    assert app_config["structure_recovery_anchored_classification_max_window_paragraphs"] == 3000
-    assert app_config["structure_recovery_anchored_classification_overlap_paragraphs"] == 0
-    assert app_config["structure_recovery_anchored_classification_preview_chars"] == 1500
-    assert app_config["structure_recovery_anchored_classification_target_input_tokens"] == 180000
-    assert app_config["structure_recovery_anchored_classification_min_confidence"] == "medium"
-    assert app_config["structure_recovery_topology_projection_enabled"] is False
-    assert app_config["structure_recovery_topology_projection_save_debug_artifacts"] is True
-    assert app_config["structure_recovery_topology_projection_binding_splits_enabled"] is False
-    assert app_config["structure_recovery_topology_projection_layout_signals_enabled"] is False
-    assert app_config["structure_recovery_topology_projection_layout_signals_heading_ratio"] == 1.15
-    assert app_config["structure_recovery_topology_projection_layout_signals_short_line_chars"] == 80
-    assert app_config["structure_recovery_topology_projection_layout_signals_baseline_tolerance_pt"] == 0.25
-    assert app_config["structure_recovery_topology_projection_layout_signals_min_tier_population"] == 2
-    assert app_config["structure_recovery_reconciliation_targeted_enabled"] is False
-    assert app_config["structure_recovery_reconciliation_targeted_threshold"] == 3
-    assert app_config["structure_recovery_reconciliation_targeted_max_paragraphs"] == 60
-    assert app_config["structure_recovery_reconciliation_targeted_timeout_seconds"] == 60
     assert app_config["structure_validation_enabled"] is True
     assert app_config["structure_validation_min_paragraphs_for_auto_gate"] == 40
     assert app_config["structure_validation_min_explicit_heading_density"] == 0.003
@@ -146,9 +109,6 @@ def test_load_app_config_exposes_image_validation_defaults(monkeypatch):
     assert app_config["paragraph_boundary_normalization_save_debug_artifacts"] is True
     # Prod default = "off": #2 structure-recovery cluster disabled on the prod path
     # (GLOBAL_PLAN 2026-06-22, PATH 2 / Task B). Restore to "auto" in config.toml to re-enable #2.
-    assert app_config["structure_recognition_mode"] == "off"
-    assert app_config["structure_recognition_enabled"] is False
-    assert app_config["structure_recognition_model"] == TEST_TEXT_MODEL_DEFAULT
     assert models.text.default == TEST_TEXT_MODEL_DEFAULT
     assert models.text.options == (
         "gpt-5.4",
@@ -159,23 +119,6 @@ def test_load_app_config_exposes_image_validation_defaults(monkeypatch):
         "openrouter:google/gemini-3.1-flash-lite-preview",
     )
     assert models.structure_recognition == TEST_TEXT_MODEL_DEFAULT
-    assert app_config["structure_recognition_max_window_paragraphs"] == 1800
-    assert app_config["structure_recognition_overlap_paragraphs"] == 50
-    assert app_config["structure_recognition_timeout_seconds"] == 60
-    assert app_config["structure_recognition_min_confidence"] == "medium"
-    assert app_config["structure_recognition_cache_enabled"] is True
-    assert app_config["structure_recognition_save_debug_artifacts"] is True
-    assert app_config["structure_recovery_enabled"] is True
-    assert app_config["structure_recovery_mode"] == "ai_first"
-    assert app_config["structure_recovery_coordinate_schema_version"] == 1
-    assert app_config["structure_recovery_topology_projection_enabled"] is False
-    assert app_config["structure_recovery_topology_projection_save_debug_artifacts"] is True
-    assert app_config["structure_recovery_topology_projection_binding_splits_enabled"] is False
-    assert app_config["structure_recovery_topology_projection_layout_signals_enabled"] is False
-    assert app_config["structure_recovery_topology_projection_layout_signals_heading_ratio"] == 1.15
-    assert app_config["structure_recovery_topology_projection_layout_signals_short_line_chars"] == 80
-    assert app_config["structure_recovery_topology_projection_layout_signals_baseline_tolerance_pt"] == 0.25
-    assert app_config["structure_recovery_topology_projection_layout_signals_min_tier_population"] == 2
     assert app_config["structure_validation_block_on_high_risk_noop"] is True
     assert app_config["relation_normalization_enabled"] is True
     assert app_config["relation_normalization_profile"] == "phase2_default"
@@ -281,81 +224,6 @@ def test_load_app_config_resolves_audiobook_defaults_from_text_model(monkeypatch
 
     assert app_config["audiobook_postprocess_default"] is False
     assert app_config["audiobook_model"] == app_config["default_model"]
-
-
-def test_load_app_config_resolves_structure_defaults_from_text_model(monkeypatch, tmp_path):
-    cfg = tmp_path / "config.toml"
-    cfg.write_text(
-        '[models.text]\n'
-        'default = "openrouter:google/gemini-3.1-flash-lite-preview"\n'
-        'options = ["openrouter:google/gemini-3.1-flash-lite-preview", "gpt-5.4-mini"]\n\n'
-        '[providers.openrouter]\n'
-        'enabled = true\n\n'
-        '[structure_recovery]\n'
-        'enabled = true\n\n'
-        '[structure_recovery.document_map]\n'
-        'enabled = true\n'
-        'model = ""\n',
-        encoding="utf-8",
-    )
-    monkeypatch.setattr(config, "CONFIG_PATH", cfg)
-
-    app_config = config.load_app_config()
-    models = cast(config.ModelRegistry, app_config["models"])
-
-    assert app_config["default_model"] == "openrouter:google/gemini-3.1-flash-lite-preview"
-    assert app_config["structure_recognition_model"] == app_config["default_model"]
-    assert models.structure_recognition == app_config["default_model"]
-    assert app_config["structure_recovery_document_map_model"] == app_config["structure_recognition_model"]
-
-
-def test_load_app_config_resolves_document_map_default_from_explicit_structure_override(monkeypatch, tmp_path):
-    cfg = tmp_path / "config.toml"
-    cfg.write_text(
-        '[models.text]\n'
-        'default = "openrouter:google/gemini-3.1-flash-lite-preview"\n'
-        'options = ["openrouter:google/gemini-3.1-flash-lite-preview", "gpt-5.4-mini"]\n\n'
-        '[models.structure_recognition]\n'
-        'default = "gpt-5-mini"\n\n'
-        '[providers.openrouter]\n'
-        'enabled = true\n\n'
-        '[structure_recovery]\n'
-        'enabled = true\n\n'
-        '[structure_recovery.document_map]\n'
-        'enabled = true\n'
-        'model = ""\n',
-        encoding="utf-8",
-    )
-    monkeypatch.setattr(config, "CONFIG_PATH", cfg)
-
-    app_config = config.load_app_config()
-
-    assert app_config["default_model"] == "openrouter:google/gemini-3.1-flash-lite-preview"
-    assert app_config["structure_recognition_model"] == "gpt-5-mini"
-    assert app_config["structure_recovery_document_map_model"] == "gpt-5-mini"
-
-
-def test_load_app_config_applies_topology_projection_env_overrides(monkeypatch):
-    monkeypatch.setattr(config, "CONFIG_PATH", config.CONFIG_PATH.parent / "__missing_config__.toml")
-    monkeypatch.setenv("DOCX_AI_STRUCTURE_RECOVERY_TOPOLOGY_ENABLED", "true")
-    monkeypatch.setenv("DOCX_AI_STRUCTURE_RECOVERY_TOPOLOGY_SAVE_DEBUG_ARTIFACTS", "false")
-    monkeypatch.setenv("DOCX_AI_STRUCTURE_RECOVERY_TOPOLOGY_BINDING_SPLITS_ENABLED", "true")
-    monkeypatch.setenv("DOCX_AI_STRUCTURE_RECOVERY_TOPOLOGY_LAYOUT_SIGNALS_ENABLED", "true")
-    monkeypatch.setenv("DOCX_AI_STRUCTURE_RECOVERY_TOPOLOGY_LAYOUT_SIGNALS_HEADING_RATIO", "5.0")
-    monkeypatch.setenv("DOCX_AI_STRUCTURE_RECOVERY_TOPOLOGY_LAYOUT_SIGNALS_SHORT_LINE_CHARS", "10")
-    monkeypatch.setenv("DOCX_AI_STRUCTURE_RECOVERY_TOPOLOGY_LAYOUT_SIGNALS_BASELINE_TOLERANCE_PT", "5.0")
-    monkeypatch.setenv("DOCX_AI_STRUCTURE_RECOVERY_TOPOLOGY_LAYOUT_SIGNALS_MIN_TIER_POPULATION", "0")
-
-    app_config = config.load_app_config()
-
-    assert app_config["structure_recovery_topology_projection_enabled"] is True
-    assert app_config["structure_recovery_topology_projection_save_debug_artifacts"] is False
-    assert app_config["structure_recovery_topology_projection_binding_splits_enabled"] is True
-    assert app_config["structure_recovery_topology_projection_layout_signals_enabled"] is True
-    assert app_config["structure_recovery_topology_projection_layout_signals_heading_ratio"] == 2.0
-    assert app_config["structure_recovery_topology_projection_layout_signals_short_line_chars"] == 20
-    assert app_config["structure_recovery_topology_projection_layout_signals_baseline_tolerance_pt"] == 2.0
-    assert app_config["structure_recovery_topology_projection_layout_signals_min_tier_population"] == 1
 
 
 def test_load_app_config_honors_audiobook_model_override_from_toml(monkeypatch, tmp_path):
@@ -495,47 +363,6 @@ def test_describe_provider_availability_reports_missing_key(monkeypatch):
         relation_normalization_profile="phase2_default",
         relation_normalization_enabled_relation_kinds=("image_caption",),
         relation_normalization_save_debug_artifacts=True,
-        structure_recognition_mode="off",
-        structure_recognition_enabled=False,
-        structure_recognition_model=TEST_STRUCTURE_RECOGNITION_MODEL,
-        structure_recognition_max_window_paragraphs=1800,
-        structure_recognition_overlap_paragraphs=50,
-        structure_recognition_timeout_seconds=60,
-        structure_recognition_timeout_retry_multiplier=1.5,
-        structure_recognition_timeout_retry_max_seconds=120,
-        structure_recognition_split_fallback_max_depth=3,
-        structure_recognition_split_fallback_max_expansions=8,
-        structure_recognition_min_confidence="medium",
-        structure_recognition_cache_enabled=True,
-        structure_recognition_save_debug_artifacts=True,
-        structure_recovery_enabled=False,
-        structure_recovery_mode="ai_first",
-        structure_recovery_coordinate_schema_version=1,
-        structure_recovery_document_map_enabled=False,
-        structure_recovery_document_map_model="",
-        structure_recovery_document_map_timeout_seconds=120,
-        structure_recovery_document_map_max_input_paragraphs=6000,
-        structure_recovery_document_map_max_input_tokens=180000,
-        structure_recovery_document_map_preview_chars=120,
-        structure_recovery_document_map_cache_enabled=True,
-        structure_recovery_document_map_save_debug_artifacts=True,
-        structure_recovery_anchored_classification_max_window_paragraphs=3000,
-        structure_recovery_anchored_classification_overlap_paragraphs=0,
-        structure_recovery_anchored_classification_preview_chars=1500,
-        structure_recovery_anchored_classification_target_input_tokens=180000,
-        structure_recovery_anchored_classification_min_confidence="medium",
-        structure_recovery_topology_projection_enabled=False,
-        structure_recovery_topology_projection_save_debug_artifacts=True,
-        structure_recovery_topology_projection_binding_splits_enabled=False,
-        structure_recovery_topology_projection_layout_signals_enabled=False,
-        structure_recovery_topology_projection_layout_signals_heading_ratio=1.15,
-        structure_recovery_topology_projection_layout_signals_short_line_chars=80,
-        structure_recovery_topology_projection_layout_signals_baseline_tolerance_pt=0.25,
-        structure_recovery_topology_projection_layout_signals_min_tier_population=2,
-        structure_recovery_reconciliation_targeted_enabled=False,
-        structure_recovery_reconciliation_targeted_threshold=3,
-        structure_recovery_reconciliation_targeted_max_paragraphs=60,
-        structure_recovery_reconciliation_targeted_timeout_seconds=60,
         structure_validation_enabled=True,
         structure_validation_min_paragraphs_for_auto_gate=40,
         structure_validation_min_explicit_heading_density=0.003,
@@ -641,47 +468,6 @@ def test_describe_provider_availability_loads_project_dotenv(monkeypatch):
         relation_normalization_profile="phase2_default",
         relation_normalization_enabled_relation_kinds=("image_caption",),
         relation_normalization_save_debug_artifacts=True,
-        structure_recognition_mode="off",
-        structure_recognition_enabled=False,
-        structure_recognition_model=TEST_STRUCTURE_RECOGNITION_MODEL,
-        structure_recognition_max_window_paragraphs=1800,
-        structure_recognition_overlap_paragraphs=50,
-        structure_recognition_timeout_seconds=60,
-        structure_recognition_timeout_retry_multiplier=1.5,
-        structure_recognition_timeout_retry_max_seconds=120,
-        structure_recognition_split_fallback_max_depth=3,
-        structure_recognition_split_fallback_max_expansions=8,
-        structure_recognition_min_confidence="medium",
-        structure_recognition_cache_enabled=True,
-        structure_recognition_save_debug_artifacts=True,
-        structure_recovery_enabled=False,
-        structure_recovery_mode="ai_first",
-        structure_recovery_coordinate_schema_version=1,
-        structure_recovery_document_map_enabled=False,
-        structure_recovery_document_map_model="",
-        structure_recovery_document_map_timeout_seconds=120,
-        structure_recovery_document_map_max_input_paragraphs=6000,
-        structure_recovery_document_map_max_input_tokens=180000,
-        structure_recovery_document_map_preview_chars=120,
-        structure_recovery_document_map_cache_enabled=True,
-        structure_recovery_document_map_save_debug_artifacts=True,
-        structure_recovery_anchored_classification_max_window_paragraphs=3000,
-        structure_recovery_anchored_classification_overlap_paragraphs=0,
-        structure_recovery_anchored_classification_preview_chars=1500,
-        structure_recovery_anchored_classification_target_input_tokens=180000,
-        structure_recovery_anchored_classification_min_confidence="medium",
-        structure_recovery_topology_projection_enabled=False,
-        structure_recovery_topology_projection_save_debug_artifacts=True,
-        structure_recovery_topology_projection_binding_splits_enabled=False,
-        structure_recovery_topology_projection_layout_signals_enabled=False,
-        structure_recovery_topology_projection_layout_signals_heading_ratio=1.15,
-        structure_recovery_topology_projection_layout_signals_short_line_chars=80,
-        structure_recovery_topology_projection_layout_signals_baseline_tolerance_pt=0.25,
-        structure_recovery_topology_projection_layout_signals_min_tier_population=2,
-        structure_recovery_reconciliation_targeted_enabled=False,
-        structure_recovery_reconciliation_targeted_threshold=3,
-        structure_recovery_reconciliation_targeted_max_paragraphs=60,
-        structure_recovery_reconciliation_targeted_timeout_seconds=60,
         structure_validation_enabled=True,
         structure_validation_min_paragraphs_for_auto_gate=40,
         structure_validation_min_explicit_heading_density=0.003,
@@ -1210,104 +996,6 @@ def test_load_app_config_applies_layout_cleanup_env_overrides(monkeypatch):
     assert app_config["layout_artifact_cleanup_save_debug_artifacts"] is False
 
 
-def test_load_app_config_applies_structure_recognition_env_overrides(monkeypatch):
-    monkeypatch.setattr(config, "CONFIG_PATH", config.CONFIG_PATH.parent / "__missing_config__.toml")
-    monkeypatch.setenv("OPENAI_API_KEY", "test-openai-key")
-    monkeypatch.setenv("DOCX_AI_STRUCTURE_RECOGNITION_ENABLED", "true")
-    monkeypatch.setenv("DOCX_AI_STRUCTURE_RECOGNITION_MODEL", "gpt-5.4")
-    monkeypatch.setenv("DOCX_AI_STRUCTURE_RECOGNITION_MAX_WINDOW_PARAGRAPHS", "9999")
-    monkeypatch.setenv("DOCX_AI_STRUCTURE_RECOGNITION_OVERLAP_PARAGRAPHS", "999")
-    monkeypatch.setenv("DOCX_AI_STRUCTURE_RECOGNITION_TIMEOUT_SECONDS", "999")
-    monkeypatch.setenv("DOCX_AI_STRUCTURE_RECOGNITION_SPLIT_FALLBACK_MAX_DEPTH", "999")
-    monkeypatch.setenv("DOCX_AI_STRUCTURE_RECOGNITION_SPLIT_FALLBACK_MAX_EXPANSIONS", "999")
-    monkeypatch.setenv("DOCX_AI_STRUCTURE_RECOGNITION_MIN_CONFIDENCE", "high")
-    monkeypatch.setenv("DOCX_AI_STRUCTURE_RECOGNITION_CACHE_ENABLED", "false")
-    monkeypatch.setenv("DOCX_AI_STRUCTURE_RECOGNITION_SAVE_DEBUG_ARTIFACTS", "false")
-
-    app_config = config.load_app_config()
-    models = cast(config.ModelRegistry, app_config["models"])
-
-    assert app_config["structure_recognition_enabled"] is True
-    assert app_config["structure_recognition_mode"] == "always"
-    assert app_config["structure_recognition_model"] == "gpt-5.4"
-    assert models.structure_recognition == "gpt-5.4"
-    assert app_config["structure_recognition_max_window_paragraphs"] == 4000
-    assert app_config["structure_recognition_overlap_paragraphs"] == 200
-    assert app_config["structure_recognition_timeout_seconds"] == 300
-    assert app_config["structure_recognition_split_fallback_max_depth"] == 20
-    assert app_config["structure_recognition_split_fallback_max_expansions"] == 100
-    assert app_config["structure_recognition_min_confidence"] == "high"
-    assert app_config["structure_recognition_cache_enabled"] is False
-    assert app_config["structure_recognition_save_debug_artifacts"] is False
-
-
-def test_load_app_config_allows_zero_structure_recognition_split_fallback_caps(monkeypatch):
-    monkeypatch.setattr(config, "CONFIG_PATH", config.CONFIG_PATH.parent / "__missing_config__.toml")
-    monkeypatch.setenv("OPENAI_API_KEY", "test-openai-key")
-    monkeypatch.setenv("DOCX_AI_STRUCTURE_RECOGNITION_ENABLED", "true")
-    monkeypatch.setenv("DOCX_AI_STRUCTURE_RECOGNITION_SPLIT_FALLBACK_MAX_DEPTH", "0")
-    monkeypatch.setenv("DOCX_AI_STRUCTURE_RECOGNITION_SPLIT_FALLBACK_MAX_EXPANSIONS", "0")
-
-    app_config = config.load_app_config()
-
-    assert app_config["structure_recognition_split_fallback_max_depth"] == 0
-    assert app_config["structure_recognition_split_fallback_max_expansions"] == 0
-
-
-def test_load_app_config_applies_structure_recovery_env_overrides_and_clamps(monkeypatch):
-    monkeypatch.setattr(config, "CONFIG_PATH", config.CONFIG_PATH.parent / "__missing_config__.toml")
-    monkeypatch.setenv("DOCX_AI_STRUCTURE_RECOVERY_ENABLED", "true")
-    monkeypatch.setenv("DOCX_AI_STRUCTURE_RECOVERY_MODE", "legacy")
-    monkeypatch.setenv("DOCX_AI_STRUCTURE_RECOVERY_DOCUMENT_MAP_ENABLED", "true")
-    monkeypatch.setenv("DOCX_AI_STRUCTURE_RECOVERY_DOCUMENT_MAP_MODEL", "openai:gpt-5.4")
-    monkeypatch.setenv("DOCX_AI_STRUCTURE_RECOVERY_DOCUMENT_MAP_MAX_INPUT_PARAGRAPHS", "999999")
-    monkeypatch.setenv("DOCX_AI_STRUCTURE_RECOVERY_DOCUMENT_MAP_PREVIEW_CHARS", "5")
-    monkeypatch.setenv("DOCX_AI_STRUCTURE_RECOVERY_ANCHORED_CLASSIFICATION_PREVIEW_CHARS", "999999")
-    monkeypatch.setenv("DOCX_AI_STRUCTURE_RECOVERY_RECONCILIATION_TARGETED_MAX_PARAGRAPHS", "1")
-
-    app_config = config.load_app_config()
-
-    assert app_config["structure_recovery_enabled"] is True
-    assert app_config["structure_recovery_mode"] == "legacy"
-    assert app_config["structure_recovery_document_map_enabled"] is True
-    assert app_config["structure_recovery_document_map_model"] == "openai:gpt-5.4"
-    assert app_config["structure_recovery_document_map_max_input_paragraphs"] == 20000
-    assert app_config["structure_recovery_document_map_preview_chars"] == 40
-    assert app_config["structure_recovery_anchored_classification_preview_chars"] == 4000
-    assert app_config["structure_recovery_reconciliation_targeted_max_paragraphs"] == 10
-
-
-def test_load_app_config_prefers_mode_over_legacy_enabled(monkeypatch, tmp_path):
-    cfg = tmp_path / "config.toml"
-    cfg.write_text(
-        '[structure_recognition]\nmode = "auto"\nenabled = true\n',
-        encoding="utf-8",
-    )
-    monkeypatch.setattr(config, "CONFIG_PATH", cfg)
-    monkeypatch.setenv("DOCX_AI_STRUCTURE_RECOGNITION_ENABLED", "true")
-
-    app_config = config.load_app_config()
-
-    assert app_config["structure_recognition_mode"] == "auto"
-    assert app_config["structure_recognition_enabled"] is False
-
-
-def test_load_app_config_applies_structure_recognition_mode_env_override(monkeypatch, tmp_path):
-    cfg = tmp_path / "config.toml"
-    cfg.write_text(
-        '[structure_recognition]\nmode = "off"\n',
-        encoding="utf-8",
-    )
-    monkeypatch.setattr(config, "CONFIG_PATH", cfg)
-    monkeypatch.setenv("OPENAI_API_KEY", "test-openai-key")
-    monkeypatch.setenv("DOCX_AI_STRUCTURE_RECOGNITION_MODE", "always")
-
-    app_config = config.load_app_config()
-
-    assert app_config["structure_recognition_mode"] == "always"
-    assert app_config["structure_recognition_enabled"] is True
-
-
 def test_load_app_config_rejects_invalid_env_override_for_paragraph_boundary_mode(monkeypatch):
     monkeypatch.setattr(config, "CONFIG_PATH", config.CONFIG_PATH.parent / "__missing_config__.toml")
     monkeypatch.setenv("DOCX_AI_PARAGRAPH_BOUNDARY_NORMALIZATION_MODE", "aggressive")
@@ -1679,7 +1367,7 @@ def test_load_project_dotenv_overrides_empty_runtime_env_with_repo_value(monkeyp
     assert os.getenv("OPENROUTER_API_KEY") == "test-openrouter-key"
 
 
-def _provider_contract_test_args(*, paragraph_boundary_enabled: bool, structure_recognition_enabled: bool):
+def _provider_contract_test_args(*, paragraph_boundary_enabled: bool):
     return {
         "model_registry_settings": {
             "models": config.ModelRegistry(
@@ -1703,27 +1391,19 @@ def _provider_contract_test_args(*, paragraph_boundary_enabled: bool, structure_
         "paragraph_boundary_settings": {
             "paragraph_boundary_ai_review_enabled": paragraph_boundary_enabled,
         },
-        "structure_recognition_settings": {
-            "structure_recognition_enabled": structure_recognition_enabled,
-        },
-        "structure_recovery_settings": {
-            "structure_recovery_document_map_enabled": True,
-            "structure_recovery_document_map_model": "openrouter:google/gemini-3.1-flash-lite-preview",
-        },
     }
 
 
 @pytest.mark.parametrize(
-    ("role_name", "paragraph_boundary_enabled", "structure_recognition_enabled"),
+    ("role_name", "paragraph_boundary_enabled"),
     [
-        ("paragraph_boundary_ai_review", True, False),
+        ("paragraph_boundary_ai_review", True),
     ],
 )
 def test_validate_provider_model_contracts_requires_openai_for_enabled_service_roles_when_provider_disabled(
     monkeypatch,
     role_name,
     paragraph_boundary_enabled,
-    structure_recognition_enabled,
 ):
     provider_registry = config.ProviderRegistry(
         openai=config.ProviderConfig(name="openai", enabled=False, api_key_env="OPENAI_API_KEY"),
@@ -1736,22 +1416,20 @@ def test_validate_provider_model_contracts_requires_openai_for_enabled_service_r
             provider_registry=provider_registry,
             **_provider_contract_test_args(
                 paragraph_boundary_enabled=paragraph_boundary_enabled,
-                structure_recognition_enabled=structure_recognition_enabled,
             ),
         )
 
 
 @pytest.mark.parametrize(
-    ("role_name", "paragraph_boundary_enabled", "structure_recognition_enabled"),
+    ("role_name", "paragraph_boundary_enabled"),
     [
-        ("paragraph_boundary_ai_review", True, False),
+        ("paragraph_boundary_ai_review", True),
     ],
 )
 def test_validate_provider_model_contracts_requires_openai_key_for_enabled_service_roles(
     monkeypatch,
     role_name,
     paragraph_boundary_enabled,
-    structure_recognition_enabled,
 ):
     provider_registry = config.ProviderRegistry(
         openai=config.ProviderConfig(name="openai", enabled=True, api_key_env="OPENAI_API_KEY"),
@@ -1764,7 +1442,6 @@ def test_validate_provider_model_contracts_requires_openai_key_for_enabled_servi
             provider_registry=provider_registry,
             **_provider_contract_test_args(
                 paragraph_boundary_enabled=paragraph_boundary_enabled,
-                structure_recognition_enabled=structure_recognition_enabled,
             ),
         )
 
@@ -1798,11 +1475,6 @@ def test_validate_provider_model_contracts_allows_openrouter_main_text_when_open
             "audiobook_model": "openrouter:google/gemini-3.1-flash-lite-preview",
         },
         paragraph_boundary_settings={"paragraph_boundary_ai_review_enabled": True},
-        structure_recognition_settings={"structure_recognition_enabled": False},
-        structure_recovery_settings={
-            "structure_recovery_document_map_enabled": True,
-            "structure_recovery_document_map_model": "openrouter:google/gemini-3.1-flash-lite-preview",
-        },
     )
 
 
@@ -1835,47 +1507,4 @@ def test_validate_provider_model_contracts_allows_openrouter_structure_recogniti
             "audiobook_model": "openrouter:google/gemini-3.1-flash-lite-preview",
         },
         paragraph_boundary_settings={"paragraph_boundary_ai_review_enabled": False},
-        structure_recognition_settings={"structure_recognition_enabled": True},
-        structure_recovery_settings={
-            "structure_recovery_document_map_enabled": True,
-            "structure_recovery_document_map_model": "openrouter:google/gemini-3.1-flash-lite-preview",
-        },
     )
-
-
-def test_validate_provider_model_contracts_allows_explicit_openrouter_document_map_model(monkeypatch):
-    provider_registry = config.ProviderRegistry(
-        openai=config.ProviderConfig(name="openai", enabled=True, api_key_env="OPENAI_API_KEY"),
-        openrouter=config.ProviderConfig(name="openrouter", enabled=True, api_key_env="OPENROUTER_API_KEY"),
-    )
-    monkeypatch.setenv("OPENAI_API_KEY", "sk-openai")
-
-    config._validate_provider_model_contracts(
-        provider_registry=provider_registry,
-        **_provider_contract_test_args(
-            paragraph_boundary_enabled=False,
-            structure_recognition_enabled=True,
-        ),
-    )
-
-
-def test_validate_provider_model_contracts_rejects_invalid_structure_recovery_document_map_selector(monkeypatch):
-    provider_registry = config.ProviderRegistry(
-        openai=config.ProviderConfig(name="openai", enabled=True, api_key_env="OPENAI_API_KEY"),
-        openrouter=config.ProviderConfig(name="openrouter", enabled=True, api_key_env="OPENROUTER_API_KEY"),
-    )
-    monkeypatch.setenv("OPENAI_API_KEY", "sk-openai")
-    args = _provider_contract_test_args(
-        paragraph_boundary_enabled=False,
-        structure_recognition_enabled=True,
-    )
-    args["structure_recovery_settings"] = {
-        "structure_recovery_document_map_enabled": True,
-        "structure_recovery_document_map_model": "unknown-provider:claude-3.7-sonnet",
-    }
-
-    with pytest.raises(RuntimeError, match=r"structure_recovery\.document_map\.model"):
-        config._validate_provider_model_contracts(
-            provider_registry=provider_registry,
-            **args,
-        )

@@ -128,7 +128,6 @@ def _build_structure_settings_hash(
         "uploaded_file_token": uploaded_file_token,
         "structure_fingerprint": str(getattr(prepared_run_context, "structure_fingerprint", "") or ""),
         "detector_version": str(getattr(prepared_run_context, "detector_version", "") or ""),
-        "structure_recognition_mode": str(getattr(prepared_run_context, "structure_recognition_mode", "off") or "off"),
         "chunk_size_sensitive_structure": chunk_size_sensitive_structure,
         "source_format": str(getattr(prepared_run_context, "source_format", "docx") or "docx"),
         "conversion_backend": str(getattr(prepared_run_context, "conversion_backend", "") or ""),
@@ -143,9 +142,6 @@ def _build_structure_settings_hash(
         ),
         "paragraph_boundary_ai_review_mode": str(
             resolved_app_config.get("paragraph_boundary_ai_review_mode", "off") or "off"
-        ),
-        "structure_recognition_min_confidence": str(
-            resolved_app_config.get("structure_recognition_min_confidence", "medium") or "medium"
         ),
         "structure_validation_enabled": bool(resolved_app_config.get("structure_validation_enabled", True)),
     }

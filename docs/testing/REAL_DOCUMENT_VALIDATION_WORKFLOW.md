@@ -11,33 +11,31 @@ Current default mapping:
 - audiobook sanity document profile: `mazzucato-audiobook-core`
 - canonical structure-recovery document profile: `lietaer-pdf-first-20-structure-core`
 - full run profile: `ui-parity-default`
-- full AI run profile: `ui-parity-ai-default`
 - soak run profile: `ui-parity-soak-3x`
-- structural run profile: `structural-passthrough-default`
-- AI-first structural run profile: `structural-ai-first-default`
+- structural run profile: `ui-parity-translate-benchmark-advisory`
 - audiobook postprocess run profile: `ui-parity-translate-audiobook-postprocess`
 - benchmark-only advisory run profile: `ui-parity-translate-benchmark-advisory`
 
-Current structure-recognition mode contract across run profiles:
-
-- `ui-parity-default` inherits the repository UI default, which is currently `structure_recognition_mode = "auto"`
-- `ui-parity-ai-default` forces `structure_recognition_mode = "always"`
-- `structural-passthrough-default` forces `structure_recognition_mode = "off"` so the structural tier remains deterministic and does not silently pick up AI escalation from UI defaults
+NOTE (2026-06-22): the AI structure-recognition stage (#2) and its profiles
+(`ui-parity-ai-default`, `structural-ai-first-default`, `structural-passthrough-default`,
+`*topology-advisory`) have been removed. Preparation is now deterministic: importer-provided
+roles flow straight to planning, so there is no `structure_recognition_mode` contract to track.
 
 Current corpus notes:
 
 - `lietaer-core` is now back on strict deterministic structural thresholds.
 - `religion-wealth-core` now points at the original legacy `.doc` source and exercises the project-level auto-conversion path during corpus validation; it currently remains deterministic-structural `tolerant` because one page-separator artifact still produces a bounded restore diagnostic.
 - `mazzucato-audiobook-core` is the canonical real-document sample for translate plus audiobook postprocess sanity and maps to `ui-parity-translate-audiobook-postprocess` by default.
-- `lietaer-pdf-first-20-structure-core` is the canonical AI-first structure-recovery slice and maps to `structural-ai-first-default` for the structural diagnostic path.
+- `lietaer-pdf-first-20-structure-core` is the canonical structure slice for the deterministic structural diagnostic path.
 - `lietaer-pdf-first-20-benchmark` and `lietaer-pdf-full-benchmark` are explicitly tagged `benchmark-only` in `corpus_registry.toml`; they use `ui-parity-translate-benchmark-advisory` and are excluded from mandatory full gates by policy.
 
-## AI-First Structure Recovery Workflow
+## Structure Diagnostic Workflow
 
-When the active work is specifically AI-first structure recovery, do not use the
-general full-validator path as the default debug loop.
+The AI-first structure-recognition stage (#2) was removed (2026-06-22); structure roles
+now come deterministically from the importer. The structure-scoped diagnostic loop below
+remains useful for inspecting importer-produced structure on the PDF slices.
 
-Use this structure-scoped order instead:
+Use this structure-scoped order:
 
 1. focused local tests for the directly touched structure module or preparation slice;
 2. `bash scripts/run-structural-preparation-diagnostic.sh lietaer-pdf-first-20-structure-core`
@@ -54,7 +52,7 @@ Corpus policy for this workflow:
 1. `lietaer-pdf-first-20-structure-core` (`tests/sources/Rethinking-money-first-20-pages.pdf`) is the canonical fast PDF slice for routine structure iteration.
 2. `lietaer-pdf-chapter-region-core` (`tests/sources/Rethinking-money-chapter-region-pages-10-11-and-156-217.pdf`) is the cheap non-contiguous proof slice for late-book Chapter 8-11 topology regressions that the first-20-pages slice cannot cover.
 3. `lietaer-core` is not the routine structure-recovery proof document for this workflow.
-4. `ui-parity-pdf-structural-recovery` is still a `full` tier translate profile with `structure_recognition_mode = "off"`; despite its name, it is not the default proof path for AI-first structure recognition.
+4. `ui-parity-pdf-structural-recovery` is still a `full` tier translate profile; despite its name, structure recognition is deterministic (importer-driven) and there is no AI structure stage.
 5. `mazzucato-pdf-full-benchmark` (`tests/sources/The Value of Everything. Making and Taking in the Global Economy by Mariana Mazzucato (z-lib.org).pdf`) is the non-Lietaer full-book PDF benchmark for WS-2 formatting-transfer generalization; it is not the routine structure-recovery proof path.
 
 ## Canonical Entry Points
@@ -142,23 +140,13 @@ Benchmark-only policy:
 2. Their default run profile is `ui-parity-translate-benchmark-advisory`, which keeps translation quality gate policy advisory for model-comparison runs.
 3. They may participate in manual or benchmark workflows, but they are excluded from mandatory full gates by repository policy.
 
-## AI Structure Recognition Smoke
+## AI Structure Recognition Smoke (removed)
 
-The repository also has a real-document AI structure-recognition smoke test in
-`tests/test_real_document_structure_recognition_integration.py`.
-
-This test is intentionally opt-in and is excluded from the ordinary `Run Full Pytest`
-path even when `OPENAI_API_KEY` is present. It only runs when both conditions hold:
-
-1. `OPENAI_API_KEY` is available after loading the project `.env`.
-2. `DOCXAI_RUN_REAL_DOCUMENT_STRUCTURE_RECOGNITION=1` is set explicitly.
-
-Run it only when a change touches one of these surfaces:
-
-1. `structure_recognition.py` prompt/request/response parsing logic.
-2. `preparation.py` integration of the structure-recognition stage.
-3. runtime/profile wiring that decides whether AI structure recognition mode resolves to `off`, `auto`, or `always`.
-4. real-document validation/reporting logic for AI counters or AI-enabled profiles.
+The AI structure-recognition stage (#2) and its real-document smoke test
+(`tests/test_real_document_structure_recognition_integration.py`) were removed
+(2026-06-22). Structure roles are now produced deterministically by the importer, so
+there is no AI structure-recognition smoke path or `DOCXAI_RUN_REAL_DOCUMENT_STRUCTURE_RECOGNITION`
+toggle.
 
 Preferred user-visible execution paths:
 

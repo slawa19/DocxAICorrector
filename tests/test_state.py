@@ -1,6 +1,5 @@
 import pytest
 
-from docxaicorrector.core.models import StructureRecognitionSummary
 from docxaicorrector.runtime import state
 from docxaicorrector.ui.application_flow import PreparedRunContext
 from conftest import SessionState as SessionState  # noqa: F811
@@ -584,9 +583,6 @@ def test_preparation_marker_helpers_track_request_state(monkeypatch):
         preparation_detail="Анализ завершён.",
         preparation_cached=False,
         preparation_elapsed_seconds=0.1,
-        structure_recognition_summary=StructureRecognitionSummary(),
-        document_map_status="not_requested",
-        document_map_status_reason="",
     )
     session_state = SessionState(
         preparation_input_marker="report.docx:3:token:6000",

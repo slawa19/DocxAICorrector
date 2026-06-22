@@ -23,7 +23,7 @@ min_merged_raw_paragraphs = 2
 require_numbered_lists_preserved = true
 require_nonempty_output = true
 forbid_heading_only_collapse = true
-default_run_profile = "ui-parity-ai-default"
+default_run_profile = "ui-parity-translate-benchmark-advisory"
 tags = ["headings", "formatting", "manual-regression"]
 provenance = "Canonical real document regression sample"
 
@@ -164,7 +164,7 @@ require_numbered_lists_preserved = false
 require_nonempty_output = true
 forbid_heading_only_collapse = true
 require_pdf_conversion = true
-structural_run_profile = "structural-ai-first-default"
+structural_run_profile = "ui-parity-translate-benchmark-advisory"
 structural_expected_result = "pass"
 structural_expected_failed_checks = []
 structural_optional_failed_checks = []
@@ -197,7 +197,7 @@ require_nonempty_output = true
 forbid_heading_only_collapse = true
 require_toc_detected = true
 require_pdf_conversion = true
-structural_run_profile = "structural-ai-first-default"
+structural_run_profile = "ui-parity-translate-benchmark-advisory"
 structural_expected_result = "pass"
 structural_expected_failed_checks = []
 structural_optional_failed_checks = []
@@ -232,7 +232,7 @@ require_toc_detected = true
 require_pdf_conversion = true
 require_no_bullet_headings = true
 require_no_toc_body_concat = false
-default_run_profile = "ui-parity-translate-benchmark-topology-advisory"
+default_run_profile = "ui-parity-translate-benchmark-advisory"
 tags = ["pdf", "translation", "benchmark-only", "lietaer", "full-document"]
 provenance = "Benchmark-only full-document PDF profile for structure model comparison on the full Lietaer source."
 
@@ -297,35 +297,6 @@ id = "ui-parity-default"
 tier = "full"
 mode = "regression"
 enable_paragraph_markers = true
-repeat_count = 1
-
-[[run_profiles]]
-id = "ui-parity-ai-default"
-tier = "full"
-mode = "regression"
-enable_paragraph_markers = true
-structure_recognition_mode = "always"
-repeat_count = 1
-
-[[run_profiles]]
-id = "structural-passthrough-default"
-tier = "structural"
-mode = "regression"
-image_mode = "safe"
-enable_paragraph_markers = false
-structure_recognition_mode = "off"
-repeat_count = 1
-
-[[run_profiles]]
-id = "structural-ai-first-default"
-tier = "structural"
-mode = "regression"
-image_mode = "safe"
-enable_paragraph_markers = false
-structure_recognition_mode = "always"
-structure_recovery_topology_projection_enabled = true
-structure_recovery_topology_projection_layout_signals_enabled = true
-structure_recovery_topology_projection_binding_splits_enabled = true
 repeat_count = 1
 
 [[run_profiles]]
@@ -416,37 +387,6 @@ translation_output_quality_gate_policy = "advisory"
 repeat_count = 1
 
 [[run_profiles]]
-id = "ui-parity-translate-benchmark-topology-advisory"
-tier = "full"
-mode = "regression"
-processing_operation = "translate"
-source_language = "auto"
-target_language = "ru"
-audiobook_postprocess_enabled = false
-enable_paragraph_markers = true
-translation_output_quality_gate_policy = "advisory"
-structure_recognition_mode = "always"
-structure_recovery_topology_projection_enabled = true
-structure_recovery_topology_projection_binding_splits_enabled = true
-repeat_count = 1
-
-[[run_profiles]]
-id = "ui-parity-translate-benchmark-topology-advisory-chunk30000"
-tier = "full"
-mode = "regression"
-processing_operation = "translate"
-source_language = "auto"
-target_language = "ru"
-chunk_size = 30000
-audiobook_postprocess_enabled = false
-enable_paragraph_markers = true
-translation_output_quality_gate_policy = "advisory"
-structure_recognition_mode = "always"
-structure_recovery_topology_projection_enabled = true
-structure_recovery_topology_projection_binding_splits_enabled = true
-repeat_count = 1
-
-[[run_profiles]]
 id = "ui-parity-pdf-structural-recovery"
 tier = "full"
 mode = "regression"
@@ -456,7 +396,6 @@ target_language = "ru"
 translation_domain = "theology"
 audiobook_postprocess_enabled = false
 enable_paragraph_markers = true
-structure_recognition_mode = "off"
 repeat_count = 1
 
 [[run_profiles]]
@@ -476,7 +415,6 @@ reader_cleanup_chunk_size = 8000
 reader_cleanup_overlap_blocks_before = 3
 reader_cleanup_overlap_blocks_after = 3
 enable_paragraph_markers = true
-structure_recognition_mode = "off"
 repeat_count = 1
 
 [[run_profiles]]
@@ -499,7 +437,6 @@ reader_cleanup_overlap_blocks_before = 3
 reader_cleanup_overlap_blocks_after = 3
 reader_verifier_enabled = false
 enable_paragraph_markers = true
-structure_recognition_mode = "off"
 repeat_count = 1
 
 [[run_profiles]]
@@ -523,7 +460,6 @@ reader_cleanup_overlap_blocks_before = 3
 reader_cleanup_overlap_blocks_after = 3
 reader_verifier_enabled = false
 enable_paragraph_markers = true
-structure_recognition_mode = "off"
 repeat_count = 1
 
 [[run_profiles]]
@@ -540,7 +476,6 @@ reader_cleanup_enabled = false
 reader_cleanup_policy = "off"
 reader_verifier_enabled = false
 enable_paragraph_markers = true
-structure_recognition_mode = "off"
 repeat_count = 1
 
 [[run_profiles]]
@@ -564,7 +499,6 @@ reader_cleanup_overlap_blocks_before = 3
 reader_cleanup_overlap_blocks_after = 3
 reader_verifier_enabled = false
 enable_paragraph_markers = true
-structure_recognition_mode = "off"
 repeat_count = 1
 
 [[run_profiles]]
@@ -582,5 +516,4 @@ reader_cleanup_keep_toc = false
 reader_cleanup_drop_back_matter = false
 reader_cleanup_chunk_size = 50000
 enable_paragraph_markers = true
-structure_recognition_mode = "off"
 repeat_count = 1

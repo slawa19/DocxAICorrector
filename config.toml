@@ -152,64 +152,6 @@ candidate_limit = 200
 timeout_seconds = 30
 max_tokens_per_candidate = 120
 
-# PROD-PATH KILL SWITCH for the #2 structure-recovery cluster (GLOBAL_PLAN 2026-06-22, PATH 2 / Task B).
-# mode = "off" short-circuits the SINGLE gate in preparation.prepare_source (`should_run_ai`), which
-# disables ALL of #2 on the prod path at once: structure recognition (incl. timeout/retry/split-fallback),
-# structure_recovery.document_map, topology projection, and targeted reconciliation. With #2 off,
-# preparation completes deterministically and import-stage roles (chapter/numbered headings, lists) flow
-# straight to prepared output (no LLM structure call). REVERSIBILITY: set `mode = "auto"` (or "always")
-# here to restore #2 — this is the one switch. Experimental profiles that explicitly set
-# `structure_recognition_mode = "always"` (structural-ai-first-default, *topology-advisory) are unaffected
-# and keep #2 ON. See docs/specs/GLOBAL_PLAN_2026-06-16.md "Update — 2026-06-22" (#2 CONTRIBUTION MEASURED,
-# DECISION PATH 2). Task B2 = prune the now-dead code (see commit message / report).
-[structure_recognition]
-mode = "off"
-# DEPRECATED: use [models.structure_recognition].default instead.
-# model = "gpt-5-mini"
-max_window_paragraphs = 1800
-overlap_paragraphs = 50
-timeout_seconds = 60
-min_confidence = "medium"
-cache_enabled = true
-save_debug_artifacts = true
-
-[structure_recovery]
-mode = "ai_first"
-enabled = true
-
-[structure_recovery.document_map]
-enabled = true
-model = ""
-timeout_seconds = 120
-max_input_paragraphs = 6000
-max_input_tokens = 180000
-preview_chars = 120
-cache_enabled = true
-save_debug_artifacts = true
-
-[structure_recovery.anchored_classification]
-max_window_paragraphs = 3000
-overlap_paragraphs = 0
-preview_chars = 1500
-target_input_tokens = 180000
-min_confidence = "medium"
-
-[structure_recovery.topology_projection]
-enabled = false
-save_debug_artifacts = true
-binding_splits_enabled = false
-layout_signals_enabled = false
-layout_signals_heading_ratio = 1.15
-layout_signals_short_line_chars = 80
-layout_signals_baseline_tolerance_pt = 0.25
-layout_signals_min_tier_population = 2
-
-[structure_recovery.reconciliation]
-targeted_enabled = false
-targeted_threshold = 3
-targeted_max_paragraphs = 60
-targeted_timeout_seconds = 60
-
 [structure_validation]
 enabled = true
 min_paragraphs_for_auto_gate = 40

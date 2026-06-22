@@ -257,8 +257,6 @@ class ProcessingContext:
     model_id: str | None = None
     document_context_prompt: str = ""
     segment_selection: SegmentSelection | None = None
-    document_map: object | None = None
-    document_topology_projection: object | None = None
 
 
 @dataclass

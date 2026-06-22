@@ -113,7 +113,7 @@ def test_vscode_test_tasks_normalize_windows_relative_paths() -> None:
     assert lietaer_ai_task["command"] == "bash"
     assert lietaer_ai_task["args"] == [
         "-lc",
-        "export DOCXAI_REAL_DOCUMENT_PROFILE=lietaer-core; export DOCXAI_REAL_DOCUMENT_RUN_PROFILE=ui-parity-ai-default; bash scripts/run-real-document-validation.sh",
+        "export DOCXAI_REAL_DOCUMENT_PROFILE=lietaer-core; export DOCXAI_REAL_DOCUMENT_RUN_PROFILE=ui-parity-translate-benchmark-advisory; bash scripts/run-real-document-validation.sh",
     ]
 
     assert real_document_task["command"] == "bash"

@@ -4,7 +4,6 @@ import docxaicorrector.ui._app as app
 import docxaicorrector.ui.application_flow as application_flow
 import docxaicorrector.ui.compare_panel as compare_panel
 from conftest import SessionState as SessionState
-from docxaicorrector.core.models import StructureRecognitionSummary
 
 
 @pytest.fixture(autouse=True)
@@ -62,11 +61,6 @@ def _build_prepared_run_context(**overrides):
         "normalization_report": None,
         "relation_report": None,
         "cleanup_report": None,
-        "structure_map": None,
-        "structure_recognition_summary": StructureRecognitionSummary(),
-        "structure_validation_report": None,
-        "structure_recognition_mode": "off",
-        "structure_ai_attempted": False,
     }
     payload.update(overrides)
     return application_flow.PreparedRunContext(**payload)
