@@ -452,6 +452,27 @@ structure-recognition timeout/fallback machinery earn its keep, given main-text 
 then sweep for other idle/over-engineered stages with no measurable output effect, then a worth-it verdict on
 every residual. Goal: cut dead weight, no infinite polishing.
 
+#2 CONTRIBUTION MEASURED & orchestrator-verified (2026-06-22, breadth-aware, on saved artifacts): #2 is NOT
+pure dead weight but its useful core is TINY. On Money it makes exactly **7 AI heading promotions, all real
+chapter headings the import missed** ("chapter i — why this report, now?", "chapter vi/vii/viii/ix", one
+numbered subheading), **0 demotions, no harm**; the other ~8 role-changes are body→list (neutral under the
+contract) and 62 structural roles (epigraph/attribution/toc) render as body/list anyway = neutral. On
+mazzucato (current importer) #2 promotes ~0-1 headings; lietaer's big promotions exist only on the OLD
+importer (post-fix import already yields 165≥129 headings). document_map patches 0 on the current Money run
+(historical runs show up to ~20 patch-INTENT, gated by locked-override); topology disabled in prod. The
+expensive machinery (timeout/retry/recursive split-fallback — retry FAILED, 1392/1499 via fallback, 266s) wraps
+this tiny benefit. **The ONLY clean benefit is detecting "Chapter N" (roman) heading lines, which the import
+fix does NOT catch (it catches "N. Title").**
+
+DECISION (director, 2026-06-22) — **PATH 2: move "Chapter N" heading detection into IMPORT (deterministic),
+then CUT the whole #2 cluster** (structure recognition + split-fallback + document_map + reconciliation +
+topology). Rationale: consistent with "main-text structure = import problem", removes an LLM call + ~25% of
+prep time, and DE-RISKS the cut (once import owns headings, cutting #2 needs no breadth measurement).
+SEQUENCING (dependency: secure headings BEFORE cutting): **Task A** — import "Chapter N" promotion (no-LLM
+verifiable: the 7 Money chapter headings now come from import; lietaer/mazzucato no over-promotion), verify+merge.
+**Task B** — disable the #2 cluster on the prod path + confirm via one full run that chapter headings survive
+(from import) and nothing breaks, then prune the now-dead code. A first.
+
 SECONDARY (after the main merge fix): "О"-heading amplification — ROOT CAUSE found & orchestrator-verified
 2026-06-22. Only 2 short headings at import (OCR "%"/"o"), but **10× Cyrillic "О" in the output**. They
 are a **REASSEMBLY bug**, not import/translation/structure: each "О" stands where a correctly-translated
