@@ -7,6 +7,9 @@ Supersedes (for forward work): the planning docs now archived under
 PDF-import pivot, structure-recognition migration). Those remain as lineage only.
 
 Active companions:
+- `docs/RUNNING_THE_PIPELINE.md` — CANONICAL runbook for tests, config/model checks, and full-book
+  pipeline runs. Read it BEFORE running anything; verified copy-paste commands + the pitfalls list
+  (wrong model gpt-5-mini vs Gemini, env-override, WSL backgrounding, CRLF launchers).
 - `docs/specs/UI/FORMATTING_DISCREPANCY_REPORTING_SPEC_2026-06-15.md` — the first
   UI slice (how residual discrepancies reach the user).
 
@@ -302,6 +305,120 @@ with no text evidence; TOC pPr uses a denylist not an allowlist.
 Priority: TIER 1 (esp. #1/#2/#3 — production path, lose/corrupt real content). These explain the
 "run blindly" pattern: a stage's green status was not trustworthy.
 
+## Update — 2026-06-21c (fresh Money/Gemini run audited; gate-vision fix in flight; #2 confirmed live)
+
+Fresh full-pipeline run on the CORRECT baseline (Gemini via OpenRouter), reader-cleanup OFF, image-safe:
+run_id `20260621T_money_gemini`. Orchestrator audited the artifacts directly. Honest state:
+- Output is HEALTHY for main content: DOCX openable, no placeholder leak, output_ratio=1.045,
+  silent_text_loss=False. **Images 43/43 emitted** (signal #3 OK; no loss with cleanup OFF).
+- **Signal #1 (source_text_fallback) = 0** — the TIER-1 #1 fix holds on a real run; no English-as-success.
+- **Signal #2 CONFIRMED LIVE & now observable**: structure AI pass timed out on the big window, retry
+  FAILED (structure_timeout_retry_failed=1), document fell back — primary_classified=203 vs
+  split_fallback_classified=1405; readiness=blocked_unsafe_best_effort_only. The diagnostic snapshot
+  now exposes what used to be silent. This is the same partial-coverage class as TIER-1 #2.
+- acceptance=FAILED, but on unmapped_source(71)/unmapped_target(67)/formatting_diagnostics — and the
+  unmapped items are EXACTLY the agreed pass-through categories: front-matter OCR garble
+  (title/cover/attributions), bounded-TOC, and page-furniture digits ("1","2","5"…). NOT main-text loss.
+
+ACTIVE NOW (orchestrator-issued dev task): **Acceptance gate "vision" fix** — exclude ONLY
+front-matter / bounded-TOC / page-furniture from unmapped thresholds, by detection, with provenance,
+WITHOUT suppressing genuine unmapped body prose (offline test on this run's artifacts + a synthetic
+real-body counter-example). Rationale: without a trustworthy verdict we polish main text blind, AND a
+clean gate then MEASURES whether #2's structure fallback actually damages main text (currently unproven).
+
+NEXT (queued, after gate-vision): **Structure-recognition fallback hardening (TIER-1 #2)** — the
+203-vs-1405 primary/fallback split + failed timeout-retry on Money. Do NOT start until the gate can
+measure before/after on main text. Main goal UNCHANGED: ship-quality translated DOCX of the MAIN
+CONTENT for one source, then breadth across books; TOC/front-matter/references stay pass-through.
+
+## Update — 2026-06-22 (ROOT CAUSE of "nothing we fix sticks": defect is IMPORT-stage segmentation)
+
+Director pushed: why does NOTHING we ship for assembly actually fix the body? Ran a NO-LLM import
+diagnostic on Money (extract spans → `build_paragraph_units_from_text_spans`) and inspected the units
+BEFORE any LLM. Decisive finding:
+- Import produces **148 unmerged sentence/list continuations** (line ends with no terminal punct →
+  next line starts lowercase) + **118 bare-digit footnote units (role=footnote)** ALREADY in the
+  normalized DOCX, before structure recognition runs at all. English source, e.g. `…It makes clear`
+  → `that awareness of`; `…between money` → `and sustainability…`.
+- **Paragraph segmentation is FIXED AT IMPORT** (`processing_runtime.py:511,530` builds the normalized
+  DOCX straight from importer units). Structure recognition only RE-ROLES; it NEVER merges paragraphs.
+  So neither the full structure pass nor the timeout-fallback can fix these — it is not their job.
+- Therefore EVERY measure we shipped (translation-fallback, image, structure-coverage, gate-vision,
+  even the existing import "line-fill merge" at `logical_import.py:1114`) is ORTHOGONAL to the dominant
+  body defect. The line-fill merge EXISTS but does NOT fire on this epub→pdf source (148 pass it).
+- Cache RULED OUT (`preparation.cached=False`, logic version=2 in key). Fallback is NOT the main
+  culprit. The gate is blind to this class by construction (these paragraphs map 1:1, so not "unmapped").
+This is why we were circling: the "import-origin" diagnosis (2026-06-20b) was right, but we kept fixing
+structure/gate/translation instead of the importer's continuation-merge itself.
+
+DONE & orchestrator-verified (2026-06-22, merged to main d5970c7): **import continuation-merge fix**
+in `build_paragraph_units_from_text_spans`. Independent no-LLM baseline↔fix comparison on 3 books:
+unmerged body continuations Money **148→1**, lietaer 202→2, mazzucato 245→1; **NO over-merge — heading
+& list unit counts IDENTICAL baseline↔fix on all three** (money 115/232, lietaer 176/286, mazzucato
+132/480). Root cause was geometry/indent-based boundary detection missing soft-wraps (hanging-indent list
+continuations, same-line split word-groups, page-break splits); fix adds a geometry-independent
+`_is_soft_wrap_continuation_pair` signal. 5 new import tests + file 33 passed. FOOTNOTE re-attach
+(118 bare-digit units) DEFERRED by dev as too risky to anchor — still open (see categorization below).
+A confirming full Money LLM run on merged main is in flight (run_id `20260622T_money_merged`) to verify
+the end-to-end OUTPUT body is now clean (segmentation is import-fixed; structure only re-roles) and to
+give a fresh basis for categorizing the remaining main-text defects.
+
+CONFIRMED on merged-main OUTPUT (run 20260622T_money_merged, eyes-on by orchestrator): the merge LANDED —
+mid-sentence breaks **89→15**, ≤2-char headings 11→3, acceptance now **passed**. "numbered-as-body" went
+20→46 but that is NOT a regression: the merge cleaned split numbered headings into single `N. Title`
+paragraphs, REVEALING the true count (~40 real section headings styled Normal not Heading = Defect B).
+
+RESIDUAL 15 sentence-breaks — root cause found (orchestrator, import-level breakdown 2026-06-22; they ARE
+real, not analyzer error): the merge joins **same-role pairs only** and is **footnote-opaque**. The 15 are
+(a) ~10 CROSS-ROLE continuations (lowercase soft-wrap whose two halves got different body/list/footnote
+roles → neither merger fires) and (b) ~5 footnote-NUMBER-at-break ("…path for 50" → "evolution"). The prior
+"148→1" acceptance metric was body-body-only and HID these. PROPOSED bulletproof fix (2 principled import
+rules): (1) **footnote-marker transparency** — a footnote-role/trailing-number marker is transparent to the
+merge (prose merges across it, marker kept inline); this also kills the 72 standalone digit-paragraphs at
+one root, no anchor-guessing. (2) **cross-role continuation merge** — a lowercase soft-wrap merges as body
+even across a role boundary (a real heading/list-start never begins lowercase mid-sentence). ACCEPTANCE
+METRIC FIXED: count cross-role + number-aware (Money ~15→~0) with heading/list counts unchanged on
+lietaer/mazzucato. ("Fix the gate" is NOT the lever — the gate does not measure sentence-breaks at all.)
+Footnote standalone-digits (72) and "О" caption-drop (3) fold into rule (1) / stay low-priority.
+
+DEFECT B diagnosed & orchestrator-verified (2026-06-22): the ~40 numbered section headings render as
+Normal because the IMPORTER mis-tags `N. Title` lines as **unordered/bullet list** (`list_kind='unordered'`).
+Evidence: of 47 `N. Title` source units, 46 are `role=list` (all 47 `list_kind='unordered'`), and **5 carry
+`role_confidence='explicit'`** = role set by IMPORT with AI untouched (p0449/p1075/p1094/p1144/p1253) →
+proves import-origin. A clean no-timeout structure run (even with tiny windows simulating fallback) returns
+**heading, not list** → **#2 (structure timeout) is NOT the cause and does NOT fix B**. Worse, prod feeds the
+import's bad `list_kind` into the descriptor, BIASING the AI to confirm `list` (42 ai-confirmed) — so the bad
+import tag POISONS structure recognition too. FIX LOCUS = import: recognise standalone `N. Title` as a
+numbered section heading, not a bullet item.
+
+CONSEQUENCE (key for scope / no-overengineering): **main-text structural quality is now ENTIRELY an
+import-layer problem.** Both remaining defects (sentence-breaks AND Defect B) are import-origin; #2
+(structure-recognition fallback hardening) is **OFF the main-text critical path** — candidate to drop/defer
+in the effectiveness review. Recommend ONE combined import fix: (rule 1) footnote-marker transparency,
+(rule 2) cross-role continuation merge, (rule 3) numbered-heading promotion — all in logical_import.py
+classification, verified by the no-LLM import diagnostic (cross-role/number-aware count → ~0; numbered
+`N. Title` → heading; heading/list counts on lietaer/mazzucato sane), then ONE confirming full run.
+
+SECONDARY (after the main merge fix): "О"-heading amplification — ROOT CAUSE found & orchestrator-verified
+2026-06-22. Only 2 short headings at import (OCR "%"/"o"), but **10× Cyrillic "О" in the output**. They
+are a **REASSEMBLY bug**, not import/translation/structure: each "О" stands where a correctly-translated
+figure caption was DROPPED. Proof on Money artifacts: per-block #58 = `[[DOCX_IMAGE_img_007]]` +
+`Рисунок 2.2: …(подход ОЭСР).` (clean translation), but in `latest_markdown` that caption is GONE
+(0 matches) and `# О` appears in its place. So reassembly drops the unmapped/translated caption paragraph
+and substitutes a 1-char placeholder heading = CONTENT LOSS (10 captions) + spurious heading. Money-specific
+volume (epub→pdf "fig ure" captions all fail to map); the class (dropped short paragraph → 1-char heading)
+appears elsewhere only as rare digits. Candidate: `pipeline/reassembly.py` (exact line needs a reassembly
+DEBUG run on those 2 blocks — read-only could not pinpoint it). Do AFTER import merge (which changes caption
+units and may move this), then re-check whether it persists before fixing.
+
+QUEUED — **Pipeline effectiveness & dead-stage review** (director-ordered, AFTER the current fix+verify
+iteration, NOT before): (a) hunt for other unnoticed holes of this same shape (a stage we trust that
+silently does nothing useful on real input); (b) identify OVER-ENGINEERED / idle stages — checks,
+analyses, passes that run but produce no measurable effect on the output — and REMOVE them outright;
+(c) categorize EVERY remaining known problem with an explicit **worth-it / not-worth-it verdict**.
+Rationale (binding): we must NOT slide into infinite polishing — each residual defect earns a decision
+to fix or to consciously accept, with a reason.
+
 ## Remaining Work Before Returning to UI
 
 The UI surfaces results to users, so before UI work the pipeline must (a) reliably
@@ -562,6 +679,20 @@ stable, meaningful residual, which items 1–3 deliver.
 6. **Never credit content-presence as format-presence**, and never credit a pair
    without text evidence (target⊆source by containment; no position-only maps).
 7. **No document-specific literals; no verifier as a gate.**
+8. **Delivery loop (orchestrator↔director↔dev-agent).** Agree the approach with the
+   director FIRST → orchestrator writes a self-contained dev-agent prompt → hands it to a
+   subagent → orchestrator verifies the result independently (never rubber-stamp). This
+   offloads the director: they decide direction/priority, not mechanics. Every dev prompt
+   carries the `=== КАК ЗАПУСКАТЬ ===` block.
+9. **Verify the run EXERCISED the fix, not just the output.** Before auditing output,
+   confirm the artifact was produced by the fixed code on a real input — rule out stale
+   cache, a degraded fallback path, and stage-orthogonality (a fix in stage X cannot fix a
+   defect born in stage Y). Audit the stage that OWNS the defect (proven by a stage-isolated
+   no-LLM diagnostic), not the convenient one.
+10. **No infinite polishing.** Every remaining known defect must carry an explicit
+    worth-it / not-worth-it verdict with a reason; "accept and move on" is a valid,
+    documented outcome. Periodically prune over-engineered/idle stages that produce no
+    measurable effect on the output.
 
 ## Non-Goals (defer; not blocking UI)
 
