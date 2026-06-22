@@ -836,3 +836,70 @@ def test_build_paragraph_units_keeps_real_bullet_list_when_body_follows() -> Non
         p.role == "body" and p.text == "A separate body paragraph that begins after a blank line."
         for p in result.paragraphs
     )
+
+
+def _body_context_spans() -> list[PdfTextSpan]:
+    # Enough running body so the layout profile estimates a realistic body font
+    # size and leading; the chapter detection itself is text-driven (deterministic
+    # ``Chapter <roman/number>``), independent of heading typography.
+    return [
+        _span(1, "A first running body line that establishes the document leading here.", top=40, bottom=54),
+        _span(1, "A second running body line that establishes the document leading here.", top=56, bottom=70),
+        _span(1, "A third running body line that establishes the document leading here.", top=72, bottom=86),
+    ]
+
+
+def test_build_paragraph_units_promotes_standalone_roman_chapter_number() -> None:
+    # A standalone "Chapter VI" number line is a chapter heading on import, even at
+    # body font size (text-driven deterministic detect, mirrors #2 promotions).
+    spans = _body_context_spans() + [
+        _span(1, "Chapter VI", top=140, bottom=158, x0=50, x1=160, font_size=10),
+        _span(1, "Body prose that follows the chapter heading.", top=190, bottom=204),
+    ]
+
+    result = build_paragraph_units_from_text_spans(spans)
+
+    chapter = next(p for p in result.paragraphs if p.text == "Chapter VI")
+    assert chapter.role == "heading"
+    assert chapter.heading_level == 1
+
+
+def test_build_paragraph_units_promotes_chapter_number_with_inline_title() -> None:
+    # "Chapter I — Why this report, now?" (number + dash + title) is a heading.
+    spans = _body_context_spans() + [
+        _span(1, "Chapter I — Why this report, now?", top=140, bottom=158, x0=50, x1=300, font_size=10),
+        _span(1, "Body prose that follows the chapter heading.", top=190, bottom=204),
+    ]
+
+    result = build_paragraph_units_from_text_spans(spans)
+
+    chapter = next(p for p in result.paragraphs if p.text.startswith("Chapter I"))
+    assert chapter.role == "heading"
+    assert chapter.heading_level == 1
+
+
+def test_build_paragraph_units_does_not_promote_midsentence_chapter_mention() -> None:
+    # A mid-sentence mention "…in chapter 3 we saw…" does not start with the word
+    # "Chapter" + number, so it is never promoted (stays body).
+    spans = _body_context_spans() + [
+        _span(1, "As we discussed in chapter 3 we saw the pro-cyclical tendency emerge.", top=140, bottom=154),
+    ]
+
+    result = build_paragraph_units_from_text_spans(spans)
+
+    line = next(p for p in result.paragraphs if "in chapter 3 we saw" in p.text)
+    assert line.role == "body"
+
+
+def test_build_paragraph_units_does_not_promote_toc_chapter_entry() -> None:
+    # A TOC line "Chapter II ........ 45" (title + trailing page number) is a TOC
+    # entry, never a promoted chapter heading.
+    spans = _body_context_spans() + [
+        _span(1, "Chapter II .................... 45", top=140, bottom=154, x0=50, x1=400),
+    ]
+
+    result = build_paragraph_units_from_text_spans(spans)
+
+    line = next(p for p in result.paragraphs if p.text.startswith("Chapter II"))
+    assert line.role != "heading"
+    assert line.structural_role == "toc_entry"

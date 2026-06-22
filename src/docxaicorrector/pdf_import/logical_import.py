@@ -518,6 +518,13 @@ def _classify_span_role(
         and previous_span.page_number == span.page_number
         and _is_soft_wrap_continuation_pair(_normalize_text(previous_span.text), text)
     )
+    if not soft_wrap_continuation and _looks_like_chapter_heading(span):
+        # Deterministic "Chapter <roman/number>" promotion runs before the TOC and
+        # heading-typography passes: a bare "Chapter VI" number line otherwise looks
+        # like a TOC entry (roman read as a page ref) and a body-sized chapter line
+        # otherwise fails the typography test. A real TOC chapter row (trailing page
+        # reference) is excluded inside _looks_like_chapter_heading.
+        return "heading"
     if not soft_wrap_continuation and _looks_like_toc_entry(span):
         return "toc_entry"
     if _looks_like_digit_only_small_span(span, layout_profile=layout_profile):
@@ -1320,6 +1327,63 @@ def _looks_like_standalone_heading_context(
 
 _NUMBERED_SECTION_HEADING_PATTERN = re.compile(r"^(?P<number>\d{1,3})\.\s+(?P<title>[A-ZА-Я].*)$")
 
+# A chapter heading line: the latin word "Chapter" followed by a roman numeral or
+# an arabic number, either standing alone ("Chapter VI") or carrying an inline
+# title after a dash/colon ("Chapter I — Why this report, now?"). Source PDFs are
+# English on import, so only the latin spelling is matched. Roman numerals are
+# restricted to a sane chapter range (I…XXXIX worth of letters) and uppercase to
+# avoid matching prose words; the title tail, when present, must be introduced by
+# a dash or colon (never by a bare space, which would swallow running prose that
+# merely begins with the word "Chapter").
+_CHAPTER_HEADING_PATTERN = re.compile(
+    r"^chapter\s+(?:[IVXLC]{1,7}|\d{1,3})"
+    r"(?:\s*[–—:.\-]\s*\S.*)?$",
+    re.IGNORECASE,
+)
+# The standalone "Chapter <roman/number>" number line with nothing after it. Such
+# a line is the chapter number itself, never a TOC entry (the trailing roman/arabic
+# IS the chapter number, not a page reference following a title).
+_CHAPTER_NUMBER_ONLY_PATTERN = re.compile(
+    r"^chapter\s+(?:[IVXLC]{1,7}|\d{1,3})$",
+    re.IGNORECASE,
+)
+
+
+def _looks_like_chapter_heading(span: PdfTextSpan) -> bool:
+    """Detect a deterministic ``Chapter <roman/number>`` heading line.
+
+    Promotes a standalone ``Chapter VI`` number line or a ``Chapter I — Title``
+    line to a heading. This is the one signal the LLM structure-recognition stage
+    contributed that the importer's numbered-section detector (``N. Title``) did
+    not already cover, so it is folded in deterministically here.
+
+    Guards (anti over-promote):
+    * Only a line that *begins* with the latin word ``Chapter`` (sources are
+      English on import) followed immediately by a roman numeral or arabic number
+      qualifies — a mid-sentence mention ("…in chapter 3 we saw…") never starts
+      with ``Chapter`` + number, so it is never matched.
+    * A title tail is accepted only when introduced by a dash or colon, never by a
+      bare space, so a body line that merely opens with the word ``Chapter`` does
+      not get swallowed.
+    * The caller invokes this AFTER the TOC and soft-wrap-continuation guards, so
+      ``Chapter II … 45`` TOC lines (matched by the trailing-page pattern) and
+      sentence continuations are passed through untouched.
+    """
+    text = _normalize_text(span.text)
+    if not text:
+        return False
+    # A TOC entry ("Chapter II .......... 45" / "Chapter VI: Title ... 88") ends
+    # with a page reference and is owned by the TOC pass — never promote it. A bare
+    # number line ("Chapter VI") is NOT a TOC entry (no real title precedes the
+    # roman, the trailing token IS the chapter number), so it falls through here.
+    if _looks_like_toc_entry(span) and not _CHAPTER_NUMBER_ONLY_PATTERN.match(text):
+        return False
+    if _CHAPTER_HEADING_PATTERN.match(text) is None:
+        return False
+    # A real chapter heading is short; reject an over-long line that happens to
+    # open "Chapter N —" but then runs on like body prose.
+    return len(_words(text)) <= 14
+
 
 def _numbered_line_number(text: str) -> int | None:
     match = _ORDERED_LIST_PATTERN.match(text)
@@ -1825,7 +1889,15 @@ def _paragraph_from_span(
     list_kind = None
     if role == "list":
         list_kind = "ordered" if _ORDERED_LIST_PATTERN.match(text) else "bullet"
-    heading_level = _infer_heading_level(span, median_font_size=median_font_size) if role == "heading" else None
+    heading_level = None
+    if role == "heading":
+        # A deterministic "Chapter <roman/number>" line is the top-level structural
+        # heading (h1) regardless of its font size: such a chapter line is frequently
+        # set at body size, so font-ratio inference would mislabel it h3.
+        if _CHAPTER_HEADING_PATTERN.match(text):
+            heading_level = 1
+        else:
+            heading_level = _infer_heading_level(span, median_font_size=median_font_size)
     structural_role = "toc_entry" if role == "toc_entry" else role
     paragraph_role = "body" if role == "toc_entry" else role
     return ParagraphUnit(
