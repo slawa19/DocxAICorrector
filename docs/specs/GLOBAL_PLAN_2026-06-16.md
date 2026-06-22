@@ -399,6 +399,16 @@ in the effectiveness review. Recommend ONE combined import fix: (rule 1) footnot
 classification, verified by the no-LLM import diagnostic (cross-role/number-aware count → ~0; numbered
 `N. Title` → heading; heading/list counts on lietaer/mazzucato sane), then ONE confirming full run.
 
+DONE & orchestrator-verified (2026-06-22, merged to main c97b7fb): **combined import fix** (rules 1-3) on
+branch `fix/import-footnote-crossrole-numbered-heading`. Independent baseline↔fix no-LLM diagnostic on 3
+books: Money wide breaks **16→1**, numbered `N. Title` **37 promoted to heading** (list_kind never unordered),
+footnote digit-paras 118→103; lietaer/mazzucato **0 over-promotion** (real numbered lists stay list 251/468,
+list counts unchanged 286/480), breaks 6→2 / 19→5, mazzucato footnote digits 131→15. The heading-count drop
+(lietaer 176→165, mazzucato 132→129, money lost 3) was independently diffed = ONLY spurious index/citation/
+running-header fragments correctly demoted to body — NO real chapter/section heading lost. 39 import tests
+pass. A confirming full Money run is in flight (run_id `20260622T_money_combined`) for end-to-end OUTPUT proof.
+After it: declare Money main-text status, then the queued effectiveness/dead-stage review (#2 first to assess).
+
 SECONDARY (after the main merge fix): "О"-heading amplification — ROOT CAUSE found & orchestrator-verified
 2026-06-22. Only 2 short headings at import (OCR "%"/"o"), but **10× Cyrillic "О" in the output**. They
 are a **REASSEMBLY bug**, not import/translation/structure: each "О" stands where a correctly-translated
