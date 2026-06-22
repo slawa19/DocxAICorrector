@@ -13,6 +13,27 @@ Active companions:
 - `docs/specs/UI/FORMATTING_DISCREPANCY_REPORTING_SPEC_2026-06-15.md` — the first
   UI slice (how residual discrepancies reach the user).
 
+## ═══ NAVIGATION / RESUME POINT (read this first) — updated 2026-06-22 ═══
+
+**CURRENT EXCURSION (side-branch, director-ordered):** pipeline **effectiveness / dead-stage review** —
+cutting the structure-recognition (#2) machinery + other idle/over-engineered stages that don't affect the
+output. Detail in "Update — 2026-06-22" below. In progress: measuring #2's real contribution (7 promotions /
+15 role changes) eyes-on across 3 books before any big cut; Tier-1 dead config (topology projection,
+document_map/reconciliation = 0 patches) being prepped for removal.
+
+**MONEY MAIN-TEXT = CLOSED — do NOT re-polish.** Dominant body defects resolved via import-stage fixes
+(sentence breaks 89→1, 37 numbered headings promoted, footnotes 73→~21). Accepted residue: ~10 body-font
+numbered sub-points, 3 "О" caption-drops.
+
+**MAIN TRACK to RETURN TO when the excursion ends** (the real path to UI, do NOT lose it):
+1. **Breadth validation** — run 2-3 more dissimilar full books; confirm the import fixes + gate generalise
+   (this is also what the #2 measurement piggybacks on).
+2. The five **"Remaining Work Before Returning to UI"** items below — gate stability audit, reliability
+   (general controlled-fallback), acceptance meaning, harness↔prod parity, Mazzucato tail.
+3. Then **UI** (FORMATTING_DISCREPANCY_REPORTING spec).
+Secondary follow-ups parked: "О" reassembly caption-drop fix; footnote end-to-end output confirmation
+(folds into the next full run).
+
 ## Product Goal
 
 Translate **full books** (PDF -> translated DOCX) preserving formatting, images,
