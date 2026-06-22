@@ -152,8 +152,18 @@ candidate_limit = 200
 timeout_seconds = 30
 max_tokens_per_candidate = 120
 
+# PROD-PATH KILL SWITCH for the #2 structure-recovery cluster (GLOBAL_PLAN 2026-06-22, PATH 2 / Task B).
+# mode = "off" short-circuits the SINGLE gate in preparation.prepare_source (`should_run_ai`), which
+# disables ALL of #2 on the prod path at once: structure recognition (incl. timeout/retry/split-fallback),
+# structure_recovery.document_map, topology projection, and targeted reconciliation. With #2 off,
+# preparation completes deterministically and import-stage roles (chapter/numbered headings, lists) flow
+# straight to prepared output (no LLM structure call). REVERSIBILITY: set `mode = "auto"` (or "always")
+# here to restore #2 — this is the one switch. Experimental profiles that explicitly set
+# `structure_recognition_mode = "always"` (structural-ai-first-default, *topology-advisory) are unaffected
+# and keep #2 ON. See docs/specs/GLOBAL_PLAN_2026-06-16.md "Update — 2026-06-22" (#2 CONTRIBUTION MEASURED,
+# DECISION PATH 2). Task B2 = prune the now-dead code (see commit message / report).
 [structure_recognition]
-mode = "auto"
+mode = "off"
 # DEPRECATED: use [models.structure_recognition].default instead.
 # model = "gpt-5-mini"
 max_window_paragraphs = 1800

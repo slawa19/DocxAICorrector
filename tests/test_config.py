@@ -144,7 +144,9 @@ def test_load_app_config_exposes_image_validation_defaults(monkeypatch):
     assert app_config["paragraph_boundary_normalization_enabled"] is True
     assert app_config["paragraph_boundary_normalization_mode"] == "high_only"
     assert app_config["paragraph_boundary_normalization_save_debug_artifacts"] is True
-    assert app_config["structure_recognition_mode"] == "auto"
+    # Prod default = "off": #2 structure-recovery cluster disabled on the prod path
+    # (GLOBAL_PLAN 2026-06-22, PATH 2 / Task B). Restore to "auto" in config.toml to re-enable #2.
+    assert app_config["structure_recognition_mode"] == "off"
     assert app_config["structure_recognition_enabled"] is False
     assert app_config["structure_recognition_model"] == TEST_TEXT_MODEL_DEFAULT
     assert models.text.default == TEST_TEXT_MODEL_DEFAULT

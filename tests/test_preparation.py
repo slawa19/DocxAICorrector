@@ -2657,6 +2657,17 @@ def test_prepare_document_for_processing_reports_stage_metrics(monkeypatch):
     session_state = {"preparation_cache": {}}
     events = []
 
+    # Prod default mode is now "off" (#2 cluster disabled, GLOBAL_PLAN 2026-06-22 Task B); this test
+    # exercises the structure-validation/deterministic stage emission, so force "auto" explicitly.
+    _base_load_app_config = preparation.load_app_config
+
+    def _load_app_config_auto():
+        cfg = dict(_base_load_app_config())
+        cfg["structure_recognition_mode"] = "auto"
+        return cfg
+
+    monkeypatch.setattr(preparation, "load_app_config", _load_app_config_auto)
+
     monkeypatch.setattr(
         preparation,
         "extract_document_content_with_normalization_reports",
@@ -7297,6 +7308,17 @@ def test_prepare_document_for_processing_falls_back_to_heuristics_when_structure
 def test_prepare_document_for_processing_logs_cache_miss_and_hit(monkeypatch):
     session_state = {"preparation_cache": {}}
     logged_events = []
+
+    # Prod default mode is now "off" (#2 cluster disabled, GLOBAL_PLAN 2026-06-22 Task B); this test
+    # asserts the "auto-режим" cache-hit status note, so force "auto" explicitly (before building the key).
+    _base_load_app_config = preparation.load_app_config
+
+    def _load_app_config_auto():
+        cfg = dict(_base_load_app_config())
+        cfg["structure_recognition_mode"] = "auto"
+        return cfg
+
+    monkeypatch.setattr(preparation, "load_app_config", _load_app_config_auto)
     expected_key = _build_default_prepared_source_key("report.docx:10:hash")
 
     monkeypatch.setattr(preparation, "extract_document_content_with_normalization_reports", lambda uploaded_file: _build_extract_result([], [], None))
