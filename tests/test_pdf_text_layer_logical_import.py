@@ -903,3 +903,107 @@ def test_build_paragraph_units_does_not_promote_toc_chapter_entry() -> None:
     line = next(p for p in result.paragraphs if p.text.startswith("Chapter II"))
     assert line.role != "heading"
     assert line.structural_role == "toc_entry"
+
+
+def test_build_paragraph_units_dehyphenates_soft_wrapped_word() -> None:
+    # A single word split across a soft line break ("про-" / "центов") is rejoined
+    # whole, dropping the wrap hyphen and inserting no internal space → "процентов".
+    # De-hyphenation is corpus-evidence-gated: the solid word "процентов" is attested
+    # elsewhere in the document (and no "про-центов" compound is), which is the signal
+    # that the line-break hyphen was a soft wrap, not a compound hyphen.
+    spans = _body_context_spans() + [
+        _span(1, "Годовой отчёт указал, что уровень процентов остаётся высоким.", top=120, bottom=134),
+        _span(1, "Отчёт зафиксировал резкое падение на 38 про-", top=140, bottom=154),
+        _span(1, "центов за квартал.", top=156, bottom=170),
+    ]
+
+    result = build_paragraph_units_from_text_spans(spans)
+
+    merged = next(p for p in result.paragraphs if "падение на 38" in p.text)
+    assert "процентов" in merged.text
+    assert "про- центов" not in merged.text
+    assert "про-центов" not in merged.text
+
+
+def test_build_paragraph_units_dehyphenates_latin_soft_wrapped_word() -> None:
+    # De-hyphenation is language-agnostic: a latin word wrapped at the hyphen
+    # ("estab-" / "lished") is rejoined whole → "established" once the solid form is
+    # attested elsewhere in the document.
+    spans = _body_context_spans() + [
+        _span(1, "A quorum was established before the vote proceeded.", top=120, bottom=134),
+        _span(1, "The committee had already estab-", top=140, bottom=154),
+        _span(1, "lished a working budget.", top=156, bottom=170),
+    ]
+
+    result = build_paragraph_units_from_text_spans(spans)
+
+    merged = next(p for p in result.paragraphs if "committee had already" in p.text)
+    assert "established" in merged.text
+    assert "estab- lished" not in merged.text
+    assert "estab-lished" not in merged.text
+
+
+def test_build_paragraph_units_preserves_wrapped_compound_hyphen() -> None:
+    # A genuine hyphenated compound wrapped at its hyphen ("life-" / "threatening")
+    # keeps the hyphen — the compound "life-threatening" is attested elsewhere, so it
+    # is NOT corrupted into "lifethreatening". The erroneous joining space is still
+    # removed ("life- threatening" would be wrong too).
+    spans = _body_context_spans() + [
+        _span(1, "It was a life-threatening emergency for the whole crew.", top=120, bottom=134),
+        _span(1, "Doctors described the wound as life-", top=140, bottom=154),
+        _span(1, "threatening but ultimately survivable.", top=156, bottom=170),
+    ]
+
+    result = build_paragraph_units_from_text_spans(spans)
+
+    merged = next(p for p in result.paragraphs if "Doctors described" in p.text)
+    assert "life-threatening" in merged.text
+    assert "lifethreatening" not in merged.text
+    assert "life- threatening" not in merged.text
+
+
+def test_build_paragraph_units_keeps_hyphen_without_soft_wrap_evidence() -> None:
+    # Absent positive soft-wrap evidence (neither the solid word nor the compound is
+    # attested elsewhere) the hyphen is preserved — under-merge is safer than
+    # corrupting a word. The spurious joining space is still removed.
+    spans = _body_context_spans() + [
+        _span(1, "The treaty relied on a broad inter-", top=140, bottom=154),
+        _span(1, "national coalition of partners.", top=156, bottom=170),
+    ]
+
+    result = build_paragraph_units_from_text_spans(spans)
+
+    merged = next(p for p in result.paragraphs if "The treaty relied" in p.text)
+    assert "inter-national" in merged.text
+    assert "inter- national" not in merged.text
+    assert "internationalcoalition" not in merged.text
+
+
+def test_build_paragraph_units_does_not_dehyphenate_number_range() -> None:
+    # A numeric range wrapped at the hyphen ("1603-" / "1714") is NOT a soft word
+    # wrap: a digit (not a letter) precedes the hyphen and the continuation starts
+    # with a digit, so the halves are never fused into a single token.
+    spans = _body_context_spans() + [
+        _span(1, "The dynasty reigned across the years 1603-", top=140, bottom=154),
+        _span(1, "1714 without interruption at all.", top=156, bottom=170),
+    ]
+
+    result = build_paragraph_units_from_text_spans(spans)
+
+    joined = " ".join(p.text for p in result.paragraphs)
+    assert "16031714" not in joined
+    assert "1603- 1714" in joined
+
+
+def test_build_paragraph_units_does_not_dehyphenate_before_uppercase_continuation() -> None:
+    # A line ending "sub-" followed by an UPPERCASE continuation is a boundary
+    # (new sentence / proper noun), not a soft word wrap: never de-hyphenated.
+    spans = _body_context_spans() + [
+        _span(1, "The council convened with the sub-", top=140, bottom=154),
+        _span(1, "Committee reviewed the final report.", top=156, bottom=170),
+    ]
+
+    result = build_paragraph_units_from_text_spans(spans)
+
+    joined = " ".join(p.text for p in result.paragraphs)
+    assert "subCommittee" not in joined

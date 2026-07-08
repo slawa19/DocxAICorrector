@@ -111,6 +111,7 @@ def build_paragraph_units_from_text_spans(
     spans: list[PdfTextSpan],
 ) -> PdfSourceImportResult:
     normalized_spans = [span for span in spans if _normalize_text(span.text)]
+    dehyphenation_evidence = _build_soft_wrap_dehyphenation_evidence(normalized_spans)
     repeated_furniture_keys = _detect_repeated_page_furniture_keys(tuple(normalized_spans))
     ordered_spans = sorted(normalized_spans, key=lambda item: (item.page_number, item.top, item.x0))
     layout_profile = _build_heading_layout_profile(
@@ -133,7 +134,9 @@ def build_paragraph_units_from_text_spans(
         if pending_body_spans:
             emitted.append(
                 _paragraph_from_body_spans(
-                    pending_body_spans, inline_markers=pending_body_inline_markers
+                    pending_body_spans,
+                    inline_markers=pending_body_inline_markers,
+                    dehyphenation_evidence=dehyphenation_evidence,
                 )
             )
             pending_body_spans = []
@@ -303,7 +306,9 @@ def build_paragraph_units_from_text_spans(
     _flush_heading()
     _flush_list()
 
-    emitted = _consolidate_cross_role_continuations(emitted)
+    emitted = _consolidate_cross_role_continuations(
+        emitted, dehyphenation_evidence=dehyphenation_evidence
+    )
 
     for logical_index, paragraph in enumerate(emitted):
         _assign_pdf_paragraph_identity(paragraph, logical_index)
@@ -380,7 +385,12 @@ def _unit_can_continue_run(unit: ParagraphUnit) -> bool:
     return bool((unit.text or "").strip())
 
 
-def _merge_continuation_units(units: list[ParagraphUnit], *, inline_markers: list[str]) -> ParagraphUnit:
+def _merge_continuation_units(
+    units: list[ParagraphUnit],
+    *,
+    inline_markers: list[str],
+    dehyphenation_evidence: _SoftWrapDehyphenationEvidence | None = None,
+) -> ParagraphUnit:
     """Fuse a run of prose units (Rule 2) into a single body unit.
 
     ``inline_markers`` are footnote-marker texts that sat between halves of the
@@ -392,7 +402,7 @@ def _merge_continuation_units(units: list[ParagraphUnit], *, inline_markers: lis
         parts.append((unit.text or "").strip())
         if index < len(inline_markers) and inline_markers[index]:
             parts[-1] = f"{parts[-1]} {inline_markers[index]}".strip()
-    text = " ".join(part for part in parts if part)
+    text = _join_soft_wrapped_text_pieces(parts, dehyphenation_evidence=dehyphenation_evidence)
     origin_indexes: list[int] = []
     origin_texts: list[str] = []
     for unit in units:
@@ -421,6 +431,8 @@ def _merge_continuation_units(units: list[ParagraphUnit], *, inline_markers: lis
 
 def _consolidate_cross_role_continuations(
     units: list[ParagraphUnit],
+    *,
+    dehyphenation_evidence: _SoftWrapDehyphenationEvidence | None = None,
 ) -> list[ParagraphUnit]:
     """Rules 1 & 2: merge soft-wrap continuations across role boundaries.
 
@@ -476,7 +488,13 @@ def _consolidate_cross_role_continuations(
             cursor = next_index
             merged_any = True
         if merged_any:
-            result.append(_merge_continuation_units(run, inline_markers=inline_markers))
+            result.append(
+                _merge_continuation_units(
+                    run,
+                    inline_markers=inline_markers,
+                    dehyphenation_evidence=dehyphenation_evidence,
+                )
+            )
             index = cursor + 1
         else:
             result.append(current)
@@ -1497,6 +1515,135 @@ def _is_soft_wrap_continuation_pair(previous_text: str, current_text: str) -> bo
     return _starts_like_sentence_continuation(current_text)
 
 
+# A line-wrap hyphen: the previous PDF line ended mid-token with a hyphen
+# ("…life-\nthreatening…", "…про-\nцентов…"), so the two halves belong to one token
+# and the erroneous joining space between them must be removed. Only a genuine
+# in-token hyphen qualifies — the run immediately before the hyphen must be an
+# alphabetic word (latin or cyrillic, generalized via ``[^\W\d_]``), the hyphen must
+# be the very last character of the line, and the continuation must start with a
+# lowercase letter. This deliberately excludes:
+#   * number ranges ("1603-\n1714"): a digit, not a letter, precedes the hyphen and
+#     the continuation starts with a digit;
+#   * spaced compound dashes ("foo -\nbar"): a space, not a letter, precedes it;
+#   * list-item / heading / new-sentence starts: the continuation is uppercase or a
+#     marker, so it is never treated as a wrapped continuation;
+#   * en/em dashes: only U+002D hyphen-minus, U+00AD soft hyphen and U+2010 hyphen
+#     count; the U+2013 en dash / U+2014 em dash used for ranges and asides never match.
+#
+# Whether the hyphen ITSELF is dropped ("про-"+"центов" → "процентов") or KEPT
+# ("life-"+"threatening" → "life-threatening") is decided by corpus evidence, not
+# by the raw pattern: epub-derived PDFs wrap genuine hyphenated compounds at their
+# hyphen far more often than they soft-hyphenate a single word, so unconditionally
+# dropping the hyphen would corrupt real compounds. See
+# ``_SoftWrapDehyphenationEvidence``.
+_SOFT_WRAP_HYPHEN_CHARS = "-­‐"  # hyphen-minus, soft hyphen, hyphen
+_SOFT_WRAP_HYPHEN_TAIL_PATTERN = re.compile(
+    rf"([^\W\d_]+)[{_SOFT_WRAP_HYPHEN_CHARS}]\Z", re.UNICODE
+)
+_SOFT_WRAP_HEAD_WORD_PATTERN = re.compile(r"\A([^\W\d_]+)", re.UNICODE)
+_SOLID_WORD_SCAN_PATTERN = re.compile(r"[^\W\d_]{2,}", re.UNICODE)
+_HYPHENATED_WORD_SCAN_PATTERN = re.compile(
+    rf"[^\W\d_]+[{_SOFT_WRAP_HYPHEN_CHARS}][^\W\d_]+", re.UNICODE
+)
+
+
+@dataclass(frozen=True)
+class _SoftWrapDehyphenationEvidence:
+    """Document-level evidence used to decide, per wrap, whether a line-break hyphen
+    is a *soft* hyphen (inserted only to wrap a single word — drop it) or a *hard*
+    compound hyphen (part of the word — keep it).
+
+    ``solid_forms`` are whole alphabetic tokens attested anywhere in the document;
+    ``hyphenated_forms`` are whole ``word-word`` tokens attested anywhere. A wrap
+    ``tail-`` + ``head`` is de-hyphenated only when the fused solid form
+    (``tailhead``) is attested elsewhere AND the hyphenated form (``tail-head``) is
+    NOT — i.e. there is positive evidence the joined word is a real single word and
+    no evidence it is a real compound. Absent positive soft-wrap evidence the hyphen
+    is preserved (under-merge is safer than corrupting a compound). This mirrors the
+    importer's standing anti-over-merge discipline.
+    """
+
+    solid_forms: frozenset[str]
+    hyphenated_forms: frozenset[str]
+
+    def should_drop_hyphen(self, tail_word: str, head_word: str) -> bool:
+        hyphenated = f"{tail_word}-{head_word}".lower()
+        if hyphenated in self.hyphenated_forms:
+            return False
+        return f"{tail_word}{head_word}".lower() in self.solid_forms
+
+
+def _build_soft_wrap_dehyphenation_evidence(
+    spans: list[PdfTextSpan],
+) -> _SoftWrapDehyphenationEvidence:
+    solid_forms: set[str] = set()
+    hyphenated_forms: set[str] = set()
+    for span in spans:
+        lowered = _normalize_text(span.text).lower()
+        if not lowered:
+            continue
+        solid_forms.update(_SOLID_WORD_SCAN_PATTERN.findall(lowered))
+        hyphenated_forms.update(
+            match.replace("­", "-").replace("‐", "-")
+            for match in _HYPHENATED_WORD_SCAN_PATTERN.findall(lowered)
+        )
+    return _SoftWrapDehyphenationEvidence(
+        solid_forms=frozenset(solid_forms),
+        hyphenated_forms=frozenset(hyphenated_forms),
+    )
+
+
+def _soft_wrap_hyphen_boundary(previous_text: str, next_text: str) -> tuple[str, str] | None:
+    """Return ``(tail_word, head_word)`` when ``previous_text`` ends with an in-token
+    line-wrap hyphen and ``next_text`` begins with a lowercase word; else ``None``."""
+    if not previous_text or not next_text:
+        return None
+    first_char = next_text[0]
+    if not (first_char.isalpha() and first_char.islower()):
+        return None
+    tail = _SOFT_WRAP_HYPHEN_TAIL_PATTERN.search(previous_text)
+    if tail is None:
+        return None
+    head = _SOFT_WRAP_HEAD_WORD_PATTERN.match(next_text)
+    if head is None:
+        return None
+    return tail.group(1), head.group(1)
+
+
+def _join_soft_wrapped_text_pieces(
+    pieces: list[str],
+    *,
+    dehyphenation_evidence: _SoftWrapDehyphenationEvidence | None = None,
+) -> str:
+    """Join line pieces with a single space, except across a line-wrap hyphen.
+
+    At a wrap boundary (previous ends ``word-``, next starts a lowercase word) the
+    erroneous joining space is always removed so the token is not split by a space.
+    The hyphen itself is dropped only when ``dehyphenation_evidence`` confirms a soft
+    wrap ("про-"+"центов" → "процентов"); otherwise it is kept ("life-"+"threatening"
+    → "life-threatening"), which is strictly better than the old ``"life- threatening"``.
+    """
+    joined = ""
+    for piece in pieces:
+        if not piece:
+            continue
+        if not joined:
+            joined = piece
+            continue
+        boundary = _soft_wrap_hyphen_boundary(joined, piece)
+        if boundary is None:
+            joined = f"{joined} {piece}"
+            continue
+        tail_word, head_word = boundary
+        if dehyphenation_evidence is not None and dehyphenation_evidence.should_drop_hyphen(
+            tail_word, head_word
+        ):
+            joined = f"{joined[:-1]}{piece}"
+        else:
+            joined = f"{joined}{piece}"
+    return joined
+
+
 def _can_merge_body_span(
     previous: PdfTextSpan,
     current: PdfTextSpan,
@@ -1769,6 +1916,7 @@ def _paragraph_from_body_spans(
     spans: list[PdfTextSpan],
     *,
     inline_markers: dict[int, list[str]] | None = None,
+    dehyphenation_evidence: _SoftWrapDehyphenationEvidence | None = None,
 ) -> ParagraphUnit:
     inline_markers = inline_markers or {}
     pieces: list[str] = []
@@ -1792,7 +1940,7 @@ def _paragraph_from_body_spans(
                 pieces[-1] = f"{previous_piece.rstrip()}{_to_superscript_digits(marker)}"
             else:
                 pieces.append(marker)
-    text = " ".join(piece for piece in pieces if piece)
+    text = _join_soft_wrapped_text_pieces(pieces, dehyphenation_evidence=dehyphenation_evidence)
     first = spans[0]
     return ParagraphUnit(
         text=text,
