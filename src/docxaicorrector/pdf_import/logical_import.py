@@ -19,6 +19,10 @@ from docxaicorrector.pdf_import.text_layer_quality import (
 
 _BULLET_PATTERN = re.compile(r"^(?P<marker>[-*•●])\s+(?P<body>.+)$")
 _ORDERED_LIST_PATTERN = re.compile(r"^(?P<marker>\d+)[.)]\s+(?P<body>.+)$")
+# A leading section ordinal on a heading line ("5. Обесценивание …" or the
+# nested "2.1. …"). Used to rank numbered section headings above bare headings
+# set at the same font size. General numbering signal, not a literal.
+_SECTION_ORDINAL_HEADING_PATTERN = re.compile(r"^\d+(?:\.\d+)*\.\s+\S")
 _TOC_TRAILING_PAGE_PATTERN = re.compile(
     r"^(?P<title>.+?)\s+(?:\.{2,}\s*)?(?P<page>\d{1,4}|[ivxlcdmIVXLCDM]{1,12})$"
 )
@@ -2329,6 +2333,20 @@ def _paragraph_from_span(
 
 
 def _infer_heading_level(span: PdfTextSpan, *, median_font_size: float | None) -> int:
+    level = _infer_font_heading_level(span, median_font_size=median_font_size)
+    # A heading that opens with a section ordinal ("5. Обесценивание …" or the
+    # nested "2.1. …") is structurally superior to a bare heading set at the
+    # same font size, but font-ratio inference collapses both into the same
+    # tier. Lift the numbered heading one level so numbered sections outrank
+    # their bare same-size siblings (body-font numbered -> h2, body-font bare
+    # -> h3). Only the lowest (body-font) tier is lifted, so the larger-font
+    # chapter tiers (h1/h2) that carry deliberate structure are never disturbed.
+    if level >= 3 and _has_leading_section_ordinal(span):
+        return level - 1
+    return level
+
+
+def _infer_font_heading_level(span: PdfTextSpan, *, median_font_size: float | None) -> int:
     if not median_font_size or not span.font_size:
         return 2
     ratio = span.font_size / median_font_size
@@ -2337,6 +2355,10 @@ def _infer_heading_level(span: PdfTextSpan, *, median_font_size: float | None) -
     if ratio >= 1.35:
         return 2
     return 3
+
+
+def _has_leading_section_ordinal(span: PdfTextSpan) -> bool:
+    return bool(_SECTION_ORDINAL_HEADING_PATTERN.match(_normalize_text(span.text)))
 
 
 def _style_name_for_role(role: str) -> str:

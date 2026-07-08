@@ -736,6 +736,24 @@ def _normalize_final_entry_list_fragments(entries: Sequence[FinalAssemblyEntry])
         if not next_stripped or _entry_is_heading(entry):
             continue
 
+        # A hanging trailing number on a footnote/body block (e.g. an endnote
+        # block ending in a page reference "… с. 24.") must not steal the number
+        # of a following chapter/section heading. Mirror the intro-branch guard
+        # (`not _entry_is_heading(next_entry)`): only fold the follower into a
+        # list marker when it is NOT itself a heading — unless the current entry
+        # is a genuine numbered list item carrying an explicit leading ordinal,
+        # which is the legitimate list-continuation case where a mis-tagged
+        # subheading really is the next list item.
+        next_is_heading = (
+            _entry_is_heading(next_entry)
+            or next_entry.heading_level is not None
+            or is_markdown_heading_line(next_stripped)
+        )
+        if next_is_heading and not (
+            current_number_group is not None and _entry_is_list(entry)
+        ):
+            continue
+
         body_tokens = body.split()
         if current_number_group is None and len(body_tokens) <= 2 and not re.search(r"[A-Za-zА-Яа-яЁё]", body):
             _replace_entry(index, body)

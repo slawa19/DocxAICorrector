@@ -342,6 +342,41 @@ def test_build_paragraph_units_separates_heading_levels_by_style_clusters() -> N
     assert result.paragraphs[3].text == "A Systems Perspective"
 
 
+def test_infer_heading_level_ranks_numbered_section_above_bare_same_font() -> None:
+    from docxaicorrector.pdf_import.logical_import import _paragraph_from_span
+
+    numbered = _paragraph_from_span(
+        _span(1, "5. Обесценивание денег", top=100, bottom=112, font_size=10),
+        role="heading",
+        median_font_size=10.0,
+    )
+    nested = _paragraph_from_span(
+        _span(1, "2.1. Подраздел о рисках", top=100, bottom=112, font_size=10),
+        role="heading",
+        median_font_size=10.0,
+    )
+    bare = _paragraph_from_span(
+        _span(1, "Определение стоимости", top=100, bottom=112, font_size=10),
+        role="heading",
+        median_font_size=10.0,
+    )
+    large_numbered = _paragraph_from_span(
+        _span(1, "1. Введение", top=100, bottom=112, font_size=20),
+        role="heading",
+        median_font_size=10.0,
+    )
+
+    # Same (body) font size: the numbered section outranks the bare heading.
+    assert numbered.heading_level == 2
+    assert nested.heading_level == 2
+    assert bare.heading_level == 3
+    assert numbered.heading_level < bare.heading_level
+    # Numbering must not disturb the larger-font chapter tier (h1 stays h1).
+    assert large_numbered.heading_level == 1
+    # Role stays "heading" regardless of the level adjustment.
+    assert numbered.role == "heading" and numbered.structural_role == "heading"
+
+
 def test_build_paragraph_units_is_conservative_for_ambiguous_caps_line() -> None:
     spans = [
         _span(1, "The quotation continues across the current line", top=100, bottom=112, x0=50),

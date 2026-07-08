@@ -996,6 +996,33 @@ def test_assemble_final_markdown_normalizes_registry_backed_trailing_next_item_w
     assert "## Примите срочные меры" not in result.final_markdown
 
 
+def test_assemble_final_markdown_keeps_chapter_heading_after_footnote_hanging_number():
+    # A footnote/endnote block ending in a hanging page reference ("… с. 24.")
+    # must not fold the following chapter heading into a numbered list item.
+    # The left block is not a numbered list item (no leading ordinal), so the
+    # trailing number is a page reference, not a list marker.
+    result = document_pipeline_output_validation.assemble_final_markdown(
+        processed_chunks=[
+            "Подробнее см. Смит, Экономика денег, с. 24.\n\n# Глава IV"
+        ],
+        generated_paragraph_registry=[
+            {"block_index": 1, "paragraph_id": "footnote", "text": "Подробнее см. Смит, Экономика денег, с. 24."},
+            {"block_index": 1, "paragraph_id": "chapter", "text": "# Глава IV"},
+        ],
+        source_paragraphs=[
+            _make_paragraph_stub("footnote", 0, role="footnote", structural_role="footnote"),
+            _make_paragraph_stub("chapter", 1, role="heading", structural_role="heading", heading_level=1),
+        ],
+    )
+
+    assert result.entries[0].text == "Подробнее см. Смит, Экономика денег, с. 24."
+    assert result.entries[1].text == "# Глава IV"
+    # The heading number was not stolen: no "24. Глава IV" leak, and the left
+    # footnote block gained no parasitic leading "23." marker.
+    assert "24. Глава IV" not in result.final_markdown
+    assert not result.entries[0].text.startswith("23.")
+
+
 def test_assemble_final_markdown_demotes_false_generated_heading_between_blockquote_fragments():
     result = document_pipeline_output_validation.assemble_final_markdown(
         processed_chunks=[
