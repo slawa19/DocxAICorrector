@@ -31,6 +31,67 @@ _CONTENTS_HEADING_PATTERN = re.compile(r"^(?:contents|содержание|ог�
 
 _MAX_FURNITURE_PREVIEW_LEN = 16
 
+# --- Additional agreed pass-through categories (references / captions / part-dividers) ---
+#
+# Breadth (GLOBAL_PLAN 1-A, 2026-06-22): lietaer/mazzucato fail acceptance PURELY on
+# pass-through the Money fix did not yet credit — bibliography/notes/index entries,
+# figure captions and part-dividers. These extend the same detection-with-provenance
+# mechanism; they never touch a real main-body prose paragraph (each detector is
+# role/region/form based, never a book-specific literal, and the references region
+# carries a substantial-body-prose valve so a genuinely misplaced body paragraph is
+# still counted).
+#
+# Figure/table caption ("Figure 27. …" / "Рисунок 2.2: …" / "Table 3 …"). The marker
+# must be at the START of the line — body prose almost never opens a paragraph with a
+# bare "Figure N." noun phrase.
+_CAPTION_TEXT_PATTERN = re.compile(
+    r"^(?:figure|fig|рисунок|рис|table|табл(?:ица)?|схема|диаграмма|chart|plate|photo|"
+    r"иллюстрация|илл)\.?\s*\d+",
+    re.IGNORECASE,
+)
+_MAX_CAPTION_PREVIEW_LEN = 200
+# Part-divider ("Part Two" / "Part III" / "Часть вторая"): a short structural heading.
+_PART_DIVIDER_PATTERN = re.compile(
+    r"^(?:part|часть)\s+"
+    r"(?:\d+|[ivxlcdm]+|"
+    r"one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|"
+    r"первая|вторая|третья|четвёртая|четвертая|пятая|шестая|седьмая|восьмая|девятая|десятая)"
+    r"\b",
+    re.IGNORECASE,
+)
+_MAX_PART_DIVIDER_LEN = 48
+# Bare back-matter section titles that open the references/notes/index region. Matched
+# EXACTLY against the normalized text so front-matter TOC rows ("notes 225",
+# "bibliography 241") — which carry a trailing page number — never anchor the region.
+_BACKMATTER_SECTION_TITLES = frozenset(
+    {
+        "notes",
+        "endnotes",
+        "footnotes",
+        "references",
+        "bibliography",
+        "index",
+        "sources",
+        "works cited",
+        "further reading",
+        "примечания",
+        "библиография",
+        "указатель",
+        "источники",
+        "литература",
+        "сноски",
+        "список литературы",
+        "именной указатель",
+        "предметный указатель",
+    }
+)
+# A substantial, self-contained body-prose paragraph: the anti-vacuum valve. Even inside
+# a detected references region, an entry that reads like a real paragraph (long, opens
+# with a capital, ends with terminal punctuation) is RETAINED and still counts — so a
+# genuine body-text loss can never be masked by a mis-anchored back-matter region.
+_MIN_BODY_PROSE_LEN = 140
+_BODY_PROSE_TERMINAL_CHARS = ".!?…»\"”"
+
 
 def _entry_role(entry: Mapping[str, object] | None) -> str:
     if entry is None:
@@ -63,6 +124,85 @@ def _is_page_furniture_text(text: str) -> bool:
     if len(core) <= 1 and core.isalpha():
         return True
     return False
+
+
+def _is_caption_text(text: str, role: str) -> bool:
+    """A figure/table caption: role=caption, or a line that OPENS with a numbered
+    figure/table marker ("Figure 27. …" / "Рисунок 2.2: …"). Form-only otherwise."""
+    if role == "caption":
+        return True
+    normalized = _normalize_structural_text(text)
+    if not normalized or len(normalized) > _MAX_CAPTION_PREVIEW_LEN:
+        return False
+    return _CAPTION_TEXT_PATTERN.match(normalized) is not None
+
+
+def _is_part_divider_text(text: str) -> bool:
+    """A short "Part N" / "Часть N" structural divider (numeral / roman / spelled-out
+    ordinal). Length-bounded so running prose beginning "Part of…" is never caught."""
+    normalized = _normalize_structural_text(text)
+    if not normalized or len(normalized) > _MAX_PART_DIVIDER_LEN:
+        return False
+    return _PART_DIVIDER_PATTERN.match(normalized) is not None
+
+
+def _is_substantial_body_prose(text: str) -> bool:
+    """The anti-vacuum valve: True only for a line that reads like a real body
+    paragraph — long, opening with a capital letter, closing with terminal
+    punctuation. Such an entry is NEVER classified as pass-through, so a genuine body
+    loss cannot be hidden inside a back-matter region."""
+    normalized = _normalize_structural_text(text)
+    if len(normalized) < _MIN_BODY_PROSE_LEN:
+        return False
+    first_alpha = next((ch for ch in normalized if ch.isalpha()), "")
+    if not first_alpha or first_alpha == first_alpha.lower():
+        return False
+    return normalized[-1] in _BODY_PROSE_TERMINAL_CHARS
+
+
+def _resolve_references_region_start(
+    source_registry: Sequence[Mapping[str, object]],
+    front_matter_boundary: int | None,
+    toc_region: tuple[int, int] | None,
+) -> int | None:
+    """The source_index at which the back-matter references/notes/index region begins,
+    or None. Anchored on the earliest EXACT bare back-matter section title
+    ("Notes"/"Bibliography"/"Index"/"Примечания"/…) that sits after the front-matter
+    boundary and after any bounded TOC region. Exact matching keeps the front-matter TOC
+    rows ("notes 225") from anchoring it. The caller confirms the region by form before
+    trusting it."""
+    if not source_registry:
+        return None
+    toc_end = toc_region[1] if toc_region is not None else -1
+    boundary = front_matter_boundary if front_matter_boundary is not None else -1
+    best: int | None = None
+    for entry in source_registry:
+        normalized = _normalize_structural_text(str(entry.get("text_preview") or "")).lower()
+        if normalized in _BACKMATTER_SECTION_TITLES:
+            index = _coerce_int(entry.get("source_index"), default=-1)
+            if index >= 0 and index > boundary and index > toc_end:
+                if best is None or index < best:
+                    best = index
+    return best
+
+
+def _resolve_target_references_boundary(
+    source_registry: Sequence[Mapping[str, object]],
+    source_region_start: int | None,
+) -> int | None:
+    """Project the source references-region start through the source→target mapping: the
+    first mapped target index at/after the source anchor (mirrors the front-matter
+    target-boundary projection, since the target registry carries no roles)."""
+    if source_region_start is None or not source_registry:
+        return None
+    for entry in source_registry:
+        if _coerce_int(entry.get("source_index"), default=-1) < source_region_start:
+            continue
+        mapped = entry.get("mapped_target_index")
+        if mapped is not None:
+            mapped_index = _coerce_int(mapped, default=-1)
+            return mapped_index if mapped_index >= 0 else None
+    return None
 
 
 def _resolve_source_front_matter_boundary(
@@ -184,8 +324,18 @@ def classify_passthrough_unmapped_source(
     }
     boundary = _resolve_source_front_matter_boundary(source_registry, preparation_diagnostic_snapshot)
     toc_region = _resolve_bounded_toc_region(source_registry, preparation_diagnostic_snapshot, boundary)
+    references_region_start = _confirmed_source_references_region_start(
+        unmapped_ids, by_id, source_registry, boundary, toc_region
+    )
 
-    categories: dict[str, list[str]] = {"bounded_toc": [], "front_matter": [], "page_furniture": []}
+    categories: dict[str, list[str]] = {
+        "bounded_toc": [],
+        "front_matter": [],
+        "page_furniture": [],
+        "references": [],
+        "caption": [],
+        "part": [],
+    }
     retained: list[str] = []
     for paragraph_id in unmapped_ids:
         entry = by_id.get(paragraph_id)
@@ -194,12 +344,23 @@ def classify_passthrough_unmapped_source(
             continue
         index = _coerce_int(entry.get("source_index"), default=-1)
         text = str(entry.get("text_preview") or "")
+        role = _entry_role(entry)
         if _is_page_furniture_text(text):
             categories["page_furniture"].append(paragraph_id)
+        elif _is_caption_text(text, role):
+            categories["caption"].append(paragraph_id)
+        elif _is_part_divider_text(text):
+            categories["part"].append(paragraph_id)
         elif toc_region is not None and toc_region[0] <= index <= toc_region[1]:
             categories["bounded_toc"].append(paragraph_id)
         elif boundary is not None and 0 <= index < boundary:
             categories["front_matter"].append(paragraph_id)
+        elif (
+            references_region_start is not None
+            and index >= references_region_start
+            and not _is_substantial_body_prose(text)
+        ):
+            categories["references"].append(paragraph_id)
         else:
             retained.append(paragraph_id)
     return {
@@ -210,7 +371,40 @@ def classify_passthrough_unmapped_source(
         "retained_count": len(retained),
         "front_matter_boundary_source_index": boundary,
         "bounded_toc_region": list(toc_region) if toc_region is not None else None,
+        "references_region_source_start_index": references_region_start,
     }
+
+
+def _confirmed_source_references_region_start(
+    unmapped_ids: Sequence[str],
+    by_id: Mapping[str, Mapping[str, object]],
+    source_registry: Sequence[Mapping[str, object]],
+    front_matter_boundary: int | None,
+    toc_region: tuple[int, int] | None,
+) -> int | None:
+    """Resolve the references-region anchor, then CONFIRM it by form: the region is
+    trusted only when the majority of its own unmapped entries are non-prose
+    (citations / index rows / fragments). A mid-body section literally titled "Notes"
+    followed by real prose is therefore rejected — the region cannot silence body text."""
+    region_start = _resolve_references_region_start(source_registry, front_matter_boundary, toc_region)
+    if region_start is None:
+        return None
+    in_region_prose = 0
+    in_region_total = 0
+    for paragraph_id in unmapped_ids:
+        entry = by_id.get(paragraph_id)
+        if entry is None:
+            continue
+        if _coerce_int(entry.get("source_index"), default=-1) < region_start:
+            continue
+        in_region_total += 1
+        if _is_substantial_body_prose(str(entry.get("text_preview") or "")):
+            in_region_prose += 1
+    if in_region_total == 0:
+        return None
+    if in_region_prose * 2 >= in_region_total:
+        return None
+    return region_start
 
 
 def classify_passthrough_unmapped_target(
@@ -236,16 +430,42 @@ def classify_passthrough_unmapped_target(
     }
     source_boundary = _resolve_source_front_matter_boundary(source_registry, preparation_diagnostic_snapshot)
     target_boundary = _resolve_target_front_matter_boundary(source_registry, source_boundary)
+    source_toc_region = _resolve_bounded_toc_region(
+        source_registry, preparation_diagnostic_snapshot, source_boundary
+    )
+    source_references_start = _resolve_references_region_start(
+        source_registry, source_boundary, source_toc_region
+    )
+    target_references_boundary = _confirmed_target_references_boundary(
+        unmapped_indexes, by_index, source_registry, source_references_start
+    )
 
-    categories: dict[str, list[int]] = {"front_matter": [], "page_furniture": []}
+    categories: dict[str, list[int]] = {
+        "front_matter": [],
+        "page_furniture": [],
+        "references": [],
+        "caption": [],
+        "part": [],
+    }
     retained: list[int] = []
     for index in unmapped_indexes:
         entry = by_index.get(index)
         text = str(entry.get("text_preview") or "") if entry is not None else ""
+        role = _entry_role(entry)
         if _is_page_furniture_text(text):
             categories["page_furniture"].append(index)
+        elif _is_caption_text(text, role):
+            categories["caption"].append(index)
+        elif _is_part_divider_text(text):
+            categories["part"].append(index)
         elif target_boundary is not None and 0 <= index < target_boundary:
             categories["front_matter"].append(index)
+        elif (
+            target_references_boundary is not None
+            and index >= target_references_boundary
+            and not _is_substantial_body_prose(text)
+        ):
+            categories["references"].append(index)
         else:
             retained.append(index)
     return {
@@ -255,7 +475,37 @@ def classify_passthrough_unmapped_target(
         "retained_indexes": retained,
         "retained_count": len(retained),
         "front_matter_boundary_target_index": target_boundary,
+        "references_region_target_start_index": target_references_boundary,
     }
+
+
+def _confirmed_target_references_boundary(
+    unmapped_indexes: Sequence[int],
+    by_index: Mapping[int, Mapping[str, object]],
+    source_registry: Sequence[Mapping[str, object]],
+    source_references_start: int | None,
+) -> int | None:
+    """Target-side counterpart of `_confirmed_source_references_region_start`: project
+    the source anchor to a target boundary, then confirm the projected region is
+    non-prose-dominated before trusting it."""
+    boundary = _resolve_target_references_boundary(source_registry, source_references_start)
+    if boundary is None:
+        return None
+    in_region_prose = 0
+    in_region_total = 0
+    for index in unmapped_indexes:
+        if index < boundary:
+            continue
+        in_region_total += 1
+        entry = by_index.get(index)
+        text = str(entry.get("text_preview") or "") if entry is not None else ""
+        if _is_substantial_body_prose(text):
+            in_region_prose += 1
+    if in_region_total == 0:
+        return None
+    if in_region_prose * 2 >= in_region_total:
+        return None
+    return boundary
 
 
 def _coerce_mapping_sequence(value: object) -> list[Mapping[str, object]]:
@@ -462,8 +712,12 @@ def resolve_role_aware_formatting_unmapped_source_summary(
                 "passthrough_front_matter_source_count": int(passthrough["category_counts"]["front_matter"]),
                 "passthrough_bounded_toc_source_count": int(passthrough["category_counts"]["bounded_toc"]),
                 "passthrough_page_furniture_source_count": int(passthrough["category_counts"]["page_furniture"]),
+                "passthrough_references_source_count": int(passthrough["category_counts"]["references"]),
+                "passthrough_caption_source_count": int(passthrough["category_counts"]["caption"]),
+                "passthrough_part_source_count": int(passthrough["category_counts"]["part"]),
                 "front_matter_boundary_source_index": passthrough["front_matter_boundary_source_index"],
                 "bounded_toc_region": passthrough["bounded_toc_region"],
+                "references_region_source_start_index": passthrough["references_region_source_start_index"],
                 "effective_unmapped_source_count": effective_count,
                 "benign_reduction_applied": filtered_count != raw_count or applied_passthrough_count > 0,
             }
@@ -505,7 +759,11 @@ def resolve_role_aware_formatting_unmapped_target_summary(
                 "passthrough_target_category_counts": passthrough["category_counts"],
                 "passthrough_front_matter_target_count": int(passthrough["category_counts"]["front_matter"]),
                 "passthrough_page_furniture_target_count": int(passthrough["category_counts"]["page_furniture"]),
+                "passthrough_references_target_count": int(passthrough["category_counts"]["references"]),
+                "passthrough_caption_target_count": int(passthrough["category_counts"]["caption"]),
+                "passthrough_part_target_count": int(passthrough["category_counts"]["part"]),
                 "front_matter_boundary_target_index": passthrough["front_matter_boundary_target_index"],
+                "references_region_target_start_index": passthrough["references_region_target_start_index"],
                 "effective_unmapped_target_count": effective_count,
                 "benign_reduction_applied": creditable_count > 0 or applied_passthrough_count > 0,
             }
