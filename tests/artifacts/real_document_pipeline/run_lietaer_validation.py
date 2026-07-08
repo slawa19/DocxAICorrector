@@ -552,8 +552,20 @@ def _resolve_acceptance_unmapped_target_summary(
             "passthrough_page_furniture_target_count": role_aware_target_summary.get(
                 "passthrough_page_furniture_target_count"
             ),
+            "passthrough_references_target_count": role_aware_target_summary.get(
+                "passthrough_references_target_count"
+            ),
+            "passthrough_caption_target_count": role_aware_target_summary.get(
+                "passthrough_caption_target_count"
+            ),
+            "passthrough_part_target_count": role_aware_target_summary.get(
+                "passthrough_part_target_count"
+            ),
             "front_matter_boundary_target_index": role_aware_target_summary.get(
                 "front_matter_boundary_target_index"
+            ),
+            "references_region_target_start_index": role_aware_target_summary.get(
+                "references_region_target_start_index"
             ),
         }
     count_basis = str(translation_quality_report.get("unmapped_target_count_basis") or "").strip().lower()
@@ -5312,8 +5324,12 @@ def evaluate_lietaer_acceptance(
         passthrough_front_matter_source_count=unmapped_source_summary.get("passthrough_front_matter_source_count"),
         passthrough_bounded_toc_source_count=unmapped_source_summary.get("passthrough_bounded_toc_source_count"),
         passthrough_page_furniture_source_count=unmapped_source_summary.get("passthrough_page_furniture_source_count"),
+        passthrough_references_source_count=unmapped_source_summary.get("passthrough_references_source_count"),
+        passthrough_caption_source_count=unmapped_source_summary.get("passthrough_caption_source_count"),
+        passthrough_part_source_count=unmapped_source_summary.get("passthrough_part_source_count"),
         front_matter_boundary_source_index=unmapped_source_summary.get("front_matter_boundary_source_index"),
         bounded_toc_region=unmapped_source_summary.get("bounded_toc_region"),
+        references_region_source_start_index=unmapped_source_summary.get("references_region_source_start_index"),
         mismatch_threshold=mismatch_threshold,
         caption_heading_conflicts=total_caption_heading_conflicts,
         artifact_count=len(formatting_diagnostics),
@@ -5332,6 +5348,10 @@ def evaluate_lietaer_acceptance(
         passthrough_front_matter_source_count=unmapped_source_summary.get("passthrough_front_matter_source_count"),
         passthrough_bounded_toc_source_count=unmapped_source_summary.get("passthrough_bounded_toc_source_count"),
         passthrough_page_furniture_source_count=unmapped_source_summary.get("passthrough_page_furniture_source_count"),
+        passthrough_references_source_count=unmapped_source_summary.get("passthrough_references_source_count"),
+        passthrough_caption_source_count=unmapped_source_summary.get("passthrough_caption_source_count"),
+        passthrough_part_source_count=unmapped_source_summary.get("passthrough_part_source_count"),
+        references_region_source_start_index=unmapped_source_summary.get("references_region_source_start_index"),
     )
     add_check(
         "unmapped_target_threshold",
@@ -5352,7 +5372,11 @@ def evaluate_lietaer_acceptance(
         passthrough_target_category_counts=unmapped_target_summary.get("passthrough_target_category_counts"),
         passthrough_front_matter_target_count=unmapped_target_summary.get("passthrough_front_matter_target_count"),
         passthrough_page_furniture_target_count=unmapped_target_summary.get("passthrough_page_furniture_target_count"),
+        passthrough_references_target_count=unmapped_target_summary.get("passthrough_references_target_count"),
+        passthrough_caption_target_count=unmapped_target_summary.get("passthrough_caption_target_count"),
+        passthrough_part_target_count=unmapped_target_summary.get("passthrough_part_target_count"),
         front_matter_boundary_target_index=unmapped_target_summary.get("front_matter_boundary_target_index"),
+        references_region_target_start_index=unmapped_target_summary.get("references_region_target_start_index"),
     )
 
     if translation_quality_report:
