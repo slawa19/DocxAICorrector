@@ -87,6 +87,18 @@ lietaer (PDF, italic-recovery demo), run_ids `20260622T_creatingwealth_final` / 
 orchestrator re-verify (typography present, structure clean, defects low) → director eyes-on final documents.
 Note: only creatingwealth is a genuinely new source PDF; the other sources have .docx variants (different path).
 
+DIRECTOR EYES-ON #1 (2026-06-22): "overall looks very good." Flagged two heading defects on creatingwealth →
+FIXED (merged ab71115, GENERAL rules, no per-book literals): (A) Part-dividers ("Part N")/section-markers
+(Conclusion/Introduction/Appendix…) now promoted to headings (were bold body); (B) spurious chapter-heading
+de-dup — adjacent same-number dups collapsed, back-matter chapter runs demoted, real "Chapter N — Title"
+openers preserved. Verified on source + corrected creatingwealth run. RESIDUAL ACCEPTED (director: no
+deterministic per-book tweaks — if no general rule, leave it): 2 part-boundary "ГЛАВА 1 + ГЛАВА N" spurious
+pairs the general cluster rule didn't catch remain — NOT chasing a book-specific fix. Now: fresh Money run
+(`20260622T_money_allfixes`) = cumulative result of ALL fixes for director eyes-on #2.
+
+STANDING PRINCIPLE reaffirmed (director): NO deterministic per-book edits; only general rules. Reinforces
+Working Rule #7 (no document-specific literals). A defect with no general rule is ACCEPTED, not patched.
+
 **FORWARD SEQUENCE (the main line — do NOT lose it):**
 1. → **item 1: gate stability/vision** (A→B→C→D) ← WE ARE HERE
 2. items 2–5: reliability (controlled-fallback), acceptance meaning, harness↔prod parity, Mazzucato tail
