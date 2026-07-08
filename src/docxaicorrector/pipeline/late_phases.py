@@ -1850,7 +1850,6 @@ def _is_source_backed_list_sample(
 
 
 _STANDALONE_NUMERIC_CONTINUATION_PATTERN = re.compile(r"^\s*\d{1,6}\.\s*$")
-_BACK_MATTER_REVIEW_LIST_FRAGMENT_LIMIT = 3
 _ROLE_AWARE_UNMAPPED_SOURCE_REVIEW_RATIO = 0.01
 _ROLE_LOSS_MANUAL_REVIEW_MAX_COUNT = 10
 _ROLE_LOSS_MANUAL_REVIEW_MAX_RATIO = 0.05
@@ -2089,9 +2088,25 @@ def _is_reviewable_list_fragment_residue(
 ) -> bool:
     if gate_source != "entry_assembly":
         return False
-    if not samples or len(samples) > _BACK_MATTER_REVIEW_LIST_FRAGMENT_LIMIT:
+    if not samples:
         return False
-    return all(_is_standalone_numeric_continuation_sample(sample) for sample in samples)
+    # Partition the residue: standalone-numeric back-matter (footnote / page
+    # numbers such as "18." or "1491." that survive as pass-through) vs. everything
+    # else. A NON-numeric residue line is a real body-text list fragment (a broken
+    # bullet / list item) and is never review-only: hard-fail as soon as any such
+    # fragment is present, regardless of count.
+    non_numeric_residue = [
+        sample
+        for sample in samples
+        if not _is_standalone_numeric_continuation_sample(sample)
+    ]
+    if non_numeric_residue:
+        return False
+    # Pure standalone-numeric back-matter residue: always route to soft review,
+    # regardless of how many there are, so footnote/page numbers cannot tip an
+    # otherwise-good book into an acceptance hard-fail (the old count cap wrongly
+    # blocked mazzucato at 4 such numbers).
+    return True
 
 
 def _build_formatting_review_item(
