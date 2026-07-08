@@ -31,6 +31,21 @@ hyphen" would have corrupted 201 compounds; units unchanged, compounds safe). **
 audit, breadth = corpus: lietaer mixed_script_term=2 / list_fragment_regression=20 / raw_false_fragment=69 /
 untranslated_body_review; mazzucato list_fragment_regressions_present — real defect vs stale heuristic?),
 then 1‑C (severity-table extraction), 1‑D (decide body-integrity axis). Full scope in "### 1" below.
+**1‑B DONE (merged 87c6c7d):** the only false hard-fail — mazzucato `list_fragment_regressions_present` —
+fixed by partitioning residue (any non-numeric body fragment → hard-fail; pure standalone-numeric back-matter
+→ review regardless of count; arbitrary cap=3 removed). Unit-verified; end-to-end confirms on a fresh mazzucato
+run. 1‑B audit verdict: gate hygiene otherwise SOUND (raw counters already gated to 0; sleeping gates disabled).
+
+**CRITICAL FINDING — full formatting re-verification (2026-06-22, director-requested, orchestrator-confirmed):**
+Everything is OK EXCEPT **inline bold/italic is being LOST** (BINDING contract violation). Images (43/43,
+55/55, 42/42), lists, headings/subheadings, target-styles (no zoo) — all OK. But emphasis: lietaer output
+bold=13/italic=3 vs source .docx bold=143/italic=642 (italic almost entirely lost). Two import defects:
+(6.2) font-name heuristic `"italic" in name` misses `-It`/`-BoldIt`/subset names (`text_layer_quality.py:262,383`)
+→ kills lietaer italic; (6.1) emphasis is assigned per LINE (most-common font of a pdfminer line) not per
+CHARACTER (`text_layer_quality.py:238-262` + `processing_runtime.py:576-611`) → a single italic word/book-title
+mid-sentence is lost (money 876 / mazzucato 881 mixed lines). This is part of the MAIN GOAL (canonical
+formatting). Secondary items noted: numbered-body promoted to Heading 3 (money 47/mazzucato 67 — verify
+heading vs list), stray "%"/"***" headings. FIX bold/italic BEFORE the 2-new-books run + director eyes-on.
 
 **FORWARD SEQUENCE (the main line — do NOT lose it):**
 1. → **item 1: gate stability/vision** (A→B→C→D) ← WE ARE HERE
