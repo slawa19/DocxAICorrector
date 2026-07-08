@@ -15,25 +15,26 @@ Active companions:
 
 ## ═══ NAVIGATION / RESUME POINT (read this first) — updated 2026-06-22 ═══
 
-**EXCURSION COMPLETE (2026-06-22):** the effectiveness / dead-stage review is DONE — the
-structure-recognition (#2) feature was fully REMOVED (merged f4cc963: −29.5K lines, modules + config +
-experimental profiles + tests + docs). Value (chapter/numbered heading detection) lives in import now.
-Verified: full suite 1855 pass (only pre-existing pyright + env flakiness excluded), import unaffected,
-confirming Money run acceptance PASSED with output faithful to import roles. **WE ARE NOW BACK ON THE MAIN
-TRACK** → next is breadth validation (below). Detail in "Update — 2026-06-22".
+**DONE this session (2026-06-22):** (1) Money main-text CLOSED via import fixes (sentence-breaks 89→1, 37
+numbered headings promoted, footnotes 73→~21; accepted residue: ~10 body-font numbered sub-points, 3 "О"
+caption-drops) — do NOT re-polish. (2) #2 structure-recognition feature FULLY REMOVED (f4cc963, −29.5K lines;
+full suite 1855 pass; value moved to import). (3) BREADTH validated on lietaer + mazzucato — **import fixes
+GENERALISE** (sentence-breaks ~200/245 → 25/63, footnotes → 0-1, no text loss, images intact); both fail
+acceptance ONLY on pass-through (refs/captions/figure-labels/part-dividers) = confirms the gate needs work,
+NOT the import.
 
-**MONEY MAIN-TEXT = CLOSED — do NOT re-polish.** Dominant body defects resolved via import-stage fixes
-(sentence breaks 89→1, 37 numbered headings promoted, footnotes 73→~21). Accepted residue: ~10 body-font
-numbered sub-points, 3 "О" caption-drops.
+**CURRENT STEP → Remaining-Work item 1 (gate stability / gate VISION).** Start with **1‑A: generalise the
+pass-through exclusion** (refs/bibliography/captions/part-dividers/attribution) to all books, so acceptance
+reflects MAIN-TEXT quality not pass-through noise. Then 1‑B (legacy-gate audit, breadth = corpus), 1‑C
+(severity-table extraction), 1‑D (decide body-integrity axis). Full scope in "### 1" below. Parallel small
+import polish: **de-hyphenation** ("про-\nцентов").
 
-**MAIN TRACK to RETURN TO when the excursion ends** (the real path to UI, do NOT lose it):
-1. **Breadth validation** — run 2-3 more dissimilar full books; confirm the import fixes + gate generalise
-   (this is also what the #2 measurement piggybacks on).
-2. The five **"Remaining Work Before Returning to UI"** items below — gate stability audit, reliability
-   (general controlled-fallback), acceptance meaning, harness↔prod parity, Mazzucato tail.
-3. Then **UI** (FORMATTING_DISCREPANCY_REPORTING spec).
-Secondary follow-ups parked: "О" reassembly caption-drop fix; footnote end-to-end output confirmation
-(folds into the next full run).
+**FORWARD SEQUENCE (the main line — do NOT lose it):**
+1. → **item 1: gate stability/vision** (A→B→C→D) ← WE ARE HERE
+2. items 2–5: reliability (controlled-fallback), acceptance meaning, harness↔prod parity, Mazzucato tail
+3. **UI** (FORMATTING_DISCREPANCY_REPORTING spec).
+Parked follow-ups: de-hyphenation (parallel); "О" reassembly caption-drop; footnote end-to-end confirm;
+cross-role sentence-break tail (ACCEPTED, diminishing returns).
 
 ## Product Goal
 
@@ -530,25 +531,47 @@ The UI surfaces results to users, so before UI work the pipeline must (a) reliab
 finish **any** book, (b) produce a **stable, meaningful** verdict, (c) in
 **production**, not just the harness. Five items, in priority order.
 
-### 1. Gate stability — proactive legacy-gate audit (highest leverage)
+### 1. Gate stability / gate VISION — make the acceptance verdict trustworthy (highest leverage, CURRENT)
 
-We have been narrowing stale `legacy_markdown` gates reactively, one per book.
-At least four remain on that basis (`bullet_heading`, `mixed_script_term`,
-`residual_bullet_glyph`, `toc_body_concat`) plus a dozen heuristic checks
-(`scripture_reference_heading`, `suspicious_heading_repetition`,
-`heading_body_concat`, `inline_page_furniture_leakage`,
-`pdf_blank_page_marker_leakage`, …) that may fire for the first time on a new
-book type. **Do:** audit these, narrow each to unit-aware evidence or mark it
-explicitly tolerant — proactively, so new books stop surfacing fresh red
-heuristics. **Why before UI:** a noisy gate makes the UI show false failures the
-user cannot distinguish from real defects. **Done:** running 3 dissimilar books
-surfaces no new stale-gate failure; every gate is either unit-aware or documented
-as tolerant.
+**This is where we are now (2026-06-22), after the #2 excursion + breadth.** Scope refined by the breadth
+runs (Money PASS; lietaer + mazzucato acceptance=FAILED **purely on pass-through**, not body loss —
+output_ratio 1.03–1.08, silent_text_loss=False, images intact). Four parts, do in order:
 
-The severity model for the legacy-hygiene gates currently lives as hand-copied
-code blocks (see *Architecture Hygiene* below); extracting it into a single
-table makes this audit a glance over data rather than a reverse-engineering of
-five near-identical branches. Do that extraction as part of this item.
+**A. Generalise the pass-through exclusion to ALL books (do FIRST — it unblocks a meaningful verdict).**
+The Money gate-vision fix excludes front-matter / bounded-TOC / page-furniture from the unmapped thresholds.
+But lietaer/mazzucato fail acceptance on pass-through it does NOT yet credit: **references/bibliography,
+figure captions, part-dividers, diagram labels, author/attribution lines** (verified in the unmapped samples).
+Extend the detection-based exclusion (in `validation/formatting_coverage.py` + the acceptance summary) to
+these categories, across all profiles, with provenance. Guardrail (same as before): a real unmapped BODY
+prose paragraph must still count. Done: on Money+lietaer+mazzucato the three unmapped/formatting checks fail
+ONLY on genuine main-body loss, never on refs/captions/front-matter/furniture.
+
+**B. Audit the legacy/heuristic gates — breadth is now the corpus.** The `legacy_markdown` + heuristic gates
+(`false_fragment_heading`, `residual_bullet_glyph`, `bullet_heading`, `mixed_script_term`,
+`list_fragment_regression`, `toc_body_concat`, `page_placeholder`, `scripture_reference_heading`,
+`suspicious_heading_repetition`, `heading_body_concat`, `inline_page_furniture_leakage`,
+`pdf_blank_page_marker_leakage`, …) — narrow each to unit-aware evidence or mark explicitly tolerant. Use the
+NEW breadth signals that first-fired: lietaer `mixed_script_term=2`, `list_fragment_regression(raw)=20`,
+`raw_false_fragment=69`, `untranslated_body/structural_text_review`; mazzucato `list_fragment_regressions_present`.
+Decide for each: real defect vs stale heuristic.
+
+**C. Extract the severity model into ONE table** (`_emit_hygiene_gate`). Six hand-copied hygiene-gate blocks
+(+ a duplicate in `runtime/artifacts.py`) are the source of report ↔ `formatting_review.txt` drift. Collapse
+to a table so B is a glance over data, not reverse-engineering five near-identical branches. (= Architecture
+Hygiene Task A.)
+
+**D. (decide; overlaps item 3) Gate VISION — body-integrity axis.** The gate measures unmapped paragraphs but
+is BLIND to body-structure damage (sentence-breaks, footnote-as-paragraph): a book with 63 sentence-breaks can
+still "pass" on the unmapped axis. Decide whether to ADD a measured body-integrity signal (e.g. sentence-break
+count) so the verdict reflects readable quality, not just mapping. Likely lands with item 3 (acceptance meaning).
+
+**Done for item 1:** on 4 books (Money + lietaer + mazzucato + one new) the acceptance verdict is TRUSTWORTHY —
+clean main-text → pass; real body loss → fail with a short hand-checkable list; pass-through (refs/captions/
+front-matter/furniture) → never a false fail; no new stale-gate first-fires on the 4th book.
+
+Parked import polish (NOT part of item 1): **de-hyphenation** at import (mazzucato "про-\nцентов" → merge a
+line ending in a mid-word hyphen). Small, generalizable; can run parallel. The remaining cross-role sentence-
+break tail (lietaer 25 / mazzucato ~tens, down from ~200/245) is ACCEPTED — diminishing returns.
 
 ### 2. Reliability completeness — generalise the controlled-fallback contract
 
