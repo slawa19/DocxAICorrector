@@ -5258,6 +5258,202 @@ def test_build_translation_quality_report_keeps_standalone_numeric_continuation_
     ]
 
 
+def test_build_translation_quality_report_routes_four_standalone_numeric_backmatter_to_review():
+    # Regression (GLOBAL_PLAN 1-B): four standalone-numeric back-matter residues
+    # (footnote / page numbers like mazzucato's "18." / "1491." / "1489." / "249.")
+    # must route to soft review, not the acceptance hard-fail. The old count cap
+    # (<= 3) wrongly tipped an otherwise-good book into failure at 4 such numbers.
+    final_markdown = (
+        "2. Goldman Sachs Annual Report, 2010.\n\n"
+        "18.\n\n"
+        "14. Forbes, 2017.\n\n"
+        "1491.\n\n"
+        "24. Kaldor, Essays on Value and Distribution, 1960.\n\n"
+        "1489.\n\n"
+        "31. Hutton and Kent, Currency Derivatives, 2018.\n\n"
+        "249."
+    )
+    assembly_result = document_pipeline_output_validation.FinalMarkdownAssemblyResult(
+        final_markdown=final_markdown,
+        entries=(
+            document_pipeline_output_validation.FinalAssemblyEntry(
+                text="2. Goldman Sachs Annual Report, 2010.",
+                block_index=1,
+                paragraph_id="p1",
+                source_index=0,
+                role="list",
+                structural_role="list",
+                list_kind="ordered",
+                from_registry=True,
+            ),
+            document_pipeline_output_validation.FinalAssemblyEntry(
+                text="18.",
+                block_index=1,
+                paragraph_id="p2",
+                source_index=1,
+                role="body",
+                structural_role="body",
+                from_registry=True,
+            ),
+            document_pipeline_output_validation.FinalAssemblyEntry(
+                text="14. Forbes, 2017.",
+                block_index=1,
+                paragraph_id="p3",
+                source_index=2,
+                role="list",
+                structural_role="list",
+                list_kind="ordered",
+                from_registry=True,
+            ),
+            document_pipeline_output_validation.FinalAssemblyEntry(
+                text="1491.",
+                block_index=1,
+                paragraph_id="p4",
+                source_index=3,
+                role="body",
+                structural_role="body",
+                from_registry=True,
+            ),
+            document_pipeline_output_validation.FinalAssemblyEntry(
+                text="24. Kaldor, Essays on Value and Distribution, 1960.",
+                block_index=1,
+                paragraph_id="p5",
+                source_index=4,
+                role="list",
+                structural_role="list",
+                list_kind="ordered",
+                from_registry=True,
+            ),
+            document_pipeline_output_validation.FinalAssemblyEntry(
+                text="1489.",
+                block_index=1,
+                paragraph_id="p6",
+                source_index=5,
+                role="body",
+                structural_role="body",
+                from_registry=True,
+            ),
+            document_pipeline_output_validation.FinalAssemblyEntry(
+                text="31. Hutton and Kent, Currency Derivatives, 2018.",
+                block_index=1,
+                paragraph_id="p7",
+                source_index=6,
+                role="list",
+                structural_role="list",
+                list_kind="ordered",
+                from_registry=True,
+            ),
+            document_pipeline_output_validation.FinalAssemblyEntry(
+                text="249.",
+                block_index=1,
+                paragraph_id="p8",
+                source_index=7,
+                role="body",
+                structural_role="body",
+                from_registry=True,
+            ),
+        ),
+        diagnostics=document_pipeline_output_validation.FinalAssemblyDiagnostics(),
+    )
+
+    report = document_pipeline_late_phases._build_translation_quality_report(
+        context=SimpleNamespace(
+            app_config={"translation_output_quality_gate_policy": "strict"},
+            processing_operation="translate",
+            uploaded_filename="report.docx",
+            translation_domain="general",
+        ),
+        final_markdown=final_markdown,
+        formatting_diagnostics_artifacts=[],
+        assembly_result=assembly_result,
+    )
+
+    # Detector narrowed raw 8 -> effective 4, all standalone-numeric back-matter.
+    assert report["list_fragment_regression_gate_source"] == "entry_assembly"
+    assert report["raw_list_fragment_regression_count"] == 8
+    assert report["list_fragment_regression_count"] == 4
+    assert [sample["text"] for sample in report["list_fragment_regression_samples"]] == [
+        "18.",
+        "1491.",
+        "1489.",
+        "249.",
+    ]
+    # Softened path: review, NOT the acceptance hard-fail reason.
+    assert "list_fragment_regressions_present" not in report["gate_reasons"]
+    assert report["gate_reasons"] == ["list_fragment_regressions_review_required"]
+    assert report["quality_status"] == "warn"
+    assert report["formatting_review_required_count"] == 4
+
+
+def test_build_translation_quality_report_hard_fails_non_numeric_body_list_fragment_residue():
+    # Counter-check (GLOBAL_PLAN 1-B): a real body-text list fragment (a broken
+    # bullet / item that is NOT standalone-numeric back-matter) must still be an
+    # acceptance hard-fail, regardless of count. Softening the cap for numeric
+    # back-matter must never silence genuine body-list fragmentation.
+    final_markdown = (
+        "2. Goldman Sachs Annual Report, 2010.\n\n"
+        "- разорванный\n"
+        "- пункт"
+    )
+    assembly_result = document_pipeline_output_validation.FinalMarkdownAssemblyResult(
+        final_markdown=final_markdown,
+        entries=(
+            document_pipeline_output_validation.FinalAssemblyEntry(
+                text="2. Goldman Sachs Annual Report, 2010.",
+                block_index=1,
+                paragraph_id="p1",
+                source_index=0,
+                role="list",
+                structural_role="list",
+                list_kind="ordered",
+                from_registry=True,
+            ),
+            document_pipeline_output_validation.FinalAssemblyEntry(
+                text="- разорванный",
+                block_index=1,
+                paragraph_id="p2",
+                source_index=1,
+                role="body",
+                structural_role="body",
+                from_registry=True,
+            ),
+            document_pipeline_output_validation.FinalAssemblyEntry(
+                text="- пункт",
+                block_index=1,
+                paragraph_id="p3",
+                source_index=2,
+                role="body",
+                structural_role="body",
+                from_registry=True,
+            ),
+        ),
+        diagnostics=document_pipeline_output_validation.FinalAssemblyDiagnostics(),
+    )
+
+    report = document_pipeline_late_phases._build_translation_quality_report(
+        context=SimpleNamespace(
+            app_config={"translation_output_quality_gate_policy": "strict"},
+            processing_operation="translate",
+            uploaded_filename="report.docx",
+            translation_domain="general",
+        ),
+        final_markdown=final_markdown,
+        formatting_diagnostics_artifacts=[],
+        assembly_result=assembly_result,
+    )
+
+    assert report["list_fragment_regression_gate_source"] == "entry_assembly"
+    assert report["list_fragment_regression_count"] == 1
+    non_numeric_sample = report["list_fragment_regression_samples"][0]
+    assert not document_pipeline_late_phases._is_standalone_numeric_continuation_sample(
+        SimpleNamespace(text=non_numeric_sample["text"])
+    )
+    # Body-list fragmentation stays a hard-fail acceptance reason.
+    assert "list_fragment_regressions_present" in report["gate_reasons"]
+    assert "list_fragment_regressions_review_required" not in report["gate_reasons"]
+    assert report["quality_status"] == "fail"
+
+
 def test_build_translation_quality_report_credits_source_backed_reference_by_exact_text_when_line_offsets_drift():
     final_markdown = (
         "Intro paragraph that shifts assembly offsets.\n\n"
