@@ -67,6 +67,26 @@ supports all of it. So the gap is ONLY in PDF import. DECISION:
   code / duplication / dead-ends / obvious bugs / excess → fix & optimize alongside the typography fix.
 Anti-infinite-polishing: the ACCEPT list above is explicit and binding — do not chase the PDF ceiling.
 
+BIG FORMAT WORK DONE & orchestrator-verified (2026-06-22):
+- **DOCX-path review** (merged 40995c6): fixed field-code/`delText` leakage (185 polluted paras → 0 in Value
+  of Everything), toggle-off bug (`w:b w:val="0"` wrongly bold), + robustness tests. DOCX path confirmed
+  robust; native typography (bold/italic/underline/sup/sub/tables) transfers. Remaining minor (documented,
+  not fixed): in-table-cell emphasis, style-inherited emphasis.
+- **PDF inline emphasis** (merged 57f93e4): font-name dictionary (`_font_style_flags` catches -It/-Bd/subset)
+  + CHARACTER-level runs on PdfTextSpan + emission rework (`_append_pdf_text_paragraph_to_docx` now emits from
+  paragraph.text via per-run bold/italic, fixing the multi-span bypass that made de-hyphenation + inline
+  footnote-markers INERT in output). Independently verified: lietaer italic 3→831 runs, structure counts
+  IDENTICAL (no regression), runs==text (no corruption), full suite 1885 pass. Dead code removed
+  (`_font_ratio`/`_strong_heading_indent`/`_looks_like_standalone_heading_context`), duplicate predicate
+  consolidated. super/sub/underline/tables/hyperlinks NOT done (accept-list, binding).
+- PROCESS NOTE: first PDF-fix attempt was built on a STALE base (would have resurrected #2) — caught before
+  merge, discarded, redone on current main. Lesson: verify code-agent branch base (`git merge-base` vs main).
+
+NOW: fresh eyes-on runs on current code (all import fixes + typography) — creatingwealth (NEW book, PDF) +
+lietaer (PDF, italic-recovery demo), run_ids `20260622T_creatingwealth_final` / `_lietaer_final`. Then
+orchestrator re-verify (typography present, structure clean, defects low) → director eyes-on final documents.
+Note: only creatingwealth is a genuinely new source PDF; the other sources have .docx variants (different path).
+
 **FORWARD SEQUENCE (the main line — do NOT lose it):**
 1. → **item 1: gate stability/vision** (A→B→C→D) ← WE ARE HERE
 2. items 2–5: reliability (controlled-fallback), acceptance meaning, harness↔prod parity, Mazzucato tail
