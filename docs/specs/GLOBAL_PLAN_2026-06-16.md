@@ -45,7 +45,27 @@ bold=13/italic=3 vs source .docx bold=143/italic=642 (italic almost entirely los
 CHARACTER (`text_layer_quality.py:238-262` + `processing_runtime.py:576-611`) → a single italic word/book-title
 mid-sentence is lost (money 876 / mazzucato 881 mixed lines). This is part of the MAIN GOAL (canonical
 formatting). Secondary items noted: numbered-body promoted to Heading 3 (money 47/mazzucato 67 — verify
-heading vs list), stray "%"/"***" headings. FIX bold/italic BEFORE the 2-new-books run + director eyes-on.
+heading vs list), stray "%"/"***" headings.
+
+TYPOGRAPHY SCOPE DECISION (director, 2026-06-22, orchestrator-verified) — **input-format-driven, no
+overengineering.** The pipeline has TWO input paths with different ceilings (verified): PDF-text-layer loses
+most typography (PdfTextSpan carries only per-LINE is_bold/is_italic); the **DOCX-input path already
+preserves it natively** (verified on money.docx via `extract_document_content_from_docx`: bold 313,
+underline 254, superscript 46, tables 3) and the render (Pandoc `markdown+raw_html+superscript+subscript`)
+supports all of it. So the gap is ONLY in PDF import. DECISION:
+- **DOCX input available → use it** (full typography for free). KEEP the DOCX path; code-review + robustness/
+  correctness test it (director asked). Caveat: DOCX path is DIFFERENT import code — our recent PDF-import
+  structure fixes (chapter/numbered headings, continuation-merge, footnotes) do NOT apply there → verify its
+  structure quality on one run before relying on it.
+- **PDF input → SIMPLE & RELIABLE, no overengineering.** Extract only what is cheaply/reliably extractable:
+  **bold/italic** (font-name dictionary to catch `-It`/`-Bd`/subset abbreviations + CHARACTER-level runs
+  instead of per-line most-common) — the big, reliable win (fixes lietaer italic 3→~600 + sub-line emphasis);
+  **super/subscript** ONLY if cheap from size+baseline already in spans. **ACCEPT as the PDF ceiling — do NOT
+  extract (require expensive/noisy geometric reconstruction, no direct attribute):** underline, tables,
+  hyperlinks, list-nesting. Document them as accepted PDF-input losses; when fidelity matters, use DOCX input.
+- **Also (director): code-review the PDF import** (`pdf_import/*`, `processing_runtime.py` PDF path) for dead
+  code / duplication / dead-ends / obvious bugs / excess → fix & optimize alongside the typography fix.
+Anti-infinite-polishing: the ACCEPT list above is explicit and binding — do not chase the PDF ceiling.
 
 **FORWARD SEQUENCE (the main line — do NOT lose it):**
 1. → **item 1: gate stability/vision** (A→B→C→D) ← WE ARE HERE
