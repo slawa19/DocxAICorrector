@@ -23,11 +23,14 @@ GENERALISE** (sentence-breaks ~200/245 → 25/63, footnotes → 0-1, no text los
 acceptance ONLY on pass-through (refs/captions/figure-labels/part-dividers) = confirms the gate needs work,
 NOT the import.
 
-**CURRENT STEP → Remaining-Work item 1 (gate stability / gate VISION).** Start with **1‑A: generalise the
-pass-through exclusion** (refs/bibliography/captions/part-dividers/attribution) to all books, so acceptance
-reflects MAIN-TEXT quality not pass-through noise. Then 1‑B (legacy-gate audit, breadth = corpus), 1‑C
-(severity-table extraction), 1‑D (decide body-integrity axis). Full scope in "### 1" below. Parallel small
-import polish: **de-hyphenation** ("про-\nцентов").
+**CURRENT STEP → Remaining-Work item 1 (gate stability / gate VISION).** 1‑A DONE & orchestrator-verified
+(merged 062ef15: refs/bibliography/captions/part-divider exclusion generalised; on REAL breadth reports
+lietaer SRC 47→8/TGT 17→2, mazzucato 26→2/12→3, all three unmapped checks now PASS, real body still counts,
+Money fixture intact). De-hyphenation DONE too (merged afa506a: corpus-evidence-gated — the naive "remove
+hyphen" would have corrupted 201 compounds; units unchanged, compounds safe). **NOW: 1‑B** (legacy-gate
+audit, breadth = corpus: lietaer mixed_script_term=2 / list_fragment_regression=20 / raw_false_fragment=69 /
+untranslated_body_review; mazzucato list_fragment_regressions_present — real defect vs stale heuristic?),
+then 1‑C (severity-table extraction), 1‑D (decide body-integrity axis). Full scope in "### 1" below.
 
 **FORWARD SEQUENCE (the main line — do NOT lose it):**
 1. → **item 1: gate stability/vision** (A→B→C→D) ← WE ARE HERE
