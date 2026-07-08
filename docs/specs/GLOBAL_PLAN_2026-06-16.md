@@ -99,6 +99,32 @@ pairs the general cluster rule didn't catch remain — NOT chasing a book-specif
 STANDING PRINCIPLE reaffirmed (director): NO deterministic per-book edits; only general rules. Reinforces
 Working Rule #7 (no document-specific literals). A defect with no general rule is ACCEPTED, not patched.
 
+DIRECTOR EYES-ON #2 (Money, 2026-06-22) + STRUCTURE FIXES. Money output looked good (italic 748 on titles,
+acceptance passed, images 43/43, breaks 4). Director flagged structure defects; deep diagnosis + fixes:
+- **DONE (merged da6789b, universal, no literals):**
+  - **#1 Chapter headings destroyed into numbered page-footnotes** — ROOT: assembly-normalization bug in
+    `output_validation.py::_normalize_final_entry_list_fragments` (a footnote block ending in a hanging "N."
+    page-ref carried its number onto the NEXT entry and stripped its "#", turning "# Глава IV" into
+    "24. Глава IV"; the carry branch's guard checked the current entry but not the follower — the intro
+    branch already had the right guard). FIX: skip carry-over when the follower is a heading. Restores
+    Глава IV/V/VI/VII + stops parasitic footnote numbers. **This was the highest-impact structure fix.**
+  - **#2 Numbered section headings vs bare subheadings same level** — `_infer_heading_level` ranked only by
+    font size (both body-font → L3). FIX: a leading section ordinal ("N." / "N.N") lifts a body-font heading
+    one level (numbered→L2, bare→L3); large-font chapter tiers untouched. Role stays heading. 320 tests pass.
+- **ACCEPTED (semantic / cross-role tail — no general deterministic rule; per standing principle):**
+  - #5 body-like subheadings (14.4pt = body font in the source; the .docx itself styles them "Body text" —
+    NO typographic/style signal; only SEMANTIC inference could recover them — that was #2/structure-recognition,
+    removed). #4 box/sidebar sub-headings (same body-like class). #3 single line-break after a figure caption
+    (cross-role toc_entry misclass; diminishing-returns tail). creatingwealth part-boundary "ГЛАВА 1+ГЛАВА N"
+    duplicate residual (2-item non-strict clusters the general rule didn't catch).
+
+WHAT REMAINS TO CLOSE (director asked): (a) gate is BLIND to body-structure damage — it passed Money with 4
+chapter headings destroyed → a **body-integrity axis** (heading-demoted-to-list, sentence-breaks) belongs in
+item 1‑D / item 3. (b) The five "Remaining Work Before UI" items 2–5 (reliability controlled-fallback,
+acceptance meaning, harness↔prod parity, Mazzucato tail). (c) Then UI. Structure/formatting cleanliness — the
+director's stated priority — is now in good shape (bold/italic transferred, chapter/part/section headings +
+levels, images, clean prose); remaining structure gaps are the ACCEPTED semantic tail above.
+
 **FORWARD SEQUENCE (the main line — do NOT lose it):**
 1. → **item 1: gate stability/vision** (A→B→C→D) ← WE ARE HERE
 2. items 2–5: reliability (controlled-fallback), acceptance meaning, harness↔prod parity, Mazzucato tail
