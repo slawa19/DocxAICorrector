@@ -310,6 +310,7 @@ def build_paragraph_units_from_text_spans(
     emitted = _consolidate_cross_role_continuations(
         emitted, dehyphenation_evidence=dehyphenation_evidence
     )
+    emitted = _reconcile_structural_headings(emitted)
 
     for logical_index, paragraph in enumerate(emitted):
         _assign_pdf_paragraph_identity(paragraph, logical_index)
@@ -1329,6 +1330,211 @@ _CHAPTER_NUMBER_ONLY_PATTERN = re.compile(
     r"^chapter\s+(?:[IVXLC]{1,7}|\d{1,3})$",
     re.IGNORECASE,
 )
+
+# A part divider ("PART II", "Part 3", "PART I: LOCAL ECONOMICS"). Source PDFs are
+# English on import, so only the latin spelling is matched. The number is a roman
+# numeral or an arabic number; a title tail, when present, must be introduced by a
+# separator (colon/dash), never by a bare space — a body line that merely opens
+# "Part I of the book describes…" must not be swallowed (the lowercase continuation
+# after the number is neither empty nor a separator, so it never matches). Roman
+# numerals are uppercase to avoid matching lowercase prose ("part i think").
+_PART_DIVIDER_PATTERN = re.compile(
+    r"^(?:PART|Part)\s+(?:[IVXLCM]{1,7}|\d{1,3})\b(?P<tail>.*)$"
+)
+# The bare "Part <roman/number>" divider with nothing after it. Like a bare chapter
+# number line, the trailing roman/arabic IS the part number, never a page reference,
+# so such a line is a divider even though the trailing-page TOC pattern also matches.
+_PART_NUMBER_ONLY_PATTERN = re.compile(
+    r"^(?:PART|Part)\s+(?:[IVXLCM]{1,7}|\d{1,3})$"
+)
+_STRUCTURAL_TAIL_SEPARATORS = ":—–‒-"
+
+# Standalone front/back-matter section markers. A line that IS exactly one of these
+# words (optionally followed by a separator + short title) is a structural section
+# heading, not prose. A mid-sentence use ("Conclusion In addition to the specific
+# examples…") is excluded: the marker is followed by a space and more words rather
+# than by end-of-line or a separator, so it stays body.
+_SECTION_MARKER_WORDS = frozenset(
+    {
+        "conclusion",
+        "introduction",
+        "appendix",
+        "epilogue",
+        "prologue",
+        "foreword",
+        "preface",
+        "afterword",
+    }
+)
+_SECTION_MARKER_LINE_PATTERN = re.compile(r"^(?P<word>[A-Za-z]+)\b(?P<tail>.*)$")
+
+# The notes / bibliography section that opens the back-matter. In it, per-chapter
+# endnote groupings render as bare "Chapter N" labels that are NOT chapter openers.
+_NOTES_BACKMATTER_MARKERS = frozenset(
+    {"notes", "endnotes", "references", "bibliography"}
+)
+
+
+def _structural_tail_is_heading_shaped(tail: str) -> bool:
+    """A structural-heading tail is either empty (bare divider/marker) or a short
+    title introduced by a separator. A tail beginning with an ordinary word (a
+    space-joined continuation of running prose) is not heading-shaped."""
+    stripped = tail.strip()
+    if not stripped:
+        return True
+    if stripped[0] not in _STRUCTURAL_TAIL_SEPARATORS:
+        return False
+    if stripped.count(":") >= 2:
+        # Two colons signal a glued TOC line ("Conclusion: … Appendix: …"), not a
+        # single section heading.
+        return False
+    return len(_words(stripped)) <= 10
+
+
+def _text_is_part_divider(text: str) -> bool:
+    match = _PART_DIVIDER_PATTERN.match(text.strip())
+    if match is None:
+        return False
+    return _structural_tail_is_heading_shaped(match.group("tail"))
+
+
+def _text_is_section_marker(text: str) -> bool:
+    match = _SECTION_MARKER_LINE_PATTERN.match(text.strip())
+    if match is None:
+        return False
+    if match.group("word").lower() not in _SECTION_MARKER_WORDS:
+        return False
+    return _structural_tail_is_heading_shaped(match.group("tail"))
+
+
+def _text_is_bare_chapter_number(text: str) -> bool:
+    return bool(_CHAPTER_NUMBER_ONLY_PATTERN.match(text.strip()))
+
+
+def _bare_chapter_number_token(text: str) -> str | None:
+    match = re.match(r"^chapter\s+([IVXLC]{1,7}|\d{1,3})$", text.strip(), re.IGNORECASE)
+    return match.group(1).upper() if match else None
+
+
+def _promote_unit_to_heading(unit: ParagraphUnit, *, heading_level: int) -> None:
+    unit.role = "heading"
+    unit.structural_role = "heading"
+    unit.style_name = _style_name_for_role("heading")
+    unit.heading_level = heading_level
+    unit.heading_source = "pdf_text_layer"
+    unit.list_kind = None
+    unit.list_level = 0
+    unit.boundary_rationale = "promoted_structural_heading"
+
+
+def _demote_heading_to_body(unit: ParagraphUnit) -> None:
+    unit.role = "body"
+    unit.structural_role = "body"
+    unit.style_name = _style_name_for_role("body")
+    unit.heading_level = None
+    unit.heading_source = None
+    unit.boundary_rationale = "demoted_spurious_chapter_heading"
+
+
+def _reconcile_structural_headings(units: list[ParagraphUnit]) -> list[ParagraphUnit]:
+    """Deterministic, document-level heading reconciliation (runs after the per-span
+    classification and soft-wrap consolidation).
+
+    Two independent corrections, both driven by generic structure (never by
+    book-specific literals):
+
+    A. Promote structural dividers the per-span typography test misses because they
+       are set at body size (bold body). A bare "Part N" / "Part N: Title" divider
+       becomes a top-level heading (Part sits above Chapter). A standalone
+       front/back-matter section marker ("Conclusion", "Introduction: …") becomes a
+       heading — but ONLY in the main body (before the notes/bibliography
+       back-matter), so an endnote grouping label of the same word is left alone.
+
+    B. De-duplicate chapter openers. A real opener ("Chapter N — Title", or a bare
+       "Chapter N" whose chapter body follows) stays a heading. A bare "Chapter N"
+       heading is demoted to body when it is instead (1) an adjacent duplicate of the
+       same number, (2) part of a cluster of >=2 consecutive bare chapter numbers (a
+       part-boundary mini-listing), or (3) inside the notes/bibliography back-matter
+       (a per-chapter endnote label). Two real openers never sit adjacent with no
+       chapter body between them, so demoting an adjacent run never drops a real
+       opener.
+    """
+    if not units:
+        return units
+
+    backmatter_start = len(units)
+    for index, unit in enumerate(units):
+        if unit.role == "heading" and (unit.text or "").strip().lower() in _NOTES_BACKMATTER_MARKERS:
+            backmatter_start = index
+            break
+
+    # A. Promote dividers / section markers that were left as body.
+    for index, unit in enumerate(units):
+        text = unit.text or ""
+        is_toc = unit.structural_role == "toc_entry"
+        if _text_is_part_divider(text):
+            # A bare part divider ("PART II") is mis-read as a TOC row because the
+            # roman numeral is taken for a trailing page reference; the roman IS the
+            # part number, so it is promoted anyway. A titled part TOC row that
+            # genuinely ends with a page number is left to the TOC pass.
+            if is_toc and _PART_NUMBER_ONLY_PATTERN.match(text) is None:
+                continue
+            # Promote a divider left as body to the top level (above chapters). An
+            # already-classified heading (e.g. a Contents "PART I: Title" row) keeps
+            # its level — its role is not the defect being corrected here.
+            if unit.role != "heading":
+                _promote_unit_to_heading(unit, heading_level=1)
+            continue
+        # A TOC row ("Introduction: … 1") ends with a page reference and is owned by
+        # the TOC pass — never a section-marker heading.
+        if is_toc:
+            continue
+        if (
+            unit.role != "heading"
+            and index < backmatter_start
+            and _text_is_section_marker(text)
+        ):
+            _promote_unit_to_heading(unit, heading_level=1)
+
+    # B. Demote spurious bare "Chapter N" headings.
+    chapter_indexes = [
+        index
+        for index, unit in enumerate(units)
+        if unit.role == "heading" and _text_is_bare_chapter_number(unit.text or "")
+    ]
+    demote: set[int] = set()
+    for index in chapter_indexes:
+        if index >= backmatter_start:
+            demote.add(index)
+    # Group adjacent bare-chapter headings (consecutive in the unit list) into runs.
+    run: list[int] = []
+    for index in chapter_indexes:
+        if run and index == run[-1] + 1:
+            run.append(index)
+        else:
+            if len(run) >= 2:
+                _resolve_bare_chapter_run(run, units, demote)
+            run = [index]
+    if len(run) >= 2:
+        _resolve_bare_chapter_run(run, units, demote)
+
+    for index in demote:
+        _demote_heading_to_body(units[index])
+    return units
+
+
+def _resolve_bare_chapter_run(
+    run: list[int], units: list[ParagraphUnit], demote: set[int]
+) -> None:
+    """A run of >=2 adjacent bare-chapter headings is never two real openers (a real
+    opener is always followed by its chapter body, not by another bare number). If
+    every member is the same chapter number it is a duplicate — keep the first and
+    demote the rest; otherwise it is a mini-listing — demote all of them."""
+    numbers = {_bare_chapter_number_token(units[index].text or "") for index in run}
+    if len(numbers) == 1:
+        demote.update(run[1:])
+    else:
+        demote.update(run)
 
 
 def _looks_like_chapter_heading(span: PdfTextSpan) -> bool:

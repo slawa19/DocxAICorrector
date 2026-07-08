@@ -1,6 +1,10 @@
 from __future__ import annotations
 
-from docxaicorrector.pdf_import.logical_import import build_paragraph_units_from_text_spans
+from docxaicorrector.core.models import ParagraphUnit
+from docxaicorrector.pdf_import.logical_import import (
+    build_paragraph_units_from_text_spans,
+    _reconcile_structural_headings,
+)
 from docxaicorrector.pdf_import.text_layer_quality import PdfTextSpan
 
 
@@ -1079,3 +1083,166 @@ def test_build_paragraph_units_does_not_dehyphenate_before_uppercase_continuatio
 
     joined = " ".join(p.text for p in result.paragraphs)
     assert "subCommittee" not in joined
+
+
+def _heading_notes_marker_spans(page: int, top: float) -> list[PdfTextSpan]:
+    # A prominent "Notes" divider that opens the endnote back-matter.
+    return [_span(page, "Notes", top=top, bottom=top + 20, x0=50, x1=140, font_size=18, bold=True)]
+
+
+def test_build_paragraph_units_promotes_bare_part_divider_to_top_level_heading() -> None:
+    # A body-sized (bold) "PART II" divider is missed by the typography test but is a
+    # deterministic top-level structural heading (Part sits above Chapter).
+    spans = _body_context_spans() + [
+        _span(1, "PART II", top=140, bottom=154, x0=50, x1=130, font_size=10),
+        _span(1, "Body prose opening the second part of the book here.", top=190, bottom=204),
+    ]
+
+    result = build_paragraph_units_from_text_spans(spans)
+
+    part = next(p for p in result.paragraphs if p.text == "PART II")
+    assert part.role == "heading"
+    assert part.heading_level == 1
+
+
+def test_build_paragraph_units_does_not_promote_part_number_in_running_prose() -> None:
+    # "Part I of the book describes…" opens with "Part I" but continues as prose (a
+    # bare-space lowercase continuation, no separator), so it stays body.
+    spans = _body_context_spans() + [
+        _span(1, "Part I of the book describes the process by which wealth is created.", top=140, bottom=154),
+    ]
+
+    result = build_paragraph_units_from_text_spans(spans)
+
+    line = next(p for p in result.paragraphs if p.text.startswith("Part I of the book"))
+    assert line.role == "body"
+
+
+def _body_unit(text: str) -> ParagraphUnit:
+    return ParagraphUnit(text=text, role="body", structural_role="body", style_name="PDF Body")
+
+
+def _heading_unit(text: str, *, level: int) -> ParagraphUnit:
+    return ParagraphUnit(
+        text=text,
+        role="heading",
+        structural_role="heading",
+        style_name="PDF Heading",
+        heading_level=level,
+        heading_source="pdf_text_layer",
+    )
+
+
+def test_reconcile_promotes_standalone_conclusion_body_line_to_heading() -> None:
+    # A standalone "CONCLUSION" section marker left as body (bold body typography, as
+    # it survives real large-corpus clustering) is promoted to a top-level heading.
+    units = [
+        _body_unit("A running body sentence closes the previous chapter."),
+        _body_unit("CONCLUSION"),
+        _body_unit("Body prose that opens the concluding section of the book."),
+    ]
+
+    result = _reconcile_structural_headings(units)
+
+    conclusion = next(u for u in result if u.text == "CONCLUSION")
+    assert conclusion.role == "heading"
+    assert conclusion.heading_level == 1
+
+
+def test_reconcile_does_not_promote_section_marker_in_backmatter() -> None:
+    # After the notes back-matter opens, a bare "Conclusion" endnote-group label is
+    # left as body (not a section heading).
+    units = [
+        _body_unit("A running body sentence in the main body."),
+        _heading_unit("Notes", level=3),
+        _body_unit("Conclusion"),
+        _body_unit("An endnote entry for the concluding section."),
+    ]
+
+    result = _reconcile_structural_headings(units)
+
+    assert next(u for u in result if u.text == "Conclusion").role == "body"
+
+
+def test_build_paragraph_units_does_not_promote_midsentence_conclusion_word() -> None:
+    # "Conclusion In addition to the specific examples…" uses the word mid-sentence
+    # (a bare-space capitalized continuation, not a separator), so it stays body.
+    spans = _body_context_spans() + [
+        _span(1, "Conclusion In addition to the specific examples of currency reform we saw.", top=140, bottom=154),
+    ]
+
+    result = build_paragraph_units_from_text_spans(spans)
+
+    line = next(p for p in result.paragraphs if p.text.startswith("Conclusion In addition"))
+    assert line.role == "body"
+
+
+def test_build_paragraph_units_keeps_single_adjacent_duplicate_chapter_number() -> None:
+    # Two adjacent bare chapter numbers of the same value ("CHAPTER 5" then
+    # "Chapter 5", one per page so they stay separate heading units) are one opener:
+    # keep the first, demote the duplicate.
+    spans = _body_context_spans() + [
+        _span(1, "CHAPTER 5", top=200, bottom=218, x0=50, x1=160, font_size=10),
+        _span(2, "Chapter 5", top=40, bottom=58, x0=50, x1=160, font_size=10),
+        _span(2, "Body prose that opens the fifth chapter of the book here.", top=90, bottom=104),
+    ]
+
+    result = build_paragraph_units_from_text_spans(spans)
+
+    chapters = [p for p in result.paragraphs if p.text in {"CHAPTER 5", "Chapter 5"}]
+    assert [p.role for p in chapters] == ["heading", "body"]
+
+
+def test_build_paragraph_units_demotes_bare_chapter_number_cluster() -> None:
+    # A part-boundary mini-listing of >=2 consecutive bare chapter numbers (different
+    # values) is not a set of real openers — demote them all.
+    spans = _body_context_spans() + [
+        _span(1, "CHAPTER 1", top=200, bottom=218, x0=50, x1=160, font_size=10),
+        _span(2, "CHAPTER 12", top=40, bottom=58, x0=50, x1=170, font_size=10),
+        _span(3, "Chapter 1", top=40, bottom=58, x0=50, x1=160, font_size=10),
+        _span(4, "Chapter 12", top=40, bottom=58, x0=50, x1=170, font_size=10),
+    ]
+
+    result = build_paragraph_units_from_text_spans(spans)
+
+    cluster = [p for p in result.paragraphs if p.text in {"CHAPTER 1", "CHAPTER 12", "Chapter 1", "Chapter 12"}]
+    assert len(cluster) == 4
+    assert all(p.role == "body" for p in cluster)
+
+
+def test_build_paragraph_units_demotes_backmatter_bare_chapter_labels() -> None:
+    # Inside the notes back-matter, per-chapter endnote groupings render as bare
+    # "Chapter N" labels — pass-through (body), not chapter openers.
+    spans = (
+        _body_context_spans()
+        + _heading_notes_marker_spans(1, 200)
+        + [
+            _span(1, "Chapter 1", top=260, bottom=274, x0=50, x1=160, font_size=10),
+            _span(1, "An endnote entry belonging to the first chapter of the book.", top=290, bottom=304),
+            _span(1, "Chapter 2", top=340, bottom=354, x0=50, x1=160, font_size=10),
+            _span(1, "An endnote entry belonging to the second chapter of the book.", top=370, bottom=384),
+        ]
+    )
+
+    result = build_paragraph_units_from_text_spans(spans)
+
+    labels = [p for p in result.paragraphs if p.text in {"Chapter 1", "Chapter 2"}]
+    assert len(labels) == 2
+    assert all(p.role == "body" for p in labels)
+    # The real "Notes" divider that opens the back-matter stays a heading.
+    assert next(p for p in result.paragraphs if p.text == "Notes").role == "heading"
+
+
+def test_build_paragraph_units_keeps_real_bare_chapter_opener() -> None:
+    # A lone bare "Chapter 6" opener followed by chapter body (not a duplicate, not a
+    # cluster, not back-matter) is preserved as a heading.
+    spans = _body_context_spans() + [
+        _span(1, "Chapter 6", top=200, bottom=218, x0=50, x1=160, font_size=10),
+        _span(1, "Body prose that opens the sixth chapter of the book here.", top=250, bottom=264),
+    ]
+
+    result = build_paragraph_units_from_text_spans(spans)
+
+    chapter = next(p for p in result.paragraphs if p.text == "Chapter 6")
+    assert chapter.role == "heading"
+    assert chapter.heading_level == 1
