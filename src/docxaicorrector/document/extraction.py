@@ -1268,7 +1268,12 @@ def _extract_run_text(run_element) -> str:
     text_parts: list[str] = []
     for child in run_element:
         local_name = xml_local_name(child.tag)
-        if local_name in {"t", "delText", "instrText"}:
+        if local_name == "t":
+            # Only <w:t> carries visible run text. <w:instrText> holds field
+            # instruction codes (HYPERLINK "…", PAGEREF, TOC \o …, MERGEFORMAT)
+            # and <w:delText> holds tracked-change deletions — neither is visible
+            # content, so including them leaks field codes / removed text into the
+            # translated body.
             text_parts.append(child.text or "")
             continue
         if local_name == "tab":
@@ -1287,9 +1292,9 @@ def _apply_run_markdown(text: str, run_element) -> str:
     if run_properties is None:
         return text
 
-    is_bold = find_child_element(run_properties, "b") is not None
-    is_italic = find_child_element(run_properties, "i") is not None
-    is_underline = find_child_element(run_properties, "u") is not None
+    is_bold = _run_toggle_property_is_on(run_properties, "b")
+    is_italic = _run_toggle_property_is_on(run_properties, "i")
+    is_underline = _run_toggle_property_is_on(run_properties, "u")
     vertical_align = _extract_vertical_align(run_properties)
 
     formatted = text
@@ -1309,13 +1314,23 @@ def _apply_run_markdown(text: str, run_element) -> str:
     return formatted
 
 
+_OOXML_TOGGLE_OFF_VALUES = {"0", "false", "off", "none"}
+
+
+def _run_toggle_property_is_on(run_properties, local_name: str) -> bool:
+    element = find_child_element(run_properties, local_name)
+    if element is None:
+        return False
+    value = get_xml_attribute(element, "val")
+    if value is None:
+        # An OOXML toggle property with no w:val defaults to enabled.
+        return True
+    return value.strip().lower() not in _OOXML_TOGGLE_OFF_VALUES
+
+
 def _extract_vertical_align(run_properties) -> str | None:
     vertical_align = find_child_element(run_properties, "vertAlign")
     return get_xml_attribute(vertical_align, "val") if vertical_align is not None else None
-
-
-def _extract_run_images(run) -> list[tuple[bytes, str | None, int | None, int | None, dict[str, object]]]:
-    return _extract_run_element_images(run._element, run.part)
 
 
 def _extract_run_element_images(run_element, part) -> list[tuple[bytes, str | None, int | None, int | None, dict[str, object]]]:

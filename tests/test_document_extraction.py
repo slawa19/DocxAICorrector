@@ -1810,3 +1810,193 @@ def test_extract_document_content_from_docx_preserves_hyperlinks_tabs_and_inline
 
     assert len(paragraphs) == 1
     assert paragraphs[0].text == "До **важно** и *курсив*\t[ссылка](https://example.com)"
+
+
+def _make_fld_char(char_type: str):
+    fld_char = OxmlElement("w:fldChar")
+    fld_char.set(qn("w:fldCharType"), char_type)
+    return fld_char
+
+
+def test_extract_document_content_from_docx_renders_underline_superscript_and_subscript():
+    doc = Document()
+    paragraph = doc.add_paragraph()
+    paragraph.add_run("Вода ")
+    underline_run = paragraph.add_run("важно")
+    underline_run.underline = True
+    paragraph.add_run(", формула H")
+    subscript_run = paragraph.add_run("2")
+    subscript_run.font.subscript = True
+    paragraph.add_run("O и E=mc")
+    superscript_run = paragraph.add_run("2")
+    superscript_run.font.superscript = True
+    paragraph.add_run(".")
+
+    buffer = BytesIO()
+    doc.save(buffer)
+    buffer.seek(0)
+
+    paragraphs, _ = extract_document_content_from_docx(buffer)
+
+    assert len(paragraphs) == 1
+    assert paragraphs[0].text == "Вода <u>важно</u>, формула H<sub>2</sub>O и E=mc<sup>2</sup>."
+
+
+def test_apply_run_markdown_combines_bold_and_italic():
+    doc = Document()
+    paragraph = doc.add_paragraph()
+    run = paragraph.add_run("сильно")
+    run.bold = True
+    run.italic = True
+
+    assert document_extraction._apply_run_markdown("сильно", run._element) == "***сильно***"
+
+
+def test_apply_run_markdown_ignores_explicitly_disabled_toggle_properties():
+    """<w:b w:val="0"/>, <w:i w:val="0"/>, <w:u w:val="none"/> mean formatting OFF."""
+    doc = Document()
+    paragraph = doc.add_paragraph()
+    run = paragraph.add_run("обычный")
+    run.bold = False
+    run.italic = False
+    run.underline = False
+
+    assert document_extraction._apply_run_markdown("обычный", run._element) == "обычный"
+
+
+def test_extract_document_content_from_docx_does_not_emphasize_disabled_toggle_runs():
+    doc = Document()
+    paragraph = doc.add_paragraph()
+    run = paragraph.add_run("Совершенно обычный абзац без выделения символов.")
+    run.bold = False
+    run.italic = False
+    run.underline = False
+
+    buffer = BytesIO()
+    doc.save(buffer)
+    buffer.seek(0)
+
+    paragraphs, _ = extract_document_content_from_docx(buffer)
+
+    assert len(paragraphs) == 1
+    assert paragraphs[0].text == "Совершенно обычный абзац без выделения символов."
+    assert "**" not in paragraphs[0].text
+    assert "<u>" not in paragraphs[0].text
+
+
+def test_extract_run_text_excludes_field_instruction_codes():
+    """<w:instrText> field codes (HYPERLINK/PAGEREF/TOC) must not leak into body text."""
+    doc = Document()
+    paragraph = doc.add_paragraph()
+    paragraph.add_run("Смотрите ")
+    begin = paragraph.add_run()
+    begin._element.append(_make_fld_char("begin"))
+    instruction = paragraph.add_run()
+    instr_text = OxmlElement("w:instrText")
+    instr_text.text = ' HYPERLINK "http://example.com" '
+    instruction._element.append(instr_text)
+    separate = paragraph.add_run()
+    separate._element.append(_make_fld_char("separate"))
+    paragraph.add_run("сайт примера")
+    end = paragraph.add_run()
+    end._element.append(_make_fld_char("end"))
+
+    buffer = BytesIO()
+    doc.save(buffer)
+    buffer.seek(0)
+
+    paragraphs, _ = extract_document_content_from_docx(buffer)
+
+    assert len(paragraphs) == 1
+    assert "HYPERLINK" not in paragraphs[0].text
+    assert "http://example.com" not in paragraphs[0].text
+    assert "сайт примера" in paragraphs[0].text
+
+
+def test_extract_run_text_excludes_tracked_change_deletions():
+    """<w:delText> tracked-change deletions must not resurface in the extracted text."""
+    doc = Document()
+    paragraph = doc.add_paragraph()
+    paragraph.add_run("Оставленный текст ")
+    deletion = paragraph.add_run()
+    del_text = OxmlElement("w:delText")
+    del_text.text = "удалённый фрагмент"
+    deletion._element.append(del_text)
+    paragraph.add_run("и хвост.")
+
+    buffer = BytesIO()
+    doc.save(buffer)
+    buffer.seek(0)
+
+    paragraphs, _ = extract_document_content_from_docx(buffer)
+
+    assert len(paragraphs) == 1
+    assert "удалённый фрагмент" not in paragraphs[0].text
+    assert "Оставленный текст" in paragraphs[0].text
+    assert "и хвост." in paragraphs[0].text
+
+
+def test_extract_document_content_from_docx_handles_empty_document_without_crashing():
+    doc = Document()
+    buffer = BytesIO()
+    doc.save(buffer)
+    buffer.seek(0)
+
+    paragraphs, image_assets = extract_document_content_from_docx(buffer)
+
+    assert paragraphs == []
+    assert image_assets == []
+
+
+def test_extract_document_content_from_docx_skips_blank_and_whitespace_only_paragraphs():
+    doc = Document()
+    doc.add_paragraph("Начало")
+    doc.add_paragraph("")
+    doc.add_paragraph("   ")
+    doc.add_paragraph("Конец")
+
+    buffer = BytesIO()
+    doc.save(buffer)
+    buffer.seek(0)
+
+    paragraphs, _ = extract_document_content_from_docx(buffer)
+
+    assert [paragraph.text for paragraph in paragraphs] == ["Начало", "Конец"]
+
+
+def test_extract_document_content_from_docx_tolerates_nested_tables():
+    doc = Document()
+    outer_table = doc.add_table(rows=1, cols=1)
+    outer_cell = outer_table.cell(0, 0)
+    outer_cell.paragraphs[0].add_run("Внешняя ячейка")
+    nested_table = outer_cell.add_table(rows=1, cols=1)
+    nested_table.cell(0, 0).text = "Вложенная ячейка"
+    doc.add_paragraph("После таблицы")
+
+    buffer = BytesIO()
+    doc.save(buffer)
+    buffer.seek(0)
+
+    paragraphs, _ = extract_document_content_from_docx(buffer)
+
+    table_paragraphs = [paragraph for paragraph in paragraphs if paragraph.role == "table"]
+    assert len(table_paragraphs) == 1
+    assert "Внешняя ячейка" in table_paragraphs[0].text
+    assert any(paragraph.text == "После таблицы" for paragraph in paragraphs)
+
+
+def test_extract_document_content_from_docx_renders_nested_list_levels():
+    doc = Document()
+    doc.add_paragraph("Верхний пункт", style="List Bullet")
+    doc.add_paragraph("Вложенный пункт", style="List Bullet 2")
+    doc.add_paragraph("Глубокий пункт", style="List Bullet 3")
+
+    buffer = BytesIO()
+    doc.save(buffer)
+    buffer.seek(0)
+
+    paragraphs, _ = extract_document_content_from_docx(buffer)
+
+    assert [paragraph.role for paragraph in paragraphs] == ["list", "list", "list"]
+    assert [paragraph.list_level for paragraph in paragraphs] == [0, 1, 2]
+    assert all(paragraph.list_kind == "unordered" for paragraph in paragraphs)
