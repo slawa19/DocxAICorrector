@@ -9,6 +9,7 @@ from statistics import median
 from docxaicorrector.core.models import ParagraphUnit
 from docxaicorrector.pdf_import.text_layer_quality import (
     PdfTextSpan,
+    _can_end_with_superscript_marker,
     _detect_repeated_page_furniture_keys,
     _looks_like_page_number,
     _normalize_text,
@@ -397,12 +398,18 @@ def _merge_continuation_units(
     fused sentence (Rule 1); they are spliced back inline at their original
     position so the marker survives without breaking the paragraph flow.
     """
-    parts: list[str] = []
+    piece_runs: list[list[StyleRun]] = []
     for index, unit in enumerate(units):
-        parts.append((unit.text or "").strip())
+        runs = _unit_style_runs(unit)
         if index < len(inline_markers) and inline_markers[index]:
-            parts[-1] = f"{parts[-1]} {inline_markers[index]}".strip()
-    text = _join_soft_wrapped_text_pieces(parts, dehyphenation_evidence=dehyphenation_evidence)
+            if "".join(text for text, _, _ in runs):
+                runs.append((" ", False, False))
+            runs.append((inline_markers[index], False, False))
+        piece_runs.append(runs)
+    joined_runs = _join_soft_wrapped_run_pieces(
+        piece_runs, dehyphenation_evidence=dehyphenation_evidence
+    )
+    text = "".join(run_text for run_text, _, _ in joined_runs)
     origin_indexes: list[int] = []
     origin_texts: list[str] = []
     for unit in units:
@@ -420,6 +427,7 @@ def _merge_continuation_units(
         font_size_pt=first.font_size_pt,
         origin_raw_indexes=origin_indexes,
         origin_raw_texts=origin_texts,
+        pdf_emphasis_runs=joined_runs,
         layout_origin="pdf_text_layer",
         boundary_source="pdf_text_layer",
         boundary_confidence="heuristic",
@@ -1276,12 +1284,6 @@ def _looks_like_glued_heading_line(text: str) -> bool:
     return colon_count >= 2 or title_like_words >= max(8, len(words) // 2)
 
 
-def _font_ratio(span: PdfTextSpan, median_font_size: float | None) -> float | None:
-    if not median_font_size or not span.font_size:
-        return None
-    return float(span.font_size) / median_font_size
-
-
 def _uppercase_ratio(text: str) -> float:
     letters = [char for char in text if char.isalpha()]
     if not letters:
@@ -1303,44 +1305,6 @@ def _title_word_ratio(words: list[str]) -> float:
 
 def _has_terminal_sentence_punctuation(text: str) -> bool:
     return text.rstrip().endswith((".", "!", "?", ";"))
-
-
-def _strong_heading_indent(span: PdfTextSpan, layout_profile: _PdfHeadingLayoutProfile) -> bool:
-    if layout_profile.body_left_x0 is None:
-        return False
-    return float(span.x0) - layout_profile.body_left_x0 >= 35.0
-
-
-def _looks_like_standalone_heading_context(
-    span: PdfTextSpan,
-    *,
-    previous_span: PdfTextSpan | None,
-    next_span: PdfTextSpan | None,
-) -> bool:
-    if next_span is None or next_span.page_number != span.page_number:
-        return False
-    current_text = _normalize_text(span.text)
-    next_text = _normalize_text(next_span.text)
-    next_words = _words(next_text)
-    next_is_heading_like = len(next_words) >= 2 and _uppercase_ratio(next_text) >= 0.72
-    if not current_text or not next_text or (len(next_words) < 4 and not next_is_heading_like):
-        return False
-    if _BULLET_PATTERN.match(next_text) or _ORDERED_LIST_PATTERN.match(next_text):
-        return False
-    previous_boundary = previous_span is None or previous_span.page_number != span.page_number
-    if previous_span is not None and previous_span.page_number == span.page_number:
-        previous_text = _normalize_text(previous_span.text)
-        previous_boundary = bool(previous_text and previous_text[-1] in _TERMINAL_SENTENCE_PUNCTUATION)
-    if not previous_boundary:
-        return False
-    current_font_size = span.font_size if isinstance(span.font_size, (int, float)) else 10.0
-    next_gap = max(0.0, float(next_span.top) - float(span.bottom))
-    previous_gap = 0.0
-    if previous_span is not None and previous_span.page_number == span.page_number:
-        previous_gap = max(0.0, float(span.top) - float(previous_span.bottom))
-    has_visual_gap = previous_gap >= current_font_size * 0.6 and next_gap >= current_font_size * 0.35
-    starts_new_body_line = next_text[0].isupper() or next_text[0] in _OPENING_TEXT_BOUNDARY_CHARS
-    return has_visual_gap or starts_new_body_line
 
 
 _NUMBERED_SECTION_HEADING_PATTERN = re.compile(r"^(?P<number>\d{1,3})\.\s+(?P<title>[A-ZА-Я].*)$")
@@ -1610,38 +1574,124 @@ def _soft_wrap_hyphen_boundary(previous_text: str, next_text: str) -> tuple[str,
     return tail.group(1), head.group(1)
 
 
-def _join_soft_wrapped_text_pieces(
-    pieces: list[str],
+StyleRun = tuple[str, bool, bool]
+
+
+def _join_soft_wrapped_run_pieces(
+    piece_runs: list[list[StyleRun]],
     *,
     dehyphenation_evidence: _SoftWrapDehyphenationEvidence | None = None,
-) -> str:
-    """Join line pieces with a single space, except across a line-wrap hyphen.
+) -> list[StyleRun]:
+    """Join per-piece style-run sequences with a single space, except across a
+    line-wrap hyphen — the single de-hyphenation decision, shared by both the plain
+    ``paragraph.text`` build and the per-run emphasis emission.
 
     At a wrap boundary (previous ends ``word-``, next starts a lowercase word) the
-    erroneous joining space is always removed so the token is not split by a space.
-    The hyphen itself is dropped only when ``dehyphenation_evidence`` confirms a soft
-    wrap ("про-"+"центов" → "процентов"); otherwise it is kept ("life-"+"threatening"
-    → "life-threatening"), which is strictly better than the old ``"life- threatening"``.
+    erroneous joining space is always removed. The hyphen itself is dropped only when
+    ``dehyphenation_evidence`` confirms a soft wrap ("multi-"+"faceted" →
+    "multifaceted"); otherwise it is kept ("life-"+"threatening" → "life-threatening").
+    Concatenating the returned run texts yields exactly the joined paragraph string.
     """
-    joined = ""
-    for piece in pieces:
-        if not piece:
+    result: list[StyleRun] = []
+    joined_text = ""
+    for runs in piece_runs:
+        piece_text = "".join(text for text, _, _ in runs)
+        if not piece_text:
             continue
-        if not joined:
-            joined = piece
+        if not result:
+            result.extend(runs)
+            joined_text = piece_text
             continue
-        boundary = _soft_wrap_hyphen_boundary(joined, piece)
+        boundary = _soft_wrap_hyphen_boundary(joined_text, piece_text)
         if boundary is None:
-            joined = f"{joined} {piece}"
+            result.append((" ", False, False))
+            result.extend(runs)
+            joined_text = f"{joined_text} {piece_text}"
             continue
         tail_word, head_word = boundary
         if dehyphenation_evidence is not None and dehyphenation_evidence.should_drop_hyphen(
             tail_word, head_word
         ):
-            joined = f"{joined[:-1]}{piece}"
+            _drop_trailing_char_from_runs(result)
+            result.extend(runs)
+            joined_text = f"{joined_text[:-1]}{piece_text}"
         else:
-            joined = f"{joined}{piece}"
-    return joined
+            result.extend(runs)
+            joined_text = f"{joined_text}{piece_text}"
+    return result
+
+
+def _drop_trailing_char_from_runs(runs: list[StyleRun]) -> None:
+    """Remove the final character (a soft-wrap hyphen) from the last run in place."""
+    while runs:
+        text, is_bold, is_italic = runs[-1]
+        if text:
+            trimmed = text[:-1]
+            if trimmed:
+                runs[-1] = (trimmed, is_bold, is_italic)
+            else:
+                runs.pop()
+            return
+        runs.pop()
+
+
+def _join_soft_wrapped_text_pieces(
+    pieces: list[str],
+    *,
+    dehyphenation_evidence: _SoftWrapDehyphenationEvidence | None = None,
+) -> str:
+    """Plain-text view of :func:`_join_soft_wrapped_run_pieces` — one de-hyphenation
+    implementation shared with the per-run emphasis emission."""
+    piece_runs = [[(piece, False, False)] for piece in pieces if piece]
+    joined = _join_soft_wrapped_run_pieces(
+        piece_runs, dehyphenation_evidence=dehyphenation_evidence
+    )
+    return "".join(text for text, _, _ in joined)
+
+
+def _span_style_runs(span: PdfTextSpan) -> list[StyleRun]:
+    """Return the span's character-level emphasis runs, falling back to a single
+    line-level run when no per-character data is available or when the runs would not
+    reconstruct the normalized span text (mapping-loaded spans, malformed runs)."""
+    normalized = _normalize_text(span.text)
+    runs: tuple[StyleRun, ...] = span.runs
+    if runs and "".join(text for text, _, _ in runs) == normalized:
+        return list(runs)
+    return [(normalized, bool(span.is_bold), bool(span.is_italic))]
+
+
+def _unit_style_runs(unit: ParagraphUnit) -> list[StyleRun]:
+    """Emphasis runs for an already-built unit, used when fusing continuation units.
+    Falls back to a single unit-level run when the stored runs cannot reconstruct the
+    unit text."""
+    stripped = (unit.text or "").strip()
+    runs: list[StyleRun] = list(unit.pdf_emphasis_runs)
+    if runs and "".join(text for text, _, _ in runs) == stripped:
+        return runs
+    return [(stripped, bool(unit.is_bold), bool(unit.is_italic))]
+
+
+def _glue_superscript_marker_to_runs(runs: list[StyleRun], superscript_text: str) -> None:
+    """Strip the trailing whitespace of the last run and append the footnote marker as
+    a plain superscript run, mirroring ``f"{previous.rstrip()}{superscript}"``."""
+    if runs:
+        text, is_bold, is_italic = runs[-1]
+        runs[-1] = (text.rstrip(), is_bold, is_italic)
+    runs.append((superscript_text, False, False))
+
+
+def _space_joined_style_runs(spans: list[PdfTextSpan]) -> list[StyleRun]:
+    """Emphasis runs for spans concatenated with a single space, matching the
+    ``" ".join(_normalize_text(...))`` text used by heading/list builders."""
+    result: list[StyleRun] = []
+    for span in spans:
+        runs = _span_style_runs(span)
+        if not "".join(text for text, _, _ in runs):
+            continue
+        if result:
+            result.append((" ", False, False))
+        result.extend(runs)
+    return result
 
 
 def _can_merge_body_span(
@@ -1823,7 +1873,7 @@ def _span_is_tail_marker_for_text_span(
     if text_span is None or text_span.page_number != marker.page_number:
         return False
     text = _normalize_text(text_span.text)
-    if not _can_attach_tail_footnote_marker(text):
+    if not _can_end_with_superscript_marker(text):
         return False
     body_leading = layout_profile.body_leading or body_font_size * 1.2
     if float(marker.x0) < float(text_span.x1) - body_leading * 0.2:
@@ -1831,14 +1881,6 @@ def _span_is_tail_marker_for_text_span(
     if float(marker.top) > float(text_span.bottom) or float(marker.bottom) < float(text_span.top):
         return False
     return float(marker.bottom) <= float(text_span.bottom) - marker_font_size * 0.5
-
-
-def _can_attach_tail_footnote_marker(text: str) -> bool:
-    stripped = text.rstrip()
-    if not stripped:
-        return False
-    last_char = stripped[-1]
-    return last_char.isalpha() or last_char in ".!?:;)]}»”\"'"
 
 
 def _can_prefix_heading_with_standalone_number(
@@ -1919,9 +1961,9 @@ def _paragraph_from_body_spans(
     dehyphenation_evidence: _SoftWrapDehyphenationEvidence | None = None,
 ) -> ParagraphUnit:
     inline_markers = inline_markers or {}
-    pieces: list[str] = []
+    piece_runs: list[list[StyleRun]] = []
     for index, span in enumerate(spans):
-        pieces.append(_normalize_text(span.text))
+        piece_runs.append(_span_style_runs(span))
         for marker in inline_markers.get(index, []):
             # A marker that re-attaches to the END of a completed sentence (the
             # preceding piece ends with terminal punctuation) is a footnote
@@ -1931,16 +1973,22 @@ def _paragraph_from_body_spans(
             # footnote superscript rather than a stray digit. A marker that
             # interrupts a sentence (preceding half not terminated) keeps its
             # original inline, space-separated form so the prose flows across it.
-            previous_piece = pieces[-1] if pieces else ""
+            previous_runs = piece_runs[-1] if piece_runs else []
+            previous_piece = "".join(text for text, _, _ in previous_runs)
             if (
                 previous_piece
                 and previous_piece[-1] in _TERMINAL_SENTENCE_PUNCTUATION
                 and _SUPERSCRIPT_MARKER_DIGITS_PATTERN.match(marker)
             ):
-                pieces[-1] = f"{previous_piece.rstrip()}{_to_superscript_digits(marker)}"
+                _glue_superscript_marker_to_runs(
+                    previous_runs, _to_superscript_digits(marker)
+                )
             else:
-                pieces.append(marker)
-    text = _join_soft_wrapped_text_pieces(pieces, dehyphenation_evidence=dehyphenation_evidence)
+                piece_runs.append([(marker, False, False)])
+    joined_runs = _join_soft_wrapped_run_pieces(
+        piece_runs, dehyphenation_evidence=dehyphenation_evidence
+    )
+    text = "".join(run_text for run_text, _, _ in joined_runs)
     first = spans[0]
     return ParagraphUnit(
         text=text,
@@ -1953,6 +2001,7 @@ def _paragraph_from_body_spans(
         font_size_pt=_median_font_size(spans),
         origin_raw_indexes=[_span_origin_index(span) for span in spans],
         origin_raw_texts=[_normalize_text(span.text) for span in spans],
+        pdf_emphasis_runs=joined_runs,
         layout_origin="pdf_text_layer",
         boundary_source="pdf_text_layer",
         boundary_confidence="heuristic",
@@ -1987,6 +2036,7 @@ def _paragraph_from_heading_spans(
         font_size_pt=_median_font_size(spans),
         origin_raw_indexes=[_span_origin_index(span) for span in spans],
         origin_raw_texts=[_normalize_text(span.text) for span in spans],
+        pdf_emphasis_runs=_space_joined_style_runs(spans),
         layout_origin="pdf_text_layer",
         boundary_source="pdf_text_layer",
         boundary_confidence="heuristic",
@@ -2019,6 +2069,7 @@ def _paragraph_from_list_spans(
         font_size_pt=_median_font_size(spans),
         origin_raw_indexes=[_span_origin_index(span) for span in spans],
         origin_raw_texts=[_normalize_text(span.text) for span in spans],
+        pdf_emphasis_runs=_space_joined_style_runs(spans),
         layout_origin="pdf_text_layer",
         boundary_source="pdf_text_layer",
         boundary_confidence="heuristic",
@@ -2063,6 +2114,7 @@ def _paragraph_from_span(
         font_size_pt=span.font_size,
         origin_raw_indexes=[_span_origin_index(span)],
         origin_raw_texts=[text],
+        pdf_emphasis_runs=_span_style_runs(span),
         layout_origin="pdf_text_layer",
         boundary_source="pdf_text_layer",
         boundary_confidence="heuristic",

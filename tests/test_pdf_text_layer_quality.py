@@ -6,8 +6,11 @@ from pathlib import Path
 
 from docxaicorrector.pdf_import.text_layer_quality import (
     PdfTextSpan,
+    _font_style_flags,
+    _normalize_style_runs,
     _pdfminer_top_origin_bounds,
     _split_trailing_superscript_marker_chars,
+    _style_runs_from_line_items,
     build_text_layer_quality_report,
     extract_pdf_text_spans_with_pdfminer,
     load_spans_json,
@@ -69,6 +72,80 @@ def test_pdfminer_line_split_detects_trailing_superscript_marker() -> None:
     body, marker = split
     assert "".join(char.get_text() for char in body) == "OK."
     assert "".join(char.get_text() for char in marker) == "2"
+
+
+class _StyledChar:
+    def __init__(self, text: str, fontname: str) -> None:
+        self._text = text
+        self.fontname = fontname
+
+    def get_text(self) -> str:
+        return self._text
+
+
+class _AnnoChar:
+    # Mirrors pdfminer LTAnno: virtual layout character with no ``fontname``.
+    def __init__(self, text: str) -> None:
+        self._text = text
+
+    def get_text(self) -> str:
+        return self._text
+
+
+def test_font_style_flags_reads_trailing_style_chunk() -> None:
+    assert _font_style_flags("DODEEN+NewCaledoniaLTStd-It") == (False, True)
+    assert _font_style_flags("Arial-BoldItalicMT") == (True, True)
+    assert _font_style_flags("BGKDGP+TimesNewRoman,Italic") == (False, True)
+    assert _font_style_flags("DidotLTStd-Bold") == (True, False)
+    assert _font_style_flags("ITCFranklinGothicStd-Demi") == (True, False)
+
+
+def test_font_style_flags_ignores_family_name_traps() -> None:
+    # Bare ``BT`` in a family name is not bold; ``it`` inside a family name (Didot,
+    # NewCaledonia) is not italic; a name with no style separator is regular.
+    assert _font_style_flags("DODABN+NewsGothicBT-Reg") == (False, False)
+    assert _font_style_flags("DODBHH+DidotLTStd-Roman") == (False, False)
+    assert _font_style_flags("DODEGN+NewCaledoniaLTStd") == (False, False)
+    assert _font_style_flags("AAAAAA+LiberationSerif") == (False, False)
+
+
+def test_font_style_flags_bold_weight_in_family_stays_conservative() -> None:
+    # The bold weight is baked into the family segment ("Bd"), only the upright/italic
+    # axis is in the tail ("-Reg"). Per the tail-only rule this reads as not-bold; the
+    # italic axis is still recovered from the tail.
+    assert _font_style_flags("DOCPNN+NewsGothicBdBT-Reg") == (False, False)
+    assert _font_style_flags("DOCPPN+NewsGothicBdBT-It") == (False, True)
+
+
+def test_style_runs_from_line_items_groups_mixed_styles() -> None:
+    items = [
+        _StyledChar("m", "Body"),
+        _StyledChar("i", "Body"),
+        _StyledChar("x", "Body"),
+        _AnnoChar(" "),
+        _StyledChar("i", "Body-It"),
+        _StyledChar("t", "Body-It"),
+        _AnnoChar(" "),
+        _StyledChar("b", "Body-Bold"),
+    ]
+    runs = _style_runs_from_line_items(items)
+    assert "".join(text for text, _, _ in runs) == "mix it b"
+    assert runs == (
+        ("mix", False, False),
+        (" it", False, True),
+        (" b", True, False),
+    )
+
+
+def test_normalize_style_runs_collapses_and_strips_whitespace() -> None:
+    runs = _normalize_style_runs(
+        [
+            ("  lead", False, True),
+            ("   mid  ", False, True),
+            ("tail   ", True, False),
+        ]
+    )
+    assert "".join(text for text, _, _ in runs) == "lead mid tail"
 
 
 def test_pdfminer_line_split_detects_attribution_trailing_superscript_marker() -> None:

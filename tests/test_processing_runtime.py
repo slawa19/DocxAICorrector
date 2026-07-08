@@ -2424,3 +2424,50 @@ def test_start_background_preparation_stops_after_materialization_before_worker_
     assert finalized == [("Подготовка остановлена", "", 1.0, "stopped")]
     assert activities[-1] == "Подготовка документа остановлена."
 
+
+
+def test_append_pdf_text_paragraph_emits_per_run_emphasis() -> None:
+    from docx import Document
+
+    from docxaicorrector.core.models import ParagraphUnit
+
+    paragraph = ParagraphUnit(
+        text="See life-threatening multifaceted risk.¹",
+        role="body",
+        structural_role="body",
+        pdf_emphasis_runs=[
+            ("See life-threatening ", False, False),
+            ("multifaceted", False, True),
+            (" risk.¹", False, False),
+        ],
+    )
+    document = Document()
+
+    processing_runtime._append_pdf_text_paragraph_to_docx(document, paragraph)
+
+    emitted = document.paragraphs[-1]
+    assert emitted.text == "See life-threatening multifaceted risk.¹"
+    italic_runs = [run.text for run in emitted.runs if run.italic]
+    assert italic_runs == ["multifaceted"]
+    assert all(not run.bold for run in emitted.runs)
+
+
+def test_append_pdf_text_paragraph_falls_back_without_runs() -> None:
+    from docx import Document
+
+    from docxaicorrector.core.models import ParagraphUnit
+
+    paragraph = ParagraphUnit(
+        text="Plain body line.",
+        role="body",
+        structural_role="body",
+        is_italic=True,
+    )
+    document = Document()
+
+    processing_runtime._append_pdf_text_paragraph_to_docx(document, paragraph)
+
+    emitted = document.paragraphs[-1]
+    assert emitted.text == "Plain body line."
+    assert len(emitted.runs) == 1
+    assert emitted.runs[0].italic is True

@@ -511,10 +511,6 @@ def _convert_pdf_text_layer_to_docx(*, filename: str, source_bytes: bytes) -> tu
         import_result = build_paragraph_units_from_text_spans(spans)
         if not import_result.paragraphs:
             raise RuntimeError("pdf_text_layer_import_empty_document")
-        spans_by_origin_index = {
-            max(0, (span.page_number - 1) * 10000 + int(round(span.top))): span
-            for span in spans
-        }
         try:
             image_objects = extract_pdf_images_with_pdfminer(input_path)
         except Exception as exc:
@@ -546,11 +542,7 @@ def _convert_pdf_text_layer_to_docx(*, filename: str, source_bytes: bytes) -> tu
                     images_dropped += 1
                 continue
             paragraph = payload
-            _append_pdf_text_paragraph_to_docx(
-                document,
-                paragraph,
-                spans_by_origin_index=spans_by_origin_index,
-            )
+            _append_pdf_text_paragraph_to_docx(document, paragraph)
         document.save(output_path)
         output_bytes = output_path.read_bytes() if output_path.exists() else b""
         if not output_bytes:
@@ -573,42 +565,34 @@ def _convert_pdf_text_layer_to_docx(*, filename: str, source_bytes: bytes) -> tu
         return output_bytes, "pdf-text-layer"
 
 
-def _append_pdf_text_paragraph_to_docx(document, paragraph, *, spans_by_origin_index: dict[int, object]) -> None:
+def _append_pdf_text_paragraph_to_docx(document, paragraph) -> None:
     style = _pdf_text_layer_docx_style(paragraph.role, paragraph.heading_level)
     docx_paragraph = document.add_paragraph(style=style)
     if paragraph.role == "heading":
         docx_paragraph.add_run(paragraph.text)
         return
 
-    origin_indexes = list(getattr(paragraph, "origin_raw_indexes", []) or [])
-    origin_texts = list(getattr(paragraph, "origin_raw_texts", []) or [])
-    if not origin_indexes or len(origin_indexes) != len(origin_texts):
-        run = docx_paragraph.add_run(paragraph.text)
-        if bool(getattr(paragraph, "is_bold", False)):
-            run.bold = True
-        if bool(getattr(paragraph, "is_italic", False)):
-            run.italic = True
+    # ``pdf_emphasis_runs`` carries the fully-built paragraph text (with de-hyphenation
+    # and inline footnote markers already applied) split into character-level emphasis
+    # runs; its concatenation equals ``paragraph.text``. Emit each run with its own
+    # bold/italic so sub-line emphasis survives into the DOCX.
+    emphasis_runs = list(getattr(paragraph, "pdf_emphasis_runs", None) or [])
+    if emphasis_runs:
+        for run_text, is_bold, is_italic in emphasis_runs:
+            if not run_text:
+                continue
+            run = docx_paragraph.add_run(str(run_text))
+            if is_bold:
+                run.bold = True
+            if is_italic:
+                run.italic = True
         return
 
-    wrote_run = False
-    for index, text in zip(origin_indexes, origin_texts):
-        if wrote_run:
-            docx_paragraph.add_run(" ")
-        span = spans_by_origin_index.get(int(index))
-        run = docx_paragraph.add_run(str(text))
-        if span is not None:
-            if bool(getattr(span, "is_bold", False)):
-                run.bold = True
-            if bool(getattr(span, "is_italic", False)):
-                run.italic = True
-        else:
-            if bool(getattr(paragraph, "is_bold", False)):
-                run.bold = True
-            if bool(getattr(paragraph, "is_italic", False)):
-                run.italic = True
-        wrote_run = True
-    if not wrote_run:
-        docx_paragraph.add_run(paragraph.text)
+    run = docx_paragraph.add_run(paragraph.text)
+    if bool(getattr(paragraph, "is_bold", False)):
+        run.bold = True
+    if bool(getattr(paragraph, "is_italic", False)):
+        run.italic = True
 
 
 def _append_pdf_image_to_docx(document, image_object) -> bool:

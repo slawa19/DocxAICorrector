@@ -31,6 +31,78 @@ def _span(
     )
 
 
+def _run_span(
+    page: int,
+    text: str,
+    runs: list[tuple[str, bool, bool]],
+    *,
+    top: float,
+    bottom: float,
+    italic: bool = False,
+) -> PdfTextSpan:
+    return PdfTextSpan(
+        page_number=page,
+        text=text,
+        x0=50,
+        top=top,
+        x1=450,
+        bottom=bottom,
+        page_height=800,
+        font_name="SourceSerif",
+        font_size=10,
+        is_bold=False,
+        is_italic=italic,
+        runs=tuple(runs),
+    )
+
+
+def test_pdf_emphasis_runs_carry_dehyphenation_and_inline_italics() -> None:
+    # Three soft-wrapped lines fuse into one body paragraph. The compound hyphen
+    # ("life-"+"threatening") is kept because "lifethreatening" is unattested, while
+    # "multi-"+"faceted" is de-hyphenated because "multifaceted" is attested in the
+    # trailing paragraph. The italic emphasis on "multi" must survive the hyphen drop.
+    spans = [
+        _run_span(
+            1,
+            "The risk is life-",
+            [("The risk is ", False, False), ("life-", False, False)],
+            top=200,
+            bottom=212,
+        ),
+        _run_span(
+            1,
+            "threatening and multi-",
+            [("threatening and ", False, False), ("multi-", False, True)],
+            top=213,
+            bottom=225,
+        ),
+        _run_span(
+            1,
+            "faceted, he said.",
+            [("faceted, he said.", False, False)],
+            top=226,
+            bottom=238,
+        ),
+        _run_span(
+            1,
+            "Truly multifaceted outcomes.",
+            [("Truly multifaceted outcomes.", False, False)],
+            top=320,
+            bottom=332,
+        ),
+    ]
+
+    result = build_paragraph_units_from_text_spans(spans)
+    merged = next(p for p in result.paragraphs if "life" in p.text)
+
+    assert merged.text == "The risk is life-threatening and multifaceted, he said."
+    assert "multi faceted" not in merged.text and "multi- faceted" not in merged.text
+    # The per-run emission surface reconstructs the paragraph text exactly and keeps
+    # the recovered de-hyphenated word italic.
+    assert "".join(text for text, _, _ in merged.pdf_emphasis_runs) == merged.text
+    assert ("multi", False, True) in merged.pdf_emphasis_runs
+
+
 def test_build_paragraph_units_skips_repeated_furniture_and_page_numbers() -> None:
     spans = [
         _span(1, "RUNNING HEADER", top=20, bottom=35, font_size=8),

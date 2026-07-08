@@ -252,6 +252,10 @@ class ParagraphUnit:
     font_size_pt: float | None = None
     origin_raw_indexes: list[int] = field(default_factory=list)
     origin_raw_texts: list[str] = field(default_factory=list)
+    # Character-level emphasis runs ``(text, is_bold, is_italic)`` for the PDF
+    # text-layer path; concatenating the run texts reproduces ``text``. Empty for
+    # non-PDF paths, which carry emphasis through their own markup.
+    pdf_emphasis_runs: list[tuple[str, bool, bool]] = field(default_factory=list)
     layout_origin: str = "paragraph"
     boundary_source: str = "raw"
     boundary_confidence: str = "explicit"

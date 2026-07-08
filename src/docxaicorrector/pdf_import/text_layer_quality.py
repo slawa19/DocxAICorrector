@@ -20,6 +20,13 @@ from statistics import median
 _WHITESPACE_PATTERN = re.compile(r"\s+")
 _PAGE_NUMBER_PATTERN = re.compile(r"^(?:\d{1,4}|[ivxlcdmIVXLCDM]{1,12})$")
 _LIST_MARKER_PATTERN = re.compile(r"^(?:[-*•●]|\d+[.)])\s+")
+_FONT_SUBSET_PREFIX_PATTERN = re.compile(r"^[A-Z]{6}\+")
+# Style tokens matched ONLY against the trailing style chunk of a font name.
+# ``bt`` is intentionally absent from the bold set (``NewsGothicBT`` is a family,
+# not a weight); ``it`` is intentionally scoped to the tail so ``Didot`` and other
+# family names never register as italic.
+_FONT_BOLD_STYLE_TOKENS = ("bold", "black", "semibold", "heavy", "demi", "blk", "bd", "dm")
+_FONT_ITALIC_STYLE_TOKENS = ("italic", "oblique", "obl", "it")
 _DECISION_THRESHOLDS = {
     "min_visible_text_chars": 1500,
     "min_body_span_count": 20,
@@ -41,6 +48,10 @@ class PdfTextSpan:
     font_size: float | None = None
     is_bold: bool = False
     is_italic: bool = False
+    # Character-level emphasis runs whose concatenation equals ``_normalize_text(text)``.
+    # Each run is ``(text, is_bold, is_italic)``. Empty when the span was rebuilt from a
+    # mapping (JSON) that carries no per-character font information.
+    runs: tuple[tuple[str, bool, bool], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -218,7 +229,7 @@ def extract_pdf_text_spans_with_pdfminer(pdf_path: str | Path) -> list[PdfTextSp
     """
     try:
         from pdfminer.high_level import extract_pages
-        from pdfminer.layout import LTChar, LTTextContainer, LTTextLine
+        from pdfminer.layout import LTAnno, LTChar, LTTextContainer, LTTextLine
     except ImportError as exc:  # pragma: no cover - depends on optional env
         raise RuntimeError("optional_dependency_missing:pdfminer.six") from exc
 
@@ -239,7 +250,7 @@ def extract_pdf_text_spans_with_pdfminer(pdf_path: str | Path) -> list[PdfTextSp
                 font_sizes = [float(getattr(char, "size", 0.0) or 0.0) for char in chars]
                 font_name = _most_common(font_names)
                 font_size = median(font_sizes) if font_sizes else None
-                font_name_lower = font_name.lower()
+                is_bold, is_italic = _font_style_flags(font_name)
                 top, bottom = _pdfminer_top_origin_bounds(
                     y0=float(line.y0),
                     y1=float(line.y1),
@@ -258,8 +269,9 @@ def extract_pdf_text_spans_with_pdfminer(pdf_path: str | Path) -> list[PdfTextSp
                             page_height=page_height,
                             font_name=font_name,
                             font_size=float(font_size) if font_size else None,
-                            is_bold="bold" in font_name_lower or "black" in font_name_lower,
-                            is_italic="italic" in font_name_lower or "oblique" in font_name_lower,
+                            is_bold=is_bold,
+                            is_italic=is_italic,
+                            runs=_style_runs_from_line_items(line),
                         )
                     )
                     continue
@@ -362,7 +374,7 @@ def _pdf_text_span_from_chars(
         if float(getattr(char, "size", 0.0) or 0.0) > 0
     ]
     font_name = _most_common(font_names)
-    font_name_lower = font_name.lower()
+    is_bold, is_italic = _font_style_flags(font_name)
     x0 = min(float(getattr(char, "x0", 0.0) or 0.0) for char in chars)
     x1 = max(float(getattr(char, "x1", 0.0) or 0.0) for char in chars)
     y0 = min(float(getattr(char, "y0", 0.0) or 0.0) for char in chars)
@@ -379,8 +391,9 @@ def _pdf_text_span_from_chars(
         page_height=page_height,
         font_name=font_name,
         font_size=font_size,
-        is_bold="bold" in font_name_lower or "black" in font_name_lower,
-        is_italic="italic" in font_name_lower or "oblique" in font_name_lower,
+        is_bold=is_bold,
+        is_italic=is_italic,
+        runs=_style_runs_from_line_items(chars),
     )
 
 
@@ -571,6 +584,89 @@ def _most_common(values: Iterable[str]) -> str:
     if not counter:
         return ""
     return counter.most_common(1)[0][0]
+
+
+def _font_style_flags(font_name: str) -> tuple[bool, bool]:
+    """Map a PDF font name to ``(is_bold, is_italic)``.
+
+    The subset prefix (``^[A-Z]{6}\\+``) is stripped and only the trailing style
+    chunk (after the last ``-`` or ``,``) is inspected, so family-name substrings —
+    the ``it`` in ``Didot`` or the bare ``BT`` in ``NewsGothicBT`` — cannot pose as
+    style signals. A name without a style separator carries no style information and
+    is treated as regular.
+    """
+    name = _FONT_SUBSET_PREFIX_PATTERN.sub("", str(font_name or ""))
+    separator_index = max(name.rfind("-"), name.rfind(","))
+    if separator_index < 0:
+        return (False, False)
+    tail = name[separator_index + 1 :].lower()
+    if not tail:
+        return (False, False)
+    is_bold = any(token in tail for token in _FONT_BOLD_STYLE_TOKENS)
+    is_italic = any(token in tail for token in _FONT_ITALIC_STYLE_TOKENS)
+    return (is_bold, is_italic)
+
+
+def _style_runs_from_line_items(items: Iterable[object]) -> tuple[tuple[str, bool, bool], ...]:
+    """Group a line's characters into consecutive same-style runs.
+
+    ``items`` may mix real characters (carrying ``fontname``) with virtual layout
+    characters (spaces/newlines inferred by the extractor, which have no font); the
+    latter inherit the current style so a space inside an italic word does not split
+    the run. The returned runs are whitespace-normalized so their concatenation equals
+    ``_normalize_text`` of the line text.
+    """
+    raw: list[tuple[str, bool, bool]] = []
+    current_style: tuple[bool, bool] | None = None
+    buffer: list[str] = []
+    for item in items:
+        get_text = getattr(item, "get_text", None)
+        if not callable(get_text):
+            continue
+        piece = str(get_text() or "")
+        if not piece:
+            continue
+        if hasattr(item, "fontname"):
+            style = _font_style_flags(str(getattr(item, "fontname", "") or ""))
+        else:
+            style = current_style if current_style is not None else (False, False)
+        if current_style is None:
+            current_style = style
+        elif style != current_style:
+            raw.append(("".join(buffer), current_style[0], current_style[1]))
+            buffer = []
+            current_style = style
+        buffer.append(piece)
+    if buffer and current_style is not None:
+        raw.append(("".join(buffer), current_style[0], current_style[1]))
+    return _normalize_style_runs(raw)
+
+
+def _normalize_style_runs(
+    runs: Iterable[tuple[str, bool, bool]],
+) -> tuple[tuple[str, bool, bool], ...]:
+    """Collapse internal whitespace to single spaces and strip the ends, preserving
+    per-run style. The concatenation of the result equals ``_normalize_text`` of the
+    concatenated input text."""
+    result: list[tuple[str, bool, bool]] = []
+    pending_space = False
+    started = False
+    for text, is_bold, is_italic in runs:
+        chars_out: list[str] = []
+        for char in text:
+            if char.isspace():
+                if started:
+                    pending_space = True
+                continue
+            if pending_space:
+                chars_out.append(" ")
+                pending_space = False
+            chars_out.append(char)
+            started = True
+        segment = "".join(chars_out)
+        if segment:
+            result.append((segment, bool(is_bold), bool(is_italic)))
+    return tuple(result)
 
 
 def _coerce_int(value: object, *, default: int) -> int:
