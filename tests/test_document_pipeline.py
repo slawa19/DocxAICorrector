@@ -894,11 +894,24 @@ def test_run_document_processing_passes_machine_readable_quality_warning_to_arti
     )
 
     assert result == "succeeded"
+    # Policy-independent discrepancy emission (GATE_TRUSTWORTHINESS Task B):
+    # under advisory the pass/fail severity stays policy-scaled (warn +
+    # unmapped_source_paragraphs_above_advisory_threshold) but the review-item
+    # DATA is now emitted so the UI is not blind.
     assert artifact_calls["kwargs"]["quality_warning"] == {
         "kind": "translation_quality_gate",
         "quality_status": "warn",
         "gate_reasons": ["unmapped_source_paragraphs_above_advisory_threshold"],
-        "message": "Результат собран, но quality report зафиксировал document-level structural warnings.",
+        "message": "Готово. 2 абзаца требуют проверки оформления. Подробности: formatting_review.txt",
+        "formatting_review_items": [
+            {
+                "reason": "unmapped_source_paragraphs_review_required",
+                "label": "Абзацы без явного соответствия оригиналу",
+                "count": 2,
+                "severity": "review",
+            }
+        ],
+        "formatting_review_required_count": 2,
     }
 
 
@@ -3765,15 +3778,28 @@ def test_run_document_processing_surfaces_advisory_quality_notice_on_mapping_dri
     )
 
     assert result == "succeeded"
+    # Policy-independent discrepancy emission (GATE_TRUSTWORTHINESS Task B):
+    # advisory now surfaces the unmapped review-item DATA (was 0), so the notice
+    # switches to the actionable review message while the verdict severity
+    # (warn + advisory-threshold reason) stays policy-scaled.
     assert runtime["state"]["latest_result_notice"] == {
         "level": "warning",
-        "message": "Результат собран, но quality report зафиксировал document-level structural warnings.",
+        "message": "Готово. 2 абзаца требуют проверки оформления. Подробности: formatting_review.txt",
     }
     report_files = list(quality_dir.glob("*.json"))
     assert len(report_files) == 1
     payload = json.loads(report_files[0].read_text(encoding="utf-8"))
     assert payload["quality_status"] == "warn"
     assert payload["gate_reasons"] == ["unmapped_source_paragraphs_above_advisory_threshold"]
+    assert payload["formatting_review_required_count"] == 2
+    assert payload["formatting_review_items"] == [
+        {
+            "reason": "unmapped_source_paragraphs_review_required",
+            "label": "Абзацы без явного соответствия оригиналу",
+            "count": 2,
+            "severity": "review",
+        }
+    ]
 
 
 def test_run_document_processing_keeps_false_fragment_cleanup_display_only_after_quality_gate_decoupling(tmp_path, monkeypatch):

@@ -44,6 +44,7 @@ from docxaicorrector.validation.formatting_coverage import (
     resolve_role_aware_formatting_unmapped_source_summary,
     resolve_role_aware_formatting_unmapped_target_summary,
 )
+from docxaicorrector.validation.acceptance import build_acceptance_verdict
 from docxaicorrector.validation.quality_gate_audit import quality_gate_audit_classifications_payload
 from docxaicorrector.reader_cleanup_mvp import (
     build_cleanup_blocks,
@@ -2360,6 +2361,60 @@ def _hygiene_threshold_fn(spec: _HygieneGateSpec) -> Callable[[int, object], boo
     )
 
 
+def _emit_unmapped_source_discrepancy_review_items(
+    *,
+    formatting_review_items: list[dict[str, object]],
+    basis: str,
+    role_loss_count: int,
+    role_loss_samples: Sequence[object],
+    unmapped_source_count: int,
+) -> None:
+    """Policy-independent DATA emission for unmapped-source discrepancies.
+
+    Emits role_loss / unmapped review-items so the UI has these discrepancies
+    even under advisory (where the pass/fail STATUS stays policy-scaled and is
+    applied by the caller). The item shapes mirror the strict path's
+    ``_emit_hygiene_gate`` output; only the DATA — not the verdict severity — is
+    made policy-independent (GATE_TRUSTWORTHINESS refactor, Task B).
+    """
+    if basis == "role_aware_formatting_coverage" and role_loss_count > 0:
+        spec = _HYGIENE_GATE_SPECS["role_loss"]
+        serialized_samples = [
+            dict(_serialize_role_loss_sample(cast(Mapping[str, object], sample)))
+            for sample in list(role_loss_samples)[:8]
+        ]
+        if serialized_samples:
+            use_aggregate = role_loss_count > len(serialized_samples)
+            for sample_index, sample in enumerate(serialized_samples):
+                item = _build_formatting_review_item(
+                    reason=spec.review_reason,
+                    label=spec.label,
+                    sample=sample,
+                    count=0 if use_aggregate else 1,
+                    severity=spec.severity,
+                )
+                if sample_index == 0 and use_aggregate:
+                    item["aggregate_count"] = role_loss_count
+                formatting_review_items.append(item)
+        else:
+            formatting_review_items.append(
+                _build_formatting_review_item(
+                    reason=spec.review_reason,
+                    label=spec.empty_label or spec.label,
+                    count=role_loss_count,
+                    severity=spec.severity,
+                )
+            )
+    else:
+        formatting_review_items.append(
+            _build_formatting_review_item(
+                reason="unmapped_source_paragraphs_review_required",
+                label="Абзацы без явного соответствия оригиналу",
+                count=unmapped_source_count,
+            )
+        )
+
+
 def _emit_hygiene_gate(
     *,
     quality_status: str,
@@ -2410,6 +2465,71 @@ def _emit_hygiene_gate(
             )
         )
     return quality_status, emitted_reason
+
+
+_ACCEPTANCE_MAX_UNMAPPED_SOURCE_CONFIG_KEY = "acceptance_max_unmapped_source_paragraphs"
+_ACCEPTANCE_MAX_UNMAPPED_TARGET_CONFIG_KEY = "acceptance_max_unmapped_target_paragraphs"
+_ACCEPTANCE_REQUIRE_NO_TOC_BODY_CONCAT_CONFIG_KEY = "acceptance_require_no_toc_body_concat"
+
+
+def build_report_acceptance_verdict(
+    report: Mapping[str, object],
+    *,
+    mismatch_threshold: int = 0,
+    unmapped_target_threshold: int = 0,
+    require_no_toc_body_concat: bool = False,
+) -> dict[str, object]:
+    """Assemble the acceptance verdict for a report context via the shared module.
+
+    Production-side counterpart to the harness' ``evaluate_lietaer_acceptance``:
+    both delegate to ``docxaicorrector.validation.acceptance.build_acceptance_verdict``
+    so the UI/advisory path can compute the same trustworthy verdict from a
+    report context (GATE_TRUSTWORTHINESS refactor §Scope item 6). Structural
+    (source<->output DOCX) comparison checks are harness-only and omitted here.
+    """
+    return build_acceptance_verdict(
+        report,
+        mismatch_threshold=mismatch_threshold,
+        unmapped_target_threshold=unmapped_target_threshold,
+        require_no_toc_body_concat=require_no_toc_body_concat,
+        structural_checks_builder=None,
+    )
+
+
+def _resolve_acceptance_thresholds(context: Any) -> tuple[int, int, bool]:
+    app_config = getattr(context, "app_config", {}) or {}
+
+    def _cfg_int(key: str, default: int) -> int:
+        try:
+            return int(app_config.get(key, default))
+        except (TypeError, ValueError):
+            return default
+
+    return (
+        _cfg_int(_ACCEPTANCE_MAX_UNMAPPED_SOURCE_CONFIG_KEY, 0),
+        _cfg_int(_ACCEPTANCE_MAX_UNMAPPED_TARGET_CONFIG_KEY, 0),
+        bool(app_config.get(_ACCEPTANCE_REQUIRE_NO_TOC_BODY_CONCAT_CONFIG_KEY, False)),
+    )
+
+
+def _build_report_context_for_acceptance(
+    *,
+    context: Any,
+    quality_report: Mapping[str, object],
+    formatting_diagnostics_payloads: Sequence[Mapping[str, object]],
+) -> dict[str, object]:
+    return {
+        "result": "succeeded",
+        "runtime_config": {
+            "effective": {"processing_operation": getattr(context, "processing_operation", "")}
+        },
+        "translation_quality_report": dict(quality_report),
+        "formatting_diagnostics": [dict(payload) for payload in formatting_diagnostics_payloads],
+        "output_artifacts": {},
+        "runtime": {},
+        "reader_cleanup_evidence": {},
+        "preparation_diagnostic_snapshot": {},
+    }
 
 
 def _build_translation_quality_report(
@@ -2592,6 +2712,24 @@ def _build_translation_quality_report(
             if isinstance(effective_source_total, int) and effective_source_total > 0 and (worst_unmapped_source_count / effective_source_total) > 0.01:
                 quality_status = "warn"
                 gate_reasons.append("unmapped_source_paragraphs_above_advisory_threshold")
+            # DATA is policy-independent: emit the role_loss/unmapped discrepancy
+            # review-items even under advisory so the UI is not blind (the warn
+            # status above stays policy-scaled).
+            advisory_role_loss_samples = (
+                _effective_formatting_coverage_samples_by_class(
+                    latest_payload,
+                    coverage_class="content_survived_but_format_role_lost",
+                )
+                if isinstance(latest_payload, Mapping)
+                else []
+            )
+            _emit_unmapped_source_discrepancy_review_items(
+                formatting_review_items=formatting_review_items,
+                basis=basis,
+                role_loss_count=role_loss_count,
+                role_loss_samples=advisory_role_loss_samples,
+                unmapped_source_count=worst_unmapped_source_count,
+            )
         if isinstance(latest_payload, Mapping):
             controlled_fallback_review_count, controlled_fallback_review_samples = _controlled_fallback_review_samples(
                 latest_payload
@@ -3711,6 +3849,25 @@ def finalize_processing_success(
         formatting_diagnostics_artifacts=formatting_diagnostics_artifacts,
         assembly_result=assembly_result,
         pre_cleanup_formatting_baseline=cast(Mapping[str, object] | None, docx_phase.get("pre_cleanup_formatting_baseline")),
+    )
+    # Serialize the shared acceptance verdict into the quality report so the
+    # production (incl. advisory) path carries the same trustworthy verdict the
+    # validation harness computes (GATE_TRUSTWORTHINESS refactor — harness<->prod
+    # parity). Thresholds come from config, not per-book literals.
+    (
+        _acceptance_mismatch_threshold,
+        _acceptance_unmapped_target_threshold,
+        _acceptance_require_no_toc_body_concat,
+    ) = _resolve_acceptance_thresholds(context)
+    quality_report["acceptance_verdict"] = build_report_acceptance_verdict(
+        _build_report_context_for_acceptance(
+            context=context,
+            quality_report=quality_report,
+            formatting_diagnostics_payloads=_load_formatting_diagnostics_payloads(formatting_diagnostics_artifacts),
+        ),
+        mismatch_threshold=_acceptance_mismatch_threshold,
+        unmapped_target_threshold=_acceptance_unmapped_target_threshold,
+        require_no_toc_body_concat=_acceptance_require_no_toc_body_concat,
     )
     if quality_report.get("quality_status") == "warn":
         review_count = int(quality_report.get("formatting_review_required_count") or 0)
