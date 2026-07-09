@@ -12,6 +12,10 @@ Active companions:
   (wrong model gpt-5-mini vs Gemini, env-override, WSL backgrounding, CRLF launchers).
 - `docs/specs/UI/FORMATTING_DISCREPANCY_REPORTING_SPEC_2026-06-15.md` — the first
   UI slice (how residual discrepancies reach the user).
+- `docs/specs/GATE_TRUSTWORTHINESS_AND_UI_DATA_REFACTOR_2026-07-09.md` — ACTIVE prerequisite for UI:
+  make the PRODUCTION gate emit trustworthy, complete discrepancy data + policy-consistent verdict
+  (body-integrity/heading-demotion axis, policy-independent review-items, [КРИТ] rendering, harness↔prod
+  parity). Discharges Remaining-Work items 1/3/4. Being implemented in stages.
 
 ## ═══ NAVIGATION / RESUME POINT (read this first) — updated 2026-06-22 ═══
 
