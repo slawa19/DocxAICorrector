@@ -48,6 +48,9 @@ benchmark_projects/structure_recognition_benchmark/artifacts/**
 benchmark_projects/translation_quality_benchmark/artifacts/**
 !benchmark_projects/translation_quality_benchmark/artifacts/
 
+# Local Claude Code settings (machine-specific permissions)
+.claude/settings.local.json
+
 # Root diagnostic artifacts
 /search_result.txt
 /wsl_out.txt
