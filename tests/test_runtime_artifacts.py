@@ -202,6 +202,93 @@ def test_write_ui_result_artifacts_uses_aggregate_count_for_capped_role_loss_sam
     assert "Всего: ПРАВКА 11 · ПРОВЕРКА 0 · КРИТ 0" in review_text
 
 
+def test_write_ui_result_artifacts_marks_bad_pair_review_items_as_defect(tmp_path):
+    artifact_paths = write_ui_result_artifacts(
+        source_name="report.docx",
+        markdown_text="body",
+        docx_bytes=b"docx-bytes",
+        quality_warning={
+            "quality_status": "fail",
+            "gate_reasons": ["mapping_text_quality_bad_pair"],
+            "formatting_review_required_count": 1,
+            "formatting_review_items": [
+                {
+                    "severity": "defect",
+                    "label": "Перевод встал не к тому исходному абзацу",
+                    "sample": {
+                        "text": "Совсем другой перевод",
+                        "source_text": "Original source paragraph",
+                    },
+                }
+            ],
+        },
+        output_dir=tmp_path,
+        created_at=1_766_636_465.0,
+    )
+
+    review_text = Path(artifact_paths["formatting_review_path"]).read_text(encoding="utf-8")
+
+    assert "[КРИТ] Перевод встал не к тому исходному абзацу" in review_text
+    assert "Исходный абзац: «Original source paragraph»" in review_text
+    assert "В выводе: «Совсем другой перевод»" in review_text
+    assert "Всего: ПРАВКА 0 · ПРОВЕРКА 1 · КРИТ 0" not in review_text
+    assert "Всего: ПРАВКА 0 · ПРОВЕРКА 0 · КРИТ 1" in review_text
+
+
+def test_write_ui_result_artifacts_totals_line_counts_all_three_severities(tmp_path):
+    artifact_paths = write_ui_result_artifacts(
+        source_name="report.docx",
+        markdown_text="body",
+        docx_bytes=b"docx-bytes",
+        quality_warning={
+            "quality_status": "fail",
+            "gate_reasons": ["mapping_text_quality_bad_pair"],
+            "formatting_review_items": [
+                {"severity": "fix", "label": "Правка оформления", "sample": {"text": "A"}},
+                {"severity": "review", "label": "Проверьте оформление", "sample": {"text": "B"}},
+                {"severity": "review", "label": "И это тоже", "sample": {"text": "C"}},
+                {
+                    "severity": "defect",
+                    "label": "Перевод встал не к тому исходному абзацу",
+                    "aggregate_count": 5,
+                    "count": 0,
+                    "sample": {"text": "D", "source_text": "src"},
+                },
+            ],
+        },
+        output_dir=tmp_path,
+        created_at=1_766_636_465.0,
+    )
+
+    review_text = Path(artifact_paths["formatting_review_path"]).read_text(encoding="utf-8")
+
+    assert "[ПРАВКА] Правка оформления" in review_text
+    assert "[ПРОВЕРКА] Проверьте оформление" in review_text
+    assert "[КРИТ] Перевод встал не к тому исходному абзацу" in review_text
+    # Real counts: 1 fix, 2 review, 5 defects (aggregate) — no hardcoded КРИТ 0.
+    assert "Всего: ПРАВКА 1 · ПРОВЕРКА 2 · КРИТ 5" in review_text
+
+
+def test_write_ui_result_artifacts_empty_items_render_ok_block_with_zero_totals(tmp_path):
+    artifact_paths = write_ui_result_artifacts(
+        source_name="report.docx",
+        markdown_text="body",
+        docx_bytes=b"docx-bytes",
+        quality_warning={
+            "quality_status": "warn",
+            "gate_reasons": ["some_reason"],
+            "formatting_review_items": [],
+        },
+        output_dir=tmp_path,
+        created_at=1_766_636_465.0,
+    )
+
+    review_text = Path(artifact_paths["formatting_review_path"]).read_text(encoding="utf-8")
+
+    assert "[OK] Расхождений оформления для ручной проверки не найдено." in review_text
+    assert "Всего: ПРАВКА 0 · ПРОВЕРКА 0 · КРИТ 0" in review_text
+
+
 def test_write_ui_result_artifacts_records_assembly_mode_in_meta(tmp_path):
     artifact_paths = write_ui_result_artifacts(
         source_name="report.docx",

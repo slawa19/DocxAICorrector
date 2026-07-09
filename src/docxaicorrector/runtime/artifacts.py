@@ -57,6 +57,25 @@ def _truncate_review_text(value: object, *, limit: int = 160) -> str:
     return text[: max(0, limit - 1)].rstrip() + "…"
 
 
+# Severity is the single source of truth for how an item renders and is counted:
+# "fix" → [ПРАВКА] (formatting nit), "review" → [ПРОВЕРКА] (open and check),
+# "defect" → [КРИТ] (content defect, e.g. a translated paragraph mapped to the wrong source).
+_REVIEW_SEVERITY_MARKERS = {"fix": "[ПРАВКА]", "review": "[ПРОВЕРКА]", "defect": "[КРИТ]"}
+
+
+def _review_item_severity(item: Mapping[str, object]) -> str:
+    severity = str(item.get("severity") or "review")
+    return severity if severity in _REVIEW_SEVERITY_MARKERS else "review"
+
+
+def _review_item_count(item: Mapping[str, object]) -> int:
+    value = item.get("aggregate_count") if "aggregate_count" in item else item.get("count", 1)
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return 1
+
+
 def _build_formatting_review_text(
     *,
     source_name: str,
@@ -64,20 +83,20 @@ def _build_formatting_review_text(
     created_at: float | None,
 ) -> str:
     timestamp = datetime.fromtimestamp(time.time() if created_at is None else created_at).isoformat(timespec="seconds")
-    items = list(quality_warning.get("formatting_review_items") or []) if quality_warning else []
-    review_count = int((quality_warning or {}).get("formatting_review_required_count") or len(items) or 0)
-    fix_count = sum(
-        int(item.get("aggregate_count") if "aggregate_count" in item else item.get("count", 1))
-        for item in items
-        if isinstance(item, Mapping) and str(item.get("severity") or "review") == "fix"
-    )
-    manual_review_count = max(review_count - fix_count, 0)
+    raw_items = list(quality_warning.get("formatting_review_items") or []) if quality_warning else []
+    items = [item for item in raw_items if isinstance(item, Mapping)]
+    counts = {"fix": 0, "review": 0, "defect": 0}
+    for item in items:
+        counts[_review_item_severity(item)] += _review_item_count(item)
+    totals_line = f"Всего: ПРАВКА {counts['fix']} · ПРОВЕРКА {counts['review']} · КРИТ {counts['defect']}"
     lines = [
         f"Проверка оформления — {Path(source_name).name or 'document'}",
         f"Дата: {timestamp}",
-        f"Итог: {fix_count} на правку / {manual_review_count} на проверку",
+        f"Итог: {counts['fix']} на правку / {counts['review']} на проверку / {counts['defect']} критично",
         "",
-        "Что значат пометки: [ПРОВЕРКА] — желательно открыть место в DOCX и проверить оформление.",
+        "Что значат пометки: [ПРАВКА] — оформление желательно поправить; "
+        "[ПРОВЕРКА] — откройте место в DOCX и проверьте оформление; "
+        "[КРИТ] — перевод мог встать не к тому абзацу, проверьте смысл.",
         "",
         "-" * 70,
     ]
@@ -86,33 +105,39 @@ def _build_formatting_review_text(
             [
                 "[OK] Расхождений оформления для ручной проверки не найдено.",
                 "-" * 70,
-                "Всего: ПРАВКА 0 · ПРОВЕРКА 0 · КРИТ 0",
+                totals_line,
             ]
         )
         return "\n".join(lines) + "\n"
 
     for index, item in enumerate(items, start=1):
-        if not isinstance(item, Mapping):
-            continue
-        marker = "[ПРАВКА]" if str(item.get("severity") or "review") == "fix" else "[ПРОВЕРКА]"
+        severity = _review_item_severity(item)
+        marker = _REVIEW_SEVERITY_MARKERS[severity]
         label = _truncate_review_text(item.get("label") or "Абзац требует проверки оформления", limit=100)
         sample = item.get("sample")
         sample_text = ""
+        source_text = ""
         if isinstance(sample, Mapping):
             sample_text = _truncate_review_text(sample.get("text"), limit=180)
-        count = int(item.get("aggregate_count") if "aggregate_count" in item else item.get("count", 1))
+            source_text = _truncate_review_text(sample.get("source_text"), limit=180)
+        count = _review_item_count(item)
         lines.append(f"{marker} {label}")
+        if source_text:
+            lines.append(f"  Исходный абзац: «{source_text}»")
         if sample_text:
             lines.append(f"  В выводе: «{sample_text}»")
         elif count > 1:
             lines.append(f"  Количество: {count}")
-        lines.append("  Как проверить: найдите этот фрагмент в DOCX и убедитесь, что стиль и позиция сохранены.")
+        if severity == "defect":
+            lines.append("  Как проверить: найдите этот абзац в DOCX — перевод мог встать не к тому исходному абзацу.")
+        else:
+            lines.append("  Как проверить: найдите этот фрагмент в DOCX и убедитесь, что стиль и позиция сохранены.")
         if index != len(items):
             lines.append("")
     lines.extend(
         [
             "-" * 70,
-            f"Всего: ПРАВКА {fix_count} · ПРОВЕРКА {manual_review_count} · КРИТ 0",
+            totals_line,
         ]
     )
     return "\n".join(lines) + "\n"
