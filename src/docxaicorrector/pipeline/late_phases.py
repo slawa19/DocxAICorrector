@@ -2128,6 +2128,57 @@ def _build_formatting_review_item(
     return item
 
 
+def _emit_mapping_text_quality_defect_items(
+    *,
+    formatting_review_items: list[dict[str, object]],
+    mapping_text_quality: Mapping[str, object] | None,
+    limit: int = 8,
+) -> None:
+    # A "bad pair" means a translated paragraph landed against the wrong source paragraph
+    # (source/target text barely overlap). That is a content defect, not a formatting nit,
+    # so it is surfaced with severity "defect" ([КРИТ]). Rendered samples are capped like
+    # the other gates; the true total rides on aggregate_count of the first item.
+    if not isinstance(mapping_text_quality, Mapping):
+        return
+    try:
+        bad_pair_count = int(mapping_text_quality.get("bad_pair_count") or 0)
+    except (TypeError, ValueError):
+        bad_pair_count = 0
+    if bad_pair_count <= 0:
+        return
+    raw_samples = mapping_text_quality.get("samples")
+    samples: list[Mapping[str, object]] = []
+    if isinstance(raw_samples, Sequence) and not isinstance(raw_samples, (str, bytes)):
+        samples = [sample for sample in raw_samples if isinstance(sample, Mapping)][:limit]
+    label = "Перевод встал не к тому исходному абзацу"
+    if not samples:
+        formatting_review_items.append(
+            _build_formatting_review_item(
+                reason="mapping_text_quality_bad_pair",
+                label=label,
+                count=bad_pair_count,
+                severity="defect",
+            )
+        )
+        return
+    use_aggregate = bad_pair_count > len(samples)
+    for sample_index, sample in enumerate(samples):
+        item = _build_formatting_review_item(
+            reason="mapping_text_quality_bad_pair",
+            label=label,
+            sample={
+                "text": sample.get("target_text_preview"),
+                "source_text": sample.get("source_text_preview"),
+                "reason": "mapping_text_quality_bad_pair",
+            },
+            count=0 if use_aggregate else 1,
+            severity="defect",
+        )
+        if sample_index == 0 and use_aggregate:
+            item["aggregate_count"] = bad_pair_count
+        formatting_review_items.append(item)
+
+
 def _formatting_review_required_count(items: Sequence[Mapping[str, object]]) -> int:
     count = 0
     for item in items:
@@ -2760,6 +2811,12 @@ def _build_translation_quality_report(
                 if sample_index == 0 and use_aggregate:
                     item["aggregate_count"] = len(untranslated_body_samples)
                 formatting_review_items.append(item)
+        _emit_mapping_text_quality_defect_items(
+            formatting_review_items=formatting_review_items,
+            mapping_text_quality=(
+                latest_payload.get("mapping_text_quality") if isinstance(latest_payload, Mapping) else None
+            ),
+        )
         if theology_style_samples:
             quality_status = "warn" if quality_status == "pass" else quality_status
 

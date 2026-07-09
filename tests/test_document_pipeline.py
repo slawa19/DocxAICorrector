@@ -6935,3 +6935,44 @@ def test_run_document_processing_end_to_end_produces_openable_docx_artifact(tmp_
     assert len(output_doc.inline_shapes) == 1
     assert runtime["finalize"][-1][0] == "Обработка завершена"
     assert runtime["log"][-1]["status"] == "DONE"
+
+
+def test_emit_mapping_text_quality_defect_items_surfaces_bad_pairs():
+    items: list[dict] = []
+    document_pipeline_late_phases._emit_mapping_text_quality_defect_items(
+        formatting_review_items=items,
+        mapping_text_quality={
+            "bad_pair_count": 3,
+            "samples": [
+                {
+                    "source_text_preview": "Original source paragraph",
+                    "target_text_preview": "Совсем другой перевод",
+                },
+                {
+                    "source_text_preview": "Second source",
+                    "target_text_preview": "Второй мимо",
+                },
+            ],
+        },
+    )
+
+    assert len(items) == 2
+    assert all(item["severity"] == "defect" for item in items)
+    assert all(item["reason"] == "mapping_text_quality_bad_pair" for item in items)
+    # 3 bad pairs but only 2 samples rendered -> aggregate rides on the first item.
+    assert items[0]["aggregate_count"] == 3
+    assert items[0]["sample"]["source_text"] == "Original source paragraph"
+    assert items[0]["sample"]["text"] == "Совсем другой перевод"
+
+
+def test_emit_mapping_text_quality_defect_items_noop_without_bad_pairs():
+    items: list[dict] = []
+    document_pipeline_late_phases._emit_mapping_text_quality_defect_items(
+        formatting_review_items=items,
+        mapping_text_quality={"bad_pair_count": 0, "samples": []},
+    )
+    document_pipeline_late_phases._emit_mapping_text_quality_defect_items(
+        formatting_review_items=items,
+        mapping_text_quality=None,
+    )
+    assert items == []
