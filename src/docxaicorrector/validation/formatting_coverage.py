@@ -92,6 +92,40 @@ _BACKMATTER_SECTION_TITLES = frozenset(
 _MIN_BODY_PROSE_LEN = 140
 _BODY_PROSE_TERMINAL_CHARS = ".!?…»\"”"
 
+# --- Additional agreed pass-through categories (index-region / attribution) — 3A ---
+#
+# GATE_TRUSTWORTHINESS 3A (2026-07-09): the residue that still tips effective-unmapped
+# over threshold is itself pass-through — back-matter INDEX rows (a term followed by a
+# semicolon-separated list of page numbers / ranges) and front/back ATTRIBUTION lines
+# (epigraph author credits). Both are translated as-is but must not count as body loss.
+# Each detector is form/region based (never a book-specific literal) and preserves the
+# anti-vacuum valve: a real body-prose paragraph (`_is_substantial_body_prose`) is never
+# classified as either.
+#
+# Index row: a term/heading followed by page references — at least one semicolon-joined
+# page group OR a bare/comma-led run of page numbers and page ranges ("60–61, 72; 88").
+# Only trusted INSIDE the confirmed references/back-matter region (source_index >=
+# references_region_start) so a mid-body sentence that merely ends in a number is safe.
+_INDEX_PAGE_RUN_PATTERN = re.compile(r"\d+\s*[–—-]\s*\d+|\d+\s*;\s*\d+|,\s*\d+(?:\s*[–—-]\s*\d+)?\s*(?:;|$)")
+_INDEX_SEMICOLON_PAGE_PATTERN = re.compile(r";\s*(?:pp?\.?\s*)?\d")
+_MAX_INDEX_ROW_LEN = 400
+# Attribution: an epigraph/dedication author credit. Either an explicit structural role,
+# a dash-led credit ("— Adrienne Rich"), or a short "Name, <role/affiliation>" appositive.
+_ATTRIBUTION_STRUCTURAL_ROLES = frozenset({"attribution", "epigraph", "dedication"})
+_MAX_ATTRIBUTION_LEN = 90
+_ATTRIBUTION_DASH_PATTERN = re.compile(r"^[—–\-]\s*[^\W\d_]", re.UNICODE)
+# Single-word role/affiliation nouns for the "Name, <role>" appositive form, matched on
+# WORD BOUNDARIES (never as a substring — "mp" must not match "une-mp-loyment").
+_ATTRIBUTION_ROLE_WORD_PATTERN = re.compile(
+    r"\b(?:governor|president|professor|director|editor|founder|chairman|chairwoman|"
+    r"minister|secretary|economist|chancellor|emeritus|laureate|philosopher|journalist|"
+    r"historian|ambassador|senator|congressman|congresswoman)\b",
+    re.IGNORECASE,
+)
+# Multi-word affiliation phrases (unambiguous enough to match as a substring).
+_ATTRIBUTION_ROLE_PHRASES = ("of the ", "prime minister", "chief executive", "former ")
+_ATTRIBUTION_SENTENCE_TERMINAL = ".!?"
+
 
 def _entry_role(entry: Mapping[str, object] | None) -> str:
     if entry is None:
@@ -158,6 +192,150 @@ def _is_substantial_body_prose(text: str) -> bool:
     if not first_alpha or first_alpha == first_alpha.lower():
         return False
     return normalized[-1] in _BODY_PROSE_TERMINAL_CHARS
+
+
+def _is_index_row_text(text: str) -> bool:
+    """An index/back-matter reference row: a term followed by a run of page numbers
+    (semicolon-joined groups or comma-led page ranges). Form-only; the caller restricts
+    it to the confirmed references region so a body sentence ending in a number is safe.
+    A substantial body-prose paragraph is never an index row (anti-vacuum valve)."""
+    normalized = _normalize_structural_text(text)
+    if not normalized or len(normalized) > _MAX_INDEX_ROW_LEN:
+        return False
+    if _is_substantial_body_prose(normalized):
+        return False
+    if _INDEX_SEMICOLON_PAGE_PATTERN.search(normalized) is not None:
+        return True
+    # Otherwise require a term (letters) plus a page run: a page range (digits joined by a
+    # dash) or a semicolon, AND at least three numeric groups — index rows carry a dense
+    # run of page numbers, so a plain "…in 2010." sentence tail is never mistaken for one.
+    if not any(ch.isalpha() for ch in normalized):
+        return False
+    numeric_group_count = len(re.findall(r"\d+", normalized))
+    has_page_run = (
+        re.search(r"\d+\s*[–—-]\s*\d+", normalized) is not None or ";" in normalized
+    )
+    return has_page_run and numeric_group_count >= 3
+
+
+def _is_attribution_text(text: str, role: str, structural_role: str) -> bool:
+    """An epigraph/dedication attribution credit. True for an explicit structural role,
+    a dash-led author credit ("— Adrienne Rich"), or a short "Name, <role/affiliation>"
+    appositive ("Sir Mervyn King, Governor of the Bank of England"). Length-bounded and
+    never matches a real body paragraph — anti-vacuum safe."""
+    if structural_role in _ATTRIBUTION_STRUCTURAL_ROLES or role in _ATTRIBUTION_STRUCTURAL_ROLES:
+        return True
+    normalized = _normalize_structural_text(text)
+    if not normalized or len(normalized) > _MAX_ATTRIBUTION_LEN:
+        return False
+    if _is_substantial_body_prose(normalized):
+        return False
+    if _ATTRIBUTION_DASH_PATTERN.match(normalized) is not None:
+        return True
+    if "," not in normalized:
+        return False
+    if normalized[-1] in _ATTRIBUTION_SENTENCE_TERMINAL:
+        return False
+    trailing = normalized.split(",", 1)[1].lower()
+    if _ATTRIBUTION_ROLE_WORD_PATTERN.search(trailing) is not None:
+        return True
+    return any(phrase in trailing for phrase in _ATTRIBUTION_ROLE_PHRASES)
+
+
+def _target_registry_is_heading(entry: Mapping[str, object] | None) -> bool:
+    if entry is None:
+        return False
+    return entry.get("heading_level") is not None
+
+
+def classify_heading_demotions(
+    payload: Mapping[str, object],
+    preparation_diagnostic_snapshot: Mapping[str, object] | None = None,
+) -> dict[str, object]:
+    """Body-integrity axis 1‑D: detect MAPPED source-heading → target body/list pairs
+    where the heading content survived (the pair is mapped) but the target lost the
+    heading role. Complements the existing role_loss over UNMAPPED source. Scoped to the
+    main-content span `[front_matter_boundary … references_region_start)` (excluding the
+    bounded TOC and caption/part markers) using the same provenance as
+    `classify_passthrough_unmapped_source`, so TOC / front-matter / back-matter / index
+    / attribution demotions are never counted. Returns the demotion samples + count +
+    boundary provenance (payload-level so it runs offline over saved reports and live in
+    the gate identically)."""
+    source_registry = _coerce_mapping_sequence(payload.get("source_registry"))
+    target_registry = _coerce_mapping_sequence(payload.get("target_registry"))
+    if not source_registry or not target_registry:
+        return {
+            "demotion_count": 0,
+            "demotions": [],
+            "samples": [],
+            "front_matter_boundary_source_index": None,
+            "references_region_source_start_index": None,
+            "bounded_toc_region": None,
+        }
+    target_by_index = {
+        _coerce_int(entry.get("target_index"), default=-1): entry for entry in target_registry
+    }
+    boundary = _resolve_source_front_matter_boundary(source_registry, preparation_diagnostic_snapshot)
+    toc_region = _resolve_bounded_toc_region(source_registry, preparation_diagnostic_snapshot, boundary)
+    references_region_start = _resolve_references_region_start(source_registry, boundary, toc_region)
+
+    demotions: list[dict[str, object]] = []
+    for entry in source_registry:
+        role = _entry_role(entry)
+        heading_level = entry.get("heading_level")
+        if role != "heading" and heading_level is None:
+            continue
+        structural_role = str(entry.get("structural_role") or "").strip().lower()
+        source_text = str(entry.get("text_preview") or "")
+        # A caption / part-divider that happens to carry a heading role is furniture,
+        # not a demotable body heading.
+        if role == "caption" or structural_role == "caption":
+            continue
+        if _is_part_divider_text(source_text):
+            continue
+        mapped = entry.get("mapped_target_index")
+        if mapped is None:
+            continue
+        target_entry = target_by_index.get(_coerce_int(mapped, default=-1))
+        if target_entry is None:
+            continue
+        if _target_registry_is_heading(target_entry):
+            continue
+        target_text = str(target_entry.get("text_preview") or "")
+        # The pair is mapped (content survived); guard against an empty / furniture target
+        # so a heading mapped onto a page-number or divider is not mis-flagged.
+        if not target_text.strip() or _is_page_furniture_text(target_text):
+            continue
+        index = _coerce_int(entry.get("source_index"), default=-1)
+        if boundary is not None and 0 <= index < boundary:
+            continue
+        if references_region_start is not None and index >= references_region_start:
+            continue
+        if toc_region is not None and toc_region[0] <= index <= toc_region[1]:
+            continue
+        demotions.append(
+            {
+                "paragraph_id": str(entry.get("paragraph_id") or ""),
+                "source_index": index,
+                "mapped_target_index": _coerce_int(mapped, default=-1),
+                "source_role": role or "heading",
+                "source_structural_role": structural_role or None,
+                "source_heading_level": heading_level,
+                "text_preview": source_text,
+                "target_text_preview": target_text,
+                "target_style_name": target_entry.get("style_name"),
+                "reason": "content_survived_but_heading_demoted",
+            }
+        )
+
+    return {
+        "demotion_count": len(demotions),
+        "demotions": demotions,
+        "samples": demotions[:8],
+        "front_matter_boundary_source_index": boundary,
+        "references_region_source_start_index": references_region_start,
+        "bounded_toc_region": list(toc_region) if toc_region is not None else None,
+    }
 
 
 def _resolve_references_region_start(
@@ -335,6 +513,8 @@ def classify_passthrough_unmapped_source(
         "references": [],
         "caption": [],
         "part": [],
+        "index": [],
+        "attribution": [],
     }
     retained: list[str] = []
     for paragraph_id in unmapped_ids:
@@ -345,16 +525,25 @@ def classify_passthrough_unmapped_source(
         index = _coerce_int(entry.get("source_index"), default=-1)
         text = str(entry.get("text_preview") or "")
         role = _entry_role(entry)
+        structural_role = str(entry.get("structural_role") or "").strip().lower()
         if _is_page_furniture_text(text):
             categories["page_furniture"].append(paragraph_id)
         elif _is_caption_text(text, role):
             categories["caption"].append(paragraph_id)
         elif _is_part_divider_text(text):
             categories["part"].append(paragraph_id)
+        elif _is_attribution_text(text, role, structural_role):
+            categories["attribution"].append(paragraph_id)
         elif toc_region is not None and toc_region[0] <= index <= toc_region[1]:
             categories["bounded_toc"].append(paragraph_id)
         elif boundary is not None and 0 <= index < boundary:
             categories["front_matter"].append(paragraph_id)
+        elif (
+            references_region_start is not None
+            and index >= references_region_start
+            and _is_index_row_text(text)
+        ):
+            categories["index"].append(paragraph_id)
         elif (
             references_region_start is not None
             and index >= references_region_start
@@ -446,20 +635,31 @@ def classify_passthrough_unmapped_target(
         "references": [],
         "caption": [],
         "part": [],
+        "index": [],
+        "attribution": [],
     }
     retained: list[int] = []
     for index in unmapped_indexes:
         entry = by_index.get(index)
         text = str(entry.get("text_preview") or "") if entry is not None else ""
         role = _entry_role(entry)
+        structural_role = str((entry or {}).get("structural_role") or "").strip().lower()
         if _is_page_furniture_text(text):
             categories["page_furniture"].append(index)
         elif _is_caption_text(text, role):
             categories["caption"].append(index)
         elif _is_part_divider_text(text):
             categories["part"].append(index)
+        elif _is_attribution_text(text, role, structural_role):
+            categories["attribution"].append(index)
         elif target_boundary is not None and 0 <= index < target_boundary:
             categories["front_matter"].append(index)
+        elif (
+            target_references_boundary is not None
+            and index >= target_references_boundary
+            and _is_index_row_text(text)
+        ):
+            categories["index"].append(index)
         elif (
             target_references_boundary is not None
             and index >= target_references_boundary
@@ -715,6 +915,8 @@ def resolve_role_aware_formatting_unmapped_source_summary(
                 "passthrough_references_source_count": int(passthrough["category_counts"]["references"]),
                 "passthrough_caption_source_count": int(passthrough["category_counts"]["caption"]),
                 "passthrough_part_source_count": int(passthrough["category_counts"]["part"]),
+                "passthrough_index_source_count": int(passthrough["category_counts"]["index"]),
+                "passthrough_attribution_source_count": int(passthrough["category_counts"]["attribution"]),
                 "front_matter_boundary_source_index": passthrough["front_matter_boundary_source_index"],
                 "bounded_toc_region": passthrough["bounded_toc_region"],
                 "references_region_source_start_index": passthrough["references_region_source_start_index"],
@@ -762,6 +964,8 @@ def resolve_role_aware_formatting_unmapped_target_summary(
                 "passthrough_references_target_count": int(passthrough["category_counts"]["references"]),
                 "passthrough_caption_target_count": int(passthrough["category_counts"]["caption"]),
                 "passthrough_part_target_count": int(passthrough["category_counts"]["part"]),
+                "passthrough_index_target_count": int(passthrough["category_counts"]["index"]),
+                "passthrough_attribution_target_count": int(passthrough["category_counts"]["attribution"]),
                 "front_matter_boundary_target_index": passthrough["front_matter_boundary_target_index"],
                 "references_region_target_start_index": passthrough["references_region_target_start_index"],
                 "effective_unmapped_target_count": effective_count,

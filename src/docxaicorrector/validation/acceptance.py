@@ -451,6 +451,8 @@ def build_acceptance_verdict(
         passthrough_references_source_count=unmapped_source_summary.get("passthrough_references_source_count"),
         passthrough_caption_source_count=unmapped_source_summary.get("passthrough_caption_source_count"),
         passthrough_part_source_count=unmapped_source_summary.get("passthrough_part_source_count"),
+        passthrough_index_source_count=unmapped_source_summary.get("passthrough_index_source_count"),
+        passthrough_attribution_source_count=unmapped_source_summary.get("passthrough_attribution_source_count"),
         front_matter_boundary_source_index=unmapped_source_summary.get("front_matter_boundary_source_index"),
         bounded_toc_region=unmapped_source_summary.get("bounded_toc_region"),
         references_region_source_start_index=unmapped_source_summary.get("references_region_source_start_index"),
@@ -475,6 +477,8 @@ def build_acceptance_verdict(
         passthrough_references_source_count=unmapped_source_summary.get("passthrough_references_source_count"),
         passthrough_caption_source_count=unmapped_source_summary.get("passthrough_caption_source_count"),
         passthrough_part_source_count=unmapped_source_summary.get("passthrough_part_source_count"),
+        passthrough_index_source_count=unmapped_source_summary.get("passthrough_index_source_count"),
+        passthrough_attribution_source_count=unmapped_source_summary.get("passthrough_attribution_source_count"),
         references_region_source_start_index=unmapped_source_summary.get("references_region_source_start_index"),
     )
     add_check(
@@ -499,6 +503,8 @@ def build_acceptance_verdict(
         passthrough_references_target_count=unmapped_target_summary.get("passthrough_references_target_count"),
         passthrough_caption_target_count=unmapped_target_summary.get("passthrough_caption_target_count"),
         passthrough_part_target_count=unmapped_target_summary.get("passthrough_part_target_count"),
+        passthrough_index_target_count=unmapped_target_summary.get("passthrough_index_target_count"),
+        passthrough_attribution_target_count=unmapped_target_summary.get("passthrough_attribution_target_count"),
         front_matter_boundary_target_index=unmapped_target_summary.get("front_matter_boundary_target_index"),
         references_region_target_start_index=unmapped_target_summary.get("references_region_target_start_index"),
     )

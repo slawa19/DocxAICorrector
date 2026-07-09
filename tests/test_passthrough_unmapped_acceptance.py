@@ -291,7 +291,8 @@ def test_breadth_refs_captions_part_leave_failed_checks(
     if expect_part:
         assert src["passthrough_part_source_count"] > 0
 
-    # The excluded categories fully account for the drop from raw to residual.
+    # The excluded categories fully account for the drop from raw to residual (including
+    # the 3A index-region / attribution categories added on top of the 1‑A set).
     category_total = (
         src["passthrough_front_matter_source_count"]
         + src["passthrough_bounded_toc_source_count"]
@@ -299,6 +300,8 @@ def test_breadth_refs_captions_part_leave_failed_checks(
         + src["passthrough_references_source_count"]
         + src["passthrough_caption_source_count"]
         + src["passthrough_part_source_count"]
+        + src["passthrough_index_source_count"]
+        + src["passthrough_attribution_source_count"]
     )
     assert src["raw_worst_unmapped_source_count"] - category_total == src["actual"]
 

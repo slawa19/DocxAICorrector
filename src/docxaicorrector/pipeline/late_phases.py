@@ -41,6 +41,7 @@ from docxaicorrector.pipeline.reassembly import (
 )
 from docxaicorrector.processing.preparation import humanize_quality_gate_reasons
 from docxaicorrector.validation.formatting_coverage import (
+    classify_heading_demotions,
     resolve_role_aware_formatting_unmapped_source_summary,
     resolve_role_aware_formatting_unmapped_target_summary,
 )
@@ -1892,6 +1893,14 @@ _HYGIENE_GATE_SPECS: dict[str, _HygieneGateSpec] = {
         threshold="role_loss",
         empty_label="Структурные абзацы требуют ручной правки",
     ),
+    "heading_demotion": _HygieneGateSpec(
+        review_reason="heading_demotion_review_required",
+        fail_reason="heading_demotion_above_manual_review_threshold",
+        label="Заголовок стал обычным текстом или списком",
+        severity="fix",
+        threshold="role_loss",
+        empty_label="Заголовки требуют ручной правки",
+    ),
     "bullet_heading": _HygieneGateSpec(
         review_reason="bullet_marker_headings_review_required",
         fail_reason="bullet_marker_headings_present",
@@ -2082,6 +2091,39 @@ def _is_standalone_numeric_continuation_sample(sample: object) -> bool:
     return bool(_STANDALONE_NUMERIC_CONTINUATION_PATTERN.fullmatch(text))
 
 
+_REFERENCES_BIB_MARKER_PATTERN = re.compile(
+    r"\bстр\.|\bс\.\s*\d|\bpp?\.\s*\d|\bvol\.|\bт\.\s*\d|\bтом\s+\d|№\s*\d|\b\d{4}\s*г\.",
+    re.IGNORECASE,
+)
+# Two or more footnote-number markers ("… 42 … 43 …") introducing a citation clause.
+_MULTI_FOOTNOTE_MARKER_PATTERN = re.compile(r"(?<!\d)\d{1,3}(?=\s+[«*“\"A-ZА-ЯЁ])")
+
+
+def _is_references_region_list_fragment_sample(sample: object) -> bool:
+    """A list-fragment residue line that belongs to the back-matter notes / bibliography
+    region — creditable as review, not a hard-fail. True for standalone-numeric footnote /
+    page numbers (existing 1‑A crediting) OR a bibliography/notes-form line carrying at
+    least two citation signals (quoted titles «…», years, "стр."/journal markers, multiple
+    footnote markers). A broken BODY list fragment (a bullet-led line, or a plain
+    continuation with no citation signal) is never credited — anti-vacuum for real body
+    loss."""
+    if _is_standalone_numeric_continuation_sample(sample):
+        return True
+    text = str(getattr(sample, "text", "") or "").strip()
+    if not text or text[:2] in ("- ", "* ") or text.startswith(("#", ">")):
+        return False
+    signals = 0
+    if _BIBLIOGRAPHY_LIKE_PATTERN.search(text) is not None:
+        signals += 1
+    if "«" in text or "»" in text:
+        signals += 1
+    if _REFERENCES_BIB_MARKER_PATTERN.search(text) is not None:
+        signals += 1
+    if len(_MULTI_FOOTNOTE_MARKER_PATTERN.findall(text)) >= 2:
+        signals += 1
+    return signals >= 2
+
+
 def _is_reviewable_list_fragment_residue(
     *,
     samples: Sequence[object],
@@ -2091,22 +2133,20 @@ def _is_reviewable_list_fragment_residue(
         return False
     if not samples:
         return False
-    # Partition the residue: standalone-numeric back-matter (footnote / page
-    # numbers such as "18." or "1491." that survive as pass-through) vs. everything
-    # else. A NON-numeric residue line is a real body-text list fragment (a broken
-    # bullet / list item) and is never review-only: hard-fail as soon as any such
-    # fragment is present, regardless of count.
-    non_numeric_residue = [
+    # Partition the residue: back-matter notes/bibliography residue (standalone footnote
+    # / page numbers such as "18." or "1491.", and citation-form notes lines) vs. real
+    # body-text list fragments (broken bullets / list items). A single non-creditable
+    # body fragment hard-fails; a residue that is ENTIRELY back-matter routes to soft
+    # review, regardless of count, so footnote / page / bibliography residue cannot tip
+    # an otherwise-good book into an acceptance hard-fail (1‑A references crediting
+    # extended from bare numbers to full notes/bibliography lines).
+    non_creditable_residue = [
         sample
         for sample in samples
-        if not _is_standalone_numeric_continuation_sample(sample)
+        if not _is_references_region_list_fragment_sample(sample)
     ]
-    if non_numeric_residue:
+    if non_creditable_residue:
         return False
-    # Pure standalone-numeric back-matter residue: always route to soft review,
-    # regardless of how many there are, so footnote/page numbers cannot tip an
-    # otherwise-good book into an acceptance hard-fail (the old count cap wrongly
-    # blocked mazzucato at 4 such numbers).
     return True
 
 
@@ -2187,6 +2227,22 @@ def _serialize_role_loss_sample(sample: Mapping[str, object]) -> dict[str, objec
         "reason": "content_survived_but_format_role_lost",
         "role": sample.get("role"),
         "structural_role": sample.get("structural_role"),
+    }
+
+
+def _serialize_heading_demotion_sample(sample: Mapping[str, object]) -> dict[str, object]:
+    """Serialize a 1‑D heading-demotion sample (mapped source-heading rendered as
+    body/list) into the role_loss review-item shape, tagged with its own reason so the
+    UI can distinguish the demoted-heading axis from unmapped role-loss."""
+    return {
+        "line": None,
+        "text": sample.get("text_preview") or "",
+        "target_text": sample.get("target_text_preview") or "",
+        "reason": "content_survived_but_heading_demoted",
+        "role": sample.get("source_role"),
+        "structural_role": sample.get("source_structural_role"),
+        "source_index": sample.get("source_index"),
+        "mapped_target_index": sample.get("mapped_target_index"),
     }
 
 
@@ -2644,6 +2700,8 @@ def _build_translation_quality_report(
             role_aware_target_summary["raw_unmapped_target_count"]
         )
         effective_unmapped_target_count = int(role_aware_target_summary["effective_unmapped_target_count"])
+    heading_demotion_count = 0
+    heading_demotion_samples: list[Mapping[str, object]] = []
     prepared_paragraph_count = getattr(context, "paragraph_count", None) or getattr(context, "total_paragraphs", None)
     if isinstance(prepared_paragraph_count, int) and prepared_paragraph_count > 0:
         if source_paragraph_count is None:
@@ -2662,6 +2720,17 @@ def _build_translation_quality_report(
             role_loss_count = int(effective_coverage_counts.get("content_survived_but_format_role_lost") or 0)
         except (TypeError, ValueError):
             role_loss_count = 0
+        # Body-integrity axis 1‑D: mapped source-heading → target body/list demotions
+        # (content survived, heading role lost). Complements the UNMAPPED role_loss above;
+        # main-content scoped inside classify_heading_demotions so TOC / front-matter /
+        # references / index / attribution demotions are never counted.
+        heading_demotion_result = (
+            classify_heading_demotions(latest_payload)
+            if isinstance(latest_payload, Mapping)
+            else {"demotion_count": 0, "samples": []}
+        )
+        heading_demotion_count = int(heading_demotion_result.get("demotion_count") or 0)
+        heading_demotion_samples = list(heading_demotion_result.get("samples") or [])
         if basis == "topology_unit":
             structure_unit_total_count = authority_fields.get("structure_unit_total_count")
             if isinstance(structure_unit_total_count, int) and structure_unit_total_count > 0:
@@ -2740,6 +2809,22 @@ def _build_translation_quality_report(
                 formatting_review_items=formatting_review_items,
                 count=controlled_fallback_review_count,
                 samples=controlled_fallback_review_samples,
+            )
+        # 1‑D heading-demotion is a fix-severity role_loss axis emitted independently of
+        # the unmapped-count gate above, so a mapped demoted heading surfaces even when
+        # every source paragraph is otherwise mapped. DATA is policy-independent (advisory
+        # applies the review reason, strict routes through the role_loss threshold).
+        if heading_demotion_count > 0:
+            quality_status, _ = _emit_hygiene_gate(
+                quality_status=quality_status,
+                gate_reasons=gate_reasons,
+                formatting_review_items=formatting_review_items,
+                policy=policy,
+                spec=_HYGIENE_GATE_SPECS["heading_demotion"],
+                count=heading_demotion_count,
+                source_total=effective_source_total,
+                samples=heading_demotion_samples,
+                sample_serializer=_serialize_heading_demotion_sample,
             )
         if bullet_heading_count > 0:
             quality_status, _ = _emit_hygiene_gate(
@@ -2826,6 +2911,18 @@ def _build_translation_quality_report(
                     policy=policy,
                     reason="list_fragment_regressions_present",
                 )
+                # Even on the hard-fail path the discrepancy DATA must reach the UI:
+                # emit a review-item per residue sample (previously Money hard-failed
+                # list_fragment with review_items=0, leaving the UI blind).
+                for sample in _serialize_quality_samples(list_fragment_regression_samples):
+                    formatting_review_items.append(
+                        _build_formatting_review_item(
+                            reason="list_fragment_regressions_present",
+                            label="Фрагмент списка потерял структуру",
+                            sample=sample,
+                            severity="fix",
+                        )
+                    )
         if mixed_script_samples:
             quality_status, _ = _emit_hygiene_gate(
                 quality_status=quality_status,
@@ -2985,6 +3082,10 @@ def _build_translation_quality_report(
         "raw_residual_bullet_glyph_count": len(raw_residual_bullet_glyph_samples),
         "residual_bullet_glyph_samples": _serialize_quality_samples(residual_bullet_glyph_samples),
         "raw_residual_bullet_glyph_samples": _serialize_quality_samples(raw_residual_bullet_glyph_samples),
+        "heading_demotion_count": heading_demotion_count,
+        "heading_demotion_samples": [
+            dict(_serialize_heading_demotion_sample(sample)) for sample in heading_demotion_samples
+        ],
         "list_fragment_regression_count": len(list_fragment_regression_samples),
         "list_fragment_regression_samples": _serialize_quality_samples(list_fragment_regression_samples),
         "list_fragment_regression_gate_source": list_fragment_regression_gate_source,
