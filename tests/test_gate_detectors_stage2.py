@@ -88,7 +88,9 @@ def test_heading_demotion_fires_in_main_content():
     ]
     result = classify_heading_demotions(_payload_with_boundaries(src, tgt))
     assert result["demotion_count"] == 1
-    sample = result["samples"][0]
+    samples = result["samples"]
+    assert isinstance(samples, list)
+    sample = samples[0]
     assert sample["source_index"] == 5
     assert sample["reason"] == "content_survived_but_heading_demoted"
     assert sample["mapped_target_index"] == 5
@@ -162,7 +164,9 @@ def test_anti_vacuum_real_unmapped_body_paragraph_is_retained():
         _payload_with_boundaries(src, tgt, unmapped_ids=["p0006"])
     )
     # The real body paragraph is NOT credited as any pass-through category.
-    assert "p0006" in passthrough["retained_ids"]
+    retained_ids = passthrough["retained_ids"]
+    assert isinstance(retained_ids, list)
+    assert "p0006" in retained_ids
     assert passthrough["retained_count"] == 1
 
 
@@ -222,10 +226,13 @@ def test_passthrough_credits_index_and_attribution_after_references():
     unmapped = ["p0020", "p0021", "p0022", "p0023"]
     passthrough = classify_passthrough_unmapped_source(_payload_with_boundaries(src, tgt, unmapped_ids=unmapped))
     counts = passthrough["category_counts"]
+    assert isinstance(counts, dict)
     assert counts["index"] == 1
     assert counts["attribution"] == 1
     # Anti-vacuum: the real notes-region body paragraph is still retained, not silenced.
-    assert "p0023" in passthrough["retained_ids"]
+    retained_ids = passthrough["retained_ids"]
+    assert isinstance(retained_ids, list)
+    assert "p0023" in retained_ids
 
 
 # --------------------------------------------------------------------------- #

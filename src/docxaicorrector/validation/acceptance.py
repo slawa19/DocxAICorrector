@@ -88,7 +88,7 @@ def resolve_acceptance_unmapped_source_summary(
     )
     if role_aware_summary is not None:
         return {
-            "actual": int(role_aware_summary["effective_unmapped_source_count"]),
+            "actual": _coerce_int(role_aware_summary["effective_unmapped_source_count"]),
             **role_aware_summary,
             "quality_unmapped_source_count": _coerce_int(
                 translation_quality_report.get(
@@ -129,9 +129,9 @@ def resolve_acceptance_unmapped_target_summary(
     if role_aware_target_summary is not None:
         quality_count = _coerce_int(translation_quality_report.get("unmapped_target_count"))
         return {
-            "actual": int(role_aware_target_summary["effective_unmapped_target_count"]),
+            "actual": _coerce_int(role_aware_target_summary["effective_unmapped_target_count"]),
             "unmapped_target_count_basis": role_aware_target_summary["unmapped_target_count_basis"],
-            "raw_unmapped_target_count": int(role_aware_target_summary["raw_unmapped_target_count"]),
+            "raw_unmapped_target_count": _coerce_int(role_aware_target_summary["raw_unmapped_target_count"]),
             "role_aware_effective_unmapped_target_count": role_aware_target_summary.get(
                 "effective_unmapped_target_count"
             ),
@@ -425,13 +425,13 @@ def build_acceptance_verdict(
         translation_quality_report=translation_quality_report,
         preparation_diagnostic_snapshot=preparation_diagnostic_snapshot,
     )
-    explicit_unmapped_source_count = int(unmapped_source_summary["actual"])
+    explicit_unmapped_source_count = _coerce_int(unmapped_source_summary["actual"])
     unmapped_target_summary = resolve_acceptance_unmapped_target_summary(
         formatting_diagnostics=formatting_diagnostics,
         translation_quality_report=translation_quality_report,
         preparation_diagnostic_snapshot=preparation_diagnostic_snapshot,
     )
-    explicit_unmapped_target_count = int(unmapped_target_summary["actual"])
+    explicit_unmapped_target_count = _coerce_int(unmapped_target_summary["actual"])
     add_check(
         "formatting_diagnostics_threshold",
         explicit_unmapped_source_count <= mismatch_threshold and total_caption_heading_conflicts == 0,

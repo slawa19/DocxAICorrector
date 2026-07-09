@@ -888,6 +888,9 @@ def resolve_role_aware_formatting_unmapped_source_summary(
         applied_passthrough_count = passthrough_count if preparation_diagnostic_snapshot is not None else 0
         reduction = max(creditable_count, applied_passthrough_count)
         effective_count = max(filtered_count - reduction, 0)
+        category_counts = passthrough["category_counts"]
+        if not isinstance(category_counts, Mapping):
+            category_counts = {}
         summaries.append(
             {
                 "raw_unmapped_source_count": raw_count,
@@ -895,14 +898,14 @@ def resolve_role_aware_formatting_unmapped_source_summary(
                 "format_neutral_creditable_count": creditable_count,
                 "passthrough_unmapped_source_count": passthrough_count,
                 "passthrough_source_category_counts": passthrough["category_counts"],
-                "passthrough_front_matter_source_count": int(passthrough["category_counts"]["front_matter"]),
-                "passthrough_bounded_toc_source_count": int(passthrough["category_counts"]["bounded_toc"]),
-                "passthrough_page_furniture_source_count": int(passthrough["category_counts"]["page_furniture"]),
-                "passthrough_references_source_count": int(passthrough["category_counts"]["references"]),
-                "passthrough_caption_source_count": int(passthrough["category_counts"]["caption"]),
-                "passthrough_part_source_count": int(passthrough["category_counts"]["part"]),
-                "passthrough_index_source_count": int(passthrough["category_counts"]["index"]),
-                "passthrough_attribution_source_count": int(passthrough["category_counts"]["attribution"]),
+                "passthrough_front_matter_source_count": int(category_counts["front_matter"]),
+                "passthrough_bounded_toc_source_count": int(category_counts["bounded_toc"]),
+                "passthrough_page_furniture_source_count": int(category_counts["page_furniture"]),
+                "passthrough_references_source_count": int(category_counts["references"]),
+                "passthrough_caption_source_count": int(category_counts["caption"]),
+                "passthrough_part_source_count": int(category_counts["part"]),
+                "passthrough_index_source_count": int(category_counts["index"]),
+                "passthrough_attribution_source_count": int(category_counts["attribution"]),
                 "front_matter_boundary_source_index": passthrough["front_matter_boundary_source_index"],
                 "bounded_toc_region": passthrough["bounded_toc_region"],
                 "references_region_source_start_index": passthrough["references_region_source_start_index"],
@@ -939,19 +942,22 @@ def resolve_role_aware_formatting_unmapped_target_summary(
         applied_passthrough_count = passthrough_count if preparation_diagnostic_snapshot is not None else 0
         reduction = max(creditable_count, applied_passthrough_count)
         effective_count = max(raw_count - reduction, 0)
+        category_counts = passthrough["category_counts"]
+        if not isinstance(category_counts, Mapping):
+            category_counts = {}
         summaries.append(
             {
                 "raw_unmapped_target_count": raw_count,
                 "target_split_accounting_creditable_count": creditable_count,
                 "passthrough_unmapped_target_count": passthrough_count,
                 "passthrough_target_category_counts": passthrough["category_counts"],
-                "passthrough_front_matter_target_count": int(passthrough["category_counts"]["front_matter"]),
-                "passthrough_page_furniture_target_count": int(passthrough["category_counts"]["page_furniture"]),
-                "passthrough_references_target_count": int(passthrough["category_counts"]["references"]),
-                "passthrough_caption_target_count": int(passthrough["category_counts"]["caption"]),
-                "passthrough_part_target_count": int(passthrough["category_counts"]["part"]),
-                "passthrough_index_target_count": int(passthrough["category_counts"]["index"]),
-                "passthrough_attribution_target_count": int(passthrough["category_counts"]["attribution"]),
+                "passthrough_front_matter_target_count": int(category_counts["front_matter"]),
+                "passthrough_page_furniture_target_count": int(category_counts["page_furniture"]),
+                "passthrough_references_target_count": int(category_counts["references"]),
+                "passthrough_caption_target_count": int(category_counts["caption"]),
+                "passthrough_part_target_count": int(category_counts["part"]),
+                "passthrough_index_target_count": int(category_counts["index"]),
+                "passthrough_attribution_target_count": int(category_counts["attribution"]),
                 "front_matter_boundary_target_index": passthrough["front_matter_boundary_target_index"],
                 "references_region_target_start_index": passthrough["references_region_target_start_index"],
                 "effective_unmapped_target_count": effective_count,

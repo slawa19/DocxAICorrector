@@ -2183,7 +2183,8 @@ def _emit_mapping_text_quality_defect_items(
     if not isinstance(mapping_text_quality, Mapping):
         return
     try:
-        bad_pair_count = int(mapping_text_quality.get("bad_pair_count") or 0)
+        # bad_pair_count is an int count in the mapping-text-quality payload when present.
+        bad_pair_count = int(cast(int, mapping_text_quality.get("bad_pair_count") or 0))
     except (TypeError, ValueError):
         bad_pair_count = 0
     if bad_pair_count <= 0:
@@ -2781,8 +2782,12 @@ def _build_translation_quality_report(
             if isinstance(latest_payload, Mapping)
             else {"demotion_count": 0, "samples": []}
         )
-        heading_demotion_count = int(heading_demotion_result.get("demotion_count") or 0)
-        heading_demotion_samples = list(heading_demotion_result.get("samples") or [])
+        # classify_heading_demotions always returns "demotion_count" as an int and
+        # "samples" as a list of mapping rows.
+        heading_demotion_count = cast(int, heading_demotion_result.get("demotion_count") or 0)
+        heading_demotion_samples = list(
+            cast("list[Mapping[str, object]]", heading_demotion_result.get("samples") or [])
+        )
         if basis == "topology_unit":
             structure_unit_total_count = authority_fields.get("structure_unit_total_count")
             if isinstance(structure_unit_total_count, int) and structure_unit_total_count > 0:
@@ -2876,7 +2881,10 @@ def _build_translation_quality_report(
                 count=heading_demotion_count,
                 source_total=effective_source_total,
                 samples=heading_demotion_samples,
-                sample_serializer=_serialize_heading_demotion_sample,
+                # samples handed to the serializer are always mapping rows.
+                sample_serializer=cast(
+                    "Callable[[object], Mapping[str, object]]", _serialize_heading_demotion_sample
+                ),
             )
         if bullet_heading_count > 0:
             quality_status, _ = _emit_hygiene_gate(
@@ -3047,10 +3055,13 @@ def _build_translation_quality_report(
                 if sample_index == 0 and use_aggregate:
                     item["aggregate_count"] = len(untranslated_body_samples)
                 formatting_review_items.append(item)
+        mapping_text_quality_payload = (
+            latest_payload.get("mapping_text_quality") if isinstance(latest_payload, Mapping) else None
+        )
         _emit_mapping_text_quality_defect_items(
             formatting_review_items=formatting_review_items,
             mapping_text_quality=(
-                latest_payload.get("mapping_text_quality") if isinstance(latest_payload, Mapping) else None
+                mapping_text_quality_payload if isinstance(mapping_text_quality_payload, Mapping) else None
             ),
         )
         if theology_style_samples:

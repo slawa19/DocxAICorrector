@@ -70,6 +70,8 @@ def _review_item_severity(item: Mapping[str, object]) -> str:
 
 def _review_item_count(item: Mapping[str, object]) -> int:
     value = item.get("aggregate_count") if "aggregate_count" in item else item.get("count", 1)
+    if not isinstance(value, (int, float, str)):
+        return 1
     try:
         return max(0, int(value))
     except (TypeError, ValueError):
