@@ -110,20 +110,12 @@ _INDEX_PAGE_RUN_PATTERN = re.compile(r"\d+\s*[–—-]\s*\d+|\d+\s*;\s*\d+|,\s*\
 _INDEX_SEMICOLON_PAGE_PATTERN = re.compile(r";\s*(?:pp?\.?\s*)?\d")
 _MAX_INDEX_ROW_LEN = 400
 # Attribution: an epigraph/dedication author credit. Either an explicit structural role,
-# a dash-led credit ("— Adrienne Rich"), or a short "Name, <role/affiliation>" appositive.
+# or a short dash-led credit ("— Adrienne Rich") that does NOT end in sentence-terminal
+# punctuation — a short dash-led line ending in "."/"!"/"?" is dialogue / an em-dash-led
+# clause, not an author credit.
 _ATTRIBUTION_STRUCTURAL_ROLES = frozenset({"attribution", "epigraph", "dedication"})
 _MAX_ATTRIBUTION_LEN = 90
 _ATTRIBUTION_DASH_PATTERN = re.compile(r"^[—–\-]\s*[^\W\d_]", re.UNICODE)
-# Single-word role/affiliation nouns for the "Name, <role>" appositive form, matched on
-# WORD BOUNDARIES (never as a substring — "mp" must not match "une-mp-loyment").
-_ATTRIBUTION_ROLE_WORD_PATTERN = re.compile(
-    r"\b(?:governor|president|professor|director|editor|founder|chairman|chairwoman|"
-    r"minister|secretary|economist|chancellor|emeritus|laureate|philosopher|journalist|"
-    r"historian|ambassador|senator|congressman|congresswoman)\b",
-    re.IGNORECASE,
-)
-# Multi-word affiliation phrases (unambiguous enough to match as a substring).
-_ATTRIBUTION_ROLE_PHRASES = ("of the ", "prime minister", "chief executive", "former ")
 _ATTRIBUTION_SENTENCE_TERMINAL = ".!?"
 
 
@@ -220,9 +212,10 @@ def _is_index_row_text(text: str) -> bool:
 
 def _is_attribution_text(text: str, role: str, structural_role: str) -> bool:
     """An epigraph/dedication attribution credit. True for an explicit structural role,
-    a dash-led author credit ("— Adrienne Rich"), or a short "Name, <role/affiliation>"
-    appositive ("Sir Mervyn King, Governor of the Bank of England"). Length-bounded and
-    never matches a real body paragraph — anti-vacuum safe."""
+    or a short dash-led author credit ("— Adrienne Rich"). A dash-led line that ends in
+    sentence-terminal punctuation ("."/"!"/"?") is dialogue / an em-dash-led clause, not a
+    credit, and is rejected. Length-bounded and never matches a real body paragraph —
+    anti-vacuum safe."""
     if structural_role in _ATTRIBUTION_STRUCTURAL_ROLES or role in _ATTRIBUTION_STRUCTURAL_ROLES:
         return True
     normalized = _normalize_structural_text(text)
@@ -230,16 +223,9 @@ def _is_attribution_text(text: str, role: str, structural_role: str) -> bool:
         return False
     if _is_substantial_body_prose(normalized):
         return False
-    if _ATTRIBUTION_DASH_PATTERN.match(normalized) is not None:
-        return True
-    if "," not in normalized:
-        return False
     if normalized[-1] in _ATTRIBUTION_SENTENCE_TERMINAL:
         return False
-    trailing = normalized.split(",", 1)[1].lower()
-    if _ATTRIBUTION_ROLE_WORD_PATTERN.search(trailing) is not None:
-        return True
-    return any(phrase in trailing for phrase in _ATTRIBUTION_ROLE_PHRASES)
+    return _ATTRIBUTION_DASH_PATTERN.match(normalized) is not None
 
 
 def _target_registry_is_heading(entry: Mapping[str, object] | None) -> bool:

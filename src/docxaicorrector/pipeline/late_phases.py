@@ -2099,14 +2099,15 @@ _REFERENCES_BIB_MARKER_PATTERN = re.compile(
 _MULTI_FOOTNOTE_MARKER_PATTERN = re.compile(r"(?<!\d)\d{1,3}(?=\s+[«*“\"A-ZА-ЯЁ])")
 
 
-def _is_references_region_list_fragment_sample(sample: object) -> bool:
-    """A list-fragment residue line that belongs to the back-matter notes / bibliography
-    region — creditable as review, not a hard-fail. True for standalone-numeric footnote /
-    page numbers (existing 1‑A crediting) OR a bibliography/notes-form line carrying at
-    least two citation signals (quoted titles «…», years, "стр."/journal markers, multiple
-    footnote markers). A broken BODY list fragment (a bullet-led line, or a plain
-    continuation with no citation signal) is never credited — anti-vacuum for real body
-    loss."""
+def _is_citation_form_list_fragment_sample(sample: object) -> bool:
+    """A FORM-based credit for a list-fragment residue line: creditable as review, not a
+    hard-fail. True for standalone-numeric footnote / page numbers (existing 1‑A crediting)
+    OR a citation/notes-form line carrying at least two citation signals (quoted titles
+    «…», years, "стр."/journal markers, multiple footnote markers). This does NOT verify
+    the sample sits in the references region — `QualityIssueSample` carries only a markdown
+    line number, no source index. The anti-vacuum property is purely form-based: a
+    bullet-led or plain continuation line with no citation signal is never credited, so a
+    real broken body list fragment still hard-fails."""
     if _is_standalone_numeric_continuation_sample(sample):
         return True
     text = str(getattr(sample, "text", "") or "").strip()
@@ -2133,17 +2134,17 @@ def _is_reviewable_list_fragment_residue(
         return False
     if not samples:
         return False
-    # Partition the residue: back-matter notes/bibliography residue (standalone footnote
-    # / page numbers such as "18." or "1491.", and citation-form notes lines) vs. real
-    # body-text list fragments (broken bullets / list items). A single non-creditable
-    # body fragment hard-fails; a residue that is ENTIRELY back-matter routes to soft
-    # review, regardless of count, so footnote / page / bibliography residue cannot tip
-    # an otherwise-good book into an acceptance hard-fail (1‑A references crediting
-    # extended from bare numbers to full notes/bibliography lines).
+    # Partition the residue: form-credited citation residue (standalone footnote / page
+    # numbers such as "18." or "1491.", and citation-form notes lines) vs. real body-text
+    # list fragments (broken bullets / list items). A single non-creditable body fragment
+    # hard-fails; a residue that is ENTIRELY citation-form routes to soft review, regardless
+    # of count, so footnote / page / bibliography residue cannot tip an otherwise-good book
+    # into an acceptance hard-fail (1‑A references crediting extended from bare numbers to
+    # full notes/bibliography lines).
     non_creditable_residue = [
         sample
         for sample in samples
-        if not _is_references_region_list_fragment_sample(sample)
+        if not _is_citation_form_list_fragment_sample(sample)
     ]
     if non_creditable_residue:
         return False

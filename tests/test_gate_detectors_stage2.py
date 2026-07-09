@@ -7,7 +7,7 @@
   2. 3A pass-through — index-region + attribution categories in
      `classify_passthrough_unmapped_source`, with the anti-vacuum valve preserved.
   3. list_fragment references crediting + hard-fail review-item emission
-     (`_is_reviewable_list_fragment_residue` / `_is_references_region_list_fragment_sample`).
+     (`_is_reviewable_list_fragment_residue` / `_is_citation_form_list_fragment_sample`).
 
 Every assertion is form/region based (no per-book literal). The anti-vacuum counter-proofs
 prove a real body paragraph and a real demoted body heading are STILL counted.
@@ -181,16 +181,24 @@ def test_anti_vacuum_real_demoted_body_heading_is_counted():
 
 
 def test_attribution_detection_form():
-    # dash-led and "Name, <role>" appositive credit; a plain heading and body prose do not.
+    # A short dash-led author credit is attribution; the "Name, <role>" appositive form is
+    # NOT credited BY DESIGN (the English occupation word list was removed as a per-book
+    # heuristic), and a plain heading / body prose never match.
     assert _is_attribution_text("— gwendolyn and bernard", "body", "body")
-    assert _is_attribution_text("sir mervyn king, governor of the bank of england", "heading", "heading")
-    assert _is_attribution_text("richard timberlake, former professor emeritus of", "heading", "heading")
+    assert not _is_attribution_text("sir mervyn king, governor of the bank of england", "heading", "heading")
+    assert not _is_attribution_text("richard timberlake, former professor emeritus of", "heading", "heading")
     assert not _is_attribution_text("households: consumers, employees, savers, investors", "heading", "heading")
     assert not _is_attribution_text(
         "The economy grew rapidly during this decade, and the effects were felt widely across the sector.",
         "body",
         "body",
     )
+
+
+def test_attribution_does_not_credit_dialogue_line():
+    # A short dash-led line ending in sentence-terminal punctuation is a lost dialogue
+    # reply (real body loss), NOT an author credit — it must not be credited.
+    assert not _is_attribution_text("— Я не согласен с этим решением.", "body", "body")
 
 
 def test_index_row_detection_form():
@@ -205,7 +213,7 @@ def test_passthrough_credits_index_and_attribution_after_references():
     src = _base_source_rows() + [
         _src(20, "heading", 1, None, "notes"),
         _src(21, "heading", 1, None, "chicago plan, 3, 69– 71, 231n15, 231n16"),  # index
-        _src(22, "heading", 1, None, "sir mervyn king, governor of the bank of england"),  # attribution
+        _src(22, "heading", 1, None, "— gwendolyn and bernard"),  # dash-led attribution credit
         _src(23, "body", None, None,
              "A genuine notes-region body paragraph that is long real running prose spanning well past the "
              "substantial-body-prose length threshold, opening with a capital letter and ending with a period."),
@@ -240,14 +248,14 @@ def test_list_fragment_bibliography_notes_line_credited_as_review():
         "*Journal of Public Health*, том 87 (1997), № 9, стр. 1491–1498. 56 Джеймс Бьюкен, "
         "«Застывшее желание: смысл денег» (1997). 57 Кеннеди и Литер, «Региональные валюты» (2004), стр. 30."
     )
-    assert late_phases._is_references_region_list_fragment_sample(_sample(bib))
+    assert late_phases._is_citation_form_list_fragment_sample(_sample(bib))
     assert late_phases._is_reviewable_list_fragment_residue(samples=[_sample(bib)], gate_source="entry_assembly")
 
 
 def test_list_fragment_broken_body_list_still_hard_fails():
     # A genuine broken body list fragment (bullet-led continuation) is NOT credited.
     broken = _sample("- продолжение мысли без завершения")
-    assert not late_phases._is_references_region_list_fragment_sample(broken)
+    assert not late_phases._is_citation_form_list_fragment_sample(broken)
     assert not late_phases._is_reviewable_list_fragment_residue(
         samples=[_sample("18."), broken], gate_source="entry_assembly"
     )
