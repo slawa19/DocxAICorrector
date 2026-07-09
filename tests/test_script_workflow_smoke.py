@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import platform
 import socket
 import shutil
 import subprocess
@@ -18,8 +19,12 @@ WSLPATH_EXE = shutil.which("wslpath")
 pytestmark = [
     pytest.mark.integration_local,
     pytest.mark.skipif(
-        os.environ.get("DOCXAI_SKIP_WORKFLOW_SMOKE") == "1",
-        reason="workflow smoke checks are excluded from mandatory CI signal",
+        os.environ.get("DOCXAI_SKIP_WORKFLOW_SMOKE") == "1"
+        or platform.system() == "Windows",
+        reason=(
+            "workflow smoke checks are excluded from mandatory CI signal and cannot "
+            "run natively on Windows (they exercise bash scripts via the WSL runner)"
+        ),
     ),
 ]
 

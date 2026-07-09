@@ -289,6 +289,14 @@ def test_run_reader_cleanup_preserves_image_ids_on_four_replay_books() -> None:
         / "tests/artifacts/real_document_pipeline/runs/20260618T195903Z_6156_bernardlietaer-moneyandsustainabilitypdffromepub-160516072426/Money_Sustainability_pdf_full_heldout.md",
     ]
 
+    missing = [path for path in markdown_paths if not path.exists()]
+    if missing:
+        # These faithful-replay corpora live under gitignored .run/ (and large held-out
+        # artifacts) and are absent on a clean checkout (CI runs `git clean -fdx`). Skip
+        # rather than fail so the image-id-preservation guard stays dormant-but-ready
+        # wherever the corpora are present locally.
+        pytest.skip(f"reader-cleanup replay corpora not present: {missing[0]}")
+
     for markdown_path in markdown_paths:
         markdown = markdown_path.read_text(encoding="utf-8")
 

@@ -8,12 +8,14 @@ OWNER_FILES = {
     PROJECT_ROOT / "src" / "docxaicorrector" / "runtime" / "state.py",
 }
 SKIPPED_DIR_NAMES = {
+    ".claude",
     ".git",
     ".kilo",
     ".mypy_cache",
     ".pytest_cache",
     ".ruff_cache",
     ".run",
+    ".tmp",
     ".venv",
     ".venv-win",
     "__pycache__",

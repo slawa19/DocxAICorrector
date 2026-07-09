@@ -2,7 +2,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 from docx import Document
+
+# The comparison probes PDFs through the optional pdfminer.six backend. Without it
+# the tool reports "unsupported" instead of the ok/error paths this test asserts, so
+# skip honestly rather than assert on a dependency-missing state.
+pytest.importorskip("pdfminer")
 
 from tools.compare_pdf_import_backends import build_pdf_import_backend_comparison
 

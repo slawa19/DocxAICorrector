@@ -62,6 +62,8 @@ def _run_powershell(command: str, env: dict[str, str] | None = None) -> subproce
 
 
 def test_streamlit_log_rotation_preserves_active_path_and_backups() -> None:
+    if platform.system() == "Windows":
+        pytest.skip("project-control-wsl.sh requires a POSIX/WSL shell; not runnable natively on Windows")
     run_dir = Path(tempfile.mkdtemp())
     try:
         log_path = run_dir / "streamlit.log"
@@ -93,13 +95,20 @@ def test_project_log_rollover_creates_numbered_backups() -> None:
         shared_path = _to_windows_path(REPO_ROOT / "scripts" / "_shared.ps1")
         project_log_path = _to_windows_path(run_dir / "project.log")
         run_dir.mkdir(parents=True, exist_ok=True)
+        # Dot-source and override in the SAME scope the script functions read from.
+        # `_shared.ps1` defines `$projectLogPath` at its own scope; dot-sourcing inside
+        # `& { ... }` lands those variables (and functions) in this block scope, so the
+        # functions resolve `$projectLogPath` via parent-scope lookup to *this* block.
+        # A `$script:` override would write to a different (global) scope the functions
+        # never consult, leaving them pointed at the real .run/project.log. Overriding
+        # the plain (block-local) names is what actually redirects them to the temp dir.
         command = (
             f"& {{ . '{shared_path}'; "
-            f"$script:projectLogPath = '{project_log_path}'; "
-            "$script:projectLogMaxBytes = 80; "
-            "$script:projectLogBackupCount = 2; "
+            f"$projectLogPath = '{project_log_path}'; "
+            "$projectLogMaxBytes = 80; "
+            "$projectLogBackupCount = 2; "
             "1..6 | ForEach-Object { Append-ProjectLogEntry ('line-' + $_ + '-' + ('X' * 30)) }; "
-            "Get-ChildItem -LiteralPath (Split-Path -Parent $script:projectLogPath) -Filter 'project.log*' | "
+            "Get-ChildItem -LiteralPath (Split-Path -Parent $projectLogPath) -Filter 'project.log*' | "
             "Sort-Object Name | ForEach-Object { Write-Output $_.Name } }"
         )
         result = _run_powershell(command)
