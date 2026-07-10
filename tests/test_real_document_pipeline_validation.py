@@ -8,6 +8,7 @@ from io import BytesIO
 from pathlib import Path
 from contextlib import redirect_stdout
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 from docx import Document
@@ -38,6 +39,13 @@ def _docx_bytes(document: Document) -> bytes:  # type: ignore[reportGeneralTypeI
     buffer = BytesIO()
     document.save(buffer)
     return buffer.getvalue()
+
+
+def _untyped(value: dict[str, object]) -> dict[str, Any]:
+    # Present the shared ``dict[str, object]`` verdict with Any-valued entries so
+    # tests can index ``["checks"]`` / ``["failed_checks"]`` without reportIndexIssue
+    # noise, matching how the dynamically-loaded harness module returns it untyped.
+    return value
 
 
 def _append_numbering_level(level: str, fmt: str) -> OxmlElement:  # type: ignore[reportGeneralTypeIssues]
@@ -275,13 +283,17 @@ def test_evaluate_lietaer_acceptance_fails_on_translation_quality_report_residua
     by_name = {check["name"]: check for check in acceptance["checks"]}
 
     assert acceptance["passed"] is False
+    # ``structural_comparison_available`` is no longer counted as a failure: with no
+    # ``structural_checks_builder`` (no source/output DOCX) the check is genuinely
+    # not evaluable, so it is NOT-APPLICABLE, not failed (spec FR-002).
     assert acceptance["failed_checks"] == [
         "false_fragment_headings_present",
         "residual_bullet_glyphs_present",
         "list_fragment_regressions_present",
         "mixed_script_terms_present",
-        "structural_comparison_available",
     ]
+    assert by_name["structural_comparison_available"]["applicable"] is False
+    assert by_name["structural_comparison_available"]["reason"] == "source_or_output_docx_missing"
     assert by_name["residual_bullet_glyphs_present"]["residual_bullet_glyph_gate_source"] == "legacy_markdown"
     assert by_name["residual_bullet_glyphs_present"]["residual_bullet_glyph_classification"] == "display_hygiene"
     assert by_name["residual_bullet_glyphs_present"]["raw_residual_bullet_glyph_count"] == 1
@@ -510,6 +522,215 @@ def test_evaluate_lietaer_acceptance_fails_failed_translation_quality_report() -
     assert by_name["translation_quality_report_not_failed"]["gate_reasons"] == [
         "role_loss_above_manual_review_threshold"
     ]
+
+
+def test_production_acceptance_context_passes_with_not_applicable_threshold_and_structural_checks() -> None:
+    # Exercise the PRODUCTION verdict builder end to end, exactly as
+    # finalize_processing_success does: _build_report_context_for_acceptance ->
+    # build_report_acceptance_verdict with thresholds UNCONFIGURED (None) and no
+    # structural builder. The old parity claim was validated only on saved harness
+    # reports, which never run this builder — which is why the defect survived
+    # (spec Anti-regression: "Verdict parity must be asserted on the PRODUCTION
+    # context, not a synthetic one").
+    context = SimpleNamespace(processing_operation="translate")
+    quality_report = {
+        "quality_status": "pass",
+        "gate_reasons": [],
+        "unmapped_source_count_basis": "role_aware_formatting_coverage",
+        "unmapped_target_count_basis": "role_aware_formatting_coverage",
+        "worst_unmapped_source_count": 3,
+        "unmapped_target_count": 2,
+        "bullet_heading_count": 0,
+        "false_fragment_heading_count": 0,
+        "residual_bullet_glyph_count": 0,
+        "list_fragment_regression_count": 0,
+        "mixed_script_term_count": 0,
+        "theology_style_deterministic_issue_count": 0,
+    }
+    report_context = document_pipeline_late_phases._build_report_context_for_acceptance(
+        context=context,
+        quality_report=quality_report,
+        formatting_diagnostics_payloads=[],
+        output_artifacts={"output_docx_openable": True, "output_contains_placeholder_markup": False},
+    )
+    verdict = _untyped(
+        document_pipeline_late_phases.build_report_acceptance_verdict(
+            report_context,
+            mismatch_threshold=None,
+            unmapped_target_threshold=None,
+        )
+    )
+    by_name = {check["name"]: check for check in verdict["checks"]}
+
+    assert verdict["passed"] is True
+    assert verdict["failed_checks"] == []
+    # Threshold checks are present but NOT-APPLICABLE, still carrying the measured
+    # ``actual`` so the UI can show the number without a verdict (spec FR-008).
+    for name in ("formatting_diagnostics_threshold", "unmapped_source_threshold", "unmapped_target_threshold"):
+        assert by_name[name]["applicable"] is False, name
+        assert by_name[name]["reason"] == "threshold_not_configured", name
+        assert "actual" in by_name[name], name
+    assert by_name["unmapped_source_threshold"]["actual"] == 3
+    assert by_name["unmapped_target_threshold"]["actual"] == 2
+    # Structural comparison is present but NOT-APPLICABLE (production has no source
+    # DOCX), never counted as a failure (spec FR-002).
+    assert by_name["structural_comparison_available"]["applicable"] is False
+    assert by_name["structural_comparison_available"]["reason"] == "source_or_output_docx_missing"
+    # Output openability reflects the threaded real artifacts, not a guess (FR-001).
+    assert by_name["output_docx_openable"]["applicable"] is True
+    assert by_name["output_docx_openable"]["passed"] is True
+
+
+def test_production_acceptance_output_docx_openable_not_applicable_when_docx_not_built_yet() -> None:
+    # When production reaches the verdict before the delivered DOCX exists (reader
+    # cleanup defers the base build), output_artifacts is empty. The openability
+    # check must be NOT-APPLICABLE, never a guessed pass and never a silent fail.
+    context = SimpleNamespace(processing_operation="translate")
+    report_context = document_pipeline_late_phases._build_report_context_for_acceptance(
+        context=context,
+        quality_report={"quality_status": "pass"},
+        formatting_diagnostics_payloads=[],
+        output_artifacts=None,
+    )
+    verdict = _untyped(document_pipeline_late_phases.build_report_acceptance_verdict(report_context))
+    by_name = {check["name"]: check for check in verdict["checks"]}
+
+    assert by_name["output_docx_openable"]["applicable"] is False
+    assert by_name["output_docx_openable"]["reason"] == "output_docx_not_available"
+    assert by_name["no_placeholder_markup"]["applicable"] is False
+    assert "output_docx_openable" not in verdict["failed_checks"]
+    assert "no_placeholder_markup" not in verdict["failed_checks"]
+
+
+def test_harness_path_thresholds_and_structural_builder_gate_identically() -> None:
+    # The harness path — integer thresholds AND a structural_checks_builder — must
+    # judge exactly what it judged before (spec FR-009 byte-identity): a generous
+    # threshold passes, a genuinely exceeded threshold still FAILS, and the
+    # structural NA placeholder is never emitted.
+    validation = _load_validation_module()
+    source_doc = Document()
+    source_doc.add_paragraph("Один абзац")
+    output_doc = Document()
+    output_doc.add_paragraph("Один абзац")
+    report = {
+        "result": "succeeded",
+        "output_artifacts": {
+            "output_docx_openable": True,
+            "output_contains_placeholder_markup": False,
+        },
+        "formatting_diagnostics": [
+            {"unmapped_source_ids": ["p0003", "p0004"], "unmapped_target_indexes": [12]}
+        ],
+        "translation_quality_report": {
+            "worst_unmapped_source_count": 2,
+            "unmapped_target_count": 1,
+            "toc_body_concat_detected": False,
+        },
+    }
+
+    verdict_pass = validation.evaluate_lietaer_acceptance(
+        report,
+        source_docx_bytes=_docx_bytes(source_doc),
+        output_docx_bytes=_docx_bytes(output_doc),
+        mismatch_threshold=2,
+        unmapped_target_threshold=1,
+    )
+    assert verdict_pass["passed"] is True
+    assert verdict_pass["failed_checks"] == []
+
+    verdict_fail = validation.evaluate_lietaer_acceptance(
+        report,
+        source_docx_bytes=_docx_bytes(source_doc),
+        output_docx_bytes=_docx_bytes(output_doc),
+        mismatch_threshold=0,
+        unmapped_target_threshold=0,
+    )
+    by_name = {check["name"]: check for check in verdict_fail["checks"]}
+    assert verdict_fail["passed"] is False
+    assert "formatting_diagnostics_threshold" in verdict_fail["failed_checks"]
+    assert "unmapped_source_threshold" in verdict_fail["failed_checks"]
+    assert "unmapped_target_threshold" in verdict_fail["failed_checks"]
+    # An applied threshold is evaluated, not NA.
+    assert by_name["unmapped_source_threshold"]["applicable"] is True
+    # The builder supplied real structural checks, so the NA placeholder is absent.
+    assert "structural_comparison_available" not in by_name
+
+
+def test_configured_zero_threshold_still_gates_unlike_unconfigured_none() -> None:
+    # A configured 0 must NOT be silently treated as "unconfigured" (spec FR-008).
+    from docxaicorrector.validation.acceptance import build_acceptance_verdict
+
+    report = {
+        "result": "succeeded",
+        "output_artifacts": {"output_docx_openable": True, "output_contains_placeholder_markup": False},
+        "formatting_diagnostics": [{"unmapped_source_ids": ["p0003", "p0004"], "unmapped_target_indexes": []}],
+        "translation_quality_report": {"worst_unmapped_source_count": 2, "unmapped_target_count": 0},
+    }
+
+    gated = _untyped(build_acceptance_verdict(report, mismatch_threshold=0, unmapped_target_threshold=0))
+    gated_by_name = {check["name"]: check for check in gated["checks"]}
+    assert gated_by_name["unmapped_source_threshold"]["applicable"] is True
+    assert gated_by_name["unmapped_source_threshold"]["passed"] is False
+    assert "unmapped_source_threshold" in gated["failed_checks"]
+
+    unconfigured = _untyped(build_acceptance_verdict(report, mismatch_threshold=None, unmapped_target_threshold=None))
+    unconfigured_by_name = {check["name"]: check for check in unconfigured["checks"]}
+    assert unconfigured_by_name["unmapped_source_threshold"]["applicable"] is False
+    assert unconfigured_by_name["unmapped_source_threshold"]["reason"] == "threshold_not_configured"
+    assert "unmapped_source_threshold" not in unconfigured["failed_checks"]
+    # Same measured actual either way — only the verdict differs.
+    assert gated_by_name["unmapped_source_threshold"]["actual"] == 2
+    assert unconfigured_by_name["unmapped_source_threshold"]["actual"] == 2
+
+
+def test_acceptance_check_states_are_distinguishable_in_data() -> None:
+    # Three states must be distinguishable in the emitted dicts: a passed check, a
+    # failed check, and a not-applicable check (spec FR-009, Anti-regression).
+    from docxaicorrector.validation.acceptance import build_acceptance_verdict
+
+    report = {
+        "result": "succeeded",  # -> pipeline_succeeded passes
+        "output_artifacts": {"output_docx_openable": True, "output_contains_placeholder_markup": False},
+        "formatting_diagnostics": [{"unmapped_source_ids": ["p1", "p2"], "unmapped_target_indexes": []}],
+        "translation_quality_report": {"worst_unmapped_source_count": 2, "unmapped_target_count": 0},
+    }
+    # mismatch_threshold=0 -> unmapped_source_threshold FAILS; unmapped_target
+    # threshold=None -> unmapped_target_threshold NOT-APPLICABLE; no builder ->
+    # structural_comparison_available NOT-APPLICABLE.
+    verdict = _untyped(build_acceptance_verdict(report, mismatch_threshold=0, unmapped_target_threshold=None))
+    by_name = {check["name"]: check for check in verdict["checks"]}
+
+    passed_check = by_name["pipeline_succeeded"]
+    failed_check = by_name["unmapped_source_threshold"]
+    not_applicable_check = by_name["unmapped_target_threshold"]
+
+    assert (passed_check["applicable"], passed_check["passed"]) == (True, True)
+    assert (failed_check["applicable"], failed_check["passed"]) == (True, False)
+    assert not_applicable_check["applicable"] is False
+    assert not_applicable_check["reason"] == "threshold_not_configured"
+    # Only the failed check enters failed_checks; the NA check never does.
+    assert "unmapped_source_threshold" in verdict["failed_checks"]
+    assert "unmapped_target_threshold" not in verdict["failed_checks"]
+    assert "structural_comparison_available" not in verdict["failed_checks"]
+
+
+def test_resolve_acceptance_thresholds_returns_none_when_unconfigured() -> None:
+    # Production config carries no acceptance loss budget, so the resolver returns
+    # None (unconfigured), while a configured 0 stays 0 (spec FR-008).
+    unconfigured = document_pipeline_late_phases._resolve_acceptance_thresholds(
+        SimpleNamespace(app_config={})
+    )
+    assert unconfigured == (None, None, False)
+
+    configured_zero = document_pipeline_late_phases._resolve_acceptance_thresholds(
+        SimpleNamespace(
+            app_config={
+                "acceptance_max_unmapped_source_paragraphs": 0,
+                "acceptance_max_unmapped_target_paragraphs": 0,
+            }
+        )
+    )
+    assert configured_zero == (0, 0, False)
 
 
 def test_prod_pipeline_quality_report_matches_validation_harness_replay_basis(tmp_path, monkeypatch) -> None:

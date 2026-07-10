@@ -303,24 +303,39 @@ def extract_runtime_processing_operation(report: Mapping[str, object]) -> str:
 def build_acceptance_verdict(
     report: Mapping[str, object],
     *,
-    mismatch_threshold: int = 0,
-    unmapped_target_threshold: int = 0,
+    mismatch_threshold: int | None = None,
+    unmapped_target_threshold: int | None = None,
     require_no_toc_body_concat: bool = False,
     structural_checks_builder: Callable[[str], Sequence[Mapping[str, object]]] | None = None,
 ) -> dict[str, object]:
     """Assemble the acceptance verdict from a report context.
 
-    The report-derived checks are built here. The optional structural
-    (source↔output DOCX) comparison checks are supplied by
+    Every check carries three distinguishable states in the data (spec FR-009):
+
+    - ``applicable=True, passed=True``  — evaluated and satisfied,
+    - ``applicable=True, passed=False`` — evaluated and violated (the only checks
+      that enter ``failed_checks``),
+    - ``applicable=False``              — the signal needed to evaluate the check is
+      genuinely absent, so it is neither a pass nor a fail. Such a check carries a
+      ``reason`` explaining why it could not be evaluated and never enters
+      ``failed_checks`` (Constitution VII — "No source signal, no repair").
+
+    A threshold passed as ``None`` means *unconfigured* (production has no per-book
+    loss budget); the corresponding threshold check is emitted NOT-APPLICABLE while
+    still carrying the measured ``actual``. A configured ``0`` still gates. The
+    optional structural (source↔output DOCX) comparison checks are supplied by
     ``structural_checks_builder`` (invoked with the resolved
-    ``processing_operation``); when it is ``None`` the single
-    ``structural_comparison_available=False`` check is emitted instead — exactly
-    as the legacy harness did when docx bytes were unavailable.
+    ``processing_operation``); when it is ``None`` a single NOT-APPLICABLE
+    ``structural_comparison_available`` check is emitted instead.
+
+    The harness path — integer thresholds and a ``structural_checks_builder`` —
+    yields a verdict whose ``passed``/``failed_checks`` are identical to the legacy
+    behaviour; each check merely gains the explicit ``applicable`` key.
     """
     checks: list[dict[str, object]] = []
 
-    def add_check(name: str, passed: bool, **details: object) -> None:
-        checks.append({"name": name, "passed": passed, **details})
+    def add_check(name: str, passed: bool, *, applicable: bool = True, **details: object) -> None:
+        checks.append({"name": name, "passed": passed, "applicable": applicable, **details})
 
     result = str(report.get("result") or "")
     processing_operation = extract_runtime_processing_operation(report)
@@ -346,16 +361,38 @@ def build_acceptance_verdict(
         cleanup_chunk_count=reader_cleanup_chunk_count,
         failed_chunk_ratio=reader_cleanup_failure_ratio,
     )
-    add_check(
-        "output_docx_openable",
-        bool(output_artifacts.get("output_docx_openable")),
-        output_docx_openable=output_artifacts.get("output_docx_openable"),
-    )
-    add_check(
-        "no_placeholder_markup",
-        not bool(output_artifacts.get("output_contains_placeholder_markup")),
-        output_contains_placeholder_markup=output_artifacts.get("output_contains_placeholder_markup"),
-    )
+    output_docx_openable_value = output_artifacts.get("output_docx_openable")
+    if output_docx_openable_value is None:
+        # Production finalization computes this verdict before the delivered DOCX
+        # exists (reader cleanup defers the base docx build), so the output's
+        # openability — and therefore whether it carries placeholder markup — is
+        # genuinely unknown here. Emit both as NOT-APPLICABLE rather than guessing
+        # a pass or silently failing (spec FR-001/FR-002, Constitution VII).
+        add_check(
+            "output_docx_openable",
+            False,
+            applicable=False,
+            reason="output_docx_not_available",
+            output_docx_openable=None,
+        )
+        add_check(
+            "no_placeholder_markup",
+            False,
+            applicable=False,
+            reason="output_docx_not_available",
+            output_contains_placeholder_markup=output_artifacts.get("output_contains_placeholder_markup"),
+        )
+    else:
+        add_check(
+            "output_docx_openable",
+            bool(output_docx_openable_value),
+            output_docx_openable=output_docx_openable_value,
+        )
+        add_check(
+            "no_placeholder_markup",
+            not bool(output_artifacts.get("output_contains_placeholder_markup")),
+            output_contains_placeholder_markup=output_artifacts.get("output_contains_placeholder_markup"),
+        )
 
     runtime = cast(Mapping[str, object], report.get("runtime") or {})
     runtime_state = cast(Mapping[str, object], runtime.get("state") or {})
@@ -434,7 +471,12 @@ def build_acceptance_verdict(
     explicit_unmapped_target_count = _coerce_int(unmapped_target_summary["actual"])
     add_check(
         "formatting_diagnostics_threshold",
-        explicit_unmapped_source_count <= mismatch_threshold and total_caption_heading_conflicts == 0,
+        bool(
+            mismatch_threshold is not None
+            and explicit_unmapped_source_count <= mismatch_threshold
+            and total_caption_heading_conflicts == 0
+        ),
+        applicable=mismatch_threshold is not None,
         actual=explicit_unmapped_source_count,
         worst_unmapped_source_count=worst_unmapped_source_count,
         raw_worst_unmapped_source_count=worst_unmapped_source_count,
@@ -459,10 +501,12 @@ def build_acceptance_verdict(
         mismatch_threshold=mismatch_threshold,
         caption_heading_conflicts=total_caption_heading_conflicts,
         artifact_count=len(formatting_diagnostics),
+        **({"reason": "threshold_not_configured"} if mismatch_threshold is None else {}),
     )
     add_check(
         "unmapped_source_threshold",
-        explicit_unmapped_source_count <= mismatch_threshold,
+        bool(mismatch_threshold is not None and explicit_unmapped_source_count <= mismatch_threshold),
+        applicable=mismatch_threshold is not None,
         actual=explicit_unmapped_source_count,
         allowed=mismatch_threshold,
         worst_unmapped_source_count=explicit_unmapped_source_count,
@@ -480,10 +524,12 @@ def build_acceptance_verdict(
         passthrough_index_source_count=unmapped_source_summary.get("passthrough_index_source_count"),
         passthrough_attribution_source_count=unmapped_source_summary.get("passthrough_attribution_source_count"),
         references_region_source_start_index=unmapped_source_summary.get("references_region_source_start_index"),
+        **({"reason": "threshold_not_configured"} if mismatch_threshold is None else {}),
     )
     add_check(
         "unmapped_target_threshold",
-        explicit_unmapped_target_count <= unmapped_target_threshold,
+        bool(unmapped_target_threshold is not None and explicit_unmapped_target_count <= unmapped_target_threshold),
+        applicable=unmapped_target_threshold is not None,
         actual=explicit_unmapped_target_count,
         allowed=unmapped_target_threshold,
         unmapped_target_count=explicit_unmapped_target_count,
@@ -507,6 +553,7 @@ def build_acceptance_verdict(
         passthrough_attribution_target_count=unmapped_target_summary.get("passthrough_attribution_target_count"),
         front_matter_boundary_target_index=unmapped_target_summary.get("front_matter_boundary_target_index"),
         references_region_target_start_index=unmapped_target_summary.get("references_region_target_start_index"),
+        **({"reason": "threshold_not_configured"} if unmapped_target_threshold is None else {}),
     )
 
     if translation_quality_report:
@@ -628,10 +675,15 @@ def build_acceptance_verdict(
         add_check(
             "structural_comparison_available",
             False,
+            applicable=False,
             reason="source_or_output_docx_missing",
         )
 
-    failed_checks = [check["name"] for check in checks if not bool(check["passed"])]
+    failed_checks = [
+        check["name"]
+        for check in checks
+        if check.get("applicable", True) and not bool(check["passed"])
+    ]
     return {
         "passed": not failed_checks,
         "failed_checks": failed_checks,

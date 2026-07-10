@@ -74,8 +74,18 @@ Verified 2026-07-10 against fresh runs `20260710T_lietaer_fixed`, `20260710T_mon
 - **Same run, two verdicts.** `20260710T_lietaer_fixed`: harness `acceptance.passed = True`, `failed_checks = []`.
   Report `translation_quality_report.acceptance_verdict.passed = False`, `failed_checks =
   [output_docx_openable, formatting_diagnostics_threshold, unmapped_source_threshold, unmapped_target_threshold,
-  structural_comparison_available]`. The three threshold checks fail only because the context handed to them is
-  empty, not because any threshold was exceeded.
+  structural_comparison_available]`.
+- **Production has no acceptance thresholds at all** (third cause, found while implementing; the first draft of
+  this spec wrongly blamed the empty context for the threshold failures). The config keys
+  `acceptance_max_unmapped_source_paragraphs` / `..._target_paragraphs` exist ONLY as two constants
+  (`late_phases.py:2599-2600`); they are absent from `config.toml` and set nowhere. So
+  `_resolve_acceptance_thresholds` (`late_phases.py:2628`) always returns `(0, 0, False)` and any unmapped
+  paragraph fails the check. The harness gets real thresholds per book from `corpus_registry.toml`
+  (`document_profile.max_unmapped_source_paragraphs`) — a source production cannot have, because the user uploads
+  an arbitrary document.
+- **Director decision (2026-07-10):** production must not judge what it cannot judge. Threshold and structural
+  checks become NOT-APPLICABLE in the production verdict rather than silently failing. A per-document expected
+  loss budget is a test-corpus concept and is not invented for arbitrary uploads.
 - **Anchors leak internal ids.** Real `formatting_review_items[].sample.text` values from that same run:
   `'$'`, `'### 67– 69'`, `'[[DOCX_PARA_p0052]]\n### CONTENTS'`, `'### WISPOS'`.
 - **The UI spec forbids exactly this.** `docs/specs/UI/FORMATTING_DISCREPANCY_REPORTING_SPEC_2026-06-15.md`
@@ -108,6 +118,11 @@ Verified 2026-07-10 against fresh runs `20260710T_lietaer_fixed`, `20260710T_mon
 - **FR-006**: An item whose anchor, after placeholder removal, holds no human-locatable text MUST be aggregated
   into a count rather than emitted as a row with an empty or single-symbol anchor.
 - **FR-007**: The report MUST keep emitting review-item DATA under the advisory policy (do not regress `291a24a`).
+- **FR-008**: When an acceptance threshold is not configured, the corresponding check MUST be reported as
+  NOT-APPLICABLE, not failed. A threshold of `0` MUST NOT be silently substituted for "unconfigured".
+- **FR-009**: A check has three distinguishable states in the data: passed, failed, not-applicable. Only failed
+  checks appear in `failed_checks`; `passed` is true when `failed_checks` is empty. The harness path — which
+  DOES supply thresholds and a structural comparison — MUST produce a byte-identical verdict to today's.
 
 ### Key Entities
 

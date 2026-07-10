@@ -2604,17 +2604,34 @@ _ACCEPTANCE_REQUIRE_NO_TOC_BODY_CONCAT_CONFIG_KEY = "acceptance_require_no_toc_b
 def build_report_acceptance_verdict(
     report: Mapping[str, object],
     *,
-    mismatch_threshold: int = 0,
-    unmapped_target_threshold: int = 0,
+    mismatch_threshold: int | None = None,
+    unmapped_target_threshold: int | None = None,
     require_no_toc_body_concat: bool = False,
 ) -> dict[str, object]:
     """Assemble the acceptance verdict for a report context via the shared module.
 
     Production-side counterpart to the harness' ``evaluate_lietaer_acceptance``:
     both delegate to ``docxaicorrector.validation.acceptance.build_acceptance_verdict``
-    so the UI/advisory path can compute the same trustworthy verdict from a
-    report context (GATE_TRUSTWORTHINESS refactor §Scope item 6). Structural
-    (source<->output DOCX) comparison checks are harness-only and omitted here.
+    so the UI/advisory path binds to the same shared verdict shape.
+
+    Parity of *code*, not of *evaluated checks*: production and the harness do not
+    judge the same set of checks, because production genuinely lacks some of the
+    harness' inputs, and it must not fake them (Constitution VII, spec FR-002):
+
+    - The harness owns both the source and output DOCX bytes, so it injects the
+      source<->output structural comparison. Production has no source DOCX (the user
+      uploads an arbitrary document), so no ``structural_checks_builder`` is passed
+      and ``structural_comparison_available`` is emitted NOT-APPLICABLE.
+    - The harness receives a per-book loss budget from the test corpus registry;
+      production has no such budget (``mismatch_threshold`` / ``unmapped_target_threshold``
+      arrive as ``None`` when unconfigured), so the threshold checks are emitted
+      NOT-APPLICABLE while still carrying the measured ``actual``.
+    - ``output_docx_openable`` (and ``no_placeholder_markup``) reflect the real
+      ``output_artifacts`` when the DOCX bytes exist at finalization; when the
+      delivered DOCX has not been built yet they are NOT-APPLICABLE, never a guess.
+
+    What both CAN evaluate in common (pipeline success, reader-cleanup stage,
+    display-hygiene, translation-quality residue) is judged identically.
     """
     return build_acceptance_verdict(
         report,
@@ -2625,18 +2642,28 @@ def build_report_acceptance_verdict(
     )
 
 
-def _resolve_acceptance_thresholds(context: Any) -> tuple[int, int, bool]:
+def _resolve_acceptance_thresholds(context: Any) -> tuple[int | None, int | None, bool]:
     app_config = getattr(context, "app_config", {}) or {}
 
-    def _cfg_int(key: str, default: int) -> int:
+    def _cfg_int_or_none(key: str) -> int | None:
+        # An absent config key means the threshold is UNCONFIGURED (production has
+        # no per-book loss budget), which the shared verdict renders NOT-APPLICABLE.
+        # A configured value — including ``0`` — still gates. These keys are absent
+        # from config.toml and set nowhere in production today, so this returns
+        # ``None`` there; the harness supplies real per-book integers instead.
+        if key not in app_config:
+            return None
+        value = app_config.get(key)
+        if value is None:
+            return None
         try:
-            return int(app_config.get(key, default))
+            return int(value)
         except (TypeError, ValueError):
-            return default
+            return None
 
     return (
-        _cfg_int(_ACCEPTANCE_MAX_UNMAPPED_SOURCE_CONFIG_KEY, 0),
-        _cfg_int(_ACCEPTANCE_MAX_UNMAPPED_TARGET_CONFIG_KEY, 0),
+        _cfg_int_or_none(_ACCEPTANCE_MAX_UNMAPPED_SOURCE_CONFIG_KEY),
+        _cfg_int_or_none(_ACCEPTANCE_MAX_UNMAPPED_TARGET_CONFIG_KEY),
         bool(app_config.get(_ACCEPTANCE_REQUIRE_NO_TOC_BODY_CONCAT_CONFIG_KEY, False)),
     )
 
@@ -2646,6 +2673,7 @@ def _build_report_context_for_acceptance(
     context: Any,
     quality_report: Mapping[str, object],
     formatting_diagnostics_payloads: Sequence[Mapping[str, object]],
+    output_artifacts: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     return {
         "result": "succeeded",
@@ -2654,11 +2682,34 @@ def _build_report_context_for_acceptance(
         },
         "translation_quality_report": dict(quality_report),
         "formatting_diagnostics": [dict(payload) for payload in formatting_diagnostics_payloads],
-        "output_artifacts": {},
+        # Real output artifacts when the DOCX bytes exist at this point; an empty
+        # mapping otherwise, which the shared verdict renders as a NOT-APPLICABLE
+        # ``output_docx_openable`` rather than a guessed pass (spec FR-001).
+        "output_artifacts": dict(output_artifacts) if output_artifacts else {},
         "runtime": {},
         "reader_cleanup_evidence": {},
         "preparation_diagnostic_snapshot": {},
     }
+
+
+def _resolve_acceptance_output_artifacts(
+    *,
+    docx_phase: Mapping[str, object],
+    runtime_display_markdown: str,
+) -> dict[str, object] | None:
+    """Compute the acceptance ``output_artifacts`` from already-built DOCX bytes.
+
+    Returns ``None`` when the DOCX bytes are not present yet — the base build is
+    deferred until reader cleanup on the common production path — so the caller
+    can leave ``output_docx_openable`` NOT-APPLICABLE instead of forcing an early
+    build or guessing. The builder callback is deliberately NOT invoked here.
+    """
+    docx_bytes = docx_phase.get("docx_bytes")
+    if not isinstance(docx_bytes, bytes) or not docx_bytes:
+        return None
+    from docxaicorrector.validation.structural import _build_output_artifacts
+
+    return _build_output_artifacts(docx_bytes, runtime_display_markdown)
 
 
 def _build_translation_quality_report(
@@ -4055,11 +4106,21 @@ def finalize_processing_success(
         _acceptance_unmapped_target_threshold,
         _acceptance_require_no_toc_body_concat,
     ) = _resolve_acceptance_thresholds(context)
+    # Thread the run's real output artifacts so ``output_docx_openable`` reflects
+    # reality (spec FR-001). At this point the delivered DOCX may not be built yet
+    # — reader cleanup defers the base build, leaving ``docx_bytes`` None — so we
+    # only report openability when the bytes genuinely exist; otherwise the shared
+    # verdict marks the check NOT-APPLICABLE rather than guessing (Constitution VII).
+    _acceptance_output_artifacts = _resolve_acceptance_output_artifacts(
+        docx_phase=docx_phase,
+        runtime_display_markdown=runtime_display_markdown,
+    )
     quality_report["acceptance_verdict"] = build_report_acceptance_verdict(
         _build_report_context_for_acceptance(
             context=context,
             quality_report=quality_report,
             formatting_diagnostics_payloads=_load_formatting_diagnostics_payloads(formatting_diagnostics_artifacts),
+            output_artifacts=_acceptance_output_artifacts,
         ),
         mismatch_threshold=_acceptance_mismatch_threshold,
         unmapped_target_threshold=_acceptance_unmapped_target_threshold,
