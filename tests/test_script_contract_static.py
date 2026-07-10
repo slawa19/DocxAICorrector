@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import platform
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -152,6 +153,8 @@ def test_setup_contract_declares_required_system_packages() -> None:
 
 
 def test_repository_shell_scripts_have_valid_bash_syntax() -> None:
+    if platform.system() == "Windows":
+        pytest.skip("bash cannot resolve Windows-style script paths; the check runs on the Linux/WSL runner")
     failures: list[str] = []
     for script_path in sorted((REPO_ROOT / "scripts").glob("*.sh")):
         result = subprocess.run(

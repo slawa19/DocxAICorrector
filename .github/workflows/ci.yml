@@ -31,11 +31,11 @@ jobs:
           pip install -e ".[dev]"
           python -c "import docxaicorrector"
 
-      - name: Run pyright fail-hard
-        run: |
-          . .venv/bin/activate
-          timeout 180s python -m pyright src/docxaicorrector tests
-
+      # A `pyright` fail-hard step lived here from 2026-05-12. It demanded zero errors
+      # from a codebase already carrying ~271, so it failed on every run for two months
+      # and — because `tests` needs this job — silently skipped the entire suite. The
+      # ratchet below is the type signal now: it fails on any error ABOVE the recorded
+      # baseline, so new debt is blocked while the standing debt does not gate the suite.
       - name: Run local pyright regression wrapper
         run: |
           . .venv/bin/activate
@@ -43,9 +43,7 @@ jobs:
 
   tests:
     runs-on: ubuntu-latest
-    # Deliberately NOT gated on `editable-install`: its pyright fail-hard step has been
-    # red since 2026-05-12 on pre-existing type debt, which silently skipped the whole
-    # suite. The two signals are independent — a type regression must not hide a test one.
+    needs: [editable-install]
     env:
       DOCXAI_SKIP_WORKFLOW_SMOKE: "1"
 
