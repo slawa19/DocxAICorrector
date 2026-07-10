@@ -1,7 +1,7 @@
 # Feature Specification: Make the delivery hygiene passes non-destructive
 
 Date: 2026-07-10
-Status: ACTIVE forward spec
+Status: Implemented (2026-07-10). Money live: no corruption, counts stable, passes. Guard is monotonic-safe.
 Owner surface: the display-hygiene passes that build the delivered DOCX (`runtime_display_markdown`)
 Companion: `specs/001-heading-role-preservation/spec.md`, `specs/003-list-fragment-detector/spec.md`;
 `docs/specs/GATE_TRUSTWORTHINESS_AND_UI_DATA_REFACTOR_2026-07-09.md`. First increment of the two-markdown
