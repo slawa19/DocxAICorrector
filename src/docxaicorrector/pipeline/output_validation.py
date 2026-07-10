@@ -54,6 +54,14 @@ _HOMOGLYPH_TABLE = str.maketrans({
     "X": "Х",
     "Y": "У",
 })
+# A bullet glyph welded between two word characters ("4●5", "a◦b") is data, not a
+# stray bullet: the residual-glyph pass and its detector both leave it untouched.
+_WELDED_BULLET_GLYPH_PATTERN = re.compile(r"(?<=\w)[●•◦‣](?=\w)")
+_CODE_FENCE_LINE_PATTERN = re.compile(r"^\s*(?:`{3,}|~{3,})")
+_INLINE_CODE_SPAN_PATTERN = re.compile(r"(`[^`]+`)")
+# A whitespace-delimited token carrying a scheme, an "@", or a domain-style dot is
+# an address, not prose: its Latin/Cyrillic look-alikes are intentional.
+_URL_OR_EMAIL_TOKEN_PATTERN = re.compile(r"://|www\.|@|[\w-]+\.[\w-]{2,}")
 _DANGLING_NUMBER_PATTERN = re.compile(r"(?:^|\s)\d+\.$")
 _RUSSIAN_CONTINUATION_ENDING_PATTERN = re.compile(r"\b(?:ли|что|относительно|с|в|на|к|по|для|о|у|при|об|под|над|между|является)$", re.IGNORECASE)
 _RUSSIAN_HEADING_CONTINUATION_START_PATTERN = re.compile(r"^(?:[а-яё]|[)\],.;:!?-])")
@@ -1847,6 +1855,17 @@ def normalize_inline_fragment_paragraphs_markdown(text: str) -> str:
     return _collapse_markdown_blank_lines("\n".join(lines))
 
 
+def _strip_stray_bullet_glyphs(text: str) -> str:
+    def _replace(match: re.Match[str]) -> str:
+        # A glyph welded between two word characters is data (e.g. "4●5"); leave it
+        # and its neighbours untouched. Every other glyph is a stray bullet.
+        if match.group("welded") is not None:
+            return match.group(0)
+        return " "
+
+    return re.sub(r"(?P<welded>(?<=\w)[●•◦‣](?=\w))|\s*[●•◦‣]\s*", _replace, text)
+
+
 def normalize_residual_bullet_glyphs_markdown(text: str) -> str:
     normalized_lines: list[str] = []
     for raw_line in text.splitlines():
@@ -1859,10 +1878,11 @@ def normalize_residual_bullet_glyphs_markdown(text: str) -> str:
             continue
 
         updated = raw_line
-        updated = re.sub(r"^(\s*)[●•◦‣]\s+", r"\1- ", updated)
+        # Only a leading glyph followed by whitespace AND real content is a list item.
+        updated = re.sub(r"^(\s*)[●•◦‣]\s+(?=\S)", r"\1- ", updated)
         updated = re.sub(r"([,;:])\s*[●•◦‣]\s*", r"\1 ", updated)
         updated = re.sub(r"\s*[●•◦‣]\s*;\s*", "; ", updated)
-        updated = re.sub(r"\s*[●•◦‣]\s*", " ", updated)
+        updated = _strip_stray_bullet_glyphs(updated)
         updated = re.sub(r" {2,}", " ", updated)
         normalized_lines.append(updated.rstrip())
 
@@ -1937,13 +1957,50 @@ def normalize_list_fragment_regressions_markdown(
     return "\n".join(lines)
 
 
-def normalize_mixed_script_markdown(text: str) -> str:
-    def _repair_mixed_token(match: re.Match[str]) -> str:
-        token = match.group(0)
-        repaired = token.translate(_HOMOGLYPH_TABLE)
-        return repaired if repaired != token else token
+def _looks_url_or_email_token(token: str) -> bool:
+    return bool(_URL_OR_EMAIL_TOKEN_PATTERN.search(token))
 
-    return _CYRILLIC_LATIN_MIXED_TOKEN_PATTERN.sub(_repair_mixed_token, text)
+
+def _repair_mixed_script_token(match: re.Match[str]) -> str:
+    token = match.group(0)
+    repaired = token.translate(_HOMOGLYPH_TABLE)
+    return repaired if repaired != token else token
+
+
+def _repair_mixed_script_segment(segment: str) -> str:
+    def _repair_word(match: re.Match[str]) -> str:
+        word = match.group(0)
+        if _looks_url_or_email_token(word):
+            return word
+        return _CYRILLIC_LATIN_MIXED_TOKEN_PATTERN.sub(_repair_mixed_script_token, word)
+
+    return re.sub(r"\S+", _repair_word, segment)
+
+
+def normalize_mixed_script_markdown(text: str) -> str:
+    normalized_lines: list[str] = []
+    in_fenced_block = False
+    for line in text.splitlines():
+        if _CODE_FENCE_LINE_PATTERN.match(line):
+            in_fenced_block = not in_fenced_block
+            normalized_lines.append(line)
+            continue
+        if in_fenced_block:
+            normalized_lines.append(line)
+            continue
+        # Repair only the segments outside inline code spans; split() keeps the
+        # backticked spans at odd indices so they pass through untouched.
+        parts = _INLINE_CODE_SPAN_PATTERN.split(line)
+        for index in range(0, len(parts), 2):
+            parts[index] = _repair_mixed_script_segment(parts[index])
+        normalized_lines.append("".join(parts))
+    return "\n".join(normalized_lines)
+
+
+def _has_repairable_bullet_glyph(text: str) -> bool:
+    # Mirror the residual-glyph pass: a glyph welded between two word characters is
+    # data the pass leaves alone, so the detector must not flag it either.
+    return bool(_BULLET_GLYPH_PATTERN.search(_WELDED_BULLET_GLYPH_PATTERN.sub("", text)))
 
 
 def collect_residual_bullet_glyph_samples(text: str) -> list[QualityIssueSample]:
@@ -1954,19 +2011,19 @@ def collect_residual_bullet_glyph_samples(text: str) -> list[QualityIssueSample]
             continue
         if stripped.startswith("- "):
             content = stripped[2:]
-            if _BULLET_GLYPH_PATTERN.search(content):
+            if _has_repairable_bullet_glyph(content):
                 samples.append(_build_quality_sample(line=line_number, text=stripped, reason="residual_bullet_glyphs_present"))
             continue
         if re.match(r"^\d+[.)]\s+", stripped):
             content = re.sub(r"^\d+[.)]\s+", "", stripped)
-            if _BULLET_GLYPH_PATTERN.search(content):
+            if _has_repairable_bullet_glyph(content):
                 samples.append(_build_quality_sample(line=line_number, text=stripped, reason="residual_bullet_glyphs_present"))
             continue
         if stripped.startswith("#"):
             continue
         if stripped.startswith(">"):
             continue
-        if _BULLET_GLYPH_PATTERN.search(stripped):
+        if _has_repairable_bullet_glyph(stripped):
             samples.append(_build_quality_sample(line=line_number, text=stripped, reason="residual_bullet_glyphs_present"))
     return samples
 
@@ -1999,13 +2056,32 @@ def collect_list_fragment_regression_samples(text: str) -> list[QualityIssueSamp
     return samples
 
 
+def _iter_repairable_mixed_script_tokens(line: str) -> list[str]:
+    # Share the mixed-script pass's guard: tokens inside inline code spans or that
+    # look like a URL/email are left alone by the pass, so they are not reported.
+    tokens: list[str] = []
+    parts = _INLINE_CODE_SPAN_PATTERN.split(line)
+    for index in range(0, len(parts), 2):
+        for word in re.findall(r"\S+", parts[index]):
+            if _looks_url_or_email_token(word):
+                continue
+            tokens.extend(_CYRILLIC_LATIN_MIXED_TOKEN_PATTERN.findall(word))
+    return tokens
+
+
 def collect_mixed_script_samples(text: str) -> list[QualityIssueSample]:
     samples: list[QualityIssueSample] = []
+    in_fenced_block = False
     for line_number, raw_line in iter_markdown_lines_with_numbers(text):
+        if _CODE_FENCE_LINE_PATTERN.match(raw_line):
+            in_fenced_block = not in_fenced_block
+            continue
+        if in_fenced_block:
+            continue
         stripped = raw_line.strip()
         if not stripped:
             continue
-        for token in _CYRILLIC_LATIN_MIXED_TOKEN_PATTERN.findall(stripped):
+        for token in _iter_repairable_mixed_script_tokens(stripped):
             samples.append(_build_quality_sample(line=line_number, text=token, reason="mixed_script_term_present"))
     seen: set[tuple[int, str, str]] = set()
     deduped: list[QualityIssueSample] = []

@@ -679,6 +679,40 @@ def test_normalize_residual_bullet_glyphs_markdown_rewrites_inline_and_leading_g
     assert "мировую культуру" in normalized
 
 
+def test_normalize_residual_bullet_glyphs_markdown_preserves_glyph_welded_in_word():
+    markdown = "Сноска 4●5 и таблица 12•34, а также a◦b."
+
+    normalized = document_pipeline_output_validation.normalize_residual_bullet_glyphs_markdown(markdown)
+
+    assert normalized == markdown
+
+
+def test_normalize_residual_bullet_glyphs_markdown_preserves_leading_bullet_and_separator():
+    markdown = "● Первый пункт\nтекст; ● пункт"
+
+    normalized = document_pipeline_output_validation.normalize_residual_bullet_glyphs_markdown(markdown)
+
+    assert "- Первый пункт" in normalized
+    assert "текст; пункт" in normalized
+    assert "●" not in normalized
+
+
+def test_normalize_residual_bullet_glyphs_markdown_does_not_invent_list_item_from_lone_glyph():
+    markdown = "● "
+
+    normalized = document_pipeline_output_validation.normalize_residual_bullet_glyphs_markdown(markdown)
+
+    assert normalized.strip() != "-"
+
+
+def test_collect_residual_bullet_glyph_samples_ignores_glyph_welded_in_word():
+    markdown = "Сноска 4●5 и таблица 12•34, а также a◦b."
+
+    samples = document_pipeline_output_validation.collect_residual_bullet_glyph_samples(markdown)
+
+    assert samples == []
+
+
 def test_normalize_list_fragment_regressions_markdown_repairs_intro_and_carryover_markers():
     markdown = (
         "Поразительно, но все петли следуют одной и той же схеме: 1.\n"
@@ -762,6 +796,44 @@ def test_normalize_mixed_script_markdown_preserves_legitimate_latin_text():
     normalized = document_pipeline_output_validation.normalize_mixed_script_markdown(markdown)
 
     assert normalized == markdown
+
+
+def test_normalize_mixed_script_markdown_preserves_code_span_fence_and_url_tokens():
+    markdown = (
+        "Смотри `cоd` в примере.\n"
+        "```\n"
+        "cоd fenced\n"
+        "```\n"
+        "Ссылка example.cом здесь."
+    )
+
+    normalized = document_pipeline_output_validation.normalize_mixed_script_markdown(markdown)
+
+    assert "`cоd`" in normalized
+    assert "cоd fenced" in normalized
+    assert "example.cом" in normalized
+
+
+def test_normalize_mixed_script_markdown_repairs_prose_homoglyph_word():
+    markdown = "Cовет мудреца."
+
+    normalized = document_pipeline_output_validation.normalize_mixed_script_markdown(markdown)
+
+    assert normalized == "Совет мудреца."
+
+
+def test_collect_mixed_script_samples_ignores_code_span_fence_and_url_tokens():
+    markdown = (
+        "Смотри `cоd` в примере.\n"
+        "```\n"
+        "cоd fenced\n"
+        "```\n"
+        "Ссылка example.cом здесь."
+    )
+
+    samples = document_pipeline_output_validation.collect_mixed_script_samples(markdown)
+
+    assert samples == []
 
 
 def _make_paragraph_stub(
