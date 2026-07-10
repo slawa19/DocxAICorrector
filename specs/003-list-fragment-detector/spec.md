@@ -1,7 +1,7 @@
 # Feature Specification: List-fragment detection keyed on source list context
 
 Date: 2026-07-10
-Status: ACTIVE forward spec
+Status: Implemented (2026-07-10). Verified live on Mazzucato: passes acceptance, cross-ref sentence no longer flagged.
 Owner surface: the `list_fragment_regressions_present` acceptance axis (priority 4 — "no broken paragraphs")
 Companion: `docs/specs/GATE_TRUSTWORTHINESS_AND_UI_DATA_REFACTOR_2026-07-09.md` (blocker 4);
 `specs/002-gate-report-honesty/spec.md`
