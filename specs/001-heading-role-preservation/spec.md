@@ -1,12 +1,28 @@
 # Feature Specification: Preserve source-backed heading roles in the produced DOCX
 
 Date: 2026-07-10
-Status: ACTIVE forward spec
+Status: Implemented (2026-07-10). Verified on all four books against the produced DOCX.
 Owner surface: final DOCX assembly (`runtime_display_markdown` → `convert_markdown_to_docx_bytes`)
 Companion: `docs/specs/GATE_TRUSTWORTHINESS_AND_UI_DATA_REFACTOR_2026-07-09.md` (its 2026-07-10 Changelog
 retraction is the origin of this spec); `docs/specs/GLOBAL_PLAN_2026-06-16.md`
 Changelog:
 - 2026-07-10 — Created after four fresh full-tier runs showed chapter headings demoted in every book.
+- 2026-07-10 — Implemented and verified on all four books. TWO demotion paths existed, not one: the
+  false-fragment pass AND `normalize_list_fragment_regressions_markdown` (the markdown twin of the entry-level
+  pass `da6789b` guarded). The first fix alone made acceptance PASS while the DOCX still rendered
+  `24. Глава IV` — the green-gate-over-broken-document trap this spec warns about. Verified against the DOCX.
+
+## Result (2026-07-10, verified on the produced artifacts)
+
+| Book | Acceptance before → after | Loss-counted paragraphs | of which headings | bad pairs |
+|---|---|---|---|---|
+| Money | fail → **pass** | 17 → 2 | 13 → 1 | 0 → 0 |
+| Lietaer | fail → **pass** | 25 → 2 | 16 → 2 | 0 → 0 |
+| Mazzucato | fail → fail (`list_fragment_regressions_present`, 5 before and after — unrelated) | 2 → 0 | 2 → 0 | 0 → 0 |
+| CreatingWealth | fail → **pass** | 20 → 7 | 10 → 4 | 0 → 0 |
+
+Money's six chapter openings are `Heading 1` with no `numPr`. No threshold was changed. Suite 1856 passed;
+pyright ratchet unchanged at 244.
 
 ## User Scenarios & Testing *(mandatory)*
 
