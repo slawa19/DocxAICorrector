@@ -1,13 +1,23 @@
 # Feature Specification: Honest report data the UI can bind to
 
 Date: 2026-07-10
-Status: ACTIVE forward spec
+Status: Implemented (2026-07-10). Verdict half `dda7f5c`, anchor half `8b9fd4c`; verified on live runs.
 Owner surface: `translation_quality_report` (the report the UI and `formatting_review.txt` consume)
 Companion: `docs/specs/UI/FORMATTING_DISCREPANCY_REPORTING_SPEC_2026-06-15.md` (the consumer);
 `docs/specs/GATE_TRUSTWORTHINESS_AND_UI_DATA_REFACTOR_2026-07-09.md` (its blocker 6 remains open);
 `specs/001-heading-role-preservation/spec.md`
 Changelog:
 - 2026-07-10 — Created from a UI-readiness audit of four fresh full-tier runs.
+- 2026-07-10 — Implemented in two commits. Verdict half (FR-001/002/008/009): `dda7f5c`; production
+  verdict now agrees with the harness (Money live: both pass; Mazzucato deterministic: both fail on the real
+  list_fragment defect). Third cause found during implementation: production has NO acceptance thresholds
+  configured, so they are now NOT-APPLICABLE, not silent zero-failures. Fourth thing found: the delivered DOCX
+  does not exist yet at verdict time on the reader-cleanup path, so `output_docx_openable` is NOT-APPLICABLE
+  there (never guessed). Anchor half (FR-004/005/006): `8b9fd4c`; verified live on `20260710T_lietaer_anchors` —
+  zero `[[DOCX_` leaks, `$` aggregates into a count line, `### CONTENTS` → `CONTENTS`.
+  CAVEAT: FR-005's rendered "примените стиль «Заголовок N»" line is unit-verified but was NOT exercised in that
+  live report, because the only role-loss item present was the anchorless `$` (aggregated). It will render the
+  first time a locatable role-loss item appears.
 
 ## User Scenarios & Testing *(mandatory)*
 
