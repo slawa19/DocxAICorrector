@@ -289,6 +289,69 @@ def test_write_ui_result_artifacts_empty_items_render_ok_block_with_zero_totals(
     assert "Всего: ПРАВКА 0 · ПРОВЕРКА 0 · КРИТ 0" in review_text
 
 
+def test_write_ui_result_artifacts_aggregates_anchorless_items_without_empty_quote(tmp_path):
+    # FR-006: an item whose anchor is not locatable is counted, never printed as «».
+    artifact_paths = write_ui_result_artifacts(
+        source_name="report.docx",
+        markdown_text="body",
+        docx_bytes=b"docx-bytes",
+        quality_warning={
+            "quality_status": "warn",
+            "gate_reasons": ["role_loss_review_required"],
+            "formatting_review_items": [
+                {
+                    "severity": "fix",
+                    "label": "Структурный абзац стал обычным текстом",
+                    "sample": {"text": "Глава десятая"},
+                },
+                {
+                    "severity": "fix",
+                    "label": "Структурный абзац стал обычным текстом",
+                    "sample": {"text": "", "anchor_usable": False},
+                },
+            ],
+        },
+        output_dir=tmp_path,
+        created_at=1_766_636_465.0,
+    )
+
+    review_text = Path(artifact_paths["formatting_review_path"]).read_text(encoding="utf-8")
+
+    assert "«»" not in review_text
+    assert "В выводе: «Глава десятая»" in review_text
+    assert "1 мест без локализуемого якоря" in review_text
+    # Both items still counted in the totals — the anchorless one is not dropped.
+    assert "Всего: ПРАВКА 2 · ПРОВЕРКА 0 · КРИТ 0" in review_text
+
+
+def test_write_ui_result_artifacts_names_word_style_action_for_role_loss(tmp_path):
+    # FR-005: a role_loss item with action_style names the Word style to apply.
+    artifact_paths = write_ui_result_artifacts(
+        source_name="report.docx",
+        markdown_text="body",
+        docx_bytes=b"docx-bytes",
+        quality_warning={
+            "quality_status": "fail",
+            "gate_reasons": ["role_loss_above_manual_review_threshold"],
+            "formatting_review_items": [
+                {
+                    "severity": "fix",
+                    "label": "Заголовок стал обычным текстом",
+                    "action_style": "Заголовок 1",
+                    "sample": {"text": "Глава десятая", "role": "heading"},
+                }
+            ],
+        },
+        output_dir=tmp_path,
+        created_at=1_766_636_465.0,
+    )
+
+    review_text = Path(artifact_paths["formatting_review_path"]).read_text(encoding="utf-8")
+
+    assert "Как исправить: примените стиль «Заголовок 1» к этому абзацу в DOCX." in review_text
+    assert "убедитесь, что стиль и позиция сохранены" not in review_text
+
+
 def test_write_ui_result_artifacts_records_assembly_mode_in_meta(tmp_path):
     artifact_paths = write_ui_result_artifacts(
         source_name="report.docx",

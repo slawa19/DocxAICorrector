@@ -98,6 +98,15 @@ _DOCX_IMAGE_HEADING_CONCAT_PATTERN = re.compile(
     r"^(?P<indent>\s*)(?P<placeholder>\[\[DOCX_IMAGE_[A-Za-z0-9_]+\]\])\s+(?P<text>\S.*)$"
 )
 _MARKDOWN_HEADING_LINE_PATTERN = re.compile(r"^\s*(?P<marker>#{1,6})\s+(?P<text>\S.*)$")
+# User-facing review anchors must never carry internal paragraph/image ids. Covers both
+# placeholder families (reuses the shapes at _DOCX_IMAGE_PLACEHOLDER_PATTERN and
+# generation/document PARAGRAPH_MARKER_PATTERN); a bare literal "[[" is deliberately NOT
+# matched so real code samples survive (FR-004 anti-regression).
+_DOCX_INTERNAL_PLACEHOLDER_PATTERN = re.compile(r"\[\[DOCX_(?:PARA|IMAGE)_[A-Za-z0-9_]+\]\]")
+# A leading markdown heading marker ("### ") is display noise, not locatable text; strip it
+# only when it is a genuine heading marker (followed by whitespace or end-of-string), so an
+# inline "#hashtag" is left intact.
+_REVIEW_ANCHOR_HEADING_MARKER_PATTERN = re.compile(r"^#{1,6}(?=\s|$)\s*")
 
 
 def _format_translation_quality_gate_failure_message(gate_reasons: Sequence[str]) -> str:
@@ -2171,6 +2180,44 @@ def _is_reviewable_list_fragment_residue(
     return True
 
 
+def _sanitize_review_anchor_text(value: object) -> str:
+    """Turn a raw preview into a user-locatable anchor: drop internal
+    `[[DOCX_PARA_…]]` / `[[DOCX_IMAGE_…]]` placeholders (FR-004), strip a leading
+    markdown heading marker, and collapse whitespace/newlines."""
+    text = _DOCX_INTERNAL_PLACEHOLDER_PATTERN.sub(" ", str(value or ""))
+    text = " ".join(text.split())
+    return _REVIEW_ANCHOR_HEADING_MARKER_PATTERN.sub("", text)
+
+
+def _review_anchor_visible_char_count(text: str) -> int:
+    return sum(1 for char in text if not char.isspace())
+
+
+# Sample reasons whose role was genuinely LOST (heading/list → body), for which the
+# manual action is to reapply the source Word style (FR-005).
+_ROLE_LOSS_SAMPLE_REASONS = frozenset(
+    {"content_survived_but_format_role_lost", "content_survived_but_heading_demoted"}
+)
+
+
+def _review_item_word_style(
+    *,
+    role: str | None,
+    structural_role: str | None,
+    heading_level: int | None,
+) -> str | None:
+    """Pure role→Word-style map (Constitution VII): the concrete manual action for a
+    demoted structural paragraph. No word lists, no per-book literals — only the
+    source-declared role/level decide the style name."""
+    if heading_level is not None and heading_level >= 1:
+        return f"Заголовок {heading_level}"
+    normalized_role = (role or "").strip().lower()
+    normalized_structural = (structural_role or "").strip().lower()
+    if normalized_role == "heading" or normalized_structural == "heading":
+        return "Заголовок"
+    return None
+
+
 def _build_formatting_review_item(
     *,
     reason: str,
@@ -2186,7 +2233,34 @@ def _build_formatting_review_item(
         "severity": severity,
     }
     if sample:
-        item["sample"] = dict(sample)
+        sample_dict = dict(sample)
+        # FR-004: internal ids must never reach the user-facing anchor.
+        anchor_text = _sanitize_review_anchor_text(sample_dict.get("text"))
+        sample_dict["text"] = anchor_text
+        if "source_text" in sample_dict:
+            sample_dict["source_text"] = _sanitize_review_anchor_text(sample_dict.get("source_text"))
+        # FR-006: an anchor with fewer than 3 locatable characters (e.g. "$", "", "###")
+        # cannot be searched for. Mark it so the renderer counts it instead of printing an
+        # empty «» row. No anchor is invented (Constitution VII, "No source signal…").
+        if _review_anchor_visible_char_count(anchor_text) < 3:
+            sample_dict["anchor_usable"] = False
+        # FR-005: a role_loss / heading-demotion item carries the concrete manual action —
+        # the Word style to REAPPLY — derived purely from the source role/level. Gated on the
+        # role-loss reason so an item whose role survived (e.g. an untranslated heading) is not
+        # told to restyle a paragraph that already has the right style.
+        if sample_dict.get("reason") in _ROLE_LOSS_SAMPLE_REASONS:
+            raw_level = sample_dict.get("heading_level")
+            heading_level = raw_level if isinstance(raw_level, int) and not isinstance(raw_level, bool) else None
+            raw_role = sample_dict.get("role")
+            raw_structural = sample_dict.get("structural_role")
+            action_style = _review_item_word_style(
+                role=str(raw_role) if isinstance(raw_role, str) else None,
+                structural_role=str(raw_structural) if isinstance(raw_structural, str) else None,
+                heading_level=heading_level,
+            )
+            if action_style is not None:
+                item["action_style"] = action_style
+        item["sample"] = sample_dict
     return item
 
 
@@ -2300,6 +2374,8 @@ def _serialize_role_loss_sample(sample: Mapping[str, object]) -> dict[str, objec
         "reason": "content_survived_but_format_role_lost",
         "role": sample.get("role"),
         "structural_role": sample.get("structural_role"),
+        # None on today's residual rows; the heading role above still yields "Заголовок".
+        "heading_level": sample.get("heading_level"),
     }
 
 
@@ -2314,6 +2390,7 @@ def _serialize_heading_demotion_sample(sample: Mapping[str, object]) -> dict[str
         "reason": "content_survived_but_heading_demoted",
         "role": sample.get("source_role"),
         "structural_role": sample.get("source_structural_role"),
+        "heading_level": sample.get("source_heading_level"),
         "source_index": sample.get("source_index"),
         "mapped_target_index": sample.get("mapped_target_index"),
     }

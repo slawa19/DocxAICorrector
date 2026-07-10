@@ -78,6 +78,13 @@ def _review_item_count(item: Mapping[str, object]) -> int:
         return 1
 
 
+def _review_item_anchor_usable(item: Mapping[str, object]) -> bool:
+    # FR-006: an item whose anchor holds no locatable text is flagged upstream with
+    # sample.anchor_usable=False so it is counted, not printed as an empty «» row.
+    sample = item.get("sample")
+    return not (isinstance(sample, Mapping) and sample.get("anchor_usable") is False)
+
+
 def _build_formatting_review_text(
     *,
     source_name: str,
@@ -112,7 +119,12 @@ def _build_formatting_review_text(
         )
         return "\n".join(lines) + "\n"
 
-    for index, item in enumerate(items, start=1):
+    anchored_items = [item for item in items if _review_item_anchor_usable(item)]
+    anchorless_count = sum(
+        _review_item_count(item) for item in items if not _review_item_anchor_usable(item)
+    )
+
+    for index, item in enumerate(anchored_items):
         severity = _review_item_severity(item)
         marker = _REVIEW_SEVERITY_MARKERS[severity]
         label = _truncate_review_text(item.get("label") or "Абзац требует проверки оформления", limit=100)
@@ -123,6 +135,7 @@ def _build_formatting_review_text(
             sample_text = _truncate_review_text(sample.get("text"), limit=180)
             source_text = _truncate_review_text(sample.get("source_text"), limit=180)
         count = _review_item_count(item)
+        action_style = item.get("action_style")
         lines.append(f"{marker} {label}")
         if source_text:
             lines.append(f"  Исходный абзац: «{source_text}»")
@@ -130,12 +143,23 @@ def _build_formatting_review_text(
             lines.append(f"  В выводе: «{sample_text}»")
         elif count > 1:
             lines.append(f"  Количество: {count}")
-        if severity == "defect":
+        if isinstance(action_style, str) and action_style:
+            # FR-005: name the concrete manual action for a demoted structural paragraph.
+            lines.append(f"  Как исправить: примените стиль «{action_style}» к этому абзацу в DOCX.")
+        elif severity == "defect":
             lines.append("  Как проверить: найдите этот абзац в DOCX — перевод мог встать не к тому исходному абзацу.")
         else:
             lines.append("  Как проверить: найдите этот фрагмент в DOCX и убедитесь, что стиль и позиция сохранены.")
-        if index != len(items):
+        if index != len(anchored_items) - 1:
             lines.append("")
+    if anchorless_count > 0:
+        # FR-006: unlocatable items collapse into a single count instead of empty «» rows.
+        if anchored_items:
+            lines.append("")
+        lines.append(
+            f"{anchorless_count} мест без локализуемого якоря — проверьте оформление в DOCX "
+            "вручную (точный фрагмент для поиска отсутствует)."
+        )
     lines.extend(
         [
             "-" * 70,

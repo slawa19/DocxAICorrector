@@ -4050,7 +4050,8 @@ def test_run_document_processing_flags_untranslated_structural_heading_for_revie
             "severity": "review",
             "sample": {
                 "line": 1,
-                "text": "## The Competitive Society",
+                # FR-004: the leaked markdown heading marker is stripped from the anchor.
+                "text": "The Competitive Society",
                 "reason": "untranslated_structural_text",
                 "role": "heading",
                 "structural_role": "heading",
@@ -4140,8 +4141,11 @@ def test_build_translation_quality_report_flags_bullet_marker_headings_in_strict
             "severity": "fix",
             "sample": {
                 "line": 1,
-                "text": "## ●",
+                # FR-004/006: "## ●" strips to a lone bullet glyph — not a locatable
+                # anchor, so it is flagged for aggregation instead of shown.
+                "text": "●",
                 "reason": "bullet_marker_heading",
+                "anchor_usable": False,
             },
         }
     ]
@@ -4251,7 +4255,8 @@ def test_build_translation_quality_report_flags_untranslated_structural_heading_
             "severity": "review",
             "sample": {
                 "line": 1,
-                "text": "## The Competitive Society",
+                # FR-004: the leaked markdown heading marker is stripped from the anchor.
+                "text": "The Competitive Society",
                 "reason": "untranslated_structural_text",
                 "role": "heading",
                 "structural_role": "heading",

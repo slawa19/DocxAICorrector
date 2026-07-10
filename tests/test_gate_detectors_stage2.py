@@ -266,3 +266,131 @@ def test_list_fragment_broken_body_list_still_hard_fails():
     assert not late_phases._is_reviewable_list_fragment_residue(
         samples=[_sample("18."), broken], gate_source="entry_assembly"
     )
+
+
+# --------------------------------------------------------------------------- #
+# 002 gate-report-honesty — review-item anchors (FR-004 / FR-005 / FR-006).    #
+# --------------------------------------------------------------------------- #
+
+
+def _item_sample(item: dict[str, object]) -> dict[str, object]:
+    sample = item["sample"]
+    assert isinstance(sample, dict)
+    return sample
+
+
+def test_review_item_strips_internal_docx_placeholders_from_anchor():
+    # FR-004: a leaked [[DOCX_PARA_…]] + markdown heading marker becomes clean anchor text.
+    item = late_phases._build_formatting_review_item(
+        reason="content_survived_but_format_role_lost",
+        label="loss",
+        sample={"text": "[[DOCX_PARA_p0052]]\n### CONTENTS"},
+    )
+    sample = _item_sample(item)
+    assert "[[DOCX_" not in str(sample["text"])
+    assert sample["text"] == "CONTENTS"
+    assert sample.get("anchor_usable") is not False
+
+
+def test_review_item_strips_image_placeholder_and_keeps_words():
+    item = late_phases._build_formatting_review_item(
+        reason="content_survived_but_format_role_lost",
+        label="loss",
+        sample={"text": "[[DOCX_IMAGE_img7]] Рисунок с подписью"},
+    )
+    assert _item_sample(item)["text"] == "Рисунок с подписью"
+
+
+def test_review_item_does_not_truncate_non_docx_double_bracket():
+    # FR-004 anti-regression: a real code sample with "[[" survives untouched.
+    item = late_phases._build_formatting_review_item(
+        reason="mapping_text_quality_bad_pair",
+        label="pair",
+        sample={"text": "value = arr[[not a docx placeholder]] end"},
+    )
+    sample = _item_sample(item)
+    assert sample["text"] == "value = arr[[not a docx placeholder]] end"
+    assert sample.get("anchor_usable") is not False
+
+
+def test_review_item_single_symbol_anchor_marked_unusable():
+    # FR-006: "$" has <3 locatable characters → aggregated, not shown.
+    item = late_phases._build_formatting_review_item(
+        reason="content_survived_but_format_role_lost",
+        label="loss",
+        sample={"text": "$"},
+    )
+    assert _item_sample(item)["anchor_usable"] is False
+
+
+def test_review_item_bare_heading_marker_marked_unusable():
+    item = late_phases._build_formatting_review_item(
+        reason="content_survived_but_format_role_lost",
+        label="loss",
+        sample={"text": "###"},
+    )
+    sample = _item_sample(item)
+    assert sample["text"] == ""
+    assert sample["anchor_usable"] is False
+
+
+def test_review_item_role_loss_heading_level_names_word_style():
+    # FR-005: heading_level=1 → "Заголовок 1".
+    item = late_phases._build_formatting_review_item(
+        reason="content_survived_but_heading_demoted",
+        label="loss",
+        sample={
+            "text": "Глава десятая",
+            "reason": "content_survived_but_heading_demoted",
+            "role": "heading",
+            "heading_level": 1,
+        },
+    )
+    assert item["action_style"] == "Заголовок 1"
+
+
+def test_review_item_heading_role_without_level_names_generic_style():
+    item = late_phases._build_formatting_review_item(
+        reason="content_survived_but_format_role_lost",
+        label="loss",
+        sample={
+            "text": "Введение",
+            "reason": "content_survived_but_format_role_lost",
+            "role": "heading",
+            "heading_level": None,
+        },
+    )
+    assert item["action_style"] == "Заголовок"
+
+
+def test_review_item_body_role_carries_no_action_style():
+    item = late_phases._build_formatting_review_item(
+        reason="mapping_text_quality_bad_pair",
+        label="pair",
+        sample={"text": "Совсем другой перевод", "source_text": "Original", "role": "body"},
+    )
+    assert "action_style" not in item
+
+
+def test_review_item_word_style_map_is_pure():
+    style = late_phases._review_item_word_style
+    assert style(role="heading", structural_role=None, heading_level=2) == "Заголовок 2"
+    assert style(role="body", structural_role=None, heading_level=5) == "Заголовок 5"
+    assert style(role=None, structural_role="heading", heading_level=None) == "Заголовок"
+    assert style(role="list", structural_role=None, heading_level=None) is None
+    assert style(role=None, structural_role=None, heading_level=None) is None
+
+
+def test_heading_demotion_serializer_carries_heading_level():
+    serialized = late_phases._serialize_heading_demotion_sample(
+        {
+            "text_preview": "Глава десятая",
+            "target_text_preview": "глава десятая",
+            "source_role": "heading",
+            "source_structural_role": None,
+            "source_heading_level": 2,
+            "source_index": 12,
+            "mapped_target_index": 30,
+        }
+    )
+    assert serialized["heading_level"] == 2
