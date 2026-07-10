@@ -5529,19 +5529,19 @@ def test_build_translation_quality_report_credits_source_backed_reference_by_exa
         assembly_result=assembly_result,
     )
 
-    assert report["quality_status"] == "warn"
-    assert report["gate_reasons"] == ["list_fragment_regressions_review_required"]
-    assert report["list_fragment_regression_count"] == 1
-    assert report["list_fragment_regression_samples"] == [
-        {
-            "line": 5,
-            "text": "1491.",
-            "reason": "list_fragment_regressions_present",
-        }
-    ]
+    # The "2. Goldman Sachs…" reference is still credited by EXACT TEXT even though the
+    # intro paragraph drifts the line→entry offsets (that is the original point of this test).
+    # The bare footnote number "1491." now drops too: with only two entries its line 5 falls
+    # off the entry sequence, so it has no resolvable list context (003 FR-002, User Story 1
+    # scenario 3 — standalone footnote numbers with no list context are out of scope). Both
+    # raw samples collapse; nothing reaches the gate.
+    assert report["quality_status"] == "pass"
+    assert report["gate_reasons"] == []
+    assert report["list_fragment_regression_count"] == 0
+    assert report["list_fragment_regression_samples"] == []
     assert report["list_fragment_regression_gate_source"] == "entry_assembly"
     assert report["raw_list_fragment_regression_count"] == 2
-    assert report["formatting_review_required_count"] == 1
+    assert report["formatting_review_required_count"] == 0
 
 
 def test_run_document_processing_warns_on_advisory_structural_markdown_quality_gate(tmp_path, monkeypatch):

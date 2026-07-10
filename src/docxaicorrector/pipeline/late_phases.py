@@ -1811,7 +1811,27 @@ def _resolve_list_fragment_regression_gate_samples(
                 source_backed_list_texts=source_backed_list_texts,
             )
         ]
-        return unresolved_samples, "entry_assembly"
+        # FR-001/FR-002 (Constitution VII, "no source signal, no repair"): a carry-over
+        # sample survives to the gate only if it has SOURCE LIST CONTEXT — its resolved
+        # assembly entry, or the immediately preceding / following entry, is a source-backed
+        # list entry. A prose paragraph that merely ends in a trailing ordinal (a
+        # cross-reference / year / citation) has a body entry and body/heading neighbours, so
+        # it is dropped, not hard-failed. Keying on the source-declared list_kind — never on
+        # the text shape — means no signal ⇒ accept.
+        entry_index_by_line = _build_source_backed_entry_index_by_markdown_line(
+            final_markdown=final_markdown,
+            assembly_entries=assembly_entries,
+        )
+        contextual_samples = [
+            sample
+            for sample in unresolved_samples
+            if _sample_has_source_list_context(
+                sample=sample,
+                entry_index_by_line=entry_index_by_line,
+                assembly_entries=assembly_entries,
+            )
+        ]
+        return contextual_samples, "entry_assembly"
     return list(raw_samples), "legacy_markdown"
 
 
@@ -1834,6 +1854,52 @@ def _build_source_backed_entry_by_markdown_line(
         if entry is not None:
             entry_by_line[line_number] = entry
     return entry_by_line
+
+
+def _build_source_backed_entry_index_by_markdown_line(
+    *,
+    final_markdown: str,
+    assembly_entries: Sequence[object],
+) -> dict[int, int]:
+    """Map each non-empty markdown line to its 0-based position in ``assembly_entries``
+    (the same non-empty-line ordinal alignment ``_build_source_backed_entry_by_markdown_line``
+    relies on). The index lets a sample's entry look at its k-1 / k+1 document neighbours."""
+    entry_count = len(assembly_entries)
+    entry_index_by_line: dict[int, int] = {}
+    nonempty_index = 0
+    for line_number, raw_line in enumerate(final_markdown.splitlines(), start=1):
+        if not raw_line.strip():
+            continue
+        entry_position = nonempty_index
+        nonempty_index += 1
+        if entry_position < entry_count:
+            entry_index_by_line[line_number] = entry_position
+    return entry_index_by_line
+
+
+def _sample_has_source_list_context(
+    *,
+    sample: object,
+    entry_index_by_line: Mapping[int, int],
+    assembly_entries: Sequence[object],
+) -> bool:
+    """True iff the sample's resolved assembly entry — or the immediately preceding /
+    following entry — is a source-backed list entry (FR-001). An unresolvable line (no
+    ``line``, or a line past the entry sequence) yields no list-context signal, so the
+    sample is dropped (FR-002)."""
+    line = getattr(sample, "line", None)
+    if not isinstance(line, int):
+        return False
+    index = entry_index_by_line.get(line)
+    if index is None:
+        return False
+    entry_count = len(assembly_entries)
+    for neighbour_index in (index - 1, index, index + 1):
+        if 0 <= neighbour_index < entry_count and _is_source_backed_list_entry(
+            assembly_entries[neighbour_index]
+        ):
+            return True
+    return False
 
 
 def _normalize_list_fragment_sample_text(text: str) -> str:

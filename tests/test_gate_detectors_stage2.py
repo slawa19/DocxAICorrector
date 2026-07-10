@@ -269,6 +269,122 @@ def test_list_fragment_broken_body_list_still_hard_fails():
 
 
 # --------------------------------------------------------------------------- #
+# 003 list-fragment source list context — the gate-sample resolver (FR-001..005).
+# `_is_reviewable_list_fragment_residue` (above) is a DIFFERENT function: it decides
+# residue credit for samples that already reached the gate. The list-context filter
+# below runs earlier, in `_resolve_list_fragment_regression_gate_samples`, and decides
+# which carry-over samples reach the gate at all. The residue tests keep testing the
+# credit predicate on entry-less samples; these test the context filter on entries.
+# --------------------------------------------------------------------------- #
+
+
+def _lf_entry(text, list_kind=None, *, from_registry=True, used_fallback=False):
+    return SimpleNamespace(
+        text=text,
+        list_kind=list_kind,
+        from_registry=from_registry,
+        used_fallback=used_fallback,
+    )
+
+
+def _lf_sample(text, line):
+    return SimpleNamespace(text=text, line=line, reason="list_fragment_regressions_present")
+
+
+def test_resolve_list_fragment_drops_prose_ending_in_number_without_list_context():
+    # FR-001/FR-002 (the Mazzucato "…как мы видели в главе 7." class): a body paragraph
+    # ending in a trailing ordinal, whose entry and both neighbours are non-list, has no
+    # source list context and is DROPPED from the axis — never reaching the hard-fail.
+    entries = [
+        _lf_entry("Вводный абзац главы."),
+        _lf_entry("Как мы видели в главе 7."),
+        _lf_entry("Следующий заголовок"),
+    ]
+    final_markdown = "Вводный абзац главы.\nКак мы видели в главе 7.\nСледующий заголовок"
+    sample = _lf_sample("Как мы видели в главе 7.", line=2)
+    resolved, source = late_phases._resolve_list_fragment_regression_gate_samples(
+        raw_samples=[sample],
+        final_markdown=final_markdown,
+        assembly_entries=entries,
+        source_backed_entry_authority=True,
+        topology_projection_supported=False,
+    )
+    assert source == "entry_assembly"
+    assert resolved == []
+
+
+def test_resolve_list_fragment_keeps_fragment_adjacent_to_ordered_list_entry():
+    # FR-005: a genuinely broken fragment whose neighbour IS a source-backed ordered list
+    # entry has list context and is KEPT — priority 4 is not blunted where the signal exists.
+    entries = [
+        _lf_entry("Первый пункт списка", list_kind="ordered"),
+        _lf_entry("продолжение оборванной мысли 7."),
+        _lf_entry("Обычный абзац."),
+    ]
+    final_markdown = "Первый пункт списка\nпродолжение оборванной мысли 7.\nОбычный абзац."
+    sample = _lf_sample("продолжение оборванной мысли 7.", line=2)
+    resolved, source = late_phases._resolve_list_fragment_regression_gate_samples(
+        raw_samples=[sample],
+        final_markdown=final_markdown,
+        assembly_entries=entries,
+        source_backed_entry_authority=True,
+        topology_projection_supported=False,
+    )
+    assert source == "entry_assembly"
+    assert [getattr(item, "text") for item in resolved] == ["продолжение оборванной мысли 7."]
+
+
+def test_resolve_list_fragment_still_drops_sample_matching_real_list_entry():
+    # FR-003: the existing source-backed-list credit survives — a sample whose own entry is
+    # a real ordered list entry is still collapsed (the Lietaer 20→0 / Mazzucato 66→5 credit).
+    entries = [
+        _lf_entry("Первый пункт списка 7.", list_kind="ordered"),
+        _lf_entry("Обычный абзац."),
+    ]
+    final_markdown = "Первый пункт списка 7.\nОбычный абзац."
+    sample = _lf_sample("Первый пункт списка 7.", line=1)
+    resolved, source = late_phases._resolve_list_fragment_regression_gate_samples(
+        raw_samples=[sample],
+        final_markdown=final_markdown,
+        assembly_entries=entries,
+        source_backed_entry_authority=True,
+        topology_projection_supported=False,
+    )
+    assert source == "entry_assembly"
+    assert resolved == []
+
+
+def test_resolve_list_fragment_legacy_path_returns_raw_samples_unchanged():
+    # FR-004: no source-backed entry authority ⇒ no list-context signal ⇒ behave as today.
+    sample = _lf_sample("что угодно 7.", line=1)
+    resolved, source = late_phases._resolve_list_fragment_regression_gate_samples(
+        raw_samples=[sample],
+        final_markdown="что угодно 7.",
+        assembly_entries=[],
+        source_backed_entry_authority=False,
+        topology_projection_supported=False,
+    )
+    assert source == "legacy_markdown"
+    assert resolved == [sample]
+
+
+def test_resolve_list_fragment_drops_sample_with_unresolvable_line():
+    # FR-002 edge: a carry-over sample that cannot be resolved to an entry (no `line`) has no
+    # list-context signal and is dropped, not hard-failed.
+    entries = [_lf_entry("Единственный абзац.")]
+    sample = _lf_sample("оторванный фрагмент 7.", line=None)
+    resolved, source = late_phases._resolve_list_fragment_regression_gate_samples(
+        raw_samples=[sample],
+        final_markdown="Единственный абзац.",
+        assembly_entries=entries,
+        source_backed_entry_authority=True,
+        topology_projection_supported=False,
+    )
+    assert source == "entry_assembly"
+    assert resolved == []
+
+
+# --------------------------------------------------------------------------- #
 # 002 gate-report-honesty — review-item anchors (FR-004 / FR-005 / FR-006).    #
 # --------------------------------------------------------------------------- #
 
