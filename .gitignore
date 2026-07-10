@@ -33,6 +33,12 @@ Thumbs.db
 Desktop.ini
 .review-design-image-analysis-pipeline/
 
+# Spec Kit: commit shared project configuration and Codex skills, but keep any
+# future agent-local state under .agents out of git by default.
+.agents/*
+!.agents/skills/
+!.agents/skills/**
+
 # Generated test artifacts
 tests/artifacts/real_image_pipeline/**
 !tests/artifacts/real_image_pipeline/
@@ -50,6 +56,7 @@ benchmark_projects/translation_quality_benchmark/artifacts/**
 
 # Local Claude Code settings (machine-specific permissions)
 .claude/settings.local.json
+.claude/worktrees/
 
 # Root diagnostic artifacts
 /search_result.txt

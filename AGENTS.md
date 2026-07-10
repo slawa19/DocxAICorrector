@@ -2,6 +2,70 @@
 
 Короткий front-door для ассистентов и automation в этом репозитории.
 
+## Spec Kit Contract
+
+Spec Kit is part of the repository workflow, not a local experiment. Commit
+`.specify/`, `.agents/skills/speckit-*`, `.claude/commands/speckit-*`, and
+generated accepted specs under `specs/`. Keep other future `.agents/` state
+ignored unless explicitly reviewed for secrets and team value.
+
+`.specify/memory/constitution.md` is BINDING. Read it before planning any work.
+Principles VII (universal rules, no per-book literals) and VIII (evidence must be
+fresher than the fix) apply to every change, Spec Kit or not.
+
+Two spec homes, not interchangeable:
+
+- `specs/<NNN>-<slug>/` — one unit of work (`spec.md`, `plan.md`, `tasks.md`).
+  ALL new specs go here.
+- `docs/specs/` — long-lived documents only: `GLOBAL_PLAN_2026-06-16.md` (living
+  roadmap) and pre-Spec-Kit forward specs. Create NO new spec here.
+
+Every `spec.md` in this repo MUST carry `## Non-goals` and `## Anti-regression` in
+addition to Spec Kit's stock sections; see the constitution's Spec Format Contract.
+The skills are reachable from Codex as `$speckit-*` and from Claude Code as
+`/speckit-*` (thin wrappers in `.claude/commands/`; `.agents/skills/` stays the
+single source of truth).
+
+Use Spec Kit when the user asks for:
+
+- a new feature or user-facing workflow;
+- behavior with unclear requirements;
+- changes to architecture, data contracts, validation pipeline, UI workflow,
+  artifact/logging contracts, or real-document processing;
+- multi-step implementation where planning and reviewable documentation reduce
+  risk.
+
+Do not use Spec Kit for:
+
+- direct requests to run tests, diagnostics, or inspect artifacts;
+- tiny bug fixes with obvious expected behavior;
+- formatting-only changes;
+- isolated test expectation updates;
+- real-document failure analysis before the required fresh report checks in the
+  Real-document failure analysis contract are complete.
+
+Routing:
+
+1. If no spec exists for the requested feature, read
+   `.agents/skills/speckit-specify/SKILL.md` and create `specs/<NNN-name>/spec.md`
+   plus its requirements checklist.
+2. If the spec has unresolved material ambiguity, read
+   `.agents/skills/speckit-clarify/SKILL.md` before planning.
+3. If a spec exists and implementation direction is requested, read
+   `.agents/skills/speckit-plan/SKILL.md` and create `plan.md`, `research.md`,
+   `data-model.md`, `contracts/` when applicable, and `quickstart.md`.
+4. If a plan exists and execution needs breakdown, read
+   `.agents/skills/speckit-tasks/SKILL.md` and create `tasks.md` with small,
+   ordered, independently verifiable tasks.
+5. If tasks exist and implementation is requested, read
+   `.agents/skills/speckit-implement/SKILL.md` and implement only the selected
+   task or the next task batch explicitly requested by the user.
+
+Every Spec Kit plan and task list MUST preserve this file's WSL runtime,
+canonical verification, real-document evidence, logging/artifact, and
+line-ending contracts. Do not silently replace canonical commands with direct
+Python/pytest/debug paths.
+
 ## Runtime Contract
 
 ### Fast routing for agents
