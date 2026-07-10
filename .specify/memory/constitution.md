@@ -16,6 +16,13 @@ commit that fixed it, stalling a branch for a week.
 Templates requiring updates: .specify/templates/spec-template.md (Non-goals +
 Anti-regression sections) -- applied.
 Follow-up TODOs: none
+
+Version change: 1.1.0 -> 1.1.1 (2026-07-10, PATCH: clarification, no new principle)
+Clarified: VII gains "No source signal, no repair" — when the source carries no role /
+structural signal to key on, the defect is ACCEPTED; structure is never reconstructed
+from the shape of the text (leading ordinal, capitalisation, length, position). Fix the
+import so a signal exists, or accept. Recorded from Mazzucato chapter 7, which arrives
+as role=body / heading_level=None and therefore renders as body text.
 -->
 
 # DocxAICorrector Constitution
@@ -116,6 +123,15 @@ Detection MUST be keyed on document region, structural role, or form — never o
 word list, a signal count, or a string taken from one book. A defect for which no
 general rule exists is **ACCEPTED, not patched**: rare quality tails are a
 conscious outcome, not a backlog. TOC and footnotes are deliberately out of scope.
+
+**No source signal, no repair.** When the source document carries nothing to key on —
+the paragraph has no heading role, no structural role, no level — the defect is
+ACCEPTED. Agents MUST NOT reconstruct structure from the shape of the text (a leading
+ordinal, capitalisation, length, position). Example (2026-07-10): Mazzucato's chapter 7
+arrives from PDF import as `role=body, heading_level=None`, so it renders as body text.
+Inventing a heading from "starts with a digit and is short" would be exactly the
+per-book heuristic this principle forbids. The honest options are: fix the IMPORT so a
+real signal exists, or accept. Never guess in the assembler.
 
 Any credit rule that subtracts from a loss/defect count MUST carry an anti-vacuum
 counter-proof test showing that real body content is still counted.
@@ -253,4 +269,4 @@ Versioning follows semantic versioning:
 - MINOR for adding principles or material governance sections;
 - PATCH for wording clarifications.
 
-**Version**: 1.1.0 | **Ratified**: 2026-07-09 | **Last Amended**: 2026-07-10
+**Version**: 1.1.1 | **Ratified**: 2026-07-09 | **Last Amended**: 2026-07-10

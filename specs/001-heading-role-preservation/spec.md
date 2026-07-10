@@ -122,7 +122,12 @@ were NOT used (Constitution VIII).
   measuring a different artifact than the one delivered — is recorded in the companion spec and left for a
   separate decision.
 - **Not repairing the source-side split of a chapter title into two paragraphs.** That is PDF import shape; the
-  two paragraphs may remain two headings.
+  two paragraphs may remain two headings. Verified 2026-07-10 on Lietaer: the first line arrives `role=body`, so
+  it stays body text and only the second line becomes a heading. Faithful, not pretty.
+- **Not repairing headings the source never declared** (Constitution VII, "No source signal, no repair").
+  Mazzucato's chapter 7 arrives from PDF import as `role=body, heading_level=None`; it renders as body text and
+  that is ACCEPTED. Promoting it would require guessing from a leading ordinal — the exact per-book heuristic the
+  constitution forbids. The honest alternatives are an import fix or acceptance, never a guess in the assembler.
 - **TOC and footnotes stay out of scope.** A demoted heading inside the bounded TOC region is accepted.
 - Any residual heading defect for which no general, registry-keyed rule exists is **ACCEPTED, not patched**
   (Constitution VII).
