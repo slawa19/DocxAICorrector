@@ -556,6 +556,28 @@ def test_normalize_false_fragment_headings_markdown_demotes_registry_headings_wi
     assert "## Физика сложных потоковых сетей" not in normalized
 
 
+def test_normalize_false_fragment_headings_markdown_still_demotes_unprotected_heading_beside_protected():
+    # The load-bearing anti-regression case (FR-005): a protected set EXISTS and a
+    # heading absent from it must still be demoted. Production always supplies a
+    # protected set, so "no protected set" alone never proves the cleanup survived.
+    markdown = (
+        "См. полный отчёт см. www.example.org/report\n\n"
+        "# Глава IV\n\n"
+        "Начинается основной текст главы, и он завершается точкой.\n\n"
+        "продолжение фразы без точки\n\n"
+        "## и далее\n\n"
+        "хвост"
+    )
+    protected = _registry_protected_heading_texts(["# Глава IV"])
+
+    normalized = document_pipeline_output_validation.normalize_false_fragment_headings_markdown(
+        markdown, protected_heading_texts=protected
+    )
+
+    assert "# Глава IV" in normalized
+    assert "## и далее" not in normalized
+
+
 def test_normalize_inline_fragment_paragraphs_markdown_merges_standalone_term_fragments():
     markdown = (
         "Люди, принявшие\n\n"
