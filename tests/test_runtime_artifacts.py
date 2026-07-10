@@ -319,7 +319,7 @@ def test_write_ui_result_artifacts_aggregates_anchorless_items_without_empty_quo
 
     assert "«»" not in review_text
     assert "В выводе: «Глава десятая»" in review_text
-    assert "1 мест без локализуемого якоря" in review_text
+    assert "Мест без локализуемого якоря: 1" in review_text
     # Both items still counted in the totals — the anchorless one is not dropped.
     assert "Всего: ПРАВКА 2 · ПРОВЕРКА 0 · КРИТ 0" in review_text
 

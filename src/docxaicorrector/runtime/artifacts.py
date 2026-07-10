@@ -157,7 +157,7 @@ def _build_formatting_review_text(
         if anchored_items:
             lines.append("")
         lines.append(
-            f"{anchorless_count} мест без локализуемого якоря — проверьте оформление в DOCX "
+            f"Мест без локализуемого якоря: {anchorless_count} — проверьте оформление в DOCX "
             "вручную (точный фрагмент для поиска отсутствует)."
         )
     lines.extend(
