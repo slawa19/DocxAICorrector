@@ -2,7 +2,7 @@ import logging
 import json
 import re
 import time
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, cast
@@ -22,6 +22,7 @@ from docxaicorrector.pipeline.output_validation import (
     collect_theology_style_issue_samples,
     has_toc_body_concat_markdown,
     normalize_false_fragment_headings_markdown,
+    normalize_heading_match_text,
     normalize_list_fragment_regressions_markdown,
     normalize_mixed_script_markdown,
     normalize_page_placeholder_heading_concats_markdown,
@@ -124,9 +125,13 @@ def _normalize_final_markdown_for_display_hygiene_reporting(text: str) -> str:
     return normalized
 
 
-def _apply_runtime_display_structure_compatibility_cleanup(text: str) -> str:
-    # These repairs are display-only compatibility cleanup; quality/report logic keeps using raw gate input.
-    normalized = normalize_false_fragment_headings_markdown(text)
+def _apply_runtime_display_structure_compatibility_cleanup(
+    text: str,
+    protected_heading_texts: Collection[str] | None = None,
+) -> str:
+    # This output IS the delivered DOCX (rebuilt from runtime_display_markdown below);
+    # it is not display-only. The protected set keeps source-declared headings intact.
+    normalized = normalize_false_fragment_headings_markdown(text, protected_heading_texts=protected_heading_texts)
     return normalize_list_fragment_regressions_markdown(normalized)
 
 
@@ -136,8 +141,12 @@ def _apply_runtime_display_hygiene_cleanup(text: str) -> str:
     return normalize_mixed_script_markdown(normalized)
 
 
-def _normalize_final_markdown_for_runtime_display(text: str) -> str:
-    normalized = _apply_runtime_display_structure_compatibility_cleanup(text)
+def _normalize_final_markdown_for_runtime_display(
+    text: str,
+    generated_paragraph_registry: Sequence[Mapping[str, object]] | None = None,
+) -> str:
+    protected_heading_texts = _registry_protected_heading_texts(generated_paragraph_registry)
+    normalized = _apply_runtime_display_structure_compatibility_cleanup(text, protected_heading_texts)
     normalized = _apply_runtime_display_hygiene_cleanup(normalized)
     normalized = re.sub(r"\n{3,}", "\n\n", normalized).strip()
     if "\n" not in normalized and "\n\n" in text:
@@ -146,8 +155,9 @@ def _normalize_final_markdown_for_runtime_display(text: str) -> str:
 
 
 def _normalize_heading_match_text(text: str) -> str:
-    normalized = re.sub(r"[^\w]+", " ", text, flags=re.UNICODE).strip().lower()
-    return re.sub(r"\s+", " ", normalized)
+    # Single source of truth lives in output_validation so the protected-heading
+    # set and the false-fragment cleanup normalize identically.
+    return normalize_heading_match_text(text)
 
 
 def _registry_heading_markdown_lines(
@@ -165,6 +175,13 @@ def _registry_heading_markdown_lines(
             continue
         heading_lines.append((normalized_heading, f"{match.group('marker')} {heading_text}"))
     return heading_lines
+
+
+def _registry_protected_heading_texts(
+    generated_paragraph_registry: Sequence[Mapping[str, object]] | None,
+) -> set[str]:
+    # Source-declared heading lines whose role must survive into the delivered DOCX.
+    return {normalized for normalized, _ in _registry_heading_markdown_lines(generated_paragraph_registry)}
 
 
 def _restore_image_heading_lines_from_registry(
@@ -1338,7 +1355,10 @@ def _run_reader_cleanup_postprocess(
             cleanup_block_metadata_by_index=cleanup_identity_metadata,
         )
         cleaned_runtime_display_markdown = _restore_image_heading_lines_from_registry(
-            _normalize_final_markdown_for_runtime_display(cleanup_result.cleaned_markdown),
+            _normalize_final_markdown_for_runtime_display(
+                cleanup_result.cleaned_markdown,
+                cleanup_formatting_registry,
+            ),
             cleanup_formatting_registry,
         )
         docx_rebuild_markdown = _build_docx_rebuild_markdown_after_reader_cleanup(
@@ -3524,7 +3544,10 @@ def run_image_processing_phase(
     final_markdown = assembly_result.final_markdown
     assembly_registry = build_generated_paragraph_registry_from_entries(assembly_result.entries)
     runtime_display_markdown = _restore_image_heading_lines_from_registry(
-        _normalize_final_markdown_for_runtime_display(final_markdown),
+        _normalize_final_markdown_for_runtime_display(
+            final_markdown,
+            assembly_registry or state.generated_paragraph_registry or None,
+        ),
         assembly_registry or state.generated_paragraph_registry or None,
     )
     emitters.emit_state(context.runtime, latest_markdown=runtime_display_markdown)
@@ -3854,7 +3877,10 @@ def run_docx_build_phase(
                 source_segment_count=sum(1 for value in selected_with_context_result.segment_provenance_by_id.values() if value == "source"),
             )
     runtime_display_markdown = _restore_image_heading_lines_from_registry(
-        _normalize_final_markdown_for_runtime_display(final_markdown),
+        _normalize_final_markdown_for_runtime_display(
+            final_markdown,
+            assembly_registry or state.generated_paragraph_registry or None,
+        ),
         assembly_registry or state.generated_paragraph_registry or None,
     )
     emitters.emit_status(

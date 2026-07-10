@@ -6,6 +6,7 @@ import pytest
 
 import docxaicorrector.pipeline._pipeline as document_pipeline
 import docxaicorrector.pipeline.block_execution as block_execution
+import docxaicorrector.pipeline.late_phases as late_phases
 import docxaicorrector.pipeline.output_validation as document_pipeline_output_validation
 
 
@@ -510,6 +511,49 @@ def test_normalize_false_fragment_headings_markdown_merges_split_heading_lines()
 
     assert "### зверя" not in normalized
     assert "### О марке зверя" in normalized
+
+
+# Money live defect: a footnote/reference tail with no sentence-terminal punctuation
+# followed by three source-backed chapter headings. See
+# specs/001-heading-role-preservation/spec.md.
+_MONEY_HEADING_DEFECT_MARKDOWN = (
+    "См. полный отчёт см. www.example.org/report\n\n"
+    "# Глава IV\n\n"
+    "## Объяснение нестабильности:\n\n"
+    "## Физика сложных потоковых сетей"
+)
+
+
+def _registry_protected_heading_texts(heading_markdown_lines):
+    registry = [{"text": line} for line in heading_markdown_lines]
+    return {normalized for normalized, _ in late_phases._registry_heading_markdown_lines(registry)}
+
+
+def test_normalize_false_fragment_headings_markdown_preserves_registry_protected_headings():
+    protected = _registry_protected_heading_texts(
+        ["# Глава IV", "## Объяснение нестабильности:", "## Физика сложных потоковых сетей"]
+    )
+
+    normalized = document_pipeline_output_validation.normalize_false_fragment_headings_markdown(
+        _MONEY_HEADING_DEFECT_MARKDOWN, protected_heading_texts=protected
+    )
+
+    assert "# Глава IV" in normalized
+    assert "## Объяснение нестабильности:" in normalized
+    assert "## Физика сложных потоковых сетей" in normalized
+
+
+def test_normalize_false_fragment_headings_markdown_demotes_registry_headings_without_protected_set():
+    # Anti-regression counter-test (FR-004 + FR-005): with no protected set the
+    # source-blind cleanup must still demote/merge these lines, proving the guard
+    # does not silently disable the false-fragment cleanup.
+    normalized = document_pipeline_output_validation.normalize_false_fragment_headings_markdown(
+        _MONEY_HEADING_DEFECT_MARKDOWN
+    )
+
+    assert "# Глава IV" not in normalized
+    assert "## Объяснение нестабильности:" not in normalized
+    assert "## Физика сложных потоковых сетей" not in normalized
 
 
 def test_normalize_inline_fragment_paragraphs_markdown_merges_standalone_term_fragments():

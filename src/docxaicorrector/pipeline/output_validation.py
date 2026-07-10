@@ -1,6 +1,6 @@
 import re
 from collections import defaultdict
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal, TypeAlias
 
@@ -317,6 +317,14 @@ def _normalize_heading_text(text: str) -> str:
     lowered = text.casefold().strip()
     lowered = re.sub(r"\s+", " ", lowered)
     return lowered.strip(" \t\r\n\"'“”‘’«»()[]{}:;,.!?-–—")
+
+
+def normalize_heading_match_text(text: str) -> str:
+    # Canonical match key for comparing a heading line against a registry-derived
+    # protected heading. Both sides MUST use this one function so matching is
+    # consistent (late_phases builds the protected set with it).
+    normalized = re.sub(r"[^\w]+", " ", text, flags=re.UNICODE).strip().lower()
+    return re.sub(r"\s+", " ", normalized)
 
 
 def _normalize_repeated_heading_phrase(text: str) -> str:
@@ -1679,10 +1687,27 @@ def collect_false_fragment_heading_samples(text: str) -> list[QualityIssueSample
     return deduped
 
 
-def normalize_false_fragment_headings_markdown(text: str) -> str:
+def normalize_false_fragment_headings_markdown(
+    text: str,
+    *,
+    protected_heading_texts: Collection[str] | None = None,
+) -> str:
     lines = text.splitlines()
     toc_heading_registry = _collect_toc_heading_registry(text)
+    protected_match_texts = {
+        normalize_heading_match_text(candidate)
+        for candidate in (protected_heading_texts or ())
+        if candidate and candidate.strip()
+    }
     index = 0
+
+    def is_protected_heading_line(line: str) -> bool:
+        if not protected_match_texts:
+            return False
+        stripped_line = line.strip()
+        if not is_markdown_heading_line(stripped_line):
+            return False
+        return normalize_heading_match_text(_trim_heading_prefix(stripped_line)) in protected_match_texts
 
     def previous_nonempty_index(start_index: int) -> int | None:
         for candidate_index in range(start_index - 1, -1, -1):
@@ -1708,6 +1733,11 @@ def normalize_false_fragment_headings_markdown(text: str) -> str:
         next_index = next_nonempty_index(index)
         previous_line = lines[previous_index].strip() if previous_index is not None else ""
         next_line = lines[next_index].strip() if next_index is not None else ""
+
+        # A source-declared heading is never absorbed into a neighbouring line (FR-002/FR-003).
+        if is_protected_heading_line(stripped):
+            index += 1
+            continue
 
         if previous_index is not None and _is_split_heading_continuation(previous_line, stripped):
             previous_level = _heading_level_marker(previous_line) or "##"
@@ -1741,7 +1771,11 @@ def normalize_false_fragment_headings_markdown(text: str) -> str:
             if previous_index is not None and _is_continuation_like_previous_line(previous_line):
                 lines[previous_index] = _merge_content_line(lines[previous_index], heading_text)
                 lines[index] = ""
-                if next_index is not None and _is_continuation_like_next_line(next_line):
+                if (
+                    next_index is not None
+                    and _is_continuation_like_next_line(next_line)
+                    and not is_protected_heading_line(next_line)
+                ):
                     lines[previous_index] = _merge_content_line(lines[previous_index], lines[next_index])
                     lines[next_index] = ""
             else:
