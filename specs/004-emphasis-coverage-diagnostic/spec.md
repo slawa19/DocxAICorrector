@@ -1,7 +1,7 @@
 # Feature Specification: Emphasis-coverage diagnostic (bold / italic visibility)
 
 Date: 2026-07-10
-Status: ACTIVE forward spec
+Status: Implemented (2026-07-10). Live Money: bold 0.93, italic 0.64 — matches audit floor; advisory, non-gating.
 Owner surface: `translation_quality_report` — a new emphasis-coverage diagnostic + advisory check
 Companion: `docs/specs/GATE_TRUSTWORTHINESS_AND_UI_DATA_REFACTOR_2026-07-09.md`; `specs/002-gate-report-honesty/spec.md`
 Changelog:
