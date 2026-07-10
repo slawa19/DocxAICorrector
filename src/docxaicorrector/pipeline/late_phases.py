@@ -132,7 +132,7 @@ def _apply_runtime_display_structure_compatibility_cleanup(
     # This output IS the delivered DOCX (rebuilt from runtime_display_markdown below);
     # it is not display-only. The protected set keeps source-declared headings intact.
     normalized = normalize_false_fragment_headings_markdown(text, protected_heading_texts=protected_heading_texts)
-    return normalize_list_fragment_regressions_markdown(normalized)
+    return normalize_list_fragment_regressions_markdown(normalized, protected_heading_texts=protected_heading_texts)
 
 
 def _apply_runtime_display_hygiene_cleanup(text: str) -> str:

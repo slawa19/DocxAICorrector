@@ -578,6 +578,38 @@ def test_normalize_false_fragment_headings_markdown_still_demotes_unprotected_he
     assert "## и далее" not in normalized
 
 
+def test_normalize_list_fragment_regressions_markdown_keeps_protected_heading_out_of_the_list():
+    # Money live defect, second path: a numbered footnote entry whose text ends in the
+    # next ordinal ("… 24.") steals the following chapter heading, turning "# Глава IV"
+    # into list item "24. Глава IV". da6789b guarded the entry-level twin of this pass;
+    # the markdown-level pass that builds the delivered DOCX was left unguarded.
+    markdown = (
+        "23. (*http://chicagoinspectorgeneral.org*). 42* www.bloomberg.com 24.\n\n"
+        "# Глава IV\n\n"
+        "## Объяснение нестабильности:"
+    )
+    protected = _registry_protected_heading_texts(["# Глава IV", "## Объяснение нестабильности:"])
+
+    normalized = document_pipeline_output_validation.normalize_list_fragment_regressions_markdown(
+        markdown, protected_heading_texts=protected
+    )
+
+    assert "# Глава IV" in normalized
+    assert "24. Глава IV" not in normalized
+
+
+def test_normalize_list_fragment_regressions_markdown_still_repairs_unprotected_carry_over():
+    # Anti-regression: with the follower absent from the protected set, the carry-over
+    # repair this pass exists for must still fire.
+    markdown = "3. первый пункт списка 4.\n\nвторой пункт списка"
+
+    normalized = document_pipeline_output_validation.normalize_list_fragment_regressions_markdown(
+        markdown, protected_heading_texts={"глава iv"}
+    )
+
+    assert "4. второй пункт списка" in normalized
+
+
 def test_normalize_inline_fragment_paragraphs_markdown_merges_standalone_term_fragments():
     markdown = (
         "Люди, принявшие\n\n"

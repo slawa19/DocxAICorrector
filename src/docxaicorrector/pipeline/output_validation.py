@@ -1,6 +1,6 @@
 import re
 from collections import defaultdict
-from collections.abc import Collection, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal, TypeAlias
 
@@ -325,6 +325,28 @@ def normalize_heading_match_text(text: str) -> str:
     # consistent (late_phases builds the protected set with it).
     normalized = re.sub(r"[^\w]+", " ", text, flags=re.UNICODE).strip().lower()
     return re.sub(r"\s+", " ", normalized)
+
+
+def _build_protected_heading_predicate(
+    protected_heading_texts: Collection[str] | None,
+) -> Callable[[str], bool]:
+    # A protected heading carries a source-declared heading role (Constitution VII):
+    # no display-side cleanup may demote it, merge it away, or fold it into a list.
+    protected_match_texts = {
+        normalize_heading_match_text(candidate)
+        for candidate in (protected_heading_texts or ())
+        if candidate and candidate.strip()
+    }
+
+    def is_protected_heading_line(line: str) -> bool:
+        if not protected_match_texts:
+            return False
+        stripped_line = line.strip()
+        if not is_markdown_heading_line(stripped_line):
+            return False
+        return normalize_heading_match_text(_trim_heading_prefix(stripped_line)) in protected_match_texts
+
+    return is_protected_heading_line
 
 
 def _normalize_repeated_heading_phrase(text: str) -> str:
@@ -1694,20 +1716,8 @@ def normalize_false_fragment_headings_markdown(
 ) -> str:
     lines = text.splitlines()
     toc_heading_registry = _collect_toc_heading_registry(text)
-    protected_match_texts = {
-        normalize_heading_match_text(candidate)
-        for candidate in (protected_heading_texts or ())
-        if candidate and candidate.strip()
-    }
+    is_protected_heading_line = _build_protected_heading_predicate(protected_heading_texts)
     index = 0
-
-    def is_protected_heading_line(line: str) -> bool:
-        if not protected_match_texts:
-            return False
-        stripped_line = line.strip()
-        if not is_markdown_heading_line(stripped_line):
-            return False
-        return normalize_heading_match_text(_trim_heading_prefix(stripped_line)) in protected_match_texts
 
     def previous_nonempty_index(start_index: int) -> int | None:
         for candidate_index in range(start_index - 1, -1, -1):
@@ -1859,8 +1869,13 @@ def normalize_residual_bullet_glyphs_markdown(text: str) -> str:
     return "\n".join(normalized_lines)
 
 
-def normalize_list_fragment_regressions_markdown(text: str) -> str:
+def normalize_list_fragment_regressions_markdown(
+    text: str,
+    *,
+    protected_heading_texts: Collection[str] | None = None,
+) -> str:
     lines = text.splitlines()
+    is_protected_heading_line = _build_protected_heading_predicate(protected_heading_texts)
 
     def _next_nonempty_index(start_index: int) -> int | None:
         for candidate_index in range(start_index + 1, len(lines)):
@@ -1884,6 +1899,10 @@ def normalize_list_fragment_regressions_markdown(text: str) -> str:
             continue
         next_stripped = lines[next_index].strip()
         if re.match(r"^\d+[.)]\s+", next_stripped):
+            continue
+        # A footnote entry ending in the next ordinal ("… 24.") must not steal a
+        # source-declared heading and render it as list item "24. Глава IV".
+        if is_protected_heading_line(next_stripped):
             continue
 
         intro_match = re.match(r"^(?P<prefix>.+?):\s+1\.$", stripped)
