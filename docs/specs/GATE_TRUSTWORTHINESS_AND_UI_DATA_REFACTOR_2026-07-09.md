@@ -7,6 +7,15 @@ Changelog:
 - 2026-07-09 — Corrected the heading-demotion sections after tracing the Money `24. Глава IV` root cause to
   `output_validation._normalize_final_entry_list_fragments` (final-markdown assembly), NOT PDF import as previously
   claimed. The defect was fixed in `da6789b`; the 1‑D detector's expected count on Money is now zero.
+- 2026-07-10 — **The entry above is RETRACTED: it was wrong.** A fresh full-tier run (`20260710T_money_verify`)
+  shows the defect is LIVE. The output markdown still contains `24. Глава IV`, `16. Глава V`, `30. Глава VI`,
+  `3. Глава VII`, and the DOCX renders them `Normal` + `numPr`, while chapters VIII/IX are correct `Heading 1`.
+  `da6789b` closed only ONE demotion path (the entry-assembly carry-over in `_normalize_final_entry_list_fragments`).
+  The LIVE path is `output_validation.normalize_false_fragment_headings_markdown`, reached from
+  `late_phases._apply_runtime_display_structure_compatibility_cleanup` (`late_phases.py:127`) — a source-blind regex
+  pass whose own comment calls it "display-only" even though `late_phases.py:1080` feeds its output to the DOCX
+  rebuild. The 2026-07-09 claim was made from `classify_heading_demotions == 0` and the registry, without opening the
+  produced document. Constitution VIII exists for exactly this: verify against the artifact, not the report.
 Owner surface: production translation-quality gate + acceptance verdict + `formatting_review.txt` writer.
 Companion: `docs/specs/GLOBAL_PLAN_2026-06-16.md` (this discharges its Remaining-Work items **1** (gate stability
 / vision, incl. 1‑C/1‑D), **3** (acceptance meaning), and **4** (harness↔prod parity)).
@@ -27,10 +36,18 @@ gate must produce that output correctly, universally, on any book (no per-book l
   (advisory path) gets no `role_loss` data. The trustworthy failing verdict lives only in the harness.
 - **Gate blind to heading-demotion.** `role_loss` (`formatting_transfer.py:722`) is computed **only over UNMAPPED
   source**; a heading mapped 1:1 to its target but rendered as list/body (text survived) is invisible — this is the
-  reason the axis is needed. The earlier LIVE example (Money chapters IV/V/VI/VII rendered as `24. Глава IV` …,
-  numbered list) actually originated in `output_validation._normalize_final_entry_list_fragments` (final-markdown
-  assembly, AFTER `target_registry` is built) and was FIXED in `da6789b`; because it happened post-registry, a
-  registry-stage detector could not have seen it. The blind-spot finding above stands on its own.
+  reason the axis is needed. The Money chapters IV/V/VI/VII (`24. Глава IV` …, numbered list) are STILL demoted as of
+  the 2026-07-10 run; see the Changelog retraction and the finding below. The 1‑D detector reports 0 on them because
+  they are UNMAPPED (`mapped_target_index = None`), not mis-mapped — so a MAPPED-pair detector structurally cannot
+  see them. They surface on the unmapped-source axis instead, and are what pushes Money to 17 vs threshold 16.
+- **The gate validates a different document than the user receives** (2026-07-10, verified on
+  `20260710T_money_verify`). Quality/report logic reads `final_markdown` (source-aware, headings intact →
+  `false_fragment_heading_count = 0`), while the DOCX is rebuilt from `runtime_display_markdown`
+  (`late_phases.py:1080`), which has been through the source-blind `normalize_false_fragment_headings_markdown`
+  (`raw_false_fragment_heading_count = 52`). That normalizer demotes a short heading whenever the preceding line
+  lacks sentence-terminal punctuation (`_is_continuation_like_previous_line`) — chapters IV–VII follow footnote/URL
+  tails; VIII/IX follow prose sentences and survive. This is the primary defect on the project's top-priority axis
+  (heading transfer with correct style weight), and no gate signal reports it.
 - **`[КРИТ]`/false_pair not rendered** — `runtime/artifacts.py:60` knows 2 severities and hardcodes `КРИТ 0`.
 - **`list_fragment_regressions_present` false hard-fails on references** — 1‑A references crediting not extended to it.
 - **0/4 books pass** — effective unmapped > threshold from mis-tagged back-matter/index (1‑A not extended to
@@ -80,10 +97,12 @@ full test files green before AND after. Do NOT start a standalone big refactor �
 ## Acceptance criteria
 
 - Production (even under advisory) emits `role_loss` (incl. heading-demotion) + `unmapped_source_present` + `[КРИТ]`
-  review-items. **Money**'s 4 chapters must remain HEADINGS in the assembled output (guarded by the deterministic
-  regression test added in `da6789b`), and the 1‑D detector must report ZERO demotions on Money — a nonzero count is
-  a regression, not a success. **lietaer/mazzucato/creatingwealth** show NO false heading-demotions
-  (back-matter/index/attribution credited).
+  review-items. **Money**'s 4 chapters must remain HEADINGS **in the produced DOCX** — verified by opening the
+  artifact, never by reading `heading_demotion_count`. As of 2026-07-10 this criterion FAILS: chapters IV–VII render
+  `Normal` with `numPr`, VIII/IX are correct `Heading 1`. The `da6789b` regression test guards a different demotion
+  path and does not cover this one. **lietaer/mazzucato/creatingwealth** show NO false heading-demotions
+  (back-matter/index/attribution credited). Lietaer 2026-07-10: 16 of its 25 loss-counted paragraphs are source
+  headings — the same defect class, so this is systemic, not per-book.
 - Anti-vacuum COUNTER-PROOF: a synthetic real unmapped body paragraph (and a real demoted body heading) still counts.
 - Verdict PARITY: production finalization and the harness call the same shared acceptance assembly; same numbers.
 - Every hard-fail/warn class emits a review-item (Money `review_items > 0`).
