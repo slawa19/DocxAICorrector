@@ -52,6 +52,15 @@ ALLOWED_CENTERED_QUOTE_STRUCTURAL_ROLES = {"epigraph", "attribution", "dedicatio
 DISALLOWED_CENTER_SHORT_STRUCTURAL_ROLES = {"toc_header", "toc_entry", "heading", "caption"}
 _SYMBOL_ONLY_CARRYOVER_MARKER_PATTERN = re.compile(r"^(?P<body>.+?)\s+(?P<next_number>\d+)\.$")
 
+# Emphasis-coverage diagnostic (spec 004): the inline emphasis dialect emitted by
+# ``document/extraction.py::_apply_run_markdown`` — ``***x***`` bold+italic,
+# ``**x**`` bold, ``*x*`` / ``_x_`` italic. Triple/double spans are consumed before
+# single-asterisk italics so a bold span's inner asterisks are never miscounted.
+_EMPHASIS_TRIPLE_SPAN_PATTERN = re.compile(r"\*\*\*(.+?)\*\*\*", re.DOTALL)
+_EMPHASIS_BOLD_SPAN_PATTERN = re.compile(r"\*\*(.+?)\*\*", re.DOTALL)
+_EMPHASIS_ASTERISK_ITALIC_SPAN_PATTERN = re.compile(r"\*(.+?)\*", re.DOTALL)
+_EMPHASIS_UNDERSCORE_ITALIC_SPAN_PATTERN = re.compile(r"_(.+?)_", re.DOTALL)
+
 
 def _paragraph_preview(text: str, *, limit: int = 120) -> str:
     normalized = re.sub(r"\s+", " ", text).strip()
@@ -2031,6 +2040,107 @@ def _try_register_local_gap_fallback(
     return True
 
 
+def _count_inline_emphasis_spans(text: str) -> tuple[int, int]:
+    """Return ``(bold_span_count, italic_span_count)`` for inline markdown emphasis."""
+    if not text:
+        return 0, 0
+    triple_matches = _EMPHASIS_TRIPLE_SPAN_PATTERN.findall(text)
+    bold = len(triple_matches)
+    italic = len(triple_matches)
+    remaining = _EMPHASIS_TRIPLE_SPAN_PATTERN.sub(" ", text)
+    bold += len(_EMPHASIS_BOLD_SPAN_PATTERN.findall(remaining))
+    remaining = _EMPHASIS_BOLD_SPAN_PATTERN.sub(" ", remaining)
+    italic += len(_EMPHASIS_ASTERISK_ITALIC_SPAN_PATTERN.findall(remaining))
+    italic += len(_EMPHASIS_UNDERSCORE_ITALIC_SPAN_PATTERN.findall(remaining))
+    return bold, italic
+
+
+def _count_source_emphasis(source_paragraphs: Sequence[ParagraphUnit]) -> tuple[int, int, bool]:
+    """Count source bold/italic signals, excluding heading-role paragraphs (FR-002).
+
+    Prefers the PDF character-run signal (``pdf_emphasis_runs``); where that is absent,
+    counts inline markdown spans in the paragraph text. ``has_signal`` is False only when
+    NO paragraph carried either signal (spec FR-006 — no signal, not-measured).
+    """
+    source_bold = 0
+    source_italic = 0
+    has_signal = False
+    for paragraph in source_paragraphs:
+        if str(getattr(paragraph, "role", "") or "").strip().lower() == "heading":
+            continue
+        emphasis_runs = getattr(paragraph, "pdf_emphasis_runs", None) or []
+        if emphasis_runs:
+            has_signal = True
+            for _run_text, run_bold, run_italic in emphasis_runs:
+                if run_bold:
+                    source_bold += 1
+                if run_italic:
+                    source_italic += 1
+            continue
+        bold_spans, italic_spans = _count_inline_emphasis_spans(str(getattr(paragraph, "text", "") or ""))
+        if bold_spans or italic_spans:
+            has_signal = True
+            source_bold += bold_spans
+            source_italic += italic_spans
+    return source_bold, source_italic, has_signal
+
+
+def _count_output_emphasis(target_paragraphs: Sequence[Paragraph]) -> tuple[int, int]:
+    """Count produced-DOCX bold/italic runs, excluding Heading-styled paragraphs (FR-003)."""
+    output_bold = 0
+    output_italic = 0
+    for paragraph in target_paragraphs:
+        if _target_has_heading_format(paragraph):
+            continue
+        for run in paragraph.runs:
+            if run.bold:
+                output_bold += 1
+            if run.italic:
+                output_italic += 1
+    return output_bold, output_italic
+
+
+def _emphasis_retention_ratio(output_count: int, source_count: int) -> float | None:
+    """output/source retention; None (not-applicable) when the source count is zero (FR-004)."""
+    if source_count <= 0:
+        return None
+    return round(output_count / source_count, 4)
+
+
+def _build_emphasis_coverage_diagnostics(
+    source_paragraphs: Sequence[ParagraphUnit],
+    target_paragraphs: Sequence[Paragraph],
+) -> dict[str, object]:
+    """Advisory emphasis-coverage metric (spec 004, FR-001..FR-006).
+
+    Bold/italic retention was measured NOWHERE, so a book could lose all its italics
+    and still pass acceptance. This surfaces the loss without gating on it.
+    """
+    source_bold, source_italic, has_signal = _count_source_emphasis(source_paragraphs)
+    if not has_signal:
+        return {
+            "measured": False,
+            "reason": "no_source_emphasis_signal",
+            "source_bold": None,
+            "source_italic": None,
+            "output_bold": None,
+            "output_italic": None,
+            "bold_retention_ratio": None,
+            "italic_retention_ratio": None,
+        }
+    output_bold, output_italic = _count_output_emphasis(target_paragraphs)
+    return {
+        "measured": True,
+        "reason": None,
+        "source_bold": source_bold,
+        "source_italic": source_italic,
+        "output_bold": output_bold,
+        "output_italic": output_italic,
+        "bold_retention_ratio": _emphasis_retention_ratio(output_bold, source_bold),
+        "italic_retention_ratio": _emphasis_retention_ratio(output_italic, source_italic),
+    }
+
+
 def _map_source_target_paragraphs(
     source_paragraphs: list[ParagraphUnit],
     target_paragraphs: list[Paragraph],
@@ -2612,6 +2722,10 @@ def _map_source_target_paragraphs(
         mapped_target_by_source,
         strategy_by_source,
         generated_registry_by_id,
+    )
+    diagnostics["emphasis_coverage"] = _build_emphasis_coverage_diagnostics(
+        source_paragraphs,
+        target_paragraphs,
     )
     diagnostics["unmapped_source_role_counts"] = _build_unmapped_source_role_counts(
         source_paragraphs,

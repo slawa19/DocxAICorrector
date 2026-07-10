@@ -642,6 +642,25 @@ def build_acceptance_verdict(
             ),
             failed_reason="advisory_only",
         )
+        emphasis_coverage = translation_quality_report.get("emphasis_coverage")
+        emphasis_coverage_map = emphasis_coverage if isinstance(emphasis_coverage, Mapping) else {}
+        # Emphasis coverage (spec 004) is ADVISORY: bold/italic retention is made
+        # visible, but a low ratio must never enter failed_checks — ``passed`` is
+        # hardcoded True so the check reports without gating (FR-005). No hard
+        # retention threshold is invented from the four-book corpus.
+        add_check(
+            "emphasis_coverage_advisory",
+            True,
+            emphasis_measured=emphasis_coverage_map.get("measured"),
+            emphasis_source_bold=emphasis_coverage_map.get("source_bold"),
+            emphasis_source_italic=emphasis_coverage_map.get("source_italic"),
+            emphasis_output_bold=emphasis_coverage_map.get("output_bold"),
+            emphasis_output_italic=emphasis_coverage_map.get("output_italic"),
+            bold_retention_ratio=emphasis_coverage_map.get("bold_retention_ratio"),
+            italic_retention_ratio=emphasis_coverage_map.get("italic_retention_ratio"),
+            emphasis_coverage_reason=emphasis_coverage_map.get("reason"),
+            failed_reason="advisory_only",
+        )
     if require_no_toc_body_concat:
         toc_body_concat_check = build_acceptance_toc_body_concat_check(
             preparation_diagnostic_snapshot=preparation_diagnostic_snapshot,

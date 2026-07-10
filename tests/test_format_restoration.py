@@ -3590,3 +3590,140 @@ def test_caption_survives_extraction_markdown_and_preserve_after_image(tmp_path)
     assert updated_doc.paragraphs[1].style is not None
     assert updated_doc.paragraphs[1].style.name == "Caption"
     assert updated_doc.paragraphs[1].alignment == WD_ALIGN_PARAGRAPH.CENTER
+
+
+# ---------------------------------------------------------------------------
+# Emphasis-coverage diagnostic (spec 004): bold/italic retention made visible.
+# ---------------------------------------------------------------------------
+
+
+def _italic_source_paragraphs(count: int) -> list[ParagraphUnit]:
+    return [
+        ParagraphUnit(
+            paragraph_id=f"p{index:04d}",
+            text=f"word{index}",
+            role="body",
+            structural_role="body",
+            pdf_emphasis_runs=[(f"word{index}", False, True)],
+        )
+        for index in range(count)
+    ]
+
+
+def test_emphasis_coverage_italic_retention_full_and_zero():
+    # SC-002: 10 source italic runs preserved -> ratio 1.0; stripped -> ratio 0.0.
+    source_paragraphs = _italic_source_paragraphs(10)
+
+    preserved_doc = Document()
+    for index in range(10):
+        preserved_doc.add_paragraph().add_run(f"word{index}").italic = True
+    _, preserved_diag = _map_source_target_paragraphs(source_paragraphs, preserved_doc.paragraphs)
+    preserved = preserved_diag["emphasis_coverage"]
+    assert preserved["measured"] is True
+    assert preserved["source_italic"] == 10
+    assert preserved["output_italic"] == 10
+    assert preserved["italic_retention_ratio"] == 1.0
+
+    stripped_doc = Document()
+    for index in range(10):
+        stripped_doc.add_paragraph(f"word{index}")
+    _, stripped_diag = _map_source_target_paragraphs(source_paragraphs, stripped_doc.paragraphs)
+    stripped = stripped_diag["emphasis_coverage"]
+    assert stripped["output_italic"] == 0
+    assert stripped["italic_retention_ratio"] == 0.0
+
+
+def test_emphasis_coverage_excludes_heading_role_and_heading_style():
+    # SC-003: a heading-role source bold run does not inflate body-bold source count,
+    # and a Heading-styled target paragraph is excluded from the output bold count.
+    source_paragraphs = [
+        ParagraphUnit(
+            paragraph_id="p0000",
+            text="A BOLD HEADING",
+            role="heading",
+            structural_role="heading",
+            pdf_emphasis_runs=[("A BOLD HEADING", True, False)],
+        ),
+        ParagraphUnit(
+            paragraph_id="p0001",
+            text="body",
+            role="body",
+            structural_role="body",
+            pdf_emphasis_runs=[("body", True, False)],
+        ),
+    ]
+    target_doc = Document()
+    target_doc.add_paragraph("A BOLD HEADING", style="Heading 1").runs[0].bold = True
+    target_doc.add_paragraph().add_run("body").bold = True
+
+    _, diagnostics = _map_source_target_paragraphs(source_paragraphs, target_doc.paragraphs)
+    coverage = diagnostics["emphasis_coverage"]
+    assert coverage["source_bold"] == 1
+    assert coverage["output_bold"] == 1
+    assert coverage["bold_retention_ratio"] == 1.0
+
+
+def test_emphasis_coverage_zero_source_ratio_is_not_applicable():
+    # FR-004: a document with italic but no bold reports bold ratio as not-applicable
+    # (None), never 0.0.
+    source_paragraphs = [
+        ParagraphUnit(
+            paragraph_id="p0000",
+            text="x",
+            role="body",
+            structural_role="body",
+            pdf_emphasis_runs=[("x", False, True)],
+        ),
+    ]
+    target_doc = Document()
+    target_doc.add_paragraph().add_run("x").italic = True
+
+    _, diagnostics = _map_source_target_paragraphs(source_paragraphs, target_doc.paragraphs)
+    coverage = diagnostics["emphasis_coverage"]
+    assert coverage["measured"] is True
+    assert coverage["source_bold"] == 0
+    assert coverage["bold_retention_ratio"] is None
+    assert coverage["italic_retention_ratio"] == 1.0
+
+
+def test_emphasis_coverage_no_signal_reports_not_measured():
+    # FR-006: neither pdf_emphasis_runs nor inline markup anywhere -> measured=false
+    # with a reason, not 0/0 presented as loss.
+    source_paragraphs = [
+        ParagraphUnit(
+            paragraph_id="p0000",
+            text="plain text",
+            role="body",
+            structural_role="body",
+        ),
+    ]
+    target_doc = Document()
+    target_doc.add_paragraph("plain text")
+
+    _, diagnostics = _map_source_target_paragraphs(source_paragraphs, target_doc.paragraphs)
+    coverage = diagnostics["emphasis_coverage"]
+    assert coverage["measured"] is False
+    assert coverage["reason"] == "no_source_emphasis_signal"
+    assert coverage["source_bold"] is None
+    assert coverage["italic_retention_ratio"] is None
+
+
+def test_emphasis_coverage_counts_inline_markdown_when_no_pdf_runs():
+    # FR-002 fallback: with no pdf_emphasis_runs, inline markdown spans are counted;
+    # ``***both***`` counts as both bold and italic.
+    source_paragraphs = [
+        ParagraphUnit(
+            paragraph_id="p0000",
+            text="a **bold** and *italic* and ***both***",
+            role="body",
+            structural_role="body",
+        ),
+    ]
+    target_doc = Document()
+    target_doc.add_paragraph("plain")
+
+    _, diagnostics = _map_source_target_paragraphs(source_paragraphs, target_doc.paragraphs)
+    coverage = diagnostics["emphasis_coverage"]
+    assert coverage["measured"] is True
+    assert coverage["source_bold"] == 2
+    assert coverage["source_italic"] == 2

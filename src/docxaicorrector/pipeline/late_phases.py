@@ -2944,6 +2944,11 @@ def _build_translation_quality_report(
     toc_body_concat_detected = bool(authority_fields.get("toc_body_concat_detected", False))
     source_paragraph_count = latest_payload.get("source_count") if isinstance(latest_payload, Mapping) else None
     output_paragraph_count = latest_payload.get("target_count") if isinstance(latest_payload, Mapping) else None
+    emphasis_coverage_payload = (
+        latest_payload.get("emphasis_coverage") if isinstance(latest_payload, Mapping) else None
+    )
+    if not isinstance(emphasis_coverage_payload, Mapping):
+        emphasis_coverage_payload = {"measured": False, "reason": "emphasis_coverage_unavailable"}
     worst_unmapped_source_count = _effective_authoritative_unmapped_count(
         authority_fields,
         basis_key="unmapped_source_count_basis",
@@ -3400,6 +3405,7 @@ def _build_translation_quality_report(
         "raw_theology_style_deterministic_issue_count": len(raw_theology_style_samples),
         "theology_style_deterministic_issue_samples": _serialize_quality_samples(theology_style_samples),
         "raw_theology_style_deterministic_issue_samples": _serialize_quality_samples(raw_theology_style_samples),
+        "emphasis_coverage": dict(emphasis_coverage_payload),
         "toc_body_concat_detected": toc_body_concat_detected,
         "toc_body_concat_markdown_detected": authority_fields.get("toc_body_concat_markdown_detected", False),
         "toc_body_concat_structure_detected": authority_fields.get("toc_body_concat_structure_detected", False),

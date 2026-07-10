@@ -714,6 +714,44 @@ def test_acceptance_check_states_are_distinguishable_in_data() -> None:
     assert "structural_comparison_available" not in verdict["failed_checks"]
 
 
+def test_emphasis_coverage_advisory_never_hard_fails_even_at_zero_retention() -> None:
+    # Emphasis coverage (spec 004) is advisory-only: a zero italic retention ratio is
+    # surfaced and applicable, but must NEVER enter failed_checks (SC-002,
+    # Anti-regression — the number must not become a silent gate).
+    from docxaicorrector.validation.acceptance import build_acceptance_verdict
+
+    report = {
+        "result": "succeeded",
+        "output_artifacts": {"output_docx_openable": True, "output_contains_placeholder_markup": False},
+        "formatting_diagnostics": [{"unmapped_source_ids": [], "unmapped_target_indexes": []}],
+        "translation_quality_report": {
+            "emphasis_coverage": {
+                "measured": True,
+                "reason": None,
+                "source_bold": 4,
+                "source_italic": 10,
+                "output_bold": 4,
+                "output_italic": 0,
+                "bold_retention_ratio": 1.0,
+                "italic_retention_ratio": 0.0,
+            },
+        },
+    }
+
+    verdict = _untyped(
+        build_acceptance_verdict(report, mismatch_threshold=None, unmapped_target_threshold=None)
+    )
+    by_name = {check["name"]: check for check in verdict["checks"]}
+
+    advisory = by_name["emphasis_coverage_advisory"]
+    assert advisory["applicable"] is True
+    assert advisory["passed"] is True
+    assert advisory["failed_reason"] == "advisory_only"
+    assert advisory["emphasis_measured"] is True
+    assert advisory["italic_retention_ratio"] == 0.0
+    assert "emphasis_coverage_advisory" not in verdict["failed_checks"]
+
+
 def test_resolve_acceptance_thresholds_returns_none_when_unconfigured() -> None:
     # Production config carries no acceptance loss budget, so the resolver returns
     # None (unconfigured), while a configured 0 stays 0 (spec FR-008).
