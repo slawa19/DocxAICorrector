@@ -112,7 +112,7 @@ def _ensure_project_imports() -> None:
 ARTIFACT_ROOT = REPO_ROOT / "benchmark_projects" / "translation_quality_benchmark" / "artifacts"
 RUNS_ROOT = ARTIFACT_ROOT / "runs"
 DEFAULT_CONFIG_PATH = REPO_ROOT / "benchmark_projects" / "translation_quality_benchmark" / "benchmark_config.toml"
-DEFAULT_PROFILE_IDS = ("mazzucato-audiobook-core", "lietaer-core")
+DEFAULT_PROFILE_IDS = ("mazzucato-pdf-full-benchmark", "lietaer-pdf-full-benchmark")
 TOC_STRUCTURAL_ROLES = {"toc_header", "toc_entry"}
 FORBIDDEN_META_PATTERNS = (
     re.compile(r"^\s*(?:here(?:'s| is)\s+the\s+translation|translation\s*:)", re.IGNORECASE),

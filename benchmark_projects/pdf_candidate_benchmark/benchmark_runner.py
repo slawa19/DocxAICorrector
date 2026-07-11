@@ -54,7 +54,7 @@ MEANINGFUL_RELATIVE_IMPROVEMENT = 0.20
 MIN_VISIBLE_TEXT_CHAR_RATIO_VS_BASELINE = 0.90
 ARTIFACT_ROOT = REPO_ROOT / "benchmark_projects" / "pdf_candidate_benchmark" / "artifacts"
 RUNS_ROOT = ARTIFACT_ROOT / "runs"
-DEFAULT_SOURCE_PROFILE_ID = "lietaer-pdf-first-20-structure-core"
+DEFAULT_SOURCE_PROFILE_ID = "lietaer-pdf-full-benchmark"
 _TOC_ENTRY_PATTERN = re.compile(
     r"(?:\.{2,}|[\u2024\u2025\u2026\u2027\u2219\u22c5\u00b7]{2,}|\s{2,})\s*[0-9ivxlcdmIVXLCDM]+(?:\s|$)"
 )

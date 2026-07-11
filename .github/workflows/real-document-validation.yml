@@ -31,13 +31,13 @@ jobs:
           . .venv/bin/activate
           pip install -r requirements.txt
 
-      - name: Validate legacy DOC extraction without skip fallback
+      - name: Validate full-book PDF extraction without skip fallback
         run: |
-          bash scripts/test.sh 'tests/test_real_document_validation_corpus.py::test_corpus_extraction[religion-wealth-core]' -vv
+          bash scripts/test.sh 'tests/test_real_document_validation_corpus.py::test_corpus_extraction[mazzucato-pdf-full-benchmark]' -vv
 
-      - name: Validate PDF extraction without skip fallback
+      - name: Validate full-book PDF extraction without skip fallback (Lietaer)
         run: |
-          bash scripts/test.sh 'tests/test_real_document_validation_corpus.py::test_corpus_extraction[lietaer-pdf-first-20-structure-core]' -vv
+          bash scripts/test.sh 'tests/test_real_document_validation_corpus.py::test_corpus_extraction[lietaer-pdf-full-benchmark]' -vv
 
       - name: Upload real-document artifacts
         if: always()

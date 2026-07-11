@@ -38,14 +38,14 @@ Verified command set for structural preparation snapshots:
 ```bash
 # Preferred user-visible task path
 # Task: Run Structural Preparation Diagnostic
-# Prompt 1: lietaer-pdf-first-20-structure-core
+# Prompt 1: lietaer-pdf-full-benchmark
 # Prompt 2: leave blank to use the profile declared on the document profile
 
 # Direct WSL shell path with explicit override
-bash scripts/run-structural-preparation-diagnostic.sh lietaer-pdf-first-20-structure-core --run-profile-id ui-parity-pdf-structural-recovery
+bash scripts/run-structural-preparation-diagnostic.sh lietaer-pdf-full-benchmark --run-profile-id ui-parity-pdf-structural-recovery
 
 # File-capture fallback when terminal stdout capture is unreliable
-bash scripts/run-structural-preparation-diagnostic.sh lietaer-pdf-first-20-structure-core --run-profile-id ui-parity-pdf-structural-recovery > .run/first20_structural_snapshot.json 2>&1
+bash scripts/run-structural-preparation-diagnostic.sh lietaer-pdf-full-benchmark --run-profile-id ui-parity-pdf-structural-recovery > .run/first20_structural_snapshot.json 2>&1
 
 # Inspect the saved payload from the same WSL shell
 tail -n 40 .run/first20_structural_snapshot.json

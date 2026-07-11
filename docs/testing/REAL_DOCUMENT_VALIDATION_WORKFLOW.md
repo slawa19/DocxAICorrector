@@ -1,15 +1,13 @@
 # Real Document Validation Workflow
 
-Canonical full-tier real-document regression target: `tests/sources/Лиетар глава1.docx`.
+Canonical full-tier real-document regression target: `tests/sources/book/Rethinking-money_-How-new-currencies-turn-scarcity-into-prosperity-Bernard-Lietaer-Jacqui-Dunne.pdf` (profile `lietaer-pdf-full-benchmark`).
 
-Canonical registry for universal real-document validation: `corpus_registry.toml`.
+Canonical registry for universal real-document validation: `corpus_registry.toml`. The corpus now contains only the real full books under `tests/sources/book/`.
 
 Current default mapping:
 
-- document profile: `lietaer-core`
-- additional document profile: `religion-wealth-core`
-- audiobook sanity document profile: `mazzucato-audiobook-core`
-- canonical structure-recovery document profile: `lietaer-pdf-first-20-structure-core`
+- default document profile: `lietaer-pdf-full-benchmark`
+- additional full-book document profiles: `mazzucato-pdf-full-benchmark`, `creatingwealth-pdf-full-benchmark`, held-out `money-sustainability-pdf-full-heldout`
 - full run profile: `ui-parity-default`
 - soak run profile: `ui-parity-soak-3x`
 - structural run profile: `ui-parity-translate-benchmark-advisory`
@@ -23,11 +21,11 @@ roles flow straight to planning, so there is no `structure_recognition_mode` con
 
 Current corpus notes:
 
-- `lietaer-core` is now back on strict deterministic structural thresholds.
-- `religion-wealth-core` now points at the original legacy `.doc` source and exercises the project-level auto-conversion path during corpus validation; it currently remains deterministic-structural `tolerant` because one page-separator artifact still produces a bounded restore diagnostic.
-- `mazzucato-audiobook-core` is the canonical real-document sample for translate plus audiobook postprocess sanity and maps to `ui-parity-translate-audiobook-postprocess` by default.
-- `lietaer-pdf-first-20-structure-core` is the canonical structure slice for the deterministic structural diagnostic path.
-- `lietaer-pdf-first-20-benchmark` and `lietaer-pdf-full-benchmark` are explicitly tagged `benchmark-only` in `corpus_registry.toml`; they use `ui-parity-translate-benchmark-advisory` and are excluded from mandatory full gates by policy.
+- `lietaer-pdf-full-benchmark` is the default full-book PDF profile for structure-model comparison on the full Lietaer source.
+- `mazzucato-pdf-full-benchmark` is the non-Lietaer full-book PDF benchmark for WS-2 role-aware formatting-transfer generalization.
+- `creatingwealth-pdf-full-benchmark` is the epub-derived full-book PDF benchmark.
+- `money-sustainability-pdf-full-heldout` is the held-out full-book PDF benchmark for Stage 2 baseline validation.
+- All four are full-book profiles in `tests/sources/book/`; the benchmark-only ones use `ui-parity-translate-benchmark-advisory` and are excluded from mandatory full gates by policy.
 
 ## Structure Diagnostic Workflow
 
@@ -38,22 +36,19 @@ remains useful for inspecting importer-produced structure on the PDF slices.
 Use this structure-scoped order:
 
 1. focused local tests for the directly touched structure module or preparation slice;
-2. `bash scripts/run-structural-preparation-diagnostic.sh lietaer-pdf-first-20-structure-core`
+2. `bash scripts/run-structural-preparation-diagnostic.sh lietaer-pdf-full-benchmark`
 	as the default real-document PDF snapshot path;
-3. `bash scripts/run-structural-preparation-diagnostic.sh lietaer-pdf-chapter-region-core`
-	for late-book topology regressions that live in the Chapter 8-11 composite-heading
-	and TOC area rather than in the first-20-pages slice;
+3. `bash scripts/run-structural-preparation-diagnostic.sh mazzucato-pdf-full-benchmark`
+	for a non-Lietaer full-book topology cross-check;
 4. a full-tier validator only as a late checkpoint, and only when the defect is
 	already proven to live in final markdown/DOCX artifacts rather than in
 	preparation/structure artifacts.
 
 Corpus policy for this workflow:
 
-1. `lietaer-pdf-first-20-structure-core` (`tests/sources/Rethinking-money-first-20-pages.pdf`) is the canonical fast PDF slice for routine structure iteration.
-2. `lietaer-pdf-chapter-region-core` (`tests/sources/Rethinking-money-chapter-region-pages-10-11-and-156-217.pdf`) is the cheap non-contiguous proof slice for late-book Chapter 8-11 topology regressions that the first-20-pages slice cannot cover.
-3. `lietaer-core` is not the routine structure-recovery proof document for this workflow.
-4. `ui-parity-pdf-structural-recovery` is still a `full` tier translate profile; despite its name, structure recognition is deterministic (importer-driven) and there is no AI structure stage.
-5. `mazzucato-pdf-full-benchmark` (`tests/sources/The Value of Everything. Making and Taking in the Global Economy by Mariana Mazzucato (z-lib.org).pdf`) is the non-Lietaer full-book PDF benchmark for WS-2 formatting-transfer generalization; it is not the routine structure-recovery proof path.
+1. `lietaer-pdf-full-benchmark` (`tests/sources/book/Rethinking-money_-How-new-currencies-turn-scarcity-into-prosperity-Bernard-Lietaer-Jacqui-Dunne.pdf`) is the canonical full-book PDF for routine structure iteration.
+2. `ui-parity-pdf-structural-recovery` is still a `full` tier translate profile; despite its name, structure recognition is deterministic (importer-driven) and there is no AI structure stage.
+3. `mazzucato-pdf-full-benchmark` (`tests/sources/book/The Value of Everything. Making and Taking in the Global Economy by Mariana Mazzucato (z-lib.org).pdf`) is the non-Lietaer full-book PDF benchmark for WS-2 formatting-transfer generalization.
 
 ## Canonical Entry Points
 
@@ -91,9 +86,7 @@ GitHub Actions -> Real Document Validation
 Manual GitHub Actions AI-heavy paths:
 
 ```text
-GitHub Actions -> Real Document Quality Gate
 GitHub Actions -> Real Document AI Structure Smoke
-GitHub Actions -> Real Document Audiobook Sanity
 ```
 
 Canonical WSL CLI path:
@@ -116,13 +109,9 @@ This script does three things for you:
 
 The quality-gate script runs only the exceptional pytest entry point `tests/test_real_document_quality_gate.py` with `-vv -s`, so the terminal shows the live validator stream and pytest automatically fails the gate when the validator exits non-zero or writes an invalid manifest/report.
 
-The manual `Real Document Validation` workflow is the Phase 4 system-deps path. It installs `system-requirements.apt`, forces `DOCXAI_REQUIRE_REAL_DOCUMENT_CAPABILITIES=1`, runs the no-skip legacy DOC extraction selector plus the no-skip PDF extraction selector for `lietaer-pdf-first-20-structure-core`, and uploads `.run/` plus `tests/artifacts/real_document_pipeline/` for inspection.
-
-The manual `Real Document Quality Gate` workflow is the Phase 8 exceptional AI-heavy gate. It installs the same runtime dependencies, requires the repository `OPENAI_API_KEY` secret, sets `DOCXAI_RUN_REAL_DOCUMENT_QUALITY=1`, runs `bash scripts/run-real-document-quality-gate.sh`, and uploads `.run/`, `tests/artifacts/real_document_pipeline/`, and `tests/artifacts/structural_diagnostics/` for inspection.
+The manual `Real Document Validation` workflow is the Phase 4 system-deps path. It installs `system-requirements.apt`, forces `DOCXAI_REQUIRE_REAL_DOCUMENT_CAPABILITIES=1`, runs the no-skip full-book PDF extraction selectors for `mazzucato-pdf-full-benchmark` and `lietaer-pdf-full-benchmark`, and uploads `.run/` plus `tests/artifacts/real_document_pipeline/` for inspection.
 
 The manual `Real Document AI Structure Smoke` workflow is the Phase 8 AI-heavy structure gate. It installs the same runtime dependencies, requires the repository `OPENAI_API_KEY` secret, sets `DOCXAI_RUN_REAL_DOCUMENT_STRUCTURE_RECOGNITION=1`, runs `bash scripts/test.sh tests/test_real_document_structure_recognition_integration.py -vv`, and uploads `.run/` plus `tests/artifacts/real_document_pipeline/` for inspection.
-
-The manual `Real Document Audiobook Sanity` workflow is the Phase 8 AI-heavy narration gate. It requires the repository `OPENAI_API_KEY` secret, sets `DOCXAI_RUN_REAL_DOCUMENT_AUDIOBOOK_SANITY=1`, runs `bash scripts/test.sh tests/test_real_document_audiobook_spec.py -vv`, and uploads `.run/` plus `tests/artifacts/real_document_pipeline/` for inspection.
 
 ## Validation Tiers
 
@@ -168,37 +157,6 @@ DOCXAI_RUN_REAL_DOCUMENT_STRUCTURE_RECOGNITION=1 \
 bash scripts/test.sh tests/test_real_document_structure_recognition_integration.py -vv
 ```
 
-## Audiobook Sanity Smoke
-
-The repository also has a real-document translate-plus-audiobook-postprocess sanity test in
-`tests/test_real_document_audiobook_spec.py`.
-
-This test is intentionally opt-in and excluded from the ordinary `Run Full Pytest`
-path. It only runs when both conditions hold:
-
-1. `OPENAI_API_KEY` is available for the real validation profiles involved in the run.
-2. `DOCXAI_RUN_REAL_DOCUMENT_AUDIOBOOK_SANITY=1` is set explicitly.
-
-Run it when a change touches one of these surfaces:
-
-1. audiobook postprocess prompt or deterministic cleanup behavior;
-2. narration artifact writing or `ui_result_artifacts_saved` / `ui_audiobook_artifact_saved` logging;
-3. translate-plus-audiobook run profile wiring in the real-document validator;
-4. DOCX or TTS artifact parity between baseline translate output and audiobook postprocess output.
-
-Preferred operator execution path:
-
-```text
-GitHub Actions -> Real Document Audiobook Sanity
-```
-
-Ad-hoc pytest path when an explicit smoke assertion is needed:
-
-```bash
-DOCXAI_RUN_REAL_DOCUMENT_AUDIOBOOK_SANITY=1 \
-bash scripts/test.sh tests/test_real_document_audiobook_spec.py -vv
-```
-
 ## Environment Contract
 
 - Use the WSL project environment in `.venv`.
@@ -212,15 +170,15 @@ bash scripts/test.sh tests/test_real_document_audiobook_spec.py -vv
 
 ## CI-Parity Notes For Corpus Debugging
 
-`religion-wealth-core` intentionally points at an original legacy `.doc` source, so this profile exercises the real conversion boundary instead of a pre-normalized `.docx` shortcut.
+The full-book corpus profiles are PDF sources under `tests/sources/book/`, so corpus extraction and structural passthrough depend on the PDF text-layer importer plus `pandoc` being available in the runner.
 
 Consequences for debugging:
 
 - green local pytest in a developer WSL environment does not automatically prove green CI;
-- CI may fail only because a clean Ubuntu runner lacks `soffice` or `antiword` + `pandoc`;
-- extraction-tier and structural-tier corpus tests for legacy `.doc` and any future PDF corpus profiles should be treated as capability-sensitive, not as pure business-logic tests.
+- CI may fail only because a clean Ubuntu runner lacks `pandoc` or the PDF toolchain;
+- extraction-tier and structural-tier corpus tests for the PDF corpus profiles should be treated as capability-sensitive, not as pure business-logic tests.
 
-When a CI run fails on corpus extraction or structural passthrough for a legacy `.doc` or PDF profile, check capability first:
+When a CI run fails on corpus extraction or structural passthrough for a PDF profile, check capability first:
 
 ```bash
 python -c "import pdfminer, docx"

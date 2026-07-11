@@ -53,9 +53,11 @@ Active companions:
 > 2. ~~UI-data contract gaps~~ — RESOLVED (`specs/011`: `unmapped_target` items emitted; `[КРИТ]`/false_pair
 >    kept correct-and-latent + test-covered; `note_fragment` scoped out as a UI-copy concern, footnotes out of
 >    scope per Constitution VII). UI-data blockers are discharged.
-> 3. ~~Breadth validation~~ — DONE 2026-07-11 (two full live runs: legacy `.doc` theology + the DOCX-input
->    path; see "Breadth result" below). Pipeline + gate (specs 001–011) generalize with NO regression / NO new
->    first-fire; spec 011 validated live; one accepted front-matter tail. **All pre-UI work is now complete.**
+> 3. Breadth validation — PENDING (RETRACTED 2026-07-11). The two runs previously marked "DONE 2026-07-11"
+>    were run on LEGACY/truncated archive sources (a religion `.doc`, a mazzucato audiobook `.docx` excerpt),
+>    NOT the real full books, so they are NOT valid breadth evidence. Breadth must be re-run on the real full
+>    books in `tests/sources/book/` (lietaer / mazzucato / creatingwealth / money-sustainability PDFs). See
+>    "Breadth result" below (retracted).
 > Then the UI slice (`FORMATTING_DISCREPANCY_REPORTING`). See
 > `docs/specs/GATE_TRUSTWORTHINESS_AND_UI_DATA_REFACTOR_2026-07-09.md` → "Discharge status" for the blocker→spec map.
 
@@ -787,35 +789,21 @@ across types. This is validation, not a blocker; it is also what exposes the
 remaining stale gates for item 1. Use small no-LLM replays for diagnostics; spend
 a full-book LLM run only to confirm.
 
-### Breadth result — 2026-07-11 (two full live runs on genuinely different document types)
+### Breadth result — 2026-07-11 — RETRACTED (invalid: run on legacy/truncated sources)
 
-Ran two full pipeline runs on types the 4-PDF corpus does NOT cover, under the same advisory profile the
-gate-honesty specs (001–011) were validated on. Goal: confirm the pipeline + gate GENERALIZE and surface any
-NEW gate first-fire (discovery, not fix).
+RETRACTED 2026-07-11 (spec 012). The two 2026-07-11 breadth runs were executed on LEGACY/truncated archive
+sources, not the real full books, so they are NOT valid breadth evidence:
 
-- **#1 `religion-wealth-core`** — legacy `.doc` (auto-converted to DOCX), theology domain, 38 paragraphs
-  (run `20260711T_religion_breadth`). result=succeeded, **acceptance=passed**, output_ratio 0.993, no text loss.
-  Structural/hygiene gate clean; `false_fragment_heading` raw 2 → gated 0 via `entry_assembly` (spec 001
-  generalizes to a new type). The dormant `theology_style` advisory ran (count 0). **Spec 011 validated LIVE:**
-  the new `unmapped_target_paragraphs_review_required` item fired correctly, surfacing a garbled unmapped target
-  fragment ("———————–9 9") with its text.
-- **#2 `mazzucato-audiobook-core`** — the DOCX-INPUT path (different import code than PDF text-layer, explicitly
-  flagged under-verified in the 2026-06-22 typography decision), 153-paragraph book excerpt
-  (run `20260711T_mazzucato_docx_breadth`). result=succeeded, **acceptance=passed, gate_reasons EMPTY (fully
-  clean)**, output_ratio 1.065, no text loss, 3/3 images, bounded TOC detected + repaired. Delivered DOCX
-  headings verified at the artifact level: 5 real section headings ("Предисловие…", "Введение…", real
-  subsections) with correct Heading 1/2 levels — no noise. **This discharges the flagged "verify DOCX-input
-  structure quality on one run" item.**
+- run #1 used `religion-wealth-core`, a ~67 KB legacy theology `.doc` (auto-converted), 38 paragraphs;
+- run #2 used `mazzucato-audiobook-core`, a 153-paragraph audiobook `.docx` EXCERPT.
 
-**Verdict: the pipeline and the gate-honesty changes (001–011) generalize across genuinely different document
-types with NO gate regression and NO new stale-gate first-fire.**
+Both of these legacy profiles and their `tests/sources/archive/` sources have been removed. Any generalization
+claim, spec-011 live-validation claim, and the "accepted front-matter tail" finding recorded here stood only on
+those legacy fixtures and must NOT be relied on as breadth evidence.
 
-ACCEPTED tail (one finding): on the legacy `.doc`, the title page's fragments — a 1-char letter (`# Т`), a
-truncated publisher (`## Iberoam`), and a date (`## 21.03.2026`) — promote to headings. This is FRONT MATTER,
-which is pass-through, so acceptance is unaffected (both runs passed) and the delivered BODY headings are clean.
-Per the tripwire principle, a single occurrence on one document does NOT justify a new rule (that would be
-per-document tuning against Constitution VII). ACCEPTED as a front-matter tail; revisit only if it RECURS across
-document types. The clearest future candidate for a universal rule, IF it recurs, is rejecting a ≤1-char heading.
+**Breadth is PENDING** and must be re-run on the real full books in `tests/sources/book/`
+(`lietaer-pdf-full-benchmark`, `mazzucato-pdf-full-benchmark`, `creatingwealth-pdf-full-benchmark`,
+`money-sustainability-pdf-full-heldout`) before it can be marked done.
 
 ## Runs Alongside: Architecture Hygiene (secondary, opportunistic)
 

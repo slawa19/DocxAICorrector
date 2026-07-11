@@ -284,7 +284,7 @@
 			"command": "bash",
 			"args": [
 				"-lc",
-				"export DOCXAI_REAL_DOCUMENT_PROFILE=lietaer-core; export DOCXAI_REAL_DOCUMENT_RUN_PROFILE=ui-parity-default; bash scripts/run-real-document-validation.sh"
+				"export DOCXAI_REAL_DOCUMENT_PROFILE=lietaer-pdf-full-benchmark; export DOCXAI_REAL_DOCUMENT_RUN_PROFILE=ui-parity-default; bash scripts/run-real-document-validation.sh"
 			],
 			"options": {
 				"shell": {
@@ -315,7 +315,7 @@
 			"command": "bash",
 			"args": [
 				"-lc",
-				"export DOCXAI_REAL_DOCUMENT_PROFILE=lietaer-core; export DOCXAI_REAL_DOCUMENT_RUN_PROFILE=ui-parity-translate-benchmark-advisory; bash scripts/run-real-document-validation.sh"
+				"export DOCXAI_REAL_DOCUMENT_PROFILE=lietaer-pdf-full-benchmark; export DOCXAI_REAL_DOCUMENT_RUN_PROFILE=ui-parity-translate-benchmark-advisory; bash scripts/run-real-document-validation.sh"
 			],
 			"options": {
 				"shell": {
@@ -462,7 +462,7 @@
 		{
 			"label": "Run Structure Recovery Diagnostic (First 20 Pages)",
 			"type": "shell",
-			"command": "bash scripts/run-structural-preparation-diagnostic.sh lietaer-pdf-first-20-structure-core",
+			"command": "bash scripts/run-structural-preparation-diagnostic.sh lietaer-pdf-full-benchmark",
 			"options": {
 				"shell": {
 					"executable": "wsl.exe",
@@ -503,7 +503,7 @@
 			"id": "realDocumentProfileId",
 			"type": "promptString",
 			"description": "Document profile id from corpus_registry.toml",
-			"default": "lietaer-core"
+			"default": "lietaer-pdf-full-benchmark"
 		},
 		{
 			"id": "realDocumentRunProfileId",

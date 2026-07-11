@@ -541,11 +541,9 @@ bash scripts/test.sh tests/test_config.py::test_name -vv -x
 
 ## Real Document Validation
 
-Канонический real-document regression target: `tests/sources/Лиетар глава1.docx`.
-
-Канонический registry для universal real-document validation теперь хранится в `corpus_registry.toml`.
-Текущий Lietaer harness остаётся штатным entrypoint, но запускается как document profile `lietaer-core` с run profile `ui-parity-default`.
-В registry также добавлен второй corpus profile `religion-wealth-core`, привязанный к нормализованному DOCX sibling для `tests/sources/Собственность и богатство в религиях.doc`.
+Канонический registry для universal real-document validation хранится в `corpus_registry.toml` и содержит только реальные полные книги в `tests/sources/book/`.
+Lietaer harness остаётся штатным entrypoint и по умолчанию запускается как document profile `lietaer-pdf-full-benchmark` с run profile `ui-parity-default`.
+Corpus покрывает четыре полнокнижных PDF-профиля: `lietaer-pdf-full-benchmark`, `mazzucato-pdf-full-benchmark`, `creatingwealth-pdf-full-benchmark` и held-out `money-sustainability-pdf-full-heldout`.
 Для stochastic full-tier прогонов доступен soak run profile `ui-parity-soak-3x` с `repeat_count = 3` и aggregate reporting по повторам.
 
 Обычный regression workflow теперь разделён на три tier-а:
@@ -554,7 +552,7 @@ bash scripts/test.sh tests/test_config.py::test_name -vv -x
 - `structural` — deterministic passthrough через Pandoc + formatting restore без API-вызовов;
 - `full` — model-backed UI-parity validation и exceptional quality gate.
 
-Для audiobook follow-up в registry добавлен профиль `mazzucato-audiobook-core`, привязанный к `The Value of Everything... by Mariana Mazzucato`, с default run profile `ui-parity-translate-audiobook-postprocess`. Этот профиль нужен для sanity-проверки сценария `translate + audiobook_postprocess`.
+Run profile `ui-parity-translate-audiobook-postprocess` остаётся доступным для sanity-проверки сценария `translate + audiobook_postprocess` поверх любого book-профиля corpus.
 
 Предпочтительный пользовательский путь в VS Code:
 

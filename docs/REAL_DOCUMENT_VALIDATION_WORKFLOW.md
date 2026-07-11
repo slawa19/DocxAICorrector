@@ -1,21 +1,21 @@
 # Real Document Validation Workflow
 
-Canonical full-tier real-document regression target: `tests/sources/Лиетар глава1.docx`.
+Canonical full-tier real-document regression target: `tests/sources/book/Rethinking-money_-How-new-currencies-turn-scarcity-into-prosperity-Bernard-Lietaer-Jacqui-Dunne.pdf` (profile `lietaer-pdf-full-benchmark`).
 
-Canonical registry for universal real-document validation: `corpus_registry.toml`.
+Canonical registry for universal real-document validation: `corpus_registry.toml`. The corpus now contains only the real full books under `tests/sources/book/`.
 
 Current default mapping:
 
-- document profile: `lietaer-core`
-- additional document profile: `religion-wealth-core`
+- default document profile: `lietaer-pdf-full-benchmark`
+- additional full-book document profiles: `mazzucato-pdf-full-benchmark`, `creatingwealth-pdf-full-benchmark`, held-out `money-sustainability-pdf-full-heldout`
 - full run profile: `ui-parity-default`
 - soak run profile: `ui-parity-soak-3x`
 - structural run profile: `ui-parity-translate-benchmark-advisory`
 
 Current corpus notes:
 
-- `lietaer-core` is now back on strict deterministic structural thresholds.
-- `religion-wealth-core` now points at the original legacy `.doc` source and exercises the project-level auto-conversion path during corpus validation; it currently remains deterministic-structural `tolerant` because one page-separator artifact still produces a bounded restore diagnostic.
+- `lietaer-pdf-full-benchmark` is the default full-book PDF profile for structure-model comparison on the full Lietaer source.
+- `mazzucato-pdf-full-benchmark`, `creatingwealth-pdf-full-benchmark`, and held-out `money-sustainability-pdf-full-heldout` round out the four-book PDF corpus in `tests/sources/book/`.
 
 ## AI-First Structure Recovery Workflow
 
@@ -25,22 +25,19 @@ general full-validator path as the default debug loop.
 Use this structure-scoped order instead:
 
 1. focused local tests for the directly touched structure module or preparation slice;
-2. `bash scripts/run-structural-preparation-diagnostic.sh lietaer-pdf-first-20-structure-core`
+2. `bash scripts/run-structural-preparation-diagnostic.sh lietaer-pdf-full-benchmark`
 	as the default real-document PDF snapshot path;
-3. `bash scripts/run-structural-preparation-diagnostic.sh lietaer-pdf-chapter-region-core`
-	for late-book topology regressions that live in the Chapter 8-11 composite-heading
-	and TOC area rather than in the first-20-pages slice;
+3. `bash scripts/run-structural-preparation-diagnostic.sh mazzucato-pdf-full-benchmark`
+	for a non-Lietaer full-book topology cross-check;
 4. a full-tier validator only as a late checkpoint, and only when the defect is
 	already proven to live in final markdown/DOCX artifacts rather than in
 	preparation/structure artifacts.
 
 Corpus policy for this workflow:
 
-1. `lietaer-pdf-first-20-structure-core` (`tests/sources/Rethinking-money-first-20-pages.pdf`) is the canonical fast PDF slice for routine structure iteration.
-2. `lietaer-pdf-chapter-region-core` (`tests/sources/Rethinking-money-chapter-region-pages-10-11-and-156-217.pdf`) is the cheap non-contiguous proof slice for late-book Chapter 8-11 topology regressions that the first-20-pages slice cannot cover.
-3. `lietaer-core` is not the routine structure-recovery proof document for this workflow.
-4. `ui-parity-pdf-structural-recovery` is still a `full` tier translate profile; despite its name, structure recognition is deterministic (importer-driven) and there is no AI structure stage.
-5. `mazzucato-pdf-full-benchmark` (`tests/sources/The Value of Everything. Making and Taking in the Global Economy by Mariana Mazzucato (z-lib.org).pdf`) is the non-Lietaer full-book PDF benchmark for WS-2 formatting-transfer generalization; it is not the routine structure-recovery proof path.
+1. `lietaer-pdf-full-benchmark` (`tests/sources/book/Rethinking-money_-How-new-currencies-turn-scarcity-into-prosperity-Bernard-Lietaer-Jacqui-Dunne.pdf`) is the canonical full-book PDF for routine structure iteration.
+2. `ui-parity-pdf-structural-recovery` is still a `full` tier translate profile; despite its name, structure recognition is deterministic (importer-driven) and there is no AI structure stage.
+3. `mazzucato-pdf-full-benchmark` (`tests/sources/book/The Value of Everything. Making and Taking in the Global Economy by Mariana Mazzucato (z-lib.org).pdf`) is the non-Lietaer full-book PDF benchmark for WS-2 formatting-transfer generalization.
 
 ## Canonical Entry Points
 

@@ -204,19 +204,6 @@ def test_build_structural_metrics_uses_flagged_layout_cleanup_counts_for_signal_
     assert metrics["layout_cleanup_empty_or_whitespace_count"] == 0
 
 
-def test_reader_cleanup_comparison_only_target_document_is_chapter_region_pdf() -> None:
-    validation_profiles.load_validation_registry.cache_clear()
-    registry = validation_profiles.load_validation_registry()
-
-    document_profile = registry.get_document_profile("lietaer-pdf-chapter-region-core")
-    resolved_source = document_profile.resolved_source_path(project_root=Path(__file__).resolve().parents[1])
-
-    assert document_profile.id == "lietaer-pdf-chapter-region-core"
-    assert resolved_source.as_posix().endswith(
-        "tests/sources/archive/Rethinking-money-chapter-region-pages-10-11-and-156-217.pdf"
-    )
-
-
 def _skip_if_legacy_doc_conversion_unavailable(source_path: Path) -> None:
     if source_path.suffix.lower() != ".doc":
         return
