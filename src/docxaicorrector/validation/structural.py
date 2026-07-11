@@ -3065,7 +3065,7 @@ def _inspect_placeholder_integrity_adapter(markdown_text: str, image_assets: Seq
 
 def _parse_cli_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Print a structural preparation diagnostic snapshot for a validation profile.")
-    parser.add_argument("document_profile_id", help="Validation document profile id, for example lietaer-pdf-first-20-structure-core.")
+    parser.add_argument("document_profile_id", help="Validation document profile id, for example lietaer-pdf-full-benchmark.")
     parser.add_argument("--run-profile-id", dest="run_profile_id", help="Optional run profile override.")
     return parser.parse_args(list(argv) if argv is not None else None)
 

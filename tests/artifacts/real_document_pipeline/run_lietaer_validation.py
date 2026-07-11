@@ -5135,7 +5135,7 @@ def _build_image_forensics_report(prepared, runtime_snapshot: Mapping[str, objec
 
 def main() -> None:
     registry = load_validation_registry()
-    document_profile_id = os.environ.get("DOCXAI_REAL_DOCUMENT_PROFILE", "lietaer-core").strip() or "lietaer-core"
+    document_profile_id = os.environ.get("DOCXAI_REAL_DOCUMENT_PROFILE", "lietaer-pdf-full-benchmark").strip() or "lietaer-pdf-full-benchmark"
     requested_run_profile_id = os.environ.get("DOCXAI_REAL_DOCUMENT_RUN_PROFILE", "").strip() or None
     document_profile = registry.get_document_profile(document_profile_id)
     run_profile = registry.resolve_run_profile(document_profile, requested_run_profile_id)

@@ -1,5 +1,9 @@
 # Changelog
 
+## 2026-07-11
+
+- Удалены legacy/усечённые тестовые источники и все ссылки на них (spec 012): каталог `tests/sources/archive/` и шесть corpus-профилей на нём (`lietaer-core`, `religion-wealth-core`, `mazzucato-audiobook-core`, `lietaer-pdf-first-20-benchmark`, `lietaer-pdf-first-20-structure-core`, `lietaer-pdf-chapter-region-core`). Валидация качества теперь идёт только по реальным полным книгам в `tests/sources/book/`. Harness default, `.vscode/tasks.json`, CI-воркфлоу, benchmark-конфиги и docs перенаправлены на реальные book-профили; авто-параметризованные corpus-тесты продолжают покрывать 4 реальные книги. Историческая запись от 2026-03-21 о добавлении `religion-wealth-core` оставлена как есть (история).
+
 ## 2026-04-26
 
 - Добавлен PDF как входной формат через upload normalization boundary: PDF конвертируется LibreOffice Writer import filter в canonical DOCX, после чего существующий DOCX pipeline продолжает работу без PDF-specific document model.

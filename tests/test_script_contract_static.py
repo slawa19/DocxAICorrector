@@ -108,13 +108,13 @@ def test_vscode_test_tasks_normalize_windows_relative_paths() -> None:
     assert lietaer_task["command"] == "bash"
     assert lietaer_task["args"] == [
         "-lc",
-        "export DOCXAI_REAL_DOCUMENT_PROFILE=lietaer-core; export DOCXAI_REAL_DOCUMENT_RUN_PROFILE=ui-parity-default; bash scripts/run-real-document-validation.sh",
+        "export DOCXAI_REAL_DOCUMENT_PROFILE=lietaer-pdf-full-benchmark; export DOCXAI_REAL_DOCUMENT_RUN_PROFILE=ui-parity-default; bash scripts/run-real-document-validation.sh",
     ]
 
     assert lietaer_ai_task["command"] == "bash"
     assert lietaer_ai_task["args"] == [
         "-lc",
-        "export DOCXAI_REAL_DOCUMENT_PROFILE=lietaer-core; export DOCXAI_REAL_DOCUMENT_RUN_PROFILE=ui-parity-translate-benchmark-advisory; bash scripts/run-real-document-validation.sh",
+        "export DOCXAI_REAL_DOCUMENT_PROFILE=lietaer-pdf-full-benchmark; export DOCXAI_REAL_DOCUMENT_RUN_PROFILE=ui-parity-translate-benchmark-advisory; bash scripts/run-real-document-validation.sh",
     ]
 
     assert real_document_task["command"] == "bash"
@@ -199,35 +199,16 @@ def test_manual_real_document_workflow_installs_system_deps_and_uploads_artifact
     assert "workflow_dispatch:" in workflow_text
     assert "DOCXAI_REQUIRE_REAL_DOCUMENT_CAPABILITIES: \"1\"" in workflow_text
     assert "system-requirements.apt" in workflow_text
-    assert "tests/test_real_document_validation_corpus.py::test_corpus_extraction[religion-wealth-core]" in workflow_text
-    assert "tests/test_real_document_validation_corpus.py::test_corpus_extraction[lietaer-pdf-first-20-structure-core]" in workflow_text
+    assert "tests/test_real_document_validation_corpus.py::test_corpus_extraction[mazzucato-pdf-full-benchmark]" in workflow_text
+    assert "tests/test_real_document_validation_corpus.py::test_corpus_extraction[lietaer-pdf-full-benchmark]" in workflow_text
     assert "actions/upload-artifact@v4" in workflow_text
     assert "tests/artifacts/real_document_pipeline/**" in workflow_text
     assert "GitHub Actions -> Real Document Validation" in workflow_doc
     assert "Real Document Validation" in testing_readme
 
 
-def test_manual_quality_gate_workflow_is_documented_and_uploads_artifacts() -> None:
-    workflow_text = (REPO_ROOT / ".github" / "workflows" / "real-document-quality-gate.yml").read_text(encoding="utf-8")
-    workflow_doc = (REPO_ROOT / "docs" / "testing" / "REAL_DOCUMENT_VALIDATION_WORKFLOW.md").read_text(encoding="utf-8")
-    testing_readme = (REPO_ROOT / "docs" / "testing" / "README.md").read_text(encoding="utf-8")
-
-    assert "name: Real Document Quality Gate" in workflow_text
-    assert "workflow_dispatch:" in workflow_text
-    assert 'DOCXAI_RUN_REAL_DOCUMENT_QUALITY: "1"' in workflow_text
-    assert "OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}" in workflow_text
-    assert "system-requirements.apt" in workflow_text
-    assert "bash scripts/run-real-document-quality-gate.sh" in workflow_text
-    assert "actions/upload-artifact@v4" in workflow_text
-    assert "tests/artifacts/real_document_pipeline/**" in workflow_text
-    assert "tests/artifacts/structural_diagnostics/**" in workflow_text
-    assert "GitHub Actions -> Real Document Quality Gate" in workflow_doc
-    assert "Real Document Quality Gate" in testing_readme
-
-
 def test_manual_ai_heavy_workflows_are_documented_and_upload_artifacts() -> None:
     structure_workflow_text = (REPO_ROOT / ".github" / "workflows" / "real-document-ai-structure-smoke.yml").read_text(encoding="utf-8")
-    audiobook_workflow_text = (REPO_ROOT / ".github" / "workflows" / "real-document-audiobook-sanity.yml").read_text(encoding="utf-8")
     workflow_doc = (REPO_ROOT / "docs" / "testing" / "REAL_DOCUMENT_VALIDATION_WORKFLOW.md").read_text(encoding="utf-8")
     testing_readme = (REPO_ROOT / "docs" / "testing" / "README.md").read_text(encoding="utf-8")
 
@@ -240,27 +221,14 @@ def test_manual_ai_heavy_workflows_are_documented_and_upload_artifacts() -> None
     assert "actions/upload-artifact@v4" in structure_workflow_text
     assert "tests/artifacts/real_document_pipeline/**" in structure_workflow_text
 
-    assert "name: Real Document Audiobook Sanity" in audiobook_workflow_text
-    assert "workflow_dispatch:" in audiobook_workflow_text
-    assert 'DOCXAI_RUN_REAL_DOCUMENT_AUDIOBOOK_SANITY: "1"' in audiobook_workflow_text
-    assert "OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}" in audiobook_workflow_text
-    assert "system-requirements.apt" in audiobook_workflow_text
-    assert "bash scripts/test.sh tests/test_real_document_audiobook_spec.py -vv" in audiobook_workflow_text
-    assert "actions/upload-artifact@v4" in audiobook_workflow_text
-    assert "tests/artifacts/real_document_pipeline/**" in audiobook_workflow_text
-
     assert "GitHub Actions -> Real Document AI Structure Smoke" in workflow_doc
-    assert "GitHub Actions -> Real Document Audiobook Sanity" in workflow_doc
     assert "Real Document AI Structure Smoke" in testing_readme
-    assert "Real Document Audiobook Sanity" in testing_readme
 
 
 def test_codeowners_protects_workflow_and_startup_contract_files() -> None:
     codeowners_text = (REPO_ROOT / ".github" / "CODEOWNERS").read_text(encoding="utf-8")
 
-    assert "/.github/workflows/real-document-quality-gate.yml @slawa19" in codeowners_text
     assert "/.github/workflows/real-document-ai-structure-smoke.yml @slawa19" in codeowners_text
-    assert "/.github/workflows/real-document-audiobook-sanity.yml @slawa19" in codeowners_text
     assert "/scripts/test.sh @slawa19" in codeowners_text
     assert "/.vscode/tasks.json @slawa19" in codeowners_text
     assert "/tests/test_script_contract_static.py @slawa19" in codeowners_text

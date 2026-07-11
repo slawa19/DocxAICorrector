@@ -102,8 +102,7 @@ This inventory is intentionally pragmatic:
 
 ## Manual-AI-Heavy
 
-- `tests/test_real_document_audiobook_spec.py`
-- `tests/test_real_document_quality_gate.py`
+- no top-level manual-AI-heavy test file exists yet
 
 ## Browser-UI
 

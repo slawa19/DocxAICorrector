@@ -2211,7 +2211,7 @@ def test_resolve_reader_verifier_config_is_off_by_default_for_proof_profiles() -
             "comparison_only_validation": True,
             "validation_run_type": "comparison_only",
         },
-        document_profile_id="lietaer-pdf-chapter-region-core",
+        document_profile_id="lietaer-pdf-full-benchmark",
         run_profile_id="ui-parity-translate-simple-reader-cleanup-comparison-only",
         app_config=None,
         runtime_app_config={},
@@ -2229,7 +2229,7 @@ def test_resolve_reader_verifier_config_respects_explicit_opt_in_override() -> N
             "comparison_only_validation": True,
             "validation_run_type": "comparison_only",
         },
-        document_profile_id="lietaer-pdf-chapter-region-core",
+        document_profile_id="lietaer-pdf-full-benchmark",
         run_profile_id="ui-parity-translate-simple-reader-cleanup-comparison-only",
         app_config=None,
         runtime_app_config={
@@ -2520,7 +2520,7 @@ def test_main_uses_processing_service_facade_and_runtime_config_only(tmp_path, m
         return SimpleNamespace(**values, to_dict=lambda: dict(values))
 
     document_profile = SimpleNamespace(
-        id="lietaer-core",
+        id="lietaer-pdf-full-benchmark",
         artifact_prefix="lietaer_validation",
         output_basename="lietaer_output",
         max_unmapped_source_paragraphs=0,
@@ -2874,7 +2874,7 @@ def test_main_comparison_only_reader_cleanup_reports_non_acceptance_artifacts_fo
         return SimpleNamespace(**values, to_dict=lambda: dict(values))
 
     document_profile = SimpleNamespace(
-        id="lietaer-pdf-chapter-region-core",
+        id="lietaer-pdf-full-benchmark",
         artifact_prefix="lietaer_pdf_chapter_region",
         output_basename="Rethinking_money_chapter_region",
         max_unmapped_source_paragraphs=12,
@@ -3001,7 +3001,7 @@ def test_main_comparison_only_reader_cleanup_reports_non_acceptance_artifacts_fo
         lambda **kwargs: _ValidationServiceStub(kwargs["log_event_fn"]),
     )
 
-    monkeypatch.setenv("DOCXAI_REAL_DOCUMENT_PROFILE", "lietaer-pdf-chapter-region-core")
+    monkeypatch.setenv("DOCXAI_REAL_DOCUMENT_PROFILE", "lietaer-pdf-full-benchmark")
     monkeypatch.setenv("DOCXAI_REAL_DOCUMENT_RUN_PROFILE", "ui-parity-translate-simple-reader-cleanup-comparison-only")
     monkeypatch.delenv("DOCXAI_REAL_DOCUMENT_REPEAT_COUNT_OVERRIDE", raising=False)
     monkeypatch.setenv("DOCXAI_REAL_DOCUMENT_FORCED_RUN_ID", "run-compare")
@@ -3016,7 +3016,7 @@ def test_main_comparison_only_reader_cleanup_reports_non_acceptance_artifacts_fo
     summary_text = summary_path.read_text(encoding="utf-8")
     latest_manifest = json.loads(latest_manifest_path.read_text(encoding="utf-8"))
 
-    assert report["document_profile_id"] == "lietaer-pdf-chapter-region-core"
+    assert report["document_profile_id"] == "lietaer-pdf-full-benchmark"
     assert report["run_profile_id"] == "ui-parity-translate-simple-reader-cleanup-comparison-only"
     assert report["validation_mode"]["evidence_label"] == "comparison_only_non_acceptance"
     assert report["validation_mode"]["success_criterion"] == "pipeline_result_and_artifacts"
@@ -3195,7 +3195,7 @@ def test_build_reader_verifier_evidence_payload_excludes_toc_like_pre_audit_find
 
     evidence = validation._build_reader_verifier_evidence_payload(
         run_id="run-toc-filter",
-        document_profile_id="lietaer-pdf-chapter-region-core",
+        document_profile_id="lietaer-pdf-full-benchmark",
         run_profile_id="ui-parity-translate-simple-reader-cleanup-comparison-only",
         source_document_path=source_document_path,
         source_text="source",
@@ -3254,7 +3254,7 @@ def test_build_reader_verifier_evidence_payload_keeps_toc_like_pre_audit_finding
 
     evidence = validation._build_reader_verifier_evidence_payload(
         run_id="run-toc-in-scope",
-        document_profile_id="lietaer-pdf-chapter-region-core",
+        document_profile_id="lietaer-pdf-full-benchmark",
         run_profile_id="ui-parity-translate-simple-reader-cleanup-comparison-only",
         source_document_path=source_document_path,
         source_text="source",
@@ -3345,7 +3345,7 @@ def test_parse_reader_verifier_completed_review_filters_toc_like_remaining_issue
         evidence_path=tmp_path / "evidence.json",
         evidence_payload=evidence_payload,
         run_id="run-toc-filter",
-        document_profile_id="lietaer-pdf-chapter-region-core",
+        document_profile_id="lietaer-pdf-full-benchmark",
         run_profile_id="ui-parity-translate-simple-reader-cleanup-comparison-only",
     )
 
@@ -3419,7 +3419,7 @@ def test_build_reader_verifier_evidence_payload_emits_cleanup_ignored_reason_sum
 
     evidence = validation._build_reader_verifier_evidence_payload(
         run_id="run-cleanup-diagnostics",
-        document_profile_id="lietaer-pdf-chapter-region-core",
+        document_profile_id="lietaer-pdf-full-benchmark",
         run_profile_id="ui-parity-translate-simple-reader-cleanup-comparison-only",
         source_document_path=source_document_path,
         source_text="source",
@@ -3508,7 +3508,7 @@ def test_parse_reader_verifier_completed_review_accepts_structured_payload(tmp_p
     review = validation._parse_reader_verifier_completed_review(
         raw_response=raw_response,
         run_id="run-1",
-        document_profile_id="lietaer-pdf-chapter-region-core",
+        document_profile_id="lietaer-pdf-full-benchmark",
         run_profile_id="ui-parity-translate-simple-reader-cleanup-comparison-only",
         requested_selector="openrouter:google/gemini-3-flash-preview",
         canonical_selector="openrouter:google/gemini-3-flash-preview",
@@ -3592,7 +3592,7 @@ def test_parse_reader_verifier_completed_review_dedupes_matching_pre_audit_issue
     review = validation._parse_reader_verifier_completed_review(
         raw_response=raw_response,
         run_id="run-1",
-        document_profile_id="lietaer-pdf-chapter-region-core",
+        document_profile_id="lietaer-pdf-full-benchmark",
         run_profile_id="ui-parity-translate-simple-reader-cleanup-comparison-only",
         requested_selector="openrouter:google/gemini-3-flash-preview",
         canonical_selector="openrouter:google/gemini-3-flash-preview",
@@ -3654,7 +3654,7 @@ def test_parse_reader_verifier_completed_review_normalizes_object_findings_to_st
     review = validation._parse_reader_verifier_completed_review(
         raw_response=raw_response,
         run_id="run-1",
-        document_profile_id="lietaer-pdf-chapter-region-core",
+        document_profile_id="lietaer-pdf-full-benchmark",
         run_profile_id="ui-parity-translate-simple-reader-cleanup-comparison-only",
         requested_selector="openrouter:google/gemini-3-flash-preview",
         canonical_selector="openrouter:google/gemini-3-flash-preview",
@@ -3701,7 +3701,7 @@ def test_parse_reader_verifier_completed_review_ignores_negated_safety_summaries
     review = validation._parse_reader_verifier_completed_review(
         raw_response=raw_response,
         run_id="run-1",
-        document_profile_id="lietaer-pdf-chapter-region-core",
+        document_profile_id="lietaer-pdf-full-benchmark",
         run_profile_id="ui-parity-translate-simple-reader-cleanup-comparison-only",
         requested_selector="openrouter:google/gemini-3-flash-preview",
         canonical_selector="openrouter:google/gemini-3-flash-preview",
@@ -3766,7 +3766,7 @@ def test_parse_reader_verifier_completed_review_hardens_overconfident_simple_lan
     review = validation._parse_reader_verifier_completed_review(
         raw_response=raw_response,
         run_id="run-1",
-        document_profile_id="lietaer-pdf-chapter-region-core",
+        document_profile_id="lietaer-pdf-full-benchmark",
         run_profile_id="ui-parity-translate-simple-reader-cleanup-comparison-only",
         requested_selector="openrouter:google/gemini-3-flash-preview",
         canonical_selector="openrouter:google/gemini-3-flash-preview",
@@ -3812,7 +3812,7 @@ def test_parse_reader_verifier_completed_review_hardens_high_confidence_final_wo
     review = validation._parse_reader_verifier_completed_review(
         raw_response=raw_response,
         run_id="run-1",
-        document_profile_id="lietaer-pdf-chapter-region-core",
+        document_profile_id="lietaer-pdf-full-benchmark",
         run_profile_id="ui-parity-translate-simple-reader-cleanup-comparison-only",
         requested_selector="openrouter:google/gemini-3-flash-preview",
         canonical_selector="openrouter:google/gemini-3-flash-preview",
@@ -3883,7 +3883,7 @@ def test_parse_reader_verifier_completed_review_rejects_clean_audit_with_remaini
                 ],
             ),
             run_id="run-1",
-            document_profile_id="lietaer-pdf-chapter-region-core",
+            document_profile_id="lietaer-pdf-full-benchmark",
             run_profile_id="ui-parity-translate-simple-reader-cleanup-comparison-only",
             requested_selector="openrouter:google/gemini-3-flash-preview",
             canonical_selector="openrouter:google/gemini-3-flash-preview",
@@ -3940,7 +3940,7 @@ def test_parse_reader_verifier_completed_review_allows_raw_better_without_improv
             simple_user_next_step="Tighten the cleanup rules for heading/body splits before rerunning the same comparison-only profile.",
         ),
         run_id="run-1",
-        document_profile_id="lietaer-pdf-chapter-region-core",
+        document_profile_id="lietaer-pdf-full-benchmark",
         run_profile_id="ui-parity-translate-simple-reader-cleanup-comparison-only",
         requested_selector="openrouter:google/gemini-3-flash-preview",
         canonical_selector="openrouter:google/gemini-3-flash-preview",
@@ -3978,7 +3978,7 @@ def test_parse_reader_verifier_completed_review_ignores_malformed_improvement_an
             ],
         ),
         run_id="run-1",
-        document_profile_id="lietaer-pdf-chapter-region-core",
+        document_profile_id="lietaer-pdf-full-benchmark",
         run_profile_id="ui-parity-translate-simple-reader-cleanup-comparison-only",
         requested_selector="openrouter:google/gemini-3-flash-preview",
         canonical_selector="openrouter:google/gemini-3-flash-preview",
@@ -4040,7 +4040,7 @@ def test_parse_reader_verifier_completed_review_ignores_malformed_remaining_issu
             ],
         ),
         run_id="run-1",
-        document_profile_id="lietaer-pdf-chapter-region-core",
+        document_profile_id="lietaer-pdf-full-benchmark",
         run_profile_id="ui-parity-translate-simple-reader-cleanup-comparison-only",
         requested_selector="openrouter:google/gemini-3-flash-preview",
         canonical_selector="openrouter:google/gemini-3-flash-preview",
@@ -4099,7 +4099,7 @@ def test_parse_reader_verifier_completed_review_ignores_unknown_remaining_issue_
             ],
         ),
         run_id="run-1",
-        document_profile_id="lietaer-pdf-chapter-region-core",
+        document_profile_id="lietaer-pdf-full-benchmark",
         run_profile_id="ui-parity-translate-simple-reader-cleanup-comparison-only",
         requested_selector="openrouter:google/gemini-3-flash-preview",
         canonical_selector="openrouter:google/gemini-3-flash-preview",
@@ -4157,7 +4157,7 @@ def test_parse_reader_verifier_completed_review_downgrades_contradictory_removed
             ],
         ),
         run_id="run-1",
-        document_profile_id="lietaer-pdf-chapter-region-core",
+        document_profile_id="lietaer-pdf-full-benchmark",
         run_profile_id="ui-parity-translate-simple-reader-cleanup-comparison-only",
         requested_selector="openrouter:google/gemini-3-flash-preview",
         canonical_selector="openrouter:google/gemini-3-flash-preview",
@@ -4189,7 +4189,7 @@ def test_parse_reader_verifier_completed_review_surfaces_empty_llm_issues_from_p
             simple_user_next_step="Gather clearer comparison evidence before changing the profile.",
         ),
         run_id="run-1",
-        document_profile_id="lietaer-pdf-chapter-region-core",
+        document_profile_id="lietaer-pdf-full-benchmark",
         run_profile_id="ui-parity-translate-simple-reader-cleanup-comparison-only",
         requested_selector="openrouter:google/gemini-3-flash-preview",
         canonical_selector="openrouter:google/gemini-3-flash-preview",
@@ -4243,7 +4243,7 @@ def test_parse_reader_verifier_completed_review_restores_missing_pre_audit_targe
             ],
         ),
         run_id="run-1",
-        document_profile_id="lietaer-pdf-chapter-region-core",
+        document_profile_id="lietaer-pdf-full-benchmark",
         run_profile_id="ui-parity-translate-simple-reader-cleanup-comparison-only",
         requested_selector="openrouter:google/gemini-3-flash-preview",
         canonical_selector="openrouter:google/gemini-3-flash-preview",
@@ -4315,7 +4315,7 @@ def test_parse_reader_verifier_completed_review_restores_missing_pre_audit_targe
             ],
         ),
         run_id="run-1",
-        document_profile_id="lietaer-pdf-chapter-region-core",
+        document_profile_id="lietaer-pdf-full-benchmark",
         run_profile_id="ui-parity-translate-simple-reader-cleanup-comparison-only",
         requested_selector="openrouter:google/gemini-3-flash-preview",
         canonical_selector="openrouter:google/gemini-3-flash-preview",
@@ -4367,7 +4367,7 @@ def test_run_reader_verifier_marks_model_resolution_failure_without_fallback(tmp
 
     review = validation._run_reader_verifier(
         run_id="run-1",
-        document_profile_id="lietaer-pdf-chapter-region-core",
+        document_profile_id="lietaer-pdf-full-benchmark",
         run_profile_id="ui-parity-translate-simple-reader-cleanup-comparison-only",
         app_config=object(),
         runtime_app_config={"reader_verifier_enabled": True},
@@ -4421,7 +4421,7 @@ def test_run_reader_verifier_failure_surfaces_pre_audit_remaining_issues(tmp_pat
 
     review = validation._run_reader_verifier(
         run_id="run-1",
-        document_profile_id="lietaer-pdf-chapter-region-core",
+        document_profile_id="lietaer-pdf-full-benchmark",
         run_profile_id="ui-parity-translate-simple-reader-cleanup-comparison-only",
         app_config=object(),
         runtime_app_config={"reader_verifier_enabled": True},
@@ -4482,7 +4482,7 @@ def test_run_reader_verifier_timeout_surfaces_pre_audit_remaining_issues(tmp_pat
 
     review = validation._run_reader_verifier(
         run_id="run-1",
-        document_profile_id="lietaer-pdf-chapter-region-core",
+        document_profile_id="lietaer-pdf-full-benchmark",
         run_profile_id="ui-parity-translate-simple-reader-cleanup-comparison-only",
         app_config=object(),
         runtime_app_config={"reader_verifier_enabled": True},
@@ -4563,7 +4563,7 @@ def test_main_comparison_only_reader_verifier_writes_artifacts_and_metadata(tmp_
         return SimpleNamespace(**values, to_dict=lambda: dict(values))
 
     document_profile = SimpleNamespace(
-        id="lietaer-pdf-chapter-region-core",
+        id="lietaer-pdf-full-benchmark",
         artifact_prefix="lietaer_pdf_chapter_region",
         output_basename="Rethinking_money_chapter_region",
         max_unmapped_source_paragraphs=12,
@@ -4765,7 +4765,7 @@ def test_main_comparison_only_reader_verifier_writes_artifacts_and_metadata(tmp_
         ),
     )
 
-    monkeypatch.setenv("DOCXAI_REAL_DOCUMENT_PROFILE", "lietaer-pdf-chapter-region-core")
+    monkeypatch.setenv("DOCXAI_REAL_DOCUMENT_PROFILE", "lietaer-pdf-full-benchmark")
     monkeypatch.setenv("DOCXAI_REAL_DOCUMENT_RUN_PROFILE", "ui-parity-translate-simple-reader-cleanup-comparison-only")
     monkeypatch.setenv("DOCXAI_REAL_DOCUMENT_FORCED_RUN_ID", "run-verifier")
 
@@ -5463,7 +5463,7 @@ def test_write_reader_verifier_artifacts_keeps_anchor_repair_diagnostic_only(tmp
 
     review = validation._write_reader_verifier_artifacts(
         run_id="run-anchor",
-        document_profile_id="lietaer-pdf-chapter-region-core",
+        document_profile_id="lietaer-pdf-full-benchmark",
         run_profile_id="ui-parity-translate-simple-reader-cleanup-comparison-only",
         artifact_prefix="lietaer_pdf_chapter_region",
         artifact_dir=artifact_dir,
@@ -5688,7 +5688,7 @@ def test_write_reader_verifier_artifacts_preserves_runtime_applied_anchor_target
 
     review = validation._write_reader_verifier_artifacts(
         run_id="run-anchor-runtime",
-        document_profile_id="lietaer-pdf-chapter-region-core",
+        document_profile_id="lietaer-pdf-full-benchmark",
         run_profile_id="ui-parity-translate-simple-reader-cleanup-comparison-only",
         artifact_prefix="lietaer_pdf_chapter_region_runtime",
         artifact_dir=artifact_dir,
@@ -5782,7 +5782,7 @@ def test_main_comparison_only_reader_verifier_failure_is_non_blocking(tmp_path, 
         return SimpleNamespace(**values, to_dict=lambda: dict(values))
 
     document_profile = SimpleNamespace(
-        id="lietaer-pdf-chapter-region-core",
+        id="lietaer-pdf-full-benchmark",
         artifact_prefix="lietaer_pdf_chapter_region",
         output_basename="Rethinking_money_chapter_region",
         max_unmapped_source_paragraphs=12,
@@ -5931,7 +5931,7 @@ def test_main_comparison_only_reader_verifier_failure_is_non_blocking(tmp_path, 
     monkeypatch.setattr(validation, "get_client_for_model_selector", lambda *args, **kwargs: object())
     monkeypatch.setattr(validation, "generate_markdown_block", lambda **kwargs: "not json at all")
 
-    monkeypatch.setenv("DOCXAI_REAL_DOCUMENT_PROFILE", "lietaer-pdf-chapter-region-core")
+    monkeypatch.setenv("DOCXAI_REAL_DOCUMENT_PROFILE", "lietaer-pdf-full-benchmark")
     monkeypatch.setenv("DOCXAI_REAL_DOCUMENT_RUN_PROFILE", "ui-parity-translate-simple-reader-cleanup-comparison-only")
     monkeypatch.setenv("DOCXAI_REAL_DOCUMENT_FORCED_RUN_ID", "run-verifier-failed")
 

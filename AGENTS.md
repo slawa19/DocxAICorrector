@@ -79,14 +79,14 @@ Python/pytest/debug paths.
 ```bash
 # 1) Preferred user-visible path in VS Code task
 # Task: Run Structural Preparation Diagnostic
-# Prompt 1: lietaer-pdf-first-20-structure-core
+# Prompt 1: lietaer-pdf-full-benchmark
 # Prompt 2: leave blank to use document_profile.structural_run_profile from corpus_registry.toml
 
 # 2) Direct WSL shell path with explicit run profile override
-bash scripts/run-structural-preparation-diagnostic.sh lietaer-pdf-first-20-structure-core --run-profile-id ui-parity-pdf-structural-recovery
+bash scripts/run-structural-preparation-diagnostic.sh lietaer-pdf-full-benchmark --run-profile-id ui-parity-pdf-structural-recovery
 
 # 3) File-capture fallback when stdout transport is fragile
-bash scripts/run-structural-preparation-diagnostic.sh lietaer-pdf-first-20-structure-core --run-profile-id ui-parity-pdf-structural-recovery > .run/first20_structural_snapshot.json 2>&1
+bash scripts/run-structural-preparation-diagnostic.sh lietaer-pdf-full-benchmark --run-profile-id ui-parity-pdf-structural-recovery > .run/first20_structural_snapshot.json 2>&1
 
 # 4) Inspect saved snapshot in the same WSL shell
 tail -n 40 .run/first20_structural_snapshot.json
