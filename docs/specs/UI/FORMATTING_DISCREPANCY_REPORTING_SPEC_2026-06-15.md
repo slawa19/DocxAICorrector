@@ -34,13 +34,16 @@ role-aware effective counts in `translation_quality_report`.
 
 ## What counts as a discrepancy (reuse existing classes)
 
-| Class | Source field | User meaning |
-| --- | --- | --- |
-| `role_loss` (heading/list/caption -> body) | residual closability `content_survived_but_format_role_lost` + role-by-target-style | A heading/list became plain text — **needs manual fix** |
-| `unmapped_source_present` | closability `target_exists_text_align_missed` / `target_occupied_*` | Text is in the DOCX but its original formatting may not have transferred — **review** |
-| `unmapped_target` | `unmapped_target_indexes` classified split vs spurious | An output paragraph with no clear origin — **review** |
-| `note_fragment` | residual `ABSENT` short/`ibid` bucket | Footnote/endnote fragment — usually cosmetic |
-| `false_pair` | `mapping_text_quality.bad_pair_count > 0` | **Hard alarm**: wrong formatting may have been applied to a paragraph — must not ship silently |
+Data-layer status (updated 2026-07-11 after the pre-UI UI-data-gap assessment; see
+`docs/specs/GATE_TRUSTWORTHINESS_AND_UI_DATA_REFACTOR_2026-07-09.md` "Discharge status"):
+
+| Class | Source field | User meaning | Data status |
+| --- | --- | --- | --- |
+| `role_loss` (heading/list/caption -> body) | residual closability `content_survived_but_format_role_lost` + role-by-target-style | A heading/list became plain text — **needs manual fix** | EMITTED (`role_loss` review-items) |
+| `unmapped_source_present` | `unmapped_source_paragraphs_review_required` review-items | Text is in the DOCX but its original formatting may not have transferred — **review** | EMITTED |
+| `unmapped_target` | `unmapped_target_paragraphs_review_required` review-items (retained residue after passthrough crediting) | An output paragraph with no clear origin — **review** | EMITTED (`specs/011`, 2026-07-11) |
+| ~~`note_fragment`~~ | — | Footnote/endnote fragment — usually cosmetic | **SCOPED OUT.** Footnotes are out of scope (Constitution VII). NOT a distinct data class: short-note residue already appears within `unmapped_target` tagged `short_note_or_marker` — soften it in UI COPY ("похоже на сноску/маркер"), do not build a separate detector. |
+| `false_pair` | `mapping_text_quality.bad_pair_count > 0` | **Hard alarm**: wrong formatting may have been applied to a paragraph — must not ship silently | EMITTED but CORRECT-AND-LATENT: the detector is wired and test-covered (synthetic `bad_pair_count=3`), but no corpus book triggers it (the text-verified matcher does not mis-bind). Do NOT try to force it to fire on live data (would need a forbidden per-book literal). |
 
 ## Severity model -> UI level
 
