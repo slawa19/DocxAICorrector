@@ -33,10 +33,12 @@ Active companions:
 >   non-`completed` (`non_completed_response`) no longer aborts the whole run — it retries, then falls back to
 >   source text as a controlled `fallback_continue`, so the book finishes and a report is produced. (This item's
 >   older `docs/specs/GATE_TRUSTWORTHINESS…` NON-GOAL note is thus superseded — it IS now done.)
-> - **Item 3 (acceptance meaning):** DONE for HONESTY (`specs/002`: finite thresholds; production emits
->   passed/failed/not-applicable, never a false pass). OPEN as a PRODUCT decision: a UNIVERSAL production
->   threshold expressed as a RATIO (not an absolute count) — production currently emits NOT-APPLICABLE by design.
->   Decide with/before UI what a production verdict shows.
+> - **Item 3 (acceptance meaning):** DONE. Honesty via `specs/002` (finite thresholds; production emits
+>   passed/failed/not-applicable, never a false pass). PRODUCT decision made 2026-07-11 (`specs/010`, owner
+>   Option A): production gates on the STRUCTURAL/HYGIENE axis (the priority axis) only; the COVERAGE axis stays
+>   NOT-APPLICABLE and is surfaced as review DATA, not pass/fail. A universal ratio threshold was considered and
+>   REJECTED (an unverifiable corpus-calibrated budget — Constitution VII). No code change; locked by existing
+>   tests.
 > - **Item 4 (harness↔prod parity):** DONE. Shared `validation/acceptance.py` consumed by both paths (`specs/002`
 >   + `specs/006`).
 > - **Item 5 (mazzucato tail):** absorbed by the 1‑A/3A pass-through crediting; no separate work.
@@ -47,7 +49,7 @@ Active companions:
 > structure produced by the residual-bullet glyph fixup) is an ACCEPTED latent smell.
 >
 > **What remains before/with UI (scoped, not reliability blockers):**
-> 1. Acceptance PRODUCT semantics (item 3 above): universal ratio threshold + what a production verdict means.
+> 1. ~~Acceptance PRODUCT semantics~~ — DECIDED (`specs/010`, Option A: coverage = review-data, not a gate).
 > 2. UI-data contract gaps from `docs/specs/UI/FORMATTING_DISCREPANCY_REPORTING_SPEC_2026-06-15.md`: `[КРИТ]`/
 >    false_pair rendering is NEVER exercised (no book has `bad_pair_count > 0`); `unmapped_target` / `note_fragment`
 >    review-item classes not yet emitted. Implement or explicitly scope out.
