@@ -1,7 +1,7 @@
 # Feature Specification: Production gate measures the delivered markdown
 
 Date: 2026-07-11
-Status: ACTIVE forward spec
+Status: Implemented (2026-07-11). Money live: metrics byte-stable, gates stay entry_assembly, verdict agrees. Latent mixed_script==raw bug fixed.
 Owner surface: `_build_translation_quality_report` — the hygiene/structural REPORTING metrics
 Companion: `specs/005-hygiene-pass-safety/spec.md` (increment C); `specs/001`/`003` (source-aware structural gates);
 `docs/specs/GATE_TRUSTWORTHINESS_AND_UI_DATA_REFACTOR_2026-07-09.md` (blocker 6). Increment B of the two-markdown
