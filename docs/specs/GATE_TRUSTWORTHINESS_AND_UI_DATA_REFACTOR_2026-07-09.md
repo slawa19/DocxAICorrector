@@ -1,7 +1,9 @@
 # Gate Trustworthiness & UI-Data Refactor
 
 Date: 2026-07-09
-Status: ACTIVE forward spec. **Prerequisite for UI** (`docs/specs/UI/FORMATTING_DISCREPANCY_REPORTING_SPEC_2026-06-15.md`).
+Status: **IMPLEMENTED / SUPERSEDED (2026-07-11) by `specs/001-…` through `specs/009-…`.** This document was the
+planning spec that opened the gate-honesty workstream; all six pre-UI blockers below are discharged (see
+"Discharge status" at the end). It is kept as lineage. New work goes in `specs/<NNN>-<slug>/`, not here.
 
 Changelog:
 - 2026-07-09 — Corrected the heading-demotion sections after tracing the Money `24. Глава IV` root cause to
@@ -16,8 +18,15 @@ Changelog:
   pass whose own comment calls it "display-only" even though `late_phases.py:1080` feeds its output to the DOCX
   rebuild. The 2026-07-09 claim was made from `classify_heading_demotions == 0` and the registry, without opening the
   produced document. Constitution VIII exists for exactly this: verify against the artifact, not the report.
+- 2026-07-11 — **CLOSED.** `specs/001-heading-role-preservation` fixed the LIVE demotion: it found TWO
+  markdown demotion paths (`normalize_false_fragment_headings_markdown` AND
+  `normalize_list_fragment_regressions_markdown`), both now keyed to the source role via the assembly registry.
+  Verified on a live run — Money chapters IV–VII render `Heading 1`. All six blockers are discharged by
+  `specs/001…009` (mapping in "Discharge status"). The stale Anti-regression note that still asserted
+  "`da6789b` closed it; expected count zero" was corrected in place (it was a survivor of the 2026-07-09
+  mistake this Changelog already retracted).
 Owner surface: production translation-quality gate + acceptance verdict + `formatting_review.txt` writer.
-Companion: `docs/specs/GLOBAL_PLAN_2026-06-16.md` (this discharges its Remaining-Work items **1** (gate stability
+Companion: `docs/specs/GLOBAL_PLAN_2026-06-16.md` (this discharged its Remaining-Work items **1** (gate stability
 / vision, incl. 1‑C/1‑D), **3** (acceptance meaning), and **4** (harness↔prod parity)).
 
 ## Purpose
@@ -112,14 +121,19 @@ full test files green before AND after. Do NOT start a standalone big refactor �
 
 - `classify_passthrough_*` extensions keep counting real body (synthetic counter-example test); Money fixture
   (effective 16≤16) not regressed.
-- Structure/import fixes untouched — the 1‑D detector is READ-ONLY in the gate. NOTE: Money's `24. Глава IV`
-  demotion was a final-ASSEMBLY defect (`output_validation._normalize_final_entry_list_fragments`), not an import
-  one, and its root cause was CLOSED in `da6789b`; the 4 chapters now stay headings. 1‑D therefore remains only as a
-  universal read-only safety axis over MAPPED pairs (no new scope, no per-book heuristic — Working Rule #7), and its
-  expected count on Money is zero; a nonzero count means the `da6789b` guard regressed. WARNING to future readers:
-  the saved report fixtures (`tests/fixtures/money_gemini_passthrough_fixture.json`, committed 2026-06-21) PREDATE
-  `da6789b`, so any claim about a live heading-demotion defect must be re-verified against a fresh run or a
-  deterministic unit test — never against those stale fixtures.
+- Structure/import fixes untouched. CORRECTED 2026-07-11: the earlier version of this note claimed Money's
+  `24. Глава IV` demotion "was closed in `da6789b`; the 4 chapters now stay headings; expected count zero" — that
+  claim was FALSE (the 2026-07-10 Changelog retraction proved the defect was LIVE at that date) and is now removed.
+  The actual resolution: `specs/001-heading-role-preservation` found the demotion happens in the DISPLAY-markdown
+  passes, on TWO paths (`output_validation.normalize_false_fragment_headings_markdown` AND
+  `normalize_list_fragment_regressions_markdown`), each of which demoted a short heading following a
+  non-terminal line. Both are now guarded by the source role carried in the assembly registry (a heading entry is
+  never demoted), verified on a live Money run (chapters IV–VII render `Heading 1`). The mapped-pair 1‑D detector
+  idea in Blocker 1 was found STRUCTURALLY UNABLE to see this defect (the chapters are UNMAPPED, `mapped_target_index
+  = None`, not mis-mapped — see Verified findings), so the fix lives at the demotion source, not in a new mapped-pair
+  gate. WARNING to future readers: the saved report fixtures (`tests/fixtures/money_gemini_passthrough_fixture.json`,
+  committed 2026-06-21) PREDATE these fixes, so any claim about a live heading-demotion defect must be re-verified
+  against a fresh run or a deterministic unit test — never against those stale fixtures (Constitution VIII).
 
 ## Implementation notes (stage 2 — scope honesty)
 
@@ -133,3 +147,27 @@ full test files green before AND after. Do NOT start a standalone big refactor �
   or a short dash-led credit without sentence-terminal punctuation (a dash-led line ending in `.`/`!`/`?` is dialogue,
   not a credit). Measured effect on Money: effective unmapped source 11 → 12 (threshold 16); the acceptance invariant
   still holds.
+
+## Discharge status (added 2026-07-11)
+
+Each pre-UI blocker mapped to the `specs/<NNN>-…/` unit that discharged it. Verified per Constitution VIII
+(live run where possible, else deterministic test).
+
+| # | Blocker | Discharged by | Status |
+| --- | --- | --- | --- |
+| 1 | Body-integrity axis / heading-demotion | `specs/001-heading-role-preservation` | **DONE.** Fixed at the demotion source (two display-markdown passes, keyed to registry role). Live-verified: Money IV–VII render `Heading 1`. The mapped-pair detector was found structurally unable to see the (unmapped) defect, so it was NOT the fix. |
+| 2 | Policy-independent discrepancy emission | `specs/002-gate-report-honesty` | **DONE.** Three-state verdict (passed/failed/not-applicable); production no longer judges what it cannot; review-item anchors cleaned. |
+| 3 | `[КРИТ]`/false_pair rendering | (`runtime/artifacts.py` severity consumer) | **PARTIAL — residual UI-data gap.** The severity path exists, but NO book in the corpus has `bad_pair_count > 0`, so the `[КРИТ]` branch is never EXERCISED. Carried into the UI-data gaps list in GLOBAL_PLAN — implement/exercise or scope out with UI. |
+| 4 | list_fragment references crediting | `specs/003-list-fragment-detector` | **DONE** (form-based credit, not region-based — see Implementation notes; scope-honest). |
+| 5 | Passthrough index/attribution (3A) | this spec's stage-2 impl | **DONE** (structural role / dash-credit; the per-book word-list route was removed per Constitution VII). |
+| 6 | Harness↔prod verdict parity | `specs/002` + `specs/006-gate-on-delivered-markdown` | **DONE.** Shared `validation/acceptance.py`; production measures the DELIVERED markdown (006), closing the "gate validates a different document" finding. |
+
+Adjacent work from the same workstream (not original blockers here): `004` emphasis-coverage advisory,
+`005` hygiene-pass safety, `007` list-marker-from-role (SHELVED — unverifiable under non-deterministic
+translation), `008` paragraph-break detection (advisory), `009` controlled-fallback for
+`non_completed_response` (discharges GLOBAL_PLAN Remaining-Work item 2).
+
+**Residual UI-data gaps (carried to UI, not blockers to reliability):** (a) Blocker 3 `[КРИТ]` never exercised;
+(b) `unmapped_target` / `note_fragment` review-item classes from the UI spec not yet emitted; (c) the acceptance
+PRODUCT semantics — a universal threshold (ratio, not absolute count) and what a production verdict MEANS — is an
+open product decision, since production currently emits NOT-APPLICABLE by design (spec 002).

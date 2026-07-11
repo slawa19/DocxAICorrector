@@ -12,12 +12,49 @@ Active companions:
   (wrong model gpt-5-mini vs Gemini, env-override, WSL backgrounding, CRLF launchers).
 - `docs/specs/UI/FORMATTING_DISCREPANCY_REPORTING_SPEC_2026-06-15.md` — the first
   UI slice (how residual discrepancies reach the user).
-- `docs/specs/GATE_TRUSTWORTHINESS_AND_UI_DATA_REFACTOR_2026-07-09.md` — ACTIVE prerequisite for UI:
-  make the PRODUCTION gate emit trustworthy, complete discrepancy data + policy-consistent verdict
-  (body-integrity/heading-demotion axis, policy-independent review-items, [КРИТ] rendering, harness↔prod
-  parity). Discharges Remaining-Work items 1/3/4. Being implemented in stages.
+- `docs/specs/GATE_TRUSTWORTHINESS_AND_UI_DATA_REFACTOR_2026-07-09.md` — **IMPLEMENTED / SUPERSEDED 2026-07-11**
+  by `specs/001…009`. Was the planning spec for making the PRODUCTION gate emit trustworthy discrepancy data +
+  a policy-consistent verdict; all six blockers discharged (see its "Discharge status" table). Kept as lineage.
+  One residual UI-data gap: `[КРИТ]` rendering is never exercised (no book has `bad_pair_count > 0`).
 
 ## ═══ NAVIGATION / RESUME POINT (read this first) — updated 2026-06-22 ═══
+
+> **RESUME POINT 2026-07-11 — this block supersedes the 2026-06-22 "WE ARE HERE / FORWARD SEQUENCE" navigation
+> below.** The gate-honesty + reliability workstream is CLOSED; the five Remaining-Work items are discharged.
+> Work now lives in `specs/<NNN>-<slug>/` (Spec Kit), not in this append-log.
+>
+> **Remaining-Work items 1–5 — status:**
+> - **Item 1 (gate stability / VISION):** DONE. Heading-demotion fixed at source (`specs/001`); report/verdict
+>   honesty, three-state acceptance (`specs/002`); list_fragment references credit (`specs/003`); the gate now
+>   measures the DELIVERED markdown, closing "the gate validates a different document" (`specs/006`). Hygiene
+>   passes made non-destructive (`specs/005`); emphasis-coverage advisory (`specs/004`); paragraph-break
+>   advisory detection (`specs/008`).
+> - **Item 2 (controlled-fallback reliability):** DONE (`specs/009`). A block whose provider response is
+>   non-`completed` (`non_completed_response`) no longer aborts the whole run — it retries, then falls back to
+>   source text as a controlled `fallback_continue`, so the book finishes and a report is produced. (This item's
+>   older `docs/specs/GATE_TRUSTWORTHINESS…` NON-GOAL note is thus superseded — it IS now done.)
+> - **Item 3 (acceptance meaning):** DONE for HONESTY (`specs/002`: finite thresholds; production emits
+>   passed/failed/not-applicable, never a false pass). OPEN as a PRODUCT decision: a UNIVERSAL production
+>   threshold expressed as a RATIO (not an absolute count) — production currently emits NOT-APPLICABLE by design.
+>   Decide with/before UI what a production verdict shows.
+> - **Item 4 (harness↔prod parity):** DONE. Shared `validation/acceptance.py` consumed by both paths (`specs/002`
+>   + `specs/006`).
+> - **Item 5 (mazzucato tail):** absorbed by the 1‑A/3A pass-through crediting; no separate work.
+>
+> **Architecture debt (two-markdown convergence):** closed at increments C (`specs/005`) + B (`specs/006`).
+> Increment A (`specs/007`, list-marker-from-role) SHELVED — no current defect and unverifiable under
+> non-deterministic Gemini translation (documented in the spec's closing note). The residual coupling (list
+> structure produced by the residual-bullet glyph fixup) is an ACCEPTED latent smell.
+>
+> **What remains before/with UI (scoped, not reliability blockers):**
+> 1. Acceptance PRODUCT semantics (item 3 above): universal ratio threshold + what a production verdict means.
+> 2. UI-data contract gaps from `docs/specs/UI/FORMATTING_DISCREPANCY_REPORTING_SPEC_2026-06-15.md`: `[КРИТ]`/
+>    false_pair rendering is NEVER exercised (no book has `bad_pair_count > 0`); `unmapped_target` / `note_fragment`
+>    review-item classes not yet emitted. Implement or explicitly scope out.
+> 3. Breadth validation on 2–3 differently-structured documents (DOCX-with-styles/tables, multi-column PDF,
+>    another language) — discovery of NEW gate first-fires, not a fix of known defects.
+> Then the UI slice (`FORMATTING_DISCREPANCY_REPORTING`). See
+> `docs/specs/GATE_TRUSTWORTHINESS_AND_UI_DATA_REFACTOR_2026-07-09.md` → "Discharge status" for the blocker→spec map.
 
 **DONE this session (2026-06-22):** (1) Money main-text CLOSED via import fixes (sentence-breaks 89→1, 37
 numbered headings promoted, footnotes 73→~21; accepted residue: ~10 body-font numbered sub-points, 3 "О"
@@ -129,10 +166,13 @@ acceptance meaning, harness↔prod parity, Mazzucato tail). (c) Then UI. Structu
 director's stated priority — is now in good shape (bold/italic transferred, chapter/part/section headings +
 levels, images, clean prose); remaining structure gaps are the ACCEPTED semantic tail above.
 
-**FORWARD SEQUENCE (the main line — do NOT lose it):**
-1. → **item 1: gate stability/vision** (A→B→C→D) ← WE ARE HERE
-2. items 2–5: reliability (controlled-fallback), acceptance meaning, harness↔prod parity, Mazzucato tail
-3. **UI** (FORMATTING_DISCREPANCY_REPORTING spec).
+**FORWARD SEQUENCE (the main line — do NOT lose it):** ⟵ SUPERSEDED 2026-07-11; see the RESUME POINT block at
+the top of this section. Items 1–5 are DONE (via `specs/001…009`); what remains before UI is the acceptance
+product-semantics decision + the UI-data contract gaps + breadth validation, then the UI slice.
+1. ~~item 1: gate stability/vision (A→B→C→D)~~ — DONE (`specs/001/002/003/005/006/008`).
+2. ~~items 2–5: reliability (controlled-fallback), acceptance meaning, harness↔prod parity, Mazzucato tail~~ —
+   DONE (`specs/009` reliability; `specs/002` acceptance honesty + parity; `specs/006` delivered-markdown parity).
+3. **UI** (FORMATTING_DISCREPANCY_REPORTING spec) — next, after the two scoped decisions in the RESUME POINT.
 Parked follow-ups: de-hyphenation (parallel); "О" reassembly caption-drop; footnote end-to-end confirm;
 cross-role sentence-break tail (ACCEPTED, diminishing returns).
 
