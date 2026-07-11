@@ -50,11 +50,12 @@ Active companions:
 >
 > **What remains before/with UI (scoped, not reliability blockers):**
 > 1. ~~Acceptance PRODUCT semantics~~ — DECIDED (`specs/010`, Option A: coverage = review-data, not a gate).
-> 2. UI-data contract gaps from `docs/specs/UI/FORMATTING_DISCREPANCY_REPORTING_SPEC_2026-06-15.md`: `[КРИТ]`/
->    false_pair rendering is NEVER exercised (no book has `bad_pair_count > 0`); `unmapped_target` / `note_fragment`
->    review-item classes not yet emitted. Implement or explicitly scope out.
+> 2. ~~UI-data contract gaps~~ — RESOLVED (`specs/011`: `unmapped_target` items emitted; `[КРИТ]`/false_pair
+>    kept correct-and-latent + test-covered; `note_fragment` scoped out as a UI-copy concern, footnotes out of
+>    scope per Constitution VII). UI-data blockers are discharged.
 > 3. Breadth validation on 2–3 differently-structured documents (DOCX-with-styles/tables, multi-column PDF,
->    another language) — discovery of NEW gate first-fires, not a fix of known defects.
+>    another language) — discovery of NEW gate first-fires, not a fix of known defects. ← the one remaining
+>    pre-UI activity (a validation campaign, not a bounded fix).
 > Then the UI slice (`FORMATTING_DISCREPANCY_REPORTING`). See
 > `docs/specs/GATE_TRUSTWORTHINESS_AND_UI_DATA_REFACTOR_2026-07-09.md` → "Discharge status" for the blocker→spec map.
 

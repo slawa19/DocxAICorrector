@@ -167,8 +167,19 @@ Adjacent work from the same workstream (not original blockers here): `004` empha
 translation), `008` paragraph-break detection (advisory), `009` controlled-fallback for
 `non_completed_response` (discharges GLOBAL_PLAN Remaining-Work item 2).
 
-**Residual UI-data gaps (carried to UI, not blockers to reliability):** (a) Blocker 3 `[КРИТ]` never exercised;
-(b) `unmapped_target` / `note_fragment` review-item classes from the UI spec not yet emitted; (c) ~~acceptance
-PRODUCT semantics~~ — DECIDED 2026-07-11 (`specs/010-production-acceptance-semantics`, owner Option A):
-production gates the structural/hygiene axis only; coverage stays NOT-APPLICABLE and is surfaced as review DATA,
-not a verdict. A universal ratio threshold was considered and rejected (Constitution VII).
+**Residual UI-data gaps — RESOLVED 2026-07-11 (pre-UI UI-data-gap assessment):**
+- (a) Blocker 3 `[КРИТ]`/false_pair — KEPT as correct-and-latent. The detector is wired end-to-end and
+  test-covered (synthetic `bad_pair_count=3`); it reads 0 on the corpus because the text-verified matcher does
+  not mis-bind, not because it is dead. Forcing it to fire on live data would need a forbidden per-book literal
+  (Constitution VII/VIII). No work.
+- (b) `unmapped_target` — DONE (`specs/011-unmapped-target-review-items`): per-paragraph
+  `unmapped_target_paragraphs_review_required` items now emitted from the passthrough classifier's retained
+  residue, with an anti-vacuum counter-proof. `note_fragment` — SCOPED OUT: footnotes are out of scope
+  (Constitution VII); short-note residue already flows through `unmapped_target` tagged `short_note_or_marker`,
+  a UI-copy softening, not a distinct data class (UI spec table updated).
+- (c) acceptance PRODUCT semantics — DECIDED 2026-07-11 (`specs/010-production-acceptance-semantics`, owner
+  Option A): production gates the structural/hygiene axis only; coverage stays NOT-APPLICABLE and is surfaced as
+  review DATA, not a verdict. A universal ratio threshold was considered and rejected (Constitution VII).
+
+**Net: all UI-data blockers are discharged. What remains before the UI slice is breadth validation on 2–3
+differently-structured documents (discovery, not a known-defect fix) and the UI presentation work itself.**
