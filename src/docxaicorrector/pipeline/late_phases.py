@@ -2862,9 +2862,18 @@ def _build_translation_quality_report(
     formatting_diagnostics_artifacts: Sequence[str],
     assembly_result: Any | None = None,
     pre_cleanup_formatting_baseline: Mapping[str, object] | None = None,
+    runtime_display_markdown: str | None = None,
 ) -> dict[str, object]:
     normalized_quality_markdown = _normalize_final_markdown_for_quality_gate(final_markdown)
     display_hygiene_markdown = _normalize_final_markdown_for_display_hygiene_reporting(final_markdown)
+    # FR-002/003/006: the hygiene reporting metrics describe the DELIVERED artifact —
+    # runtime_display_markdown is the exact text fed to convert_markdown_to_docx_bytes,
+    # so measuring it matches the harness (structural.py measures latest_markdown).
+    # When it is unavailable/empty the report falls back to today's per-metric inputs
+    # so behaviour is byte-identical (degrade-safe); production always supplies it.
+    bullet_heading_reporting_markdown = runtime_display_markdown or normalized_quality_markdown
+    hygiene_reporting_markdown = runtime_display_markdown or display_hygiene_markdown
+    mixed_script_reporting_markdown = runtime_display_markdown or final_markdown
     payloads = _load_formatting_diagnostics_payloads(formatting_diagnostics_artifacts)
     latest_payload = payloads[-1] if payloads else {}
     unmapped_source_ids = latest_payload.get("unmapped_source_ids") if isinstance(latest_payload, Mapping) else []
@@ -2875,21 +2884,21 @@ def _build_translation_quality_report(
     quality_status = "pass"
     gate_reasons: list[str] = []
     formatting_review_items: list[dict[str, object]] = []
-    bullet_heading_samples = collect_bullet_heading_samples(normalized_quality_markdown)
+    bullet_heading_samples = collect_bullet_heading_samples(bullet_heading_reporting_markdown)
     raw_bullet_heading_samples = collect_bullet_heading_samples(final_markdown)
     bullet_heading_count = len(bullet_heading_samples)
     raw_page_placeholder_heading_concat_samples = collect_page_placeholder_heading_concat_samples(final_markdown)
-    page_placeholder_heading_concat_samples = collect_page_placeholder_heading_concat_samples(display_hygiene_markdown)
+    page_placeholder_heading_concat_samples = collect_page_placeholder_heading_concat_samples(hygiene_reporting_markdown)
     assembly_entries = tuple(getattr(assembly_result, "entries", ()) or ())
     assembly_uses_fallback = any(bool(getattr(entry, "used_fallback", False)) for entry in assembly_entries)
     source_backed_entry_authority = _has_source_backed_entry_authority(assembly_entries)
     entry_false_fragment_heading_samples = collect_false_fragment_heading_samples_from_entries(assembly_entries) if assembly_entries else []
     raw_false_fragment_heading_samples = collect_false_fragment_heading_samples(final_markdown)
     raw_residual_bullet_glyph_samples = collect_residual_bullet_glyph_samples(final_markdown)
-    residual_bullet_glyph_samples = collect_residual_bullet_glyph_samples(display_hygiene_markdown)
+    residual_bullet_glyph_samples = collect_residual_bullet_glyph_samples(hygiene_reporting_markdown)
     raw_list_fragment_regression_samples = collect_list_fragment_regression_samples(final_markdown)
     raw_mixed_script_samples = collect_mixed_script_samples(final_markdown)
-    mixed_script_samples = list(raw_mixed_script_samples)
+    mixed_script_samples = collect_mixed_script_samples(mixed_script_reporting_markdown)
     recovered_heading_entries = collect_recovered_heading_entries(assembly_entries) if assembly_entries and not assembly_uses_fallback else []
     untranslated_structural_samples = _collect_untranslated_structural_samples(
         final_markdown=final_markdown,
@@ -4245,6 +4254,7 @@ def finalize_processing_success(
         formatting_diagnostics_artifacts=formatting_diagnostics_artifacts,
         assembly_result=assembly_result,
         pre_cleanup_formatting_baseline=cast(Mapping[str, object] | None, docx_phase.get("pre_cleanup_formatting_baseline")),
+        runtime_display_markdown=runtime_display_markdown,
     )
     # Serialize the shared acceptance verdict into the quality report so the
     # production (incl. advisory) path carries the same trustworthy verdict the

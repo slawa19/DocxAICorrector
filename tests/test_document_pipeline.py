@@ -4566,6 +4566,116 @@ def test_build_translation_quality_report_exposes_new_residual_quality_metrics_a
     assert report["suspicious_heading_repetition_count"] == 0
 
 
+def test_build_translation_quality_report_measures_delivered_markdown_for_hygiene_metrics():
+    # Spec 006 FR-002/003: the hygiene metrics describe the delivered artifact
+    # (runtime_display_markdown), so a delivered markdown whose passes cleaned the
+    # mixed-script / residual-glyph / page-placeholder residue reports the CLEANED
+    # counts — mixed_script is NO LONGER set equal to raw.
+    final_markdown = (
+        "This page intentionally left blank Chapter Nine STRATEGIES FOR NGO S\n\n"
+        "Создавайте кoinonia-сообщества и богословие imago Dei.\n\n"
+        "Китай ... технологическими ● достижениями?"
+    )
+    runtime_display_markdown = (
+        "This page intentionally left blank\n\n"
+        "Chapter Nine STRATEGIES FOR NGO S\n\n"
+        "Создавайте сообщества.\n\n"
+        "Китай ... технологическими достижениями?"
+    )
+    context = SimpleNamespace(
+        app_config={"translation_output_quality_gate_policy": "strict"},
+        processing_operation="translate",
+        uploaded_filename="report.docx",
+        translation_domain="general",
+    )
+
+    report = document_pipeline_late_phases._build_translation_quality_report(
+        context=context,
+        final_markdown=final_markdown,
+        formatting_diagnostics_artifacts=[],
+        runtime_display_markdown=runtime_display_markdown,
+    )
+
+    # Delivered markdown is clean; raw (pre-display) baseline still counts the residue.
+    assert report["mixed_script_term_count"] == 0
+    assert report["raw_mixed_script_term_count"] == 1
+    assert cast(int, report["mixed_script_term_count"]) < cast(int, report["raw_mixed_script_term_count"])
+    assert report["page_placeholder_heading_concat_count"] == 0
+    assert report["raw_page_placeholder_heading_concat_count"] == 1
+    assert report["residual_bullet_glyph_count"] == 0
+    assert report["raw_residual_bullet_glyph_count"] == 1
+
+    # FR-006 degrade-safe: with no delivered markdown, behaviour is byte-identical to
+    # today's — mixed_script falls back to the raw count (gated == raw).
+    degraded = document_pipeline_late_phases._build_translation_quality_report(
+        context=context,
+        final_markdown=final_markdown,
+        formatting_diagnostics_artifacts=[],
+    )
+    assert degraded["mixed_script_term_count"] == degraded["raw_mixed_script_term_count"] == 1
+    assert degraded["page_placeholder_heading_concat_count"] == 0
+    assert degraded["residual_bullet_glyph_count"] == 0
+
+
+def test_build_translation_quality_report_delivered_markdown_leaves_structural_gates_source_aware():
+    # Spec 006 FR-004: threading runtime_display_markdown must NOT repoint the
+    # entry-based structural gates (specs 001/003). Passing the delivered markdown
+    # leaves false_fragment / list_fragment gate sources and counts unchanged.
+    final_markdown = "2. Goldman Sachs Annual Report, 2010.\n\n14. Forbes, 2017."
+    assembly_result = document_pipeline_output_validation.FinalMarkdownAssemblyResult(
+        final_markdown=final_markdown,
+        entries=(
+            document_pipeline_output_validation.FinalAssemblyEntry(
+                text="2. Goldman Sachs Annual Report, 2010.",
+                block_index=1,
+                paragraph_id="p1",
+                source_index=0,
+                role="list",
+                structural_role="list",
+                list_kind="ordered",
+                from_registry=True,
+            ),
+            document_pipeline_output_validation.FinalAssemblyEntry(
+                text="14. Forbes, 2017.",
+                block_index=1,
+                paragraph_id="p2",
+                source_index=1,
+                role="list",
+                structural_role="list",
+                list_kind="ordered",
+                from_registry=True,
+            ),
+        ),
+        diagnostics=document_pipeline_output_validation.FinalAssemblyDiagnostics(),
+    )
+    context = SimpleNamespace(
+        app_config={"translation_output_quality_gate_policy": "strict"},
+        processing_operation="translate",
+        uploaded_filename="report.docx",
+        translation_domain="general",
+    )
+
+    baseline = document_pipeline_late_phases._build_translation_quality_report(
+        context=context,
+        final_markdown=final_markdown,
+        formatting_diagnostics_artifacts=[],
+        assembly_result=assembly_result,
+    )
+    delivered = document_pipeline_late_phases._build_translation_quality_report(
+        context=context,
+        final_markdown=final_markdown,
+        formatting_diagnostics_artifacts=[],
+        assembly_result=assembly_result,
+        runtime_display_markdown=final_markdown,
+    )
+
+    assert delivered["list_fragment_regression_gate_source"] == "entry_assembly"
+    assert delivered["false_fragment_heading_gate_source"] == baseline["false_fragment_heading_gate_source"]
+    assert delivered["list_fragment_regression_gate_source"] == baseline["list_fragment_regression_gate_source"]
+    assert delivered["list_fragment_regression_count"] == baseline["list_fragment_regression_count"]
+    assert delivered["false_fragment_heading_count"] == baseline["false_fragment_heading_count"]
+
+
 def test_build_translation_quality_report_prefers_entry_aware_false_heading_detection():
     assembly_result = document_pipeline_output_validation.FinalMarkdownAssemblyResult(
         final_markdown="## Введение\n\nТекст раздела.",
