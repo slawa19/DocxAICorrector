@@ -168,6 +168,7 @@ translation), `008` paragraph-break detection (advisory), `009` controlled-fallb
 `non_completed_response` (discharges GLOBAL_PLAN Remaining-Work item 2).
 
 **Residual UI-data gaps (carried to UI, not blockers to reliability):** (a) Blocker 3 `[КРИТ]` never exercised;
-(b) `unmapped_target` / `note_fragment` review-item classes from the UI spec not yet emitted; (c) the acceptance
-PRODUCT semantics — a universal threshold (ratio, not absolute count) and what a production verdict MEANS — is an
-open product decision, since production currently emits NOT-APPLICABLE by design (spec 002).
+(b) `unmapped_target` / `note_fragment` review-item classes from the UI spec not yet emitted; (c) ~~acceptance
+PRODUCT semantics~~ — DECIDED 2026-07-11 (`specs/010-production-acceptance-semantics`, owner Option A):
+production gates the structural/hygiene axis only; coverage stays NOT-APPLICABLE and is surfaced as review DATA,
+not a verdict. A universal ratio threshold was considered and rejected (Constitution VII).
