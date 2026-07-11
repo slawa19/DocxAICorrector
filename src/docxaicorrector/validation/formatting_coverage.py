@@ -644,6 +644,7 @@ def classify_passthrough_unmapped_target(
         "attribution": [],
     }
     retained: list[int] = []
+    retained_samples: list[dict[str, object]] = []
     for index in unmapped_indexes:
         entry = by_index.get(index)
         text = str(entry.get("text_preview") or "") if entry is not None else ""
@@ -673,12 +674,14 @@ def classify_passthrough_unmapped_target(
             categories["references"].append(index)
         else:
             retained.append(index)
+            retained_samples.append({"target_index": index, "text_preview": text})
     return {
         "categories": categories,
         "category_counts": {key: len(value) for key, value in categories.items()},
         "passthrough_count": sum(len(value) for value in categories.values()),
         "retained_indexes": retained,
         "retained_count": len(retained),
+        "retained_samples": retained_samples,
         "front_matter_boundary_target_index": target_boundary,
         "references_region_target_start_index": target_references_boundary,
     }
@@ -964,6 +967,14 @@ def resolve_role_aware_formatting_unmapped_target_summary(
         category_counts = passthrough["category_counts"]
         if not isinstance(category_counts, Mapping):
             category_counts = {}
+        # spec 011: thread the winning payload's genuinely-unmapped (retained) target
+        # samples outward via **max_summary so the production emitter can itemize them.
+        # Capped to the first 8, mirroring the source cap at late_phases.py:2670; the
+        # winning payload only (consistent with the count).
+        retained_samples_value = passthrough["retained_samples"]
+        retained_target_samples = (
+            list(retained_samples_value[:8]) if isinstance(retained_samples_value, list) else []
+        )
         summaries.append(
             {
                 "raw_unmapped_target_count": raw_count,
@@ -981,6 +992,8 @@ def resolve_role_aware_formatting_unmapped_target_summary(
                 "references_region_target_start_index": passthrough["references_region_target_start_index"],
                 "effective_unmapped_target_count": effective_count,
                 "benign_reduction_applied": creditable_count > 0 or applied_passthrough_count > 0,
+                "retained_target_count": _coerce_int(passthrough["retained_count"]),
+                "retained_target_samples": retained_target_samples,
             }
         )
 
