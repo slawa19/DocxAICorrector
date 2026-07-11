@@ -907,6 +907,14 @@ def _can_fallback_to_source_text_after_empty_response(target_text: str) -> bool:
     return bool(target_text.strip())
 
 
+def _is_non_completed_response_error(exc: Exception) -> bool:
+    return isinstance(exc, RuntimeError) and "non_completed_response" in str(exc)
+
+
+def _can_fallback_to_source_text_after_non_completed_response(target_text: str) -> bool:
+    return bool(target_text.strip())
+
+
 def _is_retryable_empty_generation_error(exc: Exception) -> bool:
     return isinstance(exc, RuntimeError) and (
         "empty_response" in str(exc) or "collapsed_output" in str(exc) or "incomplete_response" in str(exc)
@@ -1006,6 +1014,7 @@ def generate_markdown_block(
                 or _is_retryable_empty_generation_error(exc)
                 or _is_retryable_marker_validation_error(exc)
                 or _is_retryable_context_leakage_error(exc)
+                or _is_non_completed_response_error(exc)
             )
             if not should_retry:
                 break
@@ -1078,6 +1087,21 @@ def generate_markdown_block(
             if _is_retryable_empty_generation_error(recovery_exc) or _is_retryable_marker_validation_error(recovery_exc):
                 raise recovery_exc
             raise recovery_exc
+
+    if (
+        last_exception is not None
+        and _is_non_completed_response_error(last_exception)
+        and _can_fallback_to_source_text_after_non_completed_response(target_text)
+    ):
+        log_event(
+            logging.WARNING,
+            "markdown_non_completed_response_source_fallback",
+            "Модель повторно вернула non_completed_response; сохраняю исходный текст блока как controlled fallback.",
+            model=model,
+            target_chars=len(target_text),
+            marker_mode=marker_mode,
+        )
+        return target_text
 
     if last_exception is not None:
         raise last_exception
