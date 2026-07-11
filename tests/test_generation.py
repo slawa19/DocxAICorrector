@@ -1009,6 +1009,129 @@ def test_non_completed_response_is_not_retryable():
     assert generation._is_retryable_empty_generation_error(RuntimeError("non_completed_response")) is False
 
 
+def test_generate_markdown_block_falls_back_to_source_after_persistent_non_completed_response(monkeypatch):
+    # SC-001: persistent non_completed_response with non-empty target_text returns the source text.
+    attempts = []
+    sleep_calls = []
+    logged_events = []
+
+    def create_response(**kwargs):
+        attempts.append(dict(kwargs))
+        return SimpleNamespace(status="failed")
+
+    client = SimpleNamespace(responses=SimpleNamespace(create=create_response))
+    monkeypatch.setattr(generation.time, "sleep", sleep_calls.append)
+    monkeypatch.setattr(
+        generation,
+        "log_event",
+        lambda *args, **kwargs: logged_events.append((args, kwargs)) or "evt-persistent-non-completed",
+    )
+
+    target_text = "Короткий исходный абзац, который должен сохраниться без падения пайплайна."
+    result = generation.generate_markdown_block(
+        client=_as_openai_client(client),
+        model="gpt-5.4",
+        system_prompt="system",
+        target_text=target_text,
+        context_before="before",
+        context_after="after",
+        max_retries=3,
+    )
+
+    assert result == target_text
+    assert len(attempts) == 3  # bounded by max_retries, no extra recovery call
+    assert sleep_calls == [1, 2]
+    # non_completed does NOT route through the empty-response recovery re-attempt
+    assert not any(args[1] == "markdown_empty_response_recovery_started" for args, _ in logged_events)
+    assert logged_events[-1][0][1] == "markdown_non_completed_response_source_fallback"
+
+
+def test_generate_markdown_block_retries_then_succeeds_on_non_completed_response(monkeypatch):
+    # SC-002: transient non_completed_response is retried within the bounded loop, then succeeds.
+    attempts = []
+    sleep_calls = []
+
+    def create_response(**kwargs):
+        attempts.append(dict(kwargs))
+        if len(attempts) < 3:
+            return SimpleNamespace(status="failed")
+        return SimpleNamespace(status="completed", output_text="Исправленный текст")
+
+    client = SimpleNamespace(responses=SimpleNamespace(create=create_response))
+    monkeypatch.setattr(generation.time, "sleep", sleep_calls.append)
+    monkeypatch.setattr(generation, "log_event", lambda *args, **kwargs: "evt-transient-non-completed")
+
+    result = generation.generate_markdown_block(
+        client=_as_openai_client(client),
+        model="gpt-5.4",
+        system_prompt="system",
+        target_text="target",
+        context_before="before",
+        context_after="after",
+        max_retries=3,
+    )
+
+    assert result == "Исправленный текст"
+    assert len(attempts) == 3  # proves it retried, did not fall back immediately
+    assert sleep_calls == [1, 2]
+
+
+def test_generate_markdown_block_raises_on_non_completed_response_with_empty_target(monkeypatch):
+    # SC-003a (anti-vacuum): non_completed_response with empty substrate still hard-fails.
+    # Bypass the empty-target passthrough so the error path is actually exercised.
+    monkeypatch.setattr(generation, "_should_passthrough_target", lambda _target: False)
+    monkeypatch.setattr(generation.time, "sleep", lambda *_: None)
+    monkeypatch.setattr(generation, "log_event", lambda *args, **kwargs: "evt-empty-substrate")
+
+    client = SimpleNamespace(responses=SimpleNamespace(create=lambda **_: SimpleNamespace(status="failed")))
+
+    with pytest.raises(RuntimeError) as excinfo:
+        generation.generate_markdown_block(
+            client=_as_openai_client(client),
+            model="gpt-5.4",
+            system_prompt="system",
+            target_text="   ",
+            context_before="before",
+            context_after="after",
+            max_retries=2,
+        )
+    assert "non_completed_response" in str(excinfo.value)
+
+
+def test_non_completed_response_empty_substrate_guard_rejects_fallback():
+    # SC-003a (unit): the fallback guard refuses empty/whitespace substrate.
+    assert generation._can_fallback_to_source_text_after_non_completed_response("") is False
+    assert generation._can_fallback_to_source_text_after_non_completed_response("   ") is False
+    assert generation._can_fallback_to_source_text_after_non_completed_response("target") is True
+
+
+def test_generate_markdown_block_still_raises_on_auth_error_path():
+    # SC-003b (anti-vacuum): an auth/SDK error never yields a status-bearing response, so the
+    # non_completed_response fallback must NOT swallow it — the run still hard-fails.
+    class UnauthorizedError(Exception):
+        status_code = 401
+
+    def responses_create(**kwargs):
+        raise UnauthorizedError("Unauthorized provider call")
+
+    client = SimpleNamespace(
+        base_url="https://openrouter.ai/api/v1",
+        responses=SimpleNamespace(create=responses_create),
+        chat=SimpleNamespace(completions=SimpleNamespace(create=lambda **kwargs: (_ for _ in ()).throw(AssertionError("chat fallback must not run")))),
+    )
+
+    with pytest.raises(UnauthorizedError):
+        generation.generate_markdown_block(
+            client=_as_openai_client(client),
+            model="google/gemini-3.1-flash-lite-preview",
+            system_prompt="system",
+            target_text="target",
+            context_before="before",
+            context_after="after",
+            max_retries=1,
+        )
+
+
 def test_extract_normalized_markdown_logs_collapsed_output_shape(monkeypatch):
     logged_events = []
     monkeypatch.setattr(
