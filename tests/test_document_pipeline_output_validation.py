@@ -566,6 +566,92 @@ def test_collect_paragraph_break_samples_treats_trailing_footnote_marker_as_non_
     assert samples[0].source_index == 42
 
 
+def test_collect_paragraph_break_samples_scopes_to_main_content_by_region():
+    # FR-007: only a split whose FIRST entry sits in the main-content span
+    # `[front_matter_boundary … references_region_start)` is flagged. A front-matter split
+    # and a back-matter references-region split (same shared-source + mid-sentence form)
+    # are excluded by REGION — the same provenance classify_heading_demotions applies, no
+    # per-book literal. front_matter_boundary is anchored by the "Chapter 1 — …" body
+    # heading; references_region_start by the bare "Notes" back-matter title.
+    registry = [
+        # Front matter (before the chapter-body heading): a bio split — NOT flagged.
+        _paragraph_break_entry(source_index=1, origin_raw_indexes=[1], text_preview="the author is a founding member"),
+        _paragraph_break_entry(source_index=1, origin_raw_indexes=[1], text_preview="of several learned societies"),
+        # Body-start boundary anchor.
+        _paragraph_break_entry(
+            source_index=5,
+            origin_raw_indexes=[5],
+            text_preview="Chapter 1 — The Opening",
+            role="heading",
+            structural_role="heading",
+            heading_level=1,
+        ),
+        # Main content: a genuine mid-sentence split — FLAGGED.
+        _paragraph_break_entry(
+            source_index=10,
+            origin_raw_indexes=[10],
+            text_preview="this clause runs straight into the following line without any",
+        ),
+        _paragraph_break_entry(
+            source_index=10,
+            origin_raw_indexes=[10],
+            text_preview="terminal punctuation to close it.",
+        ),
+        # Back-matter references anchor.
+        _paragraph_break_entry(source_index=50, origin_raw_indexes=[50], text_preview="Notes"),
+        # References region: a split — NOT flagged (>= references_region_start).
+        _paragraph_break_entry(
+            source_index=55,
+            origin_raw_indexes=[55],
+            text_preview="a note that continues in the citation list running onto",
+        ),
+        _paragraph_break_entry(
+            source_index=55,
+            origin_raw_indexes=[55],
+            text_preview="a second physical line of the note.",
+        ),
+    ]
+
+    samples = document_pipeline_output_validation.collect_paragraph_break_samples(registry)
+
+    assert [sample.source_index for sample in samples] == [10]
+    assert samples[0].text.endswith("without any")
+
+
+def test_collect_paragraph_break_samples_excludes_bounded_toc_region():
+    # FR-007: a split whose FIRST entry sits inside the bounded TOC region is NOT flagged,
+    # while a split outside it is. The TOC region is resolved from the preparation snapshot
+    # (bounded_toc_region_count + a "Contents" heading + toc_entry_count) — the SAME
+    # provenance classify_heading_demotions uses. first_block_has_body_start=True disables
+    # the front-matter boundary so this test isolates the TOC-region path.
+    snapshot = {
+        "first_block_has_body_start": True,
+        "bounded_toc_region_count": 1,
+        "toc_entry_count": 3,
+        "toc_header_count": 1,
+    }
+    registry = [
+        _paragraph_break_entry(
+            source_index=10,
+            origin_raw_indexes=[10],
+            text_preview="Contents",
+            role="heading",
+            structural_role="heading",
+            heading_level=1,
+        ),
+        # Inside the bounded TOC region (10 .. 14) — NOT flagged.
+        _paragraph_break_entry(source_index=12, origin_raw_indexes=[12], text_preview="a table-of-contents row running onto"),
+        _paragraph_break_entry(source_index=12, origin_raw_indexes=[12], text_preview="a wrapped second line here."),
+        # Outside the TOC region — FLAGGED (control).
+        _paragraph_break_entry(source_index=30, origin_raw_indexes=[30], text_preview="this body sentence spills over onto"),
+        _paragraph_break_entry(source_index=30, origin_raw_indexes=[30], text_preview="the following physical line."),
+    ]
+
+    samples = document_pipeline_output_validation.collect_paragraph_break_samples(registry, snapshot)
+
+    assert [sample.source_index for sample in samples] == [30]
+
+
 def test_collect_false_fragment_heading_samples_detects_dangling_question_fragment_heading():
     markdown = "Это обсуждение подводит к вопросу\n\n## Спутники? Ракеты?)\n\nкоторый дальше раскрывается в тексте."
 

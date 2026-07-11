@@ -785,9 +785,11 @@ def test_paragraph_break_advisory_never_hard_fails_even_with_nonzero_count() -> 
 
 
 def test_collect_paragraph_break_samples_is_deterministic_on_saved_reports() -> None:
-    # SC-001/SC-003: the detector is deterministic on the SAVED source_registry (no live
-    # run). It flags the Money flagship ("…monetary" ‖ "meltdowns of our times.") and
-    # never flags a genuinely-separate bibliography boundary (distinct raw blocks).
+    # SC-001/SC-003 + FR-007: the detector is deterministic on the SAVED source_registry
+    # (no live run), scoped to main content using the SAVED preparation_diagnostic_snapshot.
+    # It flags the Money flagship ("…monetary" ‖ "meltdowns of our times.") and, by REGION,
+    # drops the front-matter contributor-bio splits (Money source_index 62/66) and the
+    # Lietaer back-of-book INDEX entries (source_index >= 1801, after the "index" title).
     from docxaicorrector.pipeline.output_validation import collect_paragraph_break_samples
 
     runs_root = Path(__file__).resolve().parents[1] / "tests" / "artifacts" / "real_document_pipeline" / "runs"
@@ -799,26 +801,41 @@ def test_collect_paragraph_break_samples_is_deterministic_on_saved_reports() -> 
     }
 
     counts: dict[str, int] = {}
-    money_flagged_indexes: set[int] = set()
+    flagged_indexes: dict[str, set[int]] = {}
     for name, path in saved_reports.items():
         report = json.loads(path.read_text(encoding="utf-8"))
         registry = report["formatting_diagnostics"][0]["source_registry"]
-        samples = collect_paragraph_break_samples(registry)
+        snapshot = report.get("preparation_diagnostic_snapshot") or {}
+        samples = collect_paragraph_break_samples(registry, snapshot)
         counts[name] = len(samples)
+        flagged_indexes[name] = {
+            sample.source_index for sample in samples if sample.source_index is not None
+        }
         if name == "money":
-            money_flagged_indexes = {
-                sample.source_index for sample in samples if sample.source_index is not None
-            }
             flagship = [sample for sample in samples if sample.source_index == 219]
             assert len(flagship) == 1
             assert flagship[0].text.endswith("monetary")
             assert flagship[0].next_text.startswith("meltdowns")
 
-    # Every book carries at least one detected split (advisory signal is live).
+    # Per-book scoped counts (region scoping applied). Deterministic on the saved reports.
+    assert counts == {"money": 6, "lietaer": 13, "mazzucato": 2, "creatingwealth": 6}
+    # Every book still carries at least one detected split (advisory signal is live).
     assert all(count > 0 for count in counts.values())
-    # A bibliography region (source paragraphs ~1381-1400, each a separate raw block)
-    # is never flagged — the identity key excludes genuinely-separate paragraphs.
-    assert not any(1381 <= index <= 1400 for index in money_flagged_indexes)
+
+    money = flagged_indexes["money"]
+    # Front-matter contributor-bio splits (before the body-start boundary) are excluded
+    # by REGION — the known false-positive class from the spec, dropped without a per-book
+    # rule for them.
+    assert 62 not in money and 66 not in money
+    # A back-matter bibliography region (source paragraphs >= 1380) is never flagged.
+    assert not any(index >= 1380 for index in money)
+
+    lietaer = flagged_indexes["lietaer"]
+    # Back-of-book INDEX entries (after the "index" title at source_index 1801) are excluded
+    # by the references-region boundary.
+    assert not any(index >= 1801 for index in lietaer)
+    for index in (1821, 1983, 2003, 2079, 2183, 2218):
+        assert index not in lietaer
 
 
 def test_resolve_acceptance_thresholds_returns_none_when_unconfigured() -> None:

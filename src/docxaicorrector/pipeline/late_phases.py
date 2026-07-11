@@ -2916,6 +2916,15 @@ def _build_translation_quality_report(
     # Spec 008: ADVISORY detection of paragraphs split mid-sentence by the PDF-import
     # ``toc_entry`` mis-tag. Keyed on the source_registry provenance (shared raw block) —
     # it changes NO delivered bytes and never modifies ``final_markdown``.
+    # FR-007: scoped to the main-content span using the SAME region provenance
+    # ``classify_heading_demotions`` uses (front_matter / references / bounded-TOC
+    # boundaries) so front-matter and back-of-book noise is excluded by REGION, not by a
+    # per-book literal. The preparation_diagnostic_snapshot is not carried into the finalize
+    # scope (the formatting payload does not embed it — exactly as ``classify_heading_demotions``
+    # is invoked here without it below), so the snapshot defaults to None: the front-matter
+    # and references boundaries do not require it, and the bounded-TOC region always sits
+    # inside the front matter, so the front-matter boundary already subsumes it. The offline
+    # acceptance re-measure over a saved report passes the real snapshot.
     source_registry_entries = (
         latest_payload.get("source_registry") if isinstance(latest_payload, Mapping) else None
     )

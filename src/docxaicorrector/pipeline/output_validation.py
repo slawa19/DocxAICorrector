@@ -4,6 +4,8 @@ from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal, TypeAlias
 
+from docxaicorrector.validation.formatting_coverage import resolve_main_content_scope
+
 
 ProcessedBlockStatus: TypeAlias = Literal[
     "valid",
@@ -2220,11 +2222,40 @@ def _paragraph_break_shares_source_paragraph(
 
 def _paragraph_break_source_index(entry: Mapping[str, Any]) -> int | None:
     value = entry.get("source_index")
-    return value if isinstance(value, int) else None
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _paragraph_break_out_of_main_content(
+    entry: Mapping[str, Any],
+    *,
+    front_matter_boundary: int | None,
+    references_region_start: int | None,
+    bounded_toc_region: tuple[int, int] | None,
+) -> bool:
+    """True when the pair's FIRST entry falls OUTSIDE the main-content span (FR-007).
+
+    Mirrors the per-entry region test in ``classify_heading_demotions``: skip a source
+    index that is in the front matter (``< front_matter_boundary``), in the back-matter
+    references/notes/index region (``>= references_region_start``), or inside the bounded
+    TOC region. An entry with no integer ``source_index`` cannot be region-placed, so it
+    is NOT excluded here (the shared-source / form gates still apply).
+    """
+
+    index = _paragraph_break_source_index(entry)
+    if index is None:
+        return False
+    if front_matter_boundary is not None and index < front_matter_boundary:
+        return True
+    if references_region_start is not None and index >= references_region_start:
+        return True
+    if bounded_toc_region is not None and bounded_toc_region[0] <= index <= bounded_toc_region[1]:
+        return True
+    return False
 
 
 def collect_paragraph_break_samples(
     source_registry: Sequence[Mapping[str, Any]],
+    preparation_diagnostic_snapshot: Mapping[str, object] | None = None,
 ) -> list[ParagraphBreakSample]:
     """Flag paragraphs split mid-sentence by the PDF-import ``toc_entry`` mis-tag (spec 008).
 
@@ -2232,6 +2263,11 @@ def collect_paragraph_break_samples(
     ``source_registry`` entries is flagged when ALL hold (Constitution VII: structural
     provenance ∩ language-general form, no word lists, no per-book literals):
 
+    * the first entry's ``source_index`` is inside the MAIN-CONTENT span
+      ``[front_matter_boundary … references_region_start)`` and outside the bounded TOC
+      region (FR-007) — the SAME region provenance ``classify_heading_demotions`` uses,
+      via :func:`resolve_main_content_scope`, so TOC page-refs and back-of-book index
+      entries are excluded by REGION, never by a per-book literal;
     * they share one source paragraph — equal ``origin_raw_indexes`` (or equal
       ``source_index`` when raw indexes are absent on both) (FR-001/FR-002);
     * neither entry is a heading or a list item (FR-003);
@@ -2240,6 +2276,9 @@ def collect_paragraph_break_samples(
     """
 
     entries = [entry for entry in source_registry if isinstance(entry, Mapping)]
+    front_matter_boundary, references_region_start, bounded_toc_region = resolve_main_content_scope(
+        entries, preparation_diagnostic_snapshot
+    )
     ordered = sorted(
         enumerate(entries),
         key=lambda item: (
@@ -2250,6 +2289,13 @@ def collect_paragraph_break_samples(
     )
     samples: list[ParagraphBreakSample] = []
     for (_, first), (_, second) in zip(ordered, ordered[1:]):
+        if _paragraph_break_out_of_main_content(
+            first,
+            front_matter_boundary=front_matter_boundary,
+            references_region_start=references_region_start,
+            bounded_toc_region=bounded_toc_region,
+        ):
+            continue
         if _paragraph_break_entry_is_heading_or_list(first) or _paragraph_break_entry_is_heading_or_list(second):
             continue
         if not _paragraph_break_shares_source_paragraph(first, second):

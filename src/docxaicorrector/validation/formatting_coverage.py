@@ -472,6 +472,25 @@ def _resolve_bounded_toc_region(
     return (start_index, end_index)
 
 
+def resolve_main_content_scope(
+    source_registry: Sequence[Mapping[str, object]],
+    preparation_diagnostic_snapshot: Mapping[str, object] | None = None,
+) -> tuple[int | None, int | None, tuple[int, int] | None]:
+    """Resolve the main-content span boundaries `(front_matter_boundary,
+    references_region_start, bounded_toc_region)` using the SAME region provenance as
+    `classify_heading_demotions` — the three `_resolve_*` helpers in the same order. A
+    caller scopes to the main body by keeping only source_index in
+    `[front_matter_boundary … references_region_start)` and outside `bounded_toc_region`.
+
+    Public wrapper so other modules (e.g. the paragraph-break detector) can reuse this
+    provenance without reaching into module-private helpers or duplicating the logic
+    (Constitution VII: scope by region, not by per-book literal)."""
+    boundary = _resolve_source_front_matter_boundary(source_registry, preparation_diagnostic_snapshot)
+    toc_region = _resolve_bounded_toc_region(source_registry, preparation_diagnostic_snapshot, boundary)
+    references_region_start = _resolve_references_region_start(source_registry, boundary, toc_region)
+    return boundary, references_region_start, toc_region
+
+
 def classify_passthrough_unmapped_source(
     payload: Mapping[str, object],
     preparation_diagnostic_snapshot: Mapping[str, object] | None = None,

@@ -7,6 +7,15 @@ Companion: `docs/specs/GATE_TRUSTWORTHINESS_AND_UI_DATA_REFACTOR_2026-07-09.md`;
 will act on this signal. This spec is DETECTION ONLY — it changes no delivered bytes.
 Changelog:
 - 2026-07-11 — Created from the paragraph-break universality audit.
+- 2026-07-11 — FR-007 implemented (region scoping). Re-measure over the four saved reports
+  corrected one example: Money "doraland p.142 ‖ wellness tokens p.144" (source_index 958/965)
+  is NOT back-matter — it is a MID-BOOK "NGO/government initiatives" resource directory tagged
+  `toc_entry`, sitting inside the main-content span (body-start boundary 144 … bibliography 1380),
+  so region scoping does NOT exclude it and it stays flagged. It is an accepted in-body advisory
+  false-positive of the same class as the contributor bios (repair 009 excludes it); forcing it
+  out would need an "index/page-ref-form" text heuristic, which Constitution VII forbids. The
+  genuinely-back-matter cases — Money front-matter bios (62/66) and Lietaer INDEX entries
+  (>= 1801) — ARE excluded by region, and the Money flagship (219) stays flagged.
 
 ## User Scenarios & Testing *(mandatory)*
 
@@ -78,6 +87,18 @@ reading the saved artifact.
   text previews, source_index) into `translation_quality_report`.
 - **FR-005**: The metric is ADVISORY — it does NOT hard-fail acceptance (mirror `advisory_only`, spec 004/006).
 - **FR-006**: Detection changes NO delivered bytes and does NOT modify `final_markdown` or the DOCX assembly.
+- **FR-007 (main-content scope — added 2026-07-11 after first measurement):** the detector MUST be scoped to the
+  main-content span `[front_matter_boundary … references_region_start)`, excluding the bounded TOC region — reusing
+  the SAME region provenance as `classify_heading_demotions` (`_resolve_source_front_matter_boundary`,
+  `_resolve_references_region_start`, `_resolve_bounded_toc_region` in `validation/formatting_coverage.py`). First
+  measurement without scoping flagged front-matter and back-matter noise — front-matter contributor bios and
+  back-of-book INDEX entries ("high-powered money, 40" ‖ "hitler, adolf, 180", source_index >= 1801) — which are
+  out of scope (front-matter/TOC/references/index are deliberately excluded). Region scoping removes those
+  universally (by region, not by literal). Note (verified 2026-07-11): a page-ref line that sits INSIDE the
+  main-content span — Money's mid-book "NGO initiatives" directory ("doraland p.142" ‖ "wellness tokens p.144",
+  source_index 958/965), tagged `toc_entry` but not in any bounded front-matter/TOC/references region — is NOT
+  region-excludable and stays flagged as an accepted in-body advisory false-positive (repair 009 excludes it, like
+  the bios); it is NOT suppressed by an index/page-ref text heuristic (Constitution VII).
 
 ### Key Entities
 
