@@ -752,6 +752,75 @@ def test_emphasis_coverage_advisory_never_hard_fails_even_at_zero_retention() ->
     assert "emphasis_coverage_advisory" not in verdict["failed_checks"]
 
 
+def test_paragraph_break_advisory_never_hard_fails_even_with_nonzero_count() -> None:
+    # Paragraph-break detection (spec 008) is advisory-only: a nonzero count of
+    # mid-sentence splits is surfaced and applicable, but must NEVER enter
+    # failed_checks (SC-002, FR-005 — the number must not become a silent gate).
+    from docxaicorrector.validation.acceptance import build_acceptance_verdict
+
+    report = {
+        "result": "succeeded",
+        "output_artifacts": {"output_docx_openable": True, "output_contains_placeholder_markup": False},
+        "formatting_diagnostics": [{"unmapped_source_ids": [], "unmapped_target_indexes": []}],
+        "translation_quality_report": {
+            "paragraph_break_count": 3,
+            "paragraph_break_classification": "paragraph_break_advisory",
+            "paragraph_break_samples": [
+                {"source_index": 219, "text": "... and monetary", "next_text": "meltdowns of our times."},
+            ],
+        },
+    }
+
+    verdict = _untyped(
+        build_acceptance_verdict(report, mismatch_threshold=None, unmapped_target_threshold=None)
+    )
+    by_name = {check["name"]: check for check in verdict["checks"]}
+
+    advisory = by_name["paragraph_break_advisory"]
+    assert advisory["applicable"] is True
+    assert advisory["passed"] is True
+    assert advisory["failed_reason"] == "advisory_only"
+    assert advisory["paragraph_break_count"] == 3
+    assert "paragraph_break_advisory" not in verdict["failed_checks"]
+
+
+def test_collect_paragraph_break_samples_is_deterministic_on_saved_reports() -> None:
+    # SC-001/SC-003: the detector is deterministic on the SAVED source_registry (no live
+    # run). It flags the Money flagship ("…monetary" ‖ "meltdowns of our times.") and
+    # never flags a genuinely-separate bibliography boundary (distinct raw blocks).
+    from docxaicorrector.pipeline.output_validation import collect_paragraph_break_samples
+
+    runs_root = Path(__file__).resolve().parents[1] / "tests" / "artifacts" / "real_document_pipeline" / "runs"
+    saved_reports = {
+        "money": runs_root / "20260711T_money_marker" / "money_sustainability_pdf_full_heldout_report.json",
+        "lietaer": runs_root / "20260710T_lietaer_anchors" / "lietaer_pdf_full_benchmark_report.json",
+        "mazzucato": runs_root / "20260710T_mazzucato_listctx" / "mazzucato_pdf_full_benchmark_report.json",
+        "creatingwealth": runs_root / "20260710T_creatingwealth_fixed" / "creatingwealth_pdf_full_benchmark_report.json",
+    }
+
+    counts: dict[str, int] = {}
+    money_flagged_indexes: set[int] = set()
+    for name, path in saved_reports.items():
+        report = json.loads(path.read_text(encoding="utf-8"))
+        registry = report["formatting_diagnostics"][0]["source_registry"]
+        samples = collect_paragraph_break_samples(registry)
+        counts[name] = len(samples)
+        if name == "money":
+            money_flagged_indexes = {
+                sample.source_index for sample in samples if sample.source_index is not None
+            }
+            flagship = [sample for sample in samples if sample.source_index == 219]
+            assert len(flagship) == 1
+            assert flagship[0].text.endswith("monetary")
+            assert flagship[0].next_text.startswith("meltdowns")
+
+    # Every book carries at least one detected split (advisory signal is live).
+    assert all(count > 0 for count in counts.values())
+    # A bibliography region (source paragraphs ~1381-1400, each a separate raw block)
+    # is never flagged — the identity key excludes genuinely-separate paragraphs.
+    assert not any(1381 <= index <= 1400 for index in money_flagged_indexes)
+
+
 def test_resolve_acceptance_thresholds_returns_none_when_unconfigured() -> None:
     # Production config carries no acceptance loss budget, so the resolver returns
     # None (unconfigured), while a configured 0 stays 0 (spec FR-008).

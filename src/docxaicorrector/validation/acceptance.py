@@ -661,6 +661,19 @@ def build_acceptance_verdict(
             emphasis_coverage_reason=emphasis_coverage_map.get("reason"),
             failed_reason="advisory_only",
         )
+        # Paragraph-break detection (spec 008) is ADVISORY: mid-sentence paragraph
+        # splits are made visible, but the count must never enter failed_checks —
+        # ``passed`` is hardcoded True so the check reports without gating (FR-005).
+        # The known bio/attribution false-positive class is REPORTED, not suppressed
+        # per-book (Constitution VII); repair (spec 009) excludes it.
+        add_check(
+            "paragraph_break_advisory",
+            True,
+            paragraph_break_count=translation_quality_report.get("paragraph_break_count"),
+            paragraph_break_classification=translation_quality_report.get("paragraph_break_classification"),
+            paragraph_break_samples=translation_quality_report.get("paragraph_break_samples"),
+            failed_reason="advisory_only",
+        )
     if require_no_toc_body_concat:
         toc_body_concat_check = build_acceptance_toc_body_concat_check(
             preparation_diagnostic_snapshot=preparation_diagnostic_snapshot,

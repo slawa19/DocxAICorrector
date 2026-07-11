@@ -425,6 +425,147 @@ def test_collect_list_fragment_regression_samples_detects_body_to_uppercase_bull
     assert samples[0].reason == "list_fragment_regressions_present"
 
 
+def _paragraph_break_entry(
+    *,
+    source_index,
+    text_preview,
+    origin_raw_indexes=None,
+    role="body",
+    structural_role="toc_entry",
+    heading_level=None,
+    list_kind=None,
+):
+    entry = {
+        "source_index": source_index,
+        "text_preview": text_preview,
+        "role": role,
+        "structural_role": structural_role,
+        "heading_level": heading_level,
+        "list_kind": list_kind,
+    }
+    if origin_raw_indexes is not None:
+        entry["origin_raw_indexes"] = origin_raw_indexes
+    return entry
+
+
+def test_collect_paragraph_break_samples_flags_shared_source_mid_sentence_split():
+    # (a) A genuine split: two entries share one raw PDF block, the first ends mid-sentence
+    # (no terminal punctuation) and the second resumes lowercase → flagged (FR-001).
+    registry = [
+        _paragraph_break_entry(
+            source_index=219,
+            origin_raw_indexes=[220],
+            text_preview="this scenario has been repeated for every one of the large-scale banking crises and monetary",
+        ),
+        _paragraph_break_entry(
+            source_index=219,
+            origin_raw_indexes=[220],
+            text_preview="meltdowns of our times.",
+        ),
+    ]
+
+    samples = document_pipeline_output_validation.collect_paragraph_break_samples(registry)
+
+    assert len(samples) == 1
+    assert samples[0].source_index == 219
+    assert samples[0].text.endswith("monetary")
+    assert samples[0].next_text.startswith("meltdowns")
+
+
+def test_collect_paragraph_break_samples_ignores_boundary_without_shared_source_signal():
+    # (b) Same mid-sentence form but the two entries are separate source paragraphs
+    # (distinct raw blocks) → NOT flagged. No source signal, no flag (FR-002).
+    registry = [
+        _paragraph_break_entry(
+            source_index=1381,
+            origin_raw_indexes=[1431],
+            text_preview="edward abbey: the second rape of the west (chicago",
+        ),
+        _paragraph_break_entry(
+            source_index=1382,
+            origin_raw_indexes=[1432],
+            text_preview="mani arnarson, atli bjarnason",
+        ),
+    ]
+
+    samples = document_pipeline_output_validation.collect_paragraph_break_samples(registry)
+
+    assert samples == []
+
+
+def test_collect_paragraph_break_samples_ignores_heading_boundary():
+    # (c) A heading→body boundary is structural, not a mid-sentence split → NOT flagged (FR-003).
+    registry = [
+        _paragraph_break_entry(
+            source_index=220,
+            origin_raw_indexes=[221],
+            text_preview="identifying structural issues",
+            role="heading",
+            structural_role="heading",
+            heading_level=2,
+        ),
+        _paragraph_break_entry(
+            source_index=220,
+            origin_raw_indexes=[221],
+            text_preview="continuation body text after the heading",
+            role="body",
+            structural_role="body",
+        ),
+    ]
+
+    samples = document_pipeline_output_validation.collect_paragraph_break_samples(registry)
+
+    assert samples == []
+
+
+def test_collect_paragraph_break_samples_ignores_list_boundary():
+    # (d) A list-item boundary is structural, not a mid-sentence split → NOT flagged (FR-003).
+    registry = [
+        _paragraph_break_entry(
+            source_index=119,
+            origin_raw_indexes=[119],
+            text_preview="proposals for nine different pragmatic monetary complements",
+            role="list",
+            structural_role="list",
+            list_kind="unordered",
+        ),
+        _paragraph_break_entry(
+            source_index=119,
+            origin_raw_indexes=[119],
+            text_preview="to the current financial system",
+            role="list",
+            structural_role="list",
+            list_kind="unordered",
+        ),
+    ]
+
+    samples = document_pipeline_output_validation.collect_paragraph_break_samples(registry)
+
+    assert samples == []
+
+
+def test_collect_paragraph_break_samples_treats_trailing_footnote_marker_as_non_terminal():
+    # (e) The first fragment ends in a footnote-marker superscript ("…²"): still mid-sentence,
+    # so the pair IS flagged (spec 008 edge case).
+    registry = [
+        _paragraph_break_entry(
+            source_index=42,
+            origin_raw_indexes=[42],
+            text_preview="the argument continues past the marker here.²",
+        ),
+        _paragraph_break_entry(
+            source_index=42,
+            origin_raw_indexes=[42],
+            text_preview="and finishes on the next line.",
+        ),
+    ]
+
+    samples = document_pipeline_output_validation.collect_paragraph_break_samples(registry)
+
+    assert len(samples) == 1
+    assert samples[0].source_index == 42
+
+
 def test_collect_false_fragment_heading_samples_detects_dangling_question_fragment_heading():
     markdown = "Это обсуждение подводит к вопросу\n\n## Спутники? Ракеты?)\n\nкоторый дальше раскрывается в тексте."
 

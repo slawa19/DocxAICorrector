@@ -17,6 +17,7 @@ from docxaicorrector.pipeline.output_validation import (
     collect_false_fragment_heading_samples_from_entries,
     collect_list_fragment_regression_samples,
     collect_mixed_script_samples,
+    collect_paragraph_break_samples,
     collect_page_placeholder_heading_concat_samples,
     collect_residual_bullet_glyph_samples,
     collect_theology_style_issue_samples,
@@ -1752,6 +1753,19 @@ def _serialize_quality_samples(samples: Sequence[object], *, limit: int = 8) -> 
     return serialized
 
 
+def _serialize_paragraph_break_samples(samples: Sequence[object], *, limit: int = 8) -> list[dict[str, object]]:
+    serialized: list[dict[str, object]] = []
+    for sample in list(samples)[:limit]:
+        serialized.append(
+            {
+                "source_index": getattr(sample, "source_index", None),
+                "text": getattr(sample, "text", None),
+                "next_text": getattr(sample, "next_text", None),
+            }
+        )
+    return serialized
+
+
 def _serialize_recovered_heading_entries(entries: Sequence[object], *, limit: int = 12) -> list[dict[str, object]]:
     serialized: list[dict[str, object]] = []
     for entry in list(entries)[:limit]:
@@ -2899,6 +2913,17 @@ def _build_translation_quality_report(
     raw_list_fragment_regression_samples = collect_list_fragment_regression_samples(final_markdown)
     raw_mixed_script_samples = collect_mixed_script_samples(final_markdown)
     mixed_script_samples = collect_mixed_script_samples(mixed_script_reporting_markdown)
+    # Spec 008: ADVISORY detection of paragraphs split mid-sentence by the PDF-import
+    # ``toc_entry`` mis-tag. Keyed on the source_registry provenance (shared raw block) —
+    # it changes NO delivered bytes and never modifies ``final_markdown``.
+    source_registry_entries = (
+        latest_payload.get("source_registry") if isinstance(latest_payload, Mapping) else None
+    )
+    paragraph_break_samples = (
+        collect_paragraph_break_samples(source_registry_entries)
+        if isinstance(source_registry_entries, Sequence) and not isinstance(source_registry_entries, str)
+        else []
+    )
     recovered_heading_entries = collect_recovered_heading_entries(assembly_entries) if assembly_entries and not assembly_uses_fallback else []
     untranslated_structural_samples = _collect_untranslated_structural_samples(
         final_markdown=final_markdown,
@@ -3394,6 +3419,9 @@ def _build_translation_quality_report(
         "raw_mixed_script_term_count": len(raw_mixed_script_samples),
         "mixed_script_term_samples": _serialize_quality_samples(mixed_script_samples),
         "raw_mixed_script_term_samples": _serialize_quality_samples(raw_mixed_script_samples),
+        "paragraph_break_count": len(paragraph_break_samples),
+        "paragraph_break_classification": "paragraph_break_advisory",
+        "paragraph_break_samples": _serialize_paragraph_break_samples(paragraph_break_samples),
         "untranslated_structural_text_count": len(untranslated_structural_samples),
         "untranslated_structural_text_samples": [
             dict(_serialize_untranslated_structural_sample(sample))
