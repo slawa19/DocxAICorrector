@@ -53,7 +53,11 @@ Active companions:
 > 2. ~~UI-data contract gaps~~ — RESOLVED (`specs/011`: `unmapped_target` items emitted; `[КРИТ]`/false_pair
 >    kept correct-and-latent + test-covered; `note_fragment` scoped out as a UI-copy concern, footnotes out of
 >    scope per Constitution VII). UI-data blockers are discharged.
-> 3. Breadth validation — PENDING (RETRACTED 2026-07-11). The two runs previously marked "DONE 2026-07-11"
+> 3. Breadth / real-book validation — DONE 2026-07-11 on all 4 REAL full books (`tests/sources/book/`); see
+>    "Real-book validation" below. All pass acceptance, reconstruct at acceptable quality, gate is honest; specs
+>    001–011 hold on fresh runs. Cleared to return to UI. (The earlier same-day "breadth" note was RETRACTED — it
+>    had used legacy/truncated sources; superseded by this real-book validation.)
+> 3-legacy. (historical) Breadth validation — PENDING (RETRACTED 2026-07-11). The two runs previously marked "DONE 2026-07-11"
 >    were run on LEGACY/truncated archive sources (a religion `.doc`, a mazzucato audiobook `.docx` excerpt),
 >    NOT the real full books, so they are NOT valid breadth evidence. Breadth must be re-run on the real full
 >    books in `tests/sources/book/` (lietaer / mazzucato / creatingwealth / money-sustainability PDFs). See
@@ -801,9 +805,36 @@ Both of these legacy profiles and their `tests/sources/archive/` sources have be
 claim, spec-011 live-validation claim, and the "accepted front-matter tail" finding recorded here stood only on
 those legacy fixtures and must NOT be relied on as breadth evidence.
 
-**Breadth is PENDING** and must be re-run on the real full books in `tests/sources/book/`
-(`lietaer-pdf-full-benchmark`, `mazzucato-pdf-full-benchmark`, `creatingwealth-pdf-full-benchmark`,
-`money-sustainability-pdf-full-heldout`) before it can be marked done.
+### Real-book validation — 2026-07-11 (all 4 real full books, fresh runs on current HEAD post-cleanup)
+
+Re-ran breadth on the REAL full books in `tests/sources/book/` (advisory profile
+`ui-parity-translate-benchmark-advisory-image-safe-no-cleanup`), analysed each against expectations, artifact
+opened per book (Constitution VIII).
+
+| Book (run_id) | Paras | Images | Acceptance | ≤2-char junk headings | Text loss | false_fragment raw→gated | Gate |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Money (`20260711T_money_real1`) | 1435 | 43 | passed | 4 (~2%) | none (ratio 1.045) | 52→0 | clean (no gate_reasons) |
+| Mazzucato (`..._mazzucato_real1`) | 2314 | 42 | passed | 0 | none (1.079) | 25→0 | honest warn (6 review items) |
+| Creating Wealth (`..._creatingwealth_real1`) | 1836 | 62 | passed | 0 | none (1.053) | 54→0 | honest warn (author bios/names/unmapped×4) |
+| Lietaer (`..._lietaer_real1`) | 2290 | 55 | passed | 0 | none (1.037) | 82→2 | honest warn (page-range/currency names/unmapped×1) |
+
+Consistent verdict across all 4:
+- **Reconstruction is acceptable**: chapters/parts/sections render as correct-level headings (Money `Глава I–IX`
+  all `Heading 1` — spec 001 holds live, NOT `24. Глава IV`); body prose clean; NO text loss on any book; all
+  images preserved.
+- **Acceptance passes on all 4.** The gate is HONEST: clean books pass; genuine residue (list fragments,
+  untranslated citations/proper-names/author-bios, false-fragment parentheticals, unmapped targets, role losses —
+  all in front/back-matter or proper-noun regions) is surfaced as REVIEW items, never a false hard-fail, never
+  hidden.
+- **The refactoring (specs 001–011) holds on fresh full-book runs**: `false_fragment` raw 52/25/54/82 → gated
+  0/0/0/2; `list_fragment` raw 4/66/21/20 → gated 0/3/1/0; **spec 011 `unmapped_target` review-items fired on 3
+  of 4 books** — validated in production. Emphasis transferred (bold 0.80–0.89, italic 0.60–0.66, advisory).
+- Accepted tails (documented, small, pass-through): a few stray-char front-matter/OCR headings (Money `%`,`О`,
+  `17`,`18`), untranslated proper names (currency names, publishers), untranslated author bios, one English
+  chapter marker, decorative separators. None block acceptance; all honestly reported.
+
+**Conclusion: the pipeline reliably reconstructs the real books at acceptable quality and the gate is
+trustworthy. All pre-UI work is validated. Cleared to return to the UI slice.**
 
 ## Runs Alongside: Architecture Hygiene (secondary, opportunistic)
 
