@@ -2701,6 +2701,65 @@ def _emit_unmapped_source_discrepancy_review_items(
         )
 
 
+def _emit_unmapped_target_discrepancy_review_items(
+    *,
+    formatting_review_items: list[dict[str, object]],
+    has_role_aware_summary: bool,
+    retained_samples: Sequence[object],
+    retained_count: int,
+    effective_unmapped_target_count: int,
+) -> None:
+    """Policy-independent DATA emission for unmapped-TARGET discrepancies (spec 011).
+
+    Target counterpart of ``_emit_unmapped_source_discrepancy_review_items``: itemizes the
+    genuinely-unmapped target paragraphs (the passthrough classifier's ``retained`` residue,
+    threaded out via ``retained_target_samples``) so the UI's unmapped-target ``[ПРОВЕРКА]``
+    row lists WHICH paragraphs are unmapped, not just a count. Emitted under both strict and
+    advisory — this is review-DATA (spec 010 keeps target coverage NOT-APPLICABLE in
+    production); it appends review-items only and touches no acceptance check / verdict.
+
+    The ``has_role_aware_summary`` discriminator mirrors the source emitter's
+    ``basis == role_aware`` branch:
+      * summary present → itemize the retained residue (zero retained ⇒ nothing to review —
+        the anti-vacuum guarantee: a credited passthrough paragraph is never emitted);
+      * summary absent (no target-split accounting) → a single count-only item carrying the
+        effective count (FR-004), never silence when that count is positive.
+    """
+    reason = "unmapped_target_paragraphs_review_required"
+    label = "Абзацы перевода без явного соответствия оригиналу"
+    if has_role_aware_summary:
+        samples = [sample for sample in list(retained_samples)[:8] if isinstance(sample, Mapping)]
+        if not samples:
+            # Zero retained unmapped target paragraphs — nothing to review (SC-002a).
+            return
+        # Mirror the source emitter's capping invariant: the first item carries the true
+        # retained total when the sample list is capped below it.
+        use_aggregate = retained_count > len(samples)
+        for sample_index, sample in enumerate(samples):
+            text = str(sample.get("text_preview") or "")
+            item = _build_formatting_review_item(
+                reason=reason,
+                label=label,
+                sample={"line": None, "text": text, "reason": reason},
+                count=0 if use_aggregate else 1,
+                severity="review",
+            )
+            if sample_index == 0 and use_aggregate:
+                item["aggregate_count"] = retained_count
+            formatting_review_items.append(item)
+    elif effective_unmapped_target_count > 0:
+        # FR-004: no role-aware target summary (no target-split accounting) — fall back to a
+        # single count-only item, never silence.
+        formatting_review_items.append(
+            _build_formatting_review_item(
+                reason=reason,
+                label=label,
+                count=effective_unmapped_target_count,
+                severity="review",
+            )
+        )
+
+
 def _emit_hygiene_gate(
     *,
     quality_status: str,
@@ -3118,6 +3177,30 @@ def _build_translation_quality_report(
                 role_loss_samples=advisory_role_loss_samples,
                 unmapped_source_count=worst_unmapped_source_count,
             )
+        # spec 011: itemize the genuinely-unmapped TARGET paragraphs (the target-side
+        # counterpart of the source items above). Policy-independent DATA — emitted under
+        # BOTH strict and advisory, unconditionally, because target coverage is review-DATA
+        # (spec 010), not a gate; this appends review-items only and changes no verdict.
+        if role_aware_target_summary is not None:
+            raw_retained_samples = role_aware_target_summary.get("retained_target_samples")
+            retained_target_samples: Sequence[object] = (
+                raw_retained_samples
+                if isinstance(raw_retained_samples, Sequence)
+                and not isinstance(raw_retained_samples, (str, bytes, bytearray))
+                else []
+            )
+            raw_retained_count = role_aware_target_summary.get("retained_target_count")
+            retained_target_count = raw_retained_count if isinstance(raw_retained_count, int) else 0
+        else:
+            retained_target_samples = []
+            retained_target_count = 0
+        _emit_unmapped_target_discrepancy_review_items(
+            formatting_review_items=formatting_review_items,
+            has_role_aware_summary=role_aware_target_summary is not None,
+            retained_samples=retained_target_samples,
+            retained_count=retained_target_count,
+            effective_unmapped_target_count=effective_unmapped_target_count,
+        )
         if isinstance(latest_payload, Mapping):
             controlled_fallback_review_count, controlled_fallback_review_samples = _controlled_fallback_review_samples(
                 latest_payload

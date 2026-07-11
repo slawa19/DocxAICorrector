@@ -20,6 +20,8 @@ from types import SimpleNamespace
 from docxaicorrector.validation.formatting_coverage import (
     classify_heading_demotions,
     classify_passthrough_unmapped_source,
+    classify_passthrough_unmapped_target,
+    resolve_role_aware_formatting_unmapped_target_summary,
     _is_attribution_text,
     _is_index_row_text,
 )
@@ -415,6 +417,152 @@ def test_review_item_strips_image_placeholder_and_keeps_words():
         sample={"text": "[[DOCX_IMAGE_img7]] Рисунок с подписью"},
     )
     assert _item_sample(item)["text"] == "Рисунок с подписью"
+
+
+# --------------------------------------------------------------------------- #
+# 011 unmapped-TARGET review-items — itemize the retained target residue.      #
+# The source side already itemizes (`unmapped_source_paragraphs_review_required`);
+# these tests prove the target counterpart carries per-paragraph text_preview,
+# credits passthrough (anti-vacuum), caps like the source emitter, and touches   #
+# no verdict.                                                                     #
+# --------------------------------------------------------------------------- #
+
+# A genuine body target paragraph after the front-matter boundary (source_index 3
+# heading → target_boundary 3): long real prose, not furniture/caption/attribution.
+_REAL_TARGET_BODY = (
+    "Длинный абзац настоящей прозы перевода, который излагает содержательную "
+    "экономическую мысль на протяжении целого предложения реального текста и "
+    "корректно заканчивается точкой."
+)
+
+
+def _target_payload(unmapped_target_indexes, *, extra_tgt=None, creditable=0):
+    return {
+        "source_registry": _base_source_rows(),
+        "target_registry": _base_target_rows() + list(extra_tgt or []),
+        "unmapped_target_indexes": list(unmapped_target_indexes),
+        # Presence of split_accounting_creditable_count is what makes the role-aware
+        # target summary include this payload (formatting_coverage.py:878).
+        "unmapped_target_residual_diagnostics": {"split_accounting_creditable_count": creditable},
+    }
+
+
+def _emit_target_items_from_summary(payload):
+    """Drive the production emitter exactly as late_phases does: resolve the role-aware
+    target summary, then feed its threaded retained samples/count into the emitter."""
+    summary = resolve_role_aware_formatting_unmapped_target_summary([payload])
+    items: list[dict[str, object]] = []
+    if summary is not None:
+        raw_samples = summary.get("retained_target_samples")
+        samples = raw_samples if isinstance(raw_samples, list) else []
+        raw_retained_count = summary.get("retained_target_count")
+        retained_count = raw_retained_count if isinstance(raw_retained_count, int) else 0
+        raw_effective = summary.get("effective_unmapped_target_count")
+        effective = raw_effective if isinstance(raw_effective, int) else 0
+    else:
+        samples = []
+        retained_count = 0
+        effective = 0
+    late_phases._emit_unmapped_target_discrepancy_review_items(
+        formatting_review_items=items,
+        has_role_aware_summary=summary is not None,
+        retained_samples=samples,
+        retained_count=retained_count,
+        effective_unmapped_target_count=effective,
+    )
+    return items
+
+
+def _target_items(items):
+    return [item for item in items if item["reason"] == "unmapped_target_paragraphs_review_required"]
+
+
+def test_sc001_genuine_unmapped_body_target_is_itemized_with_text():
+    # SC-001/FR-001: the classifier returns a retained_samples row carrying text_preview.
+    payload = _target_payload([5], extra_tgt=[_tgt(5, None, _REAL_TARGET_BODY)])
+    classified = classify_passthrough_unmapped_target(payload)
+    assert classified["retained_indexes"] == [5]
+    assert classified["retained_samples"] == [{"target_index": 5, "text_preview": _REAL_TARGET_BODY}]
+    # End-to-end through the summary + emitter: exactly one review item carrying the text.
+    items = _target_items(_emit_target_items_from_summary(payload))
+    assert len(items) == 1
+    item = items[0]
+    assert item["severity"] == "review"
+    assert _item_sample(item)["text"] == _REAL_TARGET_BODY
+
+
+def test_sc002a_all_passthrough_target_emits_no_item():
+    # SC-002(a) ANTI-VACUUM: unmapped target indexes all front-matter (< boundary 3) →
+    # retained empty → NO review item (credited passthrough is never surfaced).
+    payload = _target_payload([0, 1, 2])
+    classified = classify_passthrough_unmapped_target(payload)
+    assert classified["retained_indexes"] == []
+    assert classified["retained_samples"] == []
+    counts = classified["category_counts"]
+    assert isinstance(counts, dict)
+    assert counts["front_matter"] == 3
+    assert _target_items(_emit_target_items_from_summary(payload)) == []
+
+
+def test_sc002b_one_body_among_passthrough_noise_emits_exactly_one():
+    # SC-002(b) ANTI-VACUUM: one genuine body paragraph among front-matter passthrough noise
+    # → exactly one item, for the body paragraph, carrying its text.
+    payload = _target_payload([0, 1, 2, 5], extra_tgt=[_tgt(5, None, _REAL_TARGET_BODY)])
+    classified = classify_passthrough_unmapped_target(payload)
+    assert classified["retained_indexes"] == [5]
+    items = _target_items(_emit_target_items_from_summary(payload))
+    assert len(items) == 1
+    assert _item_sample(items[0])["text"] == _REAL_TARGET_BODY
+
+
+def test_sc003_retained_above_cap_first_item_carries_aggregate_count():
+    # SC-003: more retained body targets than the sample cap (8) → first item carries
+    # aggregate_count = the true retained total, mirroring the source emitter.
+    extra = [_tgt(idx, None, f"{_REAL_TARGET_BODY} №{idx}") for idx in range(5, 17)]
+    payload = _target_payload(list(range(5, 17)), extra_tgt=extra)  # 12 genuine body targets
+    classified = classify_passthrough_unmapped_target(payload)
+    assert classified["retained_count"] == 12
+    items = _target_items(_emit_target_items_from_summary(payload))
+    assert len(items) == 8  # capped
+    assert items[0]["aggregate_count"] == 12
+    assert all("aggregate_count" not in item for item in items[1:])
+
+
+def test_fr004_no_role_aware_summary_falls_back_to_count_only_item():
+    # FR-004: no target-split accounting (no summary) but a positive effective count →
+    # a single count-only item, never silence.
+    items: list[dict[str, object]] = []
+    late_phases._emit_unmapped_target_discrepancy_review_items(
+        formatting_review_items=items,
+        has_role_aware_summary=False,
+        retained_samples=[],
+        retained_count=0,
+        effective_unmapped_target_count=7,
+    )
+    target = _target_items(items)
+    assert len(target) == 1
+    assert target[0]["count"] == 7
+    assert target[0]["severity"] == "review"
+    assert "sample" not in target[0]
+
+
+def test_sc004_emitter_only_appends_review_items_touches_no_check():
+    # SC-004 (DATA-only): the emitter mutates ONLY the passed review-item list; it returns
+    # None and takes/returns no failed_checks / verdict structure. A pre-seeded unrelated
+    # item is preserved and the addition is purely appended.
+    sentinel = {"reason": "unrelated", "label": "x", "count": 1, "severity": "fix"}
+    items: list[dict[str, object]] = [sentinel]
+    result = late_phases._emit_unmapped_target_discrepancy_review_items(
+        formatting_review_items=items,
+        has_role_aware_summary=True,
+        retained_samples=[{"target_index": 5, "text_preview": _REAL_TARGET_BODY}],
+        retained_count=1,
+        effective_unmapped_target_count=1,
+    )
+    assert result is None
+    assert items[0] is sentinel
+    assert len(items) == 2
+    assert items[1]["reason"] == "unmapped_target_paragraphs_review_required"
 
 
 def test_review_item_does_not_truncate_non_docx_double_bracket():
