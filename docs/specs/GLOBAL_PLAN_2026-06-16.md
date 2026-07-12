@@ -676,6 +676,13 @@ to fix or to consciously accept, with a reason.
 
 ## Remaining Work Before Returning to UI
 
+> ⚠️ **HISTORICAL SECTION — not the authoritative status.** Everything from here to the end of the file is the
+> dated working log written while this work was in flight; it still contains old "CURRENT / NOW / NEXT / before
+> UI" phrasing that a text search can land on. The AUTHORITATIVE, current status is the **RESUME POINT block at
+> the very top of the NAVIGATION section**. As of 2026-07-11 all five items below are DONE (specs 001–012) and
+> the pipeline is validated on the 4 real books and cleared to return to UI — read the top block, not the
+> in-flight prose below.
+
 The UI surfaces results to users, so before UI work the pipeline must (a) reliably
 finish **any** book, (b) produce a **stable, meaningful** verdict, (c) in
 **production**, not just the harness. Five items, in priority order.

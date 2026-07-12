@@ -1,10 +1,19 @@
 # Feature Specification: Detect broken (mid-sentence-split) paragraphs
 
 Date: 2026-07-11
-Status: ACTIVE forward spec
-Owner surface: `translation_quality_report` — a new advisory paragraph-break metric
-Companion: `docs/specs/GATE_TRUSTWORTHINESS_AND_UI_DATA_REFACTOR_2026-07-09.md`; a follow-up REPAIR spec (009)
-will act on this signal. This spec is DETECTION ONLY — it changes no delivered bytes.
+Status: **IMPLEMENTED (detection, advisory) 2026-07-11.** Detector `collect_paragraph_break_samples`
+(`output_validation.py:2256`) is wired (`late_phases.py:2990-2991`), emits `paragraph_break_count` /
+`paragraph_break_classification="paragraph_break_advisory"` / `paragraph_break_samples` into
+`translation_quality_report`, and the advisory acceptance check `paragraph_break_advisory`
+(`validation/acceptance.py:669-676`) is `passed=True` forever (never gates). Verified offline on 4 saved reports
+and it ran on the 4 real-book runs of 2026-07-11 without gating. **Scope was DETECTION only — that scope is
+complete.**
+Owner surface: `translation_quality_report` — an advisory paragraph-break metric
+Companion: `docs/specs/GATE_TRUSTWORTHINESS_AND_UI_DATA_REFACTOR_2026-07-09.md`. **REPAIR follow-up:** the
+auto-merge repair was analysed and **NOT recommended** (~60-70% precision, would damage the delivered document,
+unverifiable under non-deterministic translation) — see the Non-goals below. It is **after-UI / non-blocking and
+NOT a numbered spec** (the `009` slot is `009-controlled-fallback-non-completed-response`, unrelated). This spec
+is DETECTION ONLY — it changes no delivered bytes.
 Changelog:
 - 2026-07-11 — Created from the paragraph-break universality audit.
 - 2026-07-11 — FR-007 implemented (region scoping). Re-measure over the four saved reports
@@ -12,7 +21,7 @@ Changelog:
   is NOT back-matter — it is a MID-BOOK "NGO/government initiatives" resource directory tagged
   `toc_entry`, sitting inside the main-content span (body-start boundary 144 … bibliography 1380),
   so region scoping does NOT exclude it and it stays flagged. It is an accepted in-body advisory
-  false-positive of the same class as the contributor bios (repair 009 excludes it); forcing it
+  false-positive of the same class as the contributor bios (the future (not-recommended, after-UI) repair would exclude it); forcing it
   out would need an "index/page-ref-form" text heuristic, which Constitution VII forbids. The
   genuinely-back-matter cases — Money front-matter bios (62/66) and Lietaer INDEX entries
   (>= 1801) — ARE excluded by region, and the Money flagship (219) stays flagged.
@@ -46,7 +55,7 @@ share one source paragraph with a mid-sentence boundary, and does NOT flag genui
 - Multi-line bio / credential / attribution blocks (e.g. "member of the club of rome" ‖ "president of the
   cor-eu chapter") that share one raw block but are legitimately separate lines — these WILL be flagged by the
   form∩identity rule (a known false-positive class for detection). Detection is advisory, so a few false flags
-  are acceptable; the REPAIR spec (009) must exclude them. Report them honestly, do not tune them away per-book.
+  are acceptable; a future (not-recommended, after-UI) repair must exclude them. Report them honestly, do not tune them away per-book.
 - The first fragment ends in a footnote-marker digit ("…²") — still non-terminal for prose purposes.
 
 ## Verified findings
@@ -65,7 +74,7 @@ reading the saved artifact.
   unambiguous prose splits; ~4 genuinely-separate (bibliography/index) correctly excluded by the identity key.
 - **Known false-positive class:** contributor bios / epigraph attributions also share a raw block and have a
   non-terminal + lowercase boundary (Money `source_index=62`, `66`). The form∩identity rule flags them. Detection
-  reports them; repair (009) must exclude them via the already-detected structural roles (attribution/caption).
+  reports them; a future (not-recommended, after-UI) repair must exclude them via the already-detected structural roles (attribution/caption).
 
 ## Requirements *(mandatory)*
 
@@ -97,7 +106,7 @@ reading the saved artifact.
   universally (by region, not by literal). Note (verified 2026-07-11): a page-ref line that sits INSIDE the
   main-content span — Money's mid-book "NGO initiatives" directory ("doraland p.142" ‖ "wellness tokens p.144",
   source_index 958/965), tagged `toc_entry` but not in any bounded front-matter/TOC/references region — is NOT
-  region-excludable and stays flagged as an accepted in-body advisory false-positive (repair 009 excludes it, like
+  region-excludable and stays flagged as an accepted in-body advisory false-positive (the future (not-recommended, after-UI) repair would exclude it, like
   the bios); it is NOT suppressed by an index/page-ref text heuristic (Constitution VII).
 
 ### Key Entities
@@ -118,7 +127,7 @@ reading the saved artifact.
 
 ## Non-goals
 
-- **Not repairing (merging) the paragraphs** — that is spec 009, a delivered-byte change with its own
+- **Not repairing (merging) the paragraphs** — that is a future (not-recommended, after-UI; NOT a numbered spec — the `009` slot is controlled-fallback) delivered-byte change with its own
   verification and the bio/attribution exclusion.
 - **Not fixing the PDF-import mis-tag** (`_looks_like_toc_entry`) — that is a deeper import change; detection
   works from the resulting diagnostics regardless.

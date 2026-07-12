@@ -1,139 +1,131 @@
-# Formatting Discrepancy Reporting Spec (UI + human-readable log)
+# Formatting Discrepancy Reporting Spec (UI presentation slice)
 
-Date: 2026-06-15
-Status: Forward spec, not yet implemented
-Owner surface: pipeline result notice + activity feed, per-job output artifacts
-Scope: how residual formatting discrepancies are surfaced so a user can review
-and fix them by hand. Small, additive, tied to the current UI surfaces.
+Date: 2026-06-15 (original) · **Rewritten 2026-07-11** as a presentation-only slice over the already-shipped
+data/artifact contract.
+Status: ACTIVE — presentation slice. The DATA and the human-readable FILE already exist and are tested; this
+spec covers ONLY the front-end presentation over them.
+Owner surface: the result-notice / activity surface that shows a finished run + a download for the review file.
+Companion: `specs/010-production-acceptance-semantics/spec.md` (verdict vs review-data are separate axes),
+`specs/011-unmapped-target-review-items/spec.md` (the target review items), `docs/specs/GATE_TRUSTWORTHINESS_AND_UI_DATA_REFACTOR_2026-07-09.md` ("Discharge status").
+Changelog:
+- 2026-07-11 — REWRITTEN. The 2026-06-15 draft predated the data/artifact work and had drifted from the code:
+  it claimed discrepancies live only in `report.json`; proposed extending `build_formatting_diagnostics_user_feedback`
+  as the presentation contract; named `.run/job_results/<job>/`; described the `formatting_review.txt` writer as
+  future work; still listed `note_fragment`; did not reflect spec 010 (verdict ≠ review-data) or the spec 011
+  mechanics (`aggregate_count` / sample cap / count-only fallback). All corrected below against the verified
+  contract. This is NOT a reason to touch the pipeline — the data and the file are done; only the UI front-end
+  remains.
 
-## Purpose
+## What already exists (verified 2026-07-11 — the UI does NOT build any of this)
 
-After a translation, the role-aware formatting gate may leave a small residual
-(real role losses, unmapped paragraphs, note fragments). Today these live only
-in `report.json` for engineers. This spec makes them **user-visible and
-actionable**: a short UI notice + a human-readable log file next to the output
-DOCX, so a non-technical user can open the DOCX and fix the few remaining spots
-by hand.
+- **The discrepancy DATA is a structured, promoted object, not raw `report.json`.** At finalize,
+  `_build_result_quality_warning` (`late_phases.py:3687-3707`) produces a `quality_warning` dict **only when
+  `quality_status ∈ {warn, fail}`** (line 3693) carrying `kind="translation_quality_gate"`, `message`,
+  `formatting_review_items`, and `formatting_review_required_count`. It is persisted verbatim into the delivered
+  meta file (`runtime/artifacts.py:199-200`). On a fully clean run (`quality_status == pass`) there is **no**
+  `quality_warning` — the UI shows "clean".
+- **Each review item** (`_build_formatting_review_item`, `late_phases.py:2301-2344`):
+  `{reason, label (RU), count, severity ∈ {fix, review, defect}, aggregate_count?, action_style?, sample?}`.
+  The capped emission (first 8 samples, `aggregate_count` on the first when capped, count-only fallback when no
+  samples) is already implemented in the emitters (`_emit_unmapped_source_discrepancy_review_items` `:2650`,
+  `_emit_unmapped_target_discrepancy_review_items` `:2704`, spec 011).
+- **Severity → marker** is fixed in code: `runtime/artifacts.py:63`
+  `{"fix": "[ПРАВКА]", "review": "[ПРОВЕРКА]", "defect": "[КРИТ]"}`.
+- **The human-readable review FILE already exists, with retention and tests.**
+  `_build_formatting_review_text` (`runtime/artifacts.py:88-169`) renders a Russian prose review; it is written
+  as `<stem>.result.formatting_review.txt` into **`.run/ui_results/`** (NOT `.run/job_results/`) by
+  `write_ui_result_artifacts` (`runtime/artifacts.py:172-263`), next to `<stem>.result.docx` /
+  `<stem>.result.md` / `<stem>.result.meta.json`. Stem = `<YYYYMMDD_HHMMSS>_<sanitized-name>.result`. Retention
+  prunes whole stem-groups (≤ 80 groups / ≤ 7 days, `artifact_retention.py:64-65`). Tests:
+  `tests/test_runtime_artifacts.py` (`.result.formatting_review.txt` at `:95/:131`, aggregate-count capping
+  `:165`, defect `:205`), `tests/test_runtime_artifact_retention.py:192`.
 
-This is presentation only. All discrepancy data is **already computed** (no new
-analysis): `formatting_diagnostics[*].unmapped_source_residual_diagnostics`
-(category + closability + samples), `mapping_text_quality` (false pairs), and the
-role-aware effective counts in `translation_quality_report`.
+**So the UI slice is a thin FRONT-END:** read `quality_warning` from the delivered meta, show a notice + counts,
+and offer a download of the already-written `.result.formatting_review.txt`. No new analysis, no new writer, no
+pipeline change.
 
-## Plugs into existing surfaces (do not invent new ones)
+## Two axes the UI must NOT conflate (spec 010)
 
-- UI notice: existing `latest_result_notice = {"level", "message"}` (emit_state).
-- UI feed: existing `emit_activity(runtime, message)`.
-- Existing wiring to reuse/extend:
-  `build_formatting_diagnostics_user_feedback()` already returns
-  `(severity, activity_message, user_summary)` from diagnostics artifacts —
-  extend it to also point at the log file and carry counts.
-- Per-job output dir: the same dir as the user's output DOCX (`.run/job_results/<job>/`).
-- Per-run human summary precedent: `*_summary.txt` (key=value). The new log is a
-  separate, prose, reader-facing file (not key=value).
+- **Acceptance verdict** — `acceptance_passed` (pass/fail) gates on the STRUCTURAL/HYGIENE axis only; the coverage
+  axis is NOT-APPLICABLE in production (spec 010). A run can be **`acceptance_passed = true` AND
+  `quality_status = warn`** simultaneously (observed live: Mazzucato/Creating Wealth/Lietaer 2026-07-11) — the
+  book is accepted, but carries review items. The UI copy must make this non-alarming: a successful result can
+  legitimately list items to review.
+- **Review-data** — the `formatting_review_items` are DATA for human review, never a pass/fail. Coverage counts
+  are shown as data, not as a verdict.
 
-## What counts as a discrepancy (reuse existing classes)
+## Minimal UI scope (first increment — deliberately small)
 
-Data-layer status (updated 2026-07-11 after the pre-UI UI-data-gap assessment; see
-`docs/specs/GATE_TRUSTWORTHINESS_AND_UI_DATA_REFACTOR_2026-07-09.md` "Discharge status"):
+1. **A final notice keyed on the MAX severity present** (`defect` > `fix` > `review` > none) — one line, Russian.
+2. **Counts by severity**: `[КРИТ] N · [ПРАВКА] N · [ПРОВЕРКА] N` (from the items' `severity`, honoring
+   `aggregate_count`).
+3. **A download control for `<stem>.result.formatting_review.txt`** (the file already written next to the DOCX).
+4. **A one-line explanation that a successful result can still contain review items** (the two-axes point above),
+   so a passing run with `[ПРОВЕРКА]` items does not read as a failure.
+5. **Correct copy for `short_note_or_marker`**: when an `unmapped_target` item's residue is a short note/marker
+   (`residual_class == "short_note_or_marker"`, `formatting_transfer.py:318`), soften the wording ("похоже на
+   сноску или маркер"). It is NOT a separate class — it rides inside `unmapped_target`.
+6. **No internal terminology in user-facing copy** — never show `role_aware`, `retained residue`, `gate_source`,
+   `basis`, strategy names, or paragraph ids. Only the RU `label` + the human marker.
+7. **The DOCX download is always available regardless of severity** — reporting never blocks delivery (the DOCX
+   and MD are always written; `runtime/artifacts.py:187-190`).
 
-| Class | Source field | User meaning | Data status |
-| --- | --- | --- | --- |
-| `role_loss` (heading/list/caption -> body) | residual closability `content_survived_but_format_role_lost` + role-by-target-style | A heading/list became plain text — **needs manual fix** | EMITTED (`role_loss` review-items) |
-| `unmapped_source_present` | `unmapped_source_paragraphs_review_required` review-items | Text is in the DOCX but its original formatting may not have transferred — **review** | EMITTED |
-| `unmapped_target` | `unmapped_target_paragraphs_review_required` review-items (retained residue after passthrough crediting) | An output paragraph with no clear origin — **review** | EMITTED (`specs/011`, 2026-07-11) |
-| ~~`note_fragment`~~ | — | Footnote/endnote fragment — usually cosmetic | **SCOPED OUT.** Footnotes are out of scope (Constitution VII). NOT a distinct data class: short-note residue already appears within `unmapped_target` tagged `short_note_or_marker` — soften it in UI COPY ("похоже на сноску/маркер"), do not build a separate detector. |
-| `false_pair` | `mapping_text_quality.bad_pair_count > 0` | **Hard alarm**: wrong formatting may have been applied to a paragraph — must not ship silently | EMITTED but CORRECT-AND-LATENT: the detector is wired and test-covered (synthetic `bad_pair_count=3`), but no corpus book triggers it (the text-verified matcher does not mis-bind). Do NOT try to force it to fire on live data (would need a forbidden per-book literal). |
+## Notice copy (concise, Russian; keyed on max severity)
 
-## Severity model -> UI level
+- none (no `quality_warning`): `Готово. Оформление перенесено полностью.`
+- `review` only: `Готово. N абзацев стоит проверить по оформлению — см. файл проверки.` (successful — items are
+  advisory)
+- `fix` present: `Готово. N заголовков/списков стали обычным текстом — нужна ручная правка. См. файл проверки.`
+- `defect` present: `Внимание: N абзаца(ев) могли получить чужое оформление. См. файл проверки.`
 
-- **OK** (`level=info`): zero `role_loss`, zero `false_pair`. Notice:
-  «Оформление перенесено полностью.» No log file needed (or empty log).
-- **Review recommended** (`level=warn`): only `unmapped_*` / `note_fragment`,
-  no `role_loss`, no `false_pair`. Notice names the count and the log path.
-- **Manual fix needed** (`level=warn`, prominent): any `role_loss`.
-- **Defect** (`level=error`): any `false_pair > 0`. This is the only one that
-  signals possible wrong formatting applied; surface loudly, never silent.
+Each notice names the review file so the user knows what to download. The activity feed gets the same headline
+plus the per-severity counts.
 
-The DOCX is always produced regardless — reporting never blocks output.
+## The review FILE (already produced — shown here for reference, NOT to be re-implemented)
 
-## UI notification (concise)
-
-`latest_result_notice.message` — one line, Russian, e.g.:
-- OK: `Готово. Оформление перенесено полностью (0 расхождений).`
-- Review: `Готово. 16 абзацев требуют проверки оформления. Подробности: formatting_review.txt`
-- Fix: `Готово, но 3 заголовка стали обычным текстом — нужна ручная правка. См. formatting_review.txt`
-- Defect: `Внимание: 2 абзаца получили оформление от чужого фрагмента. См. formatting_review.txt`
-
-Activity feed (`emit_activity`) gets the same headline plus the per-class counts.
-The notice MUST name the log file by name so the user knows where to look.
-
-## Human-readable log file
-
-- Name: `formatting_review.txt` (or `<output_basename>.formatting_review.txt`),
-  written into the **same folder as the output DOCX**.
-- Always written when severity != OK; on OK, write a one-line "no issues" file so
-  its presence is predictable.
-- Plain prose, Russian, no internal ids/jargon in the body. Ordered by document
-  position so the user can walk the DOCX top to bottom.
-
-### Format
+`_build_formatting_review_text` already emits Russian prose ordered by document position, e.g.:
 
 ```
 Проверка оформления — <имя книги>
-Дата: <ISO>
-Итог: <0 критичных / 3 на правку / 16 на проверку>
-Что значат пометки: [ПРАВКА] — нужно поправить вручную; [ПРОВЕРКА] — желательно
-глянуть; [КРИТ] — возможно применено чужое оформление.
-
-----------------------------------------------------------------------
+Итог: КРИТ 0 · ПРАВКА 3 · ПРОВЕРКА 16
 [ПРАВКА] Заголовок стал обычным текстом
-  Где (примерно): после абзаца «…the local activities are run by a comm…»
-  Оригинал:  «Глава десятая»  (должен быть заголовок главы)
-  В выводе:  обычный абзац стиля Body Text
-  Как поправить: выделить строку и применить стиль «Заголовок 2».
-
+  Где: после «…the local activities are run by a comm…»
+  Как поправить: применить стиль заголовка.
 [ПРОВЕРКА] Абзац без явного соответствия оригиналу
-  В выводе (стиль Normal): «BerkShares — это местная валюта региона…»
-  Похоже на: разрыв/перенос при переводе. Текст на месте, проверьте стиль.
-
-[КРИТ] Возможно чужое оформление
-  Абзац: «…www imf org/external/pubs…»
-  Применён стиль от другого фрагмента — проверьте вручную.
-----------------------------------------------------------------------
-Всего: ПРАВКА 3 · ПРОВЕРКА 16 · КРИТ 0
+  «BerkShares — это местная валюта региона…» — проверьте оформление.
 ```
 
-Each entry carries: the **class label**, an **anchor** the user can locate in the
-DOCX (preceding text snippet or the paragraph text itself — never an internal
-paragraph id), the **original vs output** description, and a **concrete manual
-action** (which Word style to apply / what to check). Snippets are truncated to a
-readable length.
-
-## Data source & writer placement
-
-- A single writer turns `report.json` residual diagnostics into both the notice
-  string and `formatting_review.txt`. It runs at finalize, after the role-aware
-  gate result is known, before/with the user-facing result emission.
-- It reuses the role-by-target-style check (the same logic that distinguishes
-  real role loss from credited body dissolution) so the log never flags a
-  credited/legitimate case as a defect.
-- Anchors come from the residual `samples` (source text preview + neighbor
-  context) already captured in diagnostics.
+The UI links this file; it does not regenerate it. If the file's copy needs the `short_note_or_marker` softening
+(scope item 5) and the writer does not yet apply it, that is a SMALL writer copy tweak (one function,
+`_build_formatting_review_text`) — the only code touch this slice may need, and it is DATA-preserving.
 
 ## Non-goals
 
-- No new discrepancy analysis — presentation of existing diagnostics only.
-- No blocking of DOCX output on discrepancies.
-- No internal ids, strategy names, or basis labels in the user-facing body
-  (they may stay in `report.json` for engineers).
-- No auto-fixing — the user fixes by hand; the log only guides.
+- **No new discrepancy analysis, no new writer, no pipeline change** — the data and the file exist and are tested.
+- **No inline navigator, no clickable per-sample cards, no expandable cards per sample** in the first increment.
+- **No auto-fixing / no programmatic Word-style reapplication** — the user fixes by hand; the file guides.
+- **No blocking of the DOCX/MD download on any severity.**
+- **No internal ids/jargon in user-facing copy.**
+- **Not resurrecting `note_fragment`** as a class (scoped out — it is `short_note_or_marker` inside
+  `unmapped_target`), and **not** citing `build_formatting_diagnostics_user_feedback` as the structured contract
+  (it now supplies only the one-line `message`), nor `.run/job_results/` as the artifact location.
 
-## Future hooks
+## Contract appendix (exact surfaces the UI reads)
 
-- When the role-aware gate passes clean, the OK file makes "nothing to fix"
-  explicit (avoids the "is it green because empty?" doubt we hit earlier).
-- The same `formatting_review.txt` generalises to every book unchanged: it reads
-  the same diagnostics that any run produces, so no per-document work is needed.
-- A later UI iteration can render `formatting_review.txt` inline (clickable
-  anchors) without changing the writer.
+**Object (from the delivered `<stem>.result.meta.json` → `quality_warning`; exists only when warn/fail):**
+- `quality_warning.kind` = `"translation_quality_gate"`
+- `quality_warning.quality_status` = `"warn"` | `"fail"`
+- `quality_warning.gate_reasons` : `list[str]` (internal — for logs, not user copy)
+- `quality_warning.message` : one-line RU summary
+- `quality_warning.formatting_review_required_count` : `int` (honors `aggregate_count`)
+- `quality_warning.formatting_review_items[]` : `{reason, label, count, severity, aggregate_count?, action_style?, sample?{text, source_text?, anchor_usable?}}`
+- severity → marker (`runtime/artifacts.py:63`): `fix→[ПРАВКА]`, `review→[ПРОВЕРКА]`, `defect→[КРИТ]`
+
+**Artifact files (in `.run/ui_results/`, stem `<YYYYMMDD_HHMMSS>_<name>.result`):**
+- `<stem>.result.docx`, `<stem>.result.md` — always
+- `<stem>.result.formatting_review.txt` — when `quality_warning` present (the download target)
+- `<stem>.result.meta.json` — carries `quality_warning`
+- Retention: whole-stem group, ≤ 80 groups / ≤ 7 days.
+
+**Advisory (report-level, optional, not part of the first increment):**
+`translation_quality_report.paragraph_break_count` / `.paragraph_break_samples` (spec 008, advisory).
