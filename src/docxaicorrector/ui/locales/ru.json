@@ -28,8 +28,8 @@
   "recommend.field_source_language": "язык оригинала",
   "recommend.field_target_language": "целевой язык",
   "recommend.change_detail": "{field}: изменено с {from_value} на {to_value}",
-  "recommend.notice_generic": "После анализа файла приложение скорректировало текстовые настройки до рекомендуемых для этого документа.",
-  "recommend.notice_with_changes": "После анализа файла приложение скорректировало текстовые настройки: {changes}.",
+  "recommend.notice_generic": "Настройки под этот документ подобраны автоматически.",
+  "recommend.notice_with_changes": "Настройки под этот документ подобраны автоматически: {changes}.",
 
   "flow.no_jobs_built": "Не удалось собрать ни одного блока для обработки.",
   "flow.empty_target_block": "Обнаружен пустой целевой блок перед отправкой в модель.",
@@ -125,11 +125,7 @@
   "status.prep_summary_stage_default": "Документ подготовлен",
   "status.prep_elapsed_fragment": " | Подготовка: {elapsed}",
   "status.prep_source_meta": "Источник: {source}{elapsed_fragment}",
-  "status.prep_size_meta": "{size} MB | {paragraphs} абзацев | {images} изображений | {chars} символов | {blocks} блоков",
-  "status.prep_fingerprint_meta": "Structure fingerprint: {value}",
-  "status.prep_detector_version_meta": "Detector version: {value}",
-  "status.prep_segments_meta": "Сегменты: {count} | confidence H/M/L: {high}/{medium}/{low}",
-  "status.prep_toc_meta": "TOC matched: {matched}/{total}",
+  "status.prep_size_meta": "{size} MB | {paragraphs} абзацев | {images} изображений",
   "status.prep_manifest_meta": "Structure manifest: {path}",
 
   "log.run_log_expander": "Журнал обработки",

@@ -28,8 +28,8 @@
   "recommend.field_source_language": "source language",
   "recommend.field_target_language": "target language",
   "recommend.change_detail": "{field}: changed from {from_value} to {to_value}",
-  "recommend.notice_generic": "After analyzing the file, the app adjusted the text settings to the ones recommended for this document.",
-  "recommend.notice_with_changes": "After analyzing the file, the app adjusted the text settings: {changes}.",
+  "recommend.notice_generic": "Settings for this document were selected automatically.",
+  "recommend.notice_with_changes": "Settings for this document were selected automatically: {changes}.",
 
   "flow.no_jobs_built": "Failed to assemble any block for processing.",
   "flow.empty_target_block": "An empty target block was detected before sending to the model.",
@@ -124,11 +124,7 @@
   "status.prep_summary_stage_default": "Document prepared",
   "status.prep_elapsed_fragment": " | Preparation: {elapsed}",
   "status.prep_source_meta": "Source: {source}{elapsed_fragment}",
-  "status.prep_size_meta": "{size} MB | {paragraphs} paragraphs | {images} images | {chars} characters | {blocks} blocks",
-  "status.prep_fingerprint_meta": "Structure fingerprint: {value}",
-  "status.prep_detector_version_meta": "Detector version: {value}",
-  "status.prep_segments_meta": "Segments: {count} | confidence H/M/L: {high}/{medium}/{low}",
-  "status.prep_toc_meta": "TOC matched: {matched}/{total}",
+  "status.prep_size_meta": "{size} MB | {paragraphs} paragraphs | {images} images",
   "status.prep_manifest_meta": "Structure manifest: {path}",
 
   "log.run_log_expander": "Processing log",

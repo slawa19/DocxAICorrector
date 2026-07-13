@@ -16,8 +16,6 @@ from docxaicorrector.document.segments import (
     SegmentDetectionReport,
 )
 from docxaicorrector.processing.preparation import (
-    build_layout_cleanup_status_note,
-    build_structure_repair_status_note,
     emit_preparation_progress,
     humanize_quality_gate_reasons,
     prepare_document_for_processing,

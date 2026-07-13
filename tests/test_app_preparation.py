@@ -166,10 +166,7 @@ def test_store_preparation_summary_uses_preparation_context_not_processing_statu
         "quality_gate_status": "pass",
         "elapsed": "1.2 c",
         "progress": 1.0,
-        "status_notes": [
-            "Восстановление структуры: списки 2, TOC-регионов 1, подсказок заголовков 3.",
-            "Очистка: помечено 3 служебных элементов (2 номеров страниц, 1 повторяющихся колонтитулов, 0 пустых абзацев).",
-        ],
+        "status_notes": [],
         "raw_paragraph_count": 3,
         "logical_paragraph_count": 2,
         "merged_group_count": 1,
@@ -1052,6 +1049,38 @@ def test_store_preparation_summary_includes_structure_review_metrics(monkeypatch
     assert session_state.latest_preparation_summary["low_confidence_count"] == 3
     assert session_state.latest_preparation_summary["toc_entry_count"] == 7
     assert session_state.latest_preparation_summary["toc_matched_count"] == 5
+
+
+def test_store_preparation_summary_leaves_prepared_context_data_unchanged(monkeypatch):
+    session_state = SessionState()
+    prepared_run_context = _build_prepared_run_context(
+        paragraphs=["p1", "p2", "p3"],
+        jobs=[{"target_text": "block one"}, {"target_text": "block two"}],
+        segments=[DocumentSegment(segment_id="seg_0001"), DocumentSegment(segment_id="seg_0002")],
+        structure_fingerprint="abc123def456",
+    )
+
+    # Snapshot the load-bearing preparation OUTPUT before rendering-only summary work runs.
+    paragraphs_before = list(prepared_run_context.paragraphs)
+    jobs_before = [dict(job) for job in prepared_run_context.jobs]
+    segment_ids_before = [segment.segment_id for segment in prepared_run_context.segments]
+    fingerprint_before = prepared_run_context.structure_fingerprint
+
+    monkeypatch.setattr(app.st, "session_state", session_state)
+
+    app._store_preparation_summary(prepared_run_context=prepared_run_context)
+
+    # Preparation output must be byte-identical: the summary only surfaces it, never mutates it.
+    assert list(prepared_run_context.paragraphs) == paragraphs_before
+    assert [dict(job) for job in prepared_run_context.jobs] == jobs_before
+    assert [segment.segment_id for segment in prepared_run_context.segments] == segment_ids_before
+    assert prepared_run_context.structure_fingerprint == fingerprint_before
+    # And the summary still carries the same data for downstream engineer artifacts.
+    summary = session_state.latest_preparation_summary
+    assert summary["paragraph_count"] == len(paragraphs_before)
+    assert summary["block_count"] == len(jobs_before)
+    assert summary["segment_count"] == len(segment_ids_before)
+    assert summary["structure_fingerprint"] == fingerprint_before
 
 
 def test_main_exports_structure_manifest_from_prepared_state(monkeypatch):

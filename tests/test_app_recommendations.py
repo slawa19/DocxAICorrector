@@ -621,7 +621,7 @@ def test_build_recommended_text_settings_notice_lists_changed_settings(monkeypat
     )
 
 
-def test_main_places_recommended_text_settings_notice_inside_preparation_summary(monkeypatch):
+def test_main_renders_recommended_text_settings_notice_near_settings(monkeypatch):
     prepared_run_context = _build_prepared_run_context(
         preparation_cached=True,
         normalization_report=type("NormalizationReportStub", (), {
@@ -658,6 +658,7 @@ def test_main_places_recommended_text_settings_notice_inside_preparation_summary
     )
     summary_calls = []
     caption_calls = []
+    info_calls = []
 
     monkeypatch.setattr(app.st, "session_state", session_state)
     monkeypatch.setattr(app, "init_session_state", lambda: None)
@@ -671,7 +672,7 @@ def test_main_places_recommended_text_settings_notice_inside_preparation_summary
     monkeypatch.setattr(app.st, "title", lambda *args, **kwargs: None)
     monkeypatch.setattr(app.st, "write", lambda *args, **kwargs: None)
     monkeypatch.setattr(app.st, "file_uploader", lambda *args, **kwargs: uploaded_file)
-    monkeypatch.setattr(app.st, "info", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "info", lambda *args, **kwargs: info_calls.append(args[0] if args else ""))
     monkeypatch.setattr(app.st, "warning", lambda *args, **kwargs: None)
     monkeypatch.setattr(app.st, "error", lambda *args, **kwargs: None)
     monkeypatch.setattr(app.st, "caption", lambda *args, **kwargs: caption_calls.append(args))
@@ -690,15 +691,15 @@ def test_main_places_recommended_text_settings_notice_inside_preparation_summary
 
     app.main()
 
+    expected_notice = app.t(
+        "recommend.notice_with_changes",
+        changes="режим: изменено с Литературное редактирование на Перевод; язык оригинала: изменено с en на Авто",
+    )
     assert len(summary_calls) == 1
-    assert summary_calls[0]["status_notes"] == [
-        app.t(
-            "recommend.notice_with_changes",
-            changes="режим: изменено с Литературное редактирование на Перевод; язык оригинала: изменено с en на Авто",
-        ),
-    ]
-    # Recommendation notice must go into preparation summary, not emitted as a standalone caption.
-    # A static PDF info caption from the file-uploader area is allowed.
+    # Recommendation notice is relocated out of the preparation summary: it renders as its own
+    # one-liner near the settings, not inside the summary status_notes.
+    assert summary_calls[0].get("status_notes", []) == []
+    assert expected_notice in info_calls
     assert not any("скорректировало" in str(args) for args in caption_calls)
 
 

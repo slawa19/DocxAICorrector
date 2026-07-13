@@ -403,13 +403,7 @@ def _store_preparation_summary(*, prepared_run_context) -> None:
     cleanup_metrics = application_flow.flatten_layout_cleanup_metrics(
         getattr(prepared_run_context, "cleanup_report", None)
     )
-    cleanup_status_note = application_flow.build_layout_cleanup_status_note(
-        getattr(prepared_run_context, "cleanup_report", None)
-    )
-    structure_repair_status_note = application_flow.build_structure_repair_status_note(
-        getattr(prepared_run_context, "structure_repair_report", None)
-    )
-    status_notes = [note for note in (structure_repair_status_note, cleanup_status_note) if note]
+    status_notes: list[str] = []
     exported_manifest_path = str(getattr(prepared_run_context, "exported_structure_manifest_path", "") or "")
     if exported_manifest_path:
         status_notes.append(t("status.prep_manifest_meta", path=exported_manifest_path))
@@ -1052,6 +1046,8 @@ def main() -> None:
         ):
             st.warning(warning_message)
         notice_message = _build_recommended_text_settings_notice(uploaded_file_token)
+        if notice_message is not None:
+            st.info(notice_message)
 
     last_error = str(st.session_state.get("last_error") or "")
     last_log_hint = str(st.session_state.get("last_log_hint") or "")
@@ -1066,13 +1062,6 @@ def main() -> None:
     )
     if not restartable_outcome:
         preparation_summary = get_latest_preparation_summary()
-        if isinstance(preparation_summary, dict) and notice_message is not None:
-            status_notes = [str(note).strip() for note in preparation_summary.get("status_notes", []) if str(note).strip()]
-            status_notes.append(notice_message)
-            preparation_summary = {
-                **preparation_summary,
-                "status_notes": status_notes,
-            }
         manifest_notice = get_structure_manifest_notice_details()
         if (
             isinstance(preparation_summary, dict)

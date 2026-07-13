@@ -940,7 +940,7 @@ def test_render_live_status_shows_conversion_reuse_for_preparation(monkeypatch):
     assert progress_calls == [0.18]
 
 
-def test_render_preparation_summary_uses_stage_and_detail(monkeypatch):
+def test_render_preparation_summary_renders_only_title_and_one_meta_line(monkeypatch):
     session_state = SessionState()
     info_calls = []
     writes = []
@@ -954,7 +954,7 @@ def test_render_preparation_summary_uses_stage_and_detail(monkeypatch):
     ui.render_preparation_summary(
         {
             "stage": "Документ подготовлен",
-            "detail": "",
+            "detail": "Можно запускать обработку.",
             "file_size_bytes": 1048576,
             "paragraph_count": 12,
             "image_count": 2,
@@ -963,110 +963,11 @@ def test_render_preparation_summary_uses_stage_and_detail(monkeypatch):
             "cached": True,
             "source_format": "pdf",
             "elapsed": "1.2 c",
+            # Internal telemetry that must NOT surface in the minimal summary.
             "raw_paragraph_count": 15,
             "logical_paragraph_count": 12,
             "merged_group_count": 2,
             "merged_raw_paragraph_count": 5,
-        },
-        FakeTarget(),
-    )
-
-    assert info_calls == ["Документ подготовлен"]
-    assert writes == []
-    assert any("Источник: PDF (cache) | Подготовка: 1.2 c" in text for text in captions)
-    assert any("1.00 MB | 12 абзацев | 2 изображений | 5000 символов | 4 блоков" in text for text in captions)
-    assert any("Нормализация абзацев: сырьевых 15 -> логических 12 | слияний: 2 групп, 5 абзацев" in text for text in captions)
-
-
-def test_render_preparation_summary_places_secondary_stage_line_inside_info_block(monkeypatch):
-    session_state = SessionState()
-    info_calls = []
-    writes = []
-    captions = []
-
-    monkeypatch.setattr(ui.st, "session_state", session_state)
-    monkeypatch.setattr(ui.st, "info", lambda text: info_calls.append(text))
-    monkeypatch.setattr(ui.st, "write", lambda text: writes.append(text))
-    monkeypatch.setattr(ui.st, "caption", lambda text: captions.append(text))
-
-    ui.render_preparation_summary(
-        {
-            "stage": "Документ подготовлен",
-            "secondary_stage_line": "После анализа файла приложение скорректировало текстовые настройки: режим: изменено с Литературное редактирование на Перевод.",
-            "detail": "Можно запускать обработку.",
-            "file_size_bytes": 1024,
-            "paragraph_count": 5,
-            "image_count": 0,
-            "source_chars": 120,
-            "block_count": 2,
-            "cached": False,
-            "source_format": "pdf",
-        },
-        FakeTarget(),
-    )
-
-    assert info_calls == ["Документ подготовлен"]
-    assert writes == ["Можно запускать обработку."]
-    assert any(
-        "После анализа файла приложение скорректировало текстовые настройки: режим: изменено с Литературное редактирование на Перевод."
-        in text
-        for text in captions
-    )
-    assert any("Источник: PDF" in text for text in captions)
-
-
-def test_render_preparation_summary_renders_all_status_notes_before_meta(monkeypatch):
-    session_state = SessionState()
-    captions = []
-
-    monkeypatch.setattr(ui.st, "session_state", session_state)
-    monkeypatch.setattr(ui.st, "info", lambda text: None)
-    monkeypatch.setattr(ui.st, "write", lambda text: None)
-    monkeypatch.setattr(ui.st, "caption", lambda text: captions.append(text))
-
-    ui.render_preparation_summary(
-        {
-            "stage": "Документ подготовлен",
-            "detail": "",
-            "file_size_bytes": 1024,
-            "paragraph_count": 5,
-            "image_count": 0,
-            "source_chars": 120,
-            "block_count": 2,
-            "cached": False,
-            "source_format": "pdf",
-            "status_notes": [
-                "Структура: auto-режим, эскалация в AI не потребовалась; структурный риск не найден.",
-                "После анализа файла приложение скорректировало текстовые настройки.",
-            ],
-        },
-        FakeTarget(),
-    )
-
-    assert captions[0] == "Структура: auto-режим, эскалация в AI не потребовалась; структурный риск не найден."
-    assert captions[1] == "После анализа файла приложение скорректировало текстовые настройки."
-    assert any("Источник: PDF" in text for text in captions)
-
-
-def test_render_preparation_summary_adds_structure_review_meta_lines(monkeypatch):
-    session_state = SessionState()
-    captions = []
-
-    monkeypatch.setattr(ui.st, "session_state", session_state)
-    monkeypatch.setattr(ui.st, "info", lambda text: None)
-    monkeypatch.setattr(ui.st, "write", lambda text: None)
-    monkeypatch.setattr(ui.st, "caption", lambda text: captions.append(text))
-
-    ui.render_preparation_summary(
-        {
-            "stage": "Документ подготовлен",
-            "detail": "",
-            "file_size_bytes": 1024,
-            "paragraph_count": 5,
-            "image_count": 0,
-            "source_chars": 120,
-            "block_count": 2,
-            "cached": False,
             "structure_fingerprint": "abc123def456",
             "detector_version": "chapter_segments_v1",
             "segment_count": 4,
@@ -1076,15 +977,56 @@ def test_render_preparation_summary_adds_structure_review_meta_lines(monkeypatch
             "toc_entry_count": 6,
             "toc_matched_count": 5,
             "manifest_path": ".run/structure_manifests/report.segments.json",
+            "secondary_stage_line": "should-not-render",
+            "status_notes": ["should-not-render"],
         },
         FakeTarget(),
     )
 
-    assert any(text == "Structure fingerprint: abc123def456" for text in captions)
-    assert any(text == "Detector version: chapter_segments_v1" for text in captions)
-    assert any(text == "Сегменты: 4 | confidence H/M/L: 2/1/1" for text in captions)
-    assert any(text == "TOC matched: 5/6" for text in captions)
-    assert any(text == "Structure manifest: .run/structure_manifests/report.segments.json" for text in captions)
+    # Exactly the title and a single merged meta line — nothing else.
+    assert info_calls == ["Документ подготовлен"]
+    assert writes == []
+    assert captions == [
+        "Источник: PDF (cache) | Подготовка: 1.2 c | 1.00 MB | 12 абзацев | 2 изображений",
+    ]
+    # None of the dropped telemetry / notes leaked into the surface.
+    joined = " ".join(captions)
+    for dropped in (
+        "Structure fingerprint",
+        "Detector version",
+        "Сегменты:",
+        "TOC matched",
+        "Structure manifest",
+        "Нормализация абзацев",
+        "символов",
+        "блоков",
+        "should-not-render",
+    ):
+        assert dropped not in joined
+
+
+def test_render_preparation_summary_minimal_line_without_elapsed(monkeypatch):
+    session_state = SessionState()
+    captions = []
+
+    monkeypatch.setattr(ui.st, "session_state", session_state)
+    monkeypatch.setattr(ui.st, "info", lambda text: None)
+    monkeypatch.setattr(ui.st, "write", lambda text: None)
+    monkeypatch.setattr(ui.st, "caption", lambda text: captions.append(text))
+
+    ui.render_preparation_summary(
+        {
+            "stage": "Документ подготовлен",
+            "file_size_bytes": 1024,
+            "paragraph_count": 5,
+            "image_count": 0,
+            "cached": False,
+            "source_format": "docx",
+        },
+        FakeTarget(),
+    )
+
+    assert captions == ["Источник: DOCX | 0.00 MB | 5 абзацев | 0 изображений"]
 
 
 def test_render_live_status_shows_preparation_failure_title(monkeypatch):

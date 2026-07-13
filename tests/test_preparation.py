@@ -66,42 +66,6 @@ def _build_default_prepared_source_key(file_token: str, chunk_size: int = 6000) 
     )
 
 
-def test_build_layout_cleanup_status_note_includes_empty_paragraphs():
-    note = preparation.build_layout_cleanup_status_note(
-        LayoutArtifactCleanupReport(
-            original_paragraph_count=5,
-            cleaned_paragraph_count=2,
-            removed_paragraph_count=3,
-            removed_page_number_count=1,
-            removed_repeated_artifact_count=1,
-            removed_empty_or_whitespace_count=1,
-            cleanup_applied=True,
-        )
-    )
-
-    assert note == "Очистка: удалено 3 служебных элементов (1 номеров страниц, 1 повторяющихся колонтитулов, 1 пустых абзацев)."
-
-
-def test_build_layout_cleanup_status_note_uses_flagged_counts_for_signal_mode():
-    note = preparation.build_layout_cleanup_status_note(
-        LayoutArtifactCleanupReport(
-            original_paragraph_count=5,
-            cleaned_paragraph_count=5,
-            removed_paragraph_count=0,
-            removed_page_number_count=0,
-            removed_repeated_artifact_count=0,
-            removed_empty_or_whitespace_count=0,
-            cleanup_applied=True,
-            cleanup_mode="flag",
-            flagged_page_number_count=1,
-            flagged_repeated_artifact_count=1,
-            flagged_empty_or_whitespace_count=1,
-        )
-    )
-
-    assert note == "Очистка: помечено 3 служебных элементов (1 номеров страниц, 1 повторяющихся колонтитулов, 1 пустых абзацев)."
-
-
 def test_flatten_layout_cleanup_metrics_includes_empty_paragraphs():
     metrics = preparation.flatten_layout_cleanup_metrics(
         LayoutArtifactCleanupReport(

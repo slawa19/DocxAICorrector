@@ -427,63 +427,22 @@ def render_preparation_summary(summary: dict[str, Any] | None, target=None) -> N
         elapsed = str(summary.get("elapsed") or "")
         paragraph_count = _to_int(summary.get("paragraph_count"), default=0)
         image_count = _to_int(summary.get("image_count"), default=0)
-        source_chars = _to_int(summary.get("source_chars"), default=0)
-        block_count = _to_int(summary.get("block_count"), default=0)
-        structure_fingerprint = str(summary.get("structure_fingerprint") or "").strip()
-        detector_version = str(summary.get("detector_version") or "").strip()
-        segment_count = _to_int(summary.get("segment_count"), default=0)
-        high_confidence_count = _to_int(summary.get("high_confidence_count"), default=0)
-        medium_confidence_count = _to_int(summary.get("medium_confidence_count"), default=0)
-        low_confidence_count = _to_int(summary.get("low_confidence_count"), default=0)
-        toc_entry_count = _to_int(summary.get("toc_entry_count"), default=0)
-        toc_matched_count = _to_int(summary.get("toc_matched_count"), default=0)
-        manifest_path = str(summary.get("manifest_path") or "").strip()
-        normalization_caption = _build_normalization_caption(summary)
         elapsed_fragment = t("status.prep_elapsed_fragment", elapsed=elapsed) if elapsed else ""
         stage = str(summary.get("stage") or t("status.prep_summary_stage_default"))
-        secondary_stage_line = str(summary.get("secondary_stage_line") or "").strip()
-        raw_status_notes = summary.get("status_notes", [])
-        status_notes = [str(note).strip() for note in raw_status_notes if str(note).strip()] if isinstance(raw_status_notes, list) else []
-        if secondary_stage_line:
-            status_notes.insert(0, secondary_stage_line)
-        detail = str(summary.get("detail") or "")
-        meta_lines = [
-            t("status.prep_source_meta", source=source_label, elapsed_fragment=elapsed_fragment),
-            t(
-                "status.prep_size_meta",
-                size=f"{file_size_bytes / 1024 / 1024:.2f}",
-                paragraphs=paragraph_count,
-                images=image_count,
-                chars=source_chars,
-                blocks=block_count,
-            ),
-        ]
-        if structure_fingerprint:
-            meta_lines.append(t("status.prep_fingerprint_meta", value=structure_fingerprint))
-        if detector_version:
-            meta_lines.append(t("status.prep_detector_version_meta", value=detector_version))
-        if segment_count > 0:
-            meta_lines.append(
-                t(
-                    "status.prep_segments_meta",
-                    count=segment_count,
-                    high=high_confidence_count,
-                    medium=medium_confidence_count,
-                    low=low_confidence_count,
-                )
-            )
-            meta_lines.append(t("status.prep_toc_meta", matched=toc_matched_count, total=toc_entry_count))
-        manifest_meta_line = t("status.prep_manifest_meta", path=manifest_path)
-        if manifest_path and manifest_meta_line not in status_notes:
-            meta_lines.append(manifest_meta_line)
-        if normalization_caption:
-            meta_lines.append(normalization_caption)
+        source_meta = t("status.prep_source_meta", source=source_label, elapsed_fragment=elapsed_fragment)
+        size_meta = t(
+            "status.prep_size_meta",
+            size=f"{file_size_bytes / 1024 / 1024:.2f}",
+            paragraphs=paragraph_count,
+            images=image_count,
+        )
+        meta_line = f"{source_meta} | {size_meta}"
         _render_status_panel(
             sink=sink,
             title=stage,
             stage="",
-            detail=detail,
-            meta_lines=status_notes + meta_lines,
+            detail="",
+            meta_lines=[meta_line],
         )
 
 
