@@ -90,15 +90,10 @@ def test_build_document_context_prompt_includes_outline_and_glossary_terms():
                 SimpleNamespace(segment_id="seg_0003", ordinal=3, level=1, structural_role="chapter", title="Chapter 3"),
             ],
         ),
-        selected_segment_ids=["seg_0002"],
     )
 
     assert "Chapter 1" in prompt
     assert "Great Tribulation" in prompt
-    assert "ФОКУС ТЕКУЩЕГО ЗАПУСКА" in prompt
-    assert "#2 | Chapter 2" in prompt
-    assert "Предыдущий сегмент: Chapter 1" in prompt
-    assert "Следующий сегмент: Chapter 3" in prompt
 
 
 def test_start_background_processing_forwards_explicit_output_mode(monkeypatch):
@@ -137,10 +132,7 @@ def test_start_background_processing_forwards_explicit_output_mode(monkeypatch):
         prepared_source_key="prep:report:1234",
         structure_fingerprint="struct-abc",
         jobs=[{"target_text": "block", "context_before": "", "context_after": "", "target_chars": 5, "context_chars": 0}],
-        selected_segment_ids=["seg_0001"],
-        output_mode="selected_only",
-        include_front_matter=False,
-        include_toc=False,
+        output_mode="legacy_full_document",
         source_paragraphs=[],
         image_assets=[],
         image_mode="safe",
@@ -150,63 +142,7 @@ def test_start_background_processing_forwards_explicit_output_mode(monkeypatch):
         max_retries=1,
     )
 
-    assert captured["output_mode"] == "selected_only"
-    assert captured["include_front_matter"] is False
-    assert captured["include_toc"] is False
+    assert captured["output_mode"] == "legacy_full_document"
     assert captured["prepared_source_key"] == "prep:report:1234"
     assert captured["structure_fingerprint"] == "struct-abc"
     assert captured["document_context_prompt"] == "CTX"
-
-def test_start_background_processing_forwards_selected_with_context_output_mode(monkeypatch):
-    captured = {}
-
-    class FakeService:
-        def run_processing_worker(self, **kwargs):
-            captured.update(kwargs)
-
-    monkeypatch.setattr(app, "start_background_processing", lambda **kwargs: kwargs["worker_target"](
-        runtime=object(),
-        uploaded_filename=kwargs["uploaded_filename"],
-        prepared_source_key=kwargs["prepared_source_key"],
-        structure_fingerprint=kwargs["structure_fingerprint"],
-        jobs=kwargs["jobs"],
-        selected_segment_ids=kwargs["selected_segment_ids"],
-        output_mode=kwargs["output_mode"],
-        include_front_matter=kwargs["include_front_matter"],
-        include_toc=kwargs["include_toc"],
-        source_paragraphs=kwargs["source_paragraphs"],
-        image_assets=kwargs["image_assets"],
-        image_mode=kwargs["image_mode"],
-        app_config=kwargs["app_config"],
-        model=kwargs["model"],
-        max_retries=kwargs["max_retries"],
-        processing_operation=kwargs["processing_operation"],
-        source_language=kwargs["source_language"],
-        target_language=kwargs["target_language"],
-    ))
-    monkeypatch.setitem(__import__("sys").modules, "docxaicorrector.processing.processing_service", SimpleNamespace(get_processing_service=lambda: FakeService()))
-
-    app._start_background_processing(
-        uploaded_filename="report.docx",
-        uploaded_token="token",
-        source_bytes=b"source",
-        prepared_source_key="prep:report:1234",
-        structure_fingerprint="struct-abc",
-        jobs=[{"target_text": "block", "context_before": "", "context_after": "", "target_chars": 5, "context_chars": 0}],
-        selected_segment_ids=["seg_0001"],
-        output_mode="selected_with_context",
-        include_front_matter=True,
-        include_toc=False,
-        source_paragraphs=[SimpleNamespace(paragraph_id="p0001", text="Paragraph 1")],
-        image_assets=[],
-        image_mode="safe",
-        app_config={},
-        model="gpt-5.4",
-        max_retries=1,
-    )
-
-    assert captured["output_mode"] == "selected_with_context"
-    assert captured["include_front_matter"] is True
-    assert captured["include_toc"] is False
-    assert captured["prepared_source_key"] == "prep:report:1234"
-    assert captured["structure_fingerprint"] == "struct-abc"

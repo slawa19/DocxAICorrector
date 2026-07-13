@@ -52,8 +52,6 @@ from docxaicorrector.runtime.state import (
     apply_recommended_widget_state,
     clear_recommended_text_settings_notice_token,
     consume_recommended_text_settings_pending_widget_state,
-    get_active_segment_id,
-    get_active_segment_title,
     get_latest_preparation_summary,
     get_manual_text_settings_override_for_token,
     get_latest_image_mode,
@@ -61,21 +59,12 @@ from docxaicorrector.runtime.state import (
     get_recommended_text_settings_applied_snapshot,
     get_recommended_text_settings_notice_details,
     get_recommended_text_settings_notice_token,
-    get_selected_segment_ids,
-    get_structure_confirmed,
-    get_confirmed_structure_fingerprint,
-    get_confirmed_at_settings_hash,
-    get_segments_loaded_for_source_token,
-    get_structure_manifest_notice_details,
-    get_structure_manifest_notice_token,
     get_text_transform_assessment,
     get_latest_source_token,
     get_processing_outcome,
     get_processing_session_snapshot,
     get_prepared_run_context_for_marker,
     get_restart_source_filename,
-    get_segment_progress_by_id,
-    get_segment_status_by_id,
     has_persisted_source,
     init_session_state,
     is_app_start_logged,
@@ -86,16 +75,13 @@ from docxaicorrector.runtime.state import (
     mark_persisted_source_cleanup_done,
     push_activity,
     reset_run_state,
-    set_selected_segment_ids,
     set_manual_text_settings_override_for_token,
     set_recommended_text_settings,
     set_recommended_text_settings_applied,
     set_recommended_text_settings_notice,
     set_recommended_text_settings_pending_widget_state,
     set_latest_preparation_summary,
-    set_structure_confirmation_state,
     set_text_transform_assessment,
-    set_structure_manifest_notice,
     set_processing_status,
     should_start_preparation_for_marker,
 )
@@ -116,21 +102,7 @@ from docxaicorrector.ui._ui import (
     render_run_log,
     render_sidebar,
 )
-from docxaicorrector.ui.structure_review_panel import (
-    EffectiveSelectedProcessingState,
-    SegmentLike,
-    SelectedProcessingPayload,
-    StructureReviewState,
-    _build_effective_selected_processing_state as _structure_review_panel_build_effective_selected_processing_state,
-    _build_retry_failed_processing_state as _structure_review_panel_build_retry_failed_processing_state,
-    _get_selected_context_policy as _structure_review_panel_get_selected_context_policy,
-    _build_selected_processing_payload as _structure_review_panel_build_selected_processing_payload,
-    _build_structure_settings_hash as _structure_review_panel_build_structure_settings_hash,
-    _expand_segment_ids_for_selection as _structure_review_panel_expand_segment_ids_for_selection,
-    _render_analysis_review_panel as _structure_review_panel_render_analysis_review_panel,
-)
 from docxaicorrector.runtime.workflow_state import IdleViewState, ProcessingOutcome, has_restartable_outcome
-from docxaicorrector.pipeline.contracts import SegmentSelection
 
 PERSISTED_SOURCE_TTL_SECONDS = 12 * 60 * 60
 APP_READY_FRESHNESS_WINDOW_SECONDS = 15.0
@@ -143,29 +115,6 @@ _APP_READY_MARKER_WRITER = AppReadyMarkerWriter(
 )
 
 SidebarSettings: TypeAlias = tuple[str, int, int, str, bool, str, str, str, bool]
-
-_build_structure_settings_hash = _structure_review_panel_build_structure_settings_hash
-_build_selected_processing_payload = _structure_review_panel_build_selected_processing_payload
-_build_effective_selected_processing_state = _structure_review_panel_build_effective_selected_processing_state
-_build_retry_failed_processing_state = _structure_review_panel_build_retry_failed_processing_state
-_expand_segment_ids_for_selection = _structure_review_panel_expand_segment_ids_for_selection
-
-
-def _render_analysis_review_panel(
-    *,
-    prepared_run_context,
-    uploaded_file_token: str,
-    chunk_size: int,
-    app_config: Mapping[str, object] | None = None,
-) -> str | None:
-    return _structure_review_panel_render_analysis_review_panel(
-        prepared_run_context=prepared_run_context,
-        uploaded_file_token=uploaded_file_token,
-        chunk_size=chunk_size,
-        app_config=app_config,
-        build_structure_settings_hash_fn=_build_structure_settings_hash,
-        log_event_fn=log_event,
-    )
 
 
 @st.cache_resource
@@ -234,21 +183,10 @@ def _restartable_outcome_notice(outcome: str | None, uploaded_filename: str) -> 
     return None
 
 
-def _build_document_context_prompt(
-    *,
-    prepared_run_context: object,
-    selected_segment_ids: list[str] | None = None,
-    segment_selection: SegmentSelection | None = None,
-) -> str:
+def _build_document_context_prompt(*, prepared_run_context: object) -> str:
     return build_chapter_workflow_document_context_prompt(
         prepared_run_context=prepared_run_context,
-        selected_segment_ids=selected_segment_ids,
-        segment_selection=segment_selection,
     )
-
-
-def _get_prepared_segments(prepared_run_context: object) -> list[SegmentLike]:
-    return cast(list[SegmentLike], list(getattr(prepared_run_context, "segments", None) or []))
 
 
 def _start_background_processing(
@@ -260,7 +198,6 @@ def _start_background_processing(
     structure_fingerprint: str | None = None,
     jobs: list[dict[str, str | int]],
     selected_segment_ids: list[str] | None = None,
-    segment_selection: SegmentSelection | None = None,
     document_segments: list | None = None,
     output_mode: str | None = None,
     include_front_matter: bool = False,
@@ -286,7 +223,6 @@ def _start_background_processing(
         structure_fingerprint,
         jobs,
         selected_segment_ids,
-        segment_selection=None,
         document_segments=None,
         output_mode,
         include_front_matter,
@@ -313,7 +249,6 @@ def _start_background_processing(
             structure_fingerprint=structure_fingerprint,
             jobs=jobs,
             selected_segment_ids=selected_segment_ids,
-            segment_selection=segment_selection,
             document_segments=document_segments,
             output_mode=output_mode,
             include_front_matter=include_front_matter,
@@ -339,7 +274,6 @@ def _start_background_processing(
         structure_fingerprint=structure_fingerprint,
         jobs=jobs,
         selected_segment_ids=selected_segment_ids,
-        segment_selection=segment_selection,
         document_segments=document_segments,
         output_mode=output_mode,
         include_front_matter=include_front_matter,
@@ -449,36 +383,6 @@ def _assess_text_transform(*, source_text: str, target_language: str) -> TextTra
     assessment = assess_text_transform_excerpt(source_text, target_language=target_language)
     set_text_transform_assessment(assessment)
     return assessment
-
-
-def _handle_structure_manifest_export(*, prepared_run_context, app_config: dict[str, object], chunk_size: int) -> None:
-    manifest_path = application_flow.export_structure_manifest(
-        prepared_run_context=prepared_run_context,
-        app_config={
-            **app_config,
-            "chunk_size": chunk_size,
-        },
-    )
-    uploaded_token = str(getattr(prepared_run_context, "uploaded_file_token", "") or "")
-    set_structure_manifest_notice(
-        file_token=uploaded_token,
-        details={
-            "file_token": uploaded_token,
-            "manifest_path": manifest_path,
-            "structure_fingerprint": str(getattr(prepared_run_context, "structure_fingerprint", "") or ""),
-        },
-    )
-    _store_preparation_summary(prepared_run_context=prepared_run_context)
-    log_event(
-        logging.INFO,
-        "structure_manifest_exported",
-        "Экспортирован manifest обнаруженной структуры.",
-        filename=str(getattr(prepared_run_context, "uploaded_filename", "") or ""),
-        file_token=uploaded_token,
-        manifest_path=manifest_path,
-        structure_fingerprint=str(getattr(prepared_run_context, "structure_fingerprint", "") or ""),
-        segment_count=len(getattr(prepared_run_context, "segments", []) or []),
-    )
 
 
 
@@ -769,7 +673,6 @@ def main() -> None:
         return
 
     _apply_pending_recommended_widget_state()
-    analysis_action: str | None = None
 
     (
         model,
@@ -1058,37 +961,7 @@ def main() -> None:
     )
     if not restartable_outcome:
         preparation_summary = get_latest_preparation_summary()
-        manifest_notice = get_structure_manifest_notice_details()
-        if (
-            isinstance(preparation_summary, dict)
-            and isinstance(manifest_notice, dict)
-            and get_structure_manifest_notice_token() == uploaded_file_token
-        ):
-            manifest_path = str(manifest_notice.get("manifest_path", "") or "")
-            if manifest_path:
-                status_notes = [str(note).strip() for note in preparation_summary.get("status_notes", []) if str(note).strip()]
-                manifest_note = t("status.prep_manifest_meta", path=manifest_path)
-                if manifest_note not in status_notes:
-                    status_notes.append(manifest_note)
-                preparation_summary = {
-                    **preparation_summary,
-                    "manifest_path": manifest_path,
-                    "status_notes": status_notes,
-                }
         render_preparation_summary(preparation_summary)
-        if st.button(t("app.export_manifest_button"), use_container_width=True, key="export_structure_manifest_button"):
-            _handle_structure_manifest_export(
-                prepared_run_context=prepared_run_context,
-                app_config=app_config,
-                chunk_size=chunk_size,
-            )
-            st.rerun()
-        analysis_action = _render_analysis_review_panel(
-            prepared_run_context=prepared_run_context,
-            uploaded_file_token=uploaded_file_token,
-            chunk_size=chunk_size,
-            app_config=app_config,
-        )
     render_run_log()
     render_image_validation_summary()
     render_partial_result()
@@ -1112,7 +985,7 @@ def main() -> None:
         )
 
     _finalize_app_frame()
-    action = analysis_action if analysis_action is not None else _render_processing_controls(
+    action = _render_processing_controls(
         can_start=True,
         is_processing=False,
         emphasize_start=not has_completed_result,
@@ -1139,173 +1012,3 @@ def main() -> None:
             source_language=source_language,
             target_language=target_language,
         )
-    elif action == "start_selected":
-        requested_segment_selection = SegmentSelection(selected_segment_ids=tuple(get_selected_segment_ids()))
-        selected_processing_state = _build_effective_selected_processing_state(
-            prepared_run_context=prepared_run_context,
-            selected_segment_ids=get_selected_segment_ids(),
-            segment_selection=requested_segment_selection,
-            segment_status_by_id=get_segment_status_by_id(),
-        )
-        selected_processing_payload = selected_processing_state["payload"]
-        effective_segment_selection = SegmentSelection(
-            selected_segment_ids=tuple(selected_processing_payload["selected_segment_ids"]),
-            include_descendants=False,
-        )
-        _start_background_processing(
-            uploaded_filename=uploaded_filename,
-            uploaded_token=uploaded_file_token,
-            source_bytes=uploaded_file_bytes,
-            prepared_source_key=str(getattr(prepared_run_context, "prepared_source_key", "") or ""),
-            structure_fingerprint=str(getattr(prepared_run_context, "structure_fingerprint", "") or ""),
-            jobs=cast(list[dict[str, str | int]], selected_processing_payload["jobs"]),
-            selected_segment_ids=selected_processing_payload["selected_segment_ids"],
-            segment_selection=effective_segment_selection,
-            document_segments=list(getattr(prepared_run_context, "segments", []) or []),
-            output_mode="selected_only",
-            include_front_matter=False,
-            include_toc=False,
-            source_paragraphs=selected_processing_payload["source_paragraphs"],
-            image_assets=selected_processing_payload["image_assets"],
-            image_mode=image_mode,
-            app_config=app_config,
-            document_context_prompt=_build_document_context_prompt(
-                prepared_run_context=prepared_run_context,
-                selected_segment_ids=selected_processing_payload["selected_segment_ids"],
-                segment_selection=effective_segment_selection,
-            ),
-            model=model,
-            max_retries=max_retries,
-            processing_operation=processing_operation,
-            source_language=source_language,
-            target_language=target_language,
-        )
-        st.rerun()
-    elif action == "start_selected_with_context":
-        include_front_matter, include_toc = _structure_review_panel_get_selected_context_policy()
-        requested_segment_selection = SegmentSelection(selected_segment_ids=tuple(get_selected_segment_ids()))
-        selected_processing_state = _build_effective_selected_processing_state(
-            prepared_run_context=prepared_run_context,
-            selected_segment_ids=get_selected_segment_ids(),
-            segment_selection=requested_segment_selection,
-            segment_status_by_id=get_segment_status_by_id(),
-            include_front_matter=include_front_matter,
-            include_toc=include_toc,
-        )
-        selected_processing_payload = selected_processing_state["payload"]
-        effective_segment_selection = SegmentSelection(
-            selected_segment_ids=tuple(selected_processing_payload["selected_segment_ids"]),
-            include_descendants=False,
-        )
-        _start_background_processing(
-            uploaded_filename=uploaded_filename,
-            uploaded_token=uploaded_file_token,
-            source_bytes=uploaded_file_bytes,
-            prepared_source_key=str(getattr(prepared_run_context, "prepared_source_key", "") or ""),
-            structure_fingerprint=str(getattr(prepared_run_context, "structure_fingerprint", "") or ""),
-            jobs=cast(list[dict[str, str | int]], selected_processing_payload["jobs"]),
-            selected_segment_ids=selected_processing_payload["selected_segment_ids"],
-            segment_selection=effective_segment_selection,
-            document_segments=list(getattr(prepared_run_context, "segments", []) or []),
-            output_mode="selected_with_context",
-            include_front_matter=bool(selected_processing_payload["include_front_matter"]),
-            include_toc=bool(selected_processing_payload["include_toc"]),
-            source_paragraphs=paragraphs,
-            image_assets=image_assets,
-            image_mode=image_mode,
-            app_config=app_config,
-            document_context_prompt=_build_document_context_prompt(
-                prepared_run_context=prepared_run_context,
-                selected_segment_ids=selected_processing_payload["selected_segment_ids"],
-                segment_selection=effective_segment_selection,
-            ),
-            model=model,
-            max_retries=max_retries,
-            processing_operation=processing_operation,
-            source_language=source_language,
-            target_language=target_language,
-        )
-        st.rerun()
-    elif action == "start_retry_failed":
-        retry_failed_state = _build_retry_failed_processing_state(
-            prepared_run_context=prepared_run_context,
-            segment_status_by_id=get_segment_status_by_id(),
-        )
-        retry_failed_payload = retry_failed_state["payload"]
-        retry_segment_selection = SegmentSelection(
-            selected_segment_ids=tuple(retry_failed_payload["selected_segment_ids"]),
-            include_descendants=False,
-        )
-        _start_background_processing(
-            uploaded_filename=uploaded_filename,
-            uploaded_token=uploaded_file_token,
-            source_bytes=uploaded_file_bytes,
-            prepared_source_key=str(getattr(prepared_run_context, "prepared_source_key", "") or ""),
-            structure_fingerprint=str(getattr(prepared_run_context, "structure_fingerprint", "") or ""),
-            jobs=cast(list[dict[str, str | int]], retry_failed_payload["jobs"]),
-            selected_segment_ids=retry_failed_payload["selected_segment_ids"],
-            segment_selection=retry_segment_selection,
-            document_segments=list(getattr(prepared_run_context, "segments", []) or []),
-            output_mode="selected_only",
-            include_front_matter=False,
-            include_toc=False,
-            source_paragraphs=retry_failed_payload["source_paragraphs"],
-            image_assets=retry_failed_payload["image_assets"],
-            image_mode=image_mode,
-            app_config=app_config,
-            document_context_prompt=_build_document_context_prompt(
-                prepared_run_context=prepared_run_context,
-                selected_segment_ids=retry_failed_payload["selected_segment_ids"],
-                segment_selection=retry_segment_selection,
-            ),
-            model=model,
-            max_retries=max_retries,
-            processing_operation=processing_operation,
-            source_language=source_language,
-            target_language=target_language,
-        )
-        st.rerun()
-    elif action == "start_full_book":
-        _start_background_processing(
-            uploaded_filename=uploaded_filename,
-            uploaded_token=uploaded_file_token,
-            source_bytes=uploaded_file_bytes,
-            prepared_source_key=str(getattr(prepared_run_context, "prepared_source_key", "") or ""),
-            structure_fingerprint=str(getattr(prepared_run_context, "structure_fingerprint", "") or ""),
-            jobs=cast(list[dict[str, str | int]], jobs),
-            document_segments=list(getattr(prepared_run_context, "segments", []) or []),
-            output_mode="legacy_full_document",
-            source_paragraphs=paragraphs,
-            image_assets=image_assets,
-            image_mode=image_mode,
-            app_config=app_config,
-            document_context_prompt=document_context_prompt,
-            model=model,
-            max_retries=max_retries,
-            processing_operation=processing_operation,
-            source_language=source_language,
-            target_language=target_language,
-        )
-        st.rerun()
-    elif action == "start_final_book":
-        _start_background_processing(
-            uploaded_filename=uploaded_filename,
-            uploaded_token=uploaded_file_token,
-            source_bytes=uploaded_file_bytes,
-            prepared_source_key=str(getattr(prepared_run_context, "prepared_source_key", "") or ""),
-            structure_fingerprint=str(getattr(prepared_run_context, "structure_fingerprint", "") or ""),
-            jobs=cast(list[dict[str, str | int]], jobs),
-            document_segments=list(getattr(prepared_run_context, "segments", []) or []),
-            output_mode="final_translated_book",
-            source_paragraphs=paragraphs,
-            image_assets=image_assets,
-            image_mode=image_mode,
-            app_config=app_config,
-            document_context_prompt=document_context_prompt,
-            model=model,
-            max_retries=max_retries,
-            processing_operation=processing_operation,
-            source_language=source_language,
-            target_language=target_language,
-        )
-        st.rerun()

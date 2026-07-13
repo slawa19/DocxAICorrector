@@ -215,15 +215,6 @@ class ProcessingEmitters:
 
 
 @dataclass(frozen=True)
-class SegmentSelection:
-    selected_segment_ids: tuple[str, ...]
-    include_descendants: bool = True
-    include_front_matter: bool = False
-    include_toc: bool = False
-    output_mode: str = "selected_only"
-
-
-@dataclass(frozen=True)
 class ProcessingContext:
     uploaded_file: object
     uploaded_filename: str
@@ -256,7 +247,6 @@ class ProcessingContext:
     model_provider: str | None = None
     model_id: str | None = None
     document_context_prompt: str = ""
-    segment_selection: SegmentSelection | None = None
 
 
 @dataclass

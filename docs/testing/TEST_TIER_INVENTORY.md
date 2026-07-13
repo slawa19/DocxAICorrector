@@ -63,7 +63,6 @@ This inventory is intentionally pragmatic:
 - `tests/test_startup_performance_contract.py`
 - `tests/test_state.py`
 - `tests/test_structure_layout_signals.py`
-- `tests/test_structure_review_panel.py`
 - `tests/test_structure_validation.py`
 - `tests/test_text_transform_assessment.py`
 - `tests/test_translation_domains.py`

@@ -47,12 +47,12 @@ def test_missing_key_returns_key_itself(monkeypatch: pytest.MonkeyPatch) -> None
 
 
 def test_interpolation_applies_named_placeholders() -> None:
-    assert i18n.t("structure.visible_count", visible=3, total=10) == "Видно разделов: 3/10"
+    assert i18n.t("status.prep_manifest_meta", path="X") == "Structure manifest: X"
 
 
 def test_interpolation_with_missing_placeholder_returns_unformatted() -> None:
     # Supplying the wrong kwargs must not raise; returns the raw template.
-    assert i18n.t("structure.visible_count", wrong=1) == "Видно разделов: {visible}/{total}"
+    assert i18n.t("status.prep_manifest_meta", wrong=1) == "Structure manifest: {path}"
 
 
 def test_get_ui_language_defaults_to_ru(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -93,36 +93,12 @@ def test_ru_is_superset_of_referenced_and_en_keys() -> None:
         "app.title",
         "sidebar.settings_header",
         "sidebar.model_label",
-        "structure.visible_count",
     }
     assert referenced <= set(ru)
     # ru is the complete default: it must contain every key that en defines.
     assert set(en) <= set(ru)
     # And en must be genuinely partial to exercise the fallback path.
     assert set(ru) - set(en)
-
-
-def _panel_source() -> str:
-    panel_path = Path(i18n.__file__).resolve().parent / "structure_review_panel.py"
-    return panel_path.read_text(encoding="utf-8")
-
-
-def test_structure_panel_keys_present_in_ru_catalog() -> None:
-    """Every ``structure.*`` key referenced by the panel must exist in ru.json."""
-    referenced_keys = set(re.findall(r't\(\s*["\'](structure\.[a-z0-9_]+)["\']', _panel_source()))
-    assert referenced_keys, "expected the panel to reference structure.* i18n keys"
-    ru = json.loads(_locale_path("ru.json").read_text(encoding="utf-8"))
-    missing = sorted(referenced_keys - set(ru))
-    assert not missing, f"structure.* keys referenced by the panel but missing from ru.json: {missing}"
-
-
-def test_structure_panel_key_sets_match_between_catalogs() -> None:
-    """Every ``structure.*`` key defined in ru.json is also defined in en.json (and vice versa)."""
-    ru = json.loads(_locale_path("ru.json").read_text(encoding="utf-8"))
-    en = json.loads(_locale_path("en.json").read_text(encoding="utf-8"))
-    ru_structure = {key for key in ru if key.startswith("structure.")}
-    en_structure = {key for key in en if key.startswith("structure.")}
-    assert ru_structure == en_structure
 
 
 def _ui_module_source() -> str:

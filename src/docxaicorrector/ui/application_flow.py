@@ -4,10 +4,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol, TypedDict, cast
 
-from docxaicorrector.chapter_workflow.service import (
-    build_structure_manifest_payload as build_chapter_workflow_structure_manifest_payload,
-    export_structure_manifest as export_chapter_workflow_structure_manifest,
-)
 from docxaicorrector.document._document import summarize_boundary_normalization_metrics, validate_docx_source_bytes
 from docxaicorrector.document.segments import (
     CHAPTER_SEGMENTS_DETECTOR_VERSION,
@@ -409,20 +405,6 @@ def _build_prepared_run_context(*, uploaded_filename: str, uploaded_file_bytes: 
         ),
         document_context_profile=getattr(prepared_document, "document_context_profile", DocumentContextProfile()),
         exported_structure_manifest_path=str(getattr(prepared_document, "exported_structure_manifest_path", "") or ""),
-    )
-
-
-def build_structure_manifest_payload(*, prepared_run_context: PreparedRunContext, app_config: dict[str, object] | None = None) -> dict[str, Any]:
-    return build_chapter_workflow_structure_manifest_payload(
-        prepared_run_context=prepared_run_context,
-        app_config=app_config,
-    )
-
-
-def export_structure_manifest(*, prepared_run_context: PreparedRunContext, app_config: dict[str, object] | None = None) -> str:
-    return export_chapter_workflow_structure_manifest(
-        prepared_run_context=prepared_run_context,
-        app_config=app_config,
     )
 
 
