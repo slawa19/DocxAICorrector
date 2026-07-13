@@ -297,7 +297,7 @@ def test_render_sidebar_returns_image_settings(monkeypatch):
 
     result = ui.render_sidebar(config)
 
-    assert result == ("gpt-5-mini", 6000, 3, "semantic_redraw_direct", False, "edit", "en", "ru", False, False)
+    assert result == ("gpt-5-mini", 6000, 3, "semantic_redraw_direct", False, "edit", "en", "ru", False)
     assert sidebar_calls[:3] == [
         ("header", "Настройки"),
         (
@@ -509,14 +509,8 @@ def test_render_sidebar_warns_when_translate_source_matches_target(monkeypatch):
 
     result = ui.render_sidebar(config)
 
-    assert result == ("gpt-5-mini", 6000, 3, "semantic_redraw_direct", False, "translate", "en", "en", False, False)
+    assert result == ("gpt-5-mini", 6000, 3, "semantic_redraw_direct", False, "translate", "en", "en", False)
     assert checkbox_calls == [
-        (
-            "Дополнительный литературный проход после перевода",
-            False,
-            "sidebar_translation_second_pass",
-            "Делает второй проход только по уже переведённому тексту. Обычно улучшает стиль, но увеличивает время и стоимость обработки.",
-        ),
         (
             "Подготовить для ElevenLabs аудиокниги",
             False,
@@ -590,8 +584,8 @@ def test_render_sidebar_translate_mode_does_not_add_extra_caption(monkeypatch):
     ui.render_sidebar(config)
 
     assert captions == [ui.IMAGE_MODE_DESCRIPTIONS["safe"]]
-    assert checkbox_calls[0][0] == "Дополнительный литературный проход после перевода"
-    assert checkbox_calls[1][0] == "Подготовить для ElevenLabs аудиокниги"
+    assert checkbox_calls[0][0] == "Подготовить для ElevenLabs аудиокниги"
+    assert checkbox_calls[1][0] == "Сохранять все варианты изображений"
     assert selectbox_calls[0][1] == (
         "Литературное редактирование улучшает уже готовый текст на выбранном языке. "
         "Перевод используйте для текста, который ещё не на целевом языке. "
@@ -689,7 +683,7 @@ def test_render_sidebar_audiobook_forces_no_change_and_hides_pass_checkboxes(mon
 
     result = ui.render_sidebar(config)
 
-    assert result == ("gpt-5-mini", 6000, 3, "no_change", False, "audiobook", "auto", "ru", False, False)
+    assert result == ("gpt-5-mini", 6000, 3, "no_change", False, "audiobook", "auto", "ru", False)
     assert checkbox_calls == [
         (
             "Сохранять все варианты изображений",
@@ -708,53 +702,6 @@ def test_render_sidebar_audiobook_forces_no_change_and_hides_pass_checkboxes(mon
         "sidebar_image_mode",
         True,
     ) in selectbox_calls
-
-
-def test_render_sidebar_audiobook_ignores_stale_translation_second_pass_session_state(monkeypatch):
-    config = {
-        "models": type(
-            "Models",
-            (),
-            {
-                "text": type("TextModels", (), {"default": "gpt-5-mini", "options": ("gpt-5.4", "gpt-5-mini")})(),
-            },
-        )(),
-        "chunk_size": 6000,
-        "max_retries": 3,
-        "processing_operation_default": "audiobook",
-        "source_language_default": "auto",
-        "target_language_default": "ru",
-        "supported_languages": [
-            type("Lang", (), {"code": "ru", "label": "Русский"})(),
-            type("Lang", (), {"code": "en", "label": "English"})(),
-        ],
-        "image_mode_default": "semantic_redraw_direct",
-        "keep_all_image_variants": False,
-    }
-    session_state = SessionState(sidebar_translation_second_pass=True, sidebar_source_language="Авто")
-
-    monkeypatch.setattr(ui.st, "session_state", session_state)
-    monkeypatch.setattr(ui.st.sidebar, "header", lambda text: None)
-    monkeypatch.setattr(ui.st.sidebar, "caption", lambda text: None)
-    monkeypatch.setattr(ui.st.sidebar, "warning", lambda text: None)
-
-    def fake_selectbox(label, options, index=0, format_func=None, help=None, key=None, disabled=False):
-        if label == "Режим обработки текста":
-            return ui.TEXT_OPERATION_LABELS["audiobook"]
-        if label == "Язык оригинала":
-            return "Авто"
-        return options[index]
-
-    monkeypatch.setattr(ui.st.sidebar, "selectbox", fake_selectbox)
-    monkeypatch.setattr(ui.st.sidebar, "text_input", lambda *args, **kwargs: "")
-    monkeypatch.setattr(ui.st.sidebar, "checkbox", lambda label, value, key=None, help=None: value)
-    _mirror_bare_sidebar(monkeypatch, selectbox=fake_selectbox)
-
-    result = ui.render_sidebar(config)
-
-    assert session_state["sidebar_translation_second_pass"] is True
-    assert result[8] is False
-    assert result[9] is False
 
 
 def test_render_sidebar_does_not_add_recommendation_apply_button(monkeypatch):

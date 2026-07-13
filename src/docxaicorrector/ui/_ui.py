@@ -564,7 +564,7 @@ def _asset_value(asset, field_name: str, default=None):
     return getattr(asset, field_name, default)
 
 
-def render_sidebar(config: Mapping[str, Any]) -> tuple[str, int, int, str, bool, str, str, str, bool, bool]:
+def render_sidebar(config: Mapping[str, Any]) -> tuple[str, int, int, str, bool, str, str, str, bool]:
     st.sidebar.header(t("sidebar.settings_header"))
     operation_default = str(config.get("processing_operation_default", "edit"))
     operation_options = list(TEXT_OPERATION_LABELS.values())
@@ -608,14 +608,6 @@ def render_sidebar(config: Mapping[str, Any]) -> tuple[str, int, int, str, bool,
         if processing_operation == "translate" and source_language != "auto" and source_language == target_language:
             st.sidebar.warning(t("sidebar.same_language_warning"))
 
-    translation_second_pass_enabled = False
-    if processing_operation == "translate":
-        translation_second_pass_enabled = st.sidebar.checkbox(
-            t("sidebar.second_pass_label"),
-            value=bool(config.get("translation_second_pass_default", False)),
-            help=t("sidebar.second_pass_help"),
-            key="sidebar_translation_second_pass",
-        )
     audiobook_postprocess_enabled = False
     if processing_operation in {"edit", "translate"}:
         audiobook_postprocess_enabled = st.sidebar.checkbox(
@@ -697,7 +689,6 @@ def render_sidebar(config: Mapping[str, Any]) -> tuple[str, int, int, str, bool,
         processing_operation,
         source_language,
         target_language,
-        translation_second_pass_enabled,
         audiobook_postprocess_enabled,
     )
 

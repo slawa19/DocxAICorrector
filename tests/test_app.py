@@ -14,23 +14,23 @@ def _session_state_factory(make_session_state):
 
 
 def test_resolve_sidebar_settings_accepts_new_text_transform_tuple():
-    result = app._resolve_sidebar_settings(("gpt-5.4", 6000, 3, "safe", True, "translate", "auto", "de", True, False))
+    result = app._resolve_sidebar_settings(("gpt-5.4", 6000, 3, "safe", True, "translate", "auto", "de", False))
 
-    assert result == ("gpt-5.4", 6000, 3, "safe", True, "translate", "auto", "de", True, False)
+    assert result == ("gpt-5.4", 6000, 3, "safe", True, "translate", "auto", "de", False)
 
 
 @pytest.mark.compat_legacy
 def test_resolve_sidebar_settings_keeps_eight_tuple_compatible():
     result = app._resolve_sidebar_settings(("gpt-5.4", 6000, 3, "safe", True, "translate", "auto", "de"))
 
-    assert result == ("gpt-5.4", 6000, 3, "safe", True, "translate", "auto", "de", False, False)
+    assert result == ("gpt-5.4", 6000, 3, "safe", True, "translate", "auto", "de", False)
 
 
 @pytest.mark.compat_legacy
 def test_resolve_sidebar_settings_keeps_legacy_tuple_compatible():
     result = app._resolve_sidebar_settings(("gpt-5.4", 6000, 3, "safe", True))
 
-    assert result == ("gpt-5.4", 6000, 3, "safe", True, "edit", "en", "ru", False, False)
+    assert result == ("gpt-5.4", 6000, 3, "safe", True, "edit", "en", "ru", False)
 
 
 def test_assess_text_transform_stores_assessment_in_session_state(monkeypatch):

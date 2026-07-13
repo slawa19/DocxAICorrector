@@ -212,8 +212,6 @@ class AppConfig(Mapping[str, Any]):
     target_language_default: str
     editorial_intensity_default: str
     translation_domain_default: str
-    translation_second_pass_default: bool
-    translation_second_pass_model: str
     audiobook_postprocess_default: bool
     audiobook_model: str
     supported_languages: tuple[LanguageOption, ...]
@@ -1156,13 +1154,6 @@ def _validate_provider_model_contracts(
             source_name=f"models.text.options[{index}]",
         )
 
-    if text_runtime_defaults["translation_second_pass_model"]:
-        resolve_model_selector(
-            text_runtime_defaults["translation_second_pass_model"],
-            required_capability="responses_text",
-            config_like=provider_registry,
-            source_name="translation_second_pass_model",
-        )
     resolve_model_selector(
         text_runtime_defaults["audiobook_model"],
         required_capability="responses_text",

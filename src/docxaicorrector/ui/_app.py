@@ -142,7 +142,7 @@ _APP_READY_MARKER_WRITER = AppReadyMarkerWriter(
     time_fn=time.monotonic,
 )
 
-SidebarSettings: TypeAlias = tuple[str, int, int, str, bool, str, str, str, bool, bool]
+SidebarSettings: TypeAlias = tuple[str, int, int, str, bool, str, str, str, bool]
 
 _build_structure_settings_hash = _structure_review_panel_build_structure_settings_hash
 _build_selected_processing_payload = _structure_review_panel_build_selected_processing_payload
@@ -357,15 +357,13 @@ def _start_background_processing(
 
 
 def _resolve_sidebar_settings(sidebar_result: object) -> SidebarSettings:
-    if isinstance(sidebar_result, tuple) and len(sidebar_result) == 10:
-        return sidebar_result
     if isinstance(sidebar_result, tuple) and len(sidebar_result) == 9:
-        return (*sidebar_result, False)
+        return sidebar_result
     if isinstance(sidebar_result, tuple) and len(sidebar_result) == 8:
-        return (*sidebar_result, False, False)
+        return (*sidebar_result, False)
     if isinstance(sidebar_result, tuple) and len(sidebar_result) == 5:
         model, chunk_size, max_retries, image_mode, keep_all_image_variants = sidebar_result
-        return model, chunk_size, max_retries, image_mode, keep_all_image_variants, "edit", "en", "ru", False, False
+        return model, chunk_size, max_retries, image_mode, keep_all_image_variants, "edit", "en", "ru", False
     raise RuntimeError("Некорректный контракт render_sidebar().")
 
 
@@ -782,7 +780,6 @@ def main() -> None:
         processing_operation,
         source_language,
         target_language,
-        translation_second_pass_enabled,
         audiobook_postprocess_enabled,
     ) = _resolve_sidebar_settings(render_sidebar(app_config))
     app_config = dict(app_config)
@@ -790,7 +787,6 @@ def main() -> None:
     app_config["processing_operation"] = processing_operation
     app_config["source_language"] = source_language
     app_config["target_language"] = target_language
-    app_config["translation_second_pass_enabled"] = translation_second_pass_enabled
     app_config["audiobook_postprocess_enabled"] = audiobook_postprocess_enabled
 
     processing_active = _processing_worker_is_active()

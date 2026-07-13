@@ -195,17 +195,6 @@ def test_load_app_config_applies_translation_domain_env_override(monkeypatch):
     assert app_config["translation_domain_default"] == "theology"
 
 
-def test_load_app_config_applies_translation_second_pass_env_overrides(monkeypatch):
-    monkeypatch.setattr(config, "CONFIG_PATH", config.CONFIG_PATH.parent / "__missing_config__.toml")
-    monkeypatch.setenv("DOCX_AI_TRANSLATION_SECOND_PASS_DEFAULT", "true")
-    monkeypatch.setenv("DOCX_AI_TRANSLATION_SECOND_PASS_MODEL", "gpt-5.4")
-
-    app_config = config.load_app_config()
-
-    assert app_config["translation_second_pass_default"] is True
-    assert app_config["translation_second_pass_model"] == "gpt-5.4"
-
-
 def test_load_app_config_applies_reader_cleanup_env_overrides(monkeypatch):
     monkeypatch.setattr(config, "CONFIG_PATH", config.CONFIG_PATH.parent / "__missing_config__.toml")
     monkeypatch.setenv("DOCX_AI_READER_CLEANUP_MODEL", "openrouter:anthropic/claude-haiku-4.5")
@@ -341,8 +330,6 @@ def test_describe_provider_availability_reports_missing_key(monkeypatch):
         target_language_default="ru",
         editorial_intensity_default="literary",
         translation_domain_default="general",
-        translation_second_pass_default=False,
-        translation_second_pass_model="",
         audiobook_postprocess_default=False,
         audiobook_model="gpt-5.4-mini",
         supported_languages=tuple(),
@@ -446,8 +433,6 @@ def test_describe_provider_availability_loads_project_dotenv(monkeypatch):
         target_language_default="ru",
         editorial_intensity_default="literary",
         translation_domain_default="general",
-        translation_second_pass_default=False,
-        translation_second_pass_model="",
         audiobook_postprocess_default=False,
         audiobook_model="gpt-5.4-mini",
         supported_languages=tuple(),
@@ -1385,7 +1370,6 @@ def _provider_contract_test_args(*, paragraph_boundary_enabled: bool):
             ),
         },
         "text_runtime_defaults": {
-            "translation_second_pass_model": "",
             "audiobook_model": "openrouter:google/gemini-3.1-flash-lite-preview",
         },
         "paragraph_boundary_settings": {
@@ -1471,7 +1455,6 @@ def test_validate_provider_model_contracts_allows_openrouter_main_text_when_open
             ),
         },
         text_runtime_defaults={
-            "translation_second_pass_model": "",
             "audiobook_model": "openrouter:google/gemini-3.1-flash-lite-preview",
         },
         paragraph_boundary_settings={"paragraph_boundary_ai_review_enabled": True},
@@ -1503,7 +1486,6 @@ def test_validate_provider_model_contracts_allows_openrouter_structure_recogniti
             ),
         },
         text_runtime_defaults={
-            "translation_second_pass_model": "",
             "audiobook_model": "openrouter:google/gemini-3.1-flash-lite-preview",
         },
         paragraph_boundary_settings={"paragraph_boundary_ai_review_enabled": False},
