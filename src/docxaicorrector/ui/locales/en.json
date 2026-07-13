@@ -250,7 +250,7 @@
   "structure.selected_with_context_button": "Selected + Context",
   "structure.selected_with_context_help": "Processes the selected sections and prepends leading structural context such as front matter or TOC as source-backed content.",
   "structure.retry_failed_button": "Retry Failed",
-  "structure.process_entire_book_button": "Process Entire Book",
+  "structure.assemble_final_book_button": "Assemble final translated book",
 
   "structure.structure_confirmed_success": "Structure confirmed for the current prepared document.",
   "structure.confirmation_confirmed": "Structure confirmed | selected main {top} sections | selected nested {nested} sections",

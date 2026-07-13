@@ -251,7 +251,7 @@
   "structure.selected_with_context_button": "Выбранное + контекст",
   "structure.selected_with_context_help": "Обрабатывает выбранные разделы и добавляет в начало ведущий структурный контекст, например вводную часть или оглавление, как содержимое, подкреплённое источником.",
   "structure.retry_failed_button": "Повторить сбойные",
-  "structure.process_entire_book_button": "Обработать всю книгу",
+  "structure.assemble_final_book_button": "Собрать переведённую книгу",
 
   "structure.structure_confirmed_success": "Структура подтверждена для текущего подготовленного документа.",
   "structure.confirmation_confirmed": "Структура подтверждена | выбрано основных разделов: {top} | выбрано вложенных разделов: {nested}",

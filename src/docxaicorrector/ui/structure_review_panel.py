@@ -1164,9 +1164,16 @@ def _render_analysis_review_panel(
         segment_status_by_id=segment_status_by_id,
     )
 
-    action_columns = st.columns(2)
-    partial_col = action_columns[0]
-    full_book_col = action_columns[1]
+    if can_build_final_book:
+        action_columns = st.columns(2)
+        partial_col = action_columns[0]
+        full_book_col = action_columns[1]
+    else:
+        # No final-book assembly available: the full-document start lives in the
+        # bottom "Начать обработку" control, so the partial actions take the full
+        # width instead of leaving an empty second column.
+        partial_col = st.container()
+        full_book_col = None
     current_settings_hash = str(review_state["settings_hash"])
     current_fingerprint = str(review_state["fingerprint"])
 
@@ -1228,8 +1235,13 @@ def _render_analysis_review_panel(
     ):
         _confirm_structure_on_start()
         return "start_retry_failed"
-    if full_book_col.button(t("structure.process_entire_book_button"), type="primary", use_container_width=True, key="process_entire_book_button"):
-        return "start_final_book" if can_build_final_book else "start_full_book"
+    if full_book_col is not None and full_book_col.button(
+        t("structure.assemble_final_book_button"),
+        type="primary",
+        use_container_width=True,
+        key="process_entire_book_button",
+    ):
+        return "start_final_book"
     if structure_confirmed:
         st.success(t("structure.structure_confirmed_success"))
     st.caption(

@@ -1171,6 +1171,7 @@ def test_render_analysis_review_panel_renders_selector_and_disabled_process_sele
     )
     selected_col = FakeColumn(result=False)
     full_book_col = FakeColumn(result=False)
+    partial_container = FakeColumn(result=False)
     checkbox_calls = []
     info_calls = []
     subheader_calls = []
@@ -1213,6 +1214,7 @@ def test_render_analysis_review_panel_renders_selector_and_disabled_process_sele
     monkeypatch.setattr(app.st, "write", lambda message, **kwargs: write_calls.append(message))
     monkeypatch.setattr(app.st, "warning", lambda *args, **kwargs: None)
     monkeypatch.setattr(app.st, "success", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "container", lambda *args, **kwargs: partial_container)
 
     action = app._render_analysis_review_panel(
         prepared_run_context=prepared_run_context,
@@ -1246,7 +1248,9 @@ def test_render_analysis_review_panel_renders_selector_and_disabled_process_sele
     assert any(message == t("structure.preview_ends_with", text="p2") for message in caption_calls)
     assert not any("Boundary fingerprint:" in message for message in caption_calls)
     assert not write_calls
-    assert selected_col.calls == [
+    # Segments are pending (can_build_final_book is False), so the partial actions
+    # render in a single full-width container and the final-book button is absent.
+    assert partial_container.calls == [
         (
             t("structure.process_selected_button"),
             {
@@ -1268,14 +1272,13 @@ def test_render_analysis_review_panel_renders_selector_and_disabled_process_sele
     ]
     assert session_state.get("selected_context_include_front_matter_checkbox", True) is True
     assert session_state.get("selected_context_include_toc_checkbox", True) is True
-    assert full_book_col.calls == [(
-        t("structure.process_entire_book_button"),
-        {
-            "type": "primary",
-            "use_container_width": True,
-            "key": "process_entire_book_button",
-        },
-    )]
+    # The entire-book / assemble button must not be rendered when the final book
+    # cannot be assembled; the second action column is never created.
+    assert full_book_col.calls == []
+    assert not any(
+        label == t("structure.assemble_final_book_button")
+        for label, _ in partial_container.calls
+    )
     assert any(
         message == t("structure.overview_message", count=1)
         for message in info_calls
@@ -1351,6 +1354,7 @@ def test_render_analysis_review_panel_renders_bulk_selection_buttons(monkeypatch
 
     monkeypatch.setattr(app.st, "session_state", session_state)
     monkeypatch.setattr(app.st, "columns", fake_columns)
+    monkeypatch.setattr(app.st, "container", lambda *args, **kwargs: selected_col)
     monkeypatch.setattr(app.st, "checkbox", lambda label, **kwargs: kwargs.get("value", False))
     monkeypatch.setattr(app.st, "selectbox", lambda label, options, index=0, **kwargs: options[index])
     monkeypatch.setattr(app.st, "text_input", lambda label, value="", **kwargs: value)
@@ -1368,7 +1372,9 @@ def test_render_analysis_review_panel_renders_bulk_selection_buttons(monkeypatch
         chunk_size=6000,
     )
 
-    assert columns_calls == [3, 2]
+    # seg_0001 is pending: the final-book button is not rendered, so the action
+    # row uses a single full-width container instead of a second st.columns(2).
+    assert columns_calls == [3]
     assert bulk_select_col.calls == [(
         t("structure.select_visible_button"),
         {
@@ -3124,6 +3130,8 @@ def test_render_analysis_review_panel_confirms_structure_implicitly_on_partial_s
             [selected_col, full_book_col],
         ),
     )
+    # Non-final fixture: partial actions render in a single full-width container.
+    monkeypatch.setattr(app.st, "container", lambda *args, **kwargs: selected_col)
     monkeypatch.setattr(app.st, "checkbox", lambda label, **kwargs: kwargs.get("value", False))
     monkeypatch.setattr(app.st, "selectbox", lambda label, options, index=0, **kwargs: options[index])
     monkeypatch.setattr(app.st, "text_input", lambda label, value="", **kwargs: value)
@@ -3216,6 +3224,8 @@ def test_render_analysis_review_panel_returns_selected_action_when_confirmed(mon
             [selected_col, full_book_col],
         ),
     )
+    # Non-final fixture: partial actions render in a single full-width container.
+    monkeypatch.setattr(app.st, "container", lambda *args, **kwargs: selected_col)
     monkeypatch.setattr(app.st, "checkbox", lambda label, **kwargs: kwargs.get("value", False))
     monkeypatch.setattr(app.st, "selectbox", lambda label, options, index=0, **kwargs: options[index])
     monkeypatch.setattr(app.st, "text_input", lambda label, value="", **kwargs: value)
@@ -3313,6 +3323,8 @@ def test_render_analysis_review_panel_returns_start_selected_with_context_when_r
             [selected_col, full_book_col],
         ),
     )
+    # Non-final fixture: partial actions render in a single full-width container.
+    monkeypatch.setattr(app.st, "container", lambda *args, **kwargs: selected_col)
     monkeypatch.setattr(app.st, "checkbox", lambda label, **kwargs: kwargs.get("value", False))
     monkeypatch.setattr(app.st, "selectbox", lambda label, options, index=0, **kwargs: options[index])
     monkeypatch.setattr(app.st, "text_input", lambda label, value="", **kwargs: value)
@@ -3422,6 +3434,8 @@ def test_render_analysis_review_panel_returns_start_retry_failed_when_requested(
             [selected_col, full_book_col],
         ),
     )
+    # Non-final fixture: partial actions render in a single full-width container.
+    monkeypatch.setattr(app.st, "container", lambda *args, **kwargs: selected_col)
     monkeypatch.setattr(app.st, "checkbox", lambda label, **kwargs: kwargs.get("value", False))
     monkeypatch.setattr(app.st, "selectbox", lambda label, options, index=0, **kwargs: options[index])
     monkeypatch.setattr(app.st, "text_input", lambda label, value="", **kwargs: value)
@@ -3546,6 +3560,8 @@ def test_render_analysis_review_panel_uses_persisted_retry_help_when_available(m
             [selected_col, full_book_col],
         ),
     )
+    # Non-final fixture: partial actions render in a single full-width container.
+    monkeypatch.setattr(app.st, "container", lambda *args, **kwargs: selected_col)
     monkeypatch.setattr(app.st, "checkbox", lambda label, **kwargs: kwargs.get("value", False))
     monkeypatch.setattr(app.st, "selectbox", lambda label, options, index=0, **kwargs: options[index])
     monkeypatch.setattr(app.st, "text_input", lambda label, value="", **kwargs: value)
@@ -3689,7 +3705,7 @@ def test_render_analysis_review_panel_shows_confirmed_outline_summary(monkeypatc
     )
 
 
-def test_render_analysis_review_panel_returns_full_book_action(monkeypatch):
+def test_render_analysis_review_panel_omits_entire_book_button_when_final_book_unavailable(monkeypatch):
     session_state = SessionState(
         selected_segment_ids=["seg_0001"],
         structure_confirmed=False,
@@ -3723,6 +3739,7 @@ def test_render_analysis_review_panel_returns_full_book_action(monkeypatch):
     )
     selected_col = FakeColumn(result=False)
     full_book_col = FakeColumn(result=True)
+    partial_container = FakeColumn(result=False)
 
     bulk_select_col = FakeColumn(result=False)
     bulk_clear_col = FakeColumn(result=False)
@@ -3737,6 +3754,7 @@ def test_render_analysis_review_panel_returns_full_book_action(monkeypatch):
             [selected_col, full_book_col],
         ),
     )
+    monkeypatch.setattr(app.st, "container", lambda *args, **kwargs: partial_container)
     monkeypatch.setattr(app.st, "checkbox", lambda label, **kwargs: kwargs.get("value", False))
     monkeypatch.setattr(app.st, "selectbox", lambda label, options, index=0, **kwargs: options[index])
     monkeypatch.setattr(app.st, "text_input", lambda label, value="", **kwargs: value)
@@ -3758,10 +3776,18 @@ def test_render_analysis_review_panel_returns_full_book_action(monkeypatch):
         chunk_size=6000,
     )
 
-    assert action == "start_full_book"
+    # seg_0001 is pending, so the final book cannot be assembled: the entire-book
+    # button is not rendered and the panel returns no full-document action.
+    # The full-document start is driven by the bottom "Начать обработку" control.
+    assert action is None
+    assert full_book_col.calls == []
+    assert not any(
+        label == t("structure.assemble_final_book_button")
+        for label, _ in partial_container.calls
+    )
 
 
-def test_main_starts_full_book_processing_from_analysis_panel(monkeypatch):
+def test_main_starts_full_document_processing_from_bottom_control(monkeypatch):
     prepared_run_context = _build_prepared_run_context(
         segments=[
             DocumentSegment(
@@ -3833,6 +3859,10 @@ def test_main_starts_full_book_processing_from_analysis_panel(monkeypatch):
     monkeypatch.setattr(app.st, "expander", lambda *args, **kwargs: type("FakeExpander", (), {"__enter__": lambda self: self, "__exit__": lambda self, exc_type, exc, tb: False})())
     monkeypatch.setattr(app.st, "write", lambda *args, **kwargs: None)
     monkeypatch.setattr(app.st, "button", lambda *args, **kwargs: False)
+    # seg_0001 is pending, so the analysis panel no longer offers a full-document
+    # start; the panel returns None and the full-document start is driven by the
+    # bottom "Начать обработку" control (_render_processing_controls -> "start").
+    monkeypatch.setattr(app.st, "container", lambda *args, **kwargs: FakeColumn(result=False))
     monkeypatch.setattr(
         app.st,
         "columns",
@@ -3845,7 +3875,7 @@ def test_main_starts_full_book_processing_from_analysis_panel(monkeypatch):
     monkeypatch.setattr(app, "render_partial_result", lambda *args, **kwargs: None)
     monkeypatch.setattr(app, "render_run_log", lambda *args, **kwargs: None)
     monkeypatch.setattr(app, "render_image_validation_summary", lambda *args, **kwargs: None)
-    monkeypatch.setattr(app, "_render_processing_controls", lambda **kwargs: (_ for _ in ()).throw(AssertionError("generic controls should not be used when analysis action returns full-book start")))
+    monkeypatch.setattr(app, "_render_processing_controls", lambda **kwargs: "start")
     monkeypatch.setattr(compare_panel, "render_compare_all_apply_panel", lambda **kwargs: None)
     monkeypatch.setattr(application_flow, "resolve_effective_uploaded_file", lambda **kwargs: uploaded_file)
     monkeypatch.setattr(application_flow, "has_resettable_state", lambda **kwargs: False)
@@ -3859,6 +3889,7 @@ def test_main_starts_full_book_processing_from_analysis_panel(monkeypatch):
     assert start_calls[0]["uploaded_filename"] == "report.docx"
     assert start_calls[0]["uploaded_token"] == "report.docx:3:token"
     assert start_calls[0]["jobs"] == prepared_run_context.jobs
+    assert start_calls[0]["output_mode"] == "legacy_full_document"
 
 
 def test_main_starts_selected_processing_from_analysis_panel(monkeypatch):
@@ -3972,6 +4003,9 @@ def test_main_starts_selected_processing_from_analysis_panel(monkeypatch):
             [FakeColumn(result=True), FakeColumn(result=False)],
         ),
     )
+    # Segments are pending, so partial actions render in a single full-width
+    # container; clicking "Process Selected" (its first button) returns True.
+    monkeypatch.setattr(app.st, "container", lambda *args, **kwargs: FakeColumn(result=True))
     monkeypatch.setattr(app, "render_preparation_summary", lambda *args, **kwargs: None)
     monkeypatch.setattr(app, "render_partial_result", lambda *args, **kwargs: None)
     monkeypatch.setattr(app, "render_run_log", lambda *args, **kwargs: None)
@@ -4109,6 +4143,9 @@ def test_main_starts_selected_processing_excludes_locked_descendants(monkeypatch
             [FakeColumn(result=True), FakeColumn(result=False)],
         ),
     )
+    # Segments are pending, so partial actions render in a single full-width
+    # container; clicking "Process Selected" (its first button) returns True.
+    monkeypatch.setattr(app.st, "container", lambda *args, **kwargs: FakeColumn(result=True))
     monkeypatch.setattr(app, "render_preparation_summary", lambda *args, **kwargs: None)
     monkeypatch.setattr(app, "render_partial_result", lambda *args, **kwargs: None)
     monkeypatch.setattr(app, "render_run_log", lambda *args, **kwargs: None)
