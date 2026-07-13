@@ -1,0 +1,10 @@
+{
+  "app.title": "AI editor for DOCX/DOC/PDF via Markdown",
+  "app.page_title": "AI DOCX Editor",
+  "app.upload_prompt": "Upload a DOCX/DOC/PDF file",
+  "sidebar.settings_header": "Settings",
+  "sidebar.text_operation_label": "Text processing mode",
+  "sidebar.target_language_label": "Target language",
+  "common.download": "Download",
+  "structure.visible_count": "Visible sections: {visible}/{total}"
+}

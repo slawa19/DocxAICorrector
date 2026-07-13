@@ -1,0 +1,11 @@
+{
+  "app.title": "AI-редактор DOCX/DOC/PDF через Markdown",
+  "app.page_title": "AI DOCX Editor",
+  "app.upload_prompt": "Загрузите DOCX/DOC/PDF-файл",
+  "sidebar.settings_header": "Настройки",
+  "sidebar.text_operation_label": "Режим обработки текста",
+  "sidebar.target_language_label": "Целевой язык",
+  "sidebar.model_label": "Модель",
+  "common.download": "Скачать",
+  "structure.visible_count": "Видно разделов: {visible}/{total}"
+}
