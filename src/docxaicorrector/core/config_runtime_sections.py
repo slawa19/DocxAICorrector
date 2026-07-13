@@ -467,15 +467,7 @@ def resolve_text_runtime_defaults(
     target_language_default = parse_config_str_fn(config_data, "target_language_default", "ru").strip().lower()
     editorial_intensity_default = parse_config_str_fn(config_data, "editorial_intensity_default", "literary").strip().lower()
     translation_domain_default = parse_config_str_fn(config_data, "translation_domain_default", "general").strip().lower()
-    translation_second_pass_default = parse_config_bool_fn(config_data, "translation_second_pass_default", False)
     audiobook_postprocess_default = parse_config_bool_fn(config_data, "audiobook_postprocess_default", False)
-    raw_translation_second_pass_model = config_data.get("translation_second_pass_model")
-    if raw_translation_second_pass_model is None:
-        translation_second_pass_model = ""
-    elif not isinstance(raw_translation_second_pass_model, str):
-        raise RuntimeError(f"Некорректное поле translation_second_pass_model в {config_path}: ожидается строка")
-    else:
-        translation_second_pass_model = raw_translation_second_pass_model.strip()
     audiobook_model = _resolve_audiobook_model_default(
         config_data=config_data,
         model_registry_settings=model_registry_settings,
@@ -512,15 +504,10 @@ def resolve_text_runtime_defaults(
         os.getenv("DOCX_AI_TRANSLATION_DOMAIN_DEFAULT", translation_domain_default).strip().lower()
         or translation_domain_default
     )
-    translation_second_pass_default = parse_bool_env_fn(
-        "DOCX_AI_TRANSLATION_SECOND_PASS_DEFAULT",
-        translation_second_pass_default,
-    )
     audiobook_postprocess_default = parse_bool_env_fn(
         "DOCX_AI_AUDIOBOOK_POSTPROCESS_DEFAULT",
         audiobook_postprocess_default,
     )
-    translation_second_pass_model = parse_optional_str_env_fn("DOCX_AI_TRANSLATION_SECOND_PASS_MODEL") or translation_second_pass_model
     validate_text_transform_context_fn(
         operation=processing_operation_default,
         source_language=source_language_default,
@@ -541,8 +528,6 @@ def resolve_text_runtime_defaults(
         "target_language_default": target_language_default,
         "editorial_intensity_default": editorial_intensity_default,
         "translation_domain_default": translation_domain_default,
-        "translation_second_pass_default": translation_second_pass_default,
-        "translation_second_pass_model": translation_second_pass_model,
         "audiobook_postprocess_default": audiobook_postprocess_default,
         "audiobook_model": audiobook_model,
         "enable_paragraph_markers": enable_paragraph_markers,

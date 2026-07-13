@@ -624,7 +624,7 @@ def test_run_prepared_background_document_passes_prepared_payload_into_processin
         chunk_size=123,
         image_mode="safe",
         keep_all_image_variants=True,
-        app_config={"x": 1, "translation_second_pass_enabled": True, "translation_second_pass_model": "gpt-5.4"},
+        app_config={"x": 1},
         model="gpt-5.4",
         max_retries=2,
         job_mutator=lambda job: {**job, "job_kind": "passthrough"},
@@ -637,8 +637,7 @@ def test_run_prepared_background_document_passes_prepared_payload_into_processin
     assert captured["run"]["selected_segment_ids"] == ["seg_0001", "seg_0002"]
     assert captured["run"]["source_paragraphs"] == ["p1"]
     assert captured["run"]["image_assets"] == ["img1"]
-    assert captured["run"]["app_config"]["translation_second_pass_enabled"] is True
-    assert captured["run"]["app_config"]["translation_second_pass_model"] == "gpt-5.4"
+    assert captured["run"]["app_config"]["x"] == 1
     assert captured["run"]["app_config"]["translation_domain_default"] == "theology"
     assert captured["run"]["app_config"]["translation_domain_instructions"] == "TERM PLAN"
     assert "Great Tribulation" in captured["run"]["document_context_prompt"]

@@ -4776,7 +4776,6 @@ def finalize_processing_success(
         final_markdown_chars=len(runtime_display_markdown),
         narration_chars=len(narration_text or ""),
         elapsed_seconds=round(time.perf_counter() - state.started_at, 2),
-        translation_second_pass_enabled=_is_translation_second_pass_effectively_enabled(context=context),
         audiobook_postprocess_enabled=_should_run_audiobook_postprocess(context=context),
         reader_cleanup_enabled=_should_run_reader_cleanup(context=context),
     )
@@ -4826,12 +4825,6 @@ def _validate_narration_artifact_text(narration_text: str) -> None:
 def _should_run_audiobook_postprocess(*, context: Any) -> bool:
     return context.processing_operation in {"edit", "translate"} and bool(
         context.app_config.get("audiobook_postprocess_enabled", False)
-    )
-
-
-def _is_translation_second_pass_effectively_enabled(*, context: Any) -> bool:
-    return context.processing_operation == "translate" and bool(
-        context.app_config.get("translation_second_pass_enabled", False)
     )
 
 

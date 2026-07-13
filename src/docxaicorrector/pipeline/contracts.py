@@ -270,7 +270,6 @@ class ProcessingState:
     failed_segment_ids: set[str] = field(default_factory=set)
     system_prompt: str | None = None
     toc_system_prompt: str | None = None
-    second_pass_system_prompt: str | None = None
     started_at: float = field(default_factory=time.perf_counter)
 
 

@@ -421,11 +421,6 @@ def initialize_processing_run(
     summarize_block_plan_fn: Callable[..., dict[str, object]],
     initialization_factory_fn: Callable[..., Any],
 ) -> Any | PipelineResult | None:
-    effective_translation_second_pass_enabled = (
-        context.processing_operation == "translate"
-        and bool(context.app_config.get("translation_second_pass_enabled", False))
-    )
-
     try:
         job_count = len(context.jobs)
     except Exception as exc:
@@ -496,7 +491,6 @@ def initialize_processing_run(
             block_count=job_count,
             max_retries=context.max_retries,
             image_count=len(context.image_assets),
-            translation_second_pass_enabled=effective_translation_second_pass_enabled,
         )
         block_plan_summary = summarize_block_plan_fn(context.jobs)
         dependencies.log_event(
@@ -512,7 +506,6 @@ def initialize_processing_run(
             max_target_chars=block_plan_summary["max_target_chars"],
             avg_target_chars=block_plan_summary["avg_target_chars"],
             first_block_target_chars=block_plan_summary["first_block_target_chars"],
-            translation_second_pass_enabled=effective_translation_second_pass_enabled,
         )
         dependencies.log_event(
             logging.DEBUG,
