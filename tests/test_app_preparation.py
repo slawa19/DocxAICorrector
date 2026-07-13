@@ -467,7 +467,7 @@ def test_main_shows_pdf_size_limit_error_copy(monkeypatch):
     app.main()
 
     assert error_calls == [
-        f"Размер DOCX/DOC/PDF превышает допустимый предел {app.MAX_DOCX_ARCHIVE_SIZE_BYTES // (1024 * 1024)} МБ. Загрузите файл меньшего размера."
+        t("app.file_too_large", limit=app.MAX_DOCX_ARCHIVE_SIZE_BYTES // (1024 * 1024))
     ]
 
 
@@ -517,7 +517,7 @@ def test_main_reports_pdf_freeze_failure_without_uncaught_streamlit_error(monkey
             {"filename": "source.pdf"},
         )
     ]
-    assert error_calls == ["Ошибка чтения документа: pdf read failed"]
+    assert error_calls == [t("app.document_read_error", message="pdf read failed")]
     assert finalized == [{}]
 
 
@@ -684,7 +684,7 @@ def test_main_warns_when_current_preparation_state_is_unavailable(monkeypatch):
 
     app.main()
 
-    assert warning_calls == [app.get_preparation_state_unavailable_message()]
+    assert warning_calls == [t("app.preparation_state_unavailable")]
     assert start_calls == []
     assert calls == ["live_status", "run_log", "finalize"]
 
@@ -1117,7 +1117,7 @@ def test_main_exports_structure_manifest_from_prepared_state(monkeypatch):
     monkeypatch.setattr(app.st, "info", lambda *args, **kwargs: None)
     monkeypatch.setattr(app.st, "warning", lambda *args, **kwargs: None)
     monkeypatch.setattr(app.st, "error", lambda *args, **kwargs: None)
-    monkeypatch.setattr(app.st, "button", lambda label, **kwargs: label == "Export Structure Manifest")
+    monkeypatch.setattr(app.st, "button", lambda label, **kwargs: label == t("app.export_manifest_button"))
     monkeypatch.setattr(app, "render_preparation_summary", lambda summary, *args, **kwargs: render_calls.append(summary))
     monkeypatch.setattr(app, "render_partial_result", lambda *args, **kwargs: None)
     monkeypatch.setattr(app, "render_run_log", lambda *args, **kwargs: None)

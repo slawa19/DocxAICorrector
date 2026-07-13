@@ -120,7 +120,7 @@ def test_render_processing_controls_keeps_start_visible_while_processing(monkeyp
 
     assert action is None
     assert start_column.calls == [(
-        "Обработка запущена",
+        app.t("app.button_processing_running"),
         {
             "type": "primary",
             "use_container_width": True,
@@ -129,7 +129,7 @@ def test_render_processing_controls_keeps_start_visible_while_processing(monkeyp
         },
     )]
     assert stop_column.calls == [(
-        "Стоп",
+        app.t("app.button_stop"),
         {
             "use_container_width": True,
             "disabled": False,
@@ -149,7 +149,7 @@ def test_render_processing_controls_enables_start_and_disables_stop_when_idle(mo
 
     assert action == "start"
     assert start_column.calls == [(
-        "Начать обработку",
+        app.t("app.button_start_processing"),
         {
             "type": "primary",
             "use_container_width": True,
@@ -171,7 +171,7 @@ def test_render_processing_controls_demotes_start_after_completed_result(monkeyp
 
     assert action is None
     assert start_column.calls == [(
-        "Обработать повторно",
+        app.t("app.button_reprocess"),
         {
             "type": "secondary",
             "use_container_width": True,
@@ -180,7 +180,7 @@ def test_render_processing_controls_demotes_start_after_completed_result(monkeyp
         },
     )]
     assert stop_column.calls == [(
-        "Стоп",
+        app.t("app.button_stop"),
         {
             "use_container_width": True,
             "disabled": True,

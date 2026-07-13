@@ -615,9 +615,9 @@ def test_build_recommended_text_settings_notice_lists_changed_settings(monkeypat
 
     notice = app._build_recommended_text_settings_notice("report.docx:3:token")
 
-    assert notice == (
-        "После анализа файла приложение скорректировало текстовые настройки: "
-        "режим: изменено с Литературное редактирование на Перевод; язык оригинала: изменено с English на Авто."
+    assert notice == app.t(
+        "recommend.notice_with_changes",
+        changes="режим: изменено с Литературное редактирование на Перевод; язык оригинала: изменено с English на Авто",
     )
 
 
@@ -694,8 +694,10 @@ def test_main_places_recommended_text_settings_notice_inside_preparation_summary
 
     assert len(summary_calls) == 1
     assert summary_calls[0]["status_notes"] == [
-        "После анализа файла приложение скорректировало текстовые настройки: "
-        "режим: изменено с Литературное редактирование на Перевод; язык оригинала: изменено с en на Авто.",
+        app.t(
+            "recommend.notice_with_changes",
+            changes="режим: изменено с Литературное редактирование на Перевод; язык оригинала: изменено с en на Авто",
+        ),
     ]
     # Recommendation notice must go into preparation summary, not emitted as a standalone caption.
     # A static PDF info caption from the file-uploader area is allowed.

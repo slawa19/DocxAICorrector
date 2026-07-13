@@ -140,3 +140,30 @@ def test_ui_module_keys_present_in_both_catalogs() -> None:
     assert not missing_ru, f"keys referenced by _ui.py but missing from ru.json: {missing_ru}"
     missing_en = sorted(referenced_keys - set(en))
     assert not missing_en, f"keys referenced by _ui.py but missing from en.json: {missing_en}"
+
+
+def _module_source(filename: str) -> str:
+    return (Path(i18n.__file__).resolve().parent / filename).read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("filename", ["_app.py", "application_flow.py"])
+def test_migrated_ui_module_keys_present_in_both_catalogs(filename: str) -> None:
+    """Every i18n key referenced by the migrated ui modules exists in both catalogs."""
+    referenced_keys = set(re.findall(r't\(\s*["\']([a-z_]+\.[a-z0-9_]+)["\']', _module_source(filename)))
+    assert referenced_keys, f"expected {filename} to reference i18n keys"
+    ru = json.loads(_locale_path("ru.json").read_text(encoding="utf-8"))
+    en = json.loads(_locale_path("en.json").read_text(encoding="utf-8"))
+    missing_ru = sorted(referenced_keys - set(ru))
+    assert not missing_ru, f"keys referenced by {filename} but missing from ru.json: {missing_ru}"
+    missing_en = sorted(referenced_keys - set(en))
+    assert not missing_en, f"keys referenced by {filename} but missing from en.json: {missing_en}"
+
+
+def test_app_and_flow_namespace_key_sets_match_between_catalogs() -> None:
+    """The app.*, recommend.*, and flow.* key sets are identical across ru.json and en.json."""
+    ru = json.loads(_locale_path("ru.json").read_text(encoding="utf-8"))
+    en = json.loads(_locale_path("en.json").read_text(encoding="utf-8"))
+    for namespace in ("app.", "recommend.", "flow."):
+        ru_keys = {key for key in ru if key.startswith(namespace)}
+        en_keys = {key for key in en if key.startswith(namespace)}
+        assert ru_keys == en_keys, f"{namespace}* key sets differ between catalogs"

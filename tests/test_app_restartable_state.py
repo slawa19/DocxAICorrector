@@ -128,12 +128,12 @@ def test_main_hides_preparation_summary_for_restartable_outcome(monkeypatch, out
     assert status_calls == []
     if outcome == "stopped":
         assert warning_calls == [
-            "Обработка файла «report.docx» была остановлена. Можно изменить настройки и запустить заново без повторной загрузки."
+            app.t("app.restartable_stopped_notice", filename="report.docx")
         ]
         assert error_calls == []
     else:
         assert warning_calls == []
-        assert error_calls[0] == "Обработка файла «report.docx» завершилась ошибкой. Можно изменить настройки и запустить заново без повторной загрузки."
+        assert error_calls[0] == app.t("app.restartable_failed_notice", filename="report.docx")
 
 
 @pytest.mark.parametrize("outcome", ["stopped", "failed"])
