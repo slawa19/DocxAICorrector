@@ -119,27 +119,14 @@ def _resolve_render_target(target, *required_methods: str):
     return st
 
 
-def render_file_uploader_state_styles(*, has_uploaded_file: bool) -> None:
-    if not has_uploaded_file:
-        return
-
-    _render_trusted_html(
-        """
-        <style>
-        div[data-testid="stFileUploader"] [data-testid="stFileUploaderDropzone"] {
-            display: none !important;
-        }
-
-        div[data-testid="stFileUploader"] {
-            margin-bottom: 0 !important;
-        }
-        </style>
-        """
-    )
-
-
 def render_intro_layout_styles() -> None:
     """Constrain main block container width on the idle/upload screen.
+
+    NOTE: This is the SOLE justified custom-style exception in the UI. It caps
+    the main container width for readability on very wide viewports; there is no
+    canonical Streamlit control for a max content width. Do NOT add other custom
+    CSS/HTML — prefer native Streamlit widgets everywhere else.
+
 
     Keeps content pressed to the sidebar while preventing it from stretching
     across very wide viewports.  The container naturally fills all available
@@ -182,16 +169,6 @@ def _render_activity_feed(*, title: str, lines: list[str], feed_id: str | None =
     st.caption(title)
     for line in reversed(lines):
         st.caption(line)
-
-
-def inject_ui_styles() -> None:
-    return None
-
-
-def render_section_gap(size: str = "md") -> None:
-    gap_lines = 2 if size == "lg" else 1
-    for _ in range(gap_lines):
-        st.write("")
 
 
 def _render_status_panel(*, sink, title: str, stage: str, detail: str, meta_lines: list[str], info_level: str = "info") -> None:
@@ -557,7 +534,7 @@ def render_run_log(target=None) -> None:
     @st.fragment
     def render_run_log_fragment() -> None:
         with sink.container():
-            with st.expander(t("log.run_log_expander"), expanded=True):
+            with st.expander(t("log.run_log_expander"), expanded=False):
                 for entry in run_log:
                     message = str(entry.get("message") or "")
                     if not message and entry.get("kind") == "block":
@@ -596,7 +573,7 @@ def render_image_validation_summary(target=None) -> None:
     @st.fragment
     def render_image_validation_fragment() -> None:
         with sink.container():
-            with st.expander(t("image.validation_expander"), expanded=True):
+            with st.expander(t("image.validation_expander"), expanded=False):
                 columns = st.columns(4)
                 columns[0].metric(t("image.metric_processed"), f"{processed_images}/{total_images}")
                 columns[1].metric(t("image.metric_modified"), modified_images)
@@ -687,68 +664,69 @@ def render_sidebar(config: Mapping[str, Any]) -> tuple[str, int, int, str, bool,
             key="sidebar_audiobook_postprocess",
         )
 
-    model_options = [*get_text_model_options(config), "custom"]
-    default_model = get_text_model_default(config)
-    default_index = _resolve_model_default_index(model_options, default_model, config)
-    selected_model = st.sidebar.selectbox(
-        t("sidebar.model_select_label"),
-        model_options,
-        index=default_index,
-        format_func=lambda option: _format_model_option_label(option, config),
-        key="sidebar_model",
-    )
-    custom_model = ""
-    if selected_model == "custom":
-        custom_model = st.sidebar.text_input(
-            t("sidebar.custom_model_label"),
-            value=default_model,
-            help=t("sidebar.custom_model_help"),
-        ).strip()
+    # §10: chunk_size / max_retries are no longer user-facing sliders; source them
+    # from the config defaults that were the slider defaults so a default run is
+    # byte-identical to before.
+    chunk_size = _to_int(config["chunk_size"], default=6000)
+    max_retries = _to_int(config["max_retries"], default=3)
 
-    model = custom_model or selected_model
+    # §1: engineering knobs collapse into one expander. Widgets use the expander's
+    # own container (`with st.sidebar.expander(...)` + bare `st.*`) so they attach
+    # INSIDE the expander — `st.sidebar.*` would escape back to the sidebar root.
+    with st.sidebar.expander(t("sidebar.advanced_expander"), expanded=False):
+        model_options = [*get_text_model_options(config), "custom"]
+        default_model = get_text_model_default(config)
+        default_index = _resolve_model_default_index(model_options, default_model, config)
+        selected_model = st.selectbox(
+            t("sidebar.model_select_label"),
+            model_options,
+            index=default_index,
+            format_func=lambda option: _format_model_option_label(option, config),
+            key="sidebar_model",
+        )
+        custom_model = ""
+        if selected_model == "custom":
+            custom_model = st.text_input(
+                t("sidebar.custom_model_label"),
+                value=default_model,
+                help=t("sidebar.custom_model_help"),
+            ).strip()
+
+        model = custom_model or selected_model
+
+        if processing_operation == "audiobook":
+            image_mode = ImageMode.NO_CHANGE.value
+            st.selectbox(
+                t("sidebar.image_mode_label"),
+                [IMAGE_MODE_LABELS[ImageMode.NO_CHANGE.value]],
+                index=0,
+                key="sidebar_image_mode",
+                disabled=True,
+            )
+            st.caption(t("sidebar.image_mode_audiobook_caption"))
+        else:
+            image_mode_default = str(config.get("image_mode_default", ImageMode.NO_CHANGE.value))
+            image_mode_options = list(IMAGE_MODE_LABELS.values())
+            image_mode_default_label = IMAGE_MODE_LABELS.get(image_mode_default, IMAGE_MODE_LABELS[ImageMode.NO_CHANGE.value])
+            image_mode_index = image_mode_options.index(image_mode_default_label) if image_mode_default_label in image_mode_options else 0
+            selected_image_mode_label = st.selectbox(
+                t("sidebar.image_mode_label"),
+                image_mode_options,
+                index=image_mode_index,
+                key="sidebar_image_mode",
+            )
+            image_mode = IMAGE_MODE_VALUES_BY_LABEL.get(selected_image_mode_label, ImageMode.NO_CHANGE.value)
+        st.caption(IMAGE_MODE_DESCRIPTIONS.get(image_mode, ""))
+        keep_all_image_variants = st.checkbox(
+            t("sidebar.keep_variants_label"),
+            value=bool(config.get("keep_all_image_variants", False)),
+            help=t("sidebar.keep_variants_help"),
+            key="sidebar_keep_all_image_variants",
+        )
+
+    # Model-availability warning stays at the sidebar root (outside the collapsed
+    # expander) so a missing API key is always visible.
     _render_selected_model_availability_warning(model=model, config=config)
-    chunk_size = st.sidebar.slider(
-        t("sidebar.chunk_size_label"),
-        min_value=3000,
-        max_value=12000,
-        value=_to_int(config["chunk_size"], default=6000),
-        step=500,
-    )
-    max_retries = st.sidebar.slider(
-        t("sidebar.max_retries_label"),
-        min_value=1,
-        max_value=5,
-        value=_to_int(config["max_retries"], default=3),
-    )
-    if processing_operation == "audiobook":
-        image_mode = ImageMode.NO_CHANGE.value
-        render_sidebar_selectbox(
-            t("sidebar.image_mode_label"),
-            [IMAGE_MODE_LABELS[ImageMode.NO_CHANGE.value]],
-            index=0,
-            key="sidebar_image_mode",
-            disabled=True,
-        )
-        st.sidebar.caption(t("sidebar.image_mode_audiobook_caption"))
-    else:
-        image_mode_default = str(config.get("image_mode_default", ImageMode.NO_CHANGE.value))
-        image_mode_options = list(IMAGE_MODE_LABELS.values())
-        image_mode_default_label = IMAGE_MODE_LABELS.get(image_mode_default, IMAGE_MODE_LABELS[ImageMode.NO_CHANGE.value])
-        image_mode_index = image_mode_options.index(image_mode_default_label) if image_mode_default_label in image_mode_options else 0
-        selected_image_mode_label = render_sidebar_selectbox(
-            t("sidebar.image_mode_label"),
-            image_mode_options,
-            index=image_mode_index,
-            key="sidebar_image_mode",
-        )
-        image_mode = IMAGE_MODE_VALUES_BY_LABEL.get(selected_image_mode_label, ImageMode.NO_CHANGE.value)
-    st.sidebar.caption(IMAGE_MODE_DESCRIPTIONS.get(image_mode, ""))
-    keep_all_image_variants = st.sidebar.checkbox(
-        t("sidebar.keep_variants_label"),
-        value=bool(config.get("keep_all_image_variants", False)),
-        help=t("sidebar.keep_variants_help"),
-        key="sidebar_keep_all_image_variants",
-    )
     return (
         model,
         chunk_size,

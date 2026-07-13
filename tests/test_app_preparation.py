@@ -201,7 +201,6 @@ def test_main_restarts_background_preparation_when_chunk_size_changes(monkeypatc
 
     monkeypatch.setattr(app.st, "session_state", session_state)
     monkeypatch.setattr(app, "init_session_state", lambda: None)
-    monkeypatch.setattr(app, "inject_ui_styles", lambda: None)
     monkeypatch.setattr(app, "_cached_load_app_config", lambda: {})
     monkeypatch.setattr(app, "render_sidebar", lambda config: ("gpt-5.4", 7000, 3, "safe", True, "audiobook", "auto", "ru", False, False))
     monkeypatch.setattr(app, "_drain_processing_events", lambda: None)
@@ -261,7 +260,6 @@ def test_main_restarts_background_preparation_when_uploaded_file_changes(monkeyp
 
     monkeypatch.setattr(app.st, "session_state", session_state)
     monkeypatch.setattr(app, "init_session_state", lambda: None)
-    monkeypatch.setattr(app, "inject_ui_styles", lambda: None)
     monkeypatch.setattr(app, "_cached_load_app_config", lambda: {})
     monkeypatch.setattr(app, "render_sidebar", lambda config: ("gpt-5.4", 6000, 3, "safe", False))
     monkeypatch.setattr(app, "_drain_processing_events", lambda: None)
@@ -344,7 +342,6 @@ def test_main_normalizes_legacy_doc_before_starting_background_preparation(monke
 
     monkeypatch.setattr(app.st, "session_state", session_state)
     monkeypatch.setattr(app, "init_session_state", lambda: None)
-    monkeypatch.setattr(app, "inject_ui_styles", lambda: None)
     monkeypatch.setattr(app, "_cached_load_app_config", lambda: {})
     monkeypatch.setattr(app, "render_sidebar", lambda config: ("gpt-5.4", 6000, 3, "safe", True))
     monkeypatch.setattr(app, "_drain_processing_events", lambda: None)
@@ -405,7 +402,6 @@ def test_main_supports_pdf_upload_and_updates_user_facing_copy(monkeypatch):
 
     monkeypatch.setattr(app.st, "session_state", session_state)
     monkeypatch.setattr(app, "init_session_state", lambda: None)
-    monkeypatch.setattr(app, "inject_ui_styles", lambda: None)
     monkeypatch.setattr(app, "_cached_load_app_config", lambda: {})
     monkeypatch.setattr(app, "render_sidebar", lambda config: ("gpt-5.4", 6000, 3, "safe", False))
     monkeypatch.setattr(app, "_drain_processing_events", lambda: None)
@@ -447,7 +443,6 @@ def test_main_shows_pdf_size_limit_error_copy(monkeypatch):
 
     monkeypatch.setattr(app.st, "session_state", session_state)
     monkeypatch.setattr(app, "init_session_state", lambda: None)
-    monkeypatch.setattr(app, "inject_ui_styles", lambda: None)
     monkeypatch.setattr(app, "_cached_load_app_config", lambda: {})
     monkeypatch.setattr(app, "render_sidebar", lambda config: ("gpt-5.4", 6000, 3, "safe", False))
     monkeypatch.setattr(app, "_drain_processing_events", lambda: None)
@@ -484,7 +479,6 @@ def test_main_reports_pdf_freeze_failure_without_uncaught_streamlit_error(monkey
 
     monkeypatch.setattr(app.st, "session_state", session_state)
     monkeypatch.setattr(app, "init_session_state", lambda: None)
-    monkeypatch.setattr(app, "inject_ui_styles", lambda: None)
     monkeypatch.setattr(app, "_cached_load_app_config", lambda: {})
     monkeypatch.setattr(app, "render_sidebar", lambda config: ("gpt-5.4", 6000, 3, "safe", False))
     monkeypatch.setattr(app, "_drain_processing_events", lambda: None)
@@ -527,7 +521,6 @@ def test_main_renders_live_status_during_active_preparation(monkeypatch):
 
     monkeypatch.setattr(app.st, "session_state", session_state)
     monkeypatch.setattr(app, "init_session_state", lambda: None)
-    monkeypatch.setattr(app, "inject_ui_styles", lambda: None)
     monkeypatch.setattr(app, "_cached_load_app_config", lambda: {})
     monkeypatch.setattr(app, "render_sidebar", lambda config: ("gpt-5.4", 6000, 3, "safe", False))
     monkeypatch.setattr(app, "_drain_processing_events", lambda: None)
@@ -559,7 +552,6 @@ def test_main_keeps_processing_panel_visible_while_outcome_is_running(monkeypatc
 
     monkeypatch.setattr(app.st, "session_state", session_state)
     monkeypatch.setattr(app, "init_session_state", lambda: None)
-    monkeypatch.setattr(app, "inject_ui_styles", lambda: None)
     monkeypatch.setattr(app, "_cached_load_app_config", lambda: {})
     monkeypatch.setattr(app, "render_sidebar", lambda config: ("gpt-5.4", 6000, 3, "safe", False))
     monkeypatch.setattr(app, "_drain_processing_events", lambda: None)
@@ -576,7 +568,6 @@ def test_main_keeps_processing_panel_visible_while_outcome_is_running(monkeypatc
     monkeypatch.setattr(app, "render_run_log", lambda *args, **kwargs: calls.append("run_log"))
     monkeypatch.setattr(app, "render_image_validation_summary", lambda *args, **kwargs: calls.append("image_summary"))
     monkeypatch.setattr(app, "render_partial_result", lambda *args, **kwargs: calls.append("partial_result"))
-    monkeypatch.setattr(app, "render_section_gap", lambda *args, **kwargs: None)
     monkeypatch.setattr(app, "_render_processing_controls", lambda **kwargs: None)
 
     app.main()
@@ -601,7 +592,6 @@ def test_main_renders_current_preparation_failure_without_restarting(monkeypatch
 
     monkeypatch.setattr(app.st, "session_state", session_state)
     monkeypatch.setattr(app, "init_session_state", lambda: None)
-    monkeypatch.setattr(app, "inject_ui_styles", lambda: None)
     monkeypatch.setattr(app, "_cached_load_app_config", lambda: {})
     monkeypatch.setattr(app, "render_sidebar", lambda config: ("gpt-5.4", 6000, 3, "safe", False))
     monkeypatch.setattr(app, "_drain_processing_events", lambda: None)
@@ -653,7 +643,6 @@ def test_main_warns_when_current_preparation_state_is_unavailable(monkeypatch):
 
     monkeypatch.setattr(app.st, "session_state", session_state)
     monkeypatch.setattr(app, "init_session_state", lambda: None)
-    monkeypatch.setattr(app, "inject_ui_styles", lambda: None)
     monkeypatch.setattr(app, "_cached_load_app_config", lambda: {})
     monkeypatch.setattr(app, "render_sidebar", lambda config: ("gpt-5.4", 6000, 3, "safe", False))
     monkeypatch.setattr(app, "_drain_processing_events", lambda: None)
@@ -714,7 +703,6 @@ def test_main_keeps_completed_view_with_shared_layout(monkeypatch):
 
     monkeypatch.setattr(app.st, "session_state", session_state)
     monkeypatch.setattr(app, "init_session_state", lambda: None)
-    monkeypatch.setattr(app, "inject_ui_styles", lambda: None)
     monkeypatch.setattr(app, "_cached_load_app_config", lambda: {})
     monkeypatch.setattr(app, "render_sidebar", lambda config: ("gpt-5.4", 6000, 3, "safe", False))
     monkeypatch.setattr(app, "_drain_processing_events", lambda: None)
@@ -725,7 +713,6 @@ def test_main_keeps_completed_view_with_shared_layout(monkeypatch):
     monkeypatch.setattr(app.st, "title", lambda *args, **kwargs: None)
     monkeypatch.setattr(app.st, "write", lambda *args, **kwargs: None)
     monkeypatch.setattr(app.st, "file_uploader", lambda *args, **kwargs: None)
-    monkeypatch.setattr(app, "render_file_uploader_state_styles", lambda **kwargs: None)
     monkeypatch.setattr(app, "render_intro_layout_styles", lambda: calls.append("intro"))
     monkeypatch.setattr(app.st, "button", lambda *args, **kwargs: False)
     monkeypatch.setattr(app, "render_run_log", lambda *args, **kwargs: calls.append("run_log"))
@@ -768,7 +755,6 @@ def test_main_passes_completed_result_bundle_mode_metadata_to_renderer(monkeypat
 
     monkeypatch.setattr(app.st, "session_state", session_state)
     monkeypatch.setattr(app, "init_session_state", lambda: None)
-    monkeypatch.setattr(app, "inject_ui_styles", lambda: None)
     monkeypatch.setattr(app, "_cached_load_app_config", lambda: {})
     monkeypatch.setattr(app, "render_sidebar", lambda config: ("gpt-5.4", 6000, 3, "safe", False))
     monkeypatch.setattr(app, "_drain_processing_events", lambda: None)
@@ -779,7 +765,6 @@ def test_main_passes_completed_result_bundle_mode_metadata_to_renderer(monkeypat
     monkeypatch.setattr(app.st, "title", lambda *args, **kwargs: None)
     monkeypatch.setattr(app.st, "write", lambda *args, **kwargs: None)
     monkeypatch.setattr(app.st, "file_uploader", lambda *args, **kwargs: None)
-    monkeypatch.setattr(app, "render_file_uploader_state_styles", lambda **kwargs: None)
     monkeypatch.setattr(app, "render_intro_layout_styles", lambda: None)
     monkeypatch.setattr(app.st, "button", lambda *args, **kwargs: False)
     monkeypatch.setattr(app, "render_run_log", lambda *args, **kwargs: None)
@@ -832,7 +817,6 @@ def test_main_renders_preparation_summary_for_prepared_file(monkeypatch):
 
     monkeypatch.setattr(app.st, "session_state", session_state)
     monkeypatch.setattr(app, "init_session_state", lambda: None)
-    monkeypatch.setattr(app, "inject_ui_styles", lambda: None)
     monkeypatch.setattr(app, "_cached_load_app_config", lambda: {})
     monkeypatch.setattr(app, "render_sidebar", lambda config: ("gpt-5.4", 6000, 3, "safe", False))
     monkeypatch.setattr(app, "_drain_processing_events", lambda: None)
@@ -852,7 +836,6 @@ def test_main_renders_preparation_summary_for_prepared_file(monkeypatch):
     monkeypatch.setattr(app, "render_partial_result", lambda *args, **kwargs: None)
     monkeypatch.setattr(app, "render_run_log", lambda *args, **kwargs: None)
     monkeypatch.setattr(app, "render_image_validation_summary", lambda *args, **kwargs: None)
-    monkeypatch.setattr(app, "render_section_gap", lambda *args, **kwargs: None)
     monkeypatch.setattr(app, "_render_processing_controls", lambda **kwargs: None)
     monkeypatch.setattr(compare_panel, "render_compare_all_apply_panel", lambda **kwargs: None)
     monkeypatch.setattr(application_flow, "resolve_effective_uploaded_file", lambda **kwargs: uploaded_file)
@@ -908,7 +891,6 @@ def test_main_marks_prepared_status_with_completed_terminal_kind(monkeypatch):
 
     monkeypatch.setattr(app.st, "session_state", session_state)
     monkeypatch.setattr(app, "init_session_state", lambda: None)
-    monkeypatch.setattr(app, "inject_ui_styles", lambda: None)
     monkeypatch.setattr(app, "_cached_load_app_config", lambda: {})
     monkeypatch.setattr(app, "render_sidebar", lambda config: ("gpt-5.4", 6000, 3, "safe", False))
     monkeypatch.setattr(app, "_drain_processing_events", lambda: None)
@@ -926,7 +908,6 @@ def test_main_marks_prepared_status_with_completed_terminal_kind(monkeypatch):
     monkeypatch.setattr(app, "render_partial_result", lambda *args, **kwargs: None)
     monkeypatch.setattr(app, "render_run_log", lambda *args, **kwargs: None)
     monkeypatch.setattr(app, "render_image_validation_summary", lambda *args, **kwargs: None)
-    monkeypatch.setattr(app, "render_section_gap", lambda *args, **kwargs: None)
     monkeypatch.setattr(app, "_render_processing_controls", lambda **kwargs: None)
     monkeypatch.setattr(app, "set_processing_status", lambda **kwargs: status_calls.append(kwargs))
     monkeypatch.setattr(compare_panel, "render_compare_all_apply_panel", lambda **kwargs: None)
@@ -976,7 +957,6 @@ def test_main_ignores_stale_completed_result_for_different_uploaded_file(monkeyp
 
     monkeypatch.setattr(app.st, "session_state", session_state)
     monkeypatch.setattr(app, "init_session_state", lambda: None)
-    monkeypatch.setattr(app, "inject_ui_styles", lambda: None)
     monkeypatch.setattr(app, "_cached_load_app_config", lambda: {})
     monkeypatch.setattr(app, "render_sidebar", lambda config: ("gpt-5.4", 6000, 3, "safe", False))
     monkeypatch.setattr(app, "_drain_processing_events", lambda: None)
@@ -1008,7 +988,6 @@ def test_main_ignores_stale_completed_result_for_different_uploaded_file(monkeyp
     monkeypatch.setattr(app, "render_partial_result", lambda *args, **kwargs: None)
     monkeypatch.setattr(app, "render_run_log", lambda *args, **kwargs: None)
     monkeypatch.setattr(app, "render_image_validation_summary", lambda *args, **kwargs: None)
-    monkeypatch.setattr(app, "render_section_gap", lambda *args, **kwargs: None)
     monkeypatch.setattr(app, "_render_processing_controls", lambda **kwargs: None)
     monkeypatch.setattr(app, "render_markdown_preview", lambda *args, **kwargs: result_bundle_calls.append("markdown_preview"))
     monkeypatch.setattr(app, "render_result", lambda *args, **kwargs: result_bundle_calls.append((args, kwargs)))
@@ -1101,7 +1080,6 @@ def test_main_exports_structure_manifest_from_prepared_state(monkeypatch):
 
     monkeypatch.setattr(app.st, "session_state", session_state)
     monkeypatch.setattr(app, "init_session_state", lambda: None)
-    monkeypatch.setattr(app, "inject_ui_styles", lambda: None)
     monkeypatch.setattr(app, "_cached_load_app_config", lambda: {})
     monkeypatch.setattr(app, "render_sidebar", lambda config: ("gpt-5.4", 6000, 3, "safe", False))
     monkeypatch.setattr(app, "_drain_processing_events", lambda: None)
@@ -1122,7 +1100,6 @@ def test_main_exports_structure_manifest_from_prepared_state(monkeypatch):
     monkeypatch.setattr(app, "render_partial_result", lambda *args, **kwargs: None)
     monkeypatch.setattr(app, "render_run_log", lambda *args, **kwargs: None)
     monkeypatch.setattr(app, "render_image_validation_summary", lambda *args, **kwargs: None)
-    monkeypatch.setattr(app, "render_section_gap", lambda *args, **kwargs: None)
     monkeypatch.setattr(app, "_render_processing_controls", lambda **kwargs: None)
     monkeypatch.setattr(compare_panel, "render_compare_all_apply_panel", lambda **kwargs: None)
     monkeypatch.setattr(application_flow, "resolve_effective_uploaded_file", lambda **kwargs: uploaded_file)
@@ -3960,7 +3937,6 @@ def test_main_starts_full_book_processing_from_analysis_panel(monkeypatch):
 
     monkeypatch.setattr(app.st, "session_state", session_state)
     monkeypatch.setattr(app, "init_session_state", lambda: None)
-    monkeypatch.setattr(app, "inject_ui_styles", lambda: None)
     monkeypatch.setattr(app, "_cached_load_app_config", lambda: {})
     monkeypatch.setattr(app, "render_sidebar", lambda config: ("gpt-5.4", 6000, 3, "safe", False))
     monkeypatch.setattr(app, "_drain_processing_events", lambda: None)
@@ -3994,7 +3970,6 @@ def test_main_starts_full_book_processing_from_analysis_panel(monkeypatch):
     monkeypatch.setattr(app, "render_partial_result", lambda *args, **kwargs: None)
     monkeypatch.setattr(app, "render_run_log", lambda *args, **kwargs: None)
     monkeypatch.setattr(app, "render_image_validation_summary", lambda *args, **kwargs: None)
-    monkeypatch.setattr(app, "render_section_gap", lambda *args, **kwargs: None)
     monkeypatch.setattr(app, "_render_processing_controls", lambda **kwargs: (_ for _ in ()).throw(AssertionError("generic controls should not be used when analysis action returns full-book start")))
     monkeypatch.setattr(compare_panel, "render_compare_all_apply_panel", lambda **kwargs: None)
     monkeypatch.setattr(application_flow, "resolve_effective_uploaded_file", lambda **kwargs: uploaded_file)
@@ -4094,7 +4069,6 @@ def test_main_starts_selected_processing_from_analysis_panel(monkeypatch):
 
     monkeypatch.setattr(app.st, "session_state", session_state)
     monkeypatch.setattr(app, "init_session_state", lambda: None)
-    monkeypatch.setattr(app, "inject_ui_styles", lambda: None)
     monkeypatch.setattr(app, "_cached_load_app_config", lambda: {})
     monkeypatch.setattr(app, "render_sidebar", lambda config: ("gpt-5.4", 6000, 3, "safe", False))
     monkeypatch.setattr(app, "_drain_processing_events", lambda: None)
@@ -4127,7 +4101,6 @@ def test_main_starts_selected_processing_from_analysis_panel(monkeypatch):
     monkeypatch.setattr(app, "render_partial_result", lambda *args, **kwargs: None)
     monkeypatch.setattr(app, "render_run_log", lambda *args, **kwargs: None)
     monkeypatch.setattr(app, "render_image_validation_summary", lambda *args, **kwargs: None)
-    monkeypatch.setattr(app, "render_section_gap", lambda *args, **kwargs: None)
     monkeypatch.setattr(app, "_maybe_apply_file_recommendations", lambda **kwargs: None)
     monkeypatch.setattr(app, "_build_structure_settings_hash", lambda **kwargs: "settings123")
     monkeypatch.setattr(app, "_render_processing_controls", lambda **kwargs: (_ for _ in ()).throw(AssertionError("generic controls should not be used when analysis action returns selected start")))
@@ -4233,7 +4206,6 @@ def test_main_starts_selected_processing_excludes_locked_descendants(monkeypatch
 
     monkeypatch.setattr(app.st, "session_state", session_state)
     monkeypatch.setattr(app, "init_session_state", lambda: None)
-    monkeypatch.setattr(app, "inject_ui_styles", lambda: None)
     monkeypatch.setattr(app, "_cached_load_app_config", lambda: {})
     monkeypatch.setattr(app, "render_sidebar", lambda config: ("gpt-5.4", 6000, 3, "safe", False))
     monkeypatch.setattr(app, "_drain_processing_events", lambda: None)
@@ -4266,7 +4238,6 @@ def test_main_starts_selected_processing_excludes_locked_descendants(monkeypatch
     monkeypatch.setattr(app, "render_partial_result", lambda *args, **kwargs: None)
     monkeypatch.setattr(app, "render_run_log", lambda *args, **kwargs: None)
     monkeypatch.setattr(app, "render_image_validation_summary", lambda *args, **kwargs: None)
-    monkeypatch.setattr(app, "render_section_gap", lambda *args, **kwargs: None)
     monkeypatch.setattr(app, "_maybe_apply_file_recommendations", lambda **kwargs: None)
     monkeypatch.setattr(app, "_build_structure_settings_hash", lambda **kwargs: "settings123")
     monkeypatch.setattr(app, "_render_processing_controls", lambda **kwargs: (_ for _ in ()).throw(AssertionError("generic controls should not be used when analysis action returns selected start")))
@@ -5815,7 +5786,6 @@ def test_main_uses_lightweight_freeze_for_pdf_upload(monkeypatch):
 
     monkeypatch.setattr(app.st, "session_state", session_state)
     monkeypatch.setattr(app, "init_session_state", lambda: None)
-    monkeypatch.setattr(app, "inject_ui_styles", lambda: None)
     monkeypatch.setattr(app, "_cached_load_app_config", lambda: {})
     monkeypatch.setattr(app, "render_sidebar", lambda config: ("gpt-5.4", 6000, 3, "safe", False))
     monkeypatch.setattr(app, "_drain_processing_events", lambda: None)

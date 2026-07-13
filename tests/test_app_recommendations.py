@@ -661,7 +661,6 @@ def test_main_places_recommended_text_settings_notice_inside_preparation_summary
 
     monkeypatch.setattr(app.st, "session_state", session_state)
     monkeypatch.setattr(app, "init_session_state", lambda: None)
-    monkeypatch.setattr(app, "inject_ui_styles", lambda: None)
     monkeypatch.setattr(app, "_cached_load_app_config", lambda: {})
     monkeypatch.setattr(app, "render_sidebar", lambda config: ("gpt-5.4", 6000, 3, "safe", False))
     monkeypatch.setattr(app, "_drain_processing_events", lambda: None)
@@ -680,7 +679,6 @@ def test_main_places_recommended_text_settings_notice_inside_preparation_summary
     monkeypatch.setattr(app, "render_partial_result", lambda *args, **kwargs: None)
     monkeypatch.setattr(app, "render_run_log", lambda *args, **kwargs: None)
     monkeypatch.setattr(app, "render_image_validation_summary", lambda *args, **kwargs: None)
-    monkeypatch.setattr(app, "render_section_gap", lambda *args, **kwargs: None)
     monkeypatch.setattr(app, "_render_processing_controls", lambda **kwargs: None)
     monkeypatch.setattr(app, "get_processing_session_snapshot", lambda: type("ProcessingSnapshot", (), {"latest_source_token": ""})())
     monkeypatch.setattr(app, "get_latest_image_mode", lambda: "safe")

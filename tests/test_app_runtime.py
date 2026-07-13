@@ -19,7 +19,6 @@ def test_main_logs_app_start_only_once(monkeypatch):
 
     monkeypatch.setattr(app.st, "session_state", session_state)
     monkeypatch.setattr(app, "init_session_state", lambda: session_state.setdefault("app_start_logged", False))
-    monkeypatch.setattr(app, "inject_ui_styles", lambda: None)
     monkeypatch.setattr(app, "log_event", lambda *args, **kwargs: logged_events.append((args, kwargs)))
     monkeypatch.setattr(app.st, "title", lambda *args, **kwargs: None)
     monkeypatch.setattr(app.st, "write", lambda *args, **kwargs: None)

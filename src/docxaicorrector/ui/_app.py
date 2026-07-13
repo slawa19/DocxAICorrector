@@ -105,9 +105,7 @@ from docxaicorrector.ui._ui import (
     get_target_language_label,
     get_text_operation_label,
     get_text_setting_widget_keys,
-    inject_ui_styles,
     render_image_validation_summary,
-    render_file_uploader_state_styles,
     render_intro_layout_styles,
     render_live_status,
     render_markdown_preview,
@@ -116,7 +114,6 @@ from docxaicorrector.ui._ui import (
     render_result,
     render_result_bundle,
     render_run_log,
-    render_section_gap,
     render_sidebar,
 )
 from docxaicorrector.ui.structure_review_panel import (
@@ -203,9 +200,7 @@ def _mark_app_ready() -> None:
     _APP_READY_MARKER_WRITER.mark_ready()
 
 
-def _finalize_app_frame(*, add_section_gap: bool = False) -> None:
-    if add_section_gap:
-        render_section_gap("lg")
+def _finalize_app_frame() -> None:
     _mark_app_ready()
     _schedule_stale_persisted_sources_cleanup()
 
@@ -750,7 +745,6 @@ def main() -> None:
     init_session_state()
     _drain_processing_events()
     _drain_preparation_events()
-    inject_ui_styles()
     if not is_app_start_logged():
         log_event(logging.INFO, "app_start", "Приложение инициализировано")
         mark_app_start_logged()
@@ -797,7 +791,6 @@ def main() -> None:
     st.write(t("app.intro_description"))
     st.caption(t("app.pdf_caption"))
     uploaded_widget_file = st.file_uploader(t("app.upload_prompt"), type=["docx", "doc", "pdf"])
-    render_file_uploader_state_styles(has_uploaded_file=uploaded_widget_file is not None)
 
     if processing_in_progress:
         @st.fragment(run_every=2)
@@ -807,7 +800,7 @@ def main() -> None:
             render_run_log()
             render_image_validation_summary()
             render_partial_result()
-            _finalize_app_frame(add_section_gap=True)
+            _finalize_app_frame()
 
             still_running = get_processing_outcome() == ProcessingOutcome.RUNNING.value
             action = _render_processing_controls(can_start=False, is_processing=still_running)
@@ -1106,7 +1099,6 @@ def main() -> None:
     compare_panel.render_compare_all_apply_panel(
         latest_image_mode=get_latest_image_mode(),
         image_assets=cast(list[object], st.session_state.get("image_assets", [])),
-        render_section_gap=render_section_gap,
     )
 
     if has_completed_result:
@@ -1120,7 +1112,7 @@ def main() -> None:
             audiobook_postprocess_enabled=processing_snapshot.latest_audiobook_postprocess_enabled,
         )
 
-    _finalize_app_frame(add_section_gap=True)
+    _finalize_app_frame()
     action = analysis_action if analysis_action is not None else _render_processing_controls(
         can_start=True,
         is_processing=False,
