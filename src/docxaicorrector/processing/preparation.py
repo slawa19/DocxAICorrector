@@ -44,21 +44,10 @@ from docxaicorrector.text.translation_domains import build_terminology_plan, bui
 
 
 _REASON_LABELS: dict[str, str] = {
-    "structure_recognition_noop_on_high_risk": "AI-распознавание структуры не внесло изменений для документа с высоким структурным риском",
-    "toc_like_sequence_without_bounded_region": "обнаружен TOC-подобный фрагмент без надёжно выделенной границы",
-    "structural_repair_required_before_processing": "перед обработкой требуется structural repair документа",
-    "isolated_list_markers_remaining": "после подготовки остались изолированные маркеры списка",
+    # Preparation-stage first-block composition gate (application_flow humanization).
     "first_block_mixed_toc_and_epigraph": "первый блок смешивает элементы оглавления и эпиграфа",
     "first_block_mixed_toc_and_body_start": "первый блок смешивает элементы оглавления и начало основного текста",
-    "low_explicit_heading_density": "мало явных заголовков",
-    "high_suspicious_short_body_ratio": "много коротких body-абзацев",
-    "toc_like_sequence_detected": "обнаружен TOC-подобный фрагмент",
-    "high_all_caps_or_centered_body_ratio": "слишком много body-абзацев в ВЕРХНЕМ РЕГИСТРЕ или по центру",
-    "heading_only_collapse_risk": "есть риск потери заголовочной структуры",
-    "isolated_list_marker_fragments": "остались изолированные маркеры списков",
-    "large_front_matter_block_risk": "обнаружен риск крупного фронт-маттер блока без безопасной границы",
-    "heading_count_far_below_toc_expectation": "заголовков значительно меньше, чем ожидается по оглавлению",
-    "high_risk_without_structure_repair": "документ высокого риска не прошёл structural repair",
+    # Post-translation document-level quality gate (late_phases humanization).
     "untranslated_structural_text_review_required": "структурные элементы остались на исходном языке",
     "untranslated_body_text_review_required": "фрагменты основного текста остались на исходном языке",
     "untranslated_body_text_above_threshold": "слишком большой объём основного текста остался на исходном языке",
@@ -210,19 +199,6 @@ def _build_preparation_stage_metrics(
 PDF_IMPORT_PARAGRAPH_LOGIC_VERSION = 2
 
 
-def build_structure_repair_status_note(structure_repair_report) -> str:
-    if structure_repair_report is None or not bool(getattr(structure_repair_report, "applied", False)):
-        return ""
-    bullet_items = int(getattr(structure_repair_report, "repaired_bullet_items", 0) or 0)
-    numbered_items = int(getattr(structure_repair_report, "repaired_numbered_items", 0) or 0)
-    toc_regions = int(getattr(structure_repair_report, "bounded_toc_regions", 0) or 0)
-    heading_candidates = int(getattr(structure_repair_report, "heading_candidates_from_toc", 0) or 0)
-    return (
-        "Восстановление структуры: "
-        f"списки {bullet_items + numbered_items}, TOC-регионов {toc_regions}, подсказок заголовков {heading_candidates}."
-    )
-
-
 def emit_preparation_progress(progress_callback, *, stage: str, detail: str, progress: float, metrics: dict[str, Any] | None = None) -> None:
     if progress_callback is None:
         return
@@ -242,42 +218,6 @@ def _build_source_import_progress(*, source_format: str) -> tuple[str, str]:
             "Извлекаю абзацы, встроенные изображения и структуру из сконвертированного DOCX.",
         )
     return ("Разбор DOCX", "Извлекаю абзацы и встроенные изображения.")
-
-
-def build_layout_cleanup_status_note(cleanup_report) -> str:
-    if cleanup_report is None:
-        return ""
-    cleanup_mode = str(getattr(cleanup_report, "cleanup_mode", "remove") or "remove").strip().lower()
-    if cleanup_mode == "flag":
-        flagged_count = int(
-            getattr(cleanup_report, "flagged_page_number_count", 0)
-            or 0
-        ) + int(
-            getattr(cleanup_report, "flagged_repeated_artifact_count", 0)
-            or 0
-        ) + int(
-            getattr(cleanup_report, "flagged_empty_or_whitespace_count", 0)
-            or 0
-        )
-        if flagged_count <= 0:
-            return ""
-        page_numbers = int(getattr(cleanup_report, "flagged_page_number_count", 0) or 0)
-        repeated = int(getattr(cleanup_report, "flagged_repeated_artifact_count", 0) or 0)
-        empty = int(getattr(cleanup_report, "flagged_empty_or_whitespace_count", 0) or 0)
-        return (
-            f"Очистка: помечено {flagged_count} служебных элементов "
-            f"({page_numbers} номеров страниц, {repeated} повторяющихся колонтитулов, {empty} пустых абзацев)."
-        )
-    removed_count = int(getattr(cleanup_report, "removed_paragraph_count", 0) or 0)
-    if removed_count <= 0:
-        return ""
-    page_numbers = int(getattr(cleanup_report, "removed_page_number_count", 0) or 0)
-    repeated = int(getattr(cleanup_report, "removed_repeated_artifact_count", 0) or 0)
-    empty = int(getattr(cleanup_report, "removed_empty_or_whitespace_count", 0) or 0)
-    return (
-        f"Очистка: удалено {removed_count} служебных элементов "
-        f"({page_numbers} номеров страниц, {repeated} повторяющихся колонтитулов, {empty} пустых абзацев)."
-    )
 
 
 def _resolve_layout_cleanup_cache_key(app_config: Mapping[str, Any]) -> str:

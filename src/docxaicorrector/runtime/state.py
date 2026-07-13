@@ -703,6 +703,7 @@ def init_session_state() -> None:
     st.session_state.setdefault("processed_block_markdowns", [])
     st.session_state.setdefault("latest_docx_bytes", None)
     st.session_state.setdefault("latest_narration_text", None)
+    st.session_state.setdefault("latest_quality_warning", None)
     st.session_state.setdefault("latest_result_notice", None)
     st.session_state.setdefault("latest_source_name", "")
     st.session_state.setdefault("latest_source_token", "")
@@ -890,6 +891,7 @@ def reset_run_state(*, keep_restart_source: bool = True, preserve_preparation: b
             del st.session_state[_key]
     st.session_state.latest_docx_bytes = None
     st.session_state.latest_narration_text = None
+    st.session_state.latest_quality_warning = None
     st.session_state.latest_result_notice = None
     st.session_state.latest_source_name = ""
     st.session_state.latest_source_token = ""

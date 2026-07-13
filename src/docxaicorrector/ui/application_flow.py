@@ -16,8 +16,6 @@ from docxaicorrector.document.segments import (
     SegmentDetectionReport,
 )
 from docxaicorrector.processing.preparation import (
-    build_layout_cleanup_status_note,
-    build_structure_repair_status_note,
     emit_preparation_progress,
     humanize_quality_gate_reasons,
     prepare_document_for_processing,
@@ -40,6 +38,7 @@ from docxaicorrector.runtime.state import (
     set_selected_source_token,
 )
 from docxaicorrector.runtime.workflow_state import IdleViewState, derive_idle_view_state, has_restartable_outcome
+from docxaicorrector.ui.i18n import t
 
 
 class SessionStateLike(Protocol):
@@ -348,29 +347,29 @@ def _raise_or_fail_preparation(*, prepared_document, uploaded_filename: str, fai
             )
         raise ValueError(message)
     if not prepared_document.jobs:
+        message = t("flow.no_jobs_built")
         if fail_critical_fn is not None:
-            fail_critical_fn("no_jobs_built", "Не удалось собрать ни одного блока для обработки.", filename=uploaded_filename)
-        raise ValueError("Не удалось собрать ни одного блока для обработки.")
+            fail_critical_fn("no_jobs_built", message, filename=uploaded_filename)
+        raise ValueError(message)
     if any(not str(job.get("target_text") or "").strip() for job in prepared_document.jobs):
+        message = t("flow.empty_target_block")
         if fail_critical_fn is not None:
-            fail_critical_fn("empty_target_block", "Обнаружен пустой целевой блок перед отправкой в модель.", filename=uploaded_filename)
-        raise ValueError("Обнаружен пустой целевой блок перед отправкой в модель.")
+            fail_critical_fn("empty_target_block", message, filename=uploaded_filename)
+        raise ValueError(message)
 
 
 def _build_quality_gate_blocked_message(*, prepared_document) -> str:
     reasons = humanize_quality_gate_reasons(getattr(prepared_document, "quality_gate_reasons", ()) or ())
-    message = "Подготовка заблокирована quality gate: документ требует structural repair перед обработкой."
     if not reasons:
-        return message
-    return f"{message} Причины: {', '.join(reasons)}"
+        return t("flow.quality_gate_blocked")
+    return t("flow.quality_gate_blocked_with_reasons", reasons=", ".join(reasons))
 
 
 def _build_quality_gate_warning_message(*, prepared_document) -> str:
     reasons = humanize_quality_gate_reasons(getattr(prepared_document, "quality_gate_reasons", ()) or ())
-    message = "Обработка продолжена в best-effort режиме: структура документа распознана с повышенным риском."
     if not reasons:
-        return message
-    return f"{message} Причины: {', '.join(reasons)}"
+        return t("flow.quality_gate_warning")
+    return t("flow.quality_gate_warning_with_reasons", reasons=", ".join(reasons))
 
 
 def _build_prepared_run_context(*, uploaded_filename: str, uploaded_file_bytes: bytes, uploaded_file_token: str, prepared_document, elapsed_seconds: float) -> PreparedRunContext:

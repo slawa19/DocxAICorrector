@@ -1016,6 +1016,7 @@ def test_get_current_result_bundle_reads_p1a_source_identity_via_state_helpers(m
         "narration_text": None,
         "processing_operation": "edit",
         "audiobook_postprocess_enabled": False,
+        "quality_warning": None,
     }
 
 
@@ -1035,6 +1036,7 @@ def test_get_current_result_bundle_allows_narration_only_result(monkeypatch):
         "narration_text": "[thoughtful] text",
         "processing_operation": "edit",
         "audiobook_postprocess_enabled": False,
+        "quality_warning": None,
     }
 
 

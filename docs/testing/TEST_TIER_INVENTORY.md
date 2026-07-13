@@ -69,6 +69,8 @@ This inventory is intentionally pragmatic:
 - `tests/test_translation_domains.py`
 - `tests/test_validation_formatting_replay.py`
 - `tests/test_ui.py`
+- `tests/test_ui_i18n.py`
+- `tests/test_ui_review_presentation.py`
 - `tests/test_workflow_state.py`
 
 ## Compat-Legacy

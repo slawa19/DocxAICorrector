@@ -19,7 +19,6 @@ def test_main_logs_app_start_only_once(monkeypatch):
 
     monkeypatch.setattr(app.st, "session_state", session_state)
     monkeypatch.setattr(app, "init_session_state", lambda: session_state.setdefault("app_start_logged", False))
-    monkeypatch.setattr(app, "inject_ui_styles", lambda: None)
     monkeypatch.setattr(app, "log_event", lambda *args, **kwargs: logged_events.append((args, kwargs)))
     monkeypatch.setattr(app.st, "title", lambda *args, **kwargs: None)
     monkeypatch.setattr(app.st, "write", lambda *args, **kwargs: None)
@@ -120,7 +119,7 @@ def test_render_processing_controls_keeps_start_visible_while_processing(monkeyp
 
     assert action is None
     assert start_column.calls == [(
-        "Обработка запущена",
+        app.t("app.button_processing_running"),
         {
             "type": "primary",
             "use_container_width": True,
@@ -129,7 +128,7 @@ def test_render_processing_controls_keeps_start_visible_while_processing(monkeyp
         },
     )]
     assert stop_column.calls == [(
-        "Стоп",
+        app.t("app.button_stop"),
         {
             "use_container_width": True,
             "disabled": False,
@@ -149,7 +148,7 @@ def test_render_processing_controls_enables_start_and_disables_stop_when_idle(mo
 
     assert action == "start"
     assert start_column.calls == [(
-        "Начать обработку",
+        app.t("app.button_start_processing"),
         {
             "type": "primary",
             "use_container_width": True,
@@ -171,7 +170,7 @@ def test_render_processing_controls_demotes_start_after_completed_result(monkeyp
 
     assert action is None
     assert start_column.calls == [(
-        "Обработать повторно",
+        app.t("app.button_reprocess"),
         {
             "type": "secondary",
             "use_container_width": True,
@@ -180,7 +179,7 @@ def test_render_processing_controls_demotes_start_after_completed_result(monkeyp
         },
     )]
     assert stop_column.calls == [(
-        "Стоп",
+        app.t("app.button_stop"),
         {
             "use_container_width": True,
             "disabled": True,

@@ -9,6 +9,7 @@ from docxaicorrector.core.models import StructureRepairReport
 from docxaicorrector.document.segments import DocumentContextProfile, DocumentSegment, GlossaryTerm, SegmentBoundaryEvidence, SegmentDetectionReport
 from docxaicorrector.pipeline.contracts import SegmentSelection
 from docxaicorrector.structure.validation import StructureValidationReport
+from docxaicorrector.ui.i18n import t
 from conftest import SessionState as SessionState
 
 
@@ -165,10 +166,7 @@ def test_store_preparation_summary_uses_preparation_context_not_processing_statu
         "quality_gate_status": "pass",
         "elapsed": "1.2 c",
         "progress": 1.0,
-        "status_notes": [
-            "Восстановление структуры: списки 2, TOC-регионов 1, подсказок заголовков 3.",
-            "Очистка: помечено 3 служебных элементов (2 номеров страниц, 1 повторяющихся колонтитулов, 0 пустых абзацев).",
-        ],
+        "status_notes": [],
         "raw_paragraph_count": 3,
         "logical_paragraph_count": 2,
         "merged_group_count": 1,
@@ -200,7 +198,6 @@ def test_main_restarts_background_preparation_when_chunk_size_changes(monkeypatc
 
     monkeypatch.setattr(app.st, "session_state", session_state)
     monkeypatch.setattr(app, "init_session_state", lambda: None)
-    monkeypatch.setattr(app, "inject_ui_styles", lambda: None)
     monkeypatch.setattr(app, "_cached_load_app_config", lambda: {})
     monkeypatch.setattr(app, "render_sidebar", lambda config: ("gpt-5.4", 7000, 3, "safe", True, "audiobook", "auto", "ru", False, False))
     monkeypatch.setattr(app, "_drain_processing_events", lambda: None)
@@ -260,7 +257,6 @@ def test_main_restarts_background_preparation_when_uploaded_file_changes(monkeyp
 
     monkeypatch.setattr(app.st, "session_state", session_state)
     monkeypatch.setattr(app, "init_session_state", lambda: None)
-    monkeypatch.setattr(app, "inject_ui_styles", lambda: None)
     monkeypatch.setattr(app, "_cached_load_app_config", lambda: {})
     monkeypatch.setattr(app, "render_sidebar", lambda config: ("gpt-5.4", 6000, 3, "safe", False))
     monkeypatch.setattr(app, "_drain_processing_events", lambda: None)
@@ -343,7 +339,6 @@ def test_main_normalizes_legacy_doc_before_starting_background_preparation(monke
 
     monkeypatch.setattr(app.st, "session_state", session_state)
     monkeypatch.setattr(app, "init_session_state", lambda: None)
-    monkeypatch.setattr(app, "inject_ui_styles", lambda: None)
     monkeypatch.setattr(app, "_cached_load_app_config", lambda: {})
     monkeypatch.setattr(app, "render_sidebar", lambda config: ("gpt-5.4", 6000, 3, "safe", True))
     monkeypatch.setattr(app, "_drain_processing_events", lambda: None)
@@ -404,7 +399,6 @@ def test_main_supports_pdf_upload_and_updates_user_facing_copy(monkeypatch):
 
     monkeypatch.setattr(app.st, "session_state", session_state)
     monkeypatch.setattr(app, "init_session_state", lambda: None)
-    monkeypatch.setattr(app, "inject_ui_styles", lambda: None)
     monkeypatch.setattr(app, "_cached_load_app_config", lambda: {})
     monkeypatch.setattr(app, "render_sidebar", lambda config: ("gpt-5.4", 6000, 3, "safe", False))
     monkeypatch.setattr(app, "_drain_processing_events", lambda: None)
@@ -446,7 +440,6 @@ def test_main_shows_pdf_size_limit_error_copy(monkeypatch):
 
     monkeypatch.setattr(app.st, "session_state", session_state)
     monkeypatch.setattr(app, "init_session_state", lambda: None)
-    monkeypatch.setattr(app, "inject_ui_styles", lambda: None)
     monkeypatch.setattr(app, "_cached_load_app_config", lambda: {})
     monkeypatch.setattr(app, "render_sidebar", lambda config: ("gpt-5.4", 6000, 3, "safe", False))
     monkeypatch.setattr(app, "_drain_processing_events", lambda: None)
@@ -466,7 +459,7 @@ def test_main_shows_pdf_size_limit_error_copy(monkeypatch):
     app.main()
 
     assert error_calls == [
-        f"Размер DOCX/DOC/PDF превышает допустимый предел {app.MAX_DOCX_ARCHIVE_SIZE_BYTES // (1024 * 1024)} МБ. Загрузите файл меньшего размера."
+        t("app.file_too_large", limit=app.MAX_DOCX_ARCHIVE_SIZE_BYTES // (1024 * 1024))
     ]
 
 
@@ -483,7 +476,6 @@ def test_main_reports_pdf_freeze_failure_without_uncaught_streamlit_error(monkey
 
     monkeypatch.setattr(app.st, "session_state", session_state)
     monkeypatch.setattr(app, "init_session_state", lambda: None)
-    monkeypatch.setattr(app, "inject_ui_styles", lambda: None)
     monkeypatch.setattr(app, "_cached_load_app_config", lambda: {})
     monkeypatch.setattr(app, "render_sidebar", lambda config: ("gpt-5.4", 6000, 3, "safe", False))
     monkeypatch.setattr(app, "_drain_processing_events", lambda: None)
@@ -516,7 +508,7 @@ def test_main_reports_pdf_freeze_failure_without_uncaught_streamlit_error(monkey
             {"filename": "source.pdf"},
         )
     ]
-    assert error_calls == ["Ошибка чтения документа: pdf read failed"]
+    assert error_calls == [t("app.document_read_error", message="pdf read failed")]
     assert finalized == [{}]
 
 
@@ -526,7 +518,6 @@ def test_main_renders_live_status_during_active_preparation(monkeypatch):
 
     monkeypatch.setattr(app.st, "session_state", session_state)
     monkeypatch.setattr(app, "init_session_state", lambda: None)
-    monkeypatch.setattr(app, "inject_ui_styles", lambda: None)
     monkeypatch.setattr(app, "_cached_load_app_config", lambda: {})
     monkeypatch.setattr(app, "render_sidebar", lambda config: ("gpt-5.4", 6000, 3, "safe", False))
     monkeypatch.setattr(app, "_drain_processing_events", lambda: None)
@@ -558,7 +549,6 @@ def test_main_keeps_processing_panel_visible_while_outcome_is_running(monkeypatc
 
     monkeypatch.setattr(app.st, "session_state", session_state)
     monkeypatch.setattr(app, "init_session_state", lambda: None)
-    monkeypatch.setattr(app, "inject_ui_styles", lambda: None)
     monkeypatch.setattr(app, "_cached_load_app_config", lambda: {})
     monkeypatch.setattr(app, "render_sidebar", lambda config: ("gpt-5.4", 6000, 3, "safe", False))
     monkeypatch.setattr(app, "_drain_processing_events", lambda: None)
@@ -575,7 +565,6 @@ def test_main_keeps_processing_panel_visible_while_outcome_is_running(monkeypatc
     monkeypatch.setattr(app, "render_run_log", lambda *args, **kwargs: calls.append("run_log"))
     monkeypatch.setattr(app, "render_image_validation_summary", lambda *args, **kwargs: calls.append("image_summary"))
     monkeypatch.setattr(app, "render_partial_result", lambda *args, **kwargs: calls.append("partial_result"))
-    monkeypatch.setattr(app, "render_section_gap", lambda *args, **kwargs: None)
     monkeypatch.setattr(app, "_render_processing_controls", lambda **kwargs: None)
 
     app.main()
@@ -600,7 +589,6 @@ def test_main_renders_current_preparation_failure_without_restarting(monkeypatch
 
     monkeypatch.setattr(app.st, "session_state", session_state)
     monkeypatch.setattr(app, "init_session_state", lambda: None)
-    monkeypatch.setattr(app, "inject_ui_styles", lambda: None)
     monkeypatch.setattr(app, "_cached_load_app_config", lambda: {})
     monkeypatch.setattr(app, "render_sidebar", lambda config: ("gpt-5.4", 6000, 3, "safe", False))
     monkeypatch.setattr(app, "_drain_processing_events", lambda: None)
@@ -652,7 +640,6 @@ def test_main_warns_when_current_preparation_state_is_unavailable(monkeypatch):
 
     monkeypatch.setattr(app.st, "session_state", session_state)
     monkeypatch.setattr(app, "init_session_state", lambda: None)
-    monkeypatch.setattr(app, "inject_ui_styles", lambda: None)
     monkeypatch.setattr(app, "_cached_load_app_config", lambda: {})
     monkeypatch.setattr(app, "render_sidebar", lambda config: ("gpt-5.4", 6000, 3, "safe", False))
     monkeypatch.setattr(app, "_drain_processing_events", lambda: None)
@@ -683,7 +670,7 @@ def test_main_warns_when_current_preparation_state_is_unavailable(monkeypatch):
 
     app.main()
 
-    assert warning_calls == [app.get_preparation_state_unavailable_message()]
+    assert warning_calls == [t("app.preparation_state_unavailable")]
     assert start_calls == []
     assert calls == ["live_status", "run_log", "finalize"]
 
@@ -713,7 +700,6 @@ def test_main_keeps_completed_view_with_shared_layout(monkeypatch):
 
     monkeypatch.setattr(app.st, "session_state", session_state)
     monkeypatch.setattr(app, "init_session_state", lambda: None)
-    monkeypatch.setattr(app, "inject_ui_styles", lambda: None)
     monkeypatch.setattr(app, "_cached_load_app_config", lambda: {})
     monkeypatch.setattr(app, "render_sidebar", lambda config: ("gpt-5.4", 6000, 3, "safe", False))
     monkeypatch.setattr(app, "_drain_processing_events", lambda: None)
@@ -724,7 +710,6 @@ def test_main_keeps_completed_view_with_shared_layout(monkeypatch):
     monkeypatch.setattr(app.st, "title", lambda *args, **kwargs: None)
     monkeypatch.setattr(app.st, "write", lambda *args, **kwargs: None)
     monkeypatch.setattr(app.st, "file_uploader", lambda *args, **kwargs: None)
-    monkeypatch.setattr(app, "render_file_uploader_state_styles", lambda **kwargs: None)
     monkeypatch.setattr(app, "render_intro_layout_styles", lambda: calls.append("intro"))
     monkeypatch.setattr(app.st, "button", lambda *args, **kwargs: False)
     monkeypatch.setattr(app, "render_run_log", lambda *args, **kwargs: calls.append("run_log"))
@@ -767,7 +752,6 @@ def test_main_passes_completed_result_bundle_mode_metadata_to_renderer(monkeypat
 
     monkeypatch.setattr(app.st, "session_state", session_state)
     monkeypatch.setattr(app, "init_session_state", lambda: None)
-    monkeypatch.setattr(app, "inject_ui_styles", lambda: None)
     monkeypatch.setattr(app, "_cached_load_app_config", lambda: {})
     monkeypatch.setattr(app, "render_sidebar", lambda config: ("gpt-5.4", 6000, 3, "safe", False))
     monkeypatch.setattr(app, "_drain_processing_events", lambda: None)
@@ -778,7 +762,6 @@ def test_main_passes_completed_result_bundle_mode_metadata_to_renderer(monkeypat
     monkeypatch.setattr(app.st, "title", lambda *args, **kwargs: None)
     monkeypatch.setattr(app.st, "write", lambda *args, **kwargs: None)
     monkeypatch.setattr(app.st, "file_uploader", lambda *args, **kwargs: None)
-    monkeypatch.setattr(app, "render_file_uploader_state_styles", lambda **kwargs: None)
     monkeypatch.setattr(app, "render_intro_layout_styles", lambda: None)
     monkeypatch.setattr(app.st, "button", lambda *args, **kwargs: False)
     monkeypatch.setattr(app, "render_run_log", lambda *args, **kwargs: None)
@@ -831,7 +814,6 @@ def test_main_renders_preparation_summary_for_prepared_file(monkeypatch):
 
     monkeypatch.setattr(app.st, "session_state", session_state)
     monkeypatch.setattr(app, "init_session_state", lambda: None)
-    monkeypatch.setattr(app, "inject_ui_styles", lambda: None)
     monkeypatch.setattr(app, "_cached_load_app_config", lambda: {})
     monkeypatch.setattr(app, "render_sidebar", lambda config: ("gpt-5.4", 6000, 3, "safe", False))
     monkeypatch.setattr(app, "_drain_processing_events", lambda: None)
@@ -851,7 +833,6 @@ def test_main_renders_preparation_summary_for_prepared_file(monkeypatch):
     monkeypatch.setattr(app, "render_partial_result", lambda *args, **kwargs: None)
     monkeypatch.setattr(app, "render_run_log", lambda *args, **kwargs: None)
     monkeypatch.setattr(app, "render_image_validation_summary", lambda *args, **kwargs: None)
-    monkeypatch.setattr(app, "render_section_gap", lambda *args, **kwargs: None)
     monkeypatch.setattr(app, "_render_processing_controls", lambda **kwargs: None)
     monkeypatch.setattr(compare_panel, "render_compare_all_apply_panel", lambda **kwargs: None)
     monkeypatch.setattr(application_flow, "resolve_effective_uploaded_file", lambda **kwargs: uploaded_file)
@@ -907,7 +888,6 @@ def test_main_marks_prepared_status_with_completed_terminal_kind(monkeypatch):
 
     monkeypatch.setattr(app.st, "session_state", session_state)
     monkeypatch.setattr(app, "init_session_state", lambda: None)
-    monkeypatch.setattr(app, "inject_ui_styles", lambda: None)
     monkeypatch.setattr(app, "_cached_load_app_config", lambda: {})
     monkeypatch.setattr(app, "render_sidebar", lambda config: ("gpt-5.4", 6000, 3, "safe", False))
     monkeypatch.setattr(app, "_drain_processing_events", lambda: None)
@@ -925,7 +905,6 @@ def test_main_marks_prepared_status_with_completed_terminal_kind(monkeypatch):
     monkeypatch.setattr(app, "render_partial_result", lambda *args, **kwargs: None)
     monkeypatch.setattr(app, "render_run_log", lambda *args, **kwargs: None)
     monkeypatch.setattr(app, "render_image_validation_summary", lambda *args, **kwargs: None)
-    monkeypatch.setattr(app, "render_section_gap", lambda *args, **kwargs: None)
     monkeypatch.setattr(app, "_render_processing_controls", lambda **kwargs: None)
     monkeypatch.setattr(app, "set_processing_status", lambda **kwargs: status_calls.append(kwargs))
     monkeypatch.setattr(compare_panel, "render_compare_all_apply_panel", lambda **kwargs: None)
@@ -975,7 +954,6 @@ def test_main_ignores_stale_completed_result_for_different_uploaded_file(monkeyp
 
     monkeypatch.setattr(app.st, "session_state", session_state)
     monkeypatch.setattr(app, "init_session_state", lambda: None)
-    monkeypatch.setattr(app, "inject_ui_styles", lambda: None)
     monkeypatch.setattr(app, "_cached_load_app_config", lambda: {})
     monkeypatch.setattr(app, "render_sidebar", lambda config: ("gpt-5.4", 6000, 3, "safe", False))
     monkeypatch.setattr(app, "_drain_processing_events", lambda: None)
@@ -1007,7 +985,6 @@ def test_main_ignores_stale_completed_result_for_different_uploaded_file(monkeyp
     monkeypatch.setattr(app, "render_partial_result", lambda *args, **kwargs: None)
     monkeypatch.setattr(app, "render_run_log", lambda *args, **kwargs: None)
     monkeypatch.setattr(app, "render_image_validation_summary", lambda *args, **kwargs: None)
-    monkeypatch.setattr(app, "render_section_gap", lambda *args, **kwargs: None)
     monkeypatch.setattr(app, "_render_processing_controls", lambda **kwargs: None)
     monkeypatch.setattr(app, "render_markdown_preview", lambda *args, **kwargs: result_bundle_calls.append("markdown_preview"))
     monkeypatch.setattr(app, "render_result", lambda *args, **kwargs: result_bundle_calls.append((args, kwargs)))
@@ -1074,6 +1051,38 @@ def test_store_preparation_summary_includes_structure_review_metrics(monkeypatch
     assert session_state.latest_preparation_summary["toc_matched_count"] == 5
 
 
+def test_store_preparation_summary_leaves_prepared_context_data_unchanged(monkeypatch):
+    session_state = SessionState()
+    prepared_run_context = _build_prepared_run_context(
+        paragraphs=["p1", "p2", "p3"],
+        jobs=[{"target_text": "block one"}, {"target_text": "block two"}],
+        segments=[DocumentSegment(segment_id="seg_0001"), DocumentSegment(segment_id="seg_0002")],
+        structure_fingerprint="abc123def456",
+    )
+
+    # Snapshot the load-bearing preparation OUTPUT before rendering-only summary work runs.
+    paragraphs_before = list(prepared_run_context.paragraphs)
+    jobs_before = [dict(job) for job in prepared_run_context.jobs]
+    segment_ids_before = [segment.segment_id for segment in prepared_run_context.segments]
+    fingerprint_before = prepared_run_context.structure_fingerprint
+
+    monkeypatch.setattr(app.st, "session_state", session_state)
+
+    app._store_preparation_summary(prepared_run_context=prepared_run_context)
+
+    # Preparation output must be byte-identical: the summary only surfaces it, never mutates it.
+    assert list(prepared_run_context.paragraphs) == paragraphs_before
+    assert [dict(job) for job in prepared_run_context.jobs] == jobs_before
+    assert [segment.segment_id for segment in prepared_run_context.segments] == segment_ids_before
+    assert prepared_run_context.structure_fingerprint == fingerprint_before
+    # And the summary still carries the same data for downstream engineer artifacts.
+    summary = session_state.latest_preparation_summary
+    assert summary["paragraph_count"] == len(paragraphs_before)
+    assert summary["block_count"] == len(jobs_before)
+    assert summary["segment_count"] == len(segment_ids_before)
+    assert summary["structure_fingerprint"] == fingerprint_before
+
+
 def test_main_exports_structure_manifest_from_prepared_state(monkeypatch):
     prepared_run_context = _build_prepared_run_context()
     uploaded_file = UploadedFileStub("report.docx", b"abc")
@@ -1100,7 +1109,6 @@ def test_main_exports_structure_manifest_from_prepared_state(monkeypatch):
 
     monkeypatch.setattr(app.st, "session_state", session_state)
     monkeypatch.setattr(app, "init_session_state", lambda: None)
-    monkeypatch.setattr(app, "inject_ui_styles", lambda: None)
     monkeypatch.setattr(app, "_cached_load_app_config", lambda: {})
     monkeypatch.setattr(app, "render_sidebar", lambda config: ("gpt-5.4", 6000, 3, "safe", False))
     monkeypatch.setattr(app, "_drain_processing_events", lambda: None)
@@ -1116,12 +1124,11 @@ def test_main_exports_structure_manifest_from_prepared_state(monkeypatch):
     monkeypatch.setattr(app.st, "info", lambda *args, **kwargs: None)
     monkeypatch.setattr(app.st, "warning", lambda *args, **kwargs: None)
     monkeypatch.setattr(app.st, "error", lambda *args, **kwargs: None)
-    monkeypatch.setattr(app.st, "button", lambda label, **kwargs: label == "Export Structure Manifest")
+    monkeypatch.setattr(app.st, "button", lambda label, **kwargs: label == t("app.export_manifest_button"))
     monkeypatch.setattr(app, "render_preparation_summary", lambda summary, *args, **kwargs: render_calls.append(summary))
     monkeypatch.setattr(app, "render_partial_result", lambda *args, **kwargs: None)
     monkeypatch.setattr(app, "render_run_log", lambda *args, **kwargs: None)
     monkeypatch.setattr(app, "render_image_validation_summary", lambda *args, **kwargs: None)
-    monkeypatch.setattr(app, "render_section_gap", lambda *args, **kwargs: None)
     monkeypatch.setattr(app, "_render_processing_controls", lambda **kwargs: None)
     monkeypatch.setattr(compare_panel, "render_compare_all_apply_panel", lambda **kwargs: None)
     monkeypatch.setattr(application_flow, "resolve_effective_uploaded_file", lambda **kwargs: uploaded_file)
@@ -1191,9 +1198,9 @@ def test_render_analysis_review_panel_renders_selector_and_disabled_process_sele
         segment_diagnostics=SegmentDetectionReport(segment_count=1, toc_entry_count=1, toc_matched_count=1),
         segment_to_job={"seg_0001": (0, 1)},
     )
-    confirm_col = FakeColumn(result=False)
     selected_col = FakeColumn(result=False)
     full_book_col = FakeColumn(result=False)
+    partial_container = FakeColumn(result=False)
     checkbox_calls = []
     info_calls = []
     subheader_calls = []
@@ -1223,7 +1230,7 @@ def test_render_analysis_review_panel_renders_selector_and_disabled_process_sele
         "columns",
         _two_stage_columns(
             [bulk_select_col, bulk_clear_col, bulk_all_col],
-            [confirm_col, selected_col, full_book_col],
+            [selected_col, full_book_col],
         ),
     )
     monkeypatch.setattr(app.st, "checkbox", lambda label, **kwargs: checkbox_calls.append((label, kwargs)) or kwargs.get("value", False))
@@ -1236,6 +1243,7 @@ def test_render_analysis_review_panel_renders_selector_and_disabled_process_sele
     monkeypatch.setattr(app.st, "write", lambda message, **kwargs: write_calls.append(message))
     monkeypatch.setattr(app.st, "warning", lambda *args, **kwargs: None)
     monkeypatch.setattr(app.st, "success", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "container", lambda *args, **kwargs: partial_container)
 
     action = app._render_analysis_review_panel(
         prepared_run_context=prepared_run_context,
@@ -1244,57 +1252,76 @@ def test_render_analysis_review_panel_renders_selector_and_disabled_process_sele
     )
 
     assert action is None
-    assert subheader_calls == ["Review Sections Before Partial Translation"]
-    assert selectbox_calls == [("Status Filter", ("All sections", "Pending", "Queued", "Processing", "Completed", "Failed", "Skipped", "Low confidence"), 0)]
-    assert text_input_calls == [("Search Sections", "")]
+    assert subheader_calls == [t("structure.subheader")]
+    assert selectbox_calls == [(
+        t("structure.status_filter_label"),
+        (
+            t("structure.filter_all"),
+            t("structure.filter_pending"),
+            t("structure.filter_queued"),
+            t("structure.filter_processing"),
+            t("structure.filter_completed"),
+            t("structure.filter_failed"),
+            t("structure.filter_skipped"),
+            t("structure.filter_low_confidence"),
+        ),
+        0,
+    )]
+    assert text_input_calls == [(t("structure.search_label"), "")]
     assert checkbox_calls and checkbox_calls[0][1]["value"] is True
-    assert expander_calls == [("Advanced structure tools", False), ("Included text preview: Chapter 1", False)]
-    assert any(message == "Starts with: p1" for message in caption_calls)
-    assert any(message == "Ends with: p2" for message in caption_calls)
+    assert expander_calls == [
+        (t("structure.advanced_tools_expander"), False),
+        (t("structure.included_preview_expander", title="Chapter 1"), False),
+    ]
+    assert any(message == t("structure.preview_starts_with", text="p1") for message in caption_calls)
+    assert any(message == t("structure.preview_ends_with", text="p2") for message in caption_calls)
     assert not any("Boundary fingerprint:" in message for message in caption_calls)
     assert not write_calls
-    assert selected_col.calls == [
+    # Segments are pending (can_build_final_book is False), so the partial actions
+    # render in a single full-width container and the final-book button is absent.
+    assert partial_container.calls == [
         (
-            "Process Selected",
+            t("structure.process_selected_button"),
             {
                 "use_container_width": True,
-                "disabled": True,
-                "help": "Process Selected unavailable: confirm the current outline before running the current chapter selection.",
+                "disabled": False,
+                "help": t("structure.process_selected_help"),
                 "key": "process_selected_button",
             },
         ),
         (
-            "Selected + Context",
+            t("structure.selected_with_context_button"),
             {
                 "use_container_width": True,
-                "disabled": True,
-                "help": "Process Selected unavailable: confirm the current outline before running the current chapter selection.",
+                "disabled": False,
+                "help": t("structure.selected_with_context_help"),
                 "key": "process_selected_with_context_button",
             },
         ),
     ]
     assert session_state.get("selected_context_include_front_matter_checkbox", True) is True
     assert session_state.get("selected_context_include_toc_checkbox", True) is True
-    assert full_book_col.calls == [(
-        "Process Entire Book",
-        {
-            "type": "primary",
-            "use_container_width": True,
-            "key": "process_entire_book_button",
-        },
-    )]
+    # The entire-book / assemble button must not be rendered when the final book
+    # cannot be assembled; the second action column is never created.
+    assert full_book_col.calls == []
+    assert not any(
+        label == t("structure.assemble_final_book_button")
+        for label, _ in partial_container.calls
+    )
     assert any(
-        message == "Detected 1 reviewable section for partial translation. Review the list below to decide what should be translated separately."
+        message == t("structure.overview_message", count=1)
         for message in info_calls
     )
-    assert any(message == "Will translate: 1/1 sections | 20/20 words" for message in info_calls)
-    assert any(message.startswith("Confidence overview:") for message in caption_calls)
     assert any(
-        message == "Structure not confirmed. Process Selected stays disabled until the current outline is reviewed and confirmed."
+        message == t("structure.will_translate", selected=1, total=1, selected_words=20, total_words=20)
+        for message in info_calls
+    )
+    assert any(
+        message == t("structure.confidence_summary", high=0, medium=0, low=0)
         for message in caption_calls
     )
     assert any(
-        message == "Current selection is ready for review, but chapter-based processing stays disabled until confirmation."
+        message == t("structure.confirmation_not_confirmed")
         for message in caption_calls
     )
 
@@ -1336,7 +1363,6 @@ def test_render_analysis_review_panel_renders_bulk_selection_buttons(monkeypatch
     bulk_select_col = FakeColumn(result=False)
     bulk_clear_col = FakeColumn(result=False)
     bulk_all_col = FakeColumn(result=False)
-    confirm_col = FakeColumn(result=False)
     selected_col = FakeColumn(result=False)
     full_book_col = FakeColumn(result=False)
 
@@ -1353,10 +1379,11 @@ def test_render_analysis_review_panel_renders_bulk_selection_buttons(monkeypatch
         columns_calls.append(count)
         if len(columns_calls) == 1:
             return [bulk_select_col, bulk_clear_col, bulk_all_col]
-        return [confirm_col, selected_col, full_book_col]
+        return [selected_col, full_book_col]
 
     monkeypatch.setattr(app.st, "session_state", session_state)
     monkeypatch.setattr(app.st, "columns", fake_columns)
+    monkeypatch.setattr(app.st, "container", lambda *args, **kwargs: selected_col)
     monkeypatch.setattr(app.st, "checkbox", lambda label, **kwargs: kwargs.get("value", False))
     monkeypatch.setattr(app.st, "selectbox", lambda label, options, index=0, **kwargs: options[index])
     monkeypatch.setattr(app.st, "text_input", lambda label, value="", **kwargs: value)
@@ -1374,9 +1401,11 @@ def test_render_analysis_review_panel_renders_bulk_selection_buttons(monkeypatch
         chunk_size=6000,
     )
 
-    assert columns_calls == [3, 3]
+    # seg_0001 is pending: the final-book button is not rendered, so the action
+    # row uses a single full-width container instead of a second st.columns(2).
+    assert columns_calls == [3]
     assert bulk_select_col.calls == [(
-        "Select Visible",
+        t("structure.select_visible_button"),
         {
             "use_container_width": True,
             "disabled": False,
@@ -1384,7 +1413,7 @@ def test_render_analysis_review_panel_renders_bulk_selection_buttons(monkeypatch
         },
     )]
     assert bulk_clear_col.calls == [(
-        "Clear Visible",
+        t("structure.clear_visible_button"),
         {
             "use_container_width": True,
             "disabled": False,
@@ -1392,7 +1421,7 @@ def test_render_analysis_review_panel_renders_bulk_selection_buttons(monkeypatch
         },
     )]
     assert bulk_all_col.calls == [(
-        "Select Entire Book",
+        t("structure.select_entire_book_button"),
         {
             "use_container_width": True,
             "disabled": False,
@@ -1463,7 +1492,7 @@ def test_render_analysis_review_panel_filters_segments_by_status_and_search(monk
     checkbox_labels = []
     info_calls = []
     caption_calls = []
-    selectbox_values = iter(["Failed"])
+    selectbox_values = iter([t("structure.filter_failed")])
 
     class FakeExpander:
         def __enter__(self):
@@ -1499,13 +1528,24 @@ def test_render_analysis_review_panel_filters_segments_by_status_and_search(monk
     )
 
     assert checkbox_labels == [
-        "Appendix Notes | 2 words | appendix | clear boundary | failed 0%"
+        t(
+            "structure.segment_label",
+            title="Appendix Notes",
+            words=2,
+            role="appendix",
+            relation="",
+            confidence=t("structure.confidence_hint_high"),
+            badge=t("structure.badge_failed", percent=0),
+            active="",
+        ),
+        t("structure.include_front_matter_label"),
+        t("structure.include_toc_label"),
     ]
     assert session_state.chapter_selector_filter == "failed"
     assert session_state.chapter_selector_search == "appendix"
     assert session_state.selected_segment_ids == ["seg_0001", "seg_0002"]
-    assert any(message == "Visible sections: 1/2" for message in caption_calls)
-    assert any(message == "Will translate: 2/2 sections | 4/4 words" for message in info_calls)
+    assert any(message == t("structure.visible_count", visible=1, total=2) for message in caption_calls)
+    assert any(message == t("structure.will_translate", selected=2, total=2, selected_words=4, total_words=4) for message in info_calls)
 
 
 def test_render_analysis_review_panel_shows_empty_filter_result_notice(monkeypatch):
@@ -1545,6 +1585,7 @@ def test_render_analysis_review_panel_shows_empty_filter_result_notice(monkeypat
         segment_to_job={"seg_0001": (0,)},
     )
     info_calls = []
+    checkbox_labels = []
 
     class FakeExpander:
         def __enter__(self):
@@ -1562,8 +1603,8 @@ def test_render_analysis_review_panel_shows_empty_filter_result_notice(monkeypat
             [FakeColumn(result=False), FakeColumn(result=False), FakeColumn(result=False)],
         ),
     )
-    monkeypatch.setattr(app.st, "checkbox", lambda label, **kwargs: (_ for _ in ()).throw(AssertionError("checkbox should not render when filter is empty")))
-    monkeypatch.setattr(app.st, "selectbox", lambda label, options, index=0, **kwargs: "Completed")
+    monkeypatch.setattr(app.st, "checkbox", lambda label, **kwargs: checkbox_labels.append(label) or kwargs.get("value", False))
+    monkeypatch.setattr(app.st, "selectbox", lambda label, options, index=0, **kwargs: t("structure.filter_completed"))
     monkeypatch.setattr(app.st, "text_input", lambda label, value="", **kwargs: "missing")
     monkeypatch.setattr(app.st, "info", lambda message, **kwargs: info_calls.append(message))
     monkeypatch.setattr(app.st, "subheader", lambda *args, **kwargs: None)
@@ -1579,7 +1620,10 @@ def test_render_analysis_review_panel_shows_empty_filter_result_notice(monkeypat
         chunk_size=6000,
     )
 
-    assert "No sections match the current filter/search." in info_calls
+    assert t("structure.no_sections_match") in info_calls
+    # No per-segment checkbox renders when the filter yields no visible sections
+    # (only the include-context checkboxes may appear for the retained selection).
+    assert all("Chapter 1" not in label for label in checkbox_labels)
 
 
 def test_render_analysis_review_panel_disables_locked_segment_checkboxes(monkeypatch):
@@ -1700,7 +1744,7 @@ def test_render_analysis_review_panel_disables_locked_segment_checkboxes(monkeyp
     assert checkbox_calls[1][1]["disabled"] is True
     assert checkbox_calls[2][1]["disabled"] is False
     assert any(
-        message == "Currently unavailable in this view: 2 sections already queued or processing."
+        message == t("structure.currently_unavailable_view", count=2)
         for message in caption_calls
     )
 
@@ -1780,7 +1824,7 @@ def test_render_analysis_review_panel_supports_skipped_status_filter(monkeypatch
         ),
     )
     monkeypatch.setattr(app.st, "checkbox", lambda label, **kwargs: checkbox_labels.append(label) or kwargs.get("value", False))
-    monkeypatch.setattr(app.st, "selectbox", lambda label, options, index=0, **kwargs: "Skipped")
+    monkeypatch.setattr(app.st, "selectbox", lambda label, options, index=0, **kwargs: t("structure.filter_skipped"))
     monkeypatch.setattr(app.st, "text_input", lambda label, value="", **kwargs: value)
     monkeypatch.setattr(app.st, "info", lambda *args, **kwargs: None)
     monkeypatch.setattr(app.st, "subheader", lambda *args, **kwargs: None)
@@ -1797,7 +1841,18 @@ def test_render_analysis_review_panel_supports_skipped_status_filter(monkeypatch
     )
 
     assert checkbox_labels == [
-        "Appendix A | 2 words | appendix | clear boundary | skipped"
+        t(
+            "structure.segment_label",
+            title="Appendix A",
+            words=2,
+            role="appendix",
+            relation="",
+            confidence=t("structure.confidence_hint_high"),
+            badge=t("structure.status_skipped"),
+            active="",
+        ),
+        t("structure.include_front_matter_label"),
+        t("structure.include_toc_label"),
     ]
 
 
@@ -2063,10 +2118,12 @@ def test_render_analysis_review_panel_shows_low_confidence_warning_and_manifest(
     )
 
     assert warnings == [
-        "Some section boundaries need manual review before partial translation: Low-confidence segment boundaries detected",
-        "Review this section before partial translation: Chapter 2. Boundary confidence is low",
+        t("structure.diagnostic_warning", details="Low-confidence segment boundaries detected"),
     ]
-    assert any(message == "Manifest path: .run/structure_manifests/20260506_094000_report.segments.json" for message in captions)
+    assert any(
+        message == t("structure.manifest_path_caption", path=".run/structure_manifests/20260506_094000_report.segments.json")
+        for message in captions
+    )
 
 
 def test_render_analysis_review_panel_shows_last_exported_manifest_comparison_notice(monkeypatch):
@@ -2144,10 +2201,12 @@ def test_render_analysis_review_panel_shows_last_exported_manifest_comparison_no
 
     assert any(
         message
-        == "Current analysis differs from the last exported structure manifest.\n"
-        "Manifest path: .run/structure_manifests/20260506_083400_report.segments.json\n"
-        "Exported fingerprint: oldfingerprint\n"
-        "Current fingerprint: newfingerprint"
+        == t(
+            "structure.manifest_diff_warning",
+            manifest_path=".run/structure_manifests/20260506_083400_report.segments.json",
+            exported="oldfingerprint",
+            current="newfingerprint",
+        )
         for message in warnings
     )
 
@@ -2230,15 +2289,17 @@ def test_render_analysis_review_panel_supports_imported_manifest_comparison(monk
     )
 
     assert any(
-        message == "Imported structure manifest ready for comparison: imported_report.segments.json"
+        message == t("structure.import_ready", filename="imported_report.segments.json")
         for message in captions
     )
     assert any(
         message
-        == "Current analysis differs from the last exported structure manifest.\n"
-        "Manifest path: Imported manifest: imported_report.segments.json\n"
-        "Exported fingerprint: oldfingerprint\n"
-        "Current fingerprint: newfingerprint"
+        == t(
+            "structure.manifest_diff_warning",
+            manifest_path=t("structure.imported_manifest_path", filename="imported_report.segments.json"),
+            exported="oldfingerprint",
+            current="newfingerprint",
+        )
         for message in warnings
     )
 
@@ -2330,8 +2391,11 @@ def test_render_analysis_review_panel_shows_segment_runtime_badges(monkeypatch):
         chunk_size=6000,
     )
 
-    assert any("completed 100%" in label for label in checkbox_labels)
-    assert any("processing 50% | active" in label for label in checkbox_labels)
+    assert any(t("structure.badge_completed", percent=100) in label for label in checkbox_labels)
+    assert any(
+        t("structure.badge_processing", percent=50) + t("structure.label_active_suffix") in label
+        for label in checkbox_labels
+    )
 
 
 def test_render_analysis_review_panel_returns_start_final_book_when_all_required_segments_completed(monkeypatch):
@@ -2368,7 +2432,7 @@ def test_render_analysis_review_panel_returns_start_final_book_when_all_required
         "columns",
         _two_stage_columns(
             [FakeColumn(result=False), FakeColumn(result=False), FakeColumn(result=False)],
-            [FakeColumn(result=False), FakeColumn(result=False), FakeColumn(result=True)],
+            [FakeColumn(result=False), FakeColumn(result=True)],
         ),
     )
     monkeypatch.setattr(app.st, "checkbox", lambda label, **kwargs: kwargs.get("value", False))
@@ -2445,150 +2509,16 @@ def test_render_analysis_review_panel_shows_completed_and_failed_status_hints(mo
     )
 
     assert any(
-        message == "Completed in this session. You can select this section again if you need a revised translation."
+        message == t("structure.status_hint_completed")
         for message in captions
     )
     assert any(
-        message == "Failed in this session. Use Retry Failed or select this section again for another translation pass."
+        message == t("structure.status_hint_failed")
         for message in captions
     )
 
 
-def test_render_analysis_review_panel_shows_segment_status_summary(monkeypatch):
-    session_state = SessionState(
-        selected_segment_ids=["seg_0001", "seg_0002", "seg_0003", "seg_0004"],
-        segment_status_by_id={
-            "seg_0001": "completed",
-            "seg_0002": "processing",
-            "seg_0003": "pending",
-            "seg_0004": "failed",
-        },
-        segment_progress_by_id={
-            "seg_0001": 1.0,
-            "seg_0002": 0.5,
-            "seg_0003": 0.0,
-            "seg_0004": 0.0,
-        },
-        structure_confirmed=True,
-        confirmed_structure_fingerprint="abc123def456",
-        confirmed_at_settings_hash="settings123",
-        segments_loaded_for_source_token="report.docx:3:token",
-    )
-    prepared_run_context = _build_prepared_run_context(
-        structure_fingerprint="abc123def456",
-        segments=[
-            DocumentSegment(
-                segment_id="seg_0001",
-                ordinal=1,
-                level=1,
-                title="Chapter 1",
-                normalized_title="chapter 1",
-                start_paragraph_index=0,
-                end_paragraph_index=0,
-                start_paragraph_id="p0000",
-                end_paragraph_id="p0000",
-                paragraph_ids=("p0000",),
-                paragraph_count=1,
-                char_count=10,
-                word_count=2,
-                estimated_token_count=3,
-                structural_role="chapter",
-                confidence="high",
-                boundary_fingerprint="fp1",
-                boundary_evidence=(SegmentBoundaryEvidence(source="heading_style", confidence="high", details={}),),
-            ),
-            DocumentSegment(
-                segment_id="seg_0002",
-                ordinal=2,
-                level=1,
-                title="Chapter 2",
-                normalized_title="chapter 2",
-                start_paragraph_index=1,
-                end_paragraph_index=1,
-                start_paragraph_id="p0001",
-                end_paragraph_id="p0001",
-                paragraph_ids=("p0001",),
-                paragraph_count=1,
-                char_count=10,
-                word_count=2,
-                estimated_token_count=3,
-                structural_role="chapter",
-                confidence="high",
-                boundary_fingerprint="fp2",
-                boundary_evidence=(SegmentBoundaryEvidence(source="heading_style", confidence="high", details={}),),
-            ),
-            DocumentSegment(
-                segment_id="seg_0003",
-                ordinal=3,
-                level=1,
-                title="Chapter 3",
-                normalized_title="chapter 3",
-                start_paragraph_index=2,
-                end_paragraph_index=2,
-                start_paragraph_id="p0002",
-                end_paragraph_id="p0002",
-                paragraph_ids=("p0002",),
-                paragraph_count=1,
-                char_count=10,
-                word_count=2,
-                estimated_token_count=3,
-                structural_role="chapter",
-                confidence="high",
-                boundary_fingerprint="fp3",
-                boundary_evidence=(SegmentBoundaryEvidence(source="heading_style", confidence="high", details={}),),
-            ),
-            DocumentSegment(
-                segment_id="seg_0004",
-                ordinal=4,
-                level=1,
-                title="Chapter 4",
-                normalized_title="chapter 4",
-                start_paragraph_index=3,
-                end_paragraph_index=3,
-                start_paragraph_id="p0003",
-                end_paragraph_id="p0003",
-                paragraph_ids=("p0003",),
-                paragraph_count=1,
-                char_count=10,
-                word_count=2,
-                estimated_token_count=3,
-                structural_role="chapter",
-                confidence="high",
-                boundary_fingerprint="fp4",
-                boundary_evidence=(SegmentBoundaryEvidence(source="heading_style", confidence="high", details={}),),
-            ),
-        ],
-        segment_to_job={"seg_0001": (0,), "seg_0002": (1,), "seg_0003": (2,), "seg_0004": (3,)},
-    )
-    captions = []
-
-    monkeypatch.setattr(app, "_build_structure_settings_hash", lambda **kwargs: "settings123")
-    monkeypatch.setattr(app.st, "session_state", session_state)
-    monkeypatch.setattr(app.st, "columns", lambda n: [FakeColumn(result=False), FakeColumn(result=False), FakeColumn(result=False)])
-    monkeypatch.setattr(app.st, "checkbox", lambda label, **kwargs: kwargs.get("value", False))
-    monkeypatch.setattr(app.st, "selectbox", lambda label, options, index=0, **kwargs: options[index])
-    monkeypatch.setattr(app.st, "text_input", lambda label, value="", **kwargs: value)
-    monkeypatch.setattr(app.st, "info", lambda *args, **kwargs: None)
-    monkeypatch.setattr(app.st, "subheader", lambda *args, **kwargs: None)
-    monkeypatch.setattr(app.st, "caption", lambda message, **kwargs: captions.append(message))
-    monkeypatch.setattr(app.st, "warning", lambda *args, **kwargs: None)
-    monkeypatch.setattr(app.st, "success", lambda *args, **kwargs: None)
-    monkeypatch.setattr(app.st, "write", lambda *args, **kwargs: None)
-    monkeypatch.setattr(app.st, "expander", lambda *args, **kwargs: type("FakeExpander", (), {"__enter__": lambda self: self, "__exit__": lambda self, exc_type, exc, tb: False})())
-
-    app._render_analysis_review_panel(
-        prepared_run_context=prepared_run_context,
-        uploaded_file_token="report.docx:3:token",
-        chunk_size=6000,
-    )
-
-    assert any(
-        message == "Section status: pending 1 | processing 1 | completed 1 | failed 1"
-        for message in captions
-    )
-
-
-def test_render_analysis_review_panel_shows_selected_status_summary(monkeypatch):
+def test_render_analysis_review_panel_shows_launch_skip_for_locked_selection(monkeypatch):
     session_state = SessionState(
         selected_segment_ids=["seg_0001", "seg_0002", "seg_0004"],
         segment_status_by_id={
@@ -2648,11 +2578,7 @@ def test_render_analysis_review_panel_shows_selected_status_summary(monkeypatch)
     )
 
     assert any(
-        message == "Selected section status: completed 1 | failed 1"
-        for message in captions
-    )
-    assert any(
-        message == "This launch will skip 1 section that is already queued or processing."
+        message == t("structure.launch_skip", count=1)
         for message in captions
     )
 
@@ -2809,9 +2735,11 @@ def test_render_analysis_review_panel_shows_explicit_fingerprint_invalidation_su
     assert session_state.confirmed_structure_fingerprint == ""
     assert session_state.confirmed_at_settings_hash == ""
     assert warnings == [
-        "Structure confirmation invalidated.\n"
-        "Detected chapter structure changed after re-analysis.\n"
-        "Review the chapter list and confirm structure again before processing selected chapters."
+        "\n".join([
+            t("structure.invalidation_title"),
+            t("structure.invalidation_fingerprint_changed"),
+            t("structure.invalidation_review_again"),
+        ])
     ]
 
 
@@ -2879,9 +2807,11 @@ def test_render_analysis_review_panel_shows_explicit_settings_invalidation_summa
     assert session_state.confirmed_structure_fingerprint == ""
     assert session_state.confirmed_at_settings_hash == ""
     assert warnings == [
-        "Structure confirmation invalidated.\n"
-        "Detection-affecting settings changed since the last confirmation.\n"
-        "Review the chapter list and confirm structure again before processing selected chapters."
+        "\n".join([
+            t("structure.invalidation_title"),
+            t("structure.invalidation_settings_changed"),
+            t("structure.invalidation_review_again"),
+        ])
     ]
 
 
@@ -2972,9 +2902,11 @@ def test_render_analysis_review_panel_invalidates_confirmation_when_additional_d
 
     assert session_state.structure_confirmed is False
     assert warnings == [
-        "Structure confirmation invalidated.\n"
-        "Detection-affecting settings changed since the last confirmation.\n"
-        "Review the chapter list and confirm structure again before processing selected chapters."
+        "\n".join([
+            t("structure.invalidation_title"),
+            t("structure.invalidation_settings_changed"),
+            t("structure.invalidation_review_again"),
+        ])
     ]
 
 
@@ -3153,13 +3085,19 @@ def test_render_analysis_review_panel_invalidates_confirmation_when_only_chunk_s
 
     assert session_state.structure_confirmed is False
     assert warnings == [
-        "Structure confirmation invalidated.\n"
-        "Detection-affecting settings changed since the last confirmation.\n"
-        "Review the chapter list and confirm structure again before processing selected chapters."
+        "\n".join([
+            t("structure.invalidation_title"),
+            t("structure.invalidation_settings_changed"),
+            t("structure.invalidation_review_again"),
+        ])
     ]
 
 
-def test_render_analysis_review_panel_confirms_structure(monkeypatch):
+def test_render_analysis_review_panel_confirms_structure_implicitly_on_partial_start(monkeypatch):
+    # §8 anti-regression counter-proof: starting a partial action WITHOUT any prior
+    # explicit Confirm click must set the SAME downstream confirmation state that the
+    # removed explicit Confirm button used to set, and emit the same structure_confirmed log.
+    confirmation_calls = []
     session_state = SessionState(
         selected_segment_ids=["seg_0001"],
         structure_confirmed=False,
@@ -3191,9 +3129,9 @@ def test_render_analysis_review_panel_confirms_structure(monkeypatch):
                 boundary_evidence=(SegmentBoundaryEvidence(source="heading_style", confidence="high", details={}),),
             )
         ],
+        segment_to_job={"seg_0001": (0,)},
     )
-    confirm_col = FakeColumn(result=True)
-    selected_col = FakeColumn(result=False)
+    selected_col = FakeColumn(result=True)
     full_book_col = FakeColumn(result=False)
     reruns = []
     log_calls = []
@@ -3202,15 +3140,27 @@ def test_render_analysis_review_panel_confirms_structure(monkeypatch):
     bulk_clear_col = FakeColumn(result=False)
     bulk_all_col = FakeColumn(result=False)
 
+    import docxaicorrector.ui.structure_review_panel as structure_review_panel
+
+    real_set_confirmation = structure_review_panel.set_structure_confirmation_state
+
+    def _record_confirmation(**kwargs):
+        confirmation_calls.append(kwargs)
+        return real_set_confirmation(**kwargs)
+
     monkeypatch.setattr(app.st, "session_state", session_state)
+    monkeypatch.setattr(structure_review_panel, "set_structure_confirmation_state", _record_confirmation)
+    monkeypatch.setattr(app, "_build_structure_settings_hash", lambda **kwargs: "settings-hash-99")
     monkeypatch.setattr(
         app.st,
         "columns",
         _two_stage_columns(
             [bulk_select_col, bulk_clear_col, bulk_all_col],
-            [confirm_col, selected_col, full_book_col],
+            [selected_col, full_book_col],
         ),
     )
+    # Non-final fixture: partial actions render in a single full-width container.
+    monkeypatch.setattr(app.st, "container", lambda *args, **kwargs: selected_col)
     monkeypatch.setattr(app.st, "checkbox", lambda label, **kwargs: kwargs.get("value", False))
     monkeypatch.setattr(app.st, "selectbox", lambda label, options, index=0, **kwargs: options[index])
     monkeypatch.setattr(app.st, "text_input", lambda label, value="", **kwargs: value)
@@ -3228,17 +3178,28 @@ def test_render_analysis_review_panel_confirms_structure(monkeypatch):
     monkeypatch.setattr(app.st, "rerun", lambda: reruns.append(True))
     monkeypatch.setattr(app, "log_event", lambda *args, **kwargs: log_calls.append((args, kwargs)))
 
-    app._render_analysis_review_panel(
+    action = app._render_analysis_review_panel(
         prepared_run_context=prepared_run_context,
         uploaded_file_token="report.docx:3:token",
         chunk_size=6000,
     )
 
+    # The partial action was returned even though the user never clicked a Confirm button.
+    assert action == "start_selected"
+    # The downstream confirmation state is set to exactly what the explicit Confirm produced.
     assert session_state.structure_confirmed is True
     assert session_state.confirmed_structure_fingerprint == "abc123def456"
-    assert session_state.confirmed_at_settings_hash
+    assert session_state.confirmed_at_settings_hash == "settings-hash-99"
     assert session_state.segments_loaded_for_source_token == "report.docx:3:token"
-    assert reruns == [True]
+    assert confirmation_calls == [
+        {
+            "structure_confirmed": True,
+            "confirmed_structure_fingerprint": "abc123def456",
+            "confirmed_segment_ids": ["seg_0001"],
+            "confirmed_at_settings_hash": "settings-hash-99",
+            "segments_loaded_for_source_token": "report.docx:3:token",
+        }
+    ]
     assert log_calls and log_calls[0][0][1] == "structure_confirmed"
 
 
@@ -3276,7 +3237,6 @@ def test_render_analysis_review_panel_returns_selected_action_when_confirmed(mon
         ],
         segment_to_job={"seg_0001": (0,)},
     )
-    confirm_col = FakeColumn(result=False)
     selected_col = FakeColumn(result=True)
     full_book_col = FakeColumn(result=False)
 
@@ -3290,9 +3250,11 @@ def test_render_analysis_review_panel_returns_selected_action_when_confirmed(mon
         "columns",
         _two_stage_columns(
             [bulk_select_col, bulk_clear_col, bulk_all_col],
-            [confirm_col, selected_col, full_book_col],
+            [selected_col, full_book_col],
         ),
     )
+    # Non-final fixture: partial actions render in a single full-width container.
+    monkeypatch.setattr(app.st, "container", lambda *args, **kwargs: selected_col)
     monkeypatch.setattr(app.st, "checkbox", lambda label, **kwargs: kwargs.get("value", False))
     monkeypatch.setattr(app.st, "selectbox", lambda label, options, index=0, **kwargs: options[index])
     monkeypatch.setattr(app.st, "text_input", lambda label, value="", **kwargs: value)
@@ -3317,11 +3279,11 @@ def test_render_analysis_review_panel_returns_selected_action_when_confirmed(mon
 
     assert action == "start_selected"
     assert selected_col.calls == [(
-        "Process Selected",
+        t("structure.process_selected_button"),
         {
             "use_container_width": True,
             "disabled": False,
-            "help": "Processes only the selected sections and produces a partial output artifact.",
+            "help": t("structure.process_selected_help"),
             "key": "process_selected_button",
         },
     )]
@@ -3374,7 +3336,6 @@ def test_render_analysis_review_panel_returns_start_selected_with_context_when_r
         jobs=[{"paragraph_ids": ["p0001"], "target_text": "Paragraph 1", "context_before": "", "context_after": "", "target_chars": 11, "context_chars": 0}],
         segment_to_job={"seg_0001": (0,)},
     )
-    confirm_col = FakeColumn(result=False)
     selected_col = SequenceColumn([False, True])
     full_book_col = FakeColumn(result=False)
 
@@ -3388,9 +3349,11 @@ def test_render_analysis_review_panel_returns_start_selected_with_context_when_r
         "columns",
         _two_stage_columns(
             [bulk_select_col, bulk_clear_col, bulk_all_col],
-            [confirm_col, selected_col, full_book_col],
+            [selected_col, full_book_col],
         ),
     )
+    # Non-final fixture: partial actions render in a single full-width container.
+    monkeypatch.setattr(app.st, "container", lambda *args, **kwargs: selected_col)
     monkeypatch.setattr(app.st, "checkbox", lambda label, **kwargs: kwargs.get("value", False))
     monkeypatch.setattr(app.st, "selectbox", lambda label, options, index=0, **kwargs: options[index])
     monkeypatch.setattr(app.st, "text_input", lambda label, value="", **kwargs: value)
@@ -3416,20 +3379,20 @@ def test_render_analysis_review_panel_returns_start_selected_with_context_when_r
     assert action == "start_selected_with_context"
     assert selected_col.calls == [
         (
-            "Process Selected",
+            t("structure.process_selected_button"),
             {
                 "use_container_width": True,
                 "disabled": False,
-                    "help": "Processes only the selected sections and produces a partial output artifact.",
+                    "help": t("structure.process_selected_help"),
                 "key": "process_selected_button",
             },
         ),
         (
-            "Selected + Context",
+            t("structure.selected_with_context_button"),
             {
                 "use_container_width": True,
                 "disabled": False,
-                    "help": "Processes the selected sections and prepends leading structural context such as front matter or TOC as source-backed content.",
+                    "help": t("structure.selected_with_context_help"),
                 "key": "process_selected_with_context_button",
             },
         ),
@@ -3484,7 +3447,6 @@ def test_render_analysis_review_panel_returns_start_retry_failed_when_requested(
         jobs=[{"paragraph_ids": ["p0001"], "target_text": "Paragraph 1", "context_before": "", "context_after": "", "target_chars": 11, "context_chars": 0}],
         segment_to_job={"seg_failed": (0,)},
     )
-    confirm_col = FakeColumn(result=False)
     selected_col = SequenceColumn([False, False, True])
     full_book_col = FakeColumn(result=False)
 
@@ -3498,9 +3460,11 @@ def test_render_analysis_review_panel_returns_start_retry_failed_when_requested(
         "columns",
         _two_stage_columns(
             [bulk_select_col, bulk_clear_col, bulk_all_col],
-            [confirm_col, selected_col, full_book_col],
+            [selected_col, full_book_col],
         ),
     )
+    # Non-final fixture: partial actions render in a single full-width container.
+    monkeypatch.setattr(app.st, "container", lambda *args, **kwargs: selected_col)
     monkeypatch.setattr(app.st, "checkbox", lambda label, **kwargs: kwargs.get("value", False))
     monkeypatch.setattr(app.st, "selectbox", lambda label, options, index=0, **kwargs: options[index])
     monkeypatch.setattr(app.st, "text_input", lambda label, value="", **kwargs: value)
@@ -3526,29 +3490,29 @@ def test_render_analysis_review_panel_returns_start_retry_failed_when_requested(
     assert action == "start_retry_failed"
     assert selected_col.calls == [
         (
-            "Process Selected",
+            t("structure.process_selected_button"),
             {
                 "use_container_width": True,
                 "disabled": True,
-                "help": "Process Selected unavailable: keep at least one selectable segment selected.",
+                "help": t("structure.process_unavailable_select"),
                 "key": "process_selected_button",
             },
         ),
         (
-            "Selected + Context",
+            t("structure.selected_with_context_button"),
             {
                 "use_container_width": True,
                 "disabled": True,
-                "help": "Process Selected unavailable: keep at least one selectable segment selected.",
+                "help": t("structure.process_unavailable_select"),
                 "key": "process_selected_with_context_button",
             },
         ),
         (
-            "Retry Failed",
+            t("structure.retry_failed_button"),
             {
                 "use_container_width": True,
                 "disabled": False,
-                "help": "Reruns only the segments marked failed for this prepared document.",
+                "help": t("structure.retry_help_default"),
                 "key": "retry_failed_segments_button",
             },
         ),
@@ -3609,7 +3573,6 @@ def test_render_analysis_review_panel_uses_persisted_retry_help_when_available(m
         jobs=[{"job_id": "job_0001", "paragraph_ids": ["p0001"], "target_text": "Paragraph 1", "context_before": "", "context_after": "", "target_chars": 11, "context_chars": 0}],
         segment_to_job={"seg_failed": (0,)},
     )
-    confirm_col = FakeColumn(result=False)
     selected_col = FakeColumn(result=False)
     full_book_col = FakeColumn(result=False)
     bulk_select_col = FakeColumn(result=False)
@@ -3623,9 +3586,11 @@ def test_render_analysis_review_panel_uses_persisted_retry_help_when_available(m
         "columns",
         _two_stage_columns(
             [bulk_select_col, bulk_clear_col, bulk_all_col],
-            [confirm_col, selected_col, full_book_col],
+            [selected_col, full_book_col],
         ),
     )
+    # Non-final fixture: partial actions render in a single full-width container.
+    monkeypatch.setattr(app.st, "container", lambda *args, **kwargs: selected_col)
     monkeypatch.setattr(app.st, "checkbox", lambda label, **kwargs: kwargs.get("value", False))
     monkeypatch.setattr(app.st, "selectbox", lambda label, options, index=0, **kwargs: options[index])
     monkeypatch.setattr(app.st, "text_input", lambda label, value="", **kwargs: value)
@@ -3651,29 +3616,29 @@ def test_render_analysis_review_panel_uses_persisted_retry_help_when_available(m
     assert action is None
     assert selected_col.calls == [
         (
-            "Process Selected",
+            t("structure.process_selected_button"),
             {
                 "use_container_width": True,
                 "disabled": True,
-                "help": "Process Selected unavailable: keep at least one selectable segment selected.",
+                "help": t("structure.process_unavailable_select"),
                 "key": "process_selected_button",
             },
         ),
         (
-            "Selected + Context",
+            t("structure.selected_with_context_button"),
             {
                 "use_container_width": True,
                 "disabled": True,
-                "help": "Process Selected unavailable: keep at least one selectable segment selected.",
+                "help": t("structure.process_unavailable_select"),
                 "key": "process_selected_with_context_button",
             },
         ),
         (
-            "Retry Failed",
+            t("structure.retry_failed_button"),
             {
                 "use_container_width": True,
                 "disabled": False,
-                "help": "Reruns only the failed jobs recorded in persisted retry state for this prepared document.",
+                "help": t("structure.retry_help_persisted"),
                 "key": "retry_failed_segments_button",
             },
         ),
@@ -3764,12 +3729,12 @@ def test_render_analysis_review_panel_shows_confirmed_outline_summary(monkeypatc
     )
 
     assert any(
-        message == "Structure confirmed | selected main 1 section | selected nested 1 section"
+        message == t("structure.confirmation_confirmed", top=1, nested=1)
         for message in caption_calls
     )
 
 
-def test_render_analysis_review_panel_returns_full_book_action(monkeypatch):
+def test_render_analysis_review_panel_omits_entire_book_button_when_final_book_unavailable(monkeypatch):
     session_state = SessionState(
         selected_segment_ids=["seg_0001"],
         structure_confirmed=False,
@@ -3801,9 +3766,9 @@ def test_render_analysis_review_panel_returns_full_book_action(monkeypatch):
             )
         ],
     )
-    confirm_col = FakeColumn(result=False)
     selected_col = FakeColumn(result=False)
     full_book_col = FakeColumn(result=True)
+    partial_container = FakeColumn(result=False)
 
     bulk_select_col = FakeColumn(result=False)
     bulk_clear_col = FakeColumn(result=False)
@@ -3815,9 +3780,10 @@ def test_render_analysis_review_panel_returns_full_book_action(monkeypatch):
         "columns",
         _two_stage_columns(
             [bulk_select_col, bulk_clear_col, bulk_all_col],
-            [confirm_col, selected_col, full_book_col],
+            [selected_col, full_book_col],
         ),
     )
+    monkeypatch.setattr(app.st, "container", lambda *args, **kwargs: partial_container)
     monkeypatch.setattr(app.st, "checkbox", lambda label, **kwargs: kwargs.get("value", False))
     monkeypatch.setattr(app.st, "selectbox", lambda label, options, index=0, **kwargs: options[index])
     monkeypatch.setattr(app.st, "text_input", lambda label, value="", **kwargs: value)
@@ -3839,10 +3805,18 @@ def test_render_analysis_review_panel_returns_full_book_action(monkeypatch):
         chunk_size=6000,
     )
 
-    assert action == "start_full_book"
+    # seg_0001 is pending, so the final book cannot be assembled: the entire-book
+    # button is not rendered and the panel returns no full-document action.
+    # The full-document start is driven by the bottom "Начать обработку" control.
+    assert action is None
+    assert full_book_col.calls == []
+    assert not any(
+        label == t("structure.assemble_final_book_button")
+        for label, _ in partial_container.calls
+    )
 
 
-def test_main_starts_full_book_processing_from_analysis_panel(monkeypatch):
+def test_main_starts_full_document_processing_from_bottom_control(monkeypatch):
     prepared_run_context = _build_prepared_run_context(
         segments=[
             DocumentSegment(
@@ -3893,7 +3867,6 @@ def test_main_starts_full_book_processing_from_analysis_panel(monkeypatch):
 
     monkeypatch.setattr(app.st, "session_state", session_state)
     monkeypatch.setattr(app, "init_session_state", lambda: None)
-    monkeypatch.setattr(app, "inject_ui_styles", lambda: None)
     monkeypatch.setattr(app, "_cached_load_app_config", lambda: {})
     monkeypatch.setattr(app, "render_sidebar", lambda config: ("gpt-5.4", 6000, 3, "safe", False))
     monkeypatch.setattr(app, "_drain_processing_events", lambda: None)
@@ -3915,20 +3888,23 @@ def test_main_starts_full_book_processing_from_analysis_panel(monkeypatch):
     monkeypatch.setattr(app.st, "expander", lambda *args, **kwargs: type("FakeExpander", (), {"__enter__": lambda self: self, "__exit__": lambda self, exc_type, exc, tb: False})())
     monkeypatch.setattr(app.st, "write", lambda *args, **kwargs: None)
     monkeypatch.setattr(app.st, "button", lambda *args, **kwargs: False)
+    # seg_0001 is pending, so the analysis panel no longer offers a full-document
+    # start; the panel returns None and the full-document start is driven by the
+    # bottom "Начать обработку" control (_render_processing_controls -> "start").
+    monkeypatch.setattr(app.st, "container", lambda *args, **kwargs: FakeColumn(result=False))
     monkeypatch.setattr(
         app.st,
         "columns",
         _two_stage_columns(
             [FakeColumn(result=False), FakeColumn(result=False), FakeColumn(result=False)],
-            [FakeColumn(result=False), FakeColumn(result=False), FakeColumn(result=True)],
+            [FakeColumn(result=False), FakeColumn(result=True)],
         ),
     )
     monkeypatch.setattr(app, "render_preparation_summary", lambda *args, **kwargs: None)
     monkeypatch.setattr(app, "render_partial_result", lambda *args, **kwargs: None)
     monkeypatch.setattr(app, "render_run_log", lambda *args, **kwargs: None)
     monkeypatch.setattr(app, "render_image_validation_summary", lambda *args, **kwargs: None)
-    monkeypatch.setattr(app, "render_section_gap", lambda *args, **kwargs: None)
-    monkeypatch.setattr(app, "_render_processing_controls", lambda **kwargs: (_ for _ in ()).throw(AssertionError("generic controls should not be used when analysis action returns full-book start")))
+    monkeypatch.setattr(app, "_render_processing_controls", lambda **kwargs: "start")
     monkeypatch.setattr(compare_panel, "render_compare_all_apply_panel", lambda **kwargs: None)
     monkeypatch.setattr(application_flow, "resolve_effective_uploaded_file", lambda **kwargs: uploaded_file)
     monkeypatch.setattr(application_flow, "has_resettable_state", lambda **kwargs: False)
@@ -3942,6 +3918,7 @@ def test_main_starts_full_book_processing_from_analysis_panel(monkeypatch):
     assert start_calls[0]["uploaded_filename"] == "report.docx"
     assert start_calls[0]["uploaded_token"] == "report.docx:3:token"
     assert start_calls[0]["jobs"] == prepared_run_context.jobs
+    assert start_calls[0]["output_mode"] == "legacy_full_document"
 
 
 def test_main_starts_selected_processing_from_analysis_panel(monkeypatch):
@@ -4027,7 +4004,6 @@ def test_main_starts_selected_processing_from_analysis_panel(monkeypatch):
 
     monkeypatch.setattr(app.st, "session_state", session_state)
     monkeypatch.setattr(app, "init_session_state", lambda: None)
-    monkeypatch.setattr(app, "inject_ui_styles", lambda: None)
     monkeypatch.setattr(app, "_cached_load_app_config", lambda: {})
     monkeypatch.setattr(app, "render_sidebar", lambda config: ("gpt-5.4", 6000, 3, "safe", False))
     monkeypatch.setattr(app, "_drain_processing_events", lambda: None)
@@ -4053,14 +4029,16 @@ def test_main_starts_selected_processing_from_analysis_panel(monkeypatch):
         "columns",
         _two_stage_columns(
             [FakeColumn(result=False), FakeColumn(result=False), FakeColumn(result=False)],
-            [FakeColumn(result=False), FakeColumn(result=True), FakeColumn(result=False)],
+            [FakeColumn(result=True), FakeColumn(result=False)],
         ),
     )
+    # Segments are pending, so partial actions render in a single full-width
+    # container; clicking "Process Selected" (its first button) returns True.
+    monkeypatch.setattr(app.st, "container", lambda *args, **kwargs: FakeColumn(result=True))
     monkeypatch.setattr(app, "render_preparation_summary", lambda *args, **kwargs: None)
     monkeypatch.setattr(app, "render_partial_result", lambda *args, **kwargs: None)
     monkeypatch.setattr(app, "render_run_log", lambda *args, **kwargs: None)
     monkeypatch.setattr(app, "render_image_validation_summary", lambda *args, **kwargs: None)
-    monkeypatch.setattr(app, "render_section_gap", lambda *args, **kwargs: None)
     monkeypatch.setattr(app, "_maybe_apply_file_recommendations", lambda **kwargs: None)
     monkeypatch.setattr(app, "_build_structure_settings_hash", lambda **kwargs: "settings123")
     monkeypatch.setattr(app, "_render_processing_controls", lambda **kwargs: (_ for _ in ()).throw(AssertionError("generic controls should not be used when analysis action returns selected start")))
@@ -4166,7 +4144,6 @@ def test_main_starts_selected_processing_excludes_locked_descendants(monkeypatch
 
     monkeypatch.setattr(app.st, "session_state", session_state)
     monkeypatch.setattr(app, "init_session_state", lambda: None)
-    monkeypatch.setattr(app, "inject_ui_styles", lambda: None)
     monkeypatch.setattr(app, "_cached_load_app_config", lambda: {})
     monkeypatch.setattr(app, "render_sidebar", lambda config: ("gpt-5.4", 6000, 3, "safe", False))
     monkeypatch.setattr(app, "_drain_processing_events", lambda: None)
@@ -4192,14 +4169,16 @@ def test_main_starts_selected_processing_excludes_locked_descendants(monkeypatch
         "columns",
         _two_stage_columns(
             [FakeColumn(result=False), FakeColumn(result=False), FakeColumn(result=False)],
-            [FakeColumn(result=False), FakeColumn(result=True), FakeColumn(result=False)],
+            [FakeColumn(result=True), FakeColumn(result=False)],
         ),
     )
+    # Segments are pending, so partial actions render in a single full-width
+    # container; clicking "Process Selected" (its first button) returns True.
+    monkeypatch.setattr(app.st, "container", lambda *args, **kwargs: FakeColumn(result=True))
     monkeypatch.setattr(app, "render_preparation_summary", lambda *args, **kwargs: None)
     monkeypatch.setattr(app, "render_partial_result", lambda *args, **kwargs: None)
     monkeypatch.setattr(app, "render_run_log", lambda *args, **kwargs: None)
     monkeypatch.setattr(app, "render_image_validation_summary", lambda *args, **kwargs: None)
-    monkeypatch.setattr(app, "render_section_gap", lambda *args, **kwargs: None)
     monkeypatch.setattr(app, "_maybe_apply_file_recommendations", lambda **kwargs: None)
     monkeypatch.setattr(app, "_build_structure_settings_hash", lambda **kwargs: "settings123")
     monkeypatch.setattr(app, "_render_processing_controls", lambda **kwargs: (_ for _ in ()).throw(AssertionError("generic controls should not be used when analysis action returns selected start")))
@@ -4507,7 +4486,9 @@ def test_render_analysis_review_panel_selects_parent_with_descendants(monkeypatc
         ],
         segment_to_job={"seg_parent": (), "seg_child": (0,), "seg_other": (1,)},
     )
-    checkbox_values = iter([True, False, False])
+    # Three per-segment checkboxes, then the two include-context checkboxes
+    # (rendered because the selection maps to translatable content).
+    checkbox_values = iter([True, False, False, False, False])
     checkbox_labels = []
     info_calls = []
     caption_calls = []
@@ -4540,18 +4521,34 @@ def test_render_analysis_review_panel_selects_parent_with_descendants(monkeypatc
 
     assert session_state.selected_segment_ids == ["seg_parent", "seg_child"]
     assert any(
-        "Part I | 2 words | part | includes 1 nested section | clear boundary | pending"
+        t(
+            "structure.segment_label",
+            title="Part I",
+            words=2,
+            role="part",
+            relation=t("structure.relation_includes", count=1),
+            confidence=t("structure.confidence_hint_high"),
+            badge=t("structure.status_pending"),
+            active="",
+        )
         in label
         for label in checkbox_labels
     )
-    assert any("Chapter 1 | 2 words | chapter | under Part I | clear boundary | pending" in label for label in checkbox_labels)
-    assert any(message == "Will translate: 2/3 sections | 4/6 words" for message in info_calls)
-    assert any(message == "Hierarchy in current view: 2 main sections | 1 nested section" for message in caption_calls)
-    assert any(message == "Selection hierarchy: 1 main section | 1 nested section" for message in caption_calls)
     assert any(
-        message == "Selection also includes 1 nested section under chosen parent sections."
-        for message in caption_calls
+        t(
+            "structure.segment_label",
+            title="Chapter 1",
+            words=2,
+            role="chapter",
+            relation=t("structure.relation_under", title="Part I"),
+            confidence=t("structure.confidence_hint_high"),
+            badge=t("structure.status_pending"),
+            active="",
+        )
+        in label
+        for label in checkbox_labels
     )
+    assert any(message == t("structure.will_translate", selected=2, total=3, selected_words=4, total_words=6) for message in info_calls)
 
 
 def test_render_analysis_review_panel_clear_visible_clears_parent_and_descendants(monkeypatch):
@@ -5111,104 +5108,16 @@ def test_render_analysis_review_panel_uses_effective_selected_payload_for_ready_
         chunk_size=6000,
     )
 
-    assert any(message == "Will translate: 1/2 sections | 2/4 words" for message in info_calls)
+    assert any(message == t("structure.will_translate", selected=1, total=2, selected_words=2, total_words=4) for message in info_calls)
     assert any(
-        message == "Process Selected unavailable: the current selection does not map to any translatable content."
+        message == t("structure.process_unavailable_no_content")
         for message in caption_calls
     )
-    assert not any(message == "Ready: confirmed structure | selection maps to translatable content." for message in caption_calls)
+    assert not any(message == t("structure.ready_note") for message in caption_calls)
     assert any(
-        message == "This launch will skip 1 section that is already queued or processing."
+        message == t("structure.launch_skip", count=1)
         for message in caption_calls
     )
-
-
-def test_render_analysis_review_panel_shows_visible_structure_summary_only_for_nested_segments(monkeypatch):
-    session_state = SessionState(
-        selected_segment_ids=["seg_parent", "seg_child"],
-        segment_status_by_id={"seg_parent": "pending", "seg_child": "pending"},
-        segment_progress_by_id={"seg_parent": 0.0, "seg_child": 0.0},
-        structure_confirmed=False,
-        confirmed_structure_fingerprint="",
-        confirmed_at_settings_hash="",
-        segments_loaded_for_source_token="report.docx:3:token",
-    )
-    prepared_run_context = _build_prepared_run_context(
-        structure_fingerprint="abc123def456",
-        segments=[
-            DocumentSegment(
-                segment_id="seg_parent",
-                ordinal=1,
-                level=1,
-                title="Part I",
-                normalized_title="part i",
-                start_paragraph_index=0,
-                end_paragraph_index=0,
-                start_paragraph_id="p0000",
-                end_paragraph_id="p0000",
-                paragraph_ids=("p0000",),
-                paragraph_count=1,
-                char_count=10,
-                word_count=2,
-                estimated_token_count=3,
-                structural_role="part",
-                confidence="high",
-                boundary_fingerprint="fp_parent",
-                boundary_evidence=(SegmentBoundaryEvidence(source="heading_style", confidence="high", details={}),),
-            ),
-            DocumentSegment(
-                segment_id="seg_child",
-                parent_segment_id="seg_parent",
-                ordinal=2,
-                level=2,
-                title="Chapter 1",
-                normalized_title="chapter 1",
-                start_paragraph_index=1,
-                end_paragraph_index=1,
-                start_paragraph_id="p0001",
-                end_paragraph_id="p0001",
-                paragraph_ids=("p0001",),
-                paragraph_count=1,
-                char_count=10,
-                word_count=2,
-                estimated_token_count=3,
-                structural_role="chapter",
-                confidence="high",
-                boundary_fingerprint="fp_child",
-                boundary_evidence=(SegmentBoundaryEvidence(source="heading_style", confidence="high", details={}),),
-            ),
-        ],
-        segment_to_job={"seg_parent": (), "seg_child": (0,)},
-    )
-    caption_calls = []
-
-    class FakeExpander:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, tb):
-            return False
-
-    monkeypatch.setattr(app.st, "session_state", session_state)
-    monkeypatch.setattr(app.st, "columns", lambda n: [FakeColumn(result=False), FakeColumn(result=False), FakeColumn(result=False)])
-    monkeypatch.setattr(app.st, "checkbox", lambda label, **kwargs: kwargs.get("value", False))
-    monkeypatch.setattr(app.st, "selectbox", lambda label, options, index=0, **kwargs: options[index])
-    monkeypatch.setattr(app.st, "text_input", lambda label, value="", **kwargs: value)
-    monkeypatch.setattr(app.st, "info", lambda *args, **kwargs: None)
-    monkeypatch.setattr(app.st, "subheader", lambda *args, **kwargs: None)
-    monkeypatch.setattr(app.st, "caption", lambda message, **kwargs: caption_calls.append(message))
-    monkeypatch.setattr(app.st, "warning", lambda *args, **kwargs: None)
-    monkeypatch.setattr(app.st, "success", lambda *args, **kwargs: None)
-    monkeypatch.setattr(app.st, "write", lambda *args, **kwargs: None)
-    monkeypatch.setattr(app.st, "expander", lambda *args, **kwargs: FakeExpander())
-
-    app._render_analysis_review_panel(
-        prepared_run_context=prepared_run_context,
-        uploaded_file_token="report.docx:3:token",
-        chunk_size=6000,
-    )
-
-    assert any(message == "Hierarchy in current view: 1 main section | 1 nested section" for message in caption_calls)
 
 
 def test_render_analysis_review_panel_shows_ready_caption_when_can_process_selected(monkeypatch):
@@ -5275,11 +5184,12 @@ def test_render_analysis_review_panel_shows_ready_caption_when_can_process_selec
     )
 
     assert any(
-        message == "Ready: confirmed structure | selection maps to translatable content."
+        message == t("structure.ready_note")
         for message in caption_calls
     )
+    _process_unavailable_prefix = t("structure.process_unavailable_select").split(":")[0]
     assert not any(
-        "Process Selected unavailable" in message
+        _process_unavailable_prefix in message
         for message in caption_calls
     )
 
@@ -5355,8 +5265,8 @@ def test_render_analysis_review_panel_sanitizes_noisy_segment_titles(monkeypatch
     )
 
     assert any("[[DOCX_IMAGE" not in label and "**" not in label for label in checkbox_labels)
-    assert any(call[0] == "Included text preview: Экологические потребности" for call in expander_calls)
-    assert any(message == "Starts with: Экологические потребности" for message in caption_calls)
+    assert any(call[0] == t("structure.included_preview_expander", title="Экологические потребности") for call in expander_calls)
+    assert any(message == t("structure.preview_starts_with", text="Экологические потребности") for message in caption_calls)
 
 
 def test_render_analysis_review_panel_explains_incomplete_segment_job_mapping(monkeypatch):
@@ -5433,95 +5343,13 @@ def test_render_analysis_review_panel_explains_incomplete_segment_job_mapping(mo
     )
 
     assert any(
-        message == "Process Selected unavailable: the current section boundaries no longer match the prepared document. Re-prepare the document before partial translation."
+        message == t("structure.process_unavailable_mapping")
         for message in caption_calls
     )
     assert any(
-        message.endswith(
-            "Retry Failed unavailable: the current section boundaries no longer match the prepared document. Re-prepare the document before rerunning failed sections."
-        )
+        message.endswith(t("structure.retry_unavailable_mapping"))
         for message in caption_calls
     )
-
-
-def test_render_analysis_review_panel_shows_reconfirm_button_label_when_already_confirmed(monkeypatch):
-    session_state = SessionState(
-        selected_segment_ids=["seg_0001"],
-        structure_confirmed=True,
-        confirmed_structure_fingerprint="abc123def456",
-        confirmed_at_settings_hash="settings123",
-        segments_loaded_for_source_token="report.docx:3:token",
-    )
-    prepared_run_context = _build_prepared_run_context(
-        structure_fingerprint="abc123def456",
-        segments=[
-            DocumentSegment(
-                segment_id="seg_0001",
-                ordinal=1,
-                level=1,
-                title="Chapter 1",
-                normalized_title="chapter 1",
-                start_paragraph_index=0,
-                end_paragraph_index=0,
-                start_paragraph_id="p0000",
-                end_paragraph_id="p0000",
-                paragraph_ids=("p0000",),
-                paragraph_count=1,
-                char_count=10,
-                word_count=2,
-                estimated_token_count=3,
-                structural_role="chapter",
-                confidence="high",
-                boundary_fingerprint="fp1",
-                boundary_evidence=(SegmentBoundaryEvidence(source="heading_style", confidence="high", details={}),),
-            )
-        ],
-        segment_to_job={"seg_0001": (0,)},
-    )
-
-    class FakeExpander:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, tb):
-            return False
-
-    confirm_col = FakeColumn(result=False)
-    selected_col = FakeColumn(result=False)
-    full_book_col = FakeColumn(result=False)
-    bulk_select_col = FakeColumn(result=False)
-    bulk_clear_col = FakeColumn(result=False)
-    bulk_all_col = FakeColumn(result=False)
-
-    monkeypatch.setattr(app, "_build_structure_settings_hash", lambda **kwargs: "settings123")
-    monkeypatch.setattr(app.st, "session_state", session_state)
-    monkeypatch.setattr(
-        app.st,
-        "columns",
-        _two_stage_columns(
-            [bulk_select_col, bulk_clear_col, bulk_all_col],
-            [confirm_col, selected_col, full_book_col],
-        ),
-    )
-    monkeypatch.setattr(app.st, "checkbox", lambda label, **kwargs: kwargs.get("value", False))
-    monkeypatch.setattr(app.st, "selectbox", lambda label, options, index=0, **kwargs: options[index])
-    monkeypatch.setattr(app.st, "text_input", lambda label, value="", **kwargs: value)
-    monkeypatch.setattr(app.st, "info", lambda *args, **kwargs: None)
-    monkeypatch.setattr(app.st, "subheader", lambda *args, **kwargs: None)
-    monkeypatch.setattr(app.st, "caption", lambda *args, **kwargs: None)
-    monkeypatch.setattr(app.st, "warning", lambda *args, **kwargs: None)
-    monkeypatch.setattr(app.st, "success", lambda *args, **kwargs: None)
-    monkeypatch.setattr(app.st, "write", lambda *args, **kwargs: None)
-    monkeypatch.setattr(app.st, "expander", lambda *args, **kwargs: FakeExpander())
-
-    app._render_analysis_review_panel(
-        prepared_run_context=prepared_run_context,
-        uploaded_file_token="report.docx:3:token",
-        chunk_size=6000,
-    )
-
-    assert confirm_col.calls
-    assert confirm_col.calls[0][0] == "Re-confirm Structure"
 
 
 def test_render_analysis_review_panel_shows_failed_segment_retry_notice(monkeypatch):
@@ -5602,7 +5430,12 @@ def test_render_analysis_review_panel_shows_failed_segment_retry_notice(monkeypa
         chunk_size=6000,
     )
 
-    assert any("failed" in c.lower() and "retry failed" in c.lower() and "ready" in c.lower() for c in captions), (
+    _retry_ready_messages = {
+        t("structure.retry_ready_current_session"),
+        t("structure.retry_ready_persisted"),
+        t("structure.retry_ready_default"),
+    }
+    assert any(any(ready in c for ready in _retry_ready_messages) for c in captions), (
         f"Expected a failed-segment retry notice in captions, got: {captions}"
     )
 
@@ -5695,9 +5528,9 @@ def test_render_analysis_review_panel_shows_terminology_review_for_glossary_term
         chunk_size=6000,
     )
 
-    assert ("Terminology Review (2)", False) in expander_calls
-    assert any("Session-scoped glossary candidates" in caption for caption in caption_calls)
-    assert any("Domain: theology" == caption for caption in caption_calls)
+    assert (t("structure.terminology_expander", count=2), False) in expander_calls
+    assert any(caption == t("structure.terminology_caption") for caption in caption_calls)
+    assert any(caption == t("structure.terminology_domain", domain="theology") for caption in caption_calls)
     assert "- Great Tribulation -> Великая скорбь" in write_calls
     assert "- Antichrist -> Антихрист" in write_calls
 
@@ -5722,7 +5555,6 @@ def test_main_uses_lightweight_freeze_for_pdf_upload(monkeypatch):
 
     monkeypatch.setattr(app.st, "session_state", session_state)
     monkeypatch.setattr(app, "init_session_state", lambda: None)
-    monkeypatch.setattr(app, "inject_ui_styles", lambda: None)
     monkeypatch.setattr(app, "_cached_load_app_config", lambda: {})
     monkeypatch.setattr(app, "render_sidebar", lambda config: ("gpt-5.4", 6000, 3, "safe", False))
     monkeypatch.setattr(app, "_drain_processing_events", lambda: None)

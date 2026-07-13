@@ -227,6 +227,27 @@ def test_render_markdown_preview_hides_placeholder_only_content(monkeypatch):
     assert selectbox_calls == []
 
 
+def _mirror_bare_sidebar(
+    monkeypatch,
+    *,
+    selectbox,
+    text_input=lambda *args, **kwargs: "",
+    caption=lambda *args, **kwargs: None,
+    checkbox=lambda label, value, key=None, help=None: value,
+):
+    """Patch the expander + bare ``st.*`` widgets the advanced expander renders into.
+
+    Advanced controls (model, custom model, image mode + captions, keep-variants)
+    now render inside ``with st.sidebar.expander(...)`` via bare ``st.*`` calls, so
+    tests must patch both ``st.sidebar.*`` (always-visible controls) and ``st.*``.
+    """
+    monkeypatch.setattr(ui.st.sidebar, "expander", lambda *args, **kwargs: nullcontext())
+    monkeypatch.setattr(ui.st, "selectbox", selectbox)
+    monkeypatch.setattr(ui.st, "text_input", text_input)
+    monkeypatch.setattr(ui.st, "caption", caption)
+    monkeypatch.setattr(ui.st, "checkbox", checkbox)
+
+
 def test_render_sidebar_returns_image_settings(monkeypatch):
     config = {
         "models": type(
@@ -251,25 +272,28 @@ def test_render_sidebar_returns_image_settings(monkeypatch):
 
     sidebar_calls = []
     sidebar_warnings = []
-    monkeypatch.setattr(ui.st.sidebar, "header", lambda text: sidebar_calls.append(("header", text)))
-    monkeypatch.setattr(ui.st.sidebar, "caption", lambda text: sidebar_calls.append(("caption", text)))
-    monkeypatch.setattr(ui.st.sidebar, "warning", lambda text: sidebar_warnings.append(text))
+    checkbox_calls = []
 
-    def fake_selectbox(label, options, index=0, format_func=None, help=None, key=None):
+    def fake_caption(text):
+        sidebar_calls.append(("caption", text))
+
+    def fake_selectbox(label, options, index=0, format_func=None, help=None, key=None, disabled=False):
         sidebar_calls.append(("selectbox", label, help, tuple(options), format_func))
         if label == "Режим обработки изображений":
             return ui.IMAGE_MODE_LABELS["semantic_redraw_direct"]
         return options[index]
 
+    def fake_checkbox(label, value, key=None, help=None):
+        checkbox_calls.append((label, value, key, help))
+        return value
+
+    monkeypatch.setattr(ui.st.sidebar, "header", lambda text: sidebar_calls.append(("header", text)))
+    monkeypatch.setattr(ui.st.sidebar, "caption", fake_caption)
+    monkeypatch.setattr(ui.st.sidebar, "warning", lambda text: sidebar_warnings.append(text))
     monkeypatch.setattr(ui.st.sidebar, "selectbox", fake_selectbox)
     monkeypatch.setattr(ui.st.sidebar, "text_input", lambda *args, **kwargs: "")
-    monkeypatch.setattr(ui.st.sidebar, "slider", lambda label, **kwargs: kwargs["value"])
-    checkbox_calls = []
-    monkeypatch.setattr(
-        ui.st.sidebar,
-        "checkbox",
-        lambda label, value, key=None, help=None: checkbox_calls.append((label, value, key, help)) or value,
-    )
+    monkeypatch.setattr(ui.st.sidebar, "checkbox", fake_checkbox)
+    _mirror_bare_sidebar(monkeypatch, selectbox=fake_selectbox, caption=fake_caption, checkbox=fake_checkbox)
 
     result = ui.render_sidebar(config)
 
@@ -319,6 +343,53 @@ def test_render_sidebar_returns_image_settings(monkeypatch):
         )
     ]
     assert sidebar_warnings == []
+
+
+def test_render_sidebar_sources_chunk_and_retries_from_config_defaults(monkeypatch):
+    # §10 anti-regression: the chunk-size / retry sliders were removed from the UI;
+    # render_sidebar must still return those values, now sourced from the config
+    # defaults, so a default run is unchanged. Use non-standard config values so a
+    # regression to the old hardcoded slider defaults (6000 / 3) would be caught.
+    config = {
+        "models": type(
+            "Models",
+            (),
+            {
+                "text": type("TextModels", (), {"default": "gpt-5-mini", "options": ("gpt-5.4", "gpt-5-mini")})(),
+            },
+        )(),
+        "chunk_size": 9500,
+        "max_retries": 5,
+        "processing_operation_default": "edit",
+        "source_language_default": "en",
+        "target_language_default": "ru",
+        "supported_languages": [
+            type("Lang", (), {"code": "ru", "label": "Русский"})(),
+            type("Lang", (), {"code": "en", "label": "English"})(),
+        ],
+        "image_mode_default": "safe",
+        "keep_all_image_variants": False,
+    }
+
+    slider_calls = []
+
+    fake_selectbox = lambda label, options, index=0, format_func=None, help=None, key=None, disabled=False: options[index]
+    monkeypatch.setattr(ui.st.sidebar, "header", lambda text: None)
+    monkeypatch.setattr(ui.st.sidebar, "caption", lambda text: None)
+    monkeypatch.setattr(ui.st.sidebar, "warning", lambda text: None)
+    monkeypatch.setattr(ui.st.sidebar, "selectbox", fake_selectbox)
+    monkeypatch.setattr(ui.st.sidebar, "text_input", lambda *args, **kwargs: "")
+    monkeypatch.setattr(ui.st.sidebar, "checkbox", lambda label, value, key=None, help=None: value)
+    # A slider must NOT be rendered anymore; if one is, this records it and fails.
+    monkeypatch.setattr(ui.st.sidebar, "slider", lambda *args, **kwargs: slider_calls.append((args, kwargs)) or 0)
+    monkeypatch.setattr(ui.st, "slider", lambda *args, **kwargs: slider_calls.append((args, kwargs)) or 0)
+    _mirror_bare_sidebar(monkeypatch, selectbox=fake_selectbox)
+
+    result = ui.render_sidebar(config)
+
+    assert result[1] == 9500  # chunk_size == config default
+    assert result[2] == 5  # max_retries == config default
+    assert slider_calls == []
 
 
 def test_render_sidebar_formats_openrouter_model_label_and_warns_without_key(monkeypatch):
@@ -376,8 +447,8 @@ def test_render_sidebar_formats_openrouter_model_label_and_warns_without_key(mon
 
     monkeypatch.setattr(ui.st.sidebar, "selectbox", fake_selectbox)
     monkeypatch.setattr(ui.st.sidebar, "text_input", lambda *args, **kwargs: "")
-    monkeypatch.setattr(ui.st.sidebar, "slider", lambda label, **kwargs: kwargs["value"])
     monkeypatch.setattr(ui.st.sidebar, "checkbox", lambda label, value, key=None, help=None: value)
+    _mirror_bare_sidebar(monkeypatch, selectbox=fake_selectbox)
 
     ui.render_sidebar(config)
 
@@ -414,7 +485,7 @@ def test_render_sidebar_warns_when_translate_source_matches_target(monkeypatch):
     warnings = []
     monkeypatch.setattr(ui.st.sidebar, "warning", lambda text: warnings.append(text))
 
-    def fake_selectbox(label, options, index=0, format_func=None, help=None, key=None):
+    def fake_selectbox(label, options, index=0, format_func=None, help=None, key=None, disabled=False):
         if label == "Режим обработки текста":
             return ui.TEXT_OPERATION_LABELS["translate"]
         if label == "Целевой язык":
@@ -425,15 +496,16 @@ def test_render_sidebar_warns_when_translate_source_matches_target(monkeypatch):
             return ui.IMAGE_MODE_LABELS["semantic_redraw_direct"]
         return options[index]
 
+    checkbox_calls = []
+
+    def fake_checkbox(label, value, key=None, help=None):
+        checkbox_calls.append((label, value, key, help))
+        return value
+
     monkeypatch.setattr(ui.st.sidebar, "selectbox", fake_selectbox)
     monkeypatch.setattr(ui.st.sidebar, "text_input", lambda *args, **kwargs: "")
-    monkeypatch.setattr(ui.st.sidebar, "slider", lambda label, **kwargs: kwargs["value"])
-    checkbox_calls = []
-    monkeypatch.setattr(
-        ui.st.sidebar,
-        "checkbox",
-        lambda label, value, key=None, help=None: checkbox_calls.append((label, value, key, help)) or value,
-    )
+    monkeypatch.setattr(ui.st.sidebar, "checkbox", fake_checkbox)
+    _mirror_bare_sidebar(monkeypatch, selectbox=fake_selectbox, checkbox=fake_checkbox)
 
     result = ui.render_sidebar(config)
 
@@ -491,7 +563,10 @@ def test_render_sidebar_translate_mode_does_not_add_extra_caption(monkeypatch):
     monkeypatch.setattr(ui.st.sidebar, "caption", lambda text: captions.append(text))
     monkeypatch.setattr(ui.st.sidebar, "warning", lambda text: None)
 
-    def fake_selectbox(label, options, index=0, format_func=None, help=None, key=None):
+    def fake_caption(text):
+        captions.append(text)
+
+    def fake_selectbox(label, options, index=0, format_func=None, help=None, key=None, disabled=False):
         selectbox_calls.append((label, help))
         if label == "Режим обработки текста":
             return ui.TEXT_OPERATION_LABELS["translate"]
@@ -501,15 +576,16 @@ def test_render_sidebar_translate_mode_does_not_add_extra_caption(monkeypatch):
             return "Авто"
         return options[index]
 
+    checkbox_calls = []
+
+    def fake_checkbox(label, value, key=None, help=None):
+        checkbox_calls.append((label, value, key, help))
+        return value
+
     monkeypatch.setattr(ui.st.sidebar, "selectbox", fake_selectbox)
     monkeypatch.setattr(ui.st.sidebar, "text_input", lambda *args, **kwargs: "")
-    monkeypatch.setattr(ui.st.sidebar, "slider", lambda label, **kwargs: kwargs["value"])
-    checkbox_calls = []
-    monkeypatch.setattr(
-        ui.st.sidebar,
-        "checkbox",
-        lambda label, value, key=None, help=None: checkbox_calls.append((label, value, key, help)) or value,
-    )
+    monkeypatch.setattr(ui.st.sidebar, "checkbox", fake_checkbox)
+    _mirror_bare_sidebar(monkeypatch, selectbox=fake_selectbox, caption=fake_caption, checkbox=fake_checkbox)
 
     ui.render_sidebar(config)
 
@@ -550,14 +626,11 @@ def test_render_sidebar_preserves_hidden_source_language_value(monkeypatch):
     monkeypatch.setattr(ui.st.sidebar, "header", lambda text: None)
     monkeypatch.setattr(ui.st.sidebar, "caption", lambda text: None)
     monkeypatch.setattr(ui.st.sidebar, "warning", lambda text: None)
-    monkeypatch.setattr(
-        ui.st.sidebar,
-        "selectbox",
-        lambda label, options, index=0, format_func=None, help=None, key=None: options[index],
-    )
+    fake_selectbox = lambda label, options, index=0, format_func=None, help=None, key=None, disabled=False: options[index]
+    monkeypatch.setattr(ui.st.sidebar, "selectbox", fake_selectbox)
     monkeypatch.setattr(ui.st.sidebar, "text_input", lambda *args, **kwargs: "")
-    monkeypatch.setattr(ui.st.sidebar, "slider", lambda label, **kwargs: kwargs["value"])
     monkeypatch.setattr(ui.st.sidebar, "checkbox", lambda label, value, key=None, help=None: value)
+    _mirror_bare_sidebar(monkeypatch, selectbox=fake_selectbox)
 
     result = ui.render_sidebar(config)
 
@@ -588,8 +661,11 @@ def test_render_sidebar_audiobook_forces_no_change_and_hides_pass_checkboxes(mon
     captions = []
     checkbox_calls = []
 
+    def fake_caption(text):
+        captions.append(text)
+
     monkeypatch.setattr(ui.st.sidebar, "header", lambda text: None)
-    monkeypatch.setattr(ui.st.sidebar, "caption", lambda text: captions.append(text))
+    monkeypatch.setattr(ui.st.sidebar, "caption", fake_caption)
     monkeypatch.setattr(ui.st.sidebar, "warning", lambda text: None)
 
     selectbox_calls = []
@@ -602,14 +678,14 @@ def test_render_sidebar_audiobook_forces_no_change_and_hides_pass_checkboxes(mon
             return "Авто"
         return options[index]
 
+    def fake_checkbox(label, value, key=None, help=None):
+        checkbox_calls.append((label, value, key, help))
+        return value
+
     monkeypatch.setattr(ui.st.sidebar, "selectbox", fake_selectbox)
     monkeypatch.setattr(ui.st.sidebar, "text_input", lambda *args, **kwargs: "")
-    monkeypatch.setattr(ui.st.sidebar, "slider", lambda label, **kwargs: kwargs["value"])
-    monkeypatch.setattr(
-        ui.st.sidebar,
-        "checkbox",
-        lambda label, value, key=None, help=None: checkbox_calls.append((label, value, key, help)) or value,
-    )
+    monkeypatch.setattr(ui.st.sidebar, "checkbox", fake_checkbox)
+    _mirror_bare_sidebar(monkeypatch, selectbox=fake_selectbox, caption=fake_caption, checkbox=fake_checkbox)
 
     result = ui.render_sidebar(config)
 
@@ -671,8 +747,8 @@ def test_render_sidebar_audiobook_ignores_stale_translation_second_pass_session_
 
     monkeypatch.setattr(ui.st.sidebar, "selectbox", fake_selectbox)
     monkeypatch.setattr(ui.st.sidebar, "text_input", lambda *args, **kwargs: "")
-    monkeypatch.setattr(ui.st.sidebar, "slider", lambda label, **kwargs: kwargs["value"])
     monkeypatch.setattr(ui.st.sidebar, "checkbox", lambda label, value, key=None, help=None: value)
+    _mirror_bare_sidebar(monkeypatch, selectbox=fake_selectbox)
 
     result = ui.render_sidebar(config)
 
@@ -707,52 +783,16 @@ def test_render_sidebar_does_not_add_recommendation_apply_button(monkeypatch):
     monkeypatch.setattr(ui.st.sidebar, "header", lambda text: None)
     monkeypatch.setattr(ui.st.sidebar, "caption", lambda text: None)
     monkeypatch.setattr(ui.st.sidebar, "warning", lambda text: None)
-    monkeypatch.setattr(
-        ui.st.sidebar,
-        "selectbox",
-        lambda label, options, index=0, format_func=None, help=None, key=None: options[index],
-    )
+    fake_selectbox = lambda label, options, index=0, format_func=None, help=None, key=None, disabled=False: options[index]
+    monkeypatch.setattr(ui.st.sidebar, "selectbox", fake_selectbox)
     monkeypatch.setattr(ui.st.sidebar, "text_input", lambda *args, **kwargs: "")
-    monkeypatch.setattr(ui.st.sidebar, "slider", lambda label, **kwargs: kwargs["value"])
     monkeypatch.setattr(ui.st.sidebar, "checkbox", lambda label, value, key=None, help=None: value)
     monkeypatch.setattr(ui.st.sidebar, "button", lambda *args, **kwargs: button_calls.append((args, kwargs)) or False)
+    _mirror_bare_sidebar(monkeypatch, selectbox=fake_selectbox)
 
     ui.render_sidebar(config)
 
     assert button_calls == []
-
-
-def test_inject_ui_styles_does_not_inject_custom_css(monkeypatch):
-    injected = []
-
-    monkeypatch.setattr(ui.st, "markdown", lambda text, unsafe_allow_html: injected.append((text, unsafe_allow_html)))
-
-    ui.inject_ui_styles()
-
-    assert injected == []
-
-
-def test_render_file_uploader_state_styles_hides_dropzone_when_file_selected(monkeypatch):
-    injected = []
-
-    monkeypatch.setattr(ui.st, "markdown", lambda text, unsafe_allow_html=True: injected.append((text, unsafe_allow_html)))
-
-    ui.render_file_uploader_state_styles(has_uploaded_file=True)
-
-    assert len(injected) == 1
-    css = injected[0][0]
-    assert '[data-testid="stFileUploaderDropzone"]' in css
-    assert 'display: none !important;' in css
-
-
-def test_render_file_uploader_state_styles_does_nothing_without_file(monkeypatch):
-    injected = []
-
-    monkeypatch.setattr(ui.st, "markdown", lambda text, unsafe_allow_html=True: injected.append((text, unsafe_allow_html)))
-
-    ui.render_file_uploader_state_styles(has_uploaded_file=False)
-
-    assert injected == []
 
 
 class FakeImageColumn:
@@ -900,7 +940,7 @@ def test_render_live_status_shows_conversion_reuse_for_preparation(monkeypatch):
     assert progress_calls == [0.18]
 
 
-def test_render_preparation_summary_uses_stage_and_detail(monkeypatch):
+def test_render_preparation_summary_renders_only_title_and_one_meta_line(monkeypatch):
     session_state = SessionState()
     info_calls = []
     writes = []
@@ -914,7 +954,7 @@ def test_render_preparation_summary_uses_stage_and_detail(monkeypatch):
     ui.render_preparation_summary(
         {
             "stage": "Документ подготовлен",
-            "detail": "",
+            "detail": "Можно запускать обработку.",
             "file_size_bytes": 1048576,
             "paragraph_count": 12,
             "image_count": 2,
@@ -923,110 +963,11 @@ def test_render_preparation_summary_uses_stage_and_detail(monkeypatch):
             "cached": True,
             "source_format": "pdf",
             "elapsed": "1.2 c",
+            # Internal telemetry that must NOT surface in the minimal summary.
             "raw_paragraph_count": 15,
             "logical_paragraph_count": 12,
             "merged_group_count": 2,
             "merged_raw_paragraph_count": 5,
-        },
-        FakeTarget(),
-    )
-
-    assert info_calls == ["Документ подготовлен"]
-    assert writes == []
-    assert any("Источник: PDF (cache) | Подготовка: 1.2 c" in text for text in captions)
-    assert any("1.00 MB | 12 абзацев | 2 изображений | 5000 символов | 4 блоков" in text for text in captions)
-    assert any("Нормализация абзацев: сырьевых 15 -> логических 12 | слияний: 2 групп, 5 абзацев" in text for text in captions)
-
-
-def test_render_preparation_summary_places_secondary_stage_line_inside_info_block(monkeypatch):
-    session_state = SessionState()
-    info_calls = []
-    writes = []
-    captions = []
-
-    monkeypatch.setattr(ui.st, "session_state", session_state)
-    monkeypatch.setattr(ui.st, "info", lambda text: info_calls.append(text))
-    monkeypatch.setattr(ui.st, "write", lambda text: writes.append(text))
-    monkeypatch.setattr(ui.st, "caption", lambda text: captions.append(text))
-
-    ui.render_preparation_summary(
-        {
-            "stage": "Документ подготовлен",
-            "secondary_stage_line": "После анализа файла приложение скорректировало текстовые настройки: режим: изменено с Литературное редактирование на Перевод.",
-            "detail": "Можно запускать обработку.",
-            "file_size_bytes": 1024,
-            "paragraph_count": 5,
-            "image_count": 0,
-            "source_chars": 120,
-            "block_count": 2,
-            "cached": False,
-            "source_format": "pdf",
-        },
-        FakeTarget(),
-    )
-
-    assert info_calls == ["Документ подготовлен"]
-    assert writes == ["Можно запускать обработку."]
-    assert any(
-        "После анализа файла приложение скорректировало текстовые настройки: режим: изменено с Литературное редактирование на Перевод."
-        in text
-        for text in captions
-    )
-    assert any("Источник: PDF" in text for text in captions)
-
-
-def test_render_preparation_summary_renders_all_status_notes_before_meta(monkeypatch):
-    session_state = SessionState()
-    captions = []
-
-    monkeypatch.setattr(ui.st, "session_state", session_state)
-    monkeypatch.setattr(ui.st, "info", lambda text: None)
-    monkeypatch.setattr(ui.st, "write", lambda text: None)
-    monkeypatch.setattr(ui.st, "caption", lambda text: captions.append(text))
-
-    ui.render_preparation_summary(
-        {
-            "stage": "Документ подготовлен",
-            "detail": "",
-            "file_size_bytes": 1024,
-            "paragraph_count": 5,
-            "image_count": 0,
-            "source_chars": 120,
-            "block_count": 2,
-            "cached": False,
-            "source_format": "pdf",
-            "status_notes": [
-                "Структура: auto-режим, эскалация в AI не потребовалась; структурный риск не найден.",
-                "После анализа файла приложение скорректировало текстовые настройки.",
-            ],
-        },
-        FakeTarget(),
-    )
-
-    assert captions[0] == "Структура: auto-режим, эскалация в AI не потребовалась; структурный риск не найден."
-    assert captions[1] == "После анализа файла приложение скорректировало текстовые настройки."
-    assert any("Источник: PDF" in text for text in captions)
-
-
-def test_render_preparation_summary_adds_structure_review_meta_lines(monkeypatch):
-    session_state = SessionState()
-    captions = []
-
-    monkeypatch.setattr(ui.st, "session_state", session_state)
-    monkeypatch.setattr(ui.st, "info", lambda text: None)
-    monkeypatch.setattr(ui.st, "write", lambda text: None)
-    monkeypatch.setattr(ui.st, "caption", lambda text: captions.append(text))
-
-    ui.render_preparation_summary(
-        {
-            "stage": "Документ подготовлен",
-            "detail": "",
-            "file_size_bytes": 1024,
-            "paragraph_count": 5,
-            "image_count": 0,
-            "source_chars": 120,
-            "block_count": 2,
-            "cached": False,
             "structure_fingerprint": "abc123def456",
             "detector_version": "chapter_segments_v1",
             "segment_count": 4,
@@ -1036,15 +977,56 @@ def test_render_preparation_summary_adds_structure_review_meta_lines(monkeypatch
             "toc_entry_count": 6,
             "toc_matched_count": 5,
             "manifest_path": ".run/structure_manifests/report.segments.json",
+            "secondary_stage_line": "should-not-render",
+            "status_notes": ["should-not-render"],
         },
         FakeTarget(),
     )
 
-    assert any(text == "Structure fingerprint: abc123def456" for text in captions)
-    assert any(text == "Detector version: chapter_segments_v1" for text in captions)
-    assert any(text == "Сегменты: 4 | confidence H/M/L: 2/1/1" for text in captions)
-    assert any(text == "TOC matched: 5/6" for text in captions)
-    assert any(text == "Structure manifest: .run/structure_manifests/report.segments.json" for text in captions)
+    # Exactly the title and a single merged meta line — nothing else.
+    assert info_calls == ["Документ подготовлен"]
+    assert writes == []
+    assert captions == [
+        "Источник: PDF (cache) | Подготовка: 1.2 c | 1.00 MB | 12 абзацев | 2 изображений",
+    ]
+    # None of the dropped telemetry / notes leaked into the surface.
+    joined = " ".join(captions)
+    for dropped in (
+        "Structure fingerprint",
+        "Detector version",
+        "Сегменты:",
+        "TOC matched",
+        "Structure manifest",
+        "Нормализация абзацев",
+        "символов",
+        "блоков",
+        "should-not-render",
+    ):
+        assert dropped not in joined
+
+
+def test_render_preparation_summary_minimal_line_without_elapsed(monkeypatch):
+    session_state = SessionState()
+    captions = []
+
+    monkeypatch.setattr(ui.st, "session_state", session_state)
+    monkeypatch.setattr(ui.st, "info", lambda text: None)
+    monkeypatch.setattr(ui.st, "write", lambda text: None)
+    monkeypatch.setattr(ui.st, "caption", lambda text: captions.append(text))
+
+    ui.render_preparation_summary(
+        {
+            "stage": "Документ подготовлен",
+            "file_size_bytes": 1024,
+            "paragraph_count": 5,
+            "image_count": 0,
+            "cached": False,
+            "source_format": "docx",
+        },
+        FakeTarget(),
+    )
+
+    assert captions == ["Источник: DOCX | 0.00 MB | 5 абзацев | 0 изображений"]
 
 
 def test_render_live_status_shows_preparation_failure_title(monkeypatch):

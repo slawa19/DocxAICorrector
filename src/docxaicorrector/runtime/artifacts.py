@@ -131,9 +131,11 @@ def _build_formatting_review_text(
         sample = item.get("sample")
         sample_text = ""
         source_text = ""
+        residual_class = ""
         if isinstance(sample, Mapping):
             sample_text = _truncate_review_text(sample.get("text"), limit=180)
             source_text = _truncate_review_text(sample.get("source_text"), limit=180)
+            residual_class = str(sample.get("residual_class") or "")
         count = _review_item_count(item)
         action_style = item.get("action_style")
         lines.append(f"{marker} {label}")
@@ -148,6 +150,9 @@ def _build_formatting_review_text(
             lines.append(f"  Как исправить: примените стиль «{action_style}» к этому абзацу в DOCX.")
         elif severity == "defect":
             lines.append("  Как проверить: найдите этот абзац в DOCX — перевод мог встать не к тому исходному абзацу.")
+        elif residual_class == "short_note_or_marker":
+            # Softened wording: a short unmapped fragment is usually a footnote/marker, not a defect.
+            lines.append("  Как проверить: похоже на сноску или маркер — найдите этот фрагмент в DOCX и проверьте оформление.")
         else:
             lines.append("  Как проверить: найдите этот фрагмент в DOCX и убедитесь, что стиль и позиция сохранены.")
         if index != len(anchored_items) - 1:

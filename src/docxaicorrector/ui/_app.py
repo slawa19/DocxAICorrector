@@ -5,8 +5,10 @@ from typing import Any, Mapping, TypeAlias, cast
 
 import streamlit as st
 
+from docxaicorrector.ui.i18n import t
+
 st.set_page_config(
-    page_title="AI DOCX Editor",
+    page_title=t("app.page_title"),
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -39,7 +41,6 @@ from docxaicorrector.ui.app_runtime import (
     start_background_processing,
 )
 from docxaicorrector.core.logger import fail_critical, log_event, present_error
-from docxaicorrector.generation.message_formatting import get_preparation_state_unavailable_message, get_restartable_outcome_notice
 from docxaicorrector.processing.processing_runtime import (
     freeze_uploaded_file,
     freeze_uploaded_file_lightweight,
@@ -104,9 +105,7 @@ from docxaicorrector.ui._ui import (
     get_target_language_label,
     get_text_operation_label,
     get_text_setting_widget_keys,
-    inject_ui_styles,
     render_image_validation_summary,
-    render_file_uploader_state_styles,
     render_intro_layout_styles,
     render_live_status,
     render_markdown_preview,
@@ -115,7 +114,6 @@ from docxaicorrector.ui._ui import (
     render_result,
     render_result_bundle,
     render_run_log,
-    render_section_gap,
     render_sidebar,
 )
 from docxaicorrector.ui.structure_review_panel import (
@@ -202,9 +200,7 @@ def _mark_app_ready() -> None:
     _APP_READY_MARKER_WRITER.mark_ready()
 
 
-def _finalize_app_frame(*, add_section_gap: bool = False) -> None:
-    if add_section_gap:
-        render_section_gap("lg")
+def _finalize_app_frame() -> None:
     _mark_app_ready()
     _schedule_stale_persisted_sources_cleanup()
 
@@ -228,6 +224,14 @@ def _show_notice(*, level: str, message: str) -> None:
         st.info(message)
         return
     raise ValueError(f"Unsupported Streamlit notice level: {level}")
+
+
+def _restartable_outcome_notice(outcome: str | None, uploaded_filename: str) -> tuple[str, str] | None:
+    if outcome == "stopped":
+        return ("warning", t("app.restartable_stopped_notice", filename=uploaded_filename))
+    if outcome == "failed":
+        return ("error", t("app.restartable_failed_notice", filename=uploaded_filename))
+    return None
 
 
 def _build_document_context_prompt(
@@ -399,16 +403,10 @@ def _store_preparation_summary(*, prepared_run_context) -> None:
     cleanup_metrics = application_flow.flatten_layout_cleanup_metrics(
         getattr(prepared_run_context, "cleanup_report", None)
     )
-    cleanup_status_note = application_flow.build_layout_cleanup_status_note(
-        getattr(prepared_run_context, "cleanup_report", None)
-    )
-    structure_repair_status_note = application_flow.build_structure_repair_status_note(
-        getattr(prepared_run_context, "structure_repair_report", None)
-    )
-    status_notes = [note for note in (structure_repair_status_note, cleanup_status_note) if note]
+    status_notes: list[str] = []
     exported_manifest_path = str(getattr(prepared_run_context, "exported_structure_manifest_path", "") or "")
     if exported_manifest_path:
-        status_notes.append(f"Structure manifest: {exported_manifest_path}")
+        status_notes.append(t("status.prep_manifest_meta", path=exported_manifest_path))
     summary = {
         "stage": str(getattr(prepared_run_context, "preparation_stage", "Документ подготовлен")),
         "detail": str(getattr(prepared_run_context, "preparation_detail", "")),
@@ -521,9 +519,9 @@ def _describe_recommended_text_setting_changes(
     manual_override: ManualTextSettingsOverride,
 ) -> list[str]:
     field_labels = {
-        "processing_operation": "режим",
-        "source_language": "язык оригинала",
-        "target_language": "целевой язык",
+        "processing_operation": t("recommend.field_operation"),
+        "source_language": t("recommend.field_source_language"),
+        "target_language": t("recommend.field_target_language"),
     }
     changes: list[str] = []
     for field in TEXT_SETTINGS_FIELDS:
@@ -535,7 +533,9 @@ def _describe_recommended_text_setting_changes(
             continue
         from_value = _text_setting_display_value(config=config, field=field, value=current_value)
         to_value = _text_setting_display_value(config=config, field=field, value=recommended_value)
-        changes.append(f"{field_labels[field]}: изменено с {from_value} на {to_value}")
+        changes.append(
+            t("recommend.change_detail", field=field_labels[field], from_value=from_value, to_value=to_value)
+        )
     return changes
 
 
@@ -544,18 +544,14 @@ def _build_recommended_text_settings_notice(uploaded_file_token: str) -> str | N
         return None
     notice_details = get_recommended_text_settings_notice_details()
     if not isinstance(notice_details, dict) or str(notice_details.get("file_token", "")) != uploaded_file_token:
-        return "После анализа файла приложение скорректировало текстовые настройки до рекомендуемых для этого документа."
+        return t("recommend.notice_generic")
     changes = notice_details.get("changes")
     if not isinstance(changes, list):
-        return "После анализа файла приложение скорректировало текстовые настройки до рекомендуемых для этого документа."
+        return t("recommend.notice_generic")
     normalized_changes = [str(change).strip() for change in changes if str(change).strip()]
     if not normalized_changes:
-        return "После анализа файла приложение скорректировало текстовые настройки до рекомендуемых для этого документа."
-    return (
-        "После анализа файла приложение скорректировало текстовые настройки: "
-        + "; ".join(normalized_changes)
-        + "."
-    )
+        return t("recommend.notice_generic")
+    return t("recommend.notice_with_changes", changes="; ".join(normalized_changes))
 
 
 def _apply_recommended_widget_state(
@@ -714,7 +710,11 @@ def _render_processing_controls(*, can_start: bool, is_processing: bool, emphasi
     stop_requested = is_processing_stop_requested()
     start_col, stop_col = st.columns(2)
 
-    start_label = "Обработка запущена" if is_processing else ("Начать обработку" if emphasize_start else "Обработать повторно")
+    start_label = (
+        t("app.button_processing_running")
+        if is_processing
+        else (t("app.button_start_processing") if emphasize_start else t("app.button_reprocess"))
+    )
     if start_col.button(
         start_label,
         type="primary" if emphasize_start else "secondary",
@@ -725,7 +725,7 @@ def _render_processing_controls(*, can_start: bool, is_processing: bool, emphasi
         return "start"
 
     if stop_col.button(
-        "Останавливаю..." if stop_requested else "Стоп",
+        t("app.button_stopping") if stop_requested else t("app.button_stop"),
         use_container_width=True,
         disabled=(not is_processing) or stop_requested,
         key="stop_processing_button",
@@ -735,11 +735,30 @@ def _render_processing_controls(*, can_start: bool, is_processing: bool, emphasi
     return None
 
 
+def _render_completed_result_view(result: Mapping[str, object]) -> None:
+    """Single completed-result renderer: markdown preview + download bundle + review block.
+
+    Unifies the two former completed-render paths (IdleViewState.COMPLETED and
+    FILE_SELECTED + has_completed_result) so both surface the formatting-review block
+    from the same ``quality_warning`` DATA carried on the result bundle.
+    """
+    render_markdown_preview(title=t("app.markdown_preview_title"))
+    render_result_bundle(
+        docx_bytes=cast(bytes | None, result.get("docx_bytes")),
+        markdown_text=str(result.get("markdown_text") or ""),
+        original_filename=str(result.get("source_name") or ""),
+        narration_text=cast(str | None, result.get("narration_text")),
+        processing_operation=str(result.get("processing_operation", "edit")),
+        audiobook_postprocess_enabled=bool(result.get("audiobook_postprocess_enabled", False)),
+        success_message=t("result.success_document_processed"),
+        quality_warning=cast(Mapping[str, object] | None, result.get("quality_warning")),
+    )
+
+
 def main() -> None:
     init_session_state()
     _drain_processing_events()
     _drain_preparation_events()
-    inject_ui_styles()
     if not is_app_start_logged():
         log_event(logging.INFO, "app_start", "Приложение инициализировано")
         mark_app_start_logged()
@@ -748,7 +767,7 @@ def main() -> None:
         app_config = _cached_load_app_config()
     except Exception as exc:
         user_message = present_error("config_load_failed", exc, "Ошибка загрузки конфигурации")
-        st.error(f"Ошибка загрузки конфигурации: {user_message}")
+        st.error(t("app.config_load_error", message=user_message))
         return
 
     _apply_pending_recommended_widget_state()
@@ -782,16 +801,10 @@ def main() -> None:
 
     render_intro_layout_styles()
 
-    st.title("AI-редактор DOCX/DOC/PDF через Markdown")
-    st.write(
-        "Загрузите DOCX, legacy DOC или PDF. Приложение при необходимости автоконвертирует исходник в DOCX, "
-        "соберет смысловые блоки из нескольких абзацев, добавит соседний контекст для модели и соберет новый DOCX."
-    )
-    st.caption(
-        "PDF импортируется через преобразование в DOCX; качество структуры и форматирования зависит от исходного PDF и конвертера."
-    )
-    uploaded_widget_file = st.file_uploader("Загрузите DOCX/DOC/PDF-файл", type=["docx", "doc", "pdf"])
-    render_file_uploader_state_styles(has_uploaded_file=uploaded_widget_file is not None)
+    st.title(t("app.title"))
+    st.write(t("app.intro_description"))
+    st.caption(t("app.pdf_caption"))
+    uploaded_widget_file = st.file_uploader(t("app.upload_prompt"), type=["docx", "doc", "pdf"])
 
     if processing_in_progress:
         @st.fragment(run_every=2)
@@ -801,12 +814,12 @@ def main() -> None:
             render_run_log()
             render_image_validation_summary()
             render_partial_result()
-            _finalize_app_frame(add_section_gap=True)
+            _finalize_app_frame()
 
             still_running = get_processing_outcome() == ProcessingOutcome.RUNNING.value
             action = _render_processing_controls(can_start=False, is_processing=still_running)
             if action == "stop":
-                push_activity("Остановлено. Завершение текущего шага...")
+                push_activity(t("app.activity_stopping"))
                 _request_processing_stop()
                 st.rerun()
 
@@ -826,9 +839,7 @@ def main() -> None:
             st.rerun()
 
     if uploaded_widget_file is not None and _is_uploaded_file_too_large(uploaded_widget_file):
-        st.error(
-            f"Размер DOCX/DOC/PDF превышает допустимый предел {MAX_DOCX_ARCHIVE_SIZE_BYTES // (1024 * 1024)} МБ. Загрузите файл меньшего размера."
-        )
+        st.error(t("app.file_too_large", limit=MAX_DOCX_ARCHIVE_SIZE_BYTES // (1024 * 1024)))
         render_run_log()
         _finalize_app_frame()
         return
@@ -859,7 +870,7 @@ def main() -> None:
                 "Ошибка чтения документа",
                 filename=resolve_uploaded_filename(uploaded_widget_file),
             )
-            st.error(f"Ошибка чтения документа: {user_message}")
+            st.error(t("app.document_read_error", message=user_message))
             render_run_log()
             _finalize_app_frame()
             return
@@ -907,14 +918,14 @@ def main() -> None:
         )
         prepared_run_context = get_prepared_run_context_for_marker(current_preparation_request_marker)
         if prepared_run_context is None:
-            st.warning(get_preparation_state_unavailable_message())
+            st.warning(t("app.preparation_state_unavailable"))
             render_live_status()
             render_run_log()
             _finalize_app_frame()
             return
 
     if application_flow.has_resettable_state(current_result=current_result, session_state=session_state):
-        if st.button("Сбросить результаты", use_container_width=True):
+        if st.button(t("app.reset_results_button"), use_container_width=True):
             reset_run_state(keep_restart_source=False)
             st.rerun()
     idle_view_state = application_flow.derive_app_idle_view_state(
@@ -926,30 +937,22 @@ def main() -> None:
     if idle_view_state != IdleViewState.FILE_SELECTED:
         if idle_view_state == IdleViewState.COMPLETED:
             if current_result is None:
-                st.error("Результат обработки недоступен в текущей сессии.")
+                st.error(t("app.result_unavailable"))
                 _finalize_app_frame()
                 return
             completed_result = cast(dict[str, object], current_result)
             render_run_log()
             render_image_validation_summary()
-            render_markdown_preview(title="Предпросмотр Markdown")
-            render_result_bundle(
-                docx_bytes=cast(bytes | None, completed_result["docx_bytes"]),
-                markdown_text=str(completed_result["markdown_text"]),
-                original_filename=str(completed_result["source_name"]),
-                narration_text=cast(str | None, completed_result.get("narration_text")),
-                processing_operation=str(completed_result.get("processing_operation", "edit")),
-                audiobook_postprocess_enabled=bool(completed_result.get("audiobook_postprocess_enabled", False)),
-            )
+            _render_completed_result_view(completed_result)
         elif idle_view_state == IdleViewState.RESTARTABLE:
             processing_outcome = get_processing_outcome()
             restart_filename = get_restart_source_filename()
-            outcome_notice = get_restartable_outcome_notice(processing_outcome, restart_filename)
+            outcome_notice = _restartable_outcome_notice(processing_outcome, restart_filename)
             if outcome_notice is not None:
                 notice_level, notice_message = outcome_notice
                 _show_notice(level=notice_level, message=notice_message)
             else:
-                st.info("Можно изменить настройки и запустить обработку заново без повторной загрузки файла.")
+                st.info(t("app.restartable_generic_info"))
             render_run_log()
             render_image_validation_summary()
             render_partial_result()
@@ -976,7 +979,7 @@ def main() -> None:
                 "Ошибка чтения документа",
                 filename=resolve_uploaded_filename(uploaded_file),
             )
-            st.error(f"Ошибка чтения документа: {user_message}")
+            st.error(t("app.document_read_error", message=user_message))
             return
 
     uploaded_filename = prepared_run_context.uploaded_filename
@@ -1001,7 +1004,7 @@ def main() -> None:
     processing_outcome = get_processing_outcome()
     restartable_outcome = has_restartable_outcome(processing_outcome)
 
-    outcome_notice = get_restartable_outcome_notice(processing_outcome, uploaded_filename)
+    outcome_notice = _restartable_outcome_notice(processing_outcome, uploaded_filename)
     if current_result is None and outcome_notice is not None:
         notice_level, notice_message = outcome_notice
         _show_notice(level=notice_level, message=notice_message)
@@ -1028,10 +1031,10 @@ def main() -> None:
             **normalization_metrics,
         )
     if not st.session_state.get("activity_feed") and not restartable_outcome:
-        push_activity(f"Документ разобран на {len(jobs)} блоков.")
+        push_activity(t("app.activity_document_parsed", count=len(jobs)))
 
     if len(jobs) == 1:
-        st.info("Документ помещается в один блок. Для длинных файлов обработка пойдет по блокам с соседним контекстом.")
+        st.info(t("app.single_block_info"))
 
     notice_message = None
     if not restartable_outcome:
@@ -1043,6 +1046,8 @@ def main() -> None:
         ):
             st.warning(warning_message)
         notice_message = _build_recommended_text_settings_notice(uploaded_file_token)
+        if notice_message is not None:
+            st.info(notice_message)
 
     last_error = str(st.session_state.get("last_error") or "")
     last_log_hint = str(st.session_state.get("last_log_hint") or "")
@@ -1057,13 +1062,6 @@ def main() -> None:
     )
     if not restartable_outcome:
         preparation_summary = get_latest_preparation_summary()
-        if isinstance(preparation_summary, dict) and notice_message is not None:
-            status_notes = [str(note).strip() for note in preparation_summary.get("status_notes", []) if str(note).strip()]
-            status_notes.append(notice_message)
-            preparation_summary = {
-                **preparation_summary,
-                "status_notes": status_notes,
-            }
         manifest_notice = get_structure_manifest_notice_details()
         if (
             isinstance(preparation_summary, dict)
@@ -1073,7 +1071,7 @@ def main() -> None:
             manifest_path = str(manifest_notice.get("manifest_path", "") or "")
             if manifest_path:
                 status_notes = [str(note).strip() for note in preparation_summary.get("status_notes", []) if str(note).strip()]
-                manifest_note = f"Structure manifest: {manifest_path}"
+                manifest_note = t("status.prep_manifest_meta", path=manifest_path)
                 if manifest_note not in status_notes:
                     status_notes.append(manifest_note)
                 preparation_summary = {
@@ -1082,7 +1080,7 @@ def main() -> None:
                     "status_notes": status_notes,
                 }
         render_preparation_summary(preparation_summary)
-        if st.button("Export Structure Manifest", use_container_width=True, key="export_structure_manifest_button"):
+        if st.button(t("app.export_manifest_button"), use_container_width=True, key="export_structure_manifest_button"):
             _handle_structure_manifest_export(
                 prepared_run_context=prepared_run_context,
                 app_config=app_config,
@@ -1102,21 +1100,22 @@ def main() -> None:
     compare_panel.render_compare_all_apply_panel(
         latest_image_mode=get_latest_image_mode(),
         image_assets=cast(list[object], st.session_state.get("image_assets", [])),
-        render_section_gap=render_section_gap,
     )
 
     if has_completed_result:
-        render_markdown_preview(title="Предпросмотр Markdown")
-        render_result(
-            cast(bytes | None, st.session_state.get("latest_docx_bytes")),
-            str(st.session_state.get("latest_markdown") or ""),
-            uploaded_filename,
-            st.session_state.get("latest_narration_text"),
-            processing_operation=processing_snapshot.latest_processing_operation,
-            audiobook_postprocess_enabled=processing_snapshot.latest_audiobook_postprocess_enabled,
+        _render_completed_result_view(
+            {
+                "docx_bytes": st.session_state.get("latest_docx_bytes"),
+                "markdown_text": str(st.session_state.get("latest_markdown") or ""),
+                "source_name": uploaded_filename,
+                "narration_text": st.session_state.get("latest_narration_text"),
+                "processing_operation": processing_snapshot.latest_processing_operation,
+                "audiobook_postprocess_enabled": processing_snapshot.latest_audiobook_postprocess_enabled,
+                "quality_warning": st.session_state.get("latest_quality_warning"),
+            }
         )
 
-    _finalize_app_frame(add_section_gap=True)
+    _finalize_app_frame()
     action = analysis_action if analysis_action is not None else _render_processing_controls(
         can_start=True,
         is_processing=False,

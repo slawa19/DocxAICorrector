@@ -531,6 +531,78 @@ def test_write_ui_result_artifacts_keeps_unrelated_files_while_pruning_result_fa
     assert new_family_names[1] in remaining_names
 
 
+def test_write_ui_result_artifacts_softens_short_note_or_marker_wording(tmp_path):
+    artifact_paths = write_ui_result_artifacts(
+        source_name="report.docx",
+        markdown_text="body",
+        docx_bytes=b"docx-bytes",
+        quality_warning={
+            "quality_status": "warn",
+            "gate_reasons": ["unmapped_target_paragraphs_review_required"],
+            "formatting_review_items": [
+                {
+                    "severity": "review",
+                    "label": "Абзац перевода без явного соответствия оригиналу",
+                    "sample": {"text": "1489.", "residual_class": "short_note_or_marker"},
+                }
+            ],
+        },
+        output_dir=tmp_path,
+        created_at=1_766_636_465.0,
+    )
+
+    review_text = Path(artifact_paths["formatting_review_path"]).read_text(encoding="utf-8")
+
+    assert "похоже на сноску или маркер" in review_text
+    # The generic check-wording must be replaced, not appended.
+    assert "убедитесь, что стиль и позиция сохранены" not in review_text
+
+
+def _build_short_note_review_text(tmp_path, *, residual_class: bool) -> str:
+    sample: dict[str, object] = {"text": "1489."}
+    if residual_class:
+        sample["residual_class"] = "short_note_or_marker"
+    artifact_paths = write_ui_result_artifacts(
+        source_name="report.docx",
+        markdown_text="body",
+        docx_bytes=b"docx-bytes",
+        quality_warning={
+            "quality_status": "warn",
+            "gate_reasons": ["unmapped_target_paragraphs_review_required"],
+            "formatting_review_items": [
+                {
+                    "severity": "review",
+                    "label": "Абзац перевода без явного соответствия оригиналу",
+                    "sample": sample,
+                }
+            ],
+        },
+        output_dir=tmp_path,
+        created_at=1_766_636_465.0,
+    )
+    return Path(artifact_paths["formatting_review_path"]).read_text(encoding="utf-8")
+
+
+def test_short_note_or_marker_softening_is_data_preserving(tmp_path):
+    # Counter-proof: softening the ONE descriptive phrase must not move any count/total.
+    plain = _build_short_note_review_text(tmp_path, residual_class=False)
+    softened = _build_short_note_review_text(tmp_path, residual_class=True)
+
+    def summary_lines(text: str) -> list[str]:
+        return [line for line in text.splitlines() if line.startswith(("Итог:", "Всего:"))]
+
+    assert summary_lines(plain) == summary_lines(softened)
+    assert "Всего: ПРАВКА 0 · ПРОВЕРКА 1 · КРИТ 0" in summary_lines(plain)
+
+    plain_lines = plain.splitlines()
+    softened_lines = softened.splitlines()
+    assert len(plain_lines) == len(softened_lines)
+    diffs = [(a, b) for a, b in zip(plain_lines, softened_lines) if a != b]
+    assert len(diffs) == 1
+    assert "похоже на сноску или маркер" in diffs[0][1]
+    assert "убедитесь, что стиль и позиция сохранены" in diffs[0][0]
+
+
 def test_write_structure_manifest_artifact_persists_segments_json(tmp_path):
     manifest_path = write_structure_manifest_artifact(
         source_name="The Value of Everything.docx",
