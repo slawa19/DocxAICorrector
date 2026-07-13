@@ -185,11 +185,7 @@
   "structure.status_failed": "сбой",
   "structure.status_skipped": "пропущено",
 
-  "structure.section_status_line": "Статус разделов: {details}",
-  "structure.selected_section_status_line": "Статус выбранных разделов: {details}",
-
   "structure.visible_count": "Видно разделов: {visible}/{total}",
-  "structure.visible_hierarchy": "Иерархия в текущем виде: основных разделов {parent} | вложенных разделов {child}",
   "structure.currently_unavailable_view": "Сейчас недоступно в этом виде: разделов уже в очереди или в обработке — {count}.",
 
   "structure.select_visible_button": "Выбрать видимые",
@@ -210,8 +206,6 @@
   "structure.status_hint_failed": "Сбой в этой сессии. Используйте «Повторить сбойные» или снова выберите этот раздел для нового прохода перевода.",
   "structure.status_hint_skipped": "Пропущено в рабочем процессе текущей сессии. Обычно намеренно не включается в итоговую книгу.",
 
-  "structure.segment_warning": "Проверьте этот раздел перед частичным переводом: {title}. {suffix}",
-  "structure.segment_warning_default_suffix": "Просмотрите предпросмотр включённого текста, прежде чем переводить этот раздел отдельно.",
   "structure.included_preview_expander": "Предпросмотр включённого текста: {title}",
   "structure.preview_starts_with": "Начинается с: {text}",
   "structure.preview_ends_with": "Заканчивается на: {text}",
@@ -220,10 +214,8 @@
   "structure.no_sections_match": "Нет разделов, соответствующих текущему фильтру или поиску.",
 
   "structure.will_translate": "Будет переведено: {selected}/{total} разделов | {selected_words}/{total_words} слов",
-  "structure.selection_hierarchy": "Иерархия выбора: основных разделов {top} | вложенных разделов {nested}",
-  "structure.selection_includes_nested": "В выбор также входят вложенные разделы под выбранными родительскими разделами: {count}.",
   "structure.launch_skip": "Этот запуск пропустит разделы, уже стоящие в очереди или в обработке: {count}.",
-  "structure.ready_note": "Готово: структура подтверждена | выбор сопоставляется с переводимым содержимым.",
+  "structure.ready_note": "Готово: выбор сопоставляется с переводимым содержимым.",
 
   "structure.include_front_matter_label": "Включить вводную часть",
   "structure.include_front_matter_help": "Если включено, «Выбранное + контекст» добавляет в начало сегменты вводной части как контекст, подкреплённый источником.",
@@ -239,18 +231,13 @@
   "structure.retry_help_default": "Повторно запускает только разделы, помеченные как сбойные для этого подготовленного документа.",
   "structure.retry_summary_persisted": "Разделов с сохранённой сбойной работой для этого документа: {count}.",
   "structure.retry_summary_default": "Разделов со сбоями в этой сессии: {count}.",
-  "structure.retry_unavailable_confirm": "«Повторить сбойные» недоступно: подтвердите текущую структуру, прежде чем повторно запускать сбойные разделы.",
   "structure.retry_unavailable_mapping": "«Повторить сбойные» недоступно: текущие границы разделов больше не соответствуют подготовленному документу. Подготовьте документ заново, прежде чем повторно запускать сбойные разделы.",
   "structure.retry_unavailable_no_content": "«Повторить сбойные» недоступно: сбойные разделы сейчас не сопоставляются с переводимым содержимым.",
 
-  "structure.process_unavailable_confirm_and_select": "«Обработать выбранное» недоступно: подтвердите текущую структуру и оставьте выбранным хотя бы один доступный раздел.",
-  "structure.process_unavailable_confirm": "«Обработать выбранное» недоступно: подтвердите текущую структуру, прежде чем запускать текущий выбор глав.",
   "structure.process_unavailable_select": "«Обработать выбранное» недоступно: оставьте выбранным хотя бы один доступный раздел.",
   "structure.process_unavailable_mapping": "«Обработать выбранное» недоступно: текущие границы разделов больше не соответствуют подготовленному документу. Подготовьте документ заново перед частичным переводом.",
   "structure.process_unavailable_no_content": "«Обработать выбранное» недоступно: текущий выбор не сопоставляется ни с каким переводимым содержимым.",
 
-  "structure.confirm_button": "Подтвердить структуру",
-  "structure.reconfirm_button": "Переподтвердить структуру",
   "structure.process_selected_button": "Обработать выбранное",
   "structure.process_selected_help": "Обрабатывает только выбранные разделы и создаёт частичный результат.",
   "structure.selected_with_context_button": "Выбранное + контекст",
@@ -260,9 +247,5 @@
 
   "structure.structure_confirmed_success": "Структура подтверждена для текущего подготовленного документа.",
   "structure.confirmation_confirmed": "Структура подтверждена | выбрано основных разделов: {top} | выбрано вложенных разделов: {nested}",
-  "structure.confirmation_not_confirmed": "Структура не подтверждена. «Обработать выбранное» остаётся недоступным, пока текущая структура не будет проверена и подтверждена.",
-  "structure.process_selected_now_note": "«Обработать выбранное» теперь запускает только выбранные разделы и создаёт частичный результат.",
-  "structure.selected_with_context_note": "«Выбранное + контекст» добавляет перед первой выбранной главой ведущий структурный контекст, подкреплённый источником, например вводную часть или оглавление.",
-  "structure.process_entire_book_ready": "«Обработать всю книгу» готово создать итоговую переведённую книгу для текущей сессии.",
-  "structure.selection_ready_unconfirmed": "Текущий выбор готов к проверке, но обработка по главам остаётся недоступной до подтверждения."
+  "structure.confirmation_not_confirmed": "Структура ещё не подтверждена — она подтвердится автоматически при запуске обработки выбранных разделов."
 }

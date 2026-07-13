@@ -184,11 +184,7 @@
   "structure.status_failed": "failed",
   "structure.status_skipped": "skipped",
 
-  "structure.section_status_line": "Section status: {details}",
-  "structure.selected_section_status_line": "Selected section status: {details}",
-
   "structure.visible_count": "Visible sections: {visible}/{total}",
-  "structure.visible_hierarchy": "Hierarchy in current view: {parent} main sections | {child} nested sections",
   "structure.currently_unavailable_view": "Currently unavailable in this view: {count} sections already queued or processing.",
 
   "structure.select_visible_button": "Select Visible",
@@ -209,8 +205,6 @@
   "structure.status_hint_failed": "Failed in this session. Use Retry Failed or select this section again for another translation pass.",
   "structure.status_hint_skipped": "Skipped in the current session workflow. It is usually left out of the final book by design.",
 
-  "structure.segment_warning": "Review this section before partial translation: {title}. {suffix}",
-  "structure.segment_warning_default_suffix": "Review the included text preview before translating this section separately.",
   "structure.included_preview_expander": "Included text preview: {title}",
   "structure.preview_starts_with": "Starts with: {text}",
   "structure.preview_ends_with": "Ends with: {text}",
@@ -219,10 +213,8 @@
   "structure.no_sections_match": "No sections match the current filter/search.",
 
   "structure.will_translate": "Will translate: {selected}/{total} sections | {selected_words}/{total_words} words",
-  "structure.selection_hierarchy": "Selection hierarchy: {top} main sections | {nested} nested sections",
-  "structure.selection_includes_nested": "Selection also includes {count} nested sections under chosen parent sections.",
   "structure.launch_skip": "This launch will skip {count} sections that are already queued or processing.",
-  "structure.ready_note": "Ready: confirmed structure | selection maps to translatable content.",
+  "structure.ready_note": "Ready: selection maps to translatable content.",
 
   "structure.include_front_matter_label": "Include Front Matter",
   "structure.include_front_matter_help": "When enabled, Selected + Context prepends front matter segments as source-backed context.",
@@ -238,18 +230,13 @@
   "structure.retry_help_default": "Reruns only the segments marked failed for this prepared document.",
   "structure.retry_summary_persisted": "{count} sections have persisted failed work for this prepared document.",
   "structure.retry_summary_default": "{count} sections failed in this session.",
-  "structure.retry_unavailable_confirm": "Retry Failed unavailable: confirm the current outline before rerunning failed segments.",
   "structure.retry_unavailable_mapping": "Retry Failed unavailable: the current section boundaries no longer match the prepared document. Re-prepare the document before rerunning failed sections.",
   "structure.retry_unavailable_no_content": "Retry Failed unavailable: failed sections do not currently map to translatable content.",
 
-  "structure.process_unavailable_confirm_and_select": "Process Selected unavailable: confirm the current outline and keep at least one selectable segment selected.",
-  "structure.process_unavailable_confirm": "Process Selected unavailable: confirm the current outline before running the current chapter selection.",
   "structure.process_unavailable_select": "Process Selected unavailable: keep at least one selectable segment selected.",
   "structure.process_unavailable_mapping": "Process Selected unavailable: the current section boundaries no longer match the prepared document. Re-prepare the document before partial translation.",
   "structure.process_unavailable_no_content": "Process Selected unavailable: the current selection does not map to any translatable content.",
 
-  "structure.confirm_button": "Confirm Structure",
-  "structure.reconfirm_button": "Re-confirm Structure",
   "structure.process_selected_button": "Process Selected",
   "structure.process_selected_help": "Processes only the selected sections and produces a partial output artifact.",
   "structure.selected_with_context_button": "Selected + Context",
@@ -259,9 +246,5 @@
 
   "structure.structure_confirmed_success": "Structure confirmed for the current prepared document.",
   "structure.confirmation_confirmed": "Structure confirmed | selected main {top} sections | selected nested {nested} sections",
-  "structure.confirmation_not_confirmed": "Structure not confirmed. Process Selected stays disabled until the current outline is reviewed and confirmed.",
-  "structure.process_selected_now_note": "Process Selected now runs only the chosen sections and produces a partial output artifact.",
-  "structure.selected_with_context_note": "Selected + Context prepends leading source-backed structural context such as front matter or TOC before the first selected chapter.",
-  "structure.process_entire_book_ready": "Process Entire Book is ready to produce the final translated book for the current session.",
-  "structure.selection_ready_unconfirmed": "Current selection is ready for review, but chapter-based processing stays disabled until confirmation."
+  "structure.confirmation_not_confirmed": "Structure not yet confirmed - it is confirmed automatically when you start processing the selected sections."
 }

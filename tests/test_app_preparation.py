@@ -1169,7 +1169,6 @@ def test_render_analysis_review_panel_renders_selector_and_disabled_process_sele
         segment_diagnostics=SegmentDetectionReport(segment_count=1, toc_entry_count=1, toc_matched_count=1),
         segment_to_job={"seg_0001": (0, 1)},
     )
-    confirm_col = FakeColumn(result=False)
     selected_col = FakeColumn(result=False)
     full_book_col = FakeColumn(result=False)
     checkbox_calls = []
@@ -1201,7 +1200,7 @@ def test_render_analysis_review_panel_renders_selector_and_disabled_process_sele
         "columns",
         _two_stage_columns(
             [bulk_select_col, bulk_clear_col, bulk_all_col],
-            [confirm_col, selected_col, full_book_col],
+            [selected_col, full_book_col],
         ),
     )
     monkeypatch.setattr(app.st, "checkbox", lambda label, **kwargs: checkbox_calls.append((label, kwargs)) or kwargs.get("value", False))
@@ -1252,8 +1251,8 @@ def test_render_analysis_review_panel_renders_selector_and_disabled_process_sele
             t("structure.process_selected_button"),
             {
                 "use_container_width": True,
-                "disabled": True,
-                "help": t("structure.process_unavailable_confirm"),
+                "disabled": False,
+                "help": t("structure.process_selected_help"),
                 "key": "process_selected_button",
             },
         ),
@@ -1261,8 +1260,8 @@ def test_render_analysis_review_panel_renders_selector_and_disabled_process_sele
             t("structure.selected_with_context_button"),
             {
                 "use_container_width": True,
-                "disabled": True,
-                "help": t("structure.process_unavailable_confirm"),
+                "disabled": False,
+                "help": t("structure.selected_with_context_help"),
                 "key": "process_selected_with_context_button",
             },
         ),
@@ -1291,10 +1290,6 @@ def test_render_analysis_review_panel_renders_selector_and_disabled_process_sele
     )
     assert any(
         message == t("structure.confirmation_not_confirmed")
-        for message in caption_calls
-    )
-    assert any(
-        message == t("structure.selection_ready_unconfirmed")
         for message in caption_calls
     )
 
@@ -1336,7 +1331,6 @@ def test_render_analysis_review_panel_renders_bulk_selection_buttons(monkeypatch
     bulk_select_col = FakeColumn(result=False)
     bulk_clear_col = FakeColumn(result=False)
     bulk_all_col = FakeColumn(result=False)
-    confirm_col = FakeColumn(result=False)
     selected_col = FakeColumn(result=False)
     full_book_col = FakeColumn(result=False)
 
@@ -1353,7 +1347,7 @@ def test_render_analysis_review_panel_renders_bulk_selection_buttons(monkeypatch
         columns_calls.append(count)
         if len(columns_calls) == 1:
             return [bulk_select_col, bulk_clear_col, bulk_all_col]
-        return [confirm_col, selected_col, full_book_col]
+        return [selected_col, full_book_col]
 
     monkeypatch.setattr(app.st, "session_state", session_state)
     monkeypatch.setattr(app.st, "columns", fake_columns)
@@ -1374,7 +1368,7 @@ def test_render_analysis_review_panel_renders_bulk_selection_buttons(monkeypatch
         chunk_size=6000,
     )
 
-    assert columns_calls == [3, 3]
+    assert columns_calls == [3, 2]
     assert bulk_select_col.calls == [(
         t("structure.select_visible_button"),
         {
@@ -1508,7 +1502,9 @@ def test_render_analysis_review_panel_filters_segments_by_status_and_search(monk
             confidence=t("structure.confidence_hint_high"),
             badge=t("structure.badge_failed", percent=0),
             active="",
-        )
+        ),
+        t("structure.include_front_matter_label"),
+        t("structure.include_toc_label"),
     ]
     assert session_state.chapter_selector_filter == "failed"
     assert session_state.chapter_selector_search == "appendix"
@@ -1554,6 +1550,7 @@ def test_render_analysis_review_panel_shows_empty_filter_result_notice(monkeypat
         segment_to_job={"seg_0001": (0,)},
     )
     info_calls = []
+    checkbox_labels = []
 
     class FakeExpander:
         def __enter__(self):
@@ -1571,7 +1568,7 @@ def test_render_analysis_review_panel_shows_empty_filter_result_notice(monkeypat
             [FakeColumn(result=False), FakeColumn(result=False), FakeColumn(result=False)],
         ),
     )
-    monkeypatch.setattr(app.st, "checkbox", lambda label, **kwargs: (_ for _ in ()).throw(AssertionError("checkbox should not render when filter is empty")))
+    monkeypatch.setattr(app.st, "checkbox", lambda label, **kwargs: checkbox_labels.append(label) or kwargs.get("value", False))
     monkeypatch.setattr(app.st, "selectbox", lambda label, options, index=0, **kwargs: t("structure.filter_completed"))
     monkeypatch.setattr(app.st, "text_input", lambda label, value="", **kwargs: "missing")
     monkeypatch.setattr(app.st, "info", lambda message, **kwargs: info_calls.append(message))
@@ -1589,6 +1586,9 @@ def test_render_analysis_review_panel_shows_empty_filter_result_notice(monkeypat
     )
 
     assert t("structure.no_sections_match") in info_calls
+    # No per-segment checkbox renders when the filter yields no visible sections
+    # (only the include-context checkboxes may appear for the retained selection).
+    assert all("Chapter 1" not in label for label in checkbox_labels)
 
 
 def test_render_analysis_review_panel_disables_locked_segment_checkboxes(monkeypatch):
@@ -1815,7 +1815,9 @@ def test_render_analysis_review_panel_supports_skipped_status_filter(monkeypatch
             confidence=t("structure.confidence_hint_high"),
             badge=t("structure.status_skipped"),
             active="",
-        )
+        ),
+        t("structure.include_front_matter_label"),
+        t("structure.include_toc_label"),
     ]
 
 
@@ -2082,7 +2084,6 @@ def test_render_analysis_review_panel_shows_low_confidence_warning_and_manifest(
 
     assert warnings == [
         t("structure.diagnostic_warning", details="Low-confidence segment boundaries detected"),
-        t("structure.segment_warning", title="Chapter 2", suffix="Boundary confidence is low"),
     ]
     assert any(
         message == t("structure.manifest_path_caption", path=".run/structure_manifests/20260506_094000_report.segments.json")
@@ -2396,7 +2397,7 @@ def test_render_analysis_review_panel_returns_start_final_book_when_all_required
         "columns",
         _two_stage_columns(
             [FakeColumn(result=False), FakeColumn(result=False), FakeColumn(result=False)],
-            [FakeColumn(result=False), FakeColumn(result=False), FakeColumn(result=True)],
+            [FakeColumn(result=False), FakeColumn(result=True)],
         ),
     )
     monkeypatch.setattr(app.st, "checkbox", lambda label, **kwargs: kwargs.get("value", False))
@@ -2482,146 +2483,7 @@ def test_render_analysis_review_panel_shows_completed_and_failed_status_hints(mo
     )
 
 
-def test_render_analysis_review_panel_shows_segment_status_summary(monkeypatch):
-    session_state = SessionState(
-        selected_segment_ids=["seg_0001", "seg_0002", "seg_0003", "seg_0004"],
-        segment_status_by_id={
-            "seg_0001": "completed",
-            "seg_0002": "processing",
-            "seg_0003": "pending",
-            "seg_0004": "failed",
-        },
-        segment_progress_by_id={
-            "seg_0001": 1.0,
-            "seg_0002": 0.5,
-            "seg_0003": 0.0,
-            "seg_0004": 0.0,
-        },
-        structure_confirmed=True,
-        confirmed_structure_fingerprint="abc123def456",
-        confirmed_at_settings_hash="settings123",
-        segments_loaded_for_source_token="report.docx:3:token",
-    )
-    prepared_run_context = _build_prepared_run_context(
-        structure_fingerprint="abc123def456",
-        segments=[
-            DocumentSegment(
-                segment_id="seg_0001",
-                ordinal=1,
-                level=1,
-                title="Chapter 1",
-                normalized_title="chapter 1",
-                start_paragraph_index=0,
-                end_paragraph_index=0,
-                start_paragraph_id="p0000",
-                end_paragraph_id="p0000",
-                paragraph_ids=("p0000",),
-                paragraph_count=1,
-                char_count=10,
-                word_count=2,
-                estimated_token_count=3,
-                structural_role="chapter",
-                confidence="high",
-                boundary_fingerprint="fp1",
-                boundary_evidence=(SegmentBoundaryEvidence(source="heading_style", confidence="high", details={}),),
-            ),
-            DocumentSegment(
-                segment_id="seg_0002",
-                ordinal=2,
-                level=1,
-                title="Chapter 2",
-                normalized_title="chapter 2",
-                start_paragraph_index=1,
-                end_paragraph_index=1,
-                start_paragraph_id="p0001",
-                end_paragraph_id="p0001",
-                paragraph_ids=("p0001",),
-                paragraph_count=1,
-                char_count=10,
-                word_count=2,
-                estimated_token_count=3,
-                structural_role="chapter",
-                confidence="high",
-                boundary_fingerprint="fp2",
-                boundary_evidence=(SegmentBoundaryEvidence(source="heading_style", confidence="high", details={}),),
-            ),
-            DocumentSegment(
-                segment_id="seg_0003",
-                ordinal=3,
-                level=1,
-                title="Chapter 3",
-                normalized_title="chapter 3",
-                start_paragraph_index=2,
-                end_paragraph_index=2,
-                start_paragraph_id="p0002",
-                end_paragraph_id="p0002",
-                paragraph_ids=("p0002",),
-                paragraph_count=1,
-                char_count=10,
-                word_count=2,
-                estimated_token_count=3,
-                structural_role="chapter",
-                confidence="high",
-                boundary_fingerprint="fp3",
-                boundary_evidence=(SegmentBoundaryEvidence(source="heading_style", confidence="high", details={}),),
-            ),
-            DocumentSegment(
-                segment_id="seg_0004",
-                ordinal=4,
-                level=1,
-                title="Chapter 4",
-                normalized_title="chapter 4",
-                start_paragraph_index=3,
-                end_paragraph_index=3,
-                start_paragraph_id="p0003",
-                end_paragraph_id="p0003",
-                paragraph_ids=("p0003",),
-                paragraph_count=1,
-                char_count=10,
-                word_count=2,
-                estimated_token_count=3,
-                structural_role="chapter",
-                confidence="high",
-                boundary_fingerprint="fp4",
-                boundary_evidence=(SegmentBoundaryEvidence(source="heading_style", confidence="high", details={}),),
-            ),
-        ],
-        segment_to_job={"seg_0001": (0,), "seg_0002": (1,), "seg_0003": (2,), "seg_0004": (3,)},
-    )
-    captions = []
-
-    monkeypatch.setattr(app, "_build_structure_settings_hash", lambda **kwargs: "settings123")
-    monkeypatch.setattr(app.st, "session_state", session_state)
-    monkeypatch.setattr(app.st, "columns", lambda n: [FakeColumn(result=False), FakeColumn(result=False), FakeColumn(result=False)])
-    monkeypatch.setattr(app.st, "checkbox", lambda label, **kwargs: kwargs.get("value", False))
-    monkeypatch.setattr(app.st, "selectbox", lambda label, options, index=0, **kwargs: options[index])
-    monkeypatch.setattr(app.st, "text_input", lambda label, value="", **kwargs: value)
-    monkeypatch.setattr(app.st, "info", lambda *args, **kwargs: None)
-    monkeypatch.setattr(app.st, "subheader", lambda *args, **kwargs: None)
-    monkeypatch.setattr(app.st, "caption", lambda message, **kwargs: captions.append(message))
-    monkeypatch.setattr(app.st, "warning", lambda *args, **kwargs: None)
-    monkeypatch.setattr(app.st, "success", lambda *args, **kwargs: None)
-    monkeypatch.setattr(app.st, "write", lambda *args, **kwargs: None)
-    monkeypatch.setattr(app.st, "expander", lambda *args, **kwargs: type("FakeExpander", (), {"__enter__": lambda self: self, "__exit__": lambda self, exc_type, exc, tb: False})())
-
-    app._render_analysis_review_panel(
-        prepared_run_context=prepared_run_context,
-        uploaded_file_token="report.docx:3:token",
-        chunk_size=6000,
-    )
-
-    assert any(
-        message == t("structure.section_status_line", details=" | ".join([
-            f"{t('structure.status_pending')} 1",
-            f"{t('structure.status_processing')} 1",
-            f"{t('structure.status_completed')} 1",
-            f"{t('structure.status_failed')} 1",
-        ]))
-        for message in captions
-    )
-
-
-def test_render_analysis_review_panel_shows_selected_status_summary(monkeypatch):
+def test_render_analysis_review_panel_shows_launch_skip_for_locked_selection(monkeypatch):
     session_state = SessionState(
         selected_segment_ids=["seg_0001", "seg_0002", "seg_0004"],
         segment_status_by_id={
@@ -2680,13 +2542,6 @@ def test_render_analysis_review_panel_shows_selected_status_summary(monkeypatch)
         chunk_size=6000,
     )
 
-    assert any(
-        message == t("structure.selected_section_status_line", details=" | ".join([
-            f"{t('structure.status_completed')} 1",
-            f"{t('structure.status_failed')} 1",
-        ]))
-        for message in captions
-    )
     assert any(
         message == t("structure.launch_skip", count=1)
         for message in captions
@@ -3203,7 +3058,11 @@ def test_render_analysis_review_panel_invalidates_confirmation_when_only_chunk_s
     ]
 
 
-def test_render_analysis_review_panel_confirms_structure(monkeypatch):
+def test_render_analysis_review_panel_confirms_structure_implicitly_on_partial_start(monkeypatch):
+    # §8 anti-regression counter-proof: starting a partial action WITHOUT any prior
+    # explicit Confirm click must set the SAME downstream confirmation state that the
+    # removed explicit Confirm button used to set, and emit the same structure_confirmed log.
+    confirmation_calls = []
     session_state = SessionState(
         selected_segment_ids=["seg_0001"],
         structure_confirmed=False,
@@ -3235,9 +3094,9 @@ def test_render_analysis_review_panel_confirms_structure(monkeypatch):
                 boundary_evidence=(SegmentBoundaryEvidence(source="heading_style", confidence="high", details={}),),
             )
         ],
+        segment_to_job={"seg_0001": (0,)},
     )
-    confirm_col = FakeColumn(result=True)
-    selected_col = FakeColumn(result=False)
+    selected_col = FakeColumn(result=True)
     full_book_col = FakeColumn(result=False)
     reruns = []
     log_calls = []
@@ -3246,13 +3105,23 @@ def test_render_analysis_review_panel_confirms_structure(monkeypatch):
     bulk_clear_col = FakeColumn(result=False)
     bulk_all_col = FakeColumn(result=False)
 
+    import docxaicorrector.ui.structure_review_panel as structure_review_panel
+
+    real_set_confirmation = structure_review_panel.set_structure_confirmation_state
+
+    def _record_confirmation(**kwargs):
+        confirmation_calls.append(kwargs)
+        return real_set_confirmation(**kwargs)
+
     monkeypatch.setattr(app.st, "session_state", session_state)
+    monkeypatch.setattr(structure_review_panel, "set_structure_confirmation_state", _record_confirmation)
+    monkeypatch.setattr(app, "_build_structure_settings_hash", lambda **kwargs: "settings-hash-99")
     monkeypatch.setattr(
         app.st,
         "columns",
         _two_stage_columns(
             [bulk_select_col, bulk_clear_col, bulk_all_col],
-            [confirm_col, selected_col, full_book_col],
+            [selected_col, full_book_col],
         ),
     )
     monkeypatch.setattr(app.st, "checkbox", lambda label, **kwargs: kwargs.get("value", False))
@@ -3272,17 +3141,28 @@ def test_render_analysis_review_panel_confirms_structure(monkeypatch):
     monkeypatch.setattr(app.st, "rerun", lambda: reruns.append(True))
     monkeypatch.setattr(app, "log_event", lambda *args, **kwargs: log_calls.append((args, kwargs)))
 
-    app._render_analysis_review_panel(
+    action = app._render_analysis_review_panel(
         prepared_run_context=prepared_run_context,
         uploaded_file_token="report.docx:3:token",
         chunk_size=6000,
     )
 
+    # The partial action was returned even though the user never clicked a Confirm button.
+    assert action == "start_selected"
+    # The downstream confirmation state is set to exactly what the explicit Confirm produced.
     assert session_state.structure_confirmed is True
     assert session_state.confirmed_structure_fingerprint == "abc123def456"
-    assert session_state.confirmed_at_settings_hash
+    assert session_state.confirmed_at_settings_hash == "settings-hash-99"
     assert session_state.segments_loaded_for_source_token == "report.docx:3:token"
-    assert reruns == [True]
+    assert confirmation_calls == [
+        {
+            "structure_confirmed": True,
+            "confirmed_structure_fingerprint": "abc123def456",
+            "confirmed_segment_ids": ["seg_0001"],
+            "confirmed_at_settings_hash": "settings-hash-99",
+            "segments_loaded_for_source_token": "report.docx:3:token",
+        }
+    ]
     assert log_calls and log_calls[0][0][1] == "structure_confirmed"
 
 
@@ -3320,7 +3200,6 @@ def test_render_analysis_review_panel_returns_selected_action_when_confirmed(mon
         ],
         segment_to_job={"seg_0001": (0,)},
     )
-    confirm_col = FakeColumn(result=False)
     selected_col = FakeColumn(result=True)
     full_book_col = FakeColumn(result=False)
 
@@ -3334,7 +3213,7 @@ def test_render_analysis_review_panel_returns_selected_action_when_confirmed(mon
         "columns",
         _two_stage_columns(
             [bulk_select_col, bulk_clear_col, bulk_all_col],
-            [confirm_col, selected_col, full_book_col],
+            [selected_col, full_book_col],
         ),
     )
     monkeypatch.setattr(app.st, "checkbox", lambda label, **kwargs: kwargs.get("value", False))
@@ -3418,7 +3297,6 @@ def test_render_analysis_review_panel_returns_start_selected_with_context_when_r
         jobs=[{"paragraph_ids": ["p0001"], "target_text": "Paragraph 1", "context_before": "", "context_after": "", "target_chars": 11, "context_chars": 0}],
         segment_to_job={"seg_0001": (0,)},
     )
-    confirm_col = FakeColumn(result=False)
     selected_col = SequenceColumn([False, True])
     full_book_col = FakeColumn(result=False)
 
@@ -3432,7 +3310,7 @@ def test_render_analysis_review_panel_returns_start_selected_with_context_when_r
         "columns",
         _two_stage_columns(
             [bulk_select_col, bulk_clear_col, bulk_all_col],
-            [confirm_col, selected_col, full_book_col],
+            [selected_col, full_book_col],
         ),
     )
     monkeypatch.setattr(app.st, "checkbox", lambda label, **kwargs: kwargs.get("value", False))
@@ -3528,7 +3406,6 @@ def test_render_analysis_review_panel_returns_start_retry_failed_when_requested(
         jobs=[{"paragraph_ids": ["p0001"], "target_text": "Paragraph 1", "context_before": "", "context_after": "", "target_chars": 11, "context_chars": 0}],
         segment_to_job={"seg_failed": (0,)},
     )
-    confirm_col = FakeColumn(result=False)
     selected_col = SequenceColumn([False, False, True])
     full_book_col = FakeColumn(result=False)
 
@@ -3542,7 +3419,7 @@ def test_render_analysis_review_panel_returns_start_retry_failed_when_requested(
         "columns",
         _two_stage_columns(
             [bulk_select_col, bulk_clear_col, bulk_all_col],
-            [confirm_col, selected_col, full_book_col],
+            [selected_col, full_book_col],
         ),
     )
     monkeypatch.setattr(app.st, "checkbox", lambda label, **kwargs: kwargs.get("value", False))
@@ -3653,7 +3530,6 @@ def test_render_analysis_review_panel_uses_persisted_retry_help_when_available(m
         jobs=[{"job_id": "job_0001", "paragraph_ids": ["p0001"], "target_text": "Paragraph 1", "context_before": "", "context_after": "", "target_chars": 11, "context_chars": 0}],
         segment_to_job={"seg_failed": (0,)},
     )
-    confirm_col = FakeColumn(result=False)
     selected_col = FakeColumn(result=False)
     full_book_col = FakeColumn(result=False)
     bulk_select_col = FakeColumn(result=False)
@@ -3667,7 +3543,7 @@ def test_render_analysis_review_panel_uses_persisted_retry_help_when_available(m
         "columns",
         _two_stage_columns(
             [bulk_select_col, bulk_clear_col, bulk_all_col],
-            [confirm_col, selected_col, full_book_col],
+            [selected_col, full_book_col],
         ),
     )
     monkeypatch.setattr(app.st, "checkbox", lambda label, **kwargs: kwargs.get("value", False))
@@ -3845,7 +3721,6 @@ def test_render_analysis_review_panel_returns_full_book_action(monkeypatch):
             )
         ],
     )
-    confirm_col = FakeColumn(result=False)
     selected_col = FakeColumn(result=False)
     full_book_col = FakeColumn(result=True)
 
@@ -3859,7 +3734,7 @@ def test_render_analysis_review_panel_returns_full_book_action(monkeypatch):
         "columns",
         _two_stage_columns(
             [bulk_select_col, bulk_clear_col, bulk_all_col],
-            [confirm_col, selected_col, full_book_col],
+            [selected_col, full_book_col],
         ),
     )
     monkeypatch.setattr(app.st, "checkbox", lambda label, **kwargs: kwargs.get("value", False))
@@ -3963,7 +3838,7 @@ def test_main_starts_full_book_processing_from_analysis_panel(monkeypatch):
         "columns",
         _two_stage_columns(
             [FakeColumn(result=False), FakeColumn(result=False), FakeColumn(result=False)],
-            [FakeColumn(result=False), FakeColumn(result=False), FakeColumn(result=True)],
+            [FakeColumn(result=False), FakeColumn(result=True)],
         ),
     )
     monkeypatch.setattr(app, "render_preparation_summary", lambda *args, **kwargs: None)
@@ -4094,7 +3969,7 @@ def test_main_starts_selected_processing_from_analysis_panel(monkeypatch):
         "columns",
         _two_stage_columns(
             [FakeColumn(result=False), FakeColumn(result=False), FakeColumn(result=False)],
-            [FakeColumn(result=False), FakeColumn(result=True), FakeColumn(result=False)],
+            [FakeColumn(result=True), FakeColumn(result=False)],
         ),
     )
     monkeypatch.setattr(app, "render_preparation_summary", lambda *args, **kwargs: None)
@@ -4231,7 +4106,7 @@ def test_main_starts_selected_processing_excludes_locked_descendants(monkeypatch
         "columns",
         _two_stage_columns(
             [FakeColumn(result=False), FakeColumn(result=False), FakeColumn(result=False)],
-            [FakeColumn(result=False), FakeColumn(result=True), FakeColumn(result=False)],
+            [FakeColumn(result=True), FakeColumn(result=False)],
         ),
     )
     monkeypatch.setattr(app, "render_preparation_summary", lambda *args, **kwargs: None)
@@ -4545,7 +4420,9 @@ def test_render_analysis_review_panel_selects_parent_with_descendants(monkeypatc
         ],
         segment_to_job={"seg_parent": (), "seg_child": (0,), "seg_other": (1,)},
     )
-    checkbox_values = iter([True, False, False])
+    # Three per-segment checkboxes, then the two include-context checkboxes
+    # (rendered because the selection maps to translatable content).
+    checkbox_values = iter([True, False, False, False, False])
     checkbox_labels = []
     info_calls = []
     caption_calls = []
@@ -4606,12 +4483,6 @@ def test_render_analysis_review_panel_selects_parent_with_descendants(monkeypatc
         for label in checkbox_labels
     )
     assert any(message == t("structure.will_translate", selected=2, total=3, selected_words=4, total_words=6) for message in info_calls)
-    assert any(message == t("structure.visible_hierarchy", parent=2, child=1) for message in caption_calls)
-    assert any(message == t("structure.selection_hierarchy", top=1, nested=1) for message in caption_calls)
-    assert any(
-        message == t("structure.selection_includes_nested", count=1)
-        for message in caption_calls
-    )
 
 
 def test_render_analysis_review_panel_clear_visible_clears_parent_and_descendants(monkeypatch):
@@ -5183,94 +5054,6 @@ def test_render_analysis_review_panel_uses_effective_selected_payload_for_ready_
     )
 
 
-def test_render_analysis_review_panel_shows_visible_structure_summary_only_for_nested_segments(monkeypatch):
-    session_state = SessionState(
-        selected_segment_ids=["seg_parent", "seg_child"],
-        segment_status_by_id={"seg_parent": "pending", "seg_child": "pending"},
-        segment_progress_by_id={"seg_parent": 0.0, "seg_child": 0.0},
-        structure_confirmed=False,
-        confirmed_structure_fingerprint="",
-        confirmed_at_settings_hash="",
-        segments_loaded_for_source_token="report.docx:3:token",
-    )
-    prepared_run_context = _build_prepared_run_context(
-        structure_fingerprint="abc123def456",
-        segments=[
-            DocumentSegment(
-                segment_id="seg_parent",
-                ordinal=1,
-                level=1,
-                title="Part I",
-                normalized_title="part i",
-                start_paragraph_index=0,
-                end_paragraph_index=0,
-                start_paragraph_id="p0000",
-                end_paragraph_id="p0000",
-                paragraph_ids=("p0000",),
-                paragraph_count=1,
-                char_count=10,
-                word_count=2,
-                estimated_token_count=3,
-                structural_role="part",
-                confidence="high",
-                boundary_fingerprint="fp_parent",
-                boundary_evidence=(SegmentBoundaryEvidence(source="heading_style", confidence="high", details={}),),
-            ),
-            DocumentSegment(
-                segment_id="seg_child",
-                parent_segment_id="seg_parent",
-                ordinal=2,
-                level=2,
-                title="Chapter 1",
-                normalized_title="chapter 1",
-                start_paragraph_index=1,
-                end_paragraph_index=1,
-                start_paragraph_id="p0001",
-                end_paragraph_id="p0001",
-                paragraph_ids=("p0001",),
-                paragraph_count=1,
-                char_count=10,
-                word_count=2,
-                estimated_token_count=3,
-                structural_role="chapter",
-                confidence="high",
-                boundary_fingerprint="fp_child",
-                boundary_evidence=(SegmentBoundaryEvidence(source="heading_style", confidence="high", details={}),),
-            ),
-        ],
-        segment_to_job={"seg_parent": (), "seg_child": (0,)},
-    )
-    caption_calls = []
-
-    class FakeExpander:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, tb):
-            return False
-
-    monkeypatch.setattr(app.st, "session_state", session_state)
-    monkeypatch.setattr(app.st, "columns", lambda n: [FakeColumn(result=False), FakeColumn(result=False), FakeColumn(result=False)])
-    monkeypatch.setattr(app.st, "checkbox", lambda label, **kwargs: kwargs.get("value", False))
-    monkeypatch.setattr(app.st, "selectbox", lambda label, options, index=0, **kwargs: options[index])
-    monkeypatch.setattr(app.st, "text_input", lambda label, value="", **kwargs: value)
-    monkeypatch.setattr(app.st, "info", lambda *args, **kwargs: None)
-    monkeypatch.setattr(app.st, "subheader", lambda *args, **kwargs: None)
-    monkeypatch.setattr(app.st, "caption", lambda message, **kwargs: caption_calls.append(message))
-    monkeypatch.setattr(app.st, "warning", lambda *args, **kwargs: None)
-    monkeypatch.setattr(app.st, "success", lambda *args, **kwargs: None)
-    monkeypatch.setattr(app.st, "write", lambda *args, **kwargs: None)
-    monkeypatch.setattr(app.st, "expander", lambda *args, **kwargs: FakeExpander())
-
-    app._render_analysis_review_panel(
-        prepared_run_context=prepared_run_context,
-        uploaded_file_token="report.docx:3:token",
-        chunk_size=6000,
-    )
-
-    assert any(message == t("structure.visible_hierarchy", parent=1, child=1) for message in caption_calls)
-
-
 def test_render_analysis_review_panel_shows_ready_caption_when_can_process_selected(monkeypatch):
     session_state = SessionState(
         selected_segment_ids=["seg_0001"],
@@ -5501,86 +5284,6 @@ def test_render_analysis_review_panel_explains_incomplete_segment_job_mapping(mo
         message.endswith(t("structure.retry_unavailable_mapping"))
         for message in caption_calls
     )
-
-
-def test_render_analysis_review_panel_shows_reconfirm_button_label_when_already_confirmed(monkeypatch):
-    session_state = SessionState(
-        selected_segment_ids=["seg_0001"],
-        structure_confirmed=True,
-        confirmed_structure_fingerprint="abc123def456",
-        confirmed_at_settings_hash="settings123",
-        segments_loaded_for_source_token="report.docx:3:token",
-    )
-    prepared_run_context = _build_prepared_run_context(
-        structure_fingerprint="abc123def456",
-        segments=[
-            DocumentSegment(
-                segment_id="seg_0001",
-                ordinal=1,
-                level=1,
-                title="Chapter 1",
-                normalized_title="chapter 1",
-                start_paragraph_index=0,
-                end_paragraph_index=0,
-                start_paragraph_id="p0000",
-                end_paragraph_id="p0000",
-                paragraph_ids=("p0000",),
-                paragraph_count=1,
-                char_count=10,
-                word_count=2,
-                estimated_token_count=3,
-                structural_role="chapter",
-                confidence="high",
-                boundary_fingerprint="fp1",
-                boundary_evidence=(SegmentBoundaryEvidence(source="heading_style", confidence="high", details={}),),
-            )
-        ],
-        segment_to_job={"seg_0001": (0,)},
-    )
-
-    class FakeExpander:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, tb):
-            return False
-
-    confirm_col = FakeColumn(result=False)
-    selected_col = FakeColumn(result=False)
-    full_book_col = FakeColumn(result=False)
-    bulk_select_col = FakeColumn(result=False)
-    bulk_clear_col = FakeColumn(result=False)
-    bulk_all_col = FakeColumn(result=False)
-
-    monkeypatch.setattr(app, "_build_structure_settings_hash", lambda **kwargs: "settings123")
-    monkeypatch.setattr(app.st, "session_state", session_state)
-    monkeypatch.setattr(
-        app.st,
-        "columns",
-        _two_stage_columns(
-            [bulk_select_col, bulk_clear_col, bulk_all_col],
-            [confirm_col, selected_col, full_book_col],
-        ),
-    )
-    monkeypatch.setattr(app.st, "checkbox", lambda label, **kwargs: kwargs.get("value", False))
-    monkeypatch.setattr(app.st, "selectbox", lambda label, options, index=0, **kwargs: options[index])
-    monkeypatch.setattr(app.st, "text_input", lambda label, value="", **kwargs: value)
-    monkeypatch.setattr(app.st, "info", lambda *args, **kwargs: None)
-    monkeypatch.setattr(app.st, "subheader", lambda *args, **kwargs: None)
-    monkeypatch.setattr(app.st, "caption", lambda *args, **kwargs: None)
-    monkeypatch.setattr(app.st, "warning", lambda *args, **kwargs: None)
-    monkeypatch.setattr(app.st, "success", lambda *args, **kwargs: None)
-    monkeypatch.setattr(app.st, "write", lambda *args, **kwargs: None)
-    monkeypatch.setattr(app.st, "expander", lambda *args, **kwargs: FakeExpander())
-
-    app._render_analysis_review_panel(
-        prepared_run_context=prepared_run_context,
-        uploaded_file_token="report.docx:3:token",
-        chunk_size=6000,
-    )
-
-    assert confirm_col.calls
-    assert confirm_col.calls[0][0] == t("structure.reconfirm_button")
 
 
 def test_render_analysis_review_panel_shows_failed_segment_retry_notice(monkeypatch):

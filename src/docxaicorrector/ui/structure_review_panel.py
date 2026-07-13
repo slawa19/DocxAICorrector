@@ -525,44 +525,6 @@ def _build_segment_runtime_badge(segment_status: str, segment_progress: float) -
     return _localized_status_label(normalized_status)
 
 
-def _build_segment_status_summary_line(*, segments: list[SegmentLike], segment_status_by_id: dict[str, str]) -> str:
-    if not segments:
-        return ""
-    ordered_statuses = ("pending", "queued", "processing", "completed", "failed", "skipped")
-    counts = {status: 0 for status in ordered_statuses}
-    for segment in segments:
-        segment_id = str(getattr(segment, "segment_id", "") or "").strip()
-        if not segment_id:
-            continue
-        normalized_status = str(segment_status_by_id.get(segment_id, "pending") or "pending").strip().lower() or "pending"
-        if normalized_status not in counts:
-            continue
-        counts[normalized_status] += 1
-    fragments = [f"{_localized_status_label(status)} {count}" for status, count in counts.items() if count > 0]
-    if not fragments:
-        return ""
-    return t("structure.section_status_line", details=" | ".join(fragments))
-
-
-def _build_selected_segment_status_summary_line(*, selected_segments: list[SegmentLike], segment_status_by_id: dict[str, str]) -> str:
-    if not selected_segments:
-        return ""
-    ordered_statuses = ("pending", "queued", "processing", "completed", "failed", "skipped")
-    counts = {status: 0 for status in ordered_statuses}
-    for segment in selected_segments:
-        segment_id = str(getattr(segment, "segment_id", "") or "").strip()
-        if not segment_id:
-            continue
-        normalized_status = _normalize_segment_status(segment_status_by_id.get(segment_id, "pending"))
-        if normalized_status not in counts:
-            continue
-        counts[normalized_status] += 1
-    fragments = [f"{_localized_status_label(status)} {count}" for status, count in counts.items() if count > 0]
-    if not fragments:
-        return ""
-    return t("structure.selected_section_status_line", details=" | ".join(fragments))
-
-
 def _normalize_segment_status(value: object) -> str:
     return str(value or "pending").strip().lower() or "pending"
 
@@ -681,24 +643,6 @@ def _build_segment_title_prefix(level: object) -> str:
     return "  " * (normalized_level - 1) + "- "
 
 
-def _count_selected_descendant_coverage(*, selected_segment_ids: list[str], segment_lookup: dict[str, SegmentLike]) -> int:
-    selected_segment_id_set = {segment_id for segment_id in selected_segment_ids if segment_id}
-    covered_descendant_count = 0
-    for segment_id in selected_segment_id_set:
-        current_segment = segment_lookup.get(segment_id)
-        seen: set[str] = set()
-        while current_segment is not None:
-            parent_segment_id = str(getattr(current_segment, "parent_segment_id", "") or "").strip()
-            if not parent_segment_id or parent_segment_id in seen:
-                break
-            if parent_segment_id in selected_segment_id_set:
-                covered_descendant_count += 1
-                break
-            seen.add(parent_segment_id)
-            current_segment = segment_lookup.get(parent_segment_id)
-    return covered_descendant_count
-
-
 def _build_structure_confirmation_summary(
     *,
     structure_confirmed: bool,
@@ -723,24 +667,6 @@ def _build_structure_confirmation_summary(
         "structure.confirmation_confirmed",
         top=selected_top_level_count,
         nested=selected_nested_count,
-    )
-
-
-def _build_selected_segment_structure_summary(*, selected_segments: list[SegmentLike]) -> str:
-    if not selected_segments:
-        return ""
-    top_level_count = 0
-    nested_count = 0
-    for segment in selected_segments:
-        parent_segment_id = str(getattr(segment, "parent_segment_id", "") or "").strip()
-        if parent_segment_id:
-            nested_count += 1
-        else:
-            top_level_count += 1
-    return t(
-        "structure.selection_hierarchy",
-        top=top_level_count,
-        nested=nested_count,
     )
 
 
@@ -823,15 +749,10 @@ def _import_structure_manifest_notice(*, uploaded_file_token: str, uploaded_mani
 
 def _build_process_selected_unavailable_note(
     *,
-    structure_confirmed: bool,
     selected_segment_ids: list[str],
     selected_job_count: int,
     selection_blocked_reason: str = "",
 ) -> str:
-    if not structure_confirmed and not selected_segment_ids:
-        return t("structure.process_unavailable_confirm_and_select")
-    if not structure_confirmed:
-        return t("structure.process_unavailable_confirm")
     if not selected_segment_ids:
         return t("structure.process_unavailable_select")
     if selection_blocked_reason == "segment_job_mapping_incomplete":
@@ -867,31 +788,6 @@ def _segment_matches_review_filters(
     if not normalized_query:
         return True
     return normalized_query in segment_title or normalized_query in segment_warning_text
-
-
-def _build_visible_structure_summary(*, visible_segments: list[SegmentLike]) -> str:
-    if not visible_segments:
-        return ""
-    total_visible = len(visible_segments)
-    parent_visible = sum(
-        1
-        for segment in visible_segments
-        if not str(getattr(segment, "parent_segment_id", "") or "").strip()
-    )
-    child_visible = max(0, total_visible - parent_visible)
-    max_level = 1
-    for segment in visible_segments:
-        try:
-            max_level = max(max_level, int(getattr(segment, "level", 1) or 1))
-        except (TypeError, ValueError):
-            continue
-    if child_visible <= 0 and max_level <= 1:
-        return ""
-    return t(
-        "structure.visible_hierarchy",
-        parent=parent_visible,
-        child=child_visible,
-    )
 
 
 def _build_segment_status_hint(segment_status: str) -> str:
@@ -1024,12 +920,6 @@ def _render_analysis_review_panel(
         placeholder=t("structure.search_placeholder"),
     )
     st.session_state.chapter_selector_search = search_query
-    status_summary_line = _build_segment_status_summary_line(
-        segments=segments,
-        segment_status_by_id=segment_status_by_id,
-    )
-    if status_summary_line:
-        st.caption(status_summary_line)
     paragraphs = list(getattr(prepared_run_context, "paragraphs", []) or [])
     updated_selection: list[str] = []
     visible_segments = [
@@ -1043,9 +933,6 @@ def _render_analysis_review_panel(
         )
     ]
     st.caption(t("structure.visible_count", visible=len(visible_segments), total=len(segments)))
-    visible_structure_summary = _build_visible_structure_summary(visible_segments=visible_segments)
-    if visible_structure_summary:
-        st.caption(visible_structure_summary)
     visible_segment_ids = {
         str(getattr(segment, "segment_id", "") or "").strip()
         for segment in visible_segments
@@ -1155,11 +1042,7 @@ def _render_analysis_review_panel(
         status_hint = _build_segment_status_hint(segment_status)
         if status_hint:
             st.caption(status_hint)
-        if segment.confidence == "low":
-            segment_warning_messages = humanize_segment_warnings(getattr(segment, "warnings", ()) or ())
-            warning_suffix = "; ".join(segment_warning_messages) if segment_warning_messages else t("structure.segment_warning_default_suffix")
-            st.warning(t("structure.segment_warning", title=display_title, suffix=warning_suffix))
-        with st.expander(t("structure.included_preview_expander", title=display_title), expanded=segment.confidence == "low"):
+        with st.expander(t("structure.included_preview_expander", title=display_title), expanded=False):
             st.caption(
                 t(
                     "structure.preview_starts_with",
@@ -1196,7 +1079,7 @@ def _render_analysis_review_panel(
     selected_segments = effective_selected_state["effective_selected_segments"]
     selected_word_count = effective_selected_state["selected_word_count"]
     selected_job_count = effective_selected_state["selected_job_count"]
-    can_process_selected = structure_confirmed and bool(effective_selected_segment_ids) and selected_job_count > 0
+    can_process_selected = bool(effective_selected_segment_ids) and selected_job_count > 0
     total_all_words = sum(int(getattr(seg, "word_count", 0) or 0) for seg in segments)
     st.info(
         t(
@@ -1207,27 +1090,11 @@ def _render_analysis_review_panel(
             total_words=total_all_words,
         )
     )
-    selected_status_summary_line = _build_selected_segment_status_summary_line(
-        selected_segments=selected_segments,
-        segment_status_by_id=segment_status_by_id,
-    )
-    if selected_status_summary_line:
-        st.caption(selected_status_summary_line)
-    selected_structure_summary = _build_selected_segment_structure_summary(selected_segments=selected_segments)
-    if selected_structure_summary:
-        st.caption(selected_structure_summary)
-    selected_descendant_coverage = _count_selected_descendant_coverage(
-        selected_segment_ids=effective_selected_segment_ids,
-        segment_lookup=segment_lookup,
-    )
-    if selected_descendant_coverage > 0:
-        st.caption(t("structure.selection_includes_nested", count=selected_descendant_coverage))
     excluded_locked_segment_ids = effective_selected_state["excluded_locked_segment_ids"]
     if excluded_locked_segment_ids:
         blocked_count = len(excluded_locked_segment_ids)
         st.caption(t("structure.launch_skip", count=blocked_count))
     process_selected_unavailable_note = _build_process_selected_unavailable_note(
-        structure_confirmed=structure_confirmed,
         selected_segment_ids=effective_selected_segment_ids,
         selected_job_count=selected_job_count,
         selection_blocked_reason=str(effective_selected_state["selection_blocked_reason"]),
@@ -1266,12 +1133,10 @@ def _render_analysis_review_panel(
     failed_segment_count = current_failed_segment_count or (
         len(retry_failed_segment_ids) if retry_job_source == "persisted_jobs" else 0
     )
-    can_retry_failed = structure_confirmed and bool(retry_failed_segment_ids) and retry_failed_job_count > 0
+    can_retry_failed = bool(retry_failed_segment_ids) and retry_failed_job_count > 0
     retry_failed_unavailable_note = ""
     if failed_segment_count > 0 and not can_retry_failed:
-        if not structure_confirmed:
-            retry_failed_unavailable_note = t("structure.retry_unavailable_confirm")
-        elif retry_job_source == "blocked_incomplete_mapping":
+        if retry_job_source == "blocked_incomplete_mapping":
             retry_failed_unavailable_note = t("structure.retry_unavailable_mapping")
         else:
             retry_failed_unavailable_note = t("structure.retry_unavailable_no_content")
@@ -1299,11 +1164,15 @@ def _render_analysis_review_panel(
         segment_status_by_id=segment_status_by_id,
     )
 
-    confirm_col, selected_col, full_book_col = st.columns(3)
+    action_columns = st.columns(2)
+    partial_col = action_columns[0]
+    full_book_col = action_columns[1]
     current_settings_hash = str(review_state["settings_hash"])
     current_fingerprint = str(review_state["fingerprint"])
-    confirm_label = t("structure.reconfirm_button") if structure_confirmed else t("structure.confirm_button")
-    if confirm_col.button(confirm_label, use_container_width=True, key="confirm_structure_button"):
+
+    def _confirm_structure_on_start() -> None:
+        # §8: starting a partial action confirms the reviewed structure implicitly,
+        # setting the SAME downstream confirmation state the explicit Confirm used to set.
         set_structure_confirmation_state(
             structure_confirmed=True,
             confirmed_structure_fingerprint=current_fingerprint,
@@ -1314,13 +1183,13 @@ def _render_analysis_review_panel(
         log_event_fn(
             logging.INFO,
             "structure_confirmed",
-            "Пользователь подтвердил обнаруженную структуру документа.",
+            "Структура документа подтверждена автоматически при запуске обработки выбранных разделов.",
             file_token=uploaded_file_token,
             structure_fingerprint=current_fingerprint,
             selected_segment_count=len(selected_segment_ids),
         )
-        st.rerun()
-    if selected_col.button(
+
+    if partial_col.button(
         t("structure.process_selected_button"),
         use_container_width=True,
         disabled=not can_process_selected,
@@ -1331,8 +1200,9 @@ def _render_analysis_review_panel(
         ),
         key="process_selected_button",
     ):
+        _confirm_structure_on_start()
         return "start_selected"
-    if selected_col.button(
+    if partial_col.button(
         t("structure.selected_with_context_button"),
         use_container_width=True,
         disabled=not can_process_selected,
@@ -1343,8 +1213,9 @@ def _render_analysis_review_panel(
         ),
         key="process_selected_with_context_button",
     ):
+        _confirm_structure_on_start()
         return "start_selected_with_context"
-    if failed_segment_count > 0 and selected_col.button(
+    if failed_segment_count > 0 and partial_col.button(
         t("structure.retry_failed_button"),
         use_container_width=True,
         disabled=not can_retry_failed,
@@ -1355,35 +1226,18 @@ def _render_analysis_review_panel(
         ),
         key="retry_failed_segments_button",
     ):
+        _confirm_structure_on_start()
         return "start_retry_failed"
     if full_book_col.button(t("structure.process_entire_book_button"), type="primary", use_container_width=True, key="process_entire_book_button"):
         return "start_final_book" if can_build_final_book else "start_full_book"
     if structure_confirmed:
         st.success(t("structure.structure_confirmed_success"))
-        st.caption(
-            _build_structure_confirmation_summary(
-                structure_confirmed=structure_confirmed,
-                selected_segment_ids=selected_segment_ids,
-                segment_lookup=segment_lookup,
-                review_state=review_state,
-            )
+    st.caption(
+        _build_structure_confirmation_summary(
+            structure_confirmed=structure_confirmed,
+            selected_segment_ids=selected_segment_ids,
+            segment_lookup=segment_lookup,
+            review_state=review_state,
         )
-        if can_process_selected:
-            st.caption(t("structure.process_selected_now_note"))
-            st.caption(t("structure.selected_with_context_note"))
-        if can_retry_failed:
-            st.caption(_build_retry_failed_ready_message(retry_job_source=retry_job_source))
-        if can_build_final_book:
-            st.caption(t("structure.process_entire_book_ready"))
-    else:
-        st.caption(
-            _build_structure_confirmation_summary(
-                structure_confirmed=structure_confirmed,
-                selected_segment_ids=selected_segment_ids,
-                segment_lookup=segment_lookup,
-                review_state=review_state,
-            )
-        )
-        if selected_segment_ids:
-            st.caption(t("structure.selection_ready_unconfirmed"))
+    )
     return None
