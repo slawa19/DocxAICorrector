@@ -123,3 +123,20 @@ def test_structure_panel_key_sets_match_between_catalogs() -> None:
     ru_structure = {key for key in ru if key.startswith("structure.")}
     en_structure = {key for key in en if key.startswith("structure.")}
     assert ru_structure == en_structure
+
+
+def _ui_module_source() -> str:
+    ui_path = Path(i18n.__file__).resolve().parent / "_ui.py"
+    return ui_path.read_text(encoding="utf-8")
+
+
+def test_ui_module_keys_present_in_both_catalogs() -> None:
+    """Every i18n key referenced by _ui.py must exist in both ru.json and en.json."""
+    referenced_keys = set(re.findall(r't\(\s*["\']([a-z_]+\.[a-z0-9_]+)["\']', _ui_module_source()))
+    assert referenced_keys, "expected _ui.py to reference i18n keys"
+    ru = json.loads(_locale_path("ru.json").read_text(encoding="utf-8"))
+    en = json.loads(_locale_path("en.json").read_text(encoding="utf-8"))
+    missing_ru = sorted(referenced_keys - set(ru))
+    assert not missing_ru, f"keys referenced by _ui.py but missing from ru.json: {missing_ru}"
+    missing_en = sorted(referenced_keys - set(en))
+    assert not missing_en, f"keys referenced by _ui.py but missing from en.json: {missing_en}"

@@ -17,6 +17,7 @@ from docxaicorrector.core.config import (
 from docxaicorrector.core.logger import format_elapsed
 from docxaicorrector.generation.message_formatting import derive_live_status_title_and_severity, humanize_reason, humanize_variant
 from docxaicorrector.core.models import ImageMode
+from docxaicorrector.ui.i18n import t
 from docxaicorrector.runtime.state import (
     get_activity_feed,
     get_image_assets,
@@ -30,26 +31,26 @@ from docxaicorrector.runtime.state import (
 
 
 IMAGE_MODE_LABELS = {
-    ImageMode.NO_CHANGE.value: "Без изменения",
-    ImageMode.SAFE.value: "Просто улучшить",
-    ImageMode.SEMANTIC_REDRAW_DIRECT.value: "Креативная AI-перерисовка",
-    ImageMode.SEMANTIC_REDRAW_STRUCTURED.value: "Структурная AI-перерисовка",
-    ImageMode.COMPARE_ALL.value: "Сгенерировать 3 варианта",
+    ImageMode.NO_CHANGE.value: t("image.mode_no_change"),
+    ImageMode.SAFE.value: t("image.mode_safe"),
+    ImageMode.SEMANTIC_REDRAW_DIRECT.value: t("image.mode_semantic_direct"),
+    ImageMode.SEMANTIC_REDRAW_STRUCTURED.value: t("image.mode_semantic_structured"),
+    ImageMode.COMPARE_ALL.value: t("image.mode_compare_all"),
 }
 
 IMAGE_MODE_DESCRIPTIONS = {
-    ImageMode.NO_CHANGE.value: "Оставляет все изображения как есть, без какой-либо обработки.",
-    ImageMode.SAFE.value: "Слегка улучшает исходную картинку без смысловой перерисовки.",
-    ImageMode.SEMANTIC_REDRAW_DIRECT.value: "Делает creative redraw через vision + generate. Лучше для инфографики, композиции, цвета и сложного оформления.",
-    ImageMode.SEMANTIC_REDRAW_STRUCTURED.value: "Делает content-conservative redraw в стиле office presentation. Лучше для схем, таблиц и структурных изображений.",
-    ImageMode.COMPARE_ALL.value: "Строит safe, креативный и структурный варианты сразу, чтобы выбрать лучший перед итоговым DOCX.",
+    ImageMode.NO_CHANGE.value: t("image.desc_no_change"),
+    ImageMode.SAFE.value: t("image.desc_safe"),
+    ImageMode.SEMANTIC_REDRAW_DIRECT.value: t("image.desc_semantic_direct"),
+    ImageMode.SEMANTIC_REDRAW_STRUCTURED.value: t("image.desc_semantic_structured"),
+    ImageMode.COMPARE_ALL.value: t("image.desc_compare_all"),
 }
 
 IMAGE_MODE_VALUES_BY_LABEL = {label: value for value, label in IMAGE_MODE_LABELS.items()}
 TEXT_OPERATION_LABELS = {
-    "edit": "Литературное редактирование",
-    "translate": "Перевод",
-    "audiobook": "Подготовка аудиокниги (ElevenLabs)",
+    "edit": t("sidebar.operation_edit"),
+    "translate": t("sidebar.operation_translate"),
+    "audiobook": t("sidebar.operation_audiobook"),
 }
 TEXT_OPERATION_VALUES_BY_LABEL = {label: value for value, label in TEXT_OPERATION_LABELS.items()}
 TEXT_SETTING_WIDGET_KEYS = {
@@ -89,16 +90,16 @@ def _resolve_result_download_labels(
     operation = str(processing_operation or "edit").strip().lower() or "edit"
 
     if operation == "audiobook":
-        markdown_label = "Markdown (для инспекции)"
-        docx_label = "DOCX (для инспекции)"
+        markdown_label = t("result.markdown_inspection")
+        docx_label = t("result.docx_inspection")
     elif operation == "translate":
-        markdown_label = "Переведённый Markdown"
-        docx_label = "Переведённый DOCX"
+        markdown_label = t("result.markdown_translated")
+        docx_label = t("result.docx_translated")
     else:
-        markdown_label = "Отредактированный Markdown"
-        docx_label = "Отредактированный DOCX"
+        markdown_label = t("result.markdown_edited")
+        docx_label = t("result.docx_edited")
 
-    narration_label = "Текст для ElevenLabs (.txt)" if narration_text is not None and (audiobook_postprocess_enabled or operation == "audiobook") else None
+    narration_label = t("result.narration_elevenlabs") if narration_text is not None and (audiobook_postprocess_enabled or operation == "audiobook") else None
     return markdown_label, docx_label, narration_label
 
 
@@ -220,10 +221,12 @@ def _build_normalization_caption(metrics_source) -> str:
         return ""
     raw_paragraph_count = int(metrics.get("raw_paragraph_count", 0) or 0)
     logical_paragraph_count = int(metrics.get("logical_paragraph_count", 0) or 0)
-    return (
-        "Нормализация абзацев: "
-        f"сырьевых {raw_paragraph_count} -> логических {logical_paragraph_count} | "
-        f"слияний: {merged_group_count} групп, {merged_raw_paragraph_count} абзацев"
+    return t(
+        "preview.normalization",
+        raw=raw_paragraph_count,
+        logical=logical_paragraph_count,
+        groups=merged_group_count,
+        merged=merged_raw_paragraph_count,
     )
 
 
@@ -271,7 +274,7 @@ def get_target_language_label(config: Mapping[str, Any], language_code: str) -> 
 
 def _format_model_option_label(option: str, config: Mapping[str, Any]) -> str:
     if option == "custom":
-        return "Пользовательская модель"
+        return t("sidebar.model_custom_option")
     try:
         resolved_selector = resolve_model_selector(option, config_like=config)
     except Exception:
@@ -312,7 +315,7 @@ def _render_selected_model_availability_warning(*, model: str, config: Mapping[s
 def get_source_language_widget_value(config: Mapping[str, Any], language_code: str) -> str:
     language_labels, _, label_by_code = get_language_label_maps(config)
     if language_code == "auto":
-        return "Авто"
+        return t("sidebar.source_language_auto")
     if not language_labels:
         return language_code
     return label_by_code.get(language_code, language_labels[0])
@@ -320,7 +323,7 @@ def get_source_language_widget_value(config: Mapping[str, Any], language_code: s
 
 def resolve_source_language_from_widget_state(config: Mapping[str, Any]) -> str:
     widget_value = st.session_state.get(TEXT_SETTING_WIDGET_KEYS["source_language"])
-    if widget_value == "Авто":
+    if widget_value == t("sidebar.source_language_auto"):
         return "auto"
     _, code_by_label, _ = get_language_label_maps(config)
     if isinstance(widget_value, str) and widget_value in code_by_label:
@@ -356,18 +359,27 @@ def render_live_status(target=None) -> None:
             )
             progress_value = max(0.0, min(float(status.get("progress") or 0.0), 1.0))
             progress_percent = int(progress_value * 100)
-            stage = str(status.get("stage") or "Подготовка документа")
-            detail = str(status.get("detail") or "Идет анализ файла.")
+            stage = str(status.get("stage") or t("status.prepare_stage_default"))
+            detail = str(status.get("detail") or t("status.prepare_detail_default"))
             normalization_caption = _build_normalization_caption(status)
             meta_lines = [
-                f"Прогресс: {progress_percent}% | Источник: {source_label} | Прошло: {elapsed}",
-                (
-                    f"Размер: {file_size_bytes / 1024 / 1024:.2f} MB | Абзацы: {paragraph_count} | "
-                    f"Изображения: {image_count} | Символы: {source_chars} | Блоки: {block_count}"
+                t(
+                    "status.progress_meta",
+                    percent=progress_percent,
+                    source=source_label,
+                    elapsed=elapsed,
+                ),
+                t(
+                    "status.size_meta",
+                    size=f"{file_size_bytes / 1024 / 1024:.2f}",
+                    paragraphs=paragraph_count,
+                    images=image_count,
+                    chars=source_chars,
+                    blocks=block_count,
                 ),
             ]
             if conversion_reused:
-                meta_lines.append("Конвертация: использую уже сконвертированную DOCX-копию, повторный импорт не выполняется.")
+                meta_lines.append(t("status.conversion_reused"))
             if normalization_caption:
                 meta_lines.append(normalization_caption)
             title, severity = derive_live_status_title_and_severity(status)
@@ -383,7 +395,7 @@ def render_live_status(target=None) -> None:
             progress_api.progress(progress_value)
         else:
             title, severity = derive_live_status_title_and_severity(status)
-            stage = str(status.get("stage") or "Ожидание")
+            stage = str(status.get("stage") or t("status.processing_stage_default"))
             detail = str(status.get("detail") or "")
             active_segment_title = str(status.get("active_segment_title") or "").strip()
             raw_segment_status_by_id = status.get("segment_status_by_id")
@@ -398,12 +410,12 @@ def render_live_status(target=None) -> None:
             )
             metric_api = _resolve_render_target(target, "columns")
             metric_columns = metric_api.columns(4)
-            metric_columns[0].metric("Блок", f"{current_block}/{block_count}" if block_count else "0/0")
-            metric_columns[1].metric("Цель", f"{target_chars} симв.")
-            metric_columns[2].metric("Контекст", f"{context_chars} симв.")
-            metric_columns[3].metric("Прошло", elapsed)
+            metric_columns[0].metric(t("status.metric_block"), f"{current_block}/{block_count}" if block_count else "0/0")
+            metric_columns[1].metric(t("status.metric_target"), t("status.chars_with_unit", count=target_chars))
+            metric_columns[2].metric(t("status.metric_context"), t("status.chars_with_unit", count=context_chars))
+            metric_columns[3].metric(t("status.metric_elapsed"), elapsed)
             if active_segment_title:
-                sink.caption(f"Активный сегмент: {active_segment_title}")
+                sink.caption(t("status.active_segment", title=active_segment_title))
             if segment_status_by_id:
                 summary_order = ("pending", "queued", "processing", "completed", "failed")
                 fragments = []
@@ -416,7 +428,7 @@ def render_live_status(target=None) -> None:
                     if count > 0:
                         fragments.append(f"{segment_status} {count}")
                 if fragments:
-                    sink.caption("Сегменты: " + " | ".join(fragments))
+                    sink.caption(t("status.segments_summary", details=" | ".join(fragments)))
             progress_value = max(0.0, min(float(status.get("progress") or 0.0), 1.0))
             progress_api = _resolve_render_target(target, "progress")
             progress_api.progress(progress_value)
@@ -448,8 +460,8 @@ def render_preparation_summary(summary: dict[str, Any] | None, target=None) -> N
         toc_matched_count = _to_int(summary.get("toc_matched_count"), default=0)
         manifest_path = str(summary.get("manifest_path") or "").strip()
         normalization_caption = _build_normalization_caption(summary)
-        elapsed_fragment = f" | Подготовка: {elapsed}" if elapsed else ""
-        stage = str(summary.get("stage") or "Документ подготовлен")
+        elapsed_fragment = t("status.prep_elapsed_fragment", elapsed=elapsed) if elapsed else ""
+        stage = str(summary.get("stage") or t("status.prep_summary_stage_default"))
         secondary_stage_line = str(summary.get("secondary_stage_line") or "").strip()
         raw_status_notes = summary.get("status_notes", [])
         status_notes = [str(note).strip() for note in raw_status_notes if str(note).strip()] if isinstance(raw_status_notes, list) else []
@@ -457,24 +469,34 @@ def render_preparation_summary(summary: dict[str, Any] | None, target=None) -> N
             status_notes.insert(0, secondary_stage_line)
         detail = str(summary.get("detail") or "")
         meta_lines = [
-            f"Источник: {source_label}{elapsed_fragment}",
-            (
-                f"{file_size_bytes / 1024 / 1024:.2f} MB | {paragraph_count} абзацев | "
-                f"{image_count} изображений | {source_chars} символов | {block_count} блоков"
+            t("status.prep_source_meta", source=source_label, elapsed_fragment=elapsed_fragment),
+            t(
+                "status.prep_size_meta",
+                size=f"{file_size_bytes / 1024 / 1024:.2f}",
+                paragraphs=paragraph_count,
+                images=image_count,
+                chars=source_chars,
+                blocks=block_count,
             ),
         ]
         if structure_fingerprint:
-            meta_lines.append(f"Structure fingerprint: {structure_fingerprint}")
+            meta_lines.append(t("status.prep_fingerprint_meta", value=structure_fingerprint))
         if detector_version:
-            meta_lines.append(f"Detector version: {detector_version}")
+            meta_lines.append(t("status.prep_detector_version_meta", value=detector_version))
         if segment_count > 0:
             meta_lines.append(
-                "Сегменты: "
-                f"{segment_count} | confidence H/M/L: {high_confidence_count}/{medium_confidence_count}/{low_confidence_count}"
+                t(
+                    "status.prep_segments_meta",
+                    count=segment_count,
+                    high=high_confidence_count,
+                    medium=medium_confidence_count,
+                    low=low_confidence_count,
+                )
             )
-            meta_lines.append(f"TOC matched: {toc_matched_count}/{toc_entry_count}")
-        if manifest_path and f"Structure manifest: {manifest_path}" not in status_notes:
-            meta_lines.append(f"Structure manifest: {manifest_path}")
+            meta_lines.append(t("status.prep_toc_meta", matched=toc_matched_count, total=toc_entry_count))
+        manifest_meta_line = t("status.prep_manifest_meta", path=manifest_path)
+        if manifest_path and manifest_meta_line not in status_notes:
+            meta_lines.append(manifest_meta_line)
         if normalization_caption:
             meta_lines.append(normalization_caption)
         _render_status_panel(
@@ -535,13 +557,18 @@ def render_run_log(target=None) -> None:
     @st.fragment
     def render_run_log_fragment() -> None:
         with sink.container():
-            with st.expander("Журнал обработки", expanded=True):
+            with st.expander(t("log.run_log_expander"), expanded=True):
                 for entry in run_log:
                     message = str(entry.get("message") or "")
                     if not message and entry.get("kind") == "block":
-                        message = (
-                            f"[{entry['status']}] Блок {entry['block_index']}/{entry['block_count']} | "
-                            f"цель: {entry['target_chars']} симв. | контекст: {entry['context_chars']} симв. | {entry['details']}"
+                        message = t(
+                            "log.block_message",
+                            status=entry["status"],
+                            block_index=entry["block_index"],
+                            block_count=entry["block_count"],
+                            target_chars=entry["target_chars"],
+                            context_chars=entry["context_chars"],
+                            details=entry["details"],
                         )
                     if message:
                         st.write(message)
@@ -569,26 +596,26 @@ def render_image_validation_summary(target=None) -> None:
     @st.fragment
     def render_image_validation_fragment() -> None:
         with sink.container():
-            with st.expander("Результаты валидации изображений", expanded=True):
+            with st.expander(t("image.validation_expander"), expanded=True):
                 columns = st.columns(4)
-                columns[0].metric("Обработано", f"{processed_images}/{total_images}")
-                columns[1].metric("Изменено", modified_images)
-                columns[2].metric("Откаты", fallback_count or int(summary.get("fallbacks_applied", 0)))
-                columns[3].metric("Оригинал оставлен", original_images)
+                columns[0].metric(t("image.metric_processed"), f"{processed_images}/{total_images}")
+                columns[1].metric(t("image.metric_modified"), modified_images)
+                columns[2].metric(t("image.metric_fallbacks"), fallback_count or int(summary.get("fallbacks_applied", 0)))
+                columns[3].metric(t("image.metric_original"), original_images)
 
                 if fallback_details:
-                    st.caption("Причины отката:")
+                    st.caption(t("image.fallback_reasons_caption"))
                     for asset in fallback_details[-5:]:
                         image_id = str(_asset_value(asset, "image_id", "unknown"))
                         final_variant = humanize_variant(str(_asset_value(asset, "final_variant", "original")))
-                        final_reason = humanize_reason(str(_asset_value(asset, "final_reason", "Причина не указана.")))
-                        st.caption(f"• {image_id}: оставлен {final_variant} — {final_reason}")
+                        final_reason = humanize_reason(str(_asset_value(asset, "final_reason", t("image.reason_unspecified"))))
+                        st.caption(t("image.fallback_detail", image_id=image_id, variant=final_variant, reason=final_reason))
 
                 validation_errors = summary.get("validation_errors", [])
                 if validation_errors:
-                    st.caption("Ошибки валидации:")
+                    st.caption(t("image.validation_errors_caption"))
                     for error in validation_errors[-5:]:
-                        st.caption(f"• {error}")
+                        st.caption(t("image.error_detail", error=error))
 
     render_image_validation_fragment()
 
@@ -600,20 +627,16 @@ def _asset_value(asset, field_name: str, default=None):
 
 
 def render_sidebar(config: Mapping[str, Any]) -> tuple[str, int, int, str, bool, str, str, str, bool, bool]:
-    st.sidebar.header("Настройки")
+    st.sidebar.header(t("sidebar.settings_header"))
     operation_default = str(config.get("processing_operation_default", "edit"))
     operation_options = list(TEXT_OPERATION_LABELS.values())
     operation_default_label = TEXT_OPERATION_LABELS.get(operation_default, TEXT_OPERATION_LABELS["edit"])
     operation_index = operation_options.index(operation_default_label) if operation_default_label in operation_options else 0
     selected_operation_label = render_sidebar_selectbox(
-        "Режим обработки текста",
+        t("sidebar.text_operation_label"),
         operation_options,
         index=operation_index,
-        help=(
-            "Литературное редактирование улучшает уже готовый текст на выбранном языке. "
-            "Перевод используйте для текста, который ещё не на целевом языке. "
-            "Если текст уже переведён, обычно лучше выбрать литературное редактирование."
-        ),
+        help=t("sidebar.text_operation_help"),
         key="sidebar_text_operation",
     )
     processing_operation = TEXT_OPERATION_VALUES_BY_LABEL.get(selected_operation_label, "edit")
@@ -623,7 +646,7 @@ def render_sidebar(config: Mapping[str, Any]) -> tuple[str, int, int, str, bool,
     default_target_label = label_by_code.get(default_target_code, language_labels[0] if language_labels else default_target_code)
     target_index = language_labels.index(default_target_label) if default_target_label in language_labels else 0
     selected_target_label = render_sidebar_selectbox(
-        "Целевой язык",
+        t("sidebar.target_language_label"),
         language_labels,
         index=target_index,
         key="sidebar_target_language",
@@ -632,39 +655,35 @@ def render_sidebar(config: Mapping[str, Any]) -> tuple[str, int, int, str, bool,
 
     source_language = resolve_source_language_from_widget_state(config)
     if processing_operation in {"translate", "audiobook"}:
-        source_options = ["Авто", *language_labels]
-        source_default_label = "Авто" if source_language == "auto" else label_by_code.get(source_language, source_options[0])
+        auto_label = t("sidebar.source_language_auto")
+        source_options = [auto_label, *language_labels]
+        source_default_label = auto_label if source_language == "auto" else label_by_code.get(source_language, source_options[0])
         source_index = source_options.index(source_default_label) if source_default_label in source_options else 0
         selected_source_label = render_sidebar_selectbox(
-            "Язык оригинала",
+            t("sidebar.source_language_label"),
             source_options,
             index=source_index,
-            help="Используйте 'Авто' только как best-effort режим. Для уже переведённого текста обычно лучше выбрать литературное редактирование.",
+            help=t("sidebar.source_language_help"),
             key="sidebar_source_language",
         )
-        source_language = "auto" if selected_source_label == "Авто" else code_by_label.get(selected_source_label, source_language)
+        source_language = "auto" if selected_source_label == auto_label else code_by_label.get(selected_source_label, source_language)
         if processing_operation == "translate" and source_language != "auto" and source_language == target_language:
-            st.sidebar.warning(
-                "Исходный и целевой язык совпадают. Если нужен только стилистический апгрейд, обычно лучше выбрать литературное редактирование."
-            )
+            st.sidebar.warning(t("sidebar.same_language_warning"))
 
     translation_second_pass_enabled = False
     if processing_operation == "translate":
         translation_second_pass_enabled = st.sidebar.checkbox(
-            "Дополнительный литературный проход после перевода",
+            t("sidebar.second_pass_label"),
             value=bool(config.get("translation_second_pass_default", False)),
-            help=(
-                "Делает второй проход только по уже переведённому тексту. "
-                "Обычно улучшает стиль, но увеличивает время и стоимость обработки."
-            ),
+            help=t("sidebar.second_pass_help"),
             key="sidebar_translation_second_pass",
         )
     audiobook_postprocess_enabled = False
     if processing_operation in {"edit", "translate"}:
         audiobook_postprocess_enabled = st.sidebar.checkbox(
-            "Подготовить для ElevenLabs аудиокниги",
+            t("sidebar.audiobook_postprocess_label"),
             value=bool(config.get("audiobook_postprocess_default", False)),
-            help="Готовит отдельный narration text для ElevenLabs без изменения основного DOCX/Markdown результата.",
+            help=t("sidebar.audiobook_postprocess_help"),
             key="sidebar_audiobook_postprocess",
         )
 
@@ -672,7 +691,7 @@ def render_sidebar(config: Mapping[str, Any]) -> tuple[str, int, int, str, bool,
     default_model = get_text_model_default(config)
     default_index = _resolve_model_default_index(model_options, default_model, config)
     selected_model = st.sidebar.selectbox(
-        "Модель",
+        t("sidebar.model_select_label"),
         model_options,
         index=default_index,
         format_func=lambda option: _format_model_option_label(option, config),
@@ -681,22 +700,22 @@ def render_sidebar(config: Mapping[str, Any]) -> tuple[str, int, int, str, bool,
     custom_model = ""
     if selected_model == "custom":
         custom_model = st.sidebar.text_input(
-            "Имя модели",
+            t("sidebar.custom_model_label"),
             value=default_model,
-            help="Можно указать provider-qualified selector, например openrouter:google/gemini-3.1-flash-lite-preview.",
+            help=t("sidebar.custom_model_help"),
         ).strip()
 
     model = custom_model or selected_model
     _render_selected_model_availability_warning(model=model, config=config)
     chunk_size = st.sidebar.slider(
-        "Размер целевого блока, символов",
+        t("sidebar.chunk_size_label"),
         min_value=3000,
         max_value=12000,
         value=_to_int(config["chunk_size"], default=6000),
         step=500,
     )
     max_retries = st.sidebar.slider(
-        "Количество retry",
+        t("sidebar.max_retries_label"),
         min_value=1,
         max_value=5,
         value=_to_int(config["max_retries"], default=3),
@@ -704,20 +723,20 @@ def render_sidebar(config: Mapping[str, Any]) -> tuple[str, int, int, str, bool,
     if processing_operation == "audiobook":
         image_mode = ImageMode.NO_CHANGE.value
         render_sidebar_selectbox(
-            "Режим обработки изображений",
+            t("sidebar.image_mode_label"),
             [IMAGE_MODE_LABELS[ImageMode.NO_CHANGE.value]],
             index=0,
             key="sidebar_image_mode",
             disabled=True,
         )
-        st.sidebar.caption("Для режима аудиокниги изображения всегда оставляются без изменений.")
+        st.sidebar.caption(t("sidebar.image_mode_audiobook_caption"))
     else:
         image_mode_default = str(config.get("image_mode_default", ImageMode.NO_CHANGE.value))
         image_mode_options = list(IMAGE_MODE_LABELS.values())
         image_mode_default_label = IMAGE_MODE_LABELS.get(image_mode_default, IMAGE_MODE_LABELS[ImageMode.NO_CHANGE.value])
         image_mode_index = image_mode_options.index(image_mode_default_label) if image_mode_default_label in image_mode_options else 0
         selected_image_mode_label = render_sidebar_selectbox(
-            "Режим обработки изображений",
+            t("sidebar.image_mode_label"),
             image_mode_options,
             index=image_mode_index,
             key="sidebar_image_mode",
@@ -725,9 +744,9 @@ def render_sidebar(config: Mapping[str, Any]) -> tuple[str, int, int, str, bool,
         image_mode = IMAGE_MODE_VALUES_BY_LABEL.get(selected_image_mode_label, ImageMode.NO_CHANGE.value)
     st.sidebar.caption(IMAGE_MODE_DESCRIPTIONS.get(image_mode, ""))
     keep_all_image_variants = st.sidebar.checkbox(
-        "Сохранять все варианты изображений",
+        t("sidebar.keep_variants_label"),
         value=bool(config.get("keep_all_image_variants", False)),
-        help="Сохраняет все сгенерированные варианты изображений для последующего сравнения.",
+        help=t("sidebar.keep_variants_help"),
         key="sidebar_keep_all_image_variants",
     )
     return (
@@ -776,12 +795,12 @@ def render_markdown_preview(
 
     with sink.container():
         st.selectbox(
-            "Markdown",
+            t("preview.markdown_label"),
             options=list(range(1, option_count + 1)),
             index=current_selection - 1,
             format_func=lambda n: f"{n} / {option_count}",
             key=select_widget_key,
-            help="На экране показывается только один Markdown-блок, чтобы интерфейс не перегружался на больших документах.",
+            help=t("preview.markdown_help"),
         )
         chosen = st.session_state.get(select_widget_key, current_selection)
         if isinstance(chosen, int) and 1 <= chosen <= option_count:
@@ -790,7 +809,7 @@ def render_markdown_preview(
             chosen = current_selection
         st.session_state[textarea_key] = blocks[chosen - 1]
         st.text_area(
-            "Markdown",
+            t("preview.markdown_label"),
             value=blocks[chosen - 1],
             height=300,
             disabled=True,
@@ -814,7 +833,7 @@ def render_result(
         narration_text=narration_text,
         processing_operation=processing_operation,
         audiobook_postprocess_enabled=audiobook_postprocess_enabled,
-        success_message="Документ обработан.",
+        success_message=t("result.success_document_processed"),
     )
 
 
@@ -854,7 +873,7 @@ def render_result_bundle(
                     use_container_width=True,
                 )
         col_tts.download_button(
-            label=narration_label or "Текст для ElevenLabs (.txt)",
+            label=narration_label or t("result.narration_elevenlabs"),
             data=narration_text.encode("utf-8"),
             file_name=_build_narration_filename(original_filename),
             mime="text/plain",
@@ -912,7 +931,7 @@ def render_partial_result() -> None:
     if not _meaningful_markdown_blocks(get_processed_block_markdowns()):
         return
 
-    st.warning("Доступен промежуточный Markdown-результат последнего запуска.")
+    st.warning(t("result.partial_available_warning"))
     render_markdown_preview(
         title="Текущий Markdown",
         focus_latest=True,
