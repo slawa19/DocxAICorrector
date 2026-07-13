@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -99,3 +100,26 @@ def test_ru_is_superset_of_referenced_and_en_keys() -> None:
     assert set(en) <= set(ru)
     # And en must be genuinely partial to exercise the fallback path.
     assert set(ru) - set(en)
+
+
+def _panel_source() -> str:
+    panel_path = Path(i18n.__file__).resolve().parent / "structure_review_panel.py"
+    return panel_path.read_text(encoding="utf-8")
+
+
+def test_structure_panel_keys_present_in_ru_catalog() -> None:
+    """Every ``structure.*`` key referenced by the panel must exist in ru.json."""
+    referenced_keys = set(re.findall(r't\(\s*["\'](structure\.[a-z0-9_]+)["\']', _panel_source()))
+    assert referenced_keys, "expected the panel to reference structure.* i18n keys"
+    ru = json.loads(_locale_path("ru.json").read_text(encoding="utf-8"))
+    missing = sorted(referenced_keys - set(ru))
+    assert not missing, f"structure.* keys referenced by the panel but missing from ru.json: {missing}"
+
+
+def test_structure_panel_key_sets_match_between_catalogs() -> None:
+    """Every ``structure.*`` key defined in ru.json is also defined in en.json (and vice versa)."""
+    ru = json.loads(_locale_path("ru.json").read_text(encoding="utf-8"))
+    en = json.loads(_locale_path("en.json").read_text(encoding="utf-8"))
+    ru_structure = {key for key in ru if key.startswith("structure.")}
+    en_structure = {key for key in en if key.startswith("structure.")}
+    assert ru_structure == en_structure

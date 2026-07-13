@@ -9,6 +9,7 @@ from docxaicorrector.core.models import StructureRepairReport
 from docxaicorrector.document.segments import DocumentContextProfile, DocumentSegment, GlossaryTerm, SegmentBoundaryEvidence, SegmentDetectionReport
 from docxaicorrector.pipeline.contracts import SegmentSelection
 from docxaicorrector.structure.validation import StructureValidationReport
+from docxaicorrector.ui.i18n import t
 from conftest import SessionState as SessionState
 
 
@@ -1244,31 +1245,47 @@ def test_render_analysis_review_panel_renders_selector_and_disabled_process_sele
     )
 
     assert action is None
-    assert subheader_calls == ["Review Sections Before Partial Translation"]
-    assert selectbox_calls == [("Status Filter", ("All sections", "Pending", "Queued", "Processing", "Completed", "Failed", "Skipped", "Low confidence"), 0)]
-    assert text_input_calls == [("Search Sections", "")]
+    assert subheader_calls == [t("structure.subheader")]
+    assert selectbox_calls == [(
+        t("structure.status_filter_label"),
+        (
+            t("structure.filter_all"),
+            t("structure.filter_pending"),
+            t("structure.filter_queued"),
+            t("structure.filter_processing"),
+            t("structure.filter_completed"),
+            t("structure.filter_failed"),
+            t("structure.filter_skipped"),
+            t("structure.filter_low_confidence"),
+        ),
+        0,
+    )]
+    assert text_input_calls == [(t("structure.search_label"), "")]
     assert checkbox_calls and checkbox_calls[0][1]["value"] is True
-    assert expander_calls == [("Advanced structure tools", False), ("Included text preview: Chapter 1", False)]
-    assert any(message == "Starts with: p1" for message in caption_calls)
-    assert any(message == "Ends with: p2" for message in caption_calls)
+    assert expander_calls == [
+        (t("structure.advanced_tools_expander"), False),
+        (t("structure.included_preview_expander", title="Chapter 1"), False),
+    ]
+    assert any(message == t("structure.preview_starts_with", text="p1") for message in caption_calls)
+    assert any(message == t("structure.preview_ends_with", text="p2") for message in caption_calls)
     assert not any("Boundary fingerprint:" in message for message in caption_calls)
     assert not write_calls
     assert selected_col.calls == [
         (
-            "Process Selected",
+            t("structure.process_selected_button"),
             {
                 "use_container_width": True,
                 "disabled": True,
-                "help": "Process Selected unavailable: confirm the current outline before running the current chapter selection.",
+                "help": t("structure.process_unavailable_confirm"),
                 "key": "process_selected_button",
             },
         ),
         (
-            "Selected + Context",
+            t("structure.selected_with_context_button"),
             {
                 "use_container_width": True,
                 "disabled": True,
-                "help": "Process Selected unavailable: confirm the current outline before running the current chapter selection.",
+                "help": t("structure.process_unavailable_confirm"),
                 "key": "process_selected_with_context_button",
             },
         ),
@@ -1276,7 +1293,7 @@ def test_render_analysis_review_panel_renders_selector_and_disabled_process_sele
     assert session_state.get("selected_context_include_front_matter_checkbox", True) is True
     assert session_state.get("selected_context_include_toc_checkbox", True) is True
     assert full_book_col.calls == [(
-        "Process Entire Book",
+        t("structure.process_entire_book_button"),
         {
             "type": "primary",
             "use_container_width": True,
@@ -1284,17 +1301,23 @@ def test_render_analysis_review_panel_renders_selector_and_disabled_process_sele
         },
     )]
     assert any(
-        message == "Detected 1 reviewable section for partial translation. Review the list below to decide what should be translated separately."
+        message == t("structure.overview_message", count=1)
         for message in info_calls
     )
-    assert any(message == "Will translate: 1/1 sections | 20/20 words" for message in info_calls)
-    assert any(message.startswith("Confidence overview:") for message in caption_calls)
     assert any(
-        message == "Structure not confirmed. Process Selected stays disabled until the current outline is reviewed and confirmed."
+        message == t("structure.will_translate", selected=1, total=1, selected_words=20, total_words=20)
+        for message in info_calls
+    )
+    assert any(
+        message == t("structure.confidence_summary", high=0, medium=0, low=0)
         for message in caption_calls
     )
     assert any(
-        message == "Current selection is ready for review, but chapter-based processing stays disabled until confirmation."
+        message == t("structure.confirmation_not_confirmed")
+        for message in caption_calls
+    )
+    assert any(
+        message == t("structure.selection_ready_unconfirmed")
         for message in caption_calls
     )
 
@@ -1376,7 +1399,7 @@ def test_render_analysis_review_panel_renders_bulk_selection_buttons(monkeypatch
 
     assert columns_calls == [3, 3]
     assert bulk_select_col.calls == [(
-        "Select Visible",
+        t("structure.select_visible_button"),
         {
             "use_container_width": True,
             "disabled": False,
@@ -1384,7 +1407,7 @@ def test_render_analysis_review_panel_renders_bulk_selection_buttons(monkeypatch
         },
     )]
     assert bulk_clear_col.calls == [(
-        "Clear Visible",
+        t("structure.clear_visible_button"),
         {
             "use_container_width": True,
             "disabled": False,
@@ -1392,7 +1415,7 @@ def test_render_analysis_review_panel_renders_bulk_selection_buttons(monkeypatch
         },
     )]
     assert bulk_all_col.calls == [(
-        "Select Entire Book",
+        t("structure.select_entire_book_button"),
         {
             "use_container_width": True,
             "disabled": False,
@@ -1463,7 +1486,7 @@ def test_render_analysis_review_panel_filters_segments_by_status_and_search(monk
     checkbox_labels = []
     info_calls = []
     caption_calls = []
-    selectbox_values = iter(["Failed"])
+    selectbox_values = iter([t("structure.filter_failed")])
 
     class FakeExpander:
         def __enter__(self):
@@ -1499,13 +1522,22 @@ def test_render_analysis_review_panel_filters_segments_by_status_and_search(monk
     )
 
     assert checkbox_labels == [
-        "Appendix Notes | 2 words | appendix | clear boundary | failed 0%"
+        t(
+            "structure.segment_label",
+            title="Appendix Notes",
+            words=2,
+            role="appendix",
+            relation="",
+            confidence=t("structure.confidence_hint_high"),
+            badge=t("structure.badge_failed", percent=0),
+            active="",
+        )
     ]
     assert session_state.chapter_selector_filter == "failed"
     assert session_state.chapter_selector_search == "appendix"
     assert session_state.selected_segment_ids == ["seg_0001", "seg_0002"]
-    assert any(message == "Visible sections: 1/2" for message in caption_calls)
-    assert any(message == "Will translate: 2/2 sections | 4/4 words" for message in info_calls)
+    assert any(message == t("structure.visible_count", visible=1, total=2) for message in caption_calls)
+    assert any(message == t("structure.will_translate", selected=2, total=2, selected_words=4, total_words=4) for message in info_calls)
 
 
 def test_render_analysis_review_panel_shows_empty_filter_result_notice(monkeypatch):
@@ -1563,7 +1595,7 @@ def test_render_analysis_review_panel_shows_empty_filter_result_notice(monkeypat
         ),
     )
     monkeypatch.setattr(app.st, "checkbox", lambda label, **kwargs: (_ for _ in ()).throw(AssertionError("checkbox should not render when filter is empty")))
-    monkeypatch.setattr(app.st, "selectbox", lambda label, options, index=0, **kwargs: "Completed")
+    monkeypatch.setattr(app.st, "selectbox", lambda label, options, index=0, **kwargs: t("structure.filter_completed"))
     monkeypatch.setattr(app.st, "text_input", lambda label, value="", **kwargs: "missing")
     monkeypatch.setattr(app.st, "info", lambda message, **kwargs: info_calls.append(message))
     monkeypatch.setattr(app.st, "subheader", lambda *args, **kwargs: None)
@@ -1579,7 +1611,7 @@ def test_render_analysis_review_panel_shows_empty_filter_result_notice(monkeypat
         chunk_size=6000,
     )
 
-    assert "No sections match the current filter/search." in info_calls
+    assert t("structure.no_sections_match") in info_calls
 
 
 def test_render_analysis_review_panel_disables_locked_segment_checkboxes(monkeypatch):
@@ -1700,7 +1732,7 @@ def test_render_analysis_review_panel_disables_locked_segment_checkboxes(monkeyp
     assert checkbox_calls[1][1]["disabled"] is True
     assert checkbox_calls[2][1]["disabled"] is False
     assert any(
-        message == "Currently unavailable in this view: 2 sections already queued or processing."
+        message == t("structure.currently_unavailable_view", count=2)
         for message in caption_calls
     )
 
@@ -1780,7 +1812,7 @@ def test_render_analysis_review_panel_supports_skipped_status_filter(monkeypatch
         ),
     )
     monkeypatch.setattr(app.st, "checkbox", lambda label, **kwargs: checkbox_labels.append(label) or kwargs.get("value", False))
-    monkeypatch.setattr(app.st, "selectbox", lambda label, options, index=0, **kwargs: "Skipped")
+    monkeypatch.setattr(app.st, "selectbox", lambda label, options, index=0, **kwargs: t("structure.filter_skipped"))
     monkeypatch.setattr(app.st, "text_input", lambda label, value="", **kwargs: value)
     monkeypatch.setattr(app.st, "info", lambda *args, **kwargs: None)
     monkeypatch.setattr(app.st, "subheader", lambda *args, **kwargs: None)
@@ -1797,7 +1829,16 @@ def test_render_analysis_review_panel_supports_skipped_status_filter(monkeypatch
     )
 
     assert checkbox_labels == [
-        "Appendix A | 2 words | appendix | clear boundary | skipped"
+        t(
+            "structure.segment_label",
+            title="Appendix A",
+            words=2,
+            role="appendix",
+            relation="",
+            confidence=t("structure.confidence_hint_high"),
+            badge=t("structure.status_skipped"),
+            active="",
+        )
     ]
 
 
@@ -2063,10 +2104,13 @@ def test_render_analysis_review_panel_shows_low_confidence_warning_and_manifest(
     )
 
     assert warnings == [
-        "Some section boundaries need manual review before partial translation: Low-confidence segment boundaries detected",
-        "Review this section before partial translation: Chapter 2. Boundary confidence is low",
+        t("structure.diagnostic_warning", details="Low-confidence segment boundaries detected"),
+        t("structure.segment_warning", title="Chapter 2", suffix="Boundary confidence is low"),
     ]
-    assert any(message == "Manifest path: .run/structure_manifests/20260506_094000_report.segments.json" for message in captions)
+    assert any(
+        message == t("structure.manifest_path_caption", path=".run/structure_manifests/20260506_094000_report.segments.json")
+        for message in captions
+    )
 
 
 def test_render_analysis_review_panel_shows_last_exported_manifest_comparison_notice(monkeypatch):
@@ -2144,10 +2188,12 @@ def test_render_analysis_review_panel_shows_last_exported_manifest_comparison_no
 
     assert any(
         message
-        == "Current analysis differs from the last exported structure manifest.\n"
-        "Manifest path: .run/structure_manifests/20260506_083400_report.segments.json\n"
-        "Exported fingerprint: oldfingerprint\n"
-        "Current fingerprint: newfingerprint"
+        == t(
+            "structure.manifest_diff_warning",
+            manifest_path=".run/structure_manifests/20260506_083400_report.segments.json",
+            exported="oldfingerprint",
+            current="newfingerprint",
+        )
         for message in warnings
     )
 
@@ -2230,15 +2276,17 @@ def test_render_analysis_review_panel_supports_imported_manifest_comparison(monk
     )
 
     assert any(
-        message == "Imported structure manifest ready for comparison: imported_report.segments.json"
+        message == t("structure.import_ready", filename="imported_report.segments.json")
         for message in captions
     )
     assert any(
         message
-        == "Current analysis differs from the last exported structure manifest.\n"
-        "Manifest path: Imported manifest: imported_report.segments.json\n"
-        "Exported fingerprint: oldfingerprint\n"
-        "Current fingerprint: newfingerprint"
+        == t(
+            "structure.manifest_diff_warning",
+            manifest_path=t("structure.imported_manifest_path", filename="imported_report.segments.json"),
+            exported="oldfingerprint",
+            current="newfingerprint",
+        )
         for message in warnings
     )
 
@@ -2330,8 +2378,11 @@ def test_render_analysis_review_panel_shows_segment_runtime_badges(monkeypatch):
         chunk_size=6000,
     )
 
-    assert any("completed 100%" in label for label in checkbox_labels)
-    assert any("processing 50% | active" in label for label in checkbox_labels)
+    assert any(t("structure.badge_completed", percent=100) in label for label in checkbox_labels)
+    assert any(
+        t("structure.badge_processing", percent=50) + t("structure.label_active_suffix") in label
+        for label in checkbox_labels
+    )
 
 
 def test_render_analysis_review_panel_returns_start_final_book_when_all_required_segments_completed(monkeypatch):
@@ -2445,11 +2496,11 @@ def test_render_analysis_review_panel_shows_completed_and_failed_status_hints(mo
     )
 
     assert any(
-        message == "Completed in this session. You can select this section again if you need a revised translation."
+        message == t("structure.status_hint_completed")
         for message in captions
     )
     assert any(
-        message == "Failed in this session. Use Retry Failed or select this section again for another translation pass."
+        message == t("structure.status_hint_failed")
         for message in captions
     )
 
@@ -2583,7 +2634,12 @@ def test_render_analysis_review_panel_shows_segment_status_summary(monkeypatch):
     )
 
     assert any(
-        message == "Section status: pending 1 | processing 1 | completed 1 | failed 1"
+        message == t("structure.section_status_line", details=" | ".join([
+            f"{t('structure.status_pending')} 1",
+            f"{t('structure.status_processing')} 1",
+            f"{t('structure.status_completed')} 1",
+            f"{t('structure.status_failed')} 1",
+        ]))
         for message in captions
     )
 
@@ -2648,11 +2704,14 @@ def test_render_analysis_review_panel_shows_selected_status_summary(monkeypatch)
     )
 
     assert any(
-        message == "Selected section status: completed 1 | failed 1"
+        message == t("structure.selected_section_status_line", details=" | ".join([
+            f"{t('structure.status_completed')} 1",
+            f"{t('structure.status_failed')} 1",
+        ]))
         for message in captions
     )
     assert any(
-        message == "This launch will skip 1 section that is already queued or processing."
+        message == t("structure.launch_skip", count=1)
         for message in captions
     )
 
@@ -2809,9 +2868,11 @@ def test_render_analysis_review_panel_shows_explicit_fingerprint_invalidation_su
     assert session_state.confirmed_structure_fingerprint == ""
     assert session_state.confirmed_at_settings_hash == ""
     assert warnings == [
-        "Structure confirmation invalidated.\n"
-        "Detected chapter structure changed after re-analysis.\n"
-        "Review the chapter list and confirm structure again before processing selected chapters."
+        "\n".join([
+            t("structure.invalidation_title"),
+            t("structure.invalidation_fingerprint_changed"),
+            t("structure.invalidation_review_again"),
+        ])
     ]
 
 
@@ -2879,9 +2940,11 @@ def test_render_analysis_review_panel_shows_explicit_settings_invalidation_summa
     assert session_state.confirmed_structure_fingerprint == ""
     assert session_state.confirmed_at_settings_hash == ""
     assert warnings == [
-        "Structure confirmation invalidated.\n"
-        "Detection-affecting settings changed since the last confirmation.\n"
-        "Review the chapter list and confirm structure again before processing selected chapters."
+        "\n".join([
+            t("structure.invalidation_title"),
+            t("structure.invalidation_settings_changed"),
+            t("structure.invalidation_review_again"),
+        ])
     ]
 
 
@@ -2972,9 +3035,11 @@ def test_render_analysis_review_panel_invalidates_confirmation_when_additional_d
 
     assert session_state.structure_confirmed is False
     assert warnings == [
-        "Structure confirmation invalidated.\n"
-        "Detection-affecting settings changed since the last confirmation.\n"
-        "Review the chapter list and confirm structure again before processing selected chapters."
+        "\n".join([
+            t("structure.invalidation_title"),
+            t("structure.invalidation_settings_changed"),
+            t("structure.invalidation_review_again"),
+        ])
     ]
 
 
@@ -3153,9 +3218,11 @@ def test_render_analysis_review_panel_invalidates_confirmation_when_only_chunk_s
 
     assert session_state.structure_confirmed is False
     assert warnings == [
-        "Structure confirmation invalidated.\n"
-        "Detection-affecting settings changed since the last confirmation.\n"
-        "Review the chapter list and confirm structure again before processing selected chapters."
+        "\n".join([
+            t("structure.invalidation_title"),
+            t("structure.invalidation_settings_changed"),
+            t("structure.invalidation_review_again"),
+        ])
     ]
 
 
@@ -3317,11 +3384,11 @@ def test_render_analysis_review_panel_returns_selected_action_when_confirmed(mon
 
     assert action == "start_selected"
     assert selected_col.calls == [(
-        "Process Selected",
+        t("structure.process_selected_button"),
         {
             "use_container_width": True,
             "disabled": False,
-            "help": "Processes only the selected sections and produces a partial output artifact.",
+            "help": t("structure.process_selected_help"),
             "key": "process_selected_button",
         },
     )]
@@ -3416,20 +3483,20 @@ def test_render_analysis_review_panel_returns_start_selected_with_context_when_r
     assert action == "start_selected_with_context"
     assert selected_col.calls == [
         (
-            "Process Selected",
+            t("structure.process_selected_button"),
             {
                 "use_container_width": True,
                 "disabled": False,
-                    "help": "Processes only the selected sections and produces a partial output artifact.",
+                    "help": t("structure.process_selected_help"),
                 "key": "process_selected_button",
             },
         ),
         (
-            "Selected + Context",
+            t("structure.selected_with_context_button"),
             {
                 "use_container_width": True,
                 "disabled": False,
-                    "help": "Processes the selected sections and prepends leading structural context such as front matter or TOC as source-backed content.",
+                    "help": t("structure.selected_with_context_help"),
                 "key": "process_selected_with_context_button",
             },
         ),
@@ -3526,29 +3593,29 @@ def test_render_analysis_review_panel_returns_start_retry_failed_when_requested(
     assert action == "start_retry_failed"
     assert selected_col.calls == [
         (
-            "Process Selected",
+            t("structure.process_selected_button"),
             {
                 "use_container_width": True,
                 "disabled": True,
-                "help": "Process Selected unavailable: keep at least one selectable segment selected.",
+                "help": t("structure.process_unavailable_select"),
                 "key": "process_selected_button",
             },
         ),
         (
-            "Selected + Context",
+            t("structure.selected_with_context_button"),
             {
                 "use_container_width": True,
                 "disabled": True,
-                "help": "Process Selected unavailable: keep at least one selectable segment selected.",
+                "help": t("structure.process_unavailable_select"),
                 "key": "process_selected_with_context_button",
             },
         ),
         (
-            "Retry Failed",
+            t("structure.retry_failed_button"),
             {
                 "use_container_width": True,
                 "disabled": False,
-                "help": "Reruns only the segments marked failed for this prepared document.",
+                "help": t("structure.retry_help_default"),
                 "key": "retry_failed_segments_button",
             },
         ),
@@ -3651,29 +3718,29 @@ def test_render_analysis_review_panel_uses_persisted_retry_help_when_available(m
     assert action is None
     assert selected_col.calls == [
         (
-            "Process Selected",
+            t("structure.process_selected_button"),
             {
                 "use_container_width": True,
                 "disabled": True,
-                "help": "Process Selected unavailable: keep at least one selectable segment selected.",
+                "help": t("structure.process_unavailable_select"),
                 "key": "process_selected_button",
             },
         ),
         (
-            "Selected + Context",
+            t("structure.selected_with_context_button"),
             {
                 "use_container_width": True,
                 "disabled": True,
-                "help": "Process Selected unavailable: keep at least one selectable segment selected.",
+                "help": t("structure.process_unavailable_select"),
                 "key": "process_selected_with_context_button",
             },
         ),
         (
-            "Retry Failed",
+            t("structure.retry_failed_button"),
             {
                 "use_container_width": True,
                 "disabled": False,
-                "help": "Reruns only the failed jobs recorded in persisted retry state for this prepared document.",
+                "help": t("structure.retry_help_persisted"),
                 "key": "retry_failed_segments_button",
             },
         ),
@@ -3764,7 +3831,7 @@ def test_render_analysis_review_panel_shows_confirmed_outline_summary(monkeypatc
     )
 
     assert any(
-        message == "Structure confirmed | selected main 1 section | selected nested 1 section"
+        message == t("structure.confirmation_confirmed", top=1, nested=1)
         for message in caption_calls
     )
 
@@ -4540,16 +4607,38 @@ def test_render_analysis_review_panel_selects_parent_with_descendants(monkeypatc
 
     assert session_state.selected_segment_ids == ["seg_parent", "seg_child"]
     assert any(
-        "Part I | 2 words | part | includes 1 nested section | clear boundary | pending"
+        t(
+            "structure.segment_label",
+            title="Part I",
+            words=2,
+            role="part",
+            relation=t("structure.relation_includes", count=1),
+            confidence=t("structure.confidence_hint_high"),
+            badge=t("structure.status_pending"),
+            active="",
+        )
         in label
         for label in checkbox_labels
     )
-    assert any("Chapter 1 | 2 words | chapter | under Part I | clear boundary | pending" in label for label in checkbox_labels)
-    assert any(message == "Will translate: 2/3 sections | 4/6 words" for message in info_calls)
-    assert any(message == "Hierarchy in current view: 2 main sections | 1 nested section" for message in caption_calls)
-    assert any(message == "Selection hierarchy: 1 main section | 1 nested section" for message in caption_calls)
     assert any(
-        message == "Selection also includes 1 nested section under chosen parent sections."
+        t(
+            "structure.segment_label",
+            title="Chapter 1",
+            words=2,
+            role="chapter",
+            relation=t("structure.relation_under", title="Part I"),
+            confidence=t("structure.confidence_hint_high"),
+            badge=t("structure.status_pending"),
+            active="",
+        )
+        in label
+        for label in checkbox_labels
+    )
+    assert any(message == t("structure.will_translate", selected=2, total=3, selected_words=4, total_words=6) for message in info_calls)
+    assert any(message == t("structure.visible_hierarchy", parent=2, child=1) for message in caption_calls)
+    assert any(message == t("structure.selection_hierarchy", top=1, nested=1) for message in caption_calls)
+    assert any(
+        message == t("structure.selection_includes_nested", count=1)
         for message in caption_calls
     )
 
@@ -5111,14 +5200,14 @@ def test_render_analysis_review_panel_uses_effective_selected_payload_for_ready_
         chunk_size=6000,
     )
 
-    assert any(message == "Will translate: 1/2 sections | 2/4 words" for message in info_calls)
+    assert any(message == t("structure.will_translate", selected=1, total=2, selected_words=2, total_words=4) for message in info_calls)
     assert any(
-        message == "Process Selected unavailable: the current selection does not map to any translatable content."
+        message == t("structure.process_unavailable_no_content")
         for message in caption_calls
     )
-    assert not any(message == "Ready: confirmed structure | selection maps to translatable content." for message in caption_calls)
+    assert not any(message == t("structure.ready_note") for message in caption_calls)
     assert any(
-        message == "This launch will skip 1 section that is already queued or processing."
+        message == t("structure.launch_skip", count=1)
         for message in caption_calls
     )
 
@@ -5208,7 +5297,7 @@ def test_render_analysis_review_panel_shows_visible_structure_summary_only_for_n
         chunk_size=6000,
     )
 
-    assert any(message == "Hierarchy in current view: 1 main section | 1 nested section" for message in caption_calls)
+    assert any(message == t("structure.visible_hierarchy", parent=1, child=1) for message in caption_calls)
 
 
 def test_render_analysis_review_panel_shows_ready_caption_when_can_process_selected(monkeypatch):
@@ -5275,11 +5364,12 @@ def test_render_analysis_review_panel_shows_ready_caption_when_can_process_selec
     )
 
     assert any(
-        message == "Ready: confirmed structure | selection maps to translatable content."
+        message == t("structure.ready_note")
         for message in caption_calls
     )
+    _process_unavailable_prefix = t("structure.process_unavailable_select").split(":")[0]
     assert not any(
-        "Process Selected unavailable" in message
+        _process_unavailable_prefix in message
         for message in caption_calls
     )
 
@@ -5355,8 +5445,8 @@ def test_render_analysis_review_panel_sanitizes_noisy_segment_titles(monkeypatch
     )
 
     assert any("[[DOCX_IMAGE" not in label and "**" not in label for label in checkbox_labels)
-    assert any(call[0] == "Included text preview: Экологические потребности" for call in expander_calls)
-    assert any(message == "Starts with: Экологические потребности" for message in caption_calls)
+    assert any(call[0] == t("structure.included_preview_expander", title="Экологические потребности") for call in expander_calls)
+    assert any(message == t("structure.preview_starts_with", text="Экологические потребности") for message in caption_calls)
 
 
 def test_render_analysis_review_panel_explains_incomplete_segment_job_mapping(monkeypatch):
@@ -5433,13 +5523,11 @@ def test_render_analysis_review_panel_explains_incomplete_segment_job_mapping(mo
     )
 
     assert any(
-        message == "Process Selected unavailable: the current section boundaries no longer match the prepared document. Re-prepare the document before partial translation."
+        message == t("structure.process_unavailable_mapping")
         for message in caption_calls
     )
     assert any(
-        message.endswith(
-            "Retry Failed unavailable: the current section boundaries no longer match the prepared document. Re-prepare the document before rerunning failed sections."
-        )
+        message.endswith(t("structure.retry_unavailable_mapping"))
         for message in caption_calls
     )
 
@@ -5521,7 +5609,7 @@ def test_render_analysis_review_panel_shows_reconfirm_button_label_when_already_
     )
 
     assert confirm_col.calls
-    assert confirm_col.calls[0][0] == "Re-confirm Structure"
+    assert confirm_col.calls[0][0] == t("structure.reconfirm_button")
 
 
 def test_render_analysis_review_panel_shows_failed_segment_retry_notice(monkeypatch):
@@ -5602,7 +5690,12 @@ def test_render_analysis_review_panel_shows_failed_segment_retry_notice(monkeypa
         chunk_size=6000,
     )
 
-    assert any("failed" in c.lower() and "retry failed" in c.lower() and "ready" in c.lower() for c in captions), (
+    _retry_ready_messages = {
+        t("structure.retry_ready_current_session"),
+        t("structure.retry_ready_persisted"),
+        t("structure.retry_ready_default"),
+    }
+    assert any(any(ready in c for ready in _retry_ready_messages) for c in captions), (
         f"Expected a failed-segment retry notice in captions, got: {captions}"
     )
 
@@ -5695,9 +5788,9 @@ def test_render_analysis_review_panel_shows_terminology_review_for_glossary_term
         chunk_size=6000,
     )
 
-    assert ("Terminology Review (2)", False) in expander_calls
-    assert any("Session-scoped glossary candidates" in caption for caption in caption_calls)
-    assert any("Domain: theology" == caption for caption in caption_calls)
+    assert (t("structure.terminology_expander", count=2), False) in expander_calls
+    assert any(caption == t("structure.terminology_caption") for caption in caption_calls)
+    assert any(caption == t("structure.terminology_domain", domain="theology") for caption in caption_calls)
     assert "- Great Tribulation -> Великая скорбь" in write_calls
     assert "- Antichrist -> Антихрист" in write_calls
 
