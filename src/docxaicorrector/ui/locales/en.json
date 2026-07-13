@@ -13,7 +13,6 @@
   "app.markdown_preview_title": "Markdown preview",
   "app.restartable_generic_info": "You can change the settings and start processing again without re-uploading the file.",
   "app.single_block_info": "The document fits into a single block. For long files, processing runs block by block with neighboring context.",
-  "app.export_manifest_button": "Export Structure Manifest",
   "app.button_processing_running": "Processing started",
   "app.button_start_processing": "Start processing",
   "app.button_reprocess": "Process again",
@@ -23,26 +22,22 @@
   "app.activity_document_parsed": "The document was parsed into {count} blocks.",
   "app.restartable_stopped_notice": "Processing of the file «{filename}» was stopped. You can change the settings and start again without re-uploading.",
   "app.restartable_failed_notice": "Processing of the file «{filename}» failed. You can change the settings and start again without re-uploading.",
-
   "recommend.field_operation": "mode",
   "recommend.field_source_language": "source language",
   "recommend.field_target_language": "target language",
   "recommend.change_detail": "{field}: changed from {from_value} to {to_value}",
   "recommend.notice_generic": "Settings for this document were selected automatically.",
   "recommend.notice_with_changes": "Settings for this document were selected automatically: {changes}.",
-
   "flow.no_jobs_built": "Failed to assemble any block for processing.",
   "flow.empty_target_block": "An empty target block was detected before sending to the model.",
   "flow.quality_gate_blocked": "Preparation blocked by the quality gate: the document requires structural repair before processing.",
   "flow.quality_gate_blocked_with_reasons": "Preparation blocked by the quality gate: the document requires structural repair before processing. Reasons: {reasons}",
   "flow.quality_gate_warning": "Processing continued in best-effort mode: the document structure was recognized with elevated risk.",
   "flow.quality_gate_warning_with_reasons": "Processing continued in best-effort mode: the document structure was recognized with elevated risk. Reasons: {reasons}",
-
   "sidebar.settings_header": "Settings",
   "sidebar.text_operation_label": "Text processing mode",
   "sidebar.target_language_label": "Target language",
   "common.download": "Download",
-
   "sidebar.text_operation_help": "Literary editing improves text that is already in the selected language. Use Translation for text that is not yet in the target language. If the text is already translated, literary editing is usually the better choice.",
   "sidebar.source_language_label": "Source language",
   "sidebar.source_language_help": "Use 'Auto' only as a best-effort mode. For already-translated text, literary editing is usually the better choice.",
@@ -62,7 +57,6 @@
   "sidebar.operation_edit": "Literary editing",
   "sidebar.operation_translate": "Translation",
   "sidebar.operation_audiobook": "Audiobook preparation (ElevenLabs)",
-
   "image.mode_no_change": "No change",
   "image.mode_safe": "Just improve",
   "image.mode_semantic_direct": "Creative AI redraw",
@@ -83,7 +77,6 @@
   "image.validation_errors_caption": "Validation errors:",
   "image.error_detail": "• {error}",
   "image.reason_unspecified": "Reason not specified.",
-
   "result.markdown_inspection": "Markdown (for inspection)",
   "result.docx_inspection": "DOCX (for inspection)",
   "result.markdown_translated": "Translated Markdown",
@@ -101,11 +94,9 @@
   "result.review_download_button": "Download review report",
   "result.review_download_filename": "formatting_review.txt",
   "result.review_accepted_note": "The result is accepted — the listed items are advisory; the document is ready to use.",
-
   "preview.markdown_label": "Markdown",
   "preview.markdown_help": "Only one Markdown block is shown on screen to keep the interface responsive for large documents.",
   "preview.normalization": "Paragraph normalization: raw {raw} -> logical {logical} | merges: {groups} groups, {merged} paragraphs",
-
   "status.prepare_stage_default": "Preparing document",
   "status.prepare_detail_default": "Analyzing the file.",
   "status.progress_meta": "Progress: {percent}% | Source: {source} | Elapsed: {elapsed}",
@@ -124,129 +115,6 @@
   "status.prep_source_meta": "Source: {source}{elapsed_fragment}",
   "status.prep_size_meta": "{size} MB | {paragraphs} paragraphs | {images} images",
   "status.prep_manifest_meta": "Structure manifest: {path}",
-
   "log.run_log_expander": "Processing log",
-  "log.block_message": "[{status}] Block {block_index}/{block_count} | target: {target_chars} chars | context: {context_chars} chars | {details}",
-
-  "structure.subheader": "Review Sections Before Partial Translation",
-  "structure.overview_message": "Detected {count} reviewable sections for partial translation. Review the list below to decide what should be translated separately.",
-  "structure.confidence_summary": "Confidence overview: {high} clear | {medium} review | {low} uncertain",
-  "structure.diagnostic_warning": "Some section boundaries need manual review before partial translation: {details}",
-
-  "structure.invalidation_title": "Structure confirmation invalidated.",
-  "structure.invalidation_fingerprint_changed": "Detected chapter structure changed after re-analysis.",
-  "structure.invalidation_settings_changed": "Detection-affecting settings changed since the last confirmation.",
-  "structure.invalidation_review_again": "Review the chapter list and confirm structure again before processing selected chapters.",
-
-  "structure.confidence_hint_low": "uncertain boundary",
-  "structure.confidence_hint_medium": "review suggested",
-  "structure.confidence_hint_high": "clear boundary",
-
-  "structure.terminology_expander": "Terminology Review ({count})",
-  "structure.terminology_caption": "Session-scoped glossary candidates extracted from the current analysis. These terms are already injected into translate prompts for this run.",
-  "structure.terminology_domain": "Domain: {domain}",
-
-  "structure.advanced_tools_expander": "Advanced structure tools",
-  "structure.advanced_tools_caption": "Technical details for export, support, and structure diffing. Not required for normal translation review.",
-  "structure.fingerprint_caption": "Structure fingerprint: {value}",
-  "structure.detector_version_caption": "Detector version: {value}",
-  "structure.manifest_path_caption": "Manifest path: {path}",
-  "structure.compare_manifest_label": "Compare exported structure JSON",
-  "structure.compare_manifest_help": "Import a previously exported .segments.json manifest to compare it with the current analysis.",
-
-  "structure.manifest_diff_warning": "Current analysis differs from the last exported structure manifest.\nManifest path: {manifest_path}\nExported fingerprint: {exported}\nCurrent fingerprint: {current}",
-  "structure.last_exported_manifest": "Last exported manifest: {path}{fingerprint_suffix}{match_suffix}",
-  "structure.manifest_fingerprint_suffix": " | fingerprint {value}",
-  "structure.manifest_match_suffix": " | fingerprint matches current analysis",
-
-  "structure.import_unable_read": "Unable to read imported structure manifest: {filename}",
-  "structure.import_unable_read_bytes": "Unable to read imported structure manifest bytes: {filename}",
-  "structure.import_unable_parse": "Unable to parse imported structure manifest {filename}: {error}",
-  "structure.import_not_object": "Imported structure manifest must be a JSON object: {filename}",
-  "structure.import_no_fingerprint": "Imported structure manifest does not contain structure_fingerprint: {filename}",
-  "structure.import_ready": "Imported structure manifest ready for comparison: {filename}",
-  "structure.imported_manifest_path": "Imported manifest: {filename}",
-
-  "structure.status_filter_label": "Status Filter",
-  "structure.filter_all": "All sections",
-  "structure.filter_pending": "Pending",
-  "structure.filter_queued": "Queued",
-  "structure.filter_processing": "Processing",
-  "structure.filter_completed": "Completed",
-  "structure.filter_failed": "Failed",
-  "structure.filter_skipped": "Skipped",
-  "structure.filter_low_confidence": "Low confidence",
-  "structure.search_label": "Search Sections",
-  "structure.search_placeholder": "Search by section title or warning",
-
-  "structure.status_pending": "pending",
-  "structure.status_queued": "queued",
-  "structure.status_processing": "processing",
-  "structure.status_completed": "completed",
-  "structure.status_failed": "failed",
-  "structure.status_skipped": "skipped",
-
-  "structure.visible_count": "Visible sections: {visible}/{total}",
-  "structure.currently_unavailable_view": "Currently unavailable in this view: {count} sections already queued or processing.",
-
-  "structure.select_visible_button": "Select Visible",
-  "structure.clear_visible_button": "Clear Visible",
-  "structure.select_entire_book_button": "Select Entire Book",
-
-  "structure.segment_label": "{title} | {words} words | {role}{relation} | {confidence} | {badge}{active}",
-  "structure.label_active_suffix": " | active",
-  "structure.relation_under": " | under {title}",
-  "structure.relation_nested": " | nested section",
-  "structure.relation_includes": " | includes {count} nested sections",
-  "structure.badge_completed": "completed {percent}%",
-  "structure.badge_processing": "processing {percent}%",
-  "structure.badge_failed": "failed {percent}%",
-  "structure.badge_queued": "queued {percent}%",
-
-  "structure.status_hint_completed": "Completed in this session. You can select this section again if you need a revised translation.",
-  "structure.status_hint_failed": "Failed in this session. Use Retry Failed or select this section again for another translation pass.",
-  "structure.status_hint_skipped": "Skipped in the current session workflow. It is usually left out of the final book by design.",
-
-  "structure.included_preview_expander": "Included text preview: {title}",
-  "structure.preview_starts_with": "Starts with: {text}",
-  "structure.preview_ends_with": "Ends with: {text}",
-  "structure.preview_review_notes": "Review notes: {details}",
-  "structure.preview_boundary_confidence": "Boundary confidence: {hint}.",
-  "structure.no_sections_match": "No sections match the current filter/search.",
-
-  "structure.will_translate": "Will translate: {selected}/{total} sections | {selected_words}/{total_words} words",
-  "structure.launch_skip": "This launch will skip {count} sections that are already queued or processing.",
-  "structure.ready_note": "Ready: selection maps to translatable content.",
-
-  "structure.include_front_matter_label": "Include Front Matter",
-  "structure.include_front_matter_help": "When enabled, Selected + Context prepends front matter segments as source-backed context.",
-  "structure.include_toc_label": "Include TOC",
-  "structure.include_toc_help": "When enabled, Selected + Context prepends table-of-contents segments as source-backed context.",
-
-  "structure.retry_ready_current_session": "Retry Failed is ready to rerun only the failed jobs recorded in the current session for those failed segments.",
-  "structure.retry_ready_persisted": "Retry Failed is ready to rerun only the failed jobs from persisted retry state for this prepared document.",
-  "structure.retry_ready_default": "Retry Failed is ready to rerun only those failed segments.",
-  "structure.retry_help_current_session": "Reruns only the failed jobs recorded in the current session for the failed segments.",
-  "structure.retry_help_persisted": "Reruns only the failed jobs recorded in persisted retry state for this prepared document.",
-  "structure.retry_help_blocked": "Prepared jobs no longer match the current chapter boundaries. Re-prepare the document before rerunning failed segments.",
-  "structure.retry_help_default": "Reruns only the segments marked failed for this prepared document.",
-  "structure.retry_summary_persisted": "{count} sections have persisted failed work for this prepared document.",
-  "structure.retry_summary_default": "{count} sections failed in this session.",
-  "structure.retry_unavailable_mapping": "Retry Failed unavailable: the current section boundaries no longer match the prepared document. Re-prepare the document before rerunning failed sections.",
-  "structure.retry_unavailable_no_content": "Retry Failed unavailable: failed sections do not currently map to translatable content.",
-
-  "structure.process_unavailable_select": "Process Selected unavailable: keep at least one selectable segment selected.",
-  "structure.process_unavailable_mapping": "Process Selected unavailable: the current section boundaries no longer match the prepared document. Re-prepare the document before partial translation.",
-  "structure.process_unavailable_no_content": "Process Selected unavailable: the current selection does not map to any translatable content.",
-
-  "structure.process_selected_button": "Process Selected",
-  "structure.process_selected_help": "Processes only the selected sections and produces a partial output artifact.",
-  "structure.selected_with_context_button": "Selected + Context",
-  "structure.selected_with_context_help": "Processes the selected sections and prepends leading structural context such as front matter or TOC as source-backed content.",
-  "structure.retry_failed_button": "Retry Failed",
-  "structure.assemble_final_book_button": "Assemble final translated book",
-
-  "structure.structure_confirmed_success": "Structure confirmed for the current prepared document.",
-  "structure.confirmation_confirmed": "Structure confirmed | selected main {top} sections | selected nested {nested} sections",
-  "structure.confirmation_not_confirmed": "Structure not yet confirmed - it is confirmed automatically when you start processing the selected sections."
+  "log.block_message": "[{status}] Block {block_index}/{block_count} | target: {target_chars} chars | context: {context_chars} chars | {details}"
 }

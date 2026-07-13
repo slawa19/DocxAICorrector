@@ -19,7 +19,6 @@ from docx import Document
 
 from docxaicorrector.core.models import ParagraphUnit
 from docxaicorrector.document._document import extract_document_content_from_docx
-from docxaicorrector.pipeline.contracts import SegmentSelection
 from docxaicorrector.reader_cleanup_mvp import build_cleanup_blocks
 
 
@@ -443,208 +442,6 @@ def test_run_document_processing_persists_final_ui_result_artifacts_and_logs_pat
     }
 
 
-def test_run_document_processing_passes_selected_chapters_assembly_mode_to_artifact_writer():
-    runtime = _build_runtime_capture()
-    events, log_event = _capture_log_events()
-    captured = {}
-
-    def write_ui_result_artifacts(**kwargs):
-        captured["artifact_kwargs"] = kwargs
-        return {
-            "markdown_path": "/tmp/mariana.result.md",
-            "docx_path": "/tmp/mariana.result.docx",
-        }
-
-    result = _run_processing(
-        runtime,
-        log_event=log_event,
-        write_ui_result_artifacts=write_ui_result_artifacts,
-        selected_segment_ids=["seg_0001", "seg_0002"],
-    )
-
-    assert result == "succeeded"
-    assert captured["artifact_kwargs"]["assembly_mode"] == "selected_chapters"
-    assert captured["artifact_kwargs"]["selected_segment_count"] == 2
-    assert captured["artifact_kwargs"]["result_manifest"] == {
-        "schema_version": 1,
-        "source_name": "report.docx",
-        "assembly_mode": "selected_chapters",
-        "output_mode": "selected_only",
-        "selected_segment_count": 2,
-        "included_segment_count": 2,
-        "included_segment_ids": ["seg_0001", "seg_0002"],
-        "coverage": {
-            "segment_ids": ["seg_0001", "seg_0002"],
-            "paragraph_ranges": [],
-        },
-        "selected_segment_ids": ["seg_0001", "seg_0002"],
-        "segments": [
-            {"segment_id": "seg_0001", "job_count": 0, "selected": True},
-            {"segment_id": "seg_0002", "job_count": 0, "selected": True},
-        ],
-    }
-
-
-def test_run_document_processing_preserves_selected_with_context_output_mode_for_selected_runs():
-    runtime = _build_runtime_capture()
-    captured = {}
-
-    def write_ui_result_artifacts(**kwargs):
-        captured["artifact_kwargs"] = kwargs
-        return {
-            "markdown_path": "/tmp/mariana.result.md",
-            "docx_path": "/tmp/mariana.result.docx",
-            "manifest_path": "/tmp/mariana.result.manifest.json",
-        }
-
-    result = _run_processing(
-        runtime,
-        output_mode="selected_with_context",
-        selected_segment_ids=["seg_0001", "seg_0002"],
-        jobs=[
-            {"target_text": "block 1", "context_before": "", "context_after": "", "target_chars": 7, "context_chars": 0, "segment_id": "seg_0001"},
-            {"target_text": "block 2", "context_before": "", "context_after": "", "target_chars": 7, "context_chars": 0, "segment_id": "seg_0002"},
-        ],
-        write_ui_result_artifacts=write_ui_result_artifacts,
-    )
-
-    assert result == "succeeded"
-    assert captured["artifact_kwargs"]["assembly_mode"] == "selected_chapters"
-    assert captured["artifact_kwargs"]["result_manifest"]["output_mode"] == "selected_with_context"
-    assert captured["artifact_kwargs"]["result_manifest"]["selected_segment_ids"] == ["seg_0001", "seg_0002"]
-
-
-def test_run_document_processing_persists_segment_selection_in_result_manifest():
-    runtime = _build_runtime_capture()
-    captured = {}
-
-    def write_ui_result_artifacts(**kwargs):
-        captured["artifact_kwargs"] = kwargs
-        return {
-            "markdown_path": "/tmp/mariana.result.md",
-            "docx_path": "/tmp/mariana.result.docx",
-        }
-
-    result = _run_processing(
-        runtime,
-        write_ui_result_artifacts=write_ui_result_artifacts,
-        selected_segment_ids=None,
-        segment_selection=SegmentSelection(
-            selected_segment_ids=("seg_0003",),
-            include_descendants=False,
-            output_mode="selected_only",
-        ),
-    )
-
-    assert result == "succeeded"
-    assert captured["artifact_kwargs"]["result_manifest"]["selected_segment_ids"] == ["seg_0003"]
-    assert captured["artifact_kwargs"]["result_manifest"]["segment_selection"] == {
-        "selected_segment_ids": ["seg_0003"],
-        "include_descendants": False,
-        "include_front_matter": False,
-        "include_toc": False,
-        "output_mode": "selected_only",
-    }
-
-
-def test_build_reassembly_plan_expands_selected_with_context_with_structural_context_only():
-    plan = document_pipeline_reassembly.build_reassembly_plan(
-        selected_segment_ids=["seg_0003"],
-        output_mode="selected_with_context",
-        include_front_matter=True,
-        include_toc=True,
-        jobs=[{"segment_id": "seg_0003"}],
-        source_paragraphs=[
-            SimpleNamespace(segment_id="seg_front", text="Title", structural_role="front_matter"),
-            SimpleNamespace(segment_id="seg_0002", text="Chapter 2", structural_role="body"),
-            SimpleNamespace(segment_id="seg_toc", text="Contents", structural_role="toc_entry"),
-            SimpleNamespace(segment_id="seg_0003", text="Chapter 3", structural_role="body"),
-            SimpleNamespace(segment_id="seg_0004", text="Chapter 4", structural_role="body"),
-        ],
-    )
-
-    assert plan.output_mode == "selected_with_context"
-    assert plan.selected_segment_ids == ("seg_0003",)
-    assert plan.included_segment_ids == ("seg_front", "seg_toc", "seg_0003")
-
-
-def test_build_reassembly_plan_respects_selected_with_context_include_flags_independently():
-    plan = document_pipeline_reassembly.build_reassembly_plan(
-        selected_segment_ids=["seg_0003"],
-        output_mode="selected_with_context",
-        include_front_matter=True,
-        include_toc=False,
-        jobs=[{"segment_id": "seg_0003"}],
-        source_paragraphs=[
-            SimpleNamespace(segment_id="seg_front", text="Title", structural_role="front_matter"),
-            SimpleNamespace(segment_id="seg_toc", text="Contents", structural_role="toc_entry"),
-            SimpleNamespace(segment_id="seg_0003", text="Chapter 3", structural_role="body"),
-        ],
-    )
-
-    assert plan.included_segment_ids == ("seg_front", "seg_0003")
-
-
-def test_run_document_processing_assembles_selected_with_context_document(monkeypatch):
-    runtime = _build_runtime_capture()
-    captured = {}
-
-    def write_ui_result_artifacts(**kwargs):
-        captured["artifact_kwargs"] = kwargs
-        return {
-            "markdown_path": "/tmp/context.result.md",
-            "docx_path": "/tmp/context.result.docx",
-            "manifest_path": "/tmp/context.result.manifest.json",
-        }
-
-    monkeypatch.setattr(
-        document_pipeline_late_phases,
-        "build_segment_result_records",
-        lambda **kwargs: [
-            {
-                "segment_id": "seg_0003",
-                "translated_markdown": "Translated chapter 3",
-                "paragraph_ids": ["p3"],
-            }
-        ],
-    )
-
-    result = _run_processing(
-        runtime,
-        output_mode="selected_with_context",
-        include_front_matter=True,
-        include_toc=True,
-        selected_segment_ids=["seg_0003"],
-        jobs=[
-            {
-                "segment_id": "seg_0003",
-                "target_text": "block",
-                "context_before": "",
-                "context_after": "",
-                "target_chars": 5,
-                "context_chars": 0,
-            }
-        ],
-        source_paragraphs=[
-            SimpleNamespace(segment_id="seg_front", paragraph_id="p1", text="# Title", rendered_text="# Title", structural_role="front_matter"),
-            SimpleNamespace(segment_id="seg_0002", paragraph_id="p2", text="Earlier chapter", rendered_text="Earlier chapter", structural_role="body"),
-            SimpleNamespace(segment_id="seg_toc", paragraph_id="p3", text="Contents", rendered_text="Contents", structural_role="toc_entry"),
-            SimpleNamespace(segment_id="seg_0003", paragraph_id="p4", text="Chapter 3", rendered_text="Chapter 3", structural_role="body"),
-            SimpleNamespace(segment_id="seg_0004", paragraph_id="p5", text="Chapter 4", rendered_text="Chapter 4", structural_role="body"),
-        ],
-        write_ui_result_artifacts=write_ui_result_artifacts,
-    )
-
-    assert result == "succeeded"
-    assert runtime["state"]["latest_markdown"] == "# Title\n\nContents\n\nTranslated chapter 3"
-    assert captured["artifact_kwargs"]["markdown_text"] == "# Title\n\nContents\n\nTranslated chapter 3"
-    assert captured["artifact_kwargs"]["result_manifest"]["segments"] == [
-        {"segment_id": "seg_front", "job_count": 0, "selected": False, "provenance": "source"},
-        {"segment_id": "seg_toc", "job_count": 0, "selected": False, "provenance": "source"},
-        {"segment_id": "seg_0003", "job_count": 1, "selected": True, "provenance": "translated"},
-    ]
-
-
 def test_run_document_processing_builds_segment_aware_manifest_for_full_document_output():
     runtime = _build_runtime_capture()
     captured = {}
@@ -699,6 +496,92 @@ def test_run_document_processing_builds_segment_aware_manifest_for_full_document
             {"segment_id": "seg_0002", "job_count": 2, "selected": False},
         ],
     }
+
+
+def test_full_document_translate_run_preserves_segment_focus_and_document_context():
+    """Anti-regression (spec 016 removal of partial translation).
+
+    Segmentation is LOAD-BEARING for full-document TRANSLATE runs: ``document_segments``
+    must still reach the worker so the per-block segment-focus prompt
+    (``_build_block_segment_focus_prompt``, gated ``operation == "translate"``) and the
+    document-context prompt (``build_document_context_prompt``) are built and threaded into
+    the LLM system prompt for every block. Edit-mode tests alone would NOT catch a
+    regression here, so this drives the translate path explicitly.
+    """
+    runtime = _build_runtime_capture()
+    captured_system_prompts: list[str] = []
+    captured_prompt_source_texts: list[str] = []
+
+    document_segments = [
+        SimpleNamespace(segment_id="seg_0001", title="Chapter 1", level=1, ordinal=1, structural_role="chapter"),
+        SimpleNamespace(segment_id="seg_0002", title="Chapter 2", level=1, ordinal=2, structural_role="chapter"),
+    ]
+
+    def capture_generate(**kwargs):
+        captured_system_prompts.append(str(kwargs.get("system_prompt", "")))
+        return "Обработанный блок"
+
+    def capture_load_system_prompt(**kwargs):
+        captured_prompt_source_texts.append(str(kwargs.get("source_text", "")))
+        return "system"
+
+    result = _run_processing(
+        runtime,
+        jobs=[
+            {"target_text": "block 1", "context_before": "", "context_after": "", "target_chars": 7, "context_chars": 0, "segment_id": "seg_0001"},
+            {"target_text": "block 2", "context_before": "", "context_after": "", "target_chars": 7, "context_chars": 0, "segment_id": "seg_0002"},
+        ],
+        source_paragraphs=[
+            SimpleNamespace(role="body", segment_id="seg_0001", text="Chapter 1"),
+            SimpleNamespace(role="body", segment_id="seg_0002", text="Chapter 2"),
+        ],
+        document_segments=document_segments,
+        output_mode="legacy_full_document",
+        processing_operation="translate",
+        source_language="en",
+        target_language="ru",
+        document_context_prompt="ГЛОССАРИЙ: Great Tribulation -> Великая скорбь",
+        load_system_prompt=capture_load_system_prompt,
+        generate_markdown_block=capture_generate,
+    )
+
+    assert result == "succeeded"
+    combined_system_prompt = "\n\n".join(captured_system_prompts)
+    # document_segments reached the worker and the per-block segment-focus prompt was built:
+    assert "ТЕКУЩИЙ БЛОК ДОКУМЕНТА" in combined_system_prompt
+    assert "Chapter 1" in combined_system_prompt
+    assert "Chapter 2" in combined_system_prompt
+    # the document-context prompt (build_document_context_prompt output) still flows to blocks:
+    assert any(
+        "ГЛОССАРИЙ: Great Tribulation -> Великая скорбь" in source_text
+        for source_text in captured_prompt_source_texts
+    )
+
+
+def test_full_document_edit_run_omits_translate_only_segment_focus_prompt():
+    """Companion guard: the segment-focus prompt stays gated to translate runs, so an
+    edit run over the same segment-tagged jobs must NOT emit the segment-focus block."""
+    runtime = _build_runtime_capture()
+    captured_system_prompts: list[str] = []
+
+    def capture_generate(**kwargs):
+        captured_system_prompts.append(str(kwargs.get("system_prompt", "")))
+        return "Обработанный блок"
+
+    result = _run_processing(
+        runtime,
+        jobs=[
+            {"target_text": "block 1", "context_before": "", "context_after": "", "target_chars": 7, "context_chars": 0, "segment_id": "seg_0001"},
+        ],
+        document_segments=[
+            SimpleNamespace(segment_id="seg_0001", title="Chapter 1", level=1, ordinal=1, structural_role="chapter"),
+        ],
+        processing_operation="edit",
+        generate_markdown_block=capture_generate,
+    )
+
+    assert result == "succeeded"
+    assert "ТЕКУЩИЙ БЛОК ДОКУМЕНТА" not in "\n\n".join(captured_system_prompts)
 
 
 def test_run_document_processing_manifest_omits_noncanonical_segment_titles():
@@ -958,230 +841,6 @@ def test_run_document_processing_hard_fails_large_role_loss_with_formatting_revi
     assert all(item["label"] == "Структурный абзац стал обычным текстом" for item in review_items)
 
 
-def test_run_document_processing_preserves_final_translated_book_output_mode_in_manifest(monkeypatch):
-    runtime = _build_runtime_capture()
-    captured = {}
-
-    def write_ui_result_artifacts(**kwargs):
-        captured["artifact_kwargs"] = kwargs
-        return {
-            "markdown_path": "/tmp/report.result.md",
-            "docx_path": "/tmp/report.result.docx",
-            "manifest_path": "/tmp/report.result.manifest.json",
-        }
-
-    monkeypatch.setattr(
-        document_pipeline_late_phases,
-        "build_segment_result_records",
-        lambda **kwargs: [
-            {"segment_id": "seg_0001", "translated_markdown": "Translated chapter 1", "paragraph_ids": ["p1"]},
-        ],
-    )
-
-    result = _run_processing(
-        runtime,
-        output_mode="final_translated_book",
-        jobs=[
-            {
-                "segment_id": "seg_0001",
-                "target_text": "block",
-                "context_before": "",
-                "context_after": "",
-                "target_chars": 5,
-                "context_chars": 0,
-            }
-        ],
-        source_paragraphs=[
-            SimpleNamespace(segment_id="seg_0001", paragraph_id="p1", text="Source 1", rendered_text="Source 1", structural_role="body"),
-        ],
-        write_ui_result_artifacts=write_ui_result_artifacts,
-    )
-
-    assert result == "succeeded"
-    assert captured["artifact_kwargs"]["result_manifest"]["output_mode"] == "final_translated_book"
-
-
-def test_run_document_processing_assembles_final_translated_book_from_translated_segments(monkeypatch):
-    runtime = _build_runtime_capture()
-    events, log_event = _capture_log_events()
-    captured = {}
-
-    def write_ui_result_artifacts(**kwargs):
-        captured["artifact_kwargs"] = kwargs
-        return {
-            "markdown_path": "/tmp/report.result.md",
-            "docx_path": "/tmp/report.result.docx",
-            "manifest_path": "/tmp/report.result.manifest.json",
-        }
-
-    monkeypatch.setattr(
-        document_pipeline_late_phases,
-        "build_segment_result_records",
-        lambda **kwargs: [
-            {"segment_id": "seg_0001", "translated_markdown": "Translated chapter 1", "paragraph_ids": ["p1"]},
-            {"segment_id": "seg_0002", "translated_markdown": "Translated chapter 2", "paragraph_ids": ["p2"]},
-        ],
-    )
-
-    result = _run_processing(
-        runtime,
-        output_mode="final_translated_book",
-        jobs=[
-            {"segment_id": "seg_0001", "target_text": "block 1", "context_before": "", "context_after": "", "target_chars": 7, "context_chars": 0},
-            {"segment_id": "seg_0002", "target_text": "block 2", "context_before": "", "context_after": "", "target_chars": 7, "context_chars": 0},
-        ],
-        source_paragraphs=[
-            SimpleNamespace(segment_id="seg_0001", paragraph_id="p1", text="Source 1", rendered_text="Source 1", structural_role="body"),
-            SimpleNamespace(segment_id="seg_0002", paragraph_id="p2", text="Source 2", rendered_text="Source 2", structural_role="body"),
-        ],
-        write_ui_result_artifacts=write_ui_result_artifacts,
-        log_event=log_event,
-    )
-
-    assert result == "succeeded"
-    assert runtime["state"]["latest_markdown"] == "Translated chapter 1\n\nTranslated chapter 2"
-    assert captured["artifact_kwargs"]["result_manifest"]["segments"] == [
-        {"segment_id": "seg_0001", "job_count": 1, "selected": False, "provenance": "translated"},
-        {"segment_id": "seg_0002", "job_count": 1, "selected": False, "provenance": "translated"},
-    ]
-    assert any(event["event_id"] == "final_translated_book_assembled" for event in events)
-
-
-def test_run_document_processing_fails_final_translated_book_when_segment_translation_is_missing(monkeypatch):
-    runtime = _build_runtime_capture()
-    events, log_event = _capture_log_events()
-
-    monkeypatch.setattr(
-        document_pipeline_late_phases,
-        "build_segment_result_records",
-        lambda **kwargs: [
-            {"segment_id": "seg_0001", "translated_markdown": "Translated chapter 1", "paragraph_ids": ["p1"]},
-        ],
-    )
-
-    result = _run_processing(
-        runtime,
-        output_mode="final_translated_book",
-        jobs=[
-            {"segment_id": "seg_0001", "target_text": "block 1", "context_before": "", "context_after": "", "target_chars": 7, "context_chars": 0},
-            {"segment_id": "seg_0002", "target_text": "block 2", "context_before": "", "context_after": "", "target_chars": 7, "context_chars": 0},
-        ],
-        source_paragraphs=[
-            SimpleNamespace(segment_id="seg_0001", paragraph_id="p1", text="Source 1", rendered_text="Source 1", structural_role="body"),
-            SimpleNamespace(segment_id="seg_0002", paragraph_id="p2", text="Source 2", rendered_text="Source 2", structural_role="body"),
-        ],
-        log_event=log_event,
-    )
-
-    assert result == "failed"
-    assert runtime["finalize"][-1][0] == "Итоговая книга недоступна"
-    assert "seg_0002" in str(runtime["state"].get("last_error") or "")
-    assert any(event["event_id"] == "final_translated_book_incomplete" for event in events)
-
-
-def test_run_document_processing_preserves_hybrid_document_output_mode_in_manifest():
-    runtime = _build_runtime_capture()
-    captured = {}
-
-    def write_ui_result_artifacts(**kwargs):
-        captured["artifact_kwargs"] = kwargs
-        return {
-            "markdown_path": "/tmp/report.result.md",
-            "docx_path": "/tmp/report.result.docx",
-            "manifest_path": "/tmp/report.result.manifest.json",
-        }
-
-    result = _run_processing(
-        runtime,
-        output_mode="hybrid_document",
-        jobs=[
-            {
-                "segment_id": "seg_0001",
-                "target_text": "block",
-                "context_before": "",
-                "context_after": "",
-                "target_chars": 5,
-                "context_chars": 0,
-            }
-        ],
-        write_ui_result_artifacts=write_ui_result_artifacts,
-    )
-
-    assert result == "succeeded"
-    assert captured["artifact_kwargs"]["result_manifest"]["output_mode"] == "hybrid_document"
-
-
-def test_run_document_processing_persists_segment_result_records(monkeypatch):
-    runtime = _build_runtime_capture()
-    captured = {}
-    expected_records = [
-        {
-            "schema_version": 1,
-            "source_name": "report.docx",
-            "prepared_source_key": "prep:report:1234",
-            "structure_fingerprint": "struct-abc",
-            "segment_id": "seg_0001",
-            "assembly_mode": "selected_chapters",
-            "output_mode": "selected_only",
-            "selected": True,
-            "result_artifact_paths": {
-                "markdown_path": "/tmp/report.result.md",
-                "docx_path": "/tmp/report.result.docx",
-                "manifest_path": "/tmp/report.result.manifest.json",
-            },
-            "paragraph_ids": ["p0001"],
-            "source_indexes": [0],
-            "entry_count": 1,
-            "translated_markdown": "Обработанный блок",
-        }
-    ]
-
-    def write_ui_result_artifacts(**kwargs):
-        captured["artifact_kwargs"] = kwargs
-        return {
-            "markdown_path": "/tmp/report.result.md",
-            "docx_path": "/tmp/report.result.docx",
-            "manifest_path": "/tmp/report.result.manifest.json",
-        }
-
-    def write_segment_result_registry(*, records):
-        captured["segment_records"] = list(records)
-        return {"seg_0001": "/tmp/segment-results/seg_0001.segment-result.json"}
-
-    monkeypatch.setattr(document_pipeline, "write_segment_result_registry_impl", write_segment_result_registry)
-    monkeypatch.setattr(document_pipeline_late_phases, "build_segment_result_records", lambda **kwargs: list(expected_records))
-
-    result = _run_processing(
-        runtime,
-        prepared_source_key="prep:report:1234",
-        structure_fingerprint="struct-abc",
-        selected_segment_ids=["seg_0001"],
-        output_mode="selected_only",
-        jobs=[
-            {
-                "segment_id": "seg_0001",
-                "target_text": "block",
-                "context_before": "",
-                "context_after": "",
-                "target_chars": 5,
-                "context_chars": 0,
-            }
-        ],
-        source_paragraphs=[
-            SimpleNamespace(
-                role="body",
-                paragraph_id="p0001",
-                segment_id="seg_0001",
-                text="Original paragraph",
-            )
-        ],
-        write_ui_result_artifacts=write_ui_result_artifacts,
-    )
-
-    assert result == "succeeded"
-    assert captured["segment_records"] == expected_records
-
-
 def test_run_document_processing_persists_completed_job_result_records(monkeypatch):
     runtime = _build_runtime_capture()
     captured = {}
@@ -1226,50 +885,6 @@ def test_run_document_processing_persists_completed_job_result_records(monkeypat
     }
 
 
-def test_build_segment_result_records_maps_assembly_entries_to_segments():
-    plan = document_pipeline_reassembly.build_reassembly_plan(
-        selected_segment_ids=["seg_0001"],
-        output_mode="selected_only",
-        jobs=[{"segment_id": "seg_0001"}],
-    )
-
-    records = document_pipeline_reassembly.build_segment_result_records(
-        source_name="report.docx",
-        prepared_source_key="prep:report:1234",
-        structure_fingerprint="struct-abc",
-        plan=plan,
-        source_paragraphs=[SimpleNamespace(paragraph_id="p0001", segment_id="seg_0001")],
-        assembly_entries=[SimpleNamespace(text="Обработанный блок", paragraph_id="p0001", source_index=0, merged_paragraph_ids=())],
-        result_artifact_paths={
-            "markdown_path": "/tmp/report.result.md",
-            "docx_path": "/tmp/report.result.docx",
-            "manifest_path": "/tmp/report.result.manifest.json",
-        },
-    )
-
-    assert records == [
-        {
-            "schema_version": 1,
-            "source_name": "report.docx",
-            "prepared_source_key": "prep:report:1234",
-            "structure_fingerprint": "struct-abc",
-            "segment_id": "seg_0001",
-            "assembly_mode": "selected_chapters",
-            "output_mode": "selected_only",
-            "selected": True,
-            "result_artifact_paths": {
-                "markdown_path": "/tmp/report.result.md",
-                "docx_path": "/tmp/report.result.docx",
-                "manifest_path": "/tmp/report.result.manifest.json",
-            },
-            "paragraph_ids": ["p0001"],
-            "source_indexes": [0],
-            "entry_count": 1,
-            "translated_markdown": "Обработанный блок",
-        }
-    ]
-
-
 def test_load_segment_result_records_returns_latest_record_per_segment(tmp_path):
     target_dir = tmp_path / "prep_report_1234" / "struct-abc"
     target_dir.mkdir(parents=True, exist_ok=True)
@@ -1300,123 +915,6 @@ def test_load_segment_result_records_returns_latest_record_per_segment(tmp_path)
             "structure_fingerprint": "struct-abc",
         }
     }
-
-
-def test_assemble_hybrid_document_prefers_current_then_persisted_then_source():
-    plan = document_pipeline_reassembly.build_reassembly_plan(
-        selected_segment_ids=None,
-        output_mode="hybrid_document",
-        jobs=[{"segment_id": "seg_0001"}],
-        source_paragraphs=[
-            SimpleNamespace(segment_id="seg_0001", paragraph_id="p1", text="Source 1", rendered_text="Source 1"),
-            SimpleNamespace(segment_id="seg_0002", paragraph_id="p2", text="Source 2", rendered_text="Source 2"),
-            SimpleNamespace(segment_id="seg_0003", paragraph_id="p3", text="Source 3", rendered_text="Source 3"),
-        ],
-    )
-
-    result = document_pipeline_reassembly.assemble_hybrid_document(
-        plan=plan,
-        source_paragraphs=[
-            SimpleNamespace(segment_id="seg_0001", paragraph_id="p1", text="Source 1", rendered_text="Source 1"),
-            SimpleNamespace(segment_id="seg_0002", paragraph_id="p2", text="Source 2", rendered_text="Source 2"),
-            SimpleNamespace(segment_id="seg_0003", paragraph_id="p3", text="Source 3", rendered_text="Source 3"),
-        ],
-        current_segment_records={
-            "seg_0001": {
-                "segment_id": "seg_0001",
-                "translated_markdown": "Current translation 1",
-                "paragraph_ids": ["p1"],
-            }
-        },
-        persisted_segment_records={
-            "seg_0002": {
-                "segment_id": "seg_0002",
-                "translated_markdown": "Stored translation 2",
-                "paragraph_ids": ["p2"],
-            }
-        },
-    )
-
-    assert result.final_markdown == "Current translation 1\n\nStored translation 2\n\nSource 3"
-    assert result.segment_provenance_by_id == {
-        "seg_0001": "translated",
-        "seg_0002": "translated",
-        "seg_0003": "source",
-    }
-    assert result.generated_paragraph_registry == [
-        {"block_index": 0, "paragraph_id": "p1", "text": "Current translation 1"},
-        {"block_index": 1, "paragraph_id": "p2", "text": "Stored translation 2"},
-        {"block_index": 2, "paragraph_id": "p3", "text": "Source 3"},
-    ]
-
-
-def test_run_document_processing_assembles_true_hybrid_document(monkeypatch):
-    runtime = _build_runtime_capture()
-    captured = {}
-
-    def write_ui_result_artifacts(**kwargs):
-        captured["artifact_kwargs"] = kwargs
-        return {
-            "markdown_path": "/tmp/report.result.md",
-            "docx_path": "/tmp/report.result.docx",
-            "manifest_path": "/tmp/report.result.manifest.json",
-        }
-
-    monkeypatch.setattr(
-        document_pipeline_late_phases,
-        "build_segment_result_records",
-        lambda **kwargs: [
-            {
-                "segment_id": "seg_0001",
-                "translated_markdown": "Current translation 1",
-                "paragraph_ids": ["p1"],
-            }
-        ],
-    )
-    monkeypatch.setattr(
-        document_pipeline_late_phases,
-        "load_segment_result_records",
-        lambda **kwargs: {
-            "seg_0002": {
-                "segment_id": "seg_0002",
-                "translated_markdown": "Stored translation 2",
-                "paragraph_ids": ["p2"],
-            }
-        },
-    )
-
-    result = _run_processing(
-        runtime,
-        prepared_source_key="prep:report:1234",
-        structure_fingerprint="struct-abc",
-        output_mode="hybrid_document",
-        jobs=[
-            {
-                "segment_id": "seg_0001",
-                "target_text": "block",
-                "context_before": "",
-                "context_after": "",
-                "target_chars": 5,
-                "context_chars": 0,
-            }
-        ],
-        source_paragraphs=[
-            SimpleNamespace(segment_id="seg_0001", paragraph_id="p1", text="Source 1", rendered_text="Source 1"),
-            SimpleNamespace(segment_id="seg_0002", paragraph_id="p2", text="Source 2", rendered_text="Source 2"),
-            SimpleNamespace(segment_id="seg_0003", paragraph_id="p3", text="Source 3", rendered_text="Source 3"),
-        ],
-        write_ui_result_artifacts=write_ui_result_artifacts,
-    )
-
-    assert result == "succeeded"
-    assert runtime["state"]["latest_markdown"] == "Current translation 1\n\nStored translation 2\n\nSource 3"
-    assert captured["artifact_kwargs"]["markdown_text"] == "Current translation 1\n\nStored translation 2\n\nSource 3"
-    assert captured["artifact_kwargs"]["result_manifest"]["output_mode"] == "hybrid_document"
-    assert captured["artifact_kwargs"]["result_manifest"]["segments"] == [
-        {"segment_id": "seg_0001", "job_count": 1, "selected": False, "provenance": "translated"},
-        {"segment_id": "seg_0002", "job_count": 0, "selected": False, "provenance": "translated"},
-        {"segment_id": "seg_0003", "job_count": 0, "selected": False, "provenance": "source"},
-    ]
 
 
 def test_run_document_processing_builds_standalone_audiobook_artifact_and_coerces_image_mode():

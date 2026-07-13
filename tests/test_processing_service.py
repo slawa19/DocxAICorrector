@@ -4,7 +4,6 @@ from typing import Any, cast
 import docxaicorrector.processing.processing_service as processing_service
 from docxaicorrector.core.models import ImageAnalysisResult, ImageAsset, ImageValidationResult
 from docxaicorrector.document.segments import DocumentContextProfile, GlossaryTerm
-from docxaicorrector.pipeline.contracts import SegmentSelection
 from docxaicorrector.processing.processing_service import ProcessingService
 from docxaicorrector.pipeline.contracts import ProcessingContext, ProcessingDependencies
 from docxaicorrector.pipeline.setup import initialize_processing_run
@@ -258,38 +257,6 @@ def test_run_processing_worker_emits_success_outcome_and_runtime_events():
     assert any(isinstance(event, FinalizeProcessingStatusEvent) and event.stage == "Обработка завершена" and event.terminal_kind == "completed" for event in emitted_events)
     assert any(isinstance(event, AppendLogEvent) and event.payload["status"] == "DONE" for event in emitted_events)
     assert emitted_events[-1] == WorkerCompleteEvent(outcome="succeeded")
-
-
-def test_run_document_processing_resolves_selected_segment_ids_from_segment_selection():
-    captured = {}
-    service = _build_service(
-        run_document_processing_impl_fn=lambda **kwargs: (captured.setdefault("run", kwargs), "succeeded")[1],
-    )
-
-    result = service.run_document_processing(
-        uploaded_file="report.docx",
-        jobs=[
-            {
-                "target_text": "x",
-                "context_before": "",
-                "context_after": "",
-                "target_chars": 1,
-                "context_chars": 0,
-            }
-        ],
-        selected_segment_ids=None,
-        segment_selection=SegmentSelection(selected_segment_ids=("seg_0001", "seg_0002"), include_descendants=False),
-        image_assets=[],
-        image_mode="safe",
-        app_config={},
-        model="gpt-5.4",
-        max_retries=1,
-        on_progress=lambda **kwargs: None,
-        runtime={},
-    )
-
-    assert result == "succeeded"
-    assert captured["run"]["selected_segment_ids"] == ["seg_0001", "seg_0002"]
 
 
 def test_get_processing_service_returns_singleton_until_reset(monkeypatch):
@@ -634,17 +601,15 @@ def test_run_prepared_background_document_passes_prepared_payload_into_processin
 
     assert captured["run"]["uploaded_file"] == "prepared-report.docx"
     assert captured["run"]["jobs"] == [{"target_text": "one", "job_id": "job_0000", "job_kind": "passthrough"}]
-    assert captured["run"]["selected_segment_ids"] == ["seg_0001", "seg_0002"]
     assert captured["run"]["source_paragraphs"] == ["p1"]
     assert captured["run"]["image_assets"] == ["img1"]
     assert captured["run"]["app_config"]["x"] == 1
     assert captured["run"]["app_config"]["translation_domain_default"] == "theology"
     assert captured["run"]["app_config"]["translation_domain_instructions"] == "TERM PLAN"
+    # Full-document run: build_document_context_prompt still emits the base document
+    # context (glossary) but no partial selected-segment focus block.
     assert "Great Tribulation" in captured["run"]["document_context_prompt"]
-    assert "ФОКУС ТЕКУЩЕГО ЗАПУСКА" in captured["run"]["document_context_prompt"]
-    assert "#1 | Chapter 1" in captured["run"]["document_context_prompt"]
-    assert "#2 | Chapter 2" in captured["run"]["document_context_prompt"]
-    assert "Следующий сегмент: Chapter 3" in captured["run"]["document_context_prompt"]
+    assert "ФОКУС ТЕКУЩЕГО ЗАПУСКА" not in captured["run"]["document_context_prompt"]
 
 
 def test_run_processing_worker_passes_selected_segment_ids_to_pipeline(monkeypatch):

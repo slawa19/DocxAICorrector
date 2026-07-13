@@ -7,11 +7,10 @@ from pathlib import Path
 from typing import Literal, TypeAlias, TypeVar, cast
 
 from docxaicorrector.core.constants import SEGMENT_RESULT_REGISTRY_DIR
-from docxaicorrector.pipeline.contracts import SegmentSelection
 
 
-AssemblyMode: TypeAlias = Literal["selected_chapters", "full_document"]
-OutputMode: TypeAlias = Literal["selected_only", "selected_with_context", "legacy_full_document", "hybrid_document", "final_translated_book"]
+AssemblyMode: TypeAlias = Literal["full_document"]
+OutputMode: TypeAlias = Literal["legacy_full_document"]
 
 
 @dataclass(frozen=True)
@@ -21,14 +20,6 @@ class ReassemblyPlan:
     selected_segment_ids: tuple[str, ...]
     included_segment_ids: tuple[str, ...]
     selected_segment_count: int | None
-    segment_selection: SegmentSelection | None = None
-
-
-@dataclass(frozen=True)
-class HybridAssemblyResult:
-    final_markdown: str
-    generated_paragraph_registry: list[dict[str, object]]
-    segment_provenance_by_id: dict[str, str]
 
 
 T = TypeVar("T")
@@ -36,63 +27,17 @@ T = TypeVar("T")
 
 def build_reassembly_plan(
     *,
-    selected_segment_ids: Sequence[object] | None,
-    segment_selection: SegmentSelection | None = None,
-    output_mode: str | None,
-    include_front_matter: bool = False,
-    include_toc: bool = False,
+    output_mode: str | None = None,
     jobs: Sequence[object],
     source_paragraphs: Sequence[object] | None = None,
 ) -> ReassemblyPlan:
-    normalized_selected_ids = _normalize_segment_ids(
-        segment_selection.selected_segment_ids if segment_selection is not None else selected_segment_ids
-    )
-    if normalized_selected_ids:
-        effective_output_mode = _coerce_selected_output_mode(
-            output_mode if str(output_mode or "").strip() else getattr(segment_selection, "output_mode", None)
-        )
-        resolved_include_front_matter = bool(include_front_matter or getattr(segment_selection, "include_front_matter", False))
-        resolved_include_toc = bool(include_toc or getattr(segment_selection, "include_toc", False))
-        if effective_output_mode == "selected_with_context":
-            included_segment_ids = _resolve_selected_with_context_included_segment_ids(
-                selected_segment_ids=normalized_selected_ids,
-                include_front_matter=resolved_include_front_matter,
-                include_toc=resolved_include_toc,
-                source_paragraphs=source_paragraphs,
-            )
-        else:
-            included_segment_ids = normalized_selected_ids
-        return ReassemblyPlan(
-            assembly_mode="selected_chapters",
-            output_mode=effective_output_mode,
-            selected_segment_ids=normalized_selected_ids,
-            included_segment_ids=included_segment_ids,
-            selected_segment_count=len(normalized_selected_ids),
-            segment_selection=(
-                SegmentSelection(
-                    selected_segment_ids=normalized_selected_ids,
-                    include_descendants=bool(segment_selection.include_descendants),
-                    include_front_matter=resolved_include_front_matter,
-                    include_toc=resolved_include_toc,
-                    output_mode=effective_output_mode,
-                )
-                if segment_selection is not None
-                else None
-            ),
-        )
-    effective_output_mode = _coerce_full_document_output_mode(output_mode)
-    included_segment_ids = _resolve_included_segment_ids(
-        jobs=jobs,
-        source_paragraphs=source_paragraphs,
-        output_mode=effective_output_mode,
-    )
+    included_segment_ids = _resolve_included_segment_ids(jobs=jobs)
     return ReassemblyPlan(
         assembly_mode="full_document",
-        output_mode=effective_output_mode,
+        output_mode="legacy_full_document",
         selected_segment_ids=(),
         included_segment_ids=included_segment_ids,
         selected_segment_count=None,
-        segment_selection=None,
     )
 
 
@@ -137,31 +82,7 @@ def build_reassembly_result_manifest(
         manifest["run_id"] = str(run_id).strip()
     if plan.selected_segment_ids:
         manifest["selected_segment_ids"] = list(plan.selected_segment_ids)
-    if plan.segment_selection is not None:
-        manifest["segment_selection"] = {
-            "selected_segment_ids": list(plan.segment_selection.selected_segment_ids),
-            "include_descendants": bool(plan.segment_selection.include_descendants),
-            "include_front_matter": bool(plan.segment_selection.include_front_matter),
-            "include_toc": bool(plan.segment_selection.include_toc),
-            "output_mode": str(plan.segment_selection.output_mode or plan.output_mode),
-        }
     return manifest
-
-
-def _coerce_selected_output_mode(output_mode: str | None) -> OutputMode:
-    normalized = str(output_mode or "").strip()
-    if normalized == "selected_with_context":
-        return "selected_with_context"
-    return "selected_only"
-
-
-def _coerce_full_document_output_mode(output_mode: str | None) -> OutputMode:
-    normalized = str(output_mode or "").strip()
-    if normalized == "hybrid_document":
-        return "hybrid_document"
-    if normalized == "final_translated_book":
-        return "final_translated_book"
-    return "legacy_full_document"
 
 
 def load_segment_result_records(
@@ -199,58 +120,6 @@ def load_segment_result_records(
         if previous is None or modified_at >= previous[0]:
             records_by_segment[segment_id] = (modified_at, payload)
     return {segment_id: payload for segment_id, (_, payload) in records_by_segment.items()}
-
-
-def assemble_hybrid_document(
-    *,
-    plan: ReassemblyPlan,
-    source_paragraphs: Sequence[object] | None,
-    current_segment_records: Mapping[str, Mapping[str, object]] | None = None,
-    persisted_segment_records: Mapping[str, Mapping[str, object]] | None = None,
-) -> HybridAssemblyResult:
-    ordered_segment_ids = _collect_source_segment_ids(source_paragraphs) or plan.included_segment_ids
-    paragraphs_by_segment = _group_source_paragraphs_by_segment(source_paragraphs)
-    merged_segment_records: dict[str, Mapping[str, object]] = dict(persisted_segment_records or {})
-    merged_segment_records.update(dict(current_segment_records or {}))
-
-    markdown_parts: list[str] = []
-    generated_paragraph_registry: list[dict[str, object]] = []
-    segment_provenance_by_id: dict[str, str] = {}
-
-    for segment_id in ordered_segment_ids:
-        if segment_id not in plan.included_segment_ids:
-            continue
-        record = merged_segment_records.get(segment_id)
-        translated_markdown = _coerce_record_text(record, "translated_markdown")
-        if translated_markdown:
-            markdown_parts.append(translated_markdown)
-            generated_paragraph_registry.extend(
-                _build_generated_registry_from_segment_record(
-                    record=record,
-                    fallback_block_index=len(generated_paragraph_registry),
-                )
-            )
-            segment_provenance_by_id[segment_id] = "translated"
-            continue
-
-        source_markdown_parts = _build_source_segment_markdown_parts(paragraphs_by_segment.get(segment_id, ()))
-        if not source_markdown_parts:
-            continue
-        markdown_parts.append("\n\n".join(source_markdown_parts))
-        generated_paragraph_registry.extend(
-            _build_generated_registry_from_source_paragraphs(
-                segment_id=segment_id,
-                paragraphs=paragraphs_by_segment.get(segment_id, ()),
-                starting_block_index=len(generated_paragraph_registry),
-            )
-        )
-        segment_provenance_by_id[segment_id] = "source"
-
-    return HybridAssemblyResult(
-        final_markdown="\n\n".join(part for part in markdown_parts if part.strip()).strip(),
-        generated_paragraph_registry=generated_paragraph_registry,
-        segment_provenance_by_id=segment_provenance_by_id,
-    )
 
 
 def build_segment_result_records(
@@ -324,18 +193,6 @@ def build_segment_result_records(
     return records
 
 
-def _normalize_segment_ids(segment_ids: Sequence[object] | None) -> tuple[str, ...]:
-    normalized: list[str] = []
-    seen: set[str] = set()
-    for raw_segment_id in segment_ids or ():
-        segment_id = str(raw_segment_id or "").strip()
-        if not segment_id or segment_id in seen:
-            continue
-        seen.add(segment_id)
-        normalized.append(segment_id)
-    return tuple(normalized)
-
-
 def _build_reassembly_coverage(*, plan: ReassemblyPlan, source_paragraphs: Sequence[object] | None) -> dict[str, object]:
     included_segment_ids = set(plan.included_segment_ids)
     paragraph_ranges_by_segment: dict[str, dict[str, int | str]] = {}
@@ -382,72 +239,8 @@ def _collect_job_segment_ids(jobs: Sequence[object]) -> tuple[str, ...]:
     return tuple(segment_ids)
 
 
-def _resolve_included_segment_ids(
-    *,
-    jobs: Sequence[object],
-    source_paragraphs: Sequence[object] | None,
-    output_mode: str,
-) -> tuple[str, ...]:
-    if output_mode in {"hybrid_document", "final_translated_book"}:
-        source_segment_ids = _collect_source_segment_ids(source_paragraphs)
-        if source_segment_ids:
-            return source_segment_ids
+def _resolve_included_segment_ids(*, jobs: Sequence[object]) -> tuple[str, ...]:
     return _collect_job_segment_ids(jobs)
-
-
-def _resolve_selected_with_context_included_segment_ids(
-    *,
-    selected_segment_ids: Sequence[str],
-    include_front_matter: bool,
-    include_toc: bool,
-    source_paragraphs: Sequence[object] | None,
-) -> tuple[str, ...]:
-    ordered_segment_ids = _collect_source_segment_ids(source_paragraphs)
-    if not ordered_segment_ids:
-        return tuple(selected_segment_ids)
-
-    paragraphs_by_segment = _group_source_paragraphs_by_segment(source_paragraphs)
-
-    selected_segment_set = set(selected_segment_ids)
-    first_selected_index = next(
-        (index for index, segment_id in enumerate(ordered_segment_ids) if segment_id in selected_segment_set),
-        None,
-    )
-    if first_selected_index is None:
-        return tuple(selected_segment_ids)
-
-    included_segment_ids: list[str] = []
-    seen: set[str] = set()
-    for segment_id in ordered_segment_ids[:first_selected_index]:
-        segment_kind = _resolve_leading_context_segment_kind(paragraphs_by_segment.get(segment_id, ()))
-        if segment_kind == "front_matter" and not include_front_matter:
-            continue
-        if segment_kind == "toc" and not include_toc:
-            continue
-        if segment_kind is None:
-            continue
-        if segment_id in seen:
-            continue
-        seen.add(segment_id)
-        included_segment_ids.append(segment_id)
-    for segment_id in ordered_segment_ids[first_selected_index:]:
-        if segment_id not in selected_segment_set or segment_id in seen:
-            continue
-        seen.add(segment_id)
-        included_segment_ids.append(segment_id)
-    return tuple(included_segment_ids) if included_segment_ids else tuple(selected_segment_ids)
-
-
-def _collect_source_segment_ids(source_paragraphs: Sequence[object] | None) -> tuple[str, ...]:
-    segment_ids: list[str] = []
-    seen: set[str] = set()
-    for paragraph in source_paragraphs or ():
-        segment_id = _coerce_object_text(paragraph, "segment_id")
-        if not segment_id or segment_id in seen:
-            continue
-        seen.add(segment_id)
-        segment_ids.append(segment_id)
-    return tuple(segment_ids)
 
 
 def _build_segment_job_totals(jobs: Sequence[object]) -> dict[str, int]:
@@ -458,33 +251,6 @@ def _build_segment_job_totals(jobs: Sequence[object]) -> dict[str, int]:
             continue
         totals[segment_id] = totals.get(segment_id, 0) + 1
     return totals
-
-
-def _group_source_paragraphs_by_segment(source_paragraphs: Sequence[object] | None) -> dict[str, list[object]]:
-    grouped: dict[str, list[object]] = {}
-    for paragraph in source_paragraphs or ():
-        segment_id = _coerce_object_text(paragraph, "segment_id")
-        if not segment_id:
-            continue
-        grouped.setdefault(segment_id, []).append(paragraph)
-    return grouped
-
-
-def _resolve_leading_context_segment_kind(paragraphs: Sequence[object]) -> str | None:
-    structural_roles = {
-        _coerce_object_text(paragraph, "structural_role")
-        for paragraph in paragraphs
-        if _coerce_object_text(paragraph, "structural_role")
-    }
-    if not structural_roles:
-        return None
-    if structural_roles & {"toc", "toc_header", "toc_entry"}:
-        return "toc"
-    if structural_roles & {"front_matter", "epigraph", "attribution", "dedication"}:
-        return "front_matter"
-    if structural_roles & {"body", "body_range", "heading", "chapter", "section", "appendix", "bibliography"}:
-        return None
-    return None
 
 
 def _build_paragraph_segment_index(source_paragraphs: Sequence[object]) -> dict[str, dict[object, str]]:
@@ -556,96 +322,10 @@ def _coerce_object_text(value: object, attribute_name: str) -> str:
     return str(getattr(value, attribute_name, "") or "").strip()
 
 
-def _coerce_record_text(record: Mapping[str, object] | None, field_name: str) -> str:
-    if not isinstance(record, Mapping):
-        return ""
-    return str(record.get(field_name) or "").strip()
-
-
 def _sanitize_identity_component(value: str) -> str:
     sanitized = "".join(char if char.isalnum() or char in ("-", "_") else "_" for char in str(value or "").strip())
     compacted = "_".join(part for part in sanitized.split("_") if part)
     return compacted[:80]
-
-
-def _build_source_segment_markdown_parts(paragraphs: Sequence[object]) -> list[str]:
-    return [rendered_text for rendered_text in (_render_source_paragraph(paragraph) for paragraph in paragraphs) if rendered_text]
-
-
-def _render_source_paragraph(paragraph: object) -> str:
-    rendered_text = getattr(paragraph, "rendered_text", None)
-    if isinstance(rendered_text, str) and rendered_text.strip():
-        return rendered_text.strip()
-
-    text = _coerce_object_text(paragraph, "text")
-    if not text:
-        return ""
-
-    role = _coerce_object_text(paragraph, "role")
-    structural_role = _coerce_object_text(paragraph, "structural_role")
-    heading_level = getattr(paragraph, "heading_level", None)
-    list_kind = _coerce_object_text(paragraph, "list_kind")
-    list_level = getattr(paragraph, "list_level", 0)
-
-    if role == "heading" and isinstance(heading_level, int) and heading_level > 0 and not text.startswith("#"):
-        return f"{'#' * min(max(heading_level, 1), 6)} {text}"
-    if structural_role in {"epigraph", "attribution", "dedication"}:
-        return "\n".join(">" if not line.strip() else f"> {line}" for line in text.splitlines() or [text])
-    if role == "list" and not re_matches_explicit_list_marker(text):
-        indent = "  " * max(0, int(list_level) if isinstance(list_level, int) else 0)
-        marker = "1." if list_kind == "ordered" else "-"
-        return f"{indent}{marker} {text}"
-    return text
-
-
-def _build_generated_registry_from_source_paragraphs(
-    *,
-    segment_id: str,
-    paragraphs: Sequence[object],
-    starting_block_index: int,
-) -> list[dict[str, object]]:
-    registry: list[dict[str, object]] = []
-    for offset, paragraph in enumerate(paragraphs):
-        rendered_text = _render_source_paragraph(paragraph)
-        if not rendered_text:
-            continue
-        paragraph_id = _coerce_object_text(paragraph, "paragraph_id") or f"{segment_id}:source:{offset}"
-        registry.append(
-            {
-                "block_index": starting_block_index + len(registry),
-                "paragraph_id": paragraph_id,
-                "text": rendered_text,
-            }
-        )
-    return registry
-
-
-def _build_generated_registry_from_segment_record(
-    *,
-    record: Mapping[str, object] | None,
-    fallback_block_index: int,
-) -> list[dict[str, object]]:
-    if not isinstance(record, Mapping):
-        return []
-    translated_markdown = _coerce_record_text(record, "translated_markdown")
-    raw_paragraph_ids = record.get("paragraph_ids", [])
-    paragraph_ids = [item for item in raw_paragraph_ids if isinstance(item, str) and item.strip()] if isinstance(raw_paragraph_ids, list) else []
-    paragraph_id = paragraph_ids[0] if paragraph_ids else _coerce_record_text(record, "segment_id")
-    if not translated_markdown or not paragraph_id:
-        return []
-    payload: dict[str, object] = {
-        "block_index": fallback_block_index,
-        "paragraph_id": paragraph_id,
-        "text": translated_markdown,
-    }
-    if len(paragraph_ids) > 1:
-        payload["merged_paragraph_ids"] = paragraph_ids
-    return [payload]
-
-
-def re_matches_explicit_list_marker(text: str) -> bool:
-    stripped = text.lstrip()
-    return stripped.startswith(("- ", "* ", "• ")) or (len(stripped) > 2 and stripped[0].isdigit() and stripped[1] in {".", ")"})
 
 
 def _extend_unique(target: list[T], values: Sequence[T]) -> None:

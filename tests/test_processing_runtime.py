@@ -14,7 +14,6 @@ import docxaicorrector.runtime.state as state
 from docxaicorrector.document.extraction import extract_document_content_from_docx, extract_paragraph_units_from_docx
 from docxaicorrector.pdf_import.images import PdfImageObject
 from docxaicorrector.pdf_import.text_layer_quality import PdfTextSpan
-from docxaicorrector.pipeline.contracts import SegmentSelection
 from docxaicorrector.runtime.events import (
     AppendImageLogEvent,
     AppendLogEvent,
@@ -900,52 +899,6 @@ def test_start_background_processing_passes_selected_segment_ids_to_worker(monke
     session_state.processing_worker.join(timeout=5)
 
     assert captured["selected_segment_ids"] == ["seg_0001", "seg_0002"]
-
-
-def test_start_background_processing_passes_segment_selection_to_worker(monkeypatch):
-    session_state = SessionState(restart_session_id="session-a")
-    monkeypatch.setattr(processing_runtime.st, "session_state", session_state)
-    monkeypatch.setattr(state.st, "session_state", session_state)
-    state.init_session_state()
-    session_state.restart_session_id = "session-a"
-    monkeypatch.setattr(
-        processing_runtime,
-        "store_restart_source",
-        lambda **kwargs: {
-            "filename": kwargs["source_name"],
-            "token": kwargs["source_token"],
-            "storage_path": "restart.bin",
-            "session_id": kwargs["session_id"],
-        },
-    )
-    captured = {}
-
-    def worker_target(**kwargs):
-        captured.update(kwargs)
-
-    selection = SegmentSelection(selected_segment_ids=("seg_0001",), include_descendants=False)
-    processing_runtime.start_background_processing(
-        worker_target=worker_target,
-        reset_run_state=state.reset_run_state,
-        push_activity=lambda message: None,
-        set_processing_status=lambda **kwargs: None,
-        uploaded_filename="report.docx",
-        uploaded_token="report.docx:3:abc",
-        source_bytes=b"abc",
-        jobs=[{"target_text": "block", "target_chars": 5, "context_chars": 0}],
-        selected_segment_ids=None,
-        segment_selection=selection,
-        source_paragraphs=["paragraph"],
-        image_assets=[],
-        image_mode="safe",
-        app_config={},
-        model="gpt-5.4",
-        max_retries=1,
-    )
-
-    session_state.processing_worker.join(timeout=5)
-
-    assert captured["segment_selection"] == selection
 
 
 def test_start_background_processing_passes_none_selected_segment_ids_to_worker(monkeypatch):
