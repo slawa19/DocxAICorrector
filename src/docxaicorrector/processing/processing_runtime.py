@@ -12,7 +12,7 @@ from collections import OrderedDict
 from dataclasses import dataclass, replace
 from io import BytesIO
 from pathlib import Path
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import Protocol, cast, runtime_checkable
 from uuid import uuid4
 
@@ -76,6 +76,7 @@ _ALLOWED_SET_STATE_EVENT_KEYS = {
     "latest_markdown",
     "latest_narration_text",
     "latest_marker_diagnostics_artifact",
+    "latest_quality_warning",
     "latest_result_notice",
     "processed_block_markdowns",
     "processed_paragraph_registry",
@@ -1264,6 +1265,7 @@ def build_result_bundle(
     narration_text: str | None = None,
     processing_operation: str = "edit",
     audiobook_postprocess_enabled: bool = False,
+    quality_warning: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     return {
         "source_name": source_name,
@@ -1273,6 +1275,7 @@ def build_result_bundle(
         "narration_text": narration_text,
         "processing_operation": processing_operation,
         "audiobook_postprocess_enabled": audiobook_postprocess_enabled,
+        "quality_warning": quality_warning,
     }
 
 
@@ -1299,6 +1302,7 @@ def get_current_result_bundle() -> dict[str, object] | None:
         narration_text=latest_narration_text,
         processing_operation=processing_operation,
         audiobook_postprocess_enabled=get_latest_audiobook_postprocess_enabled(),
+        quality_warning=cast(Mapping[str, object] | None, st.session_state.get("latest_quality_warning")),
     )
 
 

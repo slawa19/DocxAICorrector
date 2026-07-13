@@ -741,6 +741,26 @@ def _render_processing_controls(*, can_start: bool, is_processing: bool, emphasi
     return None
 
 
+def _render_completed_result_view(result: Mapping[str, object]) -> None:
+    """Single completed-result renderer: markdown preview + download bundle + review block.
+
+    Unifies the two former completed-render paths (IdleViewState.COMPLETED and
+    FILE_SELECTED + has_completed_result) so both surface the formatting-review block
+    from the same ``quality_warning`` DATA carried on the result bundle.
+    """
+    render_markdown_preview(title=t("app.markdown_preview_title"))
+    render_result_bundle(
+        docx_bytes=cast(bytes | None, result.get("docx_bytes")),
+        markdown_text=str(result.get("markdown_text") or ""),
+        original_filename=str(result.get("source_name") or ""),
+        narration_text=cast(str | None, result.get("narration_text")),
+        processing_operation=str(result.get("processing_operation", "edit")),
+        audiobook_postprocess_enabled=bool(result.get("audiobook_postprocess_enabled", False)),
+        success_message=t("result.success_document_processed"),
+        quality_warning=cast(Mapping[str, object] | None, result.get("quality_warning")),
+    )
+
+
 def main() -> None:
     init_session_state()
     _drain_processing_events()
@@ -929,15 +949,7 @@ def main() -> None:
             completed_result = cast(dict[str, object], current_result)
             render_run_log()
             render_image_validation_summary()
-            render_markdown_preview(title=t("app.markdown_preview_title"))
-            render_result_bundle(
-                docx_bytes=cast(bytes | None, completed_result["docx_bytes"]),
-                markdown_text=str(completed_result["markdown_text"]),
-                original_filename=str(completed_result["source_name"]),
-                narration_text=cast(str | None, completed_result.get("narration_text")),
-                processing_operation=str(completed_result.get("processing_operation", "edit")),
-                audiobook_postprocess_enabled=bool(completed_result.get("audiobook_postprocess_enabled", False)),
-            )
+            _render_completed_result_view(completed_result)
         elif idle_view_state == IdleViewState.RESTARTABLE:
             processing_outcome = get_processing_outcome()
             restart_filename = get_restart_source_filename()
@@ -1102,14 +1114,16 @@ def main() -> None:
     )
 
     if has_completed_result:
-        render_markdown_preview(title=t("app.markdown_preview_title"))
-        render_result(
-            cast(bytes | None, st.session_state.get("latest_docx_bytes")),
-            str(st.session_state.get("latest_markdown") or ""),
-            uploaded_filename,
-            st.session_state.get("latest_narration_text"),
-            processing_operation=processing_snapshot.latest_processing_operation,
-            audiobook_postprocess_enabled=processing_snapshot.latest_audiobook_postprocess_enabled,
+        _render_completed_result_view(
+            {
+                "docx_bytes": st.session_state.get("latest_docx_bytes"),
+                "markdown_text": str(st.session_state.get("latest_markdown") or ""),
+                "source_name": uploaded_filename,
+                "narration_text": st.session_state.get("latest_narration_text"),
+                "processing_operation": processing_snapshot.latest_processing_operation,
+                "audiobook_postprocess_enabled": processing_snapshot.latest_audiobook_postprocess_enabled,
+                "quality_warning": st.session_state.get("latest_quality_warning"),
+            }
         )
 
     _finalize_app_frame()

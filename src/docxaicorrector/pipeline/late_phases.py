@@ -4640,6 +4640,12 @@ def finalize_processing_success(
                     context_chars=0,
                     log_details=error_message,
                 )
+    # Presentation-only: surface the SAME quality_warning the review artifact carries into
+    # session state so the unified result screen can render the formatting-review block.
+    quality_warning = _build_result_quality_warning(
+        quality_report=quality_report,
+        latest_result_notice=cast(Mapping[str, str] | None, docx_phase.get("latest_result_notice")),
+    )
     emitters.emit_state(
         context.runtime,
         final_generated_paragraph_registry=cast(
@@ -4648,6 +4654,7 @@ def finalize_processing_success(
         latest_docx_bytes=_resolve_docx_phase_bytes(docx_phase),
         latest_markdown=runtime_display_markdown,
         latest_narration_text=narration_text,
+        latest_quality_warning=quality_warning,
         latest_result_notice=docx_phase["latest_result_notice"],
         last_error=narration_error_message,
     )
@@ -4676,10 +4683,6 @@ def finalize_processing_success(
         }
         if reassembly_plan.selected_segment_count is not None:
             artifact_writer_kwargs["selected_segment_count"] = reassembly_plan.selected_segment_count
-        quality_warning = _build_result_quality_warning(
-            quality_report=quality_report,
-            latest_result_notice=cast(Mapping[str, str] | None, docx_phase.get("latest_result_notice")),
-        )
         if quality_warning is not None:
             artifact_writer_kwargs["quality_warning"] = quality_warning
         if narration_text is not None:

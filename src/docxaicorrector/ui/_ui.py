@@ -18,6 +18,8 @@ from docxaicorrector.core.logger import format_elapsed
 from docxaicorrector.generation.message_formatting import derive_live_status_title_and_severity, humanize_reason, humanize_variant
 from docxaicorrector.core.models import ImageMode
 from docxaicorrector.ui.i18n import t
+from docxaicorrector.ui.review_presentation import build_review_presentation
+from docxaicorrector.runtime.artifacts import _build_formatting_review_text
 from docxaicorrector.runtime.state import (
     get_activity_feed,
     get_image_assets,
@@ -815,6 +817,49 @@ def render_result(
     )
 
 
+def _render_formatting_review_block(
+    *,
+    original_filename: str,
+    quality_warning: Mapping[str, object] | None,
+) -> None:
+    # Presentation-only over the pipeline's quality_warning DATA. Rendered ONLY when a
+    # warning is present; a clean run (no warning) shows nothing beyond the success message.
+    if quality_warning is None:
+        return
+    presentation = build_review_presentation(quality_warning)
+    counts = presentation.counts
+    if presentation.level == "defect":
+        st.error(presentation.headline)
+    elif presentation.level == "fix":
+        st.warning(presentation.headline)
+    elif presentation.level == "review":
+        st.info(presentation.headline)
+    st.caption(
+        t(
+            "result.review_counts",
+            defect=counts["defect"],
+            fix=counts["fix"],
+            review=counts["review"],
+        )
+    )
+    review_text = _build_formatting_review_text(
+        source_name=original_filename,
+        quality_warning=quality_warning,
+        created_at=None,
+    )
+    st.download_button(
+        label=t("result.review_download_button"),
+        data=review_text.encode("utf-8"),
+        file_name=t("result.review_download_filename"),
+        mime="text/plain",
+        on_click="ignore",
+        use_container_width=True,
+    )
+    if presentation.level == "review":
+        # Spec 010: an accepted result can still list items to check — keep it non-alarming.
+        st.caption(t("result.review_accepted_note"))
+
+
 def render_result_bundle(
     *,
     docx_bytes: bytes | None,
@@ -824,6 +869,7 @@ def render_result_bundle(
     processing_operation: str = "edit",
     audiobook_postprocess_enabled: bool = False,
     success_message: str | None = None,
+    quality_warning: Mapping[str, object] | None = None,
 ) -> None:
     if success_message:
         st.success(success_message)
@@ -878,6 +924,10 @@ def render_result_bundle(
                 type="primary",
                 use_container_width=True,
             )
+        _render_formatting_review_block(
+            original_filename=original_filename,
+            quality_warning=quality_warning,
+        )
         return
 
     col_docx, col_md = st.columns(2)
@@ -899,6 +949,10 @@ def render_result_bundle(
         on_click="ignore",
         type="primary",
         use_container_width=True,
+    )
+    _render_formatting_review_block(
+        original_filename=original_filename,
+        quality_warning=quality_warning,
     )
 
 
