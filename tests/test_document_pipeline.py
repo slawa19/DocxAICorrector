@@ -714,7 +714,11 @@ def test_run_document_processing_passes_machine_readable_quality_warning_to_arti
         "kind": "translation_quality_gate",
         "quality_status": "warn",
         "gate_reasons": ["unmapped_source_paragraphs_above_advisory_threshold"],
-        "message": "Готово. 2 абзаца требуют проверки оформления. Подробности: formatting_review.txt",
+        "message": (
+            "Перевод завершён. Документ готов к использованию, но требует ручной "
+            "проверки оформления: 2 абзаца с замечаниями. "
+            "Подробности — в отчёте проверки (formatting_review.txt)."
+        ),
         "formatting_review_items": [
             {
                 "reason": "unmapped_source_paragraphs_review_required",
@@ -727,7 +731,7 @@ def test_run_document_processing_passes_machine_readable_quality_warning_to_arti
     }
 
 
-def test_run_document_processing_hard_fails_large_role_loss_with_formatting_review_items(tmp_path, monkeypatch):
+def test_run_document_processing_warns_and_delivers_large_role_loss_with_formatting_review_items(tmp_path, monkeypatch):
     runtime = _build_runtime_capture()
     diagnostics_dir = tmp_path / "formatting_diagnostics"
     quality_dir = tmp_path / "quality_reports"
@@ -820,18 +824,27 @@ def test_run_document_processing_hard_fails_large_role_loss_with_formatting_revi
     )
 
     report_files = list(quality_dir.glob("*.json"))
-    assert result == "failed"
-    assert runtime["finalize"][-1][0] == "Критическая ошибка качества перевода"
-    assert runtime["finalize"][-1][3] == "error"
+    # spec 018: a large role_loss set is review-grade (fix severity) — the document is
+    # fully usable, so the run is DELIVERED with a yellow "завершён, требует проверки"
+    # notice instead of a blocking red failure. The gate_reasons + review items survive.
+    assert result == "succeeded"
+    assert runtime["finalize"][-1][3] != "error"
     assert runtime["state"]["latest_result_notice"] == {
-        "level": "error",
-        "message": "Результат заблокирован document-level quality gate.",
+        "level": "warning",
+        "message": (
+            "Перевод завершён. Документ готов к использованию, но требует ручной "
+            "проверки оформления: 11 абзацев с замечаниями. "
+            "Подробности — в отчёте проверки (formatting_review.txt)."
+        ),
     }
-    assert "role loss above manual review threshold" in runtime["state"]["last_error"]
+    notice_message = runtime["state"]["latest_result_notice"]["message"]
+    assert "translation_quality_gate_failed" not in notice_message
+    assert "заблокирован" not in notice_message
+    assert "критическая" not in notice_message.lower()
     assert len(report_files) == 1
 
     quality_report = json.loads(report_files[0].read_text(encoding="utf-8"))
-    assert quality_report["quality_status"] == "fail"
+    assert quality_report["quality_status"] == "warn"
     assert quality_report["gate_reasons"] == ["role_loss_above_manual_review_threshold"]
     assert quality_report["formatting_review_required_count"] == 11
     review_items = quality_report["formatting_review_items"]
@@ -2827,7 +2840,7 @@ def test_run_document_processing_warns_user_only_for_conflicting_formatting_diag
     assert runtime["state"].get("latest_result_notice") is None
 
 
-def test_run_document_processing_fails_on_strict_unmapped_source_quality_gate(tmp_path, monkeypatch):
+def test_run_document_processing_warns_and_delivers_on_strict_unmapped_source_quality_gate(tmp_path, monkeypatch):
     runtime = _build_runtime_capture()
     diagnostics_dir = tmp_path / "formatting_diagnostics"
     quality_dir = tmp_path / "quality_reports"
@@ -2885,13 +2898,17 @@ def test_run_document_processing_fails_on_strict_unmapped_source_quality_gate(tm
         reinsert_inline_images=lambda docx_bytes, image_assets: docx_bytes,
     )
 
-    assert result == "failed"
-    assert "translation_quality_gate_failed" in runtime["state"]["last_error"]
-    assert runtime["activity"][-1] == "Итоговый перевод отклонён quality gate: unmapped_source_paragraphs_present."
+    # spec 018: strict unmapped-source residue is review-grade — the document is usable,
+    # so it is DELIVERED with a yellow warn notice, not blocked at a red failure.
+    assert result == "succeeded"
+    assert runtime["state"]["latest_result_notice"]["level"] == "warning"
+    notice_message = runtime["state"]["latest_result_notice"]["message"]
+    assert "translation_quality_gate_failed" not in notice_message
+    assert "заблокирован" not in notice_message
     report_files = list(quality_dir.glob("*.json"))
     assert len(report_files) == 1
     payload = json.loads(report_files[0].read_text(encoding="utf-8"))
-    assert payload["quality_status"] == "fail"
+    assert payload["quality_status"] == "warn"
     assert payload["gate_reasons"] == ["unmapped_source_paragraphs_present"]
     assert payload["bullet_heading_count"] == 0
     assert payload["toc_body_concat_detected"] is False
@@ -2962,7 +2979,11 @@ def test_run_document_processing_surfaces_advisory_quality_notice_on_mapping_dri
     # (warn + advisory-threshold reason) stays policy-scaled.
     assert runtime["state"]["latest_result_notice"] == {
         "level": "warning",
-        "message": "Готово. 2 абзаца требуют проверки оформления. Подробности: formatting_review.txt",
+        "message": (
+            "Перевод завершён. Документ готов к использованию, но требует ручной "
+            "проверки оформления: 2 абзаца с замечаниями. "
+            "Подробности — в отчёте проверки (formatting_review.txt)."
+        ),
     }
     report_files = list(quality_dir.glob("*.json"))
     assert len(report_files) == 1
@@ -3211,7 +3232,11 @@ def test_run_document_processing_flags_untranslated_structural_heading_for_revie
     assert result == "succeeded"
     assert runtime["state"]["latest_result_notice"] == {
         "level": "warning",
-        "message": "Готово. 1 абзац требует проверки оформления. Подробности: formatting_review.txt",
+        "message": (
+            "Перевод завершён. Документ готов к использованию, но требует ручной "
+            "проверки оформления: 1 абзац с замечаниями. "
+            "Подробности — в отчёте проверки (formatting_review.txt)."
+        ),
     }
     report_files = list(quality_dir.glob("*.json"))
     assert len(report_files) == 1
@@ -3479,12 +3504,140 @@ def test_build_translation_quality_report_fails_large_untranslated_body_text():
         assembly_result=assembly_result,
     )
 
+    # spec 018 counter-proof: wholesale-untranslated BODY above the catastrophic
+    # threshold is genuinely non-deliverable and STAYS a hard document-level fail.
     assert report["quality_status"] == "fail"
     assert report["gate_reasons"] == ["untranslated_body_text_above_threshold"]
     assert report["untranslated_body_text_count"] == 1
     assert report["untranslated_body_text_chars"] > 2000
     assert report["untranslated_body_text_ratio"] == 1.0
     assert report["formatting_review_items"][0]["severity"] == "fix"
+
+
+def test_resolve_document_delivery_verdict_downgrades_review_grade_fail_to_warn():
+    # spec 018 Level 1: every review-grade fail-driver (role_loss / heading_demotion /
+    # false_fragment / list_fragment / unmapped-source / toc_body_concat / mixed_script)
+    # resolves to a delivered ``warn`` — NOT a blocking document-level fail.
+    review_grade_reasons = [
+        "role_loss_above_manual_review_threshold",
+        "heading_demotion_above_manual_review_threshold",
+        "false_fragment_headings_present",
+        "list_fragment_regressions_present",
+        "unmapped_source_paragraphs_present",
+        "toc_body_concatenation_detected",
+        "mixed_script_terms_present",
+    ]
+    for reason in review_grade_reasons:
+        assert (
+            document_pipeline_late_phases._resolve_document_delivery_verdict(
+                quality_status="fail",
+                gate_reasons=[reason],
+            )
+            == "warn"
+        ), reason
+
+
+def test_resolve_document_delivery_verdict_keeps_untranslated_body_fatal():
+    # spec 018 Level 1: the sole genuinely-fatal reason stays a hard fail, even when it
+    # is mixed with review-grade reasons.
+    assert (
+        document_pipeline_late_phases._resolve_document_delivery_verdict(
+            quality_status="fail",
+            gate_reasons=["untranslated_body_text_above_threshold"],
+        )
+        == "fail"
+    )
+    assert (
+        document_pipeline_late_phases._resolve_document_delivery_verdict(
+            quality_status="fail",
+            gate_reasons=[
+                "role_loss_above_manual_review_threshold",
+                "untranslated_body_text_above_threshold",
+            ],
+        )
+        == "fail"
+    )
+    # pass / warn verdicts are returned unchanged.
+    assert (
+        document_pipeline_late_phases._resolve_document_delivery_verdict(
+            quality_status="pass", gate_reasons=[]
+        )
+        == "pass"
+    )
+    assert (
+        document_pipeline_late_phases._resolve_document_delivery_verdict(
+            quality_status="warn", gate_reasons=["false_fragment_headings_review_required"]
+        )
+        == "warn"
+    )
+
+
+def test_build_quality_warn_notice_message_has_no_internal_tokens():
+    # spec 018 Level 2: the yellow warn notice is human-readable Russian with NO internal
+    # tokens and NONE of the fatal-path wording.
+    message = document_pipeline_late_phases._build_quality_warn_notice_message(
+        {"formatting_review_required_count": 216}
+    )
+    assert message == (
+        "Перевод завершён. Документ готов к использованию, но требует ручной "
+        "проверки оформления: 216 абзацев с замечаниями. "
+        "Подробности — в отчёте проверки (formatting_review.txt)."
+    )
+    for forbidden in (
+        "translation_quality_gate_failed",
+        "quality_status",
+        "gate_reasons",
+        "заблокирован",
+        "критическая",
+        "role_loss",
+    ):
+        assert forbidden not in message.lower()
+    # Zero-count degrade path still carries the deliverable framing.
+    zero = document_pipeline_late_phases._build_quality_warn_notice_message(
+        {"formatting_review_required_count": 0}
+    )
+    assert zero.startswith("Перевод завершён. Документ готов к использованию")
+    assert "formatting_review.txt" in zero
+
+
+def test_resistance_report_offline_replay_reclassifies_fail_to_warn():
+    # spec 018 offline replay: the real EN->RU RESISTANCE run hard-FAILED with 5
+    # review-grade reasons (0 genuine defects, DOCX fully usable). Re-running the
+    # document-level verdict over that saved report must now yield ``warn`` with all
+    # 5 reasons still present as review items. Loads the saved artifact when it is
+    # available; otherwise replays its verdict-relevant shape inline (CI has no .run/).
+    from docxaicorrector.core.constants import RUN_DIR
+
+    resistance_reasons = [
+        "role_loss_above_manual_review_threshold",
+        "heading_demotion_above_manual_review_threshold",
+        "false_fragment_headings_review_required",
+        "list_fragment_regressions_review_required",
+        "untranslated_structural_text_review_required",
+    ]
+    saved_reports = sorted(
+        Path(RUN_DIR).glob(
+            "quality_reports/RESISTANCE_FACTORS_AND_SPECIAL_FORCES_AREAS_UKRAINE.docx_*.json"
+        )
+    )
+    if saved_reports:
+        saved = json.loads(saved_reports[-1].read_text(encoding="utf-8"))
+        assert saved["quality_status"] == "fail"
+        original_status = str(saved["quality_status"])
+        gate_reasons = list(saved["gate_reasons"])
+        assert "untranslated_body_text_above_threshold" not in gate_reasons
+    else:
+        original_status = "fail"
+        gate_reasons = list(resistance_reasons)
+
+    reclassified = document_pipeline_late_phases._resolve_document_delivery_verdict(
+        quality_status=original_status,
+        gate_reasons=gate_reasons,
+    )
+    assert reclassified == "warn"
+    # All review reasons are preserved verbatim — only the verdict severity moved.
+    for reason in resistance_reasons:
+        assert reason in gate_reasons
 
 
 @pytest.mark.parametrize(
@@ -3714,7 +3867,9 @@ def test_build_translation_quality_report_exposes_new_residual_quality_metrics_a
         formatting_diagnostics_artifacts=[],
     )
 
-    assert report["quality_status"] == "fail"
+    # spec 018: review-grade fail-drivers (false_fragment / list_fragment / mixed_script)
+    # are delivered as ``warn``, not a blocking ``fail`` — all gate_reasons preserved.
+    assert report["quality_status"] == "warn"
     assert report["gate_reasons"] == [
         "false_fragment_headings_review_required",
         "list_fragment_regressions_present",
@@ -4026,7 +4181,9 @@ def test_build_translation_quality_report_fails_large_false_fragment_heading_set
         formatting_diagnostics_artifacts=[],
     )
 
-    assert report["quality_status"] == "fail"
+    # spec 018: a large false-fragment set is review-grade (fix severity) — delivered
+    # as ``warn`` with the reason + review items preserved, not a blocking ``fail``.
+    assert report["quality_status"] == "warn"
     assert report["gate_reasons"] == ["false_fragment_headings_present"]
     assert report["false_fragment_heading_count"] == 11
     assert report["formatting_review_required_count"] == 11
@@ -4380,7 +4537,11 @@ def test_run_document_processing_warns_on_legacy_markdown_toc_concat_quality_gat
     assert payload["toc_body_concat_detected"] is True
     assert runtime["state"]["latest_result_notice"] == {
         "level": "warning",
-        "message": "Готово. 1 абзац требует проверки оформления. Подробности: formatting_review.txt",
+        "message": (
+            "Перевод завершён. Документ готов к использованию, но требует ручной "
+            "проверки оформления: 1 абзац с замечаниями. "
+            "Подробности — в отчёте проверки (formatting_review.txt)."
+        ),
     }
 
 
@@ -4433,7 +4594,9 @@ def test_build_translation_quality_report_keeps_list_fragment_runtime_cleanup_di
 
     display_markdown = document_pipeline_late_phases._normalize_final_markdown_for_runtime_display(final_markdown)
 
-    assert report["quality_status"] == "fail"
+    # spec 018: body-list fragmentation is review-grade — delivered as ``warn`` with the
+    # reason preserved (the discrepancy still gates the acceptance verdict as review-DATA).
+    assert report["quality_status"] == "warn"
     assert report["gate_reasons"] == ["list_fragment_regressions_present"]
     assert report["list_fragment_regression_count"] == 1
     assert report["list_fragment_regression_gate_source"] == "legacy_markdown"
@@ -4767,10 +4930,11 @@ def test_build_translation_quality_report_hard_fails_non_numeric_body_list_fragm
     assert not document_pipeline_late_phases._is_standalone_numeric_continuation_sample(
         SimpleNamespace(text=non_numeric_sample["text"])
     )
-    # Body-list fragmentation stays a hard-fail acceptance reason.
+    # Body-list fragmentation is a hard (non-review) gate reason; spec 018 delivers it as
+    # ``warn`` (review-DATA) rather than blocking, but the reason token is still recorded.
     assert "list_fragment_regressions_present" in report["gate_reasons"]
     assert "list_fragment_regressions_review_required" not in report["gate_reasons"]
-    assert report["quality_status"] == "fail"
+    assert report["quality_status"] == "warn"
 
 
 def test_build_translation_quality_report_credits_source_backed_reference_by_exact_text_when_line_offsets_drift():
@@ -4850,7 +5014,11 @@ def test_run_document_processing_warns_on_advisory_structural_markdown_quality_g
     assert result == "succeeded"
     assert runtime["state"]["latest_result_notice"] == {
         "level": "warning",
-        "message": "Готово. 1 абзац требует проверки оформления. Подробности: formatting_review.txt",
+        "message": (
+            "Перевод завершён. Документ готов к использованию, но требует ручной "
+            "проверки оформления: 1 абзац с замечаниями. "
+            "Подробности — в отчёте проверки (formatting_review.txt)."
+        ),
     }
     assert artifact_calls["kwargs"]["quality_warning"]["gate_reasons"] == ["toc_body_concatenation_review_required"]
     report_files = list(quality_dir.glob("*.json"))
