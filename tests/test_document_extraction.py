@@ -931,9 +931,11 @@ def test_extract_document_content_from_docx_keeps_tables_in_document_order():
     paragraphs, _ = extract_document_content_from_docx(buffer)
 
     assert [paragraph.role for paragraph in paragraphs] == ["body", "table", "body"]
-    assert paragraphs[1].text.startswith("<table>")
+    # Kept tables are emitted as Pandoc-markdown (pipe) tables so the render
+    # produces a real Word ``w:tbl`` (raw ``<table>`` HTML would be dropped).
+    assert paragraphs[1].text.startswith("| Колонка A | Колонка B |")
     assert "Колонка A" in paragraphs[1].text
-    assert build_document_text(paragraphs).startswith("Перед таблицей\n\n<table>")
+    assert build_document_text(paragraphs).startswith("Перед таблицей\n\n| Колонка A | Колонка B |")
 
 
 def test_extract_document_content_from_docx_marks_caption_after_image(tmp_path):

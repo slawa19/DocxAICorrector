@@ -71,7 +71,11 @@ from docxaicorrector.document.shared_xml import (
     resolve_num_pr_details,
     resolve_paragraph_num_pr,
 )
-from docxaicorrector.document.tables import build_raw_table as _build_raw_table_impl
+from docxaicorrector.document.tables import (
+    build_raw_table as _build_raw_table_impl,
+    flatten_table_lines as _flatten_table_lines_impl,
+)
+from docxaicorrector.document.provenance import classify_document_scan_origin
 from docxaicorrector.core.models import (
     PARAGRAPH_BOUNDARY_AI_REVIEW_MODE_VALUES,
     PARAGRAPH_BOUNDARY_NORMALIZATION_MODE_VALUES,
@@ -200,7 +204,8 @@ def extract_document_content_with_normalization_reports(
     source_bytes = _read_uploaded_docx_bytes(uploaded_file)
     validate_docx_source_bytes(source_bytes)
     document = Document(BytesIO(source_bytes))
-    raw_blocks, image_assets = _build_raw_document_blocks(document)
+    scan_origin = classify_document_scan_origin(source_bytes)
+    raw_blocks, image_assets = _build_raw_document_blocks(document, is_scan_origin=scan_origin.is_scan_origin)
     normalization_mode, save_boundary_debug_artifacts = _resolve_paragraph_boundary_normalization_settings()
     normalized_blocks, boundary_report = _normalize_paragraph_boundaries(raw_blocks, mode=normalization_mode)
     structure_recovery_enabled, structure_recovery_mode = _resolve_structure_recovery_runtime(app_config=app_config)
@@ -363,7 +368,11 @@ def _build_paragraph_text_with_placeholders(
     return "".join(parts)
 
 
-def _build_raw_document_blocks(document) -> tuple[list[RawBlock], list[ImageAsset]]:
+def _build_raw_document_blocks(
+    document,
+    *,
+    is_scan_origin: bool = False,
+) -> tuple[list[RawBlock], list[ImageAsset]]:
     raw_blocks: list[RawBlock] = []
     image_assets: list[ImageAsset] = []
     table_count = 0
@@ -373,18 +382,51 @@ def _build_raw_document_blocks(document) -> tuple[list[RawBlock], list[ImageAsse
             for raw_block in _build_raw_paragraph_blocks(cast(Paragraph, block), image_assets, raw_index=len(raw_blocks)):
                 raw_blocks.append(raw_block)
             continue
-        else:
-            table_count += 1
-            raw_block = _build_raw_table(
-                cast(Table, block),
-                image_assets,
-                raw_index=len(raw_blocks),
-                asset_id=f"table_{table_count:03d}",
-            )
+        table_count += 1
+        if is_scan_origin:
+            # Scan-origin (OCR) documents: the "table" is a scanned column layout,
+            # not authored tabular data — flatten it into linear body paragraphs.
+            raw_blocks.extend(_build_flattened_table_blocks(cast(Table, block), image_assets, start_raw_index=len(raw_blocks)))
+            continue
+        raw_block = _build_raw_table(
+            cast(Table, block),
+            image_assets,
+            raw_index=len(raw_blocks),
+            asset_id=f"table_{table_count:03d}",
+        )
         if raw_block is not None:
             raw_blocks.append(raw_block)
 
     return raw_blocks, image_assets
+
+
+def _build_flattened_table_blocks(
+    table: Table,
+    image_assets: list[ImageAsset],
+    *,
+    start_raw_index: int,
+) -> list[RawParagraph]:
+    blocks: list[RawParagraph] = []
+    for line in _flatten_table_lines_impl(
+        table,
+        image_assets,
+        build_paragraph_text_with_placeholders=_build_paragraph_text_with_placeholders,
+    ):
+        raw_index = start_raw_index + len(blocks)
+        blocks.append(
+            RawParagraph(
+                raw_index=raw_index,
+                text=line,
+                style_name="",
+                role_hint="body",
+                origin_raw_indexes=(raw_index,),
+                origin_raw_texts=(line,),
+                layout_origin="table_flattened",
+                boundary_source="raw",
+                boundary_confidence="high",
+            )
+        )
+    return blocks
 
 
 def _build_raw_paragraph_blocks(paragraph, image_assets: list[ImageAsset], *, raw_index: int) -> list[RawParagraph]:

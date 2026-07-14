@@ -48,6 +48,7 @@ This inventory is intentionally pragmatic:
 - `tests/test_pdf_text_layer_logical_import.py`
 - `tests/test_pdf_text_layer_quality.py`
 - `tests/test_preparation.py`
+- `tests/test_preserve_authored_tables.py`
 - `tests/test_processing_runtime.py`
 - `tests/test_processing_service.py`
 - `tests/test_reader_cleanup_mvp.py`
@@ -113,6 +114,7 @@ This inventory is intentionally pragmatic:
 
 - `tests/test_app.py` is primarily `unit-contract`, but it also contains explicit legacy tuple compatibility guards.
 - `tests/test_generation.py` is primarily `unit-contract`, but it includes capability-sensitive subtests gated on Pandoc availability.
+- `tests/test_preserve_authored_tables.py` is primarily `unit-contract`, but its authored-table render counter-proofs are gated on Pandoc availability.
 - `tests/test_real_document_validation_corpus.py` is primarily `system-deps`, but it already contains schema and runtime-resolution coverage that Phase 2 can split out if needed.
 - `tests/test_real_image_pipeline.py` is primarily `integration-local`, but its live API smoke subtests belong to the `manual-ai-heavy` and `live-image-api` opt-in slice.
 - `tests/test_script_workflow_smoke.py` now holds only env-sensitive subprocess/PowerShell/WSL/process smoke.
