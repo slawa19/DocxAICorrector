@@ -1,9 +1,15 @@
 # Feature Specification: Flatten OCR layout-tables into linear paragraph flow (drop scan geometry)
 
 Date: 2026-07-14
-Status: DRAFT — approved scope, pre-implementation. Import-layer fix: detect tables that are OCR page-LAYOUT
-artifacts (scanned multi-column pages reconstructed as tables) and flatten them into a linear paragraph stream,
-so the minimal-formatting canon is honored (keep structure+emphasis, DROP geometry). Genuine data tables are kept.
+Status: **CLOSED — NOT NEEDED (2026-07-14).** Diagnosis reversed during implementation. The render path already
+drops ALL table structure to single-column text (Pandoc `format="markdown+raw_html+superscript+subscript"`,
+`generation/_generation.py:1145`, drops `<table>/<tr>/<td>` → cell text becomes ordinary `<w:p>`; the fresh
+single-column `_build_reference_docx` means source `w:cols` never carry over). Verified (orchestrator, no-LLM
+reproduction of the real render on the current source): `fulldoc_current.docx` has `w:tbl=0`, single `w:cols`, no
+`w:num≥2` — a clean single-column, table-free DOCX. The narrow two-column screenshot is **structurally impossible**
+from this render path and did NOT reproduce (the source was rewritten 2026-07-14 11:14, after the screenshot; the
+failed run's output was never persisted). A LAYOUT-vs-DATA table classifier therefore has no effect on the
+delivered DOCX. NOT IMPLEMENTED; kept as lineage. Original (superseded) intent below.
 Owner surface: the DOCX table extraction (`document/extraction.py` `_build_raw_table` / the `role="table"` block)
 and the table renderer (`document/tables.py` `render_table_html` / `build_raw_table`).
 Companion: `specs/017-ocr-stamp-furniture-detection/spec.md` (sibling OCR-import defect — that one is garbage
