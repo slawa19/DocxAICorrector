@@ -1012,3 +1012,6 @@ def main() -> None:
             source_language=source_language,
             target_language=target_language,
         )
+        # Rerun immediately so the worker-active state is picked up on this click
+        # (top-of-main processing_in_progress check) instead of requiring a 2nd click.
+        st.rerun()
