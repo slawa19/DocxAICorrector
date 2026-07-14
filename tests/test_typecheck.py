@@ -11,28 +11,25 @@ pytestmark = [pytest.mark.integration, pytest.mark.typecheck]
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
-# Baseline: known pyright error count measured on a **clean worktree** with the
-# PINNED pyright version (requirements.txt / pyproject.toml: pyright==1.1.409).
-# This is a RATCHET: the test fails only if pyright finds MORE errors than the
-# baseline. Lower the number whenever you clear errors; never raise it to admit NEW
-# code debt. Re-measure and update ONLY when the pinned pyright version changes
-# (a newer tool counts differently) — that is a deliberate tool bump, not new debt.
+# Baseline: known pyright error count measured on a **CLEAN worktree** (git clean -fdx,
+# as CI runs) with the PINNED pyright version (requirements.txt / pyproject.toml:
+# pyright==1.1.409). This is a RATCHET: the test fails if pyright finds MORE errors than
+# the baseline (new debt) OR FEWER (asks you to lower it). Lower whenever you clear
+# errors; re-measure only when the pinned pyright version changes.
 #
 # History: this was 0 — accurate at fb7b83b (2026-04-27) but stale from 2026-05-12,
-# when a `pyright fail-hard` CI step landed on a codebase that had already drifted to
-# ~271 errors. CI stayed red for ~2 months and the test suite, gated behind it, never
-# ran. Then pyright was UNPINNED (>=1.1.400): the 244 baseline (set 2026-07-10) went
-# stale as the tool + code drifted, so CI's editable-install job failed on every push
-# regardless of the diff. 2026-07-14: pinned pyright==1.1.409 and re-measured the true
-# clean-checkout count on main (276; every 1.1.40x version yields 276-278 here). The
-# excess over 244 is pre-existing debt in files unrelated to recent work
-# (generation/formatting_transfer.py, structure tests, late_phases.py) — a future
-# cleanup should LOWER this number.
+# when a `pyright fail-hard` CI step landed on a codebase already carrying ~271 errors.
+# CI stayed red for ~2 months. Baseline set to the honest clean count 244 on 2026-07-10.
+# 2026-07-14: pinned pyright==1.1.409 (was unpinned >=1.1.400) so the count is
+# deterministic. On a CLEAN checkout that count is 244 (verified in a fresh worktree).
+# CAUTION: a DIRTY worktree inflates this — untracked experiment scripts under tests/
+# (e.g. tests/artifacts/**/run_reader_cleanup_replay_experiment.py) add ~32 errors that
+# CI's `git clean -fdx` removes. Always measure on a clean checkout.
 #
 # IMPORTANT: Always run this test on a clean checkout (`git status --porcelain` must be empty).
-# Dirty worktrees (uncommitted docs/, specs/, etc.) can change the error count
-# and cause flaky CI failures.
-_ERROR_BASELINE = 276
+# Dirty worktrees (uncommitted docs/, specs/, untracked experiment files) change the
+# count and cause flaky failures.
+_ERROR_BASELINE = 244
 
 
 def _run_pyright() -> dict:
