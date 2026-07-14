@@ -15,7 +15,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
   "pytest>=8.4.2",
-  "pyright>=1.1.400",
+  "pyright==1.1.409",
 ]
 pdf-import = [
   "pdfminer.six>=20231228",

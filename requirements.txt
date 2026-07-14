@@ -7,4 +7,4 @@ python-dotenv>=1.0.1
 Pillow>=10.4.0
 pdfminer.six>=20231228
 pytest>=8.4.2
-pyright>=1.1.400
+pyright==1.1.409

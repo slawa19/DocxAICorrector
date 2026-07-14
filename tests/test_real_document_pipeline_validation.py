@@ -800,6 +800,13 @@ def test_collect_paragraph_break_samples_is_deterministic_on_saved_reports() -> 
         "creatingwealth": runs_root / "20260710T_creatingwealth_fixed" / "creatingwealth_pdf_full_benchmark_report.json",
     }
 
+    # These saved run reports are local artifacts (under a gitignored `runs/` dir) and are
+    # NOT committed, so a clean checkout / CI does not have them. Skip rather than hard-fail
+    # when they are absent — the determinism assertions only mean anything with the fixtures.
+    missing_reports = [str(path) for path in saved_reports.values() if not path.exists()]
+    if missing_reports:
+        pytest.skip("saved real-document run reports not present in this checkout: " + ", ".join(missing_reports))
+
     counts: dict[str, int] = {}
     flagged_indexes: dict[str, set[int]] = {}
     for name, path in saved_reports.items():
