@@ -330,7 +330,7 @@ def test_render_sidebar_returns_image_settings(monkeypatch):
     ]
     assert checkbox_calls == [
         (
-            "Подготовить для ElevenLabs аудиокниги",
+            "Дополнительно: подготовить текст для ElevenLabs (не меняя основной результат)",
             False,
             "sidebar_audiobook_postprocess",
             "Готовит отдельный narration text для ElevenLabs без изменения основного DOCX/Markdown результата.",
@@ -512,7 +512,7 @@ def test_render_sidebar_warns_when_translate_source_matches_target(monkeypatch):
     assert result == ("gpt-5-mini", 6000, 3, "semantic_redraw_direct", False, "translate", "en", "en", False)
     assert checkbox_calls == [
         (
-            "Подготовить для ElevenLabs аудиокниги",
+            "Дополнительно: подготовить текст для ElevenLabs (не меняя основной результат)",
             False,
             "sidebar_audiobook_postprocess",
             "Готовит отдельный narration text для ElevenLabs без изменения основного DOCX/Markdown результата.",
@@ -584,7 +584,7 @@ def test_render_sidebar_translate_mode_does_not_add_extra_caption(monkeypatch):
     ui.render_sidebar(config)
 
     assert captions == [ui.IMAGE_MODE_DESCRIPTIONS["safe"]]
-    assert checkbox_calls[0][0] == "Подготовить для ElevenLabs аудиокниги"
+    assert checkbox_calls[0][0] == "Дополнительно: подготовить текст для ElevenLabs (не меняя основной результат)"
     assert checkbox_calls[1][0] == "Сохранять все варианты изображений"
     assert selectbox_calls[0][1] == (
         "Литературное редактирование улучшает уже готовый текст на выбранном языке. "

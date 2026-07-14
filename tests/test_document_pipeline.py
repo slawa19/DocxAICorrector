@@ -1186,6 +1186,38 @@ def test_run_document_processing_preserves_base_result_when_audiobook_postproces
     assert any(event["event_id"] == "audiobook_postprocess_failed_base_result_preserved" for event in warning_events)
 
 
+def test_standalone_audiobook_ignores_stale_postprocess_flag_and_never_runs_post_pass():
+    # Mutual-exclusion guard (defence in depth): the standalone `audiobook` operation and
+    # the additive `audiobook_postprocess` checkbox are two separate paths. If a stale
+    # session_state carries audiobook_postprocess_enabled=True while the standalone
+    # `audiobook` operation is selected, the pipeline must take the standalone narration
+    # branch (deterministic strip of narration_chunks) and MUST NOT trigger the LLM
+    # post-pass. Passing dependencies/emitters=None proves no post-pass call is attempted:
+    # _run_audiobook_postprocess would immediately AttributeError on None.
+    context = cast(
+        Any,
+        SimpleNamespace(
+            processing_operation="audiobook",
+            app_config={"audiobook_postprocess_enabled": True},
+        ),
+    )
+    state = cast(Any, SimpleNamespace(narration_chunks=["# Heading\n\nSpoken line."]))
+
+    assert document_pipeline_late_phases._should_run_audiobook_postprocess(context=context) is False
+
+    narration_text = document_pipeline_late_phases._build_narration_text(
+        context=context,
+        dependencies=None,
+        emitters=None,
+        state=state,
+    )
+
+    assert narration_text is not None
+    assert "Spoken line." in narration_text
+    assert "Heading" in narration_text
+    assert "#" not in narration_text  # heading marker stripped by the standalone deterministic branch
+
+
 def test_run_document_processing_applies_reader_cleanup_and_saves_raw_markdown_report_artifacts(tmp_path: Path):
     runtime = _build_runtime_capture()
     events, log_event = _capture_log_events()

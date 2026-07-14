@@ -44,7 +44,7 @@
   "sidebar.source_language_help": "Используйте 'Авто' только как best-effort режим. Для уже переведённого текста обычно лучше выбрать литературное редактирование.",
   "sidebar.source_language_auto": "Авто",
   "sidebar.same_language_warning": "Исходный и целевой язык совпадают. Если нужен только стилистический апгрейд, обычно лучше выбрать литературное редактирование.",
-  "sidebar.audiobook_postprocess_label": "Подготовить для ElevenLabs аудиокниги",
+  "sidebar.audiobook_postprocess_label": "Дополнительно: подготовить текст для ElevenLabs (не меняя основной результат)",
   "sidebar.audiobook_postprocess_help": "Готовит отдельный narration text для ElevenLabs без изменения основного DOCX/Markdown результата.",
   "sidebar.model_select_label": "Модель",
   "sidebar.model_custom_option": "Пользовательская модель",
