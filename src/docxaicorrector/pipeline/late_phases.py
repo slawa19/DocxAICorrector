@@ -1735,6 +1735,42 @@ def _apply_quality_review_reason(
     return quality_status
 
 
+# spec 018: the document-level translation quality gate hard-fails (blocking red)
+# ONLY for genuinely NON-DELIVERABLE output. An empty/unopenable DOCX is guarded
+# separately by ``_validate_nonempty_docx_bytes_or_fail``; the only quality-report
+# gate_reason catastrophic enough to block delivery of an otherwise-usable document
+# is wholesale-untranslated BODY above the catastrophic threshold. Every other
+# fail-driver (role_loss, heading_demotion, false_fragment, list_fragment, unmapped
+# source, toc_body_concat, mixed_script, residual_bullet, …) is a fix/review-severity
+# formatting discrepancy: the document IS delivered and the verdict is downgraded to
+# ``warn`` (review-DATA). This keys on the reason TOKEN (severity), never on document
+# content, so there are no per-book literals (Constitution VII).
+_FATAL_DOCUMENT_GATE_REASONS: frozenset[str] = frozenset({"untranslated_body_text_above_threshold"})
+
+
+def _resolve_document_delivery_verdict(
+    *,
+    quality_status: str,
+    gate_reasons: Sequence[str],
+) -> str:
+    """Resolve the DOCUMENT-level delivery verdict on top of the per-reason gate status.
+
+    The per-reason gate logic still computes ``fail`` for any strict-policy
+    formatting discrepancy; this resolves the delivery verdict for the whole
+    document. A ``fail`` is preserved only when a genuinely-fatal reason is present
+    (``_FATAL_DOCUMENT_GATE_REASONS``). Otherwise the run is deliverable and a
+    review-grade ``fail`` is downgraded to ``warn`` so the flagged-but-usable
+    document is presented as "completed, needs review" rather than blocked
+    (spec 018). ``pass``/``warn`` verdicts are returned unchanged. All gate_reasons
+    and review-items are preserved verbatim — only the verdict severity moves.
+    """
+    if any(reason in _FATAL_DOCUMENT_GATE_REASONS for reason in gate_reasons):
+        return "fail"
+    if quality_status == "fail":
+        return "warn"
+    return quality_status
+
+
 def _serialize_quality_samples(samples: Sequence[object], *, limit: int = 8) -> list[dict[str, object]]:
     serialized: list[dict[str, object]] = []
     for sample in list(samples)[:limit]:
@@ -3410,6 +3446,17 @@ def _build_translation_quality_report(
         if theology_style_samples:
             quality_status = "warn" if quality_status == "pass" else quality_status
 
+    # spec 018: resolve the DOCUMENT-level delivery verdict. Review-grade fail-drivers
+    # (role_loss / heading_demotion / false_fragment / list_fragment / unmapped-source /
+    # toc_body_concat / mixed_script / …) yield a delivered ``warn`` instead of a blocking
+    # ``fail``; only a genuinely-fatal reason (untranslated body above the catastrophic
+    # threshold) keeps ``fail``. Applied AFTER all per-reason emission so every gate_reason
+    # and review-item is preserved verbatim — only the verdict severity is reclassified.
+    quality_status = _resolve_document_delivery_verdict(
+        quality_status=quality_status,
+        gate_reasons=gate_reasons,
+    )
+
     report = {
         "version": 2,
         "source_name": context.uploaded_filename,
@@ -3717,8 +3764,22 @@ def _russian_paragraph_word(count: int) -> str:
     return "абзацев"
 
 
-def _russian_requires_word(count: int) -> str:
-    return "требует" if abs(count) % 10 == 1 and abs(count) % 100 != 11 else "требуют"
+def _build_quality_warn_notice_message(quality_report: Mapping[str, object]) -> str:
+    """Human-readable YELLOW warn notice for a delivered-but-flagged translation (spec 018).
+
+    Frames the run as "completed, needs review" — the document is usable and every
+    discrepancy is itemized in ``formatting_review.txt``. Deliberately carries NO
+    internal tokens (``translation_quality_gate_failed`` / raw gate_reason keys) and
+    none of the fatal-path wording ("критическая ошибка" / "заблокирован"): the count
+    of review paragraphs is the human-facing detail, not the reason tokens.
+    """
+    review_count = int(quality_report.get("formatting_review_required_count") or 0)
+    prefix = "Перевод завершён. Документ готов к использованию, но требует ручной проверки оформления"
+    suffix = "Подробности — в отчёте проверки (formatting_review.txt)."
+    if review_count > 0:
+        detail = f"{review_count} {_russian_paragraph_word(review_count)} с замечаниями"
+        return f"{prefix}: {detail}. {suffix}"
+    return f"{prefix}. {suffix}"
 
 
 def _build_quality_gate_activity_message(gate_reasons: Sequence[str]) -> str:
@@ -4259,18 +4320,10 @@ def finalize_processing_success(
         require_no_toc_body_concat=_acceptance_require_no_toc_body_concat,
     )
     if quality_report.get("quality_status") == "warn":
-        review_count = int(quality_report.get("formatting_review_required_count") or 0)
-        warning_message = (
-            f"Готово. {review_count} {_russian_paragraph_word(review_count)} "
-            f"{_russian_requires_word(review_count)} проверки оформления. "
-            "Подробности: formatting_review.txt"
-            if review_count > 0
-            else "Результат собран, но quality report зафиксировал document-level structural warnings."
-        )
         docx_phase = dict(docx_phase)
         docx_phase["latest_result_notice"] = {
             "level": "warning",
-            "message": warning_message,
+            "message": _build_quality_warn_notice_message(quality_report),
         }
     quality_report_path = _write_quality_report_artifact(source_name=context.uploaded_filename, payload=quality_report)
     if quality_report_path is not None:
