@@ -3125,6 +3125,51 @@ def test_formatting_contract_drops_source_geometry_and_size_for_body_and_heading
     assert restored_underline.underline is True
 
 
+def test_formatting_contract_strips_source_two_column_section_break_from_toc_paragraph():
+    # A source scanned in two columns (FineReader) stores a continuous 2-column section
+    # break INSIDE a TOC paragraph's pPr. Copying it onto the output paragraph grafts a
+    # narrow 2-column section into the delivered DOCX (the front-matter narrow-column
+    # defect). ``sectPr`` is page geometry and must be dropped by the restore sanitizer.
+    toc_properties_with_section_break = (
+        '<w:pPr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+        '<w:pStyle w:val="TOCEntryStyle"/>'
+        '<w:sectPr><w:type w:val="continuous"/><w:cols w:num="2" w:space="1523"/></w:sectPr>'
+        '</w:pPr>'
+    )
+    source_paragraphs = [
+        ParagraphUnit(
+            paragraph_id="p0000",
+            text="Economic vulnerability",
+            role="body",
+            structural_role="toc_entry",
+            style_name="TOCEntryStyle",
+            paragraph_properties_xml=toc_properties_with_section_break,
+        ),
+    ]
+
+    target_doc = Document()
+    target_doc.add_paragraph("Economic vulnerability", style="Body Text")
+    target_buffer = BytesIO()
+    target_doc.save(target_buffer)
+
+    restored_doc = Document(
+        BytesIO(
+            apply_output_formatting(
+                target_buffer.getvalue(),
+                source_paragraphs,
+                generated_paragraph_registry=[{"paragraph_id": "p0000", "text": "Economic vulnerability"}],
+                mismatch_event_name="test_mismatch",
+                mismatch_log_message="test mismatch",
+            )
+        )
+    )
+
+    restored_properties = restored_doc.paragraphs[0]._p.pPr
+    assert restored_properties is None or restored_properties.find(qn("w:sectPr")) is None
+    # No two-column section survives anywhere in the delivered document.
+    assert 'w:num="2"' not in restored_doc.element.xml
+
+
 def test_formatting_contract_allows_toc_font_size_without_geometry_replay():
     source_paragraphs = [
         ParagraphUnit(
