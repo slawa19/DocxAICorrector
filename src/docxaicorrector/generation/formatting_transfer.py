@@ -3210,6 +3210,13 @@ def _replace_paragraph_properties_from_xml(paragraph, paragraph_properties_xml: 
         return False
 
     paragraph_properties = parse_xml(paragraph_properties_xml)
+    # Defensive: a paragraph-level ``sectPr`` is a section break carrying page geometry
+    # (incl. multi-column layout). It must never ride into the output via a pPr copy —
+    # that grafts source scan columns onto the delivered DOCX. Strip it at the single
+    # graft point regardless of which caller supplied the pPr.
+    for child in list(paragraph_properties):
+        if xml_local_name(child.tag) == "sectPr":
+            paragraph_properties.remove(child)
     existing_properties = find_child_element(paragraph._element, "pPr")
     if existing_properties is not None:
         paragraph._element.remove(existing_properties)
@@ -3222,7 +3229,12 @@ def _sanitize_toc_paragraph_properties_xml(paragraph_properties_xml: str) -> str
         return ""
 
     paragraph_properties = parse_xml(paragraph_properties_xml)
-    unsafe_geometry_names = {"ind", "tabs", "spacing", "jc", "pStyle"}
+    # ``sectPr`` carries page geometry (size/margins/**columns**). A source scanned in
+    # two columns (FineReader) stores a continuous 2-column section break inside a
+    # paragraph's pPr; copying it onto the target paragraph grafts a 2-column section
+    # into the output (the narrow-column front-matter defect). Geometry is dropped by
+    # the minimal-formatting contract, so strip ``sectPr`` here too.
+    unsafe_geometry_names = {"ind", "tabs", "spacing", "jc", "pStyle", "sectPr"}
     for child in list(paragraph_properties):
         if xml_local_name(child.tag) in unsafe_geometry_names:
             paragraph_properties.remove(child)
