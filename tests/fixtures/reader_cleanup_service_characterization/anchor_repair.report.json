@@ -1,0 +1,205 @@
+{
+  "accepted_cleanup_operations": [
+    {
+      "after_state": "joined_with_next",
+      "char_count": 62,
+      "chunk_index": 1,
+      "confidence": "high",
+      "evidence_before": "The anchored block ends with a comma and the adjacent block starts with lowercase continuation prose.",
+      "expected_after_preview": "Кооперативная валюта помогла району удержать местную торговлю, и жители продолжили обменивать услуги без дополнительных долгов.",
+      "id": "b_000001",
+      "kind": "paragraph",
+      "next_id": "b_000002",
+      "next_text_hash": "c61769592ca8ffae",
+      "operation": "join_fragmented_paragraph",
+      "pass_name": "anchor_repair",
+      "raw_text_preview": "Кооперативная валюта помогла району удержать местную торговлю,",
+      "reason": "fragmented_paragraph",
+      "safety_note": "Join only the adjacent current payload block using exact next_id and next_text_hash.",
+      "text_hash": "5a62edb1739bfa58"
+    }
+  ],
+  "accepted_delete_blocks": [],
+  "changed": false,
+  "chunk_results": [
+    {
+      "accepted_cleanup_operation_count": 0,
+      "accepted_delete_block_count": 0,
+      "chunk_index": 1,
+      "elapsed_ms": "<elapsed_ms>",
+      "ignored_cleanup_operation_count": 0,
+      "ignored_delete_block_count": 0,
+      "parse_error_message": "",
+      "pass_name": "first_pass",
+      "proposed_cleanup_operation_count": 0,
+      "proposed_delete_block_count": 0,
+      "readonly_context_after_count": 0,
+      "readonly_context_before_count": 0,
+      "repair_attempted": false,
+      "repair_error": "",
+      "repair_status": "not_attempted",
+      "request_payload_char_count": 4631,
+      "retry_attempted": false,
+      "retry_error": "",
+      "retry_status": "not_attempted",
+      "schema_validation_error": "",
+      "status": "completed",
+      "target_block_count": 4,
+      "target_chars": 136
+    },
+    {
+      "accepted_cleanup_operation_count": 1,
+      "accepted_delete_block_count": 0,
+      "anchor_ids": [
+        "anchor-frag"
+      ],
+      "chunk_index": 1,
+      "elapsed_ms": "<elapsed_ms>",
+      "ignored_cleanup_operation_count": 0,
+      "ignored_delete_block_count": 0,
+      "pass_name": "anchor_repair",
+      "proposed_cleanup_operation_count": 1,
+      "proposed_delete_block_count": 0,
+      "repair_attempted": false,
+      "repair_error": "",
+      "repair_status": "not_attempted",
+      "schema_validation_error": "",
+      "status": "completed",
+      "target_block_count": 4,
+      "target_chars": 136
+    }
+  ],
+  "cleanup_settings": {
+    "allowed_operations": [],
+    "chunk_size": 1000,
+    "global_plan_enabled": false,
+    "max_failed_chunk_ratio": 1.0,
+    "max_reclassify_block_ratio": 0.05,
+    "model_selector": "",
+    "overlap_blocks_after": 3,
+    "overlap_blocks_before": 3
+  },
+  "global_plan": {
+    "candidate_block_ids": [],
+    "document_specific_running_headers": [],
+    "examples_do_not_delete": [],
+    "likely_fragmentation_patterns": [],
+    "likely_heading_body_patterns": [],
+    "repeated_noise_patterns": [],
+    "warnings": [
+      "toc_blocks_protected_keep_toc_true"
+    ]
+  },
+  "heading_boundary_application_diagnostics": {
+    "accepted_count": 0,
+    "ignored_count": 0,
+    "ignored_examples": [],
+    "ignored_reason_counts": {}
+  },
+  "ignored_cleanup_operations": [],
+  "ignored_delete_blocks": [],
+  "image_reconciliation": {
+    "after_image_id_count": 0,
+    "before_image_id_count": 0,
+    "extra_image_ids": [],
+    "missing_after_repair": [],
+    "missing_image_ids": [],
+    "reinserted_image_ids": [],
+    "touched": false
+  },
+  "model": "",
+  "model_resolution": {},
+  "passes": {
+    "anchor_repair_pass": {
+      "chunk_results": [
+        {
+          "accepted_cleanup_operation_count": 1,
+          "accepted_delete_block_count": 0,
+          "anchor_ids": [
+            "anchor-frag"
+          ],
+          "chunk_index": 1,
+          "elapsed_ms": "<elapsed_ms>",
+          "ignored_cleanup_operation_count": 0,
+          "ignored_delete_block_count": 0,
+          "pass_name": "anchor_repair",
+          "proposed_cleanup_operation_count": 1,
+          "proposed_delete_block_count": 0,
+          "repair_attempted": false,
+          "repair_error": "",
+          "repair_status": "not_attempted",
+          "schema_validation_error": "",
+          "status": "completed",
+          "target_block_count": 4,
+          "target_chars": 136
+        }
+      ],
+      "requested_anchor_count": 1,
+      "selected_anchor_count": 1,
+      "selected_anchors": [
+        {
+          "anchor_id": "anchor-frag",
+          "block_id": "b_000001",
+          "category": "fragmented_paragraph",
+          "line_ref": "3",
+          "snippet": "Кооперативная валюта помогла району удержать местную торговлю,"
+        }
+      ],
+      "selected_window_block_count": 4,
+      "stats": {
+        "accepted_cleanup_operation_count": 1,
+        "accepted_delete_block_count": 0,
+        "accepted_reclassify_role_count": 0,
+        "cleanup_chunk_count": 1,
+        "deleted_char_ratio": 0.0,
+        "deleted_non_whitespace_char_count": 0,
+        "failed_chunk_count": 0,
+        "ignored_cleanup_operation_count": 0,
+        "ignored_delete_block_count": 0,
+        "proposed_cleanup_operation_count": 1,
+        "proposed_delete_block_count": 0,
+        "raw_block_count": 3,
+        "raw_char_count": 141
+      },
+      "warnings": []
+    },
+    "first_pass": {
+      "stats": {
+        "accepted_cleanup_operation_count": 0,
+        "accepted_delete_block_count": 0,
+        "accepted_reclassify_role_count": 0,
+        "cleanup_chunk_count": 1,
+        "deleted_char_ratio": 0.0,
+        "deleted_non_whitespace_char_count": 0,
+        "failed_chunk_count": 0,
+        "ignored_cleanup_operation_count": 0,
+        "ignored_delete_block_count": 0,
+        "proposed_cleanup_operation_count": 0,
+        "proposed_delete_block_count": 0,
+        "raw_block_count": 4,
+        "raw_char_count": 142
+      }
+    }
+  },
+  "policy": "advisory",
+  "stage_status": "completed",
+  "stats": {
+    "accepted_cleanup_operation_count": 1,
+    "accepted_delete_block_count": 0,
+    "accepted_reclassify_role_count": 0,
+    "cleanup_chunk_count": 2,
+    "deleted_char_ratio": 0.0,
+    "deleted_non_whitespace_char_count": 0,
+    "failed_chunk_count": 0,
+    "ignored_cleanup_operation_count": 0,
+    "ignored_delete_block_count": 0,
+    "proposed_cleanup_operation_count": 1,
+    "proposed_delete_block_count": 0,
+    "raw_block_count": 4,
+    "raw_char_count": 142
+  },
+  "version": 1,
+  "warnings": [
+    "toc_blocks_protected_keep_toc_true"
+  ]
+}

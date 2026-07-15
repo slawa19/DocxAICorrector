@@ -1,0 +1,172 @@
+{
+  "accepted_cleanup_operations": [],
+  "accepted_delete_blocks": [],
+  "changed": false,
+  "chunk_results": [
+    {
+      "accepted_cleanup_operation_count": 0,
+      "accepted_delete_block_count": 0,
+      "chunk_index": 1,
+      "elapsed_ms": "<elapsed_ms>",
+      "ignored_cleanup_operation_count": 0,
+      "ignored_delete_block_count": 0,
+      "parse_error_message": "",
+      "proposed_cleanup_operation_count": 0,
+      "proposed_delete_block_count": 0,
+      "readonly_context_after_count": 3,
+      "readonly_context_before_count": 0,
+      "repair_attempted": false,
+      "repair_error": "",
+      "repair_status": "not_attempted",
+      "request_payload_char_count": 6135,
+      "retry_attempted": false,
+      "retry_error": "",
+      "retry_status": "not_attempted",
+      "schema_validation_error": "",
+      "status": "completed",
+      "target_block_count": 4,
+      "target_chars": 147
+    },
+    {
+      "accepted_cleanup_operation_count": 0,
+      "accepted_delete_block_count": 0,
+      "chunk_index": 2,
+      "elapsed_ms": "<elapsed_ms>",
+      "ignored_cleanup_operation_count": 1,
+      "ignored_delete_block_count": 1,
+      "parse_error_message": "",
+      "proposed_cleanup_operation_count": 1,
+      "proposed_delete_block_count": 1,
+      "readonly_context_after_count": 1,
+      "readonly_context_before_count": 3,
+      "repair_attempted": false,
+      "repair_error": "",
+      "repair_status": "not_attempted",
+      "request_payload_char_count": 7469,
+      "retry_attempted": false,
+      "retry_error": "",
+      "retry_status": "not_attempted",
+      "schema_validation_error": "",
+      "status": "completed",
+      "target_block_count": 6,
+      "target_chars": 177
+    },
+    {
+      "accepted_cleanup_operation_count": 0,
+      "accepted_delete_block_count": 0,
+      "chunk_index": 3,
+      "elapsed_ms": "<elapsed_ms>",
+      "ignored_cleanup_operation_count": 0,
+      "ignored_delete_block_count": 0,
+      "parse_error_message": "",
+      "proposed_cleanup_operation_count": 0,
+      "proposed_delete_block_count": 0,
+      "readonly_context_after_count": 0,
+      "readonly_context_before_count": 3,
+      "repair_attempted": false,
+      "repair_error": "",
+      "repair_status": "not_attempted",
+      "request_payload_char_count": 4799,
+      "retry_attempted": false,
+      "retry_error": "",
+      "retry_status": "not_attempted",
+      "schema_validation_error": "",
+      "status": "completed",
+      "target_block_count": 1,
+      "target_chars": 96
+    }
+  ],
+  "cleanup_settings": {
+    "allowed_operations": [],
+    "chunk_size": 200,
+    "global_plan_enabled": false,
+    "max_failed_chunk_ratio": 1.0,
+    "max_reclassify_block_ratio": 0.05,
+    "model_selector": "",
+    "overlap_blocks_after": 3,
+    "overlap_blocks_before": 3
+  },
+  "global_plan": {
+    "candidate_block_ids": [],
+    "document_specific_running_headers": [],
+    "examples_do_not_delete": [],
+    "likely_fragmentation_patterns": [],
+    "likely_heading_body_patterns": [],
+    "repeated_noise_patterns": [],
+    "warnings": [
+      "toc_blocks_protected_keep_toc_true"
+    ]
+  },
+  "heading_boundary_application_diagnostics": {
+    "accepted_count": 0,
+    "ignored_count": 0,
+    "ignored_examples": [],
+    "ignored_reason_counts": {}
+  },
+  "ignored_cleanup_operations": [
+    {
+      "char_count": 1,
+      "chunk_index": 2,
+      "confidence": "high",
+      "evidence_before": "8",
+      "expected_after_preview": "",
+      "id": "b_000009",
+      "ignored_reason": "standalone_number_delete_requires_page_context",
+      "kind": "page_number",
+      "operation": "delete_block",
+      "raw_text_preview": "8",
+      "reason": "page_number",
+      "safety_note": "Delete only the exact standalone page number block.",
+      "text_hash": "2c624232cdd22177"
+    }
+  ],
+  "ignored_delete_blocks": [
+    {
+      "char_count": 1,
+      "chunk_index": 2,
+      "confidence": "high",
+      "evidence_before": "8",
+      "expected_after_preview": "",
+      "id": "b_000009",
+      "ignored_reason": "standalone_number_delete_requires_page_context",
+      "kind": "page_number",
+      "operation": "delete_block",
+      "raw_text_preview": "8",
+      "reason": "page_number",
+      "safety_note": "Delete only the exact standalone page number block.",
+      "text_hash": "2c624232cdd22177"
+    }
+  ],
+  "image_reconciliation": {
+    "after_image_id_count": 1,
+    "before_image_id_count": 1,
+    "extra_image_ids": [],
+    "missing_after_repair": [],
+    "missing_image_ids": [],
+    "reinserted_image_ids": [],
+    "touched": false
+  },
+  "model": "",
+  "model_resolution": {},
+  "policy": "advisory",
+  "stage_status": "completed",
+  "stats": {
+    "accepted_cleanup_operation_count": 0,
+    "accepted_delete_block_count": 0,
+    "accepted_reclassify_role_count": 0,
+    "cleanup_chunk_count": 3,
+    "deleted_char_ratio": 0.0,
+    "deleted_non_whitespace_char_count": 0,
+    "failed_chunk_count": 0,
+    "ignored_cleanup_operation_count": 1,
+    "ignored_delete_block_count": 1,
+    "proposed_cleanup_operation_count": 1,
+    "proposed_delete_block_count": 1,
+    "raw_block_count": 11,
+    "raw_char_count": 440
+  },
+  "version": 1,
+  "warnings": [
+    "toc_blocks_protected_keep_toc_true"
+  ]
+}
