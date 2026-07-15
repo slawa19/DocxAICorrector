@@ -7,7 +7,7 @@ from pathlib import Path
 from threading import Lock
 from typing import Any, TYPE_CHECKING
 
-from dotenv import load_dotenv
+from dotenv import dotenv_values
 
 from docxaicorrector.core.config_loader_layers import (
     build_app_config_payload,
@@ -308,7 +308,19 @@ def _parse_image_mode(value: str, *, source_name: str) -> str:
 
 
 def load_project_dotenv() -> None:
-    load_dotenv(dotenv_path=ENV_PATH, override=True)
+    # Precedence: environment > .env > config defaults. A .env value fills a key
+    # only when the process environment has NOT already set it to a non-empty
+    # value. In hosted/CI deploys, real secrets and selectors (OPENAI_API_KEY,
+    # ANTHROPIC_API_KEY, OPENROUTER_API_KEY, DOCX_AI_* model/provider selectors)
+    # are injected as env vars and MUST win over a stray checked-in .env. An
+    # absent OR empty/whitespace env var is treated as unset, so local dev and an
+    # empty placeholder still get populated from .env.
+    for key, value in dotenv_values(dotenv_path=ENV_PATH).items():
+        if value is None:
+            continue
+        current = os.environ.get(key)
+        if current is None or current.strip() == "":
+            os.environ[key] = value
 
 
 def parse_int_env(name: str, default: int) -> int:

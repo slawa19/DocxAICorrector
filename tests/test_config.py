@@ -1352,6 +1352,33 @@ def test_load_project_dotenv_overrides_empty_runtime_env_with_repo_value(monkeyp
     assert os.getenv("OPENROUTER_API_KEY") == "test-openrouter-key"
 
 
+def test_load_project_dotenv_does_not_override_nonempty_runtime_env(monkeypatch, tmp_path):
+    # Deploy safety: a real injected secret must win over a stray checked-in .env
+    # (precedence environment > .env). Spec 024 / S3.
+    dotenv_path = tmp_path / ".env"
+    dotenv_path.write_text("OPENAI_API_KEY=dotenv-value\n", encoding="utf-8")
+
+    monkeypatch.setattr(config, "ENV_PATH", dotenv_path)
+    monkeypatch.setenv("OPENAI_API_KEY", "real-injected-secret")
+
+    config.load_project_dotenv()
+
+    assert os.getenv("OPENAI_API_KEY") == "real-injected-secret"
+
+
+def test_load_project_dotenv_is_idempotent_for_set_value(monkeypatch, tmp_path):
+    dotenv_path = tmp_path / ".env"
+    dotenv_path.write_text("OPENAI_API_KEY=dotenv-value\n", encoding="utf-8")
+
+    monkeypatch.setattr(config, "ENV_PATH", dotenv_path)
+    monkeypatch.setenv("OPENAI_API_KEY", "real-injected-secret")
+
+    config.load_project_dotenv()
+    config.load_project_dotenv()
+
+    assert os.getenv("OPENAI_API_KEY") == "real-injected-secret"
+
+
 def _provider_contract_test_args(*, paragraph_boundary_enabled: bool):
     return {
         "model_registry_settings": {
