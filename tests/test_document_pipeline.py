@@ -13,6 +13,7 @@ from typing import Any, cast
 import docxaicorrector.generation._generation as generation
 import docxaicorrector.pipeline._pipeline as document_pipeline
 import docxaicorrector.pipeline.late_phases as document_pipeline_late_phases
+import docxaicorrector.pipeline.reader_cleanup_rebuild as document_pipeline_reader_cleanup_rebuild
 import docxaicorrector.pipeline.quality_report_retention as document_pipeline_quality_report_retention
 import docxaicorrector.pipeline.output_validation as document_pipeline_output_validation
 import docxaicorrector.pipeline.reassembly as document_pipeline_reassembly
@@ -5614,7 +5615,10 @@ def test_reader_cleanup_postprocess_prefers_assembly_formatting_registry_over_st
     tmp_path,
     monkeypatch,
 ):
-    monkeypatch.setattr(document_pipeline_late_phases, "READER_CLEANUP_LINEAGE_DIR", tmp_path / "reader_cleanup_lineage")
+    # spec 031 Step 4 (situation 2): the lineage writer moved to
+    # ``pipeline.reader_cleanup_rebuild`` and reads ``READER_CLEANUP_LINEAGE_DIR`` from its
+    # OWN module, so the patch must target the new module, not the late_phases re-export.
+    monkeypatch.setattr(document_pipeline_reader_cleanup_rebuild, "READER_CLEANUP_LINEAGE_DIR", tmp_path / "reader_cleanup_lineage")
     runtime = _build_runtime_capture()
     preserve_calls = []
     log_events = []
@@ -5772,7 +5776,10 @@ def test_reader_cleanup_postprocess_persists_final_generated_registry_in_runtime
     tmp_path,
     monkeypatch,
 ):
-    monkeypatch.setattr(document_pipeline_late_phases, "READER_CLEANUP_LINEAGE_DIR", tmp_path / "reader_cleanup_lineage")
+    # spec 031 Step 4 (situation 2): the lineage writer moved to
+    # ``pipeline.reader_cleanup_rebuild`` and reads ``READER_CLEANUP_LINEAGE_DIR`` from its
+    # OWN module, so the patch must target the new module, not the late_phases re-export.
+    monkeypatch.setattr(document_pipeline_reader_cleanup_rebuild, "READER_CLEANUP_LINEAGE_DIR", tmp_path / "reader_cleanup_lineage")
     runtime = _build_runtime_capture()
     raw_markdown = "Intro\n\n[[DOCX_IMAGE_img_001]]\n\nBody paragraph"
     assembly_registry = [
