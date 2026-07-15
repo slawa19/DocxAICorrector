@@ -13,6 +13,7 @@ from typing import Any, cast
 import docxaicorrector.generation._generation as generation
 import docxaicorrector.pipeline._pipeline as document_pipeline
 import docxaicorrector.pipeline.late_phases as document_pipeline_late_phases
+import docxaicorrector.pipeline.quality_report_retention as document_pipeline_quality_report_retention
 import docxaicorrector.pipeline.output_validation as document_pipeline_output_validation
 import docxaicorrector.pipeline.reassembly as document_pipeline_reassembly
 from docx import Document
@@ -650,7 +651,7 @@ def test_run_document_processing_passes_machine_readable_quality_warning_to_arti
     artifact_calls = {}
 
     monkeypatch.setattr(document_pipeline, "FORMATTING_DIAGNOSTICS_DIR", diagnostics_dir)
-    monkeypatch.setattr(document_pipeline_late_phases, "QUALITY_REPORTS_DIR", quality_dir)
+    monkeypatch.setattr(document_pipeline_quality_report_retention, "QUALITY_REPORTS_DIR", quality_dir)
 
     diagnostics_dir.mkdir(parents=True, exist_ok=True)
     quality_dir.mkdir(parents=True, exist_ok=True)
@@ -738,7 +739,7 @@ def test_run_document_processing_warns_and_delivers_large_role_loss_with_formatt
     role_loss_ids = [f"p{index:04d}" for index in range(11)]
 
     monkeypatch.setattr(document_pipeline, "FORMATTING_DIAGNOSTICS_DIR", diagnostics_dir)
-    monkeypatch.setattr(document_pipeline_late_phases, "QUALITY_REPORTS_DIR", quality_dir)
+    monkeypatch.setattr(document_pipeline_quality_report_retention, "QUALITY_REPORTS_DIR", quality_dir)
 
     diagnostics_dir.mkdir(parents=True, exist_ok=True)
     quality_dir.mkdir(parents=True, exist_ok=True)
@@ -1324,7 +1325,7 @@ def test_run_document_processing_records_pre_cleanup_formatting_baseline_without
     runtime = _build_runtime_capture()
     converted_markdown_inputs = []
     quality_dir = tmp_path / "quality_reports"
-    monkeypatch.setattr(document_pipeline_late_phases, "QUALITY_REPORTS_DIR", quality_dir)
+    monkeypatch.setattr(document_pipeline_quality_report_retention, "QUALITY_REPORTS_DIR", quality_dir)
 
     def generate_markdown_block(**kwargs):
         if kwargs["system_prompt"].startswith("You are cleaning translated book Markdown"):
@@ -2878,7 +2879,7 @@ def test_run_document_processing_warns_and_delivers_on_strict_unmapped_source_qu
     quality_dir = tmp_path / "quality_reports"
     monkeypatch.setattr(document_pipeline, "FORMATTING_DIAGNOSTICS_DIR", diagnostics_dir)
     monkeypatch.setattr(document_pipeline_late_phases, "collect_recent_formatting_diagnostics_artifacts", lambda since_epoch_seconds, diagnostics_dir: [str(diagnostics_dir / "preserve_001.json")])
-    monkeypatch.setattr(document_pipeline_late_phases, "QUALITY_REPORTS_DIR", quality_dir)
+    monkeypatch.setattr(document_pipeline_quality_report_retention, "QUALITY_REPORTS_DIR", quality_dir)
 
     def preserve_with_unmapped_artifact(docx_bytes, paragraphs, generated_paragraph_registry=None):
         diagnostics_dir.mkdir(parents=True, exist_ok=True)
@@ -2952,7 +2953,7 @@ def test_run_document_processing_surfaces_advisory_quality_notice_on_mapping_dri
     quality_dir = tmp_path / "quality_reports"
     monkeypatch.setattr(document_pipeline, "FORMATTING_DIAGNOSTICS_DIR", diagnostics_dir)
     monkeypatch.setattr(document_pipeline_late_phases, "collect_recent_formatting_diagnostics_artifacts", lambda since_epoch_seconds, diagnostics_dir: [str(diagnostics_dir / "preserve_001.json")])
-    monkeypatch.setattr(document_pipeline_late_phases, "QUALITY_REPORTS_DIR", quality_dir)
+    monkeypatch.setattr(document_pipeline_quality_report_retention, "QUALITY_REPORTS_DIR", quality_dir)
 
     def preserve_with_unmapped_artifact(docx_bytes, paragraphs, generated_paragraph_registry=None):
         diagnostics_dir.mkdir(parents=True, exist_ok=True)
@@ -3037,7 +3038,7 @@ def test_run_document_processing_keeps_false_fragment_cleanup_display_only_after
     runtime = _build_runtime_capture()
     quality_dir = tmp_path / "quality_reports"
     monkeypatch.setattr(document_pipeline_late_phases, "collect_recent_formatting_diagnostics_artifacts", lambda since_epoch_seconds, diagnostics_dir: [])
-    monkeypatch.setattr(document_pipeline_late_phases, "QUALITY_REPORTS_DIR", quality_dir)
+    monkeypatch.setattr(document_pipeline_quality_report_retention, "QUALITY_REPORTS_DIR", quality_dir)
 
     result = _run_processing(
         runtime,
@@ -3069,7 +3070,7 @@ def test_run_document_processing_quality_report_uses_pre_display_gate_input_for_
     runtime = _build_runtime_capture()
     quality_dir = tmp_path / "quality_reports"
     monkeypatch.setattr(document_pipeline_late_phases, "collect_recent_formatting_diagnostics_artifacts", lambda since_epoch_seconds, diagnostics_dir: [])
-    monkeypatch.setattr(document_pipeline_late_phases, "QUALITY_REPORTS_DIR", quality_dir)
+    monkeypatch.setattr(document_pipeline_quality_report_retention, "QUALITY_REPORTS_DIR", quality_dir)
 
     result = _run_processing(
         runtime,
@@ -3112,7 +3113,7 @@ def test_run_document_processing_applies_residual_bullet_cleanup_before_display_
     runtime = _build_runtime_capture()
     quality_dir = tmp_path / "quality_reports"
     monkeypatch.setattr(document_pipeline_late_phases, "collect_recent_formatting_diagnostics_artifacts", lambda since_epoch_seconds, diagnostics_dir: [])
-    monkeypatch.setattr(document_pipeline_late_phases, "QUALITY_REPORTS_DIR", quality_dir)
+    monkeypatch.setattr(document_pipeline_quality_report_retention, "QUALITY_REPORTS_DIR", quality_dir)
 
     result = _run_processing(
         runtime,
@@ -3141,7 +3142,7 @@ def test_run_document_processing_normalizes_list_fragment_regressions_before_qua
     runtime = _build_runtime_capture()
     quality_dir = tmp_path / "quality_reports"
     monkeypatch.setattr(document_pipeline_late_phases, "collect_recent_formatting_diagnostics_artifacts", lambda since_epoch_seconds, diagnostics_dir: [])
-    monkeypatch.setattr(document_pipeline_late_phases, "QUALITY_REPORTS_DIR", quality_dir)
+    monkeypatch.setattr(document_pipeline_quality_report_retention, "QUALITY_REPORTS_DIR", quality_dir)
 
     result = _run_processing(
         runtime,
@@ -3175,7 +3176,7 @@ def test_run_document_processing_uses_runtime_normalized_markdown_for_docx_build
     quality_dir = tmp_path / "quality_reports"
     captured = {}
     monkeypatch.setattr(document_pipeline_late_phases, "collect_recent_formatting_diagnostics_artifacts", lambda since_epoch_seconds, diagnostics_dir: [])
-    monkeypatch.setattr(document_pipeline_late_phases, "QUALITY_REPORTS_DIR", quality_dir)
+    monkeypatch.setattr(document_pipeline_quality_report_retention, "QUALITY_REPORTS_DIR", quality_dir)
 
     result = _run_processing(
         runtime,
@@ -3199,7 +3200,7 @@ def test_run_document_processing_normalizes_mixed_script_before_quality_gate(tmp
     runtime = _build_runtime_capture()
     quality_dir = tmp_path / "quality_reports"
     monkeypatch.setattr(document_pipeline_late_phases, "collect_recent_formatting_diagnostics_artifacts", lambda since_epoch_seconds, diagnostics_dir: [])
-    monkeypatch.setattr(document_pipeline_late_phases, "QUALITY_REPORTS_DIR", quality_dir)
+    monkeypatch.setattr(document_pipeline_quality_report_retention, "QUALITY_REPORTS_DIR", quality_dir)
 
     result = _run_processing(
         runtime,
@@ -3227,7 +3228,7 @@ def test_run_document_processing_flags_untranslated_structural_heading_for_revie
     runtime = _build_runtime_capture()
     quality_dir = tmp_path / "quality_reports"
     monkeypatch.setattr(document_pipeline_late_phases, "collect_recent_formatting_diagnostics_artifacts", lambda since_epoch_seconds, diagnostics_dir: [])
-    monkeypatch.setattr(document_pipeline_late_phases, "QUALITY_REPORTS_DIR", quality_dir)
+    monkeypatch.setattr(document_pipeline_quality_report_retention, "QUALITY_REPORTS_DIR", quality_dir)
 
     result = _run_processing(
         runtime,
@@ -3301,7 +3302,7 @@ def test_run_document_processing_fails_large_untranslated_body_text(tmp_path, mo
     runtime = _build_runtime_capture()
     quality_dir = tmp_path / "quality_reports"
     monkeypatch.setattr(document_pipeline_late_phases, "collect_recent_formatting_diagnostics_artifacts", lambda since_epoch_seconds, diagnostics_dir: [])
-    monkeypatch.setattr(document_pipeline_late_phases, "QUALITY_REPORTS_DIR", quality_dir)
+    monkeypatch.setattr(document_pipeline_quality_report_retention, "QUALITY_REPORTS_DIR", quality_dir)
     untranslated_body = (
         "This framework has been tested using years of quantitative data collected about how biomass "
         "flows through natural ecosystems. Natural ecosystems are large complex flow networks that "
@@ -4511,7 +4512,7 @@ def test_run_document_processing_quality_report_uses_same_final_markdown_as_runt
     runtime = _build_runtime_capture()
     quality_dir = tmp_path / "quality_reports"
     monkeypatch.setattr(document_pipeline_late_phases, "collect_recent_formatting_diagnostics_artifacts", lambda since_epoch_seconds, diagnostics_dir: [])
-    monkeypatch.setattr(document_pipeline_late_phases, "QUALITY_REPORTS_DIR", quality_dir)
+    monkeypatch.setattr(document_pipeline_quality_report_retention, "QUALITY_REPORTS_DIR", quality_dir)
 
     final_markdown = "На людей, получивших начертание зверя и поклонявшихся его образу, приходят язвы."
     result = _run_processing(
@@ -4548,7 +4549,7 @@ def test_run_document_processing_warns_on_legacy_markdown_toc_concat_quality_gat
     runtime = _build_runtime_capture()
     quality_dir = tmp_path / "quality_reports"
     monkeypatch.setattr(document_pipeline_late_phases, "collect_recent_formatting_diagnostics_artifacts", lambda since_epoch_seconds, diagnostics_dir: [])
-    monkeypatch.setattr(document_pipeline_late_phases, "QUALITY_REPORTS_DIR", quality_dir)
+    monkeypatch.setattr(document_pipeline_quality_report_retention, "QUALITY_REPORTS_DIR", quality_dir)
 
     result = _run_processing(
         runtime,
@@ -5033,7 +5034,7 @@ def test_run_document_processing_warns_on_advisory_structural_markdown_quality_g
     quality_dir = tmp_path / "quality_reports"
     artifact_calls = {}
     monkeypatch.setattr(document_pipeline_late_phases, "collect_recent_formatting_diagnostics_artifacts", lambda since_epoch_seconds, diagnostics_dir: [])
-    monkeypatch.setattr(document_pipeline_late_phases, "QUALITY_REPORTS_DIR", quality_dir)
+    monkeypatch.setattr(document_pipeline_quality_report_retention, "QUALITY_REPORTS_DIR", quality_dir)
 
     result = _run_processing(
         runtime,

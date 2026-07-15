@@ -19,6 +19,7 @@ from docxaicorrector.core.models import LayoutArtifactCleanupDecision, LayoutArt
 from docxaicorrector.core.models import ParagraphUnit
 import docxaicorrector.pipeline._pipeline as document_pipeline
 import docxaicorrector.pipeline.late_phases as document_pipeline_late_phases
+import docxaicorrector.pipeline.quality_report_retention as document_pipeline_quality_report_retention
 
 
 PNG_BYTES = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aK3cAAAAASUVORK5CYII=")
@@ -872,7 +873,7 @@ def test_prod_pipeline_quality_report_matches_validation_harness_replay_basis(tm
     quality_dir.mkdir(parents=True, exist_ok=True)
 
     monkeypatch.setattr(document_pipeline, "FORMATTING_DIAGNOSTICS_DIR", diagnostics_dir)
-    monkeypatch.setattr(document_pipeline_late_phases, "QUALITY_REPORTS_DIR", quality_dir)
+    monkeypatch.setattr(document_pipeline_quality_report_retention, "QUALITY_REPORTS_DIR", quality_dir)
 
     runtime = {"state": {}, "finalize": [], "activity": [], "log": [], "status": []}
 
