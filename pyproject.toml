@@ -28,6 +28,15 @@ pdf-import = [
 [tool.setuptools.packages.find]
 where = ["src"]
 
+# Ship read-only resources (prompts + default config.toml) inside the wheel so
+# `import docxaicorrector` and default-config loading work from an installed
+# package with no repository checkout (spec 025 / A2).
+[tool.setuptools.package-data]
+docxaicorrector = [
+  "resources/config.toml",
+  "resources/prompts/**/*",
+]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src", "."]

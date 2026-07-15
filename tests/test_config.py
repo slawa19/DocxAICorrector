@@ -21,10 +21,14 @@ from tests.conftest import (
 
 def test_constants_paths_resolve_to_repo_root() -> None:
     repo_root = Path(__file__).resolve().parents[1]
+    resources = repo_root / "src" / "docxaicorrector" / "resources"
 
+    # Working root (writable) stays at the repo root in a checkout.
     assert constants.BASE_DIR == repo_root
-    assert constants.CONFIG_PATH == repo_root / "config.toml"
-    assert constants.PROMPTS_DIR == repo_root / "prompts"
+    # Read-only resources are packaged (spec 025 / A2), not at the repo root.
+    assert constants.RESOURCE_ROOT == resources
+    assert constants.CONFIG_PATH == resources / "config.toml"
+    assert constants.PROMPTS_DIR == resources / "prompts"
     assert constants.ENV_PATH == repo_root / ".env"
     assert constants.RUN_DIR == repo_root / ".run"
     assert constants.UI_RESULT_ARTIFACTS_DIR == repo_root / ".run" / "ui_results"

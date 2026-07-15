@@ -1,19 +1,36 @@
+import os
 from pathlib import Path
 
 
 def resolve_repo_root(start: Path) -> Path:
+    """Best-effort writable working root.
+
+    In a dev checkout this is the repository root, identified by the stable
+    ``pyproject.toml`` + ``scripts/`` marker. When the package is installed as a
+    wheel (no checkout on disk) it falls back to ``DOCX_AI_HOME`` or the current
+    working directory, so runtime artifacts land somewhere writable instead of
+    raising at import time. Read-only resources (prompts/config) do NOT use this —
+    they ship inside the package (see RESOURCE_ROOT)."""
     start = start.resolve()
     for candidate in (start, *start.parents):
-        if (candidate / "config.toml").exists() and (candidate / "prompts").is_dir() and (candidate / "pyproject.toml").exists():
+        if (candidate / "pyproject.toml").exists() and (candidate / "scripts").is_dir():
             return candidate
-    raise RuntimeError("Could not resolve DocxAICorrector repository root")
+    override = os.environ.get("DOCX_AI_HOME", "").strip()
+    return Path(override).resolve() if override else Path.cwd().resolve()
 
 
-BASE_DIR = resolve_repo_root(Path(__file__).resolve())
-PROMPTS_DIR = BASE_DIR / "prompts"
-ENV_PATH = BASE_DIR / ".env"
-CONFIG_PATH = BASE_DIR / "config.toml"
+# Read-only packaged resources (prompts + default config). Resolved relative to
+# this module, so `import docxaicorrector` works from an installed wheel with no
+# repository checkout on the path.
+RESOURCE_ROOT = Path(__file__).resolve().parent.parent / "resources"
+PROMPTS_DIR = RESOURCE_ROOT / "prompts"
+CONFIG_PATH = RESOURCE_ROOT / "config.toml"
 SYSTEM_PROMPT_PATH = PROMPTS_DIR / "system_prompt.txt"
+
+# Writable working root: runtime artifacts, .env, and logs. Repo root in a
+# checkout; DOCX_AI_HOME / cwd when installed.
+BASE_DIR = resolve_repo_root(Path(__file__).resolve())
+ENV_PATH = BASE_DIR / ".env"
 RUN_DIR = BASE_DIR / ".run"
 UI_RESULT_ARTIFACTS_DIR = RUN_DIR / "ui_results"
 STRUCTURE_MANIFESTS_DIR = RUN_DIR / "structure_manifests"

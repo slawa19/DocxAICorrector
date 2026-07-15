@@ -1955,7 +1955,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     run_dir.mkdir(parents=True, exist_ok=True)
 
     _write_text(run_dir / "judge_prompt.snapshot.txt", config.judge_prompt_text + "\n")
-    production_prompt_path = REPO_ROOT / "prompts" / "structure_recognition_system.txt"
+    production_prompt_path = REPO_ROOT / "src" / "docxaicorrector" / "resources" / "prompts" / "structure_recognition_system.txt"
     _write_text(run_dir / "resolved_production_structure_prompt.snapshot.txt", production_prompt_path.read_text(encoding="utf-8"))
     _write_text(run_dir / "benchmark_config.snapshot.toml", _render_config_snapshot(config))
 

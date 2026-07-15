@@ -14,7 +14,7 @@ RUNTIME_SURFACES = (
 # Explicitly allowed locations for canonical model literals that should not be
 # treated as runtime drift: config defaults, docs/examples, and test fixtures.
 MODEL_LITERAL_ALLOWLIST = (
-    PROJECT_ROOT / "config.toml",
+    PROJECT_ROOT / "src" / "docxaicorrector" / "resources" / "config.toml",
     PROJECT_ROOT / "docs",
     PROJECT_ROOT / "tests",
 )
