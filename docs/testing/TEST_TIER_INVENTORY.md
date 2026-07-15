@@ -83,6 +83,7 @@ This inventory is intentionally pragmatic:
 
 - `tests/test_dependency_consistency.py`
 - `tests/test_documentation_links.py`
+- `tests/test_layer_boundaries.py`
 - `tests/test_network_hardening_defaults.py`
 - `tests/test_script_contract_static.py`
 - `tests/test_script_log_retention.py`

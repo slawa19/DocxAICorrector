@@ -14,6 +14,7 @@ import docxaicorrector.processing.restart_store as restart_store
 import docxaicorrector.runtime.artifacts as runtime_artifacts
 import docxaicorrector.runtime.state as state
 import docxaicorrector.ui.application_flow as application_flow
+import docxaicorrector.processing.application_flow as flow_core
 from conftest import SessionState as SessionState  # noqa: F811
 from docx import Document
 from docxaicorrector.document.segments import DocumentContextProfile, DocumentSegment, SegmentBoundaryEvidence, SegmentDetectionReport, SegmentOutlineEntry
@@ -63,7 +64,7 @@ def _freeze_uploaded_file(name: str, content: bytes):
 
 
 def test_prepare_run_context_updates_selected_token_and_prepared_key(monkeypatch):
-    monkeypatch.setattr(application_flow, "validate_docx_source_bytes", lambda source_bytes: None)
+    monkeypatch.setattr(flow_core, "validate_docx_source_bytes", lambda source_bytes: None)
     session_state = SessionState(
         selected_source_token="",
         prepared_source_key="",
@@ -138,7 +139,7 @@ def test_sync_selected_file_context_delegates_selected_token_write_to_state(monk
         if session_state is not None:
             session_state.selected_source_token = token
 
-    monkeypatch.setattr(application_flow, "set_selected_source_token", record_selected_token)
+    monkeypatch.setattr(flow_core, "set_selected_source_token", record_selected_token)
 
     application_flow.sync_selected_file_context(
         session_state=session_state,
@@ -151,7 +152,7 @@ def test_sync_selected_file_context_delegates_selected_token_write_to_state(monk
 
 
 def test_prepare_run_context_raises_on_empty_job_target(monkeypatch):
-    monkeypatch.setattr(application_flow, "validate_docx_source_bytes", lambda source_bytes: None)
+    monkeypatch.setattr(flow_core, "validate_docx_source_bytes", lambda source_bytes: None)
     session_state = SessionState(selected_source_token="", prepared_source_key="")
     failures = []
 
@@ -189,7 +190,7 @@ def test_prepare_run_context_raises_on_empty_job_target(monkeypatch):
 
 
 def test_prepare_run_context_raises_on_none_job_target(monkeypatch):
-    monkeypatch.setattr(application_flow, "validate_docx_source_bytes", lambda source_bytes: None)
+    monkeypatch.setattr(flow_core, "validate_docx_source_bytes", lambda source_bytes: None)
     session_state = SessionState(selected_source_token="", prepared_source_key="")
     failures = []
 
@@ -227,7 +228,7 @@ def test_prepare_run_context_raises_on_none_job_target(monkeypatch):
 
 
 def test_prepare_run_context_keeps_best_effort_warning_when_quality_gate_warns(monkeypatch):
-    monkeypatch.setattr(application_flow, "validate_docx_source_bytes", lambda source_bytes: None)
+    monkeypatch.setattr(flow_core, "validate_docx_source_bytes", lambda source_bytes: None)
     session_state = SessionState(selected_source_token="", prepared_source_key="")
     failures = []
 
@@ -266,7 +267,7 @@ def test_prepare_run_context_keeps_best_effort_warning_when_quality_gate_warns(m
 
 
 def test_prepare_run_context_copies_segment_fields_from_prepared_document(monkeypatch):
-    monkeypatch.setattr(application_flow, "validate_docx_source_bytes", lambda source_bytes: None)
+    monkeypatch.setattr(flow_core, "validate_docx_source_bytes", lambda source_bytes: None)
     session_state = SessionState(selected_source_token="", prepared_source_key="")
     document_context_profile = DocumentContextProfile(
         outline_entries=(SegmentOutlineEntry(segment_id="seg_0001_abcd1234", title="Chapter 1", level=1),),
@@ -344,7 +345,7 @@ def test_document_facade_build_semantic_blocks_forwards_hard_boundaries(monkeypa
 
 
 def test_prepare_run_context_keeps_other_completed_source_tokens(monkeypatch):
-    monkeypatch.setattr(application_flow, "validate_docx_source_bytes", lambda source_bytes: None)
+    monkeypatch.setattr(flow_core, "validate_docx_source_bytes", lambda source_bytes: None)
     session_state = SessionState(
         selected_source_token="",
         prepared_source_key="",
@@ -404,7 +405,7 @@ def test_prepare_run_context_reports_invalid_archive_via_fail_critical(monkeypat
     validated = []
     failures = []
 
-    monkeypatch.setattr(application_flow, "validate_docx_source_bytes", lambda source_bytes: validated.append(source_bytes) or (_ for _ in ()).throw(RuntimeError("bad archive")))
+    monkeypatch.setattr(flow_core, "validate_docx_source_bytes", lambda source_bytes: validated.append(source_bytes) or (_ for _ in ()).throw(RuntimeError("bad archive")))
 
     def fail_critical_stub(event, message, **context):
         failures.append((event, message, context))
@@ -433,7 +434,7 @@ def test_prepare_run_context_reports_broken_relationships_via_fail_critical(monk
     failures = []
 
     monkeypatch.setattr(
-        application_flow,
+        flow_core,
         "validate_docx_source_bytes",
         lambda source_bytes: validated.append(source_bytes)
         or (_ for _ in ()).throw(RuntimeError("broken relationship target: rId5")),
@@ -468,7 +469,7 @@ def test_prepare_run_context_reports_suspicious_uncompressed_archive_via_fail_cr
     failures = []
 
     monkeypatch.setattr(
-        application_flow,
+        flow_core,
         "validate_docx_source_bytes",
         lambda source_bytes: validated.append(source_bytes)
         or (_ for _ in ()).throw(RuntimeError("DOCX-архив слишком велик после распаковки и отклонен из соображений безопасности.")),
@@ -507,7 +508,7 @@ def test_prepare_run_context_reports_absolute_archive_paths_via_fail_critical(mo
     failures = []
 
     monkeypatch.setattr(
-        application_flow,
+        flow_core,
         "validate_docx_source_bytes",
         lambda source_bytes: validated.append(source_bytes)
         or (_ for _ in ()).throw(RuntimeError("DOCX-архив содержит абсолютные пути и отклонён из соображений безопасности.")),
@@ -546,7 +547,7 @@ def test_prepare_run_context_reports_encrypted_or_protected_input_via_fail_criti
     failures = []
 
     monkeypatch.setattr(
-        application_flow,
+        flow_core,
         "validate_docx_source_bytes",
         lambda source_bytes: validated.append(source_bytes)
         or (_ for _ in ()).throw(RuntimeError("Документ защищён паролем или шифрованием и не может быть обработан.")),
@@ -586,12 +587,12 @@ def test_prepare_run_context_normalizes_legacy_doc_before_validation(monkeypatch
     freeze_calls = []
 
     monkeypatch.setattr(
-        application_flow,
+        flow_core,
         "freeze_uploaded_file",
         lambda uploaded_file: freeze_calls.append(uploaded_file.name)
         or SimpleNamespace(filename="legacy.docx", content_bytes=b"converted-docx", file_token="legacy.docx:6:mocked"),
     )
-    monkeypatch.setattr(application_flow, "validate_docx_source_bytes", lambda source_bytes: validated.append(source_bytes) or None)
+    monkeypatch.setattr(flow_core, "validate_docx_source_bytes", lambda source_bytes: validated.append(source_bytes) or None)
 
     prepared_document = SimpleNamespace(
         source_text="text",
@@ -635,12 +636,12 @@ def test_prepare_run_context_normalizes_pdf_before_validation(monkeypatch):
     freeze_calls = []
 
     monkeypatch.setattr(
-        application_flow,
+        flow_core,
         "freeze_uploaded_file",
         lambda uploaded_file: freeze_calls.append(uploaded_file.name)
         or SimpleNamespace(filename="source.docx", content_bytes=b"PK\x03\x04converted-docx", file_token="source.docx:16:mocked"),
     )
-    monkeypatch.setattr(application_flow, "validate_docx_source_bytes", lambda source_bytes: validated.append(source_bytes) or None)
+    monkeypatch.setattr(flow_core, "validate_docx_source_bytes", lambda source_bytes: validated.append(source_bytes) or None)
 
     prepared_document = SimpleNamespace(
         source_text="text",
@@ -682,7 +683,7 @@ def test_prepare_run_context_reports_doc_conversion_failure_via_fail_critical(mo
     failures = []
 
     monkeypatch.setattr(
-        application_flow,
+        flow_core,
         "freeze_uploaded_file",
         lambda uploaded_file: (_ for _ in ()).throw(RuntimeError("converter missing")),
     )
@@ -712,7 +713,7 @@ def test_prepare_run_context_reports_pdf_conversion_failure_via_fail_critical(mo
     failures = []
 
     monkeypatch.setattr(
-        application_flow,
+        flow_core,
         "freeze_uploaded_file",
         lambda uploaded_file: (_ for _ in ()).throw(RuntimeError("pdf converter missing")),
     )
@@ -743,13 +744,13 @@ def test_prepare_run_context_sync_path_freezes_upload_once(monkeypatch):
     validate_calls = []
 
     monkeypatch.setattr(
-        application_flow,
+        flow_core,
         "freeze_uploaded_file",
         lambda uploaded_file: freeze_calls.append(uploaded_file.name)
         or SimpleNamespace(filename="legacy.docx", content_bytes=b"converted-docx", file_token="legacy.docx:token"),
     )
     monkeypatch.setattr(
-        application_flow,
+        flow_core,
         "validate_docx_source_bytes",
         lambda source_bytes: validate_calls.append(source_bytes),
     )
@@ -940,7 +941,7 @@ def test_has_restartable_source_returns_false_when_restart_file_was_removed(tmp_
 
 
 def test_prepare_run_context_for_background_uses_frozen_upload_payload(monkeypatch):
-    monkeypatch.setattr(application_flow, "validate_docx_source_bytes", lambda source_bytes: None)
+    monkeypatch.setattr(flow_core, "validate_docx_source_bytes", lambda source_bytes: None)
     captured = {}
     prepared_document = SimpleNamespace(
         source_text="text",
@@ -970,7 +971,7 @@ def test_prepare_run_context_for_background_uses_frozen_upload_payload(monkeypat
 
 
 def test_prepare_run_context_for_background_uses_real_cache(monkeypatch):
-    monkeypatch.setattr(application_flow, "validate_docx_source_bytes", lambda source_bytes: None)
+    monkeypatch.setattr(flow_core, "validate_docx_source_bytes", lambda source_bytes: None)
     preparation.clear_preparation_cache(clear_shared=True)
     calls = {"extract": 0}
     progress_events = []
@@ -1195,9 +1196,9 @@ def test_background_handoff_persists_result_bundle_and_ui_artifacts(tmp_path, mo
 
 
 def test_prepare_run_context_for_background_skips_renormalization_for_frozen_payload(monkeypatch):
-    monkeypatch.setattr(application_flow, "validate_docx_source_bytes", lambda source_bytes: None)
+    monkeypatch.setattr(flow_core, "validate_docx_source_bytes", lambda source_bytes: None)
     monkeypatch.setattr(
-        application_flow,
+        flow_core,
         "freeze_uploaded_file",
         lambda uploaded_file: (_ for _ in ()).throw(AssertionError("unexpected refreeze")),
     )
@@ -1225,7 +1226,7 @@ def test_prepare_run_context_for_background_skips_renormalization_for_frozen_pay
 
 
 def test_prepare_run_context_sync_and_background_share_same_upload_contract(monkeypatch):
-    monkeypatch.setattr(application_flow, "validate_docx_source_bytes", lambda source_bytes: None)
+    monkeypatch.setattr(flow_core, "validate_docx_source_bytes", lambda source_bytes: None)
     prepared_document = SimpleNamespace(
         source_text="text",
         paragraphs=["p1"],

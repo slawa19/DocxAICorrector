@@ -9,7 +9,7 @@ from uuid import uuid4
 from dataclasses import dataclass
 
 if TYPE_CHECKING:
-    from docxaicorrector.ui.application_flow import PreparedRunContext
+    from docxaicorrector.processing.application_flow import PreparedRunContext
 from datetime import datetime
 
 import streamlit as st
@@ -281,7 +281,7 @@ def is_preparation_failed_for_marker(upload_marker: str) -> bool:
 
 
 def get_prepared_run_context_for_marker(upload_marker: str) -> PreparedRunContext | None:
-    from docxaicorrector.ui.application_flow import PreparedRunContext as _PRC
+    from docxaicorrector.processing.application_flow import PreparedRunContext as _PRC
 
     snapshot = get_preparation_state()
     if snapshot.input_marker == upload_marker and snapshot.failed_marker != upload_marker:

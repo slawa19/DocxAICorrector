@@ -352,12 +352,12 @@ def test_run_prepared_background_document_uses_preparation_and_job_mutator(monke
 
     monkeypatch.setattr(processing_service, "freeze_uploaded_file", lambda uploaded_file: {"frozen": uploaded_file})
     monkeypatch.setattr(
-        processing_service.application_flow,
+        processing_service,
         "prepare_document_for_processing",
         lambda **kwargs: captured.setdefault("prepare_document", kwargs) or object(),
     )
     monkeypatch.setattr(
-        processing_service.application_flow,
+        processing_service,
         "prepare_run_context_for_background",
         lambda **kwargs: (
             kwargs["prepare_document_for_processing_fn"](
@@ -436,12 +436,12 @@ def test_run_prepared_background_document_uses_model_aware_client_factory_for_pr
 
     monkeypatch.setattr(processing_service, "freeze_uploaded_file", lambda uploaded_file: {"frozen": uploaded_file})
     monkeypatch.setattr(
-        processing_service.application_flow,
+        processing_service,
         "prepare_document_for_processing",
         lambda **kwargs: captured.setdefault("prepare_document", kwargs) or object(),
     )
     monkeypatch.setattr(
-        processing_service.application_flow,
+        processing_service,
         "prepare_run_context_for_background",
         lambda **kwargs: (
             kwargs["prepare_document_for_processing_fn"](
@@ -511,12 +511,12 @@ def test_run_prepared_background_document_model_factory_uses_default_when_select
 
     monkeypatch.setattr(processing_service, "freeze_uploaded_file", lambda uploaded_file: {"frozen": uploaded_file})
     monkeypatch.setattr(
-        processing_service.application_flow,
+        processing_service,
         "prepare_document_for_processing",
         lambda **kwargs: captured.setdefault("prepare_document", kwargs) or object(),
     )
     monkeypatch.setattr(
-        processing_service.application_flow,
+        processing_service,
         "prepare_run_context_for_background",
         lambda **kwargs: (
             kwargs["prepare_document_for_processing_fn"](
@@ -581,7 +581,7 @@ def test_run_prepared_background_document_passes_prepared_payload_into_processin
 
     monkeypatch.setattr(processing_service, "freeze_uploaded_file", lambda uploaded_file: uploaded_file)
     monkeypatch.setattr(
-        processing_service.application_flow,
+        processing_service,
         "prepare_run_context_for_background",
         lambda **kwargs: prepared,
     )
@@ -653,7 +653,7 @@ def test_run_prepared_background_document_passes_selected_segment_ids_none_when_
 
     monkeypatch.setattr(processing_service, "freeze_uploaded_file", lambda uploaded_file: uploaded_file)
     monkeypatch.setattr(
-        processing_service.application_flow,
+        processing_service,
         "prepare_run_context_for_background",
         lambda **kwargs: prepared,
     )
@@ -788,7 +788,7 @@ def test_run_prepared_background_document_supports_distinct_prepare_and_processi
     service = _build_service(run_document_processing_impl_fn=_run_document_processing_impl)
     monkeypatch.setattr(processing_service, "freeze_uploaded_file", lambda uploaded_file: uploaded_file)
     monkeypatch.setattr(
-        processing_service.application_flow,
+        processing_service,
         "prepare_run_context_for_background",
         _prepare_run_context_for_background,
     )
@@ -821,7 +821,7 @@ def test_run_prepared_background_document_emits_controlled_failure_when_preparat
 
     monkeypatch.setattr(processing_service, "freeze_uploaded_file", lambda uploaded_file: uploaded_file)
     monkeypatch.setattr(
-        processing_service.application_flow,
+        processing_service,
         "prepare_run_context_for_background",
         lambda **kwargs: (_ for _ in ()).throw(ValueError("quality gate blocked")),
     )

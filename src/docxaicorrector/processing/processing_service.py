@@ -52,7 +52,8 @@ from docxaicorrector.processing.processing_runtime import (
     resolve_uploaded_filename,
     should_stop_processing,
 )
-import docxaicorrector.ui.application_flow as application_flow
+from docxaicorrector.processing.application_flow import PreparedRunContext, prepare_run_context_for_background
+from docxaicorrector.processing.preparation import prepare_document_for_processing
 from docxaicorrector.runtime.events import AppendLogEvent, FinalizeProcessingStatusEvent, PushActivityEvent, SetStateEvent, WorkerCompleteEvent
 from docxaicorrector.runtime.state import append_image_log, append_log, finalize_processing_status, push_activity, set_processing_status
 
@@ -352,7 +353,7 @@ class ProcessingService:
         prepare_progress_callback=None,
         processing_progress_callback=None,
         runtime=None,
-    ) -> tuple[str, application_flow.PreparedRunContext]:
+    ) -> tuple[str, PreparedRunContext]:
         deps = self.dependencies
         resolved_prepare_progress_callback = prepare_progress_callback or progress_callback
         resolved_processing_progress_callback = processing_progress_callback or progress_callback or (lambda **kwargs: None)
@@ -371,14 +372,14 @@ class ProcessingService:
             return client_factory() if callable(client_factory) else client_factory
 
         try:
-            prepared = application_flow.prepare_run_context_for_background(
+            prepared = prepare_run_context_for_background(
                 uploaded_payload=uploaded_payload,
                 chunk_size=chunk_size,
                 image_mode=image_mode,
                 keep_all_image_variants=keep_all_image_variants,
                 processing_operation=processing_operation,
                 app_config=app_config,
-                prepare_document_for_processing_fn=lambda **kwargs: application_flow.prepare_document_for_processing(
+                prepare_document_for_processing_fn=lambda **kwargs: prepare_document_for_processing(
                     get_client_fn=_prepare_client_factory,
                     **kwargs,
                 ),
