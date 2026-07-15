@@ -58,6 +58,7 @@ This inventory is intentionally pragmatic:
 - `tests/test_root_typing_stubs.py`
 - `tests/test_runtime_artifact_retention.py`
 - `tests/test_runtime_artifacts.py`
+- `tests/test_session_artifact_isolation.py`
 - `tests/test_session_state_ownership.py`
 - `tests/test_spec_image_followup.py`
 - `tests/test_spec_image_level1.py`
@@ -80,6 +81,9 @@ This inventory is intentionally pragmatic:
 
 ## Static-Workflow
 
+- `tests/test_dependency_consistency.py`
+- `tests/test_documentation_links.py`
+- `tests/test_network_hardening_defaults.py`
 - `tests/test_script_contract_static.py`
 - `tests/test_script_log_retention.py`
 
@@ -100,6 +104,7 @@ This inventory is intentionally pragmatic:
 
 ## System-Deps
 
+- `tests/test_package_install_smoke.py`
 - `tests/test_real_document_validation_corpus.py`
 
 ## Manual-AI-Heavy
