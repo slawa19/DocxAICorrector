@@ -22,6 +22,8 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 # CI stayed red for ~2 months. Baseline set to the honest clean count 244 on 2026-07-10.
 # 2026-07-14: pinned pyright==1.1.409 (was unpinned >=1.1.400) so the count is
 # deterministic. On a CLEAN checkout that count is 244 (verified in a fresh worktree).
+# 2026-07-15 (spec 028): pyrightconfig pythonVersion aligned 3.13 -> 3.12 to match
+# requires-python/CI; the clean-tree count is unchanged at 244.
 # CAUTION: a DIRTY worktree inflates this — untracked experiment scripts under tests/
 # (e.g. tests/artifacts/**/run_reader_cleanup_replay_experiment.py) add ~32 errors that
 # CI's `git clean -fdx` removes. Always measure on a clean checkout.
