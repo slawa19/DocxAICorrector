@@ -1,7 +1,7 @@
 import logging
 import re
 import time
-from collections.abc import Callable, Collection, Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, cast
@@ -21,12 +21,6 @@ from docxaicorrector.pipeline.output_validation import (
     collect_residual_bullet_glyph_samples,
     collect_theology_style_issue_samples,
     has_toc_body_concat_markdown,
-    normalize_false_fragment_headings_markdown,
-    normalize_heading_match_text,
-    normalize_list_fragment_regressions_markdown,
-    normalize_mixed_script_markdown,
-    normalize_page_placeholder_heading_concats_markdown,
-    normalize_residual_bullet_glyphs_markdown,
 )
 from docxaicorrector.pipeline.reassembly import (
     build_reassembly_plan,
@@ -101,25 +95,32 @@ from docxaicorrector.pipeline.reader_cleanup_rebuild import (  # noqa: F401
 from docxaicorrector.pipeline.reader_cleanup_postprocess import (  # noqa: F401
     _run_reader_cleanup_postprocess,
 )
+from docxaicorrector.pipeline.runtime_display_markdown import (  # noqa: F401
+    _BULLET_MARKDOWN_HEADING_PATTERN,
+    _DOCX_IMAGE_HEADING_CONCAT_PATTERN,
+    _DOCX_INTERNAL_PLACEHOLDER_PATTERN,
+    _MARKDOWN_HEADING_LINE_PATTERN,
+    _REVIEW_ANCHOR_HEADING_MARKER_PATTERN,
+    _apply_runtime_display_hygiene_cleanup,
+    _apply_runtime_display_structure_compatibility_cleanup,
+    _normalize_final_markdown_for_display_hygiene_reporting,
+    _normalize_final_markdown_for_quality_gate,
+    _normalize_final_markdown_for_runtime_display,
+    _normalize_heading_match_text,
+    _registry_heading_markdown_lines,
+    _registry_protected_heading_texts,
+    _resolve_runtime_display_markdown,
+    _restore_image_heading_lines_from_registry,
+)
+from docxaicorrector.pipeline.terminal_results import (  # noqa: F401
+    _emit_terminal_result,
+    emit_failed_result,
+    emit_stopped_result,
+    fail_empty_processing_plan,
+)
 
 
 PipelineResult = Literal["succeeded", "failed", "stopped"]
-
-
-_BULLET_MARKDOWN_HEADING_PATTERN = re.compile(r"(?m)^\s{0,3}#{1,6}\s*[\u2022\u25cf\u25e6\u2023*\-]\s*$")
-_DOCX_IMAGE_HEADING_CONCAT_PATTERN = re.compile(
-    r"^(?P<indent>\s*)(?P<placeholder>\[\[DOCX_IMAGE_[A-Za-z0-9_]+\]\])\s+(?P<text>\S.*)$"
-)
-_MARKDOWN_HEADING_LINE_PATTERN = re.compile(r"^\s*(?P<marker>#{1,6})\s+(?P<text>\S.*)$")
-# User-facing review anchors must never carry internal paragraph/image ids. Covers both
-# placeholder families (reuses the shapes at _DOCX_IMAGE_PLACEHOLDER_PATTERN and
-# generation/document PARAGRAPH_MARKER_PATTERN); a bare literal "[[" is deliberately NOT
-# matched so real code samples survive (FR-004 anti-regression).
-_DOCX_INTERNAL_PLACEHOLDER_PATTERN = re.compile(r"\[\[DOCX_(?:PARA|IMAGE)_[A-Za-z0-9_]+\]\]")
-# A leading markdown heading marker ("### ") is display noise, not locatable text; strip it
-# only when it is a genuine heading marker (followed by whitespace or end-of-string), so an
-# inline "#hashtag" is left intact.
-_REVIEW_ANCHOR_HEADING_MARKER_PATTERN = re.compile(r"^#{1,6}(?=\s|$)\s*")
 
 
 def _format_translation_quality_gate_failure_message(gate_reasons: Sequence[str]) -> str:
@@ -128,126 +129,6 @@ def _format_translation_quality_gate_failure_message(gate_reasons: Sequence[str]
     if not reasons:
         return f"{base} (translation_quality_gate_failed)"
     return f"{base} (translation_quality_gate_failed) Причины: {', '.join(reasons)}."
-
-
-def _normalize_final_markdown_for_quality_gate(text: str) -> str:
-    normalized = text
-    normalized = re.sub(r"\n{3,}", "\n\n", normalized).strip()
-    if "\n" not in normalized and "\n\n" in text:
-        return text
-    return normalized
-
-
-def _normalize_final_markdown_for_display_hygiene_reporting(text: str) -> str:
-    normalized = normalize_page_placeholder_heading_concats_markdown(text)
-    normalized = normalize_residual_bullet_glyphs_markdown(normalized)
-    normalized = re.sub(r"\n{3,}", "\n\n", normalized).strip()
-    if "\n" not in normalized and "\n\n" in text:
-        return text
-    return normalized
-
-
-def _apply_runtime_display_structure_compatibility_cleanup(
-    text: str,
-    protected_heading_texts: Collection[str] | None = None,
-) -> str:
-    # This output IS the delivered DOCX (rebuilt from runtime_display_markdown below);
-    # it is not display-only. The protected set keeps source-declared headings intact.
-    normalized = normalize_false_fragment_headings_markdown(text, protected_heading_texts=protected_heading_texts)
-    return normalize_list_fragment_regressions_markdown(normalized, protected_heading_texts=protected_heading_texts)
-
-
-def _apply_runtime_display_hygiene_cleanup(text: str) -> str:
-    normalized = normalize_page_placeholder_heading_concats_markdown(text)
-    normalized = normalize_residual_bullet_glyphs_markdown(normalized)
-    return normalize_mixed_script_markdown(normalized)
-
-
-def _normalize_final_markdown_for_runtime_display(
-    text: str,
-    generated_paragraph_registry: Sequence[Mapping[str, object]] | None = None,
-) -> str:
-    protected_heading_texts = _registry_protected_heading_texts(generated_paragraph_registry)
-    normalized = _apply_runtime_display_structure_compatibility_cleanup(text, protected_heading_texts)
-    normalized = _apply_runtime_display_hygiene_cleanup(normalized)
-    normalized = re.sub(r"\n{3,}", "\n\n", normalized).strip()
-    if "\n" not in normalized and "\n\n" in text:
-        return text
-    return normalized
-
-
-def _normalize_heading_match_text(text: str) -> str:
-    # Single source of truth lives in output_validation so the protected-heading
-    # set and the false-fragment cleanup normalize identically.
-    return normalize_heading_match_text(text)
-
-
-def _registry_heading_markdown_lines(
-    generated_paragraph_registry: Sequence[Mapping[str, object]] | None,
-) -> list[tuple[str, str]]:
-    heading_lines: list[tuple[str, str]] = []
-    for entry in generated_paragraph_registry or []:
-        text = str(entry.get("text") or entry.get("generated_text") or "").strip()
-        match = _MARKDOWN_HEADING_LINE_PATTERN.match(text)
-        if match is None:
-            continue
-        heading_text = str(match.group("text") or "").strip()
-        normalized_heading = _normalize_heading_match_text(heading_text)
-        if not normalized_heading:
-            continue
-        heading_lines.append((normalized_heading, f"{match.group('marker')} {heading_text}"))
-    return heading_lines
-
-
-def _registry_protected_heading_texts(
-    generated_paragraph_registry: Sequence[Mapping[str, object]] | None,
-) -> set[str]:
-    # Source-declared heading lines whose role must survive into the delivered DOCX.
-    return {normalized for normalized, _ in _registry_heading_markdown_lines(generated_paragraph_registry)}
-
-
-def _restore_image_heading_lines_from_registry(
-    markdown_text: str,
-    generated_paragraph_registry: Sequence[Mapping[str, object]] | None,
-) -> str:
-    heading_lines = _registry_heading_markdown_lines(generated_paragraph_registry)
-    if not heading_lines:
-        return markdown_text
-
-    restored_lines: list[str] = []
-    changed = False
-    for raw_line in markdown_text.splitlines():
-        match = _DOCX_IMAGE_HEADING_CONCAT_PATTERN.match(raw_line.rstrip())
-        if match is None:
-            restored_lines.append(raw_line.rstrip())
-            continue
-
-        concat_text = str(match.group("text") or "")
-        normalized_concat = _normalize_heading_match_text(concat_text)
-        matched_headings: list[str] = []
-        for normalized_heading, heading_markdown in heading_lines:
-            if normalized_heading in normalized_concat and heading_markdown not in matched_headings:
-                matched_headings.append(heading_markdown)
-        if not matched_headings:
-            restored_lines.append(raw_line.rstrip())
-            continue
-
-        restored_lines.append(f"{match.group('indent')}{match.group('placeholder')}")
-        restored_lines.append("")
-        restored_lines.extend(f"{match.group('indent')}{heading}" for heading in matched_headings)
-        changed = True
-
-    if not changed:
-        return markdown_text
-    return re.sub(r"\n{3,}", "\n\n", "\n".join(restored_lines)).strip()
-
-
-def _resolve_runtime_display_markdown(*, docx_phase: Mapping[str, object], fallback_markdown: str) -> str:
-    runtime_display_markdown = docx_phase.get("runtime_display_markdown")
-    if isinstance(runtime_display_markdown, str) and runtime_display_markdown:
-        return runtime_display_markdown
-
-    return _normalize_final_markdown_for_runtime_display(fallback_markdown)
 
 
 def _serialize_assembly_decisions(decisions: Sequence[object], *, limit: int = 20) -> list[dict[str, object]]:
@@ -2387,129 +2268,6 @@ def _build_quality_gate_activity_message(gate_reasons: Sequence[str]) -> str:
     if not joined_reasons:
         return "Итоговый перевод отклонён document-level quality gate."
     return f"Итоговый перевод отклонён quality gate: {joined_reasons}."
-
-
-def _emit_terminal_result(
-    *,
-    emitters: Any,
-    runtime: object,
-    finalize_stage: str,
-    detail: str,
-    progress: float,
-    terminal_kind: str,
-    activity_message: str,
-    log_status: str,
-    block_index: int,
-    block_count: int,
-    target_chars: int,
-    context_chars: int,
-    log_details: str,
-) -> None:
-    emitters.emit_finalize(runtime, finalize_stage, detail, progress, terminal_kind)
-    emitters.emit_activity(runtime, activity_message)
-    emitters.emit_log(
-        runtime,
-        status=log_status,
-        block_index=block_index,
-        block_count=block_count,
-        target_chars=target_chars,
-        context_chars=context_chars,
-        details=log_details,
-    )
-
-
-def emit_failed_result(
-    *,
-    emitters: Any,
-    runtime: object,
-    finalize_stage: str,
-    detail: str,
-    progress: float,
-    activity_message: str,
-    block_index: int,
-    block_count: int,
-    target_chars: int,
-    context_chars: int,
-    log_details: str,
-) -> PipelineResult:
-    _emit_terminal_result(
-        emitters=emitters,
-        runtime=runtime,
-        finalize_stage=finalize_stage,
-        detail=detail,
-        progress=progress,
-        terminal_kind="error",
-        activity_message=activity_message,
-        log_status="ERROR",
-        block_index=block_index,
-        block_count=block_count,
-        target_chars=target_chars,
-        context_chars=context_chars,
-        log_details=log_details,
-    )
-    return "failed"
-
-
-def emit_stopped_result(
-    *,
-    emitters: Any,
-    runtime: object,
-    detail: str,
-    progress: float,
-    block_index: int,
-    block_count: int,
-) -> PipelineResult:
-    _emit_terminal_result(
-        emitters=emitters,
-        runtime=runtime,
-        finalize_stage="Остановлено пользователем",
-        detail=detail,
-        progress=progress,
-        terminal_kind="stopped",
-        activity_message=detail,
-        log_status="STOP",
-        block_index=block_index,
-        block_count=block_count,
-        target_chars=0,
-        context_chars=0,
-        log_details=detail,
-    )
-    return "stopped"
-
-
-def fail_empty_processing_plan(
-    *,
-    context: Any,
-    dependencies: Any,
-    emitters: Any,
-) -> PipelineResult:
-    error_message = dependencies.present_error(
-        "empty_processing_plan",
-        RuntimeError("План обработки документа пуст."),
-        "Ошибка подготовки обработки",
-        filename=context.uploaded_filename,
-    )
-    emitters.emit_state(
-        context.runtime,
-        last_error=error_message,
-        latest_markdown="",
-        processed_block_markdowns=[],
-        latest_docx_bytes=None,
-        latest_narration_text=None,
-    )
-    return emit_failed_result(
-        emitters=emitters,
-        runtime=context.runtime,
-        finalize_stage="Ошибка подготовки обработки",
-        detail=error_message,
-        progress=0.0,
-        activity_message="Обработка документа остановлена: не найдено ни одного блока для обработки.",
-        block_index=0,
-        block_count=0,
-        target_chars=0,
-        context_chars=0,
-        log_details=error_message,
-    )
 
 
 def run_image_processing_phase(
