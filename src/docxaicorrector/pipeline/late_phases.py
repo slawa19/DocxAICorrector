@@ -29,11 +29,6 @@ from docxaicorrector.pipeline.output_validation import (
     normalize_page_placeholder_heading_concats_markdown,
     normalize_residual_bullet_glyphs_markdown,
 )
-from docxaicorrector.generation.formatting_diagnostics_retention import (
-    collect_recent_formatting_diagnostics,
-    load_formatting_diagnostics_payloads,
-)
-from docxaicorrector.generation._generation import strip_markdown_for_narration
 from docxaicorrector.pipeline.reassembly import (
     build_reassembly_plan,
     build_reassembly_result_manifest,
@@ -45,6 +40,30 @@ from docxaicorrector.pipeline.quality_report_retention import (  # noqa: F401
     QUALITY_REPORTS_MAX_COUNT,
     _prune_quality_reports,
     _write_quality_report_artifact,
+)
+from docxaicorrector.pipeline.formatting_diagnostics_feedback import (  # noqa: F401
+    collect_recent_formatting_diagnostics_artifacts,
+    _load_formatting_diagnostics_payloads,
+    _formatting_diagnostics_requires_user_warning,
+    _build_formatting_diagnostics_user_message,
+    build_formatting_diagnostics_user_feedback,
+)
+from docxaicorrector.pipeline.text_call_support import (  # noqa: F401
+    _require_group_int,
+    _resolve_text_call_target,
+)
+from docxaicorrector.pipeline.narration_postprocess import (  # noqa: F401
+    _ELEVENLABS_TAG_PATTERN,
+    _NARRATION_ANY_TAG_PATTERN,
+    _NARRATION_DISALLOWED_PATTERNS,
+    _build_narration_text,
+    _validate_narration_artifact_text,
+    _should_run_audiobook_postprocess,
+    _collect_narration_chunks,
+    _resolve_audiobook_postprocess_model,
+    _resolve_audiobook_postprocess_chunk_size,
+    _build_narration_postprocess_groups,
+    _run_audiobook_postprocess,
 )
 from docxaicorrector.processing.preparation import humanize_quality_gate_reasons
 from docxaicorrector.validation.formatting_coverage import (
@@ -72,18 +91,6 @@ from docxaicorrector.runtime.artifact_retention import (
 
 
 PipelineResult = Literal["succeeded", "failed", "stopped"]
-_ELEVENLABS_TAG_PATTERN = re.compile(r"\[(?:thoughtful|curious|serious|sad|excited|annoyed|sarcastic|whispers|short pause|long pause|sighs|laughs|chuckles|exhales)\]")
-_NARRATION_ANY_TAG_PATTERN = re.compile(r"\[[^\]\n]{1,40}\]")
-_NARRATION_DISALLOWED_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
-    ("internal_placeholder", re.compile(r"\[\[DOCX_[A-Za-z0-9_]+\]\]")),
-    ("raw_url", re.compile(r"(?:https?://\S+|www\.\S+)", re.IGNORECASE)),
-    ("doi", re.compile(r"\bdoi\s*[:/]?\s*10\.\d{4,9}/\S+", re.IGNORECASE)),
-    ("isbn", re.compile(r"\bisbn\b", re.IGNORECASE)),
-    ("arxiv", re.compile(r"\barxiv\b", re.IGNORECASE)),
-    ("inline_citation", re.compile(r"\((?:ibid\.|там же|[A-ZА-ЯЁ][^()]{0,80}?,\s*(?:19|20)\d{2})[^()]*\)", re.IGNORECASE)),
-    ("superscript_footnote", re.compile(r"[\u00B9\u00B2\u00B3\u2070-\u2079]")),
-    ("markdown_heading", re.compile(r"^\s{0,3}#", re.MULTILINE)),
-)
 READER_CLEANUP_LINEAGE_DIR = Path(".run") / "reader_cleanup_lineage"
 
 
@@ -1562,96 +1569,6 @@ def _log_boundary_recovery_diagnostics(*, dependencies: Any, context: Any, assem
         paragraph_count_drift=getattr(diagnostics, "paragraph_count_drift", 0),
         inconsistent_registry_blocks=list(getattr(diagnostics, "inconsistent_registry_blocks", ()) or ()),
         merge_decisions=_serialize_assembly_decisions(getattr(diagnostics, "merge_decisions", ()) or ()),
-    )
-
-
-def _require_group_int(group: Mapping[str, object], key: str) -> int:
-    value = group[key]
-    if isinstance(value, bool) or not isinstance(value, int):
-        raise TypeError(f"Narration postprocess group field '{key}' must be int, got {type(value).__name__}")
-    return value
-
-
-def collect_recent_formatting_diagnostics_artifacts(*, since_epoch_seconds: float, diagnostics_dir: Path) -> list[str]:
-    return collect_recent_formatting_diagnostics(
-        since_epoch_seconds=since_epoch_seconds,
-        diagnostics_dir=diagnostics_dir,
-    )
-
-
-def _load_formatting_diagnostics_payloads(artifact_paths: Sequence[str]) -> list[dict[str, object]]:
-    return load_formatting_diagnostics_payloads(artifact_paths)
-
-
-def _formatting_diagnostics_requires_user_warning(payload: Mapping[str, object]) -> bool:
-    caption_heading_conflicts = payload.get("caption_heading_conflicts")
-    if isinstance(caption_heading_conflicts, list) and caption_heading_conflicts:
-        return True
-
-    source_count = payload.get("source_count")
-    mapped_count = payload.get("mapped_count")
-    if isinstance(source_count, int) and isinstance(mapped_count, int):
-        if source_count >= 8 and mapped_count == 0:
-            return True
-
-    return False
-
-
-def _build_formatting_diagnostics_user_message(payload: Mapping[str, object], *, warn_user: bool) -> str:
-    source_count = payload.get("source_count")
-    mapped_count = payload.get("mapped_count")
-    unmapped_source_ids = payload.get("unmapped_source_ids")
-    unmapped_source_count = len(unmapped_source_ids) if isinstance(unmapped_source_ids, list) else None
-    caption_heading_conflicts = payload.get("caption_heading_conflicts")
-    caption_conflict_count = len(caption_heading_conflicts) if isinstance(caption_heading_conflicts, list) else 0
-
-    coverage_summary = None
-    if isinstance(mapped_count, int) and isinstance(source_count, int) and source_count > 0:
-        coverage_summary = f"Совпадение найдено для {mapped_count} из {source_count} исходных абзацев"
-        if unmapped_source_count:
-            coverage_summary += f"; без точного соответствия осталось {unmapped_source_count}"
-
-    if warn_user:
-        message = (
-            "DOCX собран, но найдены спорные места форматирования, которые стоит проверить вручную. "
-            "Обычно это означает, что часть подписей, заголовков или абзацной структуры перестроилась при генерации."
-        )
-        if coverage_summary:
-            message += f" {coverage_summary}."
-        if caption_conflict_count:
-            message += f" Конфликтов подписи/заголовка: {caption_conflict_count}."
-        return message
-
-    message = (
-        "DOCX собран. Дополнительное восстановление форматирования было частично пропущено, "
-        "потому что точное сопоставление абзацев нашлось не везде. Это нормально, когда модель объединяет, делит или переформулирует абзацы."
-    )
-    if coverage_summary:
-        message += f" {coverage_summary}."
-    return message
-
-
-def build_formatting_diagnostics_user_feedback(artifact_paths: Sequence[str]) -> tuple[str, str, str]:
-    payloads = _load_formatting_diagnostics_payloads(artifact_paths)
-    if not payloads:
-        return (
-            "INFO",
-            "Сборка DOCX завершена; сохранена служебная диагностика форматирования.",
-            "DOCX собран; сохранена служебная диагностика форматирования.",
-        )
-
-    warning_payloads = [payload for payload in payloads if _formatting_diagnostics_requires_user_warning(payload)]
-    if warning_payloads:
-        return (
-            "WARN",
-            "Сборка DOCX завершена; найдены места, где форматирование стоит проверить вручную.",
-            _build_formatting_diagnostics_user_message(warning_payloads[0], warn_user=True),
-        )
-
-    return (
-        "INFO",
-        "Сборка DOCX завершена; сохранена служебная диагностика форматирования.",
-        _build_formatting_diagnostics_user_message(payloads[0], warn_user=False),
     )
 
 
@@ -4655,223 +4572,3 @@ def finalize_processing_success(
         details=f"весь документ обработан за {time.perf_counter() - state.started_at:.1f} сек.",
     )
     return "succeeded"
-
-
-def _build_narration_text(*, context: Any, dependencies: Any, emitters: Any, state: Any) -> str | None:
-    if context.processing_operation != "audiobook":
-        if not _should_run_audiobook_postprocess(context=context):
-            return None
-        return _run_audiobook_postprocess(
-            context=context,
-            dependencies=dependencies,
-            emitters=emitters,
-            state=state,
-        )
-    narration_source = "\n\n".join(_collect_narration_chunks(state=state))
-    if not narration_source:
-        return None
-    return strip_markdown_for_narration(narration_source)
-
-
-def _validate_narration_artifact_text(narration_text: str) -> None:
-    violations = [name for name, pattern in _NARRATION_DISALLOWED_PATTERNS if pattern.search(narration_text)]
-    disallowed_tags = sorted(
-        {
-            tag
-            for tag in _NARRATION_ANY_TAG_PATTERN.findall(narration_text)
-            if _ELEVENLABS_TAG_PATTERN.fullmatch(tag) is None
-        }
-    )
-    if disallowed_tags:
-        violations.append(f"disallowed_tags={','.join(disallowed_tags[:5])}")
-    if violations:
-        raise RuntimeError("narration_artifact_validation_failed:" + ";".join(violations))
-
-
-def _should_run_audiobook_postprocess(*, context: Any) -> bool:
-    return context.processing_operation in {"edit", "translate"} and bool(
-        context.app_config.get("audiobook_postprocess_enabled", False)
-    )
-
-
-def _collect_narration_chunks(*, state: Any) -> list[str]:
-    return [str(chunk).strip() for chunk in getattr(state, "narration_chunks", []) if str(chunk).strip()]
-
-
-def _resolve_audiobook_postprocess_model(*, context: Any) -> str:
-    configured_model = str(context.app_config.get("audiobook_model", "")).strip()
-    return configured_model or context.model
-
-
-def _resolve_text_call_target(*, selector: str, context: Any, dependencies: Any, fallback_client: object | None) -> tuple[object, str, str, str | None]:
-    resolver: Any = getattr(dependencies, "resolve_model_selector", None)
-    client_factory: Any = getattr(dependencies, "get_client_for_model_selector", None)
-    if not callable(resolver) or not callable(client_factory):
-        if fallback_client is None:
-            raise RuntimeError("Provider-aware text client factory is unavailable for the requested selector.")
-        return fallback_client, selector, selector, None
-
-    resolved_selector: Any = resolver(selector, "responses_text")
-    return (
-        client_factory(selector, "responses_text"),
-        resolved_selector.model_id,
-        resolved_selector.canonical_selector,
-        resolved_selector.provider,
-    )
-
-
-def _resolve_audiobook_postprocess_chunk_size(*, context: Any) -> int:
-    configured_chunk_size = context.app_config.get("chunk_size", 6000)
-    try:
-        return max(int(configured_chunk_size), 3000)
-    except (TypeError, ValueError):
-        return 6000
-
-
-def _build_narration_postprocess_groups(*, narration_chunks: Sequence[str], chunk_size: int) -> list[dict[str, object]]:
-    if not narration_chunks:
-        return []
-
-    groups: list[dict[str, object]] = []
-    group_start = 0
-    current_chunks: list[str] = []
-    current_chars = 0
-
-    for chunk_index, chunk in enumerate(narration_chunks):
-        chunk_chars = len(chunk)
-        separator_chars = 2 if current_chunks else 0
-        if current_chunks and current_chars + separator_chars + chunk_chars > chunk_size:
-            group_end = group_start + len(current_chunks) - 1
-            groups.append(
-                {
-                    "group_index": len(groups) + 1,
-                    "start_index": group_start,
-                    "end_index": group_end,
-                    "target_text": "\n\n".join(current_chunks),
-                    "context_before": narration_chunks[group_start - 1] if group_start > 0 else "",
-                    "context_after": narration_chunks[group_end + 1] if group_end + 1 < len(narration_chunks) else "",
-                }
-            )
-            group_start = chunk_index
-            current_chunks = [chunk]
-            current_chars = chunk_chars
-            continue
-
-        current_chunks.append(chunk)
-        current_chars += separator_chars + chunk_chars
-
-    if current_chunks:
-        group_end = group_start + len(current_chunks) - 1
-        groups.append(
-            {
-                "group_index": len(groups) + 1,
-                "start_index": group_start,
-                "end_index": group_end,
-                "target_text": "\n\n".join(current_chunks),
-                "context_before": narration_chunks[group_start - 1] if group_start > 0 else "",
-                "context_after": narration_chunks[group_end + 1] if group_end + 1 < len(narration_chunks) else "",
-            }
-        )
-
-    return groups
-
-
-def _run_audiobook_postprocess(*, context: Any, dependencies: Any, emitters: Any, state: Any) -> str | None:
-    narration_chunks = _collect_narration_chunks(state=state)
-    if not narration_chunks:
-        return None
-
-    system_prompt = dependencies.load_system_prompt(
-        operation="audiobook",
-        source_language=context.source_language,
-        target_language=context.target_language,
-        editorial_intensity=str(context.app_config.get("editorial_intensity_default", "literary")),
-        prompt_variant="default",
-    )
-    model = _resolve_audiobook_postprocess_model(context=context)
-    fallback_client = None
-    if not callable(getattr(dependencies, "resolve_model_selector", None)) or not callable(
-        getattr(dependencies, "get_client_for_model_selector", None)
-    ):
-        fallback_client = dependencies.get_client()
-    client, model_id, model_selector, model_provider = _resolve_text_call_target(
-        selector=model,
-        context=context,
-        dependencies=dependencies,
-        fallback_client=fallback_client,
-    )
-    groups = _build_narration_postprocess_groups(
-        narration_chunks=narration_chunks,
-        chunk_size=_resolve_audiobook_postprocess_chunk_size(context=context),
-    )
-
-    emitters.emit_status(
-        context.runtime,
-        stage="Подготовка narration",
-        detail="Запущен отдельный audiobook post-pass для текста ElevenLabs.",
-        current_block=len(state.processed_chunks),
-        block_count=max(len(state.processed_chunks), 1),
-        target_chars=sum(len(chunk) for chunk in narration_chunks),
-        context_chars=0,
-        progress=1.0,
-        is_running=True,
-    )
-    emitters.emit_activity(context.runtime, "Запущена отдельная подготовка narration text для ElevenLabs.")
-
-    processed_groups: list[str] = []
-    for group in groups:
-        target_text = str(group["target_text"])
-        context_before = str(group["context_before"])
-        context_after = str(group["context_after"])
-        group_index = _require_group_int(group, "group_index")
-        start_index = _require_group_int(group, "start_index")
-        end_index = _require_group_int(group, "end_index")
-        dependencies.log_event(
-            logging.INFO,
-            "audiobook_postprocess_chunk_started",
-            "Запущен audiobook post-pass для narration chunk group.",
-            filename=context.uploaded_filename,
-            operation="audiobook",
-            **{"pass": "postprocess"},
-            model=model,
-            model_selector=model_selector,
-            model_provider=model_provider,
-            model_id=model_id,
-            chunk_index=group_index,
-            chunk_count=len(groups),
-            target_chars=len(target_text),
-            context_before_chars=len(context_before),
-            context_after_chars=len(context_after),
-            start_index=start_index,
-            end_index=end_index,
-        )
-        processed_chunk = dependencies.generate_markdown_block(
-            client=client,
-            model=model_id,
-            system_prompt=system_prompt,
-            target_text=target_text,
-            context_before=context_before,
-            context_after=context_after,
-            max_retries=context.max_retries,
-            expected_paragraph_ids=None,
-            marker_mode=False,
-        )
-        processed_groups.append(processed_chunk)
-        dependencies.log_event(
-            logging.INFO,
-            "audiobook_postprocess_chunk_completed",
-            "Audiobook post-pass для narration chunk group завершён.",
-            filename=context.uploaded_filename,
-            operation="audiobook",
-            **{"pass": "postprocess"},
-            model=model,
-            model_selector=model_selector,
-            model_provider=model_provider,
-            model_id=model_id,
-            chunk_index=group_index,
-            chunk_count=len(groups),
-            output_chars=len(processed_chunk),
-        )
-
-    emitters.emit_activity(context.runtime, "Подготовка narration text для ElevenLabs завершена.")
-    return strip_markdown_for_narration("\n\n".join(processed_groups))

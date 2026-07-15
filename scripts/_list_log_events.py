@@ -23,6 +23,7 @@ TARGETS = [
     "src/docxaicorrector/pipeline/block_execution.py",
     "src/docxaicorrector/pipeline/block_failures.py",
     "src/docxaicorrector/pipeline/late_phases.py",
+    "src/docxaicorrector/pipeline/narration_postprocess.py",
     "src/docxaicorrector/pipeline/setup.py",
     "src/docxaicorrector/processing/preparation.py",
     "src/docxaicorrector/processing/processing_runtime.py",

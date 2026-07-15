@@ -333,6 +333,7 @@ def test_log_event_inventory_scans_migrated_implementation_paths() -> None:
         "src/docxaicorrector/pipeline/block_execution.py",
         "src/docxaicorrector/pipeline/block_failures.py",
         "src/docxaicorrector/pipeline/late_phases.py",
+        "src/docxaicorrector/pipeline/narration_postprocess.py",
         "src/docxaicorrector/pipeline/setup.py",
         "src/docxaicorrector/processing/preparation.py",
         "src/docxaicorrector/runtime/artifact_retention.py",
