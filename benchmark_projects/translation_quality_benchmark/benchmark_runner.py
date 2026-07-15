@@ -79,10 +79,12 @@ def _ensure_project_imports() -> None:
 
     import docxaicorrector.processing.processing_runtime as imported_processing_runtime
     from docxaicorrector.core.config import load_project_dotenv as imported_load_project_dotenv
-    from docxaicorrector.document._document import (
+    from docxaicorrector.document.extraction import (
         build_document_text as imported_build_document_text,
-        build_semantic_blocks as imported_build_semantic_blocks,
         extract_document_content_with_normalization_reports as imported_extract_document_content_with_normalization_reports,
+    )
+    from docxaicorrector.document.semantic_blocks import (
+        build_semantic_blocks as imported_build_semantic_blocks,
     )
     from docxaicorrector.generation.openai_response_utils import (
         collect_response_text_traversal as imported_collect_response_text_traversal,

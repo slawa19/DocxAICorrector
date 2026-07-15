@@ -26,15 +26,15 @@ from docxaicorrector.pipeline.output_validation import (
     has_toc_body_concat_markdown as _shared_has_toc_body_concat_markdown,
 )
 from docxaicorrector.pipeline.display_hygiene import summarize_structure_quality_detectors
-from docxaicorrector.document._document import (
-    build_semantic_blocks,
+from docxaicorrector.document.boundaries import summarize_boundary_normalization_metrics
+from docxaicorrector.document.extraction import (
     build_document_text,
     extract_document_content_from_docx,
     extract_document_content_with_normalization_reports,
     extract_document_content_with_boundary_report,
     inspect_placeholder_integrity,
-    summarize_boundary_normalization_metrics,
 )
+from docxaicorrector.document.semantic_blocks import build_semantic_blocks
 from docxaicorrector.generation.formatting_diagnostics_retention import write_formatting_diagnostics_artifact
 from docxaicorrector.generation.formatting_transfer import preserve_source_paragraph_properties
 from docxaicorrector.generation._generation import convert_markdown_to_docx_bytes, ensure_pandoc_available

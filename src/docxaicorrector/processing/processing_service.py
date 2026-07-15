@@ -11,7 +11,7 @@ from docxaicorrector.core.config import (
     load_system_prompt,
     resolve_model_selector,
 )
-from docxaicorrector.document._document import inspect_placeholder_integrity
+from docxaicorrector.document.extraction import inspect_placeholder_integrity
 from docxaicorrector.generation.formatting_transfer import preserve_source_paragraph_properties
 from docxaicorrector.image.reinsertion import reinsert_inline_images
 from docxaicorrector.pipeline._pipeline import (

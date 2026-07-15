@@ -57,7 +57,7 @@ from docxaicorrector.core.config import (
     load_system_prompt,
     resolve_model_selector,
 )
-from docxaicorrector.document._document import (
+from docxaicorrector.document.extraction import (
     ORDERED_LIST_FORMATS,
     extract_document_content_from_docx,
 )

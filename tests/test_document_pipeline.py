@@ -18,7 +18,7 @@ import docxaicorrector.pipeline.reassembly as document_pipeline_reassembly
 from docx import Document
 
 from docxaicorrector.core.models import ParagraphUnit
-from docxaicorrector.document._document import extract_document_content_from_docx
+from docxaicorrector.document.extraction import extract_document_content_from_docx
 from docxaicorrector.reader_cleanup_mvp import build_cleanup_blocks
 
 

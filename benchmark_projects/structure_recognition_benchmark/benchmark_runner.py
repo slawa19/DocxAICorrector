@@ -98,7 +98,7 @@ def _ensure_project_imports() -> None:
         load_app_config as imported_load_app_config,
         load_project_dotenv as imported_load_project_dotenv,
     )
-    from docxaicorrector.document._document import (
+    from docxaicorrector.document.extraction import (
         extract_document_content_with_normalization_reports as imported_extract_document_content_with_normalization_reports,
     )
     from docxaicorrector.document.segments import detect_document_segments as imported_detect_document_segments

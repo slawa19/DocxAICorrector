@@ -16,7 +16,7 @@ from docx.shared import Inches
 from docx.shared import Pt
 
 from docxaicorrector.core.models import ParagraphUnit, RelationNormalizationReport
-from docxaicorrector.document._document import build_document_text, extract_document_content_from_docx
+from docxaicorrector.document.extraction import build_document_text, extract_document_content_from_docx
 from docxaicorrector.generation.formatting_transfer import (
     _build_output_formatting_diagnostics,
     _build_unmapped_target_residual_diagnostics,

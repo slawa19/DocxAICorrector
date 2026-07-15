@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 
 import docxaicorrector.core.config as config
-import docxaicorrector.document._document as document_module
+import docxaicorrector.document.extraction as document_module
 import docxaicorrector.document.boundary_review as boundary_review_module
 import docxaicorrector.document.relations as relation_module
 from docx import Document as make_document
@@ -17,13 +17,13 @@ from docxaicorrector.core.models import (
     RelationNormalizationReport,
 )
 
-from docxaicorrector.document._document import (
+from docxaicorrector.document.extraction import (
     build_document_text,
-    build_marker_wrapped_block_text,
-    build_paragraph_relations,
     extract_document_content_with_normalization_reports,
     extract_document_content_with_boundary_report,
 )
+from docxaicorrector.document.relations import build_paragraph_relations
+from docxaicorrector.document.semantic_blocks import build_marker_wrapped_block_text
 
 
 PNG_BYTES = base64.b64decode(

@@ -10,7 +10,7 @@ from typing import Any, cast
 from docx import Document
 
 from docxaicorrector.core.models import ParagraphUnit
-from docxaicorrector.document._document import extract_document_content_from_docx
+from docxaicorrector.document.extraction import extract_document_content_from_docx
 from docxaicorrector.generation.formatting_transfer import (
     _build_output_formatting_diagnostics,
     _collect_target_paragraphs,

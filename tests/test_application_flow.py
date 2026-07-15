@@ -308,42 +308,6 @@ def test_prepare_run_context_copies_segment_fields_from_prepared_document(monkey
     assert prepared_run_context.document_context_profile == document_context_profile
 
 
-def test_document_facade_build_semantic_blocks_forwards_hard_boundaries(monkeypatch):
-    captured = {}
-
-    import docxaicorrector.document._document as document_facade
-
-    monkeypatch.setattr(
-        document_facade,
-        "_build_semantic_blocks_impl",
-        lambda paragraphs, max_chars=6000, *, relations=None, hard_boundary_paragraph_ids=None, structure_phase="post_ai_final": captured.update(
-            {
-                "paragraphs": paragraphs,
-                "max_chars": max_chars,
-                "relations": relations,
-                "hard_boundary_paragraph_ids": hard_boundary_paragraph_ids,
-                "structure_phase": structure_phase,
-            }
-        ) or ["ok"],
-    )
-
-    result = document_facade.build_semantic_blocks(
-        cast(Any, ["p1", "p2"]),
-        max_chars=7000,
-        relations=["rel"],
-        hard_boundary_paragraph_ids={"p0002"},
-    )
-
-    assert result == ["ok"]
-    assert captured == {
-        "paragraphs": ["p1", "p2"],
-        "max_chars": 7000,
-        "relations": ["rel"],
-        "hard_boundary_paragraph_ids": {"p0002"},
-        "structure_phase": "post_ai_final",
-    }
-
-
 def test_prepare_run_context_keeps_other_completed_source_tokens(monkeypatch):
     monkeypatch.setattr(flow_core, "validate_docx_source_bytes", lambda source_bytes: None)
     session_state = SessionState(

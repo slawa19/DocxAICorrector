@@ -17,7 +17,8 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TypedDict
 
-from docxaicorrector.document._document import summarize_boundary_normalization_metrics, validate_docx_source_bytes
+from docxaicorrector.document.boundaries import summarize_boundary_normalization_metrics
+from docxaicorrector.document.extraction import validate_docx_source_bytes
 from docxaicorrector.document.segments import (
     CHAPTER_SEGMENTS_DETECTOR_VERSION,
     DocumentContextProfile,

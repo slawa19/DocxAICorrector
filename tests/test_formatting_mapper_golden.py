@@ -31,7 +31,7 @@ from pathlib import Path
 import pytest
 from docx import Document
 
-from docxaicorrector.document._document import extract_document_content_from_docx
+from docxaicorrector.document.extraction import extract_document_content_from_docx
 from docxaicorrector.generation.formatting_transfer import _map_source_target_paragraphs
 
 # Cap paragraphs per book: the gate exercises every pass at this size (11 distinct

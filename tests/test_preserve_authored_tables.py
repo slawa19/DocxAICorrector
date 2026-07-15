@@ -21,7 +21,7 @@ import pytest
 import docxaicorrector.generation._generation as generation
 from docx import Document
 
-from docxaicorrector.document._document import build_document_text, extract_document_content_from_docx
+from docxaicorrector.document.extraction import build_document_text, extract_document_content_from_docx
 from docxaicorrector.document.provenance import (
     classify_document_scan_origin,
     classify_scan_origin_from_document_xml,

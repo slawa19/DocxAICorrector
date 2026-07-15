@@ -1588,3 +1588,23 @@ def has_heading_text_signal(text: str) -> bool:
     from docxaicorrector.document.roles import has_heading_text_signal as _has_heading_text_signal
 
     return _has_heading_text_signal(text)
+
+
+def build_document_text(paragraphs: list[ParagraphUnit]) -> str:
+    return "\n\n".join(paragraph.rendered_text for paragraph in paragraphs).strip()
+
+
+def inspect_placeholder_integrity(markdown_text: str, image_assets: list[ImageAsset]) -> dict[str, str]:
+    status_map: dict[str, str] = {}
+    expected_placeholders = {asset.placeholder for asset in image_assets}
+    for asset in image_assets:
+        occurrence_count = markdown_text.count(asset.placeholder)
+        if occurrence_count == 1:
+            status_map[asset.image_id] = "ok"
+        elif occurrence_count == 0:
+            status_map[asset.image_id] = "lost"
+        else:
+            status_map[asset.image_id] = "duplicated"
+    for unexpected_placeholder in sorted(set(IMAGE_PLACEHOLDER_PATTERN.findall(markdown_text)) - expected_placeholders):
+        status_map[f"unexpected:{unexpected_placeholder}"] = "unexpected"
+    return status_map

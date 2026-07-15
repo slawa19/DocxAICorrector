@@ -41,11 +41,11 @@ def _ensure_src_first_import_order(repo_root: Path, src_root: Path) -> None:
 _ensure_src_first_import_order(REPO_ROOT, SRC_ROOT)
 
 import docxaicorrector.processing.processing_runtime as processing_runtime  # noqa: E402
-from docxaicorrector.document._document import (  # noqa: E402
+from docxaicorrector.document.extraction import (  # noqa: E402
     build_document_text,
-    build_semantic_blocks,
     extract_document_content_with_normalization_reports,
 )
+from docxaicorrector.document.semantic_blocks import build_semantic_blocks  # noqa: E402
 from docxaicorrector.validation.profiles import DocumentProfile, load_validation_registry  # noqa: E402
 from docxaicorrector.validation.structural import build_preparation_diagnostic_snapshot  # noqa: E402
 

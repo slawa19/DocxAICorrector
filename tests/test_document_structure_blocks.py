@@ -2,10 +2,10 @@ import docxaicorrector.core.config as config
 import docxaicorrector.document.semantic_blocks as semantic_blocks
 
 from docxaicorrector.core.models import DocumentBlock, EmbeddedStructureHint, ParagraphRelation, ParagraphUnit
-from docxaicorrector.document._document import (
+from docxaicorrector.document.relations import build_paragraph_relations
+from docxaicorrector.document.semantic_blocks import (
     build_editing_jobs,
     build_marker_wrapped_block_text,
-    build_paragraph_relations,
     build_semantic_blocks,
 )
 

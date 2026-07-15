@@ -15,13 +15,12 @@ from docx import Document as DocxDocument
 
 from docxaicorrector.core.config import get_client, get_client_for_model_selector, get_model_role_value, load_app_config
 from docxaicorrector.core.constants import RUN_DIR
-from docxaicorrector.document._document import (
+from docxaicorrector.document.boundaries import summarize_boundary_normalization_metrics
+from docxaicorrector.document.extraction import (
     build_document_text,
-    build_editing_jobs,
-    build_semantic_blocks,
     extract_document_content_with_normalization_reports,
-    summarize_boundary_normalization_metrics,
 )
+from docxaicorrector.document.semantic_blocks import build_editing_jobs, build_semantic_blocks
 from docxaicorrector.core.logger import log_event
 from docxaicorrector.core.models import LayoutArtifactCleanupReport, ParagraphBoundaryNormalizationReport, ParagraphRelation, RelationNormalizationReport
 from docxaicorrector.core.models import StructureRepairReport

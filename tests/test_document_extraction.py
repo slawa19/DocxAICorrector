@@ -5,7 +5,7 @@ from typing import Any, cast
 
 import pytest
 
-import docxaicorrector.document._document as document
+import docxaicorrector.document.extraction as document
 import docxaicorrector.document.extraction as document_extraction
 from docx import Document
 from docx.enum.style import WD_STYLE_TYPE
@@ -16,14 +16,16 @@ from docx.oxml.ns import qn
 from docx.shared import Inches, Pt
 
 from docxaicorrector.core.models import ImageAsset, ParagraphUnit
-from docxaicorrector.document._document import (
+from docxaicorrector.document.extraction import (
     build_document_text,
-    build_marker_wrapped_block_text,
     extract_document_content_from_docx,
     inspect_placeholder_integrity,
+)
+from docxaicorrector.document.roles import (
     paragraph_has_strong_heading_format,
     resolve_effective_paragraph_font_size,
 )
+from docxaicorrector.document.semantic_blocks import build_marker_wrapped_block_text
 from docxaicorrector.document.extraction import extract_document_content_with_normalization_reports
 
 
@@ -854,7 +856,7 @@ def test_emdash_bullet_paragraphs_render_without_list_markers():
 
 def test_classify_paragraph_role_does_not_treat_emdash_prefix_as_list():
     """Text starting with '— ' should not be classified as list by text pattern."""
-    from docxaicorrector.document._document import classify_paragraph_role
+    from docxaicorrector.document.roles import classify_paragraph_role
 
     assert classify_paragraph_role("— Это прямая речь", "Body Text") == "body"
     assert classify_paragraph_role("— Цитата из книги", "Normal") == "body"
@@ -1154,18 +1156,6 @@ def test_read_uploaded_docx_bytes_rejects_non_normalized_non_docx_input(monkeypa
 
     with pytest.raises(ValueError, match="Ожидался уже нормализованный DOCX-архив"):
         document._read_uploaded_docx_bytes(object())
-
-
-def test_extraction_compatibility_override_inventory_is_explicit_and_applied(monkeypatch):
-    monkeypatch.setattr(document._document_extraction, "MAX_DOCX_ARCHIVE_SIZE_BYTES", -1, raising=False)
-    monkeypatch.setattr(document._document_extraction, "_validate_docx_archive", None, raising=False)
-
-    document._sync_extraction_compatibility_overrides()
-
-    assert document.EXTRACTION_COMPATIBILITY_OVERRIDE_DEADLINE == "2026-06-30"
-    assert tuple(document._build_extraction_compatibility_overrides()) == document.EXTRACTION_COMPATIBILITY_OVERRIDE_TARGETS
-    assert document._document_extraction.MAX_DOCX_ARCHIVE_SIZE_BYTES == document.MAX_DOCX_ARCHIVE_SIZE_BYTES
-    assert document._document_extraction._validate_docx_archive is document._validate_docx_archive
 
 
 def test_extract_document_content_from_docx_marks_caption_after_table():
@@ -1609,7 +1599,7 @@ def test_promote_short_standalone_headings_ai_first_sets_hint_without_mutating_r
         ),
     ]
 
-    document._promote_short_standalone_headings(
+    document.promote_short_standalone_headings(
         paragraphs,
         structure_recovery_enabled=True,
         structure_recovery_mode="ai_first",
@@ -1669,7 +1659,7 @@ def test_promote_short_standalone_headings_does_not_override_ai_classified_body_
         ),
     ]
 
-    document._promote_short_standalone_headings(paragraphs)
+    document.promote_short_standalone_headings(paragraphs)
 
     assert [paragraph.role for paragraph in paragraphs] == ["body", "body", "body"]
     assert paragraphs[1].role_confidence == "ai"
@@ -1701,7 +1691,7 @@ def test_promote_short_standalone_headings_does_not_override_ai_structural_attri
         ),
     ]
 
-    document._promote_short_standalone_headings(paragraphs)
+    document.promote_short_standalone_headings(paragraphs)
 
     assert paragraphs[1].role == "body"
     assert paragraphs[1].structural_role == "attribution"
@@ -1733,7 +1723,7 @@ def test_promote_short_standalone_headings_does_not_promote_centered_all_caps_at
         ),
     ]
 
-    document._promote_short_standalone_headings(paragraphs)
+    document.promote_short_standalone_headings(paragraphs)
 
     assert paragraphs[1].role == "body"
     assert paragraphs[1].structural_role == "body"
@@ -1764,7 +1754,7 @@ def test_promote_short_standalone_headings_still_promotes_legitimate_centered_he
         ),
     ]
 
-    document._promote_short_standalone_headings(paragraphs)
+    document.promote_short_standalone_headings(paragraphs)
 
     assert paragraphs[1].role == "heading"
     assert paragraphs[1].heading_source == "heuristic"

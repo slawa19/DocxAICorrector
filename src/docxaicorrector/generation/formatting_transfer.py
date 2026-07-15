@@ -19,19 +19,21 @@ from docx.oxml.ns import qn
 from docx.shared import Pt
 from docx.text.paragraph import Paragraph
 
-from docxaicorrector.document._document import (
+from docxaicorrector.document.extraction import IMAGE_PLACEHOLDER_PATTERN
+from docxaicorrector.document.relations import (
+    build_paragraph_relations,
+    resolve_effective_relation_kinds,
+)
+from docxaicorrector.document.roles import (
     HEADING_STYLE_PATTERN,
-    IMAGE_PLACEHOLDER_PATTERN,
     INLINE_HTML_TAG_PATTERN,
     MARKDOWN_LINK_PATTERN,
-    build_paragraph_relations,
     detect_explicit_list_kind,
     find_child_element,
     get_xml_attribute,
     infer_heuristic_heading_level,
     is_image_only_text,
     is_likely_caption_text,
-    resolve_effective_relation_kinds,
     resolve_paragraph_outline_level,
     xml_local_name,
 )
