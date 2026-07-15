@@ -1,0 +1,112 @@
+{
+  "accepted_split_targets": [
+    {
+      "derived_from_source_index": 6,
+      "heading_level": 2,
+      "kind": "split_heading_prefix",
+      "source_text_preview": "Заголовок главы Первый абзац основного текста.",
+      "target_index": 7,
+      "target_text_preview": "Заголовок главы"
+    }
+  ],
+  "alignment_restoration_decisions": [
+    {
+      "action": "skipped",
+      "paragraph_id": "p0000",
+      "reason": "unsupported_alignment_value",
+      "source_alignment": "end",
+      "source_preview": "Содержание",
+      "source_role": "body",
+      "source_structural_role": "toc_header",
+      "target_heading_level": null,
+      "target_style_name": "Body Text"
+    },
+    {
+      "action": "restored",
+      "paragraph_id": "p0003",
+      "reason": "center_caption_allowlisted",
+      "source_alignment": "center",
+      "source_preview": "Рис. 1. Схема устройства",
+      "source_role": "caption",
+      "source_structural_role": "caption",
+      "target_heading_level": null,
+      "target_style_name": "Caption"
+    },
+    {
+      "action": "restored",
+      "paragraph_id": "p0004",
+      "reason": "center_attribution_allowlisted",
+      "source_alignment": "center",
+      "source_preview": "— И. ИВАНОВ",
+      "source_role": "body",
+      "source_structural_role": "attribution",
+      "target_heading_level": null,
+      "target_style_name": "Normal"
+    },
+    {
+      "action": "restored",
+      "paragraph_id": "p0005",
+      "reason": "center_attribution_allowlisted",
+      "source_alignment": "center",
+      "source_preview": "Знание сила",
+      "source_role": "body",
+      "source_structural_role": "epigraph",
+      "target_heading_level": null,
+      "target_style_name": "Normal"
+    }
+  ],
+  "caption_heading_conflicts": [],
+  "list_restoration_decisions": [
+    {
+      "action": "restored",
+      "list_kind": "ordered",
+      "list_level": 0,
+      "paragraph_id": "p0002",
+      "target_abstract_num_id": 9,
+      "target_num_id": 10,
+      "text_preview": "Первый пункт списка"
+    }
+  ],
+  "toc_format_restoration_decisions": [
+    {
+      "action": "restored",
+      "paragraph_id": "p0000",
+      "reason": "copied_sanitized_source_toc_paragraph_properties",
+      "source_alignment": "end",
+      "source_preview": "Содержание",
+      "source_style_name": "Normal",
+      "structural_role": "toc_header",
+      "target_style_name": "Body Text"
+    },
+    {
+      "action": "restored",
+      "paragraph_id": "p0001",
+      "reason": "copied_sanitized_source_toc_paragraph_properties",
+      "source_alignment": null,
+      "source_preview": "Введение в тему",
+      "source_style_name": "Normal",
+      "structural_role": "toc_entry",
+      "target_style_name": "Body Text"
+    }
+  ],
+  "toc_run_format_restoration_decisions": [
+    {
+      "action": "restored",
+      "applied_bold": false,
+      "applied_italic": false,
+      "font_size_pt": 15.0,
+      "paragraph_id": "p0000",
+      "reason": "copied_safe_toc_run_formatting",
+      "structural_role": "toc_header"
+    },
+    {
+      "action": "restored",
+      "applied_bold": false,
+      "applied_italic": true,
+      "font_size_pt": 11.0,
+      "paragraph_id": "p0001",
+      "reason": "copied_safe_toc_run_formatting",
+      "structural_role": "toc_entry"
+    }
+  ]
+}

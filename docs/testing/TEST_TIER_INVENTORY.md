@@ -97,6 +97,7 @@ This inventory is intentionally pragmatic:
 ## Integration-Local
 
 - `tests/test_formatting_mapper_golden.py`
+- `tests/test_formatting_restoration_golden.py`
 - `tests/test_image_integration.py`
 - `tests/test_pdf_candidate_benchmark_project.py`
 - `tests/test_pdf_import_backend_comparison.py`

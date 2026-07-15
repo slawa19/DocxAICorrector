@@ -7,6 +7,7 @@ from typing import cast
 
 import docxaicorrector.core.config as config
 import docxaicorrector.generation.formatting_diagnostics_retention as formatting_diagnostics_retention
+import docxaicorrector.generation.formatting_mapping as formatting_mapping
 import docxaicorrector.generation.formatting_transfer as formatting_transfer
 from docx import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH
@@ -354,8 +355,8 @@ def test_map_source_target_paragraphs_passes_post_ai_final_phase_to_relation_inf
             decisions=[],
         )
 
-    monkeypatch.setattr(formatting_transfer, "build_paragraph_relations", fake_build_paragraph_relations)
-    monkeypatch.setattr(formatting_transfer, "resolve_effective_relation_kinds", lambda: ())
+    monkeypatch.setattr(formatting_mapping, "build_paragraph_relations", fake_build_paragraph_relations)
+    monkeypatch.setattr(formatting_mapping, "resolve_effective_relation_kinds", lambda: ())
 
     source_paragraphs = [
         ParagraphUnit(text="Contents", role="body", structural_role="body", paragraph_id="p0000")
