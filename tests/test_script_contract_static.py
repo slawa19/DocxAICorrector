@@ -328,6 +328,7 @@ def test_log_event_inventory_scans_migrated_implementation_paths() -> None:
         "src/docxaicorrector/core/config.py",
         "src/docxaicorrector/document/layout_cleanup.py",
         "src/docxaicorrector/generation/_generation.py",
+        "src/docxaicorrector/generation/formatting_restoration.py",
         "src/docxaicorrector/image/generation.py",
         "src/docxaicorrector/pipeline/_pipeline.py",
         "src/docxaicorrector/pipeline/block_execution.py",
@@ -365,6 +366,7 @@ def test_codeowners_protects_moved_production_implementation_paths() -> None:
     assert "/src/docxaicorrector/processing/processing_runtime.py @slawa19" in codeowners_text
     assert "/src/docxaicorrector/processing/processing_service.py @slawa19" in codeowners_text
     assert "/src/docxaicorrector/generation/_generation.py @slawa19" in codeowners_text
+    assert "/src/docxaicorrector/generation/formatting_restoration.py @slawa19" in codeowners_text
     assert "/src/docxaicorrector/generation/formatting_transfer.py @slawa19" in codeowners_text
     assert "/src/docxaicorrector/generation/formatting_diagnostics_retention.py @slawa19" in codeowners_text
     assert "/src/docxaicorrector/generation/message_formatting.py @slawa19" in codeowners_text

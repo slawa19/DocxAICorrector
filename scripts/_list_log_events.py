@@ -12,6 +12,7 @@ TARGETS = [
     "src/docxaicorrector/core/logger.py",
     "src/docxaicorrector/document/layout_cleanup.py",
     "src/docxaicorrector/generation/_generation.py",
+    "src/docxaicorrector/generation/formatting_restoration.py",
     "src/docxaicorrector/generation/formatting_transfer.py",
     "src/docxaicorrector/image/analysis.py",
     "src/docxaicorrector/image/generation.py",
