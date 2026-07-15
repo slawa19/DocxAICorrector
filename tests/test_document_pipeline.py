@@ -13,6 +13,7 @@ from typing import Any, cast
 import docxaicorrector.generation._generation as generation
 import docxaicorrector.pipeline._pipeline as document_pipeline
 import docxaicorrector.pipeline.late_phases as document_pipeline_late_phases
+import docxaicorrector.pipeline.quality_gate as document_pipeline_quality_gate
 import docxaicorrector.pipeline.reader_cleanup_rebuild as document_pipeline_reader_cleanup_rebuild
 import docxaicorrector.pipeline.quality_report_retention as document_pipeline_quality_report_retention
 import docxaicorrector.pipeline.output_validation as document_pipeline_output_validation
@@ -3394,7 +3395,7 @@ def test_build_translation_quality_report_counts_capped_legacy_hygiene_samples(m
         for index in range(10)
     ]
     monkeypatch.setattr(
-        document_pipeline_late_phases,
+        document_pipeline_quality_gate,
         "collect_bullet_heading_samples",
         lambda markdown_text: list(samples),
     )
@@ -4198,7 +4199,7 @@ def test_build_translation_quality_report_fails_large_false_fragment_heading_set
         for index in range(11)
     ]
     monkeypatch.setattr(
-        document_pipeline_late_phases,
+        document_pipeline_quality_gate,
         "collect_false_fragment_heading_samples",
         lambda markdown_text: list(samples),
     )
