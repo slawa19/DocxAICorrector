@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import asdict, dataclass
-from difflib import SequenceMatcher
 from io import BytesIO
 import json
 from pathlib import Path
@@ -23,12 +22,10 @@ from docxaicorrector.pipeline.output_validation import (
     collect_page_placeholder_heading_concat_samples,
     collect_residual_bullet_glyph_samples,
     collect_theology_style_issue_samples,
-    has_toc_body_concat_markdown as _shared_has_toc_body_concat_markdown,
 )
 from docxaicorrector.pipeline.display_hygiene import summarize_structure_quality_detectors
 from docxaicorrector.document.boundaries import summarize_boundary_normalization_metrics
 from docxaicorrector.document.extraction import (
-    build_document_text,
     extract_document_content_from_docx,
     extract_document_content_with_normalization_reports,
     extract_document_content_with_boundary_report,
@@ -55,6 +52,29 @@ from docxaicorrector.validation.profiles import (
 )
 from docxaicorrector.validation.quality_gate_audit import quality_gate_audit_classifications_payload
 from docxaicorrector.processing.preparation import flatten_structure_repair_metrics
+from docxaicorrector.validation.structural_metrics_common import (  # noqa: F401
+    _as_float,
+    _as_int,
+)
+from docxaicorrector.validation.structural_event_log import (  # noqa: F401
+    _extract_event_context,
+    _extract_event_context_bool,
+    _extract_event_context_float,
+    _extract_event_context_int,
+    _extract_event_context_int_list,
+    _extract_event_context_list,
+    _extract_event_context_value,
+)
+from docxaicorrector.validation.structural_text_metrics import (  # noqa: F401
+    _calculate_heading_level_drift,
+    _calculate_text_similarity,
+    _count_bullet_headings,
+    _has_toc_body_concat_markdown,
+    _has_toc_structural_roles,
+    _is_heading_only_markdown,
+    _normalize_text,
+    _relation_count,
+)
 
 
 _HUMANIZED_QUALITY_GATE_REASON_TO_CODE: dict[str, str] = {
@@ -2847,151 +2867,6 @@ def _max_accepted_merged_sources(payloads: Sequence[Mapping[str, object]]) -> in
     return maximum
 
 
-def _calculate_text_similarity(source_paragraphs: Sequence[object], output_paragraphs: Sequence[object]) -> float:
-    source_text = _normalize_text(build_document_text(cast(list[Any], list(source_paragraphs))))
-    output_text = _normalize_text(build_document_text(cast(list[Any], list(output_paragraphs))))
-    if not source_text and not output_text:
-        return 1.0
-    return round(SequenceMatcher(None, source_text, output_text).ratio(), 4)
-
-
-def _calculate_heading_level_drift(source_paragraphs: Sequence[object], output_paragraphs: Sequence[object]) -> int:
-    output_levels: dict[str, int] = {}
-    for paragraph in output_paragraphs:
-        if getattr(paragraph, "role", None) != "heading":
-            continue
-        normalized = _normalize_text(str(getattr(paragraph, "text", "")))
-        if not normalized:
-            continue
-        output_levels[normalized] = int(getattr(paragraph, "heading_level", 0) or 0)
-
-    max_drift = 0
-    for paragraph in source_paragraphs:
-        if getattr(paragraph, "role", None) != "heading":
-            continue
-        normalized = _normalize_text(str(getattr(paragraph, "text", "")))
-        if not normalized or normalized not in output_levels:
-            continue
-        source_level = int(getattr(paragraph, "heading_level", 0) or 0)
-        max_drift = max(max_drift, abs(source_level - output_levels[normalized]))
-    return max_drift
-
-
-def _normalize_text(text: str) -> str:
-    normalized = re.sub(r"\s+", " ", text).strip().lower()
-    normalized = re.sub(r"^#{1,6}\s+", "", normalized)
-    return normalized
-
-
-def _is_heading_only_markdown(text: str) -> bool:
-    lines = [line.strip() for line in text.splitlines() if line.strip()]
-    return bool(lines) and all(line.startswith("#") and len(line.split()) >= 2 for line in lines)
-
-
-def _has_toc_structural_roles(paragraphs: Sequence[object]) -> bool:
-    for paragraph in paragraphs:
-        structural_role = str(getattr(paragraph, "structural_role", "") or "").strip().lower()
-        if structural_role in {"toc_header", "toc_entry"}:
-            return True
-    return False
-
-
-def _count_bullet_headings(markdown_text: str) -> int:
-    return sum(
-        1
-        for line in markdown_text.splitlines()
-        if re.match(r"^#{1,6}\s*[●•\-*]\s*$", line.strip())
-    )
-
-
-def _has_toc_body_concat_markdown(markdown_text: str) -> bool:
-    return _shared_has_toc_body_concat_markdown(markdown_text)
-
-
-def _relation_count(relation_report: object, key: str) -> int:
-    relation_counts = getattr(relation_report, "relation_counts", {}) or {}
-    if not isinstance(relation_counts, Mapping):
-        return 0
-    value = relation_counts.get(key, 0)
-    try:
-        return int(cast(Any, value))
-    except (TypeError, ValueError):
-        return 0
-
-
-def _extract_event_context(event_log: Sequence[Mapping[str, object]], event_id: str) -> Mapping[str, object]:
-    for event in reversed(event_log):
-        if str(event.get("event_id") or "") != event_id:
-            continue
-        context = event.get("context")
-        if isinstance(context, Mapping):
-            return context
-        break
-    return {}
-
-
-def _extract_event_context_value(event_log: Sequence[Mapping[str, object]], event_id: str, key: str) -> str:
-    context = _extract_event_context(event_log, event_id)
-    value = context.get(key)
-    return "" if value is None else str(value)
-
-
-def _extract_event_context_list(event_log: Sequence[Mapping[str, object]], event_id: str, key: str) -> list[str]:
-    context = _extract_event_context(event_log, event_id)
-    values = context.get(key)
-    if not isinstance(values, Sequence) or isinstance(values, (str, bytes, bytearray)):
-        return []
-    return [str(value) for value in values]
-
-
-def _extract_event_context_int(event_log: Sequence[Mapping[str, object]], event_id: str, key: str) -> int:
-    context = _extract_event_context(event_log, event_id)
-    value = context.get(key)
-    try:
-        return int(cast(Any, value))
-    except (TypeError, ValueError):
-        return 0
-
-
-def _extract_event_context_float(event_log: Sequence[Mapping[str, object]], event_id: str, key: str) -> float | None:
-    context = _extract_event_context(event_log, event_id)
-    value = context.get(key)
-    try:
-        return float(cast(Any, value))
-    except (TypeError, ValueError):
-        return None
-
-
-def _extract_event_context_bool(event_log: Sequence[Mapping[str, object]], event_id: str, key: str) -> bool:
-    context = _extract_event_context(event_log, event_id)
-    value = context.get(key)
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        normalized = value.strip().lower()
-        if normalized in {"true", "1", "yes", "on"}:
-            return True
-        if normalized in {"false", "0", "no", "off", ""}:
-            return False
-    if isinstance(value, (int, float)):
-        return bool(value)
-    return False
-
-
-def _extract_event_context_int_list(event_log: Sequence[Mapping[str, object]], event_id: str, key: str) -> list[int]:
-    context = _extract_event_context(event_log, event_id)
-    values = context.get(key)
-    if not isinstance(values, Sequence) or isinstance(values, (str, bytes, bytearray)):
-        return []
-    result: list[int] = []
-    for value in values:
-        try:
-            result.append(int(cast(Any, value)))
-        except (TypeError, ValueError):
-            continue
-    return result
-
-
 def _build_output_artifacts(docx_bytes: bytes, markdown_text: str) -> dict[str, object]:
     openable = False
     output_paragraphs = 0
@@ -3095,14 +2970,6 @@ def _preserve_source_paragraph_properties_adapter(
 
 def _reinsert_inline_images_adapter(docx_bytes: bytes, image_assets: Sequence[object]) -> bytes:
     return reinsert_inline_images(docx_bytes, cast(list[Any], list(image_assets)))
-
-
-def _as_int(metrics: Mapping[str, object], key: str) -> int:
-    return int(cast(int, metrics.get(key, 0) or 0))
-
-
-def _as_float(metrics: Mapping[str, object], key: str) -> float:
-    return float(cast(float, metrics[key]))
 
 
 if __name__ == "__main__":

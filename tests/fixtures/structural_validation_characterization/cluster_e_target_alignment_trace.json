@@ -1,0 +1,32 @@
+{
+  "diagnostics": {
+    "aligned_target_unit_keys_snapshot": {
+      "5": [
+        "u3"
+      ]
+    },
+    "alignment_coverage_summary": {
+      "aligned_via_generated_registry": 1,
+      "aligned_via_interval_inference": 1,
+      "still_unaligned": 0,
+      "total_unmapped": 1
+    },
+    "generated_registry_alignment_trace": [
+      {
+        "chosen_generated_paragraph_id": "p0003",
+        "chosen_generated_preview": "body paragraph three",
+        "match_result": "matched",
+        "target_index": 5,
+        "target_preview": "body paragraph three",
+        "unit_keys": [
+          "u3"
+        ]
+      }
+    ],
+    "unmapped_target_indexes": [
+      5
+    ]
+  },
+  "filename_prefix": "target_alignment_trace",
+  "stage": "target_alignment_trace"
+}

@@ -1,0 +1,15 @@
+{
+  "accepted_aggregated_source_unit_count": 1,
+  "accepted_aggregated_target_index_count": 1,
+  "raw_unmapped_source_paragraph_count": 1,
+  "raw_unmapped_target_paragraph_count": 1,
+  "structure_unit_total_count": 3,
+  "structure_unit_unmapped_source_count": 1,
+  "structure_unit_unmapped_target_count": 1,
+  "unit_covered_source_fragment_count": 2,
+  "unit_covered_target_fragment_count": 1,
+  "unit_unmapped_source_gate_source": "topology_unit",
+  "unit_unmapped_target_gate_source": "topology_unit",
+  "unmapped_source_count_basis": "topology_unit",
+  "unmapped_target_count_basis": "topology_unit"
+}

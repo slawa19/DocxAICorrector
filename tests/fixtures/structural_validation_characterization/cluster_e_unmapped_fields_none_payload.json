@@ -1,0 +1,14 @@
+{
+  "accepted_aggregated_source_unit_count": 0,
+  "accepted_aggregated_target_index_count": 0,
+  "raw_unmapped_source_paragraph_count": 0,
+  "raw_unmapped_target_paragraph_count": 0,
+  "structure_unit_unmapped_source_count": 0,
+  "structure_unit_unmapped_target_count": 0,
+  "unit_covered_source_fragment_count": 0,
+  "unit_covered_target_fragment_count": 0,
+  "unit_unmapped_source_gate_source": "legacy_paragraph",
+  "unit_unmapped_target_gate_source": "legacy_paragraph",
+  "unmapped_source_count_basis": "legacy_paragraph",
+  "unmapped_target_count_basis": "legacy_paragraph"
+}
