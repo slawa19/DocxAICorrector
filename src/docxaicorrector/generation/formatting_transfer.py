@@ -5,6 +5,7 @@ minimal caption/image/table normalization, split-heading normalization,
 and list numbering restoration.
 """
 
+import functools
 import logging
 import re
 from difflib import SequenceMatcher
@@ -69,6 +70,7 @@ def _paragraph_preview(text: str, *, limit: int = 120) -> str:
     return normalized[: limit - 1].rstrip() + "…"
 
 
+@functools.lru_cache(maxsize=1 << 18)
 def _normalize_text_for_mapping(text: str) -> str:
     normalized = text.strip()
     normalized = re.sub(r"^(?:>\s*)+", "", normalized)
@@ -1075,7 +1077,14 @@ def _mapping_similarity_score(source_paragraph: ParagraphUnit, target_text: str)
     if not source_text or not normalized_target:
         return 0.0
 
-    score = SequenceMatcher(None, source_text, normalized_target).ratio()
+    # Lever C (spec 029): pass 13 accepts only when the final score >= 0.9, and the role
+    # bonuses add at most 0.08, so ratio() must be >= 0.82 for any acceptance. real_quick_ratio()
+    # is a guaranteed upper bound on ratio(), so when it is below 0.82 the pair can never be
+    # accepted and the O(L^2) ratio() is skipped. Provably identical (score stays < 0.9).
+    matcher = SequenceMatcher(None, source_text, normalized_target)
+    if matcher.real_quick_ratio() < 0.82:
+        return 0.0
+    score = matcher.ratio()
     if source_paragraph.role == "caption" and is_likely_caption_text(target_text):
         score += 0.08
     if source_paragraph.role == "list":
@@ -1087,8 +1096,11 @@ def _mapping_similarity_score(source_paragraph: ParagraphUnit, target_text: str)
     return min(score, 1.0)
 
 
-def _token_set(text: str) -> set[str]:
-    return set(re.findall(r"\w+", text, flags=re.UNICODE))
+@functools.lru_cache(maxsize=1 << 18)
+def _token_set(text: str) -> frozenset[str]:
+    # Cached, immutable: callers only read via len / & / | (never mutate), so a shared
+    # frozenset is safe and lets the cache serve repeated (source, target) comparisons.
+    return frozenset(re.findall(r"\w+", text, flags=re.UNICODE))
 
 
 def _registry_candidate_mapping_evidence(
@@ -1112,18 +1124,31 @@ def _registry_candidate_mapping_evidence(
         if candidate_tokens and target_tokens
         else 0.0
     )
-    sequence_ratio = SequenceMatcher(None, normalized_candidate, normalized_target).ratio()
     target_coverage_ratio = len(normalized_candidate) / max(len(normalized_target), 1)
 
+    is_exact = normalized_candidate == normalized_target
+    is_contained = (not is_exact) and normalized_candidate in normalized_target
+    token_branch = common_count >= 3 and token_overlap_ratio >= 0.85 and target_coverage_ratio >= 0.65
+
+    # Lever C (spec 029): the only accept path that depends on the O(L^2) char ratio() is the
+    # `sequence_ratio >= 0.92` branch. The exact, substring, and token-overlap branches are decided
+    # from cheap comparisons above. So when none of those can fire, gate ratio() behind its
+    # guaranteed upper bound real_quick_ratio(): if that is below 0.92, sequence_ratio cannot reach
+    # 0.92 either and no evidence can be produced. Provably identical (never drops a real match).
+    matcher = SequenceMatcher(None, normalized_candidate, normalized_target)
+    if not is_exact and not is_contained and not token_branch and matcher.real_quick_ratio() < 0.92:
+        return None
+    sequence_ratio = matcher.ratio()
+
     evidence_type: str | None = None
-    if normalized_candidate == normalized_target:
+    if is_exact:
         evidence_type = "exact"
-    elif normalized_candidate in normalized_target:
+    elif is_contained:
         if source_format_role == "heading":
             evidence_type = "heading_exact_contained"
         elif target_coverage_ratio >= 0.65:
             evidence_type = "exact_contained"
-    elif sequence_ratio >= 0.92 or (common_count >= 3 and token_overlap_ratio >= 0.85 and target_coverage_ratio >= 0.65):
+    elif sequence_ratio >= 0.92 or token_branch:
         evidence_type = "bounded_fuzzy"
 
     if evidence_type is None:
@@ -1186,7 +1211,12 @@ def _try_register_bounded_registry_mapping(
         return False
 
     scored: list[tuple[float, int, dict[str, object]]] = []
-    for target_index in sorted(available_target_indexes):
+    for target_index in range(
+        max(0, source_index - target_window),
+        min(len(target_paragraphs), source_index + target_window + 1),
+    ):
+        if target_index not in available_target_indexes:
+            continue
         if abs(target_index - source_index) > target_window:
             continue
         target_paragraph = target_paragraphs[target_index]
@@ -1333,7 +1363,16 @@ def _try_register_projected_registry_mapping(
         return False
 
     scored: list[tuple[float, int, dict[str, object]]] = []
-    for target_index in sorted(available_target_indexes):
+    # Window [projected-W, projected+W] on the contiguous ascending index range; the
+    # int() floor plus +/-1 padding keeps this a strict superset of the abs() guard
+    # below (which still filters exactly), so the processed set is unchanged.
+    _projected_floor = int(projected_target_index)
+    for target_index in range(
+        max(0, _projected_floor - projected_window - 1),
+        min(len(target_paragraphs), _projected_floor + projected_window + 2),
+    ):
+        if target_index not in available_target_indexes:
+            continue
         if abs(target_index - projected_target_index) > projected_window:
             continue
         if previous_anchor is not None and target_index < previous_anchor[1]:
@@ -1438,7 +1477,9 @@ def _try_register_unique_registry_text_floor_mapping(
         return False
 
     scored: list[tuple[float, int, dict[str, object]]] = []
-    for target_index in sorted(available_target_indexes):
+    for target_index in range(len(target_paragraphs)):
+        if target_index not in available_target_indexes:
+            continue
         target_paragraph = target_paragraphs[target_index]
         target_text = target_paragraph.text.strip()
         if not target_text or IMAGE_PLACEHOLDER_PATTERN.search(target_text):
@@ -1533,7 +1574,9 @@ def _register_repeated_note_sequence_mappings(
         return
 
     target_indexes_by_key: dict[str, list[int]] = {}
-    for target_index in sorted(available_target_indexes):
+    for target_index in range(len(target_paragraphs)):
+        if target_index not in available_target_indexes:
+            continue
         if target_index >= len(target_paragraphs):
             continue
         target_paragraph = target_paragraphs[target_index]
@@ -2239,7 +2282,11 @@ def _map_source_target_paragraphs(
             continue
 
         aggregation_candidates: list[int] = []
-        for target_index in sorted(available_target_indexes):
+        for target_index in range(
+            max(0, source_index - 12), min(len(target_paragraphs), source_index + 13)
+        ):
+            if target_index not in available_target_indexes:
+                continue
             if abs(target_index - source_index) > 12:
                 continue
             target_normalized = _normalize_text_for_mapping(target_paragraphs[target_index].text)
@@ -2280,7 +2327,11 @@ def _map_source_target_paragraphs(
         source_format_role = _source_format_role(source_paragraph)
         if source_format_role == "heading":
             continue
-        for target_index in sorted(available_target_indexes):
+        for target_index in range(
+            max(0, source_index - 3), min(len(target_paragraphs), source_index + 4)
+        ):
+            if target_index not in available_target_indexes:
+                continue
             if abs(target_index - source_index) > 3:
                 continue
             if not _registry_mapping_role_compatible(source_format_role, target_paragraphs[target_index]):
@@ -2343,8 +2394,9 @@ def _map_source_target_paragraphs(
             source_image_text = source_paragraph.text.strip()
             candidates = [
                 target_index
-                for target_index in sorted(available_target_indexes)
-                if source_image_text
+                for target_index in range(len(target_paragraphs))
+                if target_index in available_target_indexes
+                and source_image_text
                 and source_image_text in target_paragraphs[target_index].text
                 and IMAGE_PLACEHOLDER_PATTERN.search(target_paragraphs[target_index].text)
             ]
@@ -2461,7 +2513,9 @@ def _map_source_target_paragraphs(
             continue
 
         scored_candidates: list[tuple[float, int]] = []
-        for target_index in sorted(available_target_indexes):
+        for target_index in range(len(target_paragraphs)):
+            if target_index not in available_target_indexes:
+                continue
             score = _mapping_similarity_score(source_paragraph, target_paragraphs[target_index].text)
             if score >= 0.9:
                 scored_candidates.append((score, target_index))
