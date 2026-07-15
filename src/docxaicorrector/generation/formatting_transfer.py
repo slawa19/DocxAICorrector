@@ -1168,10 +1168,66 @@ def _registry_candidate_mapping_evidence(
     }
 
 
-def _registry_mapping_role_compatible(source_format_role: str, target_paragraph: Paragraph) -> bool:
-    target_role = _target_format_role(target_paragraph)
+_ROLE_UNRESOLVED = object()
+
+
+class _TargetRoleResolver:
+    """Per-call memo of target-paragraph role resolution, keyed by target index (spec 029, Lever F).
+
+    ``_target_format_role``, ``_target_has_heading_format`` and ``_extract_target_heading_level`` are
+    pure functions of the target ``Paragraph``, and ``target_paragraphs`` is not mutated during
+    ``_map_source_target_paragraphs``. Resolving each target's role/heading-level/has-heading-format
+    at most once per call and reusing it across all passes/source iterations collapses the O(S*T)
+    role re-resolution (the dominant offline cost) to O(T), while remaining byte-identical (same
+    paragraph -> same value). This memo is deliberately local to a single mapping call and never a
+    module global: its keys index one specific ``target_paragraphs`` list.
+    """
+
+    __slots__ = ("_targets", "_format_role_by_index", "_heading_level_by_index", "_has_heading_by_index")
+
+    def __init__(self, target_paragraphs: Sequence[Paragraph]) -> None:
+        self._targets = target_paragraphs
+        self._format_role_by_index: dict[int, str] = {}
+        self._heading_level_by_index: dict[int, int | None] = {}
+        self._has_heading_by_index: dict[int, bool] = {}
+
+    def heading_level(self, target_index: int) -> int | None:
+        cached = self._heading_level_by_index.get(target_index, _ROLE_UNRESOLVED)
+        if cached is _ROLE_UNRESOLVED:
+            cached = _extract_target_heading_level(self._targets[target_index])
+            self._heading_level_by_index[target_index] = cached
+        return cast("int | None", cached)
+
+    def has_heading_format(self, target_index: int) -> bool:
+        cached = self._has_heading_by_index.get(target_index, _ROLE_UNRESOLVED)
+        if cached is _ROLE_UNRESOLVED:
+            cached = self.heading_level(target_index) is not None
+            self._has_heading_by_index[target_index] = cached
+        return cast(bool, cached)
+
+    def format_role(self, target_index: int) -> str:
+        cached = self._format_role_by_index.get(target_index, _ROLE_UNRESOLVED)
+        if cached is _ROLE_UNRESOLVED:
+            # Mirrors _target_format_role exactly, but reuses the shared heading-level memo so a
+            # target's heading level is resolved at most once per call. Keep in sync with it.
+            paragraph = self._targets[target_index]
+            if IMAGE_PLACEHOLDER_PATTERN.search(paragraph.text):
+                cached = "image"
+            elif self.heading_level(target_index) is not None:
+                cached = "heading"
+            elif detect_explicit_list_kind(paragraph.text) is not None:
+                cached = "list"
+            else:
+                cached = "body"
+            self._format_role_by_index[target_index] = cached
+        return cast(str, cached)
+
+
+def _registry_mapping_role_compatible(
+    source_format_role: str, target_role: str, target_has_heading_format: bool
+) -> bool:
     if source_format_role == "heading":
-        return _target_has_heading_format(target_paragraph)
+        return target_has_heading_format
     if source_format_role in {"body", "toc", "epigraph", "attribution", "dedication"}:
         return target_role != "heading"
     if source_format_role == "list":
@@ -1187,6 +1243,7 @@ def _try_register_bounded_registry_mapping(
     target_paragraphs: Sequence[Paragraph],
     generated_registry_by_id: Mapping[str, Mapping[str, object]],
     *,
+    role_resolver: "_TargetRoleResolver",
     mapped_target_by_source: dict[int, int],
     strategy_by_source: dict[int, str],
     available_target_indexes: set[int],
@@ -1223,7 +1280,11 @@ def _try_register_bounded_registry_mapping(
         target_text = target_paragraph.text.strip()
         if not target_text or IMAGE_PLACEHOLDER_PATTERN.search(target_text):
             continue
-        if not _registry_mapping_role_compatible(source_format_role, target_paragraph):
+        if not _registry_mapping_role_compatible(
+            source_format_role,
+            role_resolver.format_role(target_index),
+            role_resolver.has_heading_format(target_index),
+        ):
             continue
 
         best_evidence: dict[str, object] | None = None
@@ -1332,6 +1393,7 @@ def _try_register_projected_registry_mapping(
     target_paragraphs: Sequence[Paragraph],
     generated_registry_by_id: Mapping[str, Mapping[str, object]],
     *,
+    role_resolver: "_TargetRoleResolver",
     mapped_target_by_source: dict[int, int],
     strategy_by_source: dict[int, str],
     available_target_indexes: set[int],
@@ -1383,7 +1445,11 @@ def _try_register_projected_registry_mapping(
         target_text = target_paragraph.text.strip()
         if not target_text or IMAGE_PLACEHOLDER_PATTERN.search(target_text):
             continue
-        if not _registry_mapping_role_compatible(source_format_role, target_paragraph):
+        if not _registry_mapping_role_compatible(
+            source_format_role,
+            role_resolver.format_role(target_index),
+            role_resolver.has_heading_format(target_index),
+        ):
             continue
 
         best_evidence: dict[str, object] | None = None
@@ -1446,6 +1512,7 @@ def _try_register_unique_registry_text_floor_mapping(
     target_paragraphs: Sequence[Paragraph],
     generated_registry_by_id: Mapping[str, Mapping[str, object]],
     *,
+    role_resolver: "_TargetRoleResolver",
     mapped_target_by_source: dict[int, int],
     strategy_by_source: dict[int, str],
     available_target_indexes: set[int],
@@ -1484,7 +1551,11 @@ def _try_register_unique_registry_text_floor_mapping(
         target_text = target_paragraph.text.strip()
         if not target_text or IMAGE_PLACEHOLDER_PATTERN.search(target_text):
             continue
-        if not _registry_mapping_role_compatible(source_format_role, target_paragraph):
+        if not _registry_mapping_role_compatible(
+            source_format_role,
+            role_resolver.format_role(target_index),
+            role_resolver.has_heading_format(target_index),
+        ):
             continue
 
         best_evidence: dict[str, object] | None = None
@@ -1542,6 +1613,7 @@ def _register_repeated_note_sequence_mappings(
     target_paragraphs: Sequence[Paragraph],
     generated_registry_by_id: Mapping[str, Mapping[str, object]],
     *,
+    role_resolver: "_TargetRoleResolver",
     mapped_target_by_source: dict[int, int],
     strategy_by_source: dict[int, str],
     available_target_indexes: set[int],
@@ -1594,7 +1666,11 @@ def _register_repeated_note_sequence_mappings(
             continue
         for source_index, target_index in zip(sorted(source_indexes), sorted(target_indexes), strict=True):
             source_format_role = _source_format_role(source_paragraphs[source_index])
-            if not _registry_mapping_role_compatible(source_format_role, target_paragraphs[target_index]):
+            if not _registry_mapping_role_compatible(
+                source_format_role,
+                role_resolver.format_role(target_index),
+                role_resolver.has_heading_format(target_index),
+            ):
                 break
         else:
             for source_index, target_index in zip(sorted(source_indexes), sorted(target_indexes), strict=True):
@@ -1612,12 +1688,19 @@ def _generated_registry_target_text_compatible(
     source_paragraph: ParagraphUnit,
     target_paragraph: Paragraph,
     registry_entry: Mapping[str, object] | None,
+    *,
+    role_resolver: "_TargetRoleResolver",
+    target_index: int,
 ) -> bool:
     generated_text = _generated_registry_text(registry_entry)
     if not generated_text:
         return False
     source_format_role = _source_format_role(source_paragraph)
-    if not _registry_mapping_role_compatible(source_format_role, target_paragraph):
+    if not _registry_mapping_role_compatible(
+        source_format_role,
+        role_resolver.format_role(target_index),
+        role_resolver.has_heading_format(target_index),
+    ):
         return False
     return any(
         _registry_candidate_mapping_evidence(
@@ -2030,6 +2113,7 @@ def _try_register_local_gap_fallback(
     source_paragraphs: list[ParagraphUnit],
     target_paragraphs: list[Paragraph],
     *,
+    role_resolver: "_TargetRoleResolver",
     mapped_target_by_source: dict[int, int],
     strategy_by_source: dict[int, str],
     available_target_indexes: set[int],
@@ -2060,7 +2144,7 @@ def _try_register_local_gap_fallback(
         return False
 
     if structural_role == "heading":
-        if _extract_target_heading_level(candidate_target) is None:
+        if role_resolver.heading_level(candidate_index) is None:
             return False
         strategy = "local_gap_heading_fallback"
     elif structural_role == "toc_entry":
@@ -2194,6 +2278,10 @@ def _map_source_target_paragraphs(
     strategy_by_source: dict[int, str] = {}
     generated_registry_by_id = _build_generated_registry_by_paragraph_id(generated_paragraph_registry)
 
+    # Per-call memo of target role/heading resolution keyed by target index (spec 029, Lever F):
+    # resolve each target at most once and reuse across all passes/source iterations.
+    role_resolver = _TargetRoleResolver(target_paragraphs)
+
     available_target_indexes = set(range(len(target_paragraphs)))
     target_indexes_by_exact_text: dict[str, list[int]] = {}
     target_indexes_by_normalized_text: dict[str, list[int]] = {}
@@ -2224,6 +2312,8 @@ def _map_source_target_paragraphs(
             source_paragraph,
             target_paragraphs[target_index],
             registry_entry,
+            role_resolver=role_resolver,
+            target_index=target_index,
         ):
             continue
         _register_mapping(
@@ -2249,7 +2339,11 @@ def _map_source_target_paragraphs(
                 target_index
                 for target_index in target_indexes_by_normalized_text.get(normalized_generated_text, [])
                 if target_index in available_target_indexes
-                and _registry_mapping_role_compatible(source_format_role, target_paragraphs[target_index])
+                and _registry_mapping_role_compatible(
+                    source_format_role,
+                    role_resolver.format_role(target_index),
+                    role_resolver.has_heading_format(target_index),
+                )
             )
         if len(matching_target_indexes) == 1:
             _register_mapping(
@@ -2334,7 +2428,11 @@ def _map_source_target_paragraphs(
                 continue
             if abs(target_index - source_index) > 3:
                 continue
-            if not _registry_mapping_role_compatible(source_format_role, target_paragraphs[target_index]):
+            if not _registry_mapping_role_compatible(
+                source_format_role,
+                role_resolver.format_role(target_index),
+                role_resolver.has_heading_format(target_index),
+            ):
                 continue
             evidence_candidates = [
                 evidence
@@ -2440,6 +2538,7 @@ def _map_source_target_paragraphs(
             source_index,
             source_paragraphs,
             target_paragraphs,
+            role_resolver=role_resolver,
             mapped_target_by_source=mapped_target_by_source,
             strategy_by_source=strategy_by_source,
             available_target_indexes=available_target_indexes,
@@ -2472,6 +2571,7 @@ def _map_source_target_paragraphs(
             source_paragraph,
             target_paragraphs,
             generated_registry_by_id,
+            role_resolver=role_resolver,
             mapped_target_by_source=mapped_target_by_source,
             strategy_by_source=strategy_by_source,
             available_target_indexes=available_target_indexes,
@@ -2483,6 +2583,7 @@ def _map_source_target_paragraphs(
             source_paragraph,
             target_paragraphs,
             generated_registry_by_id,
+            role_resolver=role_resolver,
             mapped_target_by_source=mapped_target_by_source,
             strategy_by_source=strategy_by_source,
             available_target_indexes=available_target_indexes,
@@ -2494,6 +2595,7 @@ def _map_source_target_paragraphs(
             source_paragraph,
             target_paragraphs,
             generated_registry_by_id,
+            role_resolver=role_resolver,
             mapped_target_by_source=mapped_target_by_source,
             strategy_by_source=strategy_by_source,
             available_target_indexes=available_target_indexes,
@@ -2503,6 +2605,7 @@ def _map_source_target_paragraphs(
         source_paragraphs,
         target_paragraphs,
         generated_registry_by_id,
+        role_resolver=role_resolver,
         mapped_target_by_source=mapped_target_by_source,
         strategy_by_source=strategy_by_source,
         available_target_indexes=available_target_indexes,

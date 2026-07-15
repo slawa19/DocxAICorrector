@@ -48,6 +48,15 @@ unchanged thresholds, tuple sort keys, ambiguity guards, and role bonuses (capti
    (floor 0.9 − max bonus 0.08). Pass 11: skip only when `real_quick_ratio < 0.92` AND `candidate not in target`
    (preserve the containment-accept branch of `_registry_candidate_mapping_evidence`). Provably identical.
 
+6. **Lever F — per-call role-resolution memoization (added after profiling).** Profiling revealed the DOMINANT cost
+   in the offline path is python-docx per-target style/role resolution (`_target_format_role`,
+   `_target_has_heading_format`, `_extract_target_heading_level`), recomputed O(S·T) times for the same target across
+   source iterations. These are pure functions of the target paragraph, and `target_paragraphs` is not mutated during
+   mapping, so resolve each once per `_map_source_target_paragraphs` call keyed by target index (O(T) total) and reuse.
+   Provably identical (same paragraph → same role). This is the highest-leverage safe win; E/A/B/C removed the
+   sort/ratio cost but could not touch role resolution (it takes an unhashable `Paragraph`, so it is outside the
+   string-keyed `lru_cache`). Golden must stay byte-identical.
+
 **Out of scope (this spec):** Lever D (token inverted index for pass 13) — NOT provably admissible (char-level ratio
 vs word-level index); revisit separately behind a flag only if A/B/C/E are insufficient. Do NOT window passes 11/13
 by proximity, reorder passes, change greedy discard, or alter thresholds/sort keys.
