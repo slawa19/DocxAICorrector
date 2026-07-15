@@ -1,6 +1,8 @@
 import json
+import os
 import threading
 import time
+import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, is_dataclass
 from datetime import datetime
@@ -43,11 +45,39 @@ def _sanitize_artifact_stem(value: str) -> str:
     return compacted[:80] or "document"
 
 
-def _build_ui_result_stem(source_name: str, *, created_at: float | None = None) -> str:
+def _new_run_id() -> str:
+    """Short opaque per-run id. Isolates concurrent runs of the same source name
+    that would otherwise collide within a single wall-clock second."""
+    return uuid.uuid4().hex[:8]
+
+
+def _build_ui_result_stem(source_name: str, *, created_at: float | None = None, run_id: str | None = None) -> str:
     source_path = Path(source_name)
     stem = _sanitize_artifact_stem(source_path.stem)
     timestamp = time.strftime("%Y%m%d_%H%M%S", time.localtime(time.time() if created_at is None else created_at))
-    return f"{timestamp}_{stem}.result"
+    resolved_run_id = _sanitize_artifact_stem(run_id) if run_id else _new_run_id()
+    # run_id precedes the ``.result`` boundary so retention grouping (which strips
+    # the ``.result.<ext>`` suffix) keeps every file of one run in one group.
+    return f"{timestamp}_{stem}_{resolved_run_id}.result"
+
+
+def _atomic_write(path: Path, data: bytes | str) -> None:
+    """Write to a unique temp sibling then os.replace into place, so a crash
+    mid-write never leaves a truncated artifact that reads as delivered."""
+    tmp_path = path.parent / f"{path.name}.tmp.{_new_run_id()}"
+    try:
+        if isinstance(data, bytes):
+            tmp_path.write_bytes(data)
+        else:
+            tmp_path.write_text(data, encoding="utf-8")
+        os.replace(tmp_path, path)
+    except OSError:
+        try:
+            if tmp_path.exists():
+                tmp_path.unlink()
+        except OSError:
+            pass
+        raise
 
 
 def _truncate_review_text(value: object, *, limit: int = 160) -> str:
@@ -186,9 +216,10 @@ def write_ui_result_artifacts(
     result_manifest: Mapping[str, object] | None = None,
     output_dir: Path = UI_RESULT_ARTIFACTS_DIR,
     created_at: float | None = None,
+    run_id: str | None = None,
 ) -> dict[str, str]:
     output_dir.mkdir(parents=True, exist_ok=True)
-    artifact_stem = _build_ui_result_stem(source_name, created_at=created_at)
+    artifact_stem = _build_ui_result_stem(source_name, created_at=created_at, run_id=run_id)
     markdown_path = output_dir / f"{artifact_stem}.md"
     docx_path = output_dir / f"{artifact_stem}.docx"
     tts_path = output_dir / f"{artifact_stem}.tts.txt"
@@ -205,29 +236,29 @@ def write_ui_result_artifacts(
         meta_payload["quality_warning"] = quality_warning
     write_meta = len(meta_payload) > 1
 
-    markdown_path.write_text(markdown_text, encoding="utf-8")
+    _atomic_write(markdown_path, markdown_text)
     try:
-        docx_path.write_bytes(docx_bytes)
+        _atomic_write(docx_path, docx_bytes)
         if narration_text is not None:
-            tts_path.write_text(narration_text, encoding="utf-8")
+            _atomic_write(tts_path, narration_text)
         if quality_warning:
-            formatting_review_path.write_text(
+            _atomic_write(
+                formatting_review_path,
                 _build_formatting_review_text(
                     source_name=source_name,
                     quality_warning=quality_warning,
                     created_at=created_at,
                 ),
-                encoding="utf-8",
             )
         if write_meta:
-            meta_path.write_text(
+            _atomic_write(
+                meta_path,
                 json.dumps(meta_payload, ensure_ascii=False, indent=2),
-                encoding="utf-8",
             )
         if result_manifest is not None:
-            manifest_path.write_text(
+            _atomic_write(
+                manifest_path,
                 json.dumps(_to_jsonable(result_manifest), ensure_ascii=False, indent=2),
-                encoding="utf-8",
             )
     except OSError:
         try:
@@ -274,15 +305,17 @@ def write_structure_manifest_artifact(
     manifest_payload: Mapping[str, object],
     output_dir: Path = STRUCTURE_MANIFESTS_DIR,
     created_at: float | None = None,
+    run_id: str | None = None,
 ) -> str:
     output_dir.mkdir(parents=True, exist_ok=True)
     timestamp = time.strftime("%Y%m%d_%H%M%S", time.localtime(time.time() if created_at is None else created_at))
     source_path = Path(source_name)
     stem = _sanitize_artifact_stem(source_path.stem)
-    manifest_path = output_dir / f"{timestamp}_{stem}.segments.json"
-    manifest_path.write_text(
+    resolved_run_id = _sanitize_artifact_stem(run_id) if run_id else _new_run_id()
+    manifest_path = output_dir / f"{timestamp}_{stem}_{resolved_run_id}.segments.json"
+    _atomic_write(
+        manifest_path,
         json.dumps(_to_jsonable(manifest_payload), ensure_ascii=False, indent=2),
-        encoding="utf-8",
     )
     prune_artifact_dir(
         target_dir=output_dir,

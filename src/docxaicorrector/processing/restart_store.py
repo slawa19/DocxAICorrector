@@ -1,9 +1,28 @@
+import logging
 import re
 import time
 from pathlib import Path
 from typing import Any
 
 from docxaicorrector.core.constants import RUN_DIR
+from docxaicorrector.core.logger import log_event
+
+
+def _is_confined_persisted_source(path: Path) -> bool:
+    """A persisted-source path is safe to delete only when it resolves INSIDE
+    RUN_DIR and its name matches the ``restart_``/``completed_`` convention.
+
+    Guards clear_restart_source and cleanup_stale_persisted_sources against
+    deleting an arbitrary file whose path leaked in via corrupted or externally
+    restored session metadata (path traversal / arbitrary file deletion)."""
+    if not (path.name.startswith("restart_") or path.name.startswith("completed_")):
+        return False
+    try:
+        resolved = path.resolve()
+        run_dir_resolved = RUN_DIR.resolve()
+    except OSError:
+        return False
+    return resolved.is_relative_to(run_dir_resolved)
 
 
 def _sanitize_suffix(source_name: str) -> str:
@@ -94,6 +113,14 @@ def clear_restart_source(restart_source: dict[str, Any] | None) -> None:
     if not isinstance(storage_path, str) or not storage_path:
         return
     restart_path = Path(storage_path)
+    if not _is_confined_persisted_source(restart_path):
+        log_event(
+            logging.WARNING,
+            "restart_source_delete_refused",
+            "Refused to delete a persisted source outside RUN_DIR or with an unexpected name.",
+            storage_path=str(restart_path),
+        )
+        return
     try:
         if restart_path.exists() and restart_path.is_file():
             restart_path.unlink()
@@ -109,7 +136,7 @@ def cleanup_stale_persisted_sources(*, max_age_seconds: int, now_timestamp: floa
     for candidate in RUN_DIR.glob("*_*"):
         if not candidate.is_file():
             continue
-        if not (candidate.name.startswith("restart_") or candidate.name.startswith("completed_")):
+        if not _is_confined_persisted_source(candidate):
             continue
         try:
             candidate_age = current_timestamp - candidate.stat().st_mtime
