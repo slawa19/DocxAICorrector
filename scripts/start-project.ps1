@@ -41,6 +41,9 @@ try {
     Write-Warn 'Пропускаю тяжёлый preflight окружения для быстрого старта. Для полной диагностики используйте Project Status.'
 
     Write-Step "Запускаю Streamlit ($runtimeMode)"
+    if (-not (Test-IsLoopbackHost $serverHost)) {
+        Write-Warn "Приложение слушает $serverHost (не loopback). Встроенной аутентификации НЕТ — открытый доступ из сети позволит расходовать API-бюджет. Запускайте только за reverse proxy с аутентификацией. Для локального режима не задавайте DOCX_AI_BIND_HOST."
+    }
     $runOutput = Start-ManagedProject -ServerHost $serverHost -Port $port 2>&1
     $runExitCode = if ($runtimeMode -eq 'wsl') { $LASTEXITCODE } else { 0 }
     if ($runExitCode -ne 0) {

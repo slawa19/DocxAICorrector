@@ -251,6 +251,7 @@ OPENAI_API_KEY=sk-...
 
 - `OPENAI_API_KEY` — обязательный API-ключ OpenAI для текстовой и image-обработки.
 - `OPENROUTER_API_KEY` — optional API-ключ OpenRouter для provider-qualified text selectors вида `openrouter:<model_id>`.
+- `DOCX_AI_BIND_HOST` — интерфейс, который слушает Streamlit. По умолчанию `127.0.0.1` (только локально). У приложения нет встроенной аутентификации, поэтому удалённый режим — явный opt-in: задайте `DOCX_AI_BIND_HOST=0.0.0.0` только за reverse proxy с аутентификацией. Приоритет секретов и настроек: `environment > .env > config defaults`.
 - `DOCX_AI_MODELS_TEXT_DEFAULT` — модель редактирования текста по умолчанию.
 - `DOCX_AI_MODELS_TEXT_OPTIONS` — список моделей для sidebar через запятую.
 - `DOCX_AI_PROVIDERS_OPENAI_ENABLED` — включает или выключает provider `openai`.

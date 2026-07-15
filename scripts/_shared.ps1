@@ -19,8 +19,19 @@ $runDir = Join-Path $projectRoot '.run'
 $projectLogPath = Join-Path $runDir 'project.log'
 $projectLogMaxBytes = 262144
 $projectLogBackupCount = 5
-$serverHost = '0.0.0.0'   # used in stop-project.ps1 (Test-TcpPort) and start-project.ps1 (Invoke-WslInProject)
 $loopbackHost = '127.0.0.1'
+# Safe-by-default bind host. Local single-user runs listen on loopback only.
+# Remote exposure is an explicit opt-in: set DOCX_AI_BIND_HOST=0.0.0.0 (or a
+# specific interface). A non-loopback host has NO built-in auth — start-project.ps1
+# warns and it must sit behind an authenticating reverse proxy.
+# used in stop-project.ps1 (Test-TcpPort) and start-project.ps1 (Invoke-WslInProject)
+$serverHost = if ([string]::IsNullOrWhiteSpace($env:DOCX_AI_BIND_HOST)) { $loopbackHost } else { $env:DOCX_AI_BIND_HOST.Trim() }
+
+function Test-IsLoopbackHost {
+    param([string]$HostValue)
+    $normalized = ([string]$HostValue).Trim().ToLowerInvariant()
+    return ($normalized -eq '127.0.0.1' -or $normalized -eq 'localhost' -or $normalized -eq '::1')
+}
 $port = 8501
 $appUrl = "http://localhost:$port"
 $healthUrl = "$appUrl/_stcore/health"   # used in start-project.ps1 (Wait-HttpHealth)
