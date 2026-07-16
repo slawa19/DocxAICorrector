@@ -29,8 +29,12 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 # (guarded by per-module characterization goldens) and all runtime tests pass; the +3 is
 # benign cross-module type-inference noise — the same pre-existing "object cannot be
 # assigned to Convertible*" family (main already carried 240+ of these) surfacing a few
-# more times at the new module boundaries, not a new runtime defect. Verified clean-tree
-# (experiment script removed) = 247.
+# more times at the new module boundaries, not a new runtime defect.
+# 2026-07-16: 247 is now REPRODUCIBLE on any tree (local == CI), because the gitignored
+# throwaway `run_reader_cleanup_replay_experiment.py` — which added the ~32 errors that
+# only `git clean -fdx` removed, making the count differ between a dev tree that retained
+# it (279) and CI — is now excluded in pyrightconfig.json. Real src/tests coverage is
+# unchanged; only that one untracked experiment file (never part of the repo) is skipped.
 # CAUTION: a DIRTY worktree inflates this — untracked experiment scripts under tests/
 # (e.g. tests/artifacts/**/run_reader_cleanup_replay_experiment.py) add ~32 errors that
 # CI's `git clean -fdx` removes. Always measure on a clean checkout.
