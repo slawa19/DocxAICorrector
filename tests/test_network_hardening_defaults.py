@@ -63,3 +63,17 @@ def test_start_project_warns_on_non_loopback_bind() -> None:
     assert "Test-IsLoopbackHost" in text
     # A non-loopback bind must surface the no-auth warning before launch.
     assert "reverse proxy" in text.lower()
+
+
+def test_start_project_fails_fast_on_unsupported_bind_host() -> None:
+    # Contract: only 127.0.0.1 (loopback) or 0.0.0.0 are supported bind hosts. A
+    # *specific* interface IP must fail fast with a clear error before launch —
+    # the loopback readiness probes would otherwise false-timeout against it and
+    # the app would look "not ready" while actually running. Pin the allowlist
+    # helper + the fail-fast guard so a future edit cannot silently downgrade it
+    # back to a launch-and-hang.
+    shared = (REPO_ROOT / "scripts" / "_shared.ps1").read_text(encoding="utf-8")
+    start = (REPO_ROOT / "scripts" / "start-project.ps1").read_text(encoding="utf-8")
+    assert "function Test-IsSupportedBindHost" in shared
+    assert "0.0.0.0" in shared  # the allowlist permits the documented remote opt-in
+    assert "if (-not (Test-IsSupportedBindHost $serverHost))" in start

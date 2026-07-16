@@ -37,6 +37,15 @@ function Test-IsLoopbackHost {
     $normalized = ([string]$HostValue).Trim().ToLowerInvariant()
     return ($normalized -eq '127.0.0.1' -or $normalized -eq 'localhost' -or $normalized -eq '::1')
 }
+# Allowlist the two contract-supported bind hosts (see the DOCX_AI_BIND_HOST note
+# above): loopback (local) or 0.0.0.0 (remote, behind an auth proxy). A *specific*
+# interface IP is intentionally rejected — start-project.ps1 fails fast rather than
+# letting the loopback readiness probes false-timeout against it.
+function Test-IsSupportedBindHost {
+    param([string]$HostValue)
+    $normalized = ([string]$HostValue).Trim().ToLowerInvariant()
+    return ((Test-IsLoopbackHost $HostValue) -or $normalized -eq '0.0.0.0')
+}
 $port = 8501
 $appUrl = "http://localhost:$port"
 $healthUrl = "$appUrl/_stcore/health"   # used in start-project.ps1 (Wait-HttpHealth)

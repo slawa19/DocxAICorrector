@@ -41,6 +41,9 @@ try {
     Write-Warn 'Пропускаю тяжёлый preflight окружения для быстрого старта. Для полной диагностики используйте Project Status.'
 
     Write-Step "Запускаю Streamlit ($runtimeMode)"
+    if (-not (Test-IsSupportedBindHost $serverHost)) {
+        throw "DOCX_AI_BIND_HOST='$serverHost' не поддерживается. Допустимы только 127.0.0.1 (локальный режим) или 0.0.0.0 (удалённый доступ за reverse proxy). Конкретный интерфейсный IP не поддержан: WSL-пробы готовности (is_port_open / health_ok / app_page_ok) проверяют 127.0.0.1, куда сервер, привязанный к одиночному не-loopback адресу, не отвечает — это даёт ложный таймаут «не готово»."
+    }
     if (-not (Test-IsLoopbackHost $serverHost)) {
         Write-Warn "Приложение слушает $serverHost (не loopback). Встроенной аутентификации НЕТ — открытый доступ из сети позволит расходовать API-бюджет. Запускайте только за reverse proxy с аутентификацией. Для локального режима не задавайте DOCX_AI_BIND_HOST."
     }

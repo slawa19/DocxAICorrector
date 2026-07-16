@@ -283,9 +283,10 @@ def write_ui_result_artifacts(
         meta_payload["quality_warning"] = quality_warning
     write_meta = len(meta_payload) > 1
 
-    # Stage the whole group to temp, then publish atomically (spec 023): the group
-    # is never left partially written — the previous per-file scheme could leave a
-    # half-written group if the process died between the .md and .docx writes.
+    # Stage the whole group to temp, then publish (spec 023): staging/publish
+    # exceptions do not leave partial groups; the hard-crash window is narrowed to
+    # the rename phase (the previous per-file scheme could leave a half-written
+    # group if the process died between the .md and .docx writes).
     group_entries: list[tuple[Path, bytes | str]] = [
         (markdown_path, markdown_text),
         (docx_path, docx_bytes),
