@@ -91,6 +91,61 @@ def _append_textbox_with_paragraphs(paragraph, texts: list[str]) -> None:
     )
 
 
+def _detach_inline_drawing(doc, image_path):
+    """Build a valid inline-image ``w:drawing`` bound to the document part, detached."""
+    throwaway = doc.add_paragraph()
+    run = throwaway.add_run()
+    run.add_picture(str(image_path))
+    drawing = run._element.find(qn("w:drawing"))
+    run._element.remove(drawing)
+    throwaway._p.getparent().remove(throwaway._p)
+    return drawing
+
+
+def _append_textbox_with_interior_drawing(paragraph, text: str, drawing_element) -> None:
+    """Append a textbox whose interior holds a text paragraph AND an image drawing."""
+    textbox_run = parse_xml(
+        """
+        <w:r xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+             xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"
+             xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
+             xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape">
+            <w:drawing>
+                <wp:inline>
+                    <wp:extent cx="914400" cy="914400"/>
+                    <wp:docPr id="2" name="TextBox 2"/>
+                    <a:graphic>
+                        <a:graphicData uri="http://schemas.microsoft.com/office/word/2010/wordprocessingShape">
+                            <wps:wsp>
+                                <wps:txbx>
+                                    <w:txbxContent/>
+                                </wps:txbx>
+                                <wps:bodyPr/>
+                            </wps:wsp>
+                        </a:graphicData>
+                    </a:graphic>
+                </wp:inline>
+            </w:drawing>
+        </w:r>
+        """
+    )
+    txbx_content = textbox_run.find(".//" + qn("w:txbxContent"))
+    text_paragraph = parse_xml(
+        f"""
+        <w:p xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+            <w:r><w:t>{text}</w:t></w:r>
+        </w:p>
+        """
+    )
+    txbx_content.append(text_paragraph)
+    image_paragraph = OxmlElement("w:p")
+    image_run = OxmlElement("w:r")
+    image_run.append(drawing_element)
+    image_paragraph.append(image_run)
+    txbx_content.append(image_paragraph)
+    paragraph._p.append(textbox_run)
+
+
 def _set_raw_paragraph_alignment(paragraph, value: str) -> None:
     paragraph_properties = paragraph._element.get_or_add_pPr()
     alignment = paragraph_properties.find(qn("w:jc"))
@@ -631,6 +686,57 @@ def test_extract_document_content_from_docx_populates_image_asset_payload_fields
     assert asset.image_id == "img_001"
     assert asset.width_emu is not None
     assert asset.height_emu is not None
+
+
+def test_direct_inline_image_survives_when_paragraph_also_has_textbox(tmp_path):
+    # F11: a direct (non-textbox) inline image sharing a paragraph with a textbox
+    # must not be dropped. Previously the whole paragraph's images were suppressed
+    # whenever a textbox was present.
+    image_path = tmp_path / "image.png"
+    image_path.write_bytes(PNG_BYTES)
+    doc = Document()
+    host = doc.add_paragraph("До картинки ")
+    host.add_run().add_picture(str(image_path))  # direct inline image
+    _append_textbox_with_paragraphs(host, ["Текст во врезке"])  # text-only textbox
+    buffer = BytesIO()
+    doc.save(buffer)
+    buffer.seek(0)
+
+    paragraphs, image_assets = extract_document_content_from_docx(buffer)
+
+    assert len(image_assets) == 1
+    asset = image_assets[0]
+    assert asset.image_id == "img_001"
+    assert asset.original_bytes == PNG_BYTES
+
+    joined = "\n".join(paragraph.text for paragraph in paragraphs)
+    assert asset.placeholder in joined  # the placeholder survives in the body
+    assert "Текст во врезке" in joined  # textbox text is still restored
+
+
+def test_textbox_interior_image_is_not_double_counted_with_direct_image(tmp_path):
+    # F11 guard: a direct image and a textbox-INTERIOR image are each captured
+    # exactly once — the direct pass takes the direct image, the restore pass
+    # takes the interior one; neither is double-counted.
+    image_path = tmp_path / "image.png"
+    image_path.write_bytes(PNG_BYTES)
+    doc = Document()
+    host = doc.add_paragraph()
+    host.add_run().add_picture(str(image_path))  # direct inline image
+    interior_drawing = _detach_inline_drawing(doc, image_path)
+    _append_textbox_with_interior_drawing(host, "Врезка", interior_drawing)
+    buffer = BytesIO()
+    doc.save(buffer)
+    buffer.seek(0)
+
+    paragraphs, image_assets = extract_document_content_from_docx(buffer)
+
+    assert len(image_assets) == 2
+    assert [asset.image_id for asset in image_assets] == ["img_001", "img_002"]
+    joined = "\n".join(paragraph.text for paragraph in paragraphs)
+    assert "[[DOCX_IMAGE_img_001]]" in joined
+    assert "[[DOCX_IMAGE_img_002]]" in joined
+    assert "Врезка" in joined
 
 
 def test_extract_document_content_from_docx_captures_source_rect_forensics(tmp_path):

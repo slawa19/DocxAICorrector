@@ -1,6 +1,7 @@
 import hashlib
 import json
 import re
+from collections.abc import Mapping
 from pathlib import Path
 
 from docxaicorrector.image.shared import (
@@ -17,7 +18,7 @@ from docxaicorrector.runtime.artifact_retention import prune_artifact_dir
 def resolve_paragraph_boundary_ai_review_settings(
     *,
     allowed_modes: tuple[str, ...] | list[str] | set[str],
-    app_config: object | None = None,
+    app_config: Mapping[str, object] | None = None,
 ) -> tuple[bool, str, int, int, int, str]:
     from docxaicorrector.core.config import get_model_role_value, load_app_config
 

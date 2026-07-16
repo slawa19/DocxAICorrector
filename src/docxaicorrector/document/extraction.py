@@ -65,9 +65,11 @@ from docxaicorrector.document.roles import (
     xml_local_name,
 )
 from docxaicorrector.document.shared_xml import (
+    build_drawing_forensics,
     build_source_xml_fingerprint,
     extract_num_pr_level,
     extract_run_element_images,
+    resolve_drawing_extent_emu,
     resolve_num_pr_details,
     resolve_paragraph_num_pr,
 )
@@ -75,7 +77,7 @@ from docxaicorrector.document.tables import (
     build_raw_table as _build_raw_table_impl,
     flatten_table_lines as _flatten_table_lines_impl,
 )
-from docxaicorrector.document.provenance import classify_document_scan_origin
+from docxaicorrector.document.provenance import classify_document_scan_origin, table_has_authored_signals
 from docxaicorrector.core.models import (
     PARAGRAPH_BOUNDARY_AI_REVIEW_MODE_VALUES,
     PARAGRAPH_BOUNDARY_NORMALIZATION_MODE_VALUES,
@@ -340,6 +342,7 @@ def _build_paragraph_text_with_placeholders(
     *,
     include_image_placeholders: bool = True,
     allow_run_markdown: bool = True,
+    exclude_textbox_interior_images: bool = False,
 ) -> str:
     parts: list[str] = []
     for child in paragraph._element:
@@ -352,6 +355,7 @@ def _build_paragraph_text_with_placeholders(
                     image_assets,
                     allow_hyperlink_markdown=allow_run_markdown,
                     include_image_placeholders=include_image_placeholders,
+                    exclude_textbox_interior_images=exclude_textbox_interior_images,
                 )
             )
             continue
@@ -363,6 +367,7 @@ def _build_paragraph_text_with_placeholders(
                     image_assets,
                     allow_hyperlink_markdown=allow_run_markdown,
                     include_image_placeholders=include_image_placeholders,
+                    exclude_textbox_interior_images=exclude_textbox_interior_images,
                 )
             )
     return "".join(parts)
@@ -383,13 +388,17 @@ def _build_raw_document_blocks(
                 raw_blocks.append(raw_block)
             continue
         table_count += 1
-        if is_scan_origin:
+        table = cast(Table, block)
+        if is_scan_origin and not table_has_authored_signals(table._tbl):
             # Scan-origin (OCR) documents: the "table" is a scanned column layout,
             # not authored tabular data — flatten it into linear body paragraphs.
-            raw_blocks.extend(_build_flattened_table_blocks(cast(Table, block), image_assets, start_raw_index=len(raw_blocks)))
+            # The document-level scan signal is only a PRIOR: a table that carries
+            # strong local authored-table signals (real borders / uniform grid) is
+            # preserved rather than flattened (F13).
+            raw_blocks.extend(_build_flattened_table_blocks(table, image_assets, start_raw_index=len(raw_blocks)))
             continue
         raw_block = _build_raw_table(
-            cast(Table, block),
+            table,
             image_assets,
             raw_index=len(raw_blocks),
             asset_id=f"table_{table_count:03d}",
@@ -432,7 +441,18 @@ def _build_flattened_table_blocks(
 def _build_raw_paragraph_blocks(paragraph, image_assets: list[ImageAsset], *, raw_index: int) -> list[RawParagraph]:
     raw_blocks: list[RawParagraph] = []
     has_textboxes = _paragraph_has_textbox_content(paragraph)
-    direct_text = _build_paragraph_text_with_placeholders(paragraph, image_assets, include_image_placeholders=not has_textboxes)
+    # When the host paragraph carries a textbox we still capture its DIRECT
+    # (non-textbox) drawing images here — dropping the whole paragraph's images
+    # would lose a real inline image that merely shares a paragraph with a
+    # textbox (F11). Textbox-interior images are excluded because the dedicated
+    # restore pass below (_iter_textbox_paragraphs) captures them; including
+    # them here too would double-count.
+    direct_text = _build_paragraph_text_with_placeholders(
+        paragraph,
+        image_assets,
+        include_image_placeholders=True,
+        exclude_textbox_interior_images=has_textboxes,
+    )
 
     if direct_text.strip():
         raw_block = _build_raw_paragraph(
@@ -1270,6 +1290,7 @@ def _render_hyperlink_element(
     *,
     include_image_placeholders: bool = True,
     allow_hyperlink_markdown: bool = True,
+    exclude_textbox_interior_images: bool = False,
 ) -> str:
     text_parts: list[str] = []
     for child in hyperlink_element:
@@ -1282,6 +1303,7 @@ def _render_hyperlink_element(
                 image_assets,
                 allow_hyperlink_markdown=False,
                 include_image_placeholders=include_image_placeholders,
+                exclude_textbox_interior_images=exclude_textbox_interior_images,
             )
         )
 
@@ -1307,10 +1329,20 @@ def _render_run_element(
     *,
     allow_hyperlink_markdown: bool = True,
     include_image_placeholders: bool = True,
+    exclude_textbox_interior_images: bool = False,
 ) -> str:
     text = _extract_run_text(run_element)
     formatted_text = _apply_run_markdown(text, run_element) if allow_hyperlink_markdown else text
-    image_placeholders = _extract_run_image_placeholders(run_element, part, image_assets) if include_image_placeholders else []
+    image_placeholders = (
+        _extract_run_image_placeholders(
+            run_element,
+            part,
+            image_assets,
+            exclude_textbox_interior_images=exclude_textbox_interior_images,
+        )
+        if include_image_placeholders
+        else []
+    )
     return formatted_text + "".join(image_placeholders)
 
 
@@ -1391,9 +1423,62 @@ def _extract_run_element_images(run_element, part) -> list[tuple[bytes, str | No
     )
 
 
-def _extract_run_image_placeholders(run_element, part, image_assets: list[ImageAsset]) -> list[str]:
+def _element_is_inside_textbox(element) -> bool:
+    for ancestor in element.iterancestors():
+        if xml_local_name(ancestor.tag) == "txbxContent":
+            return True
+    return False
+
+
+def _extract_run_element_direct_images(
+    run_element, part
+) -> list[tuple[bytes, str | None, int | None, int | None, dict[str, object]]]:
+    """Like ``extract_run_element_images`` but skips blips inside a textbox.
+
+    A textbox-interior image (a ``w:drawing`` blip nested under
+    ``w:txbxContent``) is captured by the dedicated textbox restore pass, so
+    emitting it here would double-count it. Everything else — genuine direct
+    inline/anchored images that merely share a paragraph with a textbox — is
+    preserved (F11).
+    """
+    images: list[tuple[bytes, str | None, int | None, int | None, dict[str, object]]] = []
+    for drawing in run_element.xpath(".//w:drawing"):
+        width_emu, height_emu = resolve_drawing_extent_emu(drawing)
+        for blip in drawing.xpath(".//a:blip"):
+            if _element_is_inside_textbox(blip):
+                continue
+            embed_id = blip.get(f"{{{RELATIONSHIP_NAMESPACE}}}embed")
+            if not embed_id:
+                continue
+            image_part = part.related_parts.get(embed_id)
+            if image_part is None:
+                continue
+            images.append(
+                (
+                    image_part.blob,
+                    getattr(image_part, "content_type", None),
+                    width_emu,
+                    height_emu,
+                    build_drawing_forensics(drawing, embed_id=embed_id),
+                )
+            )
+    return images
+
+
+def _extract_run_image_placeholders(
+    run_element,
+    part,
+    image_assets: list[ImageAsset],
+    *,
+    exclude_textbox_interior_images: bool = False,
+) -> list[str]:
     placeholders: list[str] = []
-    for image_blob, mime_type, width_emu, height_emu, source_forensics in _extract_run_element_images(run_element, part):
+    run_images = (
+        _extract_run_element_direct_images(run_element, part)
+        if exclude_textbox_interior_images
+        else _extract_run_element_images(run_element, part)
+    )
+    for image_blob, mime_type, width_emu, height_emu, source_forensics in run_images:
         image_index = len(image_assets) + 1
         placeholder = f"[[DOCX_IMAGE_img_{image_index:03d}]]"
         image_assets.append(

@@ -78,3 +78,94 @@ def _read_document_xml(source_bytes: bytes) -> str:
             return archive.read("word/document.xml").decode("utf-8", "ignore")
     except (KeyError, zipfile.BadZipFile):
         return ""
+
+
+# --------------------------------------------------------------------------- #
+# Per-table authored-signal override for the document-level scan-origin prior. #
+# --------------------------------------------------------------------------- #
+
+# Columns whose widths sit within this max/min ratio read as a deliberately laid
+# out grid. OCR column-region "tables" carry wildly uneven widths (measured on
+# the reference corpus RESISTANCE tables: ratios 2.2-2.5), so a tolerance well
+# below that keeps scan tables classified as non-uniform.
+_UNIFORM_GRID_MAX_RATIO = 1.5
+
+# OOXML border edge w:val values that mean "no visible border".
+_NO_BORDER_VALUES = {"nil", "none"}
+
+
+def _element_local_name(tag: object) -> str:
+    if not isinstance(tag, str):
+        return ""
+    return tag.rsplit("}", 1)[-1]
+
+
+def _first_child_by_local_name(element, local_name: str):
+    if element is None:
+        return None
+    for child in element:
+        if _element_local_name(child.tag) == local_name:
+            return child
+    return None
+
+
+def _attribute_by_local_name(element, local_name: str) -> str | None:
+    for key, value in element.attrib.items():
+        if _element_local_name(key) == local_name:
+            return value
+    return None
+
+
+def _table_has_real_borders(table_element) -> bool:
+    table_properties = _first_child_by_local_name(table_element, "tblPr")
+    borders = _first_child_by_local_name(table_properties, "tblBorders")
+    if borders is None:
+        return False
+    for edge in borders:
+        value = _attribute_by_local_name(edge, "val")
+        if value is None:
+            continue
+        if value.strip().lower() not in _NO_BORDER_VALUES:
+            return True
+    return False
+
+
+def _table_has_uniform_grid(table_element) -> bool:
+    grid = _first_child_by_local_name(table_element, "tblGrid")
+    if grid is None:
+        return False
+    widths: list[int] = []
+    for child in grid:
+        if _element_local_name(child.tag) != "gridCol":
+            continue
+        raw_width = _attribute_by_local_name(child, "w")
+        if raw_width is None:
+            return False
+        try:
+            width = int(raw_width)
+        except (TypeError, ValueError):
+            return False
+        if width <= 0:
+            return False
+        widths.append(width)
+    if len(widths) < 2:
+        return False
+    return (max(widths) / min(widths)) <= _UNIFORM_GRID_MAX_RATIO
+
+
+def table_has_authored_signals(table_element) -> bool:
+    """Return True when a ``w:tbl`` carries strong local authored-table signals.
+
+    The scan-origin (OCR) classification is document-wide, but a genuine authored
+    table can appear inside a document that trips the corpus thresholds — and a
+    real authored multi-column document can trip them wholesale. Flattening such
+    a table destroys real tabular data. This per-table override keeps a table
+    when it looks authored: it has real table-level borders (a ``w:tblBorders``
+    edge that is not ``nil``/``none``) or a uniform multi-column grid
+    (``w:tblGrid`` columns of near-equal width). Borderless, irregular tables —
+    the shape produced by OCR column-region detection — carry neither signal and
+    are still flattened by the caller.
+    """
+    if table_element is None:
+        return False
+    return _table_has_real_borders(table_element) or _table_has_uniform_grid(table_element)

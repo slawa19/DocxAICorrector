@@ -72,11 +72,11 @@ def _events(deps: _RecordingDependencies) -> list[str]:
     return [event for _level, event, _msg, _ctx in deps.events]
 
 
-def _event(deps: _RecordingDependencies, name: str):
+def _event(deps: _RecordingDependencies, name: str) -> tuple[int, dict[str, object]]:
     for level, event, _msg, ctx in deps.events:
         if event == name:
             return level, ctx
-    return None
+    raise AssertionError(f"event not found: {name}")
 
 
 def _cleanup_result(*, markdown: str, docx_bytes: bytes = b"final-docx"):
@@ -193,14 +193,13 @@ def test_finalize_artifact_save_oserror_is_terminal_visible_but_still_succeeds(m
     assert delivered, "delivered markdown/docx did not reach emit_state"
 
     # A user-visible WARNING result notice reached state.
-    warning_notices = [
-        call["latest_result_notice"]
-        for call in emitters.state_calls
-        if isinstance(call.get("latest_result_notice"), dict)
-        and call["latest_result_notice"].get("level") == "warning"
-    ]
+    warning_notices: list[dict[str, object]] = []
+    for call in emitters.state_calls:
+        notice = call.get("latest_result_notice")
+        if isinstance(notice, dict) and notice.get("level") == "warning":
+            warning_notices.append(notice)
     assert warning_notices, "no warning result-notice reached state"
-    assert "сохранить файлы результата" in warning_notices[-1]["message"]
+    assert "сохранить файлы результата" in str(warning_notices[-1]["message"])
 
     # The failed persistence was logged.
     assert "ui_result_artifacts_save_failed" in _events(deps)
@@ -243,12 +242,11 @@ def test_finalize_artifact_save_success_logs_completed_info(monkeypatch):
     level, _ctx = _event(deps, "processing_completed")
     assert level == logging.INFO
     # No unpersisted-warning notice.
-    unpersisted_notices = [
-        call["latest_result_notice"]
-        for call in emitters.state_calls
-        if isinstance(call.get("latest_result_notice"), dict)
-        and "сохранить файлы результата" in str(call["latest_result_notice"].get("message", ""))
-    ]
+    unpersisted_notices: list[dict[str, object]] = []
+    for call in emitters.state_calls:
+        notice = call.get("latest_result_notice")
+        if isinstance(notice, dict) and "сохранить файлы результата" in str(notice.get("message", "")):
+            unpersisted_notices.append(notice)
     assert not unpersisted_notices
 
 

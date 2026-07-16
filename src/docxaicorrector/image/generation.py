@@ -10,6 +10,7 @@ from PIL import Image, ImageDraw, ImageEnhance, ImageOps
 from PIL import ImageChops
 
 from docxaicorrector.core.config import get_model_role_value
+from docxaicorrector.image.analysis import image_within_pixel_budget
 from docxaicorrector.image.output_policy import resolve_image_output_policy, select_nearest_fallback_size, select_nearest_size
 from docxaicorrector.image.shared import (
     call_responses_create_with_retry,
@@ -145,6 +146,8 @@ def _is_reconstruction_first_candidate(analysis: ImageAnalysisResult) -> bool:
 
 
 def _generate_safe_candidate(image_bytes: bytes) -> bytes:
+    if not image_within_pixel_budget(image_bytes, stage="safe_image_enhancement"):
+        return image_bytes
     try:
         with Image.open(BytesIO(image_bytes)) as source_image:
             source_image.load()

@@ -460,3 +460,89 @@ def test_analyze_image_logs_and_falls_back_when_vision_returns_incomplete_respon
     assert logged_events[0][1]["error_message"] == "Vision analysis returned incomplete output."
     assert logged_events[0][1]["error_code"] == "incomplete_response"
     assert logged_events[0][1]["response_stage"] == "vision_analysis"
+
+
+def test_extract_visual_features_rejects_oversized_header_before_decode(monkeypatch):
+    """An image whose header reports oversized dimensions is rejected BEFORE
+    the pixel decode (.load()) runs, a WARNING is logged, and the skip result
+    (None visual features) is returned."""
+    image_bytes = _make_diagram_like_jpeg()  # 480x320
+
+    load_calls = {"count": 0}
+    real_load = Image.Image.load
+
+    def spy_load(self, *args, **kwargs):
+        load_calls["count"] += 1
+        return real_load(self, *args, **kwargs)
+
+    monkeypatch.setattr(Image.Image, "load", spy_load)
+    # Shrink the dimension budget so the ordinary synthetic image trips it.
+    monkeypatch.setattr(image_analysis, "MAX_IMAGE_DIMENSION_PX", 100)
+
+    logged_events = []
+    monkeypatch.setattr(
+        image_analysis,
+        "log_event",
+        lambda level, event, message, **context: logged_events.append((event, context)),
+    )
+
+    features = image_analysis._extract_visual_features(image_bytes)
+
+    assert features is None
+    assert load_calls["count"] == 0
+    assert logged_events and logged_events[0][0] == "image_pixel_budget_exceeded"
+    assert logged_events[0][1]["width"] == 480
+    assert logged_events[0][1]["height"] == 320
+    assert logged_events[0][1]["stage"] == "image_visual_feature_extraction"
+
+
+def test_extract_visual_features_rejects_by_megapixel_budget(monkeypatch):
+    """Rejection also fires on the megapixel budget even when per-side
+    dimensions are individually under MAX_IMAGE_DIMENSION_PX."""
+    image_bytes = _make_diagram_like_jpeg()  # 480x320 -> 0.1536 MP
+
+    monkeypatch.setattr(image_analysis, "MAX_IMAGE_MEGAPIXELS", 0.1)
+
+    logged_events = []
+    monkeypatch.setattr(
+        image_analysis,
+        "log_event",
+        lambda level, event, message, **context: logged_events.append((event, context)),
+    )
+
+    features = image_analysis._extract_visual_features(image_bytes)
+
+    assert features is None
+    assert logged_events and logged_events[0][0] == "image_pixel_budget_exceeded"
+
+
+def test_extract_visual_features_surfaces_decompression_bomb(monkeypatch):
+    """A real DecompressionBombError raised while reading the header is logged
+    (surfaced), not silently swallowed, and the image is skipped."""
+
+    def boom(*args, **kwargs):
+        raise Image.DecompressionBombError("bomb")
+
+    monkeypatch.setattr(image_analysis.Image, "open", boom)
+
+    logged_events = []
+    monkeypatch.setattr(
+        image_analysis,
+        "log_event",
+        lambda level, event, message, **context: logged_events.append((event, context)),
+    )
+
+    features = image_analysis._extract_visual_features(b"irrelevant-bytes")
+
+    assert features is None
+    assert logged_events and logged_events[0][0] == "image_pixel_budget_decompression_bomb"
+    assert logged_events[0][1]["error_type"] == "DecompressionBombError"
+
+
+def test_extract_visual_features_processes_normal_image_within_budget():
+    """A normally-sized image still decodes and yields visual features (the
+    guard does not disturb existing behaviour)."""
+    features = image_analysis._extract_visual_features(_make_diagram_like_jpeg())
+
+    assert features is not None
+    assert {"white_ratio", "edge_ratio", "bright_ratio"} <= set(features)

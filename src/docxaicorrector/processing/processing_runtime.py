@@ -13,7 +13,7 @@ from dataclasses import dataclass, replace
 from io import BytesIO
 from pathlib import Path
 from collections.abc import Callable, Mapping
-from typing import Protocol, cast, runtime_checkable
+from typing import Protocol, TypeVar, cast, runtime_checkable
 from uuid import uuid4
 
 import streamlit as st
@@ -67,6 +67,41 @@ _PDF_MAGIC = b"%PDF-"
 _DEFAULT_UPLOADED_FILENAME = "document.docx"
 _DOC_CONVERSION_TIMEOUT_SECONDS = 120
 _MATERIALIZED_UPLOAD_CACHE_LIMIT = 4
+
+# ---------------------------------------------------------------------------
+# F7: conservative resource budgets for the in-process pdfminer PDF parse.
+# Normal documents are well within these limits; over-budget documents fail
+# fast with a typed ``pdf_import_over_budget:*`` error (never silently
+# truncated) so a pathological upload cannot exhaust RAM/CPU in-process.
+# ---------------------------------------------------------------------------
+_MAX_PDF_IMPORT_FILE_BYTES = 64 * 1024 * 1024  # 64 MiB
+_MAX_PDF_IMPORT_PAGE_COUNT = 2000
+_PDF_PARSE_WALLCLOCK_BUDGET_SECONDS = 300  # 5 minutes around the in-process parse
+
+# ---------------------------------------------------------------------------
+# F27: process-wide admission gate. Each background processing worker acquires a
+# slot before doing real work so N concurrent Streamlit sessions cannot multiply
+# PDF RAM / subprocess / API cost without bound. Single-session behaviour is
+# unchanged (default limit >= 1); override via the env var.
+# ---------------------------------------------------------------------------
+_PROCESSING_ADMISSION_LIMIT_ENV = "DOCXAI_MAX_CONCURRENT_PROCESSING"
+_DEFAULT_PROCESSING_ADMISSION_LIMIT = 2
+
+
+def _resolve_processing_admission_limit() -> int:
+    raw_value = os.getenv(_PROCESSING_ADMISSION_LIMIT_ENV, "")
+    try:
+        limit = int(str(raw_value).strip())
+    except (TypeError, ValueError):
+        return _DEFAULT_PROCESSING_ADMISSION_LIMIT
+    return limit if limit >= 1 else _DEFAULT_PROCESSING_ADMISSION_LIMIT
+
+
+def _build_processing_admission_gate(limit: int) -> threading.BoundedSemaphore:
+    return threading.BoundedSemaphore(max(1, int(limit)))
+
+
+_PROCESSING_ADMISSION_GATE = _build_processing_admission_gate(_resolve_processing_admission_limit())
 _ALLOWED_SET_STATE_EVENT_KEYS = {
     "final_generated_paragraph_registry",
     "image_assets",
@@ -475,6 +510,108 @@ def _run_pdf_ocr_to_text_layer_pdf(*, input_path: Path, output_path: Path) -> No
         raise RuntimeError("pdf_ocr_import_empty_output")
 
 
+def _count_pdf_pages_for_budget(pdf_path: Path, *, cap: int) -> int | None:
+    """Best-effort page count that short-circuits once ``cap`` is exceeded.
+
+    Returns ``None`` when the page tree cannot be read (e.g. a stub/broken PDF),
+    in which case callers skip the page-count budget rather than reject a
+    document we could not measure. The scan stops at ``cap + 1`` so a huge page
+    tree is never fully walked.
+    """
+
+    try:
+        from pdfminer.pdfpage import PDFPage
+    except ImportError:  # pragma: no cover - depends on optional env
+        return None
+    try:
+        with open(pdf_path, "rb") as handle:
+            count = 0
+            for _ in PDFPage.get_pages(handle):
+                count += 1
+                if count > cap:
+                    break
+            return count
+    except Exception:
+        return None
+
+
+def _enforce_pdf_import_budget(*, filename: str, source_bytes: bytes, input_path: Path) -> None:
+    """Reject PDFs that exceed the conservative in-process parse budget (F7)."""
+
+    max_bytes = _MAX_PDF_IMPORT_FILE_BYTES
+    file_size = len(source_bytes)
+    if file_size > max_bytes:
+        log_event(
+            logging.ERROR,
+            "pdf_import_over_budget",
+            "PDF отклонён: превышен лимит размера файла для импорта.",
+            filename=filename,
+            limit="file_size",
+            file_size_bytes=file_size,
+            max_file_size_bytes=max_bytes,
+        )
+        raise RuntimeError(f"pdf_import_over_budget:file_size:{file_size}>{max_bytes}")
+
+    max_pages = _MAX_PDF_IMPORT_PAGE_COUNT
+    page_count = _count_pdf_pages_for_budget(input_path, cap=max_pages)
+    if page_count is not None and page_count > max_pages:
+        log_event(
+            logging.ERROR,
+            "pdf_import_over_budget",
+            "PDF отклонён: превышен лимит числа страниц для импорта.",
+            filename=filename,
+            limit="page_count",
+            page_count=page_count,
+            max_page_count=max_pages,
+        )
+        raise RuntimeError(f"pdf_import_over_budget:page_count:{page_count}>{max_pages}")
+
+
+_PdfParseResultT = TypeVar("_PdfParseResultT")
+
+
+def _run_pdf_parse_within_wallclock_budget(
+    parse_callable: Callable[[], _PdfParseResultT], *, filename: str, stage: str
+) -> _PdfParseResultT:
+    """Run an in-process pdfminer parse with a wall-clock guard (F7).
+
+    The parse runs in a daemon worker thread; if it does not finish within the
+    budget the caller fails fast with a typed ``pdf_import_over_budget`` error
+    instead of blocking the pipeline indefinitely on a pathological document.
+    """
+
+    budget = _PDF_PARSE_WALLCLOCK_BUDGET_SECONDS
+    result_box: dict[str, _PdfParseResultT] = {}
+    error_box: dict[str, BaseException] = {}
+
+    def _runner() -> None:
+        try:
+            result_box["value"] = parse_callable()
+        except BaseException as exc:  # noqa: BLE001 - re-raised in the caller thread
+            error_box["error"] = exc
+
+    parse_thread = threading.Thread(target=_runner, daemon=True, name=f"pdf-parse-{stage}")
+    started_at = time.monotonic()
+    parse_thread.start()
+    parse_thread.join(timeout=budget)
+    if parse_thread.is_alive():
+        elapsed = time.monotonic() - started_at
+        log_event(
+            logging.ERROR,
+            "pdf_import_over_budget",
+            "PDF отклонён: разбор text-layer превысил лимит времени.",
+            filename=filename,
+            limit="parse_wallclock",
+            stage=stage,
+            elapsed_seconds=round(elapsed, 3),
+            max_parse_seconds=budget,
+        )
+        raise RuntimeError(f"pdf_import_over_budget:parse_wallclock:{stage}:{budget}")
+    if "error" in error_box:
+        raise error_box["error"]
+    return result_box["value"]
+
+
 def _convert_pdf_text_layer_to_docx(*, filename: str, source_bytes: bytes) -> tuple[bytes, str]:
     from docx import Document
 
@@ -491,7 +628,13 @@ def _convert_pdf_text_layer_to_docx(*, filename: str, source_bytes: bytes) -> tu
         output_path = temp_dir / Path(_build_normalized_docx_filename(filename)).name
         input_path.write_bytes(source_bytes)
 
-        spans = extract_pdf_text_spans_with_pdfminer(input_path)
+        _enforce_pdf_import_budget(filename=filename, source_bytes=source_bytes, input_path=input_path)
+
+        spans = _run_pdf_parse_within_wallclock_budget(
+            lambda: extract_pdf_text_spans_with_pdfminer(input_path),
+            filename=filename,
+            stage="text_layer",
+        )
         quality_report = build_text_layer_quality_report(spans)
         if quality_report.decision != "promising":
             if not _pdf_ocr_import_enabled():
@@ -569,20 +712,37 @@ def _convert_pdf_text_layer_to_docx(*, filename: str, source_bytes: bytes) -> tu
 def _append_pdf_text_paragraph_to_docx(document, paragraph) -> None:
     style = _pdf_text_layer_docx_style(paragraph.role, paragraph.heading_level)
     docx_paragraph = document.add_paragraph(style=style)
-    if paragraph.role == "heading":
-        docx_paragraph.add_run(paragraph.text)
-        return
 
     # ``pdf_emphasis_runs`` carries the fully-built paragraph text (with de-hyphenation
     # and inline footnote markers already applied) split into character-level emphasis
     # runs; its concatenation equals ``paragraph.text``. Emit each run with its own
     # bold/italic so sub-line emphasis survives into the DOCX.
-    emphasis_runs = list(getattr(paragraph, "pdf_emphasis_runs", None) or [])
+    emphasis_runs = [
+        (str(run_text), bool(is_bold), bool(is_italic))
+        for run_text, is_bold, is_italic in (getattr(paragraph, "pdf_emphasis_runs", None) or [])
+        if run_text
+    ]
+
+    if paragraph.role == "heading":
+        # A heading already conveys weight via its style, so a *uniformly*
+        # bold/italic heading must not encode false character emphasis. Only
+        # genuinely mixed intra-heading emphasis (F24) is preserved run-by-run;
+        # a uniform (or empty) run set collapses to a single plain run.
+        distinct_states = {(is_bold, is_italic) for _text, is_bold, is_italic in emphasis_runs}
+        if len(distinct_states) > 1:
+            for run_text, is_bold, is_italic in emphasis_runs:
+                run = docx_paragraph.add_run(run_text)
+                if is_bold:
+                    run.bold = True
+                if is_italic:
+                    run.italic = True
+            return
+        docx_paragraph.add_run(paragraph.text)
+        return
+
     if emphasis_runs:
         for run_text, is_bold, is_italic in emphasis_runs:
-            if not run_text:
-                continue
-            run = docx_paragraph.add_run(str(run_text))
+            run = docx_paragraph.add_run(run_text)
             if is_bold:
                 run.bold = True
             if is_italic:
@@ -1630,8 +1790,18 @@ def start_background_processing(
         is_running=True,
     )
 
+    def _admission_guarded_worker_target(**worker_kwargs) -> None:
+        # F27: acquire a process-wide admission slot before doing real work so
+        # concurrent sessions cannot multiply PDF RAM / subprocess / API cost.
+        # Released on every exit path (completion, stop_event, or error).
+        _PROCESSING_ADMISSION_GATE.acquire()
+        try:
+            worker_target(**worker_kwargs)
+        finally:
+            _PROCESSING_ADMISSION_GATE.release()
+
     worker = threading.Thread(
-        target=worker_target,
+        target=_admission_guarded_worker_target,
         kwargs={
             "runtime": runtime,
             "uploaded_filename": uploaded_filename,

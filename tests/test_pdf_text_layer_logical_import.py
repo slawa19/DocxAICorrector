@@ -961,10 +961,12 @@ def _body_context_spans() -> list[PdfTextSpan]:
 
 
 def test_build_paragraph_units_promotes_standalone_roman_chapter_number() -> None:
-    # A standalone "Chapter VI" number line is a chapter heading on import, even at
-    # body font size (text-driven deterministic detect, mirrors #2 promotions).
+    # A standalone "Chapter VI" number line that carries a heading-typography signal
+    # (bold emphasis here) is promoted to a chapter heading. The literal match alone
+    # is no longer sufficient (F23): a plain body line reading "Chapter VI" stays body
+    # — see test_build_paragraph_units_does_not_promote_plain_body_chapter_line.
     spans = _body_context_spans() + [
-        _span(1, "Chapter VI", top=140, bottom=158, x0=50, x1=160, font_size=10),
+        _span(1, "Chapter VI", top=140, bottom=158, x0=50, x1=160, font_size=10, bold=True),
         _span(1, "Body prose that follows the chapter heading.", top=190, bottom=204),
     ]
 
@@ -976,9 +978,10 @@ def test_build_paragraph_units_promotes_standalone_roman_chapter_number() -> Non
 
 
 def test_build_paragraph_units_promotes_chapter_number_with_inline_title() -> None:
-    # "Chapter I — Why this report, now?" (number + dash + title) is a heading.
+    # "Chapter I — Why this report, now?" (number + dash + title) carrying a heading
+    # typography signal (bold) is a heading.
     spans = _body_context_spans() + [
-        _span(1, "Chapter I — Why this report, now?", top=140, bottom=158, x0=50, x1=300, font_size=10),
+        _span(1, "Chapter I — Why this report, now?", top=140, bottom=158, x0=50, x1=300, font_size=10, bold=True),
         _span(1, "Body prose that follows the chapter heading.", top=190, bottom=204),
     ]
 
@@ -987,6 +990,36 @@ def test_build_paragraph_units_promotes_chapter_number_with_inline_title() -> No
     chapter = next(p for p in result.paragraphs if p.text.startswith("Chapter I"))
     assert chapter.role == "heading"
     assert chapter.heading_level == 1
+
+
+def test_build_paragraph_units_promotes_prominent_chapter_line() -> None:
+    # The typography signal need not be bold: a "Chapter III" line set at a prominent
+    # font relative to body (>= 1.12x) is corroboration enough to promote.
+    spans = _body_context_spans() + [
+        _span(1, "Chapter III", top=140, bottom=158, x0=50, x1=170, font_size=16, bold=False),
+        _span(1, "Body prose that follows the chapter heading.", top=190, bottom=204),
+    ]
+
+    result = build_paragraph_units_from_text_spans(spans)
+
+    chapter = next(p for p in result.paragraphs if p.text == "Chapter III")
+    assert chapter.role == "heading"
+    assert chapter.heading_level == 1
+
+
+def test_build_paragraph_units_does_not_promote_plain_body_chapter_line() -> None:
+    # F23: a "Chapter III" line at plain body font with no emphasis carries no
+    # typography signal, so the literal match alone does NOT promote it to a heading.
+    spans = _body_context_spans() + [
+        _span(1, "Chapter III", top=140, bottom=158, x0=50, x1=170, font_size=10, bold=False),
+        _span(1, "Body prose that follows the chapter heading.", top=190, bottom=204),
+    ]
+
+    result = build_paragraph_units_from_text_spans(spans)
+
+    chapter = next(p for p in result.paragraphs if p.text == "Chapter III")
+    assert chapter.role == "body"
+    assert chapter.heading_level is None
 
 
 def test_build_paragraph_units_does_not_promote_midsentence_chapter_mention() -> None:
@@ -1126,10 +1159,13 @@ def _heading_notes_marker_spans(page: int, top: float) -> list[PdfTextSpan]:
 
 
 def test_build_paragraph_units_promotes_bare_part_divider_to_top_level_heading() -> None:
-    # A body-sized (bold) "PART II" divider is missed by the typography test but is a
-    # deterministic top-level structural heading (Part sits above Chapter).
+    # A body-sized but BOLD "PART II" divider is missed by the font-ratio typography
+    # test (it is only body-sized) yet carries a corroborating emphasis signal, so it
+    # is promoted to a deterministic top-level structural heading (Part sits above
+    # Chapter). Reconcile — not the per-span classifier — does the promotion, so the
+    # level is forced to 1 rather than inferred from the (body) font ratio.
     spans = _body_context_spans() + [
-        _span(1, "PART II", top=140, bottom=154, x0=50, x1=130, font_size=10),
+        _span(1, "PART II", top=140, bottom=154, x0=50, x1=130, font_size=10, bold=True),
         _span(1, "Body prose opening the second part of the book here.", top=190, bottom=204),
     ]
 
@@ -1138,6 +1174,21 @@ def test_build_paragraph_units_promotes_bare_part_divider_to_top_level_heading()
     part = next(p for p in result.paragraphs if p.text == "PART II")
     assert part.role == "heading"
     assert part.heading_level == 1
+
+
+def test_build_paragraph_units_does_not_promote_plain_body_part_divider() -> None:
+    # F23: the same "PART II" literal set at plain body font with no emphasis carries
+    # no typography signal, so it is NOT promoted ("no source signal, no repair").
+    spans = _body_context_spans() + [
+        _span(1, "PART II", top=140, bottom=154, x0=50, x1=130, font_size=10, bold=False),
+        _span(1, "Body prose opening the second part of the book here.", top=190, bottom=204),
+    ]
+
+    result = build_paragraph_units_from_text_spans(spans)
+
+    part = next(p for p in result.paragraphs if p.text == "PART II")
+    assert part.role == "body"
+    assert part.heading_level is None
 
 
 def test_build_paragraph_units_does_not_promote_part_number_in_running_prose() -> None:
@@ -1153,8 +1204,17 @@ def test_build_paragraph_units_does_not_promote_part_number_in_running_prose() -
     assert line.role == "body"
 
 
-def _body_unit(text: str) -> ParagraphUnit:
-    return ParagraphUnit(text=text, role="body", structural_role="body", style_name="PDF Body")
+def _body_unit(
+    text: str, *, bold: bool = False, font_size_pt: float | None = None
+) -> ParagraphUnit:
+    return ParagraphUnit(
+        text=text,
+        role="body",
+        structural_role="body",
+        style_name="PDF Body",
+        is_bold=bold,
+        font_size_pt=font_size_pt,
+    )
 
 
 def _heading_unit(text: str, *, level: int) -> ParagraphUnit:
@@ -1169,11 +1229,12 @@ def _heading_unit(text: str, *, level: int) -> ParagraphUnit:
 
 
 def test_reconcile_promotes_standalone_conclusion_body_line_to_heading() -> None:
-    # A standalone "CONCLUSION" section marker left as body (bold body typography, as
-    # it survives real large-corpus clustering) is promoted to a top-level heading.
+    # A standalone "CONCLUSION" section marker left as body but carrying a heading
+    # typography signal (bold body, as it survives real large-corpus clustering) is
+    # promoted to a top-level heading.
     units = [
         _body_unit("A running body sentence closes the previous chapter."),
-        _body_unit("CONCLUSION"),
+        _body_unit("CONCLUSION", bold=True),
         _body_unit("Body prose that opens the concluding section of the book."),
     ]
 
@@ -1184,13 +1245,28 @@ def test_reconcile_promotes_standalone_conclusion_body_line_to_heading() -> None
     assert conclusion.heading_level == 1
 
 
+def test_reconcile_does_not_promote_plain_body_section_marker() -> None:
+    # F23: a "CONCLUSION" section marker set at plain body font with no emphasis
+    # carries no typography signal, so the marker literal alone does NOT promote it.
+    units = [
+        _body_unit("A running body sentence closes the previous chapter."),
+        _body_unit("CONCLUSION"),
+        _body_unit("Body prose that opens the concluding section of the book."),
+    ]
+
+    result = _reconcile_structural_headings(units, body_font_size=10.0)
+
+    assert next(u for u in result if u.text == "CONCLUSION").role == "body"
+
+
 def test_reconcile_does_not_promote_section_marker_in_backmatter() -> None:
     # After the notes back-matter opens, a bare "Conclusion" endnote-group label is
-    # left as body (not a section heading).
+    # left as body even WITH a typography signal — the back-matter position gate, not
+    # a missing signal, is what suppresses the promotion here.
     units = [
         _body_unit("A running body sentence in the main body."),
         _heading_unit("Notes", level=3),
-        _body_unit("Conclusion"),
+        _body_unit("Conclusion", bold=True),
         _body_unit("An endnote entry for the concluding section."),
     ]
 
@@ -1215,10 +1291,11 @@ def test_build_paragraph_units_does_not_promote_midsentence_conclusion_word() ->
 def test_build_paragraph_units_keeps_single_adjacent_duplicate_chapter_number() -> None:
     # Two adjacent bare chapter numbers of the same value ("CHAPTER 5" then
     # "Chapter 5", one per page so they stay separate heading units) are one opener:
-    # keep the first, demote the duplicate.
+    # keep the first, demote the duplicate. Both bare chapter lines carry a heading
+    # typography signal (bold) so they are promoted before de-duplication runs.
     spans = _body_context_spans() + [
-        _span(1, "CHAPTER 5", top=200, bottom=218, x0=50, x1=160, font_size=10),
-        _span(2, "Chapter 5", top=40, bottom=58, x0=50, x1=160, font_size=10),
+        _span(1, "CHAPTER 5", top=200, bottom=218, x0=50, x1=160, font_size=10, bold=True),
+        _span(2, "Chapter 5", top=40, bottom=58, x0=50, x1=160, font_size=10, bold=True),
         _span(2, "Body prose that opens the fifth chapter of the book here.", top=90, bottom=104),
     ]
 
@@ -1232,10 +1309,10 @@ def test_build_paragraph_units_demotes_bare_chapter_number_cluster() -> None:
     # A part-boundary mini-listing of >=2 consecutive bare chapter numbers (different
     # values) is not a set of real openers — demote them all.
     spans = _body_context_spans() + [
-        _span(1, "CHAPTER 1", top=200, bottom=218, x0=50, x1=160, font_size=10),
-        _span(2, "CHAPTER 12", top=40, bottom=58, x0=50, x1=170, font_size=10),
-        _span(3, "Chapter 1", top=40, bottom=58, x0=50, x1=160, font_size=10),
-        _span(4, "Chapter 12", top=40, bottom=58, x0=50, x1=170, font_size=10),
+        _span(1, "CHAPTER 1", top=200, bottom=218, x0=50, x1=160, font_size=10, bold=True),
+        _span(2, "CHAPTER 12", top=40, bottom=58, x0=50, x1=170, font_size=10, bold=True),
+        _span(3, "Chapter 1", top=40, bottom=58, x0=50, x1=160, font_size=10, bold=True),
+        _span(4, "Chapter 12", top=40, bottom=58, x0=50, x1=170, font_size=10, bold=True),
     ]
 
     result = build_paragraph_units_from_text_spans(spans)
@@ -1252,9 +1329,9 @@ def test_build_paragraph_units_demotes_backmatter_bare_chapter_labels() -> None:
         _body_context_spans()
         + _heading_notes_marker_spans(1, 200)
         + [
-            _span(1, "Chapter 1", top=260, bottom=274, x0=50, x1=160, font_size=10),
+            _span(1, "Chapter 1", top=260, bottom=274, x0=50, x1=160, font_size=10, bold=True),
             _span(1, "An endnote entry belonging to the first chapter of the book.", top=290, bottom=304),
-            _span(1, "Chapter 2", top=340, bottom=354, x0=50, x1=160, font_size=10),
+            _span(1, "Chapter 2", top=340, bottom=354, x0=50, x1=160, font_size=10, bold=True),
             _span(1, "An endnote entry belonging to the second chapter of the book.", top=370, bottom=384),
         ]
     )
@@ -1272,7 +1349,7 @@ def test_build_paragraph_units_keeps_real_bare_chapter_opener() -> None:
     # A lone bare "Chapter 6" opener followed by chapter body (not a duplicate, not a
     # cluster, not back-matter) is preserved as a heading.
     spans = _body_context_spans() + [
-        _span(1, "Chapter 6", top=200, bottom=218, x0=50, x1=160, font_size=10),
+        _span(1, "Chapter 6", top=200, bottom=218, x0=50, x1=160, font_size=10, bold=True),
         _span(1, "Body prose that opens the sixth chapter of the book here.", top=250, bottom=264),
     ]
 

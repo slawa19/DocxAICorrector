@@ -1043,7 +1043,10 @@ def test_prepare_document_for_processing_emits_heartbeat_during_extraction(monke
 def test_build_prepared_source_key_distinguishes_target_language():
     # F14: two keys differing ONLY by target_language must be distinct so a run with a
     # different target language cannot serve another run's cached glossary/context.
-    base_kwargs = dict(
+    key_ru = preparation.build_prepared_source_key(
+        "token",
+        6000,
+        target_language="ru",
         processing_operation="edit",
         paragraph_boundary_normalization_mode="high_only",
         paragraph_boundary_ai_review_mode="off",
@@ -1052,16 +1055,29 @@ def test_build_prepared_source_key_distinguishes_target_language():
         structure_recovery_enabled=False,
         structure_recovery_mode="legacy",
     )
-    key_ru = preparation.build_prepared_source_key("token", 6000, target_language="ru", **base_kwargs)
-    key_de = preparation.build_prepared_source_key("token", 6000, target_language="de", **base_kwargs)
+    key_de = preparation.build_prepared_source_key(
+        "token",
+        6000,
+        target_language="de",
+        processing_operation="edit",
+        paragraph_boundary_normalization_mode="high_only",
+        paragraph_boundary_ai_review_mode="off",
+        source_language="en",
+        translation_domain="general",
+        structure_recovery_enabled=False,
+        structure_recovery_mode="legacy",
+    )
     assert key_ru != key_de
 
 
 def test_build_prepared_source_key_distinguishes_translation_domain():
     # F14: keys differing ONLY by translation_domain must be distinct.
-    base_kwargs = dict(source_language="en", target_language="ru")
-    key_general = preparation.build_prepared_source_key("token", 6000, translation_domain="general", **base_kwargs)
-    key_legal = preparation.build_prepared_source_key("token", 6000, translation_domain="legal", **base_kwargs)
+    key_general = preparation.build_prepared_source_key(
+        "token", 6000, translation_domain="general", source_language="en", target_language="ru"
+    )
+    key_legal = preparation.build_prepared_source_key(
+        "token", 6000, translation_domain="legal", source_language="en", target_language="ru"
+    )
     assert key_general != key_legal
 
 
@@ -1078,15 +1094,24 @@ def test_build_prepared_source_key_distinguishes_structure_recovery_mode():
 
 def test_build_prepared_source_key_identical_settings_collide():
     # F14: identical settings must still produce the SAME key (cache hit preserved).
-    kwargs = dict(
+    key_a = preparation.build_prepared_source_key(
+        "token",
+        6000,
         target_language="ru",
         source_language="en",
         translation_domain="general",
         structure_recovery_enabled=True,
         structure_recovery_mode="ai_first",
     )
-    key_a = preparation.build_prepared_source_key("token", 6000, **kwargs)
-    key_b = preparation.build_prepared_source_key("token", 6000, **kwargs)
+    key_b = preparation.build_prepared_source_key(
+        "token",
+        6000,
+        target_language="ru",
+        source_language="en",
+        translation_domain="general",
+        structure_recovery_enabled=True,
+        structure_recovery_mode="ai_first",
+    )
     assert key_a == key_b
 
 

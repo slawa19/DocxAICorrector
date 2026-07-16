@@ -314,7 +314,9 @@ def build_paragraph_units_from_text_spans(
     emitted = _consolidate_cross_role_continuations(
         emitted, dehyphenation_evidence=dehyphenation_evidence
     )
-    emitted = _reconcile_structural_headings(emitted)
+    emitted = _reconcile_structural_headings(
+        emitted, body_font_size=layout_profile.body_font_size
+    )
 
     for logical_index, paragraph in enumerate(emitted):
         _assign_pdf_paragraph_identity(paragraph, logical_index)
@@ -549,7 +551,9 @@ def _classify_span_role(
         and previous_span.page_number == span.page_number
         and _is_soft_wrap_continuation_pair(_normalize_text(previous_span.text), text)
     )
-    if not soft_wrap_continuation and _looks_like_chapter_heading(span):
+    if not soft_wrap_continuation and _looks_like_chapter_heading(
+        span, layout_profile=layout_profile
+    ):
         # Deterministic "Chapter <roman/number>" promotion runs before the TOC and
         # heading-typography passes: a bare "Chapter VI" number line otherwise looks
         # like a TOC entry (roman read as a page ref) and a body-sized chapter line
@@ -1440,7 +1444,58 @@ def _demote_heading_to_body(unit: ParagraphUnit) -> None:
     unit.boundary_rationale = "demoted_spurious_chapter_heading"
 
 
-def _reconcile_structural_headings(units: list[ParagraphUnit]) -> list[ParagraphUnit]:
+# Minimum line-font / body-font ratio that counts as prominent heading typography.
+# Shared threshold with the numbered-section detector's font-prominence gate
+# (``_looks_like_numbered_section_heading``): a line set at >= 1.12x the body font
+# carries a genuine typographic heading signal.
+_HEADING_PROMINENT_FONT_RATIO = 1.12
+
+
+def _span_has_heading_typography_signal(
+    span: PdfTextSpan, *, layout_profile: _PdfHeadingLayoutProfile
+) -> bool:
+    """True when a span carries at least one corroborating heading-typography
+    signal — a prominent font relative to body, or bold emphasis.
+
+    This is the layout corroboration required before a pure *text-shape*
+    structural match (a ``Chapter N`` line) may be promoted to a heading, mirroring
+    ``_looks_like_numbered_section_heading``'s font-prominence gate. Without such a
+    signal a body line that merely matches the literal pattern stays body ("no
+    source signal, no repair").
+    """
+    if span.is_bold or any(is_bold for _, is_bold, _ in span.runs):
+        return True
+    body_font_size = layout_profile.body_font_size
+    span_font_size = span.font_size if isinstance(span.font_size, (int, float)) else None
+    if body_font_size and span_font_size:
+        if float(span_font_size) / float(body_font_size) >= _HEADING_PROMINENT_FONT_RATIO:
+            return True
+    return False
+
+
+def _unit_has_heading_typography_signal(
+    unit: ParagraphUnit, *, body_font_size: float | None
+) -> bool:
+    """Paragraph-unit counterpart of ``_span_has_heading_typography_signal``.
+
+    Reads the typography that survives per-span classification and soft-wrap
+    consolidation onto the unit (bold flag, per-character emphasis runs, prominent
+    font size). A structural divider / section marker the per-span typography test
+    missed is promoted only when it still carries one of these signals — a plain
+    body-font, non-emphasized line matching the marker literal is left as body.
+    """
+    if unit.is_bold or any(is_bold for _, is_bold, _ in unit.pdf_emphasis_runs):
+        return True
+    font_size = unit.font_size_pt
+    if body_font_size and isinstance(font_size, (int, float)):
+        if float(font_size) / float(body_font_size) >= _HEADING_PROMINENT_FONT_RATIO:
+            return True
+    return False
+
+
+def _reconcile_structural_headings(
+    units: list[ParagraphUnit], *, body_font_size: float | None = None
+) -> list[ParagraphUnit]:
     """Deterministic, document-level heading reconciliation (runs after the per-span
     classification and soft-wrap consolidation).
 
@@ -1483,10 +1538,14 @@ def _reconcile_structural_headings(units: list[ParagraphUnit]) -> list[Paragraph
             # genuinely ends with a page number is left to the TOC pass.
             if is_toc and _PART_NUMBER_ONLY_PATTERN.match(text) is None:
                 continue
-            # Promote a divider left as body to the top level (above chapters). An
-            # already-classified heading (e.g. a Contents "PART I: Title" row) keeps
-            # its level — its role is not the defect being corrected here.
-            if unit.role != "heading":
+            # Promote a divider left as body to the top level (above chapters), but
+            # only when it carries a corroborating typography signal (prominent font
+            # or bold) — a plain body-font line that merely matches the "Part N"
+            # literal is not repaired. An already-classified heading (e.g. a Contents
+            # "PART I: Title" row) keeps its level — its role is not the defect here.
+            if unit.role != "heading" and _unit_has_heading_typography_signal(
+                unit, body_font_size=body_font_size
+            ):
                 _promote_unit_to_heading(unit, heading_level=1)
             continue
         # A TOC row ("Introduction: … 1") ends with a page reference and is owned by
@@ -1497,6 +1556,7 @@ def _reconcile_structural_headings(units: list[ParagraphUnit]) -> list[Paragraph
             unit.role != "heading"
             and index < backmatter_start
             and _text_is_section_marker(text)
+            and _unit_has_heading_typography_signal(unit, body_font_size=body_font_size)
         ):
             _promote_unit_to_heading(unit, heading_level=1)
 
@@ -1541,7 +1601,9 @@ def _resolve_bare_chapter_run(
         demote.update(run)
 
 
-def _looks_like_chapter_heading(span: PdfTextSpan) -> bool:
+def _looks_like_chapter_heading(
+    span: PdfTextSpan, *, layout_profile: _PdfHeadingLayoutProfile
+) -> bool:
     """Detect a deterministic ``Chapter <roman/number>`` heading line.
 
     Promotes a standalone ``Chapter VI`` number line or a ``Chapter I — Title``
@@ -1557,6 +1619,11 @@ def _looks_like_chapter_heading(span: PdfTextSpan) -> bool:
     * A title tail is accepted only when introduced by a dash or colon, never by a
       bare space, so a body line that merely opens with the word ``Chapter`` does
       not get swallowed.
+    * The literal match alone is not sufficient: the line must also carry a
+      corroborating heading-typography signal (prominent font or bold emphasis),
+      consistent with ``_looks_like_numbered_section_heading``. A plain body-font,
+      non-emphasized line that merely reads "Chapter N" is left as body ("no
+      source signal, no repair").
     * The caller invokes this AFTER the TOC and soft-wrap-continuation guards, so
       ``Chapter II … 45`` TOC lines (matched by the trailing-page pattern) and
       sentence continuations are passed through untouched.
@@ -1574,7 +1641,9 @@ def _looks_like_chapter_heading(span: PdfTextSpan) -> bool:
         return False
     # A real chapter heading is short; reject an over-long line that happens to
     # open "Chapter N —" but then runs on like body prose.
-    return len(_words(text)) <= 14
+    if len(_words(text)) > 14:
+        return False
+    return _span_has_heading_typography_signal(span, layout_profile=layout_profile)
 
 
 def _numbered_line_number(text: str) -> int | None:

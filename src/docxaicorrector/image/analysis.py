@@ -39,6 +39,75 @@ HEURISTIC_EDGE_RATIO_THRESHOLD = 0.06
 HEURISTIC_BRIGHT_RATIO_THRESHOLD = 0.82
 HEURISTIC_COLORFUL_RATIO_THRESHOLD = 0.12
 
+# --- Decompression-bomb / pixel-budget guard (finding F8) --------------------
+# The raster decode paths here and in image.generation previously called
+# Image.open(...).load() with no upper bound, so an accidentally or maliciously
+# huge image (a "decompression bomb") could exhaust memory before any check ran,
+# and a real DecompressionBombError would be swallowed by the broad
+# `except Exception`. We inspect the header (Image.open(...).size — no .load(),
+# no pixel decode) and reject BEFORE decoding when the reported geometry exceeds
+# a conservative budget. Constants are named so they are easy to tune.
+MAX_IMAGE_DIMENSION_PX = 12000
+MAX_IMAGE_MEGAPIXELS = 50.0
+# Upper bound on the decoded raster; Pillow expands to at most 4 bytes/pixel
+# (RGBA). 50 MP * 4 bytes ~= 200 MiB, so 256 MiB leaves conservative headroom.
+MAX_DECODED_IMAGE_BYTES = 256 * 1024 * 1024
+
+
+def image_within_pixel_budget(image_bytes: bytes, *, stage: str) -> bool:
+    """Return True when the image header is within the decode budget.
+
+    Reads only the header (``Image.open(...).size`` — no ``.load()``, so no pixel
+    decode) and rejects an oversized image BEFORE Pillow allocates the full
+    raster. On rejection a structured WARNING is logged and False is returned so
+    the caller can skip the image instead of decoding it. A real
+    ``DecompressionBombError`` raised while reading the header is logged
+    (surfaced), never silently swallowed. Header bytes that are simply
+    corrupt/unsupported return True so the caller's own decode+except path keeps
+    its prior behaviour.
+    """
+    try:
+        with Image.open(BytesIO(image_bytes)) as header_image:
+            width, height = header_image.size
+    except Image.DecompressionBombError as exc:
+        log_event(
+            logging.WARNING,
+            "image_pixel_budget_decompression_bomb",
+            "Pillow пометил изображение как decompression bomb при чтении заголовка; изображение пропущено без декодирования.",
+            stage=stage,
+            error_type=exc.__class__.__name__,
+            error_message=str(exc),
+        )
+        return False
+    except Exception:
+        # Header unreadable for an unrelated reason (corrupt/unsupported bytes).
+        # Defer to the caller's existing decode+except handling.
+        return True
+
+    megapixels = (width * height) / 1_000_000.0
+    estimated_decoded_bytes = width * height * 4
+    if (
+        width > MAX_IMAGE_DIMENSION_PX
+        or height > MAX_IMAGE_DIMENSION_PX
+        or megapixels > MAX_IMAGE_MEGAPIXELS
+        or estimated_decoded_bytes > MAX_DECODED_IMAGE_BYTES
+    ):
+        log_event(
+            logging.WARNING,
+            "image_pixel_budget_exceeded",
+            "Изображение превышает pixel budget; пропускаю без полного декодирования.",
+            stage=stage,
+            width=width,
+            height=height,
+            megapixels=round(megapixels, 2),
+            estimated_decoded_bytes=estimated_decoded_bytes,
+            max_dimension_px=MAX_IMAGE_DIMENSION_PX,
+            max_megapixels=MAX_IMAGE_MEGAPIXELS,
+            max_decoded_bytes=MAX_DECODED_IMAGE_BYTES,
+        )
+        return False
+    return True
+
 
 def analyze_image(
     image_bytes: bytes,
@@ -479,6 +548,8 @@ def _normalize_render_strategy(route_hint: object, fallback_strategy: str) -> tu
 
 
 def _extract_visual_features(image_bytes: bytes) -> dict[str, float] | None:
+    if not image_within_pixel_budget(image_bytes, stage="image_visual_feature_extraction"):
+        return None
     try:
         with Image.open(BytesIO(image_bytes)) as source_image:
             source_image.load()

@@ -3,6 +3,7 @@ from io import BytesIO
 from types import SimpleNamespace
 from typing import Any, cast
 
+import docxaicorrector.image.analysis as image_analysis
 import docxaicorrector.image.generation as image_generation
 from PIL import Image, ImageDraw
 from docxaicorrector.core.models import ImageAnalysisResult
@@ -1262,3 +1263,43 @@ def test_generate_image_candidate_direct_includes_extracted_text_in_prompt(monke
 
     assert candidate
     assert "Факты -> Анализ -> Вывод" in captured["prompt"]
+
+
+def test_generate_safe_candidate_skips_oversized_image_before_decode(monkeypatch):
+    """An oversized image is skipped (original bytes returned) BEFORE the safe
+    enhancement decode (.load()) runs, and a WARNING is logged."""
+    image_bytes = build_detailed_png_bytes()  # 12x12
+
+    load_calls = {"count": 0}
+    real_load = Image.Image.load
+
+    def spy_load(self, *args, **kwargs):
+        load_calls["count"] += 1
+        return real_load(self, *args, **kwargs)
+
+    monkeypatch.setattr(Image.Image, "load", spy_load)
+    # Shrink the dimension budget so the ordinary synthetic image trips it.
+    monkeypatch.setattr(image_analysis, "MAX_IMAGE_DIMENSION_PX", 4)
+
+    logged_events = []
+    monkeypatch.setattr(
+        image_analysis,
+        "log_event",
+        lambda level, event, message, **context: logged_events.append((event, context)),
+    )
+
+    result = image_generation._generate_safe_candidate(image_bytes)
+
+    assert result == image_bytes
+    assert load_calls["count"] == 0
+    assert logged_events and logged_events[0][0] == "image_pixel_budget_exceeded"
+    assert logged_events[0][1]["stage"] == "safe_image_enhancement"
+
+
+def test_generate_safe_candidate_processes_normal_image_within_budget():
+    """A normally-sized image still runs through safe enhancement and returns
+    non-empty candidate bytes (the guard does not disturb existing behaviour)."""
+    result = image_generation._generate_safe_candidate(build_detailed_png_bytes())
+
+    assert isinstance(result, bytes)
+    assert result

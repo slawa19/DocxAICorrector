@@ -3,6 +3,7 @@ import queue
 import sys
 import subprocess
 import threading
+import time
 from types import SimpleNamespace
 from pathlib import Path
 from typing import Any, cast
@@ -2426,3 +2427,310 @@ def test_append_pdf_text_paragraph_falls_back_without_runs() -> None:
     assert emitted.text == "Plain body line."
     assert len(emitted.runs) == 1
     assert emitted.runs[0].italic is True
+
+
+# --- F24: heading emphasis runs preserved by the DOCX materializer ---------
+
+
+def test_append_pdf_heading_preserves_mixed_emphasis_runs() -> None:
+    from docx import Document
+
+    from docxaicorrector.core.models import ParagraphUnit
+
+    paragraph = ParagraphUnit(
+        text="Chapter One: The Beginning",
+        role="heading",
+        structural_role="heading",
+        heading_level=1,
+        pdf_emphasis_runs=[
+            ("Chapter One: ", True, False),
+            ("The Beginning", False, True),
+        ],
+    )
+    document = Document()
+
+    processing_runtime._append_pdf_text_paragraph_to_docx(document, paragraph)
+
+    emitted = document.paragraphs[-1]
+    assert emitted.text == "Chapter One: The Beginning"
+    assert [run.text for run in emitted.runs if run.bold] == ["Chapter One: "]
+    assert [run.text for run in emitted.runs if run.italic] == ["The Beginning"]
+
+
+def test_append_pdf_heading_without_runs_stays_single_plain_run() -> None:
+    from docx import Document
+
+    from docxaicorrector.core.models import ParagraphUnit
+
+    paragraph = ParagraphUnit(
+        text="Plain Heading",
+        role="heading",
+        structural_role="heading",
+        heading_level=2,
+    )
+    document = Document()
+
+    processing_runtime._append_pdf_text_paragraph_to_docx(document, paragraph)
+
+    emitted = document.paragraphs[-1]
+    assert emitted.text == "Plain Heading"
+    assert len(emitted.runs) == 1
+    assert not emitted.runs[0].bold
+    assert not emitted.runs[0].italic
+
+
+# --- F7: PDF import resource budget ----------------------------------------
+
+
+def _promising_report_stub(spans):
+    return SimpleNamespace(decision="promising", decision_reasons=(), body_text_ratio=1.0)
+
+
+def test_convert_pdf_rejects_oversize_input_file(monkeypatch) -> None:
+    events: list[tuple[int, str, dict[str, object]]] = []
+    monkeypatch.setattr(processing_runtime, "_MAX_PDF_IMPORT_FILE_BYTES", 16)
+    monkeypatch.setattr(
+        processing_runtime,
+        "log_event",
+        lambda level, event, message, **context: events.append((level, event, context)),
+    )
+
+    with pytest.raises(RuntimeError, match="pdf_import_over_budget:file_size"):
+        processing_runtime._convert_pdf_text_layer_to_docx(
+            filename="oversize.pdf",
+            source_bytes=b"%PDF-1.4\n" + b"x" * 100,
+        )
+
+    assert any(
+        event == "pdf_import_over_budget" and context.get("limit") == "file_size"
+        for _level, event, context in events
+    )
+
+
+def test_convert_pdf_rejects_over_page_budget(monkeypatch) -> None:
+    events: list[tuple[int, str, dict[str, object]]] = []
+    monkeypatch.setattr(processing_runtime, "_MAX_PDF_IMPORT_PAGE_COUNT", 3)
+    monkeypatch.setattr(processing_runtime, "_count_pdf_pages_for_budget", lambda path, cap: 5000)
+    monkeypatch.setattr(
+        processing_runtime,
+        "log_event",
+        lambda level, event, message, **context: events.append((level, event, context)),
+    )
+
+    with pytest.raises(RuntimeError, match="pdf_import_over_budget:page_count"):
+        processing_runtime._convert_pdf_text_layer_to_docx(
+            filename="many-pages.pdf",
+            source_bytes=b"%PDF-1.4\n",
+        )
+
+    assert any(
+        event == "pdf_import_over_budget" and context.get("limit") == "page_count"
+        for _level, event, context in events
+    )
+
+
+def test_convert_pdf_rejects_when_parse_exceeds_wallclock_budget(monkeypatch) -> None:
+    from docxaicorrector.pdf_import import text_layer_quality
+
+    events: list[tuple[int, str, dict[str, object]]] = []
+    monkeypatch.setattr(processing_runtime, "_PDF_PARSE_WALLCLOCK_BUDGET_SECONDS", 0.2)
+
+    def slow_parse(path):
+        time.sleep(1.0)
+        return []
+
+    monkeypatch.setattr(text_layer_quality, "extract_pdf_text_spans_with_pdfminer", slow_parse)
+    monkeypatch.setattr(
+        processing_runtime,
+        "log_event",
+        lambda level, event, message, **context: events.append((level, event, context)),
+    )
+
+    with pytest.raises(RuntimeError, match="pdf_import_over_budget:parse_wallclock"):
+        processing_runtime._convert_pdf_text_layer_to_docx(
+            filename="slow.pdf",
+            source_bytes=b"%PDF-1.4\n",
+        )
+
+    assert any(
+        event == "pdf_import_over_budget" and context.get("limit") == "parse_wallclock"
+        for _level, event, context in events
+    )
+
+
+def test_convert_pdf_normal_document_parses_within_budget(monkeypatch) -> None:
+    from docxaicorrector.pdf_import import images as pdf_images
+    from docxaicorrector.pdf_import import text_layer_quality
+
+    spans = [
+        PdfTextSpan(
+            page_number=1,
+            text="Ordinary body line.",
+            x0=50,
+            top=100,
+            x1=450,
+            bottom=112,
+            page_height=800,
+            font_size=10,
+        )
+    ]
+    monkeypatch.setattr(text_layer_quality, "extract_pdf_text_spans_with_pdfminer", lambda path: spans)
+    monkeypatch.setattr(text_layer_quality, "build_text_layer_quality_report", _promising_report_stub)
+    monkeypatch.setattr(pdf_images, "extract_pdf_images_with_pdfminer", lambda path: [])
+
+    docx_bytes, backend = processing_runtime._convert_pdf_text_layer_to_docx(
+        filename="normal.pdf",
+        source_bytes=b"%PDF-1.4\n",
+    )
+
+    assert backend == "pdf-text-layer"
+    assert docx_bytes
+
+
+# --- F27: process-wide admission gate --------------------------------------
+
+
+def test_processing_admission_limit_env_override(monkeypatch) -> None:
+    monkeypatch.setenv("DOCXAI_MAX_CONCURRENT_PROCESSING", "5")
+    assert processing_runtime._resolve_processing_admission_limit() == 5
+
+    monkeypatch.setenv("DOCXAI_MAX_CONCURRENT_PROCESSING", "0")
+    assert (
+        processing_runtime._resolve_processing_admission_limit()
+        == processing_runtime._DEFAULT_PROCESSING_ADMISSION_LIMIT
+    )
+
+    monkeypatch.setenv("DOCXAI_MAX_CONCURRENT_PROCESSING", "not-a-number")
+    assert (
+        processing_runtime._resolve_processing_admission_limit()
+        == processing_runtime._DEFAULT_PROCESSING_ADMISSION_LIMIT
+    )
+
+    monkeypatch.delenv("DOCXAI_MAX_CONCURRENT_PROCESSING", raising=False)
+    assert (
+        processing_runtime._resolve_processing_admission_limit()
+        == processing_runtime._DEFAULT_PROCESSING_ADMISSION_LIMIT
+    )
+
+
+def test_processing_admission_gate_caps_concurrency() -> None:
+    gate = processing_runtime._build_processing_admission_gate(2)
+
+    assert gate.acquire(blocking=False) is True
+    assert gate.acquire(blocking=False) is True
+    # The gate is bounded: with both slots held the next acquire cannot proceed.
+    assert gate.acquire(blocking=False) is False
+
+    gate.release()
+    assert gate.acquire(blocking=False) is True
+
+    gate.release()
+    gate.release()
+
+
+def test_processing_admission_gate_floor_is_single_slot() -> None:
+    gate = processing_runtime._build_processing_admission_gate(0)
+
+    assert gate.acquire(blocking=False) is True
+    assert gate.acquire(blocking=False) is False
+
+    gate.release()
+
+
+# --- F12: PDF image discovery vs emission is counted and warned ------------
+
+
+class _FailingImageStream:
+    def get_rawdata(self):
+        raise ValueError("stream_decode_failed")
+
+    def get_data(self):
+        raise ValueError("stream_decode_failed")
+
+
+class _StaticImageStream:
+    def __init__(self, data: bytes) -> None:
+        self._data = data
+
+    def get_rawdata(self):
+        return self._data
+
+
+class _FakeLTFigure(list):
+    pass
+
+
+class _FakePage(list):
+    height = 800.0
+
+
+class _FakeLTImage:
+    def __init__(self, stream, bbox):
+        self.stream = stream
+        self.x0, self.y0, self.x1, self.y1 = bbox
+
+
+def _patch_pdfminer_image_layout(monkeypatch, pages) -> None:
+    import pdfminer.high_level as high_level
+    import pdfminer.layout as layout
+
+    monkeypatch.setattr(layout, "LTImage", _FakeLTImage)
+    monkeypatch.setattr(layout, "LTFigure", _FakeLTFigure)
+    monkeypatch.setattr(high_level, "extract_pages", lambda path: pages)
+
+
+def test_extract_pdf_images_warns_when_discovered_exceeds_emitted(monkeypatch) -> None:
+    from docxaicorrector.pdf_import import images as pdf_images
+
+    failing_image = _FakeLTImage(_FailingImageStream(), (0.0, 0.0, 10.0, 10.0))
+    page = _FakePage([failing_image])
+    _patch_pdfminer_image_layout(monkeypatch, pages=[page])
+
+    events: list[tuple[int, str, dict[str, object]]] = []
+    monkeypatch.setattr(
+        pdf_images,
+        "log_event",
+        lambda level, event, message, **context: events.append((level, event, context)),
+    )
+
+    result = pdf_images.extract_pdf_images_with_pdfminer("dummy.pdf")
+
+    assert result == []
+    dropped = next(
+        context for _level, event, context in events if event == "pdf_image_extraction_dropped_images"
+    )
+    assert dropped["discovered"] == 1
+    assert dropped["emitted"] == 0
+    assert dropped["skipped_no_image_bytes"] == 1
+
+
+def test_extract_pdf_images_emits_summary_without_dropping_valid_image(monkeypatch) -> None:
+    from docxaicorrector.pdf_import import images as pdf_images
+
+    png_bytes = (
+        b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01"
+        b"\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4"
+        b"\x89\x00\x00\x00\nIDATx\x9cc\xf8\x0f\x00\x01\x01"
+        b"\x01\x00\x18\xdd\x8d\xb0\x00\x00\x00\x00IEND\xaeB`\x82"
+    )
+    good_image = _FakeLTImage(_StaticImageStream(png_bytes), (10.0, 700.0, 60.0, 760.0))
+    page = _FakePage([good_image])
+    _patch_pdfminer_image_layout(monkeypatch, pages=[page])
+
+    events: list[tuple[int, str, dict[str, object]]] = []
+    monkeypatch.setattr(
+        pdf_images,
+        "log_event",
+        lambda level, event, message, **context: events.append((level, event, context)),
+    )
+
+    result = pdf_images.extract_pdf_images_with_pdfminer("dummy.pdf")
+
+    assert len(result) == 1
+    assert result[0].mime_type == "image/png"
+    assert not any(event == "pdf_image_extraction_dropped_images" for _level, event, _context in events)
+    summary = next(
+        context for _level, event, context in events if event == "pdf_image_extraction_summary"
+    )
+    assert summary["discovered"] == 1
+    assert summary["emitted"] == 1
