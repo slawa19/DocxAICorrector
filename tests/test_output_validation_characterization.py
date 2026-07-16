@@ -174,7 +174,11 @@ def test_collect_samples_golden() -> None:
             "Это связано с Седьмой\n- Судной печатью № 1"
         ),
         "collect_mixed_script_samples": ov.collect_mixed_script_samples("Это meханизм работает."),
-        "collect_theology_style_issue_samples": ov.collect_theology_style_issue_samples("imago dei в исходном тексте."),
+        "collect_glossary_and_heading_issue_samples": ov.collect_glossary_and_heading_issue_samples(
+            "## Synthetic Awkward Heading\n\nОбсуждаем synthglossterm в исходном тексте.",
+            glossary_terms=("synthglossterm",),
+            awkward_heading_markers=("Synthetic Awkward Heading",),
+        ),
         "collect_paragraph_break_samples": ov.collect_paragraph_break_samples(paragraph_break_registry),
     }
     _assert_golden("collect_samples", result)

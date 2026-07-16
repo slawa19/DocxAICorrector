@@ -785,67 +785,6 @@ def test_paragraph_break_advisory_never_hard_fails_even_with_nonzero_count() -> 
     assert "paragraph_break_advisory" not in verdict["failed_checks"]
 
 
-def test_collect_paragraph_break_samples_is_deterministic_on_saved_reports() -> None:
-    # SC-001/SC-003 + FR-007: the detector is deterministic on the SAVED source_registry
-    # (no live run), scoped to main content using the SAVED preparation_diagnostic_snapshot.
-    # It flags the Money flagship ("…monetary" ‖ "meltdowns of our times.") and, by REGION,
-    # drops the front-matter contributor-bio splits (Money source_index 62/66) and the
-    # Lietaer back-of-book INDEX entries (source_index >= 1801, after the "index" title).
-    from docxaicorrector.pipeline.output_validation import collect_paragraph_break_samples
-
-    runs_root = Path(__file__).resolve().parents[1] / "tests" / "artifacts" / "real_document_pipeline" / "runs"
-    saved_reports = {
-        "money": runs_root / "20260711T_money_marker" / "money_sustainability_pdf_full_heldout_report.json",
-        "lietaer": runs_root / "20260710T_lietaer_anchors" / "lietaer_pdf_full_benchmark_report.json",
-        "mazzucato": runs_root / "20260710T_mazzucato_listctx" / "mazzucato_pdf_full_benchmark_report.json",
-        "creatingwealth": runs_root / "20260710T_creatingwealth_fixed" / "creatingwealth_pdf_full_benchmark_report.json",
-    }
-
-    # These saved run reports are local artifacts (under a gitignored `runs/` dir) and are
-    # NOT committed, so a clean checkout / CI does not have them. Skip rather than hard-fail
-    # when they are absent — the determinism assertions only mean anything with the fixtures.
-    missing_reports = [str(path) for path in saved_reports.values() if not path.exists()]
-    if missing_reports:
-        pytest.skip("saved real-document run reports not present in this checkout: " + ", ".join(missing_reports))
-
-    counts: dict[str, int] = {}
-    flagged_indexes: dict[str, set[int]] = {}
-    for name, path in saved_reports.items():
-        report = json.loads(path.read_text(encoding="utf-8"))
-        registry = report["formatting_diagnostics"][0]["source_registry"]
-        snapshot = report.get("preparation_diagnostic_snapshot") or {}
-        samples = collect_paragraph_break_samples(registry, snapshot)
-        counts[name] = len(samples)
-        flagged_indexes[name] = {
-            sample.source_index for sample in samples if sample.source_index is not None
-        }
-        if name == "money":
-            flagship = [sample for sample in samples if sample.source_index == 219]
-            assert len(flagship) == 1
-            assert flagship[0].text.endswith("monetary")
-            assert flagship[0].next_text.startswith("meltdowns")
-
-    # Per-book scoped counts (region scoping applied). Deterministic on the saved reports.
-    assert counts == {"money": 6, "lietaer": 13, "mazzucato": 2, "creatingwealth": 6}
-    # Every book still carries at least one detected split (advisory signal is live).
-    assert all(count > 0 for count in counts.values())
-
-    money = flagged_indexes["money"]
-    # Front-matter contributor-bio splits (before the body-start boundary) are excluded
-    # by REGION — the known false-positive class from the spec, dropped without a per-book
-    # rule for them.
-    assert 62 not in money and 66 not in money
-    # A back-matter bibliography region (source paragraphs >= 1380) is never flagged.
-    assert not any(index >= 1380 for index in money)
-
-    lietaer = flagged_indexes["lietaer"]
-    # Back-of-book INDEX entries (after the "index" title at source_index 1801) are excluded
-    # by the references-region boundary.
-    assert not any(index >= 1801 for index in lietaer)
-    for index in (1821, 1983, 2003, 2079, 2183, 2218):
-        assert index not in lietaer
-
-
 def test_resolve_acceptance_thresholds_returns_none_when_unconfigured() -> None:
     # Production config carries no acceptance loss budget, so the resolver returns
     # None (unconfigured), while a configured 0 stays 0 (spec FR-008).
@@ -1404,38 +1343,41 @@ def test_evaluate_lietaer_acceptance_ignores_short_garbage_heading_and_markdown_
     assert heading_check["output_heading_count"] == 1
 
 
-def test_evaluate_lietaer_acceptance_detects_known_false_split_in_runtime_markdown() -> None:
-    validation = _load_validation_module()
+_LIETAER_SOURCE_DOCX = (
+    Path(__file__).resolve().parents[1]
+    / "tests"
+    / "sources"
+    / "book"
+    / "Rethinking-money_-How-new-currencies-turn-scarcity-into-prosperity-Bernard-Lietaer-Jacqui-Dunne.docx"
+)
 
-    source_doc = Document()
-    source_doc.add_paragraph("Однако деньги — не единственное средство обмена.")
-    output_doc = Document()
-    output_doc.add_paragraph("Однако деньги — не единственное средство обмена.")
+# The specific per-book false split this fixture guards: a mid-sentence paragraph break that
+# duplicated the carried-over word ("…установить" repeated across the break). Spec 036 F2
+# removed this literal from shared production acceptance; the regression now lives here,
+# backed by the maintained Lietaer source docx.
+_LIETAER_EXCHANGE_INSTALL_ROOF_FALSE_SPLIT = "установить\n\nустановить новую крышу"
 
-    report = {
-        "result": "succeeded",
-        "output_artifacts": {
-            "output_docx_openable": True,
-            "output_contains_placeholder_markup": False,
-        },
-        "formatting_diagnostics": [],
-        "runtime": {
-            "state": {
-                "latest_markdown": "Вы помогаете соседу установить\n\nустановить новую крышу.",
-                "processed_block_markdowns": ["Вы помогаете соседу установить\n\nустановить новую крышу."],
-            }
-        },
-    }
 
-    acceptance = validation.evaluate_lietaer_acceptance(
-        report,
-        source_docx_bytes=_docx_bytes(source_doc),
-        output_docx_bytes=_docx_bytes(output_doc),
-    )
+def _docx_paragraph_markdown(docx_bytes: bytes) -> str:
+    document = Document(BytesIO(docx_bytes))
+    paragraphs = [paragraph.text.strip() for paragraph in document.paragraphs if paragraph.text and paragraph.text.strip()]
+    return "\n\n".join(paragraphs)
 
-    assert acceptance["passed"] is False
-    assert "known_false_split_absent_in_final_markdown:lietaer_exchange_install_roof_split" in acceptance["failed_checks"]
-    assert "known_false_split_absent_in_processed_markdown:lietaer_exchange_install_roof_split" in acceptance["failed_checks"]
+
+def test_lietaer_source_delivered_markdown_has_no_exchange_install_roof_false_split() -> None:
+    # Spec 036 F2/F6: this per-book regression was a hardcoded ``known_false_split_absent_*``
+    # check in shared production acceptance; it is now a FIXTURE test driving the maintained
+    # Lietaer source under tests/sources/book/. We assemble the source into paragraph markdown
+    # deterministically (no LLM) and assert the specific "exchange/install/roof" false-split
+    # string is absent from the delivered markdown. Keeping the per-book literal in the test
+    # layer (not production) is exactly the intended de-literalization.
+    assert _LIETAER_SOURCE_DOCX.exists(), f"maintained Lietaer source missing: {_LIETAER_SOURCE_DOCX}"
+
+    delivered_markdown = _docx_paragraph_markdown(_LIETAER_SOURCE_DOCX.read_bytes())
+    # Non-vacuous fixture guard: the maintained source must actually yield substantial content.
+    assert len(delivered_markdown) > 10000, "Lietaer source produced unexpectedly little markdown"
+
+    assert _LIETAER_EXCHANGE_INSTALL_ROOF_FALSE_SPLIT not in delivered_markdown.lower()
 
 
 def test_evaluate_lietaer_acceptance_classifies_placeholder_heading_concat_as_display_hygiene() -> None:

@@ -981,19 +981,40 @@ def test_normalize_list_fragment_regressions_markdown_preserves_emoji_marker_lin
     assert "2. В первой половине" in normalized
 
 
-def test_collect_theology_style_issue_samples_detects_awkward_headings_and_glossary_terms():
+def test_collect_glossary_and_heading_issue_samples_flags_configured_terms_and_markers():
+    # Spec 036 F2: the detector is config-driven; it fires only on the terms/markers the
+    # caller supplies (here purely SYNTHETIC), never on any hardcoded book string.
+    markdown = (
+        "## Synthetic Awkward Heading Alpha\n\n"
+        "## Synthetic Awkward Heading Beta\n\n"
+        "Первый абзац упоминает synthglossone в тексте.\n\n"
+        "Второй абзац упоминает synthglosstwo в тексте."
+    )
+
+    samples = document_pipeline_output_validation.collect_glossary_and_heading_issue_samples(
+        markdown,
+        glossary_terms=("synthglossone", "synthglosstwo"),
+        awkward_heading_markers=("Synthetic Awkward Heading Alpha", "Synthetic Awkward Heading Beta"),
+    )
+
+    reasons = [sample.reason for sample in samples]
+    assert reasons.count("awkward_judgment_heading_present") == 2
+    assert reasons.count("unresolved_glossary_term_present") == 2
+    assert "mixed_script_term_present" not in reasons
+
+
+def test_collect_glossary_and_heading_issue_samples_empty_by_default_on_book_strings():
+    # Anti-vacuum guard: with NO configured terms/markers (the production default), the
+    # detector does not fire even on the former hardcoded book literals.
     markdown = (
         "## Суд над пятым печатью\n\n"
         "## Четвёртое чашеобразное судилище\n\n"
-        "Создавайте кoinonia-сообщества и богословие imago Dei."
+        "Создавайте koinonia-сообщества и богословие imago dei."
     )
 
-    samples = document_pipeline_output_validation.collect_theology_style_issue_samples(markdown)
-
-    reasons = [sample.reason for sample in samples]
-    assert "awkward_judgment_heading_present" in reasons
-    assert "unresolved_glossary_term_present" in reasons
-    assert "mixed_script_term_present" not in reasons
+    assert document_pipeline_output_validation.collect_glossary_and_heading_issue_samples(markdown) == []
+    # The legacy name is re-exported and shares the same empty-default behaviour.
+    assert document_pipeline_output_validation.collect_theology_style_issue_samples(markdown) == []
 
 
 def test_collect_mixed_script_samples_detects_cyrillic_latin_tokens():

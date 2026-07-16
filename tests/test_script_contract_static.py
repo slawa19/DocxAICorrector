@@ -466,3 +466,41 @@ def test_codeowners_protects_moved_production_implementation_paths() -> None:
     assert "/src/docxaicorrector/ui/app_runtime.py @slawa19" in codeowners_text
     assert "/src/docxaicorrector/ui/application_flow.py @slawa19" in codeowners_text
     assert "/src/docxaicorrector/ui/compare_panel.py @slawa19" in codeowners_text
+
+
+# Spec 036 F2/F6: shared production validation must stay book-agnostic. The detectors are
+# config-driven with EMPTY defaults, and per-book regression value lives in fixture tests.
+# This guard fails if any source-less book literal creeps back into the gate-adjacent
+# production modules, so per-book determinism cannot be reintroduced by construction.
+_BOOK_LITERAL_DENY_LIST = (
+    "Суд над пятым печатью",
+    "Четвёртое чашеобразное судилище",
+    "imago dei",
+    "koinonia",
+    "lietaer_exchange_install_roof_split",
+)
+
+_DENY_LIST_SCANNED_MODULES = (
+    "src/docxaicorrector/validation/acceptance.py",
+    "src/docxaicorrector/pipeline/output_validation.py",
+    "src/docxaicorrector/pipeline/quality_gate.py",
+    "src/docxaicorrector/reader_cleanup_mvp/_prompts.py",
+)
+
+
+def test_production_validation_modules_are_free_of_book_specific_literals() -> None:
+    violations: list[str] = []
+    for module_rel_path in _DENY_LIST_SCANNED_MODULES:
+        module_path = REPO_ROOT / module_rel_path
+        assert module_path.is_file(), f"scanned production module missing: {module_rel_path}"
+        source_text = module_path.read_text(encoding="utf-8")
+        lowered_source = source_text.casefold()
+        for literal in _BOOK_LITERAL_DENY_LIST:
+            if literal.casefold() in lowered_source:
+                violations.append(f"{module_rel_path}: {literal!r}")
+
+    assert not violations, (
+        "source-less book literals must not live in shared/production validation "
+        "(keep detectors config-driven with empty defaults; move per-book regressions to "
+        "fixture tests): " + "; ".join(violations)
+    )

@@ -2117,21 +2117,33 @@ def collect_mixed_script_samples(text: str) -> list[QualityIssueSample]:
     return deduped
 
 
-def collect_theology_style_issue_samples(text: str) -> list[QualityIssueSample]:
+def collect_glossary_and_heading_issue_samples(
+    text: str,
+    *,
+    glossary_terms: Collection[str] = (),
+    awkward_heading_markers: Collection[str] = (),
+) -> list[QualityIssueSample]:
+    # Spec 036 F2: the detector is config-driven with EMPTY defaults (anti-vacuum by
+    # construction). No book-specific string is embedded here; callers supply the
+    # document's translation-domain glossary terms / awkward-heading markers, and with
+    # nothing configured the axis simply does not fire. The reason outputs
+    # (``awkward_judgment_heading_present`` / ``unresolved_glossary_term_present``) are
+    # unchanged so the gate report schema stays stable.
+    normalized_heading_markers = [marker for marker in (str(m).strip() for m in awkward_heading_markers) if marker]
+    normalized_glossary_terms = [term for term in (str(t).strip().casefold() for t in glossary_terms) if term]
     samples: list[QualityIssueSample] = []
-    seen_glossary_terms: dict[str, int] = {}
+    if not normalized_heading_markers and not normalized_glossary_terms:
+        return samples
     for line_number, raw_line in iter_markdown_lines_with_numbers(text):
         stripped = raw_line.strip()
         if not stripped:
             continue
-        if "Суд над пятым печатью" in stripped:
-            samples.append(_build_quality_sample(line=line_number, text=stripped, reason="awkward_judgment_heading_present"))
-        if "Четвёртое чашеобразное судилище" in stripped:
-            samples.append(_build_quality_sample(line=line_number, text=stripped, reason="awkward_judgment_heading_present"))
+        for marker in normalized_heading_markers:
+            if marker in stripped:
+                samples.append(_build_quality_sample(line=line_number, text=stripped, reason="awkward_judgment_heading_present"))
         lowered = stripped.casefold()
-        for glossary_term in ("imago dei", "koinonia"):
+        for glossary_term in normalized_glossary_terms:
             if glossary_term in lowered:
-                seen_glossary_terms[glossary_term] = seen_glossary_terms.get(glossary_term, 0) + 1
                 samples.append(_build_quality_sample(line=line_number, text=stripped, reason="unresolved_glossary_term_present"))
 
     deduped: list[QualityIssueSample] = []
@@ -2143,6 +2155,12 @@ def collect_theology_style_issue_samples(text: str) -> list[QualityIssueSample]:
         seen.add(key)
         deduped.append(sample)
     return deduped
+
+
+# Backwards-compatible alias (spec 036 F2): the former ``collect_theology_style_issue_samples``
+# hardcoded per-book strings; it now resolves to the domain-neutral, config-driven detector
+# above so any caller/import referencing the old name gets the empty-default behaviour.
+collect_theology_style_issue_samples = collect_glossary_and_heading_issue_samples
 
 
 def _split_markdown_paragraphs(text: str) -> list[str]:

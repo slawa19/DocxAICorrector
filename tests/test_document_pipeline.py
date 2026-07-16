@@ -3922,7 +3922,11 @@ def test_build_translation_quality_report_exposes_new_residual_quality_metrics_a
     assert isinstance(mixed_script_term_count, int)
     assert isinstance(theology_style_issue_count, int)
     assert mixed_script_term_count >= 1
-    assert theology_style_issue_count >= 2
+    # Spec 036 F2: the glossary/awkward-heading detector is config-driven with empty
+    # defaults and the production report builder passes no book-specific terms, so this
+    # domain-style-advisory axis no longer fires on hardcoded strings — the schema fields
+    # stay present but the deterministic count is 0.
+    assert theology_style_issue_count == 0
     assert report["mixed_script_term_gate_source"] == "legacy_markdown"
     assert report["mixed_script_term_classification"] == "non_structural_hygiene"
     assert report["raw_mixed_script_term_count"] == mixed_script_term_count

@@ -39,18 +39,6 @@
       "raw_page_placeholder_heading_concat_count": 0
     },
     {
-      "applicable": true,
-      "bad_pattern": "установить\n\nустановить новую крышу",
-      "name": "known_false_split_absent_in_final_markdown:lietaer_exchange_install_roof_split",
-      "passed": true
-    },
-    {
-      "applicable": true,
-      "bad_pattern": "установить\n\nустановить новую крышу",
-      "name": "known_false_split_absent_in_processed_markdown:lietaer_exchange_install_roof_split",
-      "passed": true
-    },
-    {
       "actual": 0,
       "applicable": false,
       "artifact_count": 0,

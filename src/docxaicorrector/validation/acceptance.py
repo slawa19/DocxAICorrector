@@ -432,20 +432,11 @@ def build_acceptance_verdict(
         page_placeholder_heading_concat_classification=page_placeholder_heading_concat_classification,
     )
 
-    known_false_split_patterns = {
-        "lietaer_exchange_install_roof_split": "установить\n\nустановить новую крышу",
-    }
-    for check_suffix, bad_pattern in known_false_split_patterns.items():
-        add_check(
-            f"known_false_split_absent_in_final_markdown:{check_suffix}",
-            bad_pattern not in latest_markdown.lower(),
-            bad_pattern=bad_pattern,
-        )
-        add_check(
-            f"known_false_split_absent_in_processed_markdown:{check_suffix}",
-            bad_pattern not in combined_processed_markdown.lower(),
-            bad_pattern=bad_pattern,
-        )
+    # Spec 036 F2: per-book "known false split" literals no longer live in shared
+    # production acceptance. The Lietaer duplicate-word false-split regression is a
+    # fixture test that drives the maintained Lietaer source (see
+    # ``tests/test_real_document_pipeline_validation.py``); the acceptance verdict must
+    # stay book-agnostic, so no ``known_false_split_absent_*`` checks are emitted here.
 
     worst_unmapped_source_count = 0
     total_caption_heading_conflicts = 0

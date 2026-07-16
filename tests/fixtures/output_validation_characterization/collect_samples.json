@@ -25,6 +25,18 @@
       "text": "## (заметка в скобках)"
     }
   ],
+  "collect_glossary_and_heading_issue_samples": [
+    {
+      "line": 1,
+      "reason": "awkward_judgment_heading_present",
+      "text": "## Synthetic Awkward Heading"
+    },
+    {
+      "line": 3,
+      "reason": "unresolved_glossary_term_present",
+      "text": "Обсуждаем synthglossterm в исходном тексте."
+    }
+  ],
   "collect_list_fragment_regression_samples": [
     {
       "line": 1,
@@ -58,13 +70,6 @@
       "line": 1,
       "reason": "residual_bullet_glyphs_present",
       "text": "Текст ● ещё текста здесь."
-    }
-  ],
-  "collect_theology_style_issue_samples": [
-    {
-      "line": 1,
-      "reason": "unresolved_glossary_term_present",
-      "text": "imago dei в исходном тексте."
     }
   ]
 }
