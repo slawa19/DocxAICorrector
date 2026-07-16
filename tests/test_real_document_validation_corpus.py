@@ -94,7 +94,11 @@ def test_maintenance_guide_no_longer_requires_removed_expected_acceptance_policy
     assert "expected_acceptance_policy" not in maintenance_guide_text
 
 
-def test_require_or_skip_real_document_capability_skips_by_default() -> None:
+def test_require_or_skip_real_document_capability_skips_by_default(monkeypatch) -> None:
+    # Isolate ambient env: the canonical gate script exports
+    # DOCXAI_REQUIRE_REAL_DOCUMENT_CAPABILITIES=1, but this asserts the DEFAULT
+    # (var-absent) skip behaviour and must not inherit it.
+    monkeypatch.delenv(REQUIRE_REAL_DOCUMENT_CAPABILITIES_ENV, raising=False)
     with pytest.raises(pytest.skip.Exception, match="capability missing"):
         _require_or_skip_real_document_capability("capability missing")
 
@@ -106,7 +110,8 @@ def test_require_or_skip_real_document_capability_fails_when_capabilities_are_re
         _require_or_skip_real_document_capability("capability missing")
 
 
-def test_skip_if_missing_real_document_source_uses_controlled_skip_reason(tmp_path) -> None:
+def test_skip_if_missing_real_document_source_uses_controlled_skip_reason(monkeypatch, tmp_path) -> None:
+    monkeypatch.delenv(REQUIRE_REAL_DOCUMENT_CAPABILITIES_ENV, raising=False)
     missing_source = tmp_path / "missing.pdf"
 
     with pytest.raises(pytest.skip.Exception, match=r"missing real-document source"):
@@ -250,6 +255,7 @@ def _skip_if_structural_passthrough_runtime_unavailable(run_profile) -> None:
 
 
 def test_skip_if_legacy_doc_conversion_unavailable_uses_controlled_skip_reason(monkeypatch) -> None:
+    monkeypatch.delenv(REQUIRE_REAL_DOCUMENT_CAPABILITIES_ENV, raising=False)
     monkeypatch.setattr(processing_runtime, "legacy_doc_conversion_available", lambda: False)
 
     with pytest.raises(pytest.skip.Exception, match=r"legacy DOC auto-conversion unavailable in current runtime"):
