@@ -19,6 +19,7 @@ To regenerate the goldens after an intentional, reviewed behaviour change, run::
 from __future__ import annotations
 
 import json
+import logging
 import os
 import time
 from pathlib import Path
@@ -319,6 +320,32 @@ def test_write_quality_report_artifact_prunes_after_write(tmp_path, monkeypatch)
     assert result_path is not None
     assert not stale.exists()
     assert Path(result_path).exists()
+
+
+def test_write_quality_report_artifact_logs_warning_on_write_failure(tmp_path, monkeypatch):
+    # A non-serializable payload value makes ``json.dumps(payload, ...)`` raise TypeError
+    # WHILE it is inside the writer's try block, exercising the fail-open
+    # ``except Exception`` branch (returns None but logs a structured WARNING).
+    quality_dir = tmp_path / "quality_reports"
+    monkeypatch.setattr(_RETENTION_MODULE, "QUALITY_REPORTS_DIR", quality_dir)
+    recorded_events: list[tuple[int, str, str, dict[str, object]]] = []
+
+    def _record_log_event(level, event, message, **context):
+        recorded_events.append((level, event, message, context))
+
+    monkeypatch.setattr(_RETENTION_MODULE, "log_event", _record_log_event)
+
+    result_path = quality_report_retention._write_quality_report_artifact(
+        source_name="report.docx",
+        payload={"unserializable": {1, 2, 3}},
+    )
+
+    assert result_path is None  # fail-open: does not raise
+    assert [event for _, event, _, _ in recorded_events] == ["quality_report_write_failed"]
+    level, _event, _message, context = recorded_events[0]
+    assert level == logging.WARNING
+    assert context["source_name"] == "report.docx"
+    assert context["error_type"] == "TypeError"
 
 
 # --------------------------------------------------------------------------- #

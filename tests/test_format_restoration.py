@@ -1,5 +1,6 @@
 import base64
 import json
+import logging
 import os
 from io import BytesIO
 from pathlib import Path
@@ -3267,6 +3268,32 @@ def test_write_formatting_diagnostics_artifact_prunes_expired_runtime_files_only
     assert artifact_path is not None
     assert sorted(path.name for path in runtime_dir.glob("*.json")) == [Path(artifact_path).name]
     assert test_artifact.exists()
+
+
+def test_write_formatting_diagnostics_artifact_logs_warning_on_write_failure(tmp_path, monkeypatch):
+    # A non-serializable diagnostics value makes ``json.dumps(payload, ...)`` raise
+    # TypeError WHILE it is inside the writer's try block, exercising the fail-open
+    # ``except Exception`` branch (returns None but logs a structured WARNING).
+    recorded_events: list[tuple[int, str, str, dict[str, object]]] = []
+
+    def _record_log_event(level, event, message, **context):
+        recorded_events.append((level, event, message, context))
+
+    monkeypatch.setattr(formatting_diagnostics_retention, "log_event", _record_log_event)
+
+    result = formatting_diagnostics_retention.write_formatting_diagnostics_artifact(
+        stage="restore",
+        diagnostics={"unserializable": {1, 2, 3}},
+        diagnostics_dir=tmp_path,
+        now_epoch_ms=200_000,
+    )
+
+    assert result is None  # fail-open: does not raise
+    assert [event for _, event, _, _ in recorded_events] == ["formatting_diagnostics_write_failed"]
+    level, _event, _message, context = recorded_events[0]
+    assert level == logging.WARNING
+    assert context["stage"] == "restore"
+    assert context["error_type"] == "TypeError"
 
 
 def test_preserve_source_paragraph_properties_applies_minimal_output_formatting():

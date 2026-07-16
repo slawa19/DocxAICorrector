@@ -2,6 +2,8 @@ import json
 import os
 from pathlib import Path
 
+import pytest
+
 import docxaicorrector.runtime.artifacts as runtime_artifacts
 from docxaicorrector.runtime.artifacts import (
     load_job_result_registry,
@@ -793,3 +795,58 @@ def test_load_job_result_registry_prefers_payload_updated_at_over_file_mtime(tmp
             "updated_at": "2026-05-07T12:00:00+00:00",
         }
     }
+
+
+def test_atomic_write_group_staging_failure_publishes_nothing(tmp_path):
+    # The SECOND entry's parent dir does not exist, so its ``write_text`` raises
+    # FileNotFoundError (an OSError subclass) DURING staging. Nothing is published,
+    # and the first entry's already-staged temp is rolled back.
+    good_dir = tmp_path / "good"
+    good_dir.mkdir()
+    good_final = good_dir / "first.txt"
+    bad_final = tmp_path / "missing" / "second.txt"  # parent "missing" does not exist
+
+    with pytest.raises(OSError):
+        runtime_artifacts._atomic_write_group(
+            [
+                (good_final, "first"),
+                (bad_final, "second"),
+            ]
+        )
+
+    # Nothing was published (staging failed before the os.replace phase).
+    assert not good_final.exists()
+    # The first entry's staged temp was unlinked on rollback — no leftovers.
+    assert list(good_dir.glob("*.tmp.*")) == []
+
+
+def test_atomic_write_group_publish_failure_rolls_back(tmp_path, monkeypatch):
+    # os.replace succeeds on the first publish then raises OSError on the second, so the
+    # first (already-published) final must be rolled back and no temp may survive.
+    first_final = tmp_path / "first.txt"
+    second_final = tmp_path / "second.txt"
+
+    real_replace = os.replace
+    replace_calls = {"count": 0}
+
+    def _flaky_replace(src, dst, *args, **kwargs):
+        replace_calls["count"] += 1
+        if replace_calls["count"] >= 2:
+            raise OSError("simulated publish failure on second os.replace")
+        return real_replace(src, dst, *args, **kwargs)
+
+    monkeypatch.setattr(runtime_artifacts.os, "replace", _flaky_replace)
+
+    with pytest.raises(OSError):
+        runtime_artifacts._atomic_write_group(
+            [
+                (first_final, "first"),
+                (second_final, "second"),
+            ]
+        )
+
+    # First final was published then rolled back; second never published.
+    assert not first_final.exists()
+    assert not second_final.exists()
+    # Both staged temps were unlinked (the moved one is gone, the remaining one cleaned).
+    assert list(tmp_path.glob("*.tmp.*")) == []
