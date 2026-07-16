@@ -11,6 +11,7 @@ from typing import Any, cast
 import pytest
 
 import docxaicorrector.processing.processing_runtime as processing_runtime
+import docxaicorrector.processing.upload_ports as upload_ports
 import docxaicorrector.runtime.state as state
 from docxaicorrector.document.extraction import extract_document_content_from_docx, extract_paragraph_units_from_docx
 from docxaicorrector.pdf_import.images import PdfImageObject
@@ -2044,8 +2045,10 @@ def test_heartbeat_beacon_logs_warning_once_when_callback_fails(monkeypatch):
     def failing_progress_cb(**kwargs):
         raise RuntimeError("boom")
 
+    # HeartbeatBeacon lives in the ui-free upload_ports module (re-exported from
+    # processing_runtime), so its log_event binding is upload_ports.log_event.
     monkeypatch.setattr(
-        processing_runtime,
+        upload_ports,
         "log_event",
         lambda level, event, message, **context: log_calls.append(
             {

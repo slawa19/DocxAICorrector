@@ -64,6 +64,30 @@ def test_processing_core_imports_without_ui_package() -> None:
     assert "OK" in result.stdout
 
 
+def test_ui_free_core_import_does_not_load_streamlit() -> None:
+    # F3: importing the ui-free processing/document core must not transitively
+    # load Streamlit. A future FastAPI backend/worker imports these modules in a
+    # headless process where streamlit is neither wanted nor necessarily present.
+    # Run in a FRESH subprocess so module-import state is clean.
+    probe = (
+        "import docxaicorrector.processing.application_flow;"
+        "import docxaicorrector.document.extraction;"
+        "import sys;"
+        "loaded=[m for m in sys.modules if m=='streamlit' or m.startswith('streamlit.')];"
+        "assert not loaded, loaded;"
+        "print('OK')"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", probe],
+        capture_output=True, text=True, cwd=str(REPO_ROOT),
+        env={**__import__("os").environ, "PYTHONPATH": str(SRC.parent)},
+    )
+    assert result.returncode == 0, (
+        f"ui-free core transitively loaded streamlit (or failed to import):\n{result.stderr[-800:]}"
+    )
+    assert "OK" in result.stdout
+
+
 def test_flow_message_defaults_match_ru_catalog() -> None:
     from docxaicorrector.processing import application_flow as paf
 

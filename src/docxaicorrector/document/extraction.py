@@ -94,7 +94,7 @@ from docxaicorrector.core.models import (
     StructureRepairReport,
     normalize_heuristic_structural_role_hint,
 )
-from docxaicorrector.processing.processing_runtime import read_uploaded_file_bytes, resolve_uploaded_filename
+from docxaicorrector.processing.upload_ports import read_uploaded_file_bytes, resolve_uploaded_filename
 from docxaicorrector.runtime.artifact_retention import (
     PARAGRAPH_BOUNDARY_AI_REVIEW_MAX_AGE_SECONDS,
     PARAGRAPH_BOUNDARY_AI_REVIEW_MAX_COUNT,

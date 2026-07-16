@@ -15,6 +15,7 @@ import logging
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from io import BytesIO
 from typing import TypedDict
 
 from docxaicorrector.document.boundaries import summarize_boundary_normalization_metrics
@@ -30,12 +31,29 @@ from docxaicorrector.processing.preparation import (
     humanize_quality_gate_reasons,
     prepare_document_for_processing,
 )
-from docxaicorrector.processing.processing_runtime import (
+from docxaicorrector.processing.upload_ports import (
     FrozenUploadPayload,
-    freeze_uploaded_file,
+    UploadedFileLike,
     resolve_uploaded_filename,
 )
-from docxaicorrector.runtime.state import get_selected_source_token, set_selected_source_token
+from docxaicorrector.runtime.session_ports import get_selected_source_token, set_selected_source_token
+
+
+def freeze_uploaded_file(uploaded_file: UploadedFileLike | BytesIO) -> FrozenUploadPayload:
+    """Ui-free seam over ``processing_runtime.freeze_uploaded_file``.
+
+    The concrete implementation (with its PDF/DOC conversion chain) lives in
+    ``processing_runtime``, which binds streamlit for its session helpers. Keeping
+    a module-level wrapper here preserves the patchable seam
+    (``application_flow.freeze_uploaded_file``) while deferring the streamlit-bound
+    import to call time, so this ui-free module's import graph stays streamlit-free
+    (tests/test_layer_boundaries.py).
+    """
+    from docxaicorrector.processing.processing_runtime import (
+        freeze_uploaded_file as _freeze_uploaded_file,
+    )
+
+    return _freeze_uploaded_file(uploaded_file)
 
 
 # Canonical domain messages (default language). The ui layer overrides these via

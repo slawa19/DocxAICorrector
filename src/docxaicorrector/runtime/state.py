@@ -18,6 +18,10 @@ from docxaicorrector.core.constants import APP_LOG_PATH
 from docxaicorrector.generation.message_formatting import build_block_journal_entry, build_image_journal_entry
 from docxaicorrector.processing.restart_store import clear_restart_source
 from docxaicorrector.runtime.workflow_state import ProcessingOutcome
+from docxaicorrector.runtime.session_ports import (  # noqa: F401
+    get_selected_source_token,
+    set_selected_source_token,
+)
 
 
 def build_default_image_processing_summary() -> dict[str, Any]:
@@ -153,10 +157,6 @@ def get_latest_processing_operation(*, session_state=None) -> str:
 
 def get_latest_audiobook_postprocess_enabled(*, session_state=None) -> bool:
     return get_processing_session_snapshot(session_state=session_state).latest_audiobook_postprocess_enabled
-
-
-def get_selected_source_token(*, session_state=None) -> str:
-    return get_processing_session_snapshot(session_state=session_state).selected_source_token
 
 
 def get_latest_image_mode(*, session_state=None) -> str:
@@ -447,10 +447,6 @@ def request_processing_stop() -> None:
     if stop_event is not None:
         stop_event.set()
     st.session_state.processing_stop_requested = True
-
-
-def set_selected_source_token(uploaded_token: str, *, session_state=None) -> None:
-    _resolve_session_state(session_state).selected_source_token = uploaded_token
 
 
 def get_recommended_text_settings() -> object | None:

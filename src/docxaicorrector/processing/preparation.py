@@ -25,7 +25,7 @@ from docxaicorrector.core.logger import log_event
 from docxaicorrector.core.models import LayoutArtifactCleanupReport, ParagraphBoundaryNormalizationReport, ParagraphRelation, RelationNormalizationReport
 from docxaicorrector.core.models import StructureRepairReport
 from docxaicorrector.core.models import clone_prepared_image_asset
-from docxaicorrector.processing.processing_runtime import FrozenUploadPayload, HeartbeatBeacon, build_in_memory_uploaded_file
+from docxaicorrector.processing.upload_ports import FrozenUploadPayload, HeartbeatBeacon, build_in_memory_uploaded_file
 from docxaicorrector.document.segments import (
     CHAPTER_SEGMENTS_DETECTOR_VERSION,
     DocumentContextProfile,

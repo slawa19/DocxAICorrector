@@ -13,7 +13,7 @@ from dataclasses import dataclass, replace
 from io import BytesIO
 from pathlib import Path
 from collections.abc import Callable, Mapping
-from typing import Protocol, TypeVar, cast, runtime_checkable
+from typing import TypeVar, cast
 from uuid import uuid4
 
 import streamlit as st
@@ -58,13 +58,23 @@ from docxaicorrector.runtime.events import (
     WorkerCompleteEvent,
 )
 from docxaicorrector.runtime.workflow_state import ProcessingOutcome
+from docxaicorrector.processing.upload_ports import (  # noqa: F401
+    _DEFAULT_UPLOADED_FILENAME,
+    FrozenUploadPayload,
+    HeartbeatBeacon,
+    InMemoryUploadedFile,
+    UploadedFileLike,
+    _looks_like_runtime_object_repr,
+    build_in_memory_uploaded_file,
+    read_uploaded_file_bytes,
+    resolve_uploaded_filename,
+)
 
 
 MAX_COMPLETED_SOURCE_BYTES = 8 * 1024 * 1024
 _DOCX_ZIP_MAGIC = b"PK\x03\x04"
 _LEGACY_DOC_MAGIC = bytes.fromhex("D0CF11E0A1B11AE1")
 _PDF_MAGIC = b"%PDF-"
-_DEFAULT_UPLOADED_FILENAME = "document.docx"
 _DOC_CONVERSION_TIMEOUT_SECONDS = 120
 _MATERIALIZED_UPLOAD_CACHE_LIMIT = 4
 
@@ -167,11 +177,6 @@ __all__ = [
 ]
 
 
-def _looks_like_runtime_object_repr(value: str) -> bool:
-    normalized = value.strip().lower()
-    return normalized.startswith("<") and " object at 0x" in normalized and normalized.endswith(">")
-
-
 class BackgroundRuntime:
     def __init__(self, event_queue, stop_event, source_token: str = ""):
         self._event_queue = event_queue
@@ -186,33 +191,6 @@ class BackgroundRuntime:
 
     def should_stop(self) -> bool:
         return self._stop_event.is_set()
-
-
-@runtime_checkable
-class UploadedFileLike(Protocol):
-    name: str
-
-    def read(self, size: int = -1) -> bytes: ...
-
-    def getvalue(self) -> bytes: ...
-
-    def seek(self, offset: int, whence: int = 0) -> int: ...
-
-
-class InMemoryUploadedFile(BytesIO):
-    name: str
-    size: int
-
-
-@dataclass(frozen=True)
-class FrozenUploadPayload:
-    filename: str
-    content_bytes: bytes
-    file_size: int
-    content_hash: str
-    file_token: str
-    source_format: str = "docx"
-    conversion_backend: str | None = None
 
 
 @dataclass(frozen=True)
@@ -256,20 +234,6 @@ class ResolvedUploadContract:
     @property
     def file_token(self) -> str:
         return f"{self.filename}:{self.source_identity.token_size}:{self.source_identity.token_hash}"
-
-
-def read_uploaded_file_bytes(uploaded_file: UploadedFileLike | BytesIO) -> bytes:
-    if hasattr(uploaded_file, "seek"):
-        uploaded_file.seek(0)
-    if hasattr(uploaded_file, "getvalue"):
-        source_bytes = uploaded_file.getvalue()
-    else:
-        source_bytes = uploaded_file.read()
-    if not isinstance(source_bytes, (bytes, bytearray)) or not source_bytes:
-        raise ValueError("Не удалось прочитать содержимое загруженного файла.")
-    if hasattr(uploaded_file, "seek"):
-        uploaded_file.seek(0)
-    return bytes(source_bytes)
 
 
 def _detect_uploaded_document_format(*, filename: str, source_bytes: bytes) -> str:
@@ -1050,89 +1014,6 @@ def freeze_uploaded_file_lightweight(uploaded_file: UploadedFileLike | BytesIO) 
     return freeze_resolved_upload(resolve_upload_contract(filename=filename, source_bytes=raw))
 
 
-class HeartbeatBeacon:
-    """Periodically re-emits a progress event during a long blocking call.
-
-    Designed to wrap subprocess calls (LibreOffice) and synchronous network
-    calls (OpenAI) where we cannot inject native progress hooks. The beacon
-    runs a daemon thread that ticks every ``interval_seconds`` and invokes
-    ``progress_callback`` with the current elapsed seconds substituted into
-    ``detail_template`` (``{elapsed}`` placeholder). The beacon is a no-op
-    when ``progress_callback`` is ``None``.
-
-    The beacon is reentrant via the context manager and never raises out of
-    the worker: any exception in ``progress_callback`` stops the beacon.
-    """
-
-    def __init__(
-        self,
-        progress_callback,
-        *,
-        stage: str,
-        detail_template: str,
-        progress: float,
-        metrics: dict | None = None,
-        interval_seconds: float = 2.0,
-    ) -> None:
-        self._progress_callback = progress_callback
-        self._stage = stage
-        self._detail_template = detail_template
-        self._progress = progress
-        self._metrics = dict(metrics or {})
-        self._interval = max(0.05, float(interval_seconds))
-        self._stop_event = threading.Event()
-        self._thread: threading.Thread | None = None
-        self._started_at = 0.0
-        self._callback_failure_logged = False
-
-    def __enter__(self) -> "HeartbeatBeacon":
-        if self._progress_callback is None:
-            return self
-        self._started_at = time.monotonic()
-        self._thread = threading.Thread(
-            target=self._run,
-            daemon=True,
-            name="docxai-heartbeat",
-        )
-        self._thread.start()
-        return self
-
-    def __exit__(self, exc_type, exc_val, exc_tb) -> bool:
-        self._stop_event.set()
-        thread = self._thread
-        if thread is not None:
-            thread.join(timeout=self._interval + 0.5)
-        return False
-
-    def _run(self) -> None:
-        while not self._stop_event.wait(self._interval):
-            elapsed = max(0, int(time.monotonic() - self._started_at))
-            try:
-                detail = self._detail_template.format(elapsed=elapsed)
-            except (KeyError, IndexError, ValueError):
-                detail = self._detail_template
-            try:
-                self._progress_callback(
-                    stage=self._stage,
-                    detail=detail,
-                    progress=self._progress,
-                    metrics=dict(self._metrics),
-                )
-            except Exception:
-                if not self._callback_failure_logged:
-                    self._callback_failure_logged = True
-                    log_event(
-                        logging.WARNING,
-                        "heartbeat_callback_failed",
-                        "Heartbeat progress callback failed; periodic heartbeat updates were disabled for this operation.",
-                        stage=self._stage,
-                        detail_template=self._detail_template,
-                        interval_seconds=self._interval,
-                    )
-                # Heartbeat must never abort the worker.
-                return
-
-
 def _touch_materialized_upload_cache_entry(
     cache: OrderedDict[str, FrozenUploadPayload],
     cache_key: str,
@@ -1365,13 +1246,6 @@ def build_uploaded_file_token(uploaded_file: UploadedFileLike | BytesIO | None =
     return resolve_upload_contract(filename=file_name, source_bytes=bytes(source_bytes)).file_token
 
 
-def build_in_memory_uploaded_file(*, source_name: str, source_bytes: bytes):
-    uploaded_file = InMemoryUploadedFile(source_bytes)
-    uploaded_file.name = source_name
-    uploaded_file.size = len(source_bytes)
-    return uploaded_file
-
-
 def _coerce_metric_to_int(metrics: dict[str, object], key: str) -> int:
     value = metrics.get(key, 0)
     if isinstance(value, bool):
@@ -1599,19 +1473,6 @@ def should_stop_processing(runtime: BackgroundRuntime | None) -> bool:
     if runtime is None:
         return False
     return runtime.should_stop()
-
-
-def resolve_uploaded_filename(uploaded_file) -> str:
-    if isinstance(uploaded_file, FrozenUploadPayload):
-        return uploaded_file.filename
-    explicit_name = getattr(uploaded_file, "name", None)
-    if isinstance(explicit_name, str) and explicit_name.strip():
-        return explicit_name
-
-    fallback_name = str(uploaded_file).strip()
-    if not fallback_name or _looks_like_runtime_object_repr(fallback_name):
-        return _DEFAULT_UPLOADED_FILENAME
-    return fallback_name
 
 
 def drain_processing_events(*, set_processing_status, finalize_processing_status, push_activity, append_log, append_image_log) -> None:
