@@ -32,3 +32,14 @@ formatting-TRANSFER discrepancy (the gate's axis), so it is invisible there.
 
 - Not part of `specs/015` (summary simplification) or `specs/016` (drop partial translation). This is a standalone
   content-quality fix to be scheduled separately.
+
+## Anti-regression
+
+This spec is BACKLOG (not implemented); the guards below become mandatory when it is scheduled and built:
+
+- The stamp/classification-marker detector MUST use a universal multilingual rule set only — NO per-document or
+  per-book literals (Constitution VII) — pinned by a deny-list test over the furniture-detection module.
+- An anti-vacuum counter-proof: real repeated short body text (e.g. a legitimately recurring heading or refrain)
+  MUST NOT be removed by the repeated-stamp detector — a fixture test asserting non-removal of a benign repeated line.
+- Existing furniture-detection behaviour for the current `BOILERPLATE_TOKENS` / textbox-origin paths MUST stay
+  byte-identical for inputs that do not contain a classification stamp (no regression to today's cleanup decisions).

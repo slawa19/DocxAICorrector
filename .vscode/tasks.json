@@ -254,7 +254,7 @@
 		{
 			"label": "Run Docker CI Parity Pytest",
 			"type": "shell",
-			"command": "bash -lc 'docker run --rm -v \"$(pwd)\":/src -w /src python:3.12 bash -lc \"python -m venv /tmp/docxai-venv && . /tmp/docxai-venv/bin/activate && python -m pip install --upgrade pip && pip install -r requirements.txt && pytest tests/ -q\"'",
+			"command": "bash -lc 'docker run --rm -v \"$(pwd)\":/src:ro python:3.12 bash /src/scripts/docker-ci-parity.sh'",
 			"options": {
 				"shell": {
 					"executable": "wsl.exe",
@@ -435,7 +435,14 @@
 		{
 			"label": "Run Structural Preparation Diagnostic",
 			"type": "shell",
-			"command": "bash scripts/run-structural-preparation-diagnostic.sh \"${input:structuralDiagnosticDocumentProfileId}\" \"${input:structuralDiagnosticRunProfileArg}\"",
+			"command": "bash",
+			"args": [
+				"-lc",
+				"profile=\"$1\"; run_profile_id=\"$2\"; args=(\"$profile\"); if [[ -n \"$run_profile_id\" ]]; then args+=(--run-profile-id \"$run_profile_id\"); fi; bash scripts/run-structural-preparation-diagnostic.sh \"${args[@]}\"",
+				"_",
+				"${input:structuralDiagnosticDocumentProfileId}",
+				"${input:structuralDiagnosticRunProfileId}"
+			],
 			"options": {
 				"shell": {
 					"executable": "wsl.exe",
@@ -518,9 +525,9 @@
 			"default": "end-times-pdf-core"
 		},
 		{
-			"id": "structuralDiagnosticRunProfileArg",
+			"id": "structuralDiagnosticRunProfileId",
 			"type": "promptString",
-			"description": "Optional literal CLI arg, e.g. --run-profile-id ui-parity-translate-benchmark-advisory",
+			"description": "Optional run profile id, e.g. ui-parity-translate-benchmark-advisory (leave empty to use the profile default)",
 			"default": ""
 		}
 	]

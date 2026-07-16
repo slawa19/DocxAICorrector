@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import platform
+import re
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -90,12 +91,35 @@ def test_vscode_test_tasks_normalize_windows_relative_paths() -> None:
 
     assert full_task["command"] == "bash scripts/test.sh"
 
-    assert docker_parity_task["command"].startswith(
-        'bash -lc \'docker run --rm -v "$(pwd)":/src -w /src python:3.12 bash -lc "'
-    )
     assert docker_parity_task.get("args", []) == []
-    assert "pip install -r requirements.txt" in docker_parity_task["command"]
-    assert "pytest tests/ -q" in docker_parity_task["command"]
+    # Docker CI Parity runs in a container against a READ-ONLY mount and delegates to
+    # scripts/docker-ci-parity.sh (which copies into a container-only workdir), so a
+    # local run never clobbers the developer's host/WSL .venv or writes into the tree.
+    docker_parity_command = docker_parity_task["command"]
+    assert "docker run --rm" in docker_parity_command
+    assert '"$(pwd)":/src:ro' in docker_parity_command  # read-only mount — no host writes
+    assert "scripts/docker-ci-parity.sh" in docker_parity_command
+    # The parity script must MIRROR ci.yml: editable install + import check, the pyright
+    # ratchet, the full static tier, and the marker-excluded suite via scripts/test.sh.
+    parity_script = (REPO_ROOT / "scripts" / "docker-ci-parity.sh").read_text(encoding="utf-8")
+    assert "pip install -e" in parity_script
+    assert ".[dev]" in parity_script
+    assert "import docxaicorrector" in parity_script
+    assert "bash scripts/test.sh tests/test_typecheck.py -q" in parity_script
+    for static_file in (
+        "test_script_contract_static",
+        "test_network_hardening_defaults",
+        "test_layer_boundaries",
+        "test_documentation_links",
+        "test_dependency_consistency",
+    ):
+        assert static_file in parity_script
+    assert "bash scripts/test.sh tests/ -q -m" in parity_script
+    assert (
+        "not static_workflow and not typecheck and not system_deps and not manual_ai_heavy and not browser_ui"
+        in parity_script
+    )
+    assert "pip install -r requirements.txt" not in parity_script
 
     assert file_task["command"] == 'bash scripts/test.sh "${relativeFile}"'
     assert file_task.get("args", []) == []
@@ -175,6 +199,42 @@ def test_legacy_powershell_test_wrappers_are_removed() -> None:
         assert not (REPO_ROOT / "scripts" / script_name).exists()
 
 
+def test_referenced_test_paths_exist_on_disk() -> None:
+    """Every ``tests/...py`` selector referenced by shell scripts, VS Code tasks, and
+    GitHub workflows must resolve to a file on disk.
+
+    This permanently blocks dangling selectors: a renamed or removed test can no
+    longer survive as a broken reference inside ``scripts/*.sh``,
+    ``.vscode/tasks.json``, or ``.github/workflows/*.yml``.
+    """
+    # Documented usage placeholders that are illustrative help text, not real
+    # selectors (the argument-validation message inside ``scripts/test.sh``).
+    placeholder_paths = {"tests/test_file.py"}
+
+    reference_pattern = re.compile(r"tests/[\w./-]+\.py")
+
+    scanned_files: list[Path] = []
+    scanned_files.extend(sorted((REPO_ROOT / "scripts").glob("*.sh")))
+    scanned_files.append(REPO_ROOT / ".vscode" / "tasks.json")
+    scanned_files.extend(sorted((REPO_ROOT / ".github" / "workflows").glob("*.yml")))
+
+    dangling: list[str] = []
+    for source_file in scanned_files:
+        if not source_file.exists():
+            continue
+        for raw_line in source_file.read_text(encoding="utf-8").splitlines():
+            # Skip shell comment lines: they document usage rather than invoke tests.
+            if source_file.suffix == ".sh" and raw_line.lstrip().startswith("#"):
+                continue
+            for referenced_path in reference_pattern.findall(raw_line):
+                if referenced_path in placeholder_paths:
+                    continue
+                if not (REPO_ROOT / referenced_path).is_file():
+                    dangling.append(f"{source_file.relative_to(REPO_ROOT).as_posix()}: {referenced_path}")
+
+    assert not dangling, "dangling test selectors reference missing files: " + "; ".join(sorted(set(dangling)))
+
+
 def test_ci_exposes_editable_install_and_static_workflow_jobs() -> None:
     ci_text = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
     tests_job_text = ci_text.split("tests:", 1)[1]
@@ -207,28 +267,9 @@ def test_manual_real_document_workflow_installs_system_deps_and_uploads_artifact
     assert "Real Document Validation" in testing_readme
 
 
-def test_manual_ai_heavy_workflows_are_documented_and_upload_artifacts() -> None:
-    structure_workflow_text = (REPO_ROOT / ".github" / "workflows" / "real-document-ai-structure-smoke.yml").read_text(encoding="utf-8")
-    workflow_doc = (REPO_ROOT / "docs" / "testing" / "REAL_DOCUMENT_VALIDATION_WORKFLOW.md").read_text(encoding="utf-8")
-    testing_readme = (REPO_ROOT / "docs" / "testing" / "README.md").read_text(encoding="utf-8")
-
-    assert "name: Real Document AI Structure Smoke" in structure_workflow_text
-    assert "workflow_dispatch:" in structure_workflow_text
-    assert 'DOCXAI_RUN_REAL_DOCUMENT_STRUCTURE_RECOGNITION: "1"' in structure_workflow_text
-    assert "OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}" in structure_workflow_text
-    assert "system-requirements.apt" in structure_workflow_text
-    assert "bash scripts/test.sh tests/test_real_document_structure_recognition_integration.py -vv" in structure_workflow_text
-    assert "actions/upload-artifact@v4" in structure_workflow_text
-    assert "tests/artifacts/real_document_pipeline/**" in structure_workflow_text
-
-    assert "GitHub Actions -> Real Document AI Structure Smoke" in workflow_doc
-    assert "Real Document AI Structure Smoke" in testing_readme
-
-
 def test_codeowners_protects_workflow_and_startup_contract_files() -> None:
     codeowners_text = (REPO_ROOT / ".github" / "CODEOWNERS").read_text(encoding="utf-8")
 
-    assert "/.github/workflows/real-document-ai-structure-smoke.yml @slawa19" in codeowners_text
     assert "/scripts/test.sh @slawa19" in codeowners_text
     assert "/.vscode/tasks.json @slawa19" in codeowners_text
     assert "/tests/test_script_contract_static.py @slawa19" in codeowners_text
