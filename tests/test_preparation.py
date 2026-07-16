@@ -1210,6 +1210,38 @@ def test_build_prepared_source_key_identical_ai_review_settings_collide():
     assert key_a == key_b
 
 
+def test_resolve_scan_origin_cache_key_defaults_and_folds_overrides():
+    # F2: the default resolves to the general conservative thresholds, and an
+    # app_config override changes the resolved fingerprint.
+    default_key = preparation._resolve_scan_origin_cache_key(None)
+    assert default_key == "10:0.1:1.5"
+    assert preparation._DEFAULT_SCAN_ORIGIN_CACHE_KEY == default_key
+    tuned_key = preparation._resolve_scan_origin_cache_key(
+        {"scan_origin_multi_column_absolute_min": 25}
+    )
+    assert tuned_key == "25:0.1:1.5"
+    assert tuned_key != default_key
+
+
+def test_build_prepared_source_key_distinguishes_scan_origin_threshold():
+    # F2: two keys differing ONLY by a scan-origin threshold must be distinct — the
+    # thresholds change which tables are flattened, shaping different prepared structure.
+    key_default = preparation.build_prepared_source_key(
+        "token", 6000, scan_origin_key="10:0.1:1.5"
+    )
+    key_tuned = preparation.build_prepared_source_key(
+        "token", 6000, scan_origin_key="20:0.1:1.5"
+    )
+    assert key_default != key_tuned
+
+
+def test_build_prepared_source_key_identical_scan_origin_collide():
+    # F2: identical scan-origin thresholds still produce the SAME key (cache hit preserved).
+    key_a = preparation.build_prepared_source_key("token", 6000, scan_origin_key="10:0.1:1.5")
+    key_b = preparation.build_prepared_source_key("token", 6000, scan_origin_key="10:0.1:1.5")
+    assert key_a == key_b
+
+
 def test_build_editing_jobs_adapter_propagates_internal_type_error_without_retry():
     # F25: a target that accepts the signature-checked kwargs but raises TypeError
     # DEEP inside must propagate and be invoked exactly once (no swallow/retry).

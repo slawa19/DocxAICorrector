@@ -143,16 +143,22 @@ def call_docx_restorer_with_optional_registry(
     paragraphs: Any,
     generated_paragraph_registry: Any,
 ) -> bytes:
+    # F15: signature-gate the optional generated_paragraph_registry kwarg instead of a
+    # TypeError retry, so the restorer is called EXACTLY ONCE and a genuine internal
+    # TypeError propagates rather than being misread as a signature mismatch (which
+    # would silently re-run the restorer). A legacy restorer without the parameter is
+    # still called once, without the kwarg.
     try:
-        return restorer(
-            docx_bytes,
-            paragraphs,
-            generated_paragraph_registry=generated_paragraph_registry,
-        )
-    except TypeError as exc:
-        if "generated_paragraph_registry" not in str(exc):
-            raise
-        return restorer(docx_bytes, paragraphs)
+        signature = inspect.signature(restorer)
+    except (TypeError, ValueError):
+        return restorer(docx_bytes, paragraphs, generated_paragraph_registry=generated_paragraph_registry)
+    parameters = signature.parameters
+    accepts_registry = "generated_paragraph_registry" in parameters or any(
+        parameter.kind == inspect.Parameter.VAR_KEYWORD for parameter in parameters.values()
+    )
+    if accepts_registry:
+        return restorer(docx_bytes, paragraphs, generated_paragraph_registry=generated_paragraph_registry)
+    return restorer(docx_bytes, paragraphs)
 
 
 def current_markdown(processed_chunks: Sequence[str]) -> str:

@@ -6584,3 +6584,48 @@ def test_emit_mapping_text_quality_defect_items_noop_without_bad_pairs():
         mapping_text_quality=None,
     )
     assert items == []
+
+
+def test_call_docx_restorer_propagates_internal_type_error_called_once():
+    # F15: a restorer that accepts generated_paragraph_registry but raises TypeError
+    # DEEP inside must propagate and be invoked exactly once (no swallow/retry), even
+    # when the message mentions the kwarg.
+    from docxaicorrector.pipeline.support import call_docx_restorer_with_optional_registry
+
+    calls = {"count": 0}
+
+    def flaky_restorer(docx_bytes, paragraphs, *, generated_paragraph_registry=None):
+        calls["count"] += 1
+        raise TypeError("generated_paragraph_registry failed deep inside restorer")
+
+    with pytest.raises(TypeError, match="deep inside"):
+        call_docx_restorer_with_optional_registry(
+            flaky_restorer,
+            b"docx",
+            ["p"],
+            [{"block_index": 0}],
+        )
+
+    assert calls["count"] == 1
+
+
+def test_call_docx_restorer_legacy_target_called_once_without_kwarg():
+    # F15: a legacy restorer without the optional generated_paragraph_registry parameter
+    # is still called exactly once, without the kwarg.
+    from docxaicorrector.pipeline.support import call_docx_restorer_with_optional_registry
+
+    calls = {"count": 0, "received_registry": "unset"}
+
+    def legacy_restorer(docx_bytes, paragraphs):
+        calls["count"] += 1
+        return b"restored"
+
+    result = call_docx_restorer_with_optional_registry(
+        legacy_restorer,
+        b"docx",
+        ["p"],
+        [{"block_index": 0}],
+    )
+
+    assert result == b"restored"
+    assert calls["count"] == 1

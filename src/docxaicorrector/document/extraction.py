@@ -1,3 +1,4 @@
+import inspect
 import re
 import zipfile
 from collections import Counter
@@ -5,7 +6,7 @@ from dataclasses import replace
 from io import BytesIO
 from math import isclose
 from pathlib import Path
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import cast
 
 from docx import Document
@@ -198,6 +199,7 @@ def extract_document_content_with_normalization_reports(
     uploaded_file,
     *,
     app_config: Mapping[str, object] | None = None,
+    client_factory: Callable[[str], object] | None = None,
 ) -> tuple[
     list[ParagraphUnit],
     list[ImageAsset],
@@ -276,15 +278,22 @@ def extract_document_content_with_normalization_reports(
         ai_review_max_tokens_per_candidate,
         ai_review_model,
     ) = _resolve_paragraph_boundary_ai_review_settings(app_config)
-    try:
+    # F15: signature-gate the optional structure_phase kwarg instead of a TypeError
+    # retry, so build_paragraph_relations is called EXACTLY ONCE and a genuine internal
+    # TypeError propagates rather than being misread as a signature mismatch (which
+    # would silently re-run the target). A legacy target without the parameter is still
+    # called once, without the kwarg.
+    relations_signature = inspect.signature(build_paragraph_relations)
+    relations_accepts_structure_phase = any(
+        parameter.kind == inspect.Parameter.VAR_KEYWORD for parameter in relations_signature.parameters.values()
+    ) or "structure_phase" in relations_signature.parameters
+    if relations_accepts_structure_phase:
         relations, relation_report = build_paragraph_relations(
             paragraphs,
             enabled_relation_kinds=enabled_relation_kinds if relation_enabled else (),
             structure_phase="pre_ai_diagnostic",
         )
-    except TypeError as exc:
-        if "structure_phase" not in str(exc):
-            raise
+    else:
         relations, relation_report = build_paragraph_relations(
             paragraphs,
             enabled_relation_kinds=enabled_relation_kinds if relation_enabled else (),
@@ -310,6 +319,7 @@ def extract_document_content_with_normalization_reports(
             candidate_limit=ai_review_candidate_limit,
             timeout_seconds=ai_review_timeout_seconds,
             max_tokens_per_candidate=ai_review_max_tokens_per_candidate,
+            client_factory=client_factory,
         )
 
     if save_boundary_debug_artifacts:
@@ -1103,12 +1113,14 @@ def _request_ai_review_recommendations(
     candidates: list[dict[str, object]],
     timeout_seconds: int,
     max_tokens_per_candidate: int,
+    client_factory: Callable[[str], object] | None = None,
 ) -> dict[str, dict[str, object]]:
     return _request_ai_review_recommendations_impl(
         model=model,
         candidates=candidates,
         timeout_seconds=timeout_seconds,
         max_tokens_per_candidate=max_tokens_per_candidate,
+        client_factory=client_factory,
     )
 
 
@@ -1145,6 +1157,7 @@ def _run_paragraph_boundary_ai_review(
     candidate_limit: int,
     timeout_seconds: int,
     max_tokens_per_candidate: int,
+    client_factory: Callable[[str], object] | None = None,
 ) -> str | None:
     return _run_paragraph_boundary_ai_review_impl(
         source_name=source_name,
@@ -1162,6 +1175,7 @@ def _run_paragraph_boundary_ai_review(
         max_age_seconds=PARAGRAPH_BOUNDARY_AI_REVIEW_MAX_AGE_SECONDS,
         max_count=PARAGRAPH_BOUNDARY_AI_REVIEW_MAX_COUNT,
         request_ai_review_recommendations_impl=_request_ai_review_recommendations,
+        client_factory=client_factory,
     )
 
 

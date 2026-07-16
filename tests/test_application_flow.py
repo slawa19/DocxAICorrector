@@ -968,7 +968,7 @@ def test_prepare_run_context_for_background_uses_real_cache(monkeypatch):
     assert calls["extract"] == 1
     assert second.prepared_source_key.endswith(
         ":6000:high_only:off:phase2_default:epigraph_attribution,image_caption,table_caption,toc_region:lc=1:3:80:flag:pv=2"
-        ":pk=3:sl=en:tl=ru:td=general:sr=0:srm=legacy:ar=off"
+        ":pk=4:sl=en:tl=ru:td=general:sr=0:srm=legacy:so=10:0.1:1.5:ar=off"
     )
     assert second.preparation_cached is True
     assert second.preparation_stage == "Документ подготовлен"

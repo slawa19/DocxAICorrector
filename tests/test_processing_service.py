@@ -495,6 +495,84 @@ def test_run_prepared_background_document_uses_model_aware_client_factory_for_pr
     ]
 
 
+def test_run_prepared_background_document_threads_tenant_factory_into_boundary_review(monkeypatch):
+    # F3: a REAL service -> preparation -> extraction path threads the service's tenant
+    # client factory all the way into the boundary-review stage — the review sees THAT
+    # factory (which routes model selectors to the tenant client), not the global client.
+    from docx import Document
+
+    import docxaicorrector.document.extraction as document_extraction
+    import docxaicorrector.processing.application_flow as application_flow
+    import docxaicorrector.processing.preparation as preparation
+    from docxaicorrector.processing.upload_ports import FrozenUploadPayload
+
+    preparation.clear_preparation_cache(clear_shared=True)
+
+    sentinel_global_client = object()
+    sentinel_tenant_client = object()
+
+    def _selector_client_factory(selector, required_capability, *, config_like=None):
+        return sentinel_tenant_client
+
+    document_obj = Document()
+    document_obj.add_paragraph("Body content one is long enough to be a boundary-review candidate.")
+    buffer = BytesIO()
+    document_obj.save(buffer)
+    docx_bytes = buffer.getvalue()
+
+    frozen_payload = FrozenUploadPayload(
+        filename="tenant-factory.docx",
+        content_bytes=docx_bytes,
+        file_size=len(docx_bytes),
+        content_hash="hash-token",
+        file_token="hash-token",
+    )
+    monkeypatch.setattr(processing_service, "freeze_uploaded_file", lambda uploaded_file: frozen_payload)
+    monkeypatch.setattr(application_flow, "freeze_uploaded_file", lambda uploaded_file: frozen_payload)
+
+    monkeypatch.setattr(
+        document_extraction,
+        "_resolve_paragraph_boundary_ai_review_settings",
+        lambda *a, **k: (True, "review_only", 200, 30, 120, "openrouter:test/structure"),
+    )
+    captured = {}
+
+    def fake_run_review(**kwargs):
+        captured["client_factory"] = kwargs.get("client_factory")
+        return None
+
+    monkeypatch.setattr(document_extraction, "_run_paragraph_boundary_ai_review", fake_run_review)
+
+    service = _build_service(
+        run_document_processing_impl_fn=lambda **kwargs: "succeeded",
+        get_client_fn=lambda: sentinel_global_client,
+        get_client_for_model_selector_fn=_selector_client_factory,
+    )
+
+    app_config = dict(preparation.load_app_config())
+    app_config["structure_recognition_model"] = "openrouter:test/structure"
+
+    result, _prepared = service.run_prepared_background_document(
+        uploaded_file="tenant-factory.docx",
+        chunk_size=6000,
+        image_mode="safe",
+        keep_all_image_variants=False,
+        app_config=app_config,
+        model="gpt-5.4",
+        max_retries=2,
+        processing_operation="edit",
+        progress_callback=None,
+        runtime={"state": {}},
+    )
+
+    assert result == "succeeded"
+    tenant_factory = captured["client_factory"]
+    assert tenant_factory is not None
+    # The captured factory is the tenant factory: a model selector routes to the tenant
+    # client, never the global get_client() sentinel.
+    assert tenant_factory("openrouter:test/structure") is sentinel_tenant_client
+
+
 def test_run_prepared_background_document_model_factory_uses_default_when_selector_omitted(monkeypatch):
     sentinel_model_client = object()
     captured = {}

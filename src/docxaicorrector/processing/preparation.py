@@ -8,7 +8,7 @@ import logging
 from io import BytesIO
 from pathlib import Path
 from threading import Event, Lock
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from typing import Any, cast
 
 from docx import Document as DocxDocument
@@ -40,6 +40,7 @@ from docxaicorrector.document.segments import (
     resolve_segment_hard_boundary_paragraph_ids,
     validate_segment_coverage,
 )
+from docxaicorrector.document.provenance import resolve_scan_origin_config
 from docxaicorrector.document.structure_authority import get_effective_structural_role
 from docxaicorrector.text.translation_domains import build_terminology_plan, build_translation_domain_instructions
 
@@ -228,6 +229,22 @@ def _resolve_layout_cleanup_cache_key(app_config: Mapping[str, Any]) -> str:
     max_repeated_text_chars = max(1, int(app_config.get("layout_artifact_cleanup_max_repeated_text_chars", 80) or 80))
     cleanup_mode = str(app_config.get("layout_artifact_cleanup_mode", "flag") or "flag").strip().lower() or "flag"
     return f"1:{min_repeat_count}:{max_repeated_text_chars}:{cleanup_mode}"
+
+
+def _resolve_scan_origin_cache_key(app_config: Mapping[str, Any] | None) -> str:
+    # F2: the document-level scan-origin (OCR) thresholds change which tables are
+    # flattened into linear body paragraphs vs. preserved (see
+    # ``resolve_scan_origin_config`` / ``classify_document_scan_origin``), so they
+    # shape the prepared/cached structure. Resolve them through the SAME resolver
+    # the extraction stage uses so the key's scan-origin fingerprint is authoritative
+    # and two runs that differ only by a threshold do not share a prepared entry.
+    config = resolve_scan_origin_config(app_config)
+    return f"{config.multi_column_absolute_min}:{config.multi_column_ratio_min}:{config.authored_uniform_grid_max_ratio}"
+
+
+_DEFAULT_SCAN_ORIGIN_CACHE_KEY = _resolve_scan_origin_cache_key(None)
+
+
 def _apply_first_block_composition_quality_gate(
     *,
     blocks: list,
@@ -293,6 +310,7 @@ def build_prepared_source_key(
     translation_domain: str = "general",
     structure_recovery_enabled: bool = False,
     structure_recovery_mode: str = "legacy",
+    scan_origin_key: str = _DEFAULT_SCAN_ORIGIN_CACHE_KEY,
 ) -> str:
     resolved_operation = str(processing_operation or "edit").strip().lower() or "edit"
     operation_suffix = "" if resolved_operation == "edit" else f":op={resolved_operation}"
@@ -323,13 +341,15 @@ def build_prepared_source_key(
     # translation domain, structure-recovery knobs) into the key so run B cannot serve
     # run A's glossary/context. `pk` is an explicit key-format version tag: bumping it
     # invalidates stale entries whenever this fingerprint layout changes.
+    normalized_scan_origin_key = str(scan_origin_key or "").strip() or _DEFAULT_SCAN_ORIGIN_CACHE_KEY
     context_fingerprint = (
-        f":pk=3"
+        f":pk=4"
         f":sl={normalized_source_language}"
         f":tl={normalized_target_language}"
         f":td={normalized_translation_domain}"
         f":sr={structure_recovery_flag}"
         f":srm={normalized_structure_recovery_mode}"
+        f":so={normalized_scan_origin_key}"
         f"{ai_review_fingerprint}"
     )
     return (
@@ -475,10 +495,28 @@ def _supports_segment_detection(paragraphs: Sequence[Any]) -> bool:
     return all(hasattr(paragraph, "text") and hasattr(paragraph, "role") for paragraph in paragraphs)
 
 
-def _extract_document_content_with_optional_app_config(*, uploaded_file, app_config: Mapping[str, Any]):
+def _extract_document_content_with_optional_app_config(
+    *,
+    uploaded_file,
+    app_config: Mapping[str, Any],
+    client_factory: Callable[[str], object] | None = None,
+):
     signature = inspect.signature(extract_document_content_with_normalization_reports)
-    accepts_kwargs = any(parameter.kind == inspect.Parameter.VAR_KEYWORD for parameter in signature.parameters.values())
-    if accepts_kwargs or "app_config" in signature.parameters:
+    parameters = signature.parameters
+    accepts_kwargs = any(parameter.kind == inspect.Parameter.VAR_KEYWORD for parameter in parameters.values())
+    accepts_app_config = accepts_kwargs or "app_config" in parameters
+    # F3: thread the tenant client factory (when supplied) into extraction exactly
+    # like app_config is gated here, so a per-tenant factory reaches the boundary-review
+    # stage instead of falling back to the global provider client. Injected test doubles
+    # that predate the parameter keep working because it is only forwarded when accepted.
+    forwards_client_factory = client_factory is not None and (accepts_kwargs or "client_factory" in parameters)
+    if forwards_client_factory:
+        if accepts_app_config:
+            return extract_document_content_with_normalization_reports(
+                uploaded_file, app_config=app_config, client_factory=client_factory
+            )
+        return extract_document_content_with_normalization_reports(uploaded_file, client_factory=client_factory)
+    if accepts_app_config:
         return extract_document_content_with_normalization_reports(uploaded_file, app_config=app_config)
     return extract_document_content_with_normalization_reports(uploaded_file)
 
@@ -494,6 +532,7 @@ def _prepare_document_for_processing(
     app_config: Mapping[str, Any],
     processing_operation: str = "edit",
     get_client_fn,
+    client_factory: Callable[[str], object] | None = None,
     progress_callback=None,
 ):
     initial_stage, initial_detail = _build_source_import_progress(source_format=source_format)
@@ -519,7 +558,9 @@ def _prepare_document_for_processing(
         metrics={"source_format": source_format, "conversion_backend": conversion_backend},
         interval_seconds=2.0,
     ):
-        extraction_result = _extract_document_content_with_optional_app_config(uploaded_file=uploaded_file, app_config=app_config)
+        extraction_result = _extract_document_content_with_optional_app_config(
+            uploaded_file=uploaded_file, app_config=app_config, client_factory=client_factory
+        )
     paragraphs, image_assets, normalization_report, relations, relation_report, cleanup_report = extraction_result[:6]
     structure_repair_report = extraction_result[6] if len(extraction_result) > 6 else None
     emit_preparation_progress(
@@ -863,6 +904,7 @@ def prepare_document_for_processing(
     processing_operation: str | None = None,
     session_state=None,
     get_client_fn=None,
+    client_factory: Callable[[str], object] | None = None,
     progress_callback=None,
 ) -> PreparedDocumentData:
     resolved_config = load_app_config() if app_config is None else app_config
@@ -913,6 +955,7 @@ def prepare_document_for_processing(
     key_structure_recovery_mode = str(
         resolved_config.get("structure_recovery_mode", "legacy") or "legacy"
     ).strip().lower() or "legacy"
+    key_scan_origin = _resolve_scan_origin_cache_key(resolved_config)
     prepared_source_key = build_prepared_source_key(
         uploaded_payload.file_token,
         chunk_size,
@@ -930,6 +973,7 @@ def prepare_document_for_processing(
         translation_domain=key_translation_domain,
         structure_recovery_enabled=key_structure_recovery_enabled,
         structure_recovery_mode=key_structure_recovery_mode,
+        scan_origin_key=key_scan_origin,
     )
     cached, in_flight, cache_level = _read_or_reserve_cached_prepared_document(
         session_state=session_state,
@@ -984,6 +1028,7 @@ def prepare_document_for_processing(
             app_config=resolved_config,
             processing_operation=resolved_processing_operation,
             get_client_fn=resolved_get_client_fn,
+            client_factory=client_factory,
             progress_callback=progress_callback,
         )
         _store_cached_prepared_document(

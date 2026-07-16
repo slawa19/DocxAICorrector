@@ -378,6 +378,7 @@ class ProcessingService:
                 app_config=app_config,
                 prepare_document_for_processing_fn=lambda **kwargs: prepare_document_for_processing(
                     get_client_fn=_prepare_client_factory,
+                    client_factory=_prepare_client_factory,
                     **kwargs,
                 ),
                 progress_callback=resolved_prepare_progress_callback,

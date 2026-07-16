@@ -2226,3 +2226,89 @@ def test_ai_review_resolver_uses_passed_app_config(monkeypatch):
     )[1]
     assert override_mode == "off"
     assert override_mode != global_mode
+
+
+def test_extraction_threads_client_factory_into_boundary_review(tmp_path, monkeypatch):
+    # F3: extraction threads the tenant client_factory into the boundary-review stage
+    # so a per-tenant factory (not the global provider client) shapes the review.
+    document_obj = Document()
+    document_obj.add_paragraph("Body content one is long enough to be a boundary-review candidate.")
+    source_path = tmp_path / "client-factory-threading.docx"
+    document_obj.save(source_path)
+
+    monkeypatch.setattr(
+        document_extraction,
+        "_resolve_paragraph_boundary_ai_review_settings",
+        lambda *a, **k: (True, "review_only", 200, 30, 120, "openai:gpt-test"),
+    )
+    captured = {}
+
+    def fake_run_review(**kwargs):
+        captured["client_factory"] = kwargs.get("client_factory")
+        return None
+
+    monkeypatch.setattr(document_extraction, "_run_paragraph_boundary_ai_review", fake_run_review)
+
+    def tenant_factory(model):
+        return object()
+
+    with source_path.open("rb") as source_file:
+        extract_document_content_with_normalization_reports(source_file, client_factory=tenant_factory)
+
+    assert captured["client_factory"] is tenant_factory
+
+
+def test_extraction_build_relations_propagates_internal_type_error_called_once(tmp_path, monkeypatch):
+    # F15: a build_paragraph_relations target that accepts the signature-checked
+    # structure_phase kwarg but raises TypeError DEEP inside must propagate and be
+    # invoked exactly once — no swallow/retry, even when the message mentions the kwarg.
+    document_obj = Document()
+    document_obj.add_paragraph("Body content one.")
+    source_path = tmp_path / "relations-internal-typeerror.docx"
+    document_obj.save(source_path)
+
+    monkeypatch.setattr(
+        document_extraction,
+        "_resolve_paragraph_boundary_ai_review_settings",
+        lambda *a, **k: (False, "off", 0, 0, 0, ""),
+    )
+    calls = {"count": 0}
+
+    def flaky_build_paragraph_relations(paragraphs, *, enabled_relation_kinds=(), structure_phase="pre_ai_diagnostic"):
+        calls["count"] += 1
+        raise TypeError("structure_phase failed deep inside build_paragraph_relations")
+
+    monkeypatch.setattr(document_extraction, "build_paragraph_relations", flaky_build_paragraph_relations)
+
+    with source_path.open("rb") as source_file:
+        with pytest.raises(TypeError, match="deep inside"):
+            extract_document_content_with_normalization_reports(source_file)
+
+    assert calls["count"] == 1
+
+
+def test_extraction_build_relations_legacy_target_called_once_without_kwarg(tmp_path, monkeypatch):
+    # F15: a legacy build_paragraph_relations without the optional structure_phase
+    # parameter is still called exactly once, without the kwarg.
+    document_obj = Document()
+    document_obj.add_paragraph("Body content one.")
+    source_path = tmp_path / "relations-legacy-target.docx"
+    document_obj.save(source_path)
+
+    monkeypatch.setattr(
+        document_extraction,
+        "_resolve_paragraph_boundary_ai_review_settings",
+        lambda *a, **k: (False, "off", 0, 0, 0, ""),
+    )
+    calls = {"count": 0}
+
+    def legacy_build_paragraph_relations(paragraphs, *, enabled_relation_kinds=()):
+        calls["count"] += 1
+        return [], None
+
+    monkeypatch.setattr(document_extraction, "build_paragraph_relations", legacy_build_paragraph_relations)
+
+    with source_path.open("rb") as source_file:
+        extract_document_content_with_normalization_reports(source_file)
+
+    assert calls["count"] == 1
