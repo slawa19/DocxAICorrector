@@ -29,15 +29,12 @@ PROJECT_ROOT = SCRIPT_PATH.parents[3]
 SRC_ROOT = PROJECT_ROOT / "src"
 
 
-def _ensure_src_first_import_order(project_root: Path, src_root: Path) -> None:
-    project_root_str = str(project_root)
-    src_root_str = str(src_root)
-    sys.path[:] = [entry for entry in sys.path if entry not in {project_root_str, src_root_str}]
-    sys.path.insert(0, project_root_str)
-    sys.path.insert(0, src_root_str)
+# Make the repo-root shared bootstrap importable, then pin src first (F5/R29).
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+from docxaicorrector_bootstrap import ensure_src_first_import_order
 
-
-_ensure_src_first_import_order(PROJECT_ROOT, SRC_ROOT)
+ensure_src_first_import_order(PROJECT_ROOT, SRC_ROOT)
 
 from docx import Document
 from docx.document import Document as DocxDocument

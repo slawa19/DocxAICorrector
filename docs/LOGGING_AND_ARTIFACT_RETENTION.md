@@ -262,7 +262,7 @@ Root workspace is not an artifact drop zone. Runtime/debug/manual investigation 
 ### 6.2 Тесты
 
 - `tests/test_logger.py` — парсинг `DOCX_AI_LOG_LEVEL`, fallback, `log_event`/`log_exception`/`present_error`/`fail_critical` контракты.
-- `tests/test_formatting_diagnostics_retention.py` — retention по age/count.
+- `tests/test_format_restoration.py` — retention по age/count (`test_prune_formatting_diagnostics_*`).
 - `tests/test_app.py::test_mark_app_ready_uses_shared_throttled_writer` — throttle для `app.ready`.
 - Для любого нового artifact family'и обязательно unit-тест на retention.
 

@@ -384,7 +384,7 @@ echo START && powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\Users\
 
 1. Прочитать последний run report из `tests/artifacts/real_document_pipeline/lietaer_pdf_full_benchmark_report.json` или `tests/artifacts/real_document_pipeline/runs/<latest_run_id>/`.
 2. Дословно процитировать массив `failed_checks` и для каждого check записать пару `actual` / `threshold` и overage ratio.
-3. Сопоставить эти числа с разделом `## 5.0 Live Failure Inventory` в `docs/specs/STRUCTURE_RECOGNITION_COMPLETION_PLAN_2026-05-14.md`. Если таблица устарела относительно последнего report — сначала обновить таблицу, потом думать дальше.
+3. Сопоставить эти числа с разделом `## 5.0 Live Failure Inventory` в `docs/archive/specs/STRUCTURE_RECOGNITION_COMPLETION_PLAN_2026-05-14.md`. Если таблица устарела относительно последнего report — сначала обновить таблицу, потом думать дальше.
 4. Только после этих трёх шагов формулировать гипотезы.
 
 Запрещено:
@@ -392,7 +392,7 @@ echo START && powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\Users\
 - Формировать гипотезы или планы из conversation memory / session summaries без свежей цитаты из run report. Память может быть устаревшей относительно последнего прогона.
 - Называть любой check из `failed_checks` "косметикой", "минорной проблемой", "не блокером", "можно отложить" без явного разрешения пользователя проигнорировать его.
 - Утверждать, что глава потеряна, фрагмент потерян, или счётчик завышен, без конкретной ссылки `file:line` в актуальном run report или fixture артефакте.
-- Предлагать изменения Stage 1 prompt / schema / cache, включая "multi-signal chapter promotion from TOC + body neighborhoods", без отдельной утверждённой спеки под `docs/specs/`. Это вне scope `TOPOLOGY_FIRST_STRUCTURE_RECOVERY_REMEDIATION_SPEC_2026-05-12.md` и `LAYOUT_SIGNAL_EVIDENCE_SLICE_SPEC_2026-05-14.md`.
+- Предлагать изменения Stage 1 prompt / schema / cache, включая "multi-signal chapter promotion from TOC + body neighborhoods", без отдельной утверждённой спеки под `specs/<NNN>-<slug>/` (все новые спеки живут там, см. раздел Spec Kit Contract). Это вне scope архивных `docs/archive/specs/TOPOLOGY_FIRST_STRUCTURE_RECOVERY_REMEDIATION_SPEC_2026-05-12.md` и `docs/archive/specs/LAYOUT_SIGNAL_EVIDENCE_SLICE_SPEC_2026-05-14.md` (исторические справочники, не место для создания новых спек).
 - Предлагать full-book прогон как очередной шаг отладки. Full-book — это milestone, а не tuning loop; правила в Workstream F continuation plan.
 - Связывать в один slice независимые failing checks с разными root-cause classes (например bullets + unmapped fragments + index region). Каждый класс — отдельный mini-plan.
 

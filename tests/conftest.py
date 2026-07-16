@@ -11,13 +11,12 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 SRC_ROOT = PROJECT_ROOT / "src"
 
 
-def _ensure_src_first_import_order(src_root: Path) -> None:
-    src_root_str = str(src_root)
-    sys.path[:] = [entry for entry in sys.path if entry != src_root_str]
-    sys.path.insert(0, src_root_str)
+# Make the repo-root shared bootstrap importable, then pin src first (F5/R29).
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+from docxaicorrector_bootstrap import ensure_src_first_import_order
 
-
-_ensure_src_first_import_order(SRC_ROOT)
+ensure_src_first_import_order(SRC_ROOT)
 
 from docxaicorrector.core.config import ModelRegistry, TextModelConfig
 import docxaicorrector.core.config as config

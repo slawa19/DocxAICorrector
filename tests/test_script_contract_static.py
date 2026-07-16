@@ -5,7 +5,6 @@ import platform
 import re
 import subprocess
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -21,55 +20,72 @@ def _load_vscode_tasks() -> list[dict[str, Any]]:
     return json.loads(tasks_path.read_text(encoding="utf-8"))["tasks"]
 
 
-def _assert_src_bootstrap_results_in_src_first(script_path: Path) -> None:
+# The standalone entrypoints (conftest, scripts, benchmark runners) MUST share the
+# single ``docxaicorrector_bootstrap.ensure_src_first_import_order`` helper rather
+# than re-defining it inline; before consolidation the identical helper lived in
+# seven copies (finding F5/R29). The shared helper's src-first ordering guarantee is
+# proven directly in ``test_shared_bootstrap_orders_src_first``; each entrypoint here
+# only has to (a) not re-declare the helper and (b) call the shared one with SRC_ROOT
+# last so src wins.
+_SHARED_BOOTSTRAP_IMPORT = "from docxaicorrector_bootstrap import ensure_src_first_import_order"
+_ALLOWED_BOOTSTRAP_INVOCATIONS = {
+    "ensure_src_first_import_order(SRC_ROOT)",
+    "ensure_src_first_import_order(PROJECT_ROOT, SRC_ROOT)",
+    "ensure_src_first_import_order(REPO_ROOT, SRC_ROOT)",
+    "ensure_src_first_import_order(ROOT_DIR, SRC_ROOT)",
+}
+
+
+def _assert_uses_shared_bootstrap(script_path: Path) -> None:
     source_lines = script_path.read_text(encoding="utf-8").splitlines()
     source_text = "\n".join(source_lines)
-    start_index: int | None = None
-    helper_index: int | None = None
-    invocation_index: int | None = None
-    invocation_line: str | None = None
 
-    for index, line in enumerate(source_lines):
-        stripped = line.strip()
-        if start_index is None and stripped.startswith(("SCRIPT_PATH =", "PROJECT_ROOT =", "REPO_ROOT =", "ROOT_DIR =")):
-            start_index = index
-        if helper_index is None and stripped.startswith("def _ensure_src_first_import_order("):
-            helper_index = index
-        if stripped in {
-            "_ensure_src_first_import_order(SRC_ROOT)",
-            "_ensure_src_first_import_order(PROJECT_ROOT, SRC_ROOT)",
-            "_ensure_src_first_import_order(REPO_ROOT, SRC_ROOT)",
-            "_ensure_src_first_import_order(ROOT_DIR, SRC_ROOT)",
-        }:
-            invocation_index = index
-            invocation_line = stripped
+    assert "def _ensure_src_first_import_order(" not in source_text, (
+        f"{script_path} must not re-define the consolidated bootstrap helper"
+    )
+    assert _SHARED_BOOTSTRAP_IMPORT in source_text, (
+        f"{script_path} must import the shared ensure_src_first_import_order helper"
+    )
+
+    stripped_lines = [line.strip() for line in source_lines]
+    start_index = next(
+        (
+            index
+            for index, stripped in enumerate(stripped_lines)
+            if stripped.startswith(("SCRIPT_PATH =", "PROJECT_ROOT =", "REPO_ROOT =", "ROOT_DIR ="))
+        ),
+        None,
+    )
+    invocation_index = next(
+        (index for index, stripped in enumerate(stripped_lines) if stripped in _ALLOWED_BOOTSTRAP_INVOCATIONS),
+        None,
+    )
 
     assert start_index is not None, script_path
-    assert helper_index is not None and helper_index >= start_index, script_path
-    assert invocation_index is not None and invocation_index >= helper_index, script_path
-    assert invocation_line is not None, script_path
+    assert invocation_index is not None and invocation_index >= start_index, script_path
 
-    helper_name = None
-    if "REPO_ROOT = _resolve_repo_root()" in source_text:
-        helper_name = "_resolve_repo_root"
 
-    bootstrap_snippet = "\n".join(source_lines[start_index : invocation_index + 1])
-    fake_sys = SimpleNamespace(path=[])
-    namespace = {
-        "__file__": str(script_path),
-        "Path": Path,
-        "sys": fake_sys,
-    }
-    if helper_name is not None:
-        namespace[helper_name] = lambda: script_path.parents[2]
-    exec(bootstrap_snippet, namespace)
+def test_shared_bootstrap_orders_src_first() -> None:
+    import sys
 
-    expected_prefix = [str(namespace["SRC_ROOT"])]
-    if invocation_line != "_ensure_src_first_import_order(SRC_ROOT)":
-        root_name = next(name for name in ("PROJECT_ROOT", "REPO_ROOT", "ROOT_DIR") if name in invocation_line)
-        expected_prefix.append(str(namespace[root_name]))
+    from docxaicorrector_bootstrap import ensure_src_first_import_order
 
-    assert fake_sys.path[: len(expected_prefix)] == expected_prefix
+    repo_root = Path("/synthetic-bootstrap-root")
+    src_root = repo_root / "src"
+    original = list(sys.path)
+    try:
+        # conftest shape: only src is pinned; it ends up first and is de-duplicated.
+        sys.path[:] = ["/pre", str(src_root), "/mid", str(repo_root), "/tail"]
+        ensure_src_first_import_order(src_root)
+        assert sys.path[0] == str(src_root)
+        assert sys.path.count(str(src_root)) == 1
+
+        # script / benchmark shape: repo root + src, with src searched first.
+        sys.path[:] = ["/pre", "/tail"]
+        ensure_src_first_import_order(repo_root, src_root)
+        assert sys.path[:2] == [str(src_root), str(repo_root)]
+    finally:
+        sys.path[:] = original
 
 
 def test_vscode_test_tasks_normalize_windows_relative_paths() -> None:
@@ -351,15 +367,22 @@ def test_source_path_bootstrap_prefers_src_before_repo_root() -> None:
     assert expected_pythonpath in test_sh
     assert expected_pythonpath in validation_sh
     assert expected_pythonpath in structural_sh
-    _assert_src_bootstrap_results_in_src_first(REPO_ROOT / "tests" / "conftest.py")
-    _assert_src_bootstrap_results_in_src_first(
+    # Every standalone entrypoint shares the consolidated bootstrap helper (F5/R29).
+    _assert_uses_shared_bootstrap(REPO_ROOT / "tests" / "conftest.py")
+    _assert_uses_shared_bootstrap(
         REPO_ROOT / "tests" / "artifacts" / "real_document_pipeline" / "run_lietaer_validation.py"
     )
-    _assert_src_bootstrap_results_in_src_first(
+    _assert_uses_shared_bootstrap(
         REPO_ROOT / "benchmark_projects" / "pdf_candidate_benchmark" / "benchmark_runner.py"
     )
-    _assert_src_bootstrap_results_in_src_first(REPO_ROOT / "scripts" / "run_pic1_modes.py")
-    _assert_src_bootstrap_results_in_src_first(REPO_ROOT / "scripts" / "_run_cleanup_now.py")
+    _assert_uses_shared_bootstrap(
+        REPO_ROOT / "benchmark_projects" / "structure_recognition_benchmark" / "benchmark_runner.py"
+    )
+    _assert_uses_shared_bootstrap(
+        REPO_ROOT / "benchmark_projects" / "translation_quality_benchmark" / "benchmark_runner.py"
+    )
+    _assert_uses_shared_bootstrap(REPO_ROOT / "scripts" / "run_pic1_modes.py")
+    _assert_uses_shared_bootstrap(REPO_ROOT / "scripts" / "_run_cleanup_now.py")
 
 
 def test_log_event_inventory_scans_migrated_implementation_paths() -> None:

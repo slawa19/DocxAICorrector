@@ -30,15 +30,12 @@ REPO_ROOT = _resolve_repo_root()
 SRC_ROOT = REPO_ROOT / "src"
 
 
-def _ensure_src_first_import_order(repo_root: Path, src_root: Path) -> None:
-    repo_root_str = str(repo_root)
-    src_root_str = str(src_root)
-    sys.path[:] = [entry for entry in sys.path if entry not in {repo_root_str, src_root_str}]
-    sys.path.insert(0, repo_root_str)
-    sys.path.insert(0, src_root_str)
+# Make the repo-root shared bootstrap importable, then pin src first (F5/R29).
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+from docxaicorrector_bootstrap import ensure_src_first_import_order  # noqa: E402
 
-
-_ensure_src_first_import_order(REPO_ROOT, SRC_ROOT)
+ensure_src_first_import_order(REPO_ROOT, SRC_ROOT)
 
 import docxaicorrector.processing.processing_runtime as processing_runtime  # noqa: E402
 from docxaicorrector.document.extraction import (  # noqa: E402

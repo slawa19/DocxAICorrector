@@ -19,9 +19,21 @@ pytestmark = pytest.mark.static_workflow
 # Docs whose internal references we own and keep current. The canonical
 # validation workflow is intentionally excluded here — it references large test
 # data files that are not always present on disk.
+#
+# Coverage is an explicit allow-list rather than a ``docs/*.md`` glob: two docs
+# (``docs/ARCHIVE_INDEX.md`` and the dated ``docs/HANDOFF_2026-07-11.md``) carry
+# stale references that are out of scope for this checker — ARCHIVE_INDEX points
+# at owner-held monetization drafts that were never committed
+# (``docs/archive/drafts/monetization1.md`` / ``monatization2.md``) and HANDOFF
+# is a point-in-time snapshot naming a removed ``tests/sources/archive/`` dir.
+# Add a doc here only once its in-repo references fully resolve.
 DOCS_TO_CHECK = [
     REPO_ROOT / "README.md",
     REPO_ROOT / "docs" / "REAL_DOCUMENT_VALIDATION_WORKFLOW.md",
+    REPO_ROOT / "AGENTS.md",
+    REPO_ROOT / "docs" / "COPILOT_CLI_LOOP_USAGE.md",
+    REPO_ROOT / "docs" / "WORKFLOW_AND_IMAGE_MODES.md",
+    REPO_ROOT / "docs" / "LOGGING_AND_ARTIFACT_RETENTION.md",
 ]
 
 _MD_LINK = re.compile(r"\]\(([^)]+)\)")

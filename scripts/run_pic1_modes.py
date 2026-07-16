@@ -12,15 +12,12 @@ ARTIFACTS_DIR = TESTS_DIR / "artifacts" / "real_image_pipeline"
 SOURCE_IMAGE = TESTS_DIR / "pic1_lietaer.jpg"
 
 
-def _ensure_src_first_import_order(root_dir: Path, src_root: Path) -> None:
-    root_dir_str = str(root_dir)
-    src_root_str = str(src_root)
-    sys.path[:] = [entry for entry in sys.path if entry not in {root_dir_str, src_root_str}]
-    sys.path.insert(0, root_dir_str)
-    sys.path.insert(0, src_root_str)
+# Make the repo-root shared bootstrap importable, then pin src first (F5/R29).
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+from docxaicorrector_bootstrap import ensure_src_first_import_order
 
-
-_ensure_src_first_import_order(ROOT_DIR, SRC_ROOT)
+ensure_src_first_import_order(ROOT_DIR, SRC_ROOT)
 
 from docxaicorrector.core.config import get_client, get_model_role_value, load_app_config
 from docxaicorrector.core.models import ImageAsset, get_image_variant_bytes
