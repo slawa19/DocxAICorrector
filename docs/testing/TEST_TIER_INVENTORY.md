@@ -39,6 +39,7 @@ This inventory is intentionally pragmatic:
 - `tests/test_image_reinsertion.py`
 - `tests/test_image_validation.py`
 - `tests/test_late_phases_characterization.py`
+- `tests/test_late_phases_finalize_gate_persistence.py`
 - `tests/test_logger.py`
 - `tests/test_message_formatting.py`
 - `tests/test_model_registry_sweep.py`

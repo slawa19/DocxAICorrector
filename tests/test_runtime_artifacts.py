@@ -694,6 +694,97 @@ def test_write_job_result_registry_persists_job_records_in_identity_tree(tmp_pat
     }
 
 
+def test_write_segment_result_registry_prunes_stale_family_by_count(tmp_path, monkeypatch):
+    monkeypatch.setattr(runtime_artifacts, "SEGMENT_RESULT_REGISTRY_MAX_COUNT", 1)
+    monkeypatch.setattr(runtime_artifacts, "SEGMENT_RESULT_REGISTRY_MAX_AGE_SECONDS", 10_000)
+
+    stale_leaf = tmp_path / "prep_old" / "struct-old"
+    stale_leaf.mkdir(parents=True, exist_ok=True)
+    stale_path = stale_leaf / "seg_0000.segment-result.json"
+    stale_path.write_text(json.dumps({"segment_id": "seg_0000"}), encoding="utf-8")
+    os.utime(stale_path, (10.0, 10.0))
+
+    artifact_paths = write_segment_result_registry(
+        records=[
+            {
+                "schema_version": 1,
+                "prepared_source_key": "prep:report:1234",
+                "structure_fingerprint": "struct-abc",
+                "segment_id": "seg_0001",
+                "translated_markdown": "Translated chapter",
+            }
+        ],
+        output_dir=tmp_path,
+    )
+
+    new_path = Path(artifact_paths["seg_0001"])
+    assert new_path.exists()
+    # The count cap is family-wide (recursive), so the stale leaf is pruned even
+    # though it lives under a different source/structure identity.
+    assert not stale_path.exists()
+    remaining = sorted(path.name for path in tmp_path.rglob("*.segment-result.json"))
+    assert remaining == ["seg_0001.segment-result.json"]
+
+
+def test_write_segment_result_registry_prunes_stale_family_by_age(tmp_path, monkeypatch):
+    monkeypatch.setattr(runtime_artifacts, "SEGMENT_RESULT_REGISTRY_MAX_COUNT", 1000)
+    monkeypatch.setattr(runtime_artifacts, "SEGMENT_RESULT_REGISTRY_MAX_AGE_SECONDS", 60)
+
+    stale_leaf = tmp_path / "prep_old" / "struct-old"
+    stale_leaf.mkdir(parents=True, exist_ok=True)
+    stale_path = stale_leaf / "seg_0000.segment-result.json"
+    stale_path.write_text(json.dumps({"segment_id": "seg_0000"}), encoding="utf-8")
+    os.utime(stale_path, (10.0, 10.0))
+
+    artifact_paths = write_segment_result_registry(
+        records=[
+            {
+                "schema_version": 1,
+                "prepared_source_key": "prep:report:1234",
+                "structure_fingerprint": "struct-abc",
+                "segment_id": "seg_0001",
+                "translated_markdown": "Translated chapter",
+            }
+        ],
+        output_dir=tmp_path,
+    )
+
+    assert Path(artifact_paths["seg_0001"]).exists()
+    assert not stale_path.exists()
+
+
+def test_write_job_result_registry_prunes_stale_family_by_count(tmp_path, monkeypatch):
+    monkeypatch.setattr(runtime_artifacts, "JOB_RESULT_REGISTRY_MAX_COUNT", 1)
+    monkeypatch.setattr(runtime_artifacts, "JOB_RESULT_REGISTRY_MAX_AGE_SECONDS", 10_000)
+
+    stale_leaf = tmp_path / "prep_old" / "struct-old"
+    stale_leaf.mkdir(parents=True, exist_ok=True)
+    stale_path = stale_leaf / "job_0000.job-result.json"
+    stale_path.write_text(json.dumps({"job_id": "job_0000", "status": "failed"}), encoding="utf-8")
+    os.utime(stale_path, (10.0, 10.0))
+
+    artifact_paths = write_job_result_registry(
+        records=[
+            {
+                "schema_version": 1,
+                "prepared_source_key": "prep:report:1234",
+                "structure_fingerprint": "struct-abc",
+                "job_id": "job_0007",
+                "segment_id": "seg_0002",
+                "status": "completed",
+                "updated_at": "2026-05-07T12:00:00+00:00",
+            }
+        ],
+        output_dir=tmp_path,
+    )
+
+    new_path = Path(artifact_paths["job_0007"])
+    assert new_path.exists()
+    assert not stale_path.exists()
+    remaining = sorted(path.name for path in tmp_path.rglob("*.job-result.json"))
+    assert remaining == ["job_0007.job-result.json"]
+
+
 def test_load_job_result_registry_keeps_latest_record_per_job_id(tmp_path):
     target_dir = tmp_path / "prep_report_1234" / "struct-abc"
     target_dir.mkdir(parents=True, exist_ok=True)

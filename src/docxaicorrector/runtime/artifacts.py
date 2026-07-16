@@ -18,6 +18,22 @@ from docxaicorrector.runtime.artifact_retention import (
     prune_ui_result_artifact_groups,
 )
 
+# Retention budgets for the data-bearing result registries (F26). These families
+# were previously unbounded, unlike every other ``.run/`` writer in this module.
+# The files live two levels deep under the family root
+# (``<source_key>/<fingerprint>/<id>.json``) and are keyed by ``segment_id`` /
+# ``job_id``, so re-running one document overwrites in place — the unbounded
+# growth is the accumulation of stale identity leaves across documents and
+# structure revisions. Pruning therefore runs family-wide with a recursive glob.
+# Values mirror the long-lived 30-day structure-manifest cache (these registries
+# are likewise a resume/reuse cache read by ``load_job_result_registry``); the
+# count caps are set well above any single document's segment/job fan-out so a
+# live run is never pruned, only historical accumulation.
+SEGMENT_RESULT_REGISTRY_MAX_AGE_SECONDS = 30 * 24 * 60 * 60
+SEGMENT_RESULT_REGISTRY_MAX_COUNT = 2000
+JOB_RESULT_REGISTRY_MAX_AGE_SECONDS = 30 * 24 * 60 * 60
+JOB_RESULT_REGISTRY_MAX_COUNT = 2000
+
 
 class AppReadyMarkerWriter:
     def __init__(self, *, path: Path, freshness_window_seconds: float = 15.0, time_fn=None):
@@ -385,6 +401,16 @@ def write_segment_result_registry(
             encoding="utf-8",
         )
         persisted_paths[segment_id] = str(artifact_path)
+    # Bound family growth after publishing, mirroring the UI-result and
+    # structure-manifest writers. Recursive glob prunes stale identity leaves
+    # across the whole family, not just one document's segment folder.
+    prune_artifact_dir(
+        target_dir=output_dir,
+        max_age_seconds=SEGMENT_RESULT_REGISTRY_MAX_AGE_SECONDS,
+        max_count=SEGMENT_RESULT_REGISTRY_MAX_COUNT,
+        glob="**/*.segment-result.json",
+        emit_log=False,
+    )
     return persisted_paths
 
 
@@ -412,6 +438,16 @@ def write_job_result_registry(
             encoding="utf-8",
         )
         persisted_paths[job_id] = str(artifact_path)
+    # Bound family growth after publishing, mirroring the UI-result and
+    # structure-manifest writers. Recursive glob prunes stale identity leaves
+    # across the whole family, not just one document's job folder.
+    prune_artifact_dir(
+        target_dir=output_dir,
+        max_age_seconds=JOB_RESULT_REGISTRY_MAX_AGE_SECONDS,
+        max_count=JOB_RESULT_REGISTRY_MAX_COUNT,
+        glob="**/*.job-result.json",
+        emit_log=False,
+    )
     return persisted_paths
 
 

@@ -7,6 +7,7 @@ from typing import Any, Literal, TypeAlias
 
 from docxaicorrector.pipeline.job_results import persist_terminal_job_result
 from docxaicorrector.pipeline.output_validation import validate_translated_toc_block
+from docxaicorrector.runtime.artifact_retention import prune_artifact_dir
 
 
 PipelineResult: TypeAlias = Literal["succeeded", "failed", "stopped"]
@@ -32,6 +33,12 @@ CONTROLLED_BLOCK_FAILURE_POLICY: dict[str, dict[str, str]] = {
     "source_extraction_failure": {"decision": "fail"},
 }
 CONTROLLED_BLOCK_FALLBACK_DIR = Path(".run") / "block_fallbacks"
+# Retention budget for controlled-block fallback diagnostics (F26). Each rejected
+# block writes a uuid-suffixed artifact that never overwrites, so this flat family
+# grew without bound. Values match the diagnostic tier used elsewhere under
+# ``.run/`` (7-day age, small count); pruning runs right after each write.
+BLOCK_FALLBACK_ARTIFACTS_MAX_AGE_SECONDS = 7 * 24 * 60 * 60
+BLOCK_FALLBACK_ARTIFACTS_MAX_COUNT = 200
 
 
 def _safe_artifact_stem(value: str) -> str:
@@ -66,6 +73,13 @@ def _write_controlled_block_fallback_artifact(
             / f"{_safe_artifact_stem(str(getattr(context, 'uploaded_filename', '') or 'document'))}_block_{index}_{uuid.uuid4().hex[:8]}.json"
         )
         artifact_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        prune_artifact_dir(
+            target_dir=CONTROLLED_BLOCK_FALLBACK_DIR,
+            max_age_seconds=BLOCK_FALLBACK_ARTIFACTS_MAX_AGE_SECONDS,
+            max_count=BLOCK_FALLBACK_ARTIFACTS_MAX_COUNT,
+            glob="*.json",
+            emit_log=False,
+        )
         return str(artifact_path)
     except OSError:
         return None

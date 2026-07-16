@@ -602,6 +602,7 @@ def test_main_renders_current_preparation_failure_without_restarting(monkeypatch
     monkeypatch.setattr(app.st, "info", lambda *args, **kwargs: None)
     monkeypatch.setattr(app.st, "warning", lambda *args, **kwargs: None)
     monkeypatch.setattr(app.st, "error", lambda value, *args, **kwargs: error_calls.append(value))
+    monkeypatch.setattr(app.st, "button", lambda *args, **kwargs: False)
     monkeypatch.setattr(app.st, "fragment", lambda **kw: (lambda fn: fn))
     monkeypatch.setattr(app, "render_live_status", lambda *args, **kwargs: calls.append("live_status"))
     monkeypatch.setattr(app, "render_run_log", lambda *args, **kwargs: calls.append("run_log"))
@@ -621,6 +622,67 @@ def test_main_renders_current_preparation_failure_without_restarting(monkeypatch
     assert error_calls == ["bad archive"]
     assert start_calls == []
     assert calls == ["live_status", "run_log", "finalize"]
+
+
+def test_main_retry_button_clears_failure_and_reruns_in_failed_branch(monkeypatch):
+    session_state = SessionState(
+        app_start_logged=True,
+        processing_status={"stage": "Ошибка подготовки", "detail": "bad archive", "phase": "preparing"},
+        activity_feed=[],
+        preparation_input_marker="report.docx:3:ba7816bf8f01cfea:6000",
+        preparation_failed_marker="report.docx:3:ba7816bf8f01cfea:6000",
+        prepared_run_context=None,
+        last_error="bad archive",
+        last_background_error={"kind": "bad archive"},
+        processing_outcome="failed",
+    )
+    uploaded_file = UploadedFileStub("report.docx", b"abc")
+    button_calls = []
+    clear_calls = []
+
+    class RerunRequested(Exception):
+        pass
+
+    monkeypatch.setattr(app.st, "session_state", session_state)
+    monkeypatch.setattr(app, "init_session_state", lambda: None)
+    monkeypatch.setattr(app, "_cached_load_app_config", lambda: {})
+    monkeypatch.setattr(app, "render_sidebar", lambda config: ("gpt-5.4", 6000, 3, "safe", False))
+    monkeypatch.setattr(app, "_drain_processing_events", lambda: None)
+    monkeypatch.setattr(app, "_drain_preparation_events", lambda: None)
+    monkeypatch.setattr(app, "_processing_worker_is_active", lambda: False)
+    monkeypatch.setattr(app, "_preparation_worker_is_active", lambda: False)
+    monkeypatch.setattr(app, "get_current_result_bundle", lambda: None)
+    monkeypatch.setattr(app.st, "title", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "write", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "caption", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "file_uploader", lambda *args, **kwargs: uploaded_file)
+    monkeypatch.setattr(app.st, "info", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "warning", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "error", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "button", lambda label, *args, **kwargs: button_calls.append(label) or True)
+    monkeypatch.setattr(app.st, "fragment", lambda **kw: (lambda fn: fn))
+    monkeypatch.setattr(app, "render_live_status", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app, "render_run_log", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app, "_finalize_app_frame", lambda **kwargs: None)
+    monkeypatch.setattr(app, "get_prepared_run_context_for_marker", lambda marker: None)
+    monkeypatch.setattr(app, "should_start_preparation_for_marker", lambda marker: False)
+    monkeypatch.setattr(app, "is_preparation_failed_for_marker", lambda marker: True)
+    monkeypatch.setattr(
+        app,
+        "clear_preparation_failure",
+        lambda marker: clear_calls.append(marker),
+    )
+    monkeypatch.setattr(app.st, "rerun", lambda: (_ for _ in ()).throw(RerunRequested()))
+
+    try:
+        app.main()
+    except RerunRequested:
+        pass
+    else:
+        raise AssertionError("Expected rerun after clearing preparation failure via retry")
+
+    assert button_calls == [t("app.button_reprocess")]
+    assert clear_calls == ["report.docx:3:ba7816bf8f01cfea:6000"]
 
 
 def test_main_warns_when_current_preparation_state_is_unavailable(monkeypatch):

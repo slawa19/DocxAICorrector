@@ -333,6 +333,26 @@ def apply_preparation_failure(*, upload_marker: str, error_message: str, error_d
     st.session_state.processing_outcome = ProcessingOutcome.FAILED.value
 
 
+def clear_preparation_failure(upload_marker: str) -> None:
+    """Atomically clear a recorded preparation failure for ``upload_marker``.
+
+    After a failed preparation, ``preparation_failed_marker`` pins the marker so
+    ``should_start_preparation_for_marker`` refuses to re-start preparation for the
+    same file. This clears the failed marker together with the stale
+    prepared-context / input-marker / error state in a single mutation, so the next
+    frame re-starts preparation for that file. No-op when the current failure is for
+    a different marker, so a stale retry cannot wipe an unrelated failure.
+    """
+    if str(st.session_state.get("preparation_failed_marker", "")) != upload_marker:
+        return
+    st.session_state.preparation_failed_marker = ""
+    st.session_state.preparation_input_marker = ""
+    st.session_state.prepared_run_context = None
+    st.session_state.last_background_error = None
+    st.session_state.last_error = ""
+    st.session_state.processing_outcome = ProcessingOutcome.IDLE.value
+
+
 def apply_preparation_stop(*, upload_marker: str) -> None:
     st.session_state.prepared_run_context = None
     st.session_state.preparation_input_marker = upload_marker

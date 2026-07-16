@@ -479,7 +479,13 @@ wait_ready() {
     local port="${1:-$DEFAULT_PORT}"
     local deadline=$((SECONDS + ${2:-90}))
     while [[ $SECONDS -lt $deadline ]]; do
-        if health_ok "$port" && app_page_ok "$port"; then
+        # The authoritative readiness signal is the render marker app.ready, which the
+        # Streamlit app writes on its first successful frame (_finalize_app_frame ->
+        # _mark_app_ready). app_page_ok only matches the static shell served BEFORE the
+        # app renders, so gating on it alone (F19) flips status to READY too early. Gate
+        # on health_ok && app_ready (the real render marker) and keep app_page_ok as an
+        # additional shell probe, not the sole app-level signal.
+        if health_ok "$port" && app_ready && app_page_ok "$port"; then
             echo "ok"
             return 0
         fi

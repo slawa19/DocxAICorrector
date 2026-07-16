@@ -192,6 +192,28 @@ def test_setup_contract_declares_required_system_packages() -> None:
     assert "Setup Project" in copilot_instructions
 
 
+def test_wait_ready_gate_requires_app_render_marker() -> None:
+    """``wait_ready`` must gate on the real render marker ``app_ready`` (F19).
+
+    ``app_page_ok`` matches only the static Streamlit shell served BEFORE the app
+    renders, so gating readiness on it alone flipped status to READY too early. The
+    render marker ``app.ready`` — written by the Streamlit app on its first successful
+    frame — is the authoritative signal and must be part of the gate so status cannot
+    report READY before the app actually renders.
+    """
+    script_text = (REPO_ROOT / "scripts" / "project-control-wsl.sh").read_text(encoding="utf-8")
+
+    match = re.search(r"\nwait_ready\(\) \{\n(.*?)\n\}\n", script_text, re.DOTALL)
+    assert match is not None, "wait_ready() function not found in project-control-wsl.sh"
+    body = match.group(1)
+
+    assert "app_ready" in body, (
+        "wait_ready must gate on app_ready (the app.ready render marker) so status "
+        "cannot flip READY before the Streamlit app renders and writes app.ready"
+    )
+    assert "health_ok" in body, "wait_ready must still require the Streamlit health probe"
+
+
 def test_repository_shell_scripts_have_valid_bash_syntax() -> None:
     if platform.system() == "Windows":
         pytest.skip("bash cannot resolve Windows-style script paths; the check runs on the Linux/WSL runner")

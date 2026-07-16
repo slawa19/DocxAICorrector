@@ -52,6 +52,7 @@ from docxaicorrector.runtime.state import (
     apply_recommended_widget_state,
     clear_recommended_text_settings_notice_token,
     consume_recommended_text_settings_pending_widget_state,
+    clear_preparation_failure,
     get_latest_preparation_summary,
     get_manual_text_settings_override_for_token,
     get_latest_image_mode,
@@ -795,6 +796,9 @@ def main() -> None:
             preparation_error = str(st.session_state.get("last_error") or "")
             if preparation_error:
                 st.error(preparation_error)
+            if st.button(t("app.button_reprocess"), use_container_width=True):
+                clear_preparation_failure(preparation_request_marker)
+                st.rerun()
             render_live_status()
             render_run_log()
             _finalize_app_frame()
