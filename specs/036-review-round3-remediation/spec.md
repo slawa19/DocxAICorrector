@@ -511,3 +511,47 @@ runtime/evidence contract. Each item below was re-verified against live code and
   "fully closed" claim to reflect that these are static contracts.
 - A redundant `stash@{0}` WIP backup remains on the branch for the owner to `git stash drop` (the
   auto-approver refuses stash deletion without explicit authorization).
+
+## Round-5 follow-up register (2026-07-17)
+
+Round-5 review: no new P0, but a RED canonical real-document gate + P1/P2 gaps. Code findings
+remediated + committed (branch `hardening/wave1-saas-prereqs`); full suite **2096 passed / 9
+skipped**, pyright 246, range diff-check clean.
+
+- **#1 (P1 blocker) — `c7a5283`:** genuine passthrough blocks (verbatim source, no LLM) now BYPASS
+  the LLM-output-quality classifier in `block_execution` — they were hard-failing as
+  `heading_only_output` → EMPTY DOCX. Verified on a real book: the failure MOVED from
+  `heading_only_output`/empty to formatting-coverage thresholds (see gate residual below), proving
+  passthrough output is now accepted.
+- **#2/#3/#15 — `a3e1e7d`:** preparation cache key folds scan-origin overrides (`:pk=4:so=`); the
+  tenant client factory is threaded service→preparation→extraction→boundary-review; the two
+  remaining TypeError-retry adapters use signature gating.
+- **#5/#6 — `e524b76`:** image byte-cap before b64decode + pixel gate before every provider
+  `.load()` + generated images charge the shared per-document budget; retention is concurrency-safe
+  via a process-wide active-publication registry (barrier test).
+- **#7/#8/#13 — `c7a5283`:** verdict refreshed on no-op cleanup once the DOCX exists; provider
+  secret fingerprint computed from the same in-lock read as the client (no rotation TOCTOU);
+  primary-artifact persistence verified (present/on-disk/non-empty) before claiming success.
+
+### Real-document gate — REMAINS RED (documented residual, NOT closed)
+`test_corpus_structural_passthrough` requires each of the 4 real scanned/PDF books to validate
+CLEAN (`passed=True`; the profiles carry no expected failed-checks). #1's fix un-empties the DOCX,
+but the structural validation then fails on `unmapped_source_threshold` / `unmapped_target_threshold`
+— a formatting-mapper COVERAGE gap on real books, i.e. the hard structure-recognition residual
+(F13/F14 class), not a remediation-sweep code fix. The reviewer's #1 diagnosis was incomplete:
+fixing it alone does not green the gate. Each iteration is ~25 min/book (~99 min for all four).
+Getting this gate green is a separate, dedicated structure-recognition/formatting-coverage effort.
+
+### Deferred as diminishing-returns / PARTIAL (per the review's own CONFLICTS downgrade)
+- #4 (PDF streaming — mitigated by the unified deadline + 64 MiB file cap), #9 (aggregate
+  re-decode accounting), #10 (OCR process-group cleanup), #11 (main-admission cancellable wait),
+  #12 (retention byte-quota), #14 (golden stable-identity nuance). Accordingly the earlier
+  "sweeping image budget", "stable identity", and "completed retention" claims are PARTIAL.
+
+### Process incident + lesson (important)
+A concurrent dev agent ran a destructive `git checkout -- .` on the shared working tree, wiping
+other agents' UNCOMMITTED work (a second incident after an earlier `git stash` one). Recovered by
+committing verified work immediately (protective commits) and re-doing the wiped changes with a
+sequential agent under a hard "run ZERO git commands" rule. LESSON: never run concurrent agents
+that touch git state; forbid agents from any git command — both incidents originated in
+`git worktree`/`checkout` used for pyright isolation.
