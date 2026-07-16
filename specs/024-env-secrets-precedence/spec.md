@@ -1,9 +1,12 @@
 # Feature Specification: Environment wins over on-disk .env (secrets precedence)
 
 Date: 2026-07-15
-Status: **PLANNED (Wave 1 / S3).** Config/deploy safety. Flip `.env` loading from clobbering process env to
+Status: **IMPLEMENTED (2026-07-16).** Config/deploy safety. Flip `.env` loading from clobbering process env to
 respecting it, matching the conventional precedence environment > `.env` > config defaults.
 Owner surface: `core/config.py` (`load_project_dotenv`), its call sites, and `core/config_loader_layers.py`.
+
+Verification: tests/test_config.py proves the environment > `.env` > defaults precedence — pre-set process env wins over a differing `.env`, `.env` still fills an unset key, and repeated `load_project_dotenv()` calls are idempotent.
+Changelog: 2026-07-16 — implemented; status + Non-goals/Anti-regression added to meet the constitution spec-format contract.
 
 ## Problem (verified against HEAD d27c137)
 
@@ -42,6 +45,19 @@ exists next to the deployed code; with none it is a no-op.
 
 - Any secret-management/vault integration.
 - Changing which keys are read or the provider-resolution logic.
+
+## Non-goals
+
+(See also `## Out of scope` above.)
+
+- No secret-management / vault integration — this is a one-line precedence flip (`override=False`), not a secrets backend.
+- No change to which keys are read or to provider-resolution logic — key inventory and resolution stay exactly as they were.
+
+## Anti-regression
+
+- A pre-set process env value (e.g. `OPENAI_API_KEY`) is RETAINED after `load_project_dotenv()` when `.env` holds a different value (real environment wins) — tests/test_config.py.
+- With the key absent from `os.environ` but present in `.env`, the `.env` value is loaded (local DX preserved) — tests/test_config.py.
+- Calling `load_project_dotenv()` multiple times never changes an already-set value (idempotent) — tests/test_config.py.
 
 ## SaaS rationale
 

@@ -1,10 +1,13 @@
 # Feature Specification: Decompose generation/formatting_transfer.py (behaviour-preserving)
 
 Date: 2026-07-16
-Status: **PLANNED (Wave 3 / decomposition, module 3 of 5).** Pure structural refactor of the ~3505-line
+Status: **IMPLEMENTED (2026-07-16).** Pure structural refactor of the ~3505-line
 `generation/formatting_transfer.py` into a mapper module + a restoration module + a thin facade. No behaviour change.
 Owner surface: `generation/formatting_transfer.py` (shrinks to ~250-line facade), new `generation/formatting_mapping.py`
 + `generation/formatting_restoration.py`, the relation-phase test, and the log-event/CODEOWNERS contracts.
+
+Verification: tests/test_formatting_mapper_golden.py stays byte-identical at every step (mandatory gate) and tests/test_formatting_restoration_golden.py pins Golden A (document.xml + numbering.xml) + Golden B (diagnostics JSON); tests/test_format_restoration.py (99) and tests/test_script_contract_static.py green.
+Changelog: 2026-07-16 — implemented; status + Non-goals/Anti-regression added to meet the constitution spec-format contract.
 
 ## Problem + favourable facts (verified)
 
@@ -69,6 +72,19 @@ bidirectionally couple with the mapper (genuine load-time cycle needing function
 
 - Behaviour changes; the optional diagnostics split; the mapper's internal structure (spec 029, keep intact).
 - structural.py / output_validation.py — specs 034-035.
+
+## Non-goals
+
+(See also `## Out of scope` above.)
+
+- No behaviour change; the optional Step 3 diagnostics split is deferred (bidirectional coupling → genuine cycle for marginal benefit); the mapper's internal structure is left intact (spec 029).
+- structural.py / output_validation.py are out of scope — specs 034-035.
+
+## Anti-regression
+
+- The mapper golden is byte-identical at EVERY step (the diagnostics builders move WITH the mapper, so they are inside this snapshot) — tests/test_formatting_mapper_golden.py (mandatory gate each step).
+- Restoration Golden A (`word/document.xml` + `word/numbering.xml`) and Golden B (diagnostics-artifact JSON) are byte-identical — tests/test_formatting_restoration_golden.py; tests/test_format_restoration.py (99) green.
+- The situation-2 repoint lands (`build_paragraph_relations` / `resolve_effective_relation_kinds` patched on `formatting_mapping`) while `log_event` + `FORMATTING_DIAGNOSTICS_DIR` stay situation-1 on the facade, and the relocated `alignment_restoration_skipped` log event is registered — tests/test_format_restoration.py + tests/test_script_contract_static.py.
 
 ## SaaS rationale
 

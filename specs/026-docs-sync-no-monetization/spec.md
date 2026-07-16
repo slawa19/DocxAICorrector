@@ -1,12 +1,15 @@
 # Feature Specification: Documentation sync to the deterministic importer-first pipeline
 
 Date: 2026-07-15
-Status: **PLANNED (Wave 1 / S6).** Documentation accuracy. Remove references to a removed pipeline stage and
+Status: **IMPLEMENTED (2026-07-16).** Documentation accuracy. Remove references to a removed pipeline stage and
 nonexistent files, deduplicate the validation workflow, and mark the stale handoff as historical.
 Owner surface: `README.md`, `docs/REAL_DOCUMENT_VALIDATION_WORKFLOW.md`,
 `docs/testing/REAL_DOCUMENT_VALIDATION_WORKFLOW.md`, `docs/HANDOFF_2026-07-11.md`, and a new internal-link check.
 **Explicitly out of scope: the `plans/monetization*.md` drafts** — the three payment/admin variants stay untouched;
 that decision is the owner's and comes later.
+
+Verification: tests/test_documentation_links.py proves every relative Markdown link / repo path in README + the canonical workflow doc resolves, that `structure_recognition` is not referenced as a live module, and that the root workflow file is a short redirect stub.
+Changelog: 2026-07-16 — implemented; status + Non-goals/Anti-regression added to meet the constitution spec-format contract.
 
 ## Problem (verified against HEAD d27c137)
 
@@ -57,6 +60,19 @@ that decision is the owner's and comes later.
 - Rewriting archived specs under `docs/archive/`.
 - The actual `processing ↔ ui` cycle fix (spec S5 / Wave 2); this spec only stops describing the modules as
   independent.
+
+## Non-goals
+
+(See also `## Out of scope` above.)
+
+- `plans/monetization*.md` drafts and the `monatization2.md` typo stay untouched — that is an owner decision, deferred by design.
+- Archived specs under `docs/archive/` are not rewritten — only the README links pointing at them are corrected.
+- The actual `processing ↔ ui` import cycle is NOT fixed here (that is spec 027) — this spec only stops describing the modules as independent.
+
+## Anti-regression
+
+- Every relative Markdown link and repo path in README + the canonical `docs/testing/REAL_DOCUMENT_VALIDATION_WORKFLOW.md` resolves to an existing file (no dangling links) — tests/test_documentation_links.py.
+- `structure_recognition` does not reappear as a live-module reference in README, and the root `docs/REAL_DOCUMENT_VALIDATION_WORKFLOW.md` stays a short redirect stub (below the size threshold, contains the redirect marker) — tests/test_documentation_links.py.
 
 ## SaaS rationale
 

@@ -1,11 +1,14 @@
 # Feature Specification: Decompose pipeline/output_validation.py (behaviour-preserving)
 
 Date: 2026-07-16
-Status: **PLANNED (Wave 3 / decomposition, module 5 of 5 — final).** Pure structural refactor of the ~2453-line
+Status: **IMPLEMENTED (2026-07-16).** Pure structural refactor of the ~2453-line
 `pipeline/output_validation.py`: isolate the two self-contained satellite clusters and pin the interwoven core behind
 a golden. No behaviour change.
 Owner surface: `pipeline/output_validation.py`, new `pipeline/paragraph_break_detection.py` +
 `pipeline/toc_block_validation.py`, and a new characterization test.
+
+Verification: tests/test_output_validation_characterization.py holds `assemble_final_markdown` + all `collect_*`/`normalize_*` + `validate_translated_toc_block` + `classify_processed_block` + the 4 private-via-alias TOC pins byte-identical after each satellite extraction; tests/test_document_pipeline_output_validation.py green.
+Changelog: 2026-07-16 — implemented; status + Non-goals/Anti-regression added to meet the constitution spec-format contract.
 
 ## Problem + favourable facts (verified) — and an honest scope note
 
@@ -63,6 +66,18 @@ the 4 private-via-alias TOC names resolve on `output_validation`.
 ## Out of scope
 
 - Behaviour changes; splitting the interwoven core; the optional Step 3 unless mandated.
+
+## Non-goals
+
+(See also `## Out of scope` above.)
+
+- No behaviour change; the interwoven ~1800-line core is deliberately NOT split (a dense function-local-import mesh / genuine cycle for near-zero cohesion gain is higher risk than the lines are worth — realistic reduction only ~2453 → ~2150).
+- The optional Step 3 (`processed_block_classification.py`) is skipped unless further reduction is mandated.
+
+## Anti-regression
+
+- `assemble_final_markdown` (full `FinalMarkdownAssemblyResult`), all 9 `collect_*`, all 7 `normalize_*`, `validate_translated_toc_block` (each reason), `classify_processed_block` (each status), and the 4 private-via-alias TOC pins stay byte-identical after each satellite extraction — tests/test_output_validation_characterization.py.
+- The comprehensive re-export shim keeps every consumer resolving (situation-1 everywhere; the 4 private names `_is_page_reference_like` / `_has_page_reference_suffix` / `_is_substantive_toc_line` / `_is_allowlisted_unchanged_toc_line` resolve on `output_validation`) — tests/test_document_pipeline_output_validation.py + tests/test_document_pipeline.py + tests/test_script_contract_static.py.
 
 ## SaaS rationale
 

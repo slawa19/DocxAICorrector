@@ -1,13 +1,16 @@
 # Feature Specification: Break the processing → ui import cycle
 
 Date: 2026-07-15
-Status: **PLANNED (Wave 2 / S5).** Structural refactor. Move the domain preparation contract and its orchestration
+Status: **IMPLEMENTED (2026-07-16).** Structural refactor. Move the domain preparation contract and its orchestration
 out of the ui layer so the processing core imports without Streamlit/ui. Behaviour-preserving.
 Owner surface: new `processing/application_flow.py`; slimmed `ui/application_flow.py` (re-export + UI/state helpers);
 `processing/processing_service.py`; `runtime/state.py`; relocated i18n (`core/i18n.py` + `core/locales/`, shim at
 `ui/i18n.py`).
 Companion: prerequisite for the planned FastAPI backend/worker split (`plans/monetization*.md`) — a backend must
 import the processing core without the ui package.
+
+Verification: tests/test_layer_boundaries.py is the layering guard (no core package imports `docxaicorrector.ui`); tests/test_application_flow.py, test_processing_service.py, and test_state.py stay green proving the re-export/shim preserves the public surface and messages.
+Changelog: 2026-07-16 — implemented; status + Non-goals/Anti-regression added to meet the constitution spec-format contract.
 
 ## Problem (verified against HEAD d27c137)
 
@@ -62,6 +65,19 @@ No new DI framework; no pipeline rewrite. The existing dependency-injection seam
 
 - Splitting the ui `prepare_run_context` session-state entrypoint further, or extracting a formal service interface.
 - Any change to preparation logic, quality-gate semantics, or message catalogs (byte-identical strings).
+
+## Non-goals
+
+(See also `## Out of scope` above.)
+
+- No further splitting of the ui `prepare_run_context` session-state entrypoint and no formal service interface extraction — the existing fn-param DI seams are reused as-is.
+- No change to preparation logic, quality-gate semantics, or message catalogs — strings stay byte-identical (same catalog after the i18n relocation).
+
+## Anti-regression
+
+- No module under `processing/`, `runtime/`, `generation/`, `pipeline/`, `validation/`, `document/`, `image/` imports `docxaicorrector.ui` — tests/test_layer_boundaries.py (static AST/import scan pins the layering so the cycle cannot reappear).
+- `import docxaicorrector.processing.processing_service` and `import docxaicorrector.processing.application_flow` succeed without pulling the `ui` package into `sys.modules` — tests/test_layer_boundaries.py.
+- The public surface + localized messages are unchanged via re-exports and the `ui/i18n.py` shim — tests/test_application_flow.py, test_processing_service.py, test_state.py stay green.
 
 ## SaaS rationale
 

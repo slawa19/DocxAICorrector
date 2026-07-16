@@ -1,10 +1,13 @@
 # Feature Specification: Explicit package contract and single dependency source of truth
 
 Date: 2026-07-15
-Status: **PLANNED (Wave 1 / S4).** Packaging + dependency hygiene. Two coupled decisions: (A) what installable
+Status: **IMPLEMENTED (2026-07-16).** Packaging + dependency hygiene. Two coupled decisions: (A) what installable
 surface the project actually promises, and (B) making `pyproject.toml` the single source of dependency truth.
 Owner surface: `pyproject.toml`, `requirements.txt`, `core/constants.py` (`resolve_repo_root`),
 `tests/test_docxaicorrector_bootstrap_package.py`, and a new consistency test.
+
+Verification: tests/test_dependency_consistency.py gates the single source of truth (requirements.txt ↔ pyproject runtime deps); tests/test_package_install_smoke.py proves the A2 wheel installs into a clean venv and imports with default config; tests/test_docxaicorrector_bootstrap_package.py keeps the repo-root import path green.
+Changelog: 2026-07-16 — implemented; status + Non-goals/Anti-regression added to meet the constitution spec-format contract. Decision A2 (genuinely installable core) taken; `pdfplumber` removed as unused while `pdfminer.six` was found to be used by `pdf_import/images.py` and kept (audit corrected).
 
 ## Problem A — install contract is broken (verified against HEAD d27c137)
 
@@ -75,6 +78,18 @@ The dependency sync (Problem B) is implemented unconditionally.
 ## Out of scope
 
 - Splitting the core into multiple distributables (backend/worker packaging) — that is future backend work.
+
+## Non-goals
+
+(See also `## Out of scope` above.)
+
+- No splitting the core into multiple distributables (backend/worker packaging) — deferred to future backend work.
+- No new PDF backend wired up — `pdfplumber` was removed as genuinely unused; `pdfminer.six` was kept ONLY because `pdf_import/images.py` already lazy-imports it, not as a new feature.
+
+## Anti-regression
+
+- Runtime deps stay in sync across the two sources: every runtime dep in requirements.txt is present in pyproject runtime deps and vice versa (dev tools excluded), and `anthropic` (a real runtime import) is present in both — tests/test_dependency_consistency.py (fails on divergence).
+- The built wheel installs into a fresh venv with no repo checkout on the path and `import docxaicorrector` + default-config load succeeds (A2) — tests/test_package_install_smoke.py; the repo-root import path remains valid — tests/test_docxaicorrector_bootstrap_package.py.
 
 ## SaaS rationale
 

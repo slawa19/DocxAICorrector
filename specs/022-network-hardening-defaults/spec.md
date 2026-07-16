@@ -1,13 +1,16 @@
 # Feature Specification: Safe-by-default network binding for the Streamlit surface
 
 Date: 2026-07-15
-Status: **PLANNED (Wave 1 / S1).** Security hardening. No behaviour change for the local single-user workflow;
+Status: **IMPLEMENTED (2026-07-16).** Security hardening. No behaviour change for the local single-user workflow;
 tightens defaults so the app is not silently exposed on all interfaces.
 Owner surface: `.streamlit/config.toml`, `scripts/_shared.ps1`, `scripts/project-control-wsl.sh`,
 `scripts/start-project.ps1`.
 Companion: prerequisite for the envisioned hosted SaaS (`plans/monetization*.md`) where a FastAPI/auth layer — not
 Streamlit — is the trust boundary. This spec does NOT introduce auth; it removes the open-by-default posture that
 would let an unauthenticated caller spend paid API budget.
+
+Verification: tests/test_network_hardening_defaults.py proves the loopback default + XSRF-on config (and the no-CORS-off-while-XSRF-on invariant), and that `DOCX_AI_BIND_HOST=0.0.0.0` opt-in emits the no-auth startup warning.
+Changelog: 2026-07-16 — implemented; status + Non-goals/Anti-regression added to meet the constitution spec-format contract.
 
 ## Problem (verified against HEAD d27c137)
 
@@ -52,6 +55,19 @@ CSRF / WebSocket-origin vectors.
 
 - Building authentication, sessions, or the reverse proxy itself (belongs to the future backend/SaaS work).
 - Any change to upload normalization, archive guards, or the processing pipeline.
+
+## Non-goals
+
+(See also `## Out of scope` above.)
+
+- Building authentication, sessions, or the reverse proxy itself — that is the future backend/SaaS trust boundary, not a binding-defaults change.
+- Changing upload normalization, archive guards, or the processing pipeline — this spec touches only network-binding posture.
+- Forcing loopback with no escape hatch — `DOCX_AI_BIND_HOST=0.0.0.0` stays available as a deliberate, warned opt-in for intentional remote deploys behind an authenticating proxy.
+
+## Anti-regression
+
+- Default bind is `127.0.0.1` with `enableXsrfProtection = true` and `enableCORS` never `false` while XSRF is on (Streamlit rejects that combination) — guarded by tests/test_network_hardening_defaults.py (static config assertions).
+- `DOCX_AI_BIND_HOST` unset ⇒ launcher binds loopback; set to `0.0.0.0` ⇒ the one-line no-auth startup warning is emitted — guarded by tests/test_network_hardening_defaults.py (launcher/echoed-command assertion).
 
 ## SaaS rationale
 

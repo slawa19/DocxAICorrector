@@ -1,12 +1,15 @@
 # Feature Specification: Per-run artifact isolation and confined restart-source deletion
 
 Date: 2026-07-15
-Status: **PLANNED (Wave 1 / S2).** Correctness + safety. Two related filesystem defects in the run-artifact layer:
+Status: **IMPLEMENTED (2026-07-16).** Correctness + safety. Two related filesystem defects in the run-artifact layer:
 non-unique artifact naming (cross-run overwrite) and unconfined file deletion trusting persisted metadata.
 Owner surface: `runtime/artifacts.py` (`_build_ui_result_stem`, `write_ui_result_artifacts`,
 `write_structure_manifest_artifact`), `processing/restart_store.py` (`clear_restart_source`).
 Companion: prerequisite for multi-user hosting — under a single local user collisions are rare; under concurrency
 they become cross-tenant overwrite and path-traversal.
+
+Verification: tests/test_session_artifact_isolation.py proves distinct-stem-per-run (no cross-run overwrite), atomic write (no partial/.tmp remnant), and confined `clear_restart_source` deletion.
+Changelog: 2026-07-16 — implemented; status + Non-goals/Anti-regression added to meet the constitution spec-format contract.
 
 ## Problem A — artifact collisions (verified against HEAD d27c137)
 
@@ -60,6 +63,19 @@ with externally-restorable session metadata or a corrupted session state it beco
 - Introducing real per-user identity or a user-scoped directory tree (arrives with the backend; run_id is the
   minimal isolation primitive that composes with it later).
 - Retention-policy changes beyond keeping current pruning working with the new stem.
+
+## Non-goals
+
+(See also `## Out of scope` above.)
+
+- No real per-user identity or user-scoped directory tree — `run_id` is the minimal isolation primitive the backend later composes with; full scoping arrives with the backend.
+- No retention-policy change beyond keeping existing pruning working with the new stem — this is a collision/deletion-safety fix, not a lifecycle redesign.
+
+## Anti-regression
+
+- Two runs of the same source name with `created_at` within the same wall-clock second produce DIFFERENT stems and coexist in `.run/ui_results/` with no overwrite — tests/test_session_artifact_isolation.py.
+- Atomic group write leaves no `.tmp`/partial file after success, and a simulated mid-write failure leaves the prior artifact intact — tests/test_session_artifact_isolation.py.
+- `clear_restart_source` deletes a valid `restart_*`/`completed_*` file inside `RUN_DIR` but refuses (warns, does not raise) an out-of-`RUN_DIR` path or a non-matching name inside it — tests/test_session_artifact_isolation.py.
 
 ## SaaS rationale
 

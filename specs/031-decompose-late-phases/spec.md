@@ -1,11 +1,14 @@
 # Feature Specification: Decompose pipeline/late_phases.py (behaviour-preserving)
 
 Date: 2026-07-15
-Status: **PLANNED (Wave 3 / decomposition, module 1 of 5).** Pure structural refactor of the 4913-line
+Status: **IMPLEMENTED (2026-07-16).** Pure structural refactor of the 4913-line
 mixed-responsibility `pipeline/late_phases.py` into cohesive modules, one cluster per commit, characterization
 goldens first. No behaviour change.
 Owner surface: `pipeline/late_phases.py` (shrinks to finalize + re-export shim), new `pipeline/*` modules, the
 seam-dependent tests, and `scripts/run-reader-cleanup-lineage-rebuild-harness.py` (namespace importer).
+
+Verification: tests/test_late_phases_characterization.py holds the Step-0 goldens byte-identical after every cluster extraction (plus the monkeypatch-contract regression test); tests/test_document_pipeline.py and tests/test_script_contract_static.py stay green.
+Changelog: 2026-07-16 — implemented; status + Non-goals/Anti-regression added to meet the constitution spec-format contract. Monkeypatch scope was corrected during implementation — THREE patched module attributes (not two): `collect_recent_formatting_diagnostics_artifacts` (situation-1 re-export) plus the situation-2 constants `QUALITY_REPORTS_DIR` (17 sites) and `READER_CLEANUP_LINEAGE_DIR` (2 sites), whose patch sites were repointed to the new modules.
 
 ## Problem
 
@@ -94,6 +97,18 @@ new characterization goldens — all green, no golden diff. Harness script runs 
 - Behaviour changes of any kind (byte-identical relocation + re-export only).
 - The other four large modules (`reader_cleanup_mvp/service.py`, `generation/formatting_transfer.py`,
   `validation/structural.py`, `pipeline/output_validation.py`) — separate specs 032-035.
+
+## Non-goals
+
+(See also `## Out of scope` above.)
+
+- No behaviour change of any kind — byte-identical relocation + re-export only.
+- The other four large modules (`reader_cleanup_mvp/service.py`, `generation/formatting_transfer.py`, `validation/structural.py`, `pipeline/output_validation.py`) are out of scope — specs 032-035.
+
+## Anti-regression
+
+- The Step-0 characterization goldens (translation-quality-report matrix, `build_report_acceptance_verdict`, delivery-verdict transitions, Cluster A/B outputs, and the `finalize_processing_success` ordered emit/artifact sequence) stay byte-identical after EVERY extraction step — tests/test_late_phases_characterization.py.
+- The monkeypatch contract survives the moves: patching `late_phases.collect_recent_formatting_diagnostics_artifacts` is still observed by `run_docx_build_phase` (situation-1 re-export), and the situation-2 constants are patched on the NEW module — tests/test_late_phases_characterization.py (monkeypatch-contract regression test) + test_document_pipeline.py + test_script_contract_static.py.
 
 ## SaaS rationale
 

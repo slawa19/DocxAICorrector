@@ -1,11 +1,14 @@
 # Feature Specification: Optimize the formatting-transfer mapper (output-identical)
 
 Date: 2026-07-15
-Status: **PLANNED (Wave 3 / #7).** Performance. Remove the O(S·T·L²) + O(S·T·log T) cost from the formatting
+Status: **IMPLEMENTED (2026-07-16).** Performance. Remove the O(S·T·L²) + O(S·T·log T) cost from the formatting
 mapper hot path with **provably output-identical** changes, gated by a full-blob golden.
 Owner surface: `generation/formatting_transfer.py` (`_map_source_target_paragraphs` and its passes), new
 characterization/golden test, new offline profiling harness.
 Note: `build/lib/.../formatting_transfer.py` is a stale build artifact — edit only `src/`.
+
+Verification: tests/test_formatting_mapper_golden.py is the gate — the full-blob mapper golden (mapping_pairs + complete diagnostics) is byte-identical after every lever; tests/test_format_restoration.py (99) stays green.
+Changelog: 2026-07-16 — implemented; status + Non-goals/Anti-regression added to meet the constitution spec-format contract.
 
 ## Problem (verified against HEAD d27c137 + research)
 
@@ -77,6 +80,18 @@ by proximity, reorder passes, change greedy discard, or alter thresholds/sort ke
 Sorting factor removed; windowed passes O(S·W); the two unbounded passes reduced to O(S·T·L) worst / ≈O(S·T)
 typical (length gate eliminates almost all pairs in O(1)). The O(n²·L²) hot path becomes ≈O(n²) with a small
 constant, **output provably identical** (golden-enforced).
+
+## Non-goals
+
+(See also the "**Out of scope (this spec)**" paragraph under Scope above.)
+
+- Lever D (token inverted index for pass 13) is excluded — it is not provably admissible (char-level `ratio()` vs word-level index), so it cannot ride the output-identical guarantee.
+- No windowing of passes 11/13 by proximity, no pass reordering, no change to greedy `discard` semantics, thresholds, tuple sort keys, or role bonuses — each would break the equivalence proof this spec is built on.
+
+## Anti-regression
+
+- The full-blob characterization golden (per-book `mapping_pairs` + the ENTIRE `diagnostics` dict) is byte-identical before/after every lever — tests/test_formatting_mapper_golden.py (the gate).
+- Ascending target-scan order and greedy `available_target_indexes.discard` semantics are preserved (only upper-bound-admissible pruning via `real_quick_ratio`/`quick_ratio`) — tests/test_format_restoration.py (99) green after every lever.
 
 ## SaaS rationale
 

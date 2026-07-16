@@ -1,11 +1,14 @@
 # Feature Specification: Decompose reader_cleanup_mvp/service.py (behaviour-preserving)
 
 Date: 2026-07-15
-Status: **PLANNED (Wave 3 / decomposition, module 2 of 5).** Pure structural refactor of the 4932-line
+Status: **IMPLEMENTED (2026-07-16).** Pure structural refactor of the 4932-line
 `reader_cleanup_mvp/service.py` into cohesive `_`-prefixed submodules, one cluster per commit, characterization
 golden first. No behaviour change.
 Owner surface: `reader_cleanup_mvp/service.py` (shrinks to the orchestrator + re-export shim), new
 `reader_cleanup_mvp/_*.py`, and a new characterization test.
+
+Verification: tests/test_reader_cleanup_service_characterization.py holds `result.cleaned_markdown` + canonical `result.report_payload` + the 4 prompt strings + `build_cleanup_blocks` ids/hashes byte-identical after every cluster move; tests/test_reader_cleanup_mvp.py (156) and tests/test_document_pipeline.py green.
+Changelog: 2026-07-16 — implemented; status + Non-goals/Anti-regression added to meet the constitution spec-format contract. Monkeypatch surface re-verified during implementation — ZERO `service.<name>` patch sites confirmed tree-wide, so re-export alone satisfies every consumer (no situation-2 repoints); the gitignored replay-experiment's direct private imports were kept re-exported from `service.py`.
 
 ## Problem + favourable facts (verified)
 
@@ -63,6 +66,18 @@ import (`from docxaicorrector.reader_cleanup_mvp.service import _GENERIC_RUNNING
 
 - Behaviour changes (byte-identical relocation + re-export only).
 - The other three large modules (formatting_transfer, structural, output_validation) — specs 033-035.
+
+## Non-goals
+
+(See also `## Out of scope` above.)
+
+- No behaviour change — byte-identical relocation + re-export only.
+- The other three large modules (formatting_transfer, structural, output_validation) are out of scope — specs 033-035.
+
+## Anti-regression
+
+- `result.cleaned_markdown`, the canonical `result.report_payload`, the 4 `build_*_system_prompt` strings, and `build_cleanup_blocks` ids/hashes stay byte-identical after every cluster extraction — tests/test_reader_cleanup_service_characterization.py.
+- The package facade and the direct private imports (`_GENERIC_RUNNING_HEADER_TOKENS`, `READER_CLEANUP_DEFAULT_SELECTOR` from `.service`) keep resolving via re-export — import smoke in tests/test_reader_cleanup_mvp.py (156) + tests/test_reader_cleanup_structural_matrix.py + tests/test_document_pipeline.py.
 
 ## SaaS rationale
 

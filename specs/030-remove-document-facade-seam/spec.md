@@ -1,10 +1,13 @@
 # Feature Specification: Remove the expired extraction-compatibility seam and the _document facade
 
 Date: 2026-07-15
-Status: **PLANNED (Wave 3 / hygiene).** Tech-debt removal. Delete the expired monkeypatch seam and the
+Status: **IMPLEMENTED (2026-07-16).** Tech-debt removal. Delete the expired monkeypatch seam and the
 `document/_document.py` facade, repointing all importers to the specialized `document/*` modules. Behaviour-preserving.
 Owner surface: `document/_document.py` (deleted), `document/extraction.py` (gains 2 relocated fns), 7 production
 importers + 4 non-src scripts, and the seam-dependent tests.
+
+Verification: tests/test_paragraph_boundary_normalization.py and tests/test_document_extraction.py are green AFTER seam deletion (they exercise the exact behaviour the seam propagated); tests/test_formatting_mapper_golden.py stays byte-identical and no `document._document` importer remains.
+Changelog: 2026-07-16 — implemented; status + Non-goals/Anti-regression added to meet the constitution spec-format contract.
 
 ## Problem (verified against HEAD + research)
 
@@ -68,6 +71,19 @@ A deprecated re-export shim is NOT kept — it would re-introduce the dual-modul
 
 - Any change to extraction/roles/relations/semantic_blocks behaviour (byte-identical relocation only).
 - Decomposition of the large modules (separate specs).
+
+## Non-goals
+
+(See also `## Out of scope` above.)
+
+- No change to extraction/roles/relations/semantic_blocks behaviour — byte-identical relocation of the two facade-only functions only.
+- No decomposition of the large modules — that is specs 031-035.
+- No deprecated re-export shim for `document/_document.py` is kept — a shim would re-introduce the dual-module-identity problem the seam papered over.
+
+## Anti-regression
+
+- The behaviour the compat seam silently propagated survives its removal — tests/test_paragraph_boundary_normalization.py + tests/test_document_extraction.py green AFTER Step 3 deletes the seam (NOTE: these pass via the seam until it is gone, so the invariant is only proven post-deletion — this is the non-obvious part of this spec).
+- No residual `document._document` importer remains anywhere (src + tests + benchmarks + scripts) and downstream output is unchanged — tests/test_formatting_mapper_golden.py (golden byte-identical) + test_document_pipeline.py + test_document_structure_blocks.py.
 
 ## SaaS rationale
 

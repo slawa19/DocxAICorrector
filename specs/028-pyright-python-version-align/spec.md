@@ -1,9 +1,12 @@
 # Feature Specification: Align Pyright pythonVersion with the project (3.12)
 
 Date: 2026-07-15
-Status: **PLANNED (Wave 3 / hygiene).** Type-check config correctness. Pyright analyzes against 3.13 while the
+Status: **IMPLEMENTED (2026-07-16).** Type-check config correctness. Pyright analyzes against 3.13 while the
 package contract and CI run 3.12, so it can miss uses of API unavailable on the supported minimum.
 Owner surface: `pyrightconfig.json`, `tests/test_typecheck.py` (baseline re-measure only).
+
+Verification: tests/test_typecheck.py::test_pyright_no_regression passes on a clean tree with `pythonVersion = 3.12` and the re-measured baseline (two-sided ratchet).
+Changelog: 2026-07-16 — implemented; status + Non-goals/Anti-regression added to meet the constitution spec-format contract.
 
 ## Problem (verified against HEAD d27c137)
 
@@ -27,6 +30,17 @@ the supported minimum can accept code that fails to import/typecheck on 3.12.
 ## Out of scope
 
 - Reducing the error count itself (the review's per-module-ratchet reduction is separate Wave-3 work).
+
+## Non-goals
+
+(See also `## Out of scope` above.)
+
+- No reduction of the Pyright error count itself — the per-module-ratchet reduction is separate Wave-3 work; this spec only aligns the analysis interpreter and re-baselines.
+- No change to the pinned `pyright==1.1.409` toolchain — only `pythonVersion` and the baseline value move.
+
+## Anti-regression
+
+- `pyrightconfig.json` `pythonVersion` is `3.12` (matching `requires-python` and CI) and `_ERROR_BASELINE` holds as a two-sided ratchet — not higher, not lower — on a clean checkout (gitignored replay artifact excluded, matching CI's `git clean -fdx`) — tests/test_typecheck.py::test_pyright_no_regression.
 
 ## SaaS rationale
 

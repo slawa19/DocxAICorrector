@@ -1,10 +1,13 @@
 # Feature Specification: Decompose validation/structural.py (behaviour-preserving)
 
 Date: 2026-07-16
-Status: **PLANNED (Wave 3 / decomposition, module 4 of 5).** Pure structural refactor of the ~3110-line
+Status: **IMPLEMENTED (2026-07-16).** Pure structural refactor of the ~3110-line
 `validation/structural.py`: relocate ~1900 lines of pure leaf clusters into focused `validation/structural_*.py`
 modules, leaving a ~1100-line orchestration/processing-service/IO core. No behaviour change.
 Owner surface: `validation/structural.py`, new `validation/structural_*.py`, and characterization goldens.
+
+Verification: tests/test_structural_validation_characterization.py holds the Cluster-E / orchestrator / prep-snapshot / TOC-gate goldens byte-identical after each extraction; tests/test_real_document_validation_corpus.py (the orchestrator + monkeypatch net) and tests/test_structure_validation.py green.
+Changelog: 2026-07-16 — implemented; status + Non-goals/Anti-regression added to meet the constitution spec-format contract.
 
 ## Problem + favourable facts (verified)
 
@@ -63,6 +66,18 @@ both entry orders no cycle.
 
 - Behaviour changes; splitting the resident orchestration core; moving the two situation-1-anchor functions.
 - output_validation.py — spec 035.
+
+## Non-goals
+
+(See also `## Out of scope` above.)
+
+- No behaviour change; the resident orchestration/processing-service/IO/CLI core is NOT split; the two situation-1-anchor functions (`build_preparation_diagnostic_snapshot`, `_build_preparation_diagnostic_defaults`) are NOT moved.
+- output_validation.py is out of scope — spec 035.
+
+## Anti-regression
+
+- The characterization goldens (Cluster E unit-alignment `_derive_unit_aware_unmapped_fields` + trace, the orchestrator `metrics/checks/preparation_diagnostic_snapshot`, the `build_preparation_diagnostic_snapshot` golden, and Cluster D TOC-body-concat gate fields) stay byte-identical after every extraction — tests/test_structural_validation_characterization.py.
+- All 15 monkeypatch sites remain situation-1 (re-export, no repoint) because the orchestration core stays resident — tests/test_real_document_validation_corpus.py is the primary net (fails immediately on any missed situation-2) + tests/test_structure_validation.py + tests/test_script_contract_static.py.
 
 ## SaaS rationale
 
