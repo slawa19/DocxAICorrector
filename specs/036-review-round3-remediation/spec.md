@@ -466,3 +466,48 @@ must run in CI; F2 removes per-book literals that would false-gate other tenants
 F3 is what lets a headless backend import the processing core without Streamlit; F4 keeps the
 "completed" signal honest for downstream consumers; F5 removes dead routes that mislead agents
 and bloat the repo.
+
+## Round-4 follow-up register (2026-07-16) — remediated
+
+A round-4 review found that several initial-pass fixes passed their unit test WITHOUT closing the
+runtime/evidence contract. Each item below was re-verified against live code and remediated (branch
+`hardening/wave1-saas-prereqs`); every fix landed with its anti-regression test and pyright held at
+246. Commit map:
+
+- **P0 gate self-failure** (`9274619`): the F1 gate script exports
+  `DOCXAI_REQUIRE_REAL_DOCUMENT_CAPABILITIES=1`, but three default-skip meta-tests didn't clear the
+  env → the gate failed on its own unit tests. Isolated the env in those three meta-tests only; the
+  real corpus tests stay env-sensitive (verified: full gate module passes under env=1).
+- **Batch 1 — security/runtime** (`a5bc1df`): F7 the PDF wall-clock guard now GENUINELY terminates
+  (spawn multiprocessing child under one unified deadline covering page-count/spans/OCR/images;
+  terminate→kill on overrun; caps on spans/images; in-process test seam) — the old daemon-thread
+  guard never stopped the work and covered only the first stage. F27 the admission gate now covers
+  PREPARATION (PDF parse/OCR), not just main processing, via a cancellable acquire. F8 the image
+  pixel budget is now a real end-to-end GATE at every decode/base64/vision entry (oversized bytes
+  never reach the API) + a per-document aggregate budget.
+- **Batch 2 — evidence/isolation** (`64336e4`): Finding 8 the AUTHORITATIVE quality report is now
+  rebuilt on the delivered post-cleanup markdown (verdict carried, stale artifact superseded) — and
+  fixed an F10 trigger bug (display-hygiene vs reader-cleanup). Finding 6 removed the production-dead
+  theology detector + wiring (count fields kept as documented inert constants for out-of-scope
+  consumers). Finding 9 provider cache keyed on a sha256 of the RESOLVED secret (rotation re-keys);
+  boundary-review uses the passed factory. Finding 5 completed F3 — `processing_service` no longer
+  transitively loads Streamlit (new `service_ports`; boundary test extended).
+- **Batch 3 — architecture/cleanup** (`fc58a47`): F11 retention never prunes the current run's own
+  records + atomic writes. F12 primary-artifact vs registry/diagnostics persistence tracked
+  separately. F10 prep cache key folds AI-review model/limits (pk=3). F15 quality_gate monkeypatch
+  seam made coherent + proven. F16 mapper-golden perturbations keyed on stable source identity. F17
+  nested-textbox images extracted exactly once. F13/F14 corpus/English literals moved to documented,
+  config-overridable constants / an extensible lexicon (behaviour unchanged).
+
+### Honest residuals (documented, not silently closed)
+- **F13/F14 (Constitution VII):** the scan/table thresholds and heading-marker words are now named,
+  documented, config-overridable constants rather than per-book literals — but structural detection
+  still needs a *calibrated* signal, and the default heading lexicon is still English. A fully
+  corpus-free / language-agnostic detector is genuine future work (documented in-source).
+- **F15:** the pipeline's access to the PRIVATE `validation.structural._build_output_artifacts` is
+  left with a TODO (a public wrapper would edit `validation/structural.py`, out of the batch scope).
+- **F18:** several guards (readiness/CI-inventory/docs/deny-list) assert on strings/partial lists,
+  not full runtime behaviour — a known limitation; this spec's Status was corrected from a premature
+  "fully closed" claim to reflect that these are static contracts.
+- A redundant `stash@{0}` WIP backup remains on the branch for the owner to `git stash drop` (the
+  auto-approver refuses stash deletion without explicit authorization).
