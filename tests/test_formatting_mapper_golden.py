@@ -23,6 +23,7 @@ fixtures after an intentional, reviewed behavior change, run::
 from __future__ import annotations
 
 import glob
+import hashlib
 import json
 import os
 import re
@@ -53,10 +54,27 @@ def _slug(path: str) -> str:
     return re.sub(r"[^a-z0-9]+", "_", stem.lower()).strip("_")
 
 
+def _stable_perturb_key(source_paragraph) -> int:
+    """Stable per-source-paragraph perturbation selector (F16).
+
+    Derives the perturbation bucket from the paragraph's OWN identity — its
+    ``paragraph_id`` (falling back to the source text) — instead of its positional
+    ``enumerate`` index. This keeps the perturbation of a given source paragraph fixed when
+    an UNRELATED paragraph is inserted/removed elsewhere (e.g. a recovered image paragraph,
+    F11): only genuinely-adjacent effects (the MERGED next-paragraph fold) move, so the golden
+    blesses the actual change instead of a reshuffled delta across every later paragraph.
+    """
+    identity = str(getattr(source_paragraph, "paragraph_id", "") or "") or str(getattr(source_paragraph, "text", "") or "")
+    return int(hashlib.sha1(identity.encode("utf-8")).hexdigest()[:8], 16)
+
+
 def _build_case(source_paragraphs):
     """Deterministically synthesize (target Document, registry) from source paragraphs.
 
-    All perturbation is pure index arithmetic so the blob is reproducible.
+    Perturbation SELECTION is keyed on a stable per-paragraph identity hash (F16); only the
+    positional operations that are genuinely about adjacency/ordering (the MERGED next-source
+    fold, the target index a rebuild-key hint points at) still reference the index. The blob
+    stays fully reproducible (hash of fixed identities, no RNG / time).
     """
     doc = Document()
     registry: list[dict[str, object]] = []
@@ -65,13 +83,14 @@ def _build_case(source_paragraphs):
         base = sp.text
         stripped = base.strip()
         words = stripped.split()
+        key = _stable_perturb_key(sp)
 
         # --- target text: mostly identity, ~14% small edit (high ratio -> fuzzy/13
         # accept), ~9% large edit (low ratio -> residual, exercises reject paths).
         ttext = base
-        if stripped and i % 7 == 2 and len(words) >= 2:
+        if stripped and key % 7 == 2 and len(words) >= 2:
             ttext = base + " " + words[-1]
-        elif stripped and i % 11 == 0 and len(words) >= 4:
+        elif stripped and key % 11 == 0 and len(words) >= 4:
             ttext = " ".join(words[: max(1, len(words) // 2)])
 
         # Realistic styling so role resolution mirrors a real generated docx.
@@ -85,25 +104,27 @@ def _build_case(source_paragraphs):
         pid = sp.paragraph_id
         if not pid:
             continue
-        if i % 23 == 5:
+        if key % 23 == 5:
             # RENAMED: drop the registry entry so this source must be recovered by
             # the exact-text / global-similarity passes instead of a registry pass.
             continue
         entry: dict[str, object] = {"paragraph_id": pid, "text": base}
-        if i % 17 == 0 and len(words) >= 3:
+        if key % 17 == 0 and len(words) >= 3:
             # SPLIT: generated markdown split a heading off the front of the body.
             entry["text"] = "### " + " ".join(words[:2]) + "\n" + " ".join(words[2:])
         elif (
-            i % 19 == 0
+            key % 19 == 0
             and i + 1 < n
             and source_paragraphs[i + 1].paragraph_id
             and source_paragraphs[i + 1].text.strip()
         ):
-            # MERGED: generated text folded the next source paragraph in.
+            # MERGED: generated text folded the next source paragraph in (genuinely
+            # positional — the fold target is the immediate document neighbour).
             entry["text"] = base + "\n" + source_paragraphs[i + 1].text
             entry["merged_paragraph_ids"] = [source_paragraphs[i + 1].paragraph_id]
-        if i % 31 == 3:
-            # Rebuild-key hint (drives the paragraph_id_rebuild_key pass).
+        if key % 31 == 3:
+            # Rebuild-key hint (drives the paragraph_id_rebuild_key pass). The hint VALUE is
+            # the paragraph's own target index (positional by definition).
             entry["target_paragraph_indexes"] = [i]
         registry.append(entry)
     return doc, registry
@@ -156,3 +177,45 @@ def test_formatting_mapper_output_matches_golden(book_path: str) -> None:
         f"formatting mapper output diverged from golden for {Path(book_path).name}; "
         f"a spec-029 lever must be byte-identical"
     )
+
+
+class _FakeSourceParagraph:
+    """Minimal source-paragraph stand-in exposing exactly the attributes _build_case reads."""
+
+    def __init__(self, paragraph_id: str, text: str, role: str = "body", heading_level: int | None = None) -> None:
+        self.paragraph_id = paragraph_id
+        self.text = text
+        self.role = role
+        self.heading_level = heading_level
+
+
+def test_perturbation_selection_is_stable_under_unrelated_insertion() -> None:
+    """F16: a source paragraph's perturbation must depend only on its own identity, so
+    inserting an unrelated paragraph elsewhere does not reshuffle it.
+
+    Builds the same paragraphs twice — once plain, once with an unrelated paragraph inserted
+    at the FRONT (shifting every positional index by one) — and asserts each shared paragraph
+    lands the SAME target text. Under the old enumerate-index selection every paragraph after
+    the insertion would flip perturbation; under identity-hash selection they are invariant.
+    """
+    shared = [
+        _FakeSourceParagraph(f"p{index:03d}", f"Source paragraph number {index} with several words here.")
+        for index in range(40)
+    ]
+    baseline_doc, _ = _build_case(list(shared))
+    inserted = [_FakeSourceParagraph("x_inserted", "An unrelated recovered image paragraph."), *shared]
+    inserted_doc, _ = _build_case(inserted)
+
+    baseline_text_by_pid = {sp.paragraph_id: para.text for sp, para in zip(shared, baseline_doc.paragraphs)}
+    # The inserted doc has one extra leading paragraph; the rest align to `shared` by offset 1.
+    inserted_text_by_pid = {
+        sp.paragraph_id: para.text for sp, para in zip(shared, inserted_doc.paragraphs[1:])
+    }
+
+    assert baseline_text_by_pid == inserted_text_by_pid
+    # Guard against a degenerate all-identity map: the selection must actually perturb some
+    # paragraphs, otherwise the invariance above would be vacuous.
+    assert any(para.text != sp.text for sp, para in zip(shared, baseline_doc.paragraphs))
+
+    # Stability is per-identity: the key is a pure function of paragraph_id only (text differs).
+    assert _stable_perturb_key(shared[5]) == _stable_perturb_key(_FakeSourceParagraph("p005", "different text"))

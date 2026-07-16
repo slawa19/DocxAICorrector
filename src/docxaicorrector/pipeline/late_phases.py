@@ -989,11 +989,16 @@ def finalize_processing_success(
         latest_result_notice=docx_phase["latest_result_notice"],
         last_error=narration_error_message,
     )
-    # F4: track whether result files actually reached disk. The result is already
-    # delivered from session state (emit_state above), so a persistence failure must
-    # NOT hard-fail the run — but it must stop being a silent success.
-    artifacts_persisted = True
-    artifacts_persist_error: str | None = None
+    # F4 + F12: track the persistence of the PRIMARY result artifacts
+    # (``.result.md``/``.result.docx`` via ``write_ui_result_artifacts``) SEPARATELY
+    # from the secondary diagnostics and the resume/reuse registries. The result is
+    # already delivered from session state (emit_state above), so a persistence
+    # failure must NOT hard-fail the run — but only a PRIMARY-artifact failure may
+    # claim the result files were not saved. A diagnostics- or registry-only failure
+    # logs its own WARNING yet still counts as a fully delivered success, because the
+    # user-facing result files DID reach disk.
+    primary_artifacts_persisted = True
+    primary_artifacts_persist_error: str | None = None
     try:
         reassembly_plan = build_reassembly_plan(
             output_mode=str(getattr(context, "output_mode", "") or ""),
@@ -1022,17 +1027,9 @@ def finalize_processing_success(
         result_artifact_paths = dict(
             dependencies.write_ui_result_artifacts(**artifact_writer_kwargs)
         )
-        if reader_cleanup_report is not None:
-            result_artifact_paths.update(
-                write_reader_cleanup_diagnostics(
-                    cleaned_artifact_paths=result_artifact_paths,
-                    raw_markdown=reader_cleanup_raw_markdown or gate_input_markdown,
-                    report_payload=reader_cleanup_report,
-                )
-            )
     except OSError as exc:
-        artifacts_persisted = False
-        artifacts_persist_error = f"ui_result_artifacts_save_failed: {exc}"
+        primary_artifacts_persisted = False
+        primary_artifacts_persist_error = f"ui_result_artifacts_save_failed: {exc}"
         dependencies.log_event(
             logging.WARNING,
             "ui_result_artifacts_save_failed",
@@ -1048,6 +1045,26 @@ def finalize_processing_success(
             filename=context.uploaded_filename,
             artifact_paths=result_artifact_paths,
         )
+        # F12: reader-cleanup diagnostics are a SECONDARY artifact. A save failure
+        # here must NOT claim the delivered result was not saved — it logs its own
+        # WARNING and the primary result stays reported as persisted.
+        if reader_cleanup_report is not None:
+            try:
+                result_artifact_paths.update(
+                    write_reader_cleanup_diagnostics(
+                        cleaned_artifact_paths=result_artifact_paths,
+                        raw_markdown=reader_cleanup_raw_markdown or gate_input_markdown,
+                        report_payload=reader_cleanup_report,
+                    )
+                )
+            except OSError as exc:
+                dependencies.log_event(
+                    logging.WARNING,
+                    "reader_cleanup_diagnostics_save_failed",
+                    "Не удалось сохранить reader cleanup diagnostics; итоговый результат доставлен.",
+                    filename=context.uploaded_filename,
+                    error_message=str(exc),
+                )
         segment_result_records = build_segment_result_records(
             source_name=context.uploaded_filename,
             prepared_source_key=str(getattr(context, "prepared_source_key", "") or ""),
@@ -1063,12 +1080,14 @@ def finalize_processing_success(
                     dependencies.write_segment_result_registry(records=segment_result_records)
                 )
             except OSError as exc:
-                artifacts_persisted = False
-                artifacts_persist_error = f"segment_result_registry_save_failed: {exc}"
+                # F12: the segment-result registry is a resume/reuse cache written
+                # AFTER the primary result files. Its failure must NOT flip the
+                # terminal state to "unpersisted" — the delivered result reached
+                # disk. Log a DISTINCT WARNING instead.
                 dependencies.log_event(
                     logging.WARNING,
                     "segment_result_registry_save_failed",
-                    "Не удалось сохранить persisted segment result registry.",
+                    "Не удалось сохранить persisted segment result registry; итоговый результат доставлен.",
                     filename=context.uploaded_filename,
                     error_message=str(exc),
                 )
@@ -1095,13 +1114,16 @@ def finalize_processing_success(
                 excluded_blocks=int(getattr(state, "excluded_narration_block_count", 0) or 0),
                 mode="standalone" if context.processing_operation == "audiobook" else "postprocess",
             )
-    # F4: the delivered result is still available from session state, but the result
-    # files did not reach disk. Surface a user-visible WARNING notice so the UI shows the
-    # files were not saved, and make the terminal log observably distinct from a fully
-    # persisted success (WARNING ``processing_completed_unpersisted`` instead of INFO
-    # ``processing_completed``). The run still genuinely produced a delivered result, so
-    # the "completed" progress frame and the "succeeded" return are unchanged.
-    if not artifacts_persisted:
+    # F4 + F12: the delivered result is still available from session state, but when
+    # the PRIMARY result files (``.result.md``/``.result.docx``) did not reach disk we
+    # surface a user-visible WARNING notice so the UI shows the files were not saved, and
+    # make the terminal log observably distinct from a fully persisted success (WARNING
+    # ``processing_completed_unpersisted`` instead of INFO ``processing_completed``). This
+    # fires ONLY on a primary-artifact failure — a diagnostics/registry-only failure was
+    # already logged as its own WARNING above and never reaches here. The run still
+    # genuinely produced a delivered result, so the "completed" progress frame and the
+    # "succeeded" return are unchanged.
+    if not primary_artifacts_persisted:
         emitters.emit_state(
             context.runtime,
             latest_result_notice={
@@ -1126,7 +1148,7 @@ def finalize_processing_success(
         audiobook_postprocess_enabled=_should_run_audiobook_postprocess(context=context),
         reader_cleanup_enabled=_should_run_reader_cleanup(context=context),
     )
-    if artifacts_persisted:
+    if primary_artifacts_persisted:
         dependencies.log_event(
             logging.INFO,
             "processing_completed",
@@ -1138,7 +1160,7 @@ def finalize_processing_success(
             logging.WARNING,
             "processing_completed_unpersisted",
             "Документ обработан полностью, но итоговые файлы результата не сохранены на диск.",
-            reason=artifacts_persist_error or "ui_result_artifacts_save_failed",
+            reason=primary_artifacts_persist_error or "ui_result_artifacts_save_failed",
             **_completed_log_fields,
         )
     emitters.emit_log(

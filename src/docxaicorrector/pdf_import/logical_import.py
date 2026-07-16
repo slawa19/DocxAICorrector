@@ -1318,16 +1318,46 @@ def _has_terminal_sentence_punctuation(text: str) -> bool:
 
 _NUMBERED_SECTION_HEADING_PATTERN = re.compile(r"^(?P<number>\d{1,3})\.\s+(?P<title>[A-ZА-Я].*)$")
 
-# A chapter heading line: the latin word "Chapter" followed by a roman numeral or
-# an arabic number, either standing alone ("Chapter VI") or carrying an inline
-# title after a dash/colon ("Chapter I — Why this report, now?"). Source PDFs are
-# English on import, so only the latin spelling is matched. Roman numerals are
+# --------------------------------------------------------------------------- #
+# Heading-marker lexicon (Constitution VII).                                    #
+# --------------------------------------------------------------------------- #
+# Structural heading detection recognises a small set of MARKER WORDS that open a
+# chapter / part / front- or back-matter divider. Those words are collected here
+# as a single, documented, EXTENSIBLE lexicon instead of being buried as literals
+# inside individual regexes, so the language/literal dependency is explicit and
+# auditable, and so the lexicon can be resolved per language via configuration in
+# future (an override map keyed by document language would slot in here without
+# touching the pattern-construction logic below).
+#
+# Honest residual limitation: the default lexicon is ENGLISH because source PDFs
+# are English on import (translation happens downstream). This is still a
+# language-dependent heuristic — a fully language-agnostic structural detector is
+# out of scope here (it would key off typography/layout, not marker words) and
+# remains future work. Lifting the words into named constants removes the
+# "buried per-book/English literal" smell and keeps the current behaviour exactly;
+# it does not, by itself, make the detector language-independent.
+
+# Word(s) that open a chapter heading ("Chapter VI"). Matched case-insensitively
+# (the whole chapter pattern carries re.IGNORECASE), so casing is not enumerated.
+_CHAPTER_MARKER_WORDS: tuple[str, ...] = ("chapter",)
+# Word(s) that open a part divider ("PART II", "Part 3"). Matched only in the
+# "PART"/"Part" casings — never lowercase "part", which is ordinary prose
+# ("part i think"). Casing IS enumerated here because the part patterns are
+# case-sensitive by design.
+_PART_MARKER_WORDS: tuple[str, ...] = ("PART", "Part")
+
+_CHAPTER_MARKER_ALT = "|".join(_CHAPTER_MARKER_WORDS)
+_PART_MARKER_ALT = "|".join(_PART_MARKER_WORDS)
+
+# A chapter heading line: a chapter marker word followed by a roman numeral or an
+# arabic number, either standing alone ("Chapter VI") or carrying an inline title
+# after a dash/colon ("Chapter I — Why this report, now?"). Roman numerals are
 # restricted to a sane chapter range (I…XXXIX worth of letters) and uppercase to
 # avoid matching prose words; the title tail, when present, must be introduced by
 # a dash or colon (never by a bare space, which would swallow running prose that
-# merely begins with the word "Chapter").
+# merely begins with the marker word).
 _CHAPTER_HEADING_PATTERN = re.compile(
-    r"^chapter\s+(?:[IVXLC]{1,7}|\d{1,3})"
+    r"^(?:" + _CHAPTER_MARKER_ALT + r")\s+(?:[IVXLC]{1,7}|\d{1,3})"
     r"(?:\s*[–—:.\-]\s*\S.*)?$",
     re.IGNORECASE,
 )
@@ -1335,33 +1365,34 @@ _CHAPTER_HEADING_PATTERN = re.compile(
 # a line is the chapter number itself, never a TOC entry (the trailing roman/arabic
 # IS the chapter number, not a page reference following a title).
 _CHAPTER_NUMBER_ONLY_PATTERN = re.compile(
-    r"^chapter\s+(?:[IVXLC]{1,7}|\d{1,3})$",
+    r"^(?:" + _CHAPTER_MARKER_ALT + r")\s+(?:[IVXLC]{1,7}|\d{1,3})$",
     re.IGNORECASE,
 )
 
-# A part divider ("PART II", "Part 3", "PART I: LOCAL ECONOMICS"). Source PDFs are
-# English on import, so only the latin spelling is matched. The number is a roman
-# numeral or an arabic number; a title tail, when present, must be introduced by a
-# separator (colon/dash), never by a bare space — a body line that merely opens
+# A part divider ("PART II", "Part 3", "PART I: LOCAL ECONOMICS"). The number is a
+# roman numeral or an arabic number; a title tail, when present, must be introduced
+# by a separator (colon/dash), never by a bare space — a body line that merely opens
 # "Part I of the book describes…" must not be swallowed (the lowercase continuation
 # after the number is neither empty nor a separator, so it never matches). Roman
 # numerals are uppercase to avoid matching lowercase prose ("part i think").
 _PART_DIVIDER_PATTERN = re.compile(
-    r"^(?:PART|Part)\s+(?:[IVXLCM]{1,7}|\d{1,3})\b(?P<tail>.*)$"
+    r"^(?:" + _PART_MARKER_ALT + r")\s+(?:[IVXLCM]{1,7}|\d{1,3})\b(?P<tail>.*)$"
 )
 # The bare "Part <roman/number>" divider with nothing after it. Like a bare chapter
 # number line, the trailing roman/arabic IS the part number, never a page reference,
 # so such a line is a divider even though the trailing-page TOC pattern also matches.
 _PART_NUMBER_ONLY_PATTERN = re.compile(
-    r"^(?:PART|Part)\s+(?:[IVXLCM]{1,7}|\d{1,3})$"
+    r"^(?:" + _PART_MARKER_ALT + r")\s+(?:[IVXLCM]{1,7}|\d{1,3})$"
 )
 _STRUCTURAL_TAIL_SEPARATORS = ":—–‒-"
 
-# Standalone front/back-matter section markers. A line that IS exactly one of these
-# words (optionally followed by a separator + short title) is a structural section
-# heading, not prose. A mid-sentence use ("Conclusion In addition to the specific
-# examples…") is excluded: the marker is followed by a space and more words rather
-# than by end-of-line or a separator, so it stays body.
+# Standalone front/back-matter section markers — part of the heading-marker
+# lexicon documented above (English default, extensible per language via config;
+# see the _CHAPTER_MARKER_WORDS / _PART_MARKER_WORDS block). A line that IS exactly
+# one of these words (optionally followed by a separator + short title) is a
+# structural section heading, not prose. A mid-sentence use ("Conclusion In
+# addition to the specific examples…") is excluded: the marker is followed by a
+# space and more words rather than by end-of-line or a separator, so it stays body.
 _SECTION_MARKER_WORDS = frozenset(
     {
         "conclusion",
@@ -1376,8 +1407,10 @@ _SECTION_MARKER_WORDS = frozenset(
 )
 _SECTION_MARKER_LINE_PATTERN = re.compile(r"^(?P<word>[A-Za-z]+)\b(?P<tail>.*)$")
 
-# The notes / bibliography section that opens the back-matter. In it, per-chapter
-# endnote groupings render as bare "Chapter N" labels that are NOT chapter openers.
+# The notes / bibliography section that opens the back-matter — part of the
+# heading-marker lexicon documented above (English default, extensible per
+# language via config). In it, per-chapter endnote groupings render as bare
+# "Chapter N" labels that are NOT chapter openers.
 _NOTES_BACKMATTER_MARKERS = frozenset(
     {"notes", "endnotes", "references", "bibliography"}
 )
@@ -1420,7 +1453,11 @@ def _text_is_bare_chapter_number(text: str) -> bool:
 
 
 def _bare_chapter_number_token(text: str) -> str | None:
-    match = re.match(r"^chapter\s+([IVXLC]{1,7}|\d{1,3})$", text.strip(), re.IGNORECASE)
+    match = re.match(
+        r"^(?:" + _CHAPTER_MARKER_ALT + r")\s+([IVXLC]{1,7}|\d{1,3})$",
+        text.strip(),
+        re.IGNORECASE,
+    )
     return match.group(1).upper() if match else None
 
 

@@ -1115,6 +1115,101 @@ def test_build_prepared_source_key_identical_settings_collide():
     assert key_a == key_b
 
 
+def test_build_prepared_source_key_distinguishes_ai_review_model():
+    # F10: with AI review ON, two keys differing ONLY by the AI-review model must be
+    # distinct — a different structure-recognition model shapes a different cached
+    # AI-review artifact, so it must not be served from another model's prepared entry.
+    key_model_a = preparation.build_prepared_source_key(
+        "token",
+        6000,
+        paragraph_boundary_ai_review_mode="review_only",
+        paragraph_boundary_ai_review_model="gpt-model-a",
+        paragraph_boundary_ai_review_candidate_limit=200,
+        paragraph_boundary_ai_review_timeout_seconds=30,
+        paragraph_boundary_ai_review_max_tokens_per_candidate=120,
+    )
+    key_model_b = preparation.build_prepared_source_key(
+        "token",
+        6000,
+        paragraph_boundary_ai_review_mode="review_only",
+        paragraph_boundary_ai_review_model="gpt-model-b",
+        paragraph_boundary_ai_review_candidate_limit=200,
+        paragraph_boundary_ai_review_timeout_seconds=30,
+        paragraph_boundary_ai_review_max_tokens_per_candidate=120,
+    )
+    assert key_model_a != key_model_b
+
+
+def test_build_prepared_source_key_distinguishes_ai_review_candidate_limit():
+    # F10: with AI review ON, two keys differing ONLY by candidate-limit must be distinct.
+    key_limit_200 = preparation.build_prepared_source_key(
+        "token",
+        6000,
+        paragraph_boundary_ai_review_mode="review_only",
+        paragraph_boundary_ai_review_model="gpt-model-a",
+        paragraph_boundary_ai_review_candidate_limit=200,
+        paragraph_boundary_ai_review_timeout_seconds=30,
+        paragraph_boundary_ai_review_max_tokens_per_candidate=120,
+    )
+    key_limit_500 = preparation.build_prepared_source_key(
+        "token",
+        6000,
+        paragraph_boundary_ai_review_mode="review_only",
+        paragraph_boundary_ai_review_model="gpt-model-a",
+        paragraph_boundary_ai_review_candidate_limit=500,
+        paragraph_boundary_ai_review_timeout_seconds=30,
+        paragraph_boundary_ai_review_max_tokens_per_candidate=120,
+    )
+    assert key_limit_200 != key_limit_500
+
+
+def test_build_prepared_source_key_ai_review_off_ignores_model_and_limits():
+    # F10: when AI review is OFF the model/limits do not shape any cached artifact, so
+    # keys that differ only by those knobs must still COLLIDE (no needless invalidation).
+    key_off_a = preparation.build_prepared_source_key(
+        "token",
+        6000,
+        paragraph_boundary_ai_review_mode="off",
+        paragraph_boundary_ai_review_model="gpt-model-a",
+        paragraph_boundary_ai_review_candidate_limit=200,
+        paragraph_boundary_ai_review_timeout_seconds=30,
+        paragraph_boundary_ai_review_max_tokens_per_candidate=120,
+    )
+    key_off_b = preparation.build_prepared_source_key(
+        "token",
+        6000,
+        paragraph_boundary_ai_review_mode="off",
+        paragraph_boundary_ai_review_model="gpt-model-b",
+        paragraph_boundary_ai_review_candidate_limit=999,
+        paragraph_boundary_ai_review_timeout_seconds=99,
+        paragraph_boundary_ai_review_max_tokens_per_candidate=999,
+    )
+    assert key_off_a == key_off_b
+
+
+def test_build_prepared_source_key_identical_ai_review_settings_collide():
+    # F10: identical AI-review settings still produce the SAME key (cache hit preserved).
+    key_a = preparation.build_prepared_source_key(
+        "token",
+        6000,
+        paragraph_boundary_ai_review_mode="review_only",
+        paragraph_boundary_ai_review_model="gpt-model-a",
+        paragraph_boundary_ai_review_candidate_limit=200,
+        paragraph_boundary_ai_review_timeout_seconds=30,
+        paragraph_boundary_ai_review_max_tokens_per_candidate=120,
+    )
+    key_b = preparation.build_prepared_source_key(
+        "token",
+        6000,
+        paragraph_boundary_ai_review_mode="review_only",
+        paragraph_boundary_ai_review_model="gpt-model-a",
+        paragraph_boundary_ai_review_candidate_limit=200,
+        paragraph_boundary_ai_review_timeout_seconds=30,
+        paragraph_boundary_ai_review_max_tokens_per_candidate=120,
+    )
+    assert key_a == key_b
+
+
 def test_build_editing_jobs_adapter_propagates_internal_type_error_without_retry():
     # F25: a target that accepts the signature-checked kwargs but raises TypeError
     # DEEP inside must propagate and be invoked exactly once (no swallow/retry).

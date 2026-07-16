@@ -6,6 +6,29 @@ the acceptance-verdict wrappers, and the ``_build_translation_quality_report`` h
 its authority/warning helpers. ``late_phases`` re-exports every name here so
 ``late_phases.<name>`` keeps resolving for the test namespace and the still-in-``late_phases``
 callers (``finalize_processing_success``). No module-level mutable state; pure CPU (no LLM).
+
+Monkeypatch / compat seam (F15 — the contract is *this module*):
+    The detector/serializer/collector leaves live in the ``quality_gate_serializers`` and
+    ``quality_gate_text_detectors`` satellites (and in ``output_validation`` /
+    ``formatting_coverage``), but they are imported *into this module's namespace* above and
+    every gate function invokes them by bare name. Name resolution therefore happens against
+    THIS module's globals at call time, so the single documented patch point is
+    ``quality_gate.<name>`` — patching it there lands for the whole gate, even when the
+    ``_build_translation_quality_report`` hub is reached through the ``late_phases.<name>``
+    re-export (the hub still *executes* in this namespace). Patch here, NOT at ``late_phases``
+    (that re-export binding is a copy and would be a stale no-op for the hub's own callees).
+
+    Caveat — transitive calls INSIDE a satellite: when one satellite leaf calls another
+    (e.g. ``_is_untranslated_body_text`` calls ``_is_bibliography_or_url_dominant_text`` and
+    ``_latin_letter_ratio`` from within ``quality_gate_text_detectors``), that inner call
+    resolves against the *satellite's* globals, so patching ``quality_gate.<inner_leaf>`` does
+    NOT reach it. Patch the outermost leaf this module invokes directly (``_is_untranslated_
+    body_text``), or patch the satellite module itself, to override transitive behaviour.
+
+TODO (F15): ``_resolve_acceptance_output_artifacts`` reaches the PRIVATE
+``docxaicorrector.validation.structural._build_output_artifacts``. Promoting it to a public
+wrapper is out of this module's scope (would edit ``validation/structural.py``); left as a
+documented private-access seam until that module exposes a public entry point.
 """
 
 import re
@@ -1146,6 +1169,9 @@ def _resolve_acceptance_output_artifacts(
     docx_bytes = docx_phase.get("docx_bytes")
     if not isinstance(docx_bytes, bytes) or not docx_bytes:
         return None
+    # TODO (F15): private cross-module access — ``_build_output_artifacts`` has no public
+    # wrapper yet. Exposing one edits ``validation/structural.py`` (out of this module's
+    # scope), so this stays a documented private seam. See the module docstring.
     from docxaicorrector.validation.structural import _build_output_artifacts
 
     return _build_output_artifacts(docx_bytes, runtime_display_markdown)

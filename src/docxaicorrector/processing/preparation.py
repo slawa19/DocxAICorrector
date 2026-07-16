@@ -16,6 +16,7 @@ from docx import Document as DocxDocument
 from docxaicorrector.core.config import get_client, get_client_for_model_selector, get_model_role_value, load_app_config
 from docxaicorrector.core.constants import RUN_DIR
 from docxaicorrector.document.boundaries import summarize_boundary_normalization_metrics
+from docxaicorrector.document.boundary_review import resolve_paragraph_boundary_ai_review_settings
 from docxaicorrector.document.extraction import (
     build_document_text,
     extract_document_content_with_normalization_reports,
@@ -23,6 +24,7 @@ from docxaicorrector.document.extraction import (
 from docxaicorrector.document.semantic_blocks import build_editing_jobs, build_semantic_blocks
 from docxaicorrector.core.logger import log_event
 from docxaicorrector.core.models import LayoutArtifactCleanupReport, ParagraphBoundaryNormalizationReport, ParagraphRelation, RelationNormalizationReport
+from docxaicorrector.core.models import PARAGRAPH_BOUNDARY_AI_REVIEW_MODE_VALUES
 from docxaicorrector.core.models import StructureRepairReport
 from docxaicorrector.core.models import clone_prepared_image_asset
 from docxaicorrector.processing.upload_ports import FrozenUploadPayload, HeartbeatBeacon, build_in_memory_uploaded_file
@@ -280,6 +282,10 @@ def build_prepared_source_key(
     processing_operation: str = "edit",
     paragraph_boundary_normalization_mode: str = "high_only",
     paragraph_boundary_ai_review_mode: str = "off",
+    paragraph_boundary_ai_review_model: str = "",
+    paragraph_boundary_ai_review_candidate_limit: int = 0,
+    paragraph_boundary_ai_review_timeout_seconds: int = 0,
+    paragraph_boundary_ai_review_max_tokens_per_candidate: int = 0,
     relation_normalization_key: str = "phase2_default:epigraph_attribution,image_caption,table_caption,toc_region",
     layout_artifact_cleanup_key: str = "1:3:80",
     source_language: str = "en",
@@ -295,17 +301,36 @@ def build_prepared_source_key(
     normalized_translation_domain = str(translation_domain or "general").strip().lower() or "general"
     normalized_structure_recovery_mode = str(structure_recovery_mode or "legacy").strip().lower() or "legacy"
     structure_recovery_flag = "1" if bool(structure_recovery_enabled) else "0"
+    # F10: the boundary AI-review artifact is shaped by MORE than its mode — the
+    # structure-recognition MODEL, the candidate limit, the per-candidate timeout, and the
+    # per-candidate token budget all change what recommendations get cached (see
+    # ``resolve_paragraph_boundary_ai_review_settings``). Fold them into the key so two runs
+    # that differ only by AI-review model (or any limit) do not share a prepared entry. They
+    # only influence the result when AI review is actually running, so when the mode is "off"
+    # a single stable ``ar=off`` token is used to avoid needless cross-invalidation.
+    normalized_ai_review_mode = str(paragraph_boundary_ai_review_mode or "off").strip().lower() or "off"
+    if normalized_ai_review_mode == "off":
+        ai_review_fingerprint = ":ar=off"
+    else:
+        normalized_ai_review_model = str(paragraph_boundary_ai_review_model or "").strip().lower()
+        ai_review_fingerprint = (
+            f":arm={normalized_ai_review_model}"
+            f":arcl={int(paragraph_boundary_ai_review_candidate_limit or 0)}"
+            f":arts={int(paragraph_boundary_ai_review_timeout_seconds or 0)}"
+            f":armt={int(paragraph_boundary_ai_review_max_tokens_per_candidate or 0)}"
+        )
     # F14: fold every setting that influences the prepared/cached result (languages,
     # translation domain, structure-recovery knobs) into the key so run B cannot serve
     # run A's glossary/context. `pk` is an explicit key-format version tag: bumping it
     # invalidates stale entries whenever this fingerprint layout changes.
     context_fingerprint = (
-        f":pk=2"
+        f":pk=3"
         f":sl={normalized_source_language}"
         f":tl={normalized_target_language}"
         f":td={normalized_translation_domain}"
         f":sr={structure_recovery_flag}"
         f":srm={normalized_structure_recovery_mode}"
+        f"{ai_review_fingerprint}"
     )
     return (
         f"{uploaded_file_token}:{chunk_size}:{paragraph_boundary_normalization_mode}:"
@@ -850,10 +875,19 @@ def prepare_document_for_processing(
         if bool(resolved_config["paragraph_boundary_normalization_enabled"])
         else "off"
     )
-    ai_review_mode = (
-        str(resolved_config.get("paragraph_boundary_ai_review_mode", "off"))
-        if bool(resolved_config.get("paragraph_boundary_ai_review_enabled", False))
-        else "off"
+    # F10: resolve the AI-review settings through the SAME resolver the extraction stage
+    # uses, so the key's model/limit fingerprint is authoritative (mode gated to "off"
+    # when disabled; model/limits are the exact values that shape the cached artifact).
+    (
+        ai_review_effective_enabled,
+        ai_review_mode,
+        ai_review_candidate_limit,
+        ai_review_timeout_seconds,
+        ai_review_max_tokens_per_candidate,
+        ai_review_model,
+    ) = resolve_paragraph_boundary_ai_review_settings(
+        allowed_modes=PARAGRAPH_BOUNDARY_AI_REVIEW_MODE_VALUES,
+        app_config=resolved_config,
     )
     relation_normalization_key = "off"
     if bool(resolved_config.get("relation_normalization_enabled", True)):
@@ -885,6 +919,10 @@ def prepare_document_for_processing(
         processing_operation=resolved_processing_operation,
         paragraph_boundary_normalization_mode=normalization_mode,
         paragraph_boundary_ai_review_mode=ai_review_mode,
+        paragraph_boundary_ai_review_model=ai_review_model,
+        paragraph_boundary_ai_review_candidate_limit=ai_review_candidate_limit,
+        paragraph_boundary_ai_review_timeout_seconds=ai_review_timeout_seconds,
+        paragraph_boundary_ai_review_max_tokens_per_candidate=ai_review_max_tokens_per_candidate,
         relation_normalization_key=relation_normalization_key,
         layout_artifact_cleanup_key=layout_cleanup_key,
         source_language=key_source_language,

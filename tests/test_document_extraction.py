@@ -146,6 +146,49 @@ def _append_textbox_with_interior_drawing(paragraph, text: str, drawing_element)
     paragraph._p.append(textbox_run)
 
 
+def _nested_textbox_run(inner_run_xml: str) -> str:
+    """A textbox run whose interior paragraph holds ``inner_run_xml`` (another run)."""
+    return f"""
+        <w:r xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+             xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"
+             xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
+             xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape">
+            <w:drawing>
+                <wp:inline>
+                    <wp:extent cx="914400" cy="914400"/>
+                    <wp:docPr id="3" name="OuterTextBox"/>
+                    <a:graphic>
+                        <a:graphicData uri="http://schemas.microsoft.com/office/word/2010/wordprocessingShape">
+                            <wps:wsp>
+                                <wps:txbx>
+                                    <w:txbxContent>
+                                        <w:p>{inner_run_xml}</w:p>
+                                    </w:txbxContent>
+                                </wps:txbx>
+                                <wps:bodyPr/>
+                            </wps:wsp>
+                        </a:graphicData>
+                    </a:graphic>
+                </wp:inline>
+            </w:drawing>
+        </w:r>
+        """
+
+
+def _append_nested_textbox_with_interior_drawing(paragraph, drawing_element) -> None:
+    """Append a NESTED textbox (a txbxContent inside a txbxContent) whose deepest
+    interior paragraph holds exactly one image drawing."""
+    outer_run = parse_xml(_nested_textbox_run(_nested_textbox_run("")))
+    txbx_contents = outer_run.findall(".//" + qn("w:txbxContent"))
+    innermost = txbx_contents[-1]
+    image_paragraph = OxmlElement("w:p")
+    image_run = OxmlElement("w:r")
+    image_run.append(drawing_element)
+    image_paragraph.append(image_run)
+    innermost.append(image_paragraph)
+    paragraph._p.append(outer_run)
+
+
 def _set_raw_paragraph_alignment(paragraph, value: str) -> None:
     paragraph_properties = paragraph._element.get_or_add_pPr()
     alignment = paragraph_properties.find(qn("w:jc"))
@@ -737,6 +780,30 @@ def test_textbox_interior_image_is_not_double_counted_with_direct_image(tmp_path
     assert "[[DOCX_IMAGE_img_001]]" in joined
     assert "[[DOCX_IMAGE_img_002]]" in joined
     assert "Врезка" in joined
+
+
+def test_nested_textbox_interior_image_is_extracted_exactly_once(tmp_path):
+    # F17: a nested textbox (txbxContent inside txbxContent) containing a single
+    # image must yield exactly one image asset. Previously the outer restore
+    # paragraph and the inner restore paragraph both captured the deep blip
+    # (the "inside any textbox" test could not distinguish nesting levels), so
+    # the same image was emitted twice.
+    image_path = tmp_path / "image.png"
+    image_path.write_bytes(PNG_BYTES)
+    doc = Document()
+    host = doc.add_paragraph()
+    interior_drawing = _detach_inline_drawing(doc, image_path)
+    _append_nested_textbox_with_interior_drawing(host, interior_drawing)
+    buffer = BytesIO()
+    doc.save(buffer)
+    buffer.seek(0)
+
+    paragraphs, image_assets = extract_document_content_from_docx(buffer)
+
+    assert len(image_assets) == 1
+    assert image_assets[0].image_id == "img_001"
+    joined = "\n".join(paragraph.text for paragraph in paragraphs)
+    assert joined.count("[[DOCX_IMAGE_img_001]]") == 1
 
 
 def test_extract_document_content_from_docx_captures_source_rect_forensics(tmp_path):

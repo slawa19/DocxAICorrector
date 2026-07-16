@@ -753,6 +753,122 @@ def test_write_segment_result_registry_prunes_stale_family_by_age(tmp_path, monk
     assert not stale_path.exists()
 
 
+def test_write_segment_result_registry_never_prunes_current_run_batch(tmp_path, monkeypatch):
+    # F11: a batch larger than the family count budget must return paths that ALL
+    # still exist — the current run's just-written records are never pruned.
+    monkeypatch.setattr(runtime_artifacts, "SEGMENT_RESULT_REGISTRY_MAX_COUNT", 2)
+    monkeypatch.setattr(runtime_artifacts, "SEGMENT_RESULT_REGISTRY_MAX_AGE_SECONDS", 10_000)
+
+    records = [
+        {
+            "schema_version": 1,
+            "prepared_source_key": "prep:report:1234",
+            "structure_fingerprint": "struct-abc",
+            "segment_id": f"seg_{index:04d}",
+            "translated_markdown": "Translated chapter",
+        }
+        for index in range(5)
+    ]
+
+    artifact_paths = write_segment_result_registry(records=records, output_dir=tmp_path)
+
+    # All five returned paths exist despite the count budget being 2.
+    assert len(artifact_paths) == 5
+    for path in artifact_paths.values():
+        assert Path(path).exists(), path
+
+
+def test_write_segment_result_registry_prunes_history_but_protects_oversized_current_run(tmp_path, monkeypatch):
+    # F11: history is still bounded — a stale historical leaf is pruned even while
+    # the (oversized) current batch is fully protected.
+    monkeypatch.setattr(runtime_artifacts, "SEGMENT_RESULT_REGISTRY_MAX_COUNT", 2)
+    monkeypatch.setattr(runtime_artifacts, "SEGMENT_RESULT_REGISTRY_MAX_AGE_SECONDS", 10_000)
+
+    stale_leaf = tmp_path / "prep_old" / "struct-old"
+    stale_leaf.mkdir(parents=True, exist_ok=True)
+    stale_path = stale_leaf / "seg_stale.segment-result.json"
+    stale_path.write_text(json.dumps({"segment_id": "seg_stale"}), encoding="utf-8")
+    os.utime(stale_path, (10.0, 10.0))
+
+    records = [
+        {
+            "schema_version": 1,
+            "prepared_source_key": "prep:report:1234",
+            "structure_fingerprint": "struct-abc",
+            "segment_id": f"seg_{index:04d}",
+            "translated_markdown": "Translated chapter",
+        }
+        for index in range(3)
+    ]
+
+    artifact_paths = write_segment_result_registry(records=records, output_dir=tmp_path)
+
+    assert len(artifact_paths) == 3
+    for path in artifact_paths.values():
+        assert Path(path).exists(), path
+    # The stale historical leaf is still reclaimed.
+    assert not stale_path.exists()
+
+
+def test_write_segment_result_registry_writes_atomically_without_partial_file(tmp_path, monkeypatch):
+    # F11: an interrupted write must never leave a truncated half-file at the final
+    # path. Fail the os.replace of the SECOND record; its destination must not exist
+    # and no temp sibling may survive.
+    real_replace = os.replace
+    replace_calls = {"count": 0}
+
+    def _flaky_replace(src, dst, *args, **kwargs):
+        replace_calls["count"] += 1
+        if replace_calls["count"] >= 2:
+            raise OSError("simulated interrupted registry write")
+        return real_replace(src, dst, *args, **kwargs)
+
+    monkeypatch.setattr(runtime_artifacts.os, "replace", _flaky_replace)
+
+    records = [
+        {
+            "prepared_source_key": "prep:report:1234",
+            "structure_fingerprint": "struct-abc",
+            "segment_id": f"seg_{index:04d}",
+            "translated_markdown": "Translated chapter",
+        }
+        for index in range(2)
+    ]
+
+    with pytest.raises(OSError):
+        write_segment_result_registry(records=records, output_dir=tmp_path)
+
+    leaf = tmp_path / "prep_report_1234" / "struct-abc"
+    # The second record's final artifact was never published — no half-file.
+    assert not (leaf / "seg_0001.segment-result.json").exists()
+    # No leftover temp siblings from the interrupted write.
+    assert list(leaf.glob("*.tmp.*")) == []
+
+
+def test_write_job_result_registry_never_prunes_current_run_batch(tmp_path, monkeypatch):
+    # F11 (job-result writer parity): an oversized batch returns paths that all exist.
+    monkeypatch.setattr(runtime_artifacts, "JOB_RESULT_REGISTRY_MAX_COUNT", 2)
+    monkeypatch.setattr(runtime_artifacts, "JOB_RESULT_REGISTRY_MAX_AGE_SECONDS", 10_000)
+
+    records = [
+        {
+            "schema_version": 1,
+            "prepared_source_key": "prep:report:1234",
+            "structure_fingerprint": "struct-abc",
+            "job_id": f"job_{index:04d}",
+            "segment_id": "seg_0001",
+            "status": "completed",
+        }
+        for index in range(5)
+    ]
+
+    artifact_paths = write_job_result_registry(records=records, output_dir=tmp_path)
+
+    assert len(artifact_paths) == 5
+    for path in artifact_paths.values():
+        assert Path(path).exists(), path
+
+
 def test_write_job_result_registry_prunes_stale_family_by_count(tmp_path, monkeypatch):
     monkeypatch.setattr(runtime_artifacts, "JOB_RESULT_REGISTRY_MAX_COUNT", 1)
     monkeypatch.setattr(runtime_artifacts, "JOB_RESULT_REGISTRY_MAX_AGE_SECONDS", 10_000)

@@ -377,6 +377,71 @@ def write_structure_manifest_artifact(
     return str(manifest_path)
 
 
+def _prune_registry_family_protecting_current(
+    *,
+    target_dir: Path,
+    glob: str,
+    max_age_seconds: int | None,
+    max_count: int | None,
+    protected_paths: set[str],
+    now_epoch_seconds: float | None = None,
+) -> list[str]:
+    """Family-wide age/count prune that NEVER removes ``protected_paths`` (F11).
+
+    Mirrors :func:`prune_artifact_dir`'s age+count policy, but the CURRENT call's
+    just-written records are excluded from the prune candidate set, so the paths a
+    registry writer returns are guaranteed to still exist even when the batch is
+    larger than the family count budget. Protected records occupy budget: the count
+    cap keeps the newest NON-protected leaves only up to ``max_count`` total files,
+    so an oversized live run is never pruned to reclaim its own space — only stale
+    historical identity leaves are removed. Byte quotas are intentionally not added
+    (the shared prune helper has no such budget — do not over-engineer).
+    """
+    if not target_dir.exists() or not target_dir.is_dir():
+        return []
+
+    reference_now = time.time() if now_epoch_seconds is None else float(now_epoch_seconds)
+    retained: list[tuple[float, Path]] = []
+    pruned_paths: list[str] = []
+
+    for artifact_path in target_dir.glob(glob):
+        if not artifact_path.is_file():
+            continue
+        if str(artifact_path) in protected_paths:
+            continue
+        try:
+            mtime = artifact_path.stat().st_mtime
+        except OSError:
+            continue
+
+        age_seconds = max(0.0, reference_now - mtime)
+        if max_age_seconds is not None and max_age_seconds >= 0 and age_seconds > max_age_seconds:
+            try:
+                artifact_path.unlink()
+                pruned_paths.append(str(artifact_path))
+            except OSError:
+                pass
+            continue
+
+        retained.append((mtime, artifact_path))
+
+    if max_count is not None and max_count >= 0:
+        # Protected (current-run) records consume budget but are never candidates,
+        # so the historical leaves get whatever slots remain.
+        effective_budget = max(0, max_count - len(protected_paths))
+        if len(retained) > effective_budget:
+            retained.sort(key=lambda item: (item[0], item[1].name))
+            overflow = len(retained) - effective_budget
+            for _, artifact_path in retained[:overflow]:
+                try:
+                    artifact_path.unlink()
+                    pruned_paths.append(str(artifact_path))
+                except OSError:
+                    continue
+
+    return pruned_paths
+
+
 def write_segment_result_registry(
     *,
     records: Sequence[Mapping[str, object]],
@@ -396,20 +461,24 @@ def write_segment_result_registry(
         )
         target_dir.mkdir(parents=True, exist_ok=True)
         artifact_path = target_dir / f"{_sanitize_artifact_stem(segment_id)}.segment-result.json"
-        artifact_path.write_text(
+        # Atomic write (temp sibling + os.replace): an interrupted write never leaves
+        # a truncated half-file that later reads as a delivered record (F11).
+        _atomic_write(
+            artifact_path,
             json.dumps(_to_jsonable(record), ensure_ascii=False, indent=2),
-            encoding="utf-8",
         )
         persisted_paths[segment_id] = str(artifact_path)
     # Bound family growth after publishing, mirroring the UI-result and
     # structure-manifest writers. Recursive glob prunes stale identity leaves
-    # across the whole family, not just one document's segment folder.
-    prune_artifact_dir(
+    # across the whole family, not just one document's segment folder — but the
+    # records this call just wrote are PROTECTED, so the returned paths always
+    # still exist (F11).
+    _prune_registry_family_protecting_current(
         target_dir=output_dir,
+        glob="**/*.segment-result.json",
         max_age_seconds=SEGMENT_RESULT_REGISTRY_MAX_AGE_SECONDS,
         max_count=SEGMENT_RESULT_REGISTRY_MAX_COUNT,
-        glob="**/*.segment-result.json",
-        emit_log=False,
+        protected_paths=set(persisted_paths.values()),
     )
     return persisted_paths
 
@@ -433,20 +502,24 @@ def write_job_result_registry(
         )
         target_dir.mkdir(parents=True, exist_ok=True)
         artifact_path = target_dir / f"{_sanitize_artifact_stem(job_id)}.job-result.json"
-        artifact_path.write_text(
+        # Atomic write (temp sibling + os.replace): an interrupted write never leaves
+        # a truncated half-file that later reads as a delivered record (F11).
+        _atomic_write(
+            artifact_path,
             json.dumps(_to_jsonable(record), ensure_ascii=False, indent=2),
-            encoding="utf-8",
         )
         persisted_paths[job_id] = str(artifact_path)
     # Bound family growth after publishing, mirroring the UI-result and
     # structure-manifest writers. Recursive glob prunes stale identity leaves
-    # across the whole family, not just one document's job folder.
-    prune_artifact_dir(
+    # across the whole family, not just one document's job folder — but the
+    # records this call just wrote are PROTECTED, so the returned paths always
+    # still exist (F11).
+    _prune_registry_family_protecting_current(
         target_dir=output_dir,
+        glob="**/*.job-result.json",
         max_age_seconds=JOB_RESULT_REGISTRY_MAX_AGE_SECONDS,
         max_count=JOB_RESULT_REGISTRY_MAX_COUNT,
-        glob="**/*.job-result.json",
-        emit_log=False,
+        protected_paths=set(persisted_paths.values()),
     )
     return persisted_paths
 

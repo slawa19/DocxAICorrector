@@ -3422,6 +3422,56 @@ def test_build_translation_quality_report_counts_capped_legacy_hygiene_samples(m
     assert [item["count"] for item in review_items] == [0] * 8
 
 
+def test_quality_gate_monkeypatch_seam_lands_on_owner_module(monkeypatch):
+    # F15: the documented patch seam is `quality_gate.<name>` (the OWNER module), even when
+    # the hub is reached through the `late_phases.<name>` re-export. Patching the body-text
+    # detector at quality_gate must change gate behaviour: an otherwise-translated body entry
+    # is then flagged as untranslated. This proves the compat seam is coherent (the bare-name
+    # call inside `_collect_untranslated_body_samples` resolves against quality_gate globals).
+    assembly_result = document_pipeline_output_validation.FinalMarkdownAssemblyResult(
+        final_markdown="Полностью переведённый абзац основного текста.",
+        entries=(
+            document_pipeline_output_validation.FinalAssemblyEntry(
+                text="Полностью переведённый абзац основного текста.",
+                block_index=1,
+                paragraph_id="p1",
+                source_index=0,
+                role="body",
+                structural_role="body",
+                from_registry=True,
+            ),
+        ),
+        diagnostics=document_pipeline_output_validation.FinalAssemblyDiagnostics(),
+    )
+    context = SimpleNamespace(
+        app_config={"translation_output_quality_gate_policy": "advisory"},
+        processing_operation="translate",
+        uploaded_filename="report.docx",
+        translation_domain="general",
+    )
+
+    # Baseline: the Cyrillic body paragraph is NOT flagged as untranslated.
+    baseline = document_pipeline_late_phases._build_translation_quality_report(
+        context=context,
+        final_markdown=assembly_result.final_markdown,
+        formatting_diagnostics_artifacts=[],
+        assembly_result=assembly_result,
+    )
+    baseline_reasons = cast(list[str], baseline["gate_reasons"])
+    assert "untranslated_body_text_review_required" not in baseline_reasons
+
+    # Patch the documented seam on the OWNER module; the hub called via late_phases must honour it.
+    monkeypatch.setattr(document_pipeline_quality_gate, "_is_untranslated_body_text", lambda text: True)
+    patched = document_pipeline_late_phases._build_translation_quality_report(
+        context=context,
+        final_markdown=assembly_result.final_markdown,
+        formatting_diagnostics_artifacts=[],
+        assembly_result=assembly_result,
+    )
+    patched_reasons = cast(list[str], patched["gate_reasons"])
+    assert "untranslated_body_text_review_required" in patched_reasons
+
+
 def test_build_translation_quality_report_flags_untranslated_structural_heading_but_not_proper_name():
     assembly_result = document_pipeline_output_validation.FinalMarkdownAssemblyResult(
         final_markdown="## The Competitive Society\n\n## Terra\n\nПереведённый текст.",

@@ -68,7 +68,6 @@ from docxaicorrector.document.shared_xml import (
     build_drawing_forensics,
     build_source_xml_fingerprint,
     extract_num_pr_level,
-    extract_run_element_images,
     resolve_drawing_extent_emu,
     resolve_num_pr_details,
     resolve_paragraph_num_pr,
@@ -77,7 +76,12 @@ from docxaicorrector.document.tables import (
     build_raw_table as _build_raw_table_impl,
     flatten_table_lines as _flatten_table_lines_impl,
 )
-from docxaicorrector.document.provenance import classify_document_scan_origin, table_has_authored_signals
+from docxaicorrector.document.provenance import (
+    ScanOriginConfig,
+    classify_document_scan_origin,
+    resolve_scan_origin_config,
+    table_has_authored_signals,
+)
 from docxaicorrector.core.models import (
     PARAGRAPH_BOUNDARY_AI_REVIEW_MODE_VALUES,
     PARAGRAPH_BOUNDARY_NORMALIZATION_MODE_VALUES,
@@ -206,8 +210,13 @@ def extract_document_content_with_normalization_reports(
     source_bytes = _read_uploaded_docx_bytes(uploaded_file)
     validate_docx_source_bytes(source_bytes)
     document = Document(BytesIO(source_bytes))
-    scan_origin = classify_document_scan_origin(source_bytes)
-    raw_blocks, image_assets = _build_raw_document_blocks(document, is_scan_origin=scan_origin.is_scan_origin)
+    scan_origin_config = resolve_scan_origin_config(app_config)
+    scan_origin = classify_document_scan_origin(source_bytes, config=scan_origin_config)
+    raw_blocks, image_assets = _build_raw_document_blocks(
+        document,
+        is_scan_origin=scan_origin.is_scan_origin,
+        scan_origin_config=scan_origin_config,
+    )
     normalization_mode, save_boundary_debug_artifacts = _resolve_paragraph_boundary_normalization_settings(app_config)
     normalized_blocks, boundary_report = _normalize_paragraph_boundaries(raw_blocks, mode=normalization_mode)
     structure_recovery_enabled, structure_recovery_mode = _resolve_structure_recovery_runtime(app_config=app_config)
@@ -342,8 +351,18 @@ def _build_paragraph_text_with_placeholders(
     *,
     include_image_placeholders: bool = True,
     allow_run_markdown: bool = True,
-    exclude_textbox_interior_images: bool = False,
 ) -> str:
+    # A drawing/blip is extracted exactly once by partitioning on the blip's
+    # NEAREST enclosing textbox (``w:txbxContent``). Each paragraph "owns" the
+    # blips whose nearest textbox ancestor equals the paragraph's own nearest
+    # textbox ancestor (``None`` for a normal body paragraph). This makes the
+    # direct-image walk and the textbox restore pass an exhaustive, non-
+    # overlapping partition even under NESTED textboxes (a txbxContent inside a
+    # txbxContent): the outer textbox paragraph skips a blip that lives in a
+    # deeper textbox, and that blip is emitted once by the deeper textbox's own
+    # restore paragraph (F17). An absolute "is inside any textbox" test cannot
+    # express this because a restore paragraph is itself inside a textbox.
+    owner_textbox = _nearest_txbx_ancestor(paragraph._element)
     parts: list[str] = []
     for child in paragraph._element:
         local_name = xml_local_name(child.tag)
@@ -355,7 +374,7 @@ def _build_paragraph_text_with_placeholders(
                     image_assets,
                     allow_hyperlink_markdown=allow_run_markdown,
                     include_image_placeholders=include_image_placeholders,
-                    exclude_textbox_interior_images=exclude_textbox_interior_images,
+                    owner_textbox=owner_textbox,
                 )
             )
             continue
@@ -367,7 +386,7 @@ def _build_paragraph_text_with_placeholders(
                     image_assets,
                     allow_hyperlink_markdown=allow_run_markdown,
                     include_image_placeholders=include_image_placeholders,
-                    exclude_textbox_interior_images=exclude_textbox_interior_images,
+                    owner_textbox=owner_textbox,
                 )
             )
     return "".join(parts)
@@ -377,10 +396,12 @@ def _build_raw_document_blocks(
     document,
     *,
     is_scan_origin: bool = False,
+    scan_origin_config: ScanOriginConfig | None = None,
 ) -> tuple[list[RawBlock], list[ImageAsset]]:
     raw_blocks: list[RawBlock] = []
     image_assets: list[ImageAsset] = []
     table_count = 0
+    uniform_grid_max_ratio = (scan_origin_config or resolve_scan_origin_config(None)).authored_uniform_grid_max_ratio
 
     for block_kind, block in _iter_document_block_items(document):
         if block_kind == "paragraph":
@@ -389,7 +410,9 @@ def _build_raw_document_blocks(
             continue
         table_count += 1
         table = cast(Table, block)
-        if is_scan_origin and not table_has_authored_signals(table._tbl):
+        if is_scan_origin and not table_has_authored_signals(
+            table._tbl, uniform_grid_max_ratio=uniform_grid_max_ratio
+        ):
             # Scan-origin (OCR) documents: the "table" is a scanned column layout,
             # not authored tabular data — flatten it into linear body paragraphs.
             # The document-level scan signal is only a PRIOR: a table that carries
@@ -440,18 +463,16 @@ def _build_flattened_table_blocks(
 
 def _build_raw_paragraph_blocks(paragraph, image_assets: list[ImageAsset], *, raw_index: int) -> list[RawParagraph]:
     raw_blocks: list[RawParagraph] = []
-    has_textboxes = _paragraph_has_textbox_content(paragraph)
-    # When the host paragraph carries a textbox we still capture its DIRECT
-    # (non-textbox) drawing images here — dropping the whole paragraph's images
-    # would lose a real inline image that merely shares a paragraph with a
-    # textbox (F11). Textbox-interior images are excluded because the dedicated
-    # restore pass below (_iter_textbox_paragraphs) captures them; including
-    # them here too would double-count.
+    # The host paragraph owns only its DIRECT (non-textbox) drawing images —
+    # dropping the whole paragraph's images would lose a real inline image that
+    # merely shares a paragraph with a textbox (F11). Textbox-interior images
+    # are owned by the dedicated restore pass below (_iter_textbox_paragraphs);
+    # the owner-based partition in _build_paragraph_text_with_placeholders
+    # excludes them here so they are not double-counted (F17).
     direct_text = _build_paragraph_text_with_placeholders(
         paragraph,
         image_assets,
         include_image_placeholders=True,
-        exclude_textbox_interior_images=has_textboxes,
     )
 
     if direct_text.strip():
@@ -1264,10 +1285,6 @@ def _read_uploaded_docx_bytes(uploaded_file) -> bytes:
     )
 
 
-def _paragraph_has_textbox_content(paragraph) -> bool:
-    return any(True for _ in _iter_textbox_content_elements(paragraph._element))
-
-
 def _iter_textbox_content_elements(element):
     for descendant in element.iter():
         if descendant is element:
@@ -1290,7 +1307,7 @@ def _render_hyperlink_element(
     *,
     include_image_placeholders: bool = True,
     allow_hyperlink_markdown: bool = True,
-    exclude_textbox_interior_images: bool = False,
+    owner_textbox=None,
 ) -> str:
     text_parts: list[str] = []
     for child in hyperlink_element:
@@ -1303,7 +1320,7 @@ def _render_hyperlink_element(
                 image_assets,
                 allow_hyperlink_markdown=False,
                 include_image_placeholders=include_image_placeholders,
-                exclude_textbox_interior_images=exclude_textbox_interior_images,
+                owner_textbox=owner_textbox,
             )
         )
 
@@ -1329,7 +1346,7 @@ def _render_run_element(
     *,
     allow_hyperlink_markdown: bool = True,
     include_image_placeholders: bool = True,
-    exclude_textbox_interior_images: bool = False,
+    owner_textbox=None,
 ) -> str:
     text = _extract_run_text(run_element)
     formatted_text = _apply_run_markdown(text, run_element) if allow_hyperlink_markdown else text
@@ -1338,7 +1355,7 @@ def _render_run_element(
             run_element,
             part,
             image_assets,
-            exclude_textbox_interior_images=exclude_textbox_interior_images,
+            owner_textbox=owner_textbox,
         )
         if include_image_placeholders
         else []
@@ -1415,37 +1432,42 @@ def _extract_vertical_align(run_properties) -> str | None:
     return get_xml_attribute(vertical_align, "val") if vertical_align is not None else None
 
 
-def _extract_run_element_images(run_element, part) -> list[tuple[bytes, str | None, int | None, int | None, dict[str, object]]]:
-    return extract_run_element_images(
-        run_element,
-        part,
-        relationship_namespace=RELATIONSHIP_NAMESPACE,
-    )
+def _nearest_txbx_ancestor(element):
+    """Return the closest ``w:txbxContent`` ancestor of ``element``, or ``None``.
 
-
-def _element_is_inside_textbox(element) -> bool:
+    This is the ownership key that keeps image extraction exactly-once: a blip
+    is owned by the paragraph whose nearest textbox ancestor equals the blip's
+    nearest textbox ancestor. A normal body paragraph has ``None`` here and owns
+    only blips outside every textbox; a textbox restore paragraph has its own
+    ``txbxContent`` here and owns only the blips of THAT textbox level, never the
+    blips of a deeper nested textbox (F17).
+    """
     for ancestor in element.iterancestors():
         if xml_local_name(ancestor.tag) == "txbxContent":
-            return True
-    return False
+            return ancestor
+    return None
 
 
-def _extract_run_element_direct_images(
-    run_element, part
+def _extract_run_element_owned_images(
+    run_element, part, owner_textbox
 ) -> list[tuple[bytes, str | None, int | None, int | None, dict[str, object]]]:
-    """Like ``extract_run_element_images`` but skips blips inside a textbox.
+    """Extract the run's drawing images whose nearest textbox ancestor is
+    ``owner_textbox`` (``None`` for a normal body paragraph).
 
-    A textbox-interior image (a ``w:drawing`` blip nested under
-    ``w:txbxContent``) is captured by the dedicated textbox restore pass, so
-    emitting it here would double-count it. Everything else — genuine direct
-    inline/anchored images that merely share a paragraph with a textbox — is
-    preserved (F11).
+    Restricting to the blip's NEAREST textbox makes the direct-image walk and
+    every textbox restore pass an exhaustive, non-overlapping partition: each
+    blip has exactly one nearest textbox ancestor, so exactly one paragraph
+    owns it. This holds even under nested textboxes (a ``txbxContent`` inside a
+    ``txbxContent``), where an absolute "inside any textbox" test would let the
+    same blip be emitted by both the outer and the inner restore paragraph (F17).
+    Genuine direct inline/anchored images that merely share a paragraph with a
+    textbox are still preserved (F11).
     """
     images: list[tuple[bytes, str | None, int | None, int | None, dict[str, object]]] = []
     for drawing in run_element.xpath(".//w:drawing"):
         width_emu, height_emu = resolve_drawing_extent_emu(drawing)
         for blip in drawing.xpath(".//a:blip"):
-            if _element_is_inside_textbox(blip):
+            if _nearest_txbx_ancestor(blip) is not owner_textbox:
                 continue
             embed_id = blip.get(f"{{{RELATIONSHIP_NAMESPACE}}}embed")
             if not embed_id:
@@ -1470,14 +1492,10 @@ def _extract_run_image_placeholders(
     part,
     image_assets: list[ImageAsset],
     *,
-    exclude_textbox_interior_images: bool = False,
+    owner_textbox=None,
 ) -> list[str]:
     placeholders: list[str] = []
-    run_images = (
-        _extract_run_element_direct_images(run_element, part)
-        if exclude_textbox_interior_images
-        else _extract_run_element_images(run_element, part)
-    )
+    run_images = _extract_run_element_owned_images(run_element, part, owner_textbox)
     for image_blob, mime_type, width_emu, height_emu, source_forensics in run_images:
         image_index = len(image_assets) + 1
         placeholder = f"[[DOCX_IMAGE_img_{image_index:03d}]]"

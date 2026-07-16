@@ -251,6 +251,65 @@ def test_finalize_artifact_save_success_logs_completed_info(monkeypatch):
 
 
 # --------------------------------------------------------------------------- #
+# F12 — a registry-only save failure (primary result files saved fine) must NOT
+# claim the result was not delivered; it logs a distinct WARNING and completes.
+# --------------------------------------------------------------------------- #
+
+
+def test_finalize_registry_only_oserror_completes_without_unpersisted_notice(monkeypatch):
+    gate_input = "Чистый переведённый абзац."
+
+    def _report(**kwargs):
+        return {"quality_status": "pass", "gate_reasons": []}
+
+    cleanup = _cleanup_result(markdown=gate_input, docx_bytes=b"final-docx")
+    _install_stubs(monkeypatch, gate_input_markdown=gate_input, cleanup_result=cleanup, report_fn=_report)
+    # Non-empty segment records so the registry write is actually attempted.
+    monkeypatch.setattr(
+        late_phases, "build_segment_result_records", lambda **k: [{"segment_id": "seg_0001"}]
+    )
+
+    # Primary artifacts save fine; only the segment registry write raises OSError.
+    deps = _RecordingDependencies(
+        artifact_writer=lambda: {"markdown_path": "result.md", "docx_path": "result.docx"}
+    )
+
+    def _raise_registry_oserror(*, records):
+        raise OSError("registry disk full")
+
+    deps.write_segment_result_registry = _raise_registry_oserror  # type: ignore[method-assign]
+    emitters = _RecordingEmitters()
+
+    result = _run_finalize(
+        context=_make_context(),
+        dependencies=deps,
+        emitters=emitters,
+        state=_make_state(),
+        docx_phase=_make_docx_phase(gate_input),
+    )
+
+    # The run genuinely delivered its result files, so it completes normally.
+    assert result == "succeeded"
+    assert "processing_completed" in _events(deps)
+    assert "processing_completed_unpersisted" not in _events(deps)
+    level, _ctx = _event(deps, "processing_completed")
+    assert level == logging.INFO
+
+    # A DISTINCT registry-save WARNING was logged.
+    assert "segment_result_registry_save_failed" in _events(deps)
+    reg_level, _reg_ctx = _event(deps, "segment_result_registry_save_failed")
+    assert reg_level == logging.WARNING
+
+    # NO user-facing "result files not saved" notice was emitted.
+    unpersisted_notices: list[dict[str, object]] = []
+    for call in emitters.state_calls:
+        notice = call.get("latest_result_notice")
+        if isinstance(notice, dict) and "сохранить файлы результата" in str(notice.get("message", "")):
+            unpersisted_notices.append(notice)
+    assert not unpersisted_notices
+
+
+# --------------------------------------------------------------------------- #
 # F10 — re-gate the DELIVERED post-cleanup markdown.
 # --------------------------------------------------------------------------- #
 
