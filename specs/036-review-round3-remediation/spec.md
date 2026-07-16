@@ -1,11 +1,14 @@
 # Feature Specification: Review round-3 findings remediation (correctness + boundaries + hygiene)
 
 Date: 2026-07-16
-Status: **PLANNED (2026-07-16).** Living findings register for the in-progress round-3
-review of the SaaS-hardening branch. Every finding below was independently verified
-against live code (file:line evidence cited) before entry. Remediation is NOT yet
-implemented. The review is ongoing — new findings are appended here as they are
-verified; unverified reported items sit in `## Pending verification` until confirmed.
+Status: **IMPLEMENTED (2026-07-16).** All findings F1–F28 were independently verified against
+live code (file:line evidence) and then remediated across 8 orchestrated waves (branch
+`hardening/wave1-saas-prereqs`, commits `faa9bf7`…`573e70e`), each landing with its
+anti-regression test and the pyright ratchet held at 247. One scope decision is recorded and
+respected: the F28b hub decomposition split `quality_gate.py` (satellites extracted, core pinned)
+but **left `generation/formatting_mapping.py` intact** — decomposing the correctness-critical
+mapper would reverse the deliberate spec-029/033 decision, so it was not done. Per-finding
+outcomes + commits are in `## Implementation status`.
 Owner surface: quality-gate entrypoints, `validation/acceptance.py`,
 `pipeline/output_validation.py`, `pipeline/quality_gate.py`, `processing/application_flow.py`
 + `runtime/state.py` seam, `pipeline/late_phases.py` finalize, `AGENTS.md`, `.gitignore`
@@ -26,6 +29,46 @@ REFUTED as typography-gated), F28 (the "13 specs" and ">650-line functions" clai
 actually 1 spec missing Anti-regression, largest function exactly 650). Extensions folded into
 F2–F5; remediation re-cast into a 6-phase plan; `_ensure_src_first_import_order` promoted from
 Pending to F5 (7 defs confirmed).
+2026-07-16 — ALL findings implemented across 8 waves (`faa9bf7`…`573e70e`); status → IMPLEMENTED.
+Each fix landed with its anti-regression test; pyright ratchet held at 247 throughout (a mid-sweep
+drift to 305 was reconciled back by proper typing, 0 `# pyright: ignore`). See `## Implementation status`.
+
+## Implementation status
+
+All 28 findings remediated on branch `hardening/wave1-saas-prereqs`. Commit map:
+
+- **`faa9bf7`** — F1 (quality-gate selector repointed + selector-existence contract test), F18
+  (structural-diagnostic task argv), F20 (CI runs the full static tier), F21 (dead AI-structure
+  workflow retired), F22 (Docker CI parity via read-only-mount script), F28a (spec 017 Anti-regression).
+- **`5b5f23a`** — F5 (stale AGENTS/COPILOT links → archive + `:395` contradiction reconciled;
+  doc-link checker widened; 7 `_ensure_src_first_import_order` copies → one `docxaicorrector_bootstrap`;
+  `paradump.txt` removed; 44 generated benchmark artifacts untracked).
+- **`14c9393`** — F4 (artifact-save failure → distinct `processing_completed_unpersisted` + user
+  notice, result still delivered from state), F10 (re-gate the delivered post-cleanup markdown).
+- **`efc9bea`** — F14 (prep cache key fingerprints language/domain/structure-recovery), F15
+  (resolvers honor passed `app_config`), F16 (provider-client cache keyed by full config fingerprint),
+  F25 (compat adapters drop the TypeError retry).
+- **`c99c7e7`** — F7 (PDF parse budgets), F8 (pre-decode image pixel/bomb budget), F11 (textbox-sibling
+  image survives), F12 (PDF dropped-image counters + warning), F13 (per-table authored-signal scan
+  decision), F23 (signal-gated heading promotion), F24 (heading emphasis runs preserved), F27
+  (process-wide admission gate); pyright reconciled 305→247.
+- **`ef257c1`** — F17 (retry after prep failure + reachable reset), F19 (readiness gates on the real
+  `app.ready` marker), F26 (retention on segment/job registries + block-fallbacks); fixed a latent
+  CI-breaker (new Wave-2 test file missing from `TEST_TIER_INVENTORY.md`).
+- **`95f9c92`** — F2 (production validation de-literalized: theology detector config-driven with empty
+  defaults, per-book acceptance dict removed, prompt examples neutralized), F6 (2 dead tests deleted,
+  twins generalized to synthetic terms, Lietaer check → fixture regression, deny-list guard added).
+- **`554fd0b`** + `3fe89b9` — F3 (UI-free `upload_ports`/`session_ports`; the processing/document
+  core no longer transitively imports Streamlit, enforced by a fresh-subprocess boundary test) + a
+  CRLF→LF normalization of `test_processing_runtime.py`.
+- **`573e70e`** — F28b (extracted pure detector/serializer satellites from `quality_gate.py`
+  2177→1982, byte-identical, core pinned; `formatting_mapping.py` intentionally NOT decomposed —
+  see Status).
+
+Honestly-narrowed sub-claims (implemented as the verified reality, not the overstated report): F13
+(document scan-origin kept as a prior + per-table override, not a full rewrite), F23 (only the
+text-only promotion paths gated; the ordinal path was already typography-gated), F28 (only spec 017
+lacked Anti-regression; the mapper stays intact).
 
 ## Problem
 
