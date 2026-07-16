@@ -96,9 +96,12 @@ def _prepare_state(monkeypatch):
     session_state = SessionState()
     monkeypatch.setattr(state.st, "session_state", session_state)
     state.init_session_state()
-    monkeypatch.setattr(processing_service, "set_processing_status", lambda **kwargs: None)
-    monkeypatch.setattr(processing_service, "push_activity", lambda message: None)
-    monkeypatch.setattr(processing_service, "append_image_log", lambda **kwargs: None)
+    # set_processing_status / push_activity / append_image_log now live only in
+    # runtime.state (processing_service lazy-imports them to stay Streamlit-free, round-4
+    # finding 5), so patch the source module, not the service facade.
+    monkeypatch.setattr(state, "set_processing_status", lambda **kwargs: None)
+    monkeypatch.setattr(state, "push_activity", lambda message: None)
+    monkeypatch.setattr(state, "append_image_log", lambda **kwargs: None)
     monkeypatch.setattr(processing_service, "log_event", lambda *args, **kwargs: None)
     monkeypatch.setattr(processing_service, "analyze_image", lambda *args, **kwargs: build_analysis_result())
     monkeypatch.setattr(processing_service, "get_client", lambda: object())
@@ -846,7 +849,7 @@ def test_process_document_images_skips_unsupported_source_image_without_validati
     asset.original_bytes = b"\x01\x02not-a-supported-raster"
     asset.mime_type = "image/x-emf"
 
-    monkeypatch.setattr(processing_service, "append_image_log", lambda **kwargs: image_logs.append(kwargs))
+    monkeypatch.setattr(state, "append_image_log", lambda **kwargs: image_logs.append(kwargs))
     monkeypatch.setattr(
         processing_service,
         "analyze_image",
