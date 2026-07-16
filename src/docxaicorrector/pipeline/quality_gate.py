@@ -45,6 +45,37 @@ from docxaicorrector.pipeline.runtime_display_markdown import (
     _normalize_final_markdown_for_display_hygiene_reporting,
     _normalize_final_markdown_for_quality_gate,
 )
+from docxaicorrector.pipeline.quality_gate_serializers import (  # noqa: F401
+    _serialize_assembly_decisions,
+    _serialize_quality_samples,
+    _serialize_paragraph_break_samples,
+    _serialize_recovered_heading_entries,
+    _serialize_untranslated_structural_sample,
+    _serialize_role_loss_sample,
+    _serialize_heading_demotion_sample,
+)
+from docxaicorrector.pipeline.quality_gate_text_detectors import (  # noqa: F401
+    _STANDALONE_NUMERIC_CONTINUATION_PATTERN,
+    _UNTRANSLATED_BODY_MIN_CHARS,
+    _UNTRANSLATED_BODY_MIN_LATIN_WORDS,
+    _UNTRANSLATED_BODY_FAIL_MIN_CHARS,
+    _UNTRANSLATED_BODY_FAIL_RATIO,
+    _LATIN_LETTER_PATTERN,
+    _LATIN_WORD_PATTERN,
+    _CYRILLIC_LETTER_PATTERN,
+    _MARKDOWN_STRUCTURAL_PREFIX_PATTERN,
+    _URL_OR_DOMAIN_PATTERN,
+    _BIBLIOGRAPHY_LIKE_PATTERN,
+    _strip_structural_markdown_prefix,
+    _is_untranslated_structural_text,
+    _latin_letter_ratio,
+    _is_bibliography_or_url_dominant_text,
+    _is_untranslated_body_text,
+    _is_standalone_numeric_continuation_sample,
+    _REFERENCES_BIB_MARKER_PATTERN,
+    _MULTI_FOOTNOTE_MARKER_PATTERN,
+    _is_citation_form_list_fragment_sample,
+)
 
 
 def _format_translation_quality_gate_failure_message(gate_reasons: Sequence[str]) -> str:
@@ -53,26 +84,6 @@ def _format_translation_quality_gate_failure_message(gate_reasons: Sequence[str]
     if not reasons:
         return f"{base} (translation_quality_gate_failed)"
     return f"{base} (translation_quality_gate_failed) Причины: {', '.join(reasons)}."
-
-
-def _serialize_assembly_decisions(decisions: Sequence[object], *, limit: int = 20) -> list[dict[str, object]]:
-    serialized: list[dict[str, object]] = []
-    for decision in decisions[:limit]:
-        action = getattr(decision, "action", None)
-        block_index = getattr(decision, "block_index", None)
-        paragraph_ids = getattr(decision, "paragraph_ids", ())
-        reason = getattr(decision, "reason", None)
-        serialized.append(
-            {
-                "action": action,
-                "block_index": block_index,
-                "paragraph_ids": list(paragraph_ids) if isinstance(paragraph_ids, tuple) else list(paragraph_ids or []),
-                "reason": reason,
-            }
-        )
-    return serialized
-
-
 
 
 def _resolve_translation_quality_gate_policy(*, context: Any) -> str:
@@ -153,51 +164,6 @@ def _resolve_document_delivery_verdict(
     if quality_status == "fail":
         return "warn"
     return quality_status
-
-
-def _serialize_quality_samples(samples: Sequence[object], *, limit: int = 8) -> list[dict[str, object]]:
-    serialized: list[dict[str, object]] = []
-    for sample in list(samples)[:limit]:
-        line = getattr(sample, "line", None)
-        text = getattr(sample, "text", None)
-        reason = getattr(sample, "reason", None)
-        serialized.append(
-            {
-                "line": line,
-                "text": text,
-                "reason": reason,
-            }
-        )
-    return serialized
-
-
-def _serialize_paragraph_break_samples(samples: Sequence[object], *, limit: int = 8) -> list[dict[str, object]]:
-    serialized: list[dict[str, object]] = []
-    for sample in list(samples)[:limit]:
-        serialized.append(
-            {
-                "source_index": getattr(sample, "source_index", None),
-                "text": getattr(sample, "text", None),
-                "next_text": getattr(sample, "next_text", None),
-            }
-        )
-    return serialized
-
-
-def _serialize_recovered_heading_entries(entries: Sequence[object], *, limit: int = 12) -> list[dict[str, object]]:
-    serialized: list[dict[str, object]] = []
-    for entry in list(entries)[:limit]:
-        serialized.append(
-            {
-                "paragraph_id": getattr(entry, "paragraph_id", None),
-                "source_index": getattr(entry, "source_index", None),
-                "role": getattr(entry, "role", None),
-                "structural_role": getattr(entry, "structural_role", None),
-                "generated_heading_kind": getattr(entry, "generated_heading_kind", None),
-                "text": getattr(entry, "text", None),
-            }
-        )
-    return serialized
 
 
 def _has_source_backed_entry_authority(assembly_entries: Sequence[object]) -> bool:
@@ -378,16 +344,11 @@ def _is_source_backed_list_sample(
     return _is_source_backed_list_entry(entry)
 
 
-_STANDALONE_NUMERIC_CONTINUATION_PATTERN = re.compile(r"^\s*\d{1,6}\.\s*$")
 _ROLE_AWARE_UNMAPPED_SOURCE_REVIEW_RATIO = 0.01
 _ROLE_LOSS_MANUAL_REVIEW_MAX_COUNT = 10
 _ROLE_LOSS_MANUAL_REVIEW_MAX_RATIO = 0.05
 _LEGACY_HYGIENE_MANUAL_REVIEW_MAX_COUNT = 10
 _LEGACY_HYGIENE_MANUAL_REVIEW_MAX_RATIO = 0.01
-_UNTRANSLATED_BODY_MIN_CHARS = 280
-_UNTRANSLATED_BODY_MIN_LATIN_WORDS = 30
-_UNTRANSLATED_BODY_FAIL_MIN_CHARS = 2000
-_UNTRANSLATED_BODY_FAIL_RATIO = 0.02
 
 
 @dataclass(frozen=True)
@@ -451,80 +412,6 @@ _HYGIENE_GATE_SPECS: dict[str, _HygieneGateSpec] = {
         label="Слово содержит символы из разных алфавитов",
     ),
 }
-
-
-_LATIN_LETTER_PATTERN = re.compile(r"[A-Za-z]")
-_LATIN_WORD_PATTERN = re.compile(r"\b[A-Za-z][A-Za-z'’-]{2,}\b")
-_CYRILLIC_LETTER_PATTERN = re.compile(r"[А-Яа-яЁё]")
-_MARKDOWN_STRUCTURAL_PREFIX_PATTERN = re.compile(r"^\s*(?:#{1,6}\s+|>\s+|[-*]\s+|\d+\.\s+)+")
-_URL_OR_DOMAIN_PATTERN = re.compile(r"(?:https?://|www\.|\b[A-Za-z0-9.-]+\.(?:com|org|net|edu|gov|info|io|co)\b)", re.IGNORECASE)
-_BIBLIOGRAPHY_LIKE_PATTERN = re.compile(
-    r"(?:\b(?:doi|isbn|issn|references|bibliography|press|journal|vol\.|pp\.)\b|\(\d{4}\)|\b\d{4}\b)",
-    re.IGNORECASE,
-)
-
-
-def _strip_structural_markdown_prefix(text: str) -> str:
-    stripped = str(text or "").strip()
-    return _MARKDOWN_STRUCTURAL_PREFIX_PATTERN.sub("", stripped).strip()
-
-
-def _is_untranslated_structural_text(text: str) -> bool:
-    stripped = _strip_structural_markdown_prefix(text)
-    if not stripped or _CYRILLIC_LETTER_PATTERN.search(stripped):
-        return False
-    letters = [char for char in stripped if char.isalpha()]
-    if not letters:
-        return False
-    latin_letters = [char for char in letters if _LATIN_LETTER_PATTERN.fullmatch(char)]
-    if len(latin_letters) / len(letters) < 0.8:
-        return False
-    latin_words = _LATIN_WORD_PATTERN.findall(stripped)
-    if len(latin_words) >= 2:
-        return True
-    if len(latin_words) == 1:
-        word = latin_words[0]
-        return len(word) >= 6 and word.isupper()
-    return False
-
-
-def _latin_letter_ratio(text: str) -> float:
-    letters = [char for char in text if char.isalpha()]
-    if not letters:
-        return 0.0
-    latin_letters = [char for char in letters if _LATIN_LETTER_PATTERN.fullmatch(char)]
-    return len(latin_letters) / len(letters)
-
-
-def _is_bibliography_or_url_dominant_text(text: str) -> bool:
-    stripped = _strip_structural_markdown_prefix(text)
-    if not stripped:
-        return False
-    if _URL_OR_DOMAIN_PATTERN.search(stripped):
-        words = _LATIN_WORD_PATTERN.findall(stripped)
-        return len(words) < 40
-    bibliography_hits = len(_BIBLIOGRAPHY_LIKE_PATTERN.findall(stripped))
-    if bibliography_hits >= 3:
-        return True
-    lines = [line.strip() for line in stripped.splitlines() if line.strip()]
-    if lines and sum(1 for line in lines if re.match(r"^\s*(?:\[\d+\]|\d+[.)])\s+", line)) / len(lines) >= 0.5:
-        return True
-    return False
-
-
-def _is_untranslated_body_text(text: str) -> bool:
-    stripped = _strip_structural_markdown_prefix(text)
-    if len(stripped) < _UNTRANSLATED_BODY_MIN_CHARS:
-        return False
-    if _CYRILLIC_LETTER_PATTERN.search(stripped):
-        return False
-    if _is_bibliography_or_url_dominant_text(stripped):
-        return False
-    if _latin_letter_ratio(stripped) < 0.8:
-        return False
-    if len(_LATIN_WORD_PATTERN.findall(stripped)) < _UNTRANSLATED_BODY_MIN_LATIN_WORDS:
-        return False
-    return True
 
 
 def _collect_untranslated_structural_samples(
@@ -599,57 +486,6 @@ def _collect_untranslated_body_samples(
             )
         )
     return samples
-
-
-def _serialize_untranslated_structural_sample(sample: object) -> Mapping[str, object]:
-    return {
-        "line": getattr(sample, "line", None),
-        "text": getattr(sample, "text", None),
-        "reason": getattr(sample, "reason", None),
-        "role": getattr(sample, "role", None),
-        "structural_role": getattr(sample, "structural_role", None),
-        "paragraph_id": getattr(sample, "paragraph_id", None),
-        "char_count": getattr(sample, "char_count", 0),
-    }
-
-
-def _is_standalone_numeric_continuation_sample(sample: object) -> bool:
-    text = str(getattr(sample, "text", "") or "").strip()
-    return bool(_STANDALONE_NUMERIC_CONTINUATION_PATTERN.fullmatch(text))
-
-
-_REFERENCES_BIB_MARKER_PATTERN = re.compile(
-    r"\bстр\.|\bс\.\s*\d|\bpp?\.\s*\d|\bvol\.|\bт\.\s*\d|\bтом\s+\d|№\s*\d|\b\d{4}\s*г\.",
-    re.IGNORECASE,
-)
-# Two or more footnote-number markers ("… 42 … 43 …") introducing a citation clause.
-_MULTI_FOOTNOTE_MARKER_PATTERN = re.compile(r"(?<!\d)\d{1,3}(?=\s+[«*“\"A-ZА-ЯЁ])")
-
-
-def _is_citation_form_list_fragment_sample(sample: object) -> bool:
-    """A FORM-based credit for a list-fragment residue line: creditable as review, not a
-    hard-fail. True for standalone-numeric footnote / page numbers (existing 1‑A crediting)
-    OR a citation/notes-form line carrying at least two citation signals (quoted titles
-    «…», years, "стр."/journal markers, multiple footnote markers). This does NOT verify
-    the sample sits in the references region — `QualityIssueSample` carries only a markdown
-    line number, no source index. The anti-vacuum property is purely form-based: a
-    bullet-led or plain continuation line with no citation signal is never credited, so a
-    real broken body list fragment still hard-fails."""
-    if _is_standalone_numeric_continuation_sample(sample):
-        return True
-    text = str(getattr(sample, "text", "") or "").strip()
-    if not text or text[:2] in ("- ", "* ") or text.startswith(("#", ">")):
-        return False
-    signals = 0
-    if _BIBLIOGRAPHY_LIKE_PATTERN.search(text) is not None:
-        signals += 1
-    if "«" in text or "»" in text:
-        signals += 1
-    if _REFERENCES_BIB_MARKER_PATTERN.search(text) is not None:
-        signals += 1
-    if len(_MULTI_FOOTNOTE_MARKER_PATTERN.findall(text)) >= 2:
-        signals += 1
-    return signals >= 2
 
 
 def _is_reviewable_list_fragment_residue(
@@ -862,36 +698,6 @@ def _effective_formatting_coverage_samples_by_class(
         if len(selected) >= limit:
             break
     return selected
-
-
-def _serialize_role_loss_sample(sample: Mapping[str, object]) -> dict[str, object]:
-    text = sample.get("text_preview") or sample.get("generated_text_preview") or ""
-    return {
-        "line": None,
-        "text": text,
-        "reason": "content_survived_but_format_role_lost",
-        "role": sample.get("role"),
-        "structural_role": sample.get("structural_role"),
-        # None on today's residual rows; the heading role above still yields "Заголовок".
-        "heading_level": sample.get("heading_level"),
-    }
-
-
-def _serialize_heading_demotion_sample(sample: Mapping[str, object]) -> dict[str, object]:
-    """Serialize a 1‑D heading-demotion sample (mapped source-heading rendered as
-    body/list) into the role_loss review-item shape, tagged with its own reason so the
-    UI can distinguish the demoted-heading axis from unmapped role-loss."""
-    return {
-        "line": None,
-        "text": sample.get("text_preview") or "",
-        "target_text": sample.get("target_text_preview") or "",
-        "reason": "content_survived_but_heading_demoted",
-        "role": sample.get("source_role"),
-        "structural_role": sample.get("source_structural_role"),
-        "heading_level": sample.get("source_heading_level"),
-        "source_index": sample.get("source_index"),
-        "mapped_target_index": sample.get("mapped_target_index"),
-    }
 
 
 def _controlled_fallback_review_samples(payload: Mapping[str, object], *, limit: int = 8) -> tuple[int, list[dict[str, object]]]:
@@ -2173,5 +1979,4 @@ def _build_quality_gate_activity_message(gate_reasons: Sequence[str]) -> str:
     if not joined_reasons:
         return "Итоговый перевод отклонён document-level quality gate."
     return f"Итоговый перевод отклонён quality gate: {joined_reasons}."
-
 
