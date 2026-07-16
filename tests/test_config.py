@@ -1521,3 +1521,53 @@ def test_validate_provider_model_contracts_allows_openrouter_structure_recogniti
         },
         paragraph_boundary_settings={"paragraph_boundary_ai_review_enabled": False},
     )
+
+
+def test_get_provider_client_cache_is_config_aware(monkeypatch, tmp_path):
+    # F16: caching keyed only by provider name returned a stale client when a second
+    # call passed a different resolved config (base_url/timeout/headers). The cache must
+    # be keyed on the full resolved client fingerprint instead.
+    dotenv_path = tmp_path / ".env"
+    dotenv_path.write_text("OPENAI_API_KEY=test-key\n", encoding="utf-8")
+
+    created = []
+
+    class FakeOpenAI:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+            created.append(self)
+
+    monkeypatch.setattr(config, "ENV_PATH", dotenv_path)
+    monkeypatch.setattr(config, "OpenAI", FakeOpenAI)
+    monkeypatch.setattr(config, "_CLIENT", None)
+    monkeypatch.setattr(config, "_CLIENTS_BY_PROVIDER", {})
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+
+    def _registry(base_url, timeout):
+        return config.ProviderRegistry(
+            openai=config.ProviderConfig(
+                name="openai",
+                enabled=True,
+                api_key_env="OPENAI_API_KEY",
+                base_url=base_url,
+                timeout_seconds=timeout,
+            ),
+            openrouter=config.ProviderConfig(
+                name="openrouter", enabled=False, api_key_env="OPENROUTER_API_KEY"
+            ),
+        )
+
+    registry_a = _registry("https://a.example/v1", 30.0)
+    registry_b = _registry("https://b.example/v1", 90.0)
+
+    client_a = config.get_provider_client("openai", config_like=registry_a)
+    client_b = config.get_provider_client("openai", config_like=registry_b)
+
+    # Different resolved config => different client instances (no stale reuse).
+    assert client_a is not client_b
+    assert len(created) == 2
+
+    # Identical config => same cached instance returned.
+    client_a_again = config.get_provider_client("openai", config_like=registry_a)
+    assert client_a_again is client_a
+    assert len(created) == 2

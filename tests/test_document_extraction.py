@@ -128,7 +128,7 @@ def _set_style_alignment(style, value: str) -> None:
 
 
 def test_extraction_cleanup_removes_textbox_artifacts_and_reassigns_identity(tmp_path, monkeypatch):
-    monkeypatch.setattr(document_extraction, "_resolve_paragraph_boundary_normalization_settings", lambda: ("off", False))
+    monkeypatch.setattr(document_extraction, "_resolve_paragraph_boundary_normalization_settings", lambda *a, **k: ("off", False))
     document_obj = Document()
     document_obj.add_heading("Synthetic Title", level=1)
     for page_number in range(1, 5):
@@ -163,10 +163,10 @@ def test_extraction_passes_legacy_structure_recovery_mode_to_helpers(tmp_path, m
     source_path = tmp_path / "legacy-structure-recovery.docx"
     document_obj.save(source_path)
 
-    monkeypatch.setattr(document_extraction, "_resolve_paragraph_boundary_normalization_settings", lambda: ("off", False))
+    monkeypatch.setattr(document_extraction, "_resolve_paragraph_boundary_normalization_settings", lambda *a, **k: ("off", False))
     monkeypatch.setattr(document_extraction, "_resolve_layout_artifact_cleanup_settings", lambda app_config=None: (True, 3, 80, False, "legacy"))
-    monkeypatch.setattr(document_extraction, "_resolve_relation_normalization_settings", lambda: (False, "phase2_default", (), False))
-    monkeypatch.setattr(document_extraction, "_resolve_paragraph_boundary_ai_review_settings", lambda: (False, "off", 0, 0, 0, ""))
+    monkeypatch.setattr(document_extraction, "_resolve_relation_normalization_settings", lambda *a, **k: (False, "phase2_default", (), False))
+    monkeypatch.setattr(document_extraction, "_resolve_paragraph_boundary_ai_review_settings", lambda *a, **k: (False, "off", 0, 0, 0, ""))
     monkeypatch.setattr(document_extraction, "build_paragraph_relations", lambda paragraphs, enabled_relation_kinds=(): ([], None))
     monkeypatch.setattr(document_extraction, "apply_relation_side_effects", lambda paragraphs, relations: None)
     def fake_reclassify_adjacent_captions(
@@ -452,7 +452,7 @@ def test_extract_document_content_from_docx_preserves_source_index_as_provenance
 
 
 def test_extract_document_content_with_normalization_reports_populates_page_number_stage0_signals(tmp_path, monkeypatch):
-    monkeypatch.setattr(document_extraction, "_resolve_paragraph_boundary_normalization_settings", lambda: ("off", False))
+    monkeypatch.setattr(document_extraction, "_resolve_paragraph_boundary_normalization_settings", lambda *a, **k: ("off", False))
     document_obj = Document()
     document_obj.add_paragraph("Body content")
     document_obj.add_paragraph("12")
@@ -1992,3 +1992,64 @@ def test_extract_document_content_from_docx_renders_nested_list_levels():
     assert [paragraph.role for paragraph in paragraphs] == ["list", "list", "list"]
     assert [paragraph.list_level for paragraph in paragraphs] == [0, 1, 2]
     assert all(paragraph.list_kind == "unordered" for paragraph in paragraphs)
+
+
+def test_boundary_normalization_resolver_uses_passed_app_config(monkeypatch):
+    # F15: the boundary-normalization resolver must honour an explicitly passed
+    # app_config (the one threaded from extraction), not the GLOBAL load_app_config().
+    import docxaicorrector.core.config as config
+
+    global_config = {
+        "paragraph_boundary_normalization_enabled": True,
+        "paragraph_boundary_normalization_mode": "high_only",
+        "paragraph_boundary_normalization_save_debug_artifacts": True,
+    }
+    monkeypatch.setattr(config, "load_app_config", lambda: global_config)
+
+    # No app_config => falls back to the global (proves the global path still works).
+    global_mode, _ = document_extraction._resolve_paragraph_boundary_normalization_settings()
+    assert global_mode == "high_only"
+
+    # Passed app_config overrides the global (disabled => "off").
+    override_config = {"paragraph_boundary_normalization_enabled": False}
+    override_mode, _ = document_extraction._resolve_paragraph_boundary_normalization_settings(override_config)
+    assert override_mode == "off"
+    assert override_mode != global_mode
+
+
+def test_relation_normalization_resolver_uses_passed_app_config(monkeypatch):
+    # F15: relation-normalization resolver honours the passed app_config.
+    import docxaicorrector.core.config as config
+
+    global_config = {"relation_normalization_enabled": True}
+    monkeypatch.setattr(config, "load_app_config", lambda: global_config)
+
+    global_enabled = document_extraction._resolve_relation_normalization_settings()[0]
+    assert global_enabled is True
+
+    override_enabled = document_extraction._resolve_relation_normalization_settings(
+        {"relation_normalization_enabled": False}
+    )[0]
+    assert override_enabled is False
+    assert override_enabled != global_enabled
+
+
+def test_ai_review_resolver_uses_passed_app_config(monkeypatch):
+    # F15: paragraph-boundary AI-review resolver honours the passed app_config.
+    import docxaicorrector.core.config as config
+
+    global_config = {
+        "paragraph_boundary_ai_review_enabled": True,
+        "paragraph_boundary_ai_review_mode": "review_only",
+    }
+    monkeypatch.setattr(config, "load_app_config", lambda: global_config)
+    monkeypatch.setattr(config, "get_model_role_value", lambda app_config, role: "openai:gpt-test")
+
+    global_mode = document_extraction._resolve_paragraph_boundary_ai_review_settings()[1]
+    assert global_mode == "review_only"
+
+    override_mode = document_extraction._resolve_paragraph_boundary_ai_review_settings(
+        {"paragraph_boundary_ai_review_enabled": False}
+    )[1]
+    assert override_mode == "off"
+    assert override_mode != global_mode

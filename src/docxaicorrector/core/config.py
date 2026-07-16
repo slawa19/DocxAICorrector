@@ -1415,6 +1415,41 @@ def _get_anthropic_client_class() -> type["AnthropicClient"]:
     return client_cls
 
 
+def _build_provider_client_cache_key(normalized_provider_name: str, provider_config: ProviderConfig) -> str:
+    # F16: the resolved client is shaped by base_url, default headers (referer/title),
+    # timeout, and which env var supplies the api key — not the provider name alone.
+    # Key the cache on a fingerprint of ALL of those. The api-key ENV NAME (identity)
+    # is included; the secret VALUE is never placed in the key.
+    header_items = []
+    if provider_config.referer:
+        header_items.append(("HTTP-Referer", str(provider_config.referer)))
+    if provider_config.title:
+        header_items.append(("X-OpenRouter-Title", str(provider_config.title)))
+    header_fingerprint = ";".join(f"{name}={value}" for name, value in sorted(header_items))
+    timeout_fingerprint = "" if provider_config.timeout_seconds is None else repr(provider_config.timeout_seconds)
+    return "|".join(
+        (
+            normalized_provider_name,
+            str(provider_config.base_url or ""),
+            header_fingerprint,
+            timeout_fingerprint,
+            str(provider_config.api_key_env or ""),
+        )
+    )
+
+
+def _default_openai_client_cache_key() -> str | None:
+    # The `_CLIENT` fast-path holds the default openai client (built via get_client()
+    # with config_like=None). Only reuse it when the requested config resolves to that
+    # same default fingerprint, so a config-overriding call does not receive the stale
+    # default client.
+    try:
+        default_openai_config = get_provider_config("openai", None)
+    except Exception:
+        return None
+    return _build_provider_client_cache_key("openai", default_openai_config)
+
+
 def get_provider_client(provider_name: str, *, config_like: object | None = None) -> object:
     normalized_provider_name = provider_name.strip().lower()
     provider_config = get_provider_config(normalized_provider_name, config_like)
@@ -1423,20 +1458,22 @@ def get_provider_client(provider_name: str, *, config_like: object | None = None
             f"Provider '{normalized_provider_name}' отключён, но selector '{normalized_provider_name}:<runtime>' требует его использования."
         )
 
+    client_cache_key = _build_provider_client_cache_key(normalized_provider_name, provider_config)
+
     global _CLIENT
-    cached_client = _CLIENTS_BY_PROVIDER.get(normalized_provider_name)
+    cached_client = _CLIENTS_BY_PROVIDER.get(client_cache_key)
     if cached_client is not None:
         return cached_client  # type: ignore[return-value]
-    if normalized_provider_name == "openai" and _CLIENT is not None:
-        _CLIENTS_BY_PROVIDER[normalized_provider_name] = _CLIENT
+    if normalized_provider_name == "openai" and _CLIENT is not None and client_cache_key == _default_openai_client_cache_key():
+        _CLIENTS_BY_PROVIDER[client_cache_key] = _CLIENT
         return _CLIENT
 
     with _CLIENT_LOCK:
-        cached_client = _CLIENTS_BY_PROVIDER.get(normalized_provider_name)
+        cached_client = _CLIENTS_BY_PROVIDER.get(client_cache_key)
         if cached_client is not None:
             return cached_client  # type: ignore[return-value]
-        if normalized_provider_name == "openai" and _CLIENT is not None:
-            _CLIENTS_BY_PROVIDER[normalized_provider_name] = _CLIENT
+        if normalized_provider_name == "openai" and _CLIENT is not None and client_cache_key == _default_openai_client_cache_key():
+            _CLIENTS_BY_PROVIDER[client_cache_key] = _CLIENT
             return _CLIENT
 
         load_project_dotenv()
@@ -1461,8 +1498,8 @@ def get_provider_client(provider_name: str, *, config_like: object | None = None
             client = _get_anthropic_client_class()(**client_kwargs)
         else:
             client = _get_openai_client_class()(**client_kwargs)
-        _CLIENTS_BY_PROVIDER[normalized_provider_name] = client
-        if normalized_provider_name == "openai":
+        _CLIENTS_BY_PROVIDER[client_cache_key] = client
+        if normalized_provider_name == "openai" and client_cache_key == _default_openai_client_cache_key():
             _CLIENT = client
         return client
 

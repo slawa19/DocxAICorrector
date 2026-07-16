@@ -1038,3 +1038,124 @@ def test_prepare_document_for_processing_emits_heartbeat_during_extraction(monke
     assert len(heartbeat_events) >= 2, [e.get("detail") for e in events]
     # Progress value during heartbeat should match the wired-in 0.22 anchor.
     assert all(abs(float(e["progress"]) - 0.22) < 1e-6 for e in heartbeat_events)
+
+
+def test_build_prepared_source_key_distinguishes_target_language():
+    # F14: two keys differing ONLY by target_language must be distinct so a run with a
+    # different target language cannot serve another run's cached glossary/context.
+    base_kwargs = dict(
+        processing_operation="edit",
+        paragraph_boundary_normalization_mode="high_only",
+        paragraph_boundary_ai_review_mode="off",
+        source_language="en",
+        translation_domain="general",
+        structure_recovery_enabled=False,
+        structure_recovery_mode="legacy",
+    )
+    key_ru = preparation.build_prepared_source_key("token", 6000, target_language="ru", **base_kwargs)
+    key_de = preparation.build_prepared_source_key("token", 6000, target_language="de", **base_kwargs)
+    assert key_ru != key_de
+
+
+def test_build_prepared_source_key_distinguishes_translation_domain():
+    # F14: keys differing ONLY by translation_domain must be distinct.
+    base_kwargs = dict(source_language="en", target_language="ru")
+    key_general = preparation.build_prepared_source_key("token", 6000, translation_domain="general", **base_kwargs)
+    key_legal = preparation.build_prepared_source_key("token", 6000, translation_domain="legal", **base_kwargs)
+    assert key_general != key_legal
+
+
+def test_build_prepared_source_key_distinguishes_structure_recovery_mode():
+    # F14: keys differing ONLY by structure-recovery mode must be distinct.
+    key_legacy = preparation.build_prepared_source_key(
+        "token", 6000, structure_recovery_enabled=True, structure_recovery_mode="legacy"
+    )
+    key_ai_first = preparation.build_prepared_source_key(
+        "token", 6000, structure_recovery_enabled=True, structure_recovery_mode="ai_first"
+    )
+    assert key_legacy != key_ai_first
+
+
+def test_build_prepared_source_key_identical_settings_collide():
+    # F14: identical settings must still produce the SAME key (cache hit preserved).
+    kwargs = dict(
+        target_language="ru",
+        source_language="en",
+        translation_domain="general",
+        structure_recovery_enabled=True,
+        structure_recovery_mode="ai_first",
+    )
+    key_a = preparation.build_prepared_source_key("token", 6000, **kwargs)
+    key_b = preparation.build_prepared_source_key("token", 6000, **kwargs)
+    assert key_a == key_b
+
+
+def test_build_editing_jobs_adapter_propagates_internal_type_error_without_retry():
+    # F25: a target that accepts the signature-checked kwargs but raises TypeError
+    # DEEP inside must propagate and be invoked exactly once (no swallow/retry).
+    calls = {"count": 0}
+
+    def flaky_build_editing_jobs(blocks, *, max_chars, processing_operation="edit", structure_phase="pre_ai_diagnostic"):
+        calls["count"] += 1
+        raise TypeError("internal boom, not a signature mismatch")
+
+    original = preparation.build_editing_jobs
+    preparation.build_editing_jobs = flaky_build_editing_jobs
+    try:
+        with pytest.raises(TypeError, match="internal boom"):
+            preparation._build_editing_jobs_with_optional_operation(
+                blocks=["b"],
+                max_chars=6000,
+                processing_operation="edit",
+                structure_phase="pre_ai_diagnostic",
+            )
+    finally:
+        preparation.build_editing_jobs = original
+    assert calls["count"] == 1
+
+
+def test_build_semantic_blocks_adapter_propagates_internal_type_error_without_retry():
+    # F25: same contract for the semantic-blocks adapter.
+    calls = {"count": 0}
+
+    def flaky_build_semantic_blocks(paragraphs, *, max_chars, relations, hard_boundary_paragraph_ids=None, structure_phase="pre_ai_diagnostic"):
+        calls["count"] += 1
+        raise TypeError("internal boom, not a signature mismatch")
+
+    original = preparation.build_semantic_blocks
+    preparation.build_semantic_blocks = flaky_build_semantic_blocks
+    try:
+        with pytest.raises(TypeError, match="internal boom"):
+            preparation._build_semantic_blocks_with_optional_boundaries(
+                paragraphs=["p"],
+                max_chars=6000,
+                relations=[],
+                hard_boundary_paragraph_ids=set(),
+                structure_phase="pre_ai_diagnostic",
+            )
+    finally:
+        preparation.build_semantic_blocks = original
+    assert calls["count"] == 1
+
+
+def test_detect_segments_adapter_propagates_internal_type_error_without_retry():
+    # F25: same contract for the segment-detection adapter.
+    calls = {"count": 0}
+
+    def flaky_detect_document_segments(paragraphs, *, source_content_hash16, chunk_size, structure_phase="pre_ai_diagnostic"):
+        calls["count"] += 1
+        raise TypeError("internal boom, not a signature mismatch")
+
+    original = preparation.detect_document_segments
+    preparation.detect_document_segments = flaky_detect_document_segments
+    try:
+        with pytest.raises(TypeError, match="internal boom"):
+            preparation._detect_document_segments_with_optional_phase(
+                paragraphs=["p"],
+                source_content_hash16="abc123",
+                chunk_size=6000,
+                structure_phase="pre_ai_diagnostic",
+            )
+    finally:
+        preparation.detect_document_segments = original
+    assert calls["count"] == 1

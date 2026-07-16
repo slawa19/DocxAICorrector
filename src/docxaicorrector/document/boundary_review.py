@@ -17,10 +17,12 @@ from docxaicorrector.runtime.artifact_retention import prune_artifact_dir
 def resolve_paragraph_boundary_ai_review_settings(
     *,
     allowed_modes: tuple[str, ...] | list[str] | set[str],
+    app_config: object | None = None,
 ) -> tuple[bool, str, int, int, int, str]:
     from docxaicorrector.core.config import get_model_role_value, load_app_config
 
-    app_config = load_app_config()
+    if app_config is None:
+        app_config = load_app_config()
     enabled = bool(app_config.get("paragraph_boundary_ai_review_enabled", False))
     mode = str(app_config.get("paragraph_boundary_ai_review_mode", "off") or "off")
     if mode not in allowed_modes:

@@ -206,7 +206,7 @@ def extract_document_content_with_normalization_reports(
     document = Document(BytesIO(source_bytes))
     scan_origin = classify_document_scan_origin(source_bytes)
     raw_blocks, image_assets = _build_raw_document_blocks(document, is_scan_origin=scan_origin.is_scan_origin)
-    normalization_mode, save_boundary_debug_artifacts = _resolve_paragraph_boundary_normalization_settings()
+    normalization_mode, save_boundary_debug_artifacts = _resolve_paragraph_boundary_normalization_settings(app_config)
     normalized_blocks, boundary_report = _normalize_paragraph_boundaries(raw_blocks, mode=normalization_mode)
     structure_recovery_enabled, structure_recovery_mode = _resolve_structure_recovery_runtime(app_config=app_config)
     paragraphs = _build_logical_paragraph_units(
@@ -256,7 +256,7 @@ def extract_document_content_with_normalization_reports(
         relation_profile,
         enabled_relation_kinds,
         save_relation_debug_artifacts,
-    ) = _resolve_relation_normalization_settings()
+    ) = _resolve_relation_normalization_settings(app_config)
     (
         ai_review_enabled,
         ai_review_mode,
@@ -264,7 +264,7 @@ def extract_document_content_with_normalization_reports(
         ai_review_timeout_seconds,
         ai_review_max_tokens_per_candidate,
         ai_review_model,
-    ) = _resolve_paragraph_boundary_ai_review_settings()
+    ) = _resolve_paragraph_boundary_ai_review_settings(app_config)
     try:
         relations, relation_report = build_paragraph_relations(
             paragraphs,
@@ -983,16 +983,21 @@ def _apply_or_hint_stage0_toc_role(paragraph: ParagraphUnit, *, structural_role:
     paragraph.structural_role = normalize_heuristic_structural_role_hint(structural_role) or "body"
 
 
-def _resolve_paragraph_boundary_normalization_settings() -> tuple[str, bool]:
+def _resolve_paragraph_boundary_normalization_settings(
+    app_config: Mapping[str, object] | None = None,
+) -> tuple[str, bool]:
     return _resolve_paragraph_boundary_normalization_settings_impl(
         allowed_modes=PARAGRAPH_BOUNDARY_NORMALIZATION_MODE_VALUES,
+        app_config=app_config,
     )
 
 
-def _resolve_relation_normalization_settings() -> tuple[bool, str, tuple[str, ...], bool]:
+def _resolve_relation_normalization_settings(
+    app_config: Mapping[str, object] | None = None,
+) -> tuple[bool, str, tuple[str, ...], bool]:
     from docxaicorrector.document.relations import _resolve_relation_normalization_settings as _resolve_relation_normalization_settings_impl
 
-    return _resolve_relation_normalization_settings_impl()
+    return _resolve_relation_normalization_settings_impl(app_config=app_config)
 
 
 def _resolve_layout_artifact_cleanup_settings(*, app_config: Mapping[str, object] | None = None) -> tuple[bool, int, int, bool, str]:
@@ -1021,9 +1026,12 @@ def _resolve_structure_recovery_runtime(*, app_config: Mapping[str, object] | No
     return structure_recovery_enabled, structure_recovery_mode
 
 
-def _resolve_paragraph_boundary_ai_review_settings() -> tuple[bool, str, int, int, int, str]:
+def _resolve_paragraph_boundary_ai_review_settings(
+    app_config: Mapping[str, object] | None = None,
+) -> tuple[bool, str, int, int, int, str]:
     return _resolve_paragraph_boundary_ai_review_settings_impl(
         allowed_modes=PARAGRAPH_BOUNDARY_AI_REVIEW_MODE_VALUES,
+        app_config=app_config,
     )
 
 

@@ -282,14 +282,37 @@ def build_prepared_source_key(
     paragraph_boundary_ai_review_mode: str = "off",
     relation_normalization_key: str = "phase2_default:epigraph_attribution,image_caption,table_caption,toc_region",
     layout_artifact_cleanup_key: str = "1:3:80",
+    source_language: str = "en",
+    target_language: str = "ru",
+    translation_domain: str = "general",
+    structure_recovery_enabled: bool = False,
+    structure_recovery_mode: str = "legacy",
 ) -> str:
     resolved_operation = str(processing_operation or "edit").strip().lower() or "edit"
     operation_suffix = "" if resolved_operation == "edit" else f":op={resolved_operation}"
+    normalized_source_language = str(source_language or "en").strip().lower() or "en"
+    normalized_target_language = str(target_language or "ru").strip().lower() or "ru"
+    normalized_translation_domain = str(translation_domain or "general").strip().lower() or "general"
+    normalized_structure_recovery_mode = str(structure_recovery_mode or "legacy").strip().lower() or "legacy"
+    structure_recovery_flag = "1" if bool(structure_recovery_enabled) else "0"
+    # F14: fold every setting that influences the prepared/cached result (languages,
+    # translation domain, structure-recovery knobs) into the key so run B cannot serve
+    # run A's glossary/context. `pk` is an explicit key-format version tag: bumping it
+    # invalidates stale entries whenever this fingerprint layout changes.
+    context_fingerprint = (
+        f":pk=2"
+        f":sl={normalized_source_language}"
+        f":tl={normalized_target_language}"
+        f":td={normalized_translation_domain}"
+        f":sr={structure_recovery_flag}"
+        f":srm={normalized_structure_recovery_mode}"
+    )
     return (
         f"{uploaded_file_token}:{chunk_size}:{paragraph_boundary_normalization_mode}:"
         f"{paragraph_boundary_ai_review_mode}:{relation_normalization_key}:lc={layout_artifact_cleanup_key}"
         f"{operation_suffix}"
         f":pv={PDF_IMPORT_PARAGRAPH_LOGIC_VERSION}"
+        f"{context_fingerprint}"
     )
 
 
@@ -310,55 +333,40 @@ def _build_editing_jobs_with_optional_operation(*, blocks, max_chars: int, proce
         if str(getattr(build_editing_jobs, "__module__", "")) not in {"document", "document_semantic_blocks"}:
             return build_editing_jobs(blocks, max_chars=max_chars)
         raise RuntimeError("build_editing_jobs must accept processing_operation or structure_phase")
-    try:
-        kwargs: dict[str, Any] = {"max_chars": max_chars}
-        if accepts_processing_operation:
-            kwargs["processing_operation"] = processing_operation
-        if accepts_structure_phase:
-            kwargs["structure_phase"] = structure_phase
-        return build_editing_jobs(blocks, **kwargs)
-    except TypeError:
-        return build_editing_jobs(blocks, max_chars=max_chars)
+    # F25: kwargs are already gated by inspect.signature, so call exactly once. A
+    # genuine internal TypeError must propagate rather than be misread as a signature
+    # mismatch (which would silently re-run the target and double its side effects).
+    kwargs: dict[str, Any] = {"max_chars": max_chars}
+    if accepts_processing_operation:
+        kwargs["processing_operation"] = processing_operation
+    if accepts_structure_phase:
+        kwargs["structure_phase"] = structure_phase
+    return build_editing_jobs(blocks, **kwargs)
 
 
 def _build_semantic_blocks_with_optional_boundaries(*, paragraphs, max_chars: int, relations, hard_boundary_paragraph_ids: set[str], structure_phase: str):
     signature = inspect.signature(build_semantic_blocks)
     accepts_hard_boundaries = "hard_boundary_paragraph_ids" in signature.parameters
     accepts_structure_phase = "structure_phase" in signature.parameters
+    # F25: signature-gated kwargs, called exactly once; internal TypeErrors propagate.
+    kwargs: dict[str, Any] = {"max_chars": max_chars, "relations": relations}
     if accepts_hard_boundaries:
-        try:
-            kwargs = {
-                "max_chars": max_chars,
-                "relations": relations,
-                "hard_boundary_paragraph_ids": hard_boundary_paragraph_ids,
-            }
-            if accepts_structure_phase:
-                kwargs["structure_phase"] = structure_phase
-            return build_semantic_blocks(paragraphs, **kwargs)
-        except TypeError:
-            pass
+        kwargs["hard_boundary_paragraph_ids"] = hard_boundary_paragraph_ids
     if accepts_structure_phase:
-        return build_semantic_blocks(paragraphs, max_chars=max_chars, relations=relations, structure_phase=structure_phase)
-    return build_semantic_blocks(paragraphs, max_chars=max_chars, relations=relations)
+        kwargs["structure_phase"] = structure_phase
+    return build_semantic_blocks(paragraphs, **kwargs)
 
 
 def _detect_document_segments_with_optional_phase(*, paragraphs, source_content_hash16: str, chunk_size: int, structure_phase: str):
     signature = inspect.signature(detect_document_segments)
+    # F25: signature-gated kwargs, called exactly once; internal TypeErrors propagate.
+    kwargs: dict[str, Any] = {
+        "source_content_hash16": source_content_hash16,
+        "chunk_size": chunk_size,
+    }
     if "structure_phase" in signature.parameters:
-        try:
-            return detect_document_segments(
-                paragraphs,
-                source_content_hash16=source_content_hash16,
-                chunk_size=chunk_size,
-                structure_phase=structure_phase,
-            )
-        except TypeError:
-            pass
-    return detect_document_segments(
-        paragraphs,
-        source_content_hash16=source_content_hash16,
-        chunk_size=chunk_size,
-    )
+        kwargs["structure_phase"] = structure_phase
+    return detect_document_segments(paragraphs, **kwargs)
 
 
 def _build_document_context_glossary_terms(*, translation_domain: str, source_text: str) -> tuple[GlossaryTerm, ...]:
@@ -858,6 +866,19 @@ def prepare_document_for_processing(
         )
         relation_normalization_key = f"{relation_profile}:{enabled_relation_kinds}"
     layout_cleanup_key = _resolve_layout_cleanup_cache_key(resolved_config)
+    key_source_language = str(
+        resolved_config.get("source_language", resolved_config.get("source_language_default", "en")) or "en"
+    ).strip().lower() or "en"
+    key_target_language = str(
+        resolved_config.get("target_language", resolved_config.get("target_language_default", "ru")) or "ru"
+    ).strip().lower() or "ru"
+    key_translation_domain = str(
+        resolved_config.get("translation_domain_default", "general") or "general"
+    ).strip().lower() or "general"
+    key_structure_recovery_enabled = bool(resolved_config.get("structure_recovery_enabled", False))
+    key_structure_recovery_mode = str(
+        resolved_config.get("structure_recovery_mode", "legacy") or "legacy"
+    ).strip().lower() or "legacy"
     prepared_source_key = build_prepared_source_key(
         uploaded_payload.file_token,
         chunk_size,
@@ -866,6 +887,11 @@ def prepare_document_for_processing(
         paragraph_boundary_ai_review_mode=ai_review_mode,
         relation_normalization_key=relation_normalization_key,
         layout_artifact_cleanup_key=layout_cleanup_key,
+        source_language=key_source_language,
+        target_language=key_target_language,
+        translation_domain=key_translation_domain,
+        structure_recovery_enabled=key_structure_recovery_enabled,
+        structure_recovery_mode=key_structure_recovery_mode,
     )
     cached, in_flight, cache_level = _read_or_reserve_cached_prepared_document(
         session_state=session_state,
