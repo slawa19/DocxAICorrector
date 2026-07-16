@@ -1,0 +1,30 @@
+{
+  "cross_language_valid": {
+    "is_valid": true,
+    "reason": null
+  },
+  "empty_toc_block": {
+    "is_valid": false,
+    "reason": "empty_toc_block"
+  },
+  "lost_toc_page_markers": {
+    "is_valid": false,
+    "reason": "lost_toc_page_markers"
+  },
+  "same_language_valid": {
+    "is_valid": true,
+    "reason": null
+  },
+  "toc_paragraph_count_drift": {
+    "is_valid": false,
+    "reason": "toc_paragraph_count_drift"
+  },
+  "too_many_unchanged_toc_entries": {
+    "is_valid": false,
+    "reason": "too_many_unchanged_toc_entries"
+  },
+  "unchanged_toc_header": {
+    "is_valid": false,
+    "reason": "unchanged_toc_header"
+  }
+}

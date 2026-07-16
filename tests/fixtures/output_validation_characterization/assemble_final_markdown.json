@@ -1,0 +1,251 @@
+{
+  "adjacent_body_fragment_merge": {
+    "diagnostics": {
+      "accepted_merges": 1,
+      "demoted_false_headings": 0,
+      "denied_merges": 0,
+      "fallback_paragraphs": 0,
+      "inconsistent_registry_blocks": [],
+      "merge_decisions": [
+        {
+          "action": "merge",
+          "block_index": 1,
+          "paragraph_ids": [
+            "body-left",
+            "body-right"
+          ],
+          "reason": "adjacent_continuation_recovery"
+        }
+      ],
+      "paragraph_count_drift": -1,
+      "protected_boundary_denials": 0,
+      "registry_covered_paragraphs": 2
+    },
+    "entries": [
+      {
+        "block_index": 1,
+        "boundary_confidence": "explicit",
+        "boundary_source": "raw",
+        "controlled_fallback": false,
+        "controlled_fallback_kind": null,
+        "from_registry": true,
+        "generated_heading_kind": null,
+        "heading_level": null,
+        "list_kind": null,
+        "merged_paragraph_ids": [
+          "body-left",
+          "body-right"
+        ],
+        "paragraph_id": "body-left",
+        "role": "body",
+        "source_index": 0,
+        "structural_role": "body",
+        "text": "Для христиан жизненно важно помнить знамения, чтобы, если им будет даровано пережить Великую скорбь",
+        "used_fallback": false
+      }
+    ],
+    "final_markdown": "Для христиан жизненно важно помнить знамения, чтобы, если им будет даровано пережить Великую скорбь"
+  },
+  "inconsistent_registry_fallback": {
+    "diagnostics": {
+      "accepted_merges": 0,
+      "demoted_false_headings": 0,
+      "denied_merges": 1,
+      "fallback_paragraphs": 2,
+      "inconsistent_registry_blocks": [
+        1
+      ],
+      "merge_decisions": [],
+      "paragraph_count_drift": 0,
+      "protected_boundary_denials": 0,
+      "registry_covered_paragraphs": 0
+    },
+    "entries": [
+      {
+        "block_index": 1,
+        "boundary_confidence": null,
+        "boundary_source": null,
+        "controlled_fallback": false,
+        "controlled_fallback_kind": null,
+        "from_registry": false,
+        "generated_heading_kind": null,
+        "heading_level": null,
+        "list_kind": null,
+        "merged_paragraph_ids": [],
+        "paragraph_id": null,
+        "role": null,
+        "source_index": null,
+        "structural_role": null,
+        "text": "Первый абзац.",
+        "used_fallback": true
+      },
+      {
+        "block_index": 1,
+        "boundary_confidence": null,
+        "boundary_source": null,
+        "controlled_fallback": false,
+        "controlled_fallback_kind": null,
+        "from_registry": false,
+        "generated_heading_kind": null,
+        "heading_level": null,
+        "list_kind": null,
+        "merged_paragraph_ids": [],
+        "paragraph_id": null,
+        "role": null,
+        "source_index": null,
+        "structural_role": null,
+        "text": "Второй абзац.",
+        "used_fallback": true
+      }
+    ],
+    "final_markdown": "Первый абзац.\n\nВторой абзац."
+  },
+  "partial_registry_uncovered": {
+    "diagnostics": {
+      "accepted_merges": 0,
+      "demoted_false_headings": 0,
+      "denied_merges": 3,
+      "fallback_paragraphs": 2,
+      "inconsistent_registry_blocks": [],
+      "merge_decisions": [],
+      "paragraph_count_drift": 0,
+      "protected_boundary_denials": 0,
+      "registry_covered_paragraphs": 2
+    },
+    "entries": [
+      {
+        "block_index": 1,
+        "boundary_confidence": "explicit",
+        "boundary_source": "raw",
+        "controlled_fallback": false,
+        "controlled_fallback_kind": null,
+        "from_registry": true,
+        "generated_heading_kind": null,
+        "heading_level": null,
+        "list_kind": null,
+        "merged_paragraph_ids": [
+          "p1"
+        ],
+        "paragraph_id": "p1",
+        "role": "body",
+        "source_index": 0,
+        "structural_role": "body",
+        "text": "Первый абзац исходного блока.",
+        "used_fallback": false
+      },
+      {
+        "block_index": 1,
+        "boundary_confidence": "explicit",
+        "boundary_source": "raw",
+        "controlled_fallback": false,
+        "controlled_fallback_kind": null,
+        "from_registry": true,
+        "generated_heading_kind": null,
+        "heading_level": null,
+        "list_kind": null,
+        "merged_paragraph_ids": [
+          "p2"
+        ],
+        "paragraph_id": "p2",
+        "role": "body",
+        "source_index": 1,
+        "structural_role": "body",
+        "text": "Второй абзац исходного блока.",
+        "used_fallback": false
+      },
+      {
+        "block_index": 2,
+        "boundary_confidence": null,
+        "boundary_source": null,
+        "controlled_fallback": false,
+        "controlled_fallback_kind": null,
+        "from_registry": false,
+        "generated_heading_kind": null,
+        "heading_level": null,
+        "list_kind": null,
+        "merged_paragraph_ids": [],
+        "paragraph_id": null,
+        "role": null,
+        "source_index": null,
+        "structural_role": null,
+        "text": "Passthrough блок без registry.",
+        "used_fallback": true
+      },
+      {
+        "block_index": 2,
+        "boundary_confidence": null,
+        "boundary_source": null,
+        "controlled_fallback": false,
+        "controlled_fallback_kind": null,
+        "from_registry": false,
+        "generated_heading_kind": null,
+        "heading_level": null,
+        "list_kind": null,
+        "merged_paragraph_ids": [],
+        "paragraph_id": null,
+        "role": null,
+        "source_index": null,
+        "structural_role": null,
+        "text": "Сохранить как есть.",
+        "used_fallback": true
+      }
+    ],
+    "final_markdown": "Первый абзац исходного блока.\n\nВторой абзац исходного блока.\n\nPassthrough блок без registry.\n\nСохранить как есть."
+  },
+  "toc_backed_heading_boundary": {
+    "diagnostics": {
+      "accepted_merges": 0,
+      "demoted_false_headings": 0,
+      "denied_merges": 0,
+      "fallback_paragraphs": 0,
+      "inconsistent_registry_blocks": [],
+      "merge_decisions": [],
+      "paragraph_count_drift": 0,
+      "protected_boundary_denials": 1,
+      "registry_covered_paragraphs": 2
+    },
+    "entries": [
+      {
+        "block_index": 1,
+        "boundary_confidence": "explicit",
+        "boundary_source": "raw",
+        "controlled_fallback": false,
+        "controlled_fallback_kind": null,
+        "from_registry": true,
+        "generated_heading_kind": "real_heading",
+        "heading_level": 2,
+        "list_kind": null,
+        "merged_paragraph_ids": [
+          "toc-heading"
+        ],
+        "paragraph_id": "toc-heading",
+        "role": "heading",
+        "source_index": 0,
+        "structural_role": "heading",
+        "text": "## Введение",
+        "used_fallback": false
+      },
+      {
+        "block_index": 1,
+        "boundary_confidence": "explicit",
+        "boundary_source": "raw",
+        "controlled_fallback": false,
+        "controlled_fallback_kind": null,
+        "from_registry": true,
+        "generated_heading_kind": null,
+        "heading_level": null,
+        "list_kind": null,
+        "merged_paragraph_ids": [
+          "body-1"
+        ],
+        "paragraph_id": "body-1",
+        "role": "body",
+        "source_index": 1,
+        "structural_role": "body",
+        "text": "Основной текст раздела.",
+        "used_fallback": false
+      }
+    ],
+    "final_markdown": "## Введение\n\nОсновной текст раздела."
+  }
+}

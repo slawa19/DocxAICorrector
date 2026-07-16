@@ -44,6 +44,7 @@ This inventory is intentionally pragmatic:
 - `tests/test_model_registry_sweep.py`
 - `tests/test_narration_markdown.py`
 - `tests/test_output_display_hygiene.py`
+- `tests/test_output_validation_characterization.py`
 - `tests/test_paragraph_boundary_normalization.py`
 - `tests/test_passthrough_unmapped_acceptance.py`
 - `tests/test_pdf_text_layer_logical_import.py`

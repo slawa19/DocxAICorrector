@@ -1,0 +1,70 @@
+{
+  "collect_bullet_heading_samples": [
+    {
+      "line": 1,
+      "reason": "bullet_marker_heading",
+      "text": "## •"
+    }
+  ],
+  "collect_false_fragment_heading_samples": [
+    {
+      "line": 1,
+      "reason": "scripture_reference_heading_present",
+      "text": "### (Откровение 1:1)"
+    }
+  ],
+  "collect_false_fragment_heading_samples_from_entries": [
+    {
+      "line": 1,
+      "reason": "scripture_reference_heading_present",
+      "text": "### (Откровение 1:1)"
+    },
+    {
+      "line": 5,
+      "reason": "false_fragment_headings_present",
+      "text": "## (заметка в скобках)"
+    }
+  ],
+  "collect_list_fragment_regression_samples": [
+    {
+      "line": 1,
+      "reason": "list_fragment_regressions_present",
+      "text": "Это связано с Седьмой || - Судной печатью № 1"
+    }
+  ],
+  "collect_mixed_script_samples": [
+    {
+      "line": 1,
+      "reason": "mixed_script_term_present",
+      "text": "meханизм"
+    }
+  ],
+  "collect_page_placeholder_heading_concat_samples": [
+    {
+      "line": 1,
+      "reason": "page_placeholder_heading_concat_markdown_present",
+      "text": "This page intentionally left blank Chapter 1"
+    }
+  ],
+  "collect_paragraph_break_samples": [
+    {
+      "next_text": "meltdowns of our times.",
+      "source_index": 219,
+      "text": "this scenario has been repeated for every one of the large-scale banking crises and monetary"
+    }
+  ],
+  "collect_residual_bullet_glyph_samples": [
+    {
+      "line": 1,
+      "reason": "residual_bullet_glyphs_present",
+      "text": "Текст ● ещё текста здесь."
+    }
+  ],
+  "collect_theology_style_issue_samples": [
+    {
+      "line": 1,
+      "reason": "unresolved_glossary_term_present",
+      "text": "imago dei в исходном тексте."
+    }
+  ]
+}
