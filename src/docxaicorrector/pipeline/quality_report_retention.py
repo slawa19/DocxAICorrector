@@ -12,10 +12,13 @@ module, so tests that redirect the output directory must patch it here.
 """
 
 import json
+import logging
 import re
 import time
 from collections.abc import Mapping
 from pathlib import Path
+
+from docxaicorrector.core.logger import log_event
 
 
 QUALITY_REPORTS_DIR = Path(".run") / "quality_reports"
@@ -59,5 +62,16 @@ def _write_quality_report_artifact(*, source_name: str, payload: Mapping[str, ob
         artifact_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         _prune_quality_reports(target_dir=QUALITY_REPORTS_DIR)
         return str(artifact_path)
-    except Exception:
+    except Exception as exc:
+        # Fail-open (delivery still succeeds), but log the reason so a missing quality
+        # report is never mistaken for "no report was expected".
+        log_event(
+            logging.WARNING,
+            "quality_report_write_failed",
+            "Failed to write the quality-report artifact; continuing without it.",
+            source_name=source_name,
+            expected_dir=str(QUALITY_REPORTS_DIR),
+            error_type=type(exc).__name__,
+            error=str(exc),
+        )
         return None

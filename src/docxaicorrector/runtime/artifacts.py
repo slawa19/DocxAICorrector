@@ -80,6 +80,53 @@ def _atomic_write(path: Path, data: bytes | str) -> None:
         raise
 
 
+def _atomic_write_group(entries: Sequence[tuple[Path, bytes | str]]) -> None:
+    """Publish a whole artifact group near-atomically.
+
+    Stage EVERY file to a temp sibling first (the slow, failure-prone phase), then
+    os.replace them all into place (the publish phase, rename-only). If staging
+    fails, nothing is published — no partial group. If the publish phase itself
+    fails, already-published members are rolled back. This narrows the window in
+    which a hard process crash could leave a partial group to the metadata-only
+    rename phase, instead of the previous per-file scheme where a crash between the
+    .md and .docx writes left a half-written group."""
+    staged: list[tuple[Path, Path]] = []
+    try:
+        for final_path, data in entries:
+            tmp_path = final_path.parent / f"{final_path.name}.tmp.{_new_run_id()}"
+            if isinstance(data, bytes):
+                tmp_path.write_bytes(data)
+            else:
+                tmp_path.write_text(data, encoding="utf-8")
+            staged.append((tmp_path, final_path))
+    except OSError:
+        for tmp_path, _ in staged:
+            try:
+                tmp_path.unlink()
+            except OSError:
+                pass
+        raise
+
+    published: list[Path] = []
+    try:
+        for tmp_path, final_path in staged:
+            os.replace(tmp_path, final_path)
+            published.append(final_path)
+    except OSError:
+        for final_path in published:
+            try:
+                final_path.unlink()
+            except OSError:
+                pass
+        for tmp_path, _ in staged:
+            try:
+                if tmp_path.exists():
+                    tmp_path.unlink()
+            except OSError:
+                pass
+        raise
+
+
 def _truncate_review_text(value: object, *, limit: int = 160) -> str:
     text = " ".join(str(value or "").split())
     if len(text) <= limit:
@@ -236,13 +283,18 @@ def write_ui_result_artifacts(
         meta_payload["quality_warning"] = quality_warning
     write_meta = len(meta_payload) > 1
 
-    _atomic_write(markdown_path, markdown_text)
-    try:
-        _atomic_write(docx_path, docx_bytes)
-        if narration_text is not None:
-            _atomic_write(tts_path, narration_text)
-        if quality_warning:
-            _atomic_write(
+    # Stage the whole group to temp, then publish atomically (spec 023): the group
+    # is never left partially written — the previous per-file scheme could leave a
+    # half-written group if the process died between the .md and .docx writes.
+    group_entries: list[tuple[Path, bytes | str]] = [
+        (markdown_path, markdown_text),
+        (docx_path, docx_bytes),
+    ]
+    if narration_text is not None:
+        group_entries.append((tts_path, narration_text))
+    if quality_warning:
+        group_entries.append(
+            (
                 formatting_review_path,
                 _build_formatting_review_text(
                     source_name=source_name,
@@ -250,33 +302,14 @@ def write_ui_result_artifacts(
                     created_at=created_at,
                 ),
             )
-        if write_meta:
-            _atomic_write(
-                meta_path,
-                json.dumps(meta_payload, ensure_ascii=False, indent=2),
-            )
-        if result_manifest is not None:
-            _atomic_write(
-                manifest_path,
-                json.dumps(_to_jsonable(result_manifest), ensure_ascii=False, indent=2),
-            )
-    except OSError:
-        try:
-            if markdown_path.exists():
-                markdown_path.unlink()
-            if docx_path.exists():
-                docx_path.unlink()
-            if tts_path.exists():
-                tts_path.unlink()
-            if meta_path.exists():
-                meta_path.unlink()
-            if manifest_path.exists():
-                manifest_path.unlink()
-            if formatting_review_path.exists():
-                formatting_review_path.unlink()
-        except OSError:
-            pass
-        raise
+        )
+    if write_meta:
+        group_entries.append((meta_path, json.dumps(meta_payload, ensure_ascii=False, indent=2)))
+    if result_manifest is not None:
+        group_entries.append(
+            (manifest_path, json.dumps(_to_jsonable(result_manifest), ensure_ascii=False, indent=2))
+        )
+    _atomic_write_group(group_entries)
 
     prune_ui_result_artifact_groups(
         target_dir=output_dir,

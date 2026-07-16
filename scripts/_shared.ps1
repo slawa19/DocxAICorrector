@@ -21,9 +21,14 @@ $projectLogMaxBytes = 262144
 $projectLogBackupCount = 5
 $loopbackHost = '127.0.0.1'
 # Safe-by-default bind host. Local single-user runs listen on loopback only.
-# Remote exposure is an explicit opt-in: set DOCX_AI_BIND_HOST=0.0.0.0 (or a
-# specific interface). A non-loopback host has NO built-in auth — start-project.ps1
-# warns and it must sit behind an authenticating reverse proxy.
+# Remote exposure is an explicit opt-in: set DOCX_AI_BIND_HOST=0.0.0.0 (bind all
+# interfaces). A non-loopback host has NO built-in auth — start-project.ps1 warns
+# and it must sit behind an authenticating reverse proxy.
+# SUPPORTED VALUES: 127.0.0.1 (default, local) or 0.0.0.0 (remote). A *specific*
+# interface IP is NOT supported: the WSL readiness/status probes
+# (project-control-wsl.sh: is_port_open / health_ok / app_page_ok) check 127.0.0.1,
+# which the server does not answer when bound to a single non-loopback IP -> false
+# "not ready" timeout. Use 0.0.0.0 for remote and restrict at the reverse proxy.
 # used in stop-project.ps1 (Test-TcpPort) and start-project.ps1 (Invoke-WslInProject)
 $serverHost = if ([string]::IsNullOrWhiteSpace($env:DOCX_AI_BIND_HOST)) { $loopbackHost } else { $env:DOCX_AI_BIND_HOST.Trim() }
 

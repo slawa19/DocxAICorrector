@@ -104,6 +104,9 @@ stop_streamlit_log_rotator() {
     fi
 }
 
+# Readiness/status probes assume the server answers on loopback. That holds for the
+# two supported binds (127.0.0.1 and 0.0.0.0). A specific non-loopback interface bind
+# is unsupported (see scripts/_shared.ps1) — the probe would false-timeout.
 is_port_open() {
     local port="${1:-$DEFAULT_PORT}"
     (echo > "/dev/tcp/127.0.0.1/$port") >/dev/null 2>&1
