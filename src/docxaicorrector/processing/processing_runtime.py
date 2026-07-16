@@ -71,6 +71,10 @@ from docxaicorrector.processing.upload_ports import (  # noqa: F401
     read_uploaded_file_bytes,
     resolve_uploaded_filename,
 )
+from docxaicorrector.processing.service_ports import (  # noqa: F401
+    normalize_background_error,
+    should_stop_processing,
+)
 
 
 MAX_COMPLETED_SOURCE_BYTES = 8 * 1024 * 1024
@@ -1604,24 +1608,6 @@ def build_preparation_request_marker(uploaded_file, *, chunk_size: int, processi
     return f"{build_uploaded_file_selection_marker(uploaded_file)}:{chunk_size}{operation_suffix}"
 
 
-def normalize_background_error(
-    *,
-    stage: str,
-    exc: Exception,
-    user_message: str,
-    severity: str = "error",
-    recoverable: bool = False,
-) -> dict[str, object]:
-    return {
-        "stage": stage,
-        "severity": severity,
-        "user_message": user_message,
-        "technical_message": str(exc),
-        "error_type": exc.__class__.__name__,
-        "recoverable": recoverable,
-    }
-
-
 def build_result_bundle(
     *,
     source_name: str,
@@ -1799,12 +1785,6 @@ def _is_stale_processing_event(event: ProcessingEvent) -> bool:
         return False
     latest_source_token = str(get_latest_source_token() or "")
     return event_source_token != latest_source_token
-
-
-def should_stop_processing(runtime: BackgroundRuntime | None) -> bool:
-    if runtime is None:
-        return False
-    return runtime.should_stop()
 
 
 def drain_processing_events(*, set_processing_status, finalize_processing_status, push_activity, append_log, append_image_log) -> None:

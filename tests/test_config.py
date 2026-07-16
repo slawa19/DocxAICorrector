@@ -1,3 +1,4 @@
+import hashlib
 import os
 import threading
 from pathlib import Path
@@ -1342,6 +1343,58 @@ def test_get_provider_client_builds_openrouter_client(monkeypatch, tmp_path):
         "HTTP-Referer": "DocxAICorrector",
         "X-OpenRouter-Title": "DocxAICorrector",
     }
+
+
+def test_get_provider_client_rekeys_on_secret_rotation(monkeypatch, tmp_path):
+    # F9a: rotating the credential (same env NAME, new VALUE) must return a FRESH client,
+    # while an unchanged secret keeps the cached client. The secret VALUE must never appear
+    # in the cache key — only its sha256 fingerprint.
+    dotenv_path = tmp_path / ".env"
+    dotenv_path.write_text("", encoding="utf-8")
+
+    created: list[object] = []
+
+    class FakeOpenAI:
+        def __init__(self, *, api_key):
+            self.api_key = api_key
+            created.append(self)
+
+    monkeypatch.setattr(config, "ENV_PATH", dotenv_path)
+    monkeypatch.setattr(config, "OpenAI", FakeOpenAI)
+    monkeypatch.setattr(config, "_CLIENT", None)
+    monkeypatch.setattr(config, "_CLIENT_CACHE_KEY", None)
+    monkeypatch.setattr(config, "_CLIENTS_BY_PROVIDER", {})
+
+    monkeypatch.setenv("OPENAI_API_KEY", "secret-value-A")
+    first = config.get_provider_client("openai")
+    first_again = config.get_provider_client("openai")
+    assert first is first_again  # unchanged secret -> same cached client
+    assert len(created) == 1
+
+    # Rotate the credential in place (same env NAME, new VALUE).
+    monkeypatch.setenv("OPENAI_API_KEY", "secret-value-B")
+    rotated = config.get_provider_client("openai")
+    assert rotated is not first  # rotated secret -> fresh client
+    assert len(created) == 2
+    assert getattr(rotated, "api_key") == "secret-value-B"
+
+    # Re-requesting under the rotated secret is stable (cached again).
+    rotated_again = config.get_provider_client("openai")
+    assert rotated_again is rotated
+    assert len(created) == 2
+
+    # The raw secret (or any of its values) must never be embedded in the cache key.
+    provider_config = config.get_provider_config("openai", None)
+    key = config._build_provider_client_cache_key("openai", provider_config)
+    assert "secret-value-A" not in key
+    assert "secret-value-B" not in key
+    assert hashlib.sha256(b"secret-value-B").hexdigest() in key
+
+    # An unset env var re-keys via a stable sentinel (distinct from any set value).
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    unset_key = config._build_provider_client_cache_key("openai", provider_config)
+    assert unset_key != key
+    assert "secret-value-B" not in unset_key
 
 
 def test_load_project_dotenv_overrides_empty_runtime_env_with_repo_value(monkeypatch, tmp_path):

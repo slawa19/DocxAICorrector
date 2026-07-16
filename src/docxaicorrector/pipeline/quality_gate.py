@@ -32,7 +32,6 @@ from docxaicorrector.pipeline.output_validation import (
     collect_paragraph_break_samples,
     collect_page_placeholder_heading_concat_samples,
     collect_residual_bullet_glyph_samples,
-    collect_theology_style_issue_samples,
     has_toc_body_concat_markdown,
 )
 from docxaicorrector.pipeline.formatting_diagnostics_feedback import (
@@ -1232,12 +1231,6 @@ def _build_translation_quality_report(
         else 0.0
     )
     translation_domain = str(getattr(context, "translation_domain", "") or context.app_config.get("translation_domain", "general") or "general")
-    raw_theology_style_samples = (
-        collect_theology_style_issue_samples(normalized_quality_markdown)
-        if translation_domain.strip().lower() == "theology"
-        else []
-    )
-    theology_style_samples = list(raw_theology_style_samples)
     authority_fields = _derive_translation_quality_authority_fields(
         context=context,
         final_markdown=final_markdown,
@@ -1633,8 +1626,6 @@ def _build_translation_quality_report(
                 mapping_text_quality_payload if isinstance(mapping_text_quality_payload, Mapping) else None
             ),
         )
-        if theology_style_samples:
-            quality_status = "warn" if quality_status == "pass" else quality_status
 
     # spec 018: resolve the DOCUMENT-level delivery verdict. Review-grade fail-drivers
     # (role_loss / heading_demotion / false_fragment / list_fragment / unmapped-source /
@@ -1763,12 +1754,17 @@ def _build_translation_quality_report(
             for sample in untranslated_body_samples[:8]
         ],
         "untranslated_body_text_classification": "body_translation_completeness",
-        "theology_style_deterministic_issue_count": len(theology_style_samples),
+        # Round-4 F6: the former config-driven glossary/awkward-heading detector was
+        # PRODUCTION-DEAD (every caller passed no glossary/markers, so the axis could
+        # never fire). The detector and its ``awkward_judgment_heading_present`` /
+        # ``unresolved_glossary_term_present`` sample reasons are removed. These four
+        # count/source/classification keys are a broad output contract (the acceptance
+        # advisory check, ``structural`` metric copy, and the corpus goldens all read
+        # them), so they are kept as INERT constants rather than firing a dead metric.
+        "theology_style_deterministic_issue_count": 0,
         "theology_style_deterministic_issue_source": "legacy_markdown",
         "theology_style_deterministic_issue_classification": "domain_style_advisory",
-        "raw_theology_style_deterministic_issue_count": len(raw_theology_style_samples),
-        "theology_style_deterministic_issue_samples": _serialize_quality_samples(theology_style_samples),
-        "raw_theology_style_deterministic_issue_samples": _serialize_quality_samples(raw_theology_style_samples),
+        "raw_theology_style_deterministic_issue_count": 0,
         "emphasis_coverage": dict(emphasis_coverage_payload),
         "toc_body_concat_detected": toc_body_concat_detected,
         "toc_body_concat_markdown_detected": authority_fields.get("toc_body_concat_markdown_detected", False),

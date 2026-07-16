@@ -26,7 +26,6 @@ from docxaicorrector.pipeline.output_validation import (
     collect_mixed_script_samples,
     collect_page_placeholder_heading_concat_samples,
     collect_residual_bullet_glyph_samples,
-    collect_theology_style_issue_samples,
 )
 from docxaicorrector.validation.profiles import DocumentProfile
 from docxaicorrector.validation.quality_gate_audit import quality_gate_audit_classifications_payload
@@ -53,11 +52,6 @@ def _build_markdown_quality_metrics(
     raw_residual_bullet_glyph_samples = collect_residual_bullet_glyph_samples(raw_markdown)
     list_fragment_regression_samples = collect_list_fragment_regression_samples(raw_structural_markdown)
     mixed_script_samples = collect_mixed_script_samples(latest_markdown)
-    theology_style_samples = (
-        collect_theology_style_issue_samples(latest_markdown)
-        if str(translation_domain or "").strip().lower() == "theology"
-        else []
-    )
     suspicious_heading_repetition_count = sum(
         1
         for sample in false_fragment_heading_samples
@@ -91,10 +85,14 @@ def _build_markdown_quality_metrics(
         "mixed_script_term_gate_source": "legacy_markdown",
         "mixed_script_term_classification": "non_structural_hygiene",
         "raw_mixed_script_term_count": len(mixed_script_samples),
-        "theology_style_deterministic_issue_count": len(theology_style_samples),
+        # Round-4 F6: the config-driven glossary/awkward-heading detector was
+        # production-dead (never fired) and is removed. These keys stay as INERT
+        # constants because the acceptance advisory check and the metric-snapshot copy
+        # still read them as a stable output contract.
+        "theology_style_deterministic_issue_count": 0,
         "theology_style_deterministic_issue_source": "legacy_markdown",
         "theology_style_deterministic_issue_classification": "domain_style_advisory",
-        "raw_theology_style_deterministic_issue_count": len(theology_style_samples),
+        "raw_theology_style_deterministic_issue_count": 0,
         "suspicious_heading_repetition_count": suspicious_heading_repetition_count,
         "scripture_reference_heading_count": scripture_reference_heading_count,
         "pdf_blank_page_marker_leakage_count": detector_counts.get("pdf_blank_page_marker_leakage", 0),

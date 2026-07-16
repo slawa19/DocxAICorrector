@@ -277,6 +277,9 @@ def test_get_processing_service_returns_singleton_until_reset(monkeypatch):
 
 
 def test_build_processing_service_builds_runtime_emitters_from_processing_runtime(monkeypatch):
+    import docxaicorrector.processing.processing_runtime as processing_runtime
+    import docxaicorrector.runtime.state as runtime_state
+
     processing_service.reset_processing_service()
 
     emit_state = object()
@@ -288,13 +291,23 @@ def test_build_processing_service_builds_runtime_emitters_from_processing_runtim
     emit_image_reset = object()
     captured = {}
 
-    monkeypatch.setattr(processing_service, "set_processing_status", object())
-    monkeypatch.setattr(processing_service, "finalize_processing_status", object())
-    monkeypatch.setattr(processing_service, "push_activity", object())
-    monkeypatch.setattr(processing_service, "append_log", object())
-    monkeypatch.setattr(processing_service, "append_image_log", object())
+    push_activity_sentinel = object()
+    append_log_sentinel = object()
+    append_image_log_sentinel = object()
+
+    # The default service wires the streamlit-backed runtime.state emitters + the
+    # processing_runtime emitter machinery, both imported LAZILY (at call time)
+    # inside build_default_processing_service_dependencies so that importing
+    # processing_service stays streamlit-free (round-4 finding 5). A lazy
+    # ``from module import name`` reads the SOURCE module attribute at call time,
+    # so patch the source modules rather than a module-level processing_service name.
+    monkeypatch.setattr(runtime_state, "set_processing_status", object())
+    monkeypatch.setattr(runtime_state, "finalize_processing_status", object())
+    monkeypatch.setattr(runtime_state, "push_activity", push_activity_sentinel)
+    monkeypatch.setattr(runtime_state, "append_log", append_log_sentinel)
+    monkeypatch.setattr(runtime_state, "append_image_log", append_image_log_sentinel)
     monkeypatch.setattr(
-        processing_service,
+        processing_runtime,
         "build_runtime_event_emitters",
         lambda *, dependencies: (
             captured.setdefault("dependencies", dependencies),
@@ -317,9 +330,9 @@ def test_build_processing_service_builds_runtime_emitters_from_processing_runtim
 
     processing_service.build_processing_service()
 
-    assert captured["dependencies"].push_activity is processing_service.push_activity
-    assert captured["dependencies"].append_log is processing_service.append_log
-    assert captured["dependencies"].append_image_log is processing_service.append_image_log
+    assert captured["dependencies"].push_activity is push_activity_sentinel
+    assert captured["dependencies"].append_log is append_log_sentinel
+    assert captured["dependencies"].append_image_log is append_image_log_sentinel
     service_dependencies = captured["kwargs"]["dependencies"]
     assert service_dependencies.emit_state_fn is emit_state
     assert service_dependencies.emit_finalize_fn is emit_finalize

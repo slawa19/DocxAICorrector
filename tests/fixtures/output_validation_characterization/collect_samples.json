@@ -25,18 +25,6 @@
       "text": "## (заметка в скобках)"
     }
   ],
-  "collect_glossary_and_heading_issue_samples": [
-    {
-      "line": 1,
-      "reason": "awkward_judgment_heading_present",
-      "text": "## Synthetic Awkward Heading"
-    },
-    {
-      "line": 3,
-      "reason": "unresolved_glossary_term_present",
-      "text": "Обсуждаем synthglossterm в исходном тексте."
-    }
-  ],
   "collect_list_fragment_regression_samples": [
     {
       "line": 1,

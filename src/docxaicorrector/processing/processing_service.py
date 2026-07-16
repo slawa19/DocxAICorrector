@@ -44,18 +44,15 @@ from docxaicorrector.image.generation import (
 from docxaicorrector.image.pipeline import ImageProcessingContext, process_document_images as process_document_images_impl
 from docxaicorrector.image.validation import validate_redraw_result
 from docxaicorrector.core.logger import log_event, present_error
-from docxaicorrector.processing.processing_runtime import (
-    RuntimeEventEmitterDependencies,
-    build_runtime_event_emitters,
+from docxaicorrector.processing.application_flow import (
+    PreparedRunContext,
     freeze_uploaded_file,
-    normalize_background_error,
-    resolve_uploaded_filename,
-    should_stop_processing,
+    prepare_run_context_for_background,
 )
-from docxaicorrector.processing.application_flow import PreparedRunContext, prepare_run_context_for_background
 from docxaicorrector.processing.preparation import prepare_document_for_processing
+from docxaicorrector.processing.service_ports import normalize_background_error, should_stop_processing
+from docxaicorrector.processing.upload_ports import resolve_uploaded_filename
 from docxaicorrector.runtime.events import AppendLogEvent, FinalizeProcessingStatusEvent, PushActivityEvent, SetStateEvent, WorkerCompleteEvent
-from docxaicorrector.runtime.state import append_image_log, append_log, finalize_processing_status, push_activity, set_processing_status
 
 
 def _normalize_segment_selection_ids(
@@ -470,6 +467,24 @@ def build_processing_service_dependencies(**overrides: Any) -> ProcessingService
 
 def build_default_processing_service_dependencies() -> ProcessingServiceDependencies:
     from docxaicorrector.core.config import load_app_config as _load_app_config
+
+    # Streamlit-wiring boundary: the DEFAULT service binds the streamlit-backed
+    # runtime.state emitters, so these streamlit-bound names are imported lazily
+    # here (at call time) — importing this module stays streamlit-free. The pure
+    # emitter machinery lives in the (streamlit-bound) processing_runtime module,
+    # so it is imported here too; it adds no extra streamlit cost because the
+    # runtime.state emitters loaded alongside it already pull streamlit.
+    from docxaicorrector.processing.processing_runtime import (
+        RuntimeEventEmitterDependencies,
+        build_runtime_event_emitters,
+    )
+    from docxaicorrector.runtime.state import (
+        append_image_log,
+        append_log,
+        finalize_processing_status,
+        push_activity,
+        set_processing_status,
+    )
 
     _cfg = _load_app_config()
     _body_font = _cfg.output_body_font

@@ -1045,3 +1045,169 @@ def test_ai_review_without_matching_recommendation_marks_no_recommendation(monke
     assert payload["decisions"][0]["ai_recommendation"] is None
     assert payload["decisions"][0]["final_decision"] == "keep"
     assert "ai_review_no_recommendation" in payload["decisions"][0]["reasons"]
+
+
+def test_request_ai_review_uses_passed_client_factory_not_global(monkeypatch):
+    # F9b: boundary AI review must use the provider-aware factory/client threaded in by
+    # the caller, never the global openai-only get_client().
+    sentinel_client = object()
+    factory_calls: list[str] = []
+
+    def factory(model: str) -> object:
+        factory_calls.append(model)
+        return sentinel_client
+
+    captured: dict[str, object] = {}
+
+    def fake_call(client, payload, *, max_retries, retryable_error_predicate):
+        captured["client"] = client
+        return object()
+
+    def boom_get_client() -> object:
+        raise AssertionError("global get_client() must not be used by boundary AI review")
+
+    monkeypatch.setattr(boundary_review_module, "call_responses_create_with_retry", fake_call)
+    monkeypatch.setattr(boundary_review_module, "extract_response_text", lambda *a, **k: '{"recommendations": []}')
+    monkeypatch.setattr(boundary_review_module, "parse_json_object", lambda *a, **k: {"recommendations": []})
+    monkeypatch.setattr(config, "get_client", boom_get_client)
+
+    result = boundary_review_module.request_ai_review_recommendations(
+        model="anthropic:claude-x",
+        candidates=[{"candidate_id": "0:1"}],
+        timeout_seconds=5,
+        max_tokens_per_candidate=100,
+        client_factory=factory,
+    )
+
+    assert captured["client"] is sentinel_client
+    assert factory_calls == ["anthropic:claude-x"]
+    assert result == {}
+
+
+def test_request_ai_review_default_resolves_provider_aware_not_global(monkeypatch):
+    # F9b: with no factory supplied, the default resolution goes through the provider-aware
+    # model-selector factory (get_client_for_model_selector), NOT the global get_client().
+    sentinel_client = object()
+    selector_calls: list[tuple[str, str]] = []
+
+    def fake_get_client_for_model_selector(selector, required_capability, *, config_like=None):
+        selector_calls.append((selector, required_capability))
+        return sentinel_client
+
+    captured: dict[str, object] = {}
+
+    def fake_call(client, payload, *, max_retries, retryable_error_predicate):
+        captured["client"] = client
+        return object()
+
+    def boom_get_client() -> object:
+        raise AssertionError("global get_client() must not be used by boundary AI review")
+
+    monkeypatch.setattr(config, "get_client_for_model_selector", fake_get_client_for_model_selector)
+    monkeypatch.setattr(config, "get_client", boom_get_client)
+    monkeypatch.setattr(boundary_review_module, "call_responses_create_with_retry", fake_call)
+    monkeypatch.setattr(boundary_review_module, "extract_response_text", lambda *a, **k: '{"recommendations": []}')
+    monkeypatch.setattr(boundary_review_module, "parse_json_object", lambda *a, **k: {"recommendations": []})
+
+    boundary_review_module.request_ai_review_recommendations(
+        model="gpt-5.4",
+        candidates=[{"candidate_id": "0:1"}],
+        timeout_seconds=5,
+        max_tokens_per_candidate=100,
+    )
+
+    assert captured["client"] is sentinel_client
+    assert selector_calls == [("gpt-5.4", "responses_text")]
+
+
+def test_run_paragraph_boundary_ai_review_threads_client_factory(monkeypatch, tmp_path):
+    # F9b: run_paragraph_boundary_ai_review forwards the provider-aware factory to the impl.
+    monkeypatch.setattr(
+        boundary_review_module,
+        "build_ai_review_candidates",
+        lambda **kwargs: [{"candidate_id": "0:1", "candidate_kind": "boundary_medium", "deterministic_decision": "keep"}],
+    )
+    recorded: dict[str, object] = {}
+
+    def fake_impl(*, model, candidates, timeout_seconds, max_tokens_per_candidate, client_factory=None):
+        recorded["client_factory"] = client_factory
+        return {"0:1": {"recommendation": "keep", "reasons": []}}
+
+    sentinel_factory = lambda model: object()
+
+    artifact_path = boundary_review_module.run_paragraph_boundary_ai_review(
+        source_name="doc.docx",
+        source_bytes=b"x",
+        mode="review_only",
+        model="anthropic:claude-x",
+        raw_blocks=[],
+        paragraphs=[],
+        boundary_report=ParagraphBoundaryNormalizationReport(
+            total_raw_paragraphs=0,
+            total_logical_paragraphs=0,
+            merged_group_count=0,
+            merged_raw_paragraph_count=0,
+            decisions=[],
+        ),
+        relation_report=RelationNormalizationReport(
+            total_relations=0,
+            relation_counts={},
+            rejected_candidate_count=0,
+            decisions=[],
+        ),
+        candidate_limit=10,
+        timeout_seconds=5,
+        max_tokens_per_candidate=100,
+        target_dir=tmp_path,
+        max_age_seconds=3600,
+        max_count=10,
+        request_ai_review_recommendations_impl=fake_impl,
+        client_factory=sentinel_factory,
+    )
+
+    assert artifact_path is not None
+    assert recorded["client_factory"] is sentinel_factory
+
+
+def test_run_paragraph_boundary_ai_review_omits_factory_kwarg_for_legacy_impl(monkeypatch, tmp_path):
+    # Backward-compat: an injected impl that does not accept client_factory must keep working
+    # when no factory is threaded (the extraction-layer wrapper relies on this).
+    monkeypatch.setattr(
+        boundary_review_module,
+        "build_ai_review_candidates",
+        lambda **kwargs: [{"candidate_id": "0:1", "candidate_kind": "boundary_medium", "deterministic_decision": "keep"}],
+    )
+
+    def legacy_impl(*, model, candidates, timeout_seconds, max_tokens_per_candidate):
+        return {"0:1": {"recommendation": "keep", "reasons": []}}
+
+    artifact_path = boundary_review_module.run_paragraph_boundary_ai_review(
+        source_name="doc.docx",
+        source_bytes=b"x",
+        mode="review_only",
+        model="gpt-5.4",
+        raw_blocks=[],
+        paragraphs=[],
+        boundary_report=ParagraphBoundaryNormalizationReport(
+            total_raw_paragraphs=0,
+            total_logical_paragraphs=0,
+            merged_group_count=0,
+            merged_raw_paragraph_count=0,
+            decisions=[],
+        ),
+        relation_report=RelationNormalizationReport(
+            total_relations=0,
+            relation_counts={},
+            rejected_candidate_count=0,
+            decisions=[],
+        ),
+        candidate_limit=10,
+        timeout_seconds=5,
+        max_tokens_per_candidate=100,
+        target_dir=tmp_path,
+        max_age_seconds=3600,
+        max_count=10,
+        request_ai_review_recommendations_impl=legacy_impl,
+    )
+
+    assert artifact_path is not None

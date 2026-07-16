@@ -1,3 +1,4 @@
+import hashlib
 import logging
 import os
 from collections.abc import Iterator, Mapping
@@ -64,6 +65,10 @@ from docxaicorrector.text.translation_domains import build_translation_domain_in
 OpenAI = None
 Anthropic = None
 _CLIENT = None
+# The exact cache key under which `_CLIENT` was built (including the resolved-secret
+# fingerprint). The `_CLIENT` fast-path may only reuse the global when this matches the
+# requested key, so a rotated credential never returns the stale default client.
+_CLIENT_CACHE_KEY: str | None = None
 _CLIENTS_BY_PROVIDER: dict[str, object] = {}
 _CLIENT_LOCK = Lock()
 _IMAGE_OUTPUT_SIZE_VALUES = {"256x256", "512x512", "1024x1024", "1024x1536", "1536x1024", "1024x1792", "1792x1024"}
@@ -1415,11 +1420,28 @@ def _get_anthropic_client_class() -> type["AnthropicClient"]:
     return client_cls
 
 
+def _fingerprint_provider_secret(api_key_env: str | None) -> str:
+    # F9a: fold a stable, non-reversible fingerprint of the RESOLVED api-key secret into
+    # the client cache key. Rotating the credential (same env NAME, new VALUE) must yield
+    # a different key -> a fresh client, while an unchanged secret keeps the cached client.
+    # The raw secret (and any prefix of it) is NEVER placed in the key, logged, or surfaced
+    # in errors — only its sha256 hexdigest. A missing env name or an unset/empty env var
+    # maps to a stable sentinel so an unset->set transition also re-keys. The sentinels are
+    # short words that can never collide with a 64-char hexdigest.
+    if not api_key_env:
+        return "noenv"
+    load_project_dotenv()
+    secret = os.getenv(api_key_env, "").strip()
+    if not secret:
+        return "unset"
+    return hashlib.sha256(secret.encode("utf-8")).hexdigest()
+
+
 def _build_provider_client_cache_key(normalized_provider_name: str, provider_config: ProviderConfig) -> str:
     # F16: the resolved client is shaped by base_url, default headers (referer/title),
     # timeout, and which env var supplies the api key — not the provider name alone.
     # Key the cache on a fingerprint of ALL of those. The api-key ENV NAME (identity)
-    # is included; the secret VALUE is never placed in the key.
+    # is included; the secret VALUE is never placed in the key — only a hash of it (F9a).
     header_items = []
     if provider_config.referer:
         header_items.append(("HTTP-Referer", str(provider_config.referer)))
@@ -1434,6 +1456,7 @@ def _build_provider_client_cache_key(normalized_provider_name: str, provider_con
             header_fingerprint,
             timeout_fingerprint,
             str(provider_config.api_key_env or ""),
+            _fingerprint_provider_secret(provider_config.api_key_env),
         )
     )
 
@@ -1460,11 +1483,11 @@ def get_provider_client(provider_name: str, *, config_like: object | None = None
 
     client_cache_key = _build_provider_client_cache_key(normalized_provider_name, provider_config)
 
-    global _CLIENT
+    global _CLIENT, _CLIENT_CACHE_KEY
     cached_client = _CLIENTS_BY_PROVIDER.get(client_cache_key)
     if cached_client is not None:
         return cached_client  # type: ignore[return-value]
-    if normalized_provider_name == "openai" and _CLIENT is not None and client_cache_key == _default_openai_client_cache_key():
+    if normalized_provider_name == "openai" and _CLIENT is not None and _CLIENT_CACHE_KEY == client_cache_key:
         _CLIENTS_BY_PROVIDER[client_cache_key] = _CLIENT
         return _CLIENT
 
@@ -1472,7 +1495,7 @@ def get_provider_client(provider_name: str, *, config_like: object | None = None
         cached_client = _CLIENTS_BY_PROVIDER.get(client_cache_key)
         if cached_client is not None:
             return cached_client  # type: ignore[return-value]
-        if normalized_provider_name == "openai" and _CLIENT is not None and client_cache_key == _default_openai_client_cache_key():
+        if normalized_provider_name == "openai" and _CLIENT is not None and _CLIENT_CACHE_KEY == client_cache_key:
             _CLIENTS_BY_PROVIDER[client_cache_key] = _CLIENT
             return _CLIENT
 
@@ -1501,6 +1524,7 @@ def get_provider_client(provider_name: str, *, config_like: object | None = None
         _CLIENTS_BY_PROVIDER[client_cache_key] = client
         if normalized_provider_name == "openai" and client_cache_key == _default_openai_client_cache_key():
             _CLIENT = client
+            _CLIENT_CACHE_KEY = client_cache_key
         return client
 
 

@@ -71,6 +71,7 @@ def test_ui_free_core_import_does_not_load_streamlit() -> None:
     # Run in a FRESH subprocess so module-import state is clean.
     probe = (
         "import docxaicorrector.processing.application_flow;"
+        "import docxaicorrector.processing.processing_service;"
         "import docxaicorrector.document.extraction;"
         "import sys;"
         "loaded=[m for m in sys.modules if m=='streamlit' or m.startswith('streamlit.')];"

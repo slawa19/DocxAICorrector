@@ -709,6 +709,11 @@ def finalize_processing_success(
         formatting_registry=build_generated_paragraph_registry_from_entries(assembly_result.entries),
         base_docx_builder=cast(Callable[[], bytes] | None, docx_phase.get("base_docx_builder")),
     )
+    # The delivered display markdown BEFORE reader cleanup. The pre-cleanup quality report
+    # already describes this content (its hygiene metrics were measured on it), so only a
+    # reader-cleanup change to it — NOT the earlier display-hygiene pass that produced it —
+    # makes the saved report stale and warrants a rebuild (F8, below).
+    pre_reader_cleanup_display_markdown = runtime_display_markdown
     runtime_display_markdown = reader_cleanup_postprocess.markdown
     final_docx_bytes = reader_cleanup_postprocess.docx_bytes
     reader_cleanup_report = reader_cleanup_postprocess.report
@@ -740,15 +745,20 @@ def finalize_processing_success(
         docx_phase = dict(docx_phase)
         docx_phase["latest_result_notice"] = reader_cleanup_result_notice
 
-    # F10 (spec 006 increment): re-gate the DELIVERED post-cleanup markdown.
-    # The pre-cleanup gate above measured ``gate_input_markdown``; reader cleanup can
-    # REPLACE the delivered content afterwards, so a cleanup-introduced regression would
-    # otherwise ship having "passed" a gate that never saw it. Only recompute when cleanup
-    # actually changed the delivered markdown — an unchanged run keeps byte-identical
-    # behaviour (no second gate pass). Reuse the SAME failure path as the pre-cleanup gate;
-    # the empty-DOCX guard was already run separately above.
-    if runtime_display_markdown != gate_input_markdown:
-        post_cleanup_quality_report = _build_translation_quality_report(
+    # F10 + F8 (spec 006 increment / round-4): the FINAL authoritative quality report must
+    # describe the DELIVERED post-cleanup markdown. The pre-cleanup report was written as the
+    # record describing the pre-reader-cleanup delivered content; reader cleanup can REPLACE
+    # that content afterwards, so when it does we rebuild the report on the delivered markdown,
+    # carry the acceptance verdict into it, and SUPERSEDE the pre-cleanup artifact — dropping
+    # the now-stale file — so the saved record, the delivered result notice, the result
+    # artifact, and any gate error all reference the delivered content, never the outdated
+    # pre-cleanup report. The trigger is a reader-cleanup change specifically (compared to the
+    # pre-reader-cleanup delivered markdown, NOT ``gate_input_markdown`` whose raw/structural
+    # metrics the report legitimately keeps): when reader cleanup leaves the delivered markdown
+    # unchanged the pre-cleanup report is already authoritative, so behaviour is byte-identical
+    # (no rebuild, no second write, no second gate pass). The empty-DOCX guard was already run.
+    if runtime_display_markdown != pre_reader_cleanup_display_markdown:
+        quality_report = _build_translation_quality_report(
             context=context,
             final_markdown=runtime_display_markdown,
             formatting_diagnostics_artifacts=formatting_diagnostics_artifacts,
@@ -756,16 +766,67 @@ def finalize_processing_success(
             pre_cleanup_formatting_baseline=cast(Mapping[str, object] | None, docx_phase.get("pre_cleanup_formatting_baseline")),
             runtime_display_markdown=runtime_display_markdown,
         )
-        if post_cleanup_quality_report.get("quality_status") == "fail":
+        # Carry the shared acceptance verdict into the delivered report. The DOCX bytes now
+        # exist (reader cleanup built them), so ``output_docx_openable`` reflects reality.
+        post_cleanup_output_artifacts = _resolve_acceptance_output_artifacts(
+            docx_phase=docx_phase,
+            runtime_display_markdown=runtime_display_markdown,
+        )
+        quality_report["acceptance_verdict"] = build_report_acceptance_verdict(
+            _build_report_context_for_acceptance(
+                context=context,
+                quality_report=quality_report,
+                formatting_diagnostics_payloads=_load_formatting_diagnostics_payloads(formatting_diagnostics_artifacts),
+                output_artifacts=post_cleanup_output_artifacts,
+            ),
+            mismatch_threshold=_acceptance_mismatch_threshold,
+            unmapped_target_threshold=_acceptance_unmapped_target_threshold,
+            require_no_toc_body_concat=_acceptance_require_no_toc_body_concat,
+        )
+        # Supersede the pre-cleanup artifact: write the delivered report and drop the
+        # now-stale pre-cleanup file so the saved record is never the outdated one.
+        superseded_report_path = quality_report_path
+        quality_report_path = _write_quality_report_artifact(
+            source_name=context.uploaded_filename, payload=quality_report
+        )
+        # Drop the stale pre-cleanup file only once its replacement is safely on disk, so a
+        # rare write failure never leaves the run with zero saved reports.
+        if quality_report_path is not None and superseded_report_path and superseded_report_path != quality_report_path:
+            try:
+                Path(superseded_report_path).unlink()
+            except OSError:
+                pass
+        if quality_report_path is not None:
+            dependencies.log_event(
+                logging.INFO,
+                "quality_report_saved",
+                "Обновлён quality report по итогам reader cleanup (delivered markdown).",
+                filename=context.uploaded_filename,
+                artifact_path=quality_report_path,
+                quality_status=quality_report.get("quality_status"),
+                gate_reasons=list(cast(Sequence[str], quality_report.get("gate_reasons") or [])),
+            )
+        # Refresh the delivered result notice to reflect the authoritative report, unless
+        # reader cleanup already set its own notice (which keeps precedence, as before).
+        if reader_cleanup_result_notice is None:
+            docx_phase = dict(docx_phase)
+            if quality_report.get("quality_status") == "warn":
+                docx_phase["latest_result_notice"] = {
+                    "level": "warning",
+                    "message": _build_quality_warn_notice_message(quality_report),
+                }
+            else:
+                docx_phase["latest_result_notice"] = None
+        if quality_report.get("quality_status") == "fail":
             post_cleanup_gate_reasons = list(
-                cast(Sequence[str], post_cleanup_quality_report.get("gate_reasons") or [])
+                cast(Sequence[str], quality_report.get("gate_reasons") or [])
             )
             error_message = dependencies.present_error(
                 "translation_quality_gate_failed",
                 RuntimeError(_format_translation_quality_gate_failure_message(post_cleanup_gate_reasons)),
                 "Критическая ошибка качества перевода",
                 filename=context.uploaded_filename,
-                quality_status=post_cleanup_quality_report.get("quality_status"),
+                quality_status=quality_report.get("quality_status"),
                 gate_reasons=post_cleanup_gate_reasons,
                 quality_report_path=quality_report_path,
             )
@@ -787,7 +848,7 @@ def finalize_processing_success(
                 filename=context.uploaded_filename,
                 quality_report_path=quality_report_path,
                 gate_reasons=post_cleanup_gate_reasons,
-                quality_status=post_cleanup_quality_report.get("quality_status"),
+                quality_status=quality_report.get("quality_status"),
             )
             return emit_failed_result(
                 emitters=emitters,
