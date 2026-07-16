@@ -16,6 +16,9 @@ tree at commit `120c66c`). Remediation acceptance is defined per-finding under
 `## Anti-regression`; nothing here is marked done until its anti-regression test lands green.
 Changelog: 2026-07-16 — spec created; findings F1–F5 verified and entered; P2 refactors
 (NEXT_ACTION #7) parked in `## Pending verification` pending independent confirmation.
+2026-07-16 — F6 added from two verified test-actuality audits (book-specific determinism +
+dead tests); net: 2 DELETE (dormant determinism test + orphaned image), 6 GENERALIZE in
+lockstep with F2, remainder of the 90-module suite verified clean (0 permaskips/xfails/hollow).
 
 ## Problem
 
@@ -106,6 +109,36 @@ review.
   artifacts (`git rm --cached`, keep them generated) or move them out of the ignored path;
   decide the fate of `paradump.txt` (remove or relocate).
 
+### F6 — P2 — Book-specific determinism & one orphaned fixture in tests (audit-driven)
+Two parallel test-actuality audits (book-literal axis + dead-test axis), each verified against
+live code:
+- **Dead determinism (DELETE):** `tests/test_real_document_pipeline_validation.py:788-846`
+  (`test_collect_paragraph_break_samples_is_deterministic_on_saved_reports`) hardcodes per-book
+  counts `{"money":6,"lietaer":13,"mazzucato":2,"creatingwealth":6}` plus exact source-index
+  pins against four run-report dirs (`20260710T_lietaer_anchors`, `20260711T_money_marker`,
+  `20260710T_mazzucato_listctx`, `20260710T_creatingwealth_fixed`) — VERIFIED absent; the test
+  `pytest.skip`s at :807-809 whenever they are missing, i.e. it is **dormant on every clean
+  checkout/CI**. Delete, or re-anchor to a committed report and re-derive the counts.
+- **Orphaned fixture (DELETE):** `tests/artifacts/lietaer_image7.jpeg` is git-tracked with ZERO
+  references anywhere in the repo (VERIFIED `git grep` empty). Remove.
+- **Book-specific literals — GENERALIZE in lockstep with F2:** the theology/glossary literals of
+  the source-less book "Are We In The End Times" (VERIFIED absent from `tests/sources/book/`,
+  which holds only 5 maintained books) are asserted directly in tests —
+  `test_document_pipeline_output_validation.py:983-995`, `test_document_pipeline.py:3899-3925` &
+  `:3944`, `test_output_validation_characterization.py:177` (+ golden
+  `fixtures/output_validation_characterization/collect_samples.json`) — and the Lietaer
+  single-incident twin `lietaer_exchange_install_roof_split` at
+  `test_real_document_pipeline_validation.py:1437-1438`. These are the test-side twins of the F2
+  production hardcode; remove/generalize them together with F2 so a general detector replaces the
+  per-book string matches. (Borderline domain-general normalizer tests that merely use
+  End-Times-derived sample sentences — e.g. scripture-reference heading recognition — may keep
+  the behaviour and only de-theologize the sample text.)
+- **Confirmed clean (KEEP):** the audit found NO permanent skips (all skips env/offline-gated),
+  NO xfail markers, NO removed-symbol / hollow / vacuous tests, and NO missing-fixture references
+  across all 90 test modules (`pytest --collect-only` = 1999 tests, 0 import errors). Fixture-backed
+  provenance goldens (e.g. `test_preserve_authored_tables.py` corpus pins; formatting-mapper
+  goldens loaded via dynamic slug from `tests/sources/book/*.docx`) stay.
+
 ## Scope — remediation order (severity-first)
 
 1. **F1 (P0) first** — restore/repoint the quality-gate selector so the gate runs.
@@ -171,6 +204,11 @@ promoted into `## Confirmed findings`:
 - **F5:** extend `tests/test_documentation_links.py` to validate `AGENTS.md` internal path
   references (fails on the stale `docs/specs/...` link); add a test asserting no tracked files
   exist under the "Generated …" ignored artifact paths; assert `paradump.txt` is not tracked.
+- **F6:** delete the dormant determinism test (#788-846) and the orphaned `lietaer_image7.jpeg`;
+  when the F2 detector is de-literalized, regenerate/remove the theology characterization golden
+  and drop the inline book-literal assertions; add a guard test that fails if any test asserts on
+  the known source-less book literals (shared deny-list with F2), so per-book determinism cannot
+  creep back into the suite.
 
 ## SaaS rationale
 
