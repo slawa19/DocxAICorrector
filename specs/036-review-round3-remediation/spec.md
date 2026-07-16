@@ -1,7 +1,16 @@
 # Feature Specification: Review round-3 findings remediation (correctness + boundaries + hygiene)
 
 Date: 2026-07-16
-Status: **IMPLEMENTED (2026-07-16).** All findings F1–F28 were independently verified against
+Status: **PARTIALLY IMPLEMENTED — round-4 review reopened gaps (2026-07-16).** The initial pass
+below landed all F1–F28 across 8 waves with green tests, but a follow-up (round-4) review found
+that several fixes satisfied their unit test WITHOUT closing the runtime/evidence contract
+(P0 gate self-failure now fixed in `9274619`; plus real gaps in F2 dead-axis, F3 `processing_service`
+still streamlit-bound, F7 non-killing PDF timeout, F13 corpus-calibrated ratio, F16 env-name-not-secret
+cache key, F25 two missed retry sites, F27 preparation stage ungated, and others). The round-4
+findings + their true-contract remediation are tracked as a follow-up increment (see the end of this
+spec). Do NOT treat F1–F28 as fully closed. Initial-pass detail follows.
+
+Prior (initial-pass) claim: All findings F1–F28 were independently verified against
 live code (file:line evidence) and then remediated across 8 orchestrated waves (branch
 `hardening/wave1-saas-prereqs`, commits `faa9bf7`…`573e70e`), each landing with its
 anti-regression test and the pyright ratchet held at 247. One scope decision is recorded and
