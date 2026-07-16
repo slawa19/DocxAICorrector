@@ -108,7 +108,7 @@ def _prepare_state(monkeypatch):
     monkeypatch.setattr(
         processing_service,
         "generate_image_candidate",
-        lambda image_bytes, analysis, *, mode, prefer_deterministic_reconstruction=True, reconstruction_model=None, reconstruction_render_config=None, image_output_config=None, model_config=None, client=None, budget=None: (
+        lambda image_bytes, analysis, *, mode, prefer_deterministic_reconstruction=True, reconstruction_model=None, reconstruction_render_config=None, image_output_config=None, model_config=None, client=None, budget=None, pixel_budget=None: (
             PNG_BYTES if mode == "safe" else REDRAWN_BYTES
         ),
     )
@@ -211,6 +211,7 @@ def test_process_document_images_mode_scenario_matrix(
         model_config=None,
         client=None,
         budget=None,
+        pixel_budget=None,
     ):
         generated_modes.append(mode)
         return PNG_BYTES if mode == "safe" else REDRAWN_BYTES
@@ -277,6 +278,7 @@ def test_process_document_images_applies_fallback_original_for_unreadable_candid
         model_config=None,
         client=None,
         budget=None,
+        pixel_budget=None,
     ):
         if mode == "safe":
             return b""
@@ -394,6 +396,7 @@ def test_process_document_images_reuses_single_client_for_image_attempts(monkeyp
         model_config=None,
         client=None,
         budget=None,
+        pixel_budget=None,
     ):
         generation_clients.append(client)
         return PNG_BYTES if mode == "safe" else REDRAWN_BYTES
@@ -469,7 +472,7 @@ def test_process_document_images_uses_detected_redraw_mime_type_for_candidate_an
     monkeypatch.setattr(
         processing_service,
         "generate_image_candidate",
-        lambda image_bytes, analysis, *, mode, prefer_deterministic_reconstruction=True, reconstruction_model=None, reconstruction_render_config=None, image_output_config=None, model_config=None, client=None, budget=None: PNG_BYTES if mode == "safe" else REDRAWN_BYTES,
+        lambda image_bytes, analysis, *, mode, prefer_deterministic_reconstruction=True, reconstruction_model=None, reconstruction_render_config=None, image_output_config=None, model_config=None, client=None, budget=None, pixel_budget=None: PNG_BYTES if mode == "safe" else REDRAWN_BYTES,
     )
     service = processing_service.build_processing_service()
 
@@ -504,6 +507,7 @@ def test_process_document_images_compare_all_prepares_three_variants(monkeypatch
         model_config=None,
         client=None,
         budget=None,
+        pixel_budget=None,
     ):
         generated_modes.append(mode)
         return {
@@ -559,6 +563,7 @@ def test_process_document_images_attempts_semantic_mode_for_advisory_dense_text_
         model_config=None,
         client=None,
         budget=None,
+        pixel_budget=None,
     ):
         generated_modes.append((mode, analysis.semantic_redraw_allowed))
         return PNG_BYTES if mode == "safe" else REDRAWN_BYTES
@@ -584,7 +589,7 @@ def test_process_document_images_falls_back_when_model_call_budget_is_exhausted(
     monkeypatch.setattr(
         processing_service,
         "generate_image_candidate",
-        lambda image_bytes, analysis, *, mode, prefer_deterministic_reconstruction=True, reconstruction_model=None, reconstruction_render_config=None, image_output_config=None, model_config=None, client=None, budget=None: (_ for _ in ()).throw(
+        lambda image_bytes, analysis, *, mode, prefer_deterministic_reconstruction=True, reconstruction_model=None, reconstruction_render_config=None, image_output_config=None, model_config=None, client=None, budget=None, pixel_budget=None: (_ for _ in ()).throw(
             processing_service.ImageModelCallBudgetExceeded("budget exhausted")
         )
         if mode != "safe"
@@ -627,6 +632,7 @@ def test_process_document_images_compare_all_falls_back_when_variants_are_incomp
         model_config=None,
         client=None,
         budget=None,
+        pixel_budget=None,
     ):
         generated_modes.append(mode)
         if mode == "safe":
@@ -756,6 +762,7 @@ def test_process_document_images_stops_future_images_when_document_budget_is_exh
         model_config=None,
         client=None,
         budget=None,
+        pixel_budget=None,
     ):
         if budget is not None and mode != "safe":
             budget.consume("test.generate")
@@ -903,6 +910,7 @@ def test_process_document_images_does_not_request_candidate2_after_hard_validati
         model_config=None,
         client=None,
         budget=None,
+        pixel_budget=None,
     ):
         generated_modes.append(mode)
         return PNG_BYTES if mode == "safe" else REDRAWN_BYTES

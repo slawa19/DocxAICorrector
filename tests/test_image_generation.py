@@ -3,8 +3,11 @@ from io import BytesIO
 from types import SimpleNamespace
 from typing import Any, cast
 
+import pytest
+
 import docxaicorrector.image.analysis as image_analysis
 import docxaicorrector.image.generation as image_generation
+from docxaicorrector.image.analysis import ImageBudget
 from PIL import Image, ImageDraw
 from docxaicorrector.core.models import ImageAnalysisResult
 
@@ -179,6 +182,110 @@ def test_generate_image_candidate_over_budget_returns_original_without_decode(mo
 
     assert candidate == original_bytes
     assert any(event == "image_generation_skipped_over_budget" for event, _ in logged_events)
+
+
+def _build_generate_only_semantic_client(output_bytes: bytes):
+    """Client whose images API only supports generate (no edit), so a structured
+    request falls back to the Vision + Images.generate path (mirrors the existing
+    structured harness)."""
+
+    class FakeResponsesClient:
+        def create(self, **kwargs):
+            return SimpleNamespace(output_text="Three columns with arrows. Labels: Start, Review, Finish.")
+
+    class FakeImagesClient:
+        def generate(self, **kwargs):
+            return SimpleNamespace(
+                data=[
+                    SimpleNamespace(
+                        b64_json=base64.b64encode(output_bytes).decode("ascii"),
+                        revised_prompt="revised prompt",
+                    )
+                ]
+            )
+
+    return build_semantic_client(images=FakeImagesClient(), responses=FakeResponsesClient())
+
+
+def test_extract_image_bytes_rejects_oversized_provider_payload_before_decode(monkeypatch):
+    """Round-5 finding 5a: an oversized base64 provider payload is rejected by the
+    byte cap BEFORE base64.b64decode (and therefore before any Image.load)."""
+    monkeypatch.setattr(image_analysis, "MAX_ENCODED_IMAGE_BYTES", 8)
+
+    def _boom_b64decode(*args, **kwargs):
+        raise AssertionError("base64.b64decode must not run for an oversized payload")
+
+    monkeypatch.setattr(image_generation.base64, "b64decode", _boom_b64decode)
+
+    response = SimpleNamespace(
+        data=[SimpleNamespace(b64_json="QUJDREVGR0hJSktM", revised_prompt=None)]  # 16 chars > cap of 8
+    )
+    with pytest.raises(RuntimeError):
+        image_generation._extract_image_bytes(response)
+
+
+def test_extract_image_bytes_decodes_normal_provider_payload():
+    """A within-budget payload still decodes normally."""
+    payload = base64.b64encode(PNG_BYTES).decode("ascii")
+    response = SimpleNamespace(data=[SimpleNamespace(b64_json=payload, revised_prompt="ok")])
+
+    decoded, revised = image_generation._extract_image_bytes(response)
+
+    assert decoded == PNG_BYTES
+    assert revised == "ok"
+
+
+def test_generate_image_candidate_charges_generated_output_against_pixel_budget(
+    monkeypatch, resolved_test_model_registry
+):
+    """Round-5 finding 5c: the provider-returned (generated) raster charges the
+    same per-document ImageBudget as the source image."""
+    monkeypatch.setattr(image_generation, "log_event", lambda *args, **kwargs: None)
+    client = _build_generate_only_semantic_client(build_square_semantic_output_bytes(size=24))
+    pixel_budget = ImageBudget()
+
+    candidate = image_generation.generate_image_candidate(
+        build_detailed_png_bytes(),
+        build_analysis_result(),
+        mode="semantic_redraw_structured",
+        client=client,
+        model_config=resolved_test_model_registry,
+        pixel_budget=pixel_budget,
+    )
+
+    assert candidate
+    # The 24x24 generated raster was charged to the shared document budget.
+    assert pixel_budget.admitted_images == 1
+    assert pixel_budget.used_megapixels > 0.0
+    assert pixel_budget.used_decoded_bytes == 24 * 24 * 4
+
+
+def test_generate_image_candidate_rejects_over_budget_generated_output_before_load(
+    monkeypatch, resolved_test_model_registry
+):
+    """Round-5 finding 5b: an over-budget provider raster is gated BEFORE the
+    restore/.load() step and the original source is returned unchanged."""
+    monkeypatch.setattr(image_generation, "log_event", lambda *args, **kwargs: None)
+    # Source (12x12) passes; generated output (24x24) exceeds the shrunk gate.
+    monkeypatch.setattr(image_analysis, "MAX_IMAGE_DIMENSION_PX", 20)
+
+    def _boom_restore(*args, **kwargs):
+        raise AssertionError("_restore_generated_output must not run for an over-budget generated raster")
+
+    monkeypatch.setattr(image_generation, "_restore_generated_output", _boom_restore)
+
+    original_bytes = build_detailed_png_bytes()
+    client = _build_generate_only_semantic_client(build_square_semantic_output_bytes(size=24))
+
+    candidate = image_generation.generate_image_candidate(
+        original_bytes,
+        build_analysis_result(),
+        mode="semantic_redraw_structured",
+        client=client,
+        model_config=resolved_test_model_registry,
+    )
+
+    assert candidate == original_bytes
 
 
 def test_generate_image_candidate_structured_uses_vision_and_images_generate(monkeypatch, resolved_test_model_registry):

@@ -53,6 +53,37 @@ MAX_IMAGE_MEGAPIXELS = 50.0
 # (RGBA). 50 MP * 4 bytes ~= 200 MiB, so 256 MiB leaves conservative headroom.
 MAX_DECODED_IMAGE_BYTES = 256 * 1024 * 1024
 
+# Upper bound on a base64-encoded image payload BEFORE it is decoded (round-5
+# finding 5). ``base64.b64decode`` allocates ~3/4 of the encoded length as raw
+# compressed-file bytes, and that file is then handed to Pillow. A provider that
+# returns a malicious/degenerate payload would otherwise force that allocation
+# before any pixel-budget gate could run. 64 MiB of base64 decodes to ~48 MiB of
+# compressed image bytes — far above any legitimate provider output (a few MB)
+# while keeping the pre-decode allocation bounded.
+MAX_ENCODED_IMAGE_BYTES = 64 * 1024 * 1024
+
+
+def encoded_image_within_byte_budget(encoded_payload: str | bytes, *, stage: str) -> bool:
+    """Return True when a base64 image payload is small enough to decode.
+
+    Checked BEFORE ``base64.b64decode`` so an oversized encoded payload is
+    rejected without allocating its decoded bytes. On rejection a structured
+    WARNING is logged and False is returned so the caller can degrade safely
+    (skip / keep the original) instead of decoding it.
+    """
+    encoded_length = len(encoded_payload)
+    if encoded_length > MAX_ENCODED_IMAGE_BYTES:
+        log_event(
+            logging.WARNING,
+            "image_encoded_byte_budget_exceeded",
+            "Base64 image payload превышает byte budget; отклоняю без декодирования.",
+            stage=stage,
+            encoded_length=encoded_length,
+            max_encoded_bytes=MAX_ENCODED_IMAGE_BYTES,
+        )
+        return False
+    return True
+
 
 def image_within_pixel_budget(image_bytes: bytes, *, stage: str) -> bool:
     """Return True when the image header is within the decode budget.
@@ -160,7 +191,19 @@ class ImageBudget:
         if not image_within_pixel_budget(image_bytes, stage=stage):
             self.skipped_images += 1
             return False
+        return self.charge(image_bytes, stage=stage)
 
+    def charge(self, image_bytes: bytes, *, stage: str) -> bool:
+        """Charge an already per-image-gated raster against the document total.
+
+        Unlike :meth:`admit` this does NOT re-run the per-image pixel gate — the
+        caller must have applied it (or ``image_within_pixel_budget``) already.
+        Used for GENERATED (provider-returned) rasters so they charge the SAME
+        per-document budget as embedded images (round-5 finding 5): a single
+        shared budget across embedded + generated. Returns False (and logs a
+        WARNING) when adding this image would exceed the document budget, so the
+        caller can degrade to the original instead of emitting the generated image.
+        """
         geometry = _read_image_header_geometry(image_bytes)
         if geometry is None:
             # Header unreadable for an unrelated reason; the per-image gate has

@@ -82,6 +82,11 @@ class ImageProcessingContext:
     image_model_call_budget_cls: _BudgetFactory
     image_model_call_budget_exceeded_cls: _BudgetExceededClass
     document_call_budget: _ImageModelCallBudgetLike | None = None
+    # Per-document aggregate pixel budget, shared across embedded AND generated
+    # rasters (round-5 finding 5c). Set once per document in
+    # ``process_document_images`` and forwarded to every candidate generation so a
+    # provider-returned image charges the same budget as the source image.
+    document_pixel_budget: ImageBudget | None = None
 
     def ensure_client(self) -> object:
         if self.client is None:
@@ -127,6 +132,7 @@ class ImageProcessingContext:
             model_config=self.config,
             client=client,
             budget=budget,
+            pixel_budget=self.document_pixel_budget,
         )
 
     def validate_redraw_result(
@@ -1008,6 +1014,9 @@ def process_document_images(
             context.config, "document_max_decoded_bytes", DEFAULT_DOCUMENT_MAX_DECODED_BYTES
         ),
     )
+    # Share the same aggregate budget with candidate generation so provider-returned
+    # (generated) rasters charge the document budget too (round-5 finding 5c).
+    context.document_pixel_budget = document_pixel_budget
     document_budget_exhausted = False
     context.emit_image_reset(context.runtime)
     total_images = len(image_assets)

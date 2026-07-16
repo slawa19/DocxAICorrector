@@ -1,5 +1,6 @@
 import json
 import os
+import threading
 from pathlib import Path
 
 import pytest
@@ -1057,3 +1058,69 @@ def test_atomic_write_group_publish_failure_rolls_back(tmp_path, monkeypatch):
     assert not second_final.exists()
     # Both staged temps were unlinked (the moved one is gone, the remaining one cleaned).
     assert list(tmp_path.glob("*.tmp.*")) == []
+
+
+def test_write_segment_result_registry_concurrent_writers_keep_each_others_fresh_records(tmp_path, monkeypatch):
+    # Round-5 finding 6: two writers publishing into the SAME family at the same
+    # time must not prune each other's freshly-written records. The count budget is
+    # too small for both batches together, so without the in-flight registry the
+    # concurrent pruner would evict the other run's fresh leaves.
+    monkeypatch.setattr(runtime_artifacts, "SEGMENT_RESULT_REGISTRY_MAX_COUNT", 2)
+    monkeypatch.setattr(runtime_artifacts, "SEGMENT_RESULT_REGISTRY_MAX_AGE_SECONDS", 10_000)
+
+    # A stale historical leaf that SHOULD still be reclaimed by the prune.
+    stale_leaf = tmp_path / "prep_old" / "struct-old"
+    stale_leaf.mkdir(parents=True, exist_ok=True)
+    stale_path = stale_leaf / "seg_stale.segment-result.json"
+    stale_path.write_text(json.dumps({"segment_id": "seg_stale"}), encoding="utf-8")
+    os.utime(stale_path, (10.0, 10.0))
+
+    # Interleave the two writers so BOTH have written their files AND registered
+    # their in-flight paths before EITHER snapshots the registry to prune. The
+    # snapshot happens right after the write loop, so gating it on a barrier makes
+    # each writer's protected set include the other's fresh (already on-disk) paths.
+    real_snapshot = runtime_artifacts._snapshot_active_publications
+    barrier = threading.Barrier(2)
+
+    def _barriered_snapshot(family_key):
+        barrier.wait()
+        return real_snapshot(family_key)
+
+    monkeypatch.setattr(runtime_artifacts, "_snapshot_active_publications", _barriered_snapshot)
+
+    def _records(run: str) -> list[dict[str, object]]:
+        return [
+            {
+                "schema_version": 1,
+                "prepared_source_key": f"prep:{run}",
+                "structure_fingerprint": f"struct-{run}",
+                "segment_id": f"{run}_seg_{index:04d}",
+                "translated_markdown": "Translated chapter",
+            }
+            for index in range(2)
+        ]
+
+    results: dict[str, dict[str, str]] = {}
+    errors: list[BaseException] = []
+
+    def _run(run: str):
+        try:
+            results[run] = write_segment_result_registry(records=_records(run), output_dir=tmp_path)
+        except BaseException as exc:  # noqa: BLE001 - surface thread failures to the test
+            errors.append(exc)
+
+    threads = [threading.Thread(target=_run, args=(run,)) for run in ("runA", "runB")]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=30)
+
+    assert not errors, errors
+    assert set(results) == {"runA", "runB"}
+    # BOTH runs' freshly-written records survive the concurrent prunes.
+    for run in ("runA", "runB"):
+        assert len(results[run]) == 2
+        for path in results[run].values():
+            assert Path(path).exists(), path
+    # The stale historical leaf is still reclaimed by the family prune.
+    assert not stale_path.exists()

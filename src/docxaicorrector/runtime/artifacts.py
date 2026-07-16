@@ -34,6 +34,50 @@ SEGMENT_RESULT_REGISTRY_MAX_COUNT = 2000
 JOB_RESULT_REGISTRY_MAX_AGE_SECONDS = 30 * 24 * 60 * 60
 JOB_RESULT_REGISTRY_MAX_COUNT = 2000
 
+# --- Concurrency-safe family retention (round-5 finding 6) --------------------
+# The family-wide prune only protected the CURRENT call's just-written paths, so
+# two writers publishing into the same registry family at the same time could
+# prune each other's freshly-published records: writer B's leaves are not in
+# writer A's ``protected_paths``, so A's count-cap prune treated them as stale
+# history. The fix keeps a process-wide registry of every in-flight publication's
+# paths (registered BEFORE the file is written, so there is no write→prune gap)
+# that the prune excludes. Each writer snapshots the registry immediately before
+# pruning, so its ``protected_paths`` covers BOTH its own batch AND every other
+# in-flight run's paths for the same family — no live run is pruned by a
+# concurrent one. A registration is cleared only after its writer's own prune
+# completes, so a concurrent prune always sees the union while both runs are live.
+# Prunes are intentionally NOT serialised: overlapping prunes each protect the
+# union and, at worst, race to unlink the same stale leaf (a caught OSError), so a
+# serialising lock is unnecessary and would only reintroduce an ordering hazard
+# where one run unregisters before the other prunes.
+_active_registry_publications: dict[str, set[str]] = {}
+_active_registry_publications_lock = threading.Lock()
+
+
+def _registry_family_key(output_dir: Path) -> str:
+    """Stable key for a registry family root (the recursive prune scope)."""
+    return str(output_dir)
+
+
+def _register_active_publications(family_key: str, paths: set[str]) -> None:
+    with _active_registry_publications_lock:
+        _active_registry_publications.setdefault(family_key, set()).update(paths)
+
+
+def _unregister_active_publications(family_key: str, paths: set[str]) -> None:
+    with _active_registry_publications_lock:
+        active = _active_registry_publications.get(family_key)
+        if active is None:
+            return
+        active.difference_update(paths)
+        if not active:
+            _active_registry_publications.pop(family_key, None)
+
+
+def _snapshot_active_publications(family_key: str) -> set[str]:
+    with _active_registry_publications_lock:
+        return set(_active_registry_publications.get(family_key, ()))
+
 
 class AppReadyMarkerWriter:
     def __init__(self, *, path: Path, freshness_window_seconds: float = 15.0, time_fn=None):
@@ -442,45 +486,87 @@ def _prune_registry_family_protecting_current(
     return pruned_paths
 
 
-def write_segment_result_registry(
+def _publish_registry_family(
     *,
     records: Sequence[Mapping[str, object]],
-    output_dir: Path = SEGMENT_RESULT_REGISTRY_DIR,
+    output_dir: Path,
+    id_key: str,
+    filename_suffix: str,
+    glob: str,
+    max_age_seconds: int | None,
+    max_count: int | None,
 ) -> dict[str, str]:
-    persisted_paths: dict[str, str] = {}
+    """Write one registry family's records atomically, then prune it safely.
+
+    Concurrency-safe (round-5 finding 6): the batch's target paths are registered
+    in the process-wide active-publication registry BEFORE any file is written,
+    and the prune's ``protected_paths`` is a snapshot of that registry taken right
+    before pruning. It therefore excludes not just this call's paths but every
+    OTHER in-flight run's freshly published paths for the same family, so two
+    concurrent writers can never prune each other's fresh records. History is
+    still bounded (F11).
+    """
+    planned: list[tuple[Path, Path, Mapping[str, object], str]] = []
     for record in records:
         prepared_source_key = str(record.get("prepared_source_key") or "").strip()
         structure_fingerprint = str(record.get("structure_fingerprint") or "").strip()
-        segment_id = str(record.get("segment_id") or "").strip()
-        if not prepared_source_key or not structure_fingerprint or not segment_id:
+        id_value = str(record.get(id_key) or "").strip()
+        if not prepared_source_key or not structure_fingerprint or not id_value:
             continue
         target_dir = (
             output_dir
             / _sanitize_artifact_stem(prepared_source_key)
             / _sanitize_artifact_stem(structure_fingerprint)
         )
-        target_dir.mkdir(parents=True, exist_ok=True)
-        artifact_path = target_dir / f"{_sanitize_artifact_stem(segment_id)}.segment-result.json"
-        # Atomic write (temp sibling + os.replace): an interrupted write never leaves
-        # a truncated half-file that later reads as a delivered record (F11).
-        _atomic_write(
-            artifact_path,
-            json.dumps(_to_jsonable(record), ensure_ascii=False, indent=2),
+        artifact_path = target_dir / f"{_sanitize_artifact_stem(id_value)}{filename_suffix}"
+        planned.append((target_dir, artifact_path, record, id_value))
+
+    family_key = _registry_family_key(output_dir)
+    planned_path_strs = {str(artifact_path) for _, artifact_path, _, _ in planned}
+    # Register BEFORE writing so a concurrent prune that runs between our write and
+    # our own prune still excludes these paths (no write→prune protection gap).
+    _register_active_publications(family_key, planned_path_strs)
+    persisted_paths: dict[str, str] = {}
+    try:
+        for target_dir, artifact_path, record, id_value in planned:
+            target_dir.mkdir(parents=True, exist_ok=True)
+            # Atomic write (temp sibling + os.replace): an interrupted write never
+            # leaves a truncated half-file that later reads as a delivered record (F11).
+            _atomic_write(
+                artifact_path,
+                json.dumps(_to_jsonable(record), ensure_ascii=False, indent=2),
+            )
+            persisted_paths[id_value] = str(artifact_path)
+
+        # Protect every in-flight publication (ours + any other live run's) so a
+        # recursive count/age prune only reclaims stale history.
+        protected_paths = _snapshot_active_publications(family_key) | set(persisted_paths.values())
+        _prune_registry_family_protecting_current(
+            target_dir=output_dir,
+            glob=glob,
+            max_age_seconds=max_age_seconds,
+            max_count=max_count,
+            protected_paths=protected_paths,
         )
-        persisted_paths[segment_id] = str(artifact_path)
-    # Bound family growth after publishing, mirroring the UI-result and
-    # structure-manifest writers. Recursive glob prunes stale identity leaves
-    # across the whole family, not just one document's segment folder — but the
-    # records this call just wrote are PROTECTED, so the returned paths always
-    # still exist (F11).
-    _prune_registry_family_protecting_current(
-        target_dir=output_dir,
+    finally:
+        _unregister_active_publications(family_key, planned_path_strs)
+    return persisted_paths
+
+
+def write_segment_result_registry(
+    *,
+    records: Sequence[Mapping[str, object]],
+    output_dir: Path = SEGMENT_RESULT_REGISTRY_DIR,
+) -> dict[str, str]:
+    return _publish_registry_family(
+        records=records,
+        output_dir=output_dir,
+        id_key="segment_id",
+        filename_suffix=".segment-result.json",
         glob="**/*.segment-result.json",
         max_age_seconds=SEGMENT_RESULT_REGISTRY_MAX_AGE_SECONDS,
         max_count=SEGMENT_RESULT_REGISTRY_MAX_COUNT,
-        protected_paths=set(persisted_paths.values()),
     )
-    return persisted_paths
 
 
 def write_job_result_registry(
@@ -488,40 +574,15 @@ def write_job_result_registry(
     records: Sequence[Mapping[str, object]],
     output_dir: Path = JOB_RESULT_REGISTRY_DIR,
 ) -> dict[str, str]:
-    persisted_paths: dict[str, str] = {}
-    for record in records:
-        prepared_source_key = str(record.get("prepared_source_key") or "").strip()
-        structure_fingerprint = str(record.get("structure_fingerprint") or "").strip()
-        job_id = str(record.get("job_id") or "").strip()
-        if not prepared_source_key or not structure_fingerprint or not job_id:
-            continue
-        target_dir = (
-            output_dir
-            / _sanitize_artifact_stem(prepared_source_key)
-            / _sanitize_artifact_stem(structure_fingerprint)
-        )
-        target_dir.mkdir(parents=True, exist_ok=True)
-        artifact_path = target_dir / f"{_sanitize_artifact_stem(job_id)}.job-result.json"
-        # Atomic write (temp sibling + os.replace): an interrupted write never leaves
-        # a truncated half-file that later reads as a delivered record (F11).
-        _atomic_write(
-            artifact_path,
-            json.dumps(_to_jsonable(record), ensure_ascii=False, indent=2),
-        )
-        persisted_paths[job_id] = str(artifact_path)
-    # Bound family growth after publishing, mirroring the UI-result and
-    # structure-manifest writers. Recursive glob prunes stale identity leaves
-    # across the whole family, not just one document's job folder — but the
-    # records this call just wrote are PROTECTED, so the returned paths always
-    # still exist (F11).
-    _prune_registry_family_protecting_current(
-        target_dir=output_dir,
+    return _publish_registry_family(
+        records=records,
+        output_dir=output_dir,
+        id_key="job_id",
+        filename_suffix=".job-result.json",
         glob="**/*.job-result.json",
         max_age_seconds=JOB_RESULT_REGISTRY_MAX_AGE_SECONDS,
         max_count=JOB_RESULT_REGISTRY_MAX_COUNT,
-        protected_paths=set(persisted_paths.values()),
     )
-    return persisted_paths
 
 
 def load_job_result_registry(
