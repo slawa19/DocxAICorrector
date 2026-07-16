@@ -740,6 +740,69 @@ def finalize_processing_success(
         docx_phase = dict(docx_phase)
         docx_phase["latest_result_notice"] = reader_cleanup_result_notice
 
+    # F10 (spec 006 increment): re-gate the DELIVERED post-cleanup markdown.
+    # The pre-cleanup gate above measured ``gate_input_markdown``; reader cleanup can
+    # REPLACE the delivered content afterwards, so a cleanup-introduced regression would
+    # otherwise ship having "passed" a gate that never saw it. Only recompute when cleanup
+    # actually changed the delivered markdown — an unchanged run keeps byte-identical
+    # behaviour (no second gate pass). Reuse the SAME failure path as the pre-cleanup gate;
+    # the empty-DOCX guard was already run separately above.
+    if runtime_display_markdown != gate_input_markdown:
+        post_cleanup_quality_report = _build_translation_quality_report(
+            context=context,
+            final_markdown=runtime_display_markdown,
+            formatting_diagnostics_artifacts=formatting_diagnostics_artifacts,
+            assembly_result=assembly_result,
+            pre_cleanup_formatting_baseline=cast(Mapping[str, object] | None, docx_phase.get("pre_cleanup_formatting_baseline")),
+            runtime_display_markdown=runtime_display_markdown,
+        )
+        if post_cleanup_quality_report.get("quality_status") == "fail":
+            post_cleanup_gate_reasons = list(
+                cast(Sequence[str], post_cleanup_quality_report.get("gate_reasons") or [])
+            )
+            error_message = dependencies.present_error(
+                "translation_quality_gate_failed",
+                RuntimeError(_format_translation_quality_gate_failure_message(post_cleanup_gate_reasons)),
+                "Критическая ошибка качества перевода",
+                filename=context.uploaded_filename,
+                quality_status=post_cleanup_quality_report.get("quality_status"),
+                gate_reasons=post_cleanup_gate_reasons,
+                quality_report_path=quality_report_path,
+            )
+            emitters.emit_state(
+                context.runtime,
+                latest_markdown=runtime_display_markdown,
+                latest_docx_bytes=_resolve_docx_phase_bytes(docx_phase),
+                latest_narration_text=None,
+                latest_result_notice={
+                    "level": "error",
+                    "message": "Результат заблокирован document-level quality gate.",
+                },
+                last_error=error_message,
+            )
+            dependencies.log_event(
+                logging.WARNING,
+                "translation_quality_gate_failed_post_cleanup",
+                "Итоговый перевод отклонён document-level quality gate после reader cleanup.",
+                filename=context.uploaded_filename,
+                quality_report_path=quality_report_path,
+                gate_reasons=post_cleanup_gate_reasons,
+                quality_status=post_cleanup_quality_report.get("quality_status"),
+            )
+            return emit_failed_result(
+                emitters=emitters,
+                runtime=context.runtime,
+                finalize_stage="Критическая ошибка качества перевода",
+                detail=error_message,
+                progress=1.0,
+                activity_message=_build_quality_gate_activity_message(post_cleanup_gate_reasons),
+                block_index=job_count,
+                block_count=job_count,
+                target_chars=len(runtime_display_markdown),
+                context_chars=0,
+                log_details=error_message,
+            )
+
     try:
         narration_text = _build_narration_text(
             context=context,
@@ -865,6 +928,11 @@ def finalize_processing_success(
         latest_result_notice=docx_phase["latest_result_notice"],
         last_error=narration_error_message,
     )
+    # F4: track whether result files actually reached disk. The result is already
+    # delivered from session state (emit_state above), so a persistence failure must
+    # NOT hard-fail the run — but it must stop being a silent success.
+    artifacts_persisted = True
+    artifacts_persist_error: str | None = None
     try:
         reassembly_plan = build_reassembly_plan(
             output_mode=str(getattr(context, "output_mode", "") or ""),
@@ -902,6 +970,8 @@ def finalize_processing_success(
                 )
             )
     except OSError as exc:
+        artifacts_persisted = False
+        artifacts_persist_error = f"ui_result_artifacts_save_failed: {exc}"
         dependencies.log_event(
             logging.WARNING,
             "ui_result_artifacts_save_failed",
@@ -932,6 +1002,8 @@ def finalize_processing_success(
                     dependencies.write_segment_result_registry(records=segment_result_records)
                 )
             except OSError as exc:
+                artifacts_persisted = False
+                artifacts_persist_error = f"segment_result_registry_save_failed: {exc}"
                 dependencies.log_event(
                     logging.WARNING,
                     "segment_result_registry_save_failed",
@@ -962,6 +1034,20 @@ def finalize_processing_success(
                 excluded_blocks=int(getattr(state, "excluded_narration_block_count", 0) or 0),
                 mode="standalone" if context.processing_operation == "audiobook" else "postprocess",
             )
+    # F4: the delivered result is still available from session state, but the result
+    # files did not reach disk. Surface a user-visible WARNING notice so the UI shows the
+    # files were not saved, and make the terminal log observably distinct from a fully
+    # persisted success (WARNING ``processing_completed_unpersisted`` instead of INFO
+    # ``processing_completed``). The run still genuinely produced a delivered result, so
+    # the "completed" progress frame and the "succeeded" return are unchanged.
+    if not artifacts_persisted:
+        emitters.emit_state(
+            context.runtime,
+            latest_result_notice={
+                "level": "warning",
+                "message": "Результат обработан, но не удалось сохранить файлы результата на диск.",
+            },
+        )
     emitters.emit_finalize(
         context.runtime,
         "Обработка завершена",
@@ -970,10 +1056,7 @@ def finalize_processing_success(
         "completed",
     )
     emitters.emit_activity(context.runtime, "Документ обработан полностью.")
-    dependencies.log_event(
-        logging.INFO,
-        "processing_completed",
-        "Документ обработан полностью",
+    _completed_log_fields = dict(
         filename=context.uploaded_filename,
         block_count=job_count,
         final_markdown_chars=len(runtime_display_markdown),
@@ -982,6 +1065,21 @@ def finalize_processing_success(
         audiobook_postprocess_enabled=_should_run_audiobook_postprocess(context=context),
         reader_cleanup_enabled=_should_run_reader_cleanup(context=context),
     )
+    if artifacts_persisted:
+        dependencies.log_event(
+            logging.INFO,
+            "processing_completed",
+            "Документ обработан полностью",
+            **_completed_log_fields,
+        )
+    else:
+        dependencies.log_event(
+            logging.WARNING,
+            "processing_completed_unpersisted",
+            "Документ обработан полностью, но итоговые файлы результата не сохранены на диск.",
+            reason=artifacts_persist_error or "ui_result_artifacts_save_failed",
+            **_completed_log_fields,
+        )
     emitters.emit_log(
         context.runtime,
         status="DONE",
