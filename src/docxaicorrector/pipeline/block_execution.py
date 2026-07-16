@@ -1001,7 +1001,18 @@ def process_single_block(
             exc=exc,
         )
 
-    processed_block_status = classify_processed_block_fn(payload.target_text, processed_chunk)
+    # A genuine passthrough block is emitted as the VERBATIM source markdown (no LLM call), so
+    # the LLM-output-quality classifier (heading_only_output / untranslated / ...) must not gate
+    # it — doing so produced hard failures and EMPTY DOCX for passthrough-heavy real documents
+    # (round-5 finding 1). TOC blocks routed through the LLM are genuinely processed and stay
+    # classified as before.
+    is_genuine_passthrough = payload.job_kind == "passthrough" and not _should_route_toc_through_llm(
+        context=context, payload=payload
+    )
+    if is_genuine_passthrough:
+        processed_block_status = "valid"
+    else:
+        processed_block_status = classify_processed_block_fn(payload.target_text, processed_chunk)
     if processed_block_status != "valid":
         rejection_decision = classify_processed_block_failure_decision(
             rejection_kind=processed_block_status,

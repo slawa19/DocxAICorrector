@@ -1420,28 +1420,46 @@ def _get_anthropic_client_class() -> type["AnthropicClient"]:
     return client_cls
 
 
-def _fingerprint_provider_secret(api_key_env: str | None) -> str:
-    # F9a: fold a stable, non-reversible fingerprint of the RESOLVED api-key secret into
-    # the client cache key. Rotating the credential (same env NAME, new VALUE) must yield
-    # a different key -> a fresh client, while an unchanged secret keeps the cached client.
-    # The raw secret (and any prefix of it) is NEVER placed in the key, logged, or surfaced
-    # in errors — only its sha256 hexdigest. A missing env name or an unset/empty env var
-    # maps to a stable sentinel so an unset->set transition also re-keys. The sentinels are
-    # short words that can never collide with a 64-char hexdigest.
-    if not api_key_env:
-        return "noenv"
-    load_project_dotenv()
-    secret = os.getenv(api_key_env, "").strip()
+def _fingerprint_secret_value(secret: str) -> str:
+    # F9a: fingerprint an ALREADY-RESOLVED secret VALUE (this never re-reads the
+    # environment), so a caller can fold the fingerprint of the exact secret it will use
+    # to build the client into that client's cache key — a single read feeds both. The raw
+    # secret (and any prefix of it) is NEVER placed in the key, logged, or surfaced in
+    # errors — only its sha256 hexdigest. An empty/unset secret maps to a stable sentinel
+    # so an unset->set transition also re-keys; the sentinel can never collide with a
+    # 64-char hexdigest.
     if not secret:
         return "unset"
     return hashlib.sha256(secret.encode("utf-8")).hexdigest()
 
 
-def _build_provider_client_cache_key(normalized_provider_name: str, provider_config: ProviderConfig) -> str:
+def _fingerprint_provider_secret(api_key_env: str | None) -> str:
+    # F9a: fold a stable, non-reversible fingerprint of the RESOLVED api-key secret into
+    # the client cache key. Rotating the credential (same env NAME, new VALUE) must yield
+    # a different key -> a fresh client, while an unchanged secret keeps the cached client.
+    # A missing env name maps to a stable "noenv" sentinel so an unset->set transition also
+    # re-keys. This reads the environment; the F16-TOCTOU build path instead fingerprints
+    # the single in-lock secret read via ``_fingerprint_secret_value``.
+    if not api_key_env:
+        return "noenv"
+    load_project_dotenv()
+    return _fingerprint_secret_value(os.getenv(api_key_env, "").strip())
+
+
+def _build_provider_client_cache_key(
+    normalized_provider_name: str,
+    provider_config: ProviderConfig,
+    *,
+    secret_fingerprint: str | None = None,
+) -> str:
     # F16: the resolved client is shaped by base_url, default headers (referer/title),
     # timeout, and which env var supplies the api key — not the provider name alone.
     # Key the cache on a fingerprint of ALL of those. The api-key ENV NAME (identity)
     # is included; the secret VALUE is never placed in the key — only a hash of it (F9a).
+    # When ``secret_fingerprint`` is supplied the caller has ALREADY read the secret (the
+    # in-lock build path passes the fingerprint of that same read), so the key describes
+    # exactly the secret the client is built from and cannot drift (F16-TOCTOU); otherwise
+    # the secret is read from the environment here for an optimistic pre-lock lookup.
     header_items = []
     if provider_config.referer:
         header_items.append(("HTTP-Referer", str(provider_config.referer)))
@@ -1449,6 +1467,11 @@ def _build_provider_client_cache_key(normalized_provider_name: str, provider_con
         header_items.append(("X-OpenRouter-Title", str(provider_config.title)))
     header_fingerprint = ";".join(f"{name}={value}" for name, value in sorted(header_items))
     timeout_fingerprint = "" if provider_config.timeout_seconds is None else repr(provider_config.timeout_seconds)
+    resolved_secret_fingerprint = (
+        secret_fingerprint
+        if secret_fingerprint is not None
+        else _fingerprint_provider_secret(provider_config.api_key_env)
+    )
     return "|".join(
         (
             normalized_provider_name,
@@ -1456,7 +1479,7 @@ def _build_provider_client_cache_key(normalized_provider_name: str, provider_con
             header_fingerprint,
             timeout_fingerprint,
             str(provider_config.api_key_env or ""),
-            _fingerprint_provider_secret(provider_config.api_key_env),
+            resolved_secret_fingerprint,
         )
     )
 
@@ -1481,6 +1504,10 @@ def get_provider_client(provider_name: str, *, config_like: object | None = None
             f"Provider '{normalized_provider_name}' отключён, но selector '{normalized_provider_name}:<runtime>' требует его использования."
         )
 
+    # Optimistic pre-lock key: reads the current secret for a lock-free cache hit. It is
+    # NEVER used as the store key — the authoritative key is recomputed inside the lock
+    # from the SAME secret read that builds the client, so a rotation during the wait can
+    # never store a client under a key describing a different secret (F16-TOCTOU).
     client_cache_key = _build_provider_client_cache_key(normalized_provider_name, provider_config)
 
     global _CLIENT, _CLIENT_CACHE_KEY
@@ -1503,6 +1530,23 @@ def get_provider_client(provider_name: str, *, config_like: object | None = None
         api_key = os.getenv(provider_config.api_key_env, "").strip()
         if not api_key:
             raise RuntimeError(f"Для модели '{normalized_provider_name}:<runtime>' не найден {provider_config.api_key_env}.")
+
+        # F16-TOCTOU: derive the authoritative cache key from the fingerprint of THIS
+        # exact secret read (not a separate pre-lock read that may have rotated), so the
+        # stored key always matches the secret the client is actually built with. Re-check
+        # the cache under the authoritative key in case a concurrent builder resolving the
+        # same secret already stored its client while we were reading.
+        client_cache_key = _build_provider_client_cache_key(
+            normalized_provider_name,
+            provider_config,
+            secret_fingerprint=_fingerprint_secret_value(api_key),
+        )
+        cached_client = _CLIENTS_BY_PROVIDER.get(client_cache_key)
+        if cached_client is not None:
+            return cached_client  # type: ignore[return-value]
+        if normalized_provider_name == "openai" and _CLIENT is not None and _CLIENT_CACHE_KEY == client_cache_key:
+            _CLIENTS_BY_PROVIDER[client_cache_key] = _CLIENT
+            return _CLIENT
 
         client_kwargs: dict[str, Any] = {"api_key": api_key}
         default_headers: dict[str, str] = {}

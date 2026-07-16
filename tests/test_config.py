@@ -1397,6 +1397,58 @@ def test_get_provider_client_rekeys_on_secret_rotation(monkeypatch, tmp_path):
     assert "secret-value-B" not in unset_key
 
 
+def test_get_provider_client_no_toctou_between_prelock_fingerprint_and_build(monkeypatch, tmp_path):
+    # F16-TOCTOU: the cache key must be derived from the SAME secret read that builds the
+    # client. Here the credential "rotates" between the pre-lock fingerprint read (still sees
+    # the stale secret A) and the in-lock read that builds the client (sees the rotated
+    # secret B). A client built from secret B must be stored under a key that fingerprints
+    # secret B — never under the stale secret-A key (which would let a later A-secret caller
+    # receive a B-secret client, or vice versa).
+    dotenv_path = tmp_path / ".env"
+    dotenv_path.write_text("", encoding="utf-8")
+
+    created: list[object] = []
+
+    class FakeOpenAI:
+        def __init__(self, *, api_key):
+            self.api_key = api_key
+            created.append(self)
+
+    monkeypatch.setattr(config, "ENV_PATH", dotenv_path)
+    monkeypatch.setattr(config, "OpenAI", FakeOpenAI)
+    monkeypatch.setattr(config, "_CLIENT", None)
+    monkeypatch.setattr(config, "_CLIENT_CACHE_KEY", None)
+    monkeypatch.setattr(config, "_CLIENTS_BY_PROVIDER", {})
+
+    fingerprint_a = hashlib.sha256(b"secret-value-A").hexdigest()
+    fingerprint_b = hashlib.sha256(b"secret-value-B").hexdigest()
+
+    # The in-lock read (``os.getenv`` for the api key + ``_fingerprint_secret_value``) sees
+    # the ROTATED secret B — this is what actually builds the client.
+    monkeypatch.setenv("OPENAI_API_KEY", "secret-value-B")
+    # The pre-lock fingerprint read still sees the STALE secret A (simulating a rotation
+    # that lands after the fingerprint was computed but before the in-lock read).
+    monkeypatch.setattr(config, "_fingerprint_provider_secret", lambda api_key_env: fingerprint_a)
+
+    client = config.get_provider_client("openai")
+
+    # The client was genuinely built from the in-lock (rotated) secret B.
+    assert getattr(client, "api_key") == "secret-value-B"
+    assert len(created) == 1
+
+    # Exactly one cache entry, and its key fingerprints secret B — the secret the client
+    # actually holds — NOT the stale pre-lock secret A.
+    stored_keys = list(config._CLIENTS_BY_PROVIDER.keys())
+    assert len(stored_keys) == 1
+    stored_key = stored_keys[0]
+    assert config._CLIENTS_BY_PROVIDER[stored_key] is client
+    assert fingerprint_b in stored_key
+    assert fingerprint_a not in stored_key
+    # The raw secret is never embedded in the key.
+    assert "secret-value-A" not in stored_key
+    assert "secret-value-B" not in stored_key
+
+
 def test_load_project_dotenv_overrides_empty_runtime_env_with_repo_value(monkeypatch, tmp_path):
     dotenv_path = tmp_path / ".env"
     dotenv_path.write_text("OPENROUTER_API_KEY=test-openrouter-key\n", encoding="utf-8")

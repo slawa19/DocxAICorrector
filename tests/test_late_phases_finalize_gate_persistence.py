@@ -25,6 +25,10 @@ from types import SimpleNamespace
 
 import docxaicorrector.pipeline.late_phases as late_phases
 
+# Captured at import time, before any test stubs it, so Finding 7's test can restore the
+# REAL acceptance-verdict builder over ``_install_stubs``' lightweight stub.
+_REAL_BUILD_VERDICT = late_phases.build_report_acceptance_verdict
+
 
 class _RecordingEmitters:
     def __init__(self) -> None:
@@ -88,6 +92,24 @@ def _cleanup_result(*, markdown: str, docx_bytes: bytes = b"final-docx"):
         result_notice=None,
         final_generated_paragraph_registry=None,
     )
+
+
+def _real_primary_artifact_writer(tmp_path, *, extra=None):
+    """Return a ``write_ui_result_artifacts`` stub that actually writes non-empty
+    primary files (``markdown_path`` + ``docx_path``) to ``tmp_path`` — the shape
+    Finding 13 requires for a genuine persistence success."""
+
+    def _write():
+        markdown_path = tmp_path / "report.result.md"
+        docx_path = tmp_path / "report.result.docx"
+        markdown_path.write_text("итоговый markdown", encoding="utf-8")
+        docx_path.write_bytes(b"PK\x03\x04 final-docx bytes")
+        paths = {"markdown_path": str(markdown_path), "docx_path": str(docx_path)}
+        if extra:
+            paths.update(extra)
+        return paths
+
+    return _write
 
 
 def _install_stubs(monkeypatch, *, gate_input_markdown, cleanup_result, report_fn):
@@ -214,7 +236,7 @@ def test_finalize_artifact_save_oserror_is_terminal_visible_but_still_succeeds(m
     assert any(call["terminal_kind"] == "completed" for call in emitters.finalize_calls)
 
 
-def test_finalize_artifact_save_success_logs_completed_info(monkeypatch):
+def test_finalize_artifact_save_success_logs_completed_info(monkeypatch, tmp_path):
     """Companion: when persistence succeeds the terminal log stays INFO
     ``processing_completed`` and no unpersisted-warning notice is emitted."""
     gate_input = "Чистый переведённый абзац."
@@ -225,7 +247,7 @@ def test_finalize_artifact_save_success_logs_completed_info(monkeypatch):
     cleanup = _cleanup_result(markdown=gate_input, docx_bytes=b"final-docx")
     _install_stubs(monkeypatch, gate_input_markdown=gate_input, cleanup_result=cleanup, report_fn=_report)
 
-    deps = _RecordingDependencies(artifact_writer=lambda: {"markdown_path": "result.md"})
+    deps = _RecordingDependencies(artifact_writer=_real_primary_artifact_writer(tmp_path))
     emitters = _RecordingEmitters()
 
     result = _run_finalize(
@@ -256,7 +278,7 @@ def test_finalize_artifact_save_success_logs_completed_info(monkeypatch):
 # --------------------------------------------------------------------------- #
 
 
-def test_finalize_registry_only_oserror_completes_without_unpersisted_notice(monkeypatch):
+def test_finalize_registry_only_oserror_completes_without_unpersisted_notice(monkeypatch, tmp_path):
     gate_input = "Чистый переведённый абзац."
 
     def _report(**kwargs):
@@ -269,10 +291,9 @@ def test_finalize_registry_only_oserror_completes_without_unpersisted_notice(mon
         late_phases, "build_segment_result_records", lambda **k: [{"segment_id": "seg_0001"}]
     )
 
-    # Primary artifacts save fine; only the segment registry write raises OSError.
-    deps = _RecordingDependencies(
-        artifact_writer=lambda: {"markdown_path": "result.md", "docx_path": "result.docx"}
-    )
+    # Primary artifacts save fine (real non-empty files); only the segment registry
+    # write raises OSError.
+    deps = _RecordingDependencies(artifact_writer=_real_primary_artifact_writer(tmp_path))
 
     def _raise_registry_oserror(*, records):
         raise OSError("registry disk full")
@@ -367,7 +388,7 @@ def test_finalize_regates_post_cleanup_and_blocks_when_cleanup_flips_to_fail(mon
     assert deps.write_ui_result_artifacts_calls == 0
 
 
-def test_finalize_completes_when_cleanup_changes_markdown_but_still_passes(monkeypatch):
+def test_finalize_completes_when_cleanup_changes_markdown_but_still_passes(monkeypatch, tmp_path):
     gate_input = "Чистый переведённый абзац."
     cleaned_ok = "Отредактированный, но всё ещё качественный абзац."
 
@@ -375,7 +396,7 @@ def test_finalize_completes_when_cleanup_changes_markdown_but_still_passes(monke
     cleanup = _cleanup_result(markdown=cleaned_ok, docx_bytes=b"final-docx")
     _install_stubs(monkeypatch, gate_input_markdown=gate_input, cleanup_result=cleanup, report_fn=report_fn)
 
-    deps = _RecordingDependencies(artifact_writer=lambda: {"markdown_path": "result.md"})
+    deps = _RecordingDependencies(artifact_writer=_real_primary_artifact_writer(tmp_path))
     emitters = _RecordingEmitters()
 
     result = _run_finalize(
@@ -399,7 +420,7 @@ def test_finalize_completes_when_cleanup_changes_markdown_but_still_passes(monke
     assert delivered
 
 
-def test_finalize_skips_regate_when_cleanup_leaves_markdown_unchanged(monkeypatch):
+def test_finalize_skips_regate_when_cleanup_leaves_markdown_unchanged(monkeypatch, tmp_path):
     """No behaviour change when cleanup is a no-op: the gate is computed exactly
     once (the pre-cleanup call), so unchanged content keeps its existing behaviour."""
     gate_input = "Чистый переведённый абзац."
@@ -408,7 +429,7 @@ def test_finalize_skips_regate_when_cleanup_leaves_markdown_unchanged(monkeypatc
     cleanup = _cleanup_result(markdown=gate_input, docx_bytes=b"final-docx")
     _install_stubs(monkeypatch, gate_input_markdown=gate_input, cleanup_result=cleanup, report_fn=report_fn)
 
-    deps = _RecordingDependencies(artifact_writer=lambda: {"markdown_path": "result.md"})
+    deps = _RecordingDependencies(artifact_writer=_real_primary_artifact_writer(tmp_path))
     emitters = _RecordingEmitters()
 
     result = _run_finalize(
@@ -423,3 +444,159 @@ def test_finalize_skips_regate_when_cleanup_leaves_markdown_unchanged(monkeypatc
     # Exactly one gate computation — the pre-cleanup call. The re-gate was skipped.
     assert report_calls == [gate_input]
     assert "processing_completed" in _events(deps)
+
+
+# --------------------------------------------------------------------------- #
+# Finding 13 — a returned artifact mapping is NOT proof of persistence.
+# --------------------------------------------------------------------------- #
+
+
+def _warn_notices(emitters: _RecordingEmitters) -> list[dict[str, object]]:
+    notices: list[dict[str, object]] = []
+    for call in emitters.state_calls:
+        notice = call.get("latest_result_notice")
+        if isinstance(notice, dict) and "сохранить файлы результата" in str(notice.get("message", "")):
+            notices.append(notice)
+    return notices
+
+
+def test_finalize_zero_byte_primary_docx_is_unpersisted(monkeypatch, tmp_path):
+    """A write that returns a mapping but leaves a zero-byte primary DOCX must be
+    treated as unpersisted (WARNING ``processing_completed_unpersisted`` + not-saved
+    notice), never a false ``processing_completed`` success."""
+    gate_input = "Чистый переведённый абзац."
+
+    def _report(**kwargs):
+        return {"quality_status": "pass", "gate_reasons": []}
+
+    cleanup = _cleanup_result(markdown=gate_input, docx_bytes=b"final-docx")
+    _install_stubs(monkeypatch, gate_input_markdown=gate_input, cleanup_result=cleanup, report_fn=_report)
+
+    markdown_path = tmp_path / "report.result.md"
+    markdown_path.write_text("итоговый markdown", encoding="utf-8")
+    docx_path = tmp_path / "report.result.docx"
+    docx_path.write_bytes(b"")  # primary DOCX exists but is ZERO-BYTE
+
+    deps = _RecordingDependencies(
+        artifact_writer=lambda: {"markdown_path": str(markdown_path), "docx_path": str(docx_path)}
+    )
+    emitters = _RecordingEmitters()
+
+    result = _run_finalize(
+        context=_make_context(),
+        dependencies=deps,
+        emitters=emitters,
+        state=_make_state(),
+        docx_phase=_make_docx_phase(gate_input),
+    )
+
+    # The delivered result still reached session state, so the run still "succeeds",
+    # but persistence is reported as failed.
+    assert result == "succeeded"
+    assert "ui_result_artifacts_save_failed" in _events(deps)
+    assert "processing_completed_unpersisted" in _events(deps)
+    assert "processing_completed" not in _events(deps)
+    assert _warn_notices(emitters), "no user-visible not-saved notice was emitted"
+
+
+def test_finalize_missing_primary_docx_key_is_unpersisted(monkeypatch, tmp_path):
+    """A mapping that omits the primary ``docx_path`` key entirely is unpersisted."""
+    gate_input = "Чистый переведённый абзац."
+
+    def _report(**kwargs):
+        return {"quality_status": "pass", "gate_reasons": []}
+
+    cleanup = _cleanup_result(markdown=gate_input, docx_bytes=b"final-docx")
+    _install_stubs(monkeypatch, gate_input_markdown=gate_input, cleanup_result=cleanup, report_fn=_report)
+
+    markdown_path = tmp_path / "report.result.md"
+    markdown_path.write_text("итоговый markdown", encoding="utf-8")
+
+    # docx_path missing from the mapping — the write "succeeded" but the primary DOCX
+    # was never actually reported as persisted.
+    deps = _RecordingDependencies(artifact_writer=lambda: {"markdown_path": str(markdown_path)})
+    emitters = _RecordingEmitters()
+
+    result = _run_finalize(
+        context=_make_context(),
+        dependencies=deps,
+        emitters=emitters,
+        state=_make_state(),
+        docx_phase=_make_docx_phase(gate_input),
+    )
+
+    assert result == "succeeded"
+    assert "ui_result_artifacts_save_failed" in _events(deps)
+    assert "processing_completed_unpersisted" in _events(deps)
+    assert "processing_completed" not in _events(deps)
+    assert _warn_notices(emitters)
+
+
+# --------------------------------------------------------------------------- #
+# Finding 7 — a no-op reader cleanup must still refresh the output-artifact
+# verdict fields (``output_docx_openable``) once the delivered DOCX exists.
+# --------------------------------------------------------------------------- #
+
+
+def _openable_check(verdict: dict) -> dict:
+    for check in verdict.get("checks", []):
+        if check.get("name") == "output_docx_openable":
+            return check
+    raise AssertionError("output_docx_openable check not found in verdict")
+
+
+def test_finalize_noop_cleanup_refreshes_output_docx_openable_verdict(monkeypatch, tmp_path):
+    """No-op reader cleanup, non-empty delivered DOCX: the pre-cleanup verdict records
+    ``output_docx_openable`` NOT-APPLICABLE (the base docx build is deferred, so no bytes
+    exist yet), and the finalize path must REFRESH just that output-artifact verdict field
+    on the delivered bytes so the saved record reflects the real DOCX — even though the
+    markdown never changed and its metrics are not recomputed."""
+    import copy
+
+    from io import BytesIO
+
+    from docx import Document
+
+    buf = BytesIO()
+    Document().save(buf)
+    real_docx_bytes = buf.getvalue()
+
+    gate_input = "Чистый переведённый абзац."
+
+    def _report(**kwargs):
+        return {"quality_status": "pass", "gate_reasons": []}
+
+    cleanup = _cleanup_result(markdown=gate_input, docx_bytes=real_docx_bytes)
+    _install_stubs(monkeypatch, gate_input_markdown=gate_input, cleanup_result=cleanup, report_fn=_report)
+    # Restore the REAL acceptance-verdict machinery (``_install_stubs`` stubbed it) so the
+    # verdict genuinely reflects the delivered DOCX bytes.
+    monkeypatch.setattr(late_phases, "build_report_acceptance_verdict", _REAL_BUILD_VERDICT)
+
+    written_reports: list[dict] = []
+
+    def _capture_report(*, source_name, payload):
+        written_reports.append(copy.deepcopy(payload))
+        return "quality_report.json"
+
+    monkeypatch.setattr(late_phases, "_write_quality_report_artifact", _capture_report)
+
+    deps = _RecordingDependencies(artifact_writer=_real_primary_artifact_writer(tmp_path))
+    emitters = _RecordingEmitters()
+
+    # docx_phase has NO ``docx_bytes`` (deferred base build), so the pre-cleanup verdict is N/A.
+    result = _run_finalize(
+        context=_make_context(),
+        dependencies=deps,
+        emitters=emitters,
+        state=_make_state(),
+        docx_phase=_make_docx_phase(gate_input),
+    )
+
+    assert result == "succeeded"
+    # The report was written twice: the pre-cleanup record (N/A) then the refreshed one.
+    assert len(written_reports) == 2
+    pre_check = _openable_check(written_reports[0]["acceptance_verdict"])
+    assert pre_check.get("applicable") is False  # N/A before the delivered DOCX existed
+    post_check = _openable_check(written_reports[-1]["acceptance_verdict"])
+    assert post_check.get("applicable") is True
+    assert post_check.get("passed") is True  # reflects the real, openable DOCX

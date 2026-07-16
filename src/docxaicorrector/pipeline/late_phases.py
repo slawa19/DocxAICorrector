@@ -558,6 +558,30 @@ def run_docx_build_phase(
     }
 
 
+def _verify_primary_result_artifacts_or_raise(result_artifact_paths: Mapping[str, object]) -> None:
+    """Finding 13: a returned artifact mapping is NOT proof of persistence.
+
+    ``write_ui_result_artifacts`` returning without raising only means it did not hit an
+    ``OSError`` mid-write; it does NOT guarantee the PRIMARY user-facing files
+    (``.result.md`` + ``.result.docx``) are present, on disk, and non-empty. Verify exactly
+    those two here so a mapping that omits a primary key, or points at a missing / zero-byte
+    file, is funnelled into the SAME F4/F12 primary-persistence-failure path (WARNING
+    ``processing_completed_unpersisted`` + user-visible not-saved notice) as an outright
+    write ``OSError`` — never reported as a false success. Secondary artifacts
+    (diagnostics/registries) are deliberately NOT checked here; their own failures are
+    handled separately and must never claim the delivered result was not saved.
+    """
+    for artifact_key in ("markdown_path", "docx_path"):
+        raw_path = result_artifact_paths.get(artifact_key)
+        if not isinstance(raw_path, str) or not raw_path:
+            raise OSError(f"primary result artifact '{artifact_key}' missing from write result")
+        artifact_path = Path(raw_path)
+        if not artifact_path.is_file():
+            raise OSError(f"primary result artifact '{artifact_key}' not found on disk: {raw_path}")
+        if artifact_path.stat().st_size <= 0:
+            raise OSError(f"primary result artifact '{artifact_key}' is empty on disk: {raw_path}")
+
+
 def finalize_processing_success(
     *,
     context: Any,
@@ -863,6 +887,58 @@ def finalize_processing_success(
                 context_chars=0,
                 log_details=error_message,
             )
+    else:
+        # Finding 7: reader cleanup left the delivered markdown UNCHANGED, so the
+        # markdown-derived report metrics stay authoritative and are NOT recomputed
+        # (byte-identical behaviour preserved). But the final delivered DOCX bytes may
+        # only exist NOW — the base docx build is deferred until reader cleanup on the
+        # common production path — which the pre-cleanup verdict recorded as
+        # ``output_docx_openable`` NOT-APPLICABLE. Refresh ONLY the output-artifact-
+        # dependent verdict fields on the delivered bytes so the saved record reflects
+        # the real DOCX; the markdown metrics carry over untouched. When the artifacts
+        # are unchanged from the pre-cleanup evaluation (already-built bytes, or still
+        # none) nothing is rebuilt or re-written, keeping the no-op path byte-identical.
+        post_cleanup_output_artifacts = _resolve_acceptance_output_artifacts(
+            docx_phase=docx_phase,
+            runtime_display_markdown=runtime_display_markdown,
+        )
+        if post_cleanup_output_artifacts is not None and post_cleanup_output_artifacts != _acceptance_output_artifacts:
+            quality_report["acceptance_verdict"] = build_report_acceptance_verdict(
+                _build_report_context_for_acceptance(
+                    context=context,
+                    quality_report=quality_report,
+                    formatting_diagnostics_payloads=_load_formatting_diagnostics_payloads(formatting_diagnostics_artifacts),
+                    output_artifacts=post_cleanup_output_artifacts,
+                ),
+                mismatch_threshold=_acceptance_mismatch_threshold,
+                unmapped_target_threshold=_acceptance_unmapped_target_threshold,
+                require_no_toc_body_concat=_acceptance_require_no_toc_body_concat,
+            )
+            # Supersede the pre-cleanup report so the saved record's verdict reflects
+            # the delivered DOCX. Only the acceptance verdict changed; the markdown
+            # metrics (and thus quality_status/gate_reasons/result notice) are identical,
+            # so no re-gate and no notice refresh are needed here.
+            superseded_report_path = quality_report_path
+            quality_report_path = _write_quality_report_artifact(
+                source_name=context.uploaded_filename, payload=quality_report
+            )
+            # Drop the stale pre-cleanup file only once its replacement is safely on
+            # disk, so a rare write failure never leaves the run with zero saved reports.
+            if quality_report_path is not None and superseded_report_path and superseded_report_path != quality_report_path:
+                try:
+                    Path(superseded_report_path).unlink()
+                except OSError:
+                    pass
+            if quality_report_path is not None:
+                dependencies.log_event(
+                    logging.INFO,
+                    "quality_report_saved",
+                    "Обновлён acceptance verdict quality report после reader cleanup (delivered DOCX openable).",
+                    filename=context.uploaded_filename,
+                    artifact_path=quality_report_path,
+                    quality_status=quality_report.get("quality_status"),
+                    gate_reasons=list(cast(Sequence[str], quality_report.get("gate_reasons") or [])),
+                )
 
     try:
         narration_text = _build_narration_text(
@@ -1027,6 +1103,10 @@ def finalize_processing_success(
         result_artifact_paths = dict(
             dependencies.write_ui_result_artifacts(**artifact_writer_kwargs)
         )
+        # Finding 13: a returned mapping is not proof the primary files reached disk;
+        # verify markdown + docx are present, on disk, and non-empty. A failure raises
+        # OSError so it funnels into the SAME primary-persistence-failure path below.
+        _verify_primary_result_artifacts_or_raise(result_artifact_paths)
     except OSError as exc:
         primary_artifacts_persisted = False
         primary_artifacts_persist_error = f"ui_result_artifacts_save_failed: {exc}"

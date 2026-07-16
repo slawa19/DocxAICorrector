@@ -89,6 +89,23 @@ def _reinsert_inline_images(docx_bytes, image_assets):
     return docx_bytes
 
 
+def _persist_primary_artifacts_on_disk(result_map):
+    """Finding 13: the pipeline now verifies the PRIMARY result files exist on disk and
+    are non-empty before reporting persistence success. These stubs historically returned
+    path strings without creating the files, so materialize any ``markdown_path`` /
+    ``docx_path`` the stub reports (non-destructively) to reflect a genuine save."""
+    if not isinstance(result_map, dict):
+        return result_map
+    for artifact_key in ("markdown_path", "docx_path"):
+        raw_path = result_map.get(artifact_key)
+        if isinstance(raw_path, str) and raw_path:
+            path = Path(raw_path)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            if not path.is_file() or path.stat().st_size == 0:
+                path.write_bytes(b"stub-result-artifact")
+    return result_map
+
+
 def _run_processing(runtime, **overrides):
     params = {
         "uploaded_file": "report.docx",
@@ -125,6 +142,15 @@ def _run_processing(runtime, **overrides):
         "write_ui_result_artifacts": lambda **kwargs: {"markdown_path": "/tmp/final.result.md", "docx_path": "/tmp/final.result.docx"},
     }
     params.update(overrides)
+    # Finding 13: the pipeline verifies the primary result files are actually on disk and
+    # non-empty. Wrap whatever writer the test supplied so its reported paths are genuinely
+    # materialized, keeping the "persisted success" contract these tests assert.
+    _inner_ui_writer = params["write_ui_result_artifacts"]
+
+    def _persisting_ui_writer(**kwargs):
+        return _persist_primary_artifacts_on_disk(_inner_ui_writer(**kwargs))
+
+    params["write_ui_result_artifacts"] = _persisting_ui_writer
     return document_pipeline.run_document_processing(**params)
 
 
@@ -705,7 +731,7 @@ def test_run_document_processing_passes_machine_readable_quality_warning_to_arti
         convert_markdown_to_docx_bytes=lambda markdown_text: b"docx-bytes",
         preserve_source_paragraph_properties=preserve_with_unmapped_artifact,
         reinsert_inline_images=lambda docx_bytes, image_assets: docx_bytes,
-        write_ui_result_artifacts=lambda **kwargs: artifact_calls.setdefault("kwargs", dict(kwargs)) or {"markdown_path": "/tmp/report.result.md", "docx_path": "/tmp/report.result.docx", "metadata_path": "/tmp/report.result.meta.json"},
+        write_ui_result_artifacts=lambda **kwargs: (artifact_calls.setdefault("kwargs", dict(kwargs)), _persist_primary_artifacts_on_disk({"markdown_path": "/tmp/report.result.md", "docx_path": "/tmp/report.result.docx", "metadata_path": "/tmp/report.result.meta.json"}))[1],
     )
 
     assert result == "succeeded"
@@ -1250,10 +1276,10 @@ def test_run_document_processing_applies_reader_cleanup_and_saves_raw_markdown_r
 
     def write_ui_result_artifacts(**kwargs):
         artifact_calls["kwargs"] = dict(kwargs)
-        return {
+        return _persist_primary_artifacts_on_disk({
             "markdown_path": str(tmp_path / "final.result.md"),
             "docx_path": str(tmp_path / "final.result.docx"),
-        }
+        })
 
     def convert_markdown_to_docx_bytes(markdown_text):
         converted_markdown_inputs.append(markdown_text)
@@ -1408,10 +1434,10 @@ def test_run_document_processing_records_pre_cleanup_formatting_baseline_without
         convert_markdown_to_docx_bytes=convert_markdown_to_docx_bytes,
         preserve_source_paragraph_properties=lambda docx_bytes, paragraphs, generated_paragraph_registry=None: docx_bytes,
         reinsert_inline_images=lambda docx_bytes, image_assets: docx_bytes,
-        write_ui_result_artifacts=lambda **kwargs: {
+        write_ui_result_artifacts=lambda **kwargs: _persist_primary_artifacts_on_disk({
             "markdown_path": str(tmp_path / "final.result.md"),
             "docx_path": str(tmp_path / "final.result.docx"),
-        },
+        }),
     )
 
     assert result == "succeeded"
@@ -1563,10 +1589,10 @@ def test_run_document_processing_reader_cleanup_uses_exact_raw_markdown_for_side
 
     def write_ui_result_artifacts(**kwargs):
         artifact_calls["kwargs"] = dict(kwargs)
-        return {
+        return _persist_primary_artifacts_on_disk({
             "markdown_path": str(tmp_path / "final.result.md"),
             "docx_path": str(tmp_path / "final.result.docx"),
-        }
+        })
 
     result = document_pipeline.run_document_processing(
         uploaded_file="report.docx",
@@ -1675,10 +1701,10 @@ def test_run_document_processing_reader_cleanup_applies_runtime_anchor_repair(tm
 
     def write_ui_result_artifacts(**kwargs):
         artifact_calls["kwargs"] = dict(kwargs)
-        return {
+        return _persist_primary_artifacts_on_disk({
             "markdown_path": str(tmp_path / "final.result.md"),
             "docx_path": str(tmp_path / "final.result.docx"),
-        }
+        })
 
     result = document_pipeline.run_document_processing(
         uploaded_file="report.docx",
@@ -2002,10 +2028,10 @@ def test_run_document_processing_reader_cleanup_strict_failure_preserves_base_re
 
     def write_ui_result_artifacts(**kwargs):
         artifact_calls["kwargs"] = dict(kwargs)
-        return {
+        return _persist_primary_artifacts_on_disk({
             "markdown_path": str(tmp_path / "report.result.md"),
             "docx_path": str(tmp_path / "report.result.docx"),
-        }
+        })
 
     result = document_pipeline.run_document_processing(
         uploaded_file="report.docx",
@@ -5097,7 +5123,7 @@ def test_run_document_processing_warns_on_advisory_structural_markdown_quality_g
         app_config={"translation_output_quality_gate_policy": "advisory"},
         processing_operation="translate",
         generate_markdown_block=lambda **kwargs: "Заключение……29 Введение",
-        write_ui_result_artifacts=lambda **kwargs: artifact_calls.setdefault("kwargs", dict(kwargs)) or {"markdown_path": "/tmp/report.result.md", "docx_path": "/tmp/report.result.docx", "metadata_path": "/tmp/report.result.meta.json"},
+        write_ui_result_artifacts=lambda **kwargs: (artifact_calls.setdefault("kwargs", dict(kwargs)), _persist_primary_artifacts_on_disk({"markdown_path": "/tmp/report.result.md", "docx_path": "/tmp/report.result.docx", "metadata_path": "/tmp/report.result.meta.json"}))[1],
     )
 
     assert result == "succeeded"
