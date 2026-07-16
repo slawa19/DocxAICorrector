@@ -4,6 +4,7 @@ import re
 from typing import Any, Mapping
 
 from docxaicorrector.core.config import get_model_role_value
+from docxaicorrector.image.analysis import image_within_pixel_budget
 from docxaicorrector.image.shared import (
     call_responses_create_with_retry,
     clamp_score,
@@ -368,6 +369,15 @@ def _build_vision_validation_assessment(
     candidate_mime = detect_image_mime_type(candidate_image)
     if original_mime is None or candidate_mime is None:
         raise RuntimeError("Vision validation requires readable image payloads.")
+
+    # Mandatory pixel-budget gate before base64-encoding and uploading either
+    # image to the vision API (finding F8). Raising here is caught by
+    # _maybe_build_vision_validation_assessment, which falls back to
+    # heuristic-only validation with a WARNING.
+    if not image_within_pixel_budget(original_image, stage="image_validation_original"):
+        raise RuntimeError("Original image exceeds the decode pixel budget; vision validation skipped.")
+    if not image_within_pixel_budget(candidate_image, stage="image_validation_candidate"):
+        raise RuntimeError("Candidate image exceeds the decode pixel budget; vision validation skipped.")
 
     response = call_responses_create_with_retry(
         client,

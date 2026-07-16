@@ -1,5 +1,5 @@
 import base64
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from io import BytesIO
 import logging
 
@@ -109,6 +109,118 @@ def image_within_pixel_budget(image_bytes: bytes, *, stage: str) -> bool:
     return True
 
 
+def _read_image_header_geometry(image_bytes: bytes) -> tuple[int, int] | None:
+    """Return ``(width, height)`` read from the header only (no ``.load()``).
+
+    Returns None when the header cannot be read (corrupt/unsupported bytes or a
+    decompression bomb); callers use this purely for aggregate accounting AFTER
+    the per-image :func:`image_within_pixel_budget` gate has already run, so a
+    None here simply means "do not accumulate" rather than "reject".
+    """
+    try:
+        with Image.open(BytesIO(image_bytes)) as header_image:
+            width, height = header_image.size
+    except Exception:
+        return None
+    return width, height
+
+
+# --- Per-document aggregate pixel budget (finding F8) -------------------------
+# The per-image guard above bounds any SINGLE image, but a document with many
+# large-but-individually-legal images could still force an unbounded total
+# decode. ``ImageBudget`` is a small accumulator threaded through the
+# per-document image loop that caps the TOTAL decoded pixels/bytes for one
+# document. Once the running total would exceed the cap, further images are
+# skipped with a WARNING (never silently dropped). Defaults are generous
+# multiples of the per-image cap so normal documents are unaffected.
+DEFAULT_DOCUMENT_MAX_DECODED_MEGAPIXELS = 400.0
+DEFAULT_DOCUMENT_MAX_DECODED_BYTES = 2 * 1024 * 1024 * 1024
+
+
+@dataclass
+class ImageBudget:
+    """Aggregate decoded-pixel budget for a single document's image loop."""
+
+    max_total_megapixels: float = DEFAULT_DOCUMENT_MAX_DECODED_MEGAPIXELS
+    max_total_decoded_bytes: int = DEFAULT_DOCUMENT_MAX_DECODED_BYTES
+    used_megapixels: float = 0.0
+    used_decoded_bytes: int = 0
+    admitted_images: int = 0
+    skipped_images: int = 0
+
+    def admit(self, image_bytes: bytes, *, stage: str) -> bool:
+        """Return True if the image fits BOTH the per-image and document budgets.
+
+        Applies the header-only per-image gate first (which also surfaces a
+        decompression bomb), then charges the image's decoded footprint against
+        the running document total. When either check fails the image is skipped
+        (a WARNING is logged) and False is returned so the caller can fall back
+        to the original raster instead of decoding/transmitting the image.
+        """
+        if not image_within_pixel_budget(image_bytes, stage=stage):
+            self.skipped_images += 1
+            return False
+
+        geometry = _read_image_header_geometry(image_bytes)
+        if geometry is None:
+            # Header unreadable for an unrelated reason; the per-image gate has
+            # already deferred to the caller's decode+except path. Do not charge
+            # the aggregate for bytes we could not measure.
+            return True
+
+        width, height = geometry
+        megapixels = (width * height) / 1_000_000.0
+        decoded_bytes = width * height * 4
+        projected_megapixels = self.used_megapixels + megapixels
+        projected_bytes = self.used_decoded_bytes + decoded_bytes
+        if (
+            projected_megapixels > self.max_total_megapixels
+            or projected_bytes > self.max_total_decoded_bytes
+        ):
+            self.skipped_images += 1
+            log_event(
+                logging.WARNING,
+                "image_document_pixel_budget_exceeded",
+                "Документ превысил суммарный pixel budget; дальнейшие изображения пропускаются без декодирования.",
+                stage=stage,
+                width=width,
+                height=height,
+                image_megapixels=round(megapixels, 2),
+                used_megapixels=round(self.used_megapixels, 2),
+                used_decoded_bytes=self.used_decoded_bytes,
+                max_total_megapixels=self.max_total_megapixels,
+                max_total_decoded_bytes=self.max_total_decoded_bytes,
+            )
+            return False
+
+        self.used_megapixels = projected_megapixels
+        self.used_decoded_bytes = projected_bytes
+        self.admitted_images += 1
+        return True
+
+
+def _build_over_budget_analysis_result() -> ImageAnalysisResult:
+    """Safe, degraded analysis for an image that exceeds the decode budget.
+
+    Returned WITHOUT decoding or base64-encoding the image, so an oversized /
+    decompression-bomb payload is never handed to the vision API. The image is
+    routed to safe mode and kept as-is downstream.
+    """
+    return ImageAnalysisResult(
+        image_type="mixed_or_ambiguous",
+        image_subtype=None,
+        contains_text=False,
+        semantic_redraw_allowed=False,
+        confidence=0.0,
+        structured_parse_confidence=0.0,
+        prompt_key="mixed_or_ambiguous_fallback",
+        render_strategy="safe_mode",
+        structure_summary="Image exceeds the decode pixel budget; kept in safe mode without decoding.",
+        extracted_labels=[],
+        fallback_reason="pixel_budget_exceeded",
+    )
+
+
 def analyze_image(
     image_bytes: bytes,
     *,
@@ -120,6 +232,19 @@ def analyze_image(
     non_latin_text_bypass_threshold: int = NON_LATIN_DENSE_TEXT_BYPASS_THRESHOLD,
     budget=None,
 ) -> ImageAnalysisResult:
+    # Mandatory pixel-budget gate BEFORE any decode / base64 / vision upload:
+    # an over-budget or decompression-bomb image is skipped here so it is never
+    # base64-encoded or sent to the vision API (finding F8).
+    if not image_within_pixel_budget(image_bytes, stage="image_analysis"):
+        log_event(
+            logging.WARNING,
+            "image_analysis_skipped_over_budget",
+            "Изображение превышает pixel budget; анализ пропущен без декодирования и без отправки в vision API.",
+            model=model,
+            mime_type=mime_type,
+        )
+        return _build_over_budget_analysis_result()
+
     detected_mime_type = mime_type or detect_image_mime_type(image_bytes)
     visual_features = _extract_visual_features(image_bytes)
     heuristic_result = _build_heuristic_analysis(detected_mime_type, visual_features)

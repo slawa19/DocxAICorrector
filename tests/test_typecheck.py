@@ -42,7 +42,11 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 # IMPORTANT: Always run this test on a clean checkout (`git status --porcelain` must be empty).
 # Dirty worktrees (uncommitted docs/, specs/, untracked experiment files) change the
 # count and cause flaky failures.
-_ERROR_BASELINE = 247
+# 2026-07-16 (F7/F27 batch): 247 -> 246. Replacing the generic thread-guard
+# helper (_run_pdf_parse_within_wallclock_budget) with the concrete unified
+# deadline runner removed one pre-existing inference error; the new subprocess
+# machinery and tests add none.
+_ERROR_BASELINE = 246
 
 
 def _run_pyright() -> dict:

@@ -74,6 +74,21 @@ def generate_image_candidate(
     if not is_supported_image_bytes(image_bytes):
         raise RuntimeError("Передан неподдерживаемый image payload.")
 
+    # Mandatory pixel-budget gate BEFORE any decode / base64 / vision upload in
+    # the safe, reconstruction, and semantic-redraw paths below. An over-budget
+    # or decompression-bomb image is skipped: we return the original bytes
+    # untouched instead of decoding or transmitting it (finding F8).
+    if not image_within_pixel_budget(image_bytes, stage="image_generation"):
+        log_event(
+            logging.WARNING,
+            "image_generation_skipped_over_budget",
+            "Изображение превышает pixel budget; генерация кандидата пропущена, возвращается оригинал.",
+            requested_mode=mode,
+            prompt_key=analysis.prompt_key,
+            image_type=analysis.image_type,
+        )
+        return image_bytes
+
     prompt_profile = get_image_prompt_profile(analysis.prompt_key)
     prompt_text = load_image_prompt_text(analysis.prompt_key)
     requested_mode = mode if mode in {ImageMode.SAFE.value, *SEMANTIC_MODES} else ImageMode.SAFE.value

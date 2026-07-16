@@ -546,3 +546,110 @@ def test_extract_visual_features_processes_normal_image_within_budget():
 
     assert features is not None
     assert {"white_ratio", "edge_ratio", "bright_ratio"} <= set(features)
+
+
+class _NoCallResponsesClient:
+    """Vision client that fails loudly if the API is ever invoked."""
+
+    def __init__(self):
+        self.responses = self
+
+    def create(self, **kwargs):
+        raise AssertionError("vision API must not be called for an over-budget image")
+
+
+def test_analyze_image_over_budget_skips_base64_and_vision(monkeypatch):
+    """An oversized image handed to analyze_image is NOT base64-encoded and NOT
+    sent to the vision API: a WARNING is logged and a safe degraded result is
+    returned (finding F8)."""
+    # Shrink the per-side budget so the ordinary synthetic image trips it.
+    monkeypatch.setattr(image_analysis, "MAX_IMAGE_DIMENSION_PX", 100)
+
+    b64_calls = {"count": 0}
+    real_b64encode = image_analysis.base64.b64encode
+
+    def spy_b64encode(data, *args, **kwargs):
+        b64_calls["count"] += 1
+        return real_b64encode(data, *args, **kwargs)
+
+    monkeypatch.setattr(image_analysis.base64, "b64encode", spy_b64encode)
+
+    logged_events = []
+    monkeypatch.setattr(
+        image_analysis,
+        "log_event",
+        lambda level, event, message, **context: logged_events.append((event, context)),
+    )
+
+    result = image_analysis.analyze_image(
+        _make_diagram_like_jpeg(),  # 480x320, over the shrunk 100px budget
+        model="gpt-4.1",
+        mime_type="image/jpeg",
+        client=_NoCallResponsesClient(),
+        enable_vision=True,
+    )
+
+    # No base64 encode -> nothing was uploaded to the vision API.
+    assert b64_calls["count"] == 0
+    assert result.render_strategy == "safe_mode"
+    assert result.semantic_redraw_allowed is False
+    assert result.fallback_reason == "pixel_budget_exceeded"
+    assert any(event == "image_analysis_skipped_over_budget" for event, _ in logged_events)
+
+
+def test_analyze_image_within_budget_still_calls_vision():
+    """A normally-sized image is unaffected by the gate and still reaches the
+    vision path (behaviour preserved)."""
+    client = _FakeResponsesClient(
+        '{"image_type":"diagram","semantic_redraw_allowed":true,'
+        '"prompt_key":"diagram_semantic_redraw","render_strategy":"semantic_redraw_structured",'
+        '"structure_summary":"three boxes","extracted_labels":["Start","Finish"]}'
+    )
+
+    result = image_analysis.analyze_image(
+        _make_diagram_like_jpeg(),
+        model="gpt-4.1",
+        mime_type="image/jpeg",
+        client=client,
+        enable_vision=True,
+    )
+
+    assert result.extracted_labels == ["Start", "Finish"]
+
+
+def test_image_budget_admits_within_document_total():
+    budget = image_analysis.ImageBudget(max_total_megapixels=1.0)
+
+    assert budget.admit(_make_diagram_like_jpeg(), stage="doc") is True
+    assert budget.admitted_images == 1
+    assert budget.used_megapixels > 0.0
+
+
+def test_image_budget_skips_once_document_total_exceeded(monkeypatch):
+    """Two individually-legal images whose combined footprint exceeds the
+    document cap: the second is skipped with a WARNING (finding F8, part 2)."""
+    logged_events = []
+    monkeypatch.setattr(
+        image_analysis,
+        "log_event",
+        lambda level, event, message, **context: logged_events.append((event, context)),
+    )
+    # 480x320 -> 0.1536 MP each; cap admits one but not two.
+    budget = image_analysis.ImageBudget(max_total_megapixels=0.2)
+
+    assert budget.admit(_make_diagram_like_jpeg(), stage="doc") is True
+    assert budget.admit(_make_diagram_like_jpeg(), stage="doc") is False
+    assert budget.admitted_images == 1
+    assert budget.skipped_images == 1
+    assert any(event == "image_document_pixel_budget_exceeded" for event, _ in logged_events)
+
+
+def test_image_budget_rejects_per_image_over_budget(monkeypatch):
+    """A single over-per-image-budget image is rejected by admit and not charged
+    against the document total."""
+    monkeypatch.setattr(image_analysis, "MAX_IMAGE_DIMENSION_PX", 100)
+    budget = image_analysis.ImageBudget()
+
+    assert budget.admit(_make_diagram_like_jpeg(), stage="doc") is False
+    assert budget.skipped_images == 1
+    assert budget.used_megapixels == 0.0

@@ -146,6 +146,41 @@ def test_generate_image_candidate_safe_enhances_image_bytes():
     assert candidate != original_bytes
 
 
+def test_generate_image_candidate_over_budget_returns_original_without_decode(monkeypatch):
+    """An oversized image is not decoded or sent to any vision / image-gen API;
+    generate_image_candidate returns the original bytes unchanged (finding F8)."""
+    monkeypatch.setattr(image_analysis, "MAX_IMAGE_DIMENSION_PX", 5)
+
+    class ExplodingClient:
+        def __init__(self):
+            self.responses = self
+            self.images = self
+
+        def create(self, **kwargs):
+            raise AssertionError("vision API must not be called for an over-budget image")
+
+        def generate(self, **kwargs):
+            raise AssertionError("image-generation API must not be called for an over-budget image")
+
+    logged_events = []
+    monkeypatch.setattr(
+        image_generation,
+        "log_event",
+        lambda level, event, message, **context: logged_events.append((event, context)),
+    )
+
+    original_bytes = build_detailed_png_bytes()  # 12x12, over the shrunk 5px budget
+    candidate = image_generation.generate_image_candidate(
+        original_bytes,
+        build_analysis_result(),
+        mode="semantic_redraw_structured",
+        client=ExplodingClient(),
+    )
+
+    assert candidate == original_bytes
+    assert any(event == "image_generation_skipped_over_budget" for event, _ in logged_events)
+
+
 def test_generate_image_candidate_structured_uses_vision_and_images_generate(monkeypatch, resolved_test_model_registry):
     captured: dict[str, Any] = {"vision": None, "generate": None}
 

@@ -800,6 +800,44 @@ def test_process_document_images_stops_future_images_when_document_budget_is_exh
     assert budgeted_analyses == [1]
 
 
+def test_process_document_images_skips_further_images_when_document_pixel_budget_exceeded(monkeypatch, resolved_test_model_registry):
+    """Once the running document decoded-pixel total is exceeded, later images
+    are skipped BEFORE analysis/decode with a fallback-original outcome
+    (finding F8, part 2)."""
+    _, service = _prepare_state(monkeypatch)
+    analyze_calls = {"count": 0}
+
+    def counting_analyze_image(*args, **kwargs):
+        analyze_calls["count"] += 1
+        return build_analysis_result()
+
+    monkeypatch.setattr(processing_service, "analyze_image", counting_analyze_image)
+    service = processing_service.build_processing_service()
+
+    result = service.process_document_images(
+        image_assets=[build_asset(), build_asset()],
+        image_mode="semantic_redraw_direct",
+        config=_config_with_models(
+            resolved_test_model_registry,
+            keep_all_image_variants=True,
+            # PNG_BYTES is 320x220 -> 0.0704 MP; cap admits one image but not two.
+            document_max_decoded_megapixels=0.1,
+        ),
+        on_progress=lambda **kwargs: None,
+        client=object(),
+    )
+
+    assert len(result) == 2
+    # The first image alone drives two analyze_image calls (its original plus a
+    # candidate re-analysis); the skipped second image adds none. Were it not
+    # skipped it would contribute its own analyze call(s) and push this past 2.
+    assert analyze_calls["count"] == 2
+    assert result[0].final_decision == "accept"
+    assert result[1].final_decision == "fallback_original"
+    assert result[1].final_reason == "document_pixel_budget_exceeded"
+    assert result[1].validation_status == "skipped"
+
+
 def test_process_document_images_skips_unsupported_source_image_without_validation_error(monkeypatch, resolved_test_model_registry):
     _, service = _prepare_state(monkeypatch)
     image_logs = []

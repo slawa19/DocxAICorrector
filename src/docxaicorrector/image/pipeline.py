@@ -5,6 +5,11 @@ from dataclasses import dataclass, replace
 from typing import Any, Protocol, TypeAlias, cast
 
 from docxaicorrector.core.config import get_model_role_value
+from docxaicorrector.image.analysis import (
+    DEFAULT_DOCUMENT_MAX_DECODED_BYTES,
+    DEFAULT_DOCUMENT_MAX_DECODED_MEGAPIXELS,
+    ImageBudget,
+)
 from docxaicorrector.image.pipeline_policy import build_generation_analysis, is_hard_validation_failure, resolve_validation_delivery_outcome, should_attempt_semantic_redraw
 from docxaicorrector.core.models import ImageAnalysisResult, ImageMode, ImageValidationResult, ImageVariantCandidate
 
@@ -995,6 +1000,14 @@ def process_document_images(
     processed_assets = []
     image_client = context.client
     document_call_budget = context.build_document_call_budget(total_images=len(image_assets), image_mode=image_mode)
+    document_pixel_budget = ImageBudget(
+        max_total_megapixels=_config_float(
+            context.config, "document_max_decoded_megapixels", DEFAULT_DOCUMENT_MAX_DECODED_MEGAPIXELS
+        ),
+        max_total_decoded_bytes=_config_int(
+            context.config, "document_max_decoded_bytes", DEFAULT_DOCUMENT_MAX_DECODED_BYTES
+        ),
+    )
     document_budget_exhausted = False
     context.emit_image_reset(context.runtime)
     total_images = len(image_assets)
@@ -1079,6 +1092,38 @@ def process_document_images(
 
             asset.mime_type = detected_source_mime_type
             asset.update_pipeline_metadata(source_mime_type=detected_source_mime_type)
+
+            # Per-document aggregate pixel-budget gate (finding F8): skip the
+            # image BEFORE any decode / analysis / generation once the running
+            # document total (or this image on its own) exceeds the budget. The
+            # original raster is kept; nothing is silently dropped.
+            if not document_pixel_budget.admit(
+                asset.original_bytes, stage="document_image_pixel_budget"
+            ):
+                _apply_original_fallback_outcome(
+                    asset,
+                    reason="document_pixel_budget_exceeded",
+                    validation_status="skipped",
+                )
+                context.log_event_fn(
+                    logging.WARNING,
+                    "image_document_pixel_budget_skip",
+                    "Изображение пропущено: превышен pixel budget документа или изображения.",
+                    document_used_megapixels=round(document_pixel_budget.used_megapixels, 2),
+                    document_max_megapixels=document_pixel_budget.max_total_megapixels,
+                    document_skipped_images=document_pixel_budget.skipped_images,
+                    **asset.to_log_context(),
+                )
+                _emit_asset_image_log(
+                    context,
+                    asset,
+                    status_override="skipped",
+                    append_final_reason_as_suspicious=True,
+                )
+                processed_assets.append(asset)
+                context.emit_state(context.runtime, image_assets=processed_assets)
+                continue
+
             analysis = context.analyze_image(
                 asset.original_bytes,
                 mime_type=detected_source_mime_type,
