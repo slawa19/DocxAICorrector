@@ -1213,8 +1213,18 @@ def _build_translation_quality_report(
     unmapped_source_ids = latest_payload.get("unmapped_source_ids") if isinstance(latest_payload, Mapping) else []
     unmapped_target_indexes = latest_payload.get("unmapped_target_indexes") if isinstance(latest_payload, Mapping) else []
     accepted_merged_sources = latest_payload.get("accepted_merged_sources") if isinstance(latest_payload, Mapping) else []
-    caption_heading_conflicts = latest_payload.get("caption_heading_conflicts") if isinstance(latest_payload, Mapping) else []
-    caption_heading_conflict_count = len(caption_heading_conflicts) if isinstance(caption_heading_conflicts, list) else 0
+    # spec 043 P2: the DELIVERY gate must count caption→heading conflicts across ALL
+    # current formatting-diagnostics payloads (not just the last artifact), exactly as
+    # ``build_acceptance_verdict`` aggregates ``total_caption_heading_conflicts``. With
+    # multiple artifacts present a conflict recorded in a NON-last artifact would otherwise
+    # escape the single-``latest_payload`` count, letting the delivery gate under-count and
+    # diverge from the acceptance verdict. Keyed on the conflict signal only (no per-book
+    # literal); mirrors ``acceptance.py``'s ``len(payload.get(...) or [])`` per payload.
+    caption_heading_conflict_count = sum(
+        len(cast(Sequence[object], payload.get("caption_heading_conflicts") or []))
+        for payload in payloads
+        if isinstance(payload, Mapping)
+    )
     policy = _resolve_translation_quality_gate_policy(context=context)
     quality_status = "pass"
     gate_reasons: list[str] = []
@@ -1754,7 +1764,7 @@ def _build_translation_quality_report(
             0,
         ),
         "accepted_merged_sources_count": len(accepted_merged_sources) if isinstance(accepted_merged_sources, list) else 0,
-        "caption_heading_conflicts_count": len(caption_heading_conflicts) if isinstance(caption_heading_conflicts, list) else 0,
+        "caption_heading_conflicts_count": caption_heading_conflict_count,
         "bullet_heading_count": bullet_heading_count,
         "bullet_heading_gate_source": "legacy_markdown",
         "bullet_heading_classification": "markdown_gate",

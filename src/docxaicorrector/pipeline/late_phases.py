@@ -552,6 +552,12 @@ def run_docx_build_phase(
         "latest_result_notice": latest_result_notice,
         "pre_cleanup_formatting_baseline": pre_cleanup_formatting_baseline,
         "formatting_diagnostics_artifacts": list(formatting_diagnostics_artifacts),
+        # spec 043 P1: carry the diagnostics window (start epoch + dir) into finalize so a
+        # DEFERRED base build (reader cleanup enabled) can RE-COLLECT the FINAL-DOCX
+        # formatting diagnostics written during the reader-cleanup build — the pre-cleanup
+        # gate above ran on an empty list because ``docx_bytes`` was None at that point.
+        "build_started_at_epoch": build_started_at_epoch,
+        "diagnostics_dir": diagnostics_dir,
         "assembly_entries": list(assembly_result.entries),
         "result_manifest": result_manifest,
         "processed_image_assets": list(cast(Sequence[Any], image_phase.get("processed_image_assets") or [])),
@@ -769,6 +775,36 @@ def finalize_processing_success(
         docx_phase = dict(docx_phase)
         docx_phase["latest_result_notice"] = reader_cleanup_result_notice
 
+    # spec 043 P1: when the base DOCX build was DEFERRED (reader cleanup enabled), the
+    # pre-cleanup quality gate above ran on an EMPTY formatting-diagnostics list —
+    # ``docx_bytes`` was None then, so nothing was collected. The FINAL DOCX has now been
+    # built by the reader-cleanup post-pass and has written FRESH formatting-diagnostics
+    # artifacts (incl. ``caption_heading_conflicts``) to ``diagnostics_dir``. RE-COLLECT
+    # them so the delivered-report rebuild and the caption→heading delivery gate judge the
+    # DELIVERED artifact — not the stale pre-cleanup snapshot. When the base build was NOT
+    # deferred the pre-cleanup list is already authoritative (spec 042 already gated it),
+    # so we keep it verbatim and behaviour stays byte-identical.
+    post_cleanup_formatting_diagnostics_artifacts: Sequence[str] = formatting_diagnostics_artifacts
+    post_cleanup_caption_conflict_count = 0
+    base_build_was_deferred = _should_run_reader_cleanup(context=context)
+    if base_build_was_deferred:
+        recollect_diagnostics_dir = docx_phase.get("diagnostics_dir")
+        recollect_since_epoch = cast(float, docx_phase.get("build_started_at_epoch") or 0.0)
+        if isinstance(recollect_diagnostics_dir, Path):
+            post_cleanup_formatting_diagnostics_artifacts = collect_recent_formatting_diagnostics_artifacts(
+                since_epoch_seconds=recollect_since_epoch,
+                diagnostics_dir=recollect_diagnostics_dir,
+            )
+        # Aggregate the caption→heading conflict count across ALL final diagnostics payloads
+        # (mirrors the acceptance verdict + spec 043 P2 delivery-gate aggregation) so the gate
+        # fires even when a conflict lives in a non-last artifact. Keyed on the conflict signal
+        # only (no per-book literal).
+        post_cleanup_caption_conflict_count = sum(
+            len(cast(Sequence[object], payload.get("caption_heading_conflicts") or []))
+            for payload in _load_formatting_diagnostics_payloads(post_cleanup_formatting_diagnostics_artifacts)
+            if isinstance(payload, Mapping)
+        )
+
     # F10 + F8 (spec 006 increment / round-4): the FINAL authoritative quality report must
     # describe the DELIVERED post-cleanup markdown. The pre-cleanup report was written as the
     # record describing the pre-reader-cleanup delivered content; reader cleanup can REPLACE
@@ -781,11 +817,20 @@ def finalize_processing_success(
     # metrics the report legitimately keeps): when reader cleanup leaves the delivered markdown
     # unchanged the pre-cleanup report is already authoritative, so behaviour is byte-identical
     # (no rebuild, no second write, no second gate pass). The empty-DOCX guard was already run.
-    if runtime_display_markdown != pre_reader_cleanup_display_markdown:
+    #
+    # spec 043 P1: the caption→heading delivery gate must also fire when the base build was
+    # DEFERRED and the RE-COLLECTED final diagnostics carry a conflict — even if reader
+    # cleanup left the delivered markdown UNCHANGED (the deferred build still produced the
+    # DOCX + diagnostics the pre-cleanup gate never saw). So the report rebuild is triggered
+    # by a markdown change OR a final-diagnostics caption conflict; every rebuild judges the
+    # RE-COLLECTED ``post_cleanup_formatting_diagnostics_artifacts`` (the delivered artifact)
+    # instead of the stale pre-cleanup list. The non-caption, unchanged-markdown case takes
+    # the ``else`` branch below and stays byte-identical.
+    if runtime_display_markdown != pre_reader_cleanup_display_markdown or post_cleanup_caption_conflict_count > 0:
         quality_report = _build_translation_quality_report(
             context=context,
             final_markdown=runtime_display_markdown,
-            formatting_diagnostics_artifacts=formatting_diagnostics_artifacts,
+            formatting_diagnostics_artifacts=post_cleanup_formatting_diagnostics_artifacts,
             assembly_result=assembly_result,
             pre_cleanup_formatting_baseline=cast(Mapping[str, object] | None, docx_phase.get("pre_cleanup_formatting_baseline")),
             runtime_display_markdown=runtime_display_markdown,
@@ -800,7 +845,7 @@ def finalize_processing_success(
             _build_report_context_for_acceptance(
                 context=context,
                 quality_report=quality_report,
-                formatting_diagnostics_payloads=_load_formatting_diagnostics_payloads(formatting_diagnostics_artifacts),
+                formatting_diagnostics_payloads=_load_formatting_diagnostics_payloads(post_cleanup_formatting_diagnostics_artifacts),
                 output_artifacts=post_cleanup_output_artifacts,
             ),
             mismatch_threshold=_acceptance_mismatch_threshold,

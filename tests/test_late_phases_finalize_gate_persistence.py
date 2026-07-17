@@ -569,6 +569,209 @@ def test_finalize_no_caption_conflict_publishes_normally(monkeypatch, tmp_path):
 
 
 # --------------------------------------------------------------------------- #
+# spec 043 P1 — the caption→heading delivery gate must judge the FINAL (post
+# reader-cleanup) DOCX diagnostics. When reader cleanup is enabled the base DOCX
+# is built LATE, so the pre-cleanup gate runs on an EMPTY diagnostics list; a
+# caption conflict introduced by the FINAL DOCX must still BLOCK delivery on BOTH
+# the markdown-changed AND markdown-unchanged reader-cleanup sub-paths (the
+# unchanged path is the one the pre-043 code missed entirely).
+# --------------------------------------------------------------------------- #
+
+
+def _make_reader_cleanup_context():
+    """A translate context with reader cleanup ENABLED, so the finalize base DOCX
+    build is DEFERRED (``docx_bytes`` is None at the pre-cleanup gate) and the FINAL
+    diagnostics are re-collected after the reader-cleanup build."""
+    context = _make_context()
+    context.app_config = {"reader_cleanup_enabled": True}
+    return context
+
+
+def _write_caption_conflict_artifact(diagnostics_dir, name="preserve_001.json"):
+    diagnostics_dir.mkdir(parents=True, exist_ok=True)
+    (diagnostics_dir / name).write_text(
+        json.dumps(
+            {
+                "stage": "preserve",
+                "caption_heading_conflicts": [
+                    {"paragraph_id": "p0002", "target_heading_level": 2}
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+
+def _run_deferred_finalize_with_final_diagnostics(monkeypatch, tmp_path, *, cleaned_markdown):
+    """Drive finalize with reader cleanup ENABLED (deferred base build) and a FINAL
+    DOCX that wrote a caption→heading conflict artifact during its (deferred) build.
+    ``cleaned_markdown`` controls the reader-cleanup sub-path: equal to the pre-cleanup
+    markdown → UNCHANGED sub-path; different → CHANGED sub-path."""
+    gate_input = "Чистый переведённый абзац для итоговой проверки."
+
+    diagnostics_dir = tmp_path / "formatting_diagnostics"
+    _write_caption_conflict_artifact(diagnostics_dir)
+
+    cleanup = _cleanup_result(markdown=cleaned_markdown, docx_bytes=b"PK\x03\x04 final docx")
+    _install_stubs(
+        monkeypatch,
+        gate_input_markdown=gate_input,
+        cleanup_result=cleanup,
+        report_fn=lambda **k: {"quality_status": "pass", "gate_reasons": []},
+    )
+    # KEEP the real quality-report builder so the conflict is gated by production logic.
+    monkeypatch.setattr(
+        late_phases,
+        "_build_translation_quality_report",
+        quality_gate._build_translation_quality_report,
+    )
+
+    deps = _RecordingDependencies(artifact_writer=_real_primary_artifact_writer(tmp_path))
+    emitters = _RecordingEmitters()
+
+    docx_phase = _make_docx_phase(gate_input)
+    # Deferred base build: no docx_bytes at the pre-cleanup gate, and the diagnostics
+    # window (dir + start epoch) is threaded so finalize can RE-COLLECT the final-DOCX
+    # artifacts written during the reader-cleanup build (epoch 0 => collect everything).
+    docx_phase["docx_bytes"] = None
+    docx_phase["diagnostics_dir"] = diagnostics_dir
+    docx_phase["build_started_at_epoch"] = 0.0
+
+    result = _run_finalize(
+        context=_make_reader_cleanup_context(),
+        dependencies=deps,
+        emitters=emitters,
+        state=_make_state(),
+        docx_phase=docx_phase,
+    )
+    return result, deps, emitters, gate_input
+
+
+def test_finalize_caption_conflict_in_final_docx_blocks_delivery_markdown_changed(monkeypatch, tmp_path):
+    # Reader-cleanup CHANGED the delivered markdown; the FINAL DOCX (built during the
+    # deferred build) carries a caption→heading conflict the pre-cleanup gate never saw.
+    result, deps, emitters, _gate_input = _run_deferred_finalize_with_final_diagnostics(
+        monkeypatch, tmp_path, cleaned_markdown="Отредактированный, но всё ещё качественный абзац."
+    )
+
+    assert result == "failed"
+    assert "translation_quality_gate_failed_post_cleanup" in _events(deps)
+    _level, ctx = _event(deps, "translation_quality_gate_failed_post_cleanup")
+    gate_reasons = ctx.get("gate_reasons") or []
+    assert isinstance(gate_reasons, list)
+    assert "caption_heading_conflict" in gate_reasons
+    # Primary UI artifacts were NEVER written — delivery blocked first.
+    assert deps.write_ui_result_artifacts_calls == 0
+    assert "ui_result_artifacts_saved" not in _events(deps)
+    assert "processing_completed" not in _events(deps)
+    assert not any(call["terminal_kind"] == "completed" for call in emitters.finalize_calls)
+    assert any(call["terminal_kind"] == "error" for call in emitters.finalize_calls)
+
+
+def test_finalize_caption_conflict_in_final_docx_blocks_delivery_markdown_unchanged(monkeypatch, tmp_path):
+    # Reader cleanup left the delivered markdown UNCHANGED, so the pre-043 code skipped
+    # the whole re-gate — yet the deferred FINAL DOCX still produced a caption→heading
+    # conflict. spec 043 P1 makes the caption gate authoritative on the FINAL diagnostics
+    # even on this sub-path, so delivery must be BLOCKED.
+    gate_input = "Чистый переведённый абзац для итоговой проверки."
+    result, deps, emitters, resolved_gate_input = _run_deferred_finalize_with_final_diagnostics(
+        monkeypatch, tmp_path, cleaned_markdown=gate_input
+    )
+    assert resolved_gate_input == gate_input  # markdown genuinely UNCHANGED by cleanup
+
+    assert result == "failed"
+    assert "translation_quality_gate_failed_post_cleanup" in _events(deps)
+    _level, ctx = _event(deps, "translation_quality_gate_failed_post_cleanup")
+    gate_reasons = ctx.get("gate_reasons") or []
+    assert isinstance(gate_reasons, list)
+    assert "caption_heading_conflict" in gate_reasons
+    assert deps.write_ui_result_artifacts_calls == 0
+    assert "ui_result_artifacts_saved" not in _events(deps)
+    assert "processing_completed" not in _events(deps)
+    assert not any(call["terminal_kind"] == "completed" for call in emitters.finalize_calls)
+    assert any(call["terminal_kind"] == "error" for call in emitters.finalize_calls)
+
+
+def test_finalize_reader_cleanup_without_caption_conflict_publishes(monkeypatch, tmp_path):
+    # Reader cleanup ENABLED (deferred base build), markdown unchanged, and the FINAL
+    # diagnostics carry NO caption conflict -> the run publishes normally and the
+    # unchanged-markdown path stays byte-identical (no re-gate, no spurious rebuild).
+    gate_input = "Чистый переведённый абзац для итоговой проверки."
+
+    diagnostics_dir = tmp_path / "formatting_diagnostics"
+    diagnostics_dir.mkdir(parents=True, exist_ok=True)  # present but empty -> zero conflicts
+
+    report_fn, report_calls = _fail_when_marker_report()
+    cleanup = _cleanup_result(markdown=gate_input, docx_bytes=b"PK\x03\x04 final docx")
+    _install_stubs(monkeypatch, gate_input_markdown=gate_input, cleanup_result=cleanup, report_fn=report_fn)
+
+    deps = _RecordingDependencies(artifact_writer=_real_primary_artifact_writer(tmp_path))
+    emitters = _RecordingEmitters()
+
+    docx_phase = _make_docx_phase(gate_input)
+    docx_phase["docx_bytes"] = None
+    docx_phase["diagnostics_dir"] = diagnostics_dir
+    docx_phase["build_started_at_epoch"] = 0.0
+
+    result = _run_finalize(
+        context=_make_reader_cleanup_context(),
+        dependencies=deps,
+        emitters=emitters,
+        state=_make_state(),
+        docx_phase=docx_phase,
+    )
+
+    assert result == "succeeded"
+    # Unchanged markdown + no conflict => the re-gate was skipped (only the pre-cleanup call).
+    assert report_calls == [gate_input]
+    assert "translation_quality_gate_failed_post_cleanup" not in _events(deps)
+    assert deps.write_ui_result_artifacts_calls == 1
+    assert "processing_completed" in _events(deps)
+
+
+# --------------------------------------------------------------------------- #
+# spec 043 P2 — the DELIVERY gate must aggregate caption→heading conflicts across
+# ALL current formatting-diagnostics payloads (mirroring the acceptance verdict),
+# not only the LAST artifact. A conflict in a NON-last artifact must still fail.
+# --------------------------------------------------------------------------- #
+
+
+def test_quality_report_aggregates_caption_conflicts_across_all_artifacts(tmp_path):
+    # Conflict lives in the FIRST (non-last) artifact; the LAST artifact is clean.
+    first_artifact = tmp_path / "a_preserve.json"
+    first_artifact.write_text(
+        json.dumps(
+            {
+                "stage": "preserve",
+                "caption_heading_conflicts": [{"paragraph_id": "p0002", "target_heading_level": 2}],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    last_artifact = tmp_path / "z_restore.json"
+    last_artifact.write_text(
+        json.dumps({"stage": "restore", "caption_heading_conflicts": []}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    report = quality_gate._build_translation_quality_report(
+        context=_make_context(),
+        final_markdown="Чистый переведённый абзац для итоговой проверки.",
+        formatting_diagnostics_artifacts=[str(first_artifact), str(last_artifact)],
+    )
+
+    # Pre-043 the single-latest-payload count would be 0 (last artifact clean) and the
+    # gate would PASS; the aggregate now counts the non-last conflict and BLOCKS delivery.
+    assert report["quality_status"] == "fail"
+    gate_reasons = report.get("gate_reasons") or []
+    assert isinstance(gate_reasons, list)
+    assert "caption_heading_conflict" in gate_reasons
+    assert report["caption_heading_conflicts_count"] == 1
+
+
+# --------------------------------------------------------------------------- #
 # Finding 13 — a returned artifact mapping is NOT proof of persistence.
 # --------------------------------------------------------------------------- #
 

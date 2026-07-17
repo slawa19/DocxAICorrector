@@ -1,6 +1,7 @@
 import logging
 import json
 from collections.abc import Callable, Mapping, Sequence
+from pathlib import Path
 from typing import Literal, TypeAlias, cast
 
 from docxaicorrector.generation.formatting_diagnostics_retention import (
@@ -910,6 +911,8 @@ def _run_docx_build_phase(
         result_manifest=cast(Mapping[str, object] | None, phase_result.get("result_manifest")),
         processed_image_assets=list(cast(Sequence[ImageAssetLike], phase_result.get("processed_image_assets") or [])),
         base_docx_builder=cast(Callable[[], bytes] | None, phase_result.get("base_docx_builder")),
+        build_started_at_epoch=cast(float, phase_result.get("build_started_at_epoch") or 0.0),
+        diagnostics_dir=cast(Path | None, phase_result.get("diagnostics_dir")),
     )
 
 
@@ -938,6 +941,10 @@ def _finalize_processing_success(
             "assembly_entries": list(docx_phase.assembly_entries),
             "result_manifest": docx_phase.result_manifest,
             "processed_image_assets": list(docx_phase.processed_image_assets),
+            # spec 043 P1: carry the diagnostics window through so finalize can RE-COLLECT
+            # the FINAL-DOCX formatting diagnostics after a deferred (reader-cleanup) build.
+            "build_started_at_epoch": docx_phase.build_started_at_epoch,
+            "diagnostics_dir": docx_phase.diagnostics_dir,
         },
         job_count=job_count,
         current_markdown_fn=_current_markdown,
