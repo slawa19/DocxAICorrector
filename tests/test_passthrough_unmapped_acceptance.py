@@ -26,6 +26,11 @@ from pathlib import Path
 
 import pytest
 
+from docxaicorrector.validation.acceptance import (
+    build_acceptance_verdict,
+    resolve_genuine_unmapped_count,
+)
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 FIXTURE_PATH = PROJECT_ROOT / "tests" / "fixtures" / "money_gemini_passthrough_fixture.json"
@@ -387,3 +392,205 @@ def test_breadth_counter_proof_real_body_paragraph_still_fails(validation_module
     tight_src = _checks_by_name(tight)["unmapped_source_threshold"]
     assert tight_src["passed"] is False
     assert "unmapped_source_threshold" in set(tight.get("failed_checks", []))
+
+
+# ===================================================================================
+# Spec 037: the structural passthrough gate CREDITS agreed passthrough furniture and
+# hard-gates ONLY the genuine (non-furniture) remainder. These are synthetic verdict
+# inputs driven directly through ``build_acceptance_verdict`` (the shared harness↔prod
+# assembler) plus focused unit tests of the ``resolve_genuine_unmapped_count`` credit
+# arithmetic (Constitution VII anti-vacuum: real body loss is still gated).
+# ===================================================================================
+
+_GENUINE_BODY_PREVIEW = (
+    "This is a genuinely unmapped main-body prose paragraph that develops a substantive "
+    "argument across a full sentence of real running text, well outside any front-matter, "
+    "table of contents, references region, caption, part divider, or page-furniture line."
+)
+
+
+def _source_entry(paragraph_id, source_index, text, *, mapped=None):
+    return {
+        "paragraph_id": paragraph_id,
+        "source_index": source_index,
+        "role": "body",
+        "structural_role": "body",
+        "heading_level": None,
+        "list_kind": None,
+        "mapped_target_index": mapped,
+        "text_preview": text,
+    }
+
+
+def _target_entry(target_index, text):
+    return {"target_index": target_index, "text_preview": text}
+
+
+def _synthetic_report(*, furniture_count, genuine_body_count):
+    """Build a report whose single formatting-diagnostics payload flows through the
+    role-aware coverage path with ``furniture_count`` page-furniture unmapped lines
+    (bare page numbers) and ``genuine_body_count`` genuinely-unmapped body prose lines,
+    on BOTH the source and target sides."""
+    source_registry = [
+        _source_entry(f"p_anchor_{i}", i, f"Абзац основного текста номер {i}.", mapped=i)
+        for i in range(6)
+    ]
+    target_registry = [_target_entry(i, f"Абзац основного текста номер {i}.") for i in range(6)]
+    unmapped_source_ids = []
+    unmapped_target_indexes = []
+
+    next_index = 300
+    for f in range(furniture_count):
+        pid = f"p_furn_{f}"
+        page_number_text = str(200 + f)  # bare page number -> page_furniture (form-only)
+        source_registry.append(_source_entry(pid, next_index, page_number_text))
+        target_registry.append(_target_entry(next_index, page_number_text))
+        unmapped_source_ids.append(pid)
+        unmapped_target_indexes.append(next_index)
+        next_index += 1
+    for b in range(genuine_body_count):
+        pid = f"p_body_{b}"
+        source_registry.append(_source_entry(pid, next_index, _GENUINE_BODY_PREVIEW))
+        target_registry.append(_target_entry(next_index, _GENUINE_BODY_PREVIEW))
+        unmapped_source_ids.append(pid)
+        unmapped_target_indexes.append(next_index)
+        next_index += 1
+
+    payload = {
+        "unmapped_source_ids": unmapped_source_ids,
+        "source_registry": source_registry,
+        "unmapped_source_residual_diagnostics": {
+            "effective_formatting_coverage_diagnostics": {"format_neutral_creditable_count": 0}
+        },
+        "unmapped_target_indexes": unmapped_target_indexes,
+        "target_registry": target_registry,
+        "unmapped_target_residual_diagnostics": {"split_accounting_creditable_count": 0},
+    }
+    return {
+        "result": "succeeded",
+        "runtime_config": {"effective": {"processing_operation": "translate"}},
+        "translation_quality_report": {},
+        "formatting_diagnostics": [payload],
+        "output_artifacts": {},
+        "runtime": {},
+        "reader_cleanup_evidence": {},
+        "preparation_diagnostic_snapshot": {},
+    }
+
+
+def _verdict(report, *, mismatch_threshold, unmapped_target_threshold):
+    return build_acceptance_verdict(
+        report,
+        mismatch_threshold=mismatch_threshold,
+        unmapped_target_threshold=unmapped_target_threshold,
+    )
+
+
+def _failed_names(verdict) -> set:
+    names = verdict.get("failed_checks", [])
+    return set(names) if isinstance(names, list) else set()
+
+
+# --------------------------------------------------------------------------------- #
+# Unit tests of the credit arithmetic (deterministic, no coverage plumbing).
+# --------------------------------------------------------------------------------- #
+
+
+def test_genuine_count_anti_vacuum_no_furniture_gates_full_body():
+    # No furniture available -> genuine equals the effective count (body still gated).
+    genuine, credited = resolve_genuine_unmapped_count(
+        effective_count=20, pre_credit_base_count=20, passthrough_furniture_count=0
+    )
+    assert (genuine, credited) == (20, 0)
+
+
+def test_genuine_count_furniture_only_credits_to_zero():
+    # All effective unmapped is furniture that was NOT yet subtracted -> genuine floors to 0.
+    genuine, credited = resolve_genuine_unmapped_count(
+        effective_count=10, pre_credit_base_count=10, passthrough_furniture_count=10
+    )
+    assert (genuine, credited) == (0, 10)
+
+
+def test_genuine_count_mixed_credits_only_furniture_remainder():
+    # 3 furniture + 7 genuine body, none pre-subtracted -> genuine == 7.
+    genuine, credited = resolve_genuine_unmapped_count(
+        effective_count=10, pre_credit_base_count=10, passthrough_furniture_count=3
+    )
+    assert (genuine, credited) == (7, 3)
+
+
+def test_genuine_count_never_double_credits_already_subtracted_furniture():
+    # Role-aware effective already removed the 4 furniture (base 14 -> effective 10);
+    # crediting must NOT subtract them a second time (mirrors max(creditable,passthrough)).
+    genuine, credited = resolve_genuine_unmapped_count(
+        effective_count=10, pre_credit_base_count=14, passthrough_furniture_count=4
+    )
+    assert (genuine, credited) == (10, 0)
+
+
+# --------------------------------------------------------------------------------- #
+# Verdict-level tests through build_acceptance_verdict.
+# --------------------------------------------------------------------------------- #
+
+
+def test_verdict_furniture_only_is_excused_on_both_sides():
+    report = _synthetic_report(furniture_count=8, genuine_body_count=0)
+    verdict = _verdict(report, mismatch_threshold=0, unmapped_target_threshold=0)
+    checks = _checks_by_name(verdict)
+    src = checks["unmapped_source_threshold"]
+    tgt = checks["unmapped_target_threshold"]
+
+    # Furniture was classified and credited; the genuine remainder is zero, so the checks
+    # pass even at a zero threshold and leave failed_checks.
+    assert src["credited_passthrough_furniture_source_count"] == 8
+    assert tgt["credited_passthrough_furniture_target_count"] == 8
+    assert src["genuine_unmapped_source_count"] == 0
+    assert tgt["genuine_unmapped_target_count"] == 0
+    assert src["passed"] is True
+    assert tgt["passed"] is True
+    failed = _failed_names(verdict)
+    assert "unmapped_source_threshold" not in failed
+    assert "unmapped_target_threshold" not in failed
+
+
+def test_verdict_genuine_body_still_gated_anti_vacuum():
+    # 8 furniture + 3 genuine body: the furniture is credited but the 3 body paragraphs
+    # exceed a threshold of 2, so BOTH checks stay in failed_checks (real body is gated).
+    report = _synthetic_report(furniture_count=8, genuine_body_count=3)
+    verdict = _verdict(report, mismatch_threshold=2, unmapped_target_threshold=2)
+    checks = _checks_by_name(verdict)
+    src = checks["unmapped_source_threshold"]
+    tgt = checks["unmapped_target_threshold"]
+
+    assert src["genuine_unmapped_source_count"] == 3
+    assert tgt["genuine_unmapped_target_count"] == 3
+    assert src["credited_passthrough_furniture_source_count"] == 8
+    assert tgt["credited_passthrough_furniture_target_count"] == 8
+    assert src["passed"] is False
+    assert tgt["passed"] is False
+    failed = _failed_names(verdict)
+    assert "unmapped_source_threshold" in failed
+    assert "unmapped_target_threshold" in failed
+
+
+def test_verdict_mixed_gates_only_the_genuine_remainder():
+    # Same 8 furniture + 3 body, but a threshold of 3 leaves ONLY the genuine remainder
+    # (3) at/under the bar -> the checks pass, proving furniture is not counted against it.
+    report = _synthetic_report(furniture_count=8, genuine_body_count=3)
+    verdict = _verdict(report, mismatch_threshold=3, unmapped_target_threshold=3)
+    checks = _checks_by_name(verdict)
+    src = checks["unmapped_source_threshold"]
+    tgt = checks["unmapped_target_threshold"]
+
+    assert src["genuine_unmapped_source_count"] == 3
+    assert tgt["genuine_unmapped_target_count"] == 3
+    # The raw unmapped count (furniture included) is well above the threshold; only the
+    # genuine remainder is gated, so the checks pass.
+    assert src["raw_worst_unmapped_source_count"] > 3
+    assert tgt["raw_unmapped_target_count"] > 3
+    assert src["passed"] is True
+    assert tgt["passed"] is True
+    failed = _failed_names(verdict)
+    assert "unmapped_source_threshold" not in failed
+    assert "unmapped_target_threshold" not in failed

@@ -59,6 +59,67 @@ def _max_payload_list_length(
     return max_length
 
 
+# The agreed pass-through FURNITURE categories (Constitution VII "formatting coverage is
+# review DATA, not a gate" + specs 008/010/011). These are already classified by the
+# general region/role/form detectors in ``validation/formatting_coverage.py`` and surfaced
+# on the unmapped summaries. The structural passthrough gate must CREDIT (exclude) them and
+# gate ONLY the genuine (non-furniture) remainder. Source carries a bounded-TOC category the
+# target side does not (the target registry has no role field).
+_PASSTHROUGH_FURNITURE_SOURCE_KEYS: tuple[str, ...] = (
+    "passthrough_front_matter_source_count",
+    "passthrough_bounded_toc_source_count",
+    "passthrough_page_furniture_source_count",
+    "passthrough_references_source_count",
+    "passthrough_caption_source_count",
+    "passthrough_part_source_count",
+    "passthrough_index_source_count",
+    "passthrough_attribution_source_count",
+)
+_PASSTHROUGH_FURNITURE_TARGET_KEYS: tuple[str, ...] = (
+    "passthrough_front_matter_target_count",
+    "passthrough_page_furniture_target_count",
+    "passthrough_references_target_count",
+    "passthrough_caption_target_count",
+    "passthrough_part_target_count",
+    "passthrough_index_target_count",
+    "passthrough_attribution_target_count",
+)
+
+
+def _sum_passthrough_furniture(summary: Mapping[str, object], keys: Sequence[str]) -> int:
+    total = 0
+    for key in keys:
+        value = summary.get(key)
+        if value is None:
+            continue
+        total += max(_coerce_int(value), 0)
+    return total
+
+
+def resolve_genuine_unmapped_count(
+    *,
+    effective_count: int,
+    pre_credit_base_count: int,
+    passthrough_furniture_count: int,
+) -> tuple[int, int]:
+    """Return ``(genuine_count, credited_furniture_applied)`` for the structural gate.
+
+    The GENUINE unmapped count is the effective (gated) count with the agreed pass-through
+    FURNITURE excluded (spec 037). Only the furniture *still present* in ``effective_count``
+    is credited: the role-aware coverage summary already subtracts pass-through furniture
+    from ``effective_count`` (``formatting_coverage`` reduces by
+    ``max(format_neutral_creditable, passthrough_count)``), so the amount already removed —
+    ``pre_credit_base_count - effective_count`` — is discounted before crediting again. This
+    non-stacking rule mirrors the ``max(creditable, passthrough)`` reducer and guarantees a
+    real body paragraph is NEVER double-credited (Constitution VII anti-vacuum): when no
+    furniture is present the genuine count equals the effective count and still gates.
+    """
+    already_reduced = max(pre_credit_base_count - effective_count, 0)
+    credited_furniture_applied = max(passthrough_furniture_count - already_reduced, 0)
+    genuine_count = max(effective_count - credited_furniture_applied, 0)
+    return genuine_count, credited_furniture_applied
+
+
 def resolve_acceptance_unmapped_source_summary(
     *,
     formatting_diagnostics: Sequence[Mapping[str, object]],
@@ -159,6 +220,12 @@ def resolve_acceptance_unmapped_target_summary(
             ),
             "passthrough_part_target_count": role_aware_target_summary.get(
                 "passthrough_part_target_count"
+            ),
+            "passthrough_index_target_count": role_aware_target_summary.get(
+                "passthrough_index_target_count"
+            ),
+            "passthrough_attribution_target_count": role_aware_target_summary.get(
+                "passthrough_attribution_target_count"
             ),
             "front_matter_boundary_target_index": role_aware_target_summary.get(
                 "front_matter_boundary_target_index"
@@ -460,6 +527,38 @@ def build_acceptance_verdict(
         preparation_diagnostic_snapshot=preparation_diagnostic_snapshot,
     )
     explicit_unmapped_target_count = _coerce_int(unmapped_target_summary["actual"])
+
+    # spec 037: hard-gate only the GENUINE (non-furniture) unmapped remainder. Credit the
+    # agreed pass-through furniture already classified on the summaries, without ever
+    # double-crediting what the role-aware coverage effective count already excluded.
+    passthrough_furniture_source_count = _sum_passthrough_furniture(
+        unmapped_source_summary, _PASSTHROUGH_FURNITURE_SOURCE_KEYS
+    )
+    filtered_source_value = unmapped_source_summary.get("filtered_unmapped_source_count")
+    pre_credit_source_base = (
+        _coerce_int(filtered_source_value)
+        if filtered_source_value is not None
+        else explicit_unmapped_source_count
+    )
+    genuine_unmapped_source_count, credited_furniture_source_applied = resolve_genuine_unmapped_count(
+        effective_count=explicit_unmapped_source_count,
+        pre_credit_base_count=pre_credit_source_base,
+        passthrough_furniture_count=passthrough_furniture_source_count,
+    )
+    passthrough_furniture_target_count = _sum_passthrough_furniture(
+        unmapped_target_summary, _PASSTHROUGH_FURNITURE_TARGET_KEYS
+    )
+    raw_target_value = unmapped_target_summary.get("raw_unmapped_target_count")
+    pre_credit_target_base = (
+        _coerce_int(raw_target_value)
+        if raw_target_value is not None
+        else explicit_unmapped_target_count
+    )
+    genuine_unmapped_target_count, credited_furniture_target_applied = resolve_genuine_unmapped_count(
+        effective_count=explicit_unmapped_target_count,
+        pre_credit_base_count=pre_credit_target_base,
+        passthrough_furniture_count=passthrough_furniture_target_count,
+    )
     add_check(
         "formatting_diagnostics_threshold",
         bool(
@@ -496,10 +595,13 @@ def build_acceptance_verdict(
     )
     add_check(
         "unmapped_source_threshold",
-        bool(mismatch_threshold is not None and explicit_unmapped_source_count <= mismatch_threshold),
+        bool(mismatch_threshold is not None and genuine_unmapped_source_count <= mismatch_threshold),
         applicable=mismatch_threshold is not None,
         actual=explicit_unmapped_source_count,
         allowed=mismatch_threshold,
+        genuine_unmapped_source_count=genuine_unmapped_source_count,
+        credited_passthrough_furniture_source_count=passthrough_furniture_source_count,
+        passthrough_furniture_credit_applied_source_count=credited_furniture_source_applied,
         worst_unmapped_source_count=explicit_unmapped_source_count,
         raw_worst_unmapped_source_count=worst_unmapped_source_count,
         count_basis=unmapped_source_summary.get("unmapped_source_count_basis"),
@@ -519,10 +621,13 @@ def build_acceptance_verdict(
     )
     add_check(
         "unmapped_target_threshold",
-        bool(unmapped_target_threshold is not None and explicit_unmapped_target_count <= unmapped_target_threshold),
+        bool(unmapped_target_threshold is not None and genuine_unmapped_target_count <= unmapped_target_threshold),
         applicable=unmapped_target_threshold is not None,
         actual=explicit_unmapped_target_count,
         allowed=unmapped_target_threshold,
+        genuine_unmapped_target_count=genuine_unmapped_target_count,
+        credited_passthrough_furniture_target_count=passthrough_furniture_target_count,
+        passthrough_furniture_credit_applied_target_count=credited_furniture_target_applied,
         unmapped_target_count=explicit_unmapped_target_count,
         count_basis=unmapped_target_summary.get("unmapped_target_count_basis"),
         raw_unmapped_target_count=unmapped_target_summary.get("raw_unmapped_target_count"),
