@@ -1,20 +1,26 @@
-"""Acceptance-gate pass-through exclusion (front-matter / bounded-TOC / page-furniture).
+"""Acceptance unmapped-coverage as review DATA (spec 038 / Constitution VII).
 
-Director scope decision (GLOBAL_PLAN 2026-06-20c): TOC, front-matter (title/cover/
-attributions) and source/reference pages are PASS-THROUGH — translated as-is but
-EXCLUDED from the strict unmapped-paragraph acceptance thresholds. The main-content text
-is the quality focus.
+Coverage is review DATA, not a verdict gate. The three coverage checks
+(``formatting_diagnostics_threshold``, ``unmapped_source_threshold``,
+``unmapped_target_threshold``) never enter ``failed_checks`` on residual unmapped
+coverage: the source/target coverage checks are ADVISORY (``passed=True`` unconditionally,
+``failed_reason="advisory_only"``, ``review_data=True``), and
+``formatting_diagnostics_threshold`` gates ONLY on the genuine caption/heading structural
+conflict clause. Spec 037's furniture-crediting arithmetic
+(``resolve_genuine_unmapped_count`` + the credited/genuine audit fields) is KEPT — it now
+feeds the review-DATA payload instead of a pass/fail branch.
 
-On the saved Money & Sustainability (Gemini) run, acceptance=FAILED purely because the
-unmapped thresholds drowned in that pass-through noise (71 source / 67 target). These
-tests load the real saved artifacts (compacted into a fixture with REAL values) and prove:
+The pass-through exclusion (front-matter / bounded-TOC / page-furniture / references /
+captions / part dividers) still runs and its per-category provenance stays fully auditable
+in the details. These tests load the real saved artifacts (Money & Sustainability Gemini
+fixture; lietaer/mazzucato breadth full-run reports) and prove:
 
-  * the three unmapped checks drop drastically and leave failed_checks once the agreed
-    (A) front-matter / (B) bounded-TOC / (C) page-furniture categories are excluded;
-  * per-category provenance counters are present in the check details (auditable);
-  * COUNTER-PROOF: a synthetic REAL unmapped body-prose paragraph (structural_role=body,
-    long prose, outside TOC/front-matter, not furniture) is STILL counted and re-fails the
-    threshold — the gate did not go blind in the other direction.
+  * per-category pass-through provenance counters are present and auditable;
+  * the three coverage checks stay OUT of failed_checks with ``passed is True``;
+  * ANTI-VACUUM (now enforced on the DATA, not the gate): a synthetic REAL unmapped
+    body-prose paragraph raises the genuine unmapped COUNT by exactly one and flips
+    ``genuine_exceeds_threshold`` at a tight threshold — the loss is surfaced honestly —
+    while the check's ``passed`` stays True and it never enters failed_checks.
 """
 
 from __future__ import annotations
@@ -133,11 +139,16 @@ def test_passthrough_excludes_only_agreed_categories(validation_module, money_re
     assert tgt["passed"] is True
 
 
-def test_real_body_paragraph_still_fails_the_gate(validation_module, money_report):
-    """COUNTER-PROOF: a genuine unmapped main-body prose paragraph (not front-matter, not
-    TOC, not furniture) must STILL be counted and re-trip the source threshold."""
+def test_real_body_paragraph_still_surfaced_in_review_data(validation_module, money_report):
+    """ANTI-VACUUM on the DATA (spec 038): a genuine unmapped main-body prose paragraph
+    (not front-matter, not TOC, not furniture) must STILL raise the genuine unmapped COUNT
+    by one and flip ``genuine_exceeds_threshold`` at a tight threshold — the loss is
+    surfaced honestly — but coverage is review data, so ``passed`` stays True and the
+    check never enters failed_checks."""
     base = _evaluate(validation_module, money_report)
-    base_src = _checks_by_name(base)["unmapped_source_threshold"]["actual"]
+    base_check = _checks_by_name(base)["unmapped_source_threshold"]
+    base_src = base_check["actual"]
+    base_genuine = base_check["genuine_unmapped_source_count"]
     assert base_src <= MONEY_THRESHOLD  # baseline already under threshold
 
     poisoned = copy.deepcopy(money_report)
@@ -170,30 +181,27 @@ def test_real_body_paragraph_still_fails_the_gate(validation_module, money_repor
     registry.insert(insert_at, synthetic)
     payload["unmapped_source_ids"] = list(payload["unmapped_source_ids"]) + ["p_synthetic_body_loss"]
 
-    poisoned_acceptance = _evaluate(validation_module, poisoned)
-    poisoned_src = _checks_by_name(poisoned_acceptance)["unmapped_source_threshold"]
-
-    # The synthetic real body paragraph is NOT classified as pass-through: the retained
-    # (effective) count rises by exactly one.
-    assert poisoned_src["actual"] == base_src + 1
-
-    # With the threshold at exactly the baseline residual, one extra real loss re-fails.
-    tight = validation_module.evaluate_lietaer_acceptance(
+    # Evaluate the poisoned report at a tight threshold pinned to the baseline residual so
+    # the one extra genuine loss exceeds it.
+    poisoned_acceptance = validation_module.evaluate_lietaer_acceptance(
         poisoned,
         mismatch_threshold=base_src,
         unmapped_target_threshold=MONEY_THRESHOLD,
     )
-    tight_checks = _checks_by_name(tight)
-    assert tight_checks["unmapped_source_threshold"]["passed"] is False
-    assert "unmapped_source_threshold" in set(tight.get("failed_checks", []))
-    # And the same baseline threshold leaves the un-poisoned report passing — proving the
-    # extra failure is caused by the real body loss, not a lowered bar.
-    baseline_at_tight = validation_module.evaluate_lietaer_acceptance(
-        money_report,
-        mismatch_threshold=base_src,
-        unmapped_target_threshold=MONEY_THRESHOLD,
-    )
-    assert _checks_by_name(baseline_at_tight)["unmapped_source_threshold"]["passed"] is True
+    poisoned_src = _checks_by_name(poisoned_acceptance)["unmapped_source_threshold"]
+
+    # The synthetic real body paragraph is NOT classified as pass-through: the retained
+    # (effective) count and the genuine count each rise by exactly one.
+    assert poisoned_src["actual"] == base_src + 1
+    assert poisoned_src["genuine_unmapped_source_count"] == base_genuine + 1
+
+    # The residual severity is surfaced in the DATA: genuine now exceeds the tight
+    # threshold.
+    assert poisoned_src["genuine_exceeds_threshold"] is True
+
+    # But coverage is review DATA — the check still passes and never enters failed_checks.
+    assert poisoned_src["passed"] is True
+    assert "unmapped_source_threshold" not in set(poisoned_acceptance.get("failed_checks", []))
 
 
 # ===================================================================================
@@ -311,11 +319,13 @@ def test_breadth_refs_captions_part_leave_failed_checks(
     assert src["raw_worst_unmapped_source_count"] - category_total == src["actual"]
 
 
-def test_breadth_counter_proof_real_body_paragraph_still_fails(validation_module):
-    """(c) COUNTER-PROOF on a breadth artifact: a genuine unmapped main-body prose
-    paragraph — placed in the body region, BEFORE the references region, and not a
-    caption/part/furniture line — must STILL be counted and re-fail the source
-    threshold. Proves the extended exclusion did not go blind."""
+def test_breadth_counter_proof_real_body_paragraph_still_surfaced_in_review_data(validation_module):
+    """(c) ANTI-VACUUM on the DATA (spec 038), breadth artifact: a genuine unmapped
+    main-body prose paragraph — placed in the body region, BEFORE the references region,
+    and not a caption/part/furniture line — must STILL raise the genuine unmapped COUNT by
+    one and flip ``genuine_exceeds_threshold`` at a tight threshold. Proves the extended
+    exclusion did not go blind. Coverage is review data, so ``passed`` stays True and the
+    check never enters failed_checks."""
     if not MAZZUCATO_REPORT_PATH.exists():
         pytest.skip(f"breadth artifact not present: {MAZZUCATO_REPORT_PATH}")
     # Fresh load so the in-place mutation below cannot leak into the module-scoped fixture.
@@ -323,7 +333,9 @@ def test_breadth_counter_proof_real_body_paragraph_still_fails(validation_module
 
     base = _evaluate_breadth(validation_module, report)
     base_fmt = _checks_by_name(base)["formatting_diagnostics_threshold"]
-    base_src = _checks_by_name(base)["unmapped_source_threshold"]["actual"]
+    base_src_check = _checks_by_name(base)["unmapped_source_threshold"]
+    base_src = base_src_check["actual"]
+    base_genuine = base_src_check["genuine_unmapped_source_count"]
     assert base_src <= BREADTH_SOURCE_THRESHOLD  # baseline already under threshold
 
     references_start = base_fmt["references_region_source_start_index"]
@@ -375,23 +387,27 @@ def test_breadth_counter_proof_real_body_paragraph_still_fails(validation_module
     registry.insert(insert_at, synthetic)
     payload["unmapped_source_ids"] = list(payload["unmapped_source_ids"]) + ["p_synthetic_body_loss"]
 
-    poisoned = _evaluate_breadth(validation_module, report)
-    poisoned_src = _checks_by_name(poisoned)["unmapped_source_threshold"]
-
-    # The synthetic real body paragraph is NOT swallowed by any pass-through category:
-    # the effective residual rises by exactly one.
-    assert poisoned_src["actual"] == base_src + 1
-
-    # With the threshold at exactly the baseline residual, that one extra real loss
-    # re-fails the source threshold — the gate still sees genuine body loss.
-    tight = validation_module.evaluate_lietaer_acceptance(
+    # Evaluate at a tight threshold pinned to the baseline residual so the one extra
+    # genuine loss exceeds it.
+    poisoned = validation_module.evaluate_lietaer_acceptance(
         report,
         mismatch_threshold=base_src,
         unmapped_target_threshold=BREADTH_TARGET_THRESHOLD,
     )
-    tight_src = _checks_by_name(tight)["unmapped_source_threshold"]
-    assert tight_src["passed"] is False
-    assert "unmapped_source_threshold" in set(tight.get("failed_checks", []))
+    poisoned_src = _checks_by_name(poisoned)["unmapped_source_threshold"]
+
+    # The synthetic real body paragraph is NOT swallowed by any pass-through category:
+    # the effective residual and the genuine count each rise by exactly one.
+    assert poisoned_src["actual"] == base_src + 1
+    assert poisoned_src["genuine_unmapped_source_count"] == base_genuine + 1
+
+    # The residual severity is surfaced in the DATA: genuine now exceeds the tight
+    # threshold.
+    assert poisoned_src["genuine_exceeds_threshold"] is True
+
+    # But coverage is review DATA — the check still passes and never enters failed_checks.
+    assert poisoned_src["passed"] is True
+    assert "unmapped_source_threshold" not in set(poisoned.get("failed_checks", []))
 
 
 # ===================================================================================
@@ -547,6 +563,9 @@ def test_verdict_furniture_only_is_excused_on_both_sides():
     assert tgt["credited_passthrough_furniture_target_count"] == 8
     assert src["genuine_unmapped_source_count"] == 0
     assert tgt["genuine_unmapped_target_count"] == 0
+    # Genuine is zero <= threshold, so the review-data severity marker stays clear.
+    assert src["genuine_exceeds_threshold"] is False
+    assert tgt["genuine_exceeds_threshold"] is False
     assert src["passed"] is True
     assert tgt["passed"] is True
     failed = _failed_names(verdict)
@@ -554,9 +573,11 @@ def test_verdict_furniture_only_is_excused_on_both_sides():
     assert "unmapped_target_threshold" not in failed
 
 
-def test_verdict_genuine_body_still_gated_anti_vacuum():
-    # 8 furniture + 3 genuine body: the furniture is credited but the 3 body paragraphs
-    # exceed a threshold of 2, so BOTH checks stay in failed_checks (real body is gated).
+def test_verdict_genuine_body_surfaced_but_not_gated():
+    # 8 furniture + 3 genuine body at threshold 2: the furniture is credited and the 3
+    # genuine body paragraphs are SURFACED honestly (genuine count == 3,
+    # genuine_exceeds_threshold True), but coverage is review DATA — neither check enters
+    # failed_checks and both stay passed (spec 038 / Constitution VII).
     report = _synthetic_report(furniture_count=8, genuine_body_count=3)
     verdict = _verdict(report, mismatch_threshold=2, unmapped_target_threshold=2)
     checks = _checks_by_name(verdict)
@@ -567,11 +588,15 @@ def test_verdict_genuine_body_still_gated_anti_vacuum():
     assert tgt["genuine_unmapped_target_count"] == 3
     assert src["credited_passthrough_furniture_source_count"] == 8
     assert tgt["credited_passthrough_furniture_target_count"] == 8
-    assert src["passed"] is False
-    assert tgt["passed"] is False
+    # The residual severity is surfaced in the DATA (genuine 3 > threshold 2)...
+    assert src["genuine_exceeds_threshold"] is True
+    assert tgt["genuine_exceeds_threshold"] is True
+    # ...but coverage never gates: both checks pass and stay out of failed_checks.
+    assert src["passed"] is True
+    assert tgt["passed"] is True
     failed = _failed_names(verdict)
-    assert "unmapped_source_threshold" in failed
-    assert "unmapped_target_threshold" in failed
+    assert "unmapped_source_threshold" not in failed
+    assert "unmapped_target_threshold" not in failed
 
 
 def test_verdict_mixed_gates_only_the_genuine_remainder():
@@ -586,9 +611,12 @@ def test_verdict_mixed_gates_only_the_genuine_remainder():
     assert src["genuine_unmapped_source_count"] == 3
     assert tgt["genuine_unmapped_target_count"] == 3
     # The raw unmapped count (furniture included) is well above the threshold; only the
-    # genuine remainder is gated, so the checks pass.
+    # genuine remainder (3) is measured, and it sits at/under the bar.
     assert src["raw_worst_unmapped_source_count"] > 3
     assert tgt["raw_unmapped_target_count"] > 3
+    # Genuine (3) <= threshold (3), so the review-data severity marker stays clear.
+    assert src["genuine_exceeds_threshold"] is False
+    assert tgt["genuine_exceeds_threshold"] is False
     assert src["passed"] is True
     assert tgt["passed"] is True
     failed = _failed_names(verdict)

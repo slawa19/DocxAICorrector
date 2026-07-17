@@ -561,12 +561,16 @@ def build_acceptance_verdict(
     )
     add_check(
         "formatting_diagnostics_threshold",
-        bool(
-            mismatch_threshold is not None
-            and explicit_unmapped_source_count <= mismatch_threshold
-            and total_caption_heading_conflicts == 0
-        ),
+        # spec 038 / Constitution VII: coverage is review DATA, not a gate. This check
+        # gates ONLY on the genuine structural caption/heading conflict clause; the
+        # unmapped-coverage clause is dropped from the pass condition and surfaced as
+        # the non-gating ``genuine_exceeds_threshold`` review marker below.
+        bool(total_caption_heading_conflicts == 0),
         applicable=mismatch_threshold is not None,
+        genuine_exceeds_threshold=bool(
+            mismatch_threshold is not None
+            and genuine_unmapped_source_count > mismatch_threshold
+        ),
         actual=explicit_unmapped_source_count,
         worst_unmapped_source_count=worst_unmapped_source_count,
         raw_worst_unmapped_source_count=worst_unmapped_source_count,
@@ -595,8 +599,17 @@ def build_acceptance_verdict(
     )
     add_check(
         "unmapped_source_threshold",
-        bool(mismatch_threshold is not None and genuine_unmapped_source_count <= mismatch_threshold),
+        # spec 038 / Constitution VII: coverage is review DATA, not a gate. ``passed`` is
+        # hardcoded True so residual unmapped coverage never enters failed_checks; the
+        # genuine remainder and its severity are surfaced honestly in the details.
+        True,
         applicable=mismatch_threshold is not None,
+        failed_reason="advisory_only",
+        review_data=True,
+        genuine_exceeds_threshold=bool(
+            mismatch_threshold is not None
+            and genuine_unmapped_source_count > mismatch_threshold
+        ),
         actual=explicit_unmapped_source_count,
         allowed=mismatch_threshold,
         genuine_unmapped_source_count=genuine_unmapped_source_count,
@@ -621,8 +634,17 @@ def build_acceptance_verdict(
     )
     add_check(
         "unmapped_target_threshold",
-        bool(unmapped_target_threshold is not None and genuine_unmapped_target_count <= unmapped_target_threshold),
+        # spec 038 / Constitution VII: coverage is review DATA, not a gate. ``passed`` is
+        # hardcoded True so residual unmapped coverage never enters failed_checks; the
+        # genuine remainder and its severity are surfaced honestly in the details.
+        True,
         applicable=unmapped_target_threshold is not None,
+        failed_reason="advisory_only",
+        review_data=True,
+        genuine_exceeds_threshold=bool(
+            unmapped_target_threshold is not None
+            and genuine_unmapped_target_count > unmapped_target_threshold
+        ),
         actual=explicit_unmapped_target_count,
         allowed=unmapped_target_threshold,
         genuine_unmapped_target_count=genuine_unmapped_target_count,

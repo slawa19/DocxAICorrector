@@ -603,11 +603,13 @@ def test_production_acceptance_output_docx_openable_not_applicable_when_docx_not
     assert "no_placeholder_markup" not in verdict["failed_checks"]
 
 
-def test_harness_path_thresholds_and_structural_builder_gate_identically() -> None:
-    # The harness path — integer thresholds AND a structural_checks_builder — must
-    # judge exactly what it judged before (spec FR-009 byte-identity): a generous
-    # threshold passes, a genuinely exceeded threshold still FAILS, and the
-    # structural NA placeholder is never emitted.
+def test_harness_path_gates_genuine_defects_and_treats_coverage_as_review_data() -> None:
+    # The harness path — integer thresholds AND a structural_checks_builder — gates
+    # GENUINE defects (spec FR-009) while treating unmapped coverage as review DATA
+    # (spec 038 / Constitution VII): a clean run passes; a genuine placeholder-markup
+    # defect still FAILS; coverage never gates even at threshold 0 (it is surfaced as
+    # advisory review data); and the structural NA placeholder is never emitted when a
+    # builder supplied real structural checks.
     validation = _load_validation_module()
     source_doc = Document()
     source_doc.add_paragraph("Один абзац")
@@ -629,6 +631,8 @@ def test_harness_path_thresholds_and_structural_builder_gate_identically() -> No
         },
     }
 
+    # A generous threshold AND a tight (0) threshold BOTH pass on coverage — coverage is
+    # review data, never a gate. The clean run passes outright.
     verdict_pass = validation.evaluate_lietaer_acceptance(
         report,
         source_docx_bytes=_docx_bytes(source_doc),
@@ -639,8 +643,17 @@ def test_harness_path_thresholds_and_structural_builder_gate_identically() -> No
     assert verdict_pass["passed"] is True
     assert verdict_pass["failed_checks"] == []
 
+    # A genuine, non-coverage defect (placeholder markup left in the output) still FAILS,
+    # even while coverage thresholds are set to 0.
+    report_fail = {
+        **report,
+        "output_artifacts": {
+            "output_docx_openable": True,
+            "output_contains_placeholder_markup": True,
+        },
+    }
     verdict_fail = validation.evaluate_lietaer_acceptance(
-        report,
+        report_fail,
         source_docx_bytes=_docx_bytes(source_doc),
         output_docx_bytes=_docx_bytes(output_doc),
         mismatch_threshold=0,
@@ -648,17 +661,26 @@ def test_harness_path_thresholds_and_structural_builder_gate_identically() -> No
     )
     by_name = {check["name"]: check for check in verdict_fail["checks"]}
     assert verdict_fail["passed"] is False
-    assert "formatting_diagnostics_threshold" in verdict_fail["failed_checks"]
-    assert "unmapped_source_threshold" in verdict_fail["failed_checks"]
-    assert "unmapped_target_threshold" in verdict_fail["failed_checks"]
-    # An applied threshold is evaluated, not NA.
+    assert "no_placeholder_markup" in verdict_fail["failed_checks"]
+    # Spec 038: coverage is review DATA — advisory, never gates, even at threshold 0.
+    assert "formatting_diagnostics_threshold" not in verdict_fail["failed_checks"]
+    assert "unmapped_source_threshold" not in verdict_fail["failed_checks"]
+    assert "unmapped_target_threshold" not in verdict_fail["failed_checks"]
+    # An applied threshold is still EVALUATED (applicable) and its residual severity is
+    # surfaced honestly as review data, without gating.
     assert by_name["unmapped_source_threshold"]["applicable"] is True
+    assert by_name["unmapped_source_threshold"]["review_data"] is True
+    assert by_name["unmapped_source_threshold"]["genuine_exceeds_threshold"] is True
     # The builder supplied real structural checks, so the NA placeholder is absent.
     assert "structural_comparison_available" not in by_name
 
 
-def test_configured_zero_threshold_still_gates_unlike_unconfigured_none() -> None:
+def test_configured_zero_threshold_is_evaluated_unlike_unconfigured_none() -> None:
     # A configured 0 must NOT be silently treated as "unconfigured" (spec FR-008).
+    # Spec 038 / Constitution VII: coverage is review DATA, so a configured threshold no
+    # longer GATES — but it is still EVALUATED (applicable, severity surfaced via
+    # genuine_exceeds_threshold) and stays distinct from an unconfigured (not-applicable)
+    # axis, which is not evaluated at all.
     from docxaicorrector.validation.acceptance import build_acceptance_verdict
 
     report = {
@@ -668,49 +690,66 @@ def test_configured_zero_threshold_still_gates_unlike_unconfigured_none() -> Non
         "translation_quality_report": {"worst_unmapped_source_count": 2, "unmapped_target_count": 0},
     }
 
-    gated = _untyped(build_acceptance_verdict(report, mismatch_threshold=0, unmapped_target_threshold=0))
-    gated_by_name = {check["name"]: check for check in gated["checks"]}
-    assert gated_by_name["unmapped_source_threshold"]["applicable"] is True
-    assert gated_by_name["unmapped_source_threshold"]["passed"] is False
-    assert "unmapped_source_threshold" in gated["failed_checks"]
+    configured = _untyped(build_acceptance_verdict(report, mismatch_threshold=0, unmapped_target_threshold=0))
+    configured_by_name = {check["name"]: check for check in configured["checks"]}
+    src = configured_by_name["unmapped_source_threshold"]
+    assert src["applicable"] is True
+    # Review data, not a gate: advisory pass, but the residual severity is surfaced.
+    assert src["passed"] is True
+    assert src["review_data"] is True
+    assert src["genuine_exceeds_threshold"] is True  # 2 genuine unmapped > configured 0
+    assert "unmapped_source_threshold" not in configured["failed_checks"]
 
     unconfigured = _untyped(build_acceptance_verdict(report, mismatch_threshold=None, unmapped_target_threshold=None))
     unconfigured_by_name = {check["name"]: check for check in unconfigured["checks"]}
-    assert unconfigured_by_name["unmapped_source_threshold"]["applicable"] is False
-    assert unconfigured_by_name["unmapped_source_threshold"]["reason"] == "threshold_not_configured"
+    un = unconfigured_by_name["unmapped_source_threshold"]
+    assert un["applicable"] is False
+    assert un["reason"] == "threshold_not_configured"
     assert "unmapped_source_threshold" not in unconfigured["failed_checks"]
-    # Same measured actual either way — only the verdict differs.
-    assert gated_by_name["unmapped_source_threshold"]["actual"] == 2
+    # The distinction survives without a gate: configured-0 evaluates the axis and flags
+    # the severity; unconfigured-None does not evaluate it at all.
+    assert un["genuine_exceeds_threshold"] is False
+    # Same measured actual either way — only the review verdict differs.
+    assert configured_by_name["unmapped_source_threshold"]["actual"] == 2
     assert unconfigured_by_name["unmapped_source_threshold"]["actual"] == 2
 
 
 def test_acceptance_check_states_are_distinguishable_in_data() -> None:
-    # Three states must be distinguishable in the emitted dicts: a passed check, a
-    # failed check, and a not-applicable check (spec FR-009, Anti-regression).
+    # Four states must be distinguishable in the emitted dicts: a passed check, a
+    # genuinely-FAILED (gating) check, an ADVISORY review-data check, and a
+    # not-applicable check (spec FR-009 + spec 038, Anti-regression). Spec 038 makes
+    # coverage review data, so the FAILED example is a genuine gate (placeholder markup),
+    # not the (now advisory) unmapped coverage axis.
     from docxaicorrector.validation.acceptance import build_acceptance_verdict
 
     report = {
         "result": "succeeded",  # -> pipeline_succeeded passes
-        "output_artifacts": {"output_docx_openable": True, "output_contains_placeholder_markup": False},
+        "output_artifacts": {"output_docx_openable": True, "output_contains_placeholder_markup": True},
         "formatting_diagnostics": [{"unmapped_source_ids": ["p1", "p2"], "unmapped_target_indexes": []}],
         "translation_quality_report": {"worst_unmapped_source_count": 2, "unmapped_target_count": 0},
     }
-    # mismatch_threshold=0 -> unmapped_source_threshold FAILS; unmapped_target
-    # threshold=None -> unmapped_target_threshold NOT-APPLICABLE; no builder ->
-    # structural_comparison_available NOT-APPLICABLE.
+    # no_placeholder_markup FAILS (markup present); unmapped_source threshold=0 ->
+    # APPLICABLE but ADVISORY (review data, never gates); unmapped_target threshold=None
+    # -> NOT-APPLICABLE; no builder -> structural_comparison_available NOT-APPLICABLE.
     verdict = _untyped(build_acceptance_verdict(report, mismatch_threshold=0, unmapped_target_threshold=None))
     by_name = {check["name"]: check for check in verdict["checks"]}
 
     passed_check = by_name["pipeline_succeeded"]
-    failed_check = by_name["unmapped_source_threshold"]
+    failed_check = by_name["no_placeholder_markup"]
+    advisory_check = by_name["unmapped_source_threshold"]
     not_applicable_check = by_name["unmapped_target_threshold"]
 
     assert (passed_check["applicable"], passed_check["passed"]) == (True, True)
     assert (failed_check["applicable"], failed_check["passed"]) == (True, False)
+    # Advisory: applicable + evaluated, severity surfaced, but never a gate.
+    assert (advisory_check["applicable"], advisory_check["passed"]) == (True, True)
+    assert advisory_check["review_data"] is True
+    assert advisory_check["genuine_exceeds_threshold"] is True
     assert not_applicable_check["applicable"] is False
     assert not_applicable_check["reason"] == "threshold_not_configured"
-    # Only the failed check enters failed_checks; the NA check never does.
-    assert "unmapped_source_threshold" in verdict["failed_checks"]
+    # Only the genuine failed check enters failed_checks; advisory + NA never do.
+    assert "no_placeholder_markup" in verdict["failed_checks"]
+    assert "unmapped_source_threshold" not in verdict["failed_checks"]
     assert "unmapped_target_threshold" not in verdict["failed_checks"]
     assert "structural_comparison_available" not in verdict["failed_checks"]
 
