@@ -2836,7 +2836,7 @@ def test_run_document_processing_surfaces_formatting_diagnostics_artifacts(tmp_p
     assert all(entry["status"] != "INFO" for entry in runtime["log"])
 
 
-def test_run_document_processing_warns_user_only_for_conflicting_formatting_diagnostics(tmp_path, monkeypatch):
+def test_run_document_processing_blocks_delivery_on_caption_heading_conflict(tmp_path, monkeypatch):
     runtime = _build_runtime_capture()
     diagnostics_dir = tmp_path / "formatting_diagnostics"
     monkeypatch.setattr(document_pipeline, "FORMATTING_DIAGNOSTICS_DIR", diagnostics_dir)
@@ -2893,12 +2893,18 @@ def test_run_document_processing_warns_user_only_for_conflicting_formatting_diag
         reinsert_inline_images=lambda docx_bytes, image_assets: docx_bytes,
     )
 
-    assert result == "succeeded"
-    assert runtime["activity"][-2] == "Сборка DOCX завершена; найдены места, где форматирование стоит проверить вручную."
-    assert runtime["log"][-2]["status"] == "WARN"
-    assert "спорные места форматирования" in runtime["log"][-2]["details"]
-    assert "Конфликтов подписи/заголовка: 1." in runtime["log"][-2]["details"]
-    assert runtime["state"].get("latest_result_notice") is None
+    # spec 042 P1-B: a caption→heading conflict (a figure/table caption promoted to a heading)
+    # now forces quality_status="fail" and BLOCKS delivery — reversing the prior warn-and-deliver
+    # behaviour (owner decision, round-8). The document-level quality gate rejects the run: the
+    # fail path surfaces the gate error and does NOT publish a success result. The caption→heading
+    # signal is the gate reason (auditable), humanized in the error.
+    assert result == "failed"
+    assert "translation_quality_gate_failed" in runtime["state"]["last_error"]
+    assert "подпись к рисунку или таблице превратилась в заголовок" in runtime["state"]["last_error"]
+    assert runtime["state"]["latest_result_notice"] == {
+        "level": "error",
+        "message": "Результат заблокирован document-level quality gate.",
+    }
 
 
 def test_run_document_processing_warns_and_delivers_on_strict_unmapped_source_quality_gate(tmp_path, monkeypatch):
