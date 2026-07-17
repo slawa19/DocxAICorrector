@@ -382,7 +382,7 @@ echo START && powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\Users\
 
 Обязательные шаги до любой гипотезы или плана:
 
-1. Прочитать последний run report из `tests/artifacts/real_document_pipeline/lietaer_pdf_full_benchmark_report.json` или `tests/artifacts/real_document_pipeline/runs/<latest_run_id>/`.
+1. Прочитать последний run report из `tests/artifacts/real_document_pipeline/<profile>_pdf_full_benchmark_report.json` (генерируемый артефакт) или `tests/artifacts/real_document_pipeline/runs/<latest_run_id>/`.
 2. Дословно процитировать массив `failed_checks` и для каждого check записать пару `actual` / `threshold` и overage ratio.
 3. Сопоставить эти числа с разделом `## 5.0 Live Failure Inventory` в `docs/archive/specs/STRUCTURE_RECOGNITION_COMPLETION_PLAN_2026-05-14.md`. Если таблица устарела относительно последнего report — сначала обновить таблицу, потом думать дальше.
 4. Только после этих трёх шагов формулировать гипотезы.
