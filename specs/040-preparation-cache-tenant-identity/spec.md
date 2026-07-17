@@ -1,7 +1,20 @@
 # Feature Specification: Preparation cache key incorporates client/credential identity (tenant isolation)
 
 Date: 2026-07-17
-Status: **PLANNED (2026-07-17).** Round-6 P1 follow-up (owner chose "bounded fix now"). The shared
+Status: **IMPLEMENTED (2026-07-17).** `build_prepared_source_key` gained `client_identity` (folded as a
+`:cid=` segment only when non-empty; empty → byte-identical key, verified against a pre-change snapshot);
+`_resolve_prepared_cache_client_identity` fingerprints the AI-review client via the EXISTING public
+`resolve_model_selector` + `get_provider_config`, wired at the call site. 7 unit tests incl. an end-to-end
+shared-cache no-cross-credential-bleed proof (prime under credential A → credential B misses → A hits
+again). test_preparation 48 passed; pyright 246. **Spec-criterion correction (Constitution VIII):** the
+scope formula said `sha256(os.environ.get(api_key_env,""))`, but at cache-key time the AI-review client
+is not built yet (it is created on the cache MISS path), so a bare `os.environ` read is empty when the
+credential lives only in a not-yet-loaded `.env` — which would fail to discriminate tenants. The
+implementation calls `load_project_dotenv()` first (mirroring the client's own
+`_fingerprint_provider_secret`) so the identity tracks the credential the client actually resolves. Found
+by the adversarial post-review pass (the agent honestly flagged it; the orchestrator fixed it).
+
+Round-6 P1 follow-up (owner chose "bounded fix now"). The shared
 preparation cache is process-global and its key omits client/credential identity, so in a multi-tenant
 deployment two tenants uploading the SAME document (content-hash `uploaded_file_token`) with the SAME
 settings collide on one cache entry — and the AI-boundary-review portion of the prepared document was

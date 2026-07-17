@@ -5,6 +5,7 @@ import hashlib
 import inspect
 import json
 import logging
+import os
 from io import BytesIO
 from pathlib import Path
 from threading import Event, Lock
@@ -13,7 +14,15 @@ from typing import Any, cast
 
 from docx import Document as DocxDocument
 
-from docxaicorrector.core.config import get_client, get_client_for_model_selector, get_model_role_value, load_app_config
+from docxaicorrector.core.config import (
+    get_client,
+    get_client_for_model_selector,
+    get_model_role_value,
+    get_provider_config,
+    load_app_config,
+    load_project_dotenv,
+    resolve_model_selector,
+)
 from docxaicorrector.core.constants import RUN_DIR
 from docxaicorrector.document.boundaries import summarize_boundary_normalization_metrics
 from docxaicorrector.document.boundary_review import resolve_paragraph_boundary_ai_review_settings
@@ -311,6 +320,7 @@ def build_prepared_source_key(
     structure_recovery_enabled: bool = False,
     structure_recovery_mode: str = "legacy",
     scan_origin_key: str = _DEFAULT_SCAN_ORIGIN_CACHE_KEY,
+    client_identity: str = "",
 ) -> str:
     resolved_operation = str(processing_operation or "edit").strip().lower() or "edit"
     operation_suffix = "" if resolved_operation == "edit" else f":op={resolved_operation}"
@@ -352,13 +362,65 @@ def build_prepared_source_key(
         f":so={normalized_scan_origin_key}"
         f"{ai_review_fingerprint}"
     )
+    # Spec 040: fold a secret-safe client/credential fingerprint into the key so a
+    # client-dependent prepared document (AI boundary review) is never served across
+    # differing credentials. The segment is appended ONLY when non-empty; when empty the
+    # key is byte-identical to the pre-040 output (single-tenant / review-off sharing
+    # preserved, existing cache entries not invalidated). ``cid`` is a fresh segment name
+    # that cannot collide with any existing token above.
+    normalized_client_identity = str(client_identity or "").strip()
+    client_identity_suffix = f":cid={normalized_client_identity}" if normalized_client_identity else ""
     return (
         f"{uploaded_file_token}:{chunk_size}:{paragraph_boundary_normalization_mode}:"
         f"{paragraph_boundary_ai_review_mode}:{relation_normalization_key}:lc={layout_artifact_cleanup_key}"
         f"{operation_suffix}"
         f":pv={PDF_IMPORT_PARAGRAPH_LOGIC_VERSION}"
         f"{context_fingerprint}"
+        f"{client_identity_suffix}"
     )
+
+
+def _resolve_prepared_cache_client_identity(
+    *,
+    resolved_config: Any,
+    ai_review_effective_enabled: bool,
+    ai_review_model: str,
+) -> str:
+    # Spec 040: derive a stable, secret-safe fingerprint of the AI-boundary-review client
+    # (the ONE client whose output is folded into the prepared/cached document). Returns
+    # "" unless AI review is effectively enabled — in every other case the caller must get
+    # a byte-identical key so single-tenant / review-off sharing is preserved. The raw
+    # api-key VALUE never appears in the output: only sha256(value). Fail-open: any
+    # resolution error (misconfig, disabled/unknown provider, missing registry) returns ""
+    # rather than raising — a cache-key builder must never blow up the request.
+    if not ai_review_effective_enabled:
+        return ""
+    try:
+        resolved_selector = resolve_model_selector(
+            str(ai_review_model or "").strip(),
+            config_like=resolved_config,
+            source_name="paragraph_boundary_ai_review_model",
+        )
+        provider_config = get_provider_config(resolved_selector.provider, resolved_config)
+        canonical_selector = str(resolved_selector.canonical_selector or "")
+        base_url = str(provider_config.base_url or "")
+        api_key_env = str(provider_config.api_key_env or "")
+        # Load project dotenv BEFORE reading the secret, mirroring the client's own secret
+        # resolution (core.config._fingerprint_provider_secret): at cache-key time the
+        # AI-review client is not built yet (it is created on the cache MISS path), so a
+        # bare os.environ read would be empty when the credential lives only in a
+        # not-yet-loaded .env — and would then fail to discriminate two tenants (both hash
+        # ""). Loading dotenv makes the fingerprint track the credential the client actually
+        # resolves. Only sha256(value) enters the key; the raw secret never does.
+        load_project_dotenv()
+        secret_fingerprint = hashlib.sha256(
+            (os.environ.get(api_key_env, "").strip() or "").encode()
+        ).hexdigest()
+        return hashlib.sha256(
+            "\x1f".join([canonical_selector, base_url, api_key_env, secret_fingerprint]).encode()
+        ).hexdigest()[:16]
+    except Exception:
+        return ""
 
 
 def _attach_prepared_job_ids(jobs: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
@@ -956,6 +1018,11 @@ def prepare_document_for_processing(
         resolved_config.get("structure_recovery_mode", "legacy") or "legacy"
     ).strip().lower() or "legacy"
     key_scan_origin = _resolve_scan_origin_cache_key(resolved_config)
+    prepared_cache_client_identity = _resolve_prepared_cache_client_identity(
+        resolved_config=resolved_config,
+        ai_review_effective_enabled=ai_review_effective_enabled,
+        ai_review_model=ai_review_model,
+    )
     prepared_source_key = build_prepared_source_key(
         uploaded_payload.file_token,
         chunk_size,
@@ -974,6 +1041,7 @@ def prepare_document_for_processing(
         structure_recovery_enabled=key_structure_recovery_enabled,
         structure_recovery_mode=key_structure_recovery_mode,
         scan_origin_key=key_scan_origin,
+        client_identity=prepared_cache_client_identity,
     )
     cached, in_flight, cache_level = _read_or_reserve_cached_prepared_document(
         session_state=session_state,

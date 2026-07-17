@@ -1311,3 +1311,189 @@ def test_detect_segments_adapter_propagates_internal_type_error_without_retry():
     finally:
         preparation.detect_document_segments = original
     assert calls["count"] == 1
+
+
+# --- Spec 040: preparation cache client/credential (tenant) identity ---------------------
+
+# Byte-for-byte snapshot of ``build_prepared_source_key('tok123', 1200)`` captured from the
+# pre-040 implementation. The client-identity axis MUST be a no-op when empty: an empty
+# identity may never change this string (no cache invalidation, single-tenant unchanged).
+_PRE_040_REPRESENTATIVE_KEY = (
+    "tok123:1200:high_only:off:phase2_default:"
+    "epigraph_attribution,image_caption,table_caption,toc_region:lc=1:3:80:pv=2:pk=4:"
+    "sl=en:tl=ru:td=general:sr=0:srm=legacy:so=10:0.1:1.5:ar=off"
+)
+
+
+def test_build_prepared_source_key_client_identity_empty_is_byte_identical():
+    # Anti-regression: default (no client_identity) == explicit "" == the pre-040 output.
+    default_key = preparation.build_prepared_source_key("tok123", 1200)
+    empty_identity_key = preparation.build_prepared_source_key("tok123", 1200, client_identity="")
+    assert default_key == empty_identity_key
+    assert default_key == _PRE_040_REPRESENTATIVE_KEY
+    assert ":cid=" not in default_key
+
+
+def test_build_prepared_source_key_appends_cid_segment_when_identity_present():
+    base_key = preparation.build_prepared_source_key("tok123", 1200)
+    keyed = preparation.build_prepared_source_key("tok123", 1200, client_identity="abcd1234abcd1234")
+    # Non-empty identity appends exactly one stable ``:cid=<identity>`` segment; the rest of
+    # the key is untouched, so keyed == base + suffix.
+    assert keyed == f"{base_key}:cid=abcd1234abcd1234"
+    assert keyed != base_key
+    # Different identity -> different key; same identity -> same key.
+    other = preparation.build_prepared_source_key("tok123", 1200, client_identity="ffff0000ffff0000")
+    assert other != keyed
+    same = preparation.build_prepared_source_key("tok123", 1200, client_identity="abcd1234abcd1234")
+    assert same == keyed
+
+
+def test_resolve_prepared_cache_client_identity_off_returns_empty(monkeypatch):
+    # AI review OFF -> the prepared document is NOT client-dependent -> identity "" no matter
+    # what credentials are in the environment (sharing preserved, key byte-identical).
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-whatever-value")
+    cfg = preparation.load_app_config()
+    identity = preparation._resolve_prepared_cache_client_identity(
+        resolved_config=cfg,
+        ai_review_effective_enabled=False,
+        ai_review_model="gpt-4o-mini",
+    )
+    assert identity == ""
+
+
+def test_resolve_prepared_cache_client_identity_differs_by_env_secret(monkeypatch):
+    # With AI review ON, two runs whose ONLY difference is os.environ[api_key_env] must
+    # produce DIFFERENT 16-hex identities; an unchanged secret produces the SAME identity.
+    cfg = preparation.load_app_config()
+
+    def _identity() -> str:
+        return preparation._resolve_prepared_cache_client_identity(
+            resolved_config=cfg,
+            ai_review_effective_enabled=True,
+            ai_review_model="gpt-4o-mini",
+        )
+
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-tenant-A")
+    identity_a = _identity()
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-tenant-B")
+    identity_b = _identity()
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-tenant-A")
+    identity_a_again = _identity()
+
+    assert len(identity_a) == 16 and all(c in "0123456789abcdef" for c in identity_a)
+    assert len(identity_b) == 16 and all(c in "0123456789abcdef" for c in identity_b)
+    assert identity_a != identity_b
+    assert identity_a == identity_a_again
+
+    # And the identity flows through into the full cache key.
+    key_a = preparation.build_prepared_source_key(
+        "token", 6000, paragraph_boundary_ai_review_mode="review_only", client_identity=identity_a
+    )
+    key_b = preparation.build_prepared_source_key(
+        "token", 6000, paragraph_boundary_ai_review_mode="review_only", client_identity=identity_b
+    )
+    assert key_a != key_b
+
+
+def test_resolve_prepared_cache_client_identity_never_leaks_secret(monkeypatch):
+    # Secret-safety: the raw api-key value must NEVER appear in the identity or the key,
+    # only its sha256. Also assert the env NAME's value cannot be recovered by substring.
+    secret = "SUPER-SECRET-KEY-VALUE-1234567890"
+    monkeypatch.setenv("OPENAI_API_KEY", secret)
+    cfg = preparation.load_app_config()
+    identity = preparation._resolve_prepared_cache_client_identity(
+        resolved_config=cfg,
+        ai_review_effective_enabled=True,
+        ai_review_model="gpt-4o-mini",
+    )
+    assert identity != ""
+    assert secret not in identity
+    key = preparation.build_prepared_source_key(
+        "token", 6000, paragraph_boundary_ai_review_mode="review_only", client_identity=identity
+    )
+    assert secret not in key
+
+
+def test_resolve_prepared_cache_client_identity_fails_open_on_bad_selector(monkeypatch):
+    # Fail-open: an unresolvable selector (unknown provider) must return "" rather than
+    # raise — cache-key construction can never blow up the request.
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-anything")
+    cfg = preparation.load_app_config()
+    identity = preparation._resolve_prepared_cache_client_identity(
+        resolved_config=cfg,
+        ai_review_effective_enabled=True,
+        ai_review_model="bogusprovider:some-model",
+    )
+    assert identity == ""
+
+
+def _build_sentinel_prepared_document(marker: str) -> "preparation.PreparedDocumentData":
+    return preparation.PreparedDocumentData(
+        source_text=marker,
+        paragraphs=[],
+        image_assets=[],
+        relations=[],
+        jobs=[],
+        prepared_source_key="",
+    )
+
+
+def test_prepared_cache_no_cross_credential_bleed(monkeypatch):
+    # End-to-end (shared cache): prime the shared cache under identity A (review ON), then a
+    # second run with the SAME token/settings but a DIFFERENT api-key value must NOT read
+    # identity A's prepared document; a THIRD run back on identity A DOES hit the cache.
+    # setup_function() already cleared the shared cache before this test.
+    cfg = preparation.load_app_config()
+
+    def _identity() -> str:
+        return preparation._resolve_prepared_cache_client_identity(
+            resolved_config=cfg,
+            ai_review_effective_enabled=True,
+            ai_review_model="gpt-4o-mini",
+        )
+
+    def _key(identity: str) -> str:
+        return preparation.build_prepared_source_key(
+            "token-shared",
+            6000,
+            paragraph_boundary_ai_review_mode="review_only",
+            paragraph_boundary_ai_review_model="gpt-4o-mini",
+            client_identity=identity,
+        )
+
+    # Identity A primes the shared cache.
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-tenant-A")
+    identity_a = _identity()
+    key_a = _key(identity_a)
+    preparation._store_cached_prepared_document(
+        session_state=None,
+        prepared_source_key=key_a,
+        prepared_document=_build_sentinel_prepared_document("tenant-A-document"),
+    )
+
+    # Identity B: different credential -> different key -> shared-cache MISS (reserves inflight).
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-tenant-B")
+    identity_b = _identity()
+    key_b = _key(identity_b)
+    assert identity_b != identity_a
+    assert key_b != key_a
+    cached_b, in_flight_b, _level_b = preparation._read_or_reserve_cached_prepared_document(
+        session_state=None,
+        prepared_source_key=key_b,
+    )
+    assert cached_b is None  # no cross-credential bleed
+    assert in_flight_b is not None
+    preparation._release_shared_preparation(key_b)  # tidy up the reservation
+
+    # Identity A again: same credential -> same key -> shared-cache HIT with A's document.
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-tenant-A")
+    identity_a_again = _identity()
+    assert identity_a_again == identity_a
+    cached_a, in_flight_a, level_a = preparation._read_or_reserve_cached_prepared_document(
+        session_state=None,
+        prepared_source_key=_key(identity_a_again),
+    )
+    assert in_flight_a is None
+    assert cached_a is not None
+    assert level_a == "shared"
+    assert cached_a.source_text == "tenant-A-document"
