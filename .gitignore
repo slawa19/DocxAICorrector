@@ -46,6 +46,13 @@ tests/artifacts/real_document_pipeline/**
 !tests/artifacts/real_document_pipeline/
 !tests/artifacts/real_document_pipeline/run_lietaer_validation.py
 
+# Local reader-cleanup replay experiment: a dev-only wrapper whose target
+# (tests/artifacts/real_document_pipeline/run_reader_cleanup_replay_experiment.py) is
+# gitignored above. Keeping the .sh tracked made the static-workflow contract test
+# (test_referenced_test_paths_exist_on_disk) fail on CI's clean checkout, since the
+# referenced .py never exists there. It is local tooling, so it stays untracked.
+scripts/run-reader-cleanup-replay-experiment.sh
+
 # Generated benchmark artifacts
 benchmark_projects/pdf_candidate_benchmark/artifacts/**
 !benchmark_projects/pdf_candidate_benchmark/artifacts/
