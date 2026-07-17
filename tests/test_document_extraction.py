@@ -5,7 +5,7 @@ from typing import Any, cast
 
 import pytest
 
-import docxaicorrector.document._document as document
+import docxaicorrector.document.extraction as document
 import docxaicorrector.document.extraction as document_extraction
 from docx import Document
 from docx.enum.style import WD_STYLE_TYPE
@@ -16,14 +16,16 @@ from docx.oxml.ns import qn
 from docx.shared import Inches, Pt
 
 from docxaicorrector.core.models import ImageAsset, ParagraphUnit
-from docxaicorrector.document._document import (
+from docxaicorrector.document.extraction import (
     build_document_text,
-    build_marker_wrapped_block_text,
     extract_document_content_from_docx,
     inspect_placeholder_integrity,
+)
+from docxaicorrector.document.roles import (
     paragraph_has_strong_heading_format,
     resolve_effective_paragraph_font_size,
 )
+from docxaicorrector.document.semantic_blocks import build_marker_wrapped_block_text
 from docxaicorrector.document.extraction import extract_document_content_with_normalization_reports
 
 
@@ -89,6 +91,104 @@ def _append_textbox_with_paragraphs(paragraph, texts: list[str]) -> None:
     )
 
 
+def _detach_inline_drawing(doc, image_path):
+    """Build a valid inline-image ``w:drawing`` bound to the document part, detached."""
+    throwaway = doc.add_paragraph()
+    run = throwaway.add_run()
+    run.add_picture(str(image_path))
+    drawing = run._element.find(qn("w:drawing"))
+    run._element.remove(drawing)
+    throwaway._p.getparent().remove(throwaway._p)
+    return drawing
+
+
+def _append_textbox_with_interior_drawing(paragraph, text: str, drawing_element) -> None:
+    """Append a textbox whose interior holds a text paragraph AND an image drawing."""
+    textbox_run = parse_xml(
+        """
+        <w:r xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+             xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"
+             xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
+             xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape">
+            <w:drawing>
+                <wp:inline>
+                    <wp:extent cx="914400" cy="914400"/>
+                    <wp:docPr id="2" name="TextBox 2"/>
+                    <a:graphic>
+                        <a:graphicData uri="http://schemas.microsoft.com/office/word/2010/wordprocessingShape">
+                            <wps:wsp>
+                                <wps:txbx>
+                                    <w:txbxContent/>
+                                </wps:txbx>
+                                <wps:bodyPr/>
+                            </wps:wsp>
+                        </a:graphicData>
+                    </a:graphic>
+                </wp:inline>
+            </w:drawing>
+        </w:r>
+        """
+    )
+    txbx_content = textbox_run.find(".//" + qn("w:txbxContent"))
+    text_paragraph = parse_xml(
+        f"""
+        <w:p xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+            <w:r><w:t>{text}</w:t></w:r>
+        </w:p>
+        """
+    )
+    txbx_content.append(text_paragraph)
+    image_paragraph = OxmlElement("w:p")
+    image_run = OxmlElement("w:r")
+    image_run.append(drawing_element)
+    image_paragraph.append(image_run)
+    txbx_content.append(image_paragraph)
+    paragraph._p.append(textbox_run)
+
+
+def _nested_textbox_run(inner_run_xml: str) -> str:
+    """A textbox run whose interior paragraph holds ``inner_run_xml`` (another run)."""
+    return f"""
+        <w:r xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+             xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"
+             xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
+             xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape">
+            <w:drawing>
+                <wp:inline>
+                    <wp:extent cx="914400" cy="914400"/>
+                    <wp:docPr id="3" name="OuterTextBox"/>
+                    <a:graphic>
+                        <a:graphicData uri="http://schemas.microsoft.com/office/word/2010/wordprocessingShape">
+                            <wps:wsp>
+                                <wps:txbx>
+                                    <w:txbxContent>
+                                        <w:p>{inner_run_xml}</w:p>
+                                    </w:txbxContent>
+                                </wps:txbx>
+                                <wps:bodyPr/>
+                            </wps:wsp>
+                        </a:graphicData>
+                    </a:graphic>
+                </wp:inline>
+            </w:drawing>
+        </w:r>
+        """
+
+
+def _append_nested_textbox_with_interior_drawing(paragraph, drawing_element) -> None:
+    """Append a NESTED textbox (a txbxContent inside a txbxContent) whose deepest
+    interior paragraph holds exactly one image drawing."""
+    outer_run = parse_xml(_nested_textbox_run(_nested_textbox_run("")))
+    txbx_contents = outer_run.findall(".//" + qn("w:txbxContent"))
+    innermost = txbx_contents[-1]
+    image_paragraph = OxmlElement("w:p")
+    image_run = OxmlElement("w:r")
+    image_run.append(drawing_element)
+    image_paragraph.append(image_run)
+    innermost.append(image_paragraph)
+    paragraph._p.append(outer_run)
+
+
 def _set_raw_paragraph_alignment(paragraph, value: str) -> None:
     paragraph_properties = paragraph._element.get_or_add_pPr()
     alignment = paragraph_properties.find(qn("w:jc"))
@@ -126,7 +226,7 @@ def _set_style_alignment(style, value: str) -> None:
 
 
 def test_extraction_cleanup_removes_textbox_artifacts_and_reassigns_identity(tmp_path, monkeypatch):
-    monkeypatch.setattr(document_extraction, "_resolve_paragraph_boundary_normalization_settings", lambda: ("off", False))
+    monkeypatch.setattr(document_extraction, "_resolve_paragraph_boundary_normalization_settings", lambda *a, **k: ("off", False))
     document_obj = Document()
     document_obj.add_heading("Synthetic Title", level=1)
     for page_number in range(1, 5):
@@ -161,10 +261,10 @@ def test_extraction_passes_legacy_structure_recovery_mode_to_helpers(tmp_path, m
     source_path = tmp_path / "legacy-structure-recovery.docx"
     document_obj.save(source_path)
 
-    monkeypatch.setattr(document_extraction, "_resolve_paragraph_boundary_normalization_settings", lambda: ("off", False))
+    monkeypatch.setattr(document_extraction, "_resolve_paragraph_boundary_normalization_settings", lambda *a, **k: ("off", False))
     monkeypatch.setattr(document_extraction, "_resolve_layout_artifact_cleanup_settings", lambda app_config=None: (True, 3, 80, False, "legacy"))
-    monkeypatch.setattr(document_extraction, "_resolve_relation_normalization_settings", lambda: (False, "phase2_default", (), False))
-    monkeypatch.setattr(document_extraction, "_resolve_paragraph_boundary_ai_review_settings", lambda: (False, "off", 0, 0, 0, ""))
+    monkeypatch.setattr(document_extraction, "_resolve_relation_normalization_settings", lambda *a, **k: (False, "phase2_default", (), False))
+    monkeypatch.setattr(document_extraction, "_resolve_paragraph_boundary_ai_review_settings", lambda *a, **k: (False, "off", 0, 0, 0, ""))
     monkeypatch.setattr(document_extraction, "build_paragraph_relations", lambda paragraphs, enabled_relation_kinds=(): ([], None))
     monkeypatch.setattr(document_extraction, "apply_relation_side_effects", lambda paragraphs, relations: None)
     def fake_reclassify_adjacent_captions(
@@ -450,7 +550,7 @@ def test_extract_document_content_from_docx_preserves_source_index_as_provenance
 
 
 def test_extract_document_content_with_normalization_reports_populates_page_number_stage0_signals(tmp_path, monkeypatch):
-    monkeypatch.setattr(document_extraction, "_resolve_paragraph_boundary_normalization_settings", lambda: ("off", False))
+    monkeypatch.setattr(document_extraction, "_resolve_paragraph_boundary_normalization_settings", lambda *a, **k: ("off", False))
     document_obj = Document()
     document_obj.add_paragraph("Body content")
     document_obj.add_paragraph("12")
@@ -629,6 +729,81 @@ def test_extract_document_content_from_docx_populates_image_asset_payload_fields
     assert asset.image_id == "img_001"
     assert asset.width_emu is not None
     assert asset.height_emu is not None
+
+
+def test_direct_inline_image_survives_when_paragraph_also_has_textbox(tmp_path):
+    # F11: a direct (non-textbox) inline image sharing a paragraph with a textbox
+    # must not be dropped. Previously the whole paragraph's images were suppressed
+    # whenever a textbox was present.
+    image_path = tmp_path / "image.png"
+    image_path.write_bytes(PNG_BYTES)
+    doc = Document()
+    host = doc.add_paragraph("До картинки ")
+    host.add_run().add_picture(str(image_path))  # direct inline image
+    _append_textbox_with_paragraphs(host, ["Текст во врезке"])  # text-only textbox
+    buffer = BytesIO()
+    doc.save(buffer)
+    buffer.seek(0)
+
+    paragraphs, image_assets = extract_document_content_from_docx(buffer)
+
+    assert len(image_assets) == 1
+    asset = image_assets[0]
+    assert asset.image_id == "img_001"
+    assert asset.original_bytes == PNG_BYTES
+
+    joined = "\n".join(paragraph.text for paragraph in paragraphs)
+    assert asset.placeholder in joined  # the placeholder survives in the body
+    assert "Текст во врезке" in joined  # textbox text is still restored
+
+
+def test_textbox_interior_image_is_not_double_counted_with_direct_image(tmp_path):
+    # F11 guard: a direct image and a textbox-INTERIOR image are each captured
+    # exactly once — the direct pass takes the direct image, the restore pass
+    # takes the interior one; neither is double-counted.
+    image_path = tmp_path / "image.png"
+    image_path.write_bytes(PNG_BYTES)
+    doc = Document()
+    host = doc.add_paragraph()
+    host.add_run().add_picture(str(image_path))  # direct inline image
+    interior_drawing = _detach_inline_drawing(doc, image_path)
+    _append_textbox_with_interior_drawing(host, "Врезка", interior_drawing)
+    buffer = BytesIO()
+    doc.save(buffer)
+    buffer.seek(0)
+
+    paragraphs, image_assets = extract_document_content_from_docx(buffer)
+
+    assert len(image_assets) == 2
+    assert [asset.image_id for asset in image_assets] == ["img_001", "img_002"]
+    joined = "\n".join(paragraph.text for paragraph in paragraphs)
+    assert "[[DOCX_IMAGE_img_001]]" in joined
+    assert "[[DOCX_IMAGE_img_002]]" in joined
+    assert "Врезка" in joined
+
+
+def test_nested_textbox_interior_image_is_extracted_exactly_once(tmp_path):
+    # F17: a nested textbox (txbxContent inside txbxContent) containing a single
+    # image must yield exactly one image asset. Previously the outer restore
+    # paragraph and the inner restore paragraph both captured the deep blip
+    # (the "inside any textbox" test could not distinguish nesting levels), so
+    # the same image was emitted twice.
+    image_path = tmp_path / "image.png"
+    image_path.write_bytes(PNG_BYTES)
+    doc = Document()
+    host = doc.add_paragraph()
+    interior_drawing = _detach_inline_drawing(doc, image_path)
+    _append_nested_textbox_with_interior_drawing(host, interior_drawing)
+    buffer = BytesIO()
+    doc.save(buffer)
+    buffer.seek(0)
+
+    paragraphs, image_assets = extract_document_content_from_docx(buffer)
+
+    assert len(image_assets) == 1
+    assert image_assets[0].image_id == "img_001"
+    joined = "\n".join(paragraph.text for paragraph in paragraphs)
+    assert joined.count("[[DOCX_IMAGE_img_001]]") == 1
 
 
 def test_extract_document_content_from_docx_captures_source_rect_forensics(tmp_path):
@@ -854,7 +1029,7 @@ def test_emdash_bullet_paragraphs_render_without_list_markers():
 
 def test_classify_paragraph_role_does_not_treat_emdash_prefix_as_list():
     """Text starting with '— ' should not be classified as list by text pattern."""
-    from docxaicorrector.document._document import classify_paragraph_role
+    from docxaicorrector.document.roles import classify_paragraph_role
 
     assert classify_paragraph_role("— Это прямая речь", "Body Text") == "body"
     assert classify_paragraph_role("— Цитата из книги", "Normal") == "body"
@@ -1154,18 +1329,6 @@ def test_read_uploaded_docx_bytes_rejects_non_normalized_non_docx_input(monkeypa
 
     with pytest.raises(ValueError, match="Ожидался уже нормализованный DOCX-архив"):
         document._read_uploaded_docx_bytes(object())
-
-
-def test_extraction_compatibility_override_inventory_is_explicit_and_applied(monkeypatch):
-    monkeypatch.setattr(document._document_extraction, "MAX_DOCX_ARCHIVE_SIZE_BYTES", -1, raising=False)
-    monkeypatch.setattr(document._document_extraction, "_validate_docx_archive", None, raising=False)
-
-    document._sync_extraction_compatibility_overrides()
-
-    assert document.EXTRACTION_COMPATIBILITY_OVERRIDE_DEADLINE == "2026-06-30"
-    assert tuple(document._build_extraction_compatibility_overrides()) == document.EXTRACTION_COMPATIBILITY_OVERRIDE_TARGETS
-    assert document._document_extraction.MAX_DOCX_ARCHIVE_SIZE_BYTES == document.MAX_DOCX_ARCHIVE_SIZE_BYTES
-    assert document._document_extraction._validate_docx_archive is document._validate_docx_archive
 
 
 def test_extract_document_content_from_docx_marks_caption_after_table():
@@ -1609,7 +1772,7 @@ def test_promote_short_standalone_headings_ai_first_sets_hint_without_mutating_r
         ),
     ]
 
-    document._promote_short_standalone_headings(
+    document.promote_short_standalone_headings(
         paragraphs,
         structure_recovery_enabled=True,
         structure_recovery_mode="ai_first",
@@ -1669,7 +1832,7 @@ def test_promote_short_standalone_headings_does_not_override_ai_classified_body_
         ),
     ]
 
-    document._promote_short_standalone_headings(paragraphs)
+    document.promote_short_standalone_headings(paragraphs)
 
     assert [paragraph.role for paragraph in paragraphs] == ["body", "body", "body"]
     assert paragraphs[1].role_confidence == "ai"
@@ -1701,7 +1864,7 @@ def test_promote_short_standalone_headings_does_not_override_ai_structural_attri
         ),
     ]
 
-    document._promote_short_standalone_headings(paragraphs)
+    document.promote_short_standalone_headings(paragraphs)
 
     assert paragraphs[1].role == "body"
     assert paragraphs[1].structural_role == "attribution"
@@ -1733,7 +1896,7 @@ def test_promote_short_standalone_headings_does_not_promote_centered_all_caps_at
         ),
     ]
 
-    document._promote_short_standalone_headings(paragraphs)
+    document.promote_short_standalone_headings(paragraphs)
 
     assert paragraphs[1].role == "body"
     assert paragraphs[1].structural_role == "body"
@@ -1764,7 +1927,7 @@ def test_promote_short_standalone_headings_still_promotes_legitimate_centered_he
         ),
     ]
 
-    document._promote_short_standalone_headings(paragraphs)
+    document.promote_short_standalone_headings(paragraphs)
 
     assert paragraphs[1].role == "heading"
     assert paragraphs[1].heading_source == "heuristic"
@@ -2002,3 +2165,150 @@ def test_extract_document_content_from_docx_renders_nested_list_levels():
     assert [paragraph.role for paragraph in paragraphs] == ["list", "list", "list"]
     assert [paragraph.list_level for paragraph in paragraphs] == [0, 1, 2]
     assert all(paragraph.list_kind == "unordered" for paragraph in paragraphs)
+
+
+def test_boundary_normalization_resolver_uses_passed_app_config(monkeypatch):
+    # F15: the boundary-normalization resolver must honour an explicitly passed
+    # app_config (the one threaded from extraction), not the GLOBAL load_app_config().
+    import docxaicorrector.core.config as config
+
+    global_config = {
+        "paragraph_boundary_normalization_enabled": True,
+        "paragraph_boundary_normalization_mode": "high_only",
+        "paragraph_boundary_normalization_save_debug_artifacts": True,
+    }
+    monkeypatch.setattr(config, "load_app_config", lambda: global_config)
+
+    # No app_config => falls back to the global (proves the global path still works).
+    global_mode, _ = document_extraction._resolve_paragraph_boundary_normalization_settings()
+    assert global_mode == "high_only"
+
+    # Passed app_config overrides the global (disabled => "off").
+    override_config = {"paragraph_boundary_normalization_enabled": False}
+    override_mode, _ = document_extraction._resolve_paragraph_boundary_normalization_settings(override_config)
+    assert override_mode == "off"
+    assert override_mode != global_mode
+
+
+def test_relation_normalization_resolver_uses_passed_app_config(monkeypatch):
+    # F15: relation-normalization resolver honours the passed app_config.
+    import docxaicorrector.core.config as config
+
+    global_config = {"relation_normalization_enabled": True}
+    monkeypatch.setattr(config, "load_app_config", lambda: global_config)
+
+    global_enabled = document_extraction._resolve_relation_normalization_settings()[0]
+    assert global_enabled is True
+
+    override_enabled = document_extraction._resolve_relation_normalization_settings(
+        {"relation_normalization_enabled": False}
+    )[0]
+    assert override_enabled is False
+    assert override_enabled != global_enabled
+
+
+def test_ai_review_resolver_uses_passed_app_config(monkeypatch):
+    # F15: paragraph-boundary AI-review resolver honours the passed app_config.
+    import docxaicorrector.core.config as config
+
+    global_config = {
+        "paragraph_boundary_ai_review_enabled": True,
+        "paragraph_boundary_ai_review_mode": "review_only",
+    }
+    monkeypatch.setattr(config, "load_app_config", lambda: global_config)
+    monkeypatch.setattr(config, "get_model_role_value", lambda app_config, role: "openai:gpt-test")
+
+    global_mode = document_extraction._resolve_paragraph_boundary_ai_review_settings()[1]
+    assert global_mode == "review_only"
+
+    override_mode = document_extraction._resolve_paragraph_boundary_ai_review_settings(
+        {"paragraph_boundary_ai_review_enabled": False}
+    )[1]
+    assert override_mode == "off"
+    assert override_mode != global_mode
+
+
+def test_extraction_threads_client_factory_into_boundary_review(tmp_path, monkeypatch):
+    # F3: extraction threads the tenant client_factory into the boundary-review stage
+    # so a per-tenant factory (not the global provider client) shapes the review.
+    document_obj = Document()
+    document_obj.add_paragraph("Body content one is long enough to be a boundary-review candidate.")
+    source_path = tmp_path / "client-factory-threading.docx"
+    document_obj.save(source_path)
+
+    monkeypatch.setattr(
+        document_extraction,
+        "_resolve_paragraph_boundary_ai_review_settings",
+        lambda *a, **k: (True, "review_only", 200, 30, 120, "openai:gpt-test"),
+    )
+    captured = {}
+
+    def fake_run_review(**kwargs):
+        captured["client_factory"] = kwargs.get("client_factory")
+        return None
+
+    monkeypatch.setattr(document_extraction, "_run_paragraph_boundary_ai_review", fake_run_review)
+
+    def tenant_factory(model):
+        return object()
+
+    with source_path.open("rb") as source_file:
+        extract_document_content_with_normalization_reports(source_file, client_factory=tenant_factory)
+
+    assert captured["client_factory"] is tenant_factory
+
+
+def test_extraction_build_relations_propagates_internal_type_error_called_once(tmp_path, monkeypatch):
+    # F15: a build_paragraph_relations target that accepts the signature-checked
+    # structure_phase kwarg but raises TypeError DEEP inside must propagate and be
+    # invoked exactly once — no swallow/retry, even when the message mentions the kwarg.
+    document_obj = Document()
+    document_obj.add_paragraph("Body content one.")
+    source_path = tmp_path / "relations-internal-typeerror.docx"
+    document_obj.save(source_path)
+
+    monkeypatch.setattr(
+        document_extraction,
+        "_resolve_paragraph_boundary_ai_review_settings",
+        lambda *a, **k: (False, "off", 0, 0, 0, ""),
+    )
+    calls = {"count": 0}
+
+    def flaky_build_paragraph_relations(paragraphs, *, enabled_relation_kinds=(), structure_phase="pre_ai_diagnostic"):
+        calls["count"] += 1
+        raise TypeError("structure_phase failed deep inside build_paragraph_relations")
+
+    monkeypatch.setattr(document_extraction, "build_paragraph_relations", flaky_build_paragraph_relations)
+
+    with source_path.open("rb") as source_file:
+        with pytest.raises(TypeError, match="deep inside"):
+            extract_document_content_with_normalization_reports(source_file)
+
+    assert calls["count"] == 1
+
+
+def test_extraction_build_relations_legacy_target_called_once_without_kwarg(tmp_path, monkeypatch):
+    # F15: a legacy build_paragraph_relations without the optional structure_phase
+    # parameter is still called exactly once, without the kwarg.
+    document_obj = Document()
+    document_obj.add_paragraph("Body content one.")
+    source_path = tmp_path / "relations-legacy-target.docx"
+    document_obj.save(source_path)
+
+    monkeypatch.setattr(
+        document_extraction,
+        "_resolve_paragraph_boundary_ai_review_settings",
+        lambda *a, **k: (False, "off", 0, 0, 0, ""),
+    )
+    calls = {"count": 0}
+
+    def legacy_build_paragraph_relations(paragraphs, *, enabled_relation_kinds=()):
+        calls["count"] += 1
+        return [], None
+
+    monkeypatch.setattr(document_extraction, "build_paragraph_relations", legacy_build_paragraph_relations)
+
+    with source_path.open("rb") as source_file:
+        extract_document_content_with_normalization_reports(source_file)
+
+    assert calls["count"] == 1

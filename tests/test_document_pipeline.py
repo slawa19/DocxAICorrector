@@ -13,12 +13,15 @@ from typing import Any, cast
 import docxaicorrector.generation._generation as generation
 import docxaicorrector.pipeline._pipeline as document_pipeline
 import docxaicorrector.pipeline.late_phases as document_pipeline_late_phases
+import docxaicorrector.pipeline.quality_gate as document_pipeline_quality_gate
+import docxaicorrector.pipeline.reader_cleanup_rebuild as document_pipeline_reader_cleanup_rebuild
+import docxaicorrector.pipeline.quality_report_retention as document_pipeline_quality_report_retention
 import docxaicorrector.pipeline.output_validation as document_pipeline_output_validation
 import docxaicorrector.pipeline.reassembly as document_pipeline_reassembly
 from docx import Document
 
 from docxaicorrector.core.models import ParagraphUnit
-from docxaicorrector.document._document import extract_document_content_from_docx
+from docxaicorrector.document.extraction import extract_document_content_from_docx
 from docxaicorrector.reader_cleanup_mvp import build_cleanup_blocks
 
 
@@ -86,6 +89,23 @@ def _reinsert_inline_images(docx_bytes, image_assets):
     return docx_bytes
 
 
+def _persist_primary_artifacts_on_disk(result_map):
+    """Finding 13: the pipeline now verifies the PRIMARY result files exist on disk and
+    are non-empty before reporting persistence success. These stubs historically returned
+    path strings without creating the files, so materialize any ``markdown_path`` /
+    ``docx_path`` the stub reports (non-destructively) to reflect a genuine save."""
+    if not isinstance(result_map, dict):
+        return result_map
+    for artifact_key in ("markdown_path", "docx_path"):
+        raw_path = result_map.get(artifact_key)
+        if isinstance(raw_path, str) and raw_path:
+            path = Path(raw_path)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            if not path.is_file() or path.stat().st_size == 0:
+                path.write_bytes(b"stub-result-artifact")
+    return result_map
+
+
 def _run_processing(runtime, **overrides):
     params = {
         "uploaded_file": "report.docx",
@@ -122,6 +142,15 @@ def _run_processing(runtime, **overrides):
         "write_ui_result_artifacts": lambda **kwargs: {"markdown_path": "/tmp/final.result.md", "docx_path": "/tmp/final.result.docx"},
     }
     params.update(overrides)
+    # Finding 13: the pipeline verifies the primary result files are actually on disk and
+    # non-empty. Wrap whatever writer the test supplied so its reported paths are genuinely
+    # materialized, keeping the "persisted success" contract these tests assert.
+    _inner_ui_writer = params["write_ui_result_artifacts"]
+
+    def _persisting_ui_writer(**kwargs):
+        return _persist_primary_artifacts_on_disk(_inner_ui_writer(**kwargs))
+
+    params["write_ui_result_artifacts"] = _persisting_ui_writer
     return document_pipeline.run_document_processing(**params)
 
 
@@ -650,7 +679,7 @@ def test_run_document_processing_passes_machine_readable_quality_warning_to_arti
     artifact_calls = {}
 
     monkeypatch.setattr(document_pipeline, "FORMATTING_DIAGNOSTICS_DIR", diagnostics_dir)
-    monkeypatch.setattr(document_pipeline_late_phases, "QUALITY_REPORTS_DIR", quality_dir)
+    monkeypatch.setattr(document_pipeline_quality_report_retention, "QUALITY_REPORTS_DIR", quality_dir)
 
     diagnostics_dir.mkdir(parents=True, exist_ok=True)
     quality_dir.mkdir(parents=True, exist_ok=True)
@@ -702,7 +731,7 @@ def test_run_document_processing_passes_machine_readable_quality_warning_to_arti
         convert_markdown_to_docx_bytes=lambda markdown_text: b"docx-bytes",
         preserve_source_paragraph_properties=preserve_with_unmapped_artifact,
         reinsert_inline_images=lambda docx_bytes, image_assets: docx_bytes,
-        write_ui_result_artifacts=lambda **kwargs: artifact_calls.setdefault("kwargs", dict(kwargs)) or {"markdown_path": "/tmp/report.result.md", "docx_path": "/tmp/report.result.docx", "metadata_path": "/tmp/report.result.meta.json"},
+        write_ui_result_artifacts=lambda **kwargs: (artifact_calls.setdefault("kwargs", dict(kwargs)), _persist_primary_artifacts_on_disk({"markdown_path": "/tmp/report.result.md", "docx_path": "/tmp/report.result.docx", "metadata_path": "/tmp/report.result.meta.json"}))[1],
     )
 
     assert result == "succeeded"
@@ -738,7 +767,7 @@ def test_run_document_processing_warns_and_delivers_large_role_loss_with_formatt
     role_loss_ids = [f"p{index:04d}" for index in range(11)]
 
     monkeypatch.setattr(document_pipeline, "FORMATTING_DIAGNOSTICS_DIR", diagnostics_dir)
-    monkeypatch.setattr(document_pipeline_late_phases, "QUALITY_REPORTS_DIR", quality_dir)
+    monkeypatch.setattr(document_pipeline_quality_report_retention, "QUALITY_REPORTS_DIR", quality_dir)
 
     diagnostics_dir.mkdir(parents=True, exist_ok=True)
     quality_dir.mkdir(parents=True, exist_ok=True)
@@ -1247,10 +1276,10 @@ def test_run_document_processing_applies_reader_cleanup_and_saves_raw_markdown_r
 
     def write_ui_result_artifacts(**kwargs):
         artifact_calls["kwargs"] = dict(kwargs)
-        return {
+        return _persist_primary_artifacts_on_disk({
             "markdown_path": str(tmp_path / "final.result.md"),
             "docx_path": str(tmp_path / "final.result.docx"),
-        }
+        })
 
     def convert_markdown_to_docx_bytes(markdown_text):
         converted_markdown_inputs.append(markdown_text)
@@ -1324,7 +1353,7 @@ def test_run_document_processing_records_pre_cleanup_formatting_baseline_without
     runtime = _build_runtime_capture()
     converted_markdown_inputs = []
     quality_dir = tmp_path / "quality_reports"
-    monkeypatch.setattr(document_pipeline_late_phases, "QUALITY_REPORTS_DIR", quality_dir)
+    monkeypatch.setattr(document_pipeline_quality_report_retention, "QUALITY_REPORTS_DIR", quality_dir)
 
     def generate_markdown_block(**kwargs):
         if kwargs["system_prompt"].startswith("You are cleaning translated book Markdown"):
@@ -1405,10 +1434,10 @@ def test_run_document_processing_records_pre_cleanup_formatting_baseline_without
         convert_markdown_to_docx_bytes=convert_markdown_to_docx_bytes,
         preserve_source_paragraph_properties=lambda docx_bytes, paragraphs, generated_paragraph_registry=None: docx_bytes,
         reinsert_inline_images=lambda docx_bytes, image_assets: docx_bytes,
-        write_ui_result_artifacts=lambda **kwargs: {
+        write_ui_result_artifacts=lambda **kwargs: _persist_primary_artifacts_on_disk({
             "markdown_path": str(tmp_path / "final.result.md"),
             "docx_path": str(tmp_path / "final.result.docx"),
-        },
+        }),
     )
 
     assert result == "succeeded"
@@ -1560,10 +1589,10 @@ def test_run_document_processing_reader_cleanup_uses_exact_raw_markdown_for_side
 
     def write_ui_result_artifacts(**kwargs):
         artifact_calls["kwargs"] = dict(kwargs)
-        return {
+        return _persist_primary_artifacts_on_disk({
             "markdown_path": str(tmp_path / "final.result.md"),
             "docx_path": str(tmp_path / "final.result.docx"),
-        }
+        })
 
     result = document_pipeline.run_document_processing(
         uploaded_file="report.docx",
@@ -1672,10 +1701,10 @@ def test_run_document_processing_reader_cleanup_applies_runtime_anchor_repair(tm
 
     def write_ui_result_artifacts(**kwargs):
         artifact_calls["kwargs"] = dict(kwargs)
-        return {
+        return _persist_primary_artifacts_on_disk({
             "markdown_path": str(tmp_path / "final.result.md"),
             "docx_path": str(tmp_path / "final.result.docx"),
-        }
+        })
 
     result = document_pipeline.run_document_processing(
         uploaded_file="report.docx",
@@ -1999,10 +2028,10 @@ def test_run_document_processing_reader_cleanup_strict_failure_preserves_base_re
 
     def write_ui_result_artifacts(**kwargs):
         artifact_calls["kwargs"] = dict(kwargs)
-        return {
+        return _persist_primary_artifacts_on_disk({
             "markdown_path": str(tmp_path / "report.result.md"),
             "docx_path": str(tmp_path / "report.result.docx"),
-        }
+        })
 
     result = document_pipeline.run_document_processing(
         uploaded_file="report.docx",
@@ -2807,7 +2836,7 @@ def test_run_document_processing_surfaces_formatting_diagnostics_artifacts(tmp_p
     assert all(entry["status"] != "INFO" for entry in runtime["log"])
 
 
-def test_run_document_processing_warns_user_only_for_conflicting_formatting_diagnostics(tmp_path, monkeypatch):
+def test_run_document_processing_blocks_delivery_on_caption_heading_conflict(tmp_path, monkeypatch):
     runtime = _build_runtime_capture()
     diagnostics_dir = tmp_path / "formatting_diagnostics"
     monkeypatch.setattr(document_pipeline, "FORMATTING_DIAGNOSTICS_DIR", diagnostics_dir)
@@ -2864,12 +2893,18 @@ def test_run_document_processing_warns_user_only_for_conflicting_formatting_diag
         reinsert_inline_images=lambda docx_bytes, image_assets: docx_bytes,
     )
 
-    assert result == "succeeded"
-    assert runtime["activity"][-2] == "Сборка DOCX завершена; найдены места, где форматирование стоит проверить вручную."
-    assert runtime["log"][-2]["status"] == "WARN"
-    assert "спорные места форматирования" in runtime["log"][-2]["details"]
-    assert "Конфликтов подписи/заголовка: 1." in runtime["log"][-2]["details"]
-    assert runtime["state"].get("latest_result_notice") is None
+    # spec 042 P1-B: a caption→heading conflict (a figure/table caption promoted to a heading)
+    # now forces quality_status="fail" and BLOCKS delivery — reversing the prior warn-and-deliver
+    # behaviour (owner decision, round-8). The document-level quality gate rejects the run: the
+    # fail path surfaces the gate error and does NOT publish a success result. The caption→heading
+    # signal is the gate reason (auditable), humanized in the error.
+    assert result == "failed"
+    assert "translation_quality_gate_failed" in runtime["state"]["last_error"]
+    assert "подпись к рисунку или таблице превратилась в заголовок" in runtime["state"]["last_error"]
+    assert runtime["state"]["latest_result_notice"] == {
+        "level": "error",
+        "message": "Результат заблокирован document-level quality gate.",
+    }
 
 
 def test_run_document_processing_warns_and_delivers_on_strict_unmapped_source_quality_gate(tmp_path, monkeypatch):
@@ -2878,7 +2913,7 @@ def test_run_document_processing_warns_and_delivers_on_strict_unmapped_source_qu
     quality_dir = tmp_path / "quality_reports"
     monkeypatch.setattr(document_pipeline, "FORMATTING_DIAGNOSTICS_DIR", diagnostics_dir)
     monkeypatch.setattr(document_pipeline_late_phases, "collect_recent_formatting_diagnostics_artifacts", lambda since_epoch_seconds, diagnostics_dir: [str(diagnostics_dir / "preserve_001.json")])
-    monkeypatch.setattr(document_pipeline_late_phases, "QUALITY_REPORTS_DIR", quality_dir)
+    monkeypatch.setattr(document_pipeline_quality_report_retention, "QUALITY_REPORTS_DIR", quality_dir)
 
     def preserve_with_unmapped_artifact(docx_bytes, paragraphs, generated_paragraph_registry=None):
         diagnostics_dir.mkdir(parents=True, exist_ok=True)
@@ -2952,7 +2987,7 @@ def test_run_document_processing_surfaces_advisory_quality_notice_on_mapping_dri
     quality_dir = tmp_path / "quality_reports"
     monkeypatch.setattr(document_pipeline, "FORMATTING_DIAGNOSTICS_DIR", diagnostics_dir)
     monkeypatch.setattr(document_pipeline_late_phases, "collect_recent_formatting_diagnostics_artifacts", lambda since_epoch_seconds, diagnostics_dir: [str(diagnostics_dir / "preserve_001.json")])
-    monkeypatch.setattr(document_pipeline_late_phases, "QUALITY_REPORTS_DIR", quality_dir)
+    monkeypatch.setattr(document_pipeline_quality_report_retention, "QUALITY_REPORTS_DIR", quality_dir)
 
     def preserve_with_unmapped_artifact(docx_bytes, paragraphs, generated_paragraph_registry=None):
         diagnostics_dir.mkdir(parents=True, exist_ok=True)
@@ -3037,7 +3072,7 @@ def test_run_document_processing_keeps_false_fragment_cleanup_display_only_after
     runtime = _build_runtime_capture()
     quality_dir = tmp_path / "quality_reports"
     monkeypatch.setattr(document_pipeline_late_phases, "collect_recent_formatting_diagnostics_artifacts", lambda since_epoch_seconds, diagnostics_dir: [])
-    monkeypatch.setattr(document_pipeline_late_phases, "QUALITY_REPORTS_DIR", quality_dir)
+    monkeypatch.setattr(document_pipeline_quality_report_retention, "QUALITY_REPORTS_DIR", quality_dir)
 
     result = _run_processing(
         runtime,
@@ -3069,7 +3104,7 @@ def test_run_document_processing_quality_report_uses_pre_display_gate_input_for_
     runtime = _build_runtime_capture()
     quality_dir = tmp_path / "quality_reports"
     monkeypatch.setattr(document_pipeline_late_phases, "collect_recent_formatting_diagnostics_artifacts", lambda since_epoch_seconds, diagnostics_dir: [])
-    monkeypatch.setattr(document_pipeline_late_phases, "QUALITY_REPORTS_DIR", quality_dir)
+    monkeypatch.setattr(document_pipeline_quality_report_retention, "QUALITY_REPORTS_DIR", quality_dir)
 
     result = _run_processing(
         runtime,
@@ -3112,7 +3147,7 @@ def test_run_document_processing_applies_residual_bullet_cleanup_before_display_
     runtime = _build_runtime_capture()
     quality_dir = tmp_path / "quality_reports"
     monkeypatch.setattr(document_pipeline_late_phases, "collect_recent_formatting_diagnostics_artifacts", lambda since_epoch_seconds, diagnostics_dir: [])
-    monkeypatch.setattr(document_pipeline_late_phases, "QUALITY_REPORTS_DIR", quality_dir)
+    monkeypatch.setattr(document_pipeline_quality_report_retention, "QUALITY_REPORTS_DIR", quality_dir)
 
     result = _run_processing(
         runtime,
@@ -3141,7 +3176,7 @@ def test_run_document_processing_normalizes_list_fragment_regressions_before_qua
     runtime = _build_runtime_capture()
     quality_dir = tmp_path / "quality_reports"
     monkeypatch.setattr(document_pipeline_late_phases, "collect_recent_formatting_diagnostics_artifacts", lambda since_epoch_seconds, diagnostics_dir: [])
-    monkeypatch.setattr(document_pipeline_late_phases, "QUALITY_REPORTS_DIR", quality_dir)
+    monkeypatch.setattr(document_pipeline_quality_report_retention, "QUALITY_REPORTS_DIR", quality_dir)
 
     result = _run_processing(
         runtime,
@@ -3175,7 +3210,7 @@ def test_run_document_processing_uses_runtime_normalized_markdown_for_docx_build
     quality_dir = tmp_path / "quality_reports"
     captured = {}
     monkeypatch.setattr(document_pipeline_late_phases, "collect_recent_formatting_diagnostics_artifacts", lambda since_epoch_seconds, diagnostics_dir: [])
-    monkeypatch.setattr(document_pipeline_late_phases, "QUALITY_REPORTS_DIR", quality_dir)
+    monkeypatch.setattr(document_pipeline_quality_report_retention, "QUALITY_REPORTS_DIR", quality_dir)
 
     result = _run_processing(
         runtime,
@@ -3199,7 +3234,7 @@ def test_run_document_processing_normalizes_mixed_script_before_quality_gate(tmp
     runtime = _build_runtime_capture()
     quality_dir = tmp_path / "quality_reports"
     monkeypatch.setattr(document_pipeline_late_phases, "collect_recent_formatting_diagnostics_artifacts", lambda since_epoch_seconds, diagnostics_dir: [])
-    monkeypatch.setattr(document_pipeline_late_phases, "QUALITY_REPORTS_DIR", quality_dir)
+    monkeypatch.setattr(document_pipeline_quality_report_retention, "QUALITY_REPORTS_DIR", quality_dir)
 
     result = _run_processing(
         runtime,
@@ -3227,7 +3262,7 @@ def test_run_document_processing_flags_untranslated_structural_heading_for_revie
     runtime = _build_runtime_capture()
     quality_dir = tmp_path / "quality_reports"
     monkeypatch.setattr(document_pipeline_late_phases, "collect_recent_formatting_diagnostics_artifacts", lambda since_epoch_seconds, diagnostics_dir: [])
-    monkeypatch.setattr(document_pipeline_late_phases, "QUALITY_REPORTS_DIR", quality_dir)
+    monkeypatch.setattr(document_pipeline_quality_report_retention, "QUALITY_REPORTS_DIR", quality_dir)
 
     result = _run_processing(
         runtime,
@@ -3301,7 +3336,7 @@ def test_run_document_processing_fails_large_untranslated_body_text(tmp_path, mo
     runtime = _build_runtime_capture()
     quality_dir = tmp_path / "quality_reports"
     monkeypatch.setattr(document_pipeline_late_phases, "collect_recent_formatting_diagnostics_artifacts", lambda since_epoch_seconds, diagnostics_dir: [])
-    monkeypatch.setattr(document_pipeline_late_phases, "QUALITY_REPORTS_DIR", quality_dir)
+    monkeypatch.setattr(document_pipeline_quality_report_retention, "QUALITY_REPORTS_DIR", quality_dir)
     untranslated_body = (
         "This framework has been tested using years of quantitative data collected about how biomass "
         "flows through natural ecosystems. Natural ecosystems are large complex flow networks that "
@@ -3392,7 +3427,7 @@ def test_build_translation_quality_report_counts_capped_legacy_hygiene_samples(m
         for index in range(10)
     ]
     monkeypatch.setattr(
-        document_pipeline_late_phases,
+        document_pipeline_quality_gate,
         "collect_bullet_heading_samples",
         lambda markdown_text: list(samples),
     )
@@ -3417,6 +3452,56 @@ def test_build_translation_quality_report_counts_capped_legacy_hygiene_samples(m
     assert len(review_items) == 8
     assert review_items[0]["aggregate_count"] == 10
     assert [item["count"] for item in review_items] == [0] * 8
+
+
+def test_quality_gate_monkeypatch_seam_lands_on_owner_module(monkeypatch):
+    # F15: the documented patch seam is `quality_gate.<name>` (the OWNER module), even when
+    # the hub is reached through the `late_phases.<name>` re-export. Patching the body-text
+    # detector at quality_gate must change gate behaviour: an otherwise-translated body entry
+    # is then flagged as untranslated. This proves the compat seam is coherent (the bare-name
+    # call inside `_collect_untranslated_body_samples` resolves against quality_gate globals).
+    assembly_result = document_pipeline_output_validation.FinalMarkdownAssemblyResult(
+        final_markdown="Полностью переведённый абзац основного текста.",
+        entries=(
+            document_pipeline_output_validation.FinalAssemblyEntry(
+                text="Полностью переведённый абзац основного текста.",
+                block_index=1,
+                paragraph_id="p1",
+                source_index=0,
+                role="body",
+                structural_role="body",
+                from_registry=True,
+            ),
+        ),
+        diagnostics=document_pipeline_output_validation.FinalAssemblyDiagnostics(),
+    )
+    context = SimpleNamespace(
+        app_config={"translation_output_quality_gate_policy": "advisory"},
+        processing_operation="translate",
+        uploaded_filename="report.docx",
+        translation_domain="general",
+    )
+
+    # Baseline: the Cyrillic body paragraph is NOT flagged as untranslated.
+    baseline = document_pipeline_late_phases._build_translation_quality_report(
+        context=context,
+        final_markdown=assembly_result.final_markdown,
+        formatting_diagnostics_artifacts=[],
+        assembly_result=assembly_result,
+    )
+    baseline_reasons = cast(list[str], baseline["gate_reasons"])
+    assert "untranslated_body_text_review_required" not in baseline_reasons
+
+    # Patch the documented seam on the OWNER module; the hub called via late_phases must honour it.
+    monkeypatch.setattr(document_pipeline_quality_gate, "_is_untranslated_body_text", lambda text: True)
+    patched = document_pipeline_late_phases._build_translation_quality_report(
+        context=context,
+        final_markdown=assembly_result.final_markdown,
+        formatting_diagnostics_artifacts=[],
+        assembly_result=assembly_result,
+    )
+    patched_reasons = cast(list[str], patched["gate_reasons"])
+    assert "untranslated_body_text_review_required" in patched_reasons
 
 
 def test_build_translation_quality_report_flags_untranslated_structural_heading_but_not_proper_name():
@@ -3919,7 +4004,11 @@ def test_build_translation_quality_report_exposes_new_residual_quality_metrics_a
     assert isinstance(mixed_script_term_count, int)
     assert isinstance(theology_style_issue_count, int)
     assert mixed_script_term_count >= 1
-    assert theology_style_issue_count >= 2
+    # Spec 036 F2: the glossary/awkward-heading detector is config-driven with empty
+    # defaults and the production report builder passes no book-specific terms, so this
+    # domain-style-advisory axis no longer fires on hardcoded strings — the schema fields
+    # stay present but the deterministic count is 0.
+    assert theology_style_issue_count == 0
     assert report["mixed_script_term_gate_source"] == "legacy_markdown"
     assert report["mixed_script_term_classification"] == "non_structural_hygiene"
     assert report["raw_mixed_script_term_count"] == mixed_script_term_count
@@ -4196,7 +4285,7 @@ def test_build_translation_quality_report_fails_large_false_fragment_heading_set
         for index in range(11)
     ]
     monkeypatch.setattr(
-        document_pipeline_late_phases,
+        document_pipeline_quality_gate,
         "collect_false_fragment_heading_samples",
         lambda markdown_text: list(samples),
     )
@@ -4511,7 +4600,7 @@ def test_run_document_processing_quality_report_uses_same_final_markdown_as_runt
     runtime = _build_runtime_capture()
     quality_dir = tmp_path / "quality_reports"
     monkeypatch.setattr(document_pipeline_late_phases, "collect_recent_formatting_diagnostics_artifacts", lambda since_epoch_seconds, diagnostics_dir: [])
-    monkeypatch.setattr(document_pipeline_late_phases, "QUALITY_REPORTS_DIR", quality_dir)
+    monkeypatch.setattr(document_pipeline_quality_report_retention, "QUALITY_REPORTS_DIR", quality_dir)
 
     final_markdown = "На людей, получивших начертание зверя и поклонявшихся его образу, приходят язвы."
     result = _run_processing(
@@ -4548,7 +4637,7 @@ def test_run_document_processing_warns_on_legacy_markdown_toc_concat_quality_gat
     runtime = _build_runtime_capture()
     quality_dir = tmp_path / "quality_reports"
     monkeypatch.setattr(document_pipeline_late_phases, "collect_recent_formatting_diagnostics_artifacts", lambda since_epoch_seconds, diagnostics_dir: [])
-    monkeypatch.setattr(document_pipeline_late_phases, "QUALITY_REPORTS_DIR", quality_dir)
+    monkeypatch.setattr(document_pipeline_quality_report_retention, "QUALITY_REPORTS_DIR", quality_dir)
 
     result = _run_processing(
         runtime,
@@ -5033,14 +5122,14 @@ def test_run_document_processing_warns_on_advisory_structural_markdown_quality_g
     quality_dir = tmp_path / "quality_reports"
     artifact_calls = {}
     monkeypatch.setattr(document_pipeline_late_phases, "collect_recent_formatting_diagnostics_artifacts", lambda since_epoch_seconds, diagnostics_dir: [])
-    monkeypatch.setattr(document_pipeline_late_phases, "QUALITY_REPORTS_DIR", quality_dir)
+    monkeypatch.setattr(document_pipeline_quality_report_retention, "QUALITY_REPORTS_DIR", quality_dir)
 
     result = _run_processing(
         runtime,
         app_config={"translation_output_quality_gate_policy": "advisory"},
         processing_operation="translate",
         generate_markdown_block=lambda **kwargs: "Заключение……29 Введение",
-        write_ui_result_artifacts=lambda **kwargs: artifact_calls.setdefault("kwargs", dict(kwargs)) or {"markdown_path": "/tmp/report.result.md", "docx_path": "/tmp/report.result.docx", "metadata_path": "/tmp/report.result.meta.json"},
+        write_ui_result_artifacts=lambda **kwargs: (artifact_calls.setdefault("kwargs", dict(kwargs)), _persist_primary_artifacts_on_disk({"markdown_path": "/tmp/report.result.md", "docx_path": "/tmp/report.result.docx", "metadata_path": "/tmp/report.result.meta.json"}))[1],
     )
 
     assert result == "succeeded"
@@ -5613,7 +5702,10 @@ def test_reader_cleanup_postprocess_prefers_assembly_formatting_registry_over_st
     tmp_path,
     monkeypatch,
 ):
-    monkeypatch.setattr(document_pipeline_late_phases, "READER_CLEANUP_LINEAGE_DIR", tmp_path / "reader_cleanup_lineage")
+    # spec 031 Step 4 (situation 2): the lineage writer moved to
+    # ``pipeline.reader_cleanup_rebuild`` and reads ``READER_CLEANUP_LINEAGE_DIR`` from its
+    # OWN module, so the patch must target the new module, not the late_phases re-export.
+    monkeypatch.setattr(document_pipeline_reader_cleanup_rebuild, "READER_CLEANUP_LINEAGE_DIR", tmp_path / "reader_cleanup_lineage")
     runtime = _build_runtime_capture()
     preserve_calls = []
     log_events = []
@@ -5771,7 +5863,10 @@ def test_reader_cleanup_postprocess_persists_final_generated_registry_in_runtime
     tmp_path,
     monkeypatch,
 ):
-    monkeypatch.setattr(document_pipeline_late_phases, "READER_CLEANUP_LINEAGE_DIR", tmp_path / "reader_cleanup_lineage")
+    # spec 031 Step 4 (situation 2): the lineage writer moved to
+    # ``pipeline.reader_cleanup_rebuild`` and reads ``READER_CLEANUP_LINEAGE_DIR`` from its
+    # OWN module, so the patch must target the new module, not the late_phases re-export.
+    monkeypatch.setattr(document_pipeline_reader_cleanup_rebuild, "READER_CLEANUP_LINEAGE_DIR", tmp_path / "reader_cleanup_lineage")
     runtime = _build_runtime_capture()
     raw_markdown = "Intro\n\n[[DOCX_IMAGE_img_001]]\n\nBody paragraph"
     assembly_registry = [
@@ -6495,3 +6590,48 @@ def test_emit_mapping_text_quality_defect_items_noop_without_bad_pairs():
         mapping_text_quality=None,
     )
     assert items == []
+
+
+def test_call_docx_restorer_propagates_internal_type_error_called_once():
+    # F15: a restorer that accepts generated_paragraph_registry but raises TypeError
+    # DEEP inside must propagate and be invoked exactly once (no swallow/retry), even
+    # when the message mentions the kwarg.
+    from docxaicorrector.pipeline.support import call_docx_restorer_with_optional_registry
+
+    calls = {"count": 0}
+
+    def flaky_restorer(docx_bytes, paragraphs, *, generated_paragraph_registry=None):
+        calls["count"] += 1
+        raise TypeError("generated_paragraph_registry failed deep inside restorer")
+
+    with pytest.raises(TypeError, match="deep inside"):
+        call_docx_restorer_with_optional_registry(
+            flaky_restorer,
+            b"docx",
+            ["p"],
+            [{"block_index": 0}],
+        )
+
+    assert calls["count"] == 1
+
+
+def test_call_docx_restorer_legacy_target_called_once_without_kwarg():
+    # F15: a legacy restorer without the optional generated_paragraph_registry parameter
+    # is still called exactly once, without the kwarg.
+    from docxaicorrector.pipeline.support import call_docx_restorer_with_optional_registry
+
+    calls = {"count": 0, "received_registry": "unset"}
+
+    def legacy_restorer(docx_bytes, paragraphs):
+        calls["count"] += 1
+        return b"restored"
+
+    result = call_docx_restorer_with_optional_registry(
+        legacy_restorer,
+        b"docx",
+        ["p"],
+        [{"block_index": 0}],
+    )
+
+    assert result == b"restored"
+    assert calls["count"] == 1

@@ -9,7 +9,7 @@ from uuid import uuid4
 from dataclasses import dataclass
 
 if TYPE_CHECKING:
-    from docxaicorrector.ui.application_flow import PreparedRunContext
+    from docxaicorrector.processing.application_flow import PreparedRunContext
 from datetime import datetime
 
 import streamlit as st
@@ -18,6 +18,10 @@ from docxaicorrector.core.constants import APP_LOG_PATH
 from docxaicorrector.generation.message_formatting import build_block_journal_entry, build_image_journal_entry
 from docxaicorrector.processing.restart_store import clear_restart_source
 from docxaicorrector.runtime.workflow_state import ProcessingOutcome
+from docxaicorrector.runtime.session_ports import (  # noqa: F401
+    get_selected_source_token,
+    set_selected_source_token,
+)
 
 
 def build_default_image_processing_summary() -> dict[str, Any]:
@@ -155,10 +159,6 @@ def get_latest_audiobook_postprocess_enabled(*, session_state=None) -> bool:
     return get_processing_session_snapshot(session_state=session_state).latest_audiobook_postprocess_enabled
 
 
-def get_selected_source_token(*, session_state=None) -> str:
-    return get_processing_session_snapshot(session_state=session_state).selected_source_token
-
-
 def get_latest_image_mode(*, session_state=None) -> str:
     return get_processing_session_snapshot(session_state=session_state).latest_image_mode
 
@@ -281,7 +281,7 @@ def is_preparation_failed_for_marker(upload_marker: str) -> bool:
 
 
 def get_prepared_run_context_for_marker(upload_marker: str) -> PreparedRunContext | None:
-    from docxaicorrector.ui.application_flow import PreparedRunContext as _PRC
+    from docxaicorrector.processing.application_flow import PreparedRunContext as _PRC
 
     snapshot = get_preparation_state()
     if snapshot.input_marker == upload_marker and snapshot.failed_marker != upload_marker:
@@ -331,6 +331,26 @@ def apply_preparation_failure(*, upload_marker: str, error_message: str, error_d
     st.session_state.last_background_error = error_details
     st.session_state.last_error = error_message
     st.session_state.processing_outcome = ProcessingOutcome.FAILED.value
+
+
+def clear_preparation_failure(upload_marker: str) -> None:
+    """Atomically clear a recorded preparation failure for ``upload_marker``.
+
+    After a failed preparation, ``preparation_failed_marker`` pins the marker so
+    ``should_start_preparation_for_marker`` refuses to re-start preparation for the
+    same file. This clears the failed marker together with the stale
+    prepared-context / input-marker / error state in a single mutation, so the next
+    frame re-starts preparation for that file. No-op when the current failure is for
+    a different marker, so a stale retry cannot wipe an unrelated failure.
+    """
+    if str(st.session_state.get("preparation_failed_marker", "")) != upload_marker:
+        return
+    st.session_state.preparation_failed_marker = ""
+    st.session_state.preparation_input_marker = ""
+    st.session_state.prepared_run_context = None
+    st.session_state.last_background_error = None
+    st.session_state.last_error = ""
+    st.session_state.processing_outcome = ProcessingOutcome.IDLE.value
 
 
 def apply_preparation_stop(*, upload_marker: str) -> None:
@@ -427,10 +447,6 @@ def request_processing_stop() -> None:
     if stop_event is not None:
         stop_event.set()
     st.session_state.processing_stop_requested = True
-
-
-def set_selected_source_token(uploaded_token: str, *, session_state=None) -> None:
-    _resolve_session_state(session_state).selected_source_token = uploaded_token
 
 
 def get_recommended_text_settings() -> object | None:

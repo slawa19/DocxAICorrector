@@ -18,6 +18,7 @@ This inventory is intentionally pragmatic:
 - `tests/test_app_restartable_state.py`
 - `tests/test_app_runtime.py`
 - `tests/test_application_flow.py`
+- `tests/test_block_execution_passthrough_bypass.py`
 - `tests/test_config.py`
 - `tests/test_docxaicorrector_bootstrap_package.py`
 - `tests/test_document_extraction.py`
@@ -38,11 +39,14 @@ This inventory is intentionally pragmatic:
 - `tests/test_image_reconstruction.py`
 - `tests/test_image_reinsertion.py`
 - `tests/test_image_validation.py`
+- `tests/test_late_phases_characterization.py`
+- `tests/test_late_phases_finalize_gate_persistence.py`
 - `tests/test_logger.py`
 - `tests/test_message_formatting.py`
 - `tests/test_model_registry_sweep.py`
 - `tests/test_narration_markdown.py`
 - `tests/test_output_display_hygiene.py`
+- `tests/test_output_validation_characterization.py`
 - `tests/test_paragraph_boundary_normalization.py`
 - `tests/test_passthrough_unmapped_acceptance.py`
 - `tests/test_pdf_text_layer_logical_import.py`
@@ -52,17 +56,21 @@ This inventory is intentionally pragmatic:
 - `tests/test_processing_runtime.py`
 - `tests/test_processing_service.py`
 - `tests/test_reader_cleanup_mvp.py`
+- `tests/test_reader_cleanup_service_characterization.py`
 - `tests/test_reader_cleanup_structural_matrix.py`
 - `tests/test_recommended_text_settings.py`
 - `tests/test_restart_store.py`
 - `tests/test_root_typing_stubs.py`
 - `tests/test_runtime_artifact_retention.py`
 - `tests/test_runtime_artifacts.py`
+- `tests/test_session_artifact_isolation.py`
 - `tests/test_session_state_ownership.py`
 - `tests/test_spec_image_followup.py`
 - `tests/test_spec_image_level1.py`
 - `tests/test_startup_performance_contract.py`
 - `tests/test_state.py`
+- `tests/test_structural_checks_coverage_review_data.py`
+- `tests/test_structural_validation_characterization.py`
 - `tests/test_structure_layout_signals.py`
 - `tests/test_structure_validation.py`
 - `tests/test_text_transform_assessment.py`
@@ -80,6 +88,10 @@ This inventory is intentionally pragmatic:
 
 ## Static-Workflow
 
+- `tests/test_dependency_consistency.py`
+- `tests/test_documentation_links.py`
+- `tests/test_layer_boundaries.py`
+- `tests/test_network_hardening_defaults.py`
 - `tests/test_script_contract_static.py`
 - `tests/test_script_log_retention.py`
 
@@ -89,6 +101,8 @@ This inventory is intentionally pragmatic:
 
 ## Integration-Local
 
+- `tests/test_formatting_mapper_golden.py`
+- `tests/test_formatting_restoration_golden.py`
 - `tests/test_image_integration.py`
 - `tests/test_pdf_candidate_benchmark_project.py`
 - `tests/test_pdf_import_backend_comparison.py`
@@ -100,6 +114,7 @@ This inventory is intentionally pragmatic:
 
 ## System-Deps
 
+- `tests/test_package_install_smoke.py`
 - `tests/test_real_document_validation_corpus.py`
 
 ## Manual-AI-Heavy

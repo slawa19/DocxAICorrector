@@ -20,11 +20,19 @@ import pytest
 
 import docxaicorrector.generation._generation as generation
 from docx import Document
+from docx.oxml import OxmlElement, parse_xml
+from docx.oxml.ns import qn
 
-from docxaicorrector.document._document import build_document_text, extract_document_content_from_docx
+from docxaicorrector.core.models import RawParagraph, RawTable
+from docxaicorrector.document.extraction import (
+    _build_raw_document_blocks,
+    build_document_text,
+    extract_document_content_from_docx,
+)
 from docxaicorrector.document.provenance import (
     classify_document_scan_origin,
     classify_scan_origin_from_document_xml,
+    table_has_authored_signals,
 )
 
 
@@ -210,3 +218,119 @@ def test_resistance_scan_tables_do_not_render_word_tables():
     output = generation.convert_markdown_to_docx_bytes(markdown)
 
     assert _count_word_tables(output) == 0
+
+
+# --------------------------------------------------------------------------- #
+# F13: per-table authored-signal override for the scan-origin prior           #
+# --------------------------------------------------------------------------- #
+
+_W_NS = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"'
+
+
+def _tbl_xml(*, borders: bool, grid_widths: list[int], border_val: str = "single") -> object:
+    border_edges = ""
+    if borders:
+        border_edges = (
+            "<w:tblBorders>"
+            + "".join(
+                f'<w:{edge} w:val="{border_val}" w:sz="4" w:space="0" w:color="000000"/>'
+                for edge in ("top", "left", "bottom", "right", "insideH", "insideV")
+            )
+            + "</w:tblBorders>"
+        )
+    grid = "".join(f'<w:gridCol w:w="{width}"/>' for width in grid_widths)
+    return parse_xml(
+        f"<w:tbl {_W_NS}><w:tblPr>{border_edges}</w:tblPr><w:tblGrid>{grid}</w:tblGrid></w:tbl>"
+    )
+
+
+def test_table_has_authored_signals_distinguishes_authored_from_scan_shapes():
+    # Real table-level borders alone are an authored signal (even if columns vary).
+    assert table_has_authored_signals(_tbl_xml(borders=True, grid_widths=[500, 2500, 900])) is True
+    # A uniform multi-column grid alone is an authored signal (even without borders).
+    assert table_has_authored_signals(_tbl_xml(borders=False, grid_widths=[2000, 2000])) is True
+    # Borderless + irregular widths == the OCR column-region shape -> flatten.
+    assert table_has_authored_signals(_tbl_xml(borders=False, grid_widths=[500, 2500, 900])) is False
+    # A tblBorders element whose edges are all "nil" is NOT a real border.
+    assert (
+        table_has_authored_signals(
+            _tbl_xml(borders=True, grid_widths=[500, 2500, 900], border_val="nil")
+        )
+        is False
+    )
+
+
+def test_table_has_authored_signals_treats_real_scan_tables_as_non_authored():
+    # Anti-regression: the actual RESISTANCE scan tables must keep flattening.
+    source_document = Document(BytesIO(RESISTANCE.read_bytes()))
+    assert source_document.tables  # sanity
+    for table in source_document.tables:
+        assert table_has_authored_signals(table._tbl) is False
+
+
+def _add_bordered_uniform_table(document, values: list[list[str]], *, widths: list[int]) -> None:
+    table = document.add_table(rows=len(values), cols=len(values[0]))
+    for row_index, row_values in enumerate(values):
+        for col_index, value in enumerate(row_values):
+            table.cell(row_index, col_index).text = value
+    grid = table._tbl.find(qn("w:tblGrid"))
+    for grid_col, width in zip(grid.findall(qn("w:gridCol")), widths):
+        grid_col.set(qn("w:w"), str(width))
+    table_properties = table._tbl.find(qn("w:tblPr"))
+    borders = OxmlElement("w:tblBorders")
+    for edge in ("top", "left", "bottom", "right", "insideH", "insideV"):
+        edge_element = OxmlElement(f"w:{edge}")
+        edge_element.set(qn("w:val"), "single")
+        edge_element.set(qn("w:sz"), "4")
+        borders.append(edge_element)
+    table_properties.append(borders)
+
+
+def _add_borderless_irregular_table(document, values: list[list[str]], *, widths: list[int]) -> None:
+    table = document.add_table(rows=len(values), cols=len(values[0]))
+    for row_index, row_values in enumerate(values):
+        for col_index, value in enumerate(row_values):
+            table.cell(row_index, col_index).text = value
+    grid = table._tbl.find(qn("w:tblGrid"))
+    for grid_col, width in zip(grid.findall(qn("w:gridCol")), widths):
+        grid_col.set(qn("w:w"), str(width))
+
+
+def test_scan_origin_preserves_authored_table_but_flattens_scan_table():
+    # Inside a document treated as scan-origin, the per-table override keeps a
+    # genuinely authored table (real borders + uniform grid) as a real table
+    # while still flattening a borderless, irregular scan-shape table.
+    document = Document()
+    document.add_paragraph("Перед таблицами")
+    _add_bordered_uniform_table(
+        document,
+        [["Автор A", "Автор B"], ["Значение 1", "Значение 2"]],
+        widths=[2000, 2000],
+    )
+    document.add_paragraph("Между таблицами")
+    _add_borderless_irregular_table(
+        document,
+        [["Скан ячейка A", "Скан ячейка B", "Скан ячейка C"]],
+        widths=[500, 2500, 900],
+    )
+
+    raw_blocks, _ = _build_raw_document_blocks(document, is_scan_origin=True)
+
+    table_blocks = [block for block in raw_blocks if isinstance(block, RawTable)]
+    flattened_blocks = [
+        block
+        for block in raw_blocks
+        if isinstance(block, RawParagraph) and block.layout_origin == "table_flattened"
+    ]
+
+    # The authored table survives as one RawTable carrying its cell text.
+    assert len(table_blocks) == 1
+    assert "Автор A" in table_blocks[0].html_text
+    assert "Значение 2" in table_blocks[0].html_text
+
+    # The scan-shape table is flattened into linear body lines.
+    flattened_text = "\n".join(block.text for block in flattened_blocks)
+    for value in ("Скан ячейка A", "Скан ячейка B", "Скан ячейка C"):
+        assert value in flattened_text
+    # The authored cells are NOT in the flattened stream (they stayed a table).
+    assert "Автор A" not in flattened_text

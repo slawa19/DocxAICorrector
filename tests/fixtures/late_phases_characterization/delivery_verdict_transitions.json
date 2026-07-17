@@ -1,0 +1,13 @@
+{
+  "fail::false_fragment_headings_present": "warn",
+  "fail::heading_demotion_above_manual_review_threshold": "warn",
+  "fail::list_fragment_regressions_present": "warn",
+  "fail::mixed_fatal": "fail",
+  "fail::mixed_script_terms_present": "warn",
+  "fail::role_loss_above_manual_review_threshold": "warn",
+  "fail::toc_body_concatenation_detected": "warn",
+  "fail::unmapped_source_paragraphs_present": "warn",
+  "fail::untranslated_body_text_above_threshold": "fail",
+  "pass::empty": "pass",
+  "warn::empty": "warn"
+}

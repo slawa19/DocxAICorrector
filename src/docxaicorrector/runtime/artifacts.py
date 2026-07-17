@@ -1,6 +1,8 @@
 import json
+import os
 import threading
 import time
+import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, is_dataclass
 from datetime import datetime
@@ -15,6 +17,66 @@ from docxaicorrector.runtime.artifact_retention import (
     UI_RESULT_ARTIFACTS_MAX_COUNT,
     prune_ui_result_artifact_groups,
 )
+
+# Retention budgets for the data-bearing result registries (F26). These families
+# were previously unbounded, unlike every other ``.run/`` writer in this module.
+# The files live two levels deep under the family root
+# (``<source_key>/<fingerprint>/<id>.json``) and are keyed by ``segment_id`` /
+# ``job_id``, so re-running one document overwrites in place — the unbounded
+# growth is the accumulation of stale identity leaves across documents and
+# structure revisions. Pruning therefore runs family-wide with a recursive glob.
+# Values mirror the long-lived 30-day structure-manifest cache (these registries
+# are likewise a resume/reuse cache read by ``load_job_result_registry``); the
+# count caps are set well above any single document's segment/job fan-out so a
+# live run is never pruned, only historical accumulation.
+SEGMENT_RESULT_REGISTRY_MAX_AGE_SECONDS = 30 * 24 * 60 * 60
+SEGMENT_RESULT_REGISTRY_MAX_COUNT = 2000
+JOB_RESULT_REGISTRY_MAX_AGE_SECONDS = 30 * 24 * 60 * 60
+JOB_RESULT_REGISTRY_MAX_COUNT = 2000
+
+# --- Concurrency-safe family retention (round-5 finding 6) --------------------
+# The family-wide prune only protected the CURRENT call's just-written paths, so
+# two writers publishing into the same registry family at the same time could
+# prune each other's freshly-published records: writer B's leaves are not in
+# writer A's ``protected_paths``, so A's count-cap prune treated them as stale
+# history. The fix keeps a process-wide registry of every in-flight publication's
+# paths (registered BEFORE the file is written, so there is no write→prune gap)
+# that the prune excludes. Each writer snapshots the registry immediately before
+# pruning, so its ``protected_paths`` covers BOTH its own batch AND every other
+# in-flight run's paths for the same family — no live run is pruned by a
+# concurrent one. A registration is cleared only after its writer's own prune
+# completes, so a concurrent prune always sees the union while both runs are live.
+# Prunes are intentionally NOT serialised: overlapping prunes each protect the
+# union and, at worst, race to unlink the same stale leaf (a caught OSError), so a
+# serialising lock is unnecessary and would only reintroduce an ordering hazard
+# where one run unregisters before the other prunes.
+_active_registry_publications: dict[str, set[str]] = {}
+_active_registry_publications_lock = threading.Lock()
+
+
+def _registry_family_key(output_dir: Path) -> str:
+    """Stable key for a registry family root (the recursive prune scope)."""
+    return str(output_dir)
+
+
+def _register_active_publications(family_key: str, paths: set[str]) -> None:
+    with _active_registry_publications_lock:
+        _active_registry_publications.setdefault(family_key, set()).update(paths)
+
+
+def _unregister_active_publications(family_key: str, paths: set[str]) -> None:
+    with _active_registry_publications_lock:
+        active = _active_registry_publications.get(family_key)
+        if active is None:
+            return
+        active.difference_update(paths)
+        if not active:
+            _active_registry_publications.pop(family_key, None)
+
+
+def _snapshot_active_publications(family_key: str) -> set[str]:
+    with _active_registry_publications_lock:
+        return set(_active_registry_publications.get(family_key, ()))
 
 
 class AppReadyMarkerWriter:
@@ -43,11 +105,86 @@ def _sanitize_artifact_stem(value: str) -> str:
     return compacted[:80] or "document"
 
 
-def _build_ui_result_stem(source_name: str, *, created_at: float | None = None) -> str:
+def _new_run_id() -> str:
+    """Short opaque per-run id. Isolates concurrent runs of the same source name
+    that would otherwise collide within a single wall-clock second."""
+    return uuid.uuid4().hex[:8]
+
+
+def _build_ui_result_stem(source_name: str, *, created_at: float | None = None, run_id: str | None = None) -> str:
     source_path = Path(source_name)
     stem = _sanitize_artifact_stem(source_path.stem)
     timestamp = time.strftime("%Y%m%d_%H%M%S", time.localtime(time.time() if created_at is None else created_at))
-    return f"{timestamp}_{stem}.result"
+    resolved_run_id = _sanitize_artifact_stem(run_id) if run_id else _new_run_id()
+    # run_id precedes the ``.result`` boundary so retention grouping (which strips
+    # the ``.result.<ext>`` suffix) keeps every file of one run in one group.
+    return f"{timestamp}_{stem}_{resolved_run_id}.result"
+
+
+def _atomic_write(path: Path, data: bytes | str) -> None:
+    """Write to a unique temp sibling then os.replace into place, so a crash
+    mid-write never leaves a truncated artifact that reads as delivered."""
+    tmp_path = path.parent / f"{path.name}.tmp.{_new_run_id()}"
+    try:
+        if isinstance(data, bytes):
+            tmp_path.write_bytes(data)
+        else:
+            tmp_path.write_text(data, encoding="utf-8")
+        os.replace(tmp_path, path)
+    except OSError:
+        try:
+            if tmp_path.exists():
+                tmp_path.unlink()
+        except OSError:
+            pass
+        raise
+
+
+def _atomic_write_group(entries: Sequence[tuple[Path, bytes | str]]) -> None:
+    """Publish a whole artifact group near-atomically.
+
+    Stage EVERY file to a temp sibling first (the slow, failure-prone phase), then
+    os.replace them all into place (the publish phase, rename-only). If staging
+    fails, nothing is published — no partial group. If the publish phase itself
+    fails, already-published members are rolled back. This narrows the window in
+    which a hard process crash could leave a partial group to the metadata-only
+    rename phase, instead of the previous per-file scheme where a crash between the
+    .md and .docx writes left a half-written group."""
+    staged: list[tuple[Path, Path]] = []
+    try:
+        for final_path, data in entries:
+            tmp_path = final_path.parent / f"{final_path.name}.tmp.{_new_run_id()}"
+            if isinstance(data, bytes):
+                tmp_path.write_bytes(data)
+            else:
+                tmp_path.write_text(data, encoding="utf-8")
+            staged.append((tmp_path, final_path))
+    except OSError:
+        for tmp_path, _ in staged:
+            try:
+                tmp_path.unlink()
+            except OSError:
+                pass
+        raise
+
+    published: list[Path] = []
+    try:
+        for tmp_path, final_path in staged:
+            os.replace(tmp_path, final_path)
+            published.append(final_path)
+    except OSError:
+        for final_path in published:
+            try:
+                final_path.unlink()
+            except OSError:
+                pass
+        for tmp_path, _ in staged:
+            try:
+                if tmp_path.exists():
+                    tmp_path.unlink()
+            except OSError:
+                pass
+        raise
 
 
 def _truncate_review_text(value: object, *, limit: int = 160) -> str:
@@ -186,9 +323,10 @@ def write_ui_result_artifacts(
     result_manifest: Mapping[str, object] | None = None,
     output_dir: Path = UI_RESULT_ARTIFACTS_DIR,
     created_at: float | None = None,
+    run_id: str | None = None,
 ) -> dict[str, str]:
     output_dir.mkdir(parents=True, exist_ok=True)
-    artifact_stem = _build_ui_result_stem(source_name, created_at=created_at)
+    artifact_stem = _build_ui_result_stem(source_name, created_at=created_at, run_id=run_id)
     markdown_path = output_dir / f"{artifact_stem}.md"
     docx_path = output_dir / f"{artifact_stem}.docx"
     tts_path = output_dir / f"{artifact_stem}.tts.txt"
@@ -205,47 +343,34 @@ def write_ui_result_artifacts(
         meta_payload["quality_warning"] = quality_warning
     write_meta = len(meta_payload) > 1
 
-    markdown_path.write_text(markdown_text, encoding="utf-8")
-    try:
-        docx_path.write_bytes(docx_bytes)
-        if narration_text is not None:
-            tts_path.write_text(narration_text, encoding="utf-8")
-        if quality_warning:
-            formatting_review_path.write_text(
+    # Stage the whole group to temp, then publish (spec 023): staging/publish
+    # exceptions do not leave partial groups; the hard-crash window is narrowed to
+    # the rename phase (the previous per-file scheme could leave a half-written
+    # group if the process died between the .md and .docx writes).
+    group_entries: list[tuple[Path, bytes | str]] = [
+        (markdown_path, markdown_text),
+        (docx_path, docx_bytes),
+    ]
+    if narration_text is not None:
+        group_entries.append((tts_path, narration_text))
+    if quality_warning:
+        group_entries.append(
+            (
+                formatting_review_path,
                 _build_formatting_review_text(
                     source_name=source_name,
                     quality_warning=quality_warning,
                     created_at=created_at,
                 ),
-                encoding="utf-8",
             )
-        if write_meta:
-            meta_path.write_text(
-                json.dumps(meta_payload, ensure_ascii=False, indent=2),
-                encoding="utf-8",
-            )
-        if result_manifest is not None:
-            manifest_path.write_text(
-                json.dumps(_to_jsonable(result_manifest), ensure_ascii=False, indent=2),
-                encoding="utf-8",
-            )
-    except OSError:
-        try:
-            if markdown_path.exists():
-                markdown_path.unlink()
-            if docx_path.exists():
-                docx_path.unlink()
-            if tts_path.exists():
-                tts_path.unlink()
-            if meta_path.exists():
-                meta_path.unlink()
-            if manifest_path.exists():
-                manifest_path.unlink()
-            if formatting_review_path.exists():
-                formatting_review_path.unlink()
-        except OSError:
-            pass
-        raise
+        )
+    if write_meta:
+        group_entries.append((meta_path, json.dumps(meta_payload, ensure_ascii=False, indent=2)))
+    if result_manifest is not None:
+        group_entries.append(
+            (manifest_path, json.dumps(_to_jsonable(result_manifest), ensure_ascii=False, indent=2))
+        )
+    _atomic_write_group(group_entries)
 
     prune_ui_result_artifact_groups(
         target_dir=output_dir,
@@ -274,15 +399,17 @@ def write_structure_manifest_artifact(
     manifest_payload: Mapping[str, object],
     output_dir: Path = STRUCTURE_MANIFESTS_DIR,
     created_at: float | None = None,
+    run_id: str | None = None,
 ) -> str:
     output_dir.mkdir(parents=True, exist_ok=True)
     timestamp = time.strftime("%Y%m%d_%H%M%S", time.localtime(time.time() if created_at is None else created_at))
     source_path = Path(source_name)
     stem = _sanitize_artifact_stem(source_path.stem)
-    manifest_path = output_dir / f"{timestamp}_{stem}.segments.json"
-    manifest_path.write_text(
+    resolved_run_id = _sanitize_artifact_stem(run_id) if run_id else _new_run_id()
+    manifest_path = output_dir / f"{timestamp}_{stem}_{resolved_run_id}.segments.json"
+    _atomic_write(
+        manifest_path,
         json.dumps(_to_jsonable(manifest_payload), ensure_ascii=False, indent=2),
-        encoding="utf-8",
     )
     prune_artifact_dir(
         target_dir=output_dir,
@@ -294,31 +421,152 @@ def write_structure_manifest_artifact(
     return str(manifest_path)
 
 
-def write_segment_result_registry(
+def _prune_registry_family_protecting_current(
+    *,
+    target_dir: Path,
+    glob: str,
+    max_age_seconds: int | None,
+    max_count: int | None,
+    protected_paths: set[str],
+    now_epoch_seconds: float | None = None,
+) -> list[str]:
+    """Family-wide age/count prune that NEVER removes ``protected_paths`` (F11).
+
+    Mirrors :func:`prune_artifact_dir`'s age+count policy, but the CURRENT call's
+    just-written records are excluded from the prune candidate set, so the paths a
+    registry writer returns are guaranteed to still exist even when the batch is
+    larger than the family count budget. Protected records occupy budget: the count
+    cap keeps the newest NON-protected leaves only up to ``max_count`` total files,
+    so an oversized live run is never pruned to reclaim its own space — only stale
+    historical identity leaves are removed. Byte quotas are intentionally not added
+    (the shared prune helper has no such budget — do not over-engineer).
+    """
+    if not target_dir.exists() or not target_dir.is_dir():
+        return []
+
+    reference_now = time.time() if now_epoch_seconds is None else float(now_epoch_seconds)
+    retained: list[tuple[float, Path]] = []
+    pruned_paths: list[str] = []
+
+    for artifact_path in target_dir.glob(glob):
+        if not artifact_path.is_file():
+            continue
+        if str(artifact_path) in protected_paths:
+            continue
+        try:
+            mtime = artifact_path.stat().st_mtime
+        except OSError:
+            continue
+
+        age_seconds = max(0.0, reference_now - mtime)
+        if max_age_seconds is not None and max_age_seconds >= 0 and age_seconds > max_age_seconds:
+            try:
+                artifact_path.unlink()
+                pruned_paths.append(str(artifact_path))
+            except OSError:
+                pass
+            continue
+
+        retained.append((mtime, artifact_path))
+
+    if max_count is not None and max_count >= 0:
+        # Protected (current-run) records consume budget but are never candidates,
+        # so the historical leaves get whatever slots remain.
+        effective_budget = max(0, max_count - len(protected_paths))
+        if len(retained) > effective_budget:
+            retained.sort(key=lambda item: (item[0], item[1].name))
+            overflow = len(retained) - effective_budget
+            for _, artifact_path in retained[:overflow]:
+                try:
+                    artifact_path.unlink()
+                    pruned_paths.append(str(artifact_path))
+                except OSError:
+                    continue
+
+    return pruned_paths
+
+
+def _publish_registry_family(
     *,
     records: Sequence[Mapping[str, object]],
-    output_dir: Path = SEGMENT_RESULT_REGISTRY_DIR,
+    output_dir: Path,
+    id_key: str,
+    filename_suffix: str,
+    glob: str,
+    max_age_seconds: int | None,
+    max_count: int | None,
 ) -> dict[str, str]:
-    persisted_paths: dict[str, str] = {}
+    """Write one registry family's records atomically, then prune it safely.
+
+    Concurrency-safe (round-5 finding 6): the batch's target paths are registered
+    in the process-wide active-publication registry BEFORE any file is written,
+    and the prune's ``protected_paths`` is a snapshot of that registry taken right
+    before pruning. It therefore excludes not just this call's paths but every
+    OTHER in-flight run's freshly published paths for the same family, so two
+    concurrent writers can never prune each other's fresh records. History is
+    still bounded (F11).
+    """
+    planned: list[tuple[Path, Path, Mapping[str, object], str]] = []
     for record in records:
         prepared_source_key = str(record.get("prepared_source_key") or "").strip()
         structure_fingerprint = str(record.get("structure_fingerprint") or "").strip()
-        segment_id = str(record.get("segment_id") or "").strip()
-        if not prepared_source_key or not structure_fingerprint or not segment_id:
+        id_value = str(record.get(id_key) or "").strip()
+        if not prepared_source_key or not structure_fingerprint or not id_value:
             continue
         target_dir = (
             output_dir
             / _sanitize_artifact_stem(prepared_source_key)
             / _sanitize_artifact_stem(structure_fingerprint)
         )
-        target_dir.mkdir(parents=True, exist_ok=True)
-        artifact_path = target_dir / f"{_sanitize_artifact_stem(segment_id)}.segment-result.json"
-        artifact_path.write_text(
-            json.dumps(_to_jsonable(record), ensure_ascii=False, indent=2),
-            encoding="utf-8",
+        artifact_path = target_dir / f"{_sanitize_artifact_stem(id_value)}{filename_suffix}"
+        planned.append((target_dir, artifact_path, record, id_value))
+
+    family_key = _registry_family_key(output_dir)
+    planned_path_strs = {str(artifact_path) for _, artifact_path, _, _ in planned}
+    # Register BEFORE writing so a concurrent prune that runs between our write and
+    # our own prune still excludes these paths (no write→prune protection gap).
+    _register_active_publications(family_key, planned_path_strs)
+    persisted_paths: dict[str, str] = {}
+    try:
+        for target_dir, artifact_path, record, id_value in planned:
+            target_dir.mkdir(parents=True, exist_ok=True)
+            # Atomic write (temp sibling + os.replace): an interrupted write never
+            # leaves a truncated half-file that later reads as a delivered record (F11).
+            _atomic_write(
+                artifact_path,
+                json.dumps(_to_jsonable(record), ensure_ascii=False, indent=2),
+            )
+            persisted_paths[id_value] = str(artifact_path)
+
+        # Protect every in-flight publication (ours + any other live run's) so a
+        # recursive count/age prune only reclaims stale history.
+        protected_paths = _snapshot_active_publications(family_key) | set(persisted_paths.values())
+        _prune_registry_family_protecting_current(
+            target_dir=output_dir,
+            glob=glob,
+            max_age_seconds=max_age_seconds,
+            max_count=max_count,
+            protected_paths=protected_paths,
         )
-        persisted_paths[segment_id] = str(artifact_path)
+    finally:
+        _unregister_active_publications(family_key, planned_path_strs)
     return persisted_paths
+
+
+def write_segment_result_registry(
+    *,
+    records: Sequence[Mapping[str, object]],
+    output_dir: Path = SEGMENT_RESULT_REGISTRY_DIR,
+) -> dict[str, str]:
+    return _publish_registry_family(
+        records=records,
+        output_dir=output_dir,
+        id_key="segment_id",
+        filename_suffix=".segment-result.json",
+        glob="**/*.segment-result.json",
+        max_age_seconds=SEGMENT_RESULT_REGISTRY_MAX_AGE_SECONDS,
+        max_count=SEGMENT_RESULT_REGISTRY_MAX_COUNT,
+    )
 
 
 def write_job_result_registry(
@@ -326,26 +574,15 @@ def write_job_result_registry(
     records: Sequence[Mapping[str, object]],
     output_dir: Path = JOB_RESULT_REGISTRY_DIR,
 ) -> dict[str, str]:
-    persisted_paths: dict[str, str] = {}
-    for record in records:
-        prepared_source_key = str(record.get("prepared_source_key") or "").strip()
-        structure_fingerprint = str(record.get("structure_fingerprint") or "").strip()
-        job_id = str(record.get("job_id") or "").strip()
-        if not prepared_source_key or not structure_fingerprint or not job_id:
-            continue
-        target_dir = (
-            output_dir
-            / _sanitize_artifact_stem(prepared_source_key)
-            / _sanitize_artifact_stem(structure_fingerprint)
-        )
-        target_dir.mkdir(parents=True, exist_ok=True)
-        artifact_path = target_dir / f"{_sanitize_artifact_stem(job_id)}.job-result.json"
-        artifact_path.write_text(
-            json.dumps(_to_jsonable(record), ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-        persisted_paths[job_id] = str(artifact_path)
-    return persisted_paths
+    return _publish_registry_family(
+        records=records,
+        output_dir=output_dir,
+        id_key="job_id",
+        filename_suffix=".job-result.json",
+        glob="**/*.job-result.json",
+        max_age_seconds=JOB_RESULT_REGISTRY_MAX_AGE_SECONDS,
+        max_count=JOB_RESULT_REGISTRY_MAX_COUNT,
+    )
 
 
 def load_job_result_registry(

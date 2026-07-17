@@ -3,6 +3,7 @@ import queue
 import sys
 import subprocess
 import threading
+import time
 from types import SimpleNamespace
 from pathlib import Path
 from typing import Any, cast
@@ -10,6 +11,7 @@ from typing import Any, cast
 import pytest
 
 import docxaicorrector.processing.processing_runtime as processing_runtime
+import docxaicorrector.processing.upload_ports as upload_ports
 import docxaicorrector.runtime.state as state
 from docxaicorrector.document.extraction import extract_document_content_from_docx, extract_paragraph_units_from_docx
 from docxaicorrector.pdf_import.images import PdfImageObject
@@ -38,6 +40,16 @@ class SessionState(dict):
 
     def __setattr__(self, name, value):
         self[name] = value
+
+
+@pytest.fixture(autouse=True)
+def _pdf_parse_uses_in_process_seam(monkeypatch):
+    """F7 test seam: the production PDF parse runs in a spawned child process
+    that cannot see in-process monkeypatches. These tests patch pdfminer in
+    process, so default every test to the in-process worker. Tests that must
+    exercise the real subprocess path opt out with an explicit setattr(False)."""
+
+    monkeypatch.setattr(processing_runtime, "_PDF_PARSE_IN_PROCESS", True)
 
 
 class UploadedFileStub:
@@ -2043,8 +2055,10 @@ def test_heartbeat_beacon_logs_warning_once_when_callback_fails(monkeypatch):
     def failing_progress_cb(**kwargs):
         raise RuntimeError("boom")
 
+    # HeartbeatBeacon lives in the ui-free upload_ports module (re-exported from
+    # processing_runtime), so its log_event binding is upload_ports.log_event.
     monkeypatch.setattr(
-        processing_runtime,
+        upload_ports,
         "log_event",
         lambda level, event, message, **context: log_calls.append(
             {
@@ -2426,3 +2440,621 @@ def test_append_pdf_text_paragraph_falls_back_without_runs() -> None:
     assert emitted.text == "Plain body line."
     assert len(emitted.runs) == 1
     assert emitted.runs[0].italic is True
+
+
+# --- F24: heading emphasis runs preserved by the DOCX materializer ---------
+
+
+def test_append_pdf_heading_preserves_mixed_emphasis_runs() -> None:
+    from docx import Document
+
+    from docxaicorrector.core.models import ParagraphUnit
+
+    paragraph = ParagraphUnit(
+        text="Chapter One: The Beginning",
+        role="heading",
+        structural_role="heading",
+        heading_level=1,
+        pdf_emphasis_runs=[
+            ("Chapter One: ", True, False),
+            ("The Beginning", False, True),
+        ],
+    )
+    document = Document()
+
+    processing_runtime._append_pdf_text_paragraph_to_docx(document, paragraph)
+
+    emitted = document.paragraphs[-1]
+    assert emitted.text == "Chapter One: The Beginning"
+    assert [run.text for run in emitted.runs if run.bold] == ["Chapter One: "]
+    assert [run.text for run in emitted.runs if run.italic] == ["The Beginning"]
+
+
+def test_append_pdf_heading_without_runs_stays_single_plain_run() -> None:
+    from docx import Document
+
+    from docxaicorrector.core.models import ParagraphUnit
+
+    paragraph = ParagraphUnit(
+        text="Plain Heading",
+        role="heading",
+        structural_role="heading",
+        heading_level=2,
+    )
+    document = Document()
+
+    processing_runtime._append_pdf_text_paragraph_to_docx(document, paragraph)
+
+    emitted = document.paragraphs[-1]
+    assert emitted.text == "Plain Heading"
+    assert len(emitted.runs) == 1
+    assert not emitted.runs[0].bold
+    assert not emitted.runs[0].italic
+
+
+# --- F7: PDF import resource budget ----------------------------------------
+
+
+def _promising_report_stub(spans):
+    return SimpleNamespace(decision="promising", decision_reasons=(), body_text_ratio=1.0)
+
+
+def test_convert_pdf_rejects_oversize_input_file(monkeypatch) -> None:
+    events: list[tuple[int, str, dict[str, object]]] = []
+    monkeypatch.setattr(processing_runtime, "_MAX_PDF_IMPORT_FILE_BYTES", 16)
+    monkeypatch.setattr(
+        processing_runtime,
+        "log_event",
+        lambda level, event, message, **context: events.append((level, event, context)),
+    )
+
+    with pytest.raises(RuntimeError, match="pdf_import_over_budget:file_size"):
+        processing_runtime._convert_pdf_text_layer_to_docx(
+            filename="oversize.pdf",
+            source_bytes=b"%PDF-1.4\n" + b"x" * 100,
+        )
+
+    assert any(
+        event == "pdf_import_over_budget" and context.get("limit") == "file_size"
+        for _level, event, context in events
+    )
+
+
+def test_convert_pdf_rejects_over_page_budget(monkeypatch) -> None:
+    events: list[tuple[int, str, dict[str, object]]] = []
+    # The page-count budget now runs inside the parse worker under the unified
+    # deadline; point the worker at the in-process seam so this monkeypatch is seen.
+    monkeypatch.setattr(processing_runtime, "_PDF_PARSE_IN_PROCESS", True)
+    monkeypatch.setattr(processing_runtime, "_MAX_PDF_IMPORT_PAGE_COUNT", 3)
+    monkeypatch.setattr(processing_runtime, "_count_pdf_pages_for_budget", lambda path, cap: 5000)
+    monkeypatch.setattr(
+        processing_runtime,
+        "log_event",
+        lambda level, event, message, **context: events.append((level, event, context)),
+    )
+
+    with pytest.raises(RuntimeError, match="pdf_import_over_budget:page_count"):
+        processing_runtime._convert_pdf_text_layer_to_docx(
+            filename="many-pages.pdf",
+            source_bytes=b"%PDF-1.4\n",
+        )
+
+    assert any(
+        event == "pdf_import_over_budget" and context.get("limit") == "page_count"
+        for _level, event, context in events
+    )
+
+
+def test_convert_pdf_rejects_when_parse_exceeds_wallclock_budget(monkeypatch) -> None:
+    from docxaicorrector.pdf_import import text_layer_quality
+
+    events: list[tuple[int, str, dict[str, object]]] = []
+    monkeypatch.setattr(processing_runtime, "_PDF_PARSE_IN_PROCESS", True)
+    monkeypatch.setattr(processing_runtime, "_PDF_PARSE_WALLCLOCK_BUDGET_SECONDS", 0.2)
+
+    def slow_parse(path):
+        time.sleep(1.0)
+        return []
+
+    monkeypatch.setattr(text_layer_quality, "extract_pdf_text_spans_with_pdfminer", slow_parse)
+    monkeypatch.setattr(
+        processing_runtime,
+        "log_event",
+        lambda level, event, message, **context: events.append((level, event, context)),
+    )
+
+    with pytest.raises(RuntimeError, match="pdf_import_over_budget:parse_wallclock"):
+        processing_runtime._convert_pdf_text_layer_to_docx(
+            filename="slow.pdf",
+            source_bytes=b"%PDF-1.4\n",
+        )
+
+    assert any(
+        event == "pdf_import_over_budget" and context.get("limit") == "parse_wallclock"
+        for _level, event, context in events
+    )
+
+
+def test_convert_pdf_normal_document_parses_within_budget(monkeypatch) -> None:
+    from docxaicorrector.pdf_import import images as pdf_images
+    from docxaicorrector.pdf_import import text_layer_quality
+
+    spans = [
+        PdfTextSpan(
+            page_number=1,
+            text="Ordinary body line.",
+            x0=50,
+            top=100,
+            x1=450,
+            bottom=112,
+            page_height=800,
+            font_size=10,
+        )
+    ]
+    monkeypatch.setattr(processing_runtime, "_PDF_PARSE_IN_PROCESS", True)
+    monkeypatch.setattr(text_layer_quality, "extract_pdf_text_spans_with_pdfminer", lambda path: spans)
+    monkeypatch.setattr(text_layer_quality, "build_text_layer_quality_report", _promising_report_stub)
+    monkeypatch.setattr(pdf_images, "extract_pdf_images_with_pdfminer", lambda path: [])
+
+    docx_bytes, backend = processing_runtime._convert_pdf_text_layer_to_docx(
+        filename="normal.pdf",
+        source_bytes=b"%PDF-1.4\n",
+    )
+
+    assert backend == "pdf-text-layer"
+    assert docx_bytes
+
+
+def test_convert_pdf_rejects_over_span_count_cap(monkeypatch, tmp_path) -> None:
+    from docxaicorrector.pdf_import import text_layer_quality
+
+    events: list[tuple[int, str, dict[str, object]]] = []
+    monkeypatch.setattr(processing_runtime, "_PDF_PARSE_IN_PROCESS", True)
+    monkeypatch.setattr(processing_runtime, "_MAX_PDF_IMPORT_SPAN_COUNT", 1)
+
+    def two_spans(path):
+        return [
+            PdfTextSpan(page_number=1, text="a", x0=0, top=0, x1=1, bottom=1),
+            PdfTextSpan(page_number=1, text="b", x0=0, top=2, x1=1, bottom=3),
+        ]
+
+    monkeypatch.setattr(text_layer_quality, "extract_pdf_text_spans_with_pdfminer", two_spans)
+    monkeypatch.setattr(
+        processing_runtime,
+        "log_event",
+        lambda level, event, message, **context: events.append((level, event, context)),
+    )
+
+    with pytest.raises(RuntimeError, match="pdf_import_over_budget:span_count"):
+        processing_runtime._convert_pdf_text_layer_to_docx(
+            filename="spans.pdf",
+            source_bytes=b"%PDF-1.4\n",
+        )
+
+    assert any(
+        event == "pdf_import_over_budget" and context.get("limit") == "span_count"
+        for _level, event, context in events
+    )
+
+
+def test_convert_pdf_rejects_over_image_count_cap(monkeypatch) -> None:
+    from docxaicorrector.pdf_import import images as pdf_images
+    from docxaicorrector.pdf_import import text_layer_quality
+
+    events: list[tuple[int, str, dict[str, object]]] = []
+    monkeypatch.setattr(processing_runtime, "_PDF_PARSE_IN_PROCESS", True)
+    monkeypatch.setattr(processing_runtime, "_MAX_PDF_IMPORT_IMAGE_COUNT", 1)
+
+    spans = [PdfTextSpan(page_number=1, text="Body.", x0=0, top=0, x1=100, bottom=12)]
+    monkeypatch.setattr(text_layer_quality, "extract_pdf_text_spans_with_pdfminer", lambda path: spans)
+    monkeypatch.setattr(text_layer_quality, "build_text_layer_quality_report", _promising_report_stub)
+
+    def two_images(path):
+        return [SimpleNamespace(source_index=0), SimpleNamespace(source_index=1)]
+
+    monkeypatch.setattr(pdf_images, "extract_pdf_images_with_pdfminer", two_images)
+    monkeypatch.setattr(
+        processing_runtime,
+        "log_event",
+        lambda level, event, message, **context: events.append((level, event, context)),
+    )
+
+    with pytest.raises(RuntimeError, match="pdf_import_over_budget:image_count"):
+        processing_runtime._convert_pdf_text_layer_to_docx(
+            filename="images.pdf",
+            source_bytes=b"%PDF-1.4\n",
+        )
+
+    assert any(
+        event == "pdf_import_over_budget" and context.get("limit") == "image_count"
+        for _level, event, context in events
+    )
+
+
+def test_pdf_parse_subprocess_is_terminated_on_deadline_overrun(monkeypatch, tmp_path) -> None:
+    """F7: the REAL subprocess path force-kills a worker that overruns the deadline.
+
+    Uses a module-level worker that sleeps forever as the spawned target; the
+    parent must terminate()/join() it (not leave it alive) and raise the typed
+    ``pdf_import_over_budget:deadline`` error.
+    """
+
+    # Opt out of the in-process seam: exercise the REAL killable subprocess path.
+    monkeypatch.setattr(processing_runtime, "_PDF_PARSE_IN_PROCESS", False)
+    monkeypatch.setattr(processing_runtime, "_PDF_PARSE_WALLCLOCK_BUDGET_SECONDS", 0.5)
+    monkeypatch.setattr(
+        processing_runtime,
+        "_PDF_PARSE_SUBPROCESS_ENTRY",
+        processing_runtime._pdf_parse_sleep_forever_entry,
+    )
+
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(
+        processing_runtime,
+        "_pdf_parse_process_observer",
+        lambda proc: captured.__setitem__("proc", proc),
+    )
+
+    input_path = tmp_path / "in.pdf"
+    input_path.write_bytes(b"%PDF-1.4\n")
+    ocr_output_path = tmp_path / "in.ocr.pdf"
+
+    with pytest.raises(RuntimeError, match="pdf_import_over_budget:deadline"):
+        processing_runtime._run_pdf_parse_stages_with_deadline(
+            temp_dir=tmp_path,
+            input_path=input_path,
+            ocr_output_path=ocr_output_path,
+            filename="slow.pdf",
+        )
+
+    process = cast(Any, captured.get("proc"))
+    assert process is not None, "the spawned child process was never observed"
+    # The child must have been genuinely terminated, not left running.
+    assert process.is_alive() is False
+    assert process.exitcode is not None
+
+
+def test_pdf_parse_subprocess_result_is_deserialized_from_child(monkeypatch, tmp_path) -> None:
+    """F7: the parent reads back a real spawned child's serialized parse result."""
+
+    monkeypatch.setattr(processing_runtime, "_PDF_PARSE_IN_PROCESS", False)
+    monkeypatch.setattr(
+        processing_runtime,
+        "_PDF_PARSE_SUBPROCESS_ENTRY",
+        processing_runtime._pdf_parse_canned_result_entry,
+    )
+
+    input_path = tmp_path / "in.pdf"
+    input_path.write_bytes(b"%PDF-1.4\n")
+    ocr_output_path = tmp_path / "in.ocr.pdf"
+
+    result = processing_runtime._run_pdf_parse_stages_with_deadline(
+        temp_dir=tmp_path,
+        input_path=input_path,
+        ocr_output_path=ocr_output_path,
+        filename="ok.pdf",
+    )
+
+    assert isinstance(result, processing_runtime._PdfParseStagesResult)
+    assert result.quality_decision == "promising"
+    assert result.spans == []
+    assert result.image_objects == []
+
+
+# --- F27: process-wide admission gate --------------------------------------
+
+
+def test_processing_admission_limit_env_override(monkeypatch) -> None:
+    monkeypatch.setenv("DOCXAI_MAX_CONCURRENT_PROCESSING", "5")
+    assert processing_runtime._resolve_processing_admission_limit() == 5
+
+    monkeypatch.setenv("DOCXAI_MAX_CONCURRENT_PROCESSING", "0")
+    assert (
+        processing_runtime._resolve_processing_admission_limit()
+        == processing_runtime._DEFAULT_PROCESSING_ADMISSION_LIMIT
+    )
+
+    monkeypatch.setenv("DOCXAI_MAX_CONCURRENT_PROCESSING", "not-a-number")
+    assert (
+        processing_runtime._resolve_processing_admission_limit()
+        == processing_runtime._DEFAULT_PROCESSING_ADMISSION_LIMIT
+    )
+
+    monkeypatch.delenv("DOCXAI_MAX_CONCURRENT_PROCESSING", raising=False)
+    assert (
+        processing_runtime._resolve_processing_admission_limit()
+        == processing_runtime._DEFAULT_PROCESSING_ADMISSION_LIMIT
+    )
+
+
+def test_processing_admission_gate_caps_concurrency() -> None:
+    gate = processing_runtime._build_processing_admission_gate(2)
+
+    assert gate.acquire(blocking=False) is True
+    assert gate.acquire(blocking=False) is True
+    # The gate is bounded: with both slots held the next acquire cannot proceed.
+    assert gate.acquire(blocking=False) is False
+
+    gate.release()
+    assert gate.acquire(blocking=False) is True
+
+    gate.release()
+    gate.release()
+
+
+def test_processing_admission_gate_floor_is_single_slot() -> None:
+    gate = processing_runtime._build_processing_admission_gate(0)
+
+    assert gate.acquire(blocking=False) is True
+    assert gate.acquire(blocking=False) is False
+
+    gate.release()
+
+
+def test_admission_gate_covers_preparation_work(monkeypatch) -> None:
+    """F27: preparation acquires the process-wide admission slot around its real
+    work and releases it on completion (the costliest PDF stage runs here)."""
+
+    _clear_materialized_upload_cache()
+    session_state = SessionState()
+    monkeypatch.setattr(processing_runtime.st, "session_state", session_state)
+
+    events_log: list[str] = []
+    real_gate = processing_runtime._build_processing_admission_gate(1)
+
+    class SpyGate:
+        def acquire(self, *args, **kwargs):
+            acquired = real_gate.acquire(*args, **kwargs)
+            if acquired:
+                events_log.append("acquire")
+            return acquired
+
+        def release(self) -> None:
+            events_log.append("release")
+            real_gate.release()
+
+    monkeypatch.setattr(processing_runtime, "_PROCESSING_ADMISSION_GATE", SpyGate())
+
+    uploaded_file = processing_runtime.build_in_memory_uploaded_file(
+        source_name="book.docx",
+        source_bytes=b"PK\x03\x04docx-body",
+    )
+    payload = processing_runtime.freeze_uploaded_file_lightweight(uploaded_file)
+
+    def worker_target(**kwargs):
+        events_log.append("worker_target")
+        kwargs["progress_callback"](stage="Готово", detail="", progress=1.0, metrics={})
+
+    processing_runtime.start_background_preparation(
+        worker_target=worker_target,
+        reset_run_state=lambda **kwargs: None,
+        push_activity=lambda message: None,
+        set_processing_status=lambda **kw: None,
+        uploaded_payload=payload,
+        upload_marker=payload.file_token,
+        chunk_size=6000,
+        image_mode="safe",
+        keep_all_image_variants=True,
+    )
+
+    session_state.preparation_worker.join(timeout=5)
+
+    # The slot must wrap the real work: acquired first, worker runs, released last.
+    assert events_log == ["acquire", "worker_target", "release"]
+    # And the slot is fully returned to the gate after preparation finishes.
+    assert real_gate.acquire(blocking=False) is True
+    real_gate.release()
+
+
+def test_admission_gate_preparation_wait_is_cancellable(monkeypatch) -> None:
+    """F27: a stopped upload must not block on a full admission slot forever."""
+
+    stop_event = threading.Event()
+    stop_event.set()
+    full_gate = processing_runtime._build_processing_admission_gate(1)
+    assert full_gate.acquire(blocking=False) is True  # exhaust the only slot
+
+    acquired = processing_runtime._acquire_admission_slot_cancellable(
+        full_gate, stop_event, poll_seconds=0.01
+    )
+
+    assert acquired is False  # cancelled instead of blocking on the held slot
+    full_gate.release()
+
+
+def test_admission_gate_processing_wait_is_cancellable(monkeypatch):
+    """Spec 041 P1-2: a Stop while the processing admission gate is full must
+    cancel the queued run — ``worker_target`` never runs, the run surfaces
+    ``stopped`` to the UI, and the (never-acquired) slot is not released."""
+
+    session_state = SessionState(restart_session_id="session-a")
+    monkeypatch.setattr(processing_runtime.st, "session_state", session_state)
+    monkeypatch.setattr(state.st, "session_state", session_state)
+    state.init_session_state()
+    session_state.restart_session_id = "session-a"
+    monkeypatch.setattr(
+        processing_runtime,
+        "store_restart_source",
+        lambda **kwargs: {
+            "filename": kwargs["source_name"],
+            "token": kwargs["source_token"],
+            "storage_path": "restart.bin",
+            "session_id": kwargs["session_id"],
+        },
+    )
+
+    # Saturate the admission gate: its only slot is held for the whole test, so
+    # _acquire_admission_slot_cancellable can NEVER acquire — the only exit is a
+    # Stop. A spy records every acquire/release so we can assert no over-release.
+    real_gate = processing_runtime._build_processing_admission_gate(1)
+    assert real_gate.acquire(blocking=False) is True  # exhaust the only slot
+
+    acquire_results: list[bool] = []
+    release_calls: list[str] = []
+
+    class SpyGate:
+        def acquire(self, *args, **kwargs):
+            acquired = real_gate.acquire(*args, **kwargs)
+            acquire_results.append(acquired)
+            return acquired
+
+        def release(self) -> None:
+            release_calls.append("release")
+            real_gate.release()
+
+    monkeypatch.setattr(processing_runtime, "_PROCESSING_ADMISSION_GATE", SpyGate())
+
+    worker_calls: list[dict] = []
+
+    def worker_target(**kwargs):
+        worker_calls.append(kwargs)
+
+    processing_runtime.start_background_processing(
+        worker_target=worker_target,
+        reset_run_state=state.reset_run_state,
+        push_activity=lambda message: None,
+        set_processing_status=lambda **kwargs: None,
+        uploaded_filename="report.docx",
+        uploaded_token="report.docx:3:abc",
+        source_bytes=b"abc",
+        jobs=[{"target_text": "block", "target_chars": 5, "context_chars": 0}],
+        source_paragraphs=["paragraph"],
+        image_assets=[],
+        image_mode="safe",
+        app_config={},
+        model="gpt-5.4",
+        max_retries=1,
+    )
+
+    # The gate is permanently saturated, so the worker is parked polling for a
+    # slot; requesting Stop is the only way out. Setting the run's own stop_event
+    # (the exact object threaded into the guarded target) cancels the wait.
+    run_stop_event = session_state.processing_stop_event
+    run_stop_event.set()
+
+    session_state.processing_worker.join(timeout=5)
+    assert not session_state.processing_worker.is_alive()
+
+    # worker_target must never run — the run was cancelled during admission.
+    assert worker_calls == []
+    # The slot was never acquired, so it must never be released (no over-release;
+    # a BoundedSemaphore would raise on a spurious release — it did not, and the
+    # spy confirms release was never called on the gate).
+    assert release_calls == []
+    assert acquire_results and all(result is False for result in acquire_results)
+
+    # The run surfaces the normal stopped completion to the UI event stream.
+    outcomes: list[str] = []
+    while True:
+        try:
+            event = session_state.processing_event_queue.get_nowait()
+        except queue.Empty:
+            break
+        if isinstance(event, WorkerCompleteEvent):
+            outcomes.append(event.outcome)
+    assert outcomes == ["stopped"]
+
+    # The real gate still holds exactly the test's slot: releasing it once
+    # succeeds, and a second release raises (proving no phantom slot was added).
+    real_gate.release()
+    with pytest.raises(ValueError):
+        real_gate.release()
+
+
+# --- F12: PDF image discovery vs emission is counted and warned ------------
+
+
+class _FailingImageStream:
+    def get_rawdata(self):
+        raise ValueError("stream_decode_failed")
+
+    def get_data(self):
+        raise ValueError("stream_decode_failed")
+
+
+class _StaticImageStream:
+    def __init__(self, data: bytes) -> None:
+        self._data = data
+
+    def get_rawdata(self):
+        return self._data
+
+
+class _FakeLTFigure(list):
+    pass
+
+
+class _FakePage(list):
+    height = 800.0
+
+
+class _FakeLTImage:
+    def __init__(self, stream, bbox):
+        self.stream = stream
+        self.x0, self.y0, self.x1, self.y1 = bbox
+
+
+def _patch_pdfminer_image_layout(monkeypatch, pages) -> None:
+    import pdfminer.high_level as high_level
+    import pdfminer.layout as layout
+
+    monkeypatch.setattr(layout, "LTImage", _FakeLTImage)
+    monkeypatch.setattr(layout, "LTFigure", _FakeLTFigure)
+    monkeypatch.setattr(high_level, "extract_pages", lambda path: pages)
+
+
+def test_extract_pdf_images_warns_when_discovered_exceeds_emitted(monkeypatch) -> None:
+    from docxaicorrector.pdf_import import images as pdf_images
+
+    failing_image = _FakeLTImage(_FailingImageStream(), (0.0, 0.0, 10.0, 10.0))
+    page = _FakePage([failing_image])
+    _patch_pdfminer_image_layout(monkeypatch, pages=[page])
+
+    events: list[tuple[int, str, dict[str, object]]] = []
+    monkeypatch.setattr(
+        pdf_images,
+        "log_event",
+        lambda level, event, message, **context: events.append((level, event, context)),
+    )
+
+    result = pdf_images.extract_pdf_images_with_pdfminer("dummy.pdf")
+
+    assert result == []
+    dropped = next(
+        context for _level, event, context in events if event == "pdf_image_extraction_dropped_images"
+    )
+    assert dropped["discovered"] == 1
+    assert dropped["emitted"] == 0
+    assert dropped["skipped_no_image_bytes"] == 1
+
+
+def test_extract_pdf_images_emits_summary_without_dropping_valid_image(monkeypatch) -> None:
+    from docxaicorrector.pdf_import import images as pdf_images
+
+    png_bytes = (
+        b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01"
+        b"\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4"
+        b"\x89\x00\x00\x00\nIDATx\x9cc\xf8\x0f\x00\x01\x01"
+        b"\x01\x00\x18\xdd\x8d\xb0\x00\x00\x00\x00IEND\xaeB`\x82"
+    )
+    good_image = _FakeLTImage(_StaticImageStream(png_bytes), (10.0, 700.0, 60.0, 760.0))
+    page = _FakePage([good_image])
+    _patch_pdfminer_image_layout(monkeypatch, pages=[page])
+
+    events: list[tuple[int, str, dict[str, object]]] = []
+    monkeypatch.setattr(
+        pdf_images,
+        "log_event",
+        lambda level, event, message, **context: events.append((level, event, context)),
+    )
+
+    result = pdf_images.extract_pdf_images_with_pdfminer("dummy.pdf")
+
+    assert len(result) == 1
+    assert result[0].mime_type == "image/png"
+    assert not any(event == "pdf_image_extraction_dropped_images" for _level, event, _context in events)
+    summary = next(
+        context for _level, event, context in events if event == "pdf_image_extraction_summary"
+    )
+    assert summary["discovered"] == 1
+    assert summary["emitted"] == 1

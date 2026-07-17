@@ -1,9 +1,14 @@
 [server]
 maxUploadSize = 25
 headless = true
-enableCORS = false
-enableXsrfProtection = false
-address = "0.0.0.0"
+# Safe-by-default: XSRF protection on. Streamlit requires enableCORS=true when
+# enableXsrfProtection=true (it force-overrides CORS otherwise), so both are on.
+enableCORS = true
+enableXsrfProtection = true
+# Loopback by default. Remote exposure is an explicit opt-in via DOCX_AI_BIND_HOST
+# (see scripts/_shared.ps1) and MUST sit behind an authenticating reverse proxy —
+# the app has no built-in authentication.
+address = "127.0.0.1"
 fileWatcherType = "none"
 runOnSave = false
 folderWatchBlacklist = [".run", ".git", ".venv", "__pycache__", ".pytest_cache"]

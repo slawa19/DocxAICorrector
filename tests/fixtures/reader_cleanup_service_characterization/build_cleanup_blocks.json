@@ -1,0 +1,42 @@
+[
+  {
+    "block_id": "b_000000",
+    "index": 0,
+    "is_heading": true,
+    "is_toc_like": false,
+    "kind": "heading",
+    "text_hash": "fab9d5d23bffb992"
+  },
+  {
+    "block_id": "b_000001",
+    "index": 1,
+    "is_heading": false,
+    "is_toc_like": false,
+    "kind": "page_number",
+    "text_hash": "e8b8355262d0af49"
+  },
+  {
+    "block_id": "b_000002",
+    "index": 2,
+    "is_heading": false,
+    "is_toc_like": false,
+    "kind": "paragraph",
+    "text_hash": "c43600d3f6ad45d9"
+  },
+  {
+    "block_id": "b_000003",
+    "index": 3,
+    "is_heading": false,
+    "is_toc_like": false,
+    "kind": "extraction_artifact",
+    "text_hash": "f4cd89b86ce769d3"
+  },
+  {
+    "block_id": "b_000004",
+    "index": 4,
+    "is_heading": false,
+    "is_toc_like": false,
+    "kind": "page_number",
+    "text_hash": "2c624232cdd22177"
+  }
+]

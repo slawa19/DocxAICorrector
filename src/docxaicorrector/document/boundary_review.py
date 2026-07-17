@@ -1,6 +1,7 @@
 import hashlib
 import json
 import re
+from collections.abc import Callable, Mapping
 from pathlib import Path
 
 from docxaicorrector.image.shared import (
@@ -17,10 +18,12 @@ from docxaicorrector.runtime.artifact_retention import prune_artifact_dir
 def resolve_paragraph_boundary_ai_review_settings(
     *,
     allowed_modes: tuple[str, ...] | list[str] | set[str],
+    app_config: Mapping[str, object] | None = None,
 ) -> tuple[bool, str, int, int, int, str]:
     from docxaicorrector.core.config import get_model_role_value, load_app_config
 
-    app_config = load_app_config()
+    if app_config is None:
+        app_config = load_app_config()
     enabled = bool(app_config.get("paragraph_boundary_ai_review_enabled", False))
     mode = str(app_config.get("paragraph_boundary_ai_review_mode", "off") or "off")
     if mode not in allowed_modes:
@@ -160,17 +163,32 @@ def build_ai_review_request_payload(
     }
 
 
+def _default_ai_review_client(model: str) -> object:
+    # F9b: resolve the client through the provider-aware model-selector factory so
+    # boundary AI review uses the SAME resolved provider as the rest of the run,
+    # instead of the global openai-only get_client(). The AI review calls the
+    # responses API, hence the "responses_text" capability.
+    from docxaicorrector.core.config import get_client_for_model_selector
+
+    return get_client_for_model_selector(model, "responses_text")
+
+
 def request_ai_review_recommendations(
     *,
     model: str,
     candidates: list[dict[str, object]],
     timeout_seconds: int,
     max_tokens_per_candidate: int,
+    client_factory: Callable[[str], object] | None = None,
 ) -> dict[str, dict[str, object]]:
-    from docxaicorrector.core.config import get_client
+    # Prefer the provider-aware factory/client threaded in by the caller; fall back to
+    # the provider-aware default derived from the model selector. Never the global
+    # openai-only get_client().
+    resolve_client = client_factory if client_factory is not None else _default_ai_review_client
+    client = resolve_client(model)
 
     response = call_responses_create_with_retry(
-        get_client(),
+        client,
         build_ai_review_request_payload(
             model=model,
             candidates=candidates,
@@ -320,6 +338,7 @@ def run_paragraph_boundary_ai_review(
     max_age_seconds: int,
     max_count: int,
     request_ai_review_recommendations_impl=request_ai_review_recommendations,
+    client_factory: Callable[[str], object] | None = None,
 ) -> str | None:
     candidates = build_ai_review_candidates(
         raw_blocks=raw_blocks,
@@ -333,12 +352,16 @@ def run_paragraph_boundary_ai_review(
 
     recommendations: dict[str, dict[str, object]] = {}
     error_code: str | None = None
+    # Only forward client_factory when supplied, so injected impls that do not accept
+    # the parameter (e.g. the extraction-layer wrapper) keep working unchanged.
+    extra_impl_kwargs: dict[str, object] = {} if client_factory is None else {"client_factory": client_factory}
     try:
         recommendations = request_ai_review_recommendations_impl(
             model=model,
             candidates=candidates,
             timeout_seconds=timeout_seconds,
             max_tokens_per_candidate=max_tokens_per_candidate,
+            **extra_impl_kwargs,
         )
     except Exception as exc:
         error_code = extract_model_response_error_code(exc)

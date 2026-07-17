@@ -1,8 +1,8 @@
 {
-  "pythonVersion": "3.13",
+  "pythonVersion": "3.12",
   "typeCheckingMode": "basic",
   "include": ["src/docxaicorrector", "tests", "benchmark_projects", "scripts"],
-  "exclude": ["docs", "**/node_modules", "**/__pycache__"],
+  "exclude": ["docs", "**/node_modules", "**/__pycache__", "**/run_reader_cleanup_replay_experiment.py"],
   "extraPaths": ["src", "."],
   "reportMissingImports": "warning",
   "reportMissingModuleSource": "none"

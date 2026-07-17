@@ -4,7 +4,6 @@
 /.github/pull_request_template.md @slawa19
 /.github/workflows/ci.yml @slawa19
 /.github/workflows/real-document-validation.yml @slawa19
-/.github/workflows/real-document-ai-structure-smoke.yml @slawa19
 /.vscode/tasks.json @slawa19
 /scripts/test.sh @slawa19
 /scripts/project-control-wsl.sh @slawa19
@@ -20,6 +19,7 @@
 /src/docxaicorrector/processing/processing_runtime.py @slawa19
 /src/docxaicorrector/processing/processing_service.py @slawa19
 /src/docxaicorrector/generation/_generation.py @slawa19
+/src/docxaicorrector/generation/formatting_restoration.py @slawa19
 /src/docxaicorrector/generation/formatting_transfer.py @slawa19
 /src/docxaicorrector/generation/formatting_diagnostics_retention.py @slawa19
 /src/docxaicorrector/generation/message_formatting.py @slawa19

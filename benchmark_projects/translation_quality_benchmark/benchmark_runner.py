@@ -35,15 +35,12 @@ REPO_ROOT = _resolve_repo_root()
 SRC_ROOT = REPO_ROOT / "src"
 
 
-def _ensure_src_first_import_order(repo_root: Path, src_root: Path) -> None:
-    repo_root_str = str(repo_root)
-    src_root_str = str(src_root)
-    sys.path[:] = [entry for entry in sys.path if entry not in {repo_root_str, src_root_str}]
-    sys.path.insert(0, repo_root_str)
-    sys.path.insert(0, src_root_str)
+# Make the repo-root shared bootstrap importable, then pin src first (F5/R29).
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+from docxaicorrector_bootstrap import ensure_src_first_import_order
 
-
-_ensure_src_first_import_order(REPO_ROOT, SRC_ROOT)
+ensure_src_first_import_order(REPO_ROOT, SRC_ROOT)
 
 OpenAI = None
 processing_runtime = None
@@ -79,10 +76,12 @@ def _ensure_project_imports() -> None:
 
     import docxaicorrector.processing.processing_runtime as imported_processing_runtime
     from docxaicorrector.core.config import load_project_dotenv as imported_load_project_dotenv
-    from docxaicorrector.document._document import (
+    from docxaicorrector.document.extraction import (
         build_document_text as imported_build_document_text,
-        build_semantic_blocks as imported_build_semantic_blocks,
         extract_document_content_with_normalization_reports as imported_extract_document_content_with_normalization_reports,
+    )
+    from docxaicorrector.document.semantic_blocks import (
+        build_semantic_blocks as imported_build_semantic_blocks,
     )
     from docxaicorrector.generation.openai_response_utils import (
         collect_response_text_traversal as imported_collect_response_text_traversal,

@@ -29,7 +29,7 @@ from docxaicorrector.ui.recommended_text_settings import (
     normalize_manual_text_settings_override,
     normalize_recommendation_snapshot,
 )
-from docxaicorrector.core.config import load_app_config
+from docxaicorrector.core.config import get_client, get_client_for_model_selector, load_app_config
 from docxaicorrector.ui.app_runtime import (
     build_preparation_request_marker,
     drain_preparation_events as _drain_preparation_events,
@@ -41,6 +41,7 @@ from docxaicorrector.ui.app_runtime import (
     start_background_processing,
 )
 from docxaicorrector.core.logger import fail_critical, log_event, present_error
+from docxaicorrector.processing.preparation import resolve_prepared_cache_client_identity
 from docxaicorrector.processing.processing_runtime import (
     freeze_uploaded_file,
     freeze_uploaded_file_lightweight,
@@ -52,6 +53,7 @@ from docxaicorrector.runtime.state import (
     apply_recommended_widget_state,
     clear_recommended_text_settings_notice_token,
     consume_recommended_text_settings_pending_widget_state,
+    clear_preparation_failure,
     get_latest_preparation_summary,
     get_manual_text_settings_override_for_token,
     get_latest_image_mode,
@@ -301,6 +303,40 @@ def _resolve_sidebar_settings(sidebar_result: object) -> SidebarSettings:
     raise RuntimeError("Некорректный контракт render_sidebar().")
 
 
+def _build_preparation_client_factory(app_config: dict[str, object] | None):
+    """Build the tenant client-factory for the UI preparation path (spec 039 B).
+
+    Mirrors ``ProcessingService._prepare_client_factory`` so boundary review +
+    extraction honor per-tenant endpoint/credentials (via the app_config-scoped
+    model selector) instead of falling back to the module-global client. The UI
+    has a single global client resolution (``core.config.get_client`` /
+    ``get_client_for_model_selector``); passing THAT resolution explicitly closes
+    the implicit-global fallback in preparation.
+    """
+    resolved_app_config = app_config or {}
+
+    def _prepare_client_factory(selector: str | None = None, required_capability: str = "responses_text", *, config_like=None) -> object:
+        resolved_config = resolved_app_config if config_like is None else config_like
+        resolved_selector = str(selector or resolved_app_config.get("structure_recognition_model", "") or "").strip()
+        if resolved_selector:
+            return get_client_for_model_selector(
+                resolved_selector,
+                required_capability,
+                config_like=resolved_config,
+            )
+        return get_client()
+
+    # Spec 041 P1-1: tag the tenant factory with a secret-safe fingerprint of the
+    # AI-boundary-review client it resolves. The UI preparation paths thread this factory
+    # (not a param) through prepare_run_context[/for_background]; prepare_document_for_processing
+    # reads `.prepared_cache_identity` as a fallback so the shared cache isolates tenants that
+    # share this app_config but differ by credential/endpoint. "" (review off / fail-open)
+    # drives the safe shared-cache bypass rather than a cross-tenant collision.
+    _prepare_client_factory.prepared_cache_identity = resolve_prepared_cache_client_identity(app_config)  # type: ignore[attr-defined]
+
+    return _prepare_client_factory
+
+
 def _start_background_preparation(
     *,
     uploaded_payload,
@@ -320,6 +356,7 @@ def _start_background_preparation(
         keep_all_image_variants=keep_all_image_variants,
         processing_operation=processing_operation,
         app_config=app_config,
+        client_factory=_build_preparation_client_factory(app_config),
     )
 
 
@@ -795,6 +832,9 @@ def main() -> None:
             preparation_error = str(st.session_state.get("last_error") or "")
             if preparation_error:
                 st.error(preparation_error)
+            if st.button(t("app.button_reprocess"), use_container_width=True):
+                clear_preparation_failure(preparation_request_marker)
+                st.rerun()
             render_live_status()
             render_run_log()
             _finalize_app_frame()
@@ -866,10 +906,12 @@ def main() -> None:
                 image_mode=image_mode,
                 keep_all_image_variants=keep_all_image_variants,
                 processing_operation=processing_operation,
+                app_config=app_config,
                 session_state=st.session_state,
                 reset_run_state_fn=reset_run_state,
                 fail_critical_fn=fail_critical,
                 log_event_fn=log_event,
+                client_factory=_build_preparation_client_factory(app_config),
             )
         except Exception as exc:
             user_message = present_error(

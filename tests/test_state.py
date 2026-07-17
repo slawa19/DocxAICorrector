@@ -491,6 +491,54 @@ def test_mark_preparation_started_clears_previous_failure_and_context(monkeypatc
     assert session_state.prepared_run_context is None
 
 
+def test_clear_preparation_failure_reenables_preparation_for_same_marker(monkeypatch):
+    marker = "report.docx:3:ba7816bf8f01cfea:6000"
+    session_state = SessionState(
+        prepared_run_context=None,
+        preparation_input_marker=marker,
+        preparation_failed_marker=marker,
+        last_error="bad archive",
+        last_background_error={"kind": "bad archive"},
+        processing_outcome="failed",
+    )
+    monkeypatch.setattr(state.st, "session_state", session_state)
+
+    # Precondition: a recorded failure blocks re-starting preparation for the file.
+    assert state.should_start_preparation_for_marker(marker) is False
+    assert state.is_preparation_failed_for_marker(marker) is True
+
+    state.clear_preparation_failure(marker)
+
+    assert session_state.preparation_failed_marker == ""
+    assert session_state.preparation_input_marker == ""
+    assert session_state.prepared_run_context is None
+    assert session_state.last_error == ""
+    assert session_state.last_background_error is None
+    assert session_state.processing_outcome == "idle"
+    # The next frame is now free to re-start preparation for the same file.
+    assert state.should_start_preparation_for_marker(marker) is True
+    assert state.is_preparation_failed_for_marker(marker) is False
+
+
+def test_clear_preparation_failure_ignores_unrelated_marker(monkeypatch):
+    session_state = SessionState(
+        prepared_run_context=None,
+        preparation_input_marker="report.docx:3:ba7816bf8f01cfea:6000",
+        preparation_failed_marker="report.docx:3:ba7816bf8f01cfea:6000",
+        last_error="bad archive",
+        last_background_error={"kind": "bad archive"},
+        processing_outcome="failed",
+    )
+    monkeypatch.setattr(state.st, "session_state", session_state)
+
+    state.clear_preparation_failure("other.docx:9:deadbeef:6000")
+
+    # A stale retry for a different marker must not wipe the current failure.
+    assert session_state.preparation_failed_marker == "report.docx:3:ba7816bf8f01cfea:6000"
+    assert session_state.last_error == "bad archive"
+    assert session_state.processing_outcome == "failed"
+
+
 def test_apply_preparation_complete_initializes_segment_runtime_state(monkeypatch):
     session_state = SessionState(selected_source_token="")
     monkeypatch.setattr(state.st, "session_state", session_state)

@@ -40,15 +40,12 @@ RUNS_ROOT = ARTIFACT_ROOT / "runs"
 DEFAULT_CONFIG_PATH = BENCHMARK_ROOT / "benchmark_config.toml"
 
 
-def _ensure_src_first_import_order(repo_root: Path, src_root: Path) -> None:
-    repo_root_str = str(repo_root)
-    src_root_str = str(src_root)
-    sys.path[:] = [entry for entry in sys.path if entry not in {repo_root_str, src_root_str}]
-    sys.path.insert(0, repo_root_str)
-    sys.path.insert(0, src_root_str)
+# Make the repo-root shared bootstrap importable, then pin src first (F5/R29).
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+from docxaicorrector_bootstrap import ensure_src_first_import_order
 
-
-_ensure_src_first_import_order(REPO_ROOT, SRC_ROOT)
+ensure_src_first_import_order(REPO_ROOT, SRC_ROOT)
 
 OpenAI = None
 processing_runtime = None
@@ -98,7 +95,7 @@ def _ensure_project_imports() -> None:
         load_app_config as imported_load_app_config,
         load_project_dotenv as imported_load_project_dotenv,
     )
-    from docxaicorrector.document._document import (
+    from docxaicorrector.document.extraction import (
         extract_document_content_with_normalization_reports as imported_extract_document_content_with_normalization_reports,
     )
     from docxaicorrector.document.segments import detect_document_segments as imported_detect_document_segments
@@ -1955,7 +1952,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     run_dir.mkdir(parents=True, exist_ok=True)
 
     _write_text(run_dir / "judge_prompt.snapshot.txt", config.judge_prompt_text + "\n")
-    production_prompt_path = REPO_ROOT / "prompts" / "structure_recognition_system.txt"
+    production_prompt_path = REPO_ROOT / "src" / "docxaicorrector" / "resources" / "prompts" / "structure_recognition_system.txt"
     _write_text(run_dir / "resolved_production_structure_prompt.snapshot.txt", production_prompt_path.read_text(encoding="utf-8"))
     _write_text(run_dir / "benchmark_config.snapshot.toml", _render_config_snapshot(config))
 

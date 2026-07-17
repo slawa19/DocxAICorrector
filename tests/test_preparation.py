@@ -1038,3 +1038,623 @@ def test_prepare_document_for_processing_emits_heartbeat_during_extraction(monke
     assert len(heartbeat_events) >= 2, [e.get("detail") for e in events]
     # Progress value during heartbeat should match the wired-in 0.22 anchor.
     assert all(abs(float(e["progress"]) - 0.22) < 1e-6 for e in heartbeat_events)
+
+
+def test_build_prepared_source_key_distinguishes_target_language():
+    # F14: two keys differing ONLY by target_language must be distinct so a run with a
+    # different target language cannot serve another run's cached glossary/context.
+    key_ru = preparation.build_prepared_source_key(
+        "token",
+        6000,
+        target_language="ru",
+        processing_operation="edit",
+        paragraph_boundary_normalization_mode="high_only",
+        paragraph_boundary_ai_review_mode="off",
+        source_language="en",
+        translation_domain="general",
+        structure_recovery_enabled=False,
+        structure_recovery_mode="legacy",
+    )
+    key_de = preparation.build_prepared_source_key(
+        "token",
+        6000,
+        target_language="de",
+        processing_operation="edit",
+        paragraph_boundary_normalization_mode="high_only",
+        paragraph_boundary_ai_review_mode="off",
+        source_language="en",
+        translation_domain="general",
+        structure_recovery_enabled=False,
+        structure_recovery_mode="legacy",
+    )
+    assert key_ru != key_de
+
+
+def test_build_prepared_source_key_distinguishes_translation_domain():
+    # F14: keys differing ONLY by translation_domain must be distinct.
+    key_general = preparation.build_prepared_source_key(
+        "token", 6000, translation_domain="general", source_language="en", target_language="ru"
+    )
+    key_legal = preparation.build_prepared_source_key(
+        "token", 6000, translation_domain="legal", source_language="en", target_language="ru"
+    )
+    assert key_general != key_legal
+
+
+def test_build_prepared_source_key_distinguishes_structure_recovery_mode():
+    # F14: keys differing ONLY by structure-recovery mode must be distinct.
+    key_legacy = preparation.build_prepared_source_key(
+        "token", 6000, structure_recovery_enabled=True, structure_recovery_mode="legacy"
+    )
+    key_ai_first = preparation.build_prepared_source_key(
+        "token", 6000, structure_recovery_enabled=True, structure_recovery_mode="ai_first"
+    )
+    assert key_legacy != key_ai_first
+
+
+def test_build_prepared_source_key_identical_settings_collide():
+    # F14: identical settings must still produce the SAME key (cache hit preserved).
+    key_a = preparation.build_prepared_source_key(
+        "token",
+        6000,
+        target_language="ru",
+        source_language="en",
+        translation_domain="general",
+        structure_recovery_enabled=True,
+        structure_recovery_mode="ai_first",
+    )
+    key_b = preparation.build_prepared_source_key(
+        "token",
+        6000,
+        target_language="ru",
+        source_language="en",
+        translation_domain="general",
+        structure_recovery_enabled=True,
+        structure_recovery_mode="ai_first",
+    )
+    assert key_a == key_b
+
+
+def test_build_prepared_source_key_distinguishes_ai_review_model():
+    # F10: with AI review ON, two keys differing ONLY by the AI-review model must be
+    # distinct — a different structure-recognition model shapes a different cached
+    # AI-review artifact, so it must not be served from another model's prepared entry.
+    key_model_a = preparation.build_prepared_source_key(
+        "token",
+        6000,
+        paragraph_boundary_ai_review_mode="review_only",
+        paragraph_boundary_ai_review_model="gpt-model-a",
+        paragraph_boundary_ai_review_candidate_limit=200,
+        paragraph_boundary_ai_review_timeout_seconds=30,
+        paragraph_boundary_ai_review_max_tokens_per_candidate=120,
+    )
+    key_model_b = preparation.build_prepared_source_key(
+        "token",
+        6000,
+        paragraph_boundary_ai_review_mode="review_only",
+        paragraph_boundary_ai_review_model="gpt-model-b",
+        paragraph_boundary_ai_review_candidate_limit=200,
+        paragraph_boundary_ai_review_timeout_seconds=30,
+        paragraph_boundary_ai_review_max_tokens_per_candidate=120,
+    )
+    assert key_model_a != key_model_b
+
+
+def test_build_prepared_source_key_distinguishes_ai_review_candidate_limit():
+    # F10: with AI review ON, two keys differing ONLY by candidate-limit must be distinct.
+    key_limit_200 = preparation.build_prepared_source_key(
+        "token",
+        6000,
+        paragraph_boundary_ai_review_mode="review_only",
+        paragraph_boundary_ai_review_model="gpt-model-a",
+        paragraph_boundary_ai_review_candidate_limit=200,
+        paragraph_boundary_ai_review_timeout_seconds=30,
+        paragraph_boundary_ai_review_max_tokens_per_candidate=120,
+    )
+    key_limit_500 = preparation.build_prepared_source_key(
+        "token",
+        6000,
+        paragraph_boundary_ai_review_mode="review_only",
+        paragraph_boundary_ai_review_model="gpt-model-a",
+        paragraph_boundary_ai_review_candidate_limit=500,
+        paragraph_boundary_ai_review_timeout_seconds=30,
+        paragraph_boundary_ai_review_max_tokens_per_candidate=120,
+    )
+    assert key_limit_200 != key_limit_500
+
+
+def test_build_prepared_source_key_ai_review_off_ignores_model_and_limits():
+    # F10: when AI review is OFF the model/limits do not shape any cached artifact, so
+    # keys that differ only by those knobs must still COLLIDE (no needless invalidation).
+    key_off_a = preparation.build_prepared_source_key(
+        "token",
+        6000,
+        paragraph_boundary_ai_review_mode="off",
+        paragraph_boundary_ai_review_model="gpt-model-a",
+        paragraph_boundary_ai_review_candidate_limit=200,
+        paragraph_boundary_ai_review_timeout_seconds=30,
+        paragraph_boundary_ai_review_max_tokens_per_candidate=120,
+    )
+    key_off_b = preparation.build_prepared_source_key(
+        "token",
+        6000,
+        paragraph_boundary_ai_review_mode="off",
+        paragraph_boundary_ai_review_model="gpt-model-b",
+        paragraph_boundary_ai_review_candidate_limit=999,
+        paragraph_boundary_ai_review_timeout_seconds=99,
+        paragraph_boundary_ai_review_max_tokens_per_candidate=999,
+    )
+    assert key_off_a == key_off_b
+
+
+def test_build_prepared_source_key_identical_ai_review_settings_collide():
+    # F10: identical AI-review settings still produce the SAME key (cache hit preserved).
+    key_a = preparation.build_prepared_source_key(
+        "token",
+        6000,
+        paragraph_boundary_ai_review_mode="review_only",
+        paragraph_boundary_ai_review_model="gpt-model-a",
+        paragraph_boundary_ai_review_candidate_limit=200,
+        paragraph_boundary_ai_review_timeout_seconds=30,
+        paragraph_boundary_ai_review_max_tokens_per_candidate=120,
+    )
+    key_b = preparation.build_prepared_source_key(
+        "token",
+        6000,
+        paragraph_boundary_ai_review_mode="review_only",
+        paragraph_boundary_ai_review_model="gpt-model-a",
+        paragraph_boundary_ai_review_candidate_limit=200,
+        paragraph_boundary_ai_review_timeout_seconds=30,
+        paragraph_boundary_ai_review_max_tokens_per_candidate=120,
+    )
+    assert key_a == key_b
+
+
+def test_resolve_scan_origin_cache_key_defaults_and_folds_overrides():
+    # F2: the default resolves to the general conservative thresholds, and an
+    # app_config override changes the resolved fingerprint.
+    default_key = preparation._resolve_scan_origin_cache_key(None)
+    assert default_key == "10:0.1:1.5"
+    assert preparation._DEFAULT_SCAN_ORIGIN_CACHE_KEY == default_key
+    tuned_key = preparation._resolve_scan_origin_cache_key(
+        {"scan_origin_multi_column_absolute_min": 25}
+    )
+    assert tuned_key == "25:0.1:1.5"
+    assert tuned_key != default_key
+
+
+def test_build_prepared_source_key_distinguishes_scan_origin_threshold():
+    # F2: two keys differing ONLY by a scan-origin threshold must be distinct — the
+    # thresholds change which tables are flattened, shaping different prepared structure.
+    key_default = preparation.build_prepared_source_key(
+        "token", 6000, scan_origin_key="10:0.1:1.5"
+    )
+    key_tuned = preparation.build_prepared_source_key(
+        "token", 6000, scan_origin_key="20:0.1:1.5"
+    )
+    assert key_default != key_tuned
+
+
+def test_build_prepared_source_key_identical_scan_origin_collide():
+    # F2: identical scan-origin thresholds still produce the SAME key (cache hit preserved).
+    key_a = preparation.build_prepared_source_key("token", 6000, scan_origin_key="10:0.1:1.5")
+    key_b = preparation.build_prepared_source_key("token", 6000, scan_origin_key="10:0.1:1.5")
+    assert key_a == key_b
+
+
+def test_build_editing_jobs_adapter_propagates_internal_type_error_without_retry():
+    # F25: a target that accepts the signature-checked kwargs but raises TypeError
+    # DEEP inside must propagate and be invoked exactly once (no swallow/retry).
+    calls = {"count": 0}
+
+    def flaky_build_editing_jobs(blocks, *, max_chars, processing_operation="edit", structure_phase="pre_ai_diagnostic"):
+        calls["count"] += 1
+        raise TypeError("internal boom, not a signature mismatch")
+
+    original = preparation.build_editing_jobs
+    preparation.build_editing_jobs = flaky_build_editing_jobs
+    try:
+        with pytest.raises(TypeError, match="internal boom"):
+            preparation._build_editing_jobs_with_optional_operation(
+                blocks=["b"],
+                max_chars=6000,
+                processing_operation="edit",
+                structure_phase="pre_ai_diagnostic",
+            )
+    finally:
+        preparation.build_editing_jobs = original
+    assert calls["count"] == 1
+
+
+def test_build_semantic_blocks_adapter_propagates_internal_type_error_without_retry():
+    # F25: same contract for the semantic-blocks adapter.
+    calls = {"count": 0}
+
+    def flaky_build_semantic_blocks(paragraphs, *, max_chars, relations, hard_boundary_paragraph_ids=None, structure_phase="pre_ai_diagnostic"):
+        calls["count"] += 1
+        raise TypeError("internal boom, not a signature mismatch")
+
+    original = preparation.build_semantic_blocks
+    preparation.build_semantic_blocks = flaky_build_semantic_blocks
+    try:
+        with pytest.raises(TypeError, match="internal boom"):
+            preparation._build_semantic_blocks_with_optional_boundaries(
+                paragraphs=["p"],
+                max_chars=6000,
+                relations=[],
+                hard_boundary_paragraph_ids=set(),
+                structure_phase="pre_ai_diagnostic",
+            )
+    finally:
+        preparation.build_semantic_blocks = original
+    assert calls["count"] == 1
+
+
+def test_detect_segments_adapter_propagates_internal_type_error_without_retry():
+    # F25: same contract for the segment-detection adapter.
+    calls = {"count": 0}
+
+    def flaky_detect_document_segments(paragraphs, *, source_content_hash16, chunk_size, structure_phase="pre_ai_diagnostic"):
+        calls["count"] += 1
+        raise TypeError("internal boom, not a signature mismatch")
+
+    original = preparation.detect_document_segments
+    preparation.detect_document_segments = flaky_detect_document_segments
+    try:
+        with pytest.raises(TypeError, match="internal boom"):
+            preparation._detect_document_segments_with_optional_phase(
+                paragraphs=["p"],
+                source_content_hash16="abc123",
+                chunk_size=6000,
+                structure_phase="pre_ai_diagnostic",
+            )
+    finally:
+        preparation.detect_document_segments = original
+    assert calls["count"] == 1
+
+
+# --- Spec 040: preparation cache client/credential (tenant) identity ---------------------
+
+# Byte-for-byte snapshot of ``build_prepared_source_key('tok123', 1200)`` captured from the
+# pre-040 implementation. The client-identity axis MUST be a no-op when empty: an empty
+# identity may never change this string (no cache invalidation, single-tenant unchanged).
+_PRE_040_REPRESENTATIVE_KEY = (
+    "tok123:1200:high_only:off:phase2_default:"
+    "epigraph_attribution,image_caption,table_caption,toc_region:lc=1:3:80:pv=2:pk=4:"
+    "sl=en:tl=ru:td=general:sr=0:srm=legacy:so=10:0.1:1.5:ar=off"
+)
+
+
+def test_build_prepared_source_key_client_identity_empty_is_byte_identical():
+    # Anti-regression: default (no client_identity) == explicit "" == the pre-040 output.
+    default_key = preparation.build_prepared_source_key("tok123", 1200)
+    empty_identity_key = preparation.build_prepared_source_key("tok123", 1200, client_identity="")
+    assert default_key == empty_identity_key
+    assert default_key == _PRE_040_REPRESENTATIVE_KEY
+    assert ":cid=" not in default_key
+
+
+def test_build_prepared_source_key_appends_cid_segment_when_identity_present():
+    base_key = preparation.build_prepared_source_key("tok123", 1200)
+    keyed = preparation.build_prepared_source_key("tok123", 1200, client_identity="abcd1234abcd1234")
+    # Non-empty identity appends exactly one stable ``:cid=<identity>`` segment; the rest of
+    # the key is untouched, so keyed == base + suffix.
+    assert keyed == f"{base_key}:cid=abcd1234abcd1234"
+    assert keyed != base_key
+    # Different identity -> different key; same identity -> same key.
+    other = preparation.build_prepared_source_key("tok123", 1200, client_identity="ffff0000ffff0000")
+    assert other != keyed
+    same = preparation.build_prepared_source_key("tok123", 1200, client_identity="abcd1234abcd1234")
+    assert same == keyed
+
+
+def test_resolve_prepared_cache_client_identity_off_returns_empty(monkeypatch):
+    # AI review OFF -> the prepared document is NOT client-dependent -> identity "" no matter
+    # what credentials are in the environment (sharing preserved, key byte-identical).
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-whatever-value")
+    cfg = preparation.load_app_config()
+    identity = preparation._resolve_prepared_cache_client_identity(
+        resolved_config=cfg,
+        ai_review_effective_enabled=False,
+        ai_review_model="gpt-4o-mini",
+    )
+    assert identity == ""
+
+
+def test_resolve_prepared_cache_client_identity_differs_by_env_secret(monkeypatch):
+    # With AI review ON, two runs whose ONLY difference is os.environ[api_key_env] must
+    # produce DIFFERENT 16-hex identities; an unchanged secret produces the SAME identity.
+    cfg = preparation.load_app_config()
+
+    def _identity() -> str:
+        return preparation._resolve_prepared_cache_client_identity(
+            resolved_config=cfg,
+            ai_review_effective_enabled=True,
+            ai_review_model="gpt-4o-mini",
+        )
+
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-tenant-A")
+    identity_a = _identity()
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-tenant-B")
+    identity_b = _identity()
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-tenant-A")
+    identity_a_again = _identity()
+
+    assert len(identity_a) == 16 and all(c in "0123456789abcdef" for c in identity_a)
+    assert len(identity_b) == 16 and all(c in "0123456789abcdef" for c in identity_b)
+    assert identity_a != identity_b
+    assert identity_a == identity_a_again
+
+    # And the identity flows through into the full cache key.
+    key_a = preparation.build_prepared_source_key(
+        "token", 6000, paragraph_boundary_ai_review_mode="review_only", client_identity=identity_a
+    )
+    key_b = preparation.build_prepared_source_key(
+        "token", 6000, paragraph_boundary_ai_review_mode="review_only", client_identity=identity_b
+    )
+    assert key_a != key_b
+
+
+def test_resolve_prepared_cache_client_identity_never_leaks_secret(monkeypatch):
+    # Secret-safety: the raw api-key value must NEVER appear in the identity or the key,
+    # only its sha256. Also assert the env NAME's value cannot be recovered by substring.
+    secret = "SUPER-SECRET-KEY-VALUE-1234567890"
+    monkeypatch.setenv("OPENAI_API_KEY", secret)
+    cfg = preparation.load_app_config()
+    identity = preparation._resolve_prepared_cache_client_identity(
+        resolved_config=cfg,
+        ai_review_effective_enabled=True,
+        ai_review_model="gpt-4o-mini",
+    )
+    assert identity != ""
+    assert secret not in identity
+    key = preparation.build_prepared_source_key(
+        "token", 6000, paragraph_boundary_ai_review_mode="review_only", client_identity=identity
+    )
+    assert secret not in key
+
+
+def test_resolve_prepared_cache_client_identity_fails_open_on_bad_selector(monkeypatch):
+    # Fail-open: an unresolvable selector (unknown provider) must return "" rather than
+    # raise — cache-key construction can never blow up the request.
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-anything")
+    cfg = preparation.load_app_config()
+    identity = preparation._resolve_prepared_cache_client_identity(
+        resolved_config=cfg,
+        ai_review_effective_enabled=True,
+        ai_review_model="bogusprovider:some-model",
+    )
+    assert identity == ""
+
+
+def _build_sentinel_prepared_document(marker: str) -> "preparation.PreparedDocumentData":
+    return preparation.PreparedDocumentData(
+        source_text=marker,
+        paragraphs=[],
+        image_assets=[],
+        relations=[],
+        jobs=[],
+        prepared_source_key="",
+    )
+
+
+def test_prepared_cache_no_cross_credential_bleed(monkeypatch):
+    # End-to-end (shared cache): prime the shared cache under identity A (review ON), then a
+    # second run with the SAME token/settings but a DIFFERENT api-key value must NOT read
+    # identity A's prepared document; a THIRD run back on identity A DOES hit the cache.
+    # setup_function() already cleared the shared cache before this test.
+    cfg = preparation.load_app_config()
+
+    def _identity() -> str:
+        return preparation._resolve_prepared_cache_client_identity(
+            resolved_config=cfg,
+            ai_review_effective_enabled=True,
+            ai_review_model="gpt-4o-mini",
+        )
+
+    def _key(identity: str) -> str:
+        return preparation.build_prepared_source_key(
+            "token-shared",
+            6000,
+            paragraph_boundary_ai_review_mode="review_only",
+            paragraph_boundary_ai_review_model="gpt-4o-mini",
+            client_identity=identity,
+        )
+
+    # Identity A primes the shared cache.
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-tenant-A")
+    identity_a = _identity()
+    key_a = _key(identity_a)
+    preparation._store_cached_prepared_document(
+        session_state=None,
+        prepared_source_key=key_a,
+        prepared_document=_build_sentinel_prepared_document("tenant-A-document"),
+    )
+
+    # Identity B: different credential -> different key -> shared-cache MISS (reserves inflight).
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-tenant-B")
+    identity_b = _identity()
+    key_b = _key(identity_b)
+    assert identity_b != identity_a
+    assert key_b != key_a
+    cached_b, in_flight_b, _level_b = preparation._read_or_reserve_cached_prepared_document(
+        session_state=None,
+        prepared_source_key=key_b,
+    )
+    assert cached_b is None  # no cross-credential bleed
+    assert in_flight_b is not None
+    preparation._release_shared_preparation(key_b)  # tidy up the reservation
+
+    # Identity A again: same credential -> same key -> shared-cache HIT with A's document.
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-tenant-A")
+    identity_a_again = _identity()
+    assert identity_a_again == identity_a
+    cached_a, in_flight_a, level_a = preparation._read_or_reserve_cached_prepared_document(
+        session_state=None,
+        prepared_source_key=_key(identity_a_again),
+    )
+    assert in_flight_a is None
+    assert cached_a is not None
+    assert level_a == "shared"
+    assert cached_a.source_text == "tenant-A-document"
+
+
+def _install_counting_prepared_builder(monkeypatch) -> dict[str, int]:
+    # Spec 041 P1-1 tests drive prepare_document_for_processing itself but stub the heavy
+    # pipeline: each real build increments the counter and returns a fresh sentinel so a cache
+    # HIT (no build) is distinguishable from a MISS (rebuild) by the source_text marker.
+    builds = {"count": 0}
+
+    def _fake_build(*_args, **_kwargs):
+        builds["count"] += 1
+        return _build_sentinel_prepared_document(f"prepared-doc-{builds['count']}")
+
+    monkeypatch.setattr(preparation, "_prepare_document_for_processing", _fake_build)
+    return builds
+
+
+def test_prepare_document_shared_cache_isolates_injected_tenant_identity(monkeypatch):
+    # Injected factory + AI review ON + explicit client_cache_identity: distinct tenant
+    # identities MUST NOT share one shared-cache entry even with the SAME token/app_config.
+    preparation.clear_preparation_cache(clear_shared=True)
+    config = _make_ai_first_config(
+        paragraph_boundary_ai_review_enabled=True,
+        paragraph_boundary_ai_review_mode="review_only",
+    )
+    builds = _install_counting_prepared_builder(monkeypatch)
+    payload = _build_uploaded_payload("report.docx", b"docx-bytes", "shared-token")
+
+    def factory_a(*_a, **_k):
+        return object()
+
+    def factory_b(*_a, **_k):
+        return object()
+
+    # Tenant A primes the shared cache.
+    result_a1 = preparation.prepare_document_for_processing(
+        uploaded_payload=payload,
+        chunk_size=6000,
+        app_config=config,
+        session_state=None,
+        client_factory=factory_a,
+        client_cache_identity="idA",
+    )
+    assert builds["count"] == 1
+
+    # Tenant B: different identity, SAME token/app_config -> MISS (must not receive A's doc).
+    result_b1 = preparation.prepare_document_for_processing(
+        uploaded_payload=payload,
+        chunk_size=6000,
+        app_config=config,
+        session_state=None,
+        client_factory=factory_b,
+        client_cache_identity="idB",
+    )
+    assert builds["count"] == 2
+    assert result_b1.source_text != result_a1.source_text
+
+    # Tenant A again: same identity -> shared-cache HIT (no rebuild), serves A's document.
+    result_a2 = preparation.prepare_document_for_processing(
+        uploaded_payload=payload,
+        chunk_size=6000,
+        app_config=config,
+        session_state=None,
+        client_factory=factory_a,
+        client_cache_identity="idA",
+    )
+    assert builds["count"] == 2
+    assert result_a2.source_text == result_a1.source_text
+    assert result_a2.cached is True
+
+
+def test_prepare_document_bypasses_shared_cache_when_injected_identity_unknown(monkeypatch):
+    # Injected factory + AI review ON + NO identity: the shared (process-global) tier must be
+    # bypassed entirely, so a second identical run does not serve the first run's entry.
+    preparation.clear_preparation_cache(clear_shared=True)
+    config = _make_ai_first_config(
+        paragraph_boundary_ai_review_enabled=True,
+        paragraph_boundary_ai_review_mode="review_only",
+    )
+    builds = _install_counting_prepared_builder(monkeypatch)
+    payload = _build_uploaded_payload("report.docx", b"docx-bytes", "shared-token")
+
+    def factory(*_a, **_k):
+        return object()
+
+    first = preparation.prepare_document_for_processing(
+        uploaded_payload=payload,
+        chunk_size=6000,
+        app_config=config,
+        session_state=None,
+        client_factory=factory,
+        client_cache_identity=None,
+    )
+    assert builds["count"] == 1
+
+    second = preparation.prepare_document_for_processing(
+        uploaded_payload=payload,
+        chunk_size=6000,
+        app_config=config,
+        session_state=None,
+        client_factory=factory,
+        client_cache_identity=None,
+    )
+    # No shared hit: each run rebuilds and nothing is published to the shared tier.
+    assert builds["count"] == 2
+    assert second.cached is False
+    assert second.source_text != first.source_text
+    assert len(preparation._shared_preparation_cache) == 0
+
+
+def test_prepare_document_config_path_uses_shared_cache_with_config_identity(monkeypatch):
+    # Regression: client_factory=None (config-default path) with AI review ON must keep using
+    # the config-derived identity + shared cache exactly as spec 040 (byte-identical key).
+    preparation.clear_preparation_cache(clear_shared=True)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-config-tenant")
+    config = dict(preparation.load_app_config())
+    config["paragraph_boundary_ai_review_enabled"] = True
+    config["paragraph_boundary_ai_review_mode"] = "review_only"
+    builds = _install_counting_prepared_builder(monkeypatch)
+    payload = _build_uploaded_payload("report.docx", b"docx-bytes", "config-token")
+
+    first = preparation.prepare_document_for_processing(
+        uploaded_payload=payload,
+        chunk_size=6000,
+        app_config=config,
+        session_state=None,
+        client_factory=None,
+    )
+    assert builds["count"] == 1
+
+    second = preparation.prepare_document_for_processing(
+        uploaded_payload=payload,
+        chunk_size=6000,
+        app_config=config,
+        session_state=None,
+        client_factory=None,
+    )
+    # Shared cache HIT: no rebuild, and the stored key folds the config-derived identity.
+    assert builds["count"] == 1
+    assert second.cached is True
+    assert first.source_text == second.source_text
+
+    (
+        _enabled,
+        _mode,
+        _candidate_limit,
+        _timeout_seconds,
+        _max_tokens,
+        ai_review_model,
+    ) = preparation.resolve_paragraph_boundary_ai_review_settings(
+        allowed_modes=preparation.PARAGRAPH_BOUNDARY_AI_REVIEW_MODE_VALUES,
+        app_config=config,
+    )
+    config_identity = preparation._resolve_prepared_cache_client_identity(
+        resolved_config=config,
+        ai_review_effective_enabled=True,
+        ai_review_model=ai_review_model,
+    )
+    assert config_identity != ""
+    assert len(preparation._shared_preparation_cache) == 1
+    stored_key = next(iter(preparation._shared_preparation_cache))
+    assert f":cid={config_identity}" in stored_key

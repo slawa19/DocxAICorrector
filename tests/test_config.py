@@ -1,3 +1,4 @@
+import hashlib
 import os
 import threading
 from pathlib import Path
@@ -21,10 +22,14 @@ from tests.conftest import (
 
 def test_constants_paths_resolve_to_repo_root() -> None:
     repo_root = Path(__file__).resolve().parents[1]
+    resources = repo_root / "src" / "docxaicorrector" / "resources"
 
+    # Working root (writable) stays at the repo root in a checkout.
     assert constants.BASE_DIR == repo_root
-    assert constants.CONFIG_PATH == repo_root / "config.toml"
-    assert constants.PROMPTS_DIR == repo_root / "prompts"
+    # Read-only resources are packaged (spec 025 / A2), not at the repo root.
+    assert constants.RESOURCE_ROOT == resources
+    assert constants.CONFIG_PATH == resources / "config.toml"
+    assert constants.PROMPTS_DIR == resources / "prompts"
     assert constants.ENV_PATH == repo_root / ".env"
     assert constants.RUN_DIR == repo_root / ".run"
     assert constants.UI_RESULT_ARTIFACTS_DIR == repo_root / ".run" / "ui_results"
@@ -1340,6 +1345,110 @@ def test_get_provider_client_builds_openrouter_client(monkeypatch, tmp_path):
     }
 
 
+def test_get_provider_client_rekeys_on_secret_rotation(monkeypatch, tmp_path):
+    # F9a: rotating the credential (same env NAME, new VALUE) must return a FRESH client,
+    # while an unchanged secret keeps the cached client. The secret VALUE must never appear
+    # in the cache key — only its sha256 fingerprint.
+    dotenv_path = tmp_path / ".env"
+    dotenv_path.write_text("", encoding="utf-8")
+
+    created: list[object] = []
+
+    class FakeOpenAI:
+        def __init__(self, *, api_key):
+            self.api_key = api_key
+            created.append(self)
+
+    monkeypatch.setattr(config, "ENV_PATH", dotenv_path)
+    monkeypatch.setattr(config, "OpenAI", FakeOpenAI)
+    monkeypatch.setattr(config, "_CLIENT", None)
+    monkeypatch.setattr(config, "_CLIENT_CACHE_KEY", None)
+    monkeypatch.setattr(config, "_CLIENTS_BY_PROVIDER", {})
+
+    monkeypatch.setenv("OPENAI_API_KEY", "secret-value-A")
+    first = config.get_provider_client("openai")
+    first_again = config.get_provider_client("openai")
+    assert first is first_again  # unchanged secret -> same cached client
+    assert len(created) == 1
+
+    # Rotate the credential in place (same env NAME, new VALUE).
+    monkeypatch.setenv("OPENAI_API_KEY", "secret-value-B")
+    rotated = config.get_provider_client("openai")
+    assert rotated is not first  # rotated secret -> fresh client
+    assert len(created) == 2
+    assert getattr(rotated, "api_key") == "secret-value-B"
+
+    # Re-requesting under the rotated secret is stable (cached again).
+    rotated_again = config.get_provider_client("openai")
+    assert rotated_again is rotated
+    assert len(created) == 2
+
+    # The raw secret (or any of its values) must never be embedded in the cache key.
+    provider_config = config.get_provider_config("openai", None)
+    key = config._build_provider_client_cache_key("openai", provider_config)
+    assert "secret-value-A" not in key
+    assert "secret-value-B" not in key
+    assert hashlib.sha256(b"secret-value-B").hexdigest() in key
+
+    # An unset env var re-keys via a stable sentinel (distinct from any set value).
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    unset_key = config._build_provider_client_cache_key("openai", provider_config)
+    assert unset_key != key
+    assert "secret-value-B" not in unset_key
+
+
+def test_get_provider_client_no_toctou_between_prelock_fingerprint_and_build(monkeypatch, tmp_path):
+    # F16-TOCTOU: the cache key must be derived from the SAME secret read that builds the
+    # client. Here the credential "rotates" between the pre-lock fingerprint read (still sees
+    # the stale secret A) and the in-lock read that builds the client (sees the rotated
+    # secret B). A client built from secret B must be stored under a key that fingerprints
+    # secret B — never under the stale secret-A key (which would let a later A-secret caller
+    # receive a B-secret client, or vice versa).
+    dotenv_path = tmp_path / ".env"
+    dotenv_path.write_text("", encoding="utf-8")
+
+    created: list[object] = []
+
+    class FakeOpenAI:
+        def __init__(self, *, api_key):
+            self.api_key = api_key
+            created.append(self)
+
+    monkeypatch.setattr(config, "ENV_PATH", dotenv_path)
+    monkeypatch.setattr(config, "OpenAI", FakeOpenAI)
+    monkeypatch.setattr(config, "_CLIENT", None)
+    monkeypatch.setattr(config, "_CLIENT_CACHE_KEY", None)
+    monkeypatch.setattr(config, "_CLIENTS_BY_PROVIDER", {})
+
+    fingerprint_a = hashlib.sha256(b"secret-value-A").hexdigest()
+    fingerprint_b = hashlib.sha256(b"secret-value-B").hexdigest()
+
+    # The in-lock read (``os.getenv`` for the api key + ``_fingerprint_secret_value``) sees
+    # the ROTATED secret B — this is what actually builds the client.
+    monkeypatch.setenv("OPENAI_API_KEY", "secret-value-B")
+    # The pre-lock fingerprint read still sees the STALE secret A (simulating a rotation
+    # that lands after the fingerprint was computed but before the in-lock read).
+    monkeypatch.setattr(config, "_fingerprint_provider_secret", lambda api_key_env: fingerprint_a)
+
+    client = config.get_provider_client("openai")
+
+    # The client was genuinely built from the in-lock (rotated) secret B.
+    assert getattr(client, "api_key") == "secret-value-B"
+    assert len(created) == 1
+
+    # Exactly one cache entry, and its key fingerprints secret B — the secret the client
+    # actually holds — NOT the stale pre-lock secret A.
+    stored_keys = list(config._CLIENTS_BY_PROVIDER.keys())
+    assert len(stored_keys) == 1
+    stored_key = stored_keys[0]
+    assert config._CLIENTS_BY_PROVIDER[stored_key] is client
+    assert fingerprint_b in stored_key
+    assert fingerprint_a not in stored_key
+    # The raw secret is never embedded in the key.
+    assert "secret-value-A" not in stored_key
+    assert "secret-value-B" not in stored_key
+
+
 def test_load_project_dotenv_overrides_empty_runtime_env_with_repo_value(monkeypatch, tmp_path):
     dotenv_path = tmp_path / ".env"
     dotenv_path.write_text("OPENROUTER_API_KEY=test-openrouter-key\n", encoding="utf-8")
@@ -1350,6 +1459,33 @@ def test_load_project_dotenv_overrides_empty_runtime_env_with_repo_value(monkeyp
     config.load_project_dotenv()
 
     assert os.getenv("OPENROUTER_API_KEY") == "test-openrouter-key"
+
+
+def test_load_project_dotenv_does_not_override_nonempty_runtime_env(monkeypatch, tmp_path):
+    # Deploy safety: a real injected secret must win over a stray checked-in .env
+    # (precedence environment > .env). Spec 024 / S3.
+    dotenv_path = tmp_path / ".env"
+    dotenv_path.write_text("OPENAI_API_KEY=dotenv-value\n", encoding="utf-8")
+
+    monkeypatch.setattr(config, "ENV_PATH", dotenv_path)
+    monkeypatch.setenv("OPENAI_API_KEY", "real-injected-secret")
+
+    config.load_project_dotenv()
+
+    assert os.getenv("OPENAI_API_KEY") == "real-injected-secret"
+
+
+def test_load_project_dotenv_is_idempotent_for_set_value(monkeypatch, tmp_path):
+    dotenv_path = tmp_path / ".env"
+    dotenv_path.write_text("OPENAI_API_KEY=dotenv-value\n", encoding="utf-8")
+
+    monkeypatch.setattr(config, "ENV_PATH", dotenv_path)
+    monkeypatch.setenv("OPENAI_API_KEY", "real-injected-secret")
+
+    config.load_project_dotenv()
+    config.load_project_dotenv()
+
+    assert os.getenv("OPENAI_API_KEY") == "real-injected-secret"
 
 
 def _provider_contract_test_args(*, paragraph_boundary_enabled: bool):
@@ -1490,3 +1626,53 @@ def test_validate_provider_model_contracts_allows_openrouter_structure_recogniti
         },
         paragraph_boundary_settings={"paragraph_boundary_ai_review_enabled": False},
     )
+
+
+def test_get_provider_client_cache_is_config_aware(monkeypatch, tmp_path):
+    # F16: caching keyed only by provider name returned a stale client when a second
+    # call passed a different resolved config (base_url/timeout/headers). The cache must
+    # be keyed on the full resolved client fingerprint instead.
+    dotenv_path = tmp_path / ".env"
+    dotenv_path.write_text("OPENAI_API_KEY=test-key\n", encoding="utf-8")
+
+    created = []
+
+    class FakeOpenAI:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+            created.append(self)
+
+    monkeypatch.setattr(config, "ENV_PATH", dotenv_path)
+    monkeypatch.setattr(config, "OpenAI", FakeOpenAI)
+    monkeypatch.setattr(config, "_CLIENT", None)
+    monkeypatch.setattr(config, "_CLIENTS_BY_PROVIDER", {})
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+
+    def _registry(base_url, timeout):
+        return config.ProviderRegistry(
+            openai=config.ProviderConfig(
+                name="openai",
+                enabled=True,
+                api_key_env="OPENAI_API_KEY",
+                base_url=base_url,
+                timeout_seconds=timeout,
+            ),
+            openrouter=config.ProviderConfig(
+                name="openrouter", enabled=False, api_key_env="OPENROUTER_API_KEY"
+            ),
+        )
+
+    registry_a = _registry("https://a.example/v1", 30.0)
+    registry_b = _registry("https://b.example/v1", 90.0)
+
+    client_a = config.get_provider_client("openai", config_like=registry_a)
+    client_b = config.get_provider_client("openai", config_like=registry_b)
+
+    # Different resolved config => different client instances (no stale reuse).
+    assert client_a is not client_b
+    assert len(created) == 2
+
+    # Identical config => same cached instance returned.
+    client_a_again = config.get_provider_client("openai", config_like=registry_a)
+    assert client_a_again is client_a
+    assert len(created) == 2

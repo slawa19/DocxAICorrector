@@ -1,5 +1,6 @@
 import base64
 import json
+import logging
 import os
 from io import BytesIO
 from pathlib import Path
@@ -7,6 +8,7 @@ from typing import cast
 
 import docxaicorrector.core.config as config
 import docxaicorrector.generation.formatting_diagnostics_retention as formatting_diagnostics_retention
+import docxaicorrector.generation.formatting_mapping as formatting_mapping
 import docxaicorrector.generation.formatting_transfer as formatting_transfer
 from docx import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH
@@ -16,7 +18,7 @@ from docx.shared import Inches
 from docx.shared import Pt
 
 from docxaicorrector.core.models import ParagraphUnit, RelationNormalizationReport
-from docxaicorrector.document._document import build_document_text, extract_document_content_from_docx
+from docxaicorrector.document.extraction import build_document_text, extract_document_content_from_docx
 from docxaicorrector.generation.formatting_transfer import (
     _build_output_formatting_diagnostics,
     _build_unmapped_target_residual_diagnostics,
@@ -354,8 +356,8 @@ def test_map_source_target_paragraphs_passes_post_ai_final_phase_to_relation_inf
             decisions=[],
         )
 
-    monkeypatch.setattr(formatting_transfer, "build_paragraph_relations", fake_build_paragraph_relations)
-    monkeypatch.setattr(formatting_transfer, "resolve_effective_relation_kinds", lambda: ())
+    monkeypatch.setattr(formatting_mapping, "build_paragraph_relations", fake_build_paragraph_relations)
+    monkeypatch.setattr(formatting_mapping, "resolve_effective_relation_kinds", lambda: ())
 
     source_paragraphs = [
         ParagraphUnit(text="Contents", role="body", structural_role="body", paragraph_id="p0000")
@@ -3266,6 +3268,32 @@ def test_write_formatting_diagnostics_artifact_prunes_expired_runtime_files_only
     assert artifact_path is not None
     assert sorted(path.name for path in runtime_dir.glob("*.json")) == [Path(artifact_path).name]
     assert test_artifact.exists()
+
+
+def test_write_formatting_diagnostics_artifact_logs_warning_on_write_failure(tmp_path, monkeypatch):
+    # A non-serializable diagnostics value makes ``json.dumps(payload, ...)`` raise
+    # TypeError WHILE it is inside the writer's try block, exercising the fail-open
+    # ``except Exception`` branch (returns None but logs a structured WARNING).
+    recorded_events: list[tuple[int, str, str, dict[str, object]]] = []
+
+    def _record_log_event(level, event, message, **context):
+        recorded_events.append((level, event, message, context))
+
+    monkeypatch.setattr(formatting_diagnostics_retention, "log_event", _record_log_event)
+
+    result = formatting_diagnostics_retention.write_formatting_diagnostics_artifact(
+        stage="restore",
+        diagnostics={"unserializable": {1, 2, 3}},
+        diagnostics_dir=tmp_path,
+        now_epoch_ms=200_000,
+    )
+
+    assert result is None  # fail-open: does not raise
+    assert [event for _, event, _, _ in recorded_events] == ["formatting_diagnostics_write_failed"]
+    level, _event, _message, context = recorded_events[0]
+    assert level == logging.WARNING
+    assert context["stage"] == "restore"
+    assert context["error_type"] == "TypeError"
 
 
 def test_preserve_source_paragraph_properties_applies_minimal_output_formatting():

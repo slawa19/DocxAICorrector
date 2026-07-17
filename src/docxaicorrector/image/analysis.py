@@ -1,5 +1,5 @@
 import base64
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from io import BytesIO
 import logging
 
@@ -39,6 +39,230 @@ HEURISTIC_EDGE_RATIO_THRESHOLD = 0.06
 HEURISTIC_BRIGHT_RATIO_THRESHOLD = 0.82
 HEURISTIC_COLORFUL_RATIO_THRESHOLD = 0.12
 
+# --- Decompression-bomb / pixel-budget guard (finding F8) --------------------
+# The raster decode paths here and in image.generation previously called
+# Image.open(...).load() with no upper bound, so an accidentally or maliciously
+# huge image (a "decompression bomb") could exhaust memory before any check ran,
+# and a real DecompressionBombError would be swallowed by the broad
+# `except Exception`. We inspect the header (Image.open(...).size — no .load(),
+# no pixel decode) and reject BEFORE decoding when the reported geometry exceeds
+# a conservative budget. Constants are named so they are easy to tune.
+MAX_IMAGE_DIMENSION_PX = 12000
+MAX_IMAGE_MEGAPIXELS = 50.0
+# Upper bound on the decoded raster; Pillow expands to at most 4 bytes/pixel
+# (RGBA). 50 MP * 4 bytes ~= 200 MiB, so 256 MiB leaves conservative headroom.
+MAX_DECODED_IMAGE_BYTES = 256 * 1024 * 1024
+
+# Upper bound on a base64-encoded image payload BEFORE it is decoded (round-5
+# finding 5). ``base64.b64decode`` allocates ~3/4 of the encoded length as raw
+# compressed-file bytes, and that file is then handed to Pillow. A provider that
+# returns a malicious/degenerate payload would otherwise force that allocation
+# before any pixel-budget gate could run. 64 MiB of base64 decodes to ~48 MiB of
+# compressed image bytes — far above any legitimate provider output (a few MB)
+# while keeping the pre-decode allocation bounded.
+MAX_ENCODED_IMAGE_BYTES = 64 * 1024 * 1024
+
+
+def encoded_image_within_byte_budget(encoded_payload: str | bytes, *, stage: str) -> bool:
+    """Return True when a base64 image payload is small enough to decode.
+
+    Checked BEFORE ``base64.b64decode`` so an oversized encoded payload is
+    rejected without allocating its decoded bytes. On rejection a structured
+    WARNING is logged and False is returned so the caller can degrade safely
+    (skip / keep the original) instead of decoding it.
+    """
+    encoded_length = len(encoded_payload)
+    if encoded_length > MAX_ENCODED_IMAGE_BYTES:
+        log_event(
+            logging.WARNING,
+            "image_encoded_byte_budget_exceeded",
+            "Base64 image payload превышает byte budget; отклоняю без декодирования.",
+            stage=stage,
+            encoded_length=encoded_length,
+            max_encoded_bytes=MAX_ENCODED_IMAGE_BYTES,
+        )
+        return False
+    return True
+
+
+def image_within_pixel_budget(image_bytes: bytes, *, stage: str) -> bool:
+    """Return True when the image header is within the decode budget.
+
+    Reads only the header (``Image.open(...).size`` — no ``.load()``, so no pixel
+    decode) and rejects an oversized image BEFORE Pillow allocates the full
+    raster. On rejection a structured WARNING is logged and False is returned so
+    the caller can skip the image instead of decoding it. A real
+    ``DecompressionBombError`` raised while reading the header is logged
+    (surfaced), never silently swallowed. Header bytes that are simply
+    corrupt/unsupported return True so the caller's own decode+except path keeps
+    its prior behaviour.
+    """
+    try:
+        with Image.open(BytesIO(image_bytes)) as header_image:
+            width, height = header_image.size
+    except Image.DecompressionBombError as exc:
+        log_event(
+            logging.WARNING,
+            "image_pixel_budget_decompression_bomb",
+            "Pillow пометил изображение как decompression bomb при чтении заголовка; изображение пропущено без декодирования.",
+            stage=stage,
+            error_type=exc.__class__.__name__,
+            error_message=str(exc),
+        )
+        return False
+    except Exception:
+        # Header unreadable for an unrelated reason (corrupt/unsupported bytes).
+        # Defer to the caller's existing decode+except handling.
+        return True
+
+    megapixels = (width * height) / 1_000_000.0
+    estimated_decoded_bytes = width * height * 4
+    if (
+        width > MAX_IMAGE_DIMENSION_PX
+        or height > MAX_IMAGE_DIMENSION_PX
+        or megapixels > MAX_IMAGE_MEGAPIXELS
+        or estimated_decoded_bytes > MAX_DECODED_IMAGE_BYTES
+    ):
+        log_event(
+            logging.WARNING,
+            "image_pixel_budget_exceeded",
+            "Изображение превышает pixel budget; пропускаю без полного декодирования.",
+            stage=stage,
+            width=width,
+            height=height,
+            megapixels=round(megapixels, 2),
+            estimated_decoded_bytes=estimated_decoded_bytes,
+            max_dimension_px=MAX_IMAGE_DIMENSION_PX,
+            max_megapixels=MAX_IMAGE_MEGAPIXELS,
+            max_decoded_bytes=MAX_DECODED_IMAGE_BYTES,
+        )
+        return False
+    return True
+
+
+def _read_image_header_geometry(image_bytes: bytes) -> tuple[int, int] | None:
+    """Return ``(width, height)`` read from the header only (no ``.load()``).
+
+    Returns None when the header cannot be read (corrupt/unsupported bytes or a
+    decompression bomb); callers use this purely for aggregate accounting AFTER
+    the per-image :func:`image_within_pixel_budget` gate has already run, so a
+    None here simply means "do not accumulate" rather than "reject".
+    """
+    try:
+        with Image.open(BytesIO(image_bytes)) as header_image:
+            width, height = header_image.size
+    except Exception:
+        return None
+    return width, height
+
+
+# --- Per-document aggregate pixel budget (finding F8) -------------------------
+# The per-image guard above bounds any SINGLE image, but a document with many
+# large-but-individually-legal images could still force an unbounded total
+# decode. ``ImageBudget`` is a small accumulator threaded through the
+# per-document image loop that caps the TOTAL decoded pixels/bytes for one
+# document. Once the running total would exceed the cap, further images are
+# skipped with a WARNING (never silently dropped). Defaults are generous
+# multiples of the per-image cap so normal documents are unaffected.
+DEFAULT_DOCUMENT_MAX_DECODED_MEGAPIXELS = 400.0
+DEFAULT_DOCUMENT_MAX_DECODED_BYTES = 2 * 1024 * 1024 * 1024
+
+
+@dataclass
+class ImageBudget:
+    """Aggregate decoded-pixel budget for a single document's image loop."""
+
+    max_total_megapixels: float = DEFAULT_DOCUMENT_MAX_DECODED_MEGAPIXELS
+    max_total_decoded_bytes: int = DEFAULT_DOCUMENT_MAX_DECODED_BYTES
+    used_megapixels: float = 0.0
+    used_decoded_bytes: int = 0
+    admitted_images: int = 0
+    skipped_images: int = 0
+
+    def admit(self, image_bytes: bytes, *, stage: str) -> bool:
+        """Return True if the image fits BOTH the per-image and document budgets.
+
+        Applies the header-only per-image gate first (which also surfaces a
+        decompression bomb), then charges the image's decoded footprint against
+        the running document total. When either check fails the image is skipped
+        (a WARNING is logged) and False is returned so the caller can fall back
+        to the original raster instead of decoding/transmitting the image.
+        """
+        if not image_within_pixel_budget(image_bytes, stage=stage):
+            self.skipped_images += 1
+            return False
+        return self.charge(image_bytes, stage=stage)
+
+    def charge(self, image_bytes: bytes, *, stage: str) -> bool:
+        """Charge an already per-image-gated raster against the document total.
+
+        Unlike :meth:`admit` this does NOT re-run the per-image pixel gate — the
+        caller must have applied it (or ``image_within_pixel_budget``) already.
+        Used for GENERATED (provider-returned) rasters so they charge the SAME
+        per-document budget as embedded images (round-5 finding 5): a single
+        shared budget across embedded + generated. Returns False (and logs a
+        WARNING) when adding this image would exceed the document budget, so the
+        caller can degrade to the original instead of emitting the generated image.
+        """
+        geometry = _read_image_header_geometry(image_bytes)
+        if geometry is None:
+            # Header unreadable for an unrelated reason; the per-image gate has
+            # already deferred to the caller's decode+except path. Do not charge
+            # the aggregate for bytes we could not measure.
+            return True
+
+        width, height = geometry
+        megapixels = (width * height) / 1_000_000.0
+        decoded_bytes = width * height * 4
+        projected_megapixels = self.used_megapixels + megapixels
+        projected_bytes = self.used_decoded_bytes + decoded_bytes
+        if (
+            projected_megapixels > self.max_total_megapixels
+            or projected_bytes > self.max_total_decoded_bytes
+        ):
+            self.skipped_images += 1
+            log_event(
+                logging.WARNING,
+                "image_document_pixel_budget_exceeded",
+                "Документ превысил суммарный pixel budget; дальнейшие изображения пропускаются без декодирования.",
+                stage=stage,
+                width=width,
+                height=height,
+                image_megapixels=round(megapixels, 2),
+                used_megapixels=round(self.used_megapixels, 2),
+                used_decoded_bytes=self.used_decoded_bytes,
+                max_total_megapixels=self.max_total_megapixels,
+                max_total_decoded_bytes=self.max_total_decoded_bytes,
+            )
+            return False
+
+        self.used_megapixels = projected_megapixels
+        self.used_decoded_bytes = projected_bytes
+        self.admitted_images += 1
+        return True
+
+
+def _build_over_budget_analysis_result() -> ImageAnalysisResult:
+    """Safe, degraded analysis for an image that exceeds the decode budget.
+
+    Returned WITHOUT decoding or base64-encoding the image, so an oversized /
+    decompression-bomb payload is never handed to the vision API. The image is
+    routed to safe mode and kept as-is downstream.
+    """
+    return ImageAnalysisResult(
+        image_type="mixed_or_ambiguous",
+        image_subtype=None,
+        contains_text=False,
+        semantic_redraw_allowed=False,
+        confidence=0.0,
+        structured_parse_confidence=0.0,
+        prompt_key="mixed_or_ambiguous_fallback",
+        render_strategy="safe_mode",
+        structure_summary="Image exceeds the decode pixel budget; kept in safe mode without decoding.",
+        extracted_labels=[],
+        fallback_reason="pixel_budget_exceeded",
+    )
+
 
 def analyze_image(
     image_bytes: bytes,
@@ -51,6 +275,19 @@ def analyze_image(
     non_latin_text_bypass_threshold: int = NON_LATIN_DENSE_TEXT_BYPASS_THRESHOLD,
     budget=None,
 ) -> ImageAnalysisResult:
+    # Mandatory pixel-budget gate BEFORE any decode / base64 / vision upload:
+    # an over-budget or decompression-bomb image is skipped here so it is never
+    # base64-encoded or sent to the vision API (finding F8).
+    if not image_within_pixel_budget(image_bytes, stage="image_analysis"):
+        log_event(
+            logging.WARNING,
+            "image_analysis_skipped_over_budget",
+            "Изображение превышает pixel budget; анализ пропущен без декодирования и без отправки в vision API.",
+            model=model,
+            mime_type=mime_type,
+        )
+        return _build_over_budget_analysis_result()
+
     detected_mime_type = mime_type or detect_image_mime_type(image_bytes)
     visual_features = _extract_visual_features(image_bytes)
     heuristic_result = _build_heuristic_analysis(detected_mime_type, visual_features)
@@ -479,6 +716,8 @@ def _normalize_render_strategy(route_hint: object, fallback_strategy: str) -> tu
 
 
 def _extract_visual_features(image_bytes: bytes) -> dict[str, float] | None:
+    if not image_within_pixel_budget(image_bytes, stage="image_visual_feature_extraction"):
+        return None
     try:
         with Image.open(BytesIO(image_bytes)) as source_image:
             source_image.load()

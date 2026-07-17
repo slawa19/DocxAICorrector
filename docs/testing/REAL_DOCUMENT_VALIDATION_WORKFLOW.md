@@ -83,12 +83,6 @@ Manual GitHub Actions system-deps path:
 GitHub Actions -> Real Document Validation
 ```
 
-Manual GitHub Actions AI-heavy paths:
-
-```text
-GitHub Actions -> Real Document AI Structure Smoke
-```
-
 Canonical WSL CLI path:
 
 ```bash
@@ -107,11 +101,9 @@ This script does three things for you:
 2. activates the WSL project environment at `.venv`;
 3. exports `PYTHONPATH=.` before launching `tests/artifacts/real_document_pipeline/run_lietaer_validation.py` with unbuffered output.
 
-The quality-gate script runs only the exceptional pytest entry point `tests/test_real_document_quality_gate.py` with `-vv -s`, so the terminal shows the live validator stream and pytest automatically fails the gate when the validator exits non-zero or writes an invalid manifest/report.
+The quality-gate script runs the maintained real-document corpus selector `tests/test_real_document_validation_corpus.py` with `-vv -s` under `DOCXAI_REQUIRE_REAL_DOCUMENT_CAPABILITIES=1`, so the terminal shows the live pytest stream and the capability-sensitive corpus extraction/structural checks fail the gate (instead of skipping) when a required conversion capability, real-document source, or structural expectation is missing.
 
 The manual `Real Document Validation` workflow is the Phase 4 system-deps path. It installs `system-requirements.apt`, forces `DOCXAI_REQUIRE_REAL_DOCUMENT_CAPABILITIES=1`, runs the no-skip full-book PDF extraction selectors for `mazzucato-pdf-full-benchmark` and `lietaer-pdf-full-benchmark`, and uploads `.run/` plus `tests/artifacts/real_document_pipeline/` for inspection.
-
-The manual `Real Document AI Structure Smoke` workflow is the Phase 8 AI-heavy structure gate. It installs the same runtime dependencies, requires the repository `OPENAI_API_KEY` secret, sets `DOCXAI_RUN_REAL_DOCUMENT_STRUCTURE_RECOGNITION=1`, runs `bash scripts/test.sh tests/test_real_document_structure_recognition_integration.py -vv`, and uploads `.run/` plus `tests/artifacts/real_document_pipeline/` for inspection.
 
 ## Validation Tiers
 
@@ -135,26 +127,15 @@ The AI structure-recognition stage (#2) and its real-document smoke test
 (`tests/test_real_document_structure_recognition_integration.py`) were removed
 (2026-06-22). Structure roles are now produced deterministically by the importer, so
 there is no AI structure-recognition smoke path or `DOCXAI_RUN_REAL_DOCUMENT_STRUCTURE_RECOGNITION`
-toggle.
+toggle. The `Real Document AI Structure Smoke` GitHub Actions workflow that invoked the
+removed test has also been retired; there is no active AI structure-recognition smoke
+workflow, task, or pytest selector.
 
-Preferred user-visible execution paths:
+Use the maintained user-visible real-document paths instead:
 
 ```text
 Tasks: Run Task -> Run Lietaer Real Validation
 Tasks: Run Task -> Run Lietaer Real Validation AI
-```
-
-Preferred CI/operator execution path when a persistent artifact trail is needed:
-
-```text
-GitHub Actions -> Real Document AI Structure Smoke
-```
-
-Ad-hoc pytest path when an explicit smoke assertion is needed:
-
-```bash
-DOCXAI_RUN_REAL_DOCUMENT_STRUCTURE_RECOGNITION=1 \
-bash scripts/test.sh tests/test_real_document_structure_recognition_integration.py -vv
 ```
 
 ## Environment Contract

@@ -314,7 +314,9 @@ def build_paragraph_units_from_text_spans(
     emitted = _consolidate_cross_role_continuations(
         emitted, dehyphenation_evidence=dehyphenation_evidence
     )
-    emitted = _reconcile_structural_headings(emitted)
+    emitted = _reconcile_structural_headings(
+        emitted, body_font_size=layout_profile.body_font_size
+    )
 
     for logical_index, paragraph in enumerate(emitted):
         _assign_pdf_paragraph_identity(paragraph, logical_index)
@@ -549,7 +551,9 @@ def _classify_span_role(
         and previous_span.page_number == span.page_number
         and _is_soft_wrap_continuation_pair(_normalize_text(previous_span.text), text)
     )
-    if not soft_wrap_continuation and _looks_like_chapter_heading(span):
+    if not soft_wrap_continuation and _looks_like_chapter_heading(
+        span, layout_profile=layout_profile
+    ):
         # Deterministic "Chapter <roman/number>" promotion runs before the TOC and
         # heading-typography passes: a bare "Chapter VI" number line otherwise looks
         # like a TOC entry (roman read as a page ref) and a body-sized chapter line
@@ -1314,16 +1318,46 @@ def _has_terminal_sentence_punctuation(text: str) -> bool:
 
 _NUMBERED_SECTION_HEADING_PATTERN = re.compile(r"^(?P<number>\d{1,3})\.\s+(?P<title>[A-ZА-Я].*)$")
 
-# A chapter heading line: the latin word "Chapter" followed by a roman numeral or
-# an arabic number, either standing alone ("Chapter VI") or carrying an inline
-# title after a dash/colon ("Chapter I — Why this report, now?"). Source PDFs are
-# English on import, so only the latin spelling is matched. Roman numerals are
+# --------------------------------------------------------------------------- #
+# Heading-marker lexicon (Constitution VII).                                    #
+# --------------------------------------------------------------------------- #
+# Structural heading detection recognises a small set of MARKER WORDS that open a
+# chapter / part / front- or back-matter divider. Those words are collected here
+# as a single, documented, EXTENSIBLE lexicon instead of being buried as literals
+# inside individual regexes, so the language/literal dependency is explicit and
+# auditable, and so the lexicon can be resolved per language via configuration in
+# future (an override map keyed by document language would slot in here without
+# touching the pattern-construction logic below).
+#
+# Honest residual limitation: the default lexicon is ENGLISH because source PDFs
+# are English on import (translation happens downstream). This is still a
+# language-dependent heuristic — a fully language-agnostic structural detector is
+# out of scope here (it would key off typography/layout, not marker words) and
+# remains future work. Lifting the words into named constants removes the
+# "buried per-book/English literal" smell and keeps the current behaviour exactly;
+# it does not, by itself, make the detector language-independent.
+
+# Word(s) that open a chapter heading ("Chapter VI"). Matched case-insensitively
+# (the whole chapter pattern carries re.IGNORECASE), so casing is not enumerated.
+_CHAPTER_MARKER_WORDS: tuple[str, ...] = ("chapter",)
+# Word(s) that open a part divider ("PART II", "Part 3"). Matched only in the
+# "PART"/"Part" casings — never lowercase "part", which is ordinary prose
+# ("part i think"). Casing IS enumerated here because the part patterns are
+# case-sensitive by design.
+_PART_MARKER_WORDS: tuple[str, ...] = ("PART", "Part")
+
+_CHAPTER_MARKER_ALT = "|".join(_CHAPTER_MARKER_WORDS)
+_PART_MARKER_ALT = "|".join(_PART_MARKER_WORDS)
+
+# A chapter heading line: a chapter marker word followed by a roman numeral or an
+# arabic number, either standing alone ("Chapter VI") or carrying an inline title
+# after a dash/colon ("Chapter I — Why this report, now?"). Roman numerals are
 # restricted to a sane chapter range (I…XXXIX worth of letters) and uppercase to
 # avoid matching prose words; the title tail, when present, must be introduced by
 # a dash or colon (never by a bare space, which would swallow running prose that
-# merely begins with the word "Chapter").
+# merely begins with the marker word).
 _CHAPTER_HEADING_PATTERN = re.compile(
-    r"^chapter\s+(?:[IVXLC]{1,7}|\d{1,3})"
+    r"^(?:" + _CHAPTER_MARKER_ALT + r")\s+(?:[IVXLC]{1,7}|\d{1,3})"
     r"(?:\s*[–—:.\-]\s*\S.*)?$",
     re.IGNORECASE,
 )
@@ -1331,33 +1365,34 @@ _CHAPTER_HEADING_PATTERN = re.compile(
 # a line is the chapter number itself, never a TOC entry (the trailing roman/arabic
 # IS the chapter number, not a page reference following a title).
 _CHAPTER_NUMBER_ONLY_PATTERN = re.compile(
-    r"^chapter\s+(?:[IVXLC]{1,7}|\d{1,3})$",
+    r"^(?:" + _CHAPTER_MARKER_ALT + r")\s+(?:[IVXLC]{1,7}|\d{1,3})$",
     re.IGNORECASE,
 )
 
-# A part divider ("PART II", "Part 3", "PART I: LOCAL ECONOMICS"). Source PDFs are
-# English on import, so only the latin spelling is matched. The number is a roman
-# numeral or an arabic number; a title tail, when present, must be introduced by a
-# separator (colon/dash), never by a bare space — a body line that merely opens
+# A part divider ("PART II", "Part 3", "PART I: LOCAL ECONOMICS"). The number is a
+# roman numeral or an arabic number; a title tail, when present, must be introduced
+# by a separator (colon/dash), never by a bare space — a body line that merely opens
 # "Part I of the book describes…" must not be swallowed (the lowercase continuation
 # after the number is neither empty nor a separator, so it never matches). Roman
 # numerals are uppercase to avoid matching lowercase prose ("part i think").
 _PART_DIVIDER_PATTERN = re.compile(
-    r"^(?:PART|Part)\s+(?:[IVXLCM]{1,7}|\d{1,3})\b(?P<tail>.*)$"
+    r"^(?:" + _PART_MARKER_ALT + r")\s+(?:[IVXLCM]{1,7}|\d{1,3})\b(?P<tail>.*)$"
 )
 # The bare "Part <roman/number>" divider with nothing after it. Like a bare chapter
 # number line, the trailing roman/arabic IS the part number, never a page reference,
 # so such a line is a divider even though the trailing-page TOC pattern also matches.
 _PART_NUMBER_ONLY_PATTERN = re.compile(
-    r"^(?:PART|Part)\s+(?:[IVXLCM]{1,7}|\d{1,3})$"
+    r"^(?:" + _PART_MARKER_ALT + r")\s+(?:[IVXLCM]{1,7}|\d{1,3})$"
 )
 _STRUCTURAL_TAIL_SEPARATORS = ":—–‒-"
 
-# Standalone front/back-matter section markers. A line that IS exactly one of these
-# words (optionally followed by a separator + short title) is a structural section
-# heading, not prose. A mid-sentence use ("Conclusion In addition to the specific
-# examples…") is excluded: the marker is followed by a space and more words rather
-# than by end-of-line or a separator, so it stays body.
+# Standalone front/back-matter section markers — part of the heading-marker
+# lexicon documented above (English default, extensible per language via config;
+# see the _CHAPTER_MARKER_WORDS / _PART_MARKER_WORDS block). A line that IS exactly
+# one of these words (optionally followed by a separator + short title) is a
+# structural section heading, not prose. A mid-sentence use ("Conclusion In
+# addition to the specific examples…") is excluded: the marker is followed by a
+# space and more words rather than by end-of-line or a separator, so it stays body.
 _SECTION_MARKER_WORDS = frozenset(
     {
         "conclusion",
@@ -1372,8 +1407,10 @@ _SECTION_MARKER_WORDS = frozenset(
 )
 _SECTION_MARKER_LINE_PATTERN = re.compile(r"^(?P<word>[A-Za-z]+)\b(?P<tail>.*)$")
 
-# The notes / bibliography section that opens the back-matter. In it, per-chapter
-# endnote groupings render as bare "Chapter N" labels that are NOT chapter openers.
+# The notes / bibliography section that opens the back-matter — part of the
+# heading-marker lexicon documented above (English default, extensible per
+# language via config). In it, per-chapter endnote groupings render as bare
+# "Chapter N" labels that are NOT chapter openers.
 _NOTES_BACKMATTER_MARKERS = frozenset(
     {"notes", "endnotes", "references", "bibliography"}
 )
@@ -1416,7 +1453,11 @@ def _text_is_bare_chapter_number(text: str) -> bool:
 
 
 def _bare_chapter_number_token(text: str) -> str | None:
-    match = re.match(r"^chapter\s+([IVXLC]{1,7}|\d{1,3})$", text.strip(), re.IGNORECASE)
+    match = re.match(
+        r"^(?:" + _CHAPTER_MARKER_ALT + r")\s+([IVXLC]{1,7}|\d{1,3})$",
+        text.strip(),
+        re.IGNORECASE,
+    )
     return match.group(1).upper() if match else None
 
 
@@ -1440,7 +1481,58 @@ def _demote_heading_to_body(unit: ParagraphUnit) -> None:
     unit.boundary_rationale = "demoted_spurious_chapter_heading"
 
 
-def _reconcile_structural_headings(units: list[ParagraphUnit]) -> list[ParagraphUnit]:
+# Minimum line-font / body-font ratio that counts as prominent heading typography.
+# Shared threshold with the numbered-section detector's font-prominence gate
+# (``_looks_like_numbered_section_heading``): a line set at >= 1.12x the body font
+# carries a genuine typographic heading signal.
+_HEADING_PROMINENT_FONT_RATIO = 1.12
+
+
+def _span_has_heading_typography_signal(
+    span: PdfTextSpan, *, layout_profile: _PdfHeadingLayoutProfile
+) -> bool:
+    """True when a span carries at least one corroborating heading-typography
+    signal — a prominent font relative to body, or bold emphasis.
+
+    This is the layout corroboration required before a pure *text-shape*
+    structural match (a ``Chapter N`` line) may be promoted to a heading, mirroring
+    ``_looks_like_numbered_section_heading``'s font-prominence gate. Without such a
+    signal a body line that merely matches the literal pattern stays body ("no
+    source signal, no repair").
+    """
+    if span.is_bold or any(is_bold for _, is_bold, _ in span.runs):
+        return True
+    body_font_size = layout_profile.body_font_size
+    span_font_size = span.font_size if isinstance(span.font_size, (int, float)) else None
+    if body_font_size and span_font_size:
+        if float(span_font_size) / float(body_font_size) >= _HEADING_PROMINENT_FONT_RATIO:
+            return True
+    return False
+
+
+def _unit_has_heading_typography_signal(
+    unit: ParagraphUnit, *, body_font_size: float | None
+) -> bool:
+    """Paragraph-unit counterpart of ``_span_has_heading_typography_signal``.
+
+    Reads the typography that survives per-span classification and soft-wrap
+    consolidation onto the unit (bold flag, per-character emphasis runs, prominent
+    font size). A structural divider / section marker the per-span typography test
+    missed is promoted only when it still carries one of these signals — a plain
+    body-font, non-emphasized line matching the marker literal is left as body.
+    """
+    if unit.is_bold or any(is_bold for _, is_bold, _ in unit.pdf_emphasis_runs):
+        return True
+    font_size = unit.font_size_pt
+    if body_font_size and isinstance(font_size, (int, float)):
+        if float(font_size) / float(body_font_size) >= _HEADING_PROMINENT_FONT_RATIO:
+            return True
+    return False
+
+
+def _reconcile_structural_headings(
+    units: list[ParagraphUnit], *, body_font_size: float | None = None
+) -> list[ParagraphUnit]:
     """Deterministic, document-level heading reconciliation (runs after the per-span
     classification and soft-wrap consolidation).
 
@@ -1483,10 +1575,14 @@ def _reconcile_structural_headings(units: list[ParagraphUnit]) -> list[Paragraph
             # genuinely ends with a page number is left to the TOC pass.
             if is_toc and _PART_NUMBER_ONLY_PATTERN.match(text) is None:
                 continue
-            # Promote a divider left as body to the top level (above chapters). An
-            # already-classified heading (e.g. a Contents "PART I: Title" row) keeps
-            # its level — its role is not the defect being corrected here.
-            if unit.role != "heading":
+            # Promote a divider left as body to the top level (above chapters), but
+            # only when it carries a corroborating typography signal (prominent font
+            # or bold) — a plain body-font line that merely matches the "Part N"
+            # literal is not repaired. An already-classified heading (e.g. a Contents
+            # "PART I: Title" row) keeps its level — its role is not the defect here.
+            if unit.role != "heading" and _unit_has_heading_typography_signal(
+                unit, body_font_size=body_font_size
+            ):
                 _promote_unit_to_heading(unit, heading_level=1)
             continue
         # A TOC row ("Introduction: … 1") ends with a page reference and is owned by
@@ -1497,6 +1593,7 @@ def _reconcile_structural_headings(units: list[ParagraphUnit]) -> list[Paragraph
             unit.role != "heading"
             and index < backmatter_start
             and _text_is_section_marker(text)
+            and _unit_has_heading_typography_signal(unit, body_font_size=body_font_size)
         ):
             _promote_unit_to_heading(unit, heading_level=1)
 
@@ -1541,7 +1638,9 @@ def _resolve_bare_chapter_run(
         demote.update(run)
 
 
-def _looks_like_chapter_heading(span: PdfTextSpan) -> bool:
+def _looks_like_chapter_heading(
+    span: PdfTextSpan, *, layout_profile: _PdfHeadingLayoutProfile
+) -> bool:
     """Detect a deterministic ``Chapter <roman/number>`` heading line.
 
     Promotes a standalone ``Chapter VI`` number line or a ``Chapter I — Title``
@@ -1557,6 +1656,11 @@ def _looks_like_chapter_heading(span: PdfTextSpan) -> bool:
     * A title tail is accepted only when introduced by a dash or colon, never by a
       bare space, so a body line that merely opens with the word ``Chapter`` does
       not get swallowed.
+    * The literal match alone is not sufficient: the line must also carry a
+      corroborating heading-typography signal (prominent font or bold emphasis),
+      consistent with ``_looks_like_numbered_section_heading``. A plain body-font,
+      non-emphasized line that merely reads "Chapter N" is left as body ("no
+      source signal, no repair").
     * The caller invokes this AFTER the TOC and soft-wrap-continuation guards, so
       ``Chapter II … 45`` TOC lines (matched by the trailing-page pattern) and
       sentence continuations are passed through untouched.
@@ -1574,7 +1678,9 @@ def _looks_like_chapter_heading(span: PdfTextSpan) -> bool:
         return False
     # A real chapter heading is short; reject an over-long line that happens to
     # open "Chapter N —" but then runs on like body prose.
-    return len(_words(text)) <= 14
+    if len(_words(text)) > 14:
+        return False
+    return _span_has_heading_typography_signal(span, layout_profile=layout_profile)
 
 
 def _numbered_line_number(text: str) -> int | None:

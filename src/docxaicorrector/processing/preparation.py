@@ -5,28 +5,38 @@ import hashlib
 import inspect
 import json
 import logging
+import os
 from io import BytesIO
 from pathlib import Path
 from threading import Event, Lock
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from typing import Any, cast
 
 from docx import Document as DocxDocument
 
-from docxaicorrector.core.config import get_client, get_client_for_model_selector, get_model_role_value, load_app_config
-from docxaicorrector.core.constants import RUN_DIR
-from docxaicorrector.document._document import (
-    build_document_text,
-    build_editing_jobs,
-    build_semantic_blocks,
-    extract_document_content_with_normalization_reports,
-    summarize_boundary_normalization_metrics,
+from docxaicorrector.core.config import (
+    get_client,
+    get_client_for_model_selector,
+    get_model_role_value,
+    get_provider_config,
+    load_app_config,
+    load_project_dotenv,
+    resolve_model_selector,
 )
+from docxaicorrector.core.constants import RUN_DIR
+from docxaicorrector.document.boundaries import summarize_boundary_normalization_metrics
+from docxaicorrector.document.boundary_review import resolve_paragraph_boundary_ai_review_settings
+from docxaicorrector.document.extraction import (
+    build_document_text,
+    extract_document_content_with_normalization_reports,
+)
+from docxaicorrector.document.semantic_blocks import build_editing_jobs, build_semantic_blocks
 from docxaicorrector.core.logger import log_event
 from docxaicorrector.core.models import LayoutArtifactCleanupReport, ParagraphBoundaryNormalizationReport, ParagraphRelation, RelationNormalizationReport
+from docxaicorrector.core.models import PARAGRAPH_BOUNDARY_AI_REVIEW_MODE_VALUES
 from docxaicorrector.core.models import StructureRepairReport
 from docxaicorrector.core.models import clone_prepared_image_asset
-from docxaicorrector.processing.processing_runtime import FrozenUploadPayload, HeartbeatBeacon, build_in_memory_uploaded_file
+from docxaicorrector.processing.upload_ports import FrozenUploadPayload, HeartbeatBeacon, build_in_memory_uploaded_file
 from docxaicorrector.document.segments import (
     CHAPTER_SEGMENTS_DETECTOR_VERSION,
     DocumentContextProfile,
@@ -39,6 +49,7 @@ from docxaicorrector.document.segments import (
     resolve_segment_hard_boundary_paragraph_ids,
     validate_segment_coverage,
 )
+from docxaicorrector.document.provenance import resolve_scan_origin_config
 from docxaicorrector.document.structure_authority import get_effective_structural_role
 from docxaicorrector.text.translation_domains import build_terminology_plan, build_translation_domain_instructions
 
@@ -51,6 +62,8 @@ _REASON_LABELS: dict[str, str] = {
     "untranslated_structural_text_review_required": "структурные элементы остались на исходном языке",
     "untranslated_body_text_review_required": "фрагменты основного текста остались на исходном языке",
     "untranslated_body_text_above_threshold": "слишком большой объём основного текста остался на исходном языке",
+    # spec 042 P1-B: caption→heading structural conflict blocks delivery (fatal gate).
+    "caption_heading_conflict": "подпись к рисунку или таблице превратилась в заголовок",
 }
 
 
@@ -227,6 +240,22 @@ def _resolve_layout_cleanup_cache_key(app_config: Mapping[str, Any]) -> str:
     max_repeated_text_chars = max(1, int(app_config.get("layout_artifact_cleanup_max_repeated_text_chars", 80) or 80))
     cleanup_mode = str(app_config.get("layout_artifact_cleanup_mode", "flag") or "flag").strip().lower() or "flag"
     return f"1:{min_repeat_count}:{max_repeated_text_chars}:{cleanup_mode}"
+
+
+def _resolve_scan_origin_cache_key(app_config: Mapping[str, Any] | None) -> str:
+    # F2: the document-level scan-origin (OCR) thresholds change which tables are
+    # flattened into linear body paragraphs vs. preserved (see
+    # ``resolve_scan_origin_config`` / ``classify_document_scan_origin``), so they
+    # shape the prepared/cached structure. Resolve them through the SAME resolver
+    # the extraction stage uses so the key's scan-origin fingerprint is authoritative
+    # and two runs that differ only by a threshold do not share a prepared entry.
+    config = resolve_scan_origin_config(app_config)
+    return f"{config.multi_column_absolute_min}:{config.multi_column_ratio_min}:{config.authored_uniform_grid_max_ratio}"
+
+
+_DEFAULT_SCAN_ORIGIN_CACHE_KEY = _resolve_scan_origin_cache_key(None)
+
+
 def _apply_first_block_composition_quality_gate(
     *,
     blocks: list,
@@ -281,16 +310,150 @@ def build_prepared_source_key(
     processing_operation: str = "edit",
     paragraph_boundary_normalization_mode: str = "high_only",
     paragraph_boundary_ai_review_mode: str = "off",
+    paragraph_boundary_ai_review_model: str = "",
+    paragraph_boundary_ai_review_candidate_limit: int = 0,
+    paragraph_boundary_ai_review_timeout_seconds: int = 0,
+    paragraph_boundary_ai_review_max_tokens_per_candidate: int = 0,
     relation_normalization_key: str = "phase2_default:epigraph_attribution,image_caption,table_caption,toc_region",
     layout_artifact_cleanup_key: str = "1:3:80",
+    source_language: str = "en",
+    target_language: str = "ru",
+    translation_domain: str = "general",
+    structure_recovery_enabled: bool = False,
+    structure_recovery_mode: str = "legacy",
+    scan_origin_key: str = _DEFAULT_SCAN_ORIGIN_CACHE_KEY,
+    client_identity: str = "",
 ) -> str:
     resolved_operation = str(processing_operation or "edit").strip().lower() or "edit"
     operation_suffix = "" if resolved_operation == "edit" else f":op={resolved_operation}"
+    normalized_source_language = str(source_language or "en").strip().lower() or "en"
+    normalized_target_language = str(target_language or "ru").strip().lower() or "ru"
+    normalized_translation_domain = str(translation_domain or "general").strip().lower() or "general"
+    normalized_structure_recovery_mode = str(structure_recovery_mode or "legacy").strip().lower() or "legacy"
+    structure_recovery_flag = "1" if bool(structure_recovery_enabled) else "0"
+    # F10: the boundary AI-review artifact is shaped by MORE than its mode — the
+    # structure-recognition MODEL, the candidate limit, the per-candidate timeout, and the
+    # per-candidate token budget all change what recommendations get cached (see
+    # ``resolve_paragraph_boundary_ai_review_settings``). Fold them into the key so two runs
+    # that differ only by AI-review model (or any limit) do not share a prepared entry. They
+    # only influence the result when AI review is actually running, so when the mode is "off"
+    # a single stable ``ar=off`` token is used to avoid needless cross-invalidation.
+    normalized_ai_review_mode = str(paragraph_boundary_ai_review_mode or "off").strip().lower() or "off"
+    if normalized_ai_review_mode == "off":
+        ai_review_fingerprint = ":ar=off"
+    else:
+        normalized_ai_review_model = str(paragraph_boundary_ai_review_model or "").strip().lower()
+        ai_review_fingerprint = (
+            f":arm={normalized_ai_review_model}"
+            f":arcl={int(paragraph_boundary_ai_review_candidate_limit or 0)}"
+            f":arts={int(paragraph_boundary_ai_review_timeout_seconds or 0)}"
+            f":armt={int(paragraph_boundary_ai_review_max_tokens_per_candidate or 0)}"
+        )
+    # F14: fold every setting that influences the prepared/cached result (languages,
+    # translation domain, structure-recovery knobs) into the key so run B cannot serve
+    # run A's glossary/context. `pk` is an explicit key-format version tag: bumping it
+    # invalidates stale entries whenever this fingerprint layout changes.
+    normalized_scan_origin_key = str(scan_origin_key or "").strip() or _DEFAULT_SCAN_ORIGIN_CACHE_KEY
+    context_fingerprint = (
+        f":pk=4"
+        f":sl={normalized_source_language}"
+        f":tl={normalized_target_language}"
+        f":td={normalized_translation_domain}"
+        f":sr={structure_recovery_flag}"
+        f":srm={normalized_structure_recovery_mode}"
+        f":so={normalized_scan_origin_key}"
+        f"{ai_review_fingerprint}"
+    )
+    # Spec 040: fold a secret-safe client/credential fingerprint into the key so a
+    # client-dependent prepared document (AI boundary review) is never served across
+    # differing credentials. The segment is appended ONLY when non-empty; when empty the
+    # key is byte-identical to the pre-040 output (single-tenant / review-off sharing
+    # preserved, existing cache entries not invalidated). ``cid`` is a fresh segment name
+    # that cannot collide with any existing token above.
+    normalized_client_identity = str(client_identity or "").strip()
+    client_identity_suffix = f":cid={normalized_client_identity}" if normalized_client_identity else ""
     return (
         f"{uploaded_file_token}:{chunk_size}:{paragraph_boundary_normalization_mode}:"
         f"{paragraph_boundary_ai_review_mode}:{relation_normalization_key}:lc={layout_artifact_cleanup_key}"
         f"{operation_suffix}"
         f":pv={PDF_IMPORT_PARAGRAPH_LOGIC_VERSION}"
+        f"{context_fingerprint}"
+        f"{client_identity_suffix}"
+    )
+
+
+def _resolve_prepared_cache_client_identity(
+    *,
+    resolved_config: Any,
+    ai_review_effective_enabled: bool,
+    ai_review_model: str,
+) -> str:
+    # Spec 040: derive a stable, secret-safe fingerprint of the AI-boundary-review client
+    # (the ONE client whose output is folded into the prepared/cached document). Returns
+    # "" unless AI review is effectively enabled — in every other case the caller must get
+    # a byte-identical key so single-tenant / review-off sharing is preserved. The raw
+    # api-key VALUE never appears in the output: only sha256(value). Fail-open: any
+    # resolution error (misconfig, disabled/unknown provider, missing registry) returns ""
+    # rather than raising — a cache-key builder must never blow up the request.
+    if not ai_review_effective_enabled:
+        return ""
+    try:
+        resolved_selector = resolve_model_selector(
+            str(ai_review_model or "").strip(),
+            config_like=resolved_config,
+            source_name="paragraph_boundary_ai_review_model",
+        )
+        provider_config = get_provider_config(resolved_selector.provider, resolved_config)
+        canonical_selector = str(resolved_selector.canonical_selector or "")
+        base_url = str(provider_config.base_url or "")
+        api_key_env = str(provider_config.api_key_env or "")
+        # Load project dotenv BEFORE reading the secret, mirroring the client's own secret
+        # resolution (core.config._fingerprint_provider_secret): at cache-key time the
+        # AI-review client is not built yet (it is created on the cache MISS path), so a
+        # bare os.environ read would be empty when the credential lives only in a
+        # not-yet-loaded .env — and would then fail to discriminate two tenants (both hash
+        # ""). Loading dotenv makes the fingerprint track the credential the client actually
+        # resolves. Only sha256(value) enters the key; the raw secret never does.
+        load_project_dotenv()
+        secret_fingerprint = hashlib.sha256(
+            (os.environ.get(api_key_env, "").strip() or "").encode()
+        ).hexdigest()
+        return hashlib.sha256(
+            "\x1f".join([canonical_selector, base_url, api_key_env, secret_fingerprint]).encode()
+        ).hexdigest()[:16]
+    except Exception:
+        return ""
+
+
+def resolve_prepared_cache_client_identity(app_config: Mapping[str, object] | None) -> str:
+    """Public, secret-safe fingerprint of the AI-boundary-review client an injected tenant
+    ``client_factory`` resolves for ``app_config`` (spec 041 P1-1).
+
+    The injecting callers (``ProcessingService`` / UI preparation) compute this and pass it
+    as ``client_cache_identity=`` (or tag it onto their factory as ``prepared_cache_identity``)
+    so the shared preparation cache isolates tenants that share an ``app_config`` but differ
+    by credential/endpoint. Returns "" when AI boundary review is effectively disabled (the
+    client does not shape the artifact, so shared caching is safe) or on any resolution error
+    (fail-open) — an empty identity then drives the safe shared-cache bypass in
+    ``prepare_document_for_processing`` instead of a cross-tenant collision. This reuses the
+    spec-040 fingerprint logic (provider selector + base_url + api_key_env + sha256(secret)).
+    """
+    resolved_config = load_app_config() if app_config is None else app_config
+    (
+        ai_review_effective_enabled,
+        _ai_review_mode,
+        _ai_review_candidate_limit,
+        _ai_review_timeout_seconds,
+        _ai_review_max_tokens_per_candidate,
+        ai_review_model,
+    ) = resolve_paragraph_boundary_ai_review_settings(
+        allowed_modes=PARAGRAPH_BOUNDARY_AI_REVIEW_MODE_VALUES,
+        app_config=resolved_config,
+    )
+    return _resolve_prepared_cache_client_identity(
+        resolved_config=resolved_config,
+        ai_review_effective_enabled=ai_review_effective_enabled,
+        ai_review_model=ai_review_model,
     )
 
 
@@ -311,55 +474,40 @@ def _build_editing_jobs_with_optional_operation(*, blocks, max_chars: int, proce
         if str(getattr(build_editing_jobs, "__module__", "")) not in {"document", "document_semantic_blocks"}:
             return build_editing_jobs(blocks, max_chars=max_chars)
         raise RuntimeError("build_editing_jobs must accept processing_operation or structure_phase")
-    try:
-        kwargs: dict[str, Any] = {"max_chars": max_chars}
-        if accepts_processing_operation:
-            kwargs["processing_operation"] = processing_operation
-        if accepts_structure_phase:
-            kwargs["structure_phase"] = structure_phase
-        return build_editing_jobs(blocks, **kwargs)
-    except TypeError:
-        return build_editing_jobs(blocks, max_chars=max_chars)
+    # F25: kwargs are already gated by inspect.signature, so call exactly once. A
+    # genuine internal TypeError must propagate rather than be misread as a signature
+    # mismatch (which would silently re-run the target and double its side effects).
+    kwargs: dict[str, Any] = {"max_chars": max_chars}
+    if accepts_processing_operation:
+        kwargs["processing_operation"] = processing_operation
+    if accepts_structure_phase:
+        kwargs["structure_phase"] = structure_phase
+    return build_editing_jobs(blocks, **kwargs)
 
 
 def _build_semantic_blocks_with_optional_boundaries(*, paragraphs, max_chars: int, relations, hard_boundary_paragraph_ids: set[str], structure_phase: str):
     signature = inspect.signature(build_semantic_blocks)
     accepts_hard_boundaries = "hard_boundary_paragraph_ids" in signature.parameters
     accepts_structure_phase = "structure_phase" in signature.parameters
+    # F25: signature-gated kwargs, called exactly once; internal TypeErrors propagate.
+    kwargs: dict[str, Any] = {"max_chars": max_chars, "relations": relations}
     if accepts_hard_boundaries:
-        try:
-            kwargs = {
-                "max_chars": max_chars,
-                "relations": relations,
-                "hard_boundary_paragraph_ids": hard_boundary_paragraph_ids,
-            }
-            if accepts_structure_phase:
-                kwargs["structure_phase"] = structure_phase
-            return build_semantic_blocks(paragraphs, **kwargs)
-        except TypeError:
-            pass
+        kwargs["hard_boundary_paragraph_ids"] = hard_boundary_paragraph_ids
     if accepts_structure_phase:
-        return build_semantic_blocks(paragraphs, max_chars=max_chars, relations=relations, structure_phase=structure_phase)
-    return build_semantic_blocks(paragraphs, max_chars=max_chars, relations=relations)
+        kwargs["structure_phase"] = structure_phase
+    return build_semantic_blocks(paragraphs, **kwargs)
 
 
 def _detect_document_segments_with_optional_phase(*, paragraphs, source_content_hash16: str, chunk_size: int, structure_phase: str):
     signature = inspect.signature(detect_document_segments)
+    # F25: signature-gated kwargs, called exactly once; internal TypeErrors propagate.
+    kwargs: dict[str, Any] = {
+        "source_content_hash16": source_content_hash16,
+        "chunk_size": chunk_size,
+    }
     if "structure_phase" in signature.parameters:
-        try:
-            return detect_document_segments(
-                paragraphs,
-                source_content_hash16=source_content_hash16,
-                chunk_size=chunk_size,
-                structure_phase=structure_phase,
-            )
-        except TypeError:
-            pass
-    return detect_document_segments(
-        paragraphs,
-        source_content_hash16=source_content_hash16,
-        chunk_size=chunk_size,
-    )
+        kwargs["structure_phase"] = structure_phase
+    return detect_document_segments(paragraphs, **kwargs)
 
 
 def _build_document_context_glossary_terms(*, translation_domain: str, source_text: str) -> tuple[GlossaryTerm, ...]:
@@ -443,10 +591,28 @@ def _supports_segment_detection(paragraphs: Sequence[Any]) -> bool:
     return all(hasattr(paragraph, "text") and hasattr(paragraph, "role") for paragraph in paragraphs)
 
 
-def _extract_document_content_with_optional_app_config(*, uploaded_file, app_config: Mapping[str, Any]):
+def _extract_document_content_with_optional_app_config(
+    *,
+    uploaded_file,
+    app_config: Mapping[str, Any],
+    client_factory: Callable[[str], object] | None = None,
+):
     signature = inspect.signature(extract_document_content_with_normalization_reports)
-    accepts_kwargs = any(parameter.kind == inspect.Parameter.VAR_KEYWORD for parameter in signature.parameters.values())
-    if accepts_kwargs or "app_config" in signature.parameters:
+    parameters = signature.parameters
+    accepts_kwargs = any(parameter.kind == inspect.Parameter.VAR_KEYWORD for parameter in parameters.values())
+    accepts_app_config = accepts_kwargs or "app_config" in parameters
+    # F3: thread the tenant client factory (when supplied) into extraction exactly
+    # like app_config is gated here, so a per-tenant factory reaches the boundary-review
+    # stage instead of falling back to the global provider client. Injected test doubles
+    # that predate the parameter keep working because it is only forwarded when accepted.
+    forwards_client_factory = client_factory is not None and (accepts_kwargs or "client_factory" in parameters)
+    if forwards_client_factory:
+        if accepts_app_config:
+            return extract_document_content_with_normalization_reports(
+                uploaded_file, app_config=app_config, client_factory=client_factory
+            )
+        return extract_document_content_with_normalization_reports(uploaded_file, client_factory=client_factory)
+    if accepts_app_config:
         return extract_document_content_with_normalization_reports(uploaded_file, app_config=app_config)
     return extract_document_content_with_normalization_reports(uploaded_file)
 
@@ -462,6 +628,7 @@ def _prepare_document_for_processing(
     app_config: Mapping[str, Any],
     processing_operation: str = "edit",
     get_client_fn,
+    client_factory: Callable[[str], object] | None = None,
     progress_callback=None,
 ):
     initial_stage, initial_detail = _build_source_import_progress(source_format=source_format)
@@ -487,7 +654,9 @@ def _prepare_document_for_processing(
         metrics={"source_format": source_format, "conversion_backend": conversion_backend},
         interval_seconds=2.0,
     ):
-        extraction_result = _extract_document_content_with_optional_app_config(uploaded_file=uploaded_file, app_config=app_config)
+        extraction_result = _extract_document_content_with_optional_app_config(
+            uploaded_file=uploaded_file, app_config=app_config, client_factory=client_factory
+        )
     paragraphs, image_assets, normalization_report, relations, relation_report, cleanup_report = extraction_result[:6]
     structure_repair_report = extraction_result[6] if len(extraction_result) > 6 else None
     emit_preparation_progress(
@@ -768,7 +937,7 @@ def _clone_prepared_document(data: PreparedDocumentData, prepared_source_key: st
     )
 
 
-def _read_or_reserve_cached_prepared_document(*, session_state, prepared_source_key: str):
+def _read_or_reserve_cached_prepared_document(*, session_state, prepared_source_key: str, allow_shared_cache: bool = True):
     # Session cache is only touched from the Streamlit rerun thread. Background preparation
     # workers always pass session_state=None and only participate in the shared cache path.
     session_cache = _get_preparation_cache(session_state) if session_state is not None else None
@@ -776,6 +945,14 @@ def _read_or_reserve_cached_prepared_document(*, session_state, prepared_source_
         cached = _read_cache_entry(session_cache, prepared_source_key)
         if cached is not None:
             return _clone_prepared_document(cached, prepared_source_key, cached=True), None, "session"
+
+    if not allow_shared_cache:
+        # Spec 041 P1-1: the shared (process-global) tier is bypassed for this run — a
+        # client-dependent artifact must not cross an unknown-identity boundary. The
+        # per-session tier read above stays active (session-scoped, tenant-safe). Returning
+        # no in-flight reservation means the caller rebuilds and (per the matching store
+        # guard) does not publish to the shared tier.
+        return None, None, None
 
     while True:
         with _shared_preparation_cache_lock:
@@ -802,7 +979,7 @@ def _release_shared_preparation(prepared_source_key: str) -> None:
         in_flight.set()
 
 
-def _store_cached_prepared_document(*, session_state, prepared_source_key: str, prepared_document: PreparedDocumentData) -> None:
+def _store_cached_prepared_document(*, session_state, prepared_source_key: str, prepared_document: PreparedDocumentData, allow_shared_cache: bool = True) -> None:
     prepared_document.prepared_source_key = ""
     prepared_document.cached = False
     if session_state is not None:
@@ -810,6 +987,11 @@ def _store_cached_prepared_document(*, session_state, prepared_source_key: str, 
         _touch_cache_entry(cache, prepared_source_key, prepared_document)
         _trim_cache(cache)
 
+    if not allow_shared_cache:
+        # Spec 041 P1-1: mirror the read guard — only the shared (process-global) tier is
+        # skipped; the per-session store above still runs so a session keeps serving its own
+        # prepared document across reruns.
+        return
     with _shared_preparation_cache_lock:
         _touch_cache_entry(_shared_preparation_cache, prepared_source_key, prepared_document)
         _trim_cache(_shared_preparation_cache)
@@ -831,6 +1013,8 @@ def prepare_document_for_processing(
     processing_operation: str | None = None,
     session_state=None,
     get_client_fn=None,
+    client_factory: Callable[[str], object] | None = None,
+    client_cache_identity: str | None = None,
     progress_callback=None,
 ) -> PreparedDocumentData:
     resolved_config = load_app_config() if app_config is None else app_config
@@ -843,10 +1027,19 @@ def prepare_document_for_processing(
         if bool(resolved_config["paragraph_boundary_normalization_enabled"])
         else "off"
     )
-    ai_review_mode = (
-        str(resolved_config.get("paragraph_boundary_ai_review_mode", "off"))
-        if bool(resolved_config.get("paragraph_boundary_ai_review_enabled", False))
-        else "off"
+    # F10: resolve the AI-review settings through the SAME resolver the extraction stage
+    # uses, so the key's model/limit fingerprint is authoritative (mode gated to "off"
+    # when disabled; model/limits are the exact values that shape the cached artifact).
+    (
+        ai_review_effective_enabled,
+        ai_review_mode,
+        ai_review_candidate_limit,
+        ai_review_timeout_seconds,
+        ai_review_max_tokens_per_candidate,
+        ai_review_model,
+    ) = resolve_paragraph_boundary_ai_review_settings(
+        allowed_modes=PARAGRAPH_BOUNDARY_AI_REVIEW_MODE_VALUES,
+        app_config=resolved_config,
     )
     relation_normalization_key = "off"
     if bool(resolved_config.get("relation_normalization_enabled", True)):
@@ -859,18 +1052,81 @@ def prepare_document_for_processing(
         )
         relation_normalization_key = f"{relation_profile}:{enabled_relation_kinds}"
     layout_cleanup_key = _resolve_layout_cleanup_cache_key(resolved_config)
+    key_source_language = str(
+        resolved_config.get("source_language", resolved_config.get("source_language_default", "en")) or "en"
+    ).strip().lower() or "en"
+    key_target_language = str(
+        resolved_config.get("target_language", resolved_config.get("target_language_default", "ru")) or "ru"
+    ).strip().lower() or "ru"
+    key_translation_domain = str(
+        resolved_config.get("translation_domain_default", "general") or "general"
+    ).strip().lower() or "general"
+    key_structure_recovery_enabled = bool(resolved_config.get("structure_recovery_enabled", False))
+    key_structure_recovery_mode = str(
+        resolved_config.get("structure_recovery_mode", "legacy") or "legacy"
+    ).strip().lower() or "legacy"
+    key_scan_origin = _resolve_scan_origin_cache_key(resolved_config)
+    # Spec 041 P1-1: the shared (process-global) preparation cache must isolate the tenant
+    # client_factory that is ACTUALLY injected, not just the config-derived client — two
+    # callers with the same app_config but different factories/credentials must never share
+    # one client-dependent (AI-boundary-review) entry. When no explicit identity is supplied,
+    # fall back to one carried on the factory object: the UI background path threads its
+    # factory (not a param) through intermediaries this change does not touch, so it tags the
+    # factory with `.prepared_cache_identity`.
+    if client_cache_identity is None and client_factory is not None:
+        factory_identity = getattr(client_factory, "prepared_cache_identity", None)
+        client_cache_identity = str(factory_identity) if factory_identity is not None else None
+    if client_factory is None:
+        # Config-default path: the AI-boundary-review client is config-derived, so the
+        # config-derived fingerprint (spec 040) is authoritative. Byte-identical key and
+        # shared caching are preserved exactly.
+        prepared_cache_client_identity = _resolve_prepared_cache_client_identity(
+            resolved_config=resolved_config,
+            ai_review_effective_enabled=ai_review_effective_enabled,
+            ai_review_model=ai_review_model,
+        )
+        allow_shared_cache = True
+    elif not ai_review_effective_enabled:
+        # An injected factory does not shape the prepared artifact when AI boundary review is
+        # off, so the shared cache is safe and the client identity stays "" (unchanged key).
+        prepared_cache_client_identity = ""
+        allow_shared_cache = True
+    else:
+        # Injected factory + AI review ON: fold a caller-supplied, secret-safe identity into
+        # the key so distinct tenants get distinct shared entries. With NO usable identity,
+        # never serve a client-dependent artifact across an unknown boundary — bypass the
+        # shared tier for this run (the per-session tier stays available and tenant-safe).
+        resolved_client_identity = str(client_cache_identity or "").strip()
+        if resolved_client_identity:
+            prepared_cache_client_identity = resolved_client_identity
+            allow_shared_cache = True
+        else:
+            prepared_cache_client_identity = ""
+            allow_shared_cache = False
     prepared_source_key = build_prepared_source_key(
         uploaded_payload.file_token,
         chunk_size,
         processing_operation=resolved_processing_operation,
         paragraph_boundary_normalization_mode=normalization_mode,
         paragraph_boundary_ai_review_mode=ai_review_mode,
+        paragraph_boundary_ai_review_model=ai_review_model,
+        paragraph_boundary_ai_review_candidate_limit=ai_review_candidate_limit,
+        paragraph_boundary_ai_review_timeout_seconds=ai_review_timeout_seconds,
+        paragraph_boundary_ai_review_max_tokens_per_candidate=ai_review_max_tokens_per_candidate,
         relation_normalization_key=relation_normalization_key,
         layout_artifact_cleanup_key=layout_cleanup_key,
+        source_language=key_source_language,
+        target_language=key_target_language,
+        translation_domain=key_translation_domain,
+        structure_recovery_enabled=key_structure_recovery_enabled,
+        structure_recovery_mode=key_structure_recovery_mode,
+        scan_origin_key=key_scan_origin,
+        client_identity=prepared_cache_client_identity,
     )
     cached, in_flight, cache_level = _read_or_reserve_cached_prepared_document(
         session_state=session_state,
         prepared_source_key=prepared_source_key,
+        allow_shared_cache=allow_shared_cache,
     )
     if cached is not None:
         log_event(
@@ -921,12 +1177,14 @@ def prepare_document_for_processing(
             app_config=resolved_config,
             processing_operation=resolved_processing_operation,
             get_client_fn=resolved_get_client_fn,
+            client_factory=client_factory,
             progress_callback=progress_callback,
         )
         _store_cached_prepared_document(
             session_state=session_state,
             prepared_source_key=prepared_source_key,
             prepared_document=prepared_document,
+            allow_shared_cache=allow_shared_cache,
         )
     except Exception:
         if in_flight is not None:

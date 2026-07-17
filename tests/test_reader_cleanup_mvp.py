@@ -804,16 +804,16 @@ def test_reader_cleanup_system_prompt_mentions_anchor_repair_constraints() -> No
     assert "do not remove the title with remove_inline_noise" in prompt
     assert "remove only the exact numeric prefix when safe; never remove the heading text" in prompt
     assert "do not propose remove_inline_noise for that combined span" in prompt
-    assert "bad: remove_inline_noise for the whole '20 NEW FORMS OF MONEY?'" in prompt
-    assert 'bad: remove_inline_noise "Три мультинациональные валюты"' in prompt
+    assert "bad: remove_inline_noise for the whole '15 SHADE PLANTS FOR SMALL GARDENS?'" in prompt
+    assert 'bad: remove_inline_noise "Три сорта зимостойких роз"' in prompt
     assert "Good: extract_side_heading_and_reattach_body" in prompt
     assert "page furniture plus an image caption sits between two parts of one sentence" in prompt
     assert "if the number is semantic content inside a sentence" in prompt
     assert "title-case running-header island with connector words or acronyms" in prompt
-    assert "Полевой отчет НКО 167" in prompt
-    assert "3 Городское управление 201" in prompt
-    assert "БЕСПЛАТНЫЕ КЛИНИКИ И «ИТАКСКИЕ ЧАСЫ»" in prompt
-    assert "ГРАЖДАНСКИЕ ИНИЦИАТИВЫ И НЕКОММЕРЧЕСКИЙ СЕКТОР." in prompt
+    assert "Дневник садовода 167" in prompt
+    assert "3 Сад круглый год 201" in prompt
+    assert "ТЕПЛИЦЫ И «ХОЛОДНЫЕ ПАРНИКИ»" in prompt
+    assert "КОМПОСТ И ОРГАНИЧЕСКИЕ УДОБРЕНИЯ." in prompt
     assert "Стратегии для НКО 167" not in prompt
     assert "3 Управление и мы, граждане 201" not in prompt
 
@@ -2791,10 +2791,10 @@ def test_reader_cleanup_prompt_guides_heading_boundary_vs_split_choice() -> None
     assert "Title plus subtitle on one line is not automatically heading/body fusion" in prompt
     assert "Do not treat TOC-like rows, table-like rows, list rows, title+subtitle pairs, title+question pairs, or epigraph-only continuations as heading/body prose" in prompt
     assert "Sentence-style heading fused to prose" in prompt
-    assert "МЕСТНАЯ ПРОГРАММА: ОБЩЕСТВЕННАЯ ПОЛЬЗА БЕЗ ДОЛГОВ" in prompt
-    assert "РАБОЧАЯ ГРУППА Во время пилотного проекта" in prompt
-    assert "ПРОЗРАЧНОСТЬ И ПОДОТЧЕТНОСТЬ. Ключевые аспекты" in prompt
-    assert "4 Практический раздел 57 5 Следующая глава" in prompt
+    assert "ВЕСЕННИЙ УХОД: ПОДГОТОВКА ГРЯДОК К ПОСАДКЕ" in prompt
+    assert "САДОВЫЙ ИНВЕНТАРЬ Перед началом сезона" in prompt
+    assert "МУЛЬЧИРОВАНИЕ И ПРОПОЛКА. Основные приёмы" in prompt
+    assert "4 Посадка рассады 57 5 Полив и подкормка" in prompt
     assert "ГРАЖДАНСКАЯ ВАЛЮТА: ЭКОНОМИЧЕСКИЙ СТИМУЛ БЕЗ ДОЛГОВ" not in prompt
     assert "4 Летучая рыба: новый взгляд на деньги 57 5 Будущее уже наступило" not in prompt
     assert "duplicate_fragment" in prompt
@@ -2810,8 +2810,8 @@ def test_reader_cleanup_schema_repair_prompt_preserves_bounded_title_case_runnin
 def test_reader_cleanup_prompt_does_not_encourage_title_subtitle_or_question_as_body_prose() -> None:
     prompt = build_reader_cleanup_system_prompt()
 
-    assert "ОТЧЕТ И ВЫВОДЫ: краткий обзор" in prompt
-    assert "ГОРОДСКОЕ УПРАВЛЕНИЕ Что дальше?" in prompt
+    assert "ИТОГИ СЕЗОНА: краткий обзор" in prompt
+    assert "ОСЕННИЕ РАБОТЫ Что дальше?" in prompt
     assert "do not force normalize_heading_boundary unless actual narrative prose starts after them" in prompt
 
 

@@ -1,10 +1,12 @@
 from io import BytesIO
 from typing import Any, cast
 
+import docxaicorrector.processing.preparation as preparation
 import docxaicorrector.processing.processing_service as processing_service
 from docxaicorrector.core.models import ImageAnalysisResult, ImageAsset, ImageValidationResult
 from docxaicorrector.document.segments import DocumentContextProfile, GlossaryTerm
 from docxaicorrector.processing.processing_service import ProcessingService
+from docxaicorrector.processing.upload_ports import FrozenUploadPayload
 from docxaicorrector.pipeline.contracts import ProcessingContext, ProcessingDependencies
 from docxaicorrector.pipeline.setup import initialize_processing_run
 from docxaicorrector.runtime.events import AppendLogEvent, FinalizeProcessingStatusEvent, SetStateEvent, WorkerCompleteEvent
@@ -277,6 +279,9 @@ def test_get_processing_service_returns_singleton_until_reset(monkeypatch):
 
 
 def test_build_processing_service_builds_runtime_emitters_from_processing_runtime(monkeypatch):
+    import docxaicorrector.processing.processing_runtime as processing_runtime
+    import docxaicorrector.runtime.state as runtime_state
+
     processing_service.reset_processing_service()
 
     emit_state = object()
@@ -288,13 +293,23 @@ def test_build_processing_service_builds_runtime_emitters_from_processing_runtim
     emit_image_reset = object()
     captured = {}
 
-    monkeypatch.setattr(processing_service, "set_processing_status", object())
-    monkeypatch.setattr(processing_service, "finalize_processing_status", object())
-    monkeypatch.setattr(processing_service, "push_activity", object())
-    monkeypatch.setattr(processing_service, "append_log", object())
-    monkeypatch.setattr(processing_service, "append_image_log", object())
+    push_activity_sentinel = object()
+    append_log_sentinel = object()
+    append_image_log_sentinel = object()
+
+    # The default service wires the streamlit-backed runtime.state emitters + the
+    # processing_runtime emitter machinery, both imported LAZILY (at call time)
+    # inside build_default_processing_service_dependencies so that importing
+    # processing_service stays streamlit-free (round-4 finding 5). A lazy
+    # ``from module import name`` reads the SOURCE module attribute at call time,
+    # so patch the source modules rather than a module-level processing_service name.
+    monkeypatch.setattr(runtime_state, "set_processing_status", object())
+    monkeypatch.setattr(runtime_state, "finalize_processing_status", object())
+    monkeypatch.setattr(runtime_state, "push_activity", push_activity_sentinel)
+    monkeypatch.setattr(runtime_state, "append_log", append_log_sentinel)
+    monkeypatch.setattr(runtime_state, "append_image_log", append_image_log_sentinel)
     monkeypatch.setattr(
-        processing_service,
+        processing_runtime,
         "build_runtime_event_emitters",
         lambda *, dependencies: (
             captured.setdefault("dependencies", dependencies),
@@ -317,9 +332,9 @@ def test_build_processing_service_builds_runtime_emitters_from_processing_runtim
 
     processing_service.build_processing_service()
 
-    assert captured["dependencies"].push_activity is processing_service.push_activity
-    assert captured["dependencies"].append_log is processing_service.append_log
-    assert captured["dependencies"].append_image_log is processing_service.append_image_log
+    assert captured["dependencies"].push_activity is push_activity_sentinel
+    assert captured["dependencies"].append_log is append_log_sentinel
+    assert captured["dependencies"].append_image_log is append_image_log_sentinel
     service_dependencies = captured["kwargs"]["dependencies"]
     assert service_dependencies.emit_state_fn is emit_state
     assert service_dependencies.emit_finalize_fn is emit_finalize
@@ -352,12 +367,12 @@ def test_run_prepared_background_document_uses_preparation_and_job_mutator(monke
 
     monkeypatch.setattr(processing_service, "freeze_uploaded_file", lambda uploaded_file: {"frozen": uploaded_file})
     monkeypatch.setattr(
-        processing_service.application_flow,
+        processing_service,
         "prepare_document_for_processing",
         lambda **kwargs: captured.setdefault("prepare_document", kwargs) or object(),
     )
     monkeypatch.setattr(
-        processing_service.application_flow,
+        processing_service,
         "prepare_run_context_for_background",
         lambda **kwargs: (
             kwargs["prepare_document_for_processing_fn"](
@@ -436,12 +451,12 @@ def test_run_prepared_background_document_uses_model_aware_client_factory_for_pr
 
     monkeypatch.setattr(processing_service, "freeze_uploaded_file", lambda uploaded_file: {"frozen": uploaded_file})
     monkeypatch.setattr(
-        processing_service.application_flow,
+        processing_service,
         "prepare_document_for_processing",
         lambda **kwargs: captured.setdefault("prepare_document", kwargs) or object(),
     )
     monkeypatch.setattr(
-        processing_service.application_flow,
+        processing_service,
         "prepare_run_context_for_background",
         lambda **kwargs: (
             kwargs["prepare_document_for_processing_fn"](
@@ -482,6 +497,84 @@ def test_run_prepared_background_document_uses_model_aware_client_factory_for_pr
     ]
 
 
+def test_run_prepared_background_document_threads_tenant_factory_into_boundary_review(monkeypatch):
+    # F3: a REAL service -> preparation -> extraction path threads the service's tenant
+    # client factory all the way into the boundary-review stage — the review sees THAT
+    # factory (which routes model selectors to the tenant client), not the global client.
+    from docx import Document
+
+    import docxaicorrector.document.extraction as document_extraction
+    import docxaicorrector.processing.application_flow as application_flow
+    import docxaicorrector.processing.preparation as preparation
+    from docxaicorrector.processing.upload_ports import FrozenUploadPayload
+
+    preparation.clear_preparation_cache(clear_shared=True)
+
+    sentinel_global_client = object()
+    sentinel_tenant_client = object()
+
+    def _selector_client_factory(selector, required_capability, *, config_like=None):
+        return sentinel_tenant_client
+
+    document_obj = Document()
+    document_obj.add_paragraph("Body content one is long enough to be a boundary-review candidate.")
+    buffer = BytesIO()
+    document_obj.save(buffer)
+    docx_bytes = buffer.getvalue()
+
+    frozen_payload = FrozenUploadPayload(
+        filename="tenant-factory.docx",
+        content_bytes=docx_bytes,
+        file_size=len(docx_bytes),
+        content_hash="hash-token",
+        file_token="hash-token",
+    )
+    monkeypatch.setattr(processing_service, "freeze_uploaded_file", lambda uploaded_file: frozen_payload)
+    monkeypatch.setattr(application_flow, "freeze_uploaded_file", lambda uploaded_file: frozen_payload)
+
+    monkeypatch.setattr(
+        document_extraction,
+        "_resolve_paragraph_boundary_ai_review_settings",
+        lambda *a, **k: (True, "review_only", 200, 30, 120, "openrouter:test/structure"),
+    )
+    captured = {}
+
+    def fake_run_review(**kwargs):
+        captured["client_factory"] = kwargs.get("client_factory")
+        return None
+
+    monkeypatch.setattr(document_extraction, "_run_paragraph_boundary_ai_review", fake_run_review)
+
+    service = _build_service(
+        run_document_processing_impl_fn=lambda **kwargs: "succeeded",
+        get_client_fn=lambda: sentinel_global_client,
+        get_client_for_model_selector_fn=_selector_client_factory,
+    )
+
+    app_config = dict(preparation.load_app_config())
+    app_config["structure_recognition_model"] = "openrouter:test/structure"
+
+    result, _prepared = service.run_prepared_background_document(
+        uploaded_file="tenant-factory.docx",
+        chunk_size=6000,
+        image_mode="safe",
+        keep_all_image_variants=False,
+        app_config=app_config,
+        model="gpt-5.4",
+        max_retries=2,
+        processing_operation="edit",
+        progress_callback=None,
+        runtime={"state": {}},
+    )
+
+    assert result == "succeeded"
+    tenant_factory = captured["client_factory"]
+    assert tenant_factory is not None
+    # The captured factory is the tenant factory: a model selector routes to the tenant
+    # client, never the global get_client() sentinel.
+    assert tenant_factory("openrouter:test/structure") is sentinel_tenant_client
+
+
 def test_run_prepared_background_document_model_factory_uses_default_when_selector_omitted(monkeypatch):
     sentinel_model_client = object()
     captured = {}
@@ -511,12 +604,12 @@ def test_run_prepared_background_document_model_factory_uses_default_when_select
 
     monkeypatch.setattr(processing_service, "freeze_uploaded_file", lambda uploaded_file: {"frozen": uploaded_file})
     monkeypatch.setattr(
-        processing_service.application_flow,
+        processing_service,
         "prepare_document_for_processing",
         lambda **kwargs: captured.setdefault("prepare_document", kwargs) or object(),
     )
     monkeypatch.setattr(
-        processing_service.application_flow,
+        processing_service,
         "prepare_run_context_for_background",
         lambda **kwargs: (
             kwargs["prepare_document_for_processing_fn"](
@@ -581,7 +674,7 @@ def test_run_prepared_background_document_passes_prepared_payload_into_processin
 
     monkeypatch.setattr(processing_service, "freeze_uploaded_file", lambda uploaded_file: uploaded_file)
     monkeypatch.setattr(
-        processing_service.application_flow,
+        processing_service,
         "prepare_run_context_for_background",
         lambda **kwargs: prepared,
     )
@@ -653,7 +746,7 @@ def test_run_prepared_background_document_passes_selected_segment_ids_none_when_
 
     monkeypatch.setattr(processing_service, "freeze_uploaded_file", lambda uploaded_file: uploaded_file)
     monkeypatch.setattr(
-        processing_service.application_flow,
+        processing_service,
         "prepare_run_context_for_background",
         lambda **kwargs: prepared,
     )
@@ -788,7 +881,7 @@ def test_run_prepared_background_document_supports_distinct_prepare_and_processi
     service = _build_service(run_document_processing_impl_fn=_run_document_processing_impl)
     monkeypatch.setattr(processing_service, "freeze_uploaded_file", lambda uploaded_file: uploaded_file)
     monkeypatch.setattr(
-        processing_service.application_flow,
+        processing_service,
         "prepare_run_context_for_background",
         _prepare_run_context_for_background,
     )
@@ -821,7 +914,7 @@ def test_run_prepared_background_document_emits_controlled_failure_when_preparat
 
     monkeypatch.setattr(processing_service, "freeze_uploaded_file", lambda uploaded_file: uploaded_file)
     monkeypatch.setattr(
-        processing_service.application_flow,
+        processing_service,
         "prepare_run_context_for_background",
         lambda **kwargs: (_ for _ in ()).throw(ValueError("quality gate blocked")),
     )
@@ -864,3 +957,174 @@ def test_clone_processing_service_returns_overridden_copy_without_mutating_singl
     assert default_service.dependencies.load_system_prompt_fn() == "system"
 
     processing_service.reset_processing_service()
+
+
+# --- Spec 042 P1-A: run_prepared_background_document must use the dependency-supplied tenant
+# cache identity (NOT a config-derived re-derivation) so tenants sharing one app_config but
+# using different credentials never collide on one shared-cache key. These drive the REAL
+# ProcessingService.run_prepared_background_document -> real prepare_document_for_processing
+# (which computes the cache key) while stubbing only the heavy build seam, exactly like
+# test_preparation.py's counting-builder tests.
+
+
+def _make_ai_review_on_config() -> dict:
+    # Full, valid app_config (real defaults) with AI boundary review effectively ENABLED, so the
+    # injected-factory + AI-review-on branch of the shared preparation cache is exercised.
+    config = dict(preparation.load_app_config())
+    config["paragraph_boundary_ai_review_enabled"] = True
+    config["paragraph_boundary_ai_review_mode"] = "review_only"
+    return config
+
+
+def _install_counting_prepared_builder(monkeypatch) -> dict:
+    # Reuse of test_preparation.py's pattern: stub the heavy pipeline so each real BUILD (a
+    # cache MISS) increments the counter and returns a fresh sentinel; a HIT (no build) is
+    # distinguishable from a MISS by the source_text marker.
+    builds = {"count": 0}
+
+    def _fake_build(*_args, **_kwargs):
+        builds["count"] += 1
+        return preparation.PreparedDocumentData(
+            source_text=f"prepared-doc-{builds['count']}",
+            paragraphs=[],
+            image_assets=[],
+            relations=[],
+            jobs=[],
+            prepared_source_key="",
+        )
+
+    monkeypatch.setattr(preparation, "_prepare_document_for_processing", _fake_build)
+    return builds
+
+
+def _build_prepared_run_context_stub():
+    return type(
+        "PreparedRunContextStub",
+        (),
+        {
+            "uploaded_filename": "prepared-report.docx",
+            "jobs": [{"target_text": "one"}],
+            "paragraphs": ["p1"],
+            "image_assets": ["img1"],
+            "segments": [],
+            "translation_domain": "general",
+            "translation_domain_instructions": "",
+            "prepared_source_key": "",
+            "structure_fingerprint": "",
+            "document_context_profile": DocumentContextProfile(),
+        },
+    )()
+
+
+def _install_prepare_run_context_that_invokes_real_primitive(monkeypatch, captured):
+    # Stub ONLY the background-context wrapper: it calls the injected
+    # prepare_document_for_processing_fn (which is the REAL preparation primitive threaded with
+    # the service's client factory + deps.client_cache_identity) so the actual shared-cache key
+    # is computed, then captures the returned PreparedDocumentData for HIT/MISS assertions.
+    def _stub(**kwargs):
+        prepared_doc = kwargs["prepare_document_for_processing_fn"](
+            uploaded_payload=kwargs["uploaded_payload"],
+            chunk_size=kwargs["chunk_size"],
+            app_config=kwargs["app_config"],
+            processing_operation=kwargs["processing_operation"],
+            session_state=None,
+            progress_callback=None,
+        )
+        captured.setdefault("prepared_docs", []).append(prepared_doc)
+        return _build_prepared_run_context_stub()
+
+    monkeypatch.setattr(processing_service, "prepare_run_context_for_background", _stub)
+
+
+def _run_prepared(service, config):
+    service.run_prepared_background_document(
+        uploaded_file="report.docx",
+        chunk_size=6000,
+        image_mode="safe",
+        keep_all_image_variants=False,
+        app_config=config,
+        model="gpt-5.4",
+        max_retries=2,
+        processing_operation="edit",
+        progress_callback=None,
+        runtime={"state": {}},
+    )
+
+
+def test_run_prepared_background_document_isolates_tenant_cache_identity(monkeypatch):
+    # Two dependency sets share the SAME app_config/file-token but carry DIFFERENT
+    # client_cache_identity values with AI review ON: run A primes -> build; run B (different
+    # identity) MISSES -> distinct build (never receives A's doc); run A again -> shared HIT.
+    preparation.clear_preparation_cache(clear_shared=True)
+    config = _make_ai_review_on_config()
+    builds = _install_counting_prepared_builder(monkeypatch)
+    payload = FrozenUploadPayload(
+        filename="report.docx",
+        content_bytes=b"docx-bytes",
+        file_size=len(b"docx-bytes"),
+        content_hash="hash-token",
+        file_token="shared-token",
+    )
+    monkeypatch.setattr(processing_service, "freeze_uploaded_file", lambda uploaded_file: payload)
+    captured: dict = {}
+    _install_prepare_run_context_that_invokes_real_primitive(monkeypatch, captured)
+
+    def _run(identity: str):
+        service = _build_service(
+            run_document_processing_impl_fn=lambda **kwargs: "succeeded",
+            client_cache_identity=identity,
+        )
+        _run_prepared(service, config)
+        return captured["prepared_docs"][-1]
+
+    doc_a1 = _run("tenantA")
+    assert builds["count"] == 1
+
+    doc_b1 = _run("tenantB")
+    assert builds["count"] == 2
+    assert doc_b1.source_text != doc_a1.source_text
+
+    doc_a2 = _run("tenantA")
+    assert builds["count"] == 2
+    assert doc_a2.source_text == doc_a1.source_text
+    assert doc_a2.cached is True
+
+    preparation.clear_preparation_cache(clear_shared=True)
+
+
+def test_run_prepared_background_document_bypasses_shared_cache_when_identity_none(monkeypatch):
+    # deps.client_cache_identity is None + AI review ON: the shared (process-global) tier is
+    # bypassed entirely, so a second identical run rebuilds and nothing is published to the
+    # shared cache (no false cross-run guarantee for an unknown tenant boundary).
+    preparation.clear_preparation_cache(clear_shared=True)
+    config = _make_ai_review_on_config()
+    builds = _install_counting_prepared_builder(monkeypatch)
+    payload = FrozenUploadPayload(
+        filename="report.docx",
+        content_bytes=b"docx-bytes",
+        file_size=len(b"docx-bytes"),
+        content_hash="hash-token",
+        file_token="shared-token",
+    )
+    monkeypatch.setattr(processing_service, "freeze_uploaded_file", lambda uploaded_file: payload)
+    captured: dict = {}
+    _install_prepare_run_context_that_invokes_real_primitive(monkeypatch, captured)
+
+    service = _build_service(
+        run_document_processing_impl_fn=lambda **kwargs: "succeeded",
+        client_cache_identity=None,
+    )
+
+    _run_prepared(service, config)
+    assert builds["count"] == 1
+    first = captured["prepared_docs"][-1]
+
+    _run_prepared(service, config)
+    assert builds["count"] == 2
+    second = captured["prepared_docs"][-1]
+
+    assert second.cached is False
+    assert second.source_text != first.source_text
+    assert len(preparation._shared_preparation_cache) == 0
+
+    preparation.clear_preparation_cache(clear_shared=True)

@@ -96,16 +96,19 @@ def _prepare_state(monkeypatch):
     session_state = SessionState()
     monkeypatch.setattr(state.st, "session_state", session_state)
     state.init_session_state()
-    monkeypatch.setattr(processing_service, "set_processing_status", lambda **kwargs: None)
-    monkeypatch.setattr(processing_service, "push_activity", lambda message: None)
-    monkeypatch.setattr(processing_service, "append_image_log", lambda **kwargs: None)
+    # set_processing_status / push_activity / append_image_log now live only in
+    # runtime.state (processing_service lazy-imports them to stay Streamlit-free, round-4
+    # finding 5), so patch the source module, not the service facade.
+    monkeypatch.setattr(state, "set_processing_status", lambda **kwargs: None)
+    monkeypatch.setattr(state, "push_activity", lambda message: None)
+    monkeypatch.setattr(state, "append_image_log", lambda **kwargs: None)
     monkeypatch.setattr(processing_service, "log_event", lambda *args, **kwargs: None)
     monkeypatch.setattr(processing_service, "analyze_image", lambda *args, **kwargs: build_analysis_result())
     monkeypatch.setattr(processing_service, "get_client", lambda: object())
     monkeypatch.setattr(
         processing_service,
         "generate_image_candidate",
-        lambda image_bytes, analysis, *, mode, prefer_deterministic_reconstruction=True, reconstruction_model=None, reconstruction_render_config=None, image_output_config=None, model_config=None, client=None, budget=None: (
+        lambda image_bytes, analysis, *, mode, prefer_deterministic_reconstruction=True, reconstruction_model=None, reconstruction_render_config=None, image_output_config=None, model_config=None, client=None, budget=None, pixel_budget=None: (
             PNG_BYTES if mode == "safe" else REDRAWN_BYTES
         ),
     )
@@ -208,6 +211,7 @@ def test_process_document_images_mode_scenario_matrix(
         model_config=None,
         client=None,
         budget=None,
+        pixel_budget=None,
     ):
         generated_modes.append(mode)
         return PNG_BYTES if mode == "safe" else REDRAWN_BYTES
@@ -274,6 +278,7 @@ def test_process_document_images_applies_fallback_original_for_unreadable_candid
         model_config=None,
         client=None,
         budget=None,
+        pixel_budget=None,
     ):
         if mode == "safe":
             return b""
@@ -391,6 +396,7 @@ def test_process_document_images_reuses_single_client_for_image_attempts(monkeyp
         model_config=None,
         client=None,
         budget=None,
+        pixel_budget=None,
     ):
         generation_clients.append(client)
         return PNG_BYTES if mode == "safe" else REDRAWN_BYTES
@@ -466,7 +472,7 @@ def test_process_document_images_uses_detected_redraw_mime_type_for_candidate_an
     monkeypatch.setattr(
         processing_service,
         "generate_image_candidate",
-        lambda image_bytes, analysis, *, mode, prefer_deterministic_reconstruction=True, reconstruction_model=None, reconstruction_render_config=None, image_output_config=None, model_config=None, client=None, budget=None: PNG_BYTES if mode == "safe" else REDRAWN_BYTES,
+        lambda image_bytes, analysis, *, mode, prefer_deterministic_reconstruction=True, reconstruction_model=None, reconstruction_render_config=None, image_output_config=None, model_config=None, client=None, budget=None, pixel_budget=None: PNG_BYTES if mode == "safe" else REDRAWN_BYTES,
     )
     service = processing_service.build_processing_service()
 
@@ -501,6 +507,7 @@ def test_process_document_images_compare_all_prepares_three_variants(monkeypatch
         model_config=None,
         client=None,
         budget=None,
+        pixel_budget=None,
     ):
         generated_modes.append(mode)
         return {
@@ -556,6 +563,7 @@ def test_process_document_images_attempts_semantic_mode_for_advisory_dense_text_
         model_config=None,
         client=None,
         budget=None,
+        pixel_budget=None,
     ):
         generated_modes.append((mode, analysis.semantic_redraw_allowed))
         return PNG_BYTES if mode == "safe" else REDRAWN_BYTES
@@ -581,7 +589,7 @@ def test_process_document_images_falls_back_when_model_call_budget_is_exhausted(
     monkeypatch.setattr(
         processing_service,
         "generate_image_candidate",
-        lambda image_bytes, analysis, *, mode, prefer_deterministic_reconstruction=True, reconstruction_model=None, reconstruction_render_config=None, image_output_config=None, model_config=None, client=None, budget=None: (_ for _ in ()).throw(
+        lambda image_bytes, analysis, *, mode, prefer_deterministic_reconstruction=True, reconstruction_model=None, reconstruction_render_config=None, image_output_config=None, model_config=None, client=None, budget=None, pixel_budget=None: (_ for _ in ()).throw(
             processing_service.ImageModelCallBudgetExceeded("budget exhausted")
         )
         if mode != "safe"
@@ -624,6 +632,7 @@ def test_process_document_images_compare_all_falls_back_when_variants_are_incomp
         model_config=None,
         client=None,
         budget=None,
+        pixel_budget=None,
     ):
         generated_modes.append(mode)
         if mode == "safe":
@@ -753,6 +762,7 @@ def test_process_document_images_stops_future_images_when_document_budget_is_exh
         model_config=None,
         client=None,
         budget=None,
+        pixel_budget=None,
     ):
         if budget is not None and mode != "safe":
             budget.consume("test.generate")
@@ -800,6 +810,44 @@ def test_process_document_images_stops_future_images_when_document_budget_is_exh
     assert budgeted_analyses == [1]
 
 
+def test_process_document_images_skips_further_images_when_document_pixel_budget_exceeded(monkeypatch, resolved_test_model_registry):
+    """Once the running document decoded-pixel total is exceeded, later images
+    are skipped BEFORE analysis/decode with a fallback-original outcome
+    (finding F8, part 2)."""
+    _, service = _prepare_state(monkeypatch)
+    analyze_calls = {"count": 0}
+
+    def counting_analyze_image(*args, **kwargs):
+        analyze_calls["count"] += 1
+        return build_analysis_result()
+
+    monkeypatch.setattr(processing_service, "analyze_image", counting_analyze_image)
+    service = processing_service.build_processing_service()
+
+    result = service.process_document_images(
+        image_assets=[build_asset(), build_asset()],
+        image_mode="semantic_redraw_direct",
+        config=_config_with_models(
+            resolved_test_model_registry,
+            keep_all_image_variants=True,
+            # PNG_BYTES is 320x220 -> 0.0704 MP; cap admits one image but not two.
+            document_max_decoded_megapixels=0.1,
+        ),
+        on_progress=lambda **kwargs: None,
+        client=object(),
+    )
+
+    assert len(result) == 2
+    # The first image alone drives two analyze_image calls (its original plus a
+    # candidate re-analysis); the skipped second image adds none. Were it not
+    # skipped it would contribute its own analyze call(s) and push this past 2.
+    assert analyze_calls["count"] == 2
+    assert result[0].final_decision == "accept"
+    assert result[1].final_decision == "fallback_original"
+    assert result[1].final_reason == "document_pixel_budget_exceeded"
+    assert result[1].validation_status == "skipped"
+
+
 def test_process_document_images_skips_unsupported_source_image_without_validation_error(monkeypatch, resolved_test_model_registry):
     _, service = _prepare_state(monkeypatch)
     image_logs = []
@@ -808,7 +856,7 @@ def test_process_document_images_skips_unsupported_source_image_without_validati
     asset.original_bytes = b"\x01\x02not-a-supported-raster"
     asset.mime_type = "image/x-emf"
 
-    monkeypatch.setattr(processing_service, "append_image_log", lambda **kwargs: image_logs.append(kwargs))
+    monkeypatch.setattr(state, "append_image_log", lambda **kwargs: image_logs.append(kwargs))
     monkeypatch.setattr(
         processing_service,
         "analyze_image",
@@ -862,6 +910,7 @@ def test_process_document_images_does_not_request_candidate2_after_hard_validati
         model_config=None,
         client=None,
         budget=None,
+        pixel_budget=None,
     ):
         generated_modes.append(mode)
         return PNG_BYTES if mode == "safe" else REDRAWN_BYTES

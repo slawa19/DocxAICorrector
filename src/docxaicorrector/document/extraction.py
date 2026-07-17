@@ -1,3 +1,4 @@
+import inspect
 import re
 import zipfile
 from collections import Counter
@@ -5,7 +6,7 @@ from dataclasses import replace
 from io import BytesIO
 from math import isclose
 from pathlib import Path
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import cast
 
 from docx import Document
@@ -65,9 +66,10 @@ from docxaicorrector.document.roles import (
     xml_local_name,
 )
 from docxaicorrector.document.shared_xml import (
+    build_drawing_forensics,
     build_source_xml_fingerprint,
     extract_num_pr_level,
-    extract_run_element_images,
+    resolve_drawing_extent_emu,
     resolve_num_pr_details,
     resolve_paragraph_num_pr,
 )
@@ -75,7 +77,12 @@ from docxaicorrector.document.tables import (
     build_raw_table as _build_raw_table_impl,
     flatten_table_lines as _flatten_table_lines_impl,
 )
-from docxaicorrector.document.provenance import classify_document_scan_origin
+from docxaicorrector.document.provenance import (
+    ScanOriginConfig,
+    classify_document_scan_origin,
+    resolve_scan_origin_config,
+    table_has_authored_signals,
+)
 from docxaicorrector.core.models import (
     PARAGRAPH_BOUNDARY_AI_REVIEW_MODE_VALUES,
     PARAGRAPH_BOUNDARY_NORMALIZATION_MODE_VALUES,
@@ -92,7 +99,7 @@ from docxaicorrector.core.models import (
     StructureRepairReport,
     normalize_heuristic_structural_role_hint,
 )
-from docxaicorrector.processing.processing_runtime import read_uploaded_file_bytes, resolve_uploaded_filename
+from docxaicorrector.processing.upload_ports import read_uploaded_file_bytes, resolve_uploaded_filename
 from docxaicorrector.runtime.artifact_retention import (
     PARAGRAPH_BOUNDARY_AI_REVIEW_MAX_AGE_SECONDS,
     PARAGRAPH_BOUNDARY_AI_REVIEW_MAX_COUNT,
@@ -192,6 +199,7 @@ def extract_document_content_with_normalization_reports(
     uploaded_file,
     *,
     app_config: Mapping[str, object] | None = None,
+    client_factory: Callable[[str], object] | None = None,
 ) -> tuple[
     list[ParagraphUnit],
     list[ImageAsset],
@@ -204,9 +212,14 @@ def extract_document_content_with_normalization_reports(
     source_bytes = _read_uploaded_docx_bytes(uploaded_file)
     validate_docx_source_bytes(source_bytes)
     document = Document(BytesIO(source_bytes))
-    scan_origin = classify_document_scan_origin(source_bytes)
-    raw_blocks, image_assets = _build_raw_document_blocks(document, is_scan_origin=scan_origin.is_scan_origin)
-    normalization_mode, save_boundary_debug_artifacts = _resolve_paragraph_boundary_normalization_settings()
+    scan_origin_config = resolve_scan_origin_config(app_config)
+    scan_origin = classify_document_scan_origin(source_bytes, config=scan_origin_config)
+    raw_blocks, image_assets = _build_raw_document_blocks(
+        document,
+        is_scan_origin=scan_origin.is_scan_origin,
+        scan_origin_config=scan_origin_config,
+    )
+    normalization_mode, save_boundary_debug_artifacts = _resolve_paragraph_boundary_normalization_settings(app_config)
     normalized_blocks, boundary_report = _normalize_paragraph_boundaries(raw_blocks, mode=normalization_mode)
     structure_recovery_enabled, structure_recovery_mode = _resolve_structure_recovery_runtime(app_config=app_config)
     paragraphs = _build_logical_paragraph_units(
@@ -256,7 +269,7 @@ def extract_document_content_with_normalization_reports(
         relation_profile,
         enabled_relation_kinds,
         save_relation_debug_artifacts,
-    ) = _resolve_relation_normalization_settings()
+    ) = _resolve_relation_normalization_settings(app_config)
     (
         ai_review_enabled,
         ai_review_mode,
@@ -264,16 +277,23 @@ def extract_document_content_with_normalization_reports(
         ai_review_timeout_seconds,
         ai_review_max_tokens_per_candidate,
         ai_review_model,
-    ) = _resolve_paragraph_boundary_ai_review_settings()
-    try:
+    ) = _resolve_paragraph_boundary_ai_review_settings(app_config)
+    # F15: signature-gate the optional structure_phase kwarg instead of a TypeError
+    # retry, so build_paragraph_relations is called EXACTLY ONCE and a genuine internal
+    # TypeError propagates rather than being misread as a signature mismatch (which
+    # would silently re-run the target). A legacy target without the parameter is still
+    # called once, without the kwarg.
+    relations_signature = inspect.signature(build_paragraph_relations)
+    relations_accepts_structure_phase = any(
+        parameter.kind == inspect.Parameter.VAR_KEYWORD for parameter in relations_signature.parameters.values()
+    ) or "structure_phase" in relations_signature.parameters
+    if relations_accepts_structure_phase:
         relations, relation_report = build_paragraph_relations(
             paragraphs,
             enabled_relation_kinds=enabled_relation_kinds if relation_enabled else (),
             structure_phase="pre_ai_diagnostic",
         )
-    except TypeError as exc:
-        if "structure_phase" not in str(exc):
-            raise
+    else:
         relations, relation_report = build_paragraph_relations(
             paragraphs,
             enabled_relation_kinds=enabled_relation_kinds if relation_enabled else (),
@@ -299,6 +319,7 @@ def extract_document_content_with_normalization_reports(
             candidate_limit=ai_review_candidate_limit,
             timeout_seconds=ai_review_timeout_seconds,
             max_tokens_per_candidate=ai_review_max_tokens_per_candidate,
+            client_factory=client_factory,
         )
 
     if save_boundary_debug_artifacts:
@@ -341,6 +362,17 @@ def _build_paragraph_text_with_placeholders(
     include_image_placeholders: bool = True,
     allow_run_markdown: bool = True,
 ) -> str:
+    # A drawing/blip is extracted exactly once by partitioning on the blip's
+    # NEAREST enclosing textbox (``w:txbxContent``). Each paragraph "owns" the
+    # blips whose nearest textbox ancestor equals the paragraph's own nearest
+    # textbox ancestor (``None`` for a normal body paragraph). This makes the
+    # direct-image walk and the textbox restore pass an exhaustive, non-
+    # overlapping partition even under NESTED textboxes (a txbxContent inside a
+    # txbxContent): the outer textbox paragraph skips a blip that lives in a
+    # deeper textbox, and that blip is emitted once by the deeper textbox's own
+    # restore paragraph (F17). An absolute "is inside any textbox" test cannot
+    # express this because a restore paragraph is itself inside a textbox.
+    owner_textbox = _nearest_txbx_ancestor(paragraph._element)
     parts: list[str] = []
     for child in paragraph._element:
         local_name = xml_local_name(child.tag)
@@ -352,6 +384,7 @@ def _build_paragraph_text_with_placeholders(
                     image_assets,
                     allow_hyperlink_markdown=allow_run_markdown,
                     include_image_placeholders=include_image_placeholders,
+                    owner_textbox=owner_textbox,
                 )
             )
             continue
@@ -363,6 +396,7 @@ def _build_paragraph_text_with_placeholders(
                     image_assets,
                     allow_hyperlink_markdown=allow_run_markdown,
                     include_image_placeholders=include_image_placeholders,
+                    owner_textbox=owner_textbox,
                 )
             )
     return "".join(parts)
@@ -372,10 +406,12 @@ def _build_raw_document_blocks(
     document,
     *,
     is_scan_origin: bool = False,
+    scan_origin_config: ScanOriginConfig | None = None,
 ) -> tuple[list[RawBlock], list[ImageAsset]]:
     raw_blocks: list[RawBlock] = []
     image_assets: list[ImageAsset] = []
     table_count = 0
+    uniform_grid_max_ratio = (scan_origin_config or resolve_scan_origin_config(None)).authored_uniform_grid_max_ratio
 
     for block_kind, block in _iter_document_block_items(document):
         if block_kind == "paragraph":
@@ -383,13 +419,19 @@ def _build_raw_document_blocks(
                 raw_blocks.append(raw_block)
             continue
         table_count += 1
-        if is_scan_origin:
+        table = cast(Table, block)
+        if is_scan_origin and not table_has_authored_signals(
+            table._tbl, uniform_grid_max_ratio=uniform_grid_max_ratio
+        ):
             # Scan-origin (OCR) documents: the "table" is a scanned column layout,
             # not authored tabular data — flatten it into linear body paragraphs.
-            raw_blocks.extend(_build_flattened_table_blocks(cast(Table, block), image_assets, start_raw_index=len(raw_blocks)))
+            # The document-level scan signal is only a PRIOR: a table that carries
+            # strong local authored-table signals (real borders / uniform grid) is
+            # preserved rather than flattened (F13).
+            raw_blocks.extend(_build_flattened_table_blocks(table, image_assets, start_raw_index=len(raw_blocks)))
             continue
         raw_block = _build_raw_table(
-            cast(Table, block),
+            table,
             image_assets,
             raw_index=len(raw_blocks),
             asset_id=f"table_{table_count:03d}",
@@ -431,8 +473,17 @@ def _build_flattened_table_blocks(
 
 def _build_raw_paragraph_blocks(paragraph, image_assets: list[ImageAsset], *, raw_index: int) -> list[RawParagraph]:
     raw_blocks: list[RawParagraph] = []
-    has_textboxes = _paragraph_has_textbox_content(paragraph)
-    direct_text = _build_paragraph_text_with_placeholders(paragraph, image_assets, include_image_placeholders=not has_textboxes)
+    # The host paragraph owns only its DIRECT (non-textbox) drawing images —
+    # dropping the whole paragraph's images would lose a real inline image that
+    # merely shares a paragraph with a textbox (F11). Textbox-interior images
+    # are owned by the dedicated restore pass below (_iter_textbox_paragraphs);
+    # the owner-based partition in _build_paragraph_text_with_placeholders
+    # excludes them here so they are not double-counted (F17).
+    direct_text = _build_paragraph_text_with_placeholders(
+        paragraph,
+        image_assets,
+        include_image_placeholders=True,
+    )
 
     if direct_text.strip():
         raw_block = _build_raw_paragraph(
@@ -983,16 +1034,21 @@ def _apply_or_hint_stage0_toc_role(paragraph: ParagraphUnit, *, structural_role:
     paragraph.structural_role = normalize_heuristic_structural_role_hint(structural_role) or "body"
 
 
-def _resolve_paragraph_boundary_normalization_settings() -> tuple[str, bool]:
+def _resolve_paragraph_boundary_normalization_settings(
+    app_config: Mapping[str, object] | None = None,
+) -> tuple[str, bool]:
     return _resolve_paragraph_boundary_normalization_settings_impl(
         allowed_modes=PARAGRAPH_BOUNDARY_NORMALIZATION_MODE_VALUES,
+        app_config=app_config,
     )
 
 
-def _resolve_relation_normalization_settings() -> tuple[bool, str, tuple[str, ...], bool]:
+def _resolve_relation_normalization_settings(
+    app_config: Mapping[str, object] | None = None,
+) -> tuple[bool, str, tuple[str, ...], bool]:
     from docxaicorrector.document.relations import _resolve_relation_normalization_settings as _resolve_relation_normalization_settings_impl
 
-    return _resolve_relation_normalization_settings_impl()
+    return _resolve_relation_normalization_settings_impl(app_config=app_config)
 
 
 def _resolve_layout_artifact_cleanup_settings(*, app_config: Mapping[str, object] | None = None) -> tuple[bool, int, int, bool, str]:
@@ -1021,9 +1077,12 @@ def _resolve_structure_recovery_runtime(*, app_config: Mapping[str, object] | No
     return structure_recovery_enabled, structure_recovery_mode
 
 
-def _resolve_paragraph_boundary_ai_review_settings() -> tuple[bool, str, int, int, int, str]:
+def _resolve_paragraph_boundary_ai_review_settings(
+    app_config: Mapping[str, object] | None = None,
+) -> tuple[bool, str, int, int, int, str]:
     return _resolve_paragraph_boundary_ai_review_settings_impl(
         allowed_modes=PARAGRAPH_BOUNDARY_AI_REVIEW_MODE_VALUES,
+        app_config=app_config,
     )
 
 
@@ -1054,12 +1113,14 @@ def _request_ai_review_recommendations(
     candidates: list[dict[str, object]],
     timeout_seconds: int,
     max_tokens_per_candidate: int,
+    client_factory: Callable[[str], object] | None = None,
 ) -> dict[str, dict[str, object]]:
     return _request_ai_review_recommendations_impl(
         model=model,
         candidates=candidates,
         timeout_seconds=timeout_seconds,
         max_tokens_per_candidate=max_tokens_per_candidate,
+        client_factory=client_factory,
     )
 
 
@@ -1096,6 +1157,7 @@ def _run_paragraph_boundary_ai_review(
     candidate_limit: int,
     timeout_seconds: int,
     max_tokens_per_candidate: int,
+    client_factory: Callable[[str], object] | None = None,
 ) -> str | None:
     return _run_paragraph_boundary_ai_review_impl(
         source_name=source_name,
@@ -1113,6 +1175,7 @@ def _run_paragraph_boundary_ai_review(
         max_age_seconds=PARAGRAPH_BOUNDARY_AI_REVIEW_MAX_AGE_SECONDS,
         max_count=PARAGRAPH_BOUNDARY_AI_REVIEW_MAX_COUNT,
         request_ai_review_recommendations_impl=_request_ai_review_recommendations,
+        client_factory=client_factory,
     )
 
 
@@ -1236,10 +1299,6 @@ def _read_uploaded_docx_bytes(uploaded_file) -> bytes:
     )
 
 
-def _paragraph_has_textbox_content(paragraph) -> bool:
-    return any(True for _ in _iter_textbox_content_elements(paragraph._element))
-
-
 def _iter_textbox_content_elements(element):
     for descendant in element.iter():
         if descendant is element:
@@ -1262,6 +1321,7 @@ def _render_hyperlink_element(
     *,
     include_image_placeholders: bool = True,
     allow_hyperlink_markdown: bool = True,
+    owner_textbox=None,
 ) -> str:
     text_parts: list[str] = []
     for child in hyperlink_element:
@@ -1274,6 +1334,7 @@ def _render_hyperlink_element(
                 image_assets,
                 allow_hyperlink_markdown=False,
                 include_image_placeholders=include_image_placeholders,
+                owner_textbox=owner_textbox,
             )
         )
 
@@ -1299,10 +1360,20 @@ def _render_run_element(
     *,
     allow_hyperlink_markdown: bool = True,
     include_image_placeholders: bool = True,
+    owner_textbox=None,
 ) -> str:
     text = _extract_run_text(run_element)
     formatted_text = _apply_run_markdown(text, run_element) if allow_hyperlink_markdown else text
-    image_placeholders = _extract_run_image_placeholders(run_element, part, image_assets) if include_image_placeholders else []
+    image_placeholders = (
+        _extract_run_image_placeholders(
+            run_element,
+            part,
+            image_assets,
+            owner_textbox=owner_textbox,
+        )
+        if include_image_placeholders
+        else []
+    )
     return formatted_text + "".join(image_placeholders)
 
 
@@ -1375,17 +1446,71 @@ def _extract_vertical_align(run_properties) -> str | None:
     return get_xml_attribute(vertical_align, "val") if vertical_align is not None else None
 
 
-def _extract_run_element_images(run_element, part) -> list[tuple[bytes, str | None, int | None, int | None, dict[str, object]]]:
-    return extract_run_element_images(
-        run_element,
-        part,
-        relationship_namespace=RELATIONSHIP_NAMESPACE,
-    )
+def _nearest_txbx_ancestor(element):
+    """Return the closest ``w:txbxContent`` ancestor of ``element``, or ``None``.
+
+    This is the ownership key that keeps image extraction exactly-once: a blip
+    is owned by the paragraph whose nearest textbox ancestor equals the blip's
+    nearest textbox ancestor. A normal body paragraph has ``None`` here and owns
+    only blips outside every textbox; a textbox restore paragraph has its own
+    ``txbxContent`` here and owns only the blips of THAT textbox level, never the
+    blips of a deeper nested textbox (F17).
+    """
+    for ancestor in element.iterancestors():
+        if xml_local_name(ancestor.tag) == "txbxContent":
+            return ancestor
+    return None
 
 
-def _extract_run_image_placeholders(run_element, part, image_assets: list[ImageAsset]) -> list[str]:
+def _extract_run_element_owned_images(
+    run_element, part, owner_textbox
+) -> list[tuple[bytes, str | None, int | None, int | None, dict[str, object]]]:
+    """Extract the run's drawing images whose nearest textbox ancestor is
+    ``owner_textbox`` (``None`` for a normal body paragraph).
+
+    Restricting to the blip's NEAREST textbox makes the direct-image walk and
+    every textbox restore pass an exhaustive, non-overlapping partition: each
+    blip has exactly one nearest textbox ancestor, so exactly one paragraph
+    owns it. This holds even under nested textboxes (a ``txbxContent`` inside a
+    ``txbxContent``), where an absolute "inside any textbox" test would let the
+    same blip be emitted by both the outer and the inner restore paragraph (F17).
+    Genuine direct inline/anchored images that merely share a paragraph with a
+    textbox are still preserved (F11).
+    """
+    images: list[tuple[bytes, str | None, int | None, int | None, dict[str, object]]] = []
+    for drawing in run_element.xpath(".//w:drawing"):
+        width_emu, height_emu = resolve_drawing_extent_emu(drawing)
+        for blip in drawing.xpath(".//a:blip"):
+            if _nearest_txbx_ancestor(blip) is not owner_textbox:
+                continue
+            embed_id = blip.get(f"{{{RELATIONSHIP_NAMESPACE}}}embed")
+            if not embed_id:
+                continue
+            image_part = part.related_parts.get(embed_id)
+            if image_part is None:
+                continue
+            images.append(
+                (
+                    image_part.blob,
+                    getattr(image_part, "content_type", None),
+                    width_emu,
+                    height_emu,
+                    build_drawing_forensics(drawing, embed_id=embed_id),
+                )
+            )
+    return images
+
+
+def _extract_run_image_placeholders(
+    run_element,
+    part,
+    image_assets: list[ImageAsset],
+    *,
+    owner_textbox=None,
+) -> list[str]:
     placeholders: list[str] = []
-    for image_blob, mime_type, width_emu, height_emu, source_forensics in _extract_run_element_images(run_element, part):
+    run_images = _extract_run_element_owned_images(run_element, part, owner_textbox)
+    for image_blob, mime_type, width_emu, height_emu, source_forensics in run_images:
         image_index = len(image_assets) + 1
         placeholder = f"[[DOCX_IMAGE_img_{image_index:03d}]]"
         image_assets.append(
@@ -1588,3 +1713,23 @@ def has_heading_text_signal(text: str) -> bool:
     from docxaicorrector.document.roles import has_heading_text_signal as _has_heading_text_signal
 
     return _has_heading_text_signal(text)
+
+
+def build_document_text(paragraphs: list[ParagraphUnit]) -> str:
+    return "\n\n".join(paragraph.rendered_text for paragraph in paragraphs).strip()
+
+
+def inspect_placeholder_integrity(markdown_text: str, image_assets: list[ImageAsset]) -> dict[str, str]:
+    status_map: dict[str, str] = {}
+    expected_placeholders = {asset.placeholder for asset in image_assets}
+    for asset in image_assets:
+        occurrence_count = markdown_text.count(asset.placeholder)
+        if occurrence_count == 1:
+            status_map[asset.image_id] = "ok"
+        elif occurrence_count == 0:
+            status_map[asset.image_id] = "lost"
+        else:
+            status_map[asset.image_id] = "duplicated"
+    for unexpected_placeholder in sorted(set(IMAGE_PLACEHOLDER_PATTERN.findall(markdown_text)) - expected_placeholders):
+        status_map[f"unexpected:{unexpected_placeholder}"] = "unexpected"
+    return status_map

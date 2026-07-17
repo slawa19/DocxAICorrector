@@ -1,6 +1,8 @@
 import hashlib
 import logging
+import multiprocessing
 import os
+import pickle
 import queue
 import signal
 import shutil
@@ -13,7 +15,7 @@ from dataclasses import dataclass, replace
 from io import BytesIO
 from pathlib import Path
 from collections.abc import Callable, Mapping
-from typing import Protocol, cast, runtime_checkable
+from typing import cast
 from uuid import uuid4
 
 import streamlit as st
@@ -58,15 +60,108 @@ from docxaicorrector.runtime.events import (
     WorkerCompleteEvent,
 )
 from docxaicorrector.runtime.workflow_state import ProcessingOutcome
+from docxaicorrector.processing.upload_ports import (  # noqa: F401
+    _DEFAULT_UPLOADED_FILENAME,
+    FrozenUploadPayload,
+    HeartbeatBeacon,
+    InMemoryUploadedFile,
+    UploadedFileLike,
+    _looks_like_runtime_object_repr,
+    build_in_memory_uploaded_file,
+    read_uploaded_file_bytes,
+    resolve_uploaded_filename,
+)
+from docxaicorrector.processing.service_ports import (  # noqa: F401
+    normalize_background_error,
+    should_stop_processing,
+)
 
 
 MAX_COMPLETED_SOURCE_BYTES = 8 * 1024 * 1024
 _DOCX_ZIP_MAGIC = b"PK\x03\x04"
 _LEGACY_DOC_MAGIC = bytes.fromhex("D0CF11E0A1B11AE1")
 _PDF_MAGIC = b"%PDF-"
-_DEFAULT_UPLOADED_FILENAME = "document.docx"
 _DOC_CONVERSION_TIMEOUT_SECONDS = 120
 _MATERIALIZED_UPLOAD_CACHE_LIMIT = 4
+
+# ---------------------------------------------------------------------------
+# F7: conservative resource budgets for the in-process pdfminer PDF parse.
+# Normal documents are well within these limits; over-budget documents fail
+# fast with a typed ``pdf_import_over_budget:*`` error (never silently
+# truncated) so a pathological upload cannot exhaust RAM/CPU in-process.
+# ---------------------------------------------------------------------------
+_MAX_PDF_IMPORT_FILE_BYTES = 64 * 1024 * 1024  # 64 MiB
+_MAX_PDF_IMPORT_PAGE_COUNT = 2000
+# Object-count caps (F7): reject a pathological document whose extracted spans /
+# images would exhaust RAM. These are deliberately generous (a real 2000-page
+# book stays well under them); over-cap uploads fail fast with a typed
+# ``pdf_import_over_budget:*`` error and an ERROR log (never silent truncation).
+_MAX_PDF_IMPORT_SPAN_COUNT = 2_000_000
+_MAX_PDF_IMPORT_IMAGE_COUNT = 20_000
+# Single unified wall-clock deadline covering ALL heavy pdfminer/OCR stages
+# (page count + span extract + optional OCR reparse + image extract). In the
+# production path this bounds a killable child process; the in-process test
+# fallback bounds a daemon thread (which cannot be force-killed).
+_PDF_PARSE_WALLCLOCK_BUDGET_SECONDS = 300  # 5 minutes around the whole parse
+
+# F7 test seam: the production parse runs in a spawned child process so an
+# over-budget document can be genuinely TERMINATED. Existing tests monkeypatch
+# in-process pdfminer functions, which a child process cannot see, so they set
+# this flag (or ``DOCXAI_PDF_PARSE_IN_PROCESS=1``) to run the SAME worker logic
+# in-process under the thread guard. The in-process path is test-only: it cannot
+# force-kill an overrunning parse.
+_PDF_PARSE_IN_PROCESS = False
+
+
+def _pdf_parse_in_process_enabled() -> bool:
+    if _PDF_PARSE_IN_PROCESS:
+        return True
+    return os.getenv("DOCXAI_PDF_PARSE_IN_PROCESS", "").strip().lower() in {"1", "true", "yes", "on"}
+
+# ---------------------------------------------------------------------------
+# F27: process-wide admission gate. Each background processing worker acquires a
+# slot before doing real work so N concurrent Streamlit sessions cannot multiply
+# PDF RAM / subprocess / API cost without bound. Single-session behaviour is
+# unchanged (default limit >= 1); override via the env var.
+# ---------------------------------------------------------------------------
+_PROCESSING_ADMISSION_LIMIT_ENV = "DOCXAI_MAX_CONCURRENT_PROCESSING"
+_DEFAULT_PROCESSING_ADMISSION_LIMIT = 2
+
+
+def _resolve_processing_admission_limit() -> int:
+    raw_value = os.getenv(_PROCESSING_ADMISSION_LIMIT_ENV, "")
+    try:
+        limit = int(str(raw_value).strip())
+    except (TypeError, ValueError):
+        return _DEFAULT_PROCESSING_ADMISSION_LIMIT
+    return limit if limit >= 1 else _DEFAULT_PROCESSING_ADMISSION_LIMIT
+
+
+def _build_processing_admission_gate(limit: int) -> threading.BoundedSemaphore:
+    return threading.BoundedSemaphore(max(1, int(limit)))
+
+
+def _acquire_admission_slot_cancellable(
+    gate: threading.Semaphore,
+    stop_event: threading.Event | None,
+    *,
+    poll_seconds: float = 0.1,
+) -> bool:
+    """Acquire an admission slot while honouring ``stop_event`` (F27).
+
+    Blocks until a slot is free, but polls so a stopped upload does not wait on
+    a slot forever. Returns ``True`` once a slot is held, ``False`` if the wait
+    was cancelled (caller must NOT release in that case).
+    """
+
+    while True:
+        if stop_event is not None and stop_event.is_set():
+            return False
+        if gate.acquire(timeout=poll_seconds):
+            return True
+
+
+_PROCESSING_ADMISSION_GATE = _build_processing_admission_gate(_resolve_processing_admission_limit())
 _ALLOWED_SET_STATE_EVENT_KEYS = {
     "final_generated_paragraph_registry",
     "image_assets",
@@ -132,11 +227,6 @@ __all__ = [
 ]
 
 
-def _looks_like_runtime_object_repr(value: str) -> bool:
-    normalized = value.strip().lower()
-    return normalized.startswith("<") and " object at 0x" in normalized and normalized.endswith(">")
-
-
 class BackgroundRuntime:
     def __init__(self, event_queue, stop_event, source_token: str = ""):
         self._event_queue = event_queue
@@ -151,33 +241,6 @@ class BackgroundRuntime:
 
     def should_stop(self) -> bool:
         return self._stop_event.is_set()
-
-
-@runtime_checkable
-class UploadedFileLike(Protocol):
-    name: str
-
-    def read(self, size: int = -1) -> bytes: ...
-
-    def getvalue(self) -> bytes: ...
-
-    def seek(self, offset: int, whence: int = 0) -> int: ...
-
-
-class InMemoryUploadedFile(BytesIO):
-    name: str
-    size: int
-
-
-@dataclass(frozen=True)
-class FrozenUploadPayload:
-    filename: str
-    content_bytes: bytes
-    file_size: int
-    content_hash: str
-    file_token: str
-    source_format: str = "docx"
-    conversion_backend: str | None = None
 
 
 @dataclass(frozen=True)
@@ -221,20 +284,6 @@ class ResolvedUploadContract:
     @property
     def file_token(self) -> str:
         return f"{self.filename}:{self.source_identity.token_size}:{self.source_identity.token_hash}"
-
-
-def read_uploaded_file_bytes(uploaded_file: UploadedFileLike | BytesIO) -> bytes:
-    if hasattr(uploaded_file, "seek"):
-        uploaded_file.seek(0)
-    if hasattr(uploaded_file, "getvalue"):
-        source_bytes = uploaded_file.getvalue()
-    else:
-        source_bytes = uploaded_file.read()
-    if not isinstance(source_bytes, (bytes, bytearray)) or not source_bytes:
-        raise ValueError("Не удалось прочитать содержимое загруженного файла.")
-    if hasattr(uploaded_file, "seek"):
-        uploaded_file.seek(0)
-    return bytes(source_bytes)
 
 
 def _detect_uploaded_document_format(*, filename: str, source_bytes: bytes) -> str:
@@ -475,54 +524,448 @@ def _run_pdf_ocr_to_text_layer_pdf(*, input_path: Path, output_path: Path) -> No
         raise RuntimeError("pdf_ocr_import_empty_output")
 
 
-def _convert_pdf_text_layer_to_docx(*, filename: str, source_bytes: bytes) -> tuple[bytes, str]:
-    from docx import Document
+def _count_pdf_pages_for_budget(pdf_path: Path, *, cap: int) -> int | None:
+    """Best-effort page count that short-circuits once ``cap`` is exceeded.
+
+    Returns ``None`` when the page tree cannot be read (e.g. a stub/broken PDF),
+    in which case callers skip the page-count budget rather than reject a
+    document we could not measure. The scan stops at ``cap + 1`` so a huge page
+    tree is never fully walked.
+    """
+
+    try:
+        from pdfminer.pdfpage import PDFPage
+    except ImportError:  # pragma: no cover - depends on optional env
+        return None
+    try:
+        with open(pdf_path, "rb") as handle:
+            count = 0
+            for _ in PDFPage.get_pages(handle):
+                count += 1
+                if count > cap:
+                    break
+            return count
+    except Exception:
+        return None
+
+
+def _enforce_pdf_import_file_size_budget(*, filename: str, source_bytes: bytes) -> None:
+    """Reject an oversize PDF before any parse work (F7).
+
+    File size is an instant check on already-materialized bytes, so it runs in
+    the parent (outside the wall-clock deadline) before we spawn the parse.
+    """
+
+    max_bytes = _MAX_PDF_IMPORT_FILE_BYTES
+    file_size = len(source_bytes)
+    if file_size > max_bytes:
+        log_event(
+            logging.ERROR,
+            "pdf_import_over_budget",
+            "PDF отклонён: превышен лимит размера файла для импорта.",
+            filename=filename,
+            limit="file_size",
+            file_size_bytes=file_size,
+            max_file_size_bytes=max_bytes,
+        )
+        raise RuntimeError(f"pdf_import_over_budget:file_size:{file_size}>{max_bytes}")
+
+
+@dataclass
+class _PdfParseStagesResult:
+    """Serializable payload produced by the PDF parse worker (F7).
+
+    Every field is picklable (dataclasses of primitives / bytes) so the result
+    can be written to a file in the temp dir by a spawned child process and read
+    back by the parent.
+    """
+
+    spans: list
+    image_objects: list
+    quality_decision: str
+    quality_decision_reasons: tuple[str, ...]
+    body_text_ratio: float
+    ocr_used: bool
+
+
+def _run_pdf_parse_stages(
+    *,
+    input_path: Path,
+    ocr_output_path: Path,
+    filename: str,
+    ocr_import_enabled: bool,
+    max_page_count: int,
+    max_span_count: int,
+    max_image_count: int,
+) -> _PdfParseStagesResult:
+    """Run ALL heavy pdfminer/OCR stages for a PDF import under one deadline (F7).
+
+    Covers the page-count budget, span extraction, the optional OCR reparse, and
+    image extraction. Object-count caps reject a pathological document (never a
+    silent truncation). This is a module-level, picklable function so it can run
+    either in-process (test seam) or in a spawned child process (production).
+    """
 
     from docxaicorrector.pdf_import.images import extract_pdf_images_with_pdfminer
-    from docxaicorrector.pdf_import.logical_import import build_paragraph_units_from_text_spans
     from docxaicorrector.pdf_import.text_layer_quality import (
         build_text_layer_quality_report,
         extract_pdf_text_spans_with_pdfminer,
     )
 
+    page_count = _count_pdf_pages_for_budget(input_path, cap=max_page_count)
+    if page_count is not None and page_count > max_page_count:
+        log_event(
+            logging.ERROR,
+            "pdf_import_over_budget",
+            "PDF отклонён: превышен лимит числа страниц для импорта.",
+            filename=filename,
+            limit="page_count",
+            page_count=page_count,
+            max_page_count=max_page_count,
+        )
+        raise RuntimeError(f"pdf_import_over_budget:page_count:{page_count}>{max_page_count}")
+
+    spans = list(extract_pdf_text_spans_with_pdfminer(input_path))
+    _enforce_pdf_span_count_cap(spans, filename=filename, max_span_count=max_span_count)
+    quality_report = build_text_layer_quality_report(spans)
+    ocr_used = False
+
+    if quality_report.decision != "promising":
+        if not ocr_import_enabled:
+            # Not promising and OCR disabled: return early so the parent raises
+            # the typed not-promising error (no image extraction needed).
+            return _PdfParseStagesResult(
+                spans=spans,
+                image_objects=[],
+                quality_decision=str(quality_report.decision),
+                quality_decision_reasons=tuple(str(r) for r in quality_report.decision_reasons),
+                body_text_ratio=float(getattr(quality_report, "body_text_ratio", 0.0) or 0.0),
+                ocr_used=False,
+            )
+        _run_pdf_ocr_to_text_layer_pdf(input_path=input_path, output_path=ocr_output_path)
+        spans = list(extract_pdf_text_spans_with_pdfminer(ocr_output_path))
+        _enforce_pdf_span_count_cap(spans, filename=filename, max_span_count=max_span_count)
+        quality_report = build_text_layer_quality_report(spans)
+        ocr_used = True
+        if quality_report.decision != "promising":
+            return _PdfParseStagesResult(
+                spans=spans,
+                image_objects=[],
+                quality_decision=str(quality_report.decision),
+                quality_decision_reasons=tuple(str(r) for r in quality_report.decision_reasons),
+                body_text_ratio=float(getattr(quality_report, "body_text_ratio", 0.0) or 0.0),
+                ocr_used=True,
+            )
+
+    try:
+        image_objects = list(extract_pdf_images_with_pdfminer(input_path))
+    except Exception as exc:
+        log_event(
+            logging.WARNING,
+            "pdf_text_layer_image_extraction_failed",
+            "Text-layer PDF import will continue without embedded images.",
+            filename=filename,
+            reason=str(exc),
+        )
+        image_objects = []
+    else:
+        _enforce_pdf_image_count_cap(image_objects, filename=filename, max_image_count=max_image_count)
+
+    return _PdfParseStagesResult(
+        spans=spans,
+        image_objects=image_objects,
+        quality_decision=str(quality_report.decision),
+        quality_decision_reasons=tuple(str(r) for r in quality_report.decision_reasons),
+        body_text_ratio=float(getattr(quality_report, "body_text_ratio", 0.0) or 0.0),
+        ocr_used=ocr_used,
+    )
+
+
+def _enforce_pdf_span_count_cap(spans, *, filename: str, max_span_count: int) -> None:
+    span_count = len(spans)
+    if span_count > max_span_count:
+        log_event(
+            logging.ERROR,
+            "pdf_import_over_budget",
+            "PDF отклонён: превышен лимит числа text-span объектов при импорте.",
+            filename=filename,
+            limit="span_count",
+            span_count=span_count,
+            max_span_count=max_span_count,
+        )
+        raise RuntimeError(f"pdf_import_over_budget:span_count:{span_count}>{max_span_count}")
+
+
+def _enforce_pdf_image_count_cap(image_objects, *, filename: str, max_image_count: int) -> None:
+    image_count = len(image_objects)
+    if image_count > max_image_count:
+        log_event(
+            logging.ERROR,
+            "pdf_import_over_budget",
+            "PDF отклонён: превышен лимит числа image объектов при импорте.",
+            filename=filename,
+            limit="image_count",
+            image_count=image_count,
+            max_image_count=max_image_count,
+        )
+        raise RuntimeError(f"pdf_import_over_budget:image_count:{image_count}>{max_image_count}")
+
+
+def _pdf_parse_subprocess_entry(
+    result_path: str,
+    input_path: str,
+    ocr_output_path: str,
+    filename: str,
+    ocr_import_enabled: bool,
+    max_page_count: int,
+    max_span_count: int,
+    max_image_count: int,
+) -> None:
+    """Child-process entrypoint (F7): run the parse stages and pickle the result.
+
+    Errors are serialized as a plain message string (all parse-stage errors are
+    ``RuntimeError`` with a typed message) so the parent can re-raise them even
+    if the original exception type is not picklable.
+    """
+
+    try:
+        result = _run_pdf_parse_stages(
+            input_path=Path(input_path),
+            ocr_output_path=Path(ocr_output_path),
+            filename=filename,
+            ocr_import_enabled=ocr_import_enabled,
+            max_page_count=max_page_count,
+            max_span_count=max_span_count,
+            max_image_count=max_image_count,
+        )
+        payload: dict[str, object] = {"ok": True, "result": result}
+    except BaseException as exc:  # noqa: BLE001 - marshalled to the parent
+        payload = {"ok": False, "error_message": str(exc) or exc.__class__.__name__}
+    try:
+        with open(result_path, "wb") as handle:
+            pickle.dump(payload, handle, protocol=pickle.HIGHEST_PROTOCOL)
+    except Exception:
+        with open(result_path, "wb") as handle:
+            pickle.dump({"ok": False, "error_message": "pdf_parse_result_unserializable"}, handle)
+
+
+# Test seam: the parent uses this callable as the spawned-process target. Tests
+# monkeypatch it to a module-level worker that overruns the deadline so the
+# real terminate()/join() kill path can be exercised.
+_PDF_PARSE_SUBPROCESS_ENTRY: Callable[..., None] = _pdf_parse_subprocess_entry
+
+# Optional observer invoked with the spawned process right after start; tests set
+# it to capture the child and assert it was terminated. Kept ``None`` in prod.
+_pdf_parse_process_observer: Callable[[object], None] | None = None
+
+
+def _pdf_parse_sleep_forever_entry(result_path: str, *args: object, **kwargs: object) -> None:
+    """Test-only subprocess target that never finishes, to exercise termination."""
+
+    while True:  # pragma: no cover - runs in a child process that is killed
+        time.sleep(0.05)
+
+
+def _pdf_parse_canned_result_entry(result_path: str, *args: object, **kwargs: object) -> None:
+    """Test-only subprocess target: write a valid result to prove the parent
+    deserializes a spawned child's payload across the process boundary."""
+
+    result = _PdfParseStagesResult(
+        spans=[],
+        image_objects=[],
+        quality_decision="promising",
+        quality_decision_reasons=(),
+        body_text_ratio=1.0,
+        ocr_used=False,
+    )
+    with open(result_path, "wb") as handle:
+        pickle.dump({"ok": True, "result": result}, handle, protocol=pickle.HIGHEST_PROTOCOL)
+
+
+def _run_pdf_parse_stages_with_deadline(
+    *,
+    temp_dir: Path,
+    input_path: Path,
+    ocr_output_path: Path,
+    filename: str,
+) -> _PdfParseStagesResult:
+    """Run the parse stages under the single unified wall-clock deadline (F7).
+
+    Production spawns a killable child process (``spawn`` context) that writes a
+    serialized result into the temp dir; on overrun the parent ``terminate()``s
+    and ``join()``s it (Python cannot kill a thread, only a process), then raises
+    ``pdf_import_over_budget:deadline``. The in-process fallback (test seam) runs
+    the same worker in a daemon thread and cannot force-kill it — test-only.
+    """
+
+    budget = _PDF_PARSE_WALLCLOCK_BUDGET_SECONDS
+    ocr_import_enabled = _pdf_ocr_import_enabled()
+    max_page_count = _MAX_PDF_IMPORT_PAGE_COUNT
+    max_span_count = _MAX_PDF_IMPORT_SPAN_COUNT
+    max_image_count = _MAX_PDF_IMPORT_IMAGE_COUNT
+
+    if _pdf_parse_in_process_enabled():
+        return _run_pdf_parse_stages_in_process_guarded(
+            budget=budget,
+            input_path=input_path,
+            ocr_output_path=ocr_output_path,
+            filename=filename,
+            ocr_import_enabled=ocr_import_enabled,
+            max_page_count=max_page_count,
+            max_span_count=max_span_count,
+            max_image_count=max_image_count,
+        )
+
+    result_path = temp_dir / "pdf_parse_result.pickle"
+    context = multiprocessing.get_context("spawn")
+    process = context.Process(
+        target=_PDF_PARSE_SUBPROCESS_ENTRY,
+        args=(
+            str(result_path),
+            str(input_path),
+            str(ocr_output_path),
+            filename,
+            ocr_import_enabled,
+            max_page_count,
+            max_span_count,
+            max_image_count,
+        ),
+        daemon=True,
+        name="pdf-parse-worker",
+    )
+    started_at = time.monotonic()
+    process.start()
+    if _pdf_parse_process_observer is not None:
+        _pdf_parse_process_observer(process)
+    process.join(timeout=budget)
+    if process.is_alive():
+        # Python cannot kill a thread, but a child process CAN be terminated.
+        process.terminate()
+        process.join(timeout=10)
+        if process.is_alive():  # pragma: no cover - SIGKILL escalation
+            process.kill()
+            process.join(timeout=10)
+        elapsed = time.monotonic() - started_at
+        log_event(
+            logging.ERROR,
+            "pdf_import_over_budget",
+            "PDF отклонён: разбор PDF превысил единый лимит времени; дочерний процесс завершён.",
+            filename=filename,
+            limit="deadline",
+            elapsed_seconds=round(elapsed, 3),
+            max_parse_seconds=budget,
+        )
+        raise RuntimeError(f"pdf_import_over_budget:deadline:{budget}")
+
+    try:
+        with open(result_path, "rb") as handle:
+            payload = pickle.load(handle)
+    except (OSError, EOFError, pickle.UnpicklingError) as exc:
+        raise RuntimeError(f"pdf_parse_subprocess_no_result:exitcode={process.exitcode}") from exc
+
+    if not payload.get("ok"):
+        raise RuntimeError(str(payload.get("error_message") or "pdf_parse_subprocess_failed"))
+    result = payload.get("result")
+    if not isinstance(result, _PdfParseStagesResult):
+        raise RuntimeError("pdf_parse_subprocess_malformed_result")
+    return result
+
+
+def _run_pdf_parse_stages_in_process_guarded(
+    *,
+    budget: float,
+    input_path: Path,
+    ocr_output_path: Path,
+    filename: str,
+    ocr_import_enabled: bool,
+    max_page_count: int,
+    max_span_count: int,
+    max_image_count: int,
+) -> _PdfParseStagesResult:
+    """In-process fallback (TEST-ONLY) under the unified deadline.
+
+    Runs the worker in a daemon thread and fails fast on overrun. NOTE: unlike
+    the production child process, an in-process daemon thread CANNOT be
+    force-killed — an overrunning parse keeps running until the interpreter
+    exits. This path exists only so tests that monkeypatch in-process pdfminer
+    functions keep working; production uses the killable subprocess path.
+    """
+
+    result_box: dict[str, _PdfParseStagesResult] = {}
+    error_box: dict[str, BaseException] = {}
+
+    def _runner() -> None:
+        try:
+            result_box["value"] = _run_pdf_parse_stages(
+                input_path=input_path,
+                ocr_output_path=ocr_output_path,
+                filename=filename,
+                ocr_import_enabled=ocr_import_enabled,
+                max_page_count=max_page_count,
+                max_span_count=max_span_count,
+                max_image_count=max_image_count,
+            )
+        except BaseException as exc:  # noqa: BLE001 - re-raised in the caller thread
+            error_box["error"] = exc
+
+    parse_thread = threading.Thread(target=_runner, daemon=True, name="pdf-parse-inproc")
+    started_at = time.monotonic()
+    parse_thread.start()
+    parse_thread.join(timeout=budget)
+    if parse_thread.is_alive():
+        elapsed = time.monotonic() - started_at
+        log_event(
+            logging.ERROR,
+            "pdf_import_over_budget",
+            "PDF отклонён: разбор PDF превысил лимит времени (in-process fallback).",
+            filename=filename,
+            limit="parse_wallclock",
+            elapsed_seconds=round(elapsed, 3),
+            max_parse_seconds=budget,
+        )
+        raise RuntimeError(f"pdf_import_over_budget:parse_wallclock:{budget}")
+    if "error" in error_box:
+        raise error_box["error"]
+    return result_box["value"]
+
+
+def _convert_pdf_text_layer_to_docx(*, filename: str, source_bytes: bytes) -> tuple[bytes, str]:
+    from docx import Document
+
+    from docxaicorrector.pdf_import.logical_import import build_paragraph_units_from_text_spans
+
+    _enforce_pdf_import_file_size_budget(filename=filename, source_bytes=source_bytes)
+
     with tempfile.TemporaryDirectory(prefix="docxaicorrector_pdf_text_layer_") as temp_dir_name:
         temp_dir = Path(temp_dir_name)
         input_path = temp_dir / (Path(filename).name or "document.pdf")
         output_path = temp_dir / Path(_build_normalized_docx_filename(filename)).name
+        ocr_output_path = temp_dir / f"{input_path.stem}.ocr.pdf"
         input_path.write_bytes(source_bytes)
 
-        spans = extract_pdf_text_spans_with_pdfminer(input_path)
-        quality_report = build_text_layer_quality_report(spans)
-        if quality_report.decision != "promising":
-            if not _pdf_ocr_import_enabled():
-                raise RuntimeError(
-                    "pdf_text_layer_import_not_promising:"
-                    + ",".join(str(reason) for reason in quality_report.decision_reasons)
-                )
-            ocr_output_path = temp_dir / f"{input_path.stem}.ocr.pdf"
-            _run_pdf_ocr_to_text_layer_pdf(input_path=input_path, output_path=ocr_output_path)
-            spans = extract_pdf_text_spans_with_pdfminer(ocr_output_path)
-            quality_report = build_text_layer_quality_report(spans)
-            if quality_report.decision != "promising":
-                raise RuntimeError(
-                    "pdf_ocr_text_layer_import_not_promising:"
-                    + ",".join(str(reason) for reason in quality_report.decision_reasons)
-                )
+        # All heavy pdfminer/OCR stages (page count + span extract + optional OCR
+        # reparse + image extract) run under a SINGLE unified deadline (F7). In
+        # production this is a genuinely killable child process; the in-process
+        # test seam runs the same worker under a thread guard.
+        parse_result = _run_pdf_parse_stages_with_deadline(
+            temp_dir=temp_dir,
+            input_path=input_path,
+            ocr_output_path=ocr_output_path,
+            filename=filename,
+        )
+        spans = parse_result.spans
+        image_objects = parse_result.image_objects
+        if parse_result.quality_decision != "promising":
+            prefix = (
+                "pdf_ocr_text_layer_import_not_promising:"
+                if parse_result.ocr_used
+                else "pdf_text_layer_import_not_promising:"
+            )
+            raise RuntimeError(prefix + ",".join(parse_result.quality_decision_reasons))
 
         import_result = build_paragraph_units_from_text_spans(spans)
         if not import_result.paragraphs:
             raise RuntimeError("pdf_text_layer_import_empty_document")
-        try:
-            image_objects = extract_pdf_images_with_pdfminer(input_path)
-        except Exception as exc:
-            log_event(
-                logging.WARNING,
-                "pdf_text_layer_image_extraction_failed",
-                "Text-layer PDF import will continue without embedded images.",
-                filename=filename,
-                reason=str(exc),
-            )
-            image_objects = []
 
         document = Document()
         content_items = [
@@ -561,7 +1004,7 @@ def _convert_pdf_text_layer_to_docx(*, filename: str, source_bytes: bytes) -> tu
             skipped_page_number_count=import_result.report.skipped_page_number_count,
             skipped_repeated_page_furniture_count=import_result.report.skipped_repeated_page_furniture_count,
             skipped_blank_page_notice_count=import_result.report.skipped_blank_page_notice_count,
-            body_text_ratio=quality_report.body_text_ratio,
+            body_text_ratio=parse_result.body_text_ratio,
         )
         return output_bytes, "pdf-text-layer"
 
@@ -569,20 +1012,37 @@ def _convert_pdf_text_layer_to_docx(*, filename: str, source_bytes: bytes) -> tu
 def _append_pdf_text_paragraph_to_docx(document, paragraph) -> None:
     style = _pdf_text_layer_docx_style(paragraph.role, paragraph.heading_level)
     docx_paragraph = document.add_paragraph(style=style)
-    if paragraph.role == "heading":
-        docx_paragraph.add_run(paragraph.text)
-        return
 
     # ``pdf_emphasis_runs`` carries the fully-built paragraph text (with de-hyphenation
     # and inline footnote markers already applied) split into character-level emphasis
     # runs; its concatenation equals ``paragraph.text``. Emit each run with its own
     # bold/italic so sub-line emphasis survives into the DOCX.
-    emphasis_runs = list(getattr(paragraph, "pdf_emphasis_runs", None) or [])
+    emphasis_runs = [
+        (str(run_text), bool(is_bold), bool(is_italic))
+        for run_text, is_bold, is_italic in (getattr(paragraph, "pdf_emphasis_runs", None) or [])
+        if run_text
+    ]
+
+    if paragraph.role == "heading":
+        # A heading already conveys weight via its style, so a *uniformly*
+        # bold/italic heading must not encode false character emphasis. Only
+        # genuinely mixed intra-heading emphasis (F24) is preserved run-by-run;
+        # a uniform (or empty) run set collapses to a single plain run.
+        distinct_states = {(is_bold, is_italic) for _text, is_bold, is_italic in emphasis_runs}
+        if len(distinct_states) > 1:
+            for run_text, is_bold, is_italic in emphasis_runs:
+                run = docx_paragraph.add_run(run_text)
+                if is_bold:
+                    run.bold = True
+                if is_italic:
+                    run.italic = True
+            return
+        docx_paragraph.add_run(paragraph.text)
+        return
+
     if emphasis_runs:
         for run_text, is_bold, is_italic in emphasis_runs:
-            if not run_text:
-                continue
-            run = docx_paragraph.add_run(str(run_text))
+            run = docx_paragraph.add_run(run_text)
             if is_bold:
                 run.bold = True
             if is_italic:
@@ -890,89 +1350,6 @@ def freeze_uploaded_file_lightweight(uploaded_file: UploadedFileLike | BytesIO) 
     return freeze_resolved_upload(resolve_upload_contract(filename=filename, source_bytes=raw))
 
 
-class HeartbeatBeacon:
-    """Periodically re-emits a progress event during a long blocking call.
-
-    Designed to wrap subprocess calls (LibreOffice) and synchronous network
-    calls (OpenAI) where we cannot inject native progress hooks. The beacon
-    runs a daemon thread that ticks every ``interval_seconds`` and invokes
-    ``progress_callback`` with the current elapsed seconds substituted into
-    ``detail_template`` (``{elapsed}`` placeholder). The beacon is a no-op
-    when ``progress_callback`` is ``None``.
-
-    The beacon is reentrant via the context manager and never raises out of
-    the worker: any exception in ``progress_callback`` stops the beacon.
-    """
-
-    def __init__(
-        self,
-        progress_callback,
-        *,
-        stage: str,
-        detail_template: str,
-        progress: float,
-        metrics: dict | None = None,
-        interval_seconds: float = 2.0,
-    ) -> None:
-        self._progress_callback = progress_callback
-        self._stage = stage
-        self._detail_template = detail_template
-        self._progress = progress
-        self._metrics = dict(metrics or {})
-        self._interval = max(0.05, float(interval_seconds))
-        self._stop_event = threading.Event()
-        self._thread: threading.Thread | None = None
-        self._started_at = 0.0
-        self._callback_failure_logged = False
-
-    def __enter__(self) -> "HeartbeatBeacon":
-        if self._progress_callback is None:
-            return self
-        self._started_at = time.monotonic()
-        self._thread = threading.Thread(
-            target=self._run,
-            daemon=True,
-            name="docxai-heartbeat",
-        )
-        self._thread.start()
-        return self
-
-    def __exit__(self, exc_type, exc_val, exc_tb) -> bool:
-        self._stop_event.set()
-        thread = self._thread
-        if thread is not None:
-            thread.join(timeout=self._interval + 0.5)
-        return False
-
-    def _run(self) -> None:
-        while not self._stop_event.wait(self._interval):
-            elapsed = max(0, int(time.monotonic() - self._started_at))
-            try:
-                detail = self._detail_template.format(elapsed=elapsed)
-            except (KeyError, IndexError, ValueError):
-                detail = self._detail_template
-            try:
-                self._progress_callback(
-                    stage=self._stage,
-                    detail=detail,
-                    progress=self._progress,
-                    metrics=dict(self._metrics),
-                )
-            except Exception:
-                if not self._callback_failure_logged:
-                    self._callback_failure_logged = True
-                    log_event(
-                        logging.WARNING,
-                        "heartbeat_callback_failed",
-                        "Heartbeat progress callback failed; periodic heartbeat updates were disabled for this operation.",
-                        stage=self._stage,
-                        detail_template=self._detail_template,
-                        interval_seconds=self._interval,
-                    )
-                # Heartbeat must never abort the worker.
-                return
-
-
 def _touch_materialized_upload_cache_entry(
     cache: OrderedDict[str, FrozenUploadPayload],
     cache_key: str,
@@ -1205,13 +1582,6 @@ def build_uploaded_file_token(uploaded_file: UploadedFileLike | BytesIO | None =
     return resolve_upload_contract(filename=file_name, source_bytes=bytes(source_bytes)).file_token
 
 
-def build_in_memory_uploaded_file(*, source_name: str, source_bytes: bytes):
-    uploaded_file = InMemoryUploadedFile(source_bytes)
-    uploaded_file.name = source_name
-    uploaded_file.size = len(source_bytes)
-    return uploaded_file
-
-
 def _coerce_metric_to_int(metrics: dict[str, object], key: str) -> int:
     value = metrics.get(key, 0)
     if isinstance(value, bool):
@@ -1236,24 +1606,6 @@ def build_preparation_request_marker(uploaded_file, *, chunk_size: int, processi
     resolved_operation = str(processing_operation or "edit").strip().lower() or "edit"
     operation_suffix = "" if resolved_operation == "edit" else f":op={resolved_operation}"
     return f"{build_uploaded_file_selection_marker(uploaded_file)}:{chunk_size}{operation_suffix}"
-
-
-def normalize_background_error(
-    *,
-    stage: str,
-    exc: Exception,
-    user_message: str,
-    severity: str = "error",
-    recoverable: bool = False,
-) -> dict[str, object]:
-    return {
-        "stage": stage,
-        "severity": severity,
-        "user_message": user_message,
-        "technical_message": str(exc),
-        "error_type": exc.__class__.__name__,
-        "recoverable": recoverable,
-    }
 
 
 def build_result_bundle(
@@ -1435,25 +1787,6 @@ def _is_stale_processing_event(event: ProcessingEvent) -> bool:
     return event_source_token != latest_source_token
 
 
-def should_stop_processing(runtime: BackgroundRuntime | None) -> bool:
-    if runtime is None:
-        return False
-    return runtime.should_stop()
-
-
-def resolve_uploaded_filename(uploaded_file) -> str:
-    if isinstance(uploaded_file, FrozenUploadPayload):
-        return uploaded_file.filename
-    explicit_name = getattr(uploaded_file, "name", None)
-    if isinstance(explicit_name, str) and explicit_name.strip():
-        return explicit_name
-
-    fallback_name = str(uploaded_file).strip()
-    if not fallback_name or _looks_like_runtime_object_repr(fallback_name):
-        return _DEFAULT_UPLOADED_FILENAME
-    return fallback_name
-
-
 def drain_processing_events(*, set_processing_status, finalize_processing_status, push_activity, append_log, append_image_log) -> None:
     event_queue = get_processing_event_queue()
     if event_queue is None:
@@ -1630,8 +1963,27 @@ def start_background_processing(
         is_running=True,
     )
 
+    def _admission_guarded_worker_target(**worker_kwargs) -> None:
+        # F27: acquire a process-wide admission slot before doing real work so
+        # concurrent sessions cannot multiply PDF RAM / subprocess / API cost.
+        # Spec 041 P1-2: the wait is cancellable (mirrors the preparation path)
+        # so a Stop while the gate is full cancels the queued run instead of
+        # letting it run once a slot frees. ``stop_event`` and ``runtime`` are
+        # this run's own event/runtime captured from the enclosing scope.
+        if not _acquire_admission_slot_cancellable(_PROCESSING_ADMISSION_GATE, stop_event):
+            # Cancelled during the wait: nothing was acquired, so do NOT release.
+            # Surface the same stopped completion a normally-stopped run emits.
+            runtime.emit(WorkerCompleteEvent(outcome="stopped"))
+            return
+        try:
+            worker_target(**worker_kwargs)
+        finally:
+            # A slot was acquired above, so release it on every exit path
+            # (completion, stop_event, or error).
+            _PROCESSING_ADMISSION_GATE.release()
+
     worker = threading.Thread(
-        target=worker_target,
+        target=_admission_guarded_worker_target,
         kwargs={
             "runtime": runtime,
             "uploaded_filename": uploaded_filename,
@@ -1683,6 +2035,7 @@ def start_background_preparation(
     keep_all_image_variants: bool,
     processing_operation: str = "edit",
     app_config: dict[str, object] | None = None,
+    client_factory=None,
 ) -> None:
     reset_run_state(keep_restart_source=False)
     mark_preparation_started(upload_marker)
@@ -1747,7 +2100,7 @@ def start_background_preparation(
             last_activity["key"] = activity_key
             last_activity["at"] = now
 
-    def run_preparation() -> None:
+    def _run_preparation_stages() -> None:
         try:
             materialized_payload = materialize_uploaded_payload(
                 uploaded_payload,
@@ -1771,15 +2124,21 @@ def start_background_preparation(
             runtime.emit(PreparationStoppedEvent(upload_marker=upload_marker))
             return
         try:
-            prepared_run_context = worker_target(
-                uploaded_payload=materialized_payload,
-                chunk_size=chunk_size,
-                image_mode=image_mode,
-                keep_all_image_variants=keep_all_image_variants,
-                processing_operation=processing_operation,
-                app_config=app_config,
-                progress_callback=report_progress,
-            )
+            worker_kwargs: dict[str, object] = {
+                "uploaded_payload": materialized_payload,
+                "chunk_size": chunk_size,
+                "image_mode": image_mode,
+                "keep_all_image_variants": keep_all_image_variants,
+                "processing_operation": processing_operation,
+                "app_config": app_config,
+                "progress_callback": report_progress,
+            }
+            # Forward the tenant client_factory (spec 039 part B) so the UI
+            # preparation path honors per-tenant endpoint/credentials, mirroring
+            # ProcessingService. None keeps the worker call byte-compatible.
+            if client_factory is not None:
+                worker_kwargs["client_factory"] = client_factory
+            prepared_run_context = worker_target(**worker_kwargs)
         except Exception as exc:
             error_details = normalize_background_error(
                 stage="preparation",
@@ -1795,6 +2154,19 @@ def start_background_preparation(
             )
             return
         runtime.emit(PreparationCompleteEvent(prepared_run_context=prepared_run_context, upload_marker=upload_marker))
+
+    def run_preparation() -> None:
+        # F27: PDF materialization/parse is the costliest stage, so preparation
+        # must hold a process-wide admission slot too — not just main processing.
+        # The wait is cancellable so a stopped upload never blocks a slot forever;
+        # the slot is released on every exit path (complete, stop, failure).
+        if not _acquire_admission_slot_cancellable(_PROCESSING_ADMISSION_GATE, preparation_stop_event):
+            runtime.emit(PreparationStoppedEvent(upload_marker=upload_marker))
+            return
+        try:
+            _run_preparation_stages()
+        finally:
+            _PROCESSING_ADMISSION_GATE.release()
 
     worker = threading.Thread(target=run_preparation, daemon=True, name="docx-preparation-worker")
     set_preparation_runtime(worker=worker, event_queue=preparation_events, stop_event=preparation_stop_event)

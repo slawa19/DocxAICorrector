@@ -610,6 +610,46 @@ def test_extract_scene_graph_requires_explicit_client():
         raise AssertionError("Expected RuntimeError when reconstruction client is not provided")
 
 
+def test_extract_scene_graph_rejects_over_budget_before_upload(monkeypatch):
+    """An oversized image is rejected before base64-encode/upload; extraction
+    raises so the caller falls back to safe mode (finding F8)."""
+    import docxaicorrector.image.analysis as image_analysis
+
+    monkeypatch.setattr(image_analysis, "MAX_IMAGE_DIMENSION_PX", 10)
+
+    def fail_retry(*args, **kwargs):
+        raise AssertionError("VLM must not be called for an over-budget image")
+
+    monkeypatch.setattr(image_reconstruction, "call_responses_create_with_retry", fail_retry)
+
+    try:
+        extract_scene_graph(_build_test_png(), model="test-model", client=object())
+    except RuntimeError as exc:
+        assert "pixel budget" in str(exc)
+    else:
+        raise AssertionError("Expected RuntimeError for an over-budget image")
+
+
+def test_reconstruct_image_rejects_over_budget_before_decode(monkeypatch):
+    """reconstruct_image gates the pixel budget before decode/upload and raises
+    for an over-budget image (finding F8)."""
+    import docxaicorrector.image.analysis as image_analysis
+
+    monkeypatch.setattr(image_analysis, "MAX_IMAGE_DIMENSION_PX", 10)
+
+    def fail_retry(*args, **kwargs):
+        raise AssertionError("VLM must not be called for an over-budget image")
+
+    monkeypatch.setattr(image_reconstruction, "call_responses_create_with_retry", fail_retry)
+
+    try:
+        image_reconstruction.reconstruct_image(_build_test_png(), model="test-model", client=object())
+    except RuntimeError as exc:
+        assert "pixel budget" in str(exc)
+    else:
+        raise AssertionError("Expected RuntimeError for an over-budget image")
+
+
 def test_extract_scene_graph_uses_retry_wrapper_with_timeout_and_budget(monkeypatch):
     captured = {}
     budget = object()

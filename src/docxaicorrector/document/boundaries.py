@@ -1,6 +1,7 @@
 import hashlib
 import json
 import re
+from collections.abc import Mapping
 from pathlib import Path
 from typing import cast
 
@@ -40,10 +41,12 @@ _TOC_TITLECASE_STOPWORDS = {
 def resolve_paragraph_boundary_normalization_settings(
     *,
     allowed_modes: tuple[str, ...] | list[str] | set[str],
+    app_config: Mapping[str, object] | None = None,
 ) -> tuple[str, bool]:
     from docxaicorrector.core.config import load_app_config
 
-    app_config = load_app_config()
+    if app_config is None:
+        app_config = load_app_config()
     enabled = bool(app_config.get("paragraph_boundary_normalization_enabled", True))
     mode = str(app_config.get("paragraph_boundary_normalization_mode", "high_only"))
     if mode not in allowed_modes:

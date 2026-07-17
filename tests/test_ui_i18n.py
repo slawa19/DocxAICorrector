@@ -122,7 +122,11 @@ def _module_source(filename: str) -> str:
     return (Path(i18n.__file__).resolve().parent / filename).read_text(encoding="utf-8")
 
 
-@pytest.mark.parametrize("filename", ["_app.py", "application_flow.py"])
+# application_flow.py no longer references i18n keys directly: the flow.* keys moved
+# to processing/application_flow.py (spec 027). Their catalog presence is covered by
+# test_app_and_flow_namespace_key_sets_match_between_catalogs and
+# tests/test_layer_boundaries.py::test_flow_message_defaults_match_ru_catalog.
+@pytest.mark.parametrize("filename", ["_app.py"])
 def test_migrated_ui_module_keys_present_in_both_catalogs(filename: str) -> None:
     """Every i18n key referenced by the migrated ui modules exists in both catalogs."""
     referenced_keys = set(re.findall(r't\(\s*["\']([a-z_]+\.[a-z0-9_]+)["\']', _module_source(filename)))

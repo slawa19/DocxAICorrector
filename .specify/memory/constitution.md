@@ -136,6 +136,27 @@ real signal exists, or accept. Never guess in the assembler.
 Any credit rule that subtracts from a loss/defect count MUST carry an anti-vacuum
 counter-proof test showing that real body content is still counted.
 
+**Formatting coverage is review DATA, not a verdict gate (binding — this consolidates a
+decision that specs kept re-deciding; do not forget it again).** The unmapped-source and
+unmapped-target coverage axes are REVIEW DATA surfaced for a human to inspect, NOT a
+pass/fail gate on the run — this is the "no verifier as a gate" half of rule 8 above,
+decided in `specs/010-production-acceptance-semantics`. Front-matter, bounded TOC,
+references / bibliography, index, captions, part-dividers and page furniture are CREDITED
+passthrough (excluded from the genuine unmapped count), detected by document region /
+structural role / form — the `_resolve_source_front_matter_boundary` /
+`_resolve_references_region_start` / `_resolve_bounded_toc_region` family in
+`validation/formatting_coverage.py` — NEVER by a per-book string (`specs/008-paragraph-break-detection`,
+`specs/011-unmapped-target-review-items`). Footnotes are out of scope (rule above). Any
+check that treats residual unmapped coverage as a HARD failure — including the
+real-document structural passthrough gate — is a defect against this principle: it MUST emit
+the residual as review data, and a genuine coverage tail with no general repair rule is
+ACCEPTED, not gated ("no source signal, no repair"). Honest caveat: the generic
+bibliographic/structural anchor lexicon those region detectors key on
+(references/bibliography/index/notes/contents/содержание/оглавление, chapter/глава) is an
+ACKNOWLEDGED language-coverage residual — general across books and extensible per language,
+NOT a per-book literal; a book in an unsupported language may not have its regions detected,
+which is an accepted tail, not a per-book patch.
+
 Rationale: per-book tuning does not transfer to the next document, inflates the
 code, and hides real losses behind plausible-looking exceptions.
 

@@ -62,7 +62,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\copilot-cli\scripts\
 ```text
 /copilot-loop
 Цель: починить bulk selection на странице выбора глав, чтобы кнопки "Выбрать всё" и "Снять всё" реально обновляли чекбоксы.
-Контекст: Streamlit panel в src/docxaicorrector/ui/structure_review_panel.py, связанная спецификация docs/specs/STRUCTURE_REVIEW_PANEL_UX_REFACTOR_SPEC_2026-05-08.md.
+Контекст: Streamlit UI в src/docxaicorrector/ui/_app.py, историческая спецификация docs/archive/specs/STRUCTURE_REVIEW_PANEL_UX_REFACTOR_SPEC_2026-05-08.md.
 Границы: не менять pipeline перевода и real-document validation.
 Проверка: точечные тесты вокруг structure review panel или ближайшие существующие тесты.
 Автономность: до 3 итераций, не коммить, спрашивай только при архитектурной развилке.
@@ -71,7 +71,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\copilot-cli\scripts\
 ```text
 /copilot-loop
 Цель: уменьшить диагностический шум в UI после подготовки документа и оставить только список глав и кнопки запуска.
-Контекст: реализовать только поведение из docs/specs/STRUCTURE_REVIEW_PANEL_UX_REFACTOR_SPEC_2026-05-08.md.
+Контекст: реализовать только поведение из docs/archive/specs/STRUCTURE_REVIEW_PANEL_UX_REFACTOR_SPEC_2026-05-08.md.
 Границы: без новых цветов, без нового дизайна, без переписывания extraction pipeline.
 Проверка: targeted pytest для UI/state helpers; если тестов нет, вернуть это как риск.
 Автономность: максимум 3 итерации.

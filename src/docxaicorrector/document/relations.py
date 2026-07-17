@@ -1,6 +1,7 @@
 import hashlib
 import json
 import re
+from collections.abc import Mapping
 from pathlib import Path
 
 from docxaicorrector.document.structure_authority import get_effective_structural_role, phase_uses_advisory_hints
@@ -391,10 +392,14 @@ def _is_likely_caption_text(text: str) -> bool:
     return is_likely_caption_text(text)
 
 
-def _resolve_relation_normalization_settings() -> tuple[bool, str, tuple[str, ...], bool]:
+def _resolve_relation_normalization_settings(
+    *,
+    app_config: Mapping[str, object] | None = None,
+) -> tuple[bool, str, tuple[str, ...], bool]:
     from docxaicorrector.core.config import load_app_config
 
-    app_config = load_app_config()
+    if app_config is None:
+        app_config = load_app_config()
     enabled = bool(app_config.get("relation_normalization_enabled", True))
     profile = str(app_config.get("relation_normalization_profile", "phase2_default") or "phase2_default")
     configured_relation_kinds = app_config.get(

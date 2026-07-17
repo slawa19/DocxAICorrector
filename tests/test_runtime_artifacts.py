@@ -1,6 +1,9 @@
 import json
 import os
+import threading
 from pathlib import Path
+
+import pytest
 
 import docxaicorrector.runtime.artifacts as runtime_artifacts
 from docxaicorrector.runtime.artifacts import (
@@ -692,6 +695,213 @@ def test_write_job_result_registry_persists_job_records_in_identity_tree(tmp_pat
     }
 
 
+def test_write_segment_result_registry_prunes_stale_family_by_count(tmp_path, monkeypatch):
+    monkeypatch.setattr(runtime_artifacts, "SEGMENT_RESULT_REGISTRY_MAX_COUNT", 1)
+    monkeypatch.setattr(runtime_artifacts, "SEGMENT_RESULT_REGISTRY_MAX_AGE_SECONDS", 10_000)
+
+    stale_leaf = tmp_path / "prep_old" / "struct-old"
+    stale_leaf.mkdir(parents=True, exist_ok=True)
+    stale_path = stale_leaf / "seg_0000.segment-result.json"
+    stale_path.write_text(json.dumps({"segment_id": "seg_0000"}), encoding="utf-8")
+    os.utime(stale_path, (10.0, 10.0))
+
+    artifact_paths = write_segment_result_registry(
+        records=[
+            {
+                "schema_version": 1,
+                "prepared_source_key": "prep:report:1234",
+                "structure_fingerprint": "struct-abc",
+                "segment_id": "seg_0001",
+                "translated_markdown": "Translated chapter",
+            }
+        ],
+        output_dir=tmp_path,
+    )
+
+    new_path = Path(artifact_paths["seg_0001"])
+    assert new_path.exists()
+    # The count cap is family-wide (recursive), so the stale leaf is pruned even
+    # though it lives under a different source/structure identity.
+    assert not stale_path.exists()
+    remaining = sorted(path.name for path in tmp_path.rglob("*.segment-result.json"))
+    assert remaining == ["seg_0001.segment-result.json"]
+
+
+def test_write_segment_result_registry_prunes_stale_family_by_age(tmp_path, monkeypatch):
+    monkeypatch.setattr(runtime_artifacts, "SEGMENT_RESULT_REGISTRY_MAX_COUNT", 1000)
+    monkeypatch.setattr(runtime_artifacts, "SEGMENT_RESULT_REGISTRY_MAX_AGE_SECONDS", 60)
+
+    stale_leaf = tmp_path / "prep_old" / "struct-old"
+    stale_leaf.mkdir(parents=True, exist_ok=True)
+    stale_path = stale_leaf / "seg_0000.segment-result.json"
+    stale_path.write_text(json.dumps({"segment_id": "seg_0000"}), encoding="utf-8")
+    os.utime(stale_path, (10.0, 10.0))
+
+    artifact_paths = write_segment_result_registry(
+        records=[
+            {
+                "schema_version": 1,
+                "prepared_source_key": "prep:report:1234",
+                "structure_fingerprint": "struct-abc",
+                "segment_id": "seg_0001",
+                "translated_markdown": "Translated chapter",
+            }
+        ],
+        output_dir=tmp_path,
+    )
+
+    assert Path(artifact_paths["seg_0001"]).exists()
+    assert not stale_path.exists()
+
+
+def test_write_segment_result_registry_never_prunes_current_run_batch(tmp_path, monkeypatch):
+    # F11: a batch larger than the family count budget must return paths that ALL
+    # still exist — the current run's just-written records are never pruned.
+    monkeypatch.setattr(runtime_artifacts, "SEGMENT_RESULT_REGISTRY_MAX_COUNT", 2)
+    monkeypatch.setattr(runtime_artifacts, "SEGMENT_RESULT_REGISTRY_MAX_AGE_SECONDS", 10_000)
+
+    records = [
+        {
+            "schema_version": 1,
+            "prepared_source_key": "prep:report:1234",
+            "structure_fingerprint": "struct-abc",
+            "segment_id": f"seg_{index:04d}",
+            "translated_markdown": "Translated chapter",
+        }
+        for index in range(5)
+    ]
+
+    artifact_paths = write_segment_result_registry(records=records, output_dir=tmp_path)
+
+    # All five returned paths exist despite the count budget being 2.
+    assert len(artifact_paths) == 5
+    for path in artifact_paths.values():
+        assert Path(path).exists(), path
+
+
+def test_write_segment_result_registry_prunes_history_but_protects_oversized_current_run(tmp_path, monkeypatch):
+    # F11: history is still bounded — a stale historical leaf is pruned even while
+    # the (oversized) current batch is fully protected.
+    monkeypatch.setattr(runtime_artifacts, "SEGMENT_RESULT_REGISTRY_MAX_COUNT", 2)
+    monkeypatch.setattr(runtime_artifacts, "SEGMENT_RESULT_REGISTRY_MAX_AGE_SECONDS", 10_000)
+
+    stale_leaf = tmp_path / "prep_old" / "struct-old"
+    stale_leaf.mkdir(parents=True, exist_ok=True)
+    stale_path = stale_leaf / "seg_stale.segment-result.json"
+    stale_path.write_text(json.dumps({"segment_id": "seg_stale"}), encoding="utf-8")
+    os.utime(stale_path, (10.0, 10.0))
+
+    records = [
+        {
+            "schema_version": 1,
+            "prepared_source_key": "prep:report:1234",
+            "structure_fingerprint": "struct-abc",
+            "segment_id": f"seg_{index:04d}",
+            "translated_markdown": "Translated chapter",
+        }
+        for index in range(3)
+    ]
+
+    artifact_paths = write_segment_result_registry(records=records, output_dir=tmp_path)
+
+    assert len(artifact_paths) == 3
+    for path in artifact_paths.values():
+        assert Path(path).exists(), path
+    # The stale historical leaf is still reclaimed.
+    assert not stale_path.exists()
+
+
+def test_write_segment_result_registry_writes_atomically_without_partial_file(tmp_path, monkeypatch):
+    # F11: an interrupted write must never leave a truncated half-file at the final
+    # path. Fail the os.replace of the SECOND record; its destination must not exist
+    # and no temp sibling may survive.
+    real_replace = os.replace
+    replace_calls = {"count": 0}
+
+    def _flaky_replace(src, dst, *args, **kwargs):
+        replace_calls["count"] += 1
+        if replace_calls["count"] >= 2:
+            raise OSError("simulated interrupted registry write")
+        return real_replace(src, dst, *args, **kwargs)
+
+    monkeypatch.setattr(runtime_artifacts.os, "replace", _flaky_replace)
+
+    records = [
+        {
+            "prepared_source_key": "prep:report:1234",
+            "structure_fingerprint": "struct-abc",
+            "segment_id": f"seg_{index:04d}",
+            "translated_markdown": "Translated chapter",
+        }
+        for index in range(2)
+    ]
+
+    with pytest.raises(OSError):
+        write_segment_result_registry(records=records, output_dir=tmp_path)
+
+    leaf = tmp_path / "prep_report_1234" / "struct-abc"
+    # The second record's final artifact was never published — no half-file.
+    assert not (leaf / "seg_0001.segment-result.json").exists()
+    # No leftover temp siblings from the interrupted write.
+    assert list(leaf.glob("*.tmp.*")) == []
+
+
+def test_write_job_result_registry_never_prunes_current_run_batch(tmp_path, monkeypatch):
+    # F11 (job-result writer parity): an oversized batch returns paths that all exist.
+    monkeypatch.setattr(runtime_artifacts, "JOB_RESULT_REGISTRY_MAX_COUNT", 2)
+    monkeypatch.setattr(runtime_artifacts, "JOB_RESULT_REGISTRY_MAX_AGE_SECONDS", 10_000)
+
+    records = [
+        {
+            "schema_version": 1,
+            "prepared_source_key": "prep:report:1234",
+            "structure_fingerprint": "struct-abc",
+            "job_id": f"job_{index:04d}",
+            "segment_id": "seg_0001",
+            "status": "completed",
+        }
+        for index in range(5)
+    ]
+
+    artifact_paths = write_job_result_registry(records=records, output_dir=tmp_path)
+
+    assert len(artifact_paths) == 5
+    for path in artifact_paths.values():
+        assert Path(path).exists(), path
+
+
+def test_write_job_result_registry_prunes_stale_family_by_count(tmp_path, monkeypatch):
+    monkeypatch.setattr(runtime_artifacts, "JOB_RESULT_REGISTRY_MAX_COUNT", 1)
+    monkeypatch.setattr(runtime_artifacts, "JOB_RESULT_REGISTRY_MAX_AGE_SECONDS", 10_000)
+
+    stale_leaf = tmp_path / "prep_old" / "struct-old"
+    stale_leaf.mkdir(parents=True, exist_ok=True)
+    stale_path = stale_leaf / "job_0000.job-result.json"
+    stale_path.write_text(json.dumps({"job_id": "job_0000", "status": "failed"}), encoding="utf-8")
+    os.utime(stale_path, (10.0, 10.0))
+
+    artifact_paths = write_job_result_registry(
+        records=[
+            {
+                "schema_version": 1,
+                "prepared_source_key": "prep:report:1234",
+                "structure_fingerprint": "struct-abc",
+                "job_id": "job_0007",
+                "segment_id": "seg_0002",
+                "status": "completed",
+                "updated_at": "2026-05-07T12:00:00+00:00",
+            }
+        ],
+        output_dir=tmp_path,
+    )
+
+    new_path = Path(artifact_paths["job_0007"])
+    assert new_path.exists()
+    assert not stale_path.exists()
+    remaining = sorted(path.name for path in tmp_path.rglob("*.job-result.json"))
+    assert remaining == ["job_0007.job-result.json"]
+
+
 def test_load_job_result_registry_keeps_latest_record_per_job_id(tmp_path):
     target_dir = tmp_path / "prep_report_1234" / "struct-abc"
     target_dir.mkdir(parents=True, exist_ok=True)
@@ -793,3 +1003,124 @@ def test_load_job_result_registry_prefers_payload_updated_at_over_file_mtime(tmp
             "updated_at": "2026-05-07T12:00:00+00:00",
         }
     }
+
+
+def test_atomic_write_group_staging_failure_publishes_nothing(tmp_path):
+    # The SECOND entry's parent dir does not exist, so its ``write_text`` raises
+    # FileNotFoundError (an OSError subclass) DURING staging. Nothing is published,
+    # and the first entry's already-staged temp is rolled back.
+    good_dir = tmp_path / "good"
+    good_dir.mkdir()
+    good_final = good_dir / "first.txt"
+    bad_final = tmp_path / "missing" / "second.txt"  # parent "missing" does not exist
+
+    with pytest.raises(OSError):
+        runtime_artifacts._atomic_write_group(
+            [
+                (good_final, "first"),
+                (bad_final, "second"),
+            ]
+        )
+
+    # Nothing was published (staging failed before the os.replace phase).
+    assert not good_final.exists()
+    # The first entry's staged temp was unlinked on rollback — no leftovers.
+    assert list(good_dir.glob("*.tmp.*")) == []
+
+
+def test_atomic_write_group_publish_failure_rolls_back(tmp_path, monkeypatch):
+    # os.replace succeeds on the first publish then raises OSError on the second, so the
+    # first (already-published) final must be rolled back and no temp may survive.
+    first_final = tmp_path / "first.txt"
+    second_final = tmp_path / "second.txt"
+
+    real_replace = os.replace
+    replace_calls = {"count": 0}
+
+    def _flaky_replace(src, dst, *args, **kwargs):
+        replace_calls["count"] += 1
+        if replace_calls["count"] >= 2:
+            raise OSError("simulated publish failure on second os.replace")
+        return real_replace(src, dst, *args, **kwargs)
+
+    monkeypatch.setattr(runtime_artifacts.os, "replace", _flaky_replace)
+
+    with pytest.raises(OSError):
+        runtime_artifacts._atomic_write_group(
+            [
+                (first_final, "first"),
+                (second_final, "second"),
+            ]
+        )
+
+    # First final was published then rolled back; second never published.
+    assert not first_final.exists()
+    assert not second_final.exists()
+    # Both staged temps were unlinked (the moved one is gone, the remaining one cleaned).
+    assert list(tmp_path.glob("*.tmp.*")) == []
+
+
+def test_write_segment_result_registry_concurrent_writers_keep_each_others_fresh_records(tmp_path, monkeypatch):
+    # Round-5 finding 6: two writers publishing into the SAME family at the same
+    # time must not prune each other's freshly-written records. The count budget is
+    # too small for both batches together, so without the in-flight registry the
+    # concurrent pruner would evict the other run's fresh leaves.
+    monkeypatch.setattr(runtime_artifacts, "SEGMENT_RESULT_REGISTRY_MAX_COUNT", 2)
+    monkeypatch.setattr(runtime_artifacts, "SEGMENT_RESULT_REGISTRY_MAX_AGE_SECONDS", 10_000)
+
+    # A stale historical leaf that SHOULD still be reclaimed by the prune.
+    stale_leaf = tmp_path / "prep_old" / "struct-old"
+    stale_leaf.mkdir(parents=True, exist_ok=True)
+    stale_path = stale_leaf / "seg_stale.segment-result.json"
+    stale_path.write_text(json.dumps({"segment_id": "seg_stale"}), encoding="utf-8")
+    os.utime(stale_path, (10.0, 10.0))
+
+    # Interleave the two writers so BOTH have written their files AND registered
+    # their in-flight paths before EITHER snapshots the registry to prune. The
+    # snapshot happens right after the write loop, so gating it on a barrier makes
+    # each writer's protected set include the other's fresh (already on-disk) paths.
+    real_snapshot = runtime_artifacts._snapshot_active_publications
+    barrier = threading.Barrier(2)
+
+    def _barriered_snapshot(family_key):
+        barrier.wait()
+        return real_snapshot(family_key)
+
+    monkeypatch.setattr(runtime_artifacts, "_snapshot_active_publications", _barriered_snapshot)
+
+    def _records(run: str) -> list[dict[str, object]]:
+        return [
+            {
+                "schema_version": 1,
+                "prepared_source_key": f"prep:{run}",
+                "structure_fingerprint": f"struct-{run}",
+                "segment_id": f"{run}_seg_{index:04d}",
+                "translated_markdown": "Translated chapter",
+            }
+            for index in range(2)
+        ]
+
+    results: dict[str, dict[str, str]] = {}
+    errors: list[BaseException] = []
+
+    def _run(run: str):
+        try:
+            results[run] = write_segment_result_registry(records=_records(run), output_dir=tmp_path)
+        except BaseException as exc:  # noqa: BLE001 - surface thread failures to the test
+            errors.append(exc)
+
+    threads = [threading.Thread(target=_run, args=(run,)) for run in ("runA", "runB")]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=30)
+
+    assert not errors, errors
+    assert set(results) == {"runA", "runB"}
+    # BOTH runs' freshly-written records survive the concurrent prunes.
+    for run in ("runA", "runB"):
+        assert len(results[run]) == 2
+        for path in results[run].values():
+            assert Path(path).exists(), path
+    # The stale historical leaf is still reclaimed by the family prune.
+    assert not stale_path.exists()

@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import json
 import platform
+import re
 import subprocess
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -20,55 +20,72 @@ def _load_vscode_tasks() -> list[dict[str, Any]]:
     return json.loads(tasks_path.read_text(encoding="utf-8"))["tasks"]
 
 
-def _assert_src_bootstrap_results_in_src_first(script_path: Path) -> None:
+# The standalone entrypoints (conftest, scripts, benchmark runners) MUST share the
+# single ``docxaicorrector_bootstrap.ensure_src_first_import_order`` helper rather
+# than re-defining it inline; before consolidation the identical helper lived in
+# seven copies (finding F5/R29). The shared helper's src-first ordering guarantee is
+# proven directly in ``test_shared_bootstrap_orders_src_first``; each entrypoint here
+# only has to (a) not re-declare the helper and (b) call the shared one with SRC_ROOT
+# last so src wins.
+_SHARED_BOOTSTRAP_IMPORT = "from docxaicorrector_bootstrap import ensure_src_first_import_order"
+_ALLOWED_BOOTSTRAP_INVOCATIONS = {
+    "ensure_src_first_import_order(SRC_ROOT)",
+    "ensure_src_first_import_order(PROJECT_ROOT, SRC_ROOT)",
+    "ensure_src_first_import_order(REPO_ROOT, SRC_ROOT)",
+    "ensure_src_first_import_order(ROOT_DIR, SRC_ROOT)",
+}
+
+
+def _assert_uses_shared_bootstrap(script_path: Path) -> None:
     source_lines = script_path.read_text(encoding="utf-8").splitlines()
     source_text = "\n".join(source_lines)
-    start_index: int | None = None
-    helper_index: int | None = None
-    invocation_index: int | None = None
-    invocation_line: str | None = None
 
-    for index, line in enumerate(source_lines):
-        stripped = line.strip()
-        if start_index is None and stripped.startswith(("SCRIPT_PATH =", "PROJECT_ROOT =", "REPO_ROOT =", "ROOT_DIR =")):
-            start_index = index
-        if helper_index is None and stripped.startswith("def _ensure_src_first_import_order("):
-            helper_index = index
-        if stripped in {
-            "_ensure_src_first_import_order(SRC_ROOT)",
-            "_ensure_src_first_import_order(PROJECT_ROOT, SRC_ROOT)",
-            "_ensure_src_first_import_order(REPO_ROOT, SRC_ROOT)",
-            "_ensure_src_first_import_order(ROOT_DIR, SRC_ROOT)",
-        }:
-            invocation_index = index
-            invocation_line = stripped
+    assert "def _ensure_src_first_import_order(" not in source_text, (
+        f"{script_path} must not re-define the consolidated bootstrap helper"
+    )
+    assert _SHARED_BOOTSTRAP_IMPORT in source_text, (
+        f"{script_path} must import the shared ensure_src_first_import_order helper"
+    )
+
+    stripped_lines = [line.strip() for line in source_lines]
+    start_index = next(
+        (
+            index
+            for index, stripped in enumerate(stripped_lines)
+            if stripped.startswith(("SCRIPT_PATH =", "PROJECT_ROOT =", "REPO_ROOT =", "ROOT_DIR ="))
+        ),
+        None,
+    )
+    invocation_index = next(
+        (index for index, stripped in enumerate(stripped_lines) if stripped in _ALLOWED_BOOTSTRAP_INVOCATIONS),
+        None,
+    )
 
     assert start_index is not None, script_path
-    assert helper_index is not None and helper_index >= start_index, script_path
-    assert invocation_index is not None and invocation_index >= helper_index, script_path
-    assert invocation_line is not None, script_path
+    assert invocation_index is not None and invocation_index >= start_index, script_path
 
-    helper_name = None
-    if "REPO_ROOT = _resolve_repo_root()" in source_text:
-        helper_name = "_resolve_repo_root"
 
-    bootstrap_snippet = "\n".join(source_lines[start_index : invocation_index + 1])
-    fake_sys = SimpleNamespace(path=[])
-    namespace = {
-        "__file__": str(script_path),
-        "Path": Path,
-        "sys": fake_sys,
-    }
-    if helper_name is not None:
-        namespace[helper_name] = lambda: script_path.parents[2]
-    exec(bootstrap_snippet, namespace)
+def test_shared_bootstrap_orders_src_first() -> None:
+    import sys
 
-    expected_prefix = [str(namespace["SRC_ROOT"])]
-    if invocation_line != "_ensure_src_first_import_order(SRC_ROOT)":
-        root_name = next(name for name in ("PROJECT_ROOT", "REPO_ROOT", "ROOT_DIR") if name in invocation_line)
-        expected_prefix.append(str(namespace[root_name]))
+    from docxaicorrector_bootstrap import ensure_src_first_import_order
 
-    assert fake_sys.path[: len(expected_prefix)] == expected_prefix
+    repo_root = Path("/synthetic-bootstrap-root")
+    src_root = repo_root / "src"
+    original = list(sys.path)
+    try:
+        # conftest shape: only src is pinned; it ends up first and is de-duplicated.
+        sys.path[:] = ["/pre", str(src_root), "/mid", str(repo_root), "/tail"]
+        ensure_src_first_import_order(src_root)
+        assert sys.path[0] == str(src_root)
+        assert sys.path.count(str(src_root)) == 1
+
+        # script / benchmark shape: repo root + src, with src searched first.
+        sys.path[:] = ["/pre", "/tail"]
+        ensure_src_first_import_order(repo_root, src_root)
+        assert sys.path[:2] == [str(src_root), str(repo_root)]
+    finally:
+        sys.path[:] = original
 
 
 def test_vscode_test_tasks_normalize_windows_relative_paths() -> None:
@@ -90,12 +107,35 @@ def test_vscode_test_tasks_normalize_windows_relative_paths() -> None:
 
     assert full_task["command"] == "bash scripts/test.sh"
 
-    assert docker_parity_task["command"].startswith(
-        'bash -lc \'docker run --rm -v "$(pwd)":/src -w /src python:3.12 bash -lc "'
-    )
     assert docker_parity_task.get("args", []) == []
-    assert "pip install -r requirements.txt" in docker_parity_task["command"]
-    assert "pytest tests/ -q" in docker_parity_task["command"]
+    # Docker CI Parity runs in a container against a READ-ONLY mount and delegates to
+    # scripts/docker-ci-parity.sh (which copies into a container-only workdir), so a
+    # local run never clobbers the developer's host/WSL .venv or writes into the tree.
+    docker_parity_command = docker_parity_task["command"]
+    assert "docker run --rm" in docker_parity_command
+    assert '"$(pwd)":/src:ro' in docker_parity_command  # read-only mount — no host writes
+    assert "scripts/docker-ci-parity.sh" in docker_parity_command
+    # The parity script must MIRROR ci.yml: editable install + import check, the pyright
+    # ratchet, the full static tier, and the marker-excluded suite via scripts/test.sh.
+    parity_script = (REPO_ROOT / "scripts" / "docker-ci-parity.sh").read_text(encoding="utf-8")
+    assert "pip install -e" in parity_script
+    assert ".[dev]" in parity_script
+    assert "import docxaicorrector" in parity_script
+    assert "bash scripts/test.sh tests/test_typecheck.py -q" in parity_script
+    for static_file in (
+        "test_script_contract_static",
+        "test_network_hardening_defaults",
+        "test_layer_boundaries",
+        "test_documentation_links",
+        "test_dependency_consistency",
+    ):
+        assert static_file in parity_script
+    assert "bash scripts/test.sh tests/ -q -m" in parity_script
+    assert (
+        "not static_workflow and not typecheck and not system_deps and not manual_ai_heavy and not browser_ui"
+        in parity_script
+    )
+    assert "pip install -r requirements.txt" not in parity_script
 
     assert file_task["command"] == 'bash scripts/test.sh "${relativeFile}"'
     assert file_task.get("args", []) == []
@@ -152,6 +192,28 @@ def test_setup_contract_declares_required_system_packages() -> None:
     assert "Setup Project" in copilot_instructions
 
 
+def test_wait_ready_gate_requires_app_render_marker() -> None:
+    """``wait_ready`` must gate on the real render marker ``app_ready`` (F19).
+
+    ``app_page_ok`` matches only the static Streamlit shell served BEFORE the app
+    renders, so gating readiness on it alone flipped status to READY too early. The
+    render marker ``app.ready`` — written by the Streamlit app on its first successful
+    frame — is the authoritative signal and must be part of the gate so status cannot
+    report READY before the app actually renders.
+    """
+    script_text = (REPO_ROOT / "scripts" / "project-control-wsl.sh").read_text(encoding="utf-8")
+
+    match = re.search(r"\nwait_ready\(\) \{\n(.*?)\n\}\n", script_text, re.DOTALL)
+    assert match is not None, "wait_ready() function not found in project-control-wsl.sh"
+    body = match.group(1)
+
+    assert "app_ready" in body, (
+        "wait_ready must gate on app_ready (the app.ready render marker) so status "
+        "cannot flip READY before the Streamlit app renders and writes app.ready"
+    )
+    assert "health_ok" in body, "wait_ready must still require the Streamlit health probe"
+
+
 def test_repository_shell_scripts_have_valid_bash_syntax() -> None:
     if platform.system() == "Windows":
         pytest.skip("bash cannot resolve Windows-style script paths; the check runs on the Linux/WSL runner")
@@ -173,6 +235,42 @@ def test_repository_shell_scripts_have_valid_bash_syntax() -> None:
 def test_legacy_powershell_test_wrappers_are_removed() -> None:
     for script_name in ["run-tests.ps1", "run-test-file.ps1", "run-test-node.ps1"]:
         assert not (REPO_ROOT / "scripts" / script_name).exists()
+
+
+def test_referenced_test_paths_exist_on_disk() -> None:
+    """Every ``tests/...py`` selector referenced by shell scripts, VS Code tasks, and
+    GitHub workflows must resolve to a file on disk.
+
+    This permanently blocks dangling selectors: a renamed or removed test can no
+    longer survive as a broken reference inside ``scripts/*.sh``,
+    ``.vscode/tasks.json``, or ``.github/workflows/*.yml``.
+    """
+    # Documented usage placeholders that are illustrative help text, not real
+    # selectors (the argument-validation message inside ``scripts/test.sh``).
+    placeholder_paths = {"tests/test_file.py"}
+
+    reference_pattern = re.compile(r"tests/[\w./-]+\.py")
+
+    scanned_files: list[Path] = []
+    scanned_files.extend(sorted((REPO_ROOT / "scripts").glob("*.sh")))
+    scanned_files.append(REPO_ROOT / ".vscode" / "tasks.json")
+    scanned_files.extend(sorted((REPO_ROOT / ".github" / "workflows").glob("*.yml")))
+
+    dangling: list[str] = []
+    for source_file in scanned_files:
+        if not source_file.exists():
+            continue
+        for raw_line in source_file.read_text(encoding="utf-8").splitlines():
+            # Skip shell comment lines: they document usage rather than invoke tests.
+            if source_file.suffix == ".sh" and raw_line.lstrip().startswith("#"):
+                continue
+            for referenced_path in reference_pattern.findall(raw_line):
+                if referenced_path in placeholder_paths:
+                    continue
+                if not (REPO_ROOT / referenced_path).is_file():
+                    dangling.append(f"{source_file.relative_to(REPO_ROOT).as_posix()}: {referenced_path}")
+
+    assert not dangling, "dangling test selectors reference missing files: " + "; ".join(sorted(set(dangling)))
 
 
 def test_ci_exposes_editable_install_and_static_workflow_jobs() -> None:
@@ -207,28 +305,9 @@ def test_manual_real_document_workflow_installs_system_deps_and_uploads_artifact
     assert "Real Document Validation" in testing_readme
 
 
-def test_manual_ai_heavy_workflows_are_documented_and_upload_artifacts() -> None:
-    structure_workflow_text = (REPO_ROOT / ".github" / "workflows" / "real-document-ai-structure-smoke.yml").read_text(encoding="utf-8")
-    workflow_doc = (REPO_ROOT / "docs" / "testing" / "REAL_DOCUMENT_VALIDATION_WORKFLOW.md").read_text(encoding="utf-8")
-    testing_readme = (REPO_ROOT / "docs" / "testing" / "README.md").read_text(encoding="utf-8")
-
-    assert "name: Real Document AI Structure Smoke" in structure_workflow_text
-    assert "workflow_dispatch:" in structure_workflow_text
-    assert 'DOCXAI_RUN_REAL_DOCUMENT_STRUCTURE_RECOGNITION: "1"' in structure_workflow_text
-    assert "OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}" in structure_workflow_text
-    assert "system-requirements.apt" in structure_workflow_text
-    assert "bash scripts/test.sh tests/test_real_document_structure_recognition_integration.py -vv" in structure_workflow_text
-    assert "actions/upload-artifact@v4" in structure_workflow_text
-    assert "tests/artifacts/real_document_pipeline/**" in structure_workflow_text
-
-    assert "GitHub Actions -> Real Document AI Structure Smoke" in workflow_doc
-    assert "Real Document AI Structure Smoke" in testing_readme
-
-
 def test_codeowners_protects_workflow_and_startup_contract_files() -> None:
     codeowners_text = (REPO_ROOT / ".github" / "CODEOWNERS").read_text(encoding="utf-8")
 
-    assert "/.github/workflows/real-document-ai-structure-smoke.yml @slawa19" in codeowners_text
     assert "/scripts/test.sh @slawa19" in codeowners_text
     assert "/.vscode/tasks.json @slawa19" in codeowners_text
     assert "/tests/test_script_contract_static.py @slawa19" in codeowners_text
@@ -310,15 +389,22 @@ def test_source_path_bootstrap_prefers_src_before_repo_root() -> None:
     assert expected_pythonpath in test_sh
     assert expected_pythonpath in validation_sh
     assert expected_pythonpath in structural_sh
-    _assert_src_bootstrap_results_in_src_first(REPO_ROOT / "tests" / "conftest.py")
-    _assert_src_bootstrap_results_in_src_first(
+    # Every standalone entrypoint shares the consolidated bootstrap helper (F5/R29).
+    _assert_uses_shared_bootstrap(REPO_ROOT / "tests" / "conftest.py")
+    _assert_uses_shared_bootstrap(
         REPO_ROOT / "tests" / "artifacts" / "real_document_pipeline" / "run_lietaer_validation.py"
     )
-    _assert_src_bootstrap_results_in_src_first(
+    _assert_uses_shared_bootstrap(
         REPO_ROOT / "benchmark_projects" / "pdf_candidate_benchmark" / "benchmark_runner.py"
     )
-    _assert_src_bootstrap_results_in_src_first(REPO_ROOT / "scripts" / "run_pic1_modes.py")
-    _assert_src_bootstrap_results_in_src_first(REPO_ROOT / "scripts" / "_run_cleanup_now.py")
+    _assert_uses_shared_bootstrap(
+        REPO_ROOT / "benchmark_projects" / "structure_recognition_benchmark" / "benchmark_runner.py"
+    )
+    _assert_uses_shared_bootstrap(
+        REPO_ROOT / "benchmark_projects" / "translation_quality_benchmark" / "benchmark_runner.py"
+    )
+    _assert_uses_shared_bootstrap(REPO_ROOT / "scripts" / "run_pic1_modes.py")
+    _assert_uses_shared_bootstrap(REPO_ROOT / "scripts" / "_run_cleanup_now.py")
 
 
 def test_log_event_inventory_scans_migrated_implementation_paths() -> None:
@@ -328,12 +414,17 @@ def test_log_event_inventory_scans_migrated_implementation_paths() -> None:
         "src/docxaicorrector/core/config.py",
         "src/docxaicorrector/document/layout_cleanup.py",
         "src/docxaicorrector/generation/_generation.py",
+        "src/docxaicorrector/generation/formatting_restoration.py",
         "src/docxaicorrector/image/generation.py",
         "src/docxaicorrector/pipeline/_pipeline.py",
         "src/docxaicorrector/pipeline/block_execution.py",
         "src/docxaicorrector/pipeline/block_failures.py",
         "src/docxaicorrector/pipeline/late_phases.py",
+        "src/docxaicorrector/pipeline/narration_postprocess.py",
+        "src/docxaicorrector/pipeline/reader_cleanup_postprocess.py",
+        "src/docxaicorrector/pipeline/reader_cleanup_rebuild.py",
         "src/docxaicorrector/pipeline/setup.py",
+        "src/docxaicorrector/pipeline/terminal_results.py",
         "src/docxaicorrector/processing/preparation.py",
         "src/docxaicorrector/runtime/artifact_retention.py",
         "src/docxaicorrector/runtime/state.py",
@@ -361,6 +452,7 @@ def test_codeowners_protects_moved_production_implementation_paths() -> None:
     assert "/src/docxaicorrector/processing/processing_runtime.py @slawa19" in codeowners_text
     assert "/src/docxaicorrector/processing/processing_service.py @slawa19" in codeowners_text
     assert "/src/docxaicorrector/generation/_generation.py @slawa19" in codeowners_text
+    assert "/src/docxaicorrector/generation/formatting_restoration.py @slawa19" in codeowners_text
     assert "/src/docxaicorrector/generation/formatting_transfer.py @slawa19" in codeowners_text
     assert "/src/docxaicorrector/generation/formatting_diagnostics_retention.py @slawa19" in codeowners_text
     assert "/src/docxaicorrector/generation/message_formatting.py @slawa19" in codeowners_text
@@ -374,3 +466,41 @@ def test_codeowners_protects_moved_production_implementation_paths() -> None:
     assert "/src/docxaicorrector/ui/app_runtime.py @slawa19" in codeowners_text
     assert "/src/docxaicorrector/ui/application_flow.py @slawa19" in codeowners_text
     assert "/src/docxaicorrector/ui/compare_panel.py @slawa19" in codeowners_text
+
+
+# Spec 036 F2/F6: shared production validation must stay book-agnostic. The detectors are
+# config-driven with EMPTY defaults, and per-book regression value lives in fixture tests.
+# This guard fails if any source-less book literal creeps back into the gate-adjacent
+# production modules, so per-book determinism cannot be reintroduced by construction.
+_BOOK_LITERAL_DENY_LIST = (
+    "Суд над пятым печатью",
+    "Четвёртое чашеобразное судилище",
+    "imago dei",
+    "koinonia",
+    "lietaer_exchange_install_roof_split",
+)
+
+_DENY_LIST_SCANNED_MODULES = (
+    "src/docxaicorrector/validation/acceptance.py",
+    "src/docxaicorrector/pipeline/output_validation.py",
+    "src/docxaicorrector/pipeline/quality_gate.py",
+    "src/docxaicorrector/reader_cleanup_mvp/_prompts.py",
+)
+
+
+def test_production_validation_modules_are_free_of_book_specific_literals() -> None:
+    violations: list[str] = []
+    for module_rel_path in _DENY_LIST_SCANNED_MODULES:
+        module_path = REPO_ROOT / module_rel_path
+        assert module_path.is_file(), f"scanned production module missing: {module_rel_path}"
+        source_text = module_path.read_text(encoding="utf-8")
+        lowered_source = source_text.casefold()
+        for literal in _BOOK_LITERAL_DENY_LIST:
+            if literal.casefold() in lowered_source:
+                violations.append(f"{module_rel_path}: {literal!r}")
+
+    assert not violations, (
+        "source-less book literals must not live in shared/production validation "
+        "(keep detectors config-driven with empty defaults; move per-book regressions to "
+        "fixture tests): " + "; ".join(violations)
+    )

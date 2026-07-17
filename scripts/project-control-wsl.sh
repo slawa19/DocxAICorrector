@@ -104,6 +104,9 @@ stop_streamlit_log_rotator() {
     fi
 }
 
+# Readiness/status probes assume the server answers on loopback. That holds for the
+# two supported binds (127.0.0.1 and 0.0.0.0). A specific non-loopback interface bind
+# is unsupported (see scripts/_shared.ps1) — the probe would false-timeout.
 is_port_open() {
     local port="${1:-$DEFAULT_PORT}"
     (echo > "/dev/tcp/127.0.0.1/$port") >/dev/null 2>&1
@@ -476,7 +479,13 @@ wait_ready() {
     local port="${1:-$DEFAULT_PORT}"
     local deadline=$((SECONDS + ${2:-90}))
     while [[ $SECONDS -lt $deadline ]]; do
-        if health_ok "$port" && app_page_ok "$port"; then
+        # The authoritative readiness signal is the render marker app.ready, which the
+        # Streamlit app writes on its first successful frame (_finalize_app_frame ->
+        # _mark_app_ready). app_page_ok only matches the static shell served BEFORE the
+        # app renders, so gating on it alone (F19) flips status to READY too early. Gate
+        # on health_ok && app_ready (the real render marker) and keep app_page_ok as an
+        # additional shell probe, not the sole app-level signal.
+        if health_ok "$port" && app_ready && app_page_ok "$port"; then
             echo "ok"
             return 0
         fi

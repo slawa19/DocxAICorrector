@@ -2,9 +2,19 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
+
+from docxaicorrector.core.logger import log_event
+
+# Defensive page budget for a *direct* call into this extractor. The primary
+# resource budget lives in ``processing.processing_runtime`` and rejects
+# over-budget documents before this function runs, but this belt-and-suspenders
+# cap keeps a direct caller from iterating an unbounded page tree. Truncation is
+# logged (never silent).
+_MAX_PDF_IMAGE_SOURCE_PAGES = 2000
 
 
 @dataclass(frozen=True)
@@ -38,14 +48,31 @@ def extract_pdf_images_with_pdfminer(pdf_path: str | Path) -> list[PdfImageObjec
         raise RuntimeError("optional_dependency_missing:pdfminer.six") from exc
 
     images: list[PdfImageObject] = []
+    discovered_count = 0
+    skipped_no_image_bytes = 0
+    skipped_unknown_mime = 0
+    pages_truncated = False
     for page_index, page_layout in enumerate(extract_pages(str(pdf_path)), start=1):
+        if page_index > _MAX_PDF_IMAGE_SOURCE_PAGES:
+            pages_truncated = True
+            log_event(
+                logging.WARNING,
+                "pdf_image_extraction_page_budget_exceeded",
+                "PDF image extraction truncated: page budget exceeded (remaining pages not scanned for images).",
+                pdf_path=str(pdf_path),
+                max_pages=_MAX_PDF_IMAGE_SOURCE_PAGES,
+            )
+            break
         page_height = _coerce_optional_float(getattr(page_layout, "height", None))
         for image in _iter_pdfminer_images(page_layout, lt_image_type=LTImage, lt_figure_type=LTFigure):
+            discovered_count += 1
             image_bytes = _extract_pdfminer_image_file_bytes(image)
             if not image_bytes:
+                skipped_no_image_bytes += 1
                 continue
             mime_type = _detect_image_mime_type(image_bytes)
             if mime_type is None:
+                skipped_unknown_mime += 1
                 continue
             top, bottom = _pdfminer_top_origin_bounds(
                 y0=float(getattr(image, "y0", 0.0) or 0.0),
@@ -69,6 +96,33 @@ def extract_pdf_images_with_pdfminer(pdf_path: str | Path) -> list[PdfImageObjec
                     height_points=max(0.0, bottom - top),
                 )
             )
+    emitted_count = len(images)
+    skipped_count = discovered_count - emitted_count
+    if discovered_count > emitted_count:
+        # Discovered images that never became emittable objects are a silent
+        # image-loss signal; surface it at WARNING so it is observable.
+        log_event(
+            logging.WARNING,
+            "pdf_image_extraction_dropped_images",
+            "PDF images were discovered but not emitted; possible silent image loss.",
+            pdf_path=str(pdf_path),
+            discovered=discovered_count,
+            emitted=emitted_count,
+            skipped=skipped_count,
+            skipped_no_image_bytes=skipped_no_image_bytes,
+            skipped_unknown_mime=skipped_unknown_mime,
+            pages_truncated=pages_truncated,
+        )
+    else:
+        log_event(
+            logging.INFO,
+            "pdf_image_extraction_summary",
+            "PDF image extraction completed.",
+            pdf_path=str(pdf_path),
+            discovered=discovered_count,
+            emitted=emitted_count,
+            pages_truncated=pages_truncated,
+        )
     return sorted(images, key=lambda item: (item.page_number, item.top, item.x0))
 
 

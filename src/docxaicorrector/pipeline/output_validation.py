@@ -2,9 +2,45 @@ import re
 from collections import defaultdict
 from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, Literal, TypeAlias
+from typing import Literal, TypeAlias
 
-from docxaicorrector.validation.formatting_coverage import resolve_main_content_scope
+# spec 035 Step 1: the paragraph-break detection satellite now lives in
+# ``pipeline.paragraph_break_detection``. Re-export its public + private names so
+# ``output_validation.<name>`` (and ``from ...output_validation import <name>``) keep
+# resolving for every existing consumer (situation-1, re-export only).
+from docxaicorrector.pipeline.paragraph_break_detection import (  # noqa: F401
+    ParagraphBreakSample,
+    _PARAGRAPH_BREAK_CONTINUATION_STARTS,
+    _PARAGRAPH_BREAK_LIST_KINDS,
+    _paragraph_break_ends_without_terminal,
+    _paragraph_break_entry_is_heading_or_list,
+    _paragraph_break_out_of_main_content,
+    _paragraph_break_raw_key,
+    _paragraph_break_shares_source_paragraph,
+    _paragraph_break_source_index,
+    _paragraph_break_starts_continuation,
+    collect_paragraph_break_samples,
+)
+# spec 035 Step 2: the translated-TOC-block validation satellite now lives in
+# ``pipeline.toc_block_validation``. Re-export its public + private names — INCLUDING the
+# private ``_is_page_reference_like`` / ``_is_substantive_toc_line`` /
+# ``_is_allowlisted_unchanged_toc_line`` that whole-module test aliases read — so
+# ``output_validation.<name>`` keeps resolving for every existing consumer.
+from docxaicorrector.pipeline.toc_block_validation import (  # noqa: F401
+    TOC_PAGE_MARKER_LOSS_REJECTION_THRESHOLD,
+    TOC_PARAGRAPH_COUNT_TOLERANCE,
+    TOC_SUBSTANTIVE_ENTRY_MIN_COUNT_FOR_UNCHANGED_REJECTION,
+    TOC_UNCHANGED_SUBSTANTIVE_ENTRY_REJECTION_THRESHOLD,
+    TOC_UPPERCASE_LABEL_MAX_CHARS,
+    TOC_UPPERCASE_LABEL_MIN_CHARS,
+    TocValidationResult,
+    _is_allowlisted_acronym_or_label_line,
+    _is_allowlisted_unchanged_toc_line,
+    _is_page_reference_like,
+    _is_substantive_toc_line,
+    _normalize_toc_comparison_text,
+    validate_translated_toc_block,
+)
 
 
 ProcessedBlockStatus: TypeAlias = Literal[
@@ -18,15 +54,6 @@ ProcessedBlockStatus: TypeAlias = Literal[
 ]
 GeneratedHeadingKind: TypeAlias = Literal["real_heading", "false_fragment_heading", "unknown"]
 
-# Spec TOC/minimal-formatting 2026-04-21 constants.
-TOC_UPPERCASE_LABEL_MAX_CHARS = 10
-TOC_UPPERCASE_LABEL_MIN_CHARS = 2
-TOC_UNCHANGED_SUBSTANTIVE_ENTRY_REJECTION_THRESHOLD = 2
-TOC_SUBSTANTIVE_ENTRY_MIN_COUNT_FOR_UNCHANGED_REJECTION = 3
-TOC_PAGE_MARKER_LOSS_REJECTION_THRESHOLD = 2
-# Current implementation keeps zero tolerance for paragraph-count drift until a
-# narrower non-substantive tolerance is explicitly specified and validated.
-TOC_PARAGRAPH_COUNT_TOLERANCE = 0
 DISALLOWED_GENERIC_TOC_LABELS = {"CONTENTS"}
 _BULLET_HEADING_PATTERN = re.compile(r"^#{1,6}\s*[●•\-*]\s*$")
 _MARKDOWN_HEADING_PATTERN = re.compile(r"^#{1,6}\s+\S")
@@ -98,29 +125,10 @@ _SOURCE_TEXT_FALLBACK_MIN_ENGLISH_WORDS = 12
 
 
 @dataclass(frozen=True)
-class TocValidationResult:
-    is_valid: bool
-    reason: str | None = None
-
-
-@dataclass(frozen=True)
 class QualityIssueSample:
     line: int
     text: str
     reason: str | None = None
-
-
-@dataclass(frozen=True)
-class ParagraphBreakSample:
-    """One paragraph that a PDF-import mis-tag split into two mid-sentence halves.
-
-    The two halves share one source paragraph (``origin_raw_indexes``/``source_index``);
-    ``text`` is the first half's preview and ``next_text`` the second half's.
-    """
-
-    source_index: int | None
-    text: str
-    next_text: str
 
 
 @dataclass(frozen=True)
@@ -2109,233 +2117,8 @@ def collect_mixed_script_samples(text: str) -> list[QualityIssueSample]:
     return deduped
 
 
-def collect_theology_style_issue_samples(text: str) -> list[QualityIssueSample]:
-    samples: list[QualityIssueSample] = []
-    seen_glossary_terms: dict[str, int] = {}
-    for line_number, raw_line in iter_markdown_lines_with_numbers(text):
-        stripped = raw_line.strip()
-        if not stripped:
-            continue
-        if "Суд над пятым печатью" in stripped:
-            samples.append(_build_quality_sample(line=line_number, text=stripped, reason="awkward_judgment_heading_present"))
-        if "Четвёртое чашеобразное судилище" in stripped:
-            samples.append(_build_quality_sample(line=line_number, text=stripped, reason="awkward_judgment_heading_present"))
-        lowered = stripped.casefold()
-        for glossary_term in ("imago dei", "koinonia"):
-            if glossary_term in lowered:
-                seen_glossary_terms[glossary_term] = seen_glossary_terms.get(glossary_term, 0) + 1
-                samples.append(_build_quality_sample(line=line_number, text=stripped, reason="unresolved_glossary_term_present"))
-
-    deduped: list[QualityIssueSample] = []
-    seen: set[tuple[int, str, str]] = set()
-    for sample in samples:
-        key = (sample.line, sample.text, sample.reason or "")
-        if key in seen:
-            continue
-        seen.add(key)
-        deduped.append(sample)
-    return deduped
-
-
-# Language-general continuation starts (spec 008 FR-001): a second fragment that
-# resumes with a closing or joining mark (", and", "; или") is a continuation, not a
-# new sentence. Kept MINIMAL and word-list-free — the primary rule is "starts lowercase".
-_PARAGRAPH_BREAK_CONTINUATION_STARTS = frozenset(")]},.;:!?»”’")
-# ``list_kind`` values that mark a structural list boundary (spec 008 FR-003).
-_PARAGRAPH_BREAK_LIST_KINDS = frozenset({"ordered", "unordered", "list"})
-
-
-def _paragraph_break_ends_without_terminal(text: str) -> bool:
-    """True when ``text`` ends mid-sentence (no sentence-terminal punctuation).
-
-    Reuses ``_SENTENCE_TERMINAL_PATTERN`` so a closing quote/bracket counts as terminal
-    only when it follows terminal punctuation. A trailing footnote-marker digit or
-    superscript (e.g. "…²") is therefore already non-terminal — the digit is the final
-    character and the terminal pattern does not match it (spec 008 edge case).
-    """
-
-    stripped = text.strip()
-    if not stripped:
-        return False
-    return _SENTENCE_TERMINAL_PATTERN.search(stripped) is None
-
-
-def _paragraph_break_starts_continuation(text: str) -> bool:
-    """True when ``text`` starts as a continuation: a lowercase letter or joining mark.
-
-    Unicode-aware (Latin, Cyrillic, and any cased script) via ``str.islower`` — no word
-    list. The lowercase rule is primary; a leading continuation mark is the only addition.
-    """
-
-    stripped = text.strip()
-    if not stripped:
-        return False
-    first = stripped[0]
-    if first.isalpha():
-        return first.islower()
-    return first in _PARAGRAPH_BREAK_CONTINUATION_STARTS
-
-
-def _paragraph_break_entry_is_heading_or_list(entry: Mapping[str, Any]) -> bool:
-    """True when the entry is a heading or a list item (a structural boundary, not a split)."""
-
-    if entry.get("heading_level") is not None:
-        return True
-    if entry.get("role") == "heading" or entry.get("structural_role") == "heading":
-        return True
-    list_kind = entry.get("list_kind")
-    if isinstance(list_kind, str) and list_kind.strip().lower() in _PARAGRAPH_BREAK_LIST_KINDS:
-        return True
-    return False
-
-
-def _paragraph_break_raw_key(entry: Mapping[str, Any]) -> tuple[object, ...] | None:
-    """The entry's ``origin_raw_indexes`` as a tuple, or None when absent/empty."""
-
-    raw = entry.get("origin_raw_indexes")
-    if isinstance(raw, Sequence) and not isinstance(raw, str) and raw:
-        return tuple(raw)
-    return None
-
-
-def _paragraph_break_shares_source_paragraph(
-    first: Mapping[str, Any],
-    second: Mapping[str, Any],
-) -> bool:
-    """True when both entries came from the same source paragraph (spec 008 FR-001/FR-002).
-
-    The primary signal is equal, non-empty ``origin_raw_indexes`` (same raw PDF block).
-    Only when BOTH entries lack raw indexes does it fall back to equal ``source_index``.
-    A boundary with no shared-source signal is never a split ("no source signal").
-    """
-
-    first_raw = _paragraph_break_raw_key(first)
-    second_raw = _paragraph_break_raw_key(second)
-    if first_raw is not None and second_raw is not None:
-        return first_raw == second_raw
-    if first_raw is None and second_raw is None:
-        first_index = first.get("source_index")
-        second_index = second.get("source_index")
-        return isinstance(first_index, int) and first_index == second_index
-    return False
-
-
-def _paragraph_break_source_index(entry: Mapping[str, Any]) -> int | None:
-    value = entry.get("source_index")
-    return value if isinstance(value, int) and not isinstance(value, bool) else None
-
-
-def _paragraph_break_out_of_main_content(
-    entry: Mapping[str, Any],
-    *,
-    front_matter_boundary: int | None,
-    references_region_start: int | None,
-    bounded_toc_region: tuple[int, int] | None,
-) -> bool:
-    """True when the pair's FIRST entry falls OUTSIDE the main-content span (FR-007).
-
-    Mirrors the per-entry region test in ``classify_heading_demotions``: skip a source
-    index that is in the front matter (``< front_matter_boundary``), in the back-matter
-    references/notes/index region (``>= references_region_start``), or inside the bounded
-    TOC region. An entry with no integer ``source_index`` cannot be region-placed, so it
-    is NOT excluded here (the shared-source / form gates still apply).
-    """
-
-    index = _paragraph_break_source_index(entry)
-    if index is None:
-        return False
-    if front_matter_boundary is not None and index < front_matter_boundary:
-        return True
-    if references_region_start is not None and index >= references_region_start:
-        return True
-    if bounded_toc_region is not None and bounded_toc_region[0] <= index <= bounded_toc_region[1]:
-        return True
-    return False
-
-
-def collect_paragraph_break_samples(
-    source_registry: Sequence[Mapping[str, Any]],
-    preparation_diagnostic_snapshot: Mapping[str, object] | None = None,
-) -> list[ParagraphBreakSample]:
-    """Flag paragraphs split mid-sentence by the PDF-import ``toc_entry`` mis-tag (spec 008).
-
-    ADVISORY detection only — changes no delivered bytes. An adjacent ordered pair of
-    ``source_registry`` entries is flagged when ALL hold (Constitution VII: structural
-    provenance ∩ language-general form, no word lists, no per-book literals):
-
-    * the first entry's ``source_index`` is inside the MAIN-CONTENT span
-      ``[front_matter_boundary … references_region_start)`` and outside the bounded TOC
-      region (FR-007) — the SAME region provenance ``classify_heading_demotions`` uses,
-      via :func:`resolve_main_content_scope`, so TOC page-refs and back-of-book index
-      entries are excluded by REGION, never by a per-book literal;
-    * they share one source paragraph — equal ``origin_raw_indexes`` (or equal
-      ``source_index`` when raw indexes are absent on both) (FR-001/FR-002);
-    * neither entry is a heading or a list item (FR-003);
-    * the first entry's ``text_preview`` ends without sentence-terminal punctuation; and
-    * the second entry's ``text_preview`` starts lowercase / as a continuation.
-    """
-
-    entries = [entry for entry in source_registry if isinstance(entry, Mapping)]
-    front_matter_boundary, references_region_start, bounded_toc_region = resolve_main_content_scope(
-        entries, preparation_diagnostic_snapshot
-    )
-    ordered = sorted(
-        enumerate(entries),
-        key=lambda item: (
-            _paragraph_break_source_index(item[1]) is None,
-            _paragraph_break_source_index(item[1]) or 0,
-            item[0],
-        ),
-    )
-    samples: list[ParagraphBreakSample] = []
-    for (_, first), (_, second) in zip(ordered, ordered[1:]):
-        if _paragraph_break_out_of_main_content(
-            first,
-            front_matter_boundary=front_matter_boundary,
-            references_region_start=references_region_start,
-            bounded_toc_region=bounded_toc_region,
-        ):
-            continue
-        if _paragraph_break_entry_is_heading_or_list(first) or _paragraph_break_entry_is_heading_or_list(second):
-            continue
-        if not _paragraph_break_shares_source_paragraph(first, second):
-            continue
-        first_text = str(first.get("text_preview") or "")
-        second_text = str(second.get("text_preview") or "")
-        if not _paragraph_break_ends_without_terminal(first_text):
-            continue
-        if not _paragraph_break_starts_continuation(second_text):
-            continue
-        samples.append(
-            ParagraphBreakSample(
-                source_index=_paragraph_break_source_index(first),
-                text=first_text.strip(),
-                next_text=second_text.strip(),
-            )
-        )
-    return samples
-
-
-def _normalize_toc_comparison_text(text: str) -> str:
-    lowered = text.strip().lower()
-    lowered = re.sub(r"\s+", " ", lowered)
-    lowered = re.sub(r"\s*([.·•]{2,}|\.{2,})\s*(\d+)\s*$", r" ... \2", lowered)
-    return lowered.strip(" \t\r\n-–—:;,.!?()[]{}\"'«»“”")
-
-
 def _split_markdown_paragraphs(text: str) -> list[str]:
     return [chunk.strip() for chunk in re.split(r"\n\s*\n", text) if chunk.strip()]
-
-
-def _is_page_reference_like(text: str) -> bool:
-    stripped = text.strip()
-    if not stripped:
-        return False
-    if re.fullmatch(r"[0-9ivxlcdmIVXLCDM]+", stripped):
-        return True
-    if re.fullmatch(r"[.·•\-–—\s]+", stripped):
-        return True
-    return False
 
 
 def _has_page_reference_suffix(text: str) -> bool:
@@ -2355,98 +2138,3 @@ def _looks_index_page_reference_fragment(text: str) -> bool:
     if re.fullmatch(r"[0-9ivxlcdmIVXLCDMnN,;:()\[\]\-–—]+", collapsed) is None:
         return False
     return any(char.isdigit() for char in collapsed) or bool(re.search(r"[ivxlcdmIVXLCDM]", collapsed))
-
-
-def _is_allowlisted_acronym_or_label_line(text: str) -> bool:
-    tokens = [token for token in re.split(r"\s+", text.strip()) if token]
-    if not tokens:
-        return False
-    alpha_seen = False
-    for token in tokens:
-        cleaned = token.strip(".()[]{}'\"“”‘’,:;!?-–—/")
-        if not cleaned:
-            continue
-        if re.fullmatch(r"[IVXLCDM]+", cleaned):
-            continue
-        if cleaned.isdigit():
-            continue
-        alpha_chars = "".join(char for char in cleaned if char.isalpha())
-        if not alpha_chars:
-            continue
-        alpha_seen = True
-        if not alpha_chars.isupper():
-            return False
-        if cleaned in DISALLOWED_GENERIC_TOC_LABELS:
-            return False
-        if len(alpha_chars) < TOC_UPPERCASE_LABEL_MIN_CHARS or len(alpha_chars) > TOC_UPPERCASE_LABEL_MAX_CHARS:
-            return False
-    return alpha_seen
-
-
-def _is_allowlisted_unchanged_toc_line(source_line: str, target_line: str) -> bool:
-    normalized_source = _normalize_toc_comparison_text(source_line)
-    normalized_target = _normalize_toc_comparison_text(target_line)
-    if normalized_source != normalized_target:
-        return False
-    if _is_page_reference_like(normalized_source):
-        return True
-    if _is_allowlisted_acronym_or_label_line(source_line):
-        return True
-    return False
-
-
-def _is_substantive_toc_line(text: str) -> bool:
-    stripped = text.strip()
-    if not stripped:
-        return False
-    if _is_page_reference_like(stripped):
-        return False
-    return bool(re.search(r"\w", stripped, re.UNICODE))
-
-
-def validate_translated_toc_block(
-    *,
-    source_text: str,
-    processed_chunk: str,
-    structural_roles: list[str] | tuple[str, ...] | None,
-    source_language: str,
-    target_language: str,
-) -> TocValidationResult:
-    if source_language.strip().lower() == target_language.strip().lower():
-        return TocValidationResult(True)
-
-    source_paragraphs = _split_markdown_paragraphs(source_text)
-    target_paragraphs = _split_markdown_paragraphs(processed_chunk)
-    if not source_paragraphs or not target_paragraphs:
-        return TocValidationResult(False, "empty_toc_block")
-    if abs(len(source_paragraphs) - len(target_paragraphs)) > TOC_PARAGRAPH_COUNT_TOLERANCE:
-        return TocValidationResult(False, "toc_paragraph_count_drift")
-
-    normalized_roles = [str(role or "").strip().lower() for role in (structural_roles or [])]
-    unchanged_substantive_entries = 0
-    substantive_toc_entries = 0
-    lost_page_markers = 0
-
-    for index, (source_paragraph, target_paragraph) in enumerate(zip(source_paragraphs, target_paragraphs)):
-        role = normalized_roles[index] if index < len(normalized_roles) else ""
-        normalized_source = _normalize_toc_comparison_text(source_paragraph)
-        normalized_target = _normalize_toc_comparison_text(target_paragraph)
-
-        if role == "toc_header" and normalized_source == normalized_target and not _is_allowlisted_unchanged_toc_line(source_paragraph, target_paragraph):
-            return TocValidationResult(False, "unchanged_toc_header")
-
-        if role == "toc_entry" and _is_substantive_toc_line(source_paragraph):
-            substantive_toc_entries += 1
-            if normalized_source == normalized_target and not _is_allowlisted_unchanged_toc_line(source_paragraph, target_paragraph):
-                unchanged_substantive_entries += 1
-            if _has_page_reference_suffix(source_paragraph) and not _has_page_reference_suffix(target_paragraph):
-                lost_page_markers += 1
-
-    if (
-        unchanged_substantive_entries >= TOC_UNCHANGED_SUBSTANTIVE_ENTRY_REJECTION_THRESHOLD
-        and substantive_toc_entries >= TOC_SUBSTANTIVE_ENTRY_MIN_COUNT_FOR_UNCHANGED_REJECTION
-    ):
-        return TocValidationResult(False, "too_many_unchanged_toc_entries")
-    if lost_page_markers >= TOC_PAGE_MARKER_LOSS_REJECTION_THRESHOLD:
-        return TocValidationResult(False, "lost_toc_page_markers")
-    return TocValidationResult(True)

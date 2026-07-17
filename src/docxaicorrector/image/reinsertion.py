@@ -19,12 +19,8 @@ from docx.text.paragraph import Paragraph
 from docx.text.run import Run
 import lxml.etree as etree
 
-from docxaicorrector.document._document import (
-    IMAGE_PLACEHOLDER_PATTERN,
-    _extract_run_text,
-    _find_child_element,
-    _xml_local_name,
-)
+from docxaicorrector.document.extraction import IMAGE_PLACEHOLDER_PATTERN, _extract_run_text
+from docxaicorrector.document.roles import find_child_element, xml_local_name
 from docxaicorrector.core.logger import log_event
 from docxaicorrector.core.models import ImageAsset, ImageDeliveryPayload, get_image_variant_bytes
 
@@ -255,7 +251,7 @@ def _replace_multi_run_placeholders(
     asset_map: dict[str, ImageAsset],
     insertion_cache: dict[str, list[tuple[str | None, bytes]]],
 ) -> bool:
-    paragraph_children = [child for child in list(paragraph._element) if _xml_local_name(child.tag) in {"r", "hyperlink"}]
+    paragraph_children = [child for child in list(paragraph._element) if xml_local_name(child.tag) in {"r", "hyperlink"}]
     if not paragraph_children:
         return False
 
@@ -290,7 +286,7 @@ def _replace_multi_run_placeholders(
             if current_match is not None and position >= current_match.start() and position < current_match.end():
                 if position == current_match.start():
                     placeholder_text = current_match.group(0)
-                    if _xml_local_name(child.tag) == "hyperlink":
+                    if xml_local_name(child.tag) == "hyperlink":
                         return False
                     replacement_elements.extend(
                         _build_insertion_run_elements(
@@ -309,7 +305,7 @@ def _replace_multi_run_placeholders(
                 segment_end = min(segment_end, current_match.start())
 
             if segment_end > position:
-                if _xml_local_name(child.tag) == "hyperlink":
+                if xml_local_name(child.tag) == "hyperlink":
                     if position != child_start or segment_end != child_end:
                         return False
                     replacement_elements.append(deepcopy(child))
@@ -334,7 +330,7 @@ def _replace_paragraph_placeholders_fallback(
     asset_map: dict[str, ImageAsset],
     insertion_cache: dict[str, list[tuple[str | None, bytes]]],
 ) -> bool:
-    if any(_xml_local_name(child.tag) == "hyperlink" for child in list(paragraph._element)):
+    if any(xml_local_name(child.tag) == "hyperlink" for child in list(paragraph._element)):
         return False
 
     parts = re.split(f"({IMAGE_PLACEHOLDER_PATTERN.pattern})", paragraph_text)
@@ -360,7 +356,7 @@ def _replace_multi_variant_placeholders_with_blocks(
     asset_map: dict[str, ImageAsset],
     insertion_cache: dict[str, list[tuple[str | None, bytes]]],
 ) -> bool:
-    paragraph_children = [child for child in list(paragraph._element) if _xml_local_name(child.tag) in {"r", "hyperlink"}]
+    paragraph_children = [child for child in list(paragraph._element) if xml_local_name(child.tag) in {"r", "hyperlink"}]
     if not paragraph_children:
         return False
 
@@ -406,7 +402,7 @@ def _replace_multi_variant_placeholders_with_blocks(
                     asset = asset_map[placeholder_text]
                     insertions = _resolve_cached_insertions(asset, insertion_cache)
                     if len(insertions) > 1:
-                        if _xml_local_name(child.tag) != "r":
+                        if xml_local_name(child.tag) != "r":
                             _log_multi_variant_block_warning(
                                 "image_reinsertion_multi_variant_block_fallback_to_text",
                                 paragraph,
@@ -417,7 +413,7 @@ def _replace_multi_variant_placeholders_with_blocks(
                             position = min(child_end, current_match.end())
                             continue
                         fragments.append(_MultiVariantBlockFragment(asset=asset, insertions=insertions))
-                    elif _xml_local_name(child.tag) == "r":
+                    elif xml_local_name(child.tag) == "r":
                         fragments.extend(
                             _build_insertion_run_elements(
                                 paragraph,
@@ -437,7 +433,7 @@ def _replace_multi_variant_placeholders_with_blocks(
                 segment_end = min(segment_end, current_match.start())
 
             if segment_end > position:
-                if _xml_local_name(child.tag) == "hyperlink":
+                if xml_local_name(child.tag) == "hyperlink":
                     if position != child_start or segment_end != child_end:
                         return False
                     fragments.append(deepcopy(child))
@@ -586,7 +582,7 @@ def _build_picture_run_element(
 
 
 def _copy_run_properties(template_run_element, target_run_element) -> None:
-    run_properties = _find_child_element(template_run_element, "rPr")
+    run_properties = find_child_element(template_run_element, "rPr")
     if run_properties is not None:
         target_run_element.append(deepcopy(run_properties))
 
@@ -639,18 +635,18 @@ def _build_replacement_blocks_from_fragments(
 
 def _clone_paragraph_element(paragraph):
     paragraph_element = OxmlElement("w:p")
-    paragraph_properties = _find_child_element(paragraph._element, "pPr")
+    paragraph_properties = find_child_element(paragraph._element, "pPr")
     if paragraph_properties is not None:
         paragraph_element.append(deepcopy(paragraph_properties))
     return paragraph_element
 
 
 def _paragraph_element_has_content(paragraph_element) -> bool:
-    return any(_xml_local_name(child.tag) != "pPr" for child in paragraph_element)
+    return any(xml_local_name(child.tag) != "pPr" for child in paragraph_element)
 
 
 def _extract_paragraph_child_text(child) -> str:
-    if _xml_local_name(child.tag) == "hyperlink":
+    if xml_local_name(child.tag) == "hyperlink":
         return "".join(_extract_run_text(run_element) for run_element in child.xpath("./w:r"))
     return _extract_run_text(child)
 
@@ -896,7 +892,7 @@ def _log_multi_variant_block_warning(event_name: str, paragraph, placeholders: l
 def _clear_paragraph_runs(paragraph) -> None:
     paragraph_element = paragraph._element
     for child in list(paragraph_element):
-        if _xml_local_name(child.tag) in {"r", "hyperlink"}:
+        if xml_local_name(child.tag) in {"r", "hyperlink"}:
             paragraph_element.remove(child)
 
 

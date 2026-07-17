@@ -21,6 +21,7 @@ from typing import Any
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 
 from docxaicorrector.core.constants import PROMPTS_DIR
+from docxaicorrector.image.analysis import image_within_pixel_budget
 from docxaicorrector.image.shared import call_responses_create_with_retry, detect_image_mime_type, extract_response_text, is_retryable_error
 from docxaicorrector.core.logger import log_event
 
@@ -94,6 +95,11 @@ def reconstruct_image(
     resolved_model = model
     if not resolved_model:
         raise RuntimeError("Image reconstruction model is not configured.")
+    # Mandatory pixel-budget gate before any decode / base64 / vision upload.
+    # Raise so callers fall back to safe mode instead of decoding an oversized
+    # or decompression-bomb image (finding F8).
+    if not image_within_pixel_budget(image_bytes, stage="image_reconstruction"):
+        raise RuntimeError("Image exceeds the decode pixel budget; reconstruction skipped.")
     scene_graph = extract_scene_graph(image_bytes, model=resolved_model, mime_type=mime_type, client=client, budget=budget)
     original_size = _get_image_size(image_bytes)
     rendered_bytes = render_scene_graph(
@@ -132,6 +138,10 @@ def extract_scene_graph(
     resolved_model = model
     if not resolved_model:
         raise RuntimeError("Image reconstruction model is not configured.")
+    # Mandatory pixel-budget gate before base64-encoding and uploading to the
+    # VLM (finding F8). Raise so callers fall back to safe mode.
+    if not image_within_pixel_budget(image_bytes, stage="image_scene_graph_extraction"):
+        raise RuntimeError("Image exceeds the decode pixel budget; scene graph extraction skipped.")
     prompt_text = _load_scene_graph_prompt()
     data_uri = _image_bytes_to_data_uri(image_bytes, mime_type)
 

@@ -1,7 +1,10 @@
 import json
+import logging
 import time
 from pathlib import Path
 from typing import Mapping, Sequence
+
+from docxaicorrector.core.logger import log_event
 
 
 FORMATTING_DIAGNOSTICS_DIR = Path(".run") / "formatting_diagnostics"
@@ -52,7 +55,18 @@ def write_formatting_diagnostics_artifact(
         artifact_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         prune_formatting_diagnostics(diagnostics_dir=target_dir)
         return str(artifact_path)
-    except Exception:
+    except Exception as exc:
+        # Fail-open (the run still succeeds without this diagnostic), but never silently:
+        # a missing formatting-diagnostics artifact would otherwise look intended.
+        log_event(
+            logging.WARNING,
+            "formatting_diagnostics_write_failed",
+            "Failed to write the formatting-diagnostics artifact; continuing without it.",
+            stage=stage,
+            expected_dir=str(target_dir),
+            error_type=type(exc).__name__,
+            error=str(exc),
+        )
         return None
 
 

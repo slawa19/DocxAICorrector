@@ -67,7 +67,12 @@ jobs:
           pip install -r requirements.txt
 
       - name: Run static workflow checks
-        run: bash scripts/test.sh tests/test_script_contract_static.py -q
+        run: |
+          bash scripts/test.sh tests/test_script_contract_static.py -q
+          bash scripts/test.sh tests/test_network_hardening_defaults.py -q
+          bash scripts/test.sh tests/test_layer_boundaries.py -q
+          bash scripts/test.sh tests/test_documentation_links.py -q
+          bash scripts/test.sh tests/test_dependency_consistency.py -q
 
       - name: Run full test suite
         run: bash scripts/test.sh tests/ -q -m "not static_workflow and not typecheck and not system_deps and not manual_ai_heavy and not browser_ui"

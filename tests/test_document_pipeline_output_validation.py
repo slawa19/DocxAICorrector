@@ -1,4 +1,5 @@
 import json
+import os
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -978,21 +979,6 @@ def test_normalize_list_fragment_regressions_markdown_preserves_emoji_marker_lin
     assert "1. 😂" not in normalized
     assert "\n😂\n" in normalized
     assert "2. В первой половине" in normalized
-
-
-def test_collect_theology_style_issue_samples_detects_awkward_headings_and_glossary_terms():
-    markdown = (
-        "## Суд над пятым печатью\n\n"
-        "## Четвёртое чашеобразное судилище\n\n"
-        "Создавайте кoinonia-сообщества и богословие imago Dei."
-    )
-
-    samples = document_pipeline_output_validation.collect_theology_style_issue_samples(markdown)
-
-    reasons = [sample.reason for sample in samples]
-    assert "awkward_judgment_heading_present" in reasons
-    assert "unresolved_glossary_term_present" in reasons
-    assert "mixed_script_term_present" not in reasons
 
 
 def test_collect_mixed_script_samples_detects_cyrillic_latin_tokens():
@@ -2415,6 +2401,59 @@ def test_block_failure_classifier_keeps_hard_fail_classes_out_of_controlled_fall
     )
 
     assert decision == {"decision": "fail", "fallback_kind": rejection_kind}
+
+
+def test_write_controlled_block_fallback_artifact_prunes_stale_family_by_count(tmp_path, monkeypatch):
+    fallback_dir = tmp_path / "block_fallbacks"
+    fallback_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(block_execution, "CONTROLLED_BLOCK_FALLBACK_DIR", fallback_dir)
+    monkeypatch.setattr(block_execution, "BLOCK_FALLBACK_ARTIFACTS_MAX_COUNT", 1)
+    monkeypatch.setattr(block_execution, "BLOCK_FALLBACK_ARTIFACTS_MAX_AGE_SECONDS", 10_000)
+
+    stale_path = fallback_dir / "report_docx_block_0_deadbeef.json"
+    stale_path.write_text(json.dumps({"schema_version": 1}), encoding="utf-8")
+    os.utime(stale_path, (10.0, 10.0))
+
+    artifact_path = block_execution._write_controlled_block_fallback_artifact(
+        context=SimpleNamespace(uploaded_filename="report.docx"),
+        initialization=SimpleNamespace(job_count=3),
+        index=1,
+        rejection_kind="english_residual_output",
+        target_text="Source text",
+        processed_chunk="Processed text",
+    )
+
+    assert artifact_path is not None
+    new_path = Path(artifact_path)
+    assert new_path.exists()
+    assert not stale_path.exists()
+    remaining = sorted(path.name for path in fallback_dir.glob("*.json"))
+    assert remaining == [new_path.name]
+
+
+def test_write_controlled_block_fallback_artifact_prunes_stale_family_by_age(tmp_path, monkeypatch):
+    fallback_dir = tmp_path / "block_fallbacks"
+    fallback_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(block_execution, "CONTROLLED_BLOCK_FALLBACK_DIR", fallback_dir)
+    monkeypatch.setattr(block_execution, "BLOCK_FALLBACK_ARTIFACTS_MAX_COUNT", 1000)
+    monkeypatch.setattr(block_execution, "BLOCK_FALLBACK_ARTIFACTS_MAX_AGE_SECONDS", 60)
+
+    stale_path = fallback_dir / "report_docx_block_0_deadbeef.json"
+    stale_path.write_text(json.dumps({"schema_version": 1}), encoding="utf-8")
+    os.utime(stale_path, (10.0, 10.0))
+
+    artifact_path = block_execution._write_controlled_block_fallback_artifact(
+        context=SimpleNamespace(uploaded_filename="report.docx"),
+        initialization=SimpleNamespace(job_count=3),
+        index=1,
+        rejection_kind="english_residual_output",
+        target_text="Source text",
+        processed_chunk="Processed text",
+    )
+
+    assert artifact_path is not None
+    assert Path(artifact_path).exists()
+    assert not stale_path.exists()
 
 
 def test_validate_translated_toc_block_accepts_translated_toc_lines():

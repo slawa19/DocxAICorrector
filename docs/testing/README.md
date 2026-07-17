@@ -45,12 +45,9 @@ Phase 4 system-deps validation now also has a manual GitHub Actions path:
 
 Phase 8 manual AI-heavy validation now also has dedicated `workflow_dispatch` paths:
 
-- workflow: `Real Document Quality Gate`;
-- scope: `bash scripts/run-real-document-quality-gate.sh` with `DOCXAI_RUN_REAL_DOCUMENT_QUALITY=1` and `OPENAI_API_KEY`;
-- workflow: `Real Document AI Structure Smoke`;
-- scope: `tests/test_real_document_structure_recognition_integration.py` with explicit `DOCXAI_RUN_REAL_DOCUMENT_STRUCTURE_RECOGNITION=1` and `OPENAI_API_KEY`;
-- workflow: `Real Document Audiobook Sanity`;
-- scope: `tests/test_real_document_audiobook_spec.py` with explicit `DOCXAI_RUN_REAL_DOCUMENT_AUDIOBOOK_SANITY=1` and `OPENAI_API_KEY`.
+- scope: `bash scripts/run-real-document-quality-gate.sh` (exceptional operator-run quality gate) with `DOCXAI_RUN_REAL_DOCUMENT_QUALITY=1`, `DOCXAI_REQUIRE_REAL_DOCUMENT_CAPABILITIES=1`, and `OPENAI_API_KEY`.
+
+The former `Real Document AI Structure Smoke` and `Real Document Audiobook Sanity` workflows have been retired: the AI structure-recognition stage and its smoke test were removed (2026-06-22), and the audiobook-sanity source/test were removed with the legacy corpus.
 
 ## Browser UI Deferral
 

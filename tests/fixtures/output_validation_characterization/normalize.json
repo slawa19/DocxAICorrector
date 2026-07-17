@@ -1,0 +1,10 @@
+{
+  "normalize_false_fragment_headings_markdown__protected": "Это предложение продолжается,\n\n## словом\n\nи далее по тексту.",
+  "normalize_false_fragment_headings_markdown__unprotected": "Это предложение продолжается, словом и далее по тексту.",
+  "normalize_heading_match_text": "пример heading",
+  "normalize_inline_fragment_paragraphs_markdown": "Предложение не закончено, маленький фрагмент",
+  "normalize_list_fragment_regressions_markdown": "Введение:\n1. Первая глава",
+  "normalize_mixed_script_markdown": "Это mеханизм работает.",
+  "normalize_page_placeholder_heading_concats_markdown": "This page intentionally left blank\n\nChapter 1",
+  "normalize_residual_bullet_glyphs_markdown": "Текст ещё\n- Пункт списка"
+}

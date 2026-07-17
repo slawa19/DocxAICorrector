@@ -11,7 +11,7 @@ from docxaicorrector.core.config import (
     load_system_prompt,
     resolve_model_selector,
 )
-from docxaicorrector.document._document import inspect_placeholder_integrity
+from docxaicorrector.document.extraction import inspect_placeholder_integrity
 from docxaicorrector.generation.formatting_transfer import preserve_source_paragraph_properties
 from docxaicorrector.image.reinsertion import reinsert_inline_images
 from docxaicorrector.pipeline._pipeline import (
@@ -44,17 +44,15 @@ from docxaicorrector.image.generation import (
 from docxaicorrector.image.pipeline import ImageProcessingContext, process_document_images as process_document_images_impl
 from docxaicorrector.image.validation import validate_redraw_result
 from docxaicorrector.core.logger import log_event, present_error
-from docxaicorrector.processing.processing_runtime import (
-    RuntimeEventEmitterDependencies,
-    build_runtime_event_emitters,
+from docxaicorrector.processing.application_flow import (
+    PreparedRunContext,
     freeze_uploaded_file,
-    normalize_background_error,
-    resolve_uploaded_filename,
-    should_stop_processing,
+    prepare_run_context_for_background,
 )
-import docxaicorrector.ui.application_flow as application_flow
+from docxaicorrector.processing.preparation import prepare_document_for_processing
+from docxaicorrector.processing.service_ports import normalize_background_error, should_stop_processing
+from docxaicorrector.processing.upload_ports import resolve_uploaded_filename
 from docxaicorrector.runtime.events import AppendLogEvent, FinalizeProcessingStatusEvent, PushActivityEvent, SetStateEvent, WorkerCompleteEvent
-from docxaicorrector.runtime.state import append_image_log, append_log, finalize_processing_status, push_activity, set_processing_status
 
 
 def _normalize_segment_selection_ids(
@@ -98,6 +96,11 @@ class ProcessingServiceDependencies:
     resolve_uploaded_filename_fn: FilenameResolver
     image_model_call_budget_cls: type
     image_model_call_budget_exceeded_cls: type
+    # Spec 042 P1-A (Explicit-or-bypass): an opaque, secret-safe tenant fingerprint the
+    # dependency supplies for the client it ACTUALLY resolves. When None, the injected-factory
+    # + AI-review-on preparation run safely bypasses the shared cache (no config-derived false
+    # guarantee); a tenant deployment supplies a distinct value per credential/endpoint.
+    client_cache_identity: str | None = None
 
 
 @dataclass
@@ -352,7 +355,7 @@ class ProcessingService:
         prepare_progress_callback=None,
         processing_progress_callback=None,
         runtime=None,
-    ) -> tuple[str, application_flow.PreparedRunContext]:
+    ) -> tuple[str, PreparedRunContext]:
         deps = self.dependencies
         resolved_prepare_progress_callback = prepare_progress_callback or progress_callback
         resolved_processing_progress_callback = processing_progress_callback or progress_callback or (lambda **kwargs: None)
@@ -370,16 +373,23 @@ class ProcessingService:
             client_factory = deps.get_client_fn
             return client_factory() if callable(client_factory) else client_factory
 
+        # Spec 042 P1-A (Explicit-or-bypass): pass the dependency-supplied tenant identity for
+        # the client the injected factory ACTUALLY resolves — do NOT re-derive it from app_config
+        # (two tenant factories sharing this app_config but with different credentials would
+        # otherwise collapse to one shared-cache key). When it is None, the preparation primitive
+        # bypasses the shared cache for an injected-factory + AI-review-on run (the safe default).
         try:
-            prepared = application_flow.prepare_run_context_for_background(
+            prepared = prepare_run_context_for_background(
                 uploaded_payload=uploaded_payload,
                 chunk_size=chunk_size,
                 image_mode=image_mode,
                 keep_all_image_variants=keep_all_image_variants,
                 processing_operation=processing_operation,
                 app_config=app_config,
-                prepare_document_for_processing_fn=lambda **kwargs: application_flow.prepare_document_for_processing(
+                prepare_document_for_processing_fn=lambda **kwargs: prepare_document_for_processing(
                     get_client_fn=_prepare_client_factory,
+                    client_factory=_prepare_client_factory,
+                    client_cache_identity=deps.client_cache_identity,
                     **kwargs,
                 ),
                 progress_callback=resolved_prepare_progress_callback,
@@ -469,6 +479,24 @@ def build_processing_service_dependencies(**overrides: Any) -> ProcessingService
 
 def build_default_processing_service_dependencies() -> ProcessingServiceDependencies:
     from docxaicorrector.core.config import load_app_config as _load_app_config
+
+    # Streamlit-wiring boundary: the DEFAULT service binds the streamlit-backed
+    # runtime.state emitters, so these streamlit-bound names are imported lazily
+    # here (at call time) — importing this module stays streamlit-free. The pure
+    # emitter machinery lives in the (streamlit-bound) processing_runtime module,
+    # so it is imported here too; it adds no extra streamlit cost because the
+    # runtime.state emitters loaded alongside it already pull streamlit.
+    from docxaicorrector.processing.processing_runtime import (
+        RuntimeEventEmitterDependencies,
+        build_runtime_event_emitters,
+    )
+    from docxaicorrector.runtime.state import (
+        append_image_log,
+        append_log,
+        finalize_processing_status,
+        push_activity,
+        set_processing_status,
+    )
 
     _cfg = _load_app_config()
     _body_font = _cfg.output_body_font
