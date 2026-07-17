@@ -2907,6 +2907,107 @@ def test_run_document_processing_blocks_delivery_on_caption_heading_conflict(tmp
     }
 
 
+def test_run_document_processing_blocks_delivery_on_caption_conflict_in_final_docx_after_reader_cleanup_noop(
+    tmp_path, monkeypatch
+):
+    # spec 043 P1: with reader cleanup ENABLED the base DOCX build is DEFERRED, so the
+    # pre-cleanup gate sees an EMPTY diagnostics list. The FINAL DOCX — built here during
+    # the reader-cleanup NO-OP path (``base_docx_builder`` -> ``preserve_...``) — writes a
+    # caption→heading conflict artifact. finalize must RE-COLLECT it and BLOCK delivery even
+    # though reader cleanup left the markdown UNCHANGED (the pre-043 code missed this path).
+    # This is the END-TO-END production route (through ``_pipeline``'s ``DocxBuildPhaseResult``
+    # threading) that the finalize-only harness tests cannot exercise.
+    runtime = _build_runtime_capture()
+    diagnostics_dir = tmp_path / "formatting_diagnostics"
+    quality_dir = tmp_path / "quality_reports"
+    monkeypatch.setattr(document_pipeline, "FORMATTING_DIAGNOSTICS_DIR", diagnostics_dir)
+    monkeypatch.setattr(document_pipeline_quality_report_retention, "QUALITY_REPORTS_DIR", quality_dir)
+
+    def preserve_with_conflict_artifact(docx_bytes, paragraphs, generated_paragraph_registry=None):
+        # Written during the DEFERRED base DOCX build (invoked by the reader-cleanup no-op path).
+        diagnostics_dir.mkdir(parents=True, exist_ok=True)
+        (diagnostics_dir / "preserve_001.json").write_text(
+            json.dumps(
+                {
+                    "stage": "preserve",
+                    "source_count": 5,
+                    "target_count": 5,
+                    "mapped_count": 5,
+                    "unmapped_source_ids": [],
+                    "unmapped_target_indexes": [],
+                    "caption_heading_conflicts": [
+                        {"paragraph_id": "p0002", "target_heading_level": 2}
+                    ],
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        return docx_bytes
+
+    def generate_markdown_block(**kwargs):
+        # Reader-cleanup NO-OP: propose no deletions so the delivered markdown is UNCHANGED
+        # and the deferred base build (which writes the conflict artifact) is what produces
+        # the FINAL DOCX.
+        if kwargs["system_prompt"].startswith("You are cleaning translated book Markdown"):
+            return json.dumps({"cleanup_operations": [], "warnings": []}, ensure_ascii=False)
+        return "Обработанный блок"
+
+    written_artifact_paths: list[str] = []
+
+    result = document_pipeline.run_document_processing(
+        uploaded_file="report.docx",
+        jobs=[{"target_text": "block", "context_before": "", "context_after": "", "target_chars": 5, "context_chars": 0}],
+        source_paragraphs=[ParagraphStub()],
+        image_assets=[],
+        image_mode="safe",
+        app_config={"reader_cleanup_enabled": True, "reader_cleanup_policy": "advisory"},
+        model="gpt-5.4",
+        max_retries=1,
+        processing_operation="translate",
+        source_language="en",
+        target_language="ru",
+        on_progress=lambda **kwargs: None,
+        runtime=runtime,
+        resolve_uploaded_filename=lambda uploaded_file: str(uploaded_file),
+        get_client=lambda: object(),
+        ensure_pandoc_available=lambda: None,
+        load_system_prompt=lambda **_kw: "system",
+        log_event=lambda *args, **kwargs: None,
+        present_error=lambda code, exc, title, **kwargs: f"{code}:{title}: {exc}",
+        emit_state=_emit_state,
+        emit_finalize=_emit_finalize,
+        emit_activity=_emit_activity,
+        emit_log=_emit_log,
+        emit_status=_emit_status,
+        should_stop_processing=lambda runtime: False,
+        generate_markdown_block=generate_markdown_block,
+        process_document_images=lambda **kwargs: [],
+        inspect_placeholder_integrity=_inspect_placeholder_integrity,
+        convert_markdown_to_docx_bytes=lambda markdown_text: b"docx-bytes",
+        preserve_source_paragraph_properties=preserve_with_conflict_artifact,
+        reinsert_inline_images=lambda docx_bytes, image_assets: docx_bytes,
+        write_ui_result_artifacts=lambda **kwargs: written_artifact_paths.append("written") or {},
+    )
+
+    # Delivery BLOCKED by the FINAL-DOCX caption→heading conflict, even on the unchanged path.
+    assert result == "failed"
+    assert "translation_quality_gate_failed" in runtime["state"]["last_error"]
+    assert "подпись к рисунку или таблице превратилась в заголовок" in runtime["state"]["last_error"]
+    assert runtime["state"]["latest_result_notice"] == {
+        "level": "error",
+        "message": "Результат заблокирован document-level quality gate.",
+    }
+    # Primary UI result artifacts were NEVER written.
+    assert written_artifact_paths == []
+    # The saved quality report records the fail + caption gate reason.
+    report_files = list(quality_dir.glob("*.json"))
+    assert len(report_files) == 1
+    payload = json.loads(report_files[0].read_text(encoding="utf-8"))
+    assert payload["quality_status"] == "fail"
+    assert "caption_heading_conflict" in payload["gate_reasons"]
+
+
 def test_run_document_processing_warns_and_delivers_on_strict_unmapped_source_quality_gate(tmp_path, monkeypatch):
     runtime = _build_runtime_capture()
     diagnostics_dir = tmp_path / "formatting_diagnostics"

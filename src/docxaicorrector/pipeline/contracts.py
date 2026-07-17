@@ -1,6 +1,7 @@
 import time
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence, Sized
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Literal, Protocol, TypeAlias
 
 from docxaicorrector.document.segments import DocumentSegment
@@ -292,6 +293,12 @@ class DocxBuildPhaseResult:
     result_manifest: Mapping[str, object] | None = None
     processed_image_assets: list[ImageAssetLike] = field(default_factory=list)
     base_docx_builder: Callable[[], bytes] | None = None
+    # spec 043 P1: the formatting-diagnostics collection window (start epoch + dir), so a
+    # DEFERRED base build (reader cleanup enabled) can RE-COLLECT the FINAL-DOCX diagnostics
+    # in ``finalize_processing_success`` — the pre-cleanup gate saw an empty list because the
+    # DOCX (and its diagnostics) did not exist yet at that point.
+    build_started_at_epoch: float = 0.0
+    diagnostics_dir: Path | None = None
 
 
 @dataclass(frozen=True)
