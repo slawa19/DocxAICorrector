@@ -2862,6 +2862,105 @@ def test_admission_gate_preparation_wait_is_cancellable(monkeypatch) -> None:
     full_gate.release()
 
 
+def test_admission_gate_processing_wait_is_cancellable(monkeypatch):
+    """Spec 041 P1-2: a Stop while the processing admission gate is full must
+    cancel the queued run — ``worker_target`` never runs, the run surfaces
+    ``stopped`` to the UI, and the (never-acquired) slot is not released."""
+
+    session_state = SessionState(restart_session_id="session-a")
+    monkeypatch.setattr(processing_runtime.st, "session_state", session_state)
+    monkeypatch.setattr(state.st, "session_state", session_state)
+    state.init_session_state()
+    session_state.restart_session_id = "session-a"
+    monkeypatch.setattr(
+        processing_runtime,
+        "store_restart_source",
+        lambda **kwargs: {
+            "filename": kwargs["source_name"],
+            "token": kwargs["source_token"],
+            "storage_path": "restart.bin",
+            "session_id": kwargs["session_id"],
+        },
+    )
+
+    # Saturate the admission gate: its only slot is held for the whole test, so
+    # _acquire_admission_slot_cancellable can NEVER acquire — the only exit is a
+    # Stop. A spy records every acquire/release so we can assert no over-release.
+    real_gate = processing_runtime._build_processing_admission_gate(1)
+    assert real_gate.acquire(blocking=False) is True  # exhaust the only slot
+
+    acquire_results: list[bool] = []
+    release_calls: list[str] = []
+
+    class SpyGate:
+        def acquire(self, *args, **kwargs):
+            acquired = real_gate.acquire(*args, **kwargs)
+            acquire_results.append(acquired)
+            return acquired
+
+        def release(self) -> None:
+            release_calls.append("release")
+            real_gate.release()
+
+    monkeypatch.setattr(processing_runtime, "_PROCESSING_ADMISSION_GATE", SpyGate())
+
+    worker_calls: list[dict] = []
+
+    def worker_target(**kwargs):
+        worker_calls.append(kwargs)
+
+    processing_runtime.start_background_processing(
+        worker_target=worker_target,
+        reset_run_state=state.reset_run_state,
+        push_activity=lambda message: None,
+        set_processing_status=lambda **kwargs: None,
+        uploaded_filename="report.docx",
+        uploaded_token="report.docx:3:abc",
+        source_bytes=b"abc",
+        jobs=[{"target_text": "block", "target_chars": 5, "context_chars": 0}],
+        source_paragraphs=["paragraph"],
+        image_assets=[],
+        image_mode="safe",
+        app_config={},
+        model="gpt-5.4",
+        max_retries=1,
+    )
+
+    # The gate is permanently saturated, so the worker is parked polling for a
+    # slot; requesting Stop is the only way out. Setting the run's own stop_event
+    # (the exact object threaded into the guarded target) cancels the wait.
+    run_stop_event = session_state.processing_stop_event
+    run_stop_event.set()
+
+    session_state.processing_worker.join(timeout=5)
+    assert not session_state.processing_worker.is_alive()
+
+    # worker_target must never run — the run was cancelled during admission.
+    assert worker_calls == []
+    # The slot was never acquired, so it must never be released (no over-release;
+    # a BoundedSemaphore would raise on a spurious release — it did not, and the
+    # spy confirms release was never called on the gate).
+    assert release_calls == []
+    assert acquire_results and all(result is False for result in acquire_results)
+
+    # The run surfaces the normal stopped completion to the UI event stream.
+    outcomes: list[str] = []
+    while True:
+        try:
+            event = session_state.processing_event_queue.get_nowait()
+        except queue.Empty:
+            break
+        if isinstance(event, WorkerCompleteEvent):
+            outcomes.append(event.outcome)
+    assert outcomes == ["stopped"]
+
+    # The real gate still holds exactly the test's slot: releasing it once
+    # succeeds, and a second release raises (proving no phantom slot was added).
+    real_gate.release()
+    with pytest.raises(ValueError):
+        real_gate.release()
+
+
 # --- F12: PDF image discovery vs emission is counted and warned ------------
 
 

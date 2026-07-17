@@ -1966,11 +1966,20 @@ def start_background_processing(
     def _admission_guarded_worker_target(**worker_kwargs) -> None:
         # F27: acquire a process-wide admission slot before doing real work so
         # concurrent sessions cannot multiply PDF RAM / subprocess / API cost.
-        # Released on every exit path (completion, stop_event, or error).
-        _PROCESSING_ADMISSION_GATE.acquire()
+        # Spec 041 P1-2: the wait is cancellable (mirrors the preparation path)
+        # so a Stop while the gate is full cancels the queued run instead of
+        # letting it run once a slot frees. ``stop_event`` and ``runtime`` are
+        # this run's own event/runtime captured from the enclosing scope.
+        if not _acquire_admission_slot_cancellable(_PROCESSING_ADMISSION_GATE, stop_event):
+            # Cancelled during the wait: nothing was acquired, so do NOT release.
+            # Surface the same stopped completion a normally-stopped run emits.
+            runtime.emit(WorkerCompleteEvent(outcome="stopped"))
+            return
         try:
             worker_target(**worker_kwargs)
         finally:
+            # A slot was acquired above, so release it on every exit path
+            # (completion, stop_event, or error).
             _PROCESSING_ADMISSION_GATE.release()
 
     worker = threading.Thread(

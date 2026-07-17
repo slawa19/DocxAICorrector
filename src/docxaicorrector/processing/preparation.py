@@ -423,6 +423,38 @@ def _resolve_prepared_cache_client_identity(
         return ""
 
 
+def resolve_prepared_cache_client_identity(app_config: Mapping[str, object] | None) -> str:
+    """Public, secret-safe fingerprint of the AI-boundary-review client an injected tenant
+    ``client_factory`` resolves for ``app_config`` (spec 041 P1-1).
+
+    The injecting callers (``ProcessingService`` / UI preparation) compute this and pass it
+    as ``client_cache_identity=`` (or tag it onto their factory as ``prepared_cache_identity``)
+    so the shared preparation cache isolates tenants that share an ``app_config`` but differ
+    by credential/endpoint. Returns "" when AI boundary review is effectively disabled (the
+    client does not shape the artifact, so shared caching is safe) or on any resolution error
+    (fail-open) — an empty identity then drives the safe shared-cache bypass in
+    ``prepare_document_for_processing`` instead of a cross-tenant collision. This reuses the
+    spec-040 fingerprint logic (provider selector + base_url + api_key_env + sha256(secret)).
+    """
+    resolved_config = load_app_config() if app_config is None else app_config
+    (
+        ai_review_effective_enabled,
+        _ai_review_mode,
+        _ai_review_candidate_limit,
+        _ai_review_timeout_seconds,
+        _ai_review_max_tokens_per_candidate,
+        ai_review_model,
+    ) = resolve_paragraph_boundary_ai_review_settings(
+        allowed_modes=PARAGRAPH_BOUNDARY_AI_REVIEW_MODE_VALUES,
+        app_config=resolved_config,
+    )
+    return _resolve_prepared_cache_client_identity(
+        resolved_config=resolved_config,
+        ai_review_effective_enabled=ai_review_effective_enabled,
+        ai_review_model=ai_review_model,
+    )
+
+
 def _attach_prepared_job_ids(jobs: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
     prepared_jobs: list[dict[str, Any]] = []
     for index, job in enumerate(jobs):
@@ -903,7 +935,7 @@ def _clone_prepared_document(data: PreparedDocumentData, prepared_source_key: st
     )
 
 
-def _read_or_reserve_cached_prepared_document(*, session_state, prepared_source_key: str):
+def _read_or_reserve_cached_prepared_document(*, session_state, prepared_source_key: str, allow_shared_cache: bool = True):
     # Session cache is only touched from the Streamlit rerun thread. Background preparation
     # workers always pass session_state=None and only participate in the shared cache path.
     session_cache = _get_preparation_cache(session_state) if session_state is not None else None
@@ -911,6 +943,14 @@ def _read_or_reserve_cached_prepared_document(*, session_state, prepared_source_
         cached = _read_cache_entry(session_cache, prepared_source_key)
         if cached is not None:
             return _clone_prepared_document(cached, prepared_source_key, cached=True), None, "session"
+
+    if not allow_shared_cache:
+        # Spec 041 P1-1: the shared (process-global) tier is bypassed for this run — a
+        # client-dependent artifact must not cross an unknown-identity boundary. The
+        # per-session tier read above stays active (session-scoped, tenant-safe). Returning
+        # no in-flight reservation means the caller rebuilds and (per the matching store
+        # guard) does not publish to the shared tier.
+        return None, None, None
 
     while True:
         with _shared_preparation_cache_lock:
@@ -937,7 +977,7 @@ def _release_shared_preparation(prepared_source_key: str) -> None:
         in_flight.set()
 
 
-def _store_cached_prepared_document(*, session_state, prepared_source_key: str, prepared_document: PreparedDocumentData) -> None:
+def _store_cached_prepared_document(*, session_state, prepared_source_key: str, prepared_document: PreparedDocumentData, allow_shared_cache: bool = True) -> None:
     prepared_document.prepared_source_key = ""
     prepared_document.cached = False
     if session_state is not None:
@@ -945,6 +985,11 @@ def _store_cached_prepared_document(*, session_state, prepared_source_key: str, 
         _touch_cache_entry(cache, prepared_source_key, prepared_document)
         _trim_cache(cache)
 
+    if not allow_shared_cache:
+        # Spec 041 P1-1: mirror the read guard — only the shared (process-global) tier is
+        # skipped; the per-session store above still runs so a session keeps serving its own
+        # prepared document across reruns.
+        return
     with _shared_preparation_cache_lock:
         _touch_cache_entry(_shared_preparation_cache, prepared_source_key, prepared_document)
         _trim_cache(_shared_preparation_cache)
@@ -967,6 +1012,7 @@ def prepare_document_for_processing(
     session_state=None,
     get_client_fn=None,
     client_factory: Callable[[str], object] | None = None,
+    client_cache_identity: str | None = None,
     progress_callback=None,
 ) -> PreparedDocumentData:
     resolved_config = load_app_config() if app_config is None else app_config
@@ -1018,11 +1064,43 @@ def prepare_document_for_processing(
         resolved_config.get("structure_recovery_mode", "legacy") or "legacy"
     ).strip().lower() or "legacy"
     key_scan_origin = _resolve_scan_origin_cache_key(resolved_config)
-    prepared_cache_client_identity = _resolve_prepared_cache_client_identity(
-        resolved_config=resolved_config,
-        ai_review_effective_enabled=ai_review_effective_enabled,
-        ai_review_model=ai_review_model,
-    )
+    # Spec 041 P1-1: the shared (process-global) preparation cache must isolate the tenant
+    # client_factory that is ACTUALLY injected, not just the config-derived client — two
+    # callers with the same app_config but different factories/credentials must never share
+    # one client-dependent (AI-boundary-review) entry. When no explicit identity is supplied,
+    # fall back to one carried on the factory object: the UI background path threads its
+    # factory (not a param) through intermediaries this change does not touch, so it tags the
+    # factory with `.prepared_cache_identity`.
+    if client_cache_identity is None and client_factory is not None:
+        factory_identity = getattr(client_factory, "prepared_cache_identity", None)
+        client_cache_identity = str(factory_identity) if factory_identity is not None else None
+    if client_factory is None:
+        # Config-default path: the AI-boundary-review client is config-derived, so the
+        # config-derived fingerprint (spec 040) is authoritative. Byte-identical key and
+        # shared caching are preserved exactly.
+        prepared_cache_client_identity = _resolve_prepared_cache_client_identity(
+            resolved_config=resolved_config,
+            ai_review_effective_enabled=ai_review_effective_enabled,
+            ai_review_model=ai_review_model,
+        )
+        allow_shared_cache = True
+    elif not ai_review_effective_enabled:
+        # An injected factory does not shape the prepared artifact when AI boundary review is
+        # off, so the shared cache is safe and the client identity stays "" (unchanged key).
+        prepared_cache_client_identity = ""
+        allow_shared_cache = True
+    else:
+        # Injected factory + AI review ON: fold a caller-supplied, secret-safe identity into
+        # the key so distinct tenants get distinct shared entries. With NO usable identity,
+        # never serve a client-dependent artifact across an unknown boundary — bypass the
+        # shared tier for this run (the per-session tier stays available and tenant-safe).
+        resolved_client_identity = str(client_cache_identity or "").strip()
+        if resolved_client_identity:
+            prepared_cache_client_identity = resolved_client_identity
+            allow_shared_cache = True
+        else:
+            prepared_cache_client_identity = ""
+            allow_shared_cache = False
     prepared_source_key = build_prepared_source_key(
         uploaded_payload.file_token,
         chunk_size,
@@ -1046,6 +1124,7 @@ def prepare_document_for_processing(
     cached, in_flight, cache_level = _read_or_reserve_cached_prepared_document(
         session_state=session_state,
         prepared_source_key=prepared_source_key,
+        allow_shared_cache=allow_shared_cache,
     )
     if cached is not None:
         log_event(
@@ -1103,6 +1182,7 @@ def prepare_document_for_processing(
             session_state=session_state,
             prepared_source_key=prepared_source_key,
             prepared_document=prepared_document,
+            allow_shared_cache=allow_shared_cache,
         )
     except Exception:
         if in_flight is not None:

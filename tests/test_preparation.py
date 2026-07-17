@@ -1497,3 +1497,164 @@ def test_prepared_cache_no_cross_credential_bleed(monkeypatch):
     assert cached_a is not None
     assert level_a == "shared"
     assert cached_a.source_text == "tenant-A-document"
+
+
+def _install_counting_prepared_builder(monkeypatch) -> dict[str, int]:
+    # Spec 041 P1-1 tests drive prepare_document_for_processing itself but stub the heavy
+    # pipeline: each real build increments the counter and returns a fresh sentinel so a cache
+    # HIT (no build) is distinguishable from a MISS (rebuild) by the source_text marker.
+    builds = {"count": 0}
+
+    def _fake_build(*_args, **_kwargs):
+        builds["count"] += 1
+        return _build_sentinel_prepared_document(f"prepared-doc-{builds['count']}")
+
+    monkeypatch.setattr(preparation, "_prepare_document_for_processing", _fake_build)
+    return builds
+
+
+def test_prepare_document_shared_cache_isolates_injected_tenant_identity(monkeypatch):
+    # Injected factory + AI review ON + explicit client_cache_identity: distinct tenant
+    # identities MUST NOT share one shared-cache entry even with the SAME token/app_config.
+    preparation.clear_preparation_cache(clear_shared=True)
+    config = _make_ai_first_config(
+        paragraph_boundary_ai_review_enabled=True,
+        paragraph_boundary_ai_review_mode="review_only",
+    )
+    builds = _install_counting_prepared_builder(monkeypatch)
+    payload = _build_uploaded_payload("report.docx", b"docx-bytes", "shared-token")
+
+    def factory_a(*_a, **_k):
+        return object()
+
+    def factory_b(*_a, **_k):
+        return object()
+
+    # Tenant A primes the shared cache.
+    result_a1 = preparation.prepare_document_for_processing(
+        uploaded_payload=payload,
+        chunk_size=6000,
+        app_config=config,
+        session_state=None,
+        client_factory=factory_a,
+        client_cache_identity="idA",
+    )
+    assert builds["count"] == 1
+
+    # Tenant B: different identity, SAME token/app_config -> MISS (must not receive A's doc).
+    result_b1 = preparation.prepare_document_for_processing(
+        uploaded_payload=payload,
+        chunk_size=6000,
+        app_config=config,
+        session_state=None,
+        client_factory=factory_b,
+        client_cache_identity="idB",
+    )
+    assert builds["count"] == 2
+    assert result_b1.source_text != result_a1.source_text
+
+    # Tenant A again: same identity -> shared-cache HIT (no rebuild), serves A's document.
+    result_a2 = preparation.prepare_document_for_processing(
+        uploaded_payload=payload,
+        chunk_size=6000,
+        app_config=config,
+        session_state=None,
+        client_factory=factory_a,
+        client_cache_identity="idA",
+    )
+    assert builds["count"] == 2
+    assert result_a2.source_text == result_a1.source_text
+    assert result_a2.cached is True
+
+
+def test_prepare_document_bypasses_shared_cache_when_injected_identity_unknown(monkeypatch):
+    # Injected factory + AI review ON + NO identity: the shared (process-global) tier must be
+    # bypassed entirely, so a second identical run does not serve the first run's entry.
+    preparation.clear_preparation_cache(clear_shared=True)
+    config = _make_ai_first_config(
+        paragraph_boundary_ai_review_enabled=True,
+        paragraph_boundary_ai_review_mode="review_only",
+    )
+    builds = _install_counting_prepared_builder(monkeypatch)
+    payload = _build_uploaded_payload("report.docx", b"docx-bytes", "shared-token")
+
+    def factory(*_a, **_k):
+        return object()
+
+    first = preparation.prepare_document_for_processing(
+        uploaded_payload=payload,
+        chunk_size=6000,
+        app_config=config,
+        session_state=None,
+        client_factory=factory,
+        client_cache_identity=None,
+    )
+    assert builds["count"] == 1
+
+    second = preparation.prepare_document_for_processing(
+        uploaded_payload=payload,
+        chunk_size=6000,
+        app_config=config,
+        session_state=None,
+        client_factory=factory,
+        client_cache_identity=None,
+    )
+    # No shared hit: each run rebuilds and nothing is published to the shared tier.
+    assert builds["count"] == 2
+    assert second.cached is False
+    assert second.source_text != first.source_text
+    assert len(preparation._shared_preparation_cache) == 0
+
+
+def test_prepare_document_config_path_uses_shared_cache_with_config_identity(monkeypatch):
+    # Regression: client_factory=None (config-default path) with AI review ON must keep using
+    # the config-derived identity + shared cache exactly as spec 040 (byte-identical key).
+    preparation.clear_preparation_cache(clear_shared=True)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-config-tenant")
+    config = dict(preparation.load_app_config())
+    config["paragraph_boundary_ai_review_enabled"] = True
+    config["paragraph_boundary_ai_review_mode"] = "review_only"
+    builds = _install_counting_prepared_builder(monkeypatch)
+    payload = _build_uploaded_payload("report.docx", b"docx-bytes", "config-token")
+
+    first = preparation.prepare_document_for_processing(
+        uploaded_payload=payload,
+        chunk_size=6000,
+        app_config=config,
+        session_state=None,
+        client_factory=None,
+    )
+    assert builds["count"] == 1
+
+    second = preparation.prepare_document_for_processing(
+        uploaded_payload=payload,
+        chunk_size=6000,
+        app_config=config,
+        session_state=None,
+        client_factory=None,
+    )
+    # Shared cache HIT: no rebuild, and the stored key folds the config-derived identity.
+    assert builds["count"] == 1
+    assert second.cached is True
+    assert first.source_text == second.source_text
+
+    (
+        _enabled,
+        _mode,
+        _candidate_limit,
+        _timeout_seconds,
+        _max_tokens,
+        ai_review_model,
+    ) = preparation.resolve_paragraph_boundary_ai_review_settings(
+        allowed_modes=preparation.PARAGRAPH_BOUNDARY_AI_REVIEW_MODE_VALUES,
+        app_config=config,
+    )
+    config_identity = preparation._resolve_prepared_cache_client_identity(
+        resolved_config=config,
+        ai_review_effective_enabled=True,
+        ai_review_model=ai_review_model,
+    )
+    assert config_identity != ""
+    assert len(preparation._shared_preparation_cache) == 1
+    stored_key = next(iter(preparation._shared_preparation_cache))
+    assert f":cid={config_identity}" in stored_key

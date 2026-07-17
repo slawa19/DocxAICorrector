@@ -16,7 +16,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from io import BytesIO
-from typing import TypedDict
+from typing import Any, TypedDict
 
 from docxaicorrector.document.boundaries import summarize_boundary_normalization_metrics
 from docxaicorrector.document.extraction import validate_docx_source_bytes
@@ -307,7 +307,11 @@ def _prepare_run_context_core(
     # endpoint/credentials. When None (the default, e.g. the ProcessingService
     # path that already injects via prepare_document_for_processing_fn), the
     # call stays byte-compatible with the previous behavior.
-    client_factory_kwargs: dict[str, Callable[[str], object]] = {}
+    # dict[str, Any] (not dict[str, Callable]) so the **-unpack does not trip pyright now
+    # that prepare_document_for_processing carries a str client_cache_identity param
+    # (spec 041 P1-1): a dict[str, Callable] unpack would be checked against that str param.
+    # The conditional inclusion is preserved (keys absent when no factory).
+    client_factory_kwargs: dict[str, Any] = {}
     if client_factory is not None:
         client_factory_kwargs["get_client_fn"] = client_factory
         client_factory_kwargs["client_factory"] = client_factory

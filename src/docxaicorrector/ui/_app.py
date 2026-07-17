@@ -41,6 +41,7 @@ from docxaicorrector.ui.app_runtime import (
     start_background_processing,
 )
 from docxaicorrector.core.logger import fail_critical, log_event, present_error
+from docxaicorrector.processing.preparation import resolve_prepared_cache_client_identity
 from docxaicorrector.processing.processing_runtime import (
     freeze_uploaded_file,
     freeze_uploaded_file_lightweight,
@@ -324,6 +325,14 @@ def _build_preparation_client_factory(app_config: dict[str, object] | None):
                 config_like=resolved_config,
             )
         return get_client()
+
+    # Spec 041 P1-1: tag the tenant factory with a secret-safe fingerprint of the
+    # AI-boundary-review client it resolves. The UI preparation paths thread this factory
+    # (not a param) through prepare_run_context[/for_background]; prepare_document_for_processing
+    # reads `.prepared_cache_identity` as a fallback so the shared cache isolates tenants that
+    # share this app_config but differ by credential/endpoint. "" (review off / fail-open)
+    # drives the safe shared-cache bypass rather than a cross-tenant collision.
+    _prepare_client_factory.prepared_cache_identity = resolve_prepared_cache_client_identity(app_config)  # type: ignore[attr-defined]
 
     return _prepare_client_factory
 

@@ -49,7 +49,7 @@ from docxaicorrector.processing.application_flow import (
     freeze_uploaded_file,
     prepare_run_context_for_background,
 )
-from docxaicorrector.processing.preparation import prepare_document_for_processing
+from docxaicorrector.processing.preparation import prepare_document_for_processing, resolve_prepared_cache_client_identity
 from docxaicorrector.processing.service_ports import normalize_background_error, should_stop_processing
 from docxaicorrector.processing.upload_ports import resolve_uploaded_filename
 from docxaicorrector.runtime.events import AppendLogEvent, FinalizeProcessingStatusEvent, PushActivityEvent, SetStateEvent, WorkerCompleteEvent
@@ -368,6 +368,11 @@ class ProcessingService:
             client_factory = deps.get_client_fn
             return client_factory() if callable(client_factory) else client_factory
 
+        # Spec 041 P1-1: fingerprint the tenant factory's AI-boundary-review client identity
+        # so the shared preparation cache isolates tenants sharing this app_config but using
+        # different credentials/endpoints. Passed explicitly alongside the injected factory.
+        prepare_client_cache_identity = resolve_prepared_cache_client_identity(app_config)
+
         try:
             prepared = prepare_run_context_for_background(
                 uploaded_payload=uploaded_payload,
@@ -379,6 +384,7 @@ class ProcessingService:
                 prepare_document_for_processing_fn=lambda **kwargs: prepare_document_for_processing(
                     get_client_fn=_prepare_client_factory,
                     client_factory=_prepare_client_factory,
+                    client_cache_identity=prepare_client_cache_identity,
                     **kwargs,
                 ),
                 progress_callback=resolved_prepare_progress_callback,
