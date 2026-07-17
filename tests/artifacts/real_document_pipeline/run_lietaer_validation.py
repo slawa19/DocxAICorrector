@@ -5630,6 +5630,19 @@ def main() -> None:
     report["translation_quality_report"] = translation_quality_report
     report["translation_quality_report_path"] = translation_quality_report_path
     report["failure_classification"] = classify_failure(report)
+    # Load and attach the reader-cleanup evidence BEFORE evaluating the acceptance
+    # verdict so the `reader_cleanup_stage_completed` check sees the real cleanup
+    # `stage_status` (a failed cleanup must not pass as an empty status). See spec 041
+    # P1-3. `classify_failure` above does not read `reader_cleanup_evidence`, so its
+    # ordering is unaffected. The later reader-verifier block only mutates anchor-repair
+    # fields on the evidence (not stage_status/failed_chunk_count/cleanup_chunk_count),
+    # so it does not change an acceptance input and the verdict is not rebuilt.
+    reader_cleanup_evidence = _load_reader_cleanup_evidence(event_log)
+    report["reader_cleanup_evidence"] = reader_cleanup_evidence
+    _merge_reader_cleanup_artifact_paths(
+        cast(dict[str, object], report["output_artifacts"]),
+        reader_cleanup_evidence,
+    )
     report["acceptance"] = evaluate_lietaer_acceptance(
         report,
         source_docx_bytes=source_docx_bytes,
@@ -5637,12 +5650,6 @@ def main() -> None:
         mismatch_threshold=document_profile.max_unmapped_source_paragraphs,
         unmapped_target_threshold=document_profile.max_unmapped_target_paragraphs,
         require_no_toc_body_concat=document_profile.require_no_toc_body_concat,
-    )
-    reader_cleanup_evidence = _load_reader_cleanup_evidence(event_log)
-    report["reader_cleanup_evidence"] = reader_cleanup_evidence
-    _merge_reader_cleanup_artifact_paths(
-        cast(dict[str, object], report["output_artifacts"]),
-        reader_cleanup_evidence,
     )
     reader_verifier_evidence: dict[str, object] | None = None
     if bool(validation_mode.get("comparison_only_validation")):

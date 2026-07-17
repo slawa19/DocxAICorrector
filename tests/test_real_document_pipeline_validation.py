@@ -244,6 +244,36 @@ def test_evaluate_lietaer_acceptance_fails_on_reader_cleanup_failed_stage() -> N
     assert by_name["reader_cleanup_stage_completed"]["failed_chunk_ratio"] == 1.0
 
 
+def test_main_loads_reader_cleanup_evidence_before_building_acceptance_verdict() -> None:
+    # Regression guard for spec 041 P1-3: main() must attach the loaded
+    # reader-cleanup evidence to ``report`` BEFORE it calls
+    # ``evaluate_lietaer_acceptance``; otherwise the ``reader_cleanup_stage_completed``
+    # check evaluates an EMPTY ``stage_status`` (which passes) even when the real
+    # cleanup stage failed, letting a failed cleanup publish a stale GREEN verdict.
+    import inspect
+
+    validation = _load_validation_module()
+    source = inspect.getsource(validation.main)
+
+    load_marker = "reader_cleanup_evidence = _load_reader_cleanup_evidence(event_log)"
+    attach_marker = 'report["reader_cleanup_evidence"] = reader_cleanup_evidence'
+    verdict_marker = 'report["acceptance"] = evaluate_lietaer_acceptance('
+
+    load_index = source.find(load_marker)
+    attach_index = source.find(attach_marker)
+    verdict_index = source.find(verdict_marker)
+
+    assert load_index != -1, "reader-cleanup evidence load not found in main()"
+    assert attach_index != -1, "reader-cleanup evidence attach not found in main()"
+    assert verdict_index != -1, "acceptance verdict build not found in main()"
+
+    # The verdict is assembled exactly once (no alternate build path can bypass the
+    # evidence), and the load + attach both precede it.
+    assert source.count(verdict_marker) == 1
+    assert load_index < verdict_index
+    assert attach_index < verdict_index
+
+
 def test_evaluate_lietaer_acceptance_fails_on_translation_quality_report_residual_defects() -> None:
     validation = _load_validation_module()
 
