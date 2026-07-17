@@ -934,6 +934,51 @@ def test_prepare_run_context_for_background_uses_frozen_upload_payload(monkeypat
     assert captured["prepare"]["processing_operation"] == "audiobook"
 
 
+def test_prepare_run_context_for_background_forwards_tenant_client_factory(monkeypatch):
+    """Spec 039 (B): a tenant client_factory injected into the UI preparation
+    entry must reach prepare_document_for_processing (as both get_client_fn and
+    client_factory, the SAME object), and the None-default path must stay
+    byte-compatible (no factory kwargs)."""
+    monkeypatch.setattr(flow_core, "validate_docx_source_bytes", lambda source_bytes: None)
+    prepared_document = SimpleNamespace(
+        source_text="text",
+        paragraphs=["p1"],
+        image_assets=[],
+        jobs=[{"target_text": "block", "target_chars": 5, "context_chars": 0}],
+        prepared_source_key="prepared-key",
+        cached=False,
+    )
+    payload = _freeze_uploaded_file("report.docx", b"abc")
+
+    def _sentinel_factory(selector=None, required_capability="responses_text", *, config_like=None):
+        return object()
+
+    with_factory: dict[str, Any] = {}
+    application_flow.prepare_run_context_for_background(
+        uploaded_payload=payload,
+        chunk_size=6000,
+        image_mode="safe",
+        keep_all_image_variants=True,
+        app_config={},
+        prepare_document_for_processing_fn=lambda **kwargs: (with_factory.setdefault("kwargs", kwargs), prepared_document)[1],
+        client_factory=_sentinel_factory,
+    )
+    assert with_factory["kwargs"]["client_factory"] is _sentinel_factory
+    assert with_factory["kwargs"]["get_client_fn"] is _sentinel_factory
+
+    without_factory: dict[str, Any] = {}
+    application_flow.prepare_run_context_for_background(
+        uploaded_payload=payload,
+        chunk_size=6000,
+        image_mode="safe",
+        keep_all_image_variants=True,
+        app_config={},
+        prepare_document_for_processing_fn=lambda **kwargs: (without_factory.setdefault("kwargs", kwargs), prepared_document)[1],
+    )
+    assert "client_factory" not in without_factory["kwargs"]
+    assert "get_client_fn" not in without_factory["kwargs"]
+
+
 def test_prepare_run_context_for_background_uses_real_cache(monkeypatch):
     monkeypatch.setattr(flow_core, "validate_docx_source_bytes", lambda source_bytes: None)
     preparation.clear_preparation_cache(clear_shared=True)

@@ -318,9 +318,21 @@ def _build_structural_checks(
             "actual": metrics["formatting_diagnostics_count"],
             "allowed": document_profile.max_formatting_diagnostics,
         },
+        # spec 039 (A) / Constitution VII: the unmapped-source/-target coverage axes are
+        # REVIEW DATA, not a verdict gate. ``passed`` is hardcoded True so the roll-up
+        # (structural.py:624, which reads only ``passed``) never puts these in
+        # ``failed_checks``; the residual is surfaced honestly via ``actual``/``allowed``/
+        # ``exceeds_threshold`` for a human to inspect, without gating the run. Every genuine
+        # structural gate (text similarity, heading drift, formatting diagnostics, sentinels,
+        # image/table minima) stays a HARD gate.
         {
             "name": "unmapped_source_threshold",
-            "passed": unmapped_source_actual <= document_profile.max_unmapped_source_paragraphs,
+            "passed": True,
+            "review_data": True,
+            "advisory": True,
+            "exceeds_threshold": bool(
+                unmapped_source_actual > document_profile.max_unmapped_source_paragraphs
+            ),
             "actual": unmapped_source_actual,
             "allowed": document_profile.max_unmapped_source_paragraphs,
             "count_basis": unmapped_source_gate_source,
@@ -337,7 +349,12 @@ def _build_structural_checks(
         },
         {
             "name": "unmapped_target_threshold",
-            "passed": unmapped_target_actual <= document_profile.max_unmapped_target_paragraphs,
+            "passed": True,
+            "review_data": True,
+            "advisory": True,
+            "exceeds_threshold": bool(
+                unmapped_target_actual > document_profile.max_unmapped_target_paragraphs
+            ),
             "actual": unmapped_target_actual,
             "allowed": document_profile.max_unmapped_target_paragraphs,
             "count_basis": unmapped_target_gate_source,

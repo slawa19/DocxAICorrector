@@ -212,6 +212,7 @@ def prepare_run_context(
     prepare_document_for_processing_fn=None,
     resolve_uploaded_filename_fn=None,
     progress_callback=None,
+    client_factory=None,
 ) -> PreparedRunContext:
     uploaded_filename, uploaded_file_bytes, uploaded_file_token, prepared_document, elapsed_seconds = _prepare_run_context_core(
         uploaded_file=uploaded_file,
@@ -224,6 +225,7 @@ def prepare_run_context(
         resolve_uploaded_filename_fn=resolve_uploaded_filename_fn,
         reset_run_state_fn=reset_run_state_fn,
         fail_critical_fn=fail_critical_fn,
+        client_factory=client_factory,
     )
     consume_completed_source_if_used(session_state=session_state, uploaded_file_token=uploaded_file_token)
     _raise_or_fail_preparation(prepared_document=prepared_document, uploaded_filename=uploaded_filename, fail_critical_fn=fail_critical_fn, translate_fn=t)

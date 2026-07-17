@@ -2026,6 +2026,7 @@ def start_background_preparation(
     keep_all_image_variants: bool,
     processing_operation: str = "edit",
     app_config: dict[str, object] | None = None,
+    client_factory=None,
 ) -> None:
     reset_run_state(keep_restart_source=False)
     mark_preparation_started(upload_marker)
@@ -2114,15 +2115,21 @@ def start_background_preparation(
             runtime.emit(PreparationStoppedEvent(upload_marker=upload_marker))
             return
         try:
-            prepared_run_context = worker_target(
-                uploaded_payload=materialized_payload,
-                chunk_size=chunk_size,
-                image_mode=image_mode,
-                keep_all_image_variants=keep_all_image_variants,
-                processing_operation=processing_operation,
-                app_config=app_config,
-                progress_callback=report_progress,
-            )
+            worker_kwargs: dict[str, object] = {
+                "uploaded_payload": materialized_payload,
+                "chunk_size": chunk_size,
+                "image_mode": image_mode,
+                "keep_all_image_variants": keep_all_image_variants,
+                "processing_operation": processing_operation,
+                "app_config": app_config,
+                "progress_callback": report_progress,
+            }
+            # Forward the tenant client_factory (spec 039 part B) so the UI
+            # preparation path honors per-tenant endpoint/credentials, mirroring
+            # ProcessingService. None keeps the worker call byte-compatible.
+            if client_factory is not None:
+                worker_kwargs["client_factory"] = client_factory
+            prepared_run_context = worker_target(**worker_kwargs)
         except Exception as exc:
             error_details = normalize_background_error(
                 stage="preparation",

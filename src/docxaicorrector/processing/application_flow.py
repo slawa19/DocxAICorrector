@@ -248,6 +248,7 @@ def _prepare_run_context_core(
     resolve_uploaded_filename_fn,
     reset_run_state_fn=None,
     fail_critical_fn=None,
+    client_factory: Callable[[str], object] | None = None,
 ):
     started_at = time.perf_counter()
     (
@@ -300,6 +301,16 @@ def _prepare_run_context_core(
             reset_run_state_fn=reset_run_state_fn,
             uploaded_file_token=uploaded_file_token,
         )
+    # Mirror ProcessingService._prepare_client_factory injection: when a tenant
+    # client_factory is supplied, forward it as BOTH get_client_fn and
+    # client_factory so boundary review + extraction honor per-tenant
+    # endpoint/credentials. When None (the default, e.g. the ProcessingService
+    # path that already injects via prepare_document_for_processing_fn), the
+    # call stays byte-compatible with the previous behavior.
+    client_factory_kwargs: dict[str, Callable[[str], object]] = {}
+    if client_factory is not None:
+        client_factory_kwargs["get_client_fn"] = client_factory
+        client_factory_kwargs["client_factory"] = client_factory
     prepared_document = prepare_document_for_processing_fn(
         uploaded_payload=resolved_upload.uploaded_payload,
         chunk_size=chunk_size,
@@ -307,6 +318,7 @@ def _prepare_run_context_core(
         processing_operation=processing_operation,
         session_state=session_state,
         progress_callback=progress_callback,
+        **client_factory_kwargs,
     )
     elapsed_seconds = max(0.0, time.perf_counter() - started_at)
     return uploaded_filename, uploaded_file_bytes, uploaded_file_token, prepared_document, elapsed_seconds
@@ -404,6 +416,7 @@ def prepare_run_context_for_background(
     resolve_uploaded_filename_fn=None,
     progress_callback=None,
     translate_fn: TranslateFn | None = None,
+    client_factory: Callable[[str], object] | None = None,
 ) -> PreparedRunContext:
     uploaded_filename, uploaded_file_bytes, uploaded_file_token, prepared_document, elapsed_seconds = _prepare_run_context_core(
         uploaded_payload=uploaded_payload,
@@ -415,6 +428,7 @@ def prepare_run_context_for_background(
         prepare_document_for_processing_fn=prepare_document_for_processing_fn,
         resolve_uploaded_filename_fn=resolve_uploaded_filename_fn,
         fail_critical_fn=None,
+        client_factory=client_factory,
     )
     _raise_or_fail_preparation(prepared_document=prepared_document, uploaded_filename=uploaded_filename, translate_fn=translate_fn)
     emit_preparation_progress(

@@ -29,7 +29,7 @@ from docxaicorrector.ui.recommended_text_settings import (
     normalize_manual_text_settings_override,
     normalize_recommendation_snapshot,
 )
-from docxaicorrector.core.config import load_app_config
+from docxaicorrector.core.config import get_client, get_client_for_model_selector, load_app_config
 from docxaicorrector.ui.app_runtime import (
     build_preparation_request_marker,
     drain_preparation_events as _drain_preparation_events,
@@ -302,6 +302,32 @@ def _resolve_sidebar_settings(sidebar_result: object) -> SidebarSettings:
     raise RuntimeError("Некорректный контракт render_sidebar().")
 
 
+def _build_preparation_client_factory(app_config: dict[str, object] | None):
+    """Build the tenant client-factory for the UI preparation path (spec 039 B).
+
+    Mirrors ``ProcessingService._prepare_client_factory`` so boundary review +
+    extraction honor per-tenant endpoint/credentials (via the app_config-scoped
+    model selector) instead of falling back to the module-global client. The UI
+    has a single global client resolution (``core.config.get_client`` /
+    ``get_client_for_model_selector``); passing THAT resolution explicitly closes
+    the implicit-global fallback in preparation.
+    """
+    resolved_app_config = app_config or {}
+
+    def _prepare_client_factory(selector: str | None = None, required_capability: str = "responses_text", *, config_like=None) -> object:
+        resolved_config = resolved_app_config if config_like is None else config_like
+        resolved_selector = str(selector or resolved_app_config.get("structure_recognition_model", "") or "").strip()
+        if resolved_selector:
+            return get_client_for_model_selector(
+                resolved_selector,
+                required_capability,
+                config_like=resolved_config,
+            )
+        return get_client()
+
+    return _prepare_client_factory
+
+
 def _start_background_preparation(
     *,
     uploaded_payload,
@@ -321,6 +347,7 @@ def _start_background_preparation(
         keep_all_image_variants=keep_all_image_variants,
         processing_operation=processing_operation,
         app_config=app_config,
+        client_factory=_build_preparation_client_factory(app_config),
     )
 
 

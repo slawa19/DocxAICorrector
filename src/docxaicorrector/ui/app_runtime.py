@@ -125,7 +125,7 @@ def request_processing_stop() -> None:
     request_processing_stop_impl()
 
 
-def start_background_preparation(*, worker_target, uploaded_payload, upload_marker: str, chunk_size: int, image_mode: str, keep_all_image_variants: bool, processing_operation: str = "edit", app_config: dict[str, object] | None = None) -> None:
+def start_background_preparation(*, worker_target, uploaded_payload, upload_marker: str, chunk_size: int, image_mode: str, keep_all_image_variants: bool, processing_operation: str = "edit", app_config: dict[str, object] | None = None, client_factory=None) -> None:
     """Start preparation with the canonical state owners pre-bound for UI code."""
     start_background_preparation_impl(
         worker_target=worker_target,
@@ -139,6 +139,7 @@ def start_background_preparation(*, worker_target, uploaded_payload, upload_mark
         keep_all_image_variants=keep_all_image_variants,
         processing_operation=processing_operation,
         app_config=app_config,
+        client_factory=client_factory,
     )
 
 
