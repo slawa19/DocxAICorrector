@@ -1,7 +1,20 @@
 # Feature Specification: Canonical structural gate honors coverage-is-review-data + tenant client_factory reaches the UI preparation path
 
 Date: 2026-07-17
-Status: **PLANNED (2026-07-17).** Two verified round-6 findings, both strong-effect:
+Status: **IMPLEMENTED (2026-07-17).** Commit `ee8cd4d` (parts A/B/C) + follow-up (this commit: the
+`_app.py:894` sync/restart-fallback caller now also passes `app_config` + `client_factory`, with a
+sync-path forwarding test — closing a caller the first pass missed). **Evidence:** the canonical
+`test_corpus_structural_passthrough[mazzucato-pdf-full-benchmark]` selector PASSED on committed code
+(23m20s real run, 2026-07-17) — the two coverage axes left `failed_checks` while every genuine gate
+(text_similarity 0.9955, heading_drift 0, formatting_diagnostics + sentinels + image/table) stayed green,
+so the gate greened honestly, nothing masked. Full no-LLM suite 2108→2109 passed; pyright 246.
+**KNOWN-OPEN (deliberately not in this spec):** the shared preparation cache
+(`processing/preparation.py` `_shared_preparation_cache`, keyed by `build_prepared_source_key` at :295)
+is process-global and keyed WITHOUT tenant/client identity, while `uploaded_file_token` is a content
+hash — a latent cross-tenant reuse path for multi-tenant SaaS (single-tenant today). Tracked separately
+(P1, cache-tenant-isolation) — see the process-lesson in the register.
+
+Two verified round-6 findings, both strong-effect:
 
 1. **The canonical real-document gate fixes were applied to the wrong module.** Specs 037/038 made the
    coverage checks review-data in `validation/acceptance.py`, but the canonical

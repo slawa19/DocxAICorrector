@@ -897,10 +897,12 @@ def main() -> None:
                 image_mode=image_mode,
                 keep_all_image_variants=keep_all_image_variants,
                 processing_operation=processing_operation,
+                app_config=app_config,
                 session_state=st.session_state,
                 reset_run_state_fn=reset_run_state,
                 fail_critical_fn=fail_critical,
                 log_event_fn=log_event,
+                client_factory=_build_preparation_client_factory(app_config),
             )
         except Exception as exc:
             user_message = present_error(
