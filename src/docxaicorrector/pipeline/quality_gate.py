@@ -1110,9 +1110,13 @@ def _resolve_acceptance_thresholds(context: Any) -> tuple[int | None, int | None
     def _cfg_int_or_none(key: str) -> int | None:
         # An absent config key means the threshold is UNCONFIGURED (production has
         # no per-book loss budget), which the shared verdict renders NOT-APPLICABLE.
-        # A configured value — including ``0`` — still gates. These keys are absent
-        # from config.toml and set nowhere in production today, so this returns
-        # ``None`` there; the harness supplies real per-book integers instead.
+        # These keys are absent from config.toml and set nowhere in production today,
+        # so this returns ``None`` there; the harness supplies real per-book integers
+        # instead. NOTE: unmapped coverage is ADVISORY review data (specs 038/039,
+        # Constitution VII) — it never gates, at any threshold. The caption→heading
+        # structural conflict does gate, but UNCONDITIONALLY via the independent
+        # ``caption_heading_conflict_absent`` check (applicable whenever formatting
+        # diagnostics exist), NOT via any threshold resolved here.
         if key not in app_config:
             return None
         value = app_config.get(key)

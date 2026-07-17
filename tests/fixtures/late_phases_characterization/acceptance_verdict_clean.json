@@ -70,6 +70,15 @@
       "worst_unmapped_source_count": 0
     },
     {
+      "applicable": false,
+      "artifact_count": 0,
+      "caption_heading_conflict_samples": [],
+      "caption_heading_conflicts": 0,
+      "name": "caption_heading_conflict_absent",
+      "passed": true,
+      "reason": "no_formatting_diagnostics"
+    },
+    {
       "actual": 0,
       "allowed": null,
       "applicable": false,

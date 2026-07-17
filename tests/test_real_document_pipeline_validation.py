@@ -603,6 +603,93 @@ def test_production_acceptance_output_docx_openable_not_applicable_when_docx_not
     assert "no_placeholder_markup" not in verdict["failed_checks"]
 
 
+def test_production_caption_heading_conflict_gates_unconditionally() -> None:
+    # spec 041 P1-4: a caption->heading structural conflict MUST fail the PRODUCTION
+    # verdict even though production resolves mismatch_threshold=None (which renders
+    # formatting_diagnostics_threshold NOT-APPLICABLE, so the roll-up ignores its
+    # redundant caption clause). The independent caption_heading_conflict_absent check
+    # is applicable whenever formatting diagnostics were computed, so it gates the
+    # genuine conflict unconditionally in production — closing the spec-038 gap.
+    context = SimpleNamespace(processing_operation="translate")
+    conflict_payloads = [
+        {
+            "unmapped_source_ids": [],
+            "unmapped_target_indexes": [],
+            "caption_heading_conflicts": [
+                {"paragraph_id": "p0002", "target_heading_level": 2}
+            ],
+        }
+    ]
+    report_context = document_pipeline_late_phases._build_report_context_for_acceptance(
+        context=context,
+        quality_report={"quality_status": "pass", "gate_reasons": []},
+        formatting_diagnostics_payloads=conflict_payloads,
+        output_artifacts={"output_docx_openable": True, "output_contains_placeholder_markup": False},
+    )
+    verdict = _untyped(
+        document_pipeline_late_phases.build_report_acceptance_verdict(
+            report_context,
+            mismatch_threshold=None,
+            unmapped_target_threshold=None,
+        )
+    )
+    by_name = {check["name"]: check for check in verdict["checks"]}
+
+    chc = by_name["caption_heading_conflict_absent"]
+    assert chc["applicable"] is True
+    assert chc["passed"] is False
+    assert chc["caption_heading_conflicts"] == 1
+    assert chc["caption_heading_conflict_samples"] == [
+        {"paragraph_id": "p0002", "target_heading_level": 2}
+    ]
+    assert "caption_heading_conflict_absent" in verdict["failed_checks"]
+    assert verdict["passed"] is False
+    # The conflict gate does NOT ride on formatting_diagnostics_threshold, which stays
+    # NOT-APPLICABLE in production (mismatch_threshold=None) — proving the gap is closed.
+    assert by_name["formatting_diagnostics_threshold"]["applicable"] is False
+    # Unmapped coverage stays ADVISORY (specs 038/039) — unchanged by this fix.
+    assert "unmapped_source_threshold" not in verdict["failed_checks"]
+    assert "unmapped_target_threshold" not in verdict["failed_checks"]
+
+
+def test_production_caption_heading_conflict_absent_passes_when_zero_conflicts() -> None:
+    # spec 041 P1-4: with formatting diagnostics present but zero caption->heading
+    # conflicts, caption_heading_conflict_absent is applicable, passes, and never
+    # enters failed_checks. Unmapped coverage present on the same diagnostics stays
+    # advisory (specs 038/039), unchanged by this fix.
+    context = SimpleNamespace(processing_operation="translate")
+    report_context = document_pipeline_late_phases._build_report_context_for_acceptance(
+        context=context,
+        quality_report={"quality_status": "pass", "gate_reasons": []},
+        formatting_diagnostics_payloads=[
+            {
+                "unmapped_source_ids": ["p0003"],
+                "unmapped_target_indexes": [],
+                "caption_heading_conflicts": [],
+            }
+        ],
+        output_artifacts={"output_docx_openable": True, "output_contains_placeholder_markup": False},
+    )
+    verdict = _untyped(
+        document_pipeline_late_phases.build_report_acceptance_verdict(
+            report_context,
+            mismatch_threshold=None,
+            unmapped_target_threshold=None,
+        )
+    )
+    by_name = {check["name"]: check for check in verdict["checks"]}
+
+    chc = by_name["caption_heading_conflict_absent"]
+    assert chc["applicable"] is True
+    assert chc["passed"] is True
+    assert chc["caption_heading_conflicts"] == 0
+    assert chc["caption_heading_conflict_samples"] == []
+    assert "caption_heading_conflict_absent" not in verdict["failed_checks"]
+    # Unmapped coverage stays advisory even with a genuine unmapped source present.
+    assert "unmapped_source_threshold" not in verdict["failed_checks"]
+    assert "unmapped_target_threshold" not in verdict["failed_checks"]
+
+
 def test_harness_path_gates_genuine_defects_and_treats_coverage_as_review_data() -> None:
     # The harness path — integer thresholds AND a structural_checks_builder — gates
     # GENUINE defects (spec FR-009) while treating unmapped coverage as review DATA

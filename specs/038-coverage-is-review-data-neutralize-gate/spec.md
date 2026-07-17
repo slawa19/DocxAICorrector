@@ -57,6 +57,14 @@ gated. So the gate itself is the defect, not the residual.
      on `total_caption_heading_conflicts == 0` (a genuine structural conflict, not coverage). Keep the
      unmapped-count fields in the payload; add the same `genuine_exceeds_threshold` review marker for the
      source axis.
+
+     > **Superseded by spec 041 P1-4.** `formatting_diagnostics_threshold` is `applicable` only when a
+     > `mismatch_threshold` is configured, but production resolves `mismatch_threshold=None`, so its caption
+     > clause was ignored by the roll-up and a real caption→heading conflict published GREEN. Spec 041
+     > moves the hard caption/heading gate to a SEPARATE `caption_heading_conflict_absent` check that is
+     > `applicable` whenever formatting diagnostics were computed (independent of any threshold), so it
+     > gates unconditionally in production. `formatting_diagnostics_threshold` keeps its (now
+     > redundant-safe) caption clause for backward compatibility with existing goldens/tests.
 2. Do NOT touch any other check. `pipeline_succeeded`, `output_docx_openable`, `no_placeholder_markup`,
    `reader_cleanup_stage_completed`, `page_placeholder_heading_concat_hygiene_applied`,
    `translation_quality_report_not_failed`, the bullet/fragment/mixed-script quality checks, the

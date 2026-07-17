@@ -389,7 +389,12 @@ def build_acceptance_verdict(
 
     A threshold passed as ``None`` means *unconfigured* (production has no per-book
     loss budget); the corresponding threshold check is emitted NOT-APPLICABLE while
-    still carrying the measured ``actual``. A configured ``0`` still gates. The
+    still carrying the measured ``actual``. Unmapped coverage is ADVISORY review data
+    (specs 038/039, Constitution VII) — it never enters ``failed_checks`` regardless of
+    threshold. The caption→heading structural conflict, by contrast, gates
+    UNCONDITIONALLY via the separate ``caption_heading_conflict_absent`` check, which is
+    applicable whenever formatting diagnostics were computed (independent of any
+    threshold), so a real conflict fails the verdict in production. The
     optional structural (source↔output DOCX) comparison checks are supplied by
     ``structural_checks_builder`` (invoked with the resolved
     ``processing_operation``); when it is ``None`` a single NOT-APPLICABLE
@@ -507,14 +512,19 @@ def build_acceptance_verdict(
 
     worst_unmapped_source_count = 0
     total_caption_heading_conflicts = 0
+    _CAPTION_HEADING_CONFLICT_SAMPLE_LIMIT = 10
+    caption_heading_conflict_samples: list[object] = []
     for payload in formatting_diagnostics:
         worst_unmapped_source_count = max(
             worst_unmapped_source_count,
             len(cast(Sequence[object], payload.get("unmapped_source_ids") or [])),
         )
-        total_caption_heading_conflicts += len(
-            cast(Sequence[object], payload.get("caption_heading_conflicts") or [])
-        )
+        payload_conflicts = cast(Sequence[object], payload.get("caption_heading_conflicts") or [])
+        total_caption_heading_conflicts += len(payload_conflicts)
+        for conflict in payload_conflicts:
+            if len(caption_heading_conflict_samples) >= _CAPTION_HEADING_CONFLICT_SAMPLE_LIMIT:
+                break
+            caption_heading_conflict_samples.append(conflict)
     unmapped_source_summary = resolve_acceptance_unmapped_source_summary(
         formatting_diagnostics=formatting_diagnostics,
         translation_quality_report=translation_quality_report,
@@ -596,6 +606,23 @@ def build_acceptance_verdict(
         caption_heading_conflicts=total_caption_heading_conflicts,
         artifact_count=len(formatting_diagnostics),
         **({"reason": "threshold_not_configured"} if mismatch_threshold is None else {}),
+    )
+    # spec 041 P1-4: the caption→heading structural conflict is an INDEPENDENT hard gate,
+    # applicable whenever formatting diagnostics were computed — independent of any
+    # ``mismatch_threshold``. Production resolves ``mismatch_threshold=None``
+    # (``quality_gate._resolve_acceptance_thresholds``), which makes
+    # ``formatting_diagnostics_threshold`` NOT-APPLICABLE, so its (redundant) caption
+    # clause is ignored by the roll-up. This separate check gates the genuine structural
+    # conflict unconditionally in production (spec 038:56-63 promised a hard caption/heading
+    # gate). Unmapped coverage stays ADVISORY (specs 038/039); only this conflict gates.
+    add_check(
+        "caption_heading_conflict_absent",
+        total_caption_heading_conflicts == 0,
+        applicable=len(formatting_diagnostics) > 0,
+        caption_heading_conflicts=total_caption_heading_conflicts,
+        caption_heading_conflict_samples=caption_heading_conflict_samples,
+        artifact_count=len(formatting_diagnostics),
+        **({"reason": "no_formatting_diagnostics"} if not formatting_diagnostics else {}),
     )
     add_check(
         "unmapped_source_threshold",
