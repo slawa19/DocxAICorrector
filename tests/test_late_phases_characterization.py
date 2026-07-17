@@ -182,6 +182,99 @@ def test_quality_report_controlled_fallback_combo_golden():
 
 
 # --------------------------------------------------------------------------- #
+# spec 042 P1-B: a caption→heading structural conflict must drive quality_status
+# "fail" (a fatal delivery gate reason) so ``late_phases`` blocks primary artifacts.
+# --------------------------------------------------------------------------- #
+
+
+def _write_formatting_diagnostics(tmp_path: Path, payload: dict[str, object]) -> str:
+    path = tmp_path / "formatting_diagnostics_1.json"
+    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    return str(path)
+
+
+def test_quality_report_caption_heading_conflict_forces_fail(tmp_path):
+    artifact = _write_formatting_diagnostics(
+        tmp_path,
+        {"caption_heading_conflicts": [{"caption_text": "Рисунок 1", "heading_text": "## Рисунок 1"}]},
+    )
+    report = late_phases._build_translation_quality_report(
+        context=_ctx(),
+        final_markdown="Переведённый абзац текста для итоговой проверки качества.",
+        formatting_diagnostics_artifacts=[artifact],
+    )
+    # spec 042 P1-B: the conflict is a FATAL delivery gate — status flips to fail and a
+    # ``caption_heading_conflict`` gate reason is present (routes into late_phases' :664).
+    assert report["quality_status"] == "fail"
+    gate_reasons = report["gate_reasons"]
+    assert isinstance(gate_reasons, list)
+    assert "caption_heading_conflict" in gate_reasons
+    assert report["caption_heading_conflicts_count"] == 1
+
+
+def test_quality_report_zero_caption_conflict_publishes(tmp_path):
+    artifact = _write_formatting_diagnostics(tmp_path, {"caption_heading_conflicts": []})
+    report = late_phases._build_translation_quality_report(
+        context=_ctx(),
+        final_markdown="Переведённый абзац текста для итоговой проверки качества.",
+        formatting_diagnostics_artifacts=[artifact],
+    )
+    # No conflict → the caption gate never fires; the clean run still passes normally.
+    assert report["quality_status"] == "pass"
+    gate_reasons = report["gate_reasons"]
+    assert isinstance(gate_reasons, list)
+    assert "caption_heading_conflict" not in gate_reasons
+    assert report["caption_heading_conflicts_count"] == 0
+
+
+def test_quality_report_unmapped_tail_without_conflict_does_not_force_fail(tmp_path):
+    # An unmapped-coverage tail present but ZERO caption→heading conflicts: the caption
+    # gate must not fire and delivery is not forced to fail by it — unmapped coverage
+    # stays ADVISORY review-data (specs 038/039), never a fatal gate.
+    artifact = _write_formatting_diagnostics(
+        tmp_path,
+        {
+            "caption_heading_conflicts": [],
+            "unmapped_target_indexes": [3, 4, 5],
+            "unmapped_source_ids": [],
+        },
+    )
+    report = late_phases._build_translation_quality_report(
+        context=_ctx(),
+        final_markdown="Переведённый абзац текста для итоговой проверки качества.",
+        formatting_diagnostics_artifacts=[artifact],
+    )
+    assert report["quality_status"] != "fail"
+    gate_reasons = report["gate_reasons"]
+    assert isinstance(gate_reasons, list)
+    assert "caption_heading_conflict" not in gate_reasons
+
+
+def test_resolve_delivery_verdict_caption_conflict_fatal_unmapped_advisory():
+    # spec 042 P1-B: ``caption_heading_conflict`` is now a FATAL delivery reason — a
+    # ``fail`` carrying it stays ``fail`` (delivery blocked)...
+    assert (
+        late_phases._resolve_document_delivery_verdict(
+            quality_status="fail", gate_reasons=["caption_heading_conflict"]
+        )
+        == "fail"
+    )
+    # ...while an unmapped-coverage tail (review-grade) is NOT promoted to a blocking
+    # fail by the caption change: it still downgrades to a delivered ``warn`` (advisory).
+    for advisory_reason in (
+        "unmapped_source_paragraphs_review_required",
+        "unmapped_source_paragraphs_above_advisory_threshold",
+        "unmapped_source_paragraphs_present",
+    ):
+        assert (
+            late_phases._resolve_document_delivery_verdict(
+                quality_status="fail", gate_reasons=[advisory_reason]
+            )
+            == "warn"
+        )
+
+
+# --------------------------------------------------------------------------- #
 # build_report_acceptance_verdict + _resolve_document_delivery_verdict
 # --------------------------------------------------------------------------- #
 

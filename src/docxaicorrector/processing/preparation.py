@@ -62,6 +62,8 @@ _REASON_LABELS: dict[str, str] = {
     "untranslated_structural_text_review_required": "структурные элементы остались на исходном языке",
     "untranslated_body_text_review_required": "фрагменты основного текста остались на исходном языке",
     "untranslated_body_text_above_threshold": "слишком большой объём основного текста остался на исходном языке",
+    # spec 042 P1-B: caption→heading structural conflict blocks delivery (fatal gate).
+    "caption_heading_conflict": "подпись к рисунку или таблице превратилась в заголовок",
 }
 
 

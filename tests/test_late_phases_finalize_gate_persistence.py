@@ -19,11 +19,13 @@ only the finalize control flow these two fixes touch. Everything is offline.
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 from types import SimpleNamespace
 
 import docxaicorrector.pipeline.late_phases as late_phases
+import docxaicorrector.pipeline.quality_gate as quality_gate
 
 # Captured at import time, before any test stubs it, so Finding 7's test can restore the
 # REAL acceptance-verdict builder over ``_install_stubs``' lightweight stub.
@@ -443,6 +445,126 @@ def test_finalize_skips_regate_when_cleanup_leaves_markdown_unchanged(monkeypatc
     assert result == "succeeded"
     # Exactly one gate computation — the pre-cleanup call. The re-gate was skipped.
     assert report_calls == [gate_input]
+    assert "processing_completed" in _events(deps)
+
+
+# --------------------------------------------------------------------------- #
+# spec 042 P1-B — a caption→heading structural conflict must BLOCK delivery.
+# End-to-end through the REAL quality-report builder: the conflict flips
+# quality_status to "fail", which drives the terminal fail branch (:664) so the
+# primary UI result artifacts (``.result.md``/``.result.docx``) are never written.
+# --------------------------------------------------------------------------- #
+
+
+def test_finalize_caption_heading_conflict_blocks_primary_artifacts(monkeypatch, tmp_path):
+    gate_input = "Чистый переведённый абзац для итоговой проверки."
+
+    # A real formatting-diagnostics artifact carrying a caption→heading conflict.
+    conflict_artifact = tmp_path / "formatting_diagnostics_1.json"
+    conflict_artifact.write_text(
+        json.dumps(
+            {
+                "stage": "post_formatting_transfer",
+                "caption_heading_conflicts": [
+                    {"caption_text": "Рисунок 1. Схема", "heading_text": "## Рисунок 1. Схема"}
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    # Stub the heavy collaborators but KEEP the real quality-report builder so the
+    # conflict is gated by the production logic under test (not a hand-fed verdict).
+    cleanup = _cleanup_result(markdown=gate_input, docx_bytes=b"final-docx")
+    _install_stubs(
+        monkeypatch,
+        gate_input_markdown=gate_input,
+        cleanup_result=cleanup,
+        report_fn=lambda **k: {"quality_status": "pass", "gate_reasons": []},
+    )
+    monkeypatch.setattr(
+        late_phases,
+        "_build_translation_quality_report",
+        quality_gate._build_translation_quality_report,
+    )
+
+    deps = _RecordingDependencies(artifact_writer=_real_primary_artifact_writer(tmp_path))
+    emitters = _RecordingEmitters()
+
+    docx_phase = _make_docx_phase(gate_input)
+    docx_phase["formatting_diagnostics_artifacts"] = [str(conflict_artifact)]
+    # Non-empty delivered DOCX so the quality-gate fail branch (not the empty-docx guard)
+    # is the one that fires.
+    docx_phase["docx_bytes"] = b"PK\x03\x04 non-empty final docx"
+
+    result = _run_finalize(
+        context=_make_context(),
+        dependencies=deps,
+        emitters=emitters,
+        state=_make_state(),
+        docx_phase=docx_phase,
+    )
+
+    # Delivery BLOCKED by the caption→heading conflict.
+    assert result == "failed"
+    assert "translation_quality_gate_failed" in _events(deps)
+    _level, ctx = _event(deps, "translation_quality_gate_failed")
+    gate_reasons = ctx.get("gate_reasons") or []
+    assert isinstance(gate_reasons, list)
+    assert "caption_heading_conflict" in gate_reasons
+
+    # The PRIMARY UI result artifacts were NEVER written — the fail path returns first.
+    assert deps.write_ui_result_artifacts_calls == 0
+    assert "ui_result_artifacts_saved" not in _events(deps)
+    assert "processing_completed" not in _events(deps)
+    assert "processing_completed_unpersisted" not in _events(deps)
+    assert not any(call["terminal_kind"] == "completed" for call in emitters.finalize_calls)
+    assert any(call["terminal_kind"] == "error" for call in emitters.finalize_calls)
+
+
+def test_finalize_no_caption_conflict_publishes_normally(monkeypatch, tmp_path):
+    """Companion: the SAME real-builder path with ZERO caption→heading conflicts
+    publishes normally (quality_status stays pass, primary artifacts written)."""
+    gate_input = "Чистый переведённый абзац для итоговой проверки."
+
+    clean_artifact = tmp_path / "formatting_diagnostics_1.json"
+    clean_artifact.write_text(
+        json.dumps({"stage": "post_formatting_transfer", "caption_heading_conflicts": []}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    cleanup = _cleanup_result(markdown=gate_input, docx_bytes=b"final-docx")
+    _install_stubs(
+        monkeypatch,
+        gate_input_markdown=gate_input,
+        cleanup_result=cleanup,
+        report_fn=lambda **k: {"quality_status": "pass", "gate_reasons": []},
+    )
+    monkeypatch.setattr(
+        late_phases,
+        "_build_translation_quality_report",
+        quality_gate._build_translation_quality_report,
+    )
+
+    deps = _RecordingDependencies(artifact_writer=_real_primary_artifact_writer(tmp_path))
+    emitters = _RecordingEmitters()
+
+    docx_phase = _make_docx_phase(gate_input)
+    docx_phase["formatting_diagnostics_artifacts"] = [str(clean_artifact)]
+    docx_phase["docx_bytes"] = b"PK\x03\x04 non-empty final docx"
+
+    result = _run_finalize(
+        context=_make_context(),
+        dependencies=deps,
+        emitters=emitters,
+        state=_make_state(),
+        docx_phase=docx_phase,
+    )
+
+    assert result == "succeeded"
+    assert "translation_quality_gate_failed" not in _events(deps)
+    assert deps.write_ui_result_artifacts_calls == 1
     assert "processing_completed" in _events(deps)
 
 

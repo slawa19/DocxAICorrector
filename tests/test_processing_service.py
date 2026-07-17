@@ -1,10 +1,12 @@
 from io import BytesIO
 from typing import Any, cast
 
+import docxaicorrector.processing.preparation as preparation
 import docxaicorrector.processing.processing_service as processing_service
 from docxaicorrector.core.models import ImageAnalysisResult, ImageAsset, ImageValidationResult
 from docxaicorrector.document.segments import DocumentContextProfile, GlossaryTerm
 from docxaicorrector.processing.processing_service import ProcessingService
+from docxaicorrector.processing.upload_ports import FrozenUploadPayload
 from docxaicorrector.pipeline.contracts import ProcessingContext, ProcessingDependencies
 from docxaicorrector.pipeline.setup import initialize_processing_run
 from docxaicorrector.runtime.events import AppendLogEvent, FinalizeProcessingStatusEvent, SetStateEvent, WorkerCompleteEvent
@@ -955,3 +957,174 @@ def test_clone_processing_service_returns_overridden_copy_without_mutating_singl
     assert default_service.dependencies.load_system_prompt_fn() == "system"
 
     processing_service.reset_processing_service()
+
+
+# --- Spec 042 P1-A: run_prepared_background_document must use the dependency-supplied tenant
+# cache identity (NOT a config-derived re-derivation) so tenants sharing one app_config but
+# using different credentials never collide on one shared-cache key. These drive the REAL
+# ProcessingService.run_prepared_background_document -> real prepare_document_for_processing
+# (which computes the cache key) while stubbing only the heavy build seam, exactly like
+# test_preparation.py's counting-builder tests.
+
+
+def _make_ai_review_on_config() -> dict:
+    # Full, valid app_config (real defaults) with AI boundary review effectively ENABLED, so the
+    # injected-factory + AI-review-on branch of the shared preparation cache is exercised.
+    config = dict(preparation.load_app_config())
+    config["paragraph_boundary_ai_review_enabled"] = True
+    config["paragraph_boundary_ai_review_mode"] = "review_only"
+    return config
+
+
+def _install_counting_prepared_builder(monkeypatch) -> dict:
+    # Reuse of test_preparation.py's pattern: stub the heavy pipeline so each real BUILD (a
+    # cache MISS) increments the counter and returns a fresh sentinel; a HIT (no build) is
+    # distinguishable from a MISS by the source_text marker.
+    builds = {"count": 0}
+
+    def _fake_build(*_args, **_kwargs):
+        builds["count"] += 1
+        return preparation.PreparedDocumentData(
+            source_text=f"prepared-doc-{builds['count']}",
+            paragraphs=[],
+            image_assets=[],
+            relations=[],
+            jobs=[],
+            prepared_source_key="",
+        )
+
+    monkeypatch.setattr(preparation, "_prepare_document_for_processing", _fake_build)
+    return builds
+
+
+def _build_prepared_run_context_stub():
+    return type(
+        "PreparedRunContextStub",
+        (),
+        {
+            "uploaded_filename": "prepared-report.docx",
+            "jobs": [{"target_text": "one"}],
+            "paragraphs": ["p1"],
+            "image_assets": ["img1"],
+            "segments": [],
+            "translation_domain": "general",
+            "translation_domain_instructions": "",
+            "prepared_source_key": "",
+            "structure_fingerprint": "",
+            "document_context_profile": DocumentContextProfile(),
+        },
+    )()
+
+
+def _install_prepare_run_context_that_invokes_real_primitive(monkeypatch, captured):
+    # Stub ONLY the background-context wrapper: it calls the injected
+    # prepare_document_for_processing_fn (which is the REAL preparation primitive threaded with
+    # the service's client factory + deps.client_cache_identity) so the actual shared-cache key
+    # is computed, then captures the returned PreparedDocumentData for HIT/MISS assertions.
+    def _stub(**kwargs):
+        prepared_doc = kwargs["prepare_document_for_processing_fn"](
+            uploaded_payload=kwargs["uploaded_payload"],
+            chunk_size=kwargs["chunk_size"],
+            app_config=kwargs["app_config"],
+            processing_operation=kwargs["processing_operation"],
+            session_state=None,
+            progress_callback=None,
+        )
+        captured.setdefault("prepared_docs", []).append(prepared_doc)
+        return _build_prepared_run_context_stub()
+
+    monkeypatch.setattr(processing_service, "prepare_run_context_for_background", _stub)
+
+
+def _run_prepared(service, config):
+    service.run_prepared_background_document(
+        uploaded_file="report.docx",
+        chunk_size=6000,
+        image_mode="safe",
+        keep_all_image_variants=False,
+        app_config=config,
+        model="gpt-5.4",
+        max_retries=2,
+        processing_operation="edit",
+        progress_callback=None,
+        runtime={"state": {}},
+    )
+
+
+def test_run_prepared_background_document_isolates_tenant_cache_identity(monkeypatch):
+    # Two dependency sets share the SAME app_config/file-token but carry DIFFERENT
+    # client_cache_identity values with AI review ON: run A primes -> build; run B (different
+    # identity) MISSES -> distinct build (never receives A's doc); run A again -> shared HIT.
+    preparation.clear_preparation_cache(clear_shared=True)
+    config = _make_ai_review_on_config()
+    builds = _install_counting_prepared_builder(monkeypatch)
+    payload = FrozenUploadPayload(
+        filename="report.docx",
+        content_bytes=b"docx-bytes",
+        file_size=len(b"docx-bytes"),
+        content_hash="hash-token",
+        file_token="shared-token",
+    )
+    monkeypatch.setattr(processing_service, "freeze_uploaded_file", lambda uploaded_file: payload)
+    captured: dict = {}
+    _install_prepare_run_context_that_invokes_real_primitive(monkeypatch, captured)
+
+    def _run(identity: str):
+        service = _build_service(
+            run_document_processing_impl_fn=lambda **kwargs: "succeeded",
+            client_cache_identity=identity,
+        )
+        _run_prepared(service, config)
+        return captured["prepared_docs"][-1]
+
+    doc_a1 = _run("tenantA")
+    assert builds["count"] == 1
+
+    doc_b1 = _run("tenantB")
+    assert builds["count"] == 2
+    assert doc_b1.source_text != doc_a1.source_text
+
+    doc_a2 = _run("tenantA")
+    assert builds["count"] == 2
+    assert doc_a2.source_text == doc_a1.source_text
+    assert doc_a2.cached is True
+
+    preparation.clear_preparation_cache(clear_shared=True)
+
+
+def test_run_prepared_background_document_bypasses_shared_cache_when_identity_none(monkeypatch):
+    # deps.client_cache_identity is None + AI review ON: the shared (process-global) tier is
+    # bypassed entirely, so a second identical run rebuilds and nothing is published to the
+    # shared cache (no false cross-run guarantee for an unknown tenant boundary).
+    preparation.clear_preparation_cache(clear_shared=True)
+    config = _make_ai_review_on_config()
+    builds = _install_counting_prepared_builder(monkeypatch)
+    payload = FrozenUploadPayload(
+        filename="report.docx",
+        content_bytes=b"docx-bytes",
+        file_size=len(b"docx-bytes"),
+        content_hash="hash-token",
+        file_token="shared-token",
+    )
+    monkeypatch.setattr(processing_service, "freeze_uploaded_file", lambda uploaded_file: payload)
+    captured: dict = {}
+    _install_prepare_run_context_that_invokes_real_primitive(monkeypatch, captured)
+
+    service = _build_service(
+        run_document_processing_impl_fn=lambda **kwargs: "succeeded",
+        client_cache_identity=None,
+    )
+
+    _run_prepared(service, config)
+    assert builds["count"] == 1
+    first = captured["prepared_docs"][-1]
+
+    _run_prepared(service, config)
+    assert builds["count"] == 2
+    second = captured["prepared_docs"][-1]
+
+    assert second.cached is False
+    assert second.source_text != first.source_text
+    assert len(preparation._shared_preparation_cache) == 0
+
+    preparation.clear_preparation_cache(clear_shared=True)

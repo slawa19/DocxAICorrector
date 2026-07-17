@@ -154,15 +154,19 @@ def _apply_quality_review_reason(
 
 # spec 018: the document-level translation quality gate hard-fails (blocking red)
 # ONLY for genuinely NON-DELIVERABLE output. An empty/unopenable DOCX is guarded
-# separately by ``_validate_nonempty_docx_bytes_or_fail``; the only quality-report
-# gate_reason catastrophic enough to block delivery of an otherwise-usable document
-# is wholesale-untranslated BODY above the catastrophic threshold. Every other
+# separately by ``_validate_nonempty_docx_bytes_or_fail``; the quality-report
+# gate_reasons catastrophic enough to block delivery of an otherwise-usable document
+# are wholesale-untranslated BODY above the catastrophic threshold and a
+# caption→heading structural conflict (spec 042 P1-B: a figure/table caption promoted
+# to a heading corrupts the document outline — non-deliverable). Every other
 # fail-driver (role_loss, heading_demotion, false_fragment, list_fragment, unmapped
 # source, toc_body_concat, mixed_script, residual_bullet, …) is a fix/review-severity
 # formatting discrepancy: the document IS delivered and the verdict is downgraded to
 # ``warn`` (review-DATA). This keys on the reason TOKEN (severity), never on document
 # content, so there are no per-book literals (Constitution VII).
-_FATAL_DOCUMENT_GATE_REASONS: frozenset[str] = frozenset({"untranslated_body_text_above_threshold"})
+_FATAL_DOCUMENT_GATE_REASONS: frozenset[str] = frozenset(
+    {"untranslated_body_text_above_threshold", "caption_heading_conflict"}
+)
 
 
 def _resolve_document_delivery_verdict(
@@ -1114,9 +1118,13 @@ def _resolve_acceptance_thresholds(context: Any) -> tuple[int | None, int | None
         # so this returns ``None`` there; the harness supplies real per-book integers
         # instead. NOTE: unmapped coverage is ADVISORY review data (specs 038/039,
         # Constitution VII) — it never gates, at any threshold. The caption→heading
-        # structural conflict does gate, but UNCONDITIONALLY via the independent
-        # ``caption_heading_conflict_absent`` check (applicable whenever formatting
-        # diagnostics exist), NOT via any threshold resolved here.
+        # structural conflict does gate DELIVERY, but UNCONDITIONALLY (whenever the
+        # conflict count > 0), NOT via any threshold resolved here: spec 042 P1-B routes
+        # the conflict into ``quality_status="fail"`` + a ``caption_heading_conflict``
+        # gate_reason in ``_build_translation_quality_report`` (fatal token, see
+        # ``_FATAL_DOCUMENT_GATE_REASONS``), which blocks primary-artifact publication in
+        # ``late_phases``. The acceptance verdict's independent
+        # ``caption_heading_conflict_absent`` check remains the auditable record.
         if key not in app_config:
             return None
         value = app_config.get(key)
@@ -1206,6 +1214,7 @@ def _build_translation_quality_report(
     unmapped_target_indexes = latest_payload.get("unmapped_target_indexes") if isinstance(latest_payload, Mapping) else []
     accepted_merged_sources = latest_payload.get("accepted_merged_sources") if isinstance(latest_payload, Mapping) else []
     caption_heading_conflicts = latest_payload.get("caption_heading_conflicts") if isinstance(latest_payload, Mapping) else []
+    caption_heading_conflict_count = len(caption_heading_conflicts) if isinstance(caption_heading_conflicts, list) else 0
     policy = _resolve_translation_quality_gate_policy(context=context)
     quality_status = "pass"
     gate_reasons: list[str] = []
@@ -1657,12 +1666,33 @@ def _build_translation_quality_report(
             ),
         )
 
+    # spec 041 P1-4 / spec 042 P1-B: a caption→heading structural conflict (a figure/table
+    # caption promoted to a heading) corrupts the document outline and is genuinely NON-
+    # DELIVERABLE. The acceptance verdict already records it UNCONDITIONALLY via the
+    # ``caption_heading_conflict_absent`` check (the auditable record); here we route the
+    # SAME signal into the DELIVERY gate so ``quality_status`` becomes "fail" and a
+    # ``caption_heading_conflict`` gate_reason is present — which drives the
+    # ``late_phases.py`` terminal fail branch that blocks primary-artifact publication.
+    # Placed OUTSIDE the translate-only block (like the acceptance check, it is applicable
+    # whenever formatting diagnostics exist) and BEFORE the delivery-verdict resolution.
+    # The reason token is fatal (``_FATAL_DOCUMENT_GATE_REASONS``), so the verdict below
+    # preserves the ``fail`` regardless of policy — mirroring the untranslated-body
+    # catastrophic gate. Keyed on the conflict count only (no per-book literal).
+    if caption_heading_conflict_count > 0:
+        quality_status = _apply_quality_gate_reason(
+            quality_status=quality_status,
+            gate_reasons=gate_reasons,
+            policy=policy,
+            reason="caption_heading_conflict",
+        )
+
     # spec 018: resolve the DOCUMENT-level delivery verdict. Review-grade fail-drivers
     # (role_loss / heading_demotion / false_fragment / list_fragment / unmapped-source /
     # toc_body_concat / mixed_script / …) yield a delivered ``warn`` instead of a blocking
     # ``fail``; only a genuinely-fatal reason (untranslated body above the catastrophic
-    # threshold) keeps ``fail``. Applied AFTER all per-reason emission so every gate_reason
-    # and review-item is preserved verbatim — only the verdict severity is reclassified.
+    # threshold, or a caption→heading conflict) keeps ``fail``. Applied AFTER all per-reason
+    # emission so every gate_reason and review-item is preserved verbatim — only the verdict
+    # severity is reclassified.
     quality_status = _resolve_document_delivery_verdict(
         quality_status=quality_status,
         gate_reasons=gate_reasons,

@@ -49,7 +49,7 @@ from docxaicorrector.processing.application_flow import (
     freeze_uploaded_file,
     prepare_run_context_for_background,
 )
-from docxaicorrector.processing.preparation import prepare_document_for_processing, resolve_prepared_cache_client_identity
+from docxaicorrector.processing.preparation import prepare_document_for_processing
 from docxaicorrector.processing.service_ports import normalize_background_error, should_stop_processing
 from docxaicorrector.processing.upload_ports import resolve_uploaded_filename
 from docxaicorrector.runtime.events import AppendLogEvent, FinalizeProcessingStatusEvent, PushActivityEvent, SetStateEvent, WorkerCompleteEvent
@@ -96,6 +96,11 @@ class ProcessingServiceDependencies:
     resolve_uploaded_filename_fn: FilenameResolver
     image_model_call_budget_cls: type
     image_model_call_budget_exceeded_cls: type
+    # Spec 042 P1-A (Explicit-or-bypass): an opaque, secret-safe tenant fingerprint the
+    # dependency supplies for the client it ACTUALLY resolves. When None, the injected-factory
+    # + AI-review-on preparation run safely bypasses the shared cache (no config-derived false
+    # guarantee); a tenant deployment supplies a distinct value per credential/endpoint.
+    client_cache_identity: str | None = None
 
 
 @dataclass
@@ -368,11 +373,11 @@ class ProcessingService:
             client_factory = deps.get_client_fn
             return client_factory() if callable(client_factory) else client_factory
 
-        # Spec 041 P1-1: fingerprint the tenant factory's AI-boundary-review client identity
-        # so the shared preparation cache isolates tenants sharing this app_config but using
-        # different credentials/endpoints. Passed explicitly alongside the injected factory.
-        prepare_client_cache_identity = resolve_prepared_cache_client_identity(app_config)
-
+        # Spec 042 P1-A (Explicit-or-bypass): pass the dependency-supplied tenant identity for
+        # the client the injected factory ACTUALLY resolves — do NOT re-derive it from app_config
+        # (two tenant factories sharing this app_config but with different credentials would
+        # otherwise collapse to one shared-cache key). When it is None, the preparation primitive
+        # bypasses the shared cache for an injected-factory + AI-review-on run (the safe default).
         try:
             prepared = prepare_run_context_for_background(
                 uploaded_payload=uploaded_payload,
@@ -384,7 +389,7 @@ class ProcessingService:
                 prepare_document_for_processing_fn=lambda **kwargs: prepare_document_for_processing(
                     get_client_fn=_prepare_client_factory,
                     client_factory=_prepare_client_factory,
-                    client_cache_identity=prepare_client_cache_identity,
+                    client_cache_identity=deps.client_cache_identity,
                     **kwargs,
                 ),
                 progress_callback=resolved_prepare_progress_callback,
