@@ -158,15 +158,16 @@ def test_derive_unit_aware_unmapped_fields_topology_golden():
 def test_emit_target_alignment_trace_artifact_golden(monkeypatch):
     captured: dict[str, object] = {}
 
-    def _capture(*, stage, filename_prefix, diagnostics):
+    def _capture(*, stage, filename_prefix, diagnostics, scope):
         captured["stage"] = stage
         captured["filename_prefix"] = filename_prefix
         captured["diagnostics"] = diagnostics
-        return None
+        captured["scope"] = scope
+        return "/tmp/owned-offline-trace.json"
 
     monkeypatch.setattr(structural, "write_formatting_diagnostics_artifact", _capture)
 
-    structural._emit_target_alignment_trace_artifact(
+    artifact_path = structural._emit_target_alignment_trace_artifact(
         source_paragraphs=_source_paragraphs(),
         topology_projection=_unit_alignment_projection(),
         formatting_payload=_unit_alignment_payload(),
@@ -174,6 +175,8 @@ def test_emit_target_alignment_trace_artifact_golden(monkeypatch):
     )
 
     assert captured, "write_formatting_diagnostics_artifact was not called"
+    assert artifact_path == "/tmp/owned-offline-trace.json"
+    assert captured.pop("scope") == "offline"
     _assert_golden("cluster_e_target_alignment_trace", captured)
 
 

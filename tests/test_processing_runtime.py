@@ -1,9 +1,11 @@
 import hashlib
+import logging
 import queue
 import sys
 import subprocess
 import threading
 import time
+from collections.abc import Mapping
 from types import SimpleNamespace
 from pathlib import Path
 from typing import Any, cast
@@ -110,6 +112,25 @@ def test_build_preparation_request_marker_includes_non_default_operation():
     )
 
     assert marker == "report.docx:3:ba7816bf8f01cfea:6000:op=audiobook"
+
+
+def test_build_preparation_request_marker_distinguishes_canonical_language_pairs():
+    uploaded_file = UploadedFileStub("report.docx", b"abc")
+
+    default_marker = processing_runtime.build_preparation_request_marker(
+        uploaded_file, chunk_size=6000, source_language=" EN ", target_language=" ru "
+    )
+    changed_source = processing_runtime.build_preparation_request_marker(
+        uploaded_file, chunk_size=6000, source_language="de", target_language="ru"
+    )
+    changed_target = processing_runtime.build_preparation_request_marker(
+        uploaded_file, chunk_size=6000, source_language="en", target_language="DE"
+    )
+
+    assert default_marker == "report.docx:3:ba7816bf8f01cfea:6000"
+    assert changed_source.endswith(":sl=de:tl=ru")
+    assert changed_target.endswith(":sl=en:tl=de")
+    assert len({default_marker, changed_source, changed_target}) == 3
 
 
 def test_build_preparation_request_marker_uses_content_hash_for_same_name_same_size_files():
@@ -648,7 +669,7 @@ def test_start_background_preparation_propagates_cached_flag(monkeypatch):
 def test_drain_processing_events_moves_restart_source_to_completed_cache_on_success(monkeypatch):
     session_state = SessionState(
         processing_event_queue=queue.Queue(),
-        restart_source={"filename": "report.docx", "token": "report.docx:3:abc", "storage_path": "restart.bin", "session_id": "session-a"},
+        restart_source={"filename": "report.docx", "token": "report.pdf:12:original", "storage_path": "restart.bin", "session_id": "session-a", "source_format": "pdf", "conversion_backend": "pdf-text-layer"},
         processing_worker=object(),
         processing_stop_event=object(),
         processing_stop_requested=True,
@@ -657,18 +678,19 @@ def test_drain_processing_events_moves_restart_source_to_completed_cache_on_succ
     monkeypatch.setattr(processing_runtime.st, "session_state", session_state)
     monkeypatch.setattr(processing_runtime, "load_restart_source_bytes", lambda restart_source: b"abc")
     cleared = []
+    completed_store_calls = []
     monkeypatch.setattr(processing_runtime, "clear_restart_source", lambda restart_source: cleared.append(restart_source))
     monkeypatch.setattr(
         processing_runtime,
         "store_completed_source",
-        lambda **kwargs: {
+        lambda **kwargs: (completed_store_calls.append(kwargs) or {
             "filename": kwargs["source_name"],
             "token": kwargs["source_token"],
             "storage_path": "completed.bin",
             "size": len(kwargs["source_bytes"]),
             "session_id": kwargs["session_id"],
             "storage_kind": "completed",
-        },
+        }),
     )
 
     session_state.processing_event_queue.put(WorkerCompleteEvent(outcome="succeeded"))
@@ -683,14 +705,16 @@ def test_drain_processing_events_moves_restart_source_to_completed_cache_on_succ
 
     assert session_state.completed_source == {
         "filename": "report.docx",
-        "token": "report.docx:3:abc",
+        "token": "report.pdf:12:original",
         "storage_path": "completed.bin",
         "size": 3,
         "session_id": "session-a",
         "storage_kind": "completed",
     }
+    assert completed_store_calls[0]["source_format"] == "pdf"
+    assert completed_store_calls[0]["conversion_backend"] == "pdf-text-layer"
     assert session_state.restart_source is None
-    assert cleared == [{"filename": "report.docx", "token": "report.docx:3:abc", "storage_path": "restart.bin", "session_id": "session-a"}]
+    assert cleared == [{"filename": "report.docx", "token": "report.pdf:12:original", "storage_path": "restart.bin", "session_id": "session-a", "source_format": "pdf", "conversion_backend": "pdf-text-layer"}]
 
 
 def test_drain_processing_events_skips_completed_cache_for_large_sources(monkeypatch):
@@ -982,6 +1006,8 @@ def test_get_current_result_bundle_reads_p1a_source_identity_via_state_helpers(m
         "processing_operation": "edit",
         "audiobook_postprocess_enabled": False,
         "quality_warning": None,
+        "delivery_disposition": {"status": "accepted"},
+        "result_notices": [],
     }
 
 
@@ -1002,6 +1028,8 @@ def test_get_current_result_bundle_allows_narration_only_result(monkeypatch):
         "processing_operation": "edit",
         "audiobook_postprocess_enabled": False,
         "quality_warning": None,
+        "delivery_disposition": {"status": "accepted"},
+        "result_notices": [],
     }
 
 
@@ -1026,6 +1054,316 @@ def test_build_result_bundle_preserves_explicit_mode_metadata():
 
     assert result["processing_operation"] == "translate"
     assert result["audiobook_postprocess_enabled"] is True
+
+
+@pytest.mark.parametrize(
+    ("quality_warning", "delivery_disposition", "expected_status", "expected_notices"),
+    [
+        (None, None, "accepted", []),
+        (
+            {"quality_status": "warn", "message": "Review formatting"},
+            None,
+            "accepted_with_advisory",
+            [],
+        ),
+        (
+            None,
+            {
+                "status": "blocked",
+                "explanation": "Result blocked by quality gate",
+                "message_key": "result.blocked_delivery_notice",
+            },
+            "blocked",
+            [{"kind": "cleanup", "level": "warning", "message": "Cleanup degraded"}],
+        ),
+    ],
+)
+def test_build_result_bundle_carries_authoritative_delivery_contract(
+    quality_warning: Mapping[str, object] | None,
+    delivery_disposition: Mapping[str, object] | None,
+    expected_status: str,
+    expected_notices: list[Mapping[str, object]],
+):
+    result = processing_runtime.build_result_bundle(
+        source_name="report.docx",
+        source_token="report.docx:3:abc",
+        docx_bytes=b"docx",
+        markdown_text="md",
+        quality_warning=quality_warning,
+        delivery_disposition=delivery_disposition,
+        result_notices=expected_notices,
+    )
+
+    resolved_disposition = cast(Mapping[str, object], result["delivery_disposition"])
+    assert resolved_disposition["status"] == expected_status
+    assert result["result_notices"] == expected_notices
+    if expected_status == "blocked":
+        assert resolved_disposition["explanation"]
+
+
+def test_build_result_bundle_keeps_blocked_disposition_without_downloadable_bytes():
+    result = processing_runtime.build_result_bundle(
+        source_name="report.docx",
+        source_token="report.docx:3:abc",
+        docx_bytes=None,
+        markdown_text="",
+        delivery_disposition={
+            "status": "blocked",
+            "explanation": "No deliverable document",
+        },
+    )
+
+    assert result["delivery_disposition"] == {
+        "status": "blocked",
+        "explanation": "No deliverable document",
+    }
+    assert result["result_notices"] == []
+
+
+def test_get_current_result_bundle_preserves_blocked_state_and_notice_across_rerun(monkeypatch):
+    blocked_disposition = {
+        "status": "blocked",
+        "explanation": "Result blocked by quality gate",
+        "message_key": "result.blocked_delivery_notice",
+    }
+    blocked_notice = {
+        "kind": "delivery",
+        "level": "error",
+        "message": "Result blocked by quality gate",
+    }
+    session_state = SessionState(
+        latest_docx_bytes=b"blocked-docx",
+        latest_markdown="blocked markdown",
+        latest_delivery_disposition=blocked_disposition,
+        latest_result_notice=blocked_notice,
+    )
+    monkeypatch.setattr(processing_runtime.st, "session_state", session_state)
+    monkeypatch.setattr(processing_runtime, "get_latest_source_name", lambda: "report.docx")
+    monkeypatch.setattr(processing_runtime, "get_latest_source_token", lambda: "report.docx:3:abc")
+
+    result = processing_runtime.get_current_result_bundle()
+
+    assert result is not None
+    assert result["delivery_disposition"] == blocked_disposition
+    assert result["result_notices"] == [blocked_notice]
+
+
+def test_get_current_result_bundle_sanitizes_malformed_disposition_status(monkeypatch):
+    # A malformed stored disposition (unsupported status) must NOT crash the render
+    # frame: get_current_result_bundle degrades it to the safe accepted fallback and
+    # logs a WARNING instead of letting build_result_bundle's ValueError escape.
+    log_events: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
+    monkeypatch.setattr(processing_runtime, "log_event", lambda *args, **kwargs: log_events.append((args, kwargs)))
+    session_state = SessionState(
+        latest_docx_bytes=b"docx",
+        latest_markdown="md",
+        latest_delivery_disposition={"status": "totally-bogus"},
+    )
+    monkeypatch.setattr(processing_runtime.st, "session_state", session_state)
+    monkeypatch.setattr(processing_runtime, "get_latest_source_name", lambda: "report.docx")
+    monkeypatch.setattr(processing_runtime, "get_latest_source_token", lambda: "report.docx:3:abc")
+
+    result = processing_runtime.get_current_result_bundle()
+
+    assert result is not None
+    assert result["delivery_disposition"] == {"status": "accepted"}
+    assert len(log_events) == 1
+    (level, event_name, _message), _kwargs = log_events[0]
+    assert level == logging.WARNING
+    assert event_name == "result_bundle_invalid_delivery_disposition"
+
+
+def test_get_current_result_bundle_sanitizes_blocked_without_explanation(monkeypatch):
+    # A blocked disposition lacking an explanation is INVALID; the render path must
+    # degrade it gracefully (accepted fallback + WARNING) rather than crash.
+    log_events: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
+    monkeypatch.setattr(processing_runtime, "log_event", lambda *args, **kwargs: log_events.append((args, kwargs)))
+    session_state = SessionState(
+        latest_docx_bytes=b"docx",
+        latest_markdown="md",
+        latest_delivery_disposition={"status": "blocked"},
+    )
+    monkeypatch.setattr(processing_runtime.st, "session_state", session_state)
+    monkeypatch.setattr(processing_runtime, "get_latest_source_name", lambda: "report.docx")
+    monkeypatch.setattr(processing_runtime, "get_latest_source_token", lambda: "report.docx:3:abc")
+
+    result = processing_runtime.get_current_result_bundle()
+
+    assert result is not None
+    assert result["delivery_disposition"] == {"status": "accepted"}
+    assert len(log_events) == 1
+    assert log_events[0][0][1] == "result_bundle_invalid_delivery_disposition"
+
+
+def test_get_current_result_bundle_keeps_valid_blocked_disposition(monkeypatch):
+    # Contract guard: a genuinely valid blocked disposition must still render as
+    # blocked (the sanitizer only touches INVALID dispositions), and no warning fires.
+    log_events: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
+    monkeypatch.setattr(processing_runtime, "log_event", lambda *args, **kwargs: log_events.append((args, kwargs)))
+    blocked_disposition = {"status": "blocked", "explanation": "Blocked by quality gate"}
+    session_state = SessionState(
+        latest_docx_bytes=b"docx",
+        latest_markdown="md",
+        latest_delivery_disposition=blocked_disposition,
+    )
+    monkeypatch.setattr(processing_runtime.st, "session_state", session_state)
+    monkeypatch.setattr(processing_runtime, "get_latest_source_name", lambda: "report.docx")
+    monkeypatch.setattr(processing_runtime, "get_latest_source_token", lambda: "report.docx:3:abc")
+
+    result = processing_runtime.get_current_result_bundle()
+
+    assert result is not None
+    assert result["delivery_disposition"] == blocked_disposition
+    assert log_events == []
+
+
+def test_build_result_bundle_still_raises_on_invalid_direct_construction():
+    # The emit-time contract is preserved: direct construction with an invalid
+    # disposition still raises, even though the render path now tolerates it.
+    with pytest.raises(ValueError):
+        processing_runtime.build_result_bundle(
+            source_name="report.docx",
+            source_token="report.docx:3:abc",
+            docx_bytes=b"docx",
+            markdown_text="md",
+            delivery_disposition={"status": "totally-bogus"},
+        )
+    with pytest.raises(ValueError):
+        processing_runtime.build_result_bundle(
+            source_name="report.docx",
+            source_token="report.docx:3:abc",
+            docx_bytes=b"docx",
+            markdown_text="md",
+            delivery_disposition={"status": "blocked"},
+        )
+
+
+def test_get_current_result_bundle_falls_back_to_legacy_notice_when_typed_list_is_empty(monkeypatch):
+    legacy_notice = {
+        "kind": "cleanup",
+        "level": "warning",
+        "message": "Cleanup degraded",
+    }
+    session_state = SessionState(
+        latest_docx_bytes=b"docx",
+        latest_markdown="body",
+        latest_delivery_disposition={"status": "accepted_with_advisory"},
+        latest_result_notices=[],
+        latest_result_notice=legacy_notice,
+    )
+    monkeypatch.setattr(processing_runtime.st, "session_state", session_state)
+    monkeypatch.setattr(processing_runtime, "get_latest_source_name", lambda: "report.docx")
+    monkeypatch.setattr(processing_runtime, "get_latest_source_token", lambda: "token")
+
+    result = processing_runtime.get_current_result_bundle()
+
+    assert result is not None
+    assert result["result_notices"] == [legacy_notice]
+
+
+def test_get_current_result_bundle_prefers_nonempty_typed_notices_without_legacy_duplication(monkeypatch):
+    typed_notice = {
+        "kind": "narration",
+        "level": "warning",
+        "message_key": "result.narration_omitted",
+    }
+    legacy_notice = {
+        "kind": "cleanup",
+        "level": "warning",
+        "message": "Legacy cleanup warning",
+    }
+    session_state = SessionState(
+        latest_docx_bytes=b"docx",
+        latest_markdown="body",
+        latest_delivery_disposition={"status": "accepted_with_advisory"},
+        latest_result_notices=[typed_notice],
+        latest_result_notice=legacy_notice,
+    )
+    monkeypatch.setattr(processing_runtime.st, "session_state", session_state)
+    monkeypatch.setattr(processing_runtime, "get_latest_source_name", lambda: "report.docx")
+    monkeypatch.setattr(processing_runtime, "get_latest_source_token", lambda: "token")
+
+    result = processing_runtime.get_current_result_bundle()
+
+    assert result is not None
+    assert result["result_notices"] == [typed_notice]
+
+
+def test_get_current_result_bundle_preserves_typed_persistence_notice_without_legacy_duplication(monkeypatch):
+    notices = [
+        {"kind": "cleanup", "level": "warning", "message_key": "result.cleanup_advisory_failed"},
+        {"kind": "narration", "level": "warning", "message_key": "result.narration_omitted"},
+        {"kind": "persistence", "level": "warning", "message_key": "result.primary_artifacts_not_saved"},
+    ]
+    legacy_notice = {
+        "level": "warning",
+        "message": "Result processed, but result files could not be saved to disk.",
+    }
+    quality_warning = {"quality_status": "warn", "message": "Review formatting"}
+    session_state = SessionState(
+        latest_docx_bytes=b"docx",
+        latest_markdown="body",
+        latest_delivery_disposition={"status": "accepted_with_advisory"},
+        latest_quality_warning=quality_warning,
+        latest_result_notices=notices,
+        latest_result_notice=legacy_notice,
+    )
+    monkeypatch.setattr(processing_runtime.st, "session_state", session_state)
+    monkeypatch.setattr(processing_runtime, "get_latest_source_name", lambda: "report.docx")
+    monkeypatch.setattr(processing_runtime, "get_latest_source_token", lambda: "token")
+
+    result = processing_runtime.get_current_result_bundle()
+
+    assert result is not None
+    assert result["result_notices"] == notices
+    assert result["result_notices"].count(notices[-1]) == 1
+    assert result["quality_warning"] == quality_warning
+    assert result["delivery_disposition"] == {"status": "accepted_with_advisory"}
+
+
+def test_get_current_result_bundle_preserves_blocked_state_without_downloadable_bytes(monkeypatch):
+    blocked_disposition = {
+        "status": "blocked",
+        "explanation": "No deliverable document",
+    }
+    session_state = SessionState(
+        latest_docx_bytes=None,
+        latest_markdown="",
+        latest_narration_text=None,
+        latest_delivery_disposition=blocked_disposition,
+    )
+    monkeypatch.setattr(processing_runtime.st, "session_state", session_state)
+    monkeypatch.setattr(processing_runtime, "get_latest_source_name", lambda: "report.docx")
+    monkeypatch.setattr(processing_runtime, "get_latest_source_token", lambda: "report.docx:3:abc")
+
+    result = processing_runtime.get_current_result_bundle()
+
+    assert result is not None
+    assert result["docx_bytes"] is None
+    assert result["delivery_disposition"] == blocked_disposition
+
+
+def test_get_current_result_bundle_preserves_multiple_degradation_notices(monkeypatch):
+    notices = [
+        {"kind": "cleanup", "level": "warning", "message_key": "result.cleanup_advisory_failed"},
+        {"kind": "narration", "level": "warning", "message_key": "result.narration_omitted"},
+    ]
+    session_state = SessionState(
+        latest_docx_bytes=b"docx",
+        latest_markdown="body",
+        latest_delivery_disposition={"status": "blocked", "explanation": "blocked"},
+        latest_result_notices=notices,
+    )
+    monkeypatch.setattr(processing_runtime.st, "session_state", session_state)
+    monkeypatch.setattr(processing_runtime, "get_latest_source_name", lambda: "report.docx")
+    monkeypatch.setattr(processing_runtime, "get_latest_source_token", lambda: "token")
+
+    result = processing_runtime.get_current_result_bundle()
+
+    assert result is not None
+    resolved_disposition = cast(Mapping[str, object], result["delivery_disposition"])
+    assert resolved_disposition["status"] == "blocked"
+    assert result["result_notices"] == notices
 
 
 def test_freeze_uploaded_file_normalizes_legacy_doc_payload(monkeypatch):
@@ -2005,6 +2343,26 @@ def test_materialize_uploaded_payload_passthrough_for_docx():
     materialized = processing_runtime.materialize_uploaded_payload(payload, progress_callback=None)
 
     assert materialized is payload  # no allocations, no work
+
+
+@pytest.mark.parametrize("source_format", ["pdf", "doc"])
+def test_materialize_restored_normalized_payload_does_not_reconvert(source_format, monkeypatch):
+    payload = processing_runtime.FrozenUploadPayload(
+        filename="report.docx",
+        content_bytes=b"PK\x03\x04normalized",
+        file_size=14,
+        content_hash="payload-hash",
+        file_token=f"report.{source_format}:123:original",
+        source_format=source_format,
+        conversion_backend="libreoffice",
+    )
+    monkeypatch.setattr(
+        processing_runtime,
+        "normalize_uploaded_document",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("conversion must not run")),
+    )
+
+    assert processing_runtime.materialize_uploaded_payload(payload, progress_callback=None) is payload
 
 
 def test_heartbeat_beacon_emits_progress_during_blocking_call():

@@ -2,6 +2,8 @@ import base64
 import json
 import logging
 import os
+import time
+from collections.abc import Mapping
 from io import BytesIO
 from pathlib import Path
 from typing import cast
@@ -15,6 +17,11 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Inches
+
+
+def _as_mapping(value: object) -> Mapping[str, object]:
+    assert isinstance(value, Mapping)
+    return value
 from docx.shared import Pt
 
 from docxaicorrector.core.models import ParagraphUnit, RelationNormalizationReport
@@ -801,7 +808,7 @@ def test_formatting_diagnostics_keep_full_residual_rows_beyond_sample_limit():
     residual = cast(dict[str, object], diagnostics["unmapped_source_residual_diagnostics"])
     assert len(cast(list[dict[str, object]], residual["residual_rows"])) == 30
     assert len(cast(list[dict[str, object]], residual["samples"])) == 25
-    assert residual["residual_closability_diagnostics"]["classification_basis"] == "full_unmapped_source_set"
+    assert _as_mapping(residual["residual_closability_diagnostics"])["classification_basis"] == "full_unmapped_source_set"
 
 
 def test_formatting_diagnostics_credit_body_dissolved_into_mapped_neighbor_body_target():
@@ -842,12 +849,12 @@ def test_formatting_diagnostics_credit_body_dissolved_into_mapped_neighbor_body_
     )
 
     residual = cast(dict[str, object], diagnostics["unmapped_source_residual_diagnostics"])
-    assert residual["residual_closability_diagnostics"]["counts"] == {"target_occupied_by_mapped_neighbor": 1}
-    assert residual["residual_closability_diagnostics"]["embedded_marker_upper_bound_count"] == 0
-    assert residual["effective_formatting_coverage_diagnostics"]["counts"] == {
+    assert _as_mapping(residual["residual_closability_diagnostics"])["counts"] == {"target_occupied_by_mapped_neighbor": 1}
+    assert _as_mapping(residual["residual_closability_diagnostics"])["embedded_marker_upper_bound_count"] == 0
+    assert _as_mapping(residual["effective_formatting_coverage_diagnostics"])["counts"] == {
         "format_neutral_body_dissolved_creditable": 1
     }
-    assert residual["effective_formatting_coverage_diagnostics"]["format_neutral_creditable_count"] == 1
+    assert _as_mapping(residual["effective_formatting_coverage_diagnostics"])["format_neutral_creditable_count"] == 1
     sample = cast(list[dict[str, object]], residual["samples"])[0]
     assert sample["residual_closability_class"] == "target_occupied_by_mapped_neighbor"
     assert sample["effective_formatting_coverage_class"] == "format_neutral_body_dissolved_creditable"
@@ -901,7 +908,7 @@ def test_formatting_diagnostics_credit_body_with_fuzzy_neighbor_evidence():
     )
 
     residual = cast(dict[str, object], diagnostics["unmapped_source_residual_diagnostics"])
-    assert residual["effective_formatting_coverage_diagnostics"]["counts"] == {
+    assert _as_mapping(residual["effective_formatting_coverage_diagnostics"])["counts"] == {
         "format_neutral_body_dissolved_creditable": 1
     }
     sample = cast(list[dict[str, object]], residual["samples"])[0]
@@ -954,7 +961,7 @@ def test_formatting_diagnostics_credit_split_body_line_in_mapped_anchor_target()
     )
 
     residual = cast(dict[str, object], diagnostics["unmapped_source_residual_diagnostics"])
-    assert residual["effective_formatting_coverage_diagnostics"]["counts"] == {
+    assert _as_mapping(residual["effective_formatting_coverage_diagnostics"])["counts"] == {
         "format_neutral_body_dissolved_creditable": 1
     }
     sample = cast(list[dict[str, object]], residual["samples"])[0]
@@ -1002,11 +1009,11 @@ def test_formatting_diagnostics_do_not_credit_heading_dissolved_into_body_target
     )
 
     residual = cast(dict[str, object], diagnostics["unmapped_source_residual_diagnostics"])
-    assert residual["residual_closability_diagnostics"]["counts"] == {"target_occupied_by_mapped_neighbor": 1}
-    assert residual["effective_formatting_coverage_diagnostics"]["counts"] == {
+    assert _as_mapping(residual["residual_closability_diagnostics"])["counts"] == {"target_occupied_by_mapped_neighbor": 1}
+    assert _as_mapping(residual["effective_formatting_coverage_diagnostics"])["counts"] == {
         "content_survived_but_format_role_lost": 1
     }
-    assert residual["effective_formatting_coverage_diagnostics"]["format_neutral_creditable_count"] == 0
+    assert _as_mapping(residual["effective_formatting_coverage_diagnostics"])["format_neutral_creditable_count"] == 0
     sample = cast(list[dict[str, object]], residual["samples"])[0]
     assert sample["source_format_role"] == "heading"
     assert sample["effective_formatting_coverage_class"] == "content_survived_but_format_role_lost"
@@ -1051,7 +1058,7 @@ def test_formatting_diagnostics_do_not_credit_heading_with_fuzzy_body_evidence()
     )
 
     residual = cast(dict[str, object], diagnostics["unmapped_source_residual_diagnostics"])
-    assert residual["effective_formatting_coverage_diagnostics"]["counts"] == {
+    assert _as_mapping(residual["effective_formatting_coverage_diagnostics"])["counts"] == {
         "content_survived_but_format_role_lost": 1
     }
     sample = cast(list[dict[str, object]], residual["samples"])[0]
@@ -1148,7 +1155,7 @@ def test_formatting_diagnostics_classify_heading_in_free_body_target_as_role_los
     )
 
     residual = cast(dict[str, object], diagnostics["unmapped_source_residual_diagnostics"])
-    assert residual["effective_formatting_coverage_diagnostics"]["counts"] == {
+    assert _as_mapping(residual["effective_formatting_coverage_diagnostics"])["counts"] == {
         "content_survived_but_format_role_lost": 1
     }
     sample = cast(list[dict[str, object]], residual["samples"])[0]
@@ -1638,7 +1645,7 @@ def test_mapping_does_not_cover_heading_embedded_in_body_image_anchor_target():
     assert diagnostics["mapping_strategy_counts"] == {"image_anchor_contained": 1}
     assert diagnostics["unmapped_source_ids"] == ["p0002"]
     residual = cast(dict[str, object], diagnostics["unmapped_source_residual_diagnostics"])
-    assert residual["effective_formatting_coverage_diagnostics"]["counts"] == {
+    assert _as_mapping(residual["effective_formatting_coverage_diagnostics"])["counts"] == {
         "content_survived_but_format_role_lost": 1
     }
     assert diagnostics["accepted_aggregated_sources_count"] == 0
@@ -2854,7 +2861,12 @@ def test_preserve_source_paragraph_properties_logs_mismatch_warning(monkeypatch)
     events = []
     monkeypatch.setattr(formatting_transfer, "log_event", lambda level, event, message, **context: events.append((event, context)))
 
-    preserve_source_paragraph_properties(target_buffer.getvalue(), source_paragraphs)
+    preserve_source_paragraph_properties(
+        target_buffer.getvalue(),
+        source_paragraphs,
+        run_id="run-live",
+        source_token="source-live",
+    )
 
     assert len(events) == 1
     event_name, context = events[0]
@@ -2913,11 +2925,21 @@ def test_preserve_source_paragraph_properties_artifact_records_caption_heading_c
     diagnostics_dir = tmp_path / "formatting_diagnostics"
     monkeypatch.setattr(formatting_transfer, "FORMATTING_DIAGNOSTICS_DIR", diagnostics_dir)
 
-    preserve_source_paragraph_properties(target_buffer.getvalue(), source_paragraphs)
+    preserve_source_paragraph_properties(
+        target_buffer.getvalue(),
+        source_paragraphs,
+        run_id="run-live",
+        source_token="source-live",
+    )
 
     artifacts = sorted(diagnostics_dir.glob("*.json"))
     assert len(artifacts) == 1
     payload = json.loads(artifacts[0].read_text(encoding="utf-8"))
+    assert payload["ownership"] == {
+        "scope": "live",
+        "run_id": "run-live",
+        "source_token": "source-live",
+    }
     assert len(payload["caption_heading_conflicts"]) == 1
     assert payload["caption_heading_conflicts"][0]["target_style_name"] == "Heading 1"
     assert payload["caption_heading_conflicts"][0]["target_heading_level"] == 1
@@ -3294,6 +3316,163 @@ def test_write_formatting_diagnostics_artifact_logs_warning_on_write_failure(tmp
     assert level == logging.WARNING
     assert context["stage"] == "restore"
     assert context["error_type"] == "TypeError"
+
+
+def test_live_formatting_diagnostics_embed_ownership_and_collect_exact_matches(tmp_path):
+    diagnostics_dir = tmp_path / "formatting_diagnostics"
+    owned_path = formatting_diagnostics_retention.write_formatting_diagnostics_artifact(
+        stage="restore",
+        diagnostics={"mapped_count": 1},
+        diagnostics_dir=diagnostics_dir,
+        now_epoch_ms=200_000,
+        scope="live",
+        run_id="run-a",
+        source_token="source-a",
+    )
+    formatting_diagnostics_retention.write_formatting_diagnostics_artifact(
+        stage="restore",
+        diagnostics={"mapped_count": 2},
+        diagnostics_dir=diagnostics_dir,
+        now_epoch_ms=200_000,
+        scope="live",
+        run_id="run-b",
+        source_token="source-a",
+    )
+    legacy_path = diagnostics_dir / "legacy.json"
+    legacy_path.write_text('{"stage": "restore", "mapped_count": 99}', encoding="utf-8")
+
+    assert owned_path is not None
+    payload = json.loads(Path(owned_path).read_text(encoding="utf-8"))
+    assert payload["ownership"] == {
+        "scope": "live",
+        "run_id": "run-a",
+        "source_token": "source-a",
+    }
+    assert formatting_diagnostics_retention.collect_owned_formatting_diagnostics(
+        run_id="run-a",
+        source_token="source-a",
+        diagnostics_dir=diagnostics_dir,
+    ) == [owned_path]
+
+
+def test_owned_formatting_diagnostics_collection_empty_never_falls_back_to_foreign_or_legacy(tmp_path):
+    diagnostics_dir = tmp_path / "formatting_diagnostics"
+    formatting_diagnostics_retention.write_formatting_diagnostics_artifact(
+        stage="restore",
+        diagnostics={"mapped_count": 1},
+        diagnostics_dir=diagnostics_dir,
+        scope="live",
+        run_id="foreign-run",
+        source_token="foreign-source",
+    )
+    legacy_path = diagnostics_dir / "legacy.json"
+    legacy_path.write_text('{"stage": "restore"}', encoding="utf-8")
+
+    assert formatting_diagnostics_retention.collect_owned_formatting_diagnostics(
+        run_id="clean-run",
+        source_token="clean-source",
+        diagnostics_dir=diagnostics_dir,
+    ) == []
+    assert formatting_diagnostics_retention.load_formatting_diagnostics_payloads(
+        [str(legacy_path)]
+    ) == [{"stage": "restore"}]
+
+
+def test_live_formatting_diagnostics_same_stage_and_timestamp_never_collide(tmp_path):
+    diagnostics_dir = tmp_path / "formatting_diagnostics"
+    paths = {
+        formatting_diagnostics_retention.write_formatting_diagnostics_artifact(
+            stage="restore",
+            diagnostics={"sequence": sequence},
+            diagnostics_dir=diagnostics_dir,
+            now_epoch_ms=200_000,
+            scope="live",
+            run_id="run-a",
+            source_token="source-a",
+        )
+        for sequence in range(3)
+    }
+
+    assert None not in paths
+    assert len(paths) == 3
+    assert formatting_diagnostics_retention.collect_owned_formatting_diagnostics(
+        run_id="run-a",
+        source_token="source-a",
+        diagnostics_dir=diagnostics_dir,
+    ) == sorted(cast(set[str], paths))
+
+
+def test_formatting_diagnostics_reserved_envelope_fields_cannot_be_overridden(tmp_path):
+    artifact_path = formatting_diagnostics_retention.write_formatting_diagnostics_artifact(
+        stage="restore",
+        diagnostics={
+            "stage": "forged-stage",
+            "generated_at_epoch_ms": -1,
+            "ownership": {"scope": "live", "run_id": "foreign", "source_token": "foreign"},
+        },
+        diagnostics_dir=tmp_path,
+        now_epoch_ms=200_000,
+        scope="live",
+        run_id="run-a",
+        source_token="source-a",
+    )
+
+    assert artifact_path is not None
+    payload = json.loads(Path(artifact_path).read_text(encoding="utf-8"))
+    assert payload["stage"] == "restore"
+    assert payload["generated_at_epoch_ms"] == 200_000
+    assert payload["ownership"] == {
+        "scope": "live",
+        "run_id": "run-a",
+        "source_token": "source-a",
+    }
+
+
+def test_formatting_diagnostics_retention_is_family_wide_across_owners(tmp_path):
+    diagnostics_dir = tmp_path / "formatting_diagnostics"
+    now_epoch_ms = int(time.time() * 1000)
+    for sequence in range(4):
+        formatting_diagnostics_retention.write_formatting_diagnostics_artifact(
+            stage="restore",
+            diagnostics={"sequence": sequence},
+            diagnostics_dir=diagnostics_dir,
+            now_epoch_ms=now_epoch_ms + sequence,
+            scope="live",
+            run_id=f"run-{sequence % 2}",
+            source_token=f"source-{sequence}",
+        )
+
+    formatting_diagnostics_retention.prune_formatting_diagnostics(
+        diagnostics_dir=diagnostics_dir,
+        max_age_seconds=10_000,
+        max_count=2,
+    )
+
+    assert len(list(diagnostics_dir.glob("*.json"))) == 2
+
+
+def test_live_formatting_diagnostics_missing_owner_is_fail_open_and_observable(tmp_path, monkeypatch):
+    recorded_events: list[tuple[int, str, str, dict[str, object]]] = []
+    monkeypatch.setattr(
+        formatting_diagnostics_retention,
+        "log_event",
+        lambda level, event, message, **context: recorded_events.append(
+            (level, event, message, context)
+        ),
+    )
+
+    result = formatting_diagnostics_retention.write_formatting_diagnostics_artifact(
+        stage="restore",
+        diagnostics={},
+        diagnostics_dir=tmp_path,
+        scope="live",
+        run_id="",
+        source_token="source-a",
+    )
+
+    assert result is None
+    assert recorded_events[0][1] == "formatting_diagnostics_write_failed"
+    assert recorded_events[0][3]["error_type"] == "ValueError"
 
 
 def test_preserve_source_paragraph_properties_applies_minimal_output_formatting():

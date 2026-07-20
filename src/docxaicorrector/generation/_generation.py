@@ -550,7 +550,7 @@ def _call_responses_create(client: "OpenAI", request_kwargs: dict[str, Any]) -> 
     )
 
 
-def _is_openrouter_client(client: "OpenAI") -> bool:
+def _is_openrouter_client(client: object) -> bool:
     base_url = getattr(client, "base_url", None)
     if base_url is None:
         return False
@@ -1053,10 +1053,10 @@ def generate_markdown_block(
                     "markdown_incomplete_response_source_fallback",
                     "Recovery для блока снова завершился incomplete_response; сохраняю исходный текст блока как controlled fallback.",
                     model=model,
-                    target_chars=len(target_text),
+                    target_chars=len(target_text_for_leakage),
                     marker_mode=marker_mode,
                 )
-                return target_text
+                return target_text_for_leakage
             if _is_retryable_marker_validation_error(recovery_exc) and _can_fallback_to_source_text_after_marker_validation_failure(
                 target_text_for_leakage,
                 marker_mode=marker_mode,
@@ -1079,11 +1079,11 @@ def generate_markdown_block(
                     "markdown_empty_response_source_fallback",
                     "Recovery для блока снова завершился empty_response; сохраняю исходный текст блока как controlled fallback.",
                     model=model,
-                    target_chars=len(target_text),
+                    target_chars=len(target_text_for_leakage),
                     marker_mode=marker_mode,
                     recovery_error=str(recovery_exc),
                 )
-                return target_text
+                return target_text_for_leakage
             if _is_retryable_empty_generation_error(recovery_exc) or _is_retryable_marker_validation_error(recovery_exc):
                 raise recovery_exc
             raise recovery_exc
@@ -1098,10 +1098,10 @@ def generate_markdown_block(
             "markdown_non_completed_response_source_fallback",
             "Модель повторно вернула non_completed_response; сохраняю исходный текст блока как controlled fallback.",
             model=model,
-            target_chars=len(target_text),
+            target_chars=len(target_text_for_leakage),
             marker_mode=marker_mode,
         )
-        return target_text
+        return target_text_for_leakage
 
     if last_exception is not None:
         raise last_exception

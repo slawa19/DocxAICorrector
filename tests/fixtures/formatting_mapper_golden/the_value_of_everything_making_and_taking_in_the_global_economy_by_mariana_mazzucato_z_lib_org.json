@@ -1287,13 +1287,26 @@
         "anchor_asset_id": null,
         "confidence": "high",
         "member_paragraph_ids": [
+          "p0282",
+          "p0283"
+        ],
+        "rationale": [
+          "contiguous_toc_entries"
+        ],
+        "relation_id": "rel_0003",
+        "relation_kind": "toc_region"
+      },
+      {
+        "anchor_asset_id": null,
+        "confidence": "high",
+        "member_paragraph_ids": [
           "p0296",
           "p0297"
         ],
         "rationale": [
           "contiguous_toc_entries"
         ],
-        "relation_id": "rel_0003",
+        "relation_id": "rel_0004",
         "relation_kind": "toc_region"
       }
     ],
@@ -1309,7 +1322,7 @@
       "output_italic": 0,
       "reason": null,
       "source_bold": 3,
-      "source_italic": 98
+      "source_italic": 103
     },
     "high_confidence_merge_count": 54,
     "list_restoration_decisions": [],
@@ -1318,26 +1331,26 @@
       "bounded_registry_fuzzy": 1,
       "bounded_registry_heading_containment": 1,
       "exact_text": 18,
-      "local_gap_heading_fallback": 7,
+      "local_gap_heading_fallback": 6,
       "local_gap_toc_fallback": 5,
       "paragraph_id_rebuild_key": 9,
-      "paragraph_id_registry": 354,
+      "paragraph_id_registry": 353,
       "paragraph_id_registry_aggregation_anchor": 11,
-      "paragraph_id_registry_similarity": 57,
+      "paragraph_id_registry_similarity": 59,
       "similarity": 6
     },
     "mapping_text_quality": {
       "bad_pair_count": 0,
       "bad_pair_rule": "bad when not exact/contained, token_jaccard < 0.50, source_token_overlap < 0.85, and target_token_overlap < 0.85",
       "bad_strategy_counts": {},
-      "checked_count": 59,
+      "checked_count": 61,
       "indexing_basis": "formatting_diagnostics.target_registry[mapped_target_index]",
       "samples": [],
       "source_text_basis": "runtime.state.final_generated_paragraph_registry when available; source paragraph text fallback",
       "strategy_counts": {
         "bounded_registry_fuzzy": 1,
         "bounded_registry_heading_containment": 1,
-        "paragraph_id_registry_similarity": 57
+        "paragraph_id_registry_similarity": 59
       },
       "strategy_filter": [
         "bounded_registry_fuzzy",
@@ -1357,10 +1370,10 @@
       "suspicious_count": 0,
       "suspicious_counts": {}
     },
-    "rejected_relation_candidate_count": 1,
-    "relation_count": 3,
+    "rejected_relation_candidate_count": 0,
+    "relation_count": 4,
     "relation_counts": {
-      "toc_region": 3
+      "toc_region": 4
     },
     "relation_decisions": [
       {
@@ -1466,12 +1479,13 @@
       },
       {
         "anchor_asset_id": null,
-        "decision": "reject",
+        "decision": "accept",
         "member_paragraph_ids": [
-          "p0282"
+          "p0282",
+          "p0283"
         ],
         "reasons": [
-          "isolated_toc_entry"
+          "contiguous_toc_entries"
         ],
         "relation_kind": "toc_region",
         "structure_phase": "post_ai_final",
@@ -1493,8 +1507,8 @@
       }
     ],
     "relation_identity_population": {
-      "relation_id_missing_count": 421,
-      "relation_id_populated_count": 79,
+      "relation_id_missing_count": 419,
+      "relation_id_populated_count": 81,
       "source_count": 500
     },
     "source_count": 500,
@@ -9056,7 +9070,9 @@
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0282",
-        "relation_ids": [],
+        "relation_ids": [
+          "rel_0003"
+        ],
         "role": "body",
         "role_confidence": "heuristic",
         "source_index": 276,
@@ -9069,24 +9085,26 @@
         "boundary_confidence": "high",
         "boundary_rationale": null,
         "boundary_source": "raw",
-        "heading_level": 2,
+        "heading_level": null,
         "list_abstract_num_id": null,
         "list_kind": null,
         "list_level": 0,
         "list_num_id": null,
         "list_numbering_format": null,
         "mapped_target_index": 283,
-        "mapping_strategy": "paragraph_id_registry",
+        "mapping_strategy": "paragraph_id_registry_similarity",
         "origin_raw_indexes": [
           328
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0283",
-        "relation_ids": [],
-        "role": "heading",
+        "relation_ids": [
+          "rel_0003"
+        ],
+        "role": "body",
         "role_confidence": "heuristic",
         "source_index": 276,
-        "structural_role": "heading",
+        "structural_role": "toc_entry",
         "text_preview": "marginalists"
       },
       {
@@ -9423,7 +9441,7 @@
         "origin_raw_text_count": 1,
         "paragraph_id": "p0296",
         "relation_ids": [
-          "rel_0003"
+          "rel_0004"
         ],
         "role": "heading",
         "role_confidence": "explicit",
@@ -9451,7 +9469,7 @@
         "origin_raw_text_count": 1,
         "paragraph_id": "p0297",
         "relation_ids": [
-          "rel_0003"
+          "rel_0004"
         ],
         "role": "heading",
         "role_confidence": "explicit",
@@ -9883,7 +9901,7 @@
         "boundary_confidence": "high",
         "boundary_rationale": null,
         "boundary_source": "raw",
-        "heading_level": 2,
+        "heading_level": null,
         "list_abstract_num_id": null,
         "list_kind": null,
         "list_level": 0,
@@ -9897,10 +9915,10 @@
         "origin_raw_text_count": 1,
         "paragraph_id": "p0314",
         "relation_ids": [],
-        "role": "heading",
+        "role": "body",
         "role_confidence": "heuristic",
         "source_index": 306,
-        "structural_role": "heading",
+        "structural_role": "body",
         "text_preview": "the marginal revolution"
       },
       {
@@ -11921,7 +11939,7 @@
         "boundary_confidence": "high",
         "boundary_rationale": null,
         "boundary_source": "raw",
-        "heading_level": 2,
+        "heading_level": null,
         "list_abstract_num_id": null,
         "list_kind": null,
         "list_level": 0,
@@ -11935,10 +11953,10 @@
         "origin_raw_text_count": 1,
         "paragraph_id": "p0392",
         "relation_ids": [],
-        "role": "heading",
+        "role": "body",
         "role_confidence": "heuristic",
         "source_index": 384,
-        "structural_role": "heading",
+        "structural_role": "body",
         "text_preview": "spending and value"
       },
       {
@@ -12287,24 +12305,24 @@
         "boundary_confidence": "high",
         "boundary_rationale": null,
         "boundary_source": "raw",
-        "heading_level": 2,
+        "heading_level": null,
         "list_abstract_num_id": null,
         "list_kind": null,
         "list_level": 0,
         "list_num_id": null,
         "list_numbering_format": null,
         "mapped_target_index": 406,
-        "mapping_strategy": "local_gap_heading_fallback",
+        "mapping_strategy": "paragraph_id_registry_similarity",
         "origin_raw_indexes": [
           466
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0406",
         "relation_ids": [],
-        "role": "heading",
+        "role": "body",
         "role_confidence": "heuristic",
         "source_index": 398,
-        "structural_role": "heading",
+        "structural_role": "body",
         "text_preview": "investment in future capacity"
       },
       {
@@ -12679,7 +12697,7 @@
         "boundary_confidence": "high",
         "boundary_rationale": null,
         "boundary_source": "raw",
-        "heading_level": 2,
+        "heading_level": null,
         "list_abstract_num_id": null,
         "list_kind": null,
         "list_level": 0,
@@ -12693,10 +12711,10 @@
         "origin_raw_text_count": 1,
         "paragraph_id": "p0421",
         "relation_ids": [],
-        "role": "heading",
+        "role": "body",
         "role_confidence": "heuristic",
         "source_index": 413,
-        "structural_role": "heading",
+        "structural_role": "body",
         "text_preview": "prostitution, pollution and production"
       },
       {
@@ -12942,7 +12960,7 @@
         "boundary_confidence": "high",
         "boundary_rationale": null,
         "boundary_source": "raw",
-        "heading_level": 2,
+        "heading_level": null,
         "list_abstract_num_id": null,
         "list_kind": null,
         "list_level": 0,
@@ -12956,10 +12974,10 @@
         "origin_raw_text_count": 1,
         "paragraph_id": "p0431",
         "relation_ids": [],
-        "role": "heading",
+        "role": "body",
         "role_confidence": "heuristic",
         "source_index": 423,
-        "structural_role": "heading",
+        "structural_role": "body",
         "text_preview": "profits versus rents"
       },
       {
@@ -16740,9 +16758,9 @@
         "text_preview": "value in the eye of the beholder: the rise of the"
       },
       {
-        "heading_level": 2,
+        "heading_level": null,
         "mapped": true,
-        "style_name": "Heading 2",
+        "style_name": "Normal",
         "target_index": 283,
         "text_preview": "marginalists"
       },
@@ -16957,9 +16975,9 @@
         "text_preview": "the idea of scarcity became so important to economists that in the early 1930s it prompted one influential british econ…"
       },
       {
-        "heading_level": 2,
+        "heading_level": null,
         "mapped": true,
-        "style_name": "Heading 2",
+        "style_name": "Normal",
         "target_index": 314,
         "text_preview": "the marginal revolution"
       },
@@ -17503,9 +17521,9 @@
         "text_preview": "it is important to stress, however, that the difference between value added and final expenditure is not the government…"
       },
       {
-        "heading_level": 2,
+        "heading_level": null,
         "mapped": true,
-        "style_name": "Heading 2",
+        "style_name": "Normal",
         "target_index": 392,
         "text_preview": "spending and value"
       },
@@ -17601,9 +17619,9 @@
         "text_preview": "does the financial sector simply facilitate the exchange of existing value, or does it create new value? as we will see…"
       },
       {
-        "heading_level": 2,
+        "heading_level": null,
         "mapped": true,
-        "style_name": "Heading 2",
+        "style_name": "Normal",
         "target_index": 406,
         "text_preview": "investment in future capacity capacity"
       },
@@ -17706,9 +17724,9 @@
         "text_preview": "as with the absurdity of neighbours paying each other to do their housework, it is as if the statisticians are saying t…"
       },
       {
-        "heading_level": 2,
+        "heading_level": null,
         "mapped": true,
-        "style_name": "Heading 2",
+        "style_name": "Normal",
         "target_index": 421,
         "text_preview": "prostitution, pollution and production"
       },
@@ -17776,9 +17794,9 @@
         "text_preview": "yet next came an extraordinary change. from being perceived as transferring existing value and ‘rent’ in the sense of ‘…"
       },
       {
-        "heading_level": 2,
+        "heading_level": null,
         "mapped": true,
-        "style_name": "Heading 2",
+        "style_name": "Normal",
         "target_index": 431,
         "text_preview": "profits versus rents"
       },

@@ -32,6 +32,16 @@
         "target_text_preview": "The U S federal government also has an array of what it calls *non-marketable securities* that aren’ t traded on the ma…"
       },
       {
+        "anchor_paragraph_id": "p0283",
+        "anchor_source_index": 283,
+        "kind": "generated_registry_target_aggregation",
+        "paragraph_id": "p0284",
+        "source_index": 284,
+        "source_text_preview": "Economic Policy Change",
+        "target_index": 284,
+        "target_text_preview": "Economic Policy Change"
+      },
+      {
         "anchor_paragraph_id": "p0359",
         "anchor_source_index": 359,
         "kind": "generated_registry_target_aggregation",
@@ -52,7 +62,7 @@
         "target_text_preview": "Each Balinese spends time in two ways — through conventional jobs in the businesses and other money-making enterprises…"
       }
     ],
-    "accepted_aggregated_sources_count": 5,
+    "accepted_aggregated_sources_count": 6,
     "accepted_merged_sources": [
       {
         "accepted_merged_sources_count": 2,
@@ -843,18 +853,18 @@
     },
     "high_confidence_merge_count": 30,
     "list_restoration_decisions": [],
-    "mapped_count": 472,
+    "mapped_count": 471,
     "mapping_strategy_counts": {
       "adjacent_caption": 1,
       "bounded_registry_fuzzy": 3,
       "bounded_registry_heading_containment": 3,
-      "exact_text": 20,
-      "local_gap_heading_fallback": 5,
+      "exact_text": 22,
+      "local_gap_heading_fallback": 2,
       "local_gap_toc_fallback": 1,
       "paragraph_id_rebuild_key": 9,
-      "paragraph_id_registry": 341,
-      "paragraph_id_registry_aggregation_anchor": 10,
-      "paragraph_id_registry_similarity": 63,
+      "paragraph_id_registry": 340,
+      "paragraph_id_registry_aggregation_anchor": 9,
+      "paragraph_id_registry_similarity": 65,
       "positional_exact": 12,
       "projected_registry_fuzzy": 1,
       "similarity": 3
@@ -863,14 +873,14 @@
       "bad_pair_count": 0,
       "bad_pair_rule": "bad when not exact/contained, token_jaccard < 0.50, source_token_overlap < 0.85, and target_token_overlap < 0.85",
       "bad_strategy_counts": {},
-      "checked_count": 70,
+      "checked_count": 72,
       "indexing_basis": "formatting_diagnostics.target_registry[mapped_target_index]",
       "samples": [],
       "source_text_basis": "runtime.state.final_generated_paragraph_registry when available; source paragraph text fallback",
       "strategy_counts": {
         "bounded_registry_fuzzy": 3,
         "bounded_registry_heading_containment": 3,
-        "paragraph_id_registry_similarity": 63,
+        "paragraph_id_registry_similarity": 65,
         "projected_registry_fuzzy": 1
       },
       "strategy_filter": [
@@ -3549,7 +3559,7 @@
         "boundary_confidence": "high",
         "boundary_rationale": null,
         "boundary_source": "raw",
-        "heading_level": 2,
+        "heading_level": null,
         "list_abstract_num_id": null,
         "list_kind": null,
         "list_level": 0,
@@ -3563,10 +3573,10 @@
         "origin_raw_text_count": 1,
         "paragraph_id": "p0091",
         "relation_ids": [],
-        "role": "heading",
+        "role": "body",
         "role_confidence": "heuristic",
         "source_index": 87,
-        "structural_role": "heading",
+        "structural_role": "body",
         "text_preview": "overview of the book"
       },
       {
@@ -4100,7 +4110,7 @@
         "boundary_confidence": "high",
         "boundary_rationale": null,
         "boundary_source": "raw",
-        "heading_level": 2,
+        "heading_level": null,
         "list_abstract_num_id": null,
         "list_kind": null,
         "list_level": 0,
@@ -4114,10 +4124,10 @@
         "origin_raw_text_count": 1,
         "paragraph_id": "p0112",
         "relation_ids": [],
-        "role": "heading",
+        "role": "body",
         "role_confidence": "heuristic",
         "source_index": 107,
-        "structural_role": "heading",
+        "structural_role": "body",
         "text_preview": "a systems perspective"
       },
       {
@@ -4581,7 +4591,7 @@
         "boundary_confidence": "high",
         "boundary_rationale": null,
         "boundary_source": "raw",
-        "heading_level": 2,
+        "heading_level": null,
         "list_abstract_num_id": null,
         "list_kind": null,
         "list_level": 0,
@@ -4595,10 +4605,10 @@
         "origin_raw_text_count": 1,
         "paragraph_id": "p0130",
         "relation_ids": [],
-        "role": "heading",
+        "role": "body",
         "role_confidence": "heuristic",
         "source_index": 125,
-        "structural_role": "heading",
+        "structural_role": "body",
         "text_preview": "the wealth of cities"
       },
       {
@@ -6231,7 +6241,7 @@
         "boundary_confidence": "high",
         "boundary_rationale": null,
         "boundary_source": "raw",
-        "heading_level": 2,
+        "heading_level": null,
         "list_abstract_num_id": null,
         "list_kind": null,
         "list_level": 0,
@@ -6245,10 +6255,10 @@
         "origin_raw_text_count": 1,
         "paragraph_id": "p0193",
         "relation_ids": [],
-        "role": "heading",
+        "role": "body",
         "role_confidence": "heuristic",
         "source_index": 186,
-        "structural_role": "heading",
+        "structural_role": "body",
         "text_preview": "the banking system"
       },
       {
@@ -8631,8 +8641,8 @@
         "list_level": 0,
         "list_num_id": null,
         "list_numbering_format": null,
-        "mapped_target_index": 283,
-        "mapping_strategy": "paragraph_id_registry_aggregation_anchor",
+        "mapped_target_index": 284,
+        "mapping_strategy": "paragraph_id_registry",
         "origin_raw_indexes": [
           286
         ],
@@ -8651,24 +8661,24 @@
         "boundary_confidence": "high",
         "boundary_rationale": null,
         "boundary_source": "raw",
-        "heading_level": 2,
+        "heading_level": null,
         "list_abstract_num_id": null,
         "list_kind": null,
         "list_level": 0,
         "list_num_id": null,
         "list_numbering_format": null,
-        "mapped_target_index": 284,
-        "mapping_strategy": "paragraph_id_registry",
+        "mapped_target_index": null,
+        "mapping_strategy": null,
         "origin_raw_indexes": [
           287
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0284",
         "relation_ids": [],
-        "role": "heading",
+        "role": "body",
         "role_confidence": "heuristic",
         "source_index": 263,
-        "structural_role": "heading",
+        "structural_role": "body",
         "text_preview": "economic policy change"
       },
       {
@@ -8808,7 +8818,7 @@
         "boundary_confidence": "high",
         "boundary_rationale": null,
         "boundary_source": "raw",
-        "heading_level": 2,
+        "heading_level": null,
         "list_abstract_num_id": null,
         "list_kind": null,
         "list_level": 0,
@@ -8822,10 +8832,10 @@
         "origin_raw_text_count": 1,
         "paragraph_id": "p0290",
         "relation_ids": [],
-        "role": "heading",
+        "role": "body",
         "role_confidence": "heuristic",
         "source_index": 269,
-        "structural_role": "heading",
+        "structural_role": "body",
         "text_preview": "earth policies"
       },
       {
@@ -8939,7 +8949,7 @@
         "boundary_confidence": "high",
         "boundary_rationale": null,
         "boundary_source": "raw",
-        "heading_level": 2,
+        "heading_level": null,
         "list_abstract_num_id": null,
         "list_kind": null,
         "list_level": 0,
@@ -8953,10 +8963,10 @@
         "origin_raw_text_count": 1,
         "paragraph_id": "p0295",
         "relation_ids": [],
-        "role": "heading",
+        "role": "body",
         "role_confidence": "heuristic",
         "source_index": 274,
-        "structural_role": "heading",
+        "structural_role": "body",
         "text_preview": "corporate policies"
       },
       {
@@ -9122,7 +9132,7 @@
         "boundary_confidence": "high",
         "boundary_rationale": null,
         "boundary_source": "raw",
-        "heading_level": 2,
+        "heading_level": null,
         "list_abstract_num_id": null,
         "list_kind": null,
         "list_level": 0,
@@ -9136,10 +9146,10 @@
         "origin_raw_text_count": 1,
         "paragraph_id": "p0302",
         "relation_ids": [],
-        "role": "heading",
+        "role": "body",
         "role_confidence": "heuristic",
         "source_index": 281,
-        "structural_role": "heading",
+        "structural_role": "body",
         "text_preview": "monetary reform"
       },
       {
@@ -9460,7 +9470,7 @@
         "boundary_confidence": "high",
         "boundary_rationale": null,
         "boundary_source": "raw",
-        "heading_level": 2,
+        "heading_level": null,
         "list_abstract_num_id": null,
         "list_kind": null,
         "list_level": 0,
@@ -9474,10 +9484,10 @@
         "origin_raw_text_count": 1,
         "paragraph_id": "p0315",
         "relation_ids": [],
-        "role": "heading",
+        "role": "body",
         "role_confidence": "heuristic",
         "source_index": 294,
-        "structural_role": "heading",
+        "structural_role": "body",
         "text_preview": "the vortex of urbanization"
       },
       {
@@ -9721,24 +9731,24 @@
         "boundary_confidence": "high",
         "boundary_rationale": null,
         "boundary_source": "raw",
-        "heading_level": 2,
+        "heading_level": null,
         "list_abstract_num_id": null,
         "list_kind": null,
         "list_level": 0,
         "list_num_id": null,
         "list_numbering_format": null,
         "mapped_target_index": 325,
-        "mapping_strategy": "local_gap_heading_fallback",
+        "mapping_strategy": "paragraph_id_registry_similarity",
         "origin_raw_indexes": [
           332
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0325",
         "relation_ids": [],
-        "role": "heading",
+        "role": "body",
         "role_confidence": "heuristic",
         "source_index": 304,
-        "structural_role": "heading",
+        "structural_role": "body",
         "text_preview": "frank lloyd wright"
       },
       {
@@ -10450,7 +10460,7 @@
         "boundary_confidence": "high",
         "boundary_rationale": null,
         "boundary_source": "raw",
-        "heading_level": 2,
+        "heading_level": null,
         "list_abstract_num_id": null,
         "list_kind": null,
         "list_level": 0,
@@ -10464,10 +10474,10 @@
         "origin_raw_text_count": 1,
         "paragraph_id": "p0353",
         "relation_ids": [],
-        "role": "heading",
+        "role": "body",
         "role_confidence": "heuristic",
         "source_index": 332,
-        "structural_role": "heading",
+        "structural_role": "body",
         "text_preview": "economic capital"
       },
       {
@@ -10736,7 +10746,7 @@
         "boundary_confidence": "high",
         "boundary_rationale": null,
         "boundary_source": "raw",
-        "heading_level": 2,
+        "heading_level": null,
         "list_abstract_num_id": null,
         "list_kind": null,
         "list_level": 0,
@@ -10750,10 +10760,10 @@
         "origin_raw_text_count": 1,
         "paragraph_id": "p0364",
         "relation_ids": [],
-        "role": "heading",
+        "role": "body",
         "role_confidence": "heuristic",
         "source_index": 343,
-        "structural_role": "heading",
+        "structural_role": "body",
         "text_preview": "exchange as social change"
       },
       {
@@ -10840,7 +10850,7 @@
         "boundary_confidence": "high",
         "boundary_rationale": null,
         "boundary_source": "raw",
-        "heading_level": 2,
+        "heading_level": null,
         "list_abstract_num_id": null,
         "list_kind": null,
         "list_level": 0,
@@ -10854,10 +10864,10 @@
         "origin_raw_text_count": 1,
         "paragraph_id": "p0368",
         "relation_ids": [],
-        "role": "heading",
+        "role": "body",
         "role_confidence": "heuristic",
         "source_index": 347,
-        "structural_role": "heading",
+        "structural_role": "body",
         "text_preview": "tools available today"
       },
       {
@@ -10944,24 +10954,24 @@
         "boundary_confidence": "high",
         "boundary_rationale": null,
         "boundary_source": "raw",
-        "heading_level": 2,
+        "heading_level": null,
         "list_abstract_num_id": null,
         "list_kind": null,
         "list_level": 0,
         "list_num_id": null,
         "list_numbering_format": null,
         "mapped_target_index": 372,
-        "mapping_strategy": "local_gap_heading_fallback",
+        "mapping_strategy": "exact_text",
         "origin_raw_indexes": [
           380
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0372",
         "relation_ids": [],
-        "role": "heading",
+        "role": "body",
         "role_confidence": "heuristic",
         "source_index": 351,
-        "structural_role": "heading",
+        "structural_role": "body",
         "text_preview": "an ecology of currencies"
       },
       {
@@ -11339,7 +11349,7 @@
         "boundary_confidence": "high",
         "boundary_rationale": null,
         "boundary_source": "raw",
-        "heading_level": 2,
+        "heading_level": null,
         "list_abstract_num_id": null,
         "list_kind": null,
         "list_level": 0,
@@ -11353,10 +11363,10 @@
         "origin_raw_text_count": 1,
         "paragraph_id": "p0387",
         "relation_ids": [],
-        "role": "heading",
+        "role": "body",
         "role_confidence": "heuristic",
         "source_index": 365,
-        "structural_role": "heading",
+        "structural_role": "body",
         "text_preview": "demurrage cur r encies"
       },
       {
@@ -11549,24 +11559,24 @@
         "boundary_confidence": "high",
         "boundary_rationale": null,
         "boundary_source": "raw",
-        "heading_level": 2,
+        "heading_level": null,
         "list_abstract_num_id": null,
         "list_kind": null,
         "list_level": 0,
         "list_num_id": null,
         "list_numbering_format": null,
         "mapped_target_index": 395,
-        "mapping_strategy": "local_gap_heading_fallback",
+        "mapping_strategy": "exact_text",
         "origin_raw_indexes": [
           405
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0395",
         "relation_ids": [],
-        "role": "heading",
+        "role": "body",
         "role_confidence": "heuristic",
         "source_index": 373,
-        "structural_role": "heading",
+        "structural_role": "body",
         "text_preview": "cooperative and competitive currencies"
       },
       {
@@ -11732,7 +11742,7 @@
         "boundary_confidence": "high",
         "boundary_rationale": null,
         "boundary_source": "raw",
-        "heading_level": 2,
+        "heading_level": null,
         "list_abstract_num_id": null,
         "list_kind": null,
         "list_level": 0,
@@ -11746,10 +11756,10 @@
         "origin_raw_text_count": 1,
         "paragraph_id": "p0402",
         "relation_ids": [],
-        "role": "heading",
+        "role": "body",
         "role_confidence": "heuristic",
         "source_index": 380,
-        "structural_role": "heading",
+        "structural_role": "body",
         "text_preview": "the value of time"
       },
       {
@@ -11784,24 +11794,24 @@
         "boundary_confidence": "high",
         "boundary_rationale": null,
         "boundary_source": "raw",
-        "heading_level": 2,
+        "heading_level": null,
         "list_abstract_num_id": null,
         "list_kind": null,
         "list_level": 0,
         "list_num_id": null,
         "list_numbering_format": null,
         "mapped_target_index": 404,
-        "mapping_strategy": "paragraph_id_registry",
+        "mapping_strategy": "paragraph_id_registry_similarity",
         "origin_raw_indexes": [
           415
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0404",
         "relation_ids": [],
-        "role": "heading",
+        "role": "body",
         "role_confidence": "heuristic",
         "source_index": 382,
-        "structural_role": "heading",
+        "structural_role": "body",
         "text_preview": "greg brown, folksinger"
       },
       {
@@ -12098,7 +12108,7 @@
         "boundary_confidence": "high",
         "boundary_rationale": null,
         "boundary_source": "raw",
-        "heading_level": 2,
+        "heading_level": null,
         "list_abstract_num_id": null,
         "list_kind": null,
         "list_level": 0,
@@ -12112,10 +12122,10 @@
         "origin_raw_text_count": 1,
         "paragraph_id": "p0416",
         "relation_ids": [],
-        "role": "heading",
+        "role": "body",
         "role_confidence": "heuristic",
         "source_index": 394,
-        "structural_role": "heading",
+        "structural_role": "body",
         "text_preview": "the two-game economy"
       },
       {
@@ -12310,7 +12320,7 @@
         "boundary_confidence": "high",
         "boundary_rationale": null,
         "boundary_source": "raw",
-        "heading_level": 2,
+        "heading_level": null,
         "list_abstract_num_id": null,
         "list_kind": null,
         "list_level": 0,
@@ -12324,10 +12334,10 @@
         "origin_raw_text_count": 1,
         "paragraph_id": "p0424",
         "relation_ids": [],
-        "role": "heading",
+        "role": "body",
         "role_confidence": "heuristic",
         "source_index": 402,
-        "structural_role": "heading",
+        "structural_role": "body",
         "text_preview": "the way of yin-yang"
       },
       {
@@ -14934,9 +14944,9 @@
         "text_preview": "the singular form of money we have created through our laws and institutional arrangements has been a cornerstone of fi…"
       },
       {
-        "heading_level": 2,
+        "heading_level": null,
         "mapped": true,
-        "style_name": "Heading 2",
+        "style_name": "Normal",
         "target_index": 91,
         "text_preview": "overview of the book"
       },
@@ -15081,9 +15091,9 @@
         "text_preview": "we need to redefine wealth as the first step in charting a course towards sustainable wealth. so what is meant by that?…"
       },
       {
-        "heading_level": 2,
+        "heading_level": null,
         "mapped": true,
-        "style_name": "Heading 2",
+        "style_name": "Normal",
         "target_index": 112,
         "text_preview": "a systems perspective"
       },
@@ -15207,9 +15217,9 @@
         "text_preview": "more than half of humanity now lives in cities, and this trend is expected to continue for at least another decade. so…"
       },
       {
-        "heading_level": 2,
+        "heading_level": null,
         "mapped": true,
-        "style_name": "Heading 2",
+        "style_name": "Normal",
         "target_index": 130,
         "text_preview": "the wealth of cities"
       },
@@ -15648,9 +15658,9 @@
         "text_preview": "assumptions have also guided the construction of frameworks and institutions to facilitate the economic activities need…"
       },
       {
-        "heading_level": 2,
+        "heading_level": null,
         "mapped": false,
-        "style_name": "Heading 2",
+        "style_name": "Normal",
         "target_index": 193,
         "text_preview": "the banking system system"
       },
@@ -16279,15 +16289,15 @@
       },
       {
         "heading_level": null,
-        "mapped": true,
+        "mapped": false,
         "style_name": "Normal",
         "target_index": 283,
         "text_preview": "what are the fundamental assumptions and conditions needed to intervene in this destructive cycle? where are the levera…"
       },
       {
-        "heading_level": 2,
+        "heading_level": null,
         "mapped": true,
-        "style_name": "Heading 2",
+        "style_name": "Normal",
         "target_index": 284,
         "text_preview": "economic policy change"
       },
@@ -16327,9 +16337,9 @@
         "text_preview": "the enabling policies which need to be addressed to change the system fall into two main categories: earth and corporat…"
       },
       {
-        "heading_level": 2,
+        "heading_level": null,
         "mapped": true,
-        "style_name": "Heading 2",
+        "style_name": "Normal",
         "target_index": 290,
         "text_preview": "earth policies"
       },
@@ -16362,9 +16372,9 @@
         "text_preview": "in summary, the policies we need eliminate harmful practices, curb the introduction of new practices that would do more…"
       },
       {
-        "heading_level": 2,
+        "heading_level": null,
         "mapped": true,
-        "style_name": "Heading 2",
+        "style_name": "Normal",
         "target_index": 295,
         "text_preview": "corporate policies"
       },
@@ -16411,9 +16421,9 @@
         "text_preview": "on an operational level, policies such as life cycle accounting and employee ownership stock options would help the str…"
       },
       {
-        "heading_level": 2,
+        "heading_level": null,
         "mapped": true,
-        "style_name": "Heading 2",
+        "style_name": "Normal",
         "target_index": 302,
         "text_preview": "monetary reform"
       },
@@ -16502,9 +16512,9 @@
         "text_preview": "as with agriculture, a monoculture crop has the effect of making everything dependent on its health and well-being. if…"
       },
       {
-        "heading_level": 2,
+        "heading_level": null,
         "mapped": true,
-        "style_name": "Heading 2",
+        "style_name": "Normal",
         "target_index": 315,
         "text_preview": "the vortex of urbanization"
       },
@@ -16572,9 +16582,9 @@
         "text_preview": "i believe totally in a capitalist system, i only wish that someone would try it."
       },
       {
-        "heading_level": 2,
+        "heading_level": null,
         "mapped": true,
-        "style_name": "Heading 2",
+        "style_name": "Normal",
         "target_index": 325,
         "text_preview": "frank lloyd wright wright"
       },
@@ -16768,9 +16778,9 @@
         "text_preview": "a standard definition of institutional capital is hard to find — to some it means the financial resources controlled by…"
       },
       {
-        "heading_level": 2,
+        "heading_level": null,
         "mapped": true,
-        "style_name": "Heading 2",
+        "style_name": "Normal",
         "target_index": 353,
         "text_preview": "economic capital"
       },
@@ -16845,9 +16855,9 @@
         "text_preview": "each asset — the skills of the workers, the incorporation papers of the company, the entrepreneurial imagination — has…"
       },
       {
-        "heading_level": 2,
+        "heading_level": null,
         "mapped": true,
-        "style_name": "Heading 2",
+        "style_name": "Normal",
         "target_index": 364,
         "text_preview": "exchange as social change"
       },
@@ -16873,9 +16883,9 @@
         "text_preview": "there are at least as many different types of exchange possible in any given community as there are underutilized forms…"
       },
       {
-        "heading_level": 2,
+        "heading_level": null,
         "mapped": true,
-        "style_name": "Heading 2",
+        "style_name": "Normal",
         "target_index": 368,
         "text_preview": "tools available today"
       },
@@ -16901,9 +16911,9 @@
         "text_preview": "the economics of frequent flyer miles illustrates how this process works even in strictly commercial environments. a we…"
       },
       {
-        "heading_level": 2,
+        "heading_level": null,
         "mapped": true,
-        "style_name": "Heading 2",
+        "style_name": "Normal",
         "target_index": 372,
         "text_preview": "an ecology of currencies"
       },
@@ -17006,9 +17016,9 @@
         "text_preview": "but what if inflation is only the result of too much of a particular kind of money — this bank-debt money we accept wit…"
       },
       {
-        "heading_level": 2,
+        "heading_level": null,
         "mapped": true,
-        "style_name": "Heading 2",
+        "style_name": "Normal",
         "target_index": 387,
         "text_preview": "demurrage cur r encies"
       },
@@ -17062,9 +17072,9 @@
         "text_preview": "the point here is not to wax nostalgic for some lost golden eras, as there were plenty of other problems that people ha…"
       },
       {
-        "heading_level": 2,
+        "heading_level": null,
         "mapped": true,
-        "style_name": "Heading 2",
+        "style_name": "Normal",
         "target_index": 395,
         "text_preview": "cooperative and competitive currencies"
       },
@@ -17111,9 +17121,9 @@
         "text_preview": "a time bank or mutual credit system will never, and should never, take the place of all money. the goal is rather to pr…"
       },
       {
-        "heading_level": 2,
+        "heading_level": null,
         "mapped": true,
-        "style_name": "Heading 2",
+        "style_name": "Normal",
         "target_index": 402,
         "text_preview": "the value of time"
       },
@@ -17125,9 +17135,9 @@
         "text_preview": "time ain’t money when all you got is time."
       },
       {
-        "heading_level": 2,
+        "heading_level": null,
         "mapped": true,
-        "style_name": "Heading 2",
+        "style_name": "Normal",
         "target_index": 404,
         "text_preview": "greg brown, folksinger"
       },
@@ -17209,9 +17219,9 @@
         "text_preview": "revaluing time can also move us towards a sense of sufficiency and abundance, since the things we need in abundance are…"
       },
       {
-        "heading_level": 2,
+        "heading_level": null,
         "mapped": true,
-        "style_name": "Heading 2",
+        "style_name": "Normal",
         "target_index": 416,
         "text_preview": "the two-game economy"
       },
@@ -17265,9 +17275,9 @@
         "text_preview": "obviously, in real life a balance needs to be struck between these two orientations. an exclusive focus on either one o…"
       },
       {
-        "heading_level": 2,
+        "heading_level": null,
         "mapped": true,
-        "style_name": "Heading 2",
+        "style_name": "Normal",
         "target_index": 424,
         "text_preview": "the way of yin-yang"
       },
@@ -18068,11 +18078,11 @@
           "relation_ids": [],
           "residual_category": "real_uncovered",
           "residual_closability_class": "real_uncovered",
-          "role": "heading",
-          "source_format_role": "heading",
+          "role": "body",
+          "source_format_role": "body",
           "source_index": 186,
           "source_paragraph_id_available": true,
-          "structural_role": "heading",
+          "structural_role": "body",
           "target_candidate_indexes_containing_registry_text": [
             193,
             196,
@@ -18740,11 +18750,11 @@
           "relation_ids": [],
           "residual_category": "real_uncovered",
           "residual_closability_class": "real_uncovered",
-          "role": "heading",
-          "source_format_role": "heading",
+          "role": "body",
+          "source_format_role": "body",
           "source_index": 186,
           "source_paragraph_id_available": true,
-          "structural_role": "heading",
+          "structural_role": "body",
           "target_candidate_indexes_containing_registry_text": [
             193,
             196,
@@ -19205,8 +19215,7 @@
       ]
     },
     "unmapped_source_role_counts": {
-      "body": 18,
-      "heading": 1,
+      "body": 19,
       "list": 4
     },
     "unmapped_source_samples": [
@@ -19297,16 +19306,16 @@
       },
       {
         "asset_id": null,
-        "heading_level": 2,
+        "heading_level": null,
         "list_kind": null,
         "origin_raw_indexes": [
           204
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0193",
-        "role": "heading",
+        "role": "body",
         "source_index": 186,
-        "structural_role": "heading",
+        "structural_role": "body",
         "text_preview": "the banking system"
       },
       {
@@ -19547,6 +19556,7 @@
       195,
       196,
       278,
+      283,
       299,
       308,
       322,
@@ -19572,7 +19582,7 @@
       "counts": {
         "matcher_miss": 3,
         "short_note_or_marker": 5,
-        "split_accounting": 2,
+        "split_accounting": 3,
         "spurious_or_unproven": 18
       },
       "evidence_basis": "target_registry text contained/fuzzy-covered by generated source registry text",
@@ -19664,7 +19674,7 @@
         },
         {
           "residual_class": "short_note_or_marker",
-          "target_format_role": "heading",
+          "target_format_role": "body",
           "target_index": 193,
           "target_text_preview": "The Banking System System",
           "target_token_count": 4
@@ -19721,6 +19731,27 @@
           "text_evidence_score": 1.0,
           "text_evidence_token_overlap_ratio": 1.0,
           "text_evidence_type": "exact_contains"
+        },
+        {
+          "best_source_format_role": "body",
+          "best_source_index": 283,
+          "best_source_mapped_target_index": 284,
+          "best_source_paragraph_id": "p0283",
+          "best_source_text_preview": "What are the fundamental assumptions and conditions needed to intervene in this destructive cycle? Where are the levera…",
+          "residual_class": "split_accounting",
+          "split_anchor_targets": [
+            {
+              "kind": "mapped_source_target",
+              "target_index": 284
+            }
+          ],
+          "target_format_role": "body",
+          "target_index": 283,
+          "target_text_preview": "What are the fundamental assumptions and conditions needed to intervene in this destructive cycle? Where are the levera…",
+          "target_token_count": 109,
+          "text_evidence_score": 1.0,
+          "text_evidence_token_overlap_ratio": 1.0,
+          "text_evidence_type": "fuzzy_token_overlap"
         },
         {
           "best_source_format_role": "body",
@@ -20079,7 +20110,7 @@
         },
         {
           "residual_class": "short_note_or_marker",
-          "target_format_role": "heading",
+          "target_format_role": "body",
           "target_index": 193,
           "target_text_preview": "The Banking System System",
           "target_token_count": 4
@@ -20136,6 +20167,27 @@
           "text_evidence_score": 1.0,
           "text_evidence_token_overlap_ratio": 1.0,
           "text_evidence_type": "exact_contains"
+        },
+        {
+          "best_source_format_role": "body",
+          "best_source_index": 283,
+          "best_source_mapped_target_index": 284,
+          "best_source_paragraph_id": "p0283",
+          "best_source_text_preview": "What are the fundamental assumptions and conditions needed to intervene in this destructive cycle? Where are the levera…",
+          "residual_class": "split_accounting",
+          "split_anchor_targets": [
+            {
+              "kind": "mapped_source_target",
+              "target_index": 284
+            }
+          ],
+          "target_format_role": "body",
+          "target_index": 283,
+          "target_text_preview": "What are the fundamental assumptions and conditions needed to intervene in this destructive cycle? Where are the levera…",
+          "target_token_count": 109,
+          "text_evidence_score": 1.0,
+          "text_evidence_token_overlap_ratio": 1.0,
+          "text_evidence_type": "fuzzy_token_overlap"
         },
         {
           "best_source_format_role": "body",
@@ -20340,26 +20392,10 @@
           "text_evidence_score": 1.0,
           "text_evidence_token_overlap_ratio": 1.0,
           "text_evidence_type": "exact_contains"
-        },
-        {
-          "best_source_format_role": "body",
-          "best_source_index": 472,
-          "best_source_mapped_target_index": null,
-          "best_source_paragraph_id": "p0472",
-          "best_source_text_preview": "The foreclosure crisis left many US cities and towns with whole neighborhoods of empty houses. The economic crisis also…",
-          "residual_class": "spurious_or_unproven",
-          "split_anchor_targets": [],
-          "target_format_role": "body",
-          "target_index": 472,
-          "target_text_preview": "The foreclosure crisis left many US cities and towns with whole neighborhoods of empty houses. The economic crisis also…",
-          "target_token_count": 29,
-          "text_evidence_score": 1.0,
-          "text_evidence_token_overlap_ratio": 1.0,
-          "text_evidence_type": "exact_contains"
         }
       ],
-      "split_accounting_creditable_count": 2,
-      "split_accounting_only_creditable_count": 2,
+      "split_accounting_creditable_count": 3,
+      "split_accounting_only_creditable_count": 3,
       "split_accounting_rule": "Credit only unmapped target paragraphs whose text is covered by a source registry entry and that sit directly adjacent to that source's mapped or accepted aggregate target."
     },
     "unmapped_target_samples": [
@@ -20413,9 +20449,9 @@
         "text_preview": "despite the centrality of financial systems to our daily lives, most of us don’t understand the fundamentals of that sy…"
       },
       {
-        "heading_level": 2,
+        "heading_level": null,
         "mapped": false,
-        "style_name": "Heading 2",
+        "style_name": "Normal",
         "target_index": 193,
         "text_preview": "the banking system system"
       },
@@ -20439,6 +20475,13 @@
         "style_name": "Normal",
         "target_index": 278,
         "text_preview": "this hypothesis isn’t just theoretical — it is proven by the graph in figure 6. anytime you observe"
+      },
+      {
+        "heading_level": null,
+        "mapped": false,
+        "style_name": "Normal",
+        "target_index": 283,
+        "text_preview": "what are the fundamental assumptions and conditions needed to intervene in this destructive cycle? where are the levera…"
       },
       {
         "heading_level": null,
@@ -20530,13 +20573,6 @@
         "style_name": "Normal",
         "target_index": 469,
         "text_preview": "the money in the system that was created by all these suddenly worthless pieces of paper disappeared even faster than i…"
-      },
-      {
-        "heading_level": null,
-        "mapped": false,
-        "style_name": "Normal",
-        "target_index": 472,
-        "text_preview": "the foreclosure crisis left many us cities and towns with whole neighborhoods of empty houses. the economic crisis also…"
       }
     ]
   },
@@ -21627,10 +21663,6 @@
     ],
     [
       "p0283",
-      283
-    ],
-    [
-      "p0284",
       284
     ],
     [

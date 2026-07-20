@@ -1532,6 +1532,230 @@ def test_render_result_bundle_uses_explicit_mode_metadata_instead_of_session_fla
     assert cols[2].calls[0]["label"] == "Текст для ElevenLabs (.txt)"
 
 
+def test_render_result_bundle_blocked_uses_diagnostic_labels_without_success(monkeypatch):
+    success_calls = []
+    error_calls = []
+    warning_calls = []
+
+    class FakeColumn:
+        def __init__(self):
+            self.calls = []
+
+        def download_button(self, *args, **kwargs):
+            self.calls.append(kwargs)
+
+    cols = [FakeColumn(), FakeColumn(), FakeColumn()]
+    monkeypatch.setattr(ui.st, "success", lambda message: success_calls.append(message))
+    monkeypatch.setattr(ui.st, "error", lambda message: error_calls.append(message))
+    monkeypatch.setattr(ui.st, "warning", lambda message: warning_calls.append(message))
+    monkeypatch.setattr(ui.st, "columns", lambda count: cols[:count])
+
+    ui.render_result_bundle(
+        docx_bytes=b"blocked-docx",
+        markdown_text="blocked markdown",
+        narration_text="blocked narration",
+        original_filename="report.docx",
+        success_message="Document processed.",
+        delivery_disposition={
+            "status": "blocked",
+            "explanation": "Result blocked by quality gate",
+            "message_key": "result.blocked_delivery_notice",
+        },
+        result_notices=[
+            {"kind": "cleanup", "level": "warning", "message": "Cleanup degraded"}
+        ],
+    )
+
+    assert success_calls == []
+    assert error_calls
+    assert warning_calls == ["Cleanup degraded"]
+    labels = [call["label"] for column in cols for call in column.calls]
+    assert len(labels) == 3
+    assert all("diagnostic" in label.lower() or "диагност" in label.lower() for label in labels)
+    assert all(call["type"] != "primary" for column in cols for call in column.calls)
+
+
+@pytest.mark.parametrize("docx_bytes", [None, b""])
+def test_render_result_bundle_blocked_without_docx_offers_no_download(monkeypatch, docx_bytes):
+    error_calls = []
+    column_calls = []
+    monkeypatch.setattr(ui.st, "success", lambda message: pytest.fail("blocked result showed success"))
+    monkeypatch.setattr(ui.st, "error", lambda message: error_calls.append(message))
+    monkeypatch.setattr(ui.st, "warning", lambda message: None)
+    monkeypatch.setattr(ui.st, "columns", lambda count: column_calls.append(count) or [])
+
+    ui.render_result_bundle(
+        docx_bytes=docx_bytes,
+        markdown_text="partial markdown",
+        original_filename="report.docx",
+        success_message="Document processed.",
+        delivery_disposition={
+            "status": "blocked",
+            "explanation": "No deliverable document",
+        },
+    )
+
+    assert error_calls == ["No deliverable document"]
+    assert column_calls == []
+
+
+def test_render_result_bundle_advisory_keeps_success_and_coexisting_notice(monkeypatch):
+    success_calls = []
+    warning_calls = []
+
+    class FakeColumn:
+        def download_button(self, *args, **kwargs):
+            return None
+
+    monkeypatch.setattr(ui.st, "success", lambda message: success_calls.append(message))
+    monkeypatch.setattr(ui.st, "warning", lambda message: warning_calls.append(message))
+    monkeypatch.setattr(ui.st, "columns", lambda count: [FakeColumn(), FakeColumn()])
+
+    ui.render_result_bundle(
+        docx_bytes=b"docx",
+        markdown_text="markdown",
+        original_filename="report.docx",
+        success_message="Document processed.",
+        delivery_disposition={"status": "accepted_with_advisory"},
+        result_notices=[
+            {"kind": "cleanup", "level": "warning", "message": "Cleanup degraded"}
+        ],
+    )
+
+    assert success_calls == ["Document processed."]
+    assert warning_calls == ["Cleanup degraded"]
+
+
+def test_render_result_bundle_localizes_multiple_degradation_notice_keys(monkeypatch):
+    warnings = []
+    monkeypatch.setattr(ui, "t", lambda key, **kwargs: f"localized:{key}")
+    monkeypatch.setattr(ui.st, "success", lambda message: None)
+    monkeypatch.setattr(ui.st, "error", lambda message: None)
+    monkeypatch.setattr(ui.st, "warning", lambda message: warnings.append(message))
+    monkeypatch.setattr(ui.st, "columns", lambda count: [])
+
+    ui.render_result_bundle(
+        docx_bytes=None,
+        markdown_text="diagnostic markdown",
+        original_filename="report.docx",
+        delivery_disposition={"status": "blocked", "explanation": "blocked"},
+        result_notices=[
+            {"kind": "cleanup", "level": "warning", "message_key": "result.cleanup_advisory_failed"},
+            {"kind": "narration", "level": "warning", "message_key": "result.narration_omitted"},
+            {"kind": "persistence", "level": "warning", "message_key": "result.primary_artifacts_not_saved"},
+        ],
+    )
+
+    assert warnings == [
+        "localized:result.cleanup_advisory_failed",
+        "localized:result.narration_omitted",
+        "localized:result.primary_artifacts_not_saved",
+    ]
+
+
+def test_render_result_bundle_keeps_legacy_notice_without_kind_visible_once(monkeypatch):
+    success_calls = []
+    warning_calls = []
+
+    class FakeColumn:
+        def download_button(self, *args, **kwargs):
+            return None
+
+    monkeypatch.setattr(ui.st, "success", lambda message: success_calls.append(message))
+    monkeypatch.setattr(ui.st, "warning", lambda message: warning_calls.append(message))
+    monkeypatch.setattr(ui.st, "columns", lambda count: [FakeColumn() for _ in range(count)])
+
+    ui.render_result_bundle(
+        docx_bytes=b"docx",
+        markdown_text="markdown",
+        original_filename="report.docx",
+        success_message="Document processed.",
+        delivery_disposition={"status": "accepted"},
+        result_notices=[
+            {
+                "level": "warning",
+                "message": "Result processed, but result files could not be saved to disk.",
+            }
+        ],
+    )
+
+    assert success_calls == ["Document processed."]
+    assert warning_calls == [
+        "Result processed, but result files could not be saved to disk."
+    ]
+
+
+@pytest.mark.parametrize(
+    ("language", "expected"),
+    [
+        ("en", "Done. 3 paragraph(s) worth checking for formatting — see the review file."),
+        ("ru", "Готово. 3 абзац(ев) стоит проверить по оформлению — см. файл проверки."),
+    ],
+)
+def test_render_result_bundle_interpolates_typed_notice_params_in_each_locale(
+    language,
+    expected,
+    monkeypatch,
+):
+    warning_calls = []
+    monkeypatch.setattr(ui.st, "session_state", SessionState(ui_language=language))
+    monkeypatch.setattr(ui.st, "warning", lambda message: warning_calls.append(message))
+    monkeypatch.setattr(ui.st, "columns", lambda count: [])
+
+    ui.render_result_bundle(
+        docx_bytes=None,
+        markdown_text="diagnostic markdown",
+        original_filename="report.docx",
+        delivery_disposition={"status": "blocked", "explanation": "blocked"},
+        result_notices=[
+            {
+                "kind": "persistence",
+                "level": "warning",
+                "message_key": "result.notice_review",
+                "params": {"count": 3},
+            }
+        ],
+    )
+
+    assert warning_calls == [expected]
+
+
+@pytest.mark.parametrize("invalid_params", ["secret", ["secret"], {1: "secret"}])
+def test_render_result_bundle_invalid_notice_params_fail_safe_without_leakage(
+    invalid_params,
+    monkeypatch,
+):
+    success_calls = []
+    warning_calls = []
+
+    class FakeColumn:
+        def download_button(self, *args, **kwargs):
+            return None
+
+    monkeypatch.setattr(ui.st, "success", lambda message: success_calls.append(message))
+    monkeypatch.setattr(ui.st, "warning", lambda message: warning_calls.append(message))
+    monkeypatch.setattr(ui.st, "columns", lambda count: [FakeColumn() for _ in range(count)])
+
+    ui.render_result_bundle(
+        docx_bytes=b"docx",
+        markdown_text="markdown",
+        original_filename="report.docx",
+        success_message="Document processed.",
+        result_notices=[
+            {
+                "kind": "persistence",
+                "level": "warning",
+                "message_key": "result.notice_review",
+                "message": "secret",
+                "params": invalid_params,
+            }
+        ],
+    )
+
+    assert success_calls == ["Document processed."]
+    assert warning_calls == []
+
+
 def test_render_markdown_preview_renders_native_widgets(monkeypatch):
     session_state = SessionState(processed_block_markdowns=["one"])
     selectbox_calls, text_area_calls = _patch_markdown_preview_widgets(monkeypatch, session_state)

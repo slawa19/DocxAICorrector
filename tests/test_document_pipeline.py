@@ -3,6 +3,7 @@ import json
 import logging
 import subprocess
 import sys
+from collections.abc import Mapping, Sequence
 from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
@@ -15,6 +16,7 @@ import docxaicorrector.pipeline._pipeline as document_pipeline
 import docxaicorrector.pipeline.late_phases as document_pipeline_late_phases
 import docxaicorrector.pipeline.quality_gate as document_pipeline_quality_gate
 import docxaicorrector.pipeline.reader_cleanup_rebuild as document_pipeline_reader_cleanup_rebuild
+import docxaicorrector.pipeline.narration_postprocess as document_pipeline_narration_postprocess
 import docxaicorrector.pipeline.quality_report_retention as document_pipeline_quality_report_retention
 import docxaicorrector.pipeline.output_validation as document_pipeline_output_validation
 import docxaicorrector.pipeline.reassembly as document_pipeline_reassembly
@@ -23,6 +25,17 @@ from docx import Document
 from docxaicorrector.core.models import ParagraphUnit
 from docxaicorrector.document.extraction import extract_document_content_from_docx
 from docxaicorrector.reader_cleanup_mvp import build_cleanup_blocks
+
+
+def _as_mapping(value: object) -> Mapping[str, object]:
+    assert isinstance(value, Mapping)
+    return value
+
+
+def _as_mapping_sequence(value: object) -> Sequence[Mapping[str, object]]:
+    assert isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray))
+    assert all(isinstance(item, Mapping) for item in value)
+    return cast(Sequence[Mapping[str, object]], value)
 
 
 PNG_BYTES = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aK3cAAAAASUVORK5CYII=")
@@ -680,15 +693,26 @@ def test_run_document_processing_passes_machine_readable_quality_warning_to_arti
 
     monkeypatch.setattr(document_pipeline, "FORMATTING_DIAGNOSTICS_DIR", diagnostics_dir)
     monkeypatch.setattr(document_pipeline_quality_report_retention, "QUALITY_REPORTS_DIR", quality_dir)
-
     diagnostics_dir.mkdir(parents=True, exist_ok=True)
     quality_dir.mkdir(parents=True, exist_ok=True)
 
-    def preserve_with_unmapped_artifact(docx_bytes, paragraphs, generated_paragraph_registry=None):
+    def preserve_with_unmapped_artifact(
+        docx_bytes,
+        paragraphs,
+        generated_paragraph_registry=None,
+        *,
+        run_id=None,
+        source_token=None,
+    ):
         (diagnostics_dir / "preserve_001.json").write_text(
             json.dumps(
                 {
                     "stage": "restore",
+                    "ownership": {
+                        "scope": "live",
+                        "run_id": run_id,
+                        "source_token": source_token,
+                    },
                     "source_count": 50,
                     "target_count": 48,
                     "mapped_count": 48,
@@ -703,6 +727,8 @@ def test_run_document_processing_passes_machine_readable_quality_warning_to_arti
 
     result = document_pipeline.run_document_processing(
         uploaded_file="report.docx",
+        run_id="quality-warning-run",
+        source_token="quality-warning-source",
         jobs=[{"target_text": "block", "context_before": "", "context_after": "", "target_chars": 5, "context_chars": 0}],
         source_paragraphs=[ParagraphStub()],
         image_assets=[],
@@ -772,11 +798,23 @@ def test_run_document_processing_warns_and_delivers_large_role_loss_with_formatt
     diagnostics_dir.mkdir(parents=True, exist_ok=True)
     quality_dir.mkdir(parents=True, exist_ok=True)
 
-    def preserve_with_role_loss_artifact(docx_bytes, paragraphs, generated_paragraph_registry=None):
+    def preserve_with_role_loss_artifact(
+        docx_bytes,
+        paragraphs,
+        generated_paragraph_registry=None,
+        *,
+        run_id=None,
+        source_token=None,
+    ):
         (diagnostics_dir / "restore_role_loss.json").write_text(
             json.dumps(
                 {
                     "stage": "restore",
+                    "ownership": {
+                        "scope": "live",
+                        "run_id": run_id,
+                        "source_token": source_token,
+                    },
                     "unmapped_source_ids": role_loss_ids,
                     "unmapped_target_indexes": [],
                     "source_count": 1000,
@@ -819,6 +857,8 @@ def test_run_document_processing_warns_and_delivers_large_role_loss_with_formatt
 
     result = document_pipeline.run_document_processing(
         uploaded_file="report.docx",
+        run_id="role-loss-run",
+        source_token="role-loss-source",
         jobs=[{"target_text": "block", "context_before": "", "context_after": "", "target_chars": 5, "context_chars": 0}],
         source_paragraphs=[
             ParagraphUnit(text=f"Chapter {index}", role="heading", structural_role="heading", paragraph_id=paragraph_id)
@@ -1245,6 +1285,292 @@ def test_standalone_audiobook_ignores_stale_postprocess_flag_and_never_runs_post
     assert "Spoken line." in narration_text
     assert "Heading" in narration_text
     assert "#" not in narration_text  # heading marker stripped by the standalone deterministic branch
+
+
+def test_reader_cleanup_activation_is_translate_only_and_policy_off_wins():
+    enabled = {"reader_cleanup_enabled": True, "reader_cleanup_policy": "advisory"}
+
+    assert document_pipeline_late_phases._should_run_reader_cleanup(
+        context=SimpleNamespace(processing_operation="translate", app_config=enabled)
+    ) is True
+    assert document_pipeline_late_phases._should_run_reader_cleanup(
+        context=SimpleNamespace(processing_operation="edit", app_config=enabled)
+    ) is False
+    assert document_pipeline_late_phases._should_run_reader_cleanup(
+        context=SimpleNamespace(processing_operation="audiobook", app_config=enabled)
+    ) is False
+    assert document_pipeline_late_phases._should_run_reader_cleanup(
+        context=SimpleNamespace(
+            processing_operation="translate",
+            app_config={"reader_cleanup_enabled": True, "reader_cleanup_policy": "off"},
+        )
+    ) is False
+
+
+def test_translation_narration_projects_final_cleanup_registry_by_block_lineage(monkeypatch):
+    captured = {}
+    context = SimpleNamespace(
+        processing_operation="translate",
+        app_config={"reader_cleanup_enabled": True, "reader_cleanup_policy": "advisory", "audiobook_postprocess_enabled": True},
+        jobs=[{"narration_include": True}, {"narration_include": False}, {"narration_include": True}],
+    )
+    final_registry = [
+        {"block_index": 1, "paragraph_id": "p1", "text": "Final first"},
+        {"block_index": 2, "paragraph_id": "p2", "text": "Excluded bibliography"},
+        {"block_index": 3, "paragraph_id": "p3", "text": "Final replacement"},
+    ]
+    monkeypatch.setattr(
+        document_pipeline_narration_postprocess,
+        "_run_audiobook_postprocess",
+        lambda **kwargs: captured.setdefault("chunks", kwargs["narration_chunks_override"]) or "narration",
+    )
+
+    document_pipeline_late_phases._build_narration_text(
+        context=context,
+        dependencies=SimpleNamespace(),
+        emitters=SimpleNamespace(),
+        state=SimpleNamespace(narration_chunks=["stale first", "stale last"]),
+        final_generated_paragraph_registry=final_registry,
+    )
+
+    assert captured["chunks"] == ["Final first", "Final replacement"]
+
+
+def test_translation_narration_marker_disabled_cleanup_noop_omits_tts_and_preserves_base_result(
+    tmp_path,
+):
+    runtime = _build_runtime_capture()
+    block_outputs = iter(
+        ["Первый принятый fallback-абзац.", "Следующий принятый абзац."]
+    )
+    narration_provider_calls = []
+    artifact_calls = {}
+
+    def generate_markdown_block(**kwargs):
+        if kwargs["system_prompt"].startswith("You are cleaning translated book Markdown"):
+            return json.dumps(
+                {"cleanup_operations": [], "warnings": []}, ensure_ascii=False
+            )
+        if len(narration_provider_calls) == 0:
+            try:
+                return next(block_outputs)
+            except StopIteration:
+                pass
+        narration_provider_calls.append(kwargs["target_text"])
+        return "Итоговая озвучка."
+
+    def write_ui_result_artifacts(**kwargs):
+        artifact_calls["kwargs"] = dict(kwargs)
+        return {
+            "markdown_path": str(tmp_path / "fallback.result.md"),
+            "docx_path": str(tmp_path / "fallback.result.docx"),
+        }
+
+    result = _run_processing(
+        runtime,
+        processing_operation="translate",
+        jobs=[
+            {
+                "target_text": "First accepted paragraph.",
+                "context_before": "",
+                "context_after": "Following accepted paragraph.",
+                "target_chars": 25,
+                "context_chars": 29,
+                "narration_include": True,
+            },
+            {
+                "target_text": "Following accepted paragraph.",
+                "context_before": "First accepted paragraph.",
+                "context_after": "",
+                "target_chars": 29,
+                "context_chars": 25,
+                "narration_include": True,
+            },
+        ],
+        app_config={
+            "enable_paragraph_markers": False,
+            "reader_cleanup_enabled": True,
+            "reader_cleanup_policy": "advisory",
+            "audiobook_postprocess_enabled": True,
+        },
+        generate_markdown_block=generate_markdown_block,
+        convert_markdown_to_docx_bytes=lambda markdown_text: markdown_text.encode("utf-8"),
+        write_ui_result_artifacts=write_ui_result_artifacts,
+    )
+
+    assert result == "succeeded"
+    assert narration_provider_calls == []
+    assert runtime["state"]["latest_narration_text"] is None
+    assert runtime["state"]["latest_markdown"] == (
+        "Первый принятый fallback-абзац.\n\nСледующий принятый абзац."
+    )
+    assert runtime["state"]["latest_docx_bytes"] == runtime["state"][
+        "latest_markdown"
+    ].encode("utf-8")
+    assert artifact_calls["kwargs"]["markdown_text"] == runtime["state"][
+        "latest_markdown"
+    ]
+    assert artifact_calls["kwargs"]["docx_bytes"] == runtime["state"][
+        "latest_docx_bytes"
+    ]
+    assert "narration_text" not in artifact_calls["kwargs"]
+    assert {
+        "kind": "narration",
+        "level": "warning",
+        "message_key": "result.narration_omitted",
+    } in runtime["state"]["latest_result_notices"]
+
+
+def test_translation_narration_projection_skips_blank_and_image_only_valid_lineage():
+    context = SimpleNamespace(
+        jobs=[
+            {"narration_include": True},
+            {"narration_include": True},
+            {"narration_include": True},
+        ]
+    )
+
+    projected = document_pipeline_narration_postprocess._project_final_cleanup_narration_chunks(
+        context=context,
+        final_generated_paragraph_registry=[
+            {"block_index": 1, "text": "  \n  "},
+            {"block_index": 2, "text": "[[DOCX_IMAGE_img_001]]"},
+            {"block_index": 3, "text": "Eligible final narration."},
+        ],
+    )
+
+    assert projected == ["Eligible final narration."]
+    with pytest.raises(
+        RuntimeError,
+        match="narration_cleanup_projection_unsafe:incomplete_lineage",
+    ):
+        document_pipeline_narration_postprocess._project_final_cleanup_narration_chunks(
+            context=context,
+            final_generated_paragraph_registry=[
+                {"block_index": 4, "text": "[[DOCX_IMAGE_img_999]]"}
+            ],
+        )
+
+
+def test_translation_narration_projection_accepts_cleanup_delete_split_and_join_lineage():
+    context = SimpleNamespace(
+        jobs=[
+            {"narration_include": True},
+            {"narration_include": True},
+            {"narration_include": True},
+            {"narration_include": False},
+        ]
+    )
+
+    projected = document_pipeline_narration_postprocess._project_final_cleanup_narration_chunks(
+        context=context,
+        final_generated_paragraph_registry=[
+            {
+                "block_index": 1,
+                "text": "Joined final text",
+                "reader_cleanup_source_block_indexes": [1, 2],
+            },
+            # Block 3 was deliberately deleted by cleanup and is therefore absent.
+            {"block_index": 4, "text": "Excluded bibliography"},
+        ],
+    )
+
+    assert projected == ["Joined final text"]
+    assert document_pipeline_narration_postprocess._project_final_cleanup_narration_chunks(
+        context=context,
+        final_generated_paragraph_registry=[],
+    ) == []
+
+
+def test_translation_narration_projection_rejects_join_across_inclusion_boundary():
+    context = SimpleNamespace(
+        jobs=[{"narration_include": True}, {"narration_include": False}]
+    )
+
+    with pytest.raises(RuntimeError, match="narration_cleanup_projection_unsafe:mixed_join_boundary"):
+        document_pipeline_narration_postprocess._project_final_cleanup_narration_chunks(
+            context=context,
+            final_generated_paragraph_registry=[
+                {
+                    "block_index": 1,
+                    "text": "Ambiguous joined text",
+                    "reader_cleanup_source_block_indexes": [1, 2],
+                }
+            ],
+        )
+
+
+def test_translation_narration_projection_rejects_substantive_nonexistent_lineage():
+    context = SimpleNamespace(jobs=[{"narration_include": True}])
+
+    with pytest.raises(
+        RuntimeError,
+        match="narration_cleanup_projection_unsafe:incomplete_lineage",
+    ):
+        document_pipeline_narration_postprocess._project_final_cleanup_narration_chunks(
+            context=context,
+            final_generated_paragraph_registry=[
+                {"block_index": 2, "text": "Substantive final text."}
+            ],
+        )
+
+
+def test_translation_narration_rejects_unsafe_cleanup_projection():
+    context = SimpleNamespace(
+        processing_operation="translate",
+        app_config={"reader_cleanup_enabled": True, "reader_cleanup_policy": "advisory", "audiobook_postprocess_enabled": True},
+        jobs=[{"narration_include": True}],
+    )
+
+    with pytest.raises(RuntimeError, match="narration_cleanup_projection_unsafe"):
+        document_pipeline_late_phases._build_narration_text(
+            context=context,
+            dependencies=SimpleNamespace(),
+            emitters=SimpleNamespace(),
+            state=SimpleNamespace(narration_chunks=["stale"]),
+            final_generated_paragraph_registry=None,
+        )
+
+
+def test_narration_stop_after_inflight_group_prevents_later_provider_calls():
+    stop_checks = []
+    provider_calls = []
+    dependencies = SimpleNamespace(
+        should_stop_processing=lambda runtime: (stop_checks.append(True) or len(stop_checks) >= 3),
+        load_system_prompt=lambda **kwargs: "system",
+        get_client=lambda: object(),
+        generate_markdown_block=lambda **kwargs: (provider_calls.append(kwargs["target_text"]) or kwargs["target_text"]),
+        log_event=lambda *args, **kwargs: None,
+    )
+    emitters = SimpleNamespace(
+        emit_status=lambda *args, **kwargs: None,
+        emit_activity=lambda *args, **kwargs: None,
+    )
+    context = SimpleNamespace(
+        processing_operation="translate",
+        app_config={"audiobook_postprocess_enabled": True, "chunk_size": 3000},
+        jobs=[],
+        runtime={},
+        source_language="en",
+        target_language="ru",
+        model="gpt-5.4",
+        max_retries=1,
+        uploaded_filename="report.docx",
+    )
+    state = SimpleNamespace(
+        narration_chunks=["a" * 2000, "b" * 2000],
+        processed_chunks=["a", "b"],
+    )
+
+    with pytest.raises(document_pipeline_narration_postprocess.LatePhaseStopped):
+        document_pipeline_late_phases._build_narration_text(
+            context=context,
+            dependencies=dependencies,
+            emitters=emitters,
+            state=state,
+        )
+
+    assert len(provider_calls) == 1
 
 
 def test_run_document_processing_applies_reader_cleanup_and_saves_raw_markdown_report_artifacts(tmp_path: Path):
@@ -1843,6 +2169,14 @@ def test_run_document_processing_preserves_base_result_when_reader_cleanup_fails
     info_events = [event for event in events if event["level"] == logging.INFO]
     noop_event = next(event for event in info_events if event["event_id"] == "reader_cleanup_noop")
     assert any("reader_cleanup_chunk_failed" in warning for warning in noop_event["context"]["warnings"])
+    assert runtime["state"]["latest_result_notices"] == [
+        {
+            "kind": "cleanup",
+            "level": "warning",
+            "message_key": "result.cleanup_advisory_failed",
+            "message": "Reader cleanup was only partially available; the accepted base content was preserved.",
+        }
+    ]
 
 
 def test_run_document_processing_reader_cleanup_rebuild_preserves_images():
@@ -2075,6 +2409,14 @@ def test_run_document_processing_reader_cleanup_strict_failure_preserves_base_re
         "level": "warning",
         "message": "Reader cleanup strict stage failed; preserved the raw translated result without cleanup.",
     }
+    assert runtime["state"]["latest_result_notices"] == [
+        {
+            "kind": "cleanup",
+            "level": "warning",
+            "message_key": "result.cleanup_advisory_failed",
+            "message": "Reader cleanup strict stage failed; preserved the raw translated result without cleanup.",
+        }
+    ]
     warning_events = [event for event in events if event["level"] == logging.WARNING]
     assert any(event["event_id"] == "reader_cleanup_strict_failed_base_result_preserved" for event in warning_events)
     raw_sidecar_path = tmp_path / "report.raw.result.md"
@@ -2773,12 +3115,24 @@ def test_run_document_processing_surfaces_formatting_diagnostics_artifacts(tmp_p
     diagnostics_dir = tmp_path / "formatting_diagnostics"
     monkeypatch.setattr(document_pipeline, "FORMATTING_DIAGNOSTICS_DIR", diagnostics_dir)
 
-    def preserve_with_artifact(docx_bytes, paragraphs, generated_paragraph_registry=None):
+    def preserve_with_artifact(
+        docx_bytes,
+        paragraphs,
+        generated_paragraph_registry=None,
+        *,
+        run_id=None,
+        source_token=None,
+    ):
         diagnostics_dir.mkdir(parents=True, exist_ok=True)
         (diagnostics_dir / "preserve_001.json").write_text(
             json.dumps(
                 {
                     "stage": "preserve",
+                    "ownership": {
+                        "scope": "live",
+                        "run_id": run_id,
+                        "source_token": source_token,
+                    },
                     "source_count": 5,
                     "target_count": 4,
                     "mapped_count": 4,
@@ -2793,6 +3147,8 @@ def test_run_document_processing_surfaces_formatting_diagnostics_artifacts(tmp_p
 
     result = document_pipeline.run_document_processing(
         uploaded_file="report.docx",
+        run_id="diagnostics-run",
+        source_token="diagnostics-source",
         jobs=[{"target_text": "block", "context_before": "", "context_after": "", "target_chars": 5, "context_chars": 0}],
         source_paragraphs=[ParagraphStub()],
         image_assets=[],
@@ -2841,12 +3197,24 @@ def test_run_document_processing_blocks_delivery_on_caption_heading_conflict(tmp
     diagnostics_dir = tmp_path / "formatting_diagnostics"
     monkeypatch.setattr(document_pipeline, "FORMATTING_DIAGNOSTICS_DIR", diagnostics_dir)
 
-    def preserve_with_conflict_artifact(docx_bytes, paragraphs, generated_paragraph_registry=None):
+    def preserve_with_conflict_artifact(
+        docx_bytes,
+        paragraphs,
+        generated_paragraph_registry=None,
+        *,
+        run_id=None,
+        source_token=None,
+    ):
         diagnostics_dir.mkdir(parents=True, exist_ok=True)
         (diagnostics_dir / "preserve_001.json").write_text(
             json.dumps(
                 {
                     "stage": "preserve",
+                    "ownership": {
+                        "scope": "live",
+                        "run_id": run_id,
+                        "source_token": source_token,
+                    },
                     "source_count": 5,
                     "target_count": 5,
                     "mapped_count": 5,
@@ -2864,6 +3232,8 @@ def test_run_document_processing_blocks_delivery_on_caption_heading_conflict(tmp
 
     result = document_pipeline.run_document_processing(
         uploaded_file="report.docx",
+        run_id="caption-run",
+        source_token="caption-source",
         jobs=[{"target_text": "block", "context_before": "", "context_after": "", "target_chars": 5, "context_chars": 0}],
         source_paragraphs=[ParagraphStub()],
         image_assets=[],
@@ -2923,13 +3293,25 @@ def test_run_document_processing_blocks_delivery_on_caption_conflict_in_final_do
     monkeypatch.setattr(document_pipeline, "FORMATTING_DIAGNOSTICS_DIR", diagnostics_dir)
     monkeypatch.setattr(document_pipeline_quality_report_retention, "QUALITY_REPORTS_DIR", quality_dir)
 
-    def preserve_with_conflict_artifact(docx_bytes, paragraphs, generated_paragraph_registry=None):
+    def preserve_with_conflict_artifact(
+        docx_bytes,
+        paragraphs,
+        generated_paragraph_registry=None,
+        *,
+        run_id=None,
+        source_token=None,
+    ):
         # Written during the DEFERRED base DOCX build (invoked by the reader-cleanup no-op path).
         diagnostics_dir.mkdir(parents=True, exist_ok=True)
         (diagnostics_dir / "preserve_001.json").write_text(
             json.dumps(
                 {
                     "stage": "preserve",
+                    "ownership": {
+                        "scope": "live",
+                        "run_id": run_id,
+                        "source_token": source_token,
+                    },
                     "source_count": 5,
                     "target_count": 5,
                     "mapped_count": 5,
@@ -2957,6 +3339,8 @@ def test_run_document_processing_blocks_delivery_on_caption_conflict_in_final_do
 
     result = document_pipeline.run_document_processing(
         uploaded_file="report.docx",
+        run_id="deferred-caption-run",
+        source_token="deferred-caption-source",
         jobs=[{"target_text": "block", "context_before": "", "context_after": "", "target_chars": 5, "context_chars": 0}],
         source_paragraphs=[ParagraphStub()],
         image_assets=[],
@@ -3013,15 +3397,45 @@ def test_run_document_processing_warns_and_delivers_on_strict_unmapped_source_qu
     diagnostics_dir = tmp_path / "formatting_diagnostics"
     quality_dir = tmp_path / "quality_reports"
     monkeypatch.setattr(document_pipeline, "FORMATTING_DIAGNOSTICS_DIR", diagnostics_dir)
-    monkeypatch.setattr(document_pipeline_late_phases, "collect_recent_formatting_diagnostics_artifacts", lambda since_epoch_seconds, diagnostics_dir: [str(diagnostics_dir / "preserve_001.json")])
     monkeypatch.setattr(document_pipeline_quality_report_retention, "QUALITY_REPORTS_DIR", quality_dir)
+    diagnostics_dir.mkdir(parents=True, exist_ok=True)
+    (diagnostics_dir / "foreign.json").write_text(
+        json.dumps(
+            {
+                "stage": "restore",
+                "ownership": {
+                    "scope": "live",
+                    "run_id": "foreign-run",
+                    "source_token": "quality-source",
+                },
+                "source_count": 20,
+                "target_count": 0,
+                "mapped_count": 0,
+                "unmapped_source_ids": [f"foreign-{index}" for index in range(20)],
+                "unmapped_target_indexes": [],
+            }
+        ),
+        encoding="utf-8",
+    )
 
-    def preserve_with_unmapped_artifact(docx_bytes, paragraphs, generated_paragraph_registry=None):
+    def preserve_with_unmapped_artifact(
+        docx_bytes,
+        paragraphs,
+        generated_paragraph_registry=None,
+        *,
+        run_id=None,
+        source_token=None,
+    ):
         diagnostics_dir.mkdir(parents=True, exist_ok=True)
         (diagnostics_dir / "preserve_001.json").write_text(
             json.dumps(
                 {
                     "stage": "restore",
+                    "ownership": {
+                        "scope": "live",
+                        "run_id": run_id,
+                        "source_token": source_token,
+                    },
                     "source_count": 5,
                     "target_count": 4,
                     "mapped_count": 4,
@@ -3036,6 +3450,8 @@ def test_run_document_processing_warns_and_delivers_on_strict_unmapped_source_qu
 
     result = document_pipeline.run_document_processing(
         uploaded_file="report.docx",
+        run_id="quality-run",
+        source_token="quality-source",
         jobs=[{"target_text": "block", "context_before": "", "context_after": "", "target_chars": 5, "context_chars": 0}],
         source_paragraphs=[ParagraphStub()],
         image_assets=[],
@@ -3080,6 +3496,7 @@ def test_run_document_processing_warns_and_delivers_on_strict_unmapped_source_qu
     assert payload["gate_reasons"] == ["unmapped_source_paragraphs_present"]
     assert payload["bullet_heading_count"] == 0
     assert payload["toc_body_concat_detected"] is False
+    assert payload["formatting_review_required_count"] == 0
 
 
 def test_run_document_processing_surfaces_advisory_quality_notice_on_mapping_drift(tmp_path, monkeypatch):
@@ -3087,7 +3504,7 @@ def test_run_document_processing_surfaces_advisory_quality_notice_on_mapping_dri
     diagnostics_dir = tmp_path / "formatting_diagnostics"
     quality_dir = tmp_path / "quality_reports"
     monkeypatch.setattr(document_pipeline, "FORMATTING_DIAGNOSTICS_DIR", diagnostics_dir)
-    monkeypatch.setattr(document_pipeline_late_phases, "collect_recent_formatting_diagnostics_artifacts", lambda since_epoch_seconds, diagnostics_dir: [str(diagnostics_dir / "preserve_001.json")])
+    monkeypatch.setattr(document_pipeline_late_phases, "collect_owned_formatting_diagnostics_artifacts", lambda run_id, source_token, diagnostics_dir: [str(diagnostics_dir / "preserve_001.json")])
     monkeypatch.setattr(document_pipeline_quality_report_retention, "QUALITY_REPORTS_DIR", quality_dir)
 
     def preserve_with_unmapped_artifact(docx_bytes, paragraphs, generated_paragraph_registry=None):
@@ -3172,7 +3589,7 @@ def test_run_document_processing_surfaces_advisory_quality_notice_on_mapping_dri
 def test_run_document_processing_keeps_false_fragment_cleanup_display_only_after_quality_gate_decoupling(tmp_path, monkeypatch):
     runtime = _build_runtime_capture()
     quality_dir = tmp_path / "quality_reports"
-    monkeypatch.setattr(document_pipeline_late_phases, "collect_recent_formatting_diagnostics_artifacts", lambda since_epoch_seconds, diagnostics_dir: [])
+    monkeypatch.setattr(document_pipeline_late_phases, "collect_owned_formatting_diagnostics_artifacts", lambda run_id, source_token, diagnostics_dir: [])
     monkeypatch.setattr(document_pipeline_quality_report_retention, "QUALITY_REPORTS_DIR", quality_dir)
 
     result = _run_processing(
@@ -3204,7 +3621,7 @@ def test_run_document_processing_keeps_false_fragment_cleanup_display_only_after
 def test_run_document_processing_quality_report_uses_pre_display_gate_input_for_sentence_split_case(tmp_path, monkeypatch):
     runtime = _build_runtime_capture()
     quality_dir = tmp_path / "quality_reports"
-    monkeypatch.setattr(document_pipeline_late_phases, "collect_recent_formatting_diagnostics_artifacts", lambda since_epoch_seconds, diagnostics_dir: [])
+    monkeypatch.setattr(document_pipeline_late_phases, "collect_owned_formatting_diagnostics_artifacts", lambda run_id, source_token, diagnostics_dir: [])
     monkeypatch.setattr(document_pipeline_quality_report_retention, "QUALITY_REPORTS_DIR", quality_dir)
 
     result = _run_processing(
@@ -3247,7 +3664,7 @@ def test_run_document_processing_quality_report_uses_pre_display_gate_input_for_
 def test_run_document_processing_applies_residual_bullet_cleanup_before_display_hygiene_gating(tmp_path, monkeypatch):
     runtime = _build_runtime_capture()
     quality_dir = tmp_path / "quality_reports"
-    monkeypatch.setattr(document_pipeline_late_phases, "collect_recent_formatting_diagnostics_artifacts", lambda since_epoch_seconds, diagnostics_dir: [])
+    monkeypatch.setattr(document_pipeline_late_phases, "collect_owned_formatting_diagnostics_artifacts", lambda run_id, source_token, diagnostics_dir: [])
     monkeypatch.setattr(document_pipeline_quality_report_retention, "QUALITY_REPORTS_DIR", quality_dir)
 
     result = _run_processing(
@@ -3276,7 +3693,7 @@ def test_run_document_processing_applies_residual_bullet_cleanup_before_display_
 def test_run_document_processing_normalizes_list_fragment_regressions_before_quality_gate(tmp_path, monkeypatch):
     runtime = _build_runtime_capture()
     quality_dir = tmp_path / "quality_reports"
-    monkeypatch.setattr(document_pipeline_late_phases, "collect_recent_formatting_diagnostics_artifacts", lambda since_epoch_seconds, diagnostics_dir: [])
+    monkeypatch.setattr(document_pipeline_late_phases, "collect_owned_formatting_diagnostics_artifacts", lambda run_id, source_token, diagnostics_dir: [])
     monkeypatch.setattr(document_pipeline_quality_report_retention, "QUALITY_REPORTS_DIR", quality_dir)
 
     result = _run_processing(
@@ -3310,7 +3727,7 @@ def test_run_document_processing_uses_runtime_normalized_markdown_for_docx_build
     runtime = _build_runtime_capture()
     quality_dir = tmp_path / "quality_reports"
     captured = {}
-    monkeypatch.setattr(document_pipeline_late_phases, "collect_recent_formatting_diagnostics_artifacts", lambda since_epoch_seconds, diagnostics_dir: [])
+    monkeypatch.setattr(document_pipeline_late_phases, "collect_owned_formatting_diagnostics_artifacts", lambda run_id, source_token, diagnostics_dir: [])
     monkeypatch.setattr(document_pipeline_quality_report_retention, "QUALITY_REPORTS_DIR", quality_dir)
 
     result = _run_processing(
@@ -3334,7 +3751,7 @@ def test_run_document_processing_uses_runtime_normalized_markdown_for_docx_build
 def test_run_document_processing_normalizes_mixed_script_before_quality_gate(tmp_path, monkeypatch):
     runtime = _build_runtime_capture()
     quality_dir = tmp_path / "quality_reports"
-    monkeypatch.setattr(document_pipeline_late_phases, "collect_recent_formatting_diagnostics_artifacts", lambda since_epoch_seconds, diagnostics_dir: [])
+    monkeypatch.setattr(document_pipeline_late_phases, "collect_owned_formatting_diagnostics_artifacts", lambda run_id, source_token, diagnostics_dir: [])
     monkeypatch.setattr(document_pipeline_quality_report_retention, "QUALITY_REPORTS_DIR", quality_dir)
 
     result = _run_processing(
@@ -3362,7 +3779,7 @@ def test_run_document_processing_normalizes_mixed_script_before_quality_gate(tmp
 def test_run_document_processing_flags_untranslated_structural_heading_for_review(tmp_path, monkeypatch):
     runtime = _build_runtime_capture()
     quality_dir = tmp_path / "quality_reports"
-    monkeypatch.setattr(document_pipeline_late_phases, "collect_recent_formatting_diagnostics_artifacts", lambda since_epoch_seconds, diagnostics_dir: [])
+    monkeypatch.setattr(document_pipeline_late_phases, "collect_owned_formatting_diagnostics_artifacts", lambda run_id, source_token, diagnostics_dir: [])
     monkeypatch.setattr(document_pipeline_quality_report_retention, "QUALITY_REPORTS_DIR", quality_dir)
 
     result = _run_processing(
@@ -3436,7 +3853,7 @@ def test_run_document_processing_flags_untranslated_structural_heading_for_revie
 def test_run_document_processing_fails_large_untranslated_body_text(tmp_path, monkeypatch):
     runtime = _build_runtime_capture()
     quality_dir = tmp_path / "quality_reports"
-    monkeypatch.setattr(document_pipeline_late_phases, "collect_recent_formatting_diagnostics_artifacts", lambda since_epoch_seconds, diagnostics_dir: [])
+    monkeypatch.setattr(document_pipeline_late_phases, "collect_owned_formatting_diagnostics_artifacts", lambda run_id, source_token, diagnostics_dir: [])
     monkeypatch.setattr(document_pipeline_quality_report_retention, "QUALITY_REPORTS_DIR", quality_dir)
     untranslated_body = (
         "This framework has been tested using years of quantitative data collected about how biomass "
@@ -3727,9 +4144,9 @@ def test_build_translation_quality_report_fails_large_untranslated_body_text():
     assert report["quality_status"] == "fail"
     assert report["gate_reasons"] == ["untranslated_body_text_above_threshold"]
     assert report["untranslated_body_text_count"] == 1
-    assert report["untranslated_body_text_chars"] > 2000
+    assert cast(int, report["untranslated_body_text_chars"]) > 2000
     assert report["untranslated_body_text_ratio"] == 1.0
-    assert report["formatting_review_items"][0]["severity"] == "fix"
+    assert _as_mapping_sequence(report["formatting_review_items"])[0]["severity"] == "fix"
 
 
 def test_resolve_document_delivery_verdict_downgrades_review_grade_fail_to_warn():
@@ -3882,8 +4299,8 @@ def test_build_translation_quality_report_detects_toc_body_concat_across_leader_
     assert report["quality_status"] == "warn"
     assert report["gate_reasons"] == ["toc_body_concatenation_review_required"]
     assert report["toc_body_concat_detected"] is True
-    assert report["formatting_review_items"][0]["reason"] == "toc_body_concatenation_review_required"
-    assert report["formatting_review_items"][0]["severity"] == "fix"
+    assert _as_mapping_sequence(report["formatting_review_items"])[0]["reason"] == "toc_body_concatenation_review_required"
+    assert _as_mapping_sequence(report["formatting_review_items"])[0]["severity"] == "fix"
 
 
 def test_build_translation_quality_report_exposes_quality_gate_audit_classifications():
@@ -3898,14 +4315,14 @@ def test_build_translation_quality_report_exposes_quality_gate_audit_classificat
         formatting_diagnostics_artifacts=[],
     )
 
-    audit = report["quality_gate_audit_classifications"]
-    assert audit["bullet_heading"]["verdict"] == "unit_aware"
-    assert audit["bullet_heading"]["severity_model"] == "legacy_hygiene_fix_review_threshold"
-    assert audit["toc_body_concat"]["verdict"] == "tolerant"
-    assert audit["toc_body_concat"]["severity_model"] == "structure_evidence_required_else_review"
-    assert audit["mixed_script_term"]["verdict"] == "tolerant"
-    assert audit["heading_body_concat_detected"]["verdict"] == "tolerant"
-    assert audit["inline_page_furniture_leakage"]["verdict"] == "unit_aware_after_structural_label_exemption"
+    audit = _as_mapping(report["quality_gate_audit_classifications"])
+    assert _as_mapping(audit["bullet_heading"])["verdict"] == "unit_aware"
+    assert _as_mapping(audit["bullet_heading"])["severity_model"] == "legacy_hygiene_fix_review_threshold"
+    assert _as_mapping(audit["toc_body_concat"])["verdict"] == "tolerant"
+    assert _as_mapping(audit["toc_body_concat"])["severity_model"] == "structure_evidence_required_else_review"
+    assert _as_mapping(audit["mixed_script_term"])["verdict"] == "tolerant"
+    assert _as_mapping(audit["heading_body_concat_detected"])["verdict"] == "tolerant"
+    assert _as_mapping(audit["inline_page_furniture_leakage"])["verdict"] == "unit_aware_after_structural_label_exemption"
 
 
 def test_build_translation_quality_report_keeps_source_backed_scripture_heading_out_of_false_fragment_gate():
@@ -3952,7 +4369,8 @@ def test_build_translation_quality_report_keeps_source_backed_scripture_heading_
     assert report["false_fragment_heading_count"] == 0
     assert report["scripture_reference_heading_count"] == 0
     assert report["raw_false_fragment_heading_count"] == 1
-    assert report["quality_gate_audit_classifications"]["scripture_reference_heading"]["verdict"] == "tolerant"
+    audit = _as_mapping(report["quality_gate_audit_classifications"])
+    assert _as_mapping(audit["scripture_reference_heading"])["verdict"] == "tolerant"
 
 
 def test_normalize_final_markdown_for_runtime_display_splits_placeholder_from_chapter_heading():
@@ -4372,8 +4790,8 @@ def test_build_translation_quality_report_flags_raw_false_fragment_without_entry
             "reason": "inline_term_heading_present",
         }
     ]
-    assert report["formatting_review_items"][0]["reason"] == "false_fragment_headings_review_required"
-    assert report["formatting_review_items"][0]["severity"] == "fix"
+    assert _as_mapping_sequence(report["formatting_review_items"])[0]["reason"] == "false_fragment_headings_review_required"
+    assert _as_mapping_sequence(report["formatting_review_items"])[0]["severity"] == "fix"
 
 
 def test_build_translation_quality_report_fails_large_false_fragment_heading_set(monkeypatch):
@@ -4700,7 +5118,7 @@ def test_collect_false_fragment_heading_samples_from_entries_overrides_source_he
 def test_run_document_processing_quality_report_uses_same_final_markdown_as_runtime_state(tmp_path, monkeypatch):
     runtime = _build_runtime_capture()
     quality_dir = tmp_path / "quality_reports"
-    monkeypatch.setattr(document_pipeline_late_phases, "collect_recent_formatting_diagnostics_artifacts", lambda since_epoch_seconds, diagnostics_dir: [])
+    monkeypatch.setattr(document_pipeline_late_phases, "collect_owned_formatting_diagnostics_artifacts", lambda run_id, source_token, diagnostics_dir: [])
     monkeypatch.setattr(document_pipeline_quality_report_retention, "QUALITY_REPORTS_DIR", quality_dir)
 
     final_markdown = "На людей, получивших начертание зверя и поклонявшихся его образу, приходят язвы."
@@ -4737,7 +5155,7 @@ def test_run_document_processing_quality_report_uses_same_final_markdown_as_runt
 def test_run_document_processing_warns_on_legacy_markdown_toc_concat_quality_gate(tmp_path, monkeypatch):
     runtime = _build_runtime_capture()
     quality_dir = tmp_path / "quality_reports"
-    monkeypatch.setattr(document_pipeline_late_phases, "collect_recent_formatting_diagnostics_artifacts", lambda since_epoch_seconds, diagnostics_dir: [])
+    monkeypatch.setattr(document_pipeline_late_phases, "collect_owned_formatting_diagnostics_artifacts", lambda run_id, source_token, diagnostics_dir: [])
     monkeypatch.setattr(document_pipeline_quality_report_retention, "QUALITY_REPORTS_DIR", quality_dir)
 
     result = _run_processing(
@@ -5076,14 +5494,15 @@ def test_build_translation_quality_report_routes_four_standalone_numeric_backmat
     assert report["list_fragment_regression_gate_source"] == "entry_assembly"
     assert report["raw_list_fragment_regression_count"] == 8
     assert report["list_fragment_regression_count"] == 4
-    assert [sample["text"] for sample in report["list_fragment_regression_samples"]] == [
+    assert [sample["text"] for sample in _as_mapping_sequence(report["list_fragment_regression_samples"])] == [
         "18.",
         "1491.",
         "1489.",
         "249.",
     ]
     # Softened path: review, NOT the acceptance hard-fail reason.
-    assert "list_fragment_regressions_present" not in report["gate_reasons"]
+    gate_reasons = cast(Sequence[object], report["gate_reasons"])
+    assert "list_fragment_regressions_present" not in gate_reasons
     assert report["gate_reasons"] == ["list_fragment_regressions_review_required"]
     assert report["quality_status"] == "warn"
     assert report["formatting_review_required_count"] == 4
@@ -5148,14 +5567,15 @@ def test_build_translation_quality_report_hard_fails_non_numeric_body_list_fragm
 
     assert report["list_fragment_regression_gate_source"] == "entry_assembly"
     assert report["list_fragment_regression_count"] == 1
-    non_numeric_sample = report["list_fragment_regression_samples"][0]
+    non_numeric_sample = _as_mapping_sequence(report["list_fragment_regression_samples"])[0]
     assert not document_pipeline_late_phases._is_standalone_numeric_continuation_sample(
         SimpleNamespace(text=non_numeric_sample["text"])
     )
     # Body-list fragmentation is a hard (non-review) gate reason; spec 018 delivers it as
     # ``warn`` (review-DATA) rather than blocking, but the reason token is still recorded.
-    assert "list_fragment_regressions_present" in report["gate_reasons"]
-    assert "list_fragment_regressions_review_required" not in report["gate_reasons"]
+    gate_reasons = cast(Sequence[object], report["gate_reasons"])
+    assert "list_fragment_regressions_present" in gate_reasons
+    assert "list_fragment_regressions_review_required" not in gate_reasons
     assert report["quality_status"] == "warn"
 
 
@@ -5222,7 +5642,7 @@ def test_run_document_processing_warns_on_advisory_structural_markdown_quality_g
     runtime = _build_runtime_capture()
     quality_dir = tmp_path / "quality_reports"
     artifact_calls = {}
-    monkeypatch.setattr(document_pipeline_late_phases, "collect_recent_formatting_diagnostics_artifacts", lambda since_epoch_seconds, diagnostics_dir: [])
+    monkeypatch.setattr(document_pipeline_late_phases, "collect_owned_formatting_diagnostics_artifacts", lambda run_id, source_token, diagnostics_dir: [])
     monkeypatch.setattr(document_pipeline_quality_report_retention, "QUALITY_REPORTS_DIR", quality_dir)
 
     result = _run_processing(
@@ -5611,6 +6031,7 @@ def test_reader_cleanup_formatting_lineage_merges_joined_registry_entries():
             "paragraph_id": "p0001",
             "text": "First fragment second fragment",
             "merged_paragraph_ids": ["p0001", "p0002"],
+            "reader_cleanup_source_block_indexes": [1, 2],
             "reader_cleanup_operations": ["join_fragmented_paragraph"],
         }
     ]
@@ -5891,9 +6312,9 @@ def test_reader_cleanup_postprocess_prefers_assembly_formatting_registry_over_st
     assert cleaned_markdown == raw_markdown
     assert cleaned_docx_bytes == b"base-docx"
     assert report is not None
-    assert report["stats"]["accepted_delete_block_count"] == 0
-    assert report["image_reconciliation"]["before_image_id_count"] == 1
-    assert report["image_reconciliation"]["after_image_id_count"] == 1
+    assert _as_mapping(report["stats"])["accepted_delete_block_count"] == 0
+    assert _as_mapping(report["image_reconciliation"])["before_image_id_count"] == 1
+    assert _as_mapping(report["image_reconciliation"])["after_image_id_count"] == 1
     assert final_registry == [
         {"block_index": 1, "paragraph_id": "p0001", "text": "Intro", "target_paragraph_indexes": [0]},
         {"block_index": 3, "paragraph_id": "p0003", "text": "Body paragraph", "target_paragraph_indexes": [2]},
@@ -6153,6 +6574,8 @@ def test_run_document_processing_writes_marker_generation_diagnostics_artifact_o
 
     result = document_pipeline.run_document_processing(
         uploaded_file="report.docx",
+        run_id="marker-run",
+        source_token="marker-source",
         jobs=[{
             "target_text": "Исходный блок",
             "target_text_with_markers": "[[DOCX_PARA_p0001]]\nИсходный блок",
@@ -6197,6 +6620,11 @@ def test_run_document_processing_writes_marker_generation_diagnostics_artifact_o
     assert payload["stage"] == "generation"
     assert payload["error_code"] == "markers_missing"
     assert payload["paragraph_ids"] == ["p0001"]
+    assert payload["ownership"] == {
+        "scope": "live",
+        "run_id": "marker-run",
+        "source_token": "marker-source",
+    }
     assert "marker diagnostics:" in runtime["log"][-1]["details"]
 
 
@@ -6207,6 +6635,8 @@ def test_run_document_processing_marker_generation_artifact_includes_found_ids_a
 
     result = document_pipeline.run_document_processing(
         uploaded_file="report.docx",
+        run_id="marker-run",
+        source_token="marker-source",
         jobs=[{
             "target_text": "Исходный блок",
             "target_text_with_markers": "[[DOCX_PARA_p0001]]\nИсходный блок",
@@ -6267,6 +6697,8 @@ def test_run_document_processing_writes_marker_registry_diagnostics_artifact_on_
 
     result = document_pipeline.run_document_processing(
         uploaded_file="report.docx",
+        run_id="marker-run",
+        source_token="marker-source",
         jobs=[{
             "target_text": "Исходный блок",
             "target_text_with_markers": "[[DOCX_PARA_p0001]]\nИсходный блок",
@@ -6711,6 +7143,8 @@ def test_call_docx_restorer_propagates_internal_type_error_called_once():
             b"docx",
             ["p"],
             [{"block_index": 0}],
+            run_id="run-a",
+            source_token="source-a",
         )
 
     assert calls["count"] == 1
@@ -6732,6 +7166,8 @@ def test_call_docx_restorer_legacy_target_called_once_without_kwarg():
         b"docx",
         ["p"],
         [{"block_index": 0}],
+        run_id="run-a",
+        source_token="source-a",
     )
 
     assert result == b"restored"

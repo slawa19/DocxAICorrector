@@ -1,5 +1,5 @@
 import time
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 import hashlib
 import re
@@ -820,9 +820,49 @@ def render_result_bundle(
     audiobook_postprocess_enabled: bool = False,
     success_message: str | None = None,
     quality_warning: Mapping[str, object] | None = None,
+    delivery_disposition: Mapping[str, object] | None = None,
+    result_notices: Sequence[Mapping[str, object]] | None = None,
 ) -> None:
-    if success_message:
+    delivery_status = str((delivery_disposition or {}).get("status", "accepted") or "accepted")
+    blocked = delivery_status == "blocked"
+    if blocked:
+        message_key = str((delivery_disposition or {}).get("message_key", "") or "")
+        explanation = str((delivery_disposition or {}).get("explanation", "") or "").strip()
+        st.error(t(message_key) if message_key else explanation or t("result.blocked_delivery_notice"))
+    elif success_message:
         st.success(success_message)
+    for notice in result_notices or ():
+        if str(notice.get("kind", "") or "") not in {"", "cleanup", "narration", "persistence"}:
+            continue
+        message_key = str(notice.get("message_key", "") or "").strip()
+        try:
+            raw_params = notice.get("params")
+            if raw_params is None:
+                notice_params: dict[str, object] = {}
+            elif isinstance(raw_params, Mapping) and all(
+                isinstance(key, str) for key in raw_params
+            ):
+                notice_params = dict(raw_params)
+            else:
+                continue
+        except Exception:
+            continue
+        try:
+            message = (
+                t(message_key, **notice_params)
+                if message_key
+                else str(notice.get("message", "") or "").strip()
+            )
+        except Exception:
+            continue
+        if not message:
+            continue
+        if str(notice.get("level", "") or "") == "error":
+            st.error(message)
+        else:
+            st.warning(message)
+    if blocked and not docx_bytes:
+        return
     operation = str(processing_operation or "edit").strip().lower() or "edit"
     markdown_label, docx_label, narration_label = _resolve_result_download_labels(
         original_filename=original_filename,
@@ -830,6 +870,13 @@ def render_result_bundle(
         processing_operation=processing_operation,
         audiobook_postprocess_enabled=audiobook_postprocess_enabled,
     )
+    if blocked:
+        markdown_label = t("result.blocked_download_markdown")
+        docx_label = t("result.blocked_download_docx")
+        narration_label = (
+            t("result.blocked_download_narration") if narration_text is not None else None
+        )
+    download_type = "secondary" if blocked else "primary"
     if narration_text is not None:
         columns = st.columns(3)
         if operation == "audiobook":
@@ -843,7 +890,7 @@ def render_result_bundle(
                     file_name=_build_output_filename(original_filename),
                     mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                     on_click="ignore",
-                    type="primary",
+                    type=download_type,
                     use_container_width=True,
                 )
         col_tts.download_button(
@@ -852,7 +899,7 @@ def render_result_bundle(
             file_name=_build_narration_filename(original_filename),
             mime="text/plain",
             on_click="ignore",
-            type="primary",
+            type=download_type,
             use_container_width=True,
         )
         col_md.download_button(
@@ -861,7 +908,7 @@ def render_result_bundle(
             file_name=_build_markdown_filename(original_filename),
             mime="text/markdown",
             on_click="ignore",
-            type="primary",
+            type=download_type,
             use_container_width=True,
         )
         if operation == "audiobook" and docx_bytes is not None:
@@ -871,7 +918,7 @@ def render_result_bundle(
                 file_name=_build_output_filename(original_filename),
                 mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                 on_click="ignore",
-                type="primary",
+                type=download_type,
                 use_container_width=True,
             )
         _render_formatting_review_block(
@@ -888,7 +935,7 @@ def render_result_bundle(
             file_name=_build_output_filename(original_filename),
             mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             on_click="ignore",
-            type="primary",
+            type=download_type,
             use_container_width=True,
         )
     col_md.download_button(
@@ -897,7 +944,7 @@ def render_result_bundle(
         file_name=_build_markdown_filename(original_filename),
         mime="text/markdown",
         on_click="ignore",
-        type="primary",
+        type=download_type,
         use_container_width=True,
     )
     _render_formatting_review_block(

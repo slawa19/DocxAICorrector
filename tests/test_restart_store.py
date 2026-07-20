@@ -1,4 +1,5 @@
 import os
+import hashlib
 from pathlib import Path
 
 import docxaicorrector.processing.restart_store as restart_store
@@ -19,8 +20,85 @@ def test_store_and_load_restart_source_roundtrip(tmp_path, monkeypatch):
     assert metadata["filename"] == "report.docx"
     assert metadata["token"] == "report.docx:3:abc"
     assert metadata["size"] == 10
+    assert metadata["payload_sha256"] == hashlib.sha256(b"docx-bytes").hexdigest()
+    assert metadata["source_format"] == "docx"
+    assert metadata["conversion_backend"] is None
     assert Path(metadata["storage_path"]).exists()
     assert restart_store.load_restart_source_bytes(metadata) == b"docx-bytes"
+
+
+def test_store_and_load_normalized_pdf_payload_preserves_source_identity(tmp_path, monkeypatch):
+    monkeypatch.setattr(restart_store, "RUN_DIR", tmp_path)
+
+    metadata = restart_store.store_restart_source(
+        session_id="session-a",
+        source_name="report.docx",
+        source_token="report.pdf:11:original",
+        source_bytes=b"normalized-docx",
+        source_format="pdf",
+        conversion_backend="libreoffice-writer-pdf-import",
+    )
+
+    assert metadata["token"] == "report.pdf:11:original"
+    assert metadata["source_format"] == "pdf"
+    assert metadata["conversion_backend"] == "libreoffice-writer-pdf-import"
+    assert restart_store.load_restart_source_bytes(metadata) == b"normalized-docx"
+
+
+def test_load_restart_source_rejects_changed_payload(tmp_path, monkeypatch):
+    monkeypatch.setattr(restart_store, "RUN_DIR", tmp_path)
+    metadata = restart_store.store_restart_source(
+        session_id="session-a",
+        source_name="report.docx",
+        source_token="report.pdf:11:original",
+        source_bytes=b"normalized-docx",
+        source_format="pdf",
+        conversion_backend="libreoffice-writer-pdf-import",
+    )
+    Path(metadata["storage_path"]).write_bytes(b"normalized-DOCX")
+
+    assert restart_store.load_restart_source_bytes(metadata) is None
+
+
+def test_load_restart_source_rejects_size_digest_and_required_metadata_mismatch(tmp_path, monkeypatch):
+    monkeypatch.setattr(restart_store, "RUN_DIR", tmp_path)
+    metadata = restart_store.store_restart_source(
+        session_id="session-a",
+        source_name="report.docx",
+        source_token="report.pdf:11:original",
+        source_bytes=b"normalized-docx",
+        source_format="pdf",
+        conversion_backend="libreoffice-writer-pdf-import",
+    )
+
+    for changed in (
+        {**metadata, "size": metadata["size"] + 1},
+        {**metadata, "payload_sha256": "0" * 64},
+        {key: value for key, value in metadata.items() if key != "payload_sha256"},
+        {key: value for key, value in metadata.items() if key != "token"},
+        {**metadata, "conversion_backend": None},
+    ):
+        assert restart_store.load_restart_source_bytes(changed) is None
+
+
+def test_load_restart_source_rejects_unconfined_path(tmp_path, monkeypatch):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    monkeypatch.setattr(restart_store, "RUN_DIR", run_dir)
+    outside = tmp_path / "restart_outside.docx"
+    outside.write_bytes(b"normalized-docx")
+
+    record = {
+        "filename": "report.docx",
+        "token": "report.pdf:11:original",
+        "storage_path": str(outside),
+        "size": len(b"normalized-docx"),
+        "payload_sha256": hashlib.sha256(b"normalized-docx").hexdigest(),
+        "source_format": "pdf",
+        "conversion_backend": "libreoffice-writer-pdf-import",
+    }
+
+    assert restart_store.load_restart_source_bytes(record) is None
 
 
 def test_store_restart_source_replaces_previous_file(tmp_path, monkeypatch):

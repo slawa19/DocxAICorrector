@@ -22,7 +22,7 @@ from docxaicorrector.pipeline.quality_report_retention import (  # noqa: F401
     _write_quality_report_artifact,
 )
 from docxaicorrector.pipeline.formatting_diagnostics_feedback import (  # noqa: F401
-    collect_recent_formatting_diagnostics_artifacts,
+    collect_owned_formatting_diagnostics_artifacts,
     _load_formatting_diagnostics_payloads,
     _formatting_diagnostics_requires_user_warning,
     _build_formatting_diagnostics_user_message,
@@ -46,6 +46,7 @@ from docxaicorrector.pipeline.narration_postprocess import (  # noqa: F401
     _run_audiobook_postprocess,
 )
 from docxaicorrector.reader_cleanup_mvp import write_reader_cleanup_diagnostics
+from docxaicorrector.pipeline.contracts import LatePhaseStopped
 
 
 from docxaicorrector.pipeline.reader_cleanup_rebuild import (  # noqa: F401
@@ -397,7 +398,7 @@ def run_docx_build_phase(
     job_count: int,
     diagnostics_dir: Path,
     current_markdown_fn: Callable[[Sequence[str]], str],
-    call_docx_restorer_with_optional_registry_fn: Callable[[Any, bytes, Any, Any], bytes],
+    call_docx_restorer_with_optional_registry_fn: Callable[..., bytes],
 ) -> Any | None:
     reassembly_plan = build_reassembly_plan(
         output_mode=str(getattr(context, "output_mode", "") or ""),
@@ -440,7 +441,6 @@ def run_docx_build_phase(
     )
     emitters.emit_activity(context.runtime, "Все блоки готовы. Начата сборка итогового DOCX.")
     context.on_progress(preview_title="Текущий Markdown")
-    build_started_at_epoch = time.time()
     processed_image_assets = image_phase["processed_image_assets"]
     docx_bytes_cache: bytes | None = None
 
@@ -455,6 +455,8 @@ def run_docx_build_phase(
                 docx_bytes,
                 context.source_paragraphs,
                 assembly_registry or state.generated_paragraph_registry or None,
+                run_id=context.run_id,
+                source_token=context.source_token,
             )
         if processed_image_assets:
             docx_bytes = dependencies.reinsert_inline_images(docx_bytes, processed_image_assets)
@@ -506,8 +508,9 @@ def run_docx_build_phase(
     latest_result_notice: dict[str, str] | None = None
     formatting_diagnostics_artifacts: Sequence[str] = []
     if docx_bytes is not None:
-        formatting_diagnostics_artifacts = collect_recent_formatting_diagnostics_artifacts(
-            since_epoch_seconds=build_started_at_epoch,
+        formatting_diagnostics_artifacts = collect_owned_formatting_diagnostics_artifacts(
+            run_id=context.run_id,
+            source_token=context.source_token,
             diagnostics_dir=diagnostics_dir,
         )
     if formatting_diagnostics_artifacts:
@@ -552,11 +555,7 @@ def run_docx_build_phase(
         "latest_result_notice": latest_result_notice,
         "pre_cleanup_formatting_baseline": pre_cleanup_formatting_baseline,
         "formatting_diagnostics_artifacts": list(formatting_diagnostics_artifacts),
-        # spec 043 P1: carry the diagnostics window (start epoch + dir) into finalize so a
-        # DEFERRED base build (reader cleanup enabled) can RE-COLLECT the FINAL-DOCX
-        # formatting diagnostics written during the reader-cleanup build — the pre-cleanup
-        # gate above ran on an empty list because ``docx_bytes`` was None at that point.
-        "build_started_at_epoch": build_started_at_epoch,
+        # Deferred builds re-collect from this directory by exact context ownership.
         "diagnostics_dir": diagnostics_dir,
         "assembly_entries": list(assembly_result.entries),
         "result_manifest": result_manifest,
@@ -598,6 +597,23 @@ def finalize_processing_success(
     job_count: int,
     current_markdown_fn: Callable[[Sequence[str]], str],
 ) -> PipelineResult:
+    def _stop_at_late_boundary(detail: str) -> PipelineResult | None:
+        stop_predicate = getattr(dependencies, "should_stop_processing", None)
+        if not callable(stop_predicate) or not stop_predicate(context.runtime):
+            return None
+        return emit_stopped_result(
+            emitters=emitters,
+            runtime=context.runtime,
+            detail=detail,
+            progress=1.0,
+            block_index=job_count,
+            block_count=job_count,
+        )
+
+    stopped_result = _stop_at_late_boundary("Обработка остановлена перед финализацией результата.")
+    if stopped_result is not None:
+        return stopped_result
+
     assembly_result = assemble_final_markdown(
         processed_chunks=state.processed_chunks,
         generated_paragraph_registry=state.generated_paragraph_registry,
@@ -694,6 +710,11 @@ def finalize_processing_success(
             latest_markdown=runtime_display_markdown,
             latest_docx_bytes=resolved_docx_bytes,
             latest_narration_text=None,
+            latest_delivery_disposition={
+                "status": "blocked",
+                "explanation": "Результат заблокирован document-level quality gate.",
+                "message_key": "result.blocked_delivery_notice",
+            },
             latest_result_notice={
                 "level": "error",
                 "message": "Результат заблокирован document-level quality gate.",
@@ -726,19 +747,31 @@ def finalize_processing_success(
     reader_cleanup_report: dict[str, object] | None = None
     reader_cleanup_raw_markdown: str | None = None
     reader_cleanup_result_notice: dict[str, str] | None = None
-    reader_cleanup_postprocess = _run_reader_cleanup_postprocess(
-        context=context,
-        dependencies=dependencies,
-        emitters=emitters,
-        state=state,
-        cleanup_input_markdown=gate_input_markdown,
-        runtime_display_markdown=runtime_display_markdown,
-        base_docx_bytes=cast(bytes | None, docx_phase.get("docx_bytes")),
-        job_count=job_count,
-        processed_image_assets=cast(Sequence[Any], docx_phase.get("processed_image_assets") or []),
-        formatting_registry=build_generated_paragraph_registry_from_entries(assembly_result.entries),
-        base_docx_builder=cast(Callable[[], bytes] | None, docx_phase.get("base_docx_builder")),
-    )
+    result_notices: list[dict[str, object]] = [
+        dict(notice)
+        for notice in cast(Sequence[Mapping[str, object]], docx_phase.get("result_notices") or ())
+        if isinstance(notice, Mapping)
+    ]
+    stopped_result = _stop_at_late_boundary("Обработка остановлена перед reader cleanup.")
+    if stopped_result is not None:
+        return stopped_result
+    try:
+        reader_cleanup_postprocess = _run_reader_cleanup_postprocess(
+            context=context,
+            dependencies=dependencies,
+            emitters=emitters,
+            state=state,
+            cleanup_input_markdown=gate_input_markdown,
+            runtime_display_markdown=runtime_display_markdown,
+            base_docx_bytes=cast(bytes | None, docx_phase.get("docx_bytes")),
+            job_count=job_count,
+            processed_image_assets=cast(Sequence[Any], docx_phase.get("processed_image_assets") or []),
+            formatting_registry=build_generated_paragraph_registry_from_entries(assembly_result.entries),
+            base_docx_builder=cast(Callable[[], bytes] | None, docx_phase.get("base_docx_builder")),
+        )
+    except LatePhaseStopped:
+        stopped_result = _stop_at_late_boundary("Обработка остановлена во время reader cleanup.")
+        return stopped_result or "stopped"
     # The delivered display markdown BEFORE reader cleanup. The pre-cleanup quality report
     # already describes this content (its hygiene metrics were measured on it), so only a
     # reader-cleanup change to it — NOT the earlier display-hygiene pass that produced it —
@@ -749,7 +782,16 @@ def finalize_processing_success(
     reader_cleanup_report = reader_cleanup_postprocess.report
     reader_cleanup_raw_markdown = reader_cleanup_postprocess.raw_markdown
     reader_cleanup_result_notice = reader_cleanup_postprocess.result_notice
+    result_notices.extend(
+        dict(notice)
+        for notice in cast(
+            Sequence[Mapping[str, object]], reader_cleanup_postprocess.result_notices
+        )
+    )
     final_generated_paragraph_registry = reader_cleanup_postprocess.final_generated_paragraph_registry
+    stopped_result = _stop_at_late_boundary("Обработка остановлена до финальной проверки результата.")
+    if stopped_result is not None:
+        return stopped_result
     if final_generated_paragraph_registry is not None:
         docx_phase = dict(docx_phase)
         docx_phase["final_generated_paragraph_registry"] = final_generated_paragraph_registry
@@ -771,7 +813,7 @@ def finalize_processing_success(
         docx_phase = dict(docx_phase)
         docx_phase["docx_bytes"] = final_docx_bytes
         docx_phase["runtime_display_markdown"] = runtime_display_markdown
-    if reader_cleanup_result_notice is not None:
+    if reader_cleanup_result_notice is not None and quality_report.get("quality_status") != "warn":
         docx_phase = dict(docx_phase)
         docx_phase["latest_result_notice"] = reader_cleanup_result_notice
 
@@ -785,24 +827,44 @@ def finalize_processing_success(
     # deferred the pre-cleanup list is already authoritative (spec 042 already gated it),
     # so we keep it verbatim and behaviour stays byte-identical.
     post_cleanup_formatting_diagnostics_artifacts: Sequence[str] = formatting_diagnostics_artifacts
-    post_cleanup_caption_conflict_count = 0
+    post_cleanup_diagnostics_result_notice: dict[str, str] | None = None
     base_build_was_deferred = _should_run_reader_cleanup(context=context)
     if base_build_was_deferred:
         recollect_diagnostics_dir = docx_phase.get("diagnostics_dir")
-        recollect_since_epoch = cast(float, docx_phase.get("build_started_at_epoch") or 0.0)
         if isinstance(recollect_diagnostics_dir, Path):
-            post_cleanup_formatting_diagnostics_artifacts = collect_recent_formatting_diagnostics_artifacts(
-                since_epoch_seconds=recollect_since_epoch,
+            post_cleanup_formatting_diagnostics_artifacts = collect_owned_formatting_diagnostics_artifacts(
+                run_id=context.run_id,
+                source_token=context.source_token,
                 diagnostics_dir=recollect_diagnostics_dir,
             )
-        # Aggregate the caption→heading conflict count across ALL final diagnostics payloads
-        # (mirrors the acceptance verdict + spec 043 P2 delivery-gate aggregation) so the gate
-        # fires even when a conflict lives in a non-last artifact. Keyed on the conflict signal
-        # only (no per-book literal).
-        post_cleanup_caption_conflict_count = sum(
-            len(cast(Sequence[object], payload.get("caption_heading_conflicts") or []))
-            for payload in _load_formatting_diagnostics_payloads(post_cleanup_formatting_diagnostics_artifacts)
-            if isinstance(payload, Mapping)
+    diagnostics_set_changed = list(post_cleanup_formatting_diagnostics_artifacts) != list(
+        formatting_diagnostics_artifacts
+    )
+    if base_build_was_deferred and diagnostics_set_changed and post_cleanup_formatting_diagnostics_artifacts:
+        severity, activity_message, user_summary = build_formatting_diagnostics_user_feedback(
+            post_cleanup_formatting_diagnostics_artifacts
+        )
+        emitters.emit_activity(context.runtime, activity_message)
+        post_cleanup_diagnostics_result_notice = {
+            "level": "info" if severity == "INFO" else "warning",
+            "message": user_summary,
+        }
+        if severity != "INFO":
+            emitters.emit_log(
+                context.runtime,
+                status=severity,
+                block_index=job_count,
+                block_count=job_count,
+                target_chars=len(runtime_display_markdown),
+                context_chars=0,
+                details=user_summary,
+            )
+        dependencies.log_event(
+            logging.WARNING,
+            "formatting_diagnostics_artifacts_detected",
+            "Deferred DOCX build saved formatting diagnostics artifacts.",
+            filename=context.uploaded_filename,
+            artifact_paths=list(post_cleanup_formatting_diagnostics_artifacts),
         )
 
     # F10 + F8 (spec 006 increment / round-4): the FINAL authoritative quality report must
@@ -812,21 +874,11 @@ def finalize_processing_success(
     # carry the acceptance verdict into it, and SUPERSEDE the pre-cleanup artifact — dropping
     # the now-stale file — so the saved record, the delivered result notice, the result
     # artifact, and any gate error all reference the delivered content, never the outdated
-    # pre-cleanup report. The trigger is a reader-cleanup change specifically (compared to the
-    # pre-reader-cleanup delivered markdown, NOT ``gate_input_markdown`` whose raw/structural
-    # metrics the report legitimately keeps): when reader cleanup leaves the delivered markdown
-    # unchanged the pre-cleanup report is already authoritative, so behaviour is byte-identical
-    # (no rebuild, no second write, no second gate pass). The empty-DOCX guard was already run.
-    #
-    # spec 043 P1: the caption→heading delivery gate must also fire when the base build was
-    # DEFERRED and the RE-COLLECTED final diagnostics carry a conflict — even if reader
-    # cleanup left the delivered markdown UNCHANGED (the deferred build still produced the
-    # DOCX + diagnostics the pre-cleanup gate never saw). So the report rebuild is triggered
-    # by a markdown change OR a final-diagnostics caption conflict; every rebuild judges the
-    # RE-COLLECTED ``post_cleanup_formatting_diagnostics_artifacts`` (the delivered artifact)
-    # instead of the stale pre-cleanup list. The non-caption, unchanged-markdown case takes
-    # the ``else`` branch below and stays byte-identical.
-    if runtime_display_markdown != pre_reader_cleanup_display_markdown or post_cleanup_caption_conflict_count > 0:
+    # pre-cleanup report. A delivered-markdown change or any exact-owned diagnostics-set
+    # change makes the report stale. Rebuilding it does not change policy: caption conflict
+    # remains the only diagnostics-derived delivery gate; other diagnostics stay review/UI
+    # evidence. The empty-DOCX guard was already run.
+    if runtime_display_markdown != pre_reader_cleanup_display_markdown or diagnostics_set_changed:
         quality_report = _build_translation_quality_report(
             context=context,
             final_markdown=runtime_display_markdown,
@@ -875,17 +927,22 @@ def finalize_processing_success(
                 quality_status=quality_report.get("quality_status"),
                 gate_reasons=list(cast(Sequence[str], quality_report.get("gate_reasons") or [])),
             )
-        # Refresh the delivered result notice to reflect the authoritative report, unless
-        # reader cleanup already set its own notice (which keeps precedence, as before).
-        if reader_cleanup_result_notice is None:
-            docx_phase = dict(docx_phase)
-            if quality_report.get("quality_status") == "warn":
-                docx_phase["latest_result_notice"] = {
-                    "level": "warning",
-                    "message": _build_quality_warn_notice_message(quality_report),
-                }
-            else:
-                docx_phase["latest_result_notice"] = None
+        # Keep the legacy single notice compatible: the authoritative quality warning
+        # retains that slot, while typed cleanup/narration facts coexist in
+        # ``result_notices``. When there is no quality warning, preserve the cleanup
+        # legacy notice before falling back to formatting diagnostics.
+        docx_phase = dict(docx_phase)
+        if quality_report.get("quality_status") == "warn":
+            docx_phase["latest_result_notice"] = {
+                "level": "warning",
+                "message": _build_quality_warn_notice_message(quality_report),
+            }
+        elif reader_cleanup_result_notice is not None:
+            docx_phase["latest_result_notice"] = reader_cleanup_result_notice
+        elif post_cleanup_diagnostics_result_notice is not None:
+            docx_phase["latest_result_notice"] = post_cleanup_diagnostics_result_notice
+        else:
+            docx_phase["latest_result_notice"] = None
         if quality_report.get("quality_status") == "fail":
             post_cleanup_gate_reasons = list(
                 cast(Sequence[str], quality_report.get("gate_reasons") or [])
@@ -904,10 +961,16 @@ def finalize_processing_success(
                 latest_markdown=runtime_display_markdown,
                 latest_docx_bytes=_resolve_docx_phase_bytes(docx_phase),
                 latest_narration_text=None,
+                latest_delivery_disposition={
+                    "status": "blocked",
+                    "explanation": "Результат заблокирован document-level quality gate.",
+                    "message_key": "result.blocked_delivery_notice",
+                },
                 latest_result_notice={
                     "level": "error",
                     "message": "Результат заблокирован document-level quality gate.",
                 },
+                latest_result_notices=result_notices,
                 last_error=error_message,
             )
             dependencies.log_event(
@@ -985,13 +1048,23 @@ def finalize_processing_success(
                     gate_reasons=list(cast(Sequence[str], quality_report.get("gate_reasons") or [])),
                 )
 
+    stopped_result = _stop_at_late_boundary("Обработка остановлена перед подготовкой narration.")
+    if stopped_result is not None:
+        return stopped_result
     try:
         narration_text = _build_narration_text(
             context=context,
             dependencies=dependencies,
             emitters=emitters,
             state=state,
+            final_generated_paragraph_registry=cast(
+                Sequence[object] | None,
+                docx_phase.get("final_generated_paragraph_registry"),
+            ),
         )
+    except LatePhaseStopped:
+        stopped_result = _stop_at_late_boundary("Обработка остановлена во время подготовки narration.")
+        return stopped_result or "stopped"
     except Exception as exc:
         error_message = dependencies.present_error(
             "audiobook_postprocess_failed",
@@ -1003,12 +1076,23 @@ def finalize_processing_success(
         if context.processing_operation in {"edit", "translate"}:
             narration_text = None
             narration_error_message = error_message
+            narration_notice: dict[str, object] = {
+                "kind": "narration",
+                "level": "warning",
+                "message_key": (
+                    "result.narration_omitted"
+                    if "narration_cleanup_projection_unsafe" in str(exc)
+                    else "result.narration_failed"
+                ),
+            }
+            result_notices.append(narration_notice)
             emitters.emit_state(
                 context.runtime,
                 latest_docx_bytes=_resolve_docx_phase_bytes(docx_phase),
                 latest_markdown=runtime_display_markdown,
                 latest_narration_text=None,
                 latest_result_notice=docx_phase["latest_result_notice"],
+                latest_result_notices=result_notices,
                 last_error=error_message,
             )
             dependencies.log_event(
@@ -1055,12 +1139,18 @@ def finalize_processing_success(
             if context.processing_operation in {"edit", "translate"}:
                 narration_text = None
                 narration_error_message = error_message
+                result_notices.append({
+                    "kind": "narration",
+                    "level": "warning",
+                    "message_key": "result.narration_failed",
+                })
                 emitters.emit_state(
                     context.runtime,
                     latest_docx_bytes=_resolve_docx_phase_bytes(docx_phase),
                     latest_markdown=runtime_display_markdown,
                     latest_narration_text=None,
                     latest_result_notice=docx_phase["latest_result_notice"],
+                    latest_result_notices=result_notices,
                     last_error=error_message,
                 )
                 dependencies.log_event(
@@ -1098,6 +1188,9 @@ def finalize_processing_success(
         quality_report=quality_report,
         latest_result_notice=cast(Mapping[str, str] | None, docx_phase.get("latest_result_notice")),
     )
+    stopped_result = _stop_at_late_boundary("Обработка остановлена до сохранения результата.")
+    if stopped_result is not None:
+        return stopped_result
     emitters.emit_state(
         context.runtime,
         final_generated_paragraph_registry=cast(
@@ -1107,7 +1200,15 @@ def finalize_processing_success(
         latest_markdown=runtime_display_markdown,
         latest_narration_text=narration_text,
         latest_quality_warning=quality_warning,
+        latest_delivery_disposition={
+            "status": (
+                "accepted_with_advisory"
+                if quality_report.get("quality_status") == "warn"
+                else "accepted"
+            )
+        },
         latest_result_notice=docx_phase["latest_result_notice"],
+        latest_result_notices=result_notices,
         last_error=narration_error_message,
     )
     # F4 + F12: track the persistence of the PRIMARY result artifacts
@@ -1120,6 +1221,9 @@ def finalize_processing_success(
     # user-facing result files DID reach disk.
     primary_artifacts_persisted = True
     primary_artifacts_persist_error: str | None = None
+    stopped_result = _stop_at_late_boundary("Обработка остановлена до сохранения результата.")
+    if stopped_result is not None:
+        return stopped_result
     try:
         reassembly_plan = build_reassembly_plan(
             output_mode=str(getattr(context, "output_mode", "") or ""),
@@ -1152,6 +1256,9 @@ def finalize_processing_success(
         # verify markdown + docx are present, on disk, and non-empty. A failure raises
         # OSError so it funnels into the SAME primary-persistence-failure path below.
         _verify_primary_result_artifacts_or_raise(result_artifact_paths)
+        stopped_result = _stop_at_late_boundary("Обработка остановлена после сохранения основного результата.")
+        if stopped_result is not None:
+            return stopped_result
     except OSError as exc:
         primary_artifacts_persisted = False
         primary_artifacts_persist_error = f"ui_result_artifacts_save_failed: {exc}"
@@ -1249,13 +1356,24 @@ def finalize_processing_success(
     # genuinely produced a delivered result, so the "completed" progress frame and the
     # "succeeded" return are unchanged.
     if not primary_artifacts_persisted:
+        persistence_notice = {
+            "kind": "persistence",
+            "level": "warning",
+            "message_key": "result.primary_artifacts_not_saved",
+        }
+        if not any(notice.get("kind") == "persistence" for notice in result_notices):
+            result_notices.append(persistence_notice)
         emitters.emit_state(
             context.runtime,
             latest_result_notice={
                 "level": "warning",
                 "message": "Результат обработан, но не удалось сохранить файлы результата на диск.",
             },
+            latest_result_notices=result_notices,
         )
+    stopped_result = _stop_at_late_boundary("Обработка остановлена до завершения результата.")
+    if stopped_result is not None:
+        return stopped_result
     emitters.emit_finalize(
         context.runtime,
         "Обработка завершена",

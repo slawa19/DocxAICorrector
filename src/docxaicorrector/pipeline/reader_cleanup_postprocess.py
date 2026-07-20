@@ -27,6 +27,7 @@ from docxaicorrector.pipeline.reader_cleanup_rebuild import (
     _should_run_reader_cleanup,
     _write_reader_cleanup_lineage_artifact,
 )
+from docxaicorrector.pipeline.contracts import LatePhaseStopped
 from docxaicorrector.pipeline.text_call_support import _resolve_text_call_target
 from docxaicorrector.reader_cleanup_mvp import (
     ReaderCleanupStageError,
@@ -36,6 +37,15 @@ from docxaicorrector.reader_cleanup_mvp import (
     resolve_reader_cleanup_config,
     run_reader_cleanup,
 )
+
+
+def _reader_cleanup_count_is_positive(value: object) -> bool:
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        return False
+    try:
+        return int(value) > 0
+    except ValueError:
+        return False
 
 
 def _run_reader_cleanup_postprocess(
@@ -58,11 +68,19 @@ def _run_reader_cleanup_postprocess(
     )
 
     def _base_docx_bytes() -> bytes:
+        _raise_if_stopped()
         if base_docx_bytes is not None:
             return base_docx_bytes
         if base_docx_builder is not None:
-            return base_docx_builder()
+            built_docx_bytes = base_docx_builder()
+            _raise_if_stopped()
+            return built_docx_bytes
         return b""
+
+    def _raise_if_stopped() -> None:
+        stop_predicate = getattr(dependencies, "should_stop_processing", None)
+        if callable(stop_predicate) and stop_predicate(context.runtime):
+            raise LatePhaseStopped()
 
     active_formatting_registry = formatting_registry or state.generated_paragraph_registry or None
     base_final_generated_registry = _resolve_final_generated_paragraph_registry(
@@ -79,6 +97,8 @@ def _run_reader_cleanup_postprocess(
             result_notice=None,
             final_generated_paragraph_registry=base_final_generated_registry,
         )
+
+    _raise_if_stopped()
 
     config = resolve_reader_cleanup_config(app_config=context.app_config, fallback_model=context.model)
     if not config.enabled:
@@ -122,6 +142,7 @@ def _run_reader_cleanup_postprocess(
     )
 
     def _global_plan_provider(request_payload: Mapping[str, object]) -> str:
+        _raise_if_stopped()
         target_text = json.dumps(request_payload, ensure_ascii=False, indent=2)
         started_at = time.perf_counter()
         dependencies.log_event(
@@ -148,6 +169,7 @@ def _run_reader_cleanup_postprocess(
             expected_paragraph_ids=None,
             marker_mode=False,
         )
+        _raise_if_stopped()
         dependencies.log_event(
             logging.INFO,
             "reader_cleanup_global_plan_completed",
@@ -165,6 +187,7 @@ def _run_reader_cleanup_postprocess(
         return response
 
     def _operation_provider(request_payload: Mapping[str, object], chunk_index: int, chunk_count: int) -> str:
+        _raise_if_stopped()
         target_text = json.dumps(request_payload, ensure_ascii=False, indent=2)
         context_before = str(request_payload.get("context_before_preview", "") or "")
         context_after = str(request_payload.get("context_after_preview", "") or "")
@@ -198,6 +221,7 @@ def _run_reader_cleanup_postprocess(
             expected_paragraph_ids=None,
             marker_mode=False,
         )
+        _raise_if_stopped()
         dependencies.log_event(
             logging.INFO,
             "reader_cleanup_chunk_completed",
@@ -217,6 +241,7 @@ def _run_reader_cleanup_postprocess(
         return response
 
     def _repair_provider(request_payload: Mapping[str, object], chunk_index: int, chunk_count: int) -> str:
+        _raise_if_stopped()
         target_text = json.dumps(request_payload, ensure_ascii=False, indent=2)
         started_at = time.perf_counter()
         dependencies.log_event(
@@ -245,6 +270,7 @@ def _run_reader_cleanup_postprocess(
             expected_paragraph_ids=None,
             marker_mode=False,
         )
+        _raise_if_stopped()
         dependencies.log_event(
             logging.INFO,
             "reader_cleanup_schema_repair_completed",
@@ -292,6 +318,19 @@ def _run_reader_cleanup_postprocess(
                 generated_paragraph_registry=active_formatting_registry,
             )
             stats = cast(Mapping[str, object], cleanup_result.report_payload.get("stats") or {})
+            cleanup_notice = None
+            legacy_cleanup_notice = None
+            if _reader_cleanup_count_is_positive(stats.get("failed_chunk_count")):
+                cleanup_notice = {
+                    "kind": "cleanup",
+                    "level": "warning",
+                    "message_key": "result.cleanup_advisory_failed",
+                    "message": "Reader cleanup was only partially available; the accepted base content was preserved.",
+                }
+                legacy_cleanup_notice = {
+                    "level": cleanup_notice["level"],
+                    "message": cleanup_notice["message"],
+                }
             dependencies.log_event(
                 logging.INFO,
                 "reader_cleanup_noop",
@@ -316,8 +355,9 @@ def _run_reader_cleanup_postprocess(
                 docx_bytes=_base_docx_bytes(),
                 report=cleanup_result.report_payload,
                 raw_markdown=cleanup_result.raw_markdown,
-                result_notice=None,
+                result_notice=legacy_cleanup_notice,
                 final_generated_paragraph_registry=base_final_generated_registry,
+                result_notices=(cleanup_notice,) if cleanup_notice is not None else (),
             )
 
         cleanup_formatting_registry, cleanup_formatting_lineage = _derive_reader_cleanup_generated_paragraph_registry(
@@ -352,6 +392,7 @@ def _run_reader_cleanup_postprocess(
             cleaned_runtime_display_markdown,
             preliminary_final_generated_registry,
         )
+        _raise_if_stopped()
         cleanup_lineage_artifact_path = _write_reader_cleanup_lineage_artifact(
             filename=context.uploaded_filename,
             raw_markdown=cleanup_result.raw_markdown,
@@ -363,6 +404,7 @@ def _run_reader_cleanup_postprocess(
             cleanup_formatting_registry=cleanup_formatting_registry,
             cleanup_formatting_lineage=cleanup_formatting_lineage,
         )
+        _raise_if_stopped()
         cleaned_docx_bytes = _rebuild_docx_for_markdown(
             markdown_text=docx_rebuild_markdown,
             context=context,
@@ -371,6 +413,7 @@ def _run_reader_cleanup_postprocess(
             processed_image_assets=processed_image_assets,
             generated_paragraph_registry=preliminary_final_generated_registry,
         )
+        _raise_if_stopped()
         final_generated_registry = _resolve_final_generated_paragraph_registry(
             markdown_text=docx_rebuild_markdown,
             generated_paragraph_registry=preliminary_final_generated_registry,
@@ -382,6 +425,19 @@ def _run_reader_cleanup_postprocess(
             latest_docx_bytes=cleaned_docx_bytes,
         )
         stats = cast(Mapping[str, object], cleanup_result.report_payload.get("stats") or {})
+        cleanup_notice = None
+        legacy_cleanup_notice = None
+        if _reader_cleanup_count_is_positive(stats.get("failed_chunk_count")):
+            cleanup_notice = {
+                "kind": "cleanup",
+                "level": "warning",
+                "message_key": "result.cleanup_advisory_failed",
+                "message": "Reader cleanup completed with unavailable chunks; accepted cleanup operations were preserved.",
+            }
+            legacy_cleanup_notice = {
+                "level": cleanup_notice["level"],
+                "message": cleanup_notice["message"],
+            }
         dependencies.log_event(
             logging.INFO,
             "reader_cleanup_applied",
@@ -428,8 +484,9 @@ def _run_reader_cleanup_postprocess(
             docx_bytes=cleaned_docx_bytes,
             report=cleanup_result.report_payload,
             raw_markdown=cleanup_result.raw_markdown,
-            result_notice=None,
+            result_notice=legacy_cleanup_notice,
             final_generated_paragraph_registry=final_generated_registry,
+            result_notices=(cleanup_notice,) if cleanup_notice is not None else (),
         )
     except Exception as exc:
         error_message = dependencies.present_error(
@@ -441,12 +498,14 @@ def _run_reader_cleanup_postprocess(
         )
         strict_report = exc.report_payload if isinstance(exc, ReaderCleanupStageError) else None
         strict_raw_markdown = exc.raw_markdown if isinstance(exc, ReaderCleanupStageError) else cleanup_input_markdown
-        result_notice: dict[str, str] | None = None
+        typed_result_notice: dict[str, str] = {
+            "kind": "cleanup",
+            "level": "warning",
+            "message_key": "result.cleanup_advisory_failed",
+            "message": "Reader cleanup could not be applied; the base translated result was preserved.",
+        }
         if config.policy == "strict":
-            result_notice = {
-                "level": "warning",
-                "message": "Reader cleanup strict stage failed; preserved the raw translated result without cleanup.",
-            }
+            typed_result_notice["message"] = "Reader cleanup strict stage failed; preserved the raw translated result without cleanup."
             dependencies.log_event(
                 logging.WARNING,
                 "reader_cleanup_strict_failed_base_result_preserved",
@@ -473,7 +532,10 @@ def _run_reader_cleanup_postprocess(
             latest_docx_bytes=_base_docx_bytes(),
             latest_markdown=runtime_display_markdown,
             latest_narration_text=None,
-            latest_result_notice=result_notice,
+            latest_result_notice={
+                "level": typed_result_notice["level"],
+                "message": typed_result_notice["message"],
+            },
             last_error=error_message,
         )
         return ReaderCleanupPostprocessResult(
@@ -481,6 +543,10 @@ def _run_reader_cleanup_postprocess(
             docx_bytes=_base_docx_bytes(),
             report=cast(dict[str, object] | None, strict_report),
             raw_markdown=strict_raw_markdown,
-            result_notice=result_notice,
+            result_notice={
+                "level": typed_result_notice["level"],
+                "message": typed_result_notice["message"],
+            },
             final_generated_paragraph_registry=base_final_generated_registry,
+            result_notices=(typed_result_notice,),
         )

@@ -196,6 +196,8 @@ def _start_background_processing(
     uploaded_filename: str,
     uploaded_token: str,
     source_bytes: bytes,
+    source_format: str = "docx",
+    conversion_backend: str | None = None,
     prepared_source_key: str | None = None,
     structure_fingerprint: str | None = None,
     jobs: list[dict[str, str | int]],
@@ -272,6 +274,8 @@ def _start_background_processing(
         uploaded_filename=uploaded_filename,
         uploaded_token=uploaded_token,
         source_bytes=source_bytes,
+        source_format=source_format,
+        conversion_backend=conversion_backend,
         prepared_source_key=prepared_source_key,
         structure_fingerprint=structure_fingerprint,
         jobs=jobs,
@@ -691,7 +695,26 @@ def _render_completed_result_view(result: Mapping[str, object]) -> None:
         audiobook_postprocess_enabled=bool(result.get("audiobook_postprocess_enabled", False)),
         success_message=t("result.success_document_processed"),
         quality_warning=cast(Mapping[str, object] | None, result.get("quality_warning")),
+        delivery_disposition=cast(Mapping[str, object] | None, result.get("delivery_disposition")),
+        result_notices=cast(list[Mapping[str, object]], result.get("result_notices") or []),
     )
+
+
+def _select_current_result_for_source(
+    current_result: Mapping[str, object] | None,
+    *,
+    source_token: str,
+) -> Mapping[str, object] | None:
+    if current_result is None or str(current_result.get("source_token") or "") != source_token:
+        return None
+    delivery_disposition = current_result.get("delivery_disposition")
+    is_blocked = (
+        isinstance(delivery_disposition, Mapping)
+        and str(delivery_disposition.get("status", "") or "") == "blocked"
+    )
+    if is_blocked or current_result.get("docx_bytes") or current_result.get("narration_text"):
+        return current_result
+    return None
 
 
 def main() -> None:
@@ -723,6 +746,7 @@ def main() -> None:
         audiobook_postprocess_enabled,
     ) = _resolve_sidebar_settings(render_sidebar(app_config))
     app_config = dict(app_config)
+    app_config["reader_cleanup_enabled"] = bool(app_config.get("reader_cleanup_default", False))
     app_config["keep_all_image_variants"] = keep_all_image_variants
     app_config["processing_operation"] = processing_operation
     app_config["source_language"] = source_language
@@ -814,6 +838,8 @@ def main() -> None:
             uploaded_widget_payload,
             chunk_size=chunk_size,
             processing_operation=processing_operation,
+            source_language=source_language,
+            target_language=target_language,
         )
         prepared_run_context = get_prepared_run_context_for_marker(preparation_request_marker)
         if should_start_preparation_for_marker(preparation_request_marker):
@@ -854,6 +880,8 @@ def main() -> None:
             uploaded_widget_payload,
             chunk_size=chunk_size,
             processing_operation=processing_operation,
+            source_language=source_language,
+            target_language=target_language,
         )
         prepared_run_context = get_prepared_run_context_for_marker(current_preparation_request_marker)
         if prepared_run_context is None:
@@ -997,9 +1025,9 @@ def main() -> None:
         st.caption(last_log_hint)
 
     processing_snapshot = get_processing_session_snapshot()
-    has_completed_result = bool(
-        (st.session_state.get("latest_docx_bytes") or st.session_state.get("latest_narration_text"))
-        and processing_snapshot.latest_source_token == uploaded_file_token
+    selected_result = _select_current_result_for_source(
+        current_result,
+        source_token=uploaded_file_token,
     )
     if not restartable_outcome:
         preparation_summary = get_latest_preparation_summary()
@@ -1013,24 +1041,14 @@ def main() -> None:
         image_assets=cast(list[object], st.session_state.get("image_assets", [])),
     )
 
-    if has_completed_result:
-        _render_completed_result_view(
-            {
-                "docx_bytes": st.session_state.get("latest_docx_bytes"),
-                "markdown_text": str(st.session_state.get("latest_markdown") or ""),
-                "source_name": uploaded_filename,
-                "narration_text": st.session_state.get("latest_narration_text"),
-                "processing_operation": processing_snapshot.latest_processing_operation,
-                "audiobook_postprocess_enabled": processing_snapshot.latest_audiobook_postprocess_enabled,
-                "quality_warning": st.session_state.get("latest_quality_warning"),
-            }
-        )
+    if selected_result is not None:
+        _render_completed_result_view(selected_result)
 
     _finalize_app_frame()
     action = _render_processing_controls(
         can_start=True,
         is_processing=False,
-        emphasize_start=not has_completed_result,
+        emphasize_start=selected_result is None,
     )
     document_context_prompt = _build_document_context_prompt(prepared_run_context=prepared_run_context)
     if action == "start":
@@ -1038,6 +1056,8 @@ def main() -> None:
             uploaded_filename=uploaded_filename,
             uploaded_token=uploaded_file_token,
             source_bytes=uploaded_file_bytes,
+            source_format=str(getattr(prepared_run_context, "source_format", "docx") or "docx"),
+            conversion_backend=getattr(prepared_run_context, "conversion_backend", None),
             prepared_source_key=str(getattr(prepared_run_context, "prepared_source_key", "") or ""),
             structure_fingerprint=str(getattr(prepared_run_context, "structure_fingerprint", "") or ""),
             jobs=cast(list[dict[str, str | int]], jobs),

@@ -135,7 +135,6 @@ from docxaicorrector.validation.structural_prep_snapshot_helpers import (  # noq
 from docxaicorrector.structure.validation import validate_structure_quality
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
-FORMATTING_DIAGNOSTICS_DIR = PROJECT_ROOT / ".run" / "formatting_diagnostics"
 
 
 def _extract_quality_report_artifact_path(event_log: Sequence[Mapping[str, object]]) -> str | None:
@@ -218,13 +217,13 @@ def _emit_target_alignment_trace_artifact(
     topology_projection: object | None,
     formatting_payload: Mapping[str, object] | None,
     generated_paragraph_registry: Sequence[Mapping[str, object]] | None,
-) -> None:
+) -> str | None:
     if formatting_payload is None or not generated_paragraph_registry:
-        return
+        return None
 
     raw_unmapped_target_indexes = formatting_payload.get("unmapped_target_indexes")
     if not isinstance(raw_unmapped_target_indexes, list):
-        return
+        return None
 
     unmapped_target_indexes: list[int] = []
     for value in raw_unmapped_target_indexes:
@@ -233,7 +232,7 @@ def _emit_target_alignment_trace_artifact(
         except (TypeError, ValueError):
             continue
     if not unmapped_target_indexes:
-        return
+        return None
 
     paragraph_unit_keys, _ = _build_source_paragraph_unit_membership(source_paragraphs, topology_projection)
     generated_registry_alignments, _ = _align_target_indexes_from_generated_registry(
@@ -265,9 +264,10 @@ def _emit_target_alignment_trace_artifact(
     )
     aligned_via_full_inference = sum(1 for target_index in unmapped_target_indexes if full_alignments.get(target_index))
 
-    write_formatting_diagnostics_artifact(
+    return write_formatting_diagnostics_artifact(
         stage="target_alignment_trace",
         filename_prefix="target_alignment_trace",
+        scope="offline",
         diagnostics={
             "unmapped_target_indexes": unmapped_target_indexes,
             "generated_registry_alignment_trace": compact_trace,
@@ -373,7 +373,6 @@ def run_structural_passthrough_validation(
     runtime_config = apply_runtime_resolution_to_app_config(app_config, runtime_resolution)
     runtime = _build_runtime_capture()
     event_log: list[dict[str, object]] = []
-    formatting_before = _snapshot_formatting_diagnostics_paths()
     try:
         result, prepared = _build_validation_processing_service(event_log).run_prepared_background_document(
             uploaded_file=UploadedFileStub(source_path.name, source_bytes),
@@ -423,8 +422,7 @@ def run_structural_passthrough_validation(
             validation_execution_mode="passthrough",
         )
 
-    formatting_after = _snapshot_formatting_diagnostics_paths()
-    formatting_paths = _collect_new_formatting_diagnostics_paths(formatting_before, formatting_after)
+    formatting_paths = _extract_run_formatting_diagnostics_paths(event_log)
     formatting_diagnostics = _load_formatting_diagnostics_payloads(formatting_paths)
     canonical_formatting_diagnostics = _select_canonical_formatting_diagnostics_payload(formatting_diagnostics)
     canonical_formatting_payloads = [] if canonical_formatting_diagnostics is None else [canonical_formatting_diagnostics]
@@ -553,12 +551,16 @@ def run_structural_passthrough_validation(
         formatting_payload=canonical_formatting_diagnostics,
         generated_paragraph_registry=cast(Sequence[Mapping[str, object]] | None, generated_paragraph_registry),
     )
-    _emit_target_alignment_trace_artifact(
+    target_alignment_trace_path = _emit_target_alignment_trace_artifact(
         source_paragraphs=source_paragraphs,
         topology_projection=getattr(prepared, "document_topology_projection", None),
         formatting_payload=canonical_formatting_diagnostics,
         generated_paragraph_registry=cast(Sequence[Mapping[str, object]] | None, generated_paragraph_registry),
     )
+    if target_alignment_trace_path:
+        formatting_diagnostics.extend(
+            _load_formatting_diagnostics_payloads([target_alignment_trace_path])
+        )
     _apply_metric_snapshot_fields(preparation_diagnostic_snapshot, metrics)
     _normalize_snapshot_or_metric_statuses(metrics)
     checks = _build_extraction_checks(document_profile, metrics)
@@ -910,15 +912,22 @@ def _build_validation_processing_service(event_log: list[dict[str, object]]):
     )
 
 
-def _snapshot_formatting_diagnostics_paths() -> set[str]:
-    if not FORMATTING_DIAGNOSTICS_DIR.exists():
-        return set()
-    return {str(path.resolve()) for path in FORMATTING_DIAGNOSTICS_DIR.glob("*.json") if path.is_file()}
-
-
-def _collect_new_formatting_diagnostics_paths(before: set[str], after: set[str]) -> list[str]:
-    new_paths = [Path(path) for path in after - before]
-    return [str(path) for path in sorted(new_paths, key=lambda candidate: (candidate.stat().st_mtime, str(candidate)))]
+def _extract_run_formatting_diagnostics_paths(
+    event_log: Sequence[Mapping[str, object]],
+) -> list[str]:
+    for event in reversed(event_log):
+        if str(event.get("event_id") or "") != "formatting_diagnostics_artifacts_detected":
+            continue
+        context = event.get("context")
+        if not isinstance(context, Mapping):
+            continue
+        artifact_paths = context.get("artifact_paths")
+        if not isinstance(artifact_paths, Sequence) or isinstance(
+            artifact_paths, (str, bytes, bytearray)
+        ):
+            continue
+        return [str(path) for path in artifact_paths if isinstance(path, str) and path]
+    return []
 
 
 def _load_formatting_diagnostics_payloads(artifact_paths: Sequence[str]) -> list[dict[str, object]]:

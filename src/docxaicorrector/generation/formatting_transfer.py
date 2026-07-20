@@ -150,11 +150,20 @@ def _collect_target_paragraphs(document) -> list[Paragraph]:
     ]
 
 
-def _write_formatting_diagnostics_artifact(stage: str, diagnostics: dict[str, object]) -> str | None:
+def _write_formatting_diagnostics_artifact(
+    stage: str,
+    diagnostics: dict[str, object],
+    *,
+    run_id: str | None = None,
+    source_token: str | None = None,
+) -> str | None:
     return write_formatting_diagnostics_artifact(
         stage=stage,
         diagnostics=diagnostics,
         diagnostics_dir=FORMATTING_DIAGNOSTICS_DIR,
+        scope="live" if run_id is not None or source_token is not None else "offline",
+        run_id=run_id,
+        source_token=source_token,
     )
 
 
@@ -167,11 +176,16 @@ def restore_source_formatting(
     docx_bytes: bytes,
     paragraphs: list[ParagraphUnit],
     generated_paragraph_registry: Sequence[Mapping[str, object]] | None = None,
+    *,
+    run_id: str | None = None,
+    source_token: str | None = None,
 ) -> bytes:
     return _restore_source_formatting_impl(
         docx_bytes,
         paragraphs,
         generated_paragraph_registry=generated_paragraph_registry,
+        run_id=run_id,
+        source_token=source_token,
         mismatch_event_name="paragraph_count_mismatch_restore",
         mismatch_log_message=(
             "Число source/target абзацев не совпадает при unified formatting restore; "
@@ -184,12 +198,17 @@ def preserve_source_paragraph_properties(
     docx_bytes: bytes,
     paragraphs: list[ParagraphUnit],
     generated_paragraph_registry: Sequence[Mapping[str, object]] | None = None,
+    *,
+    run_id: str | None = None,
+    source_token: str | None = None,
 ) -> bytes:
     """Canonical public formatting entry point for the current transition wave."""
     return apply_output_formatting(
         docx_bytes,
         paragraphs,
         generated_paragraph_registry=generated_paragraph_registry,
+        run_id=run_id,
+        source_token=source_token,
         mismatch_event_name="paragraph_count_mismatch_preserve",
         mismatch_log_message=(
             "Число source/target абзацев не совпадает при переносе свойств форматирования; "
@@ -203,6 +222,8 @@ def apply_output_formatting(
     paragraphs: list[ParagraphUnit],
     *,
     generated_paragraph_registry: Sequence[Mapping[str, object]] | None = None,
+    run_id: str | None = None,
+    source_token: str | None = None,
     mismatch_event_name: str,
     mismatch_log_message: str,
 ) -> bytes:
@@ -247,7 +268,12 @@ def apply_output_formatting(
     # whenever the AI added or removed even one paragraph in its output.
     diagnostics["list_restoration_decisions"] = _restore_list_numbering_for_mapped_paragraphs(document, mapping_pairs)
 
-    artifact_path = _write_formatting_diagnostics_artifact("restore", diagnostics)
+    artifact_path = _write_formatting_diagnostics_artifact(
+        "restore",
+        diagnostics,
+        run_id=run_id,
+        source_token=source_token,
+    )
     if mismatch_detected:
         log_event(
             logging.WARNING,
@@ -275,6 +301,8 @@ def _restore_source_formatting_impl(
     paragraphs: list[ParagraphUnit],
     *,
     generated_paragraph_registry: Sequence[Mapping[str, object]] | None = None,
+    run_id: str | None = None,
+    source_token: str | None = None,
     mismatch_event_name: str,
     mismatch_log_message: str,
 ) -> bytes:
@@ -282,6 +310,8 @@ def _restore_source_formatting_impl(
         docx_bytes,
         paragraphs,
         generated_paragraph_registry=generated_paragraph_registry,
+        run_id=run_id,
+        source_token=source_token,
         mismatch_event_name=mismatch_event_name,
         mismatch_log_message=mismatch_log_message,
     )

@@ -197,7 +197,7 @@ def test_main_restarts_background_preparation_when_chunk_size_changes(monkeypatc
 
     monkeypatch.setattr(app.st, "session_state", session_state)
     monkeypatch.setattr(app, "init_session_state", lambda: None)
-    monkeypatch.setattr(app, "_cached_load_app_config", lambda: {})
+    monkeypatch.setattr(app, "_cached_load_app_config", lambda: {"reader_cleanup_default": True})
     monkeypatch.setattr(app, "render_sidebar", lambda config: ("gpt-5.4", 7000, 3, "safe", True, "audiobook", "auto", "ru", False))
     monkeypatch.setattr(app, "_drain_processing_events", lambda: None)
     monkeypatch.setattr(app, "_drain_preparation_events", lambda: None)
@@ -227,12 +227,13 @@ def test_main_restarts_background_preparation_when_chunk_size_changes(monkeypatc
         raise AssertionError("Expected rerun after starting background preparation")
 
     assert len(start_calls) == 1
-    assert start_calls[0]["upload_marker"] == "report.docx:3:ba7816bf8f01cfea:7000:op=audiobook"
+    assert start_calls[0]["upload_marker"] == "report.docx:3:ba7816bf8f01cfea:7000:op=audiobook:sl=auto:tl=ru"
     assert start_calls[0]["chunk_size"] == 7000
     assert start_calls[0]["image_mode"] == "safe"
     assert start_calls[0]["keep_all_image_variants"] is True
     assert start_calls[0]["processing_operation"] == "audiobook"
     assert start_calls[0]["app_config"]["processing_operation"] == "audiobook"
+    assert start_calls[0]["app_config"]["reader_cleanup_enabled"] is True
     assert isinstance(start_calls[0]["uploaded_payload"], processing_runtime.FrozenUploadPayload)
     assert start_calls[0]["uploaded_payload"].filename == "report.docx"
     assert start_calls[0]["uploaded_payload"].content_bytes == b"abc"
@@ -1190,7 +1191,7 @@ def test_main_starts_full_document_processing_from_bottom_control(monkeypatch):
 
     monkeypatch.setattr(app.st, "session_state", session_state)
     monkeypatch.setattr(app, "init_session_state", lambda: None)
-    monkeypatch.setattr(app, "_cached_load_app_config", lambda: {})
+    monkeypatch.setattr(app, "_cached_load_app_config", lambda: {"reader_cleanup_default": True})
     monkeypatch.setattr(app, "render_sidebar", lambda config: ("gpt-5.4", 6000, 3, "safe", False))
     monkeypatch.setattr(app, "_drain_processing_events", lambda: None)
     monkeypatch.setattr(app, "_drain_preparation_events", lambda: None)
@@ -1242,6 +1243,7 @@ def test_main_starts_full_document_processing_from_bottom_control(monkeypatch):
     assert start_calls[0]["uploaded_token"] == "report.docx:3:token"
     assert start_calls[0]["jobs"] == prepared_run_context.jobs
     assert start_calls[0]["output_mode"] == "legacy_full_document"
+    assert start_calls[0]["app_config"]["reader_cleanup_enabled"] is True
 
 
 def test_main_uses_lightweight_freeze_for_pdf_upload(monkeypatch):

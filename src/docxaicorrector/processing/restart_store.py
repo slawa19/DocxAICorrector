@@ -1,8 +1,9 @@
 import logging
+import hashlib
 import re
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from docxaicorrector.core.constants import RUN_DIR
 from docxaicorrector.core.logger import log_event
@@ -47,6 +48,8 @@ def _store_persisted_source(
     source_name: str,
     source_token: str,
     source_bytes: bytes,
+    source_format: str = "docx",
+    conversion_backend: str | None = None,
     previous_source: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     RUN_DIR.mkdir(parents=True, exist_ok=True)
@@ -61,6 +64,9 @@ def _store_persisted_source(
         "token": source_token,
         "storage_path": str(storage_path),
         "size": len(source_bytes),
+        "payload_sha256": hashlib.sha256(source_bytes).hexdigest(),
+        "source_format": str(source_format or "docx").strip().lower(),
+        "conversion_backend": conversion_backend,
         "storage_kind": prefix,
     }
 
@@ -69,24 +75,28 @@ def _build_restart_source_path(session_id: str, source_token: str, source_name: 
     return _build_persisted_source_path("restart", session_id, source_token, source_name)
 
 
-def store_restart_source(*, session_id: str, source_name: str, source_token: str, source_bytes: bytes, previous_restart_source: dict[str, Any] | None = None) -> dict[str, Any]:
+def store_restart_source(*, session_id: str, source_name: str, source_token: str, source_bytes: bytes, source_format: str = "docx", conversion_backend: str | None = None, previous_restart_source: dict[str, Any] | None = None) -> dict[str, Any]:
     return _store_persisted_source(
         prefix="restart",
         session_id=session_id,
         source_name=source_name,
         source_token=source_token,
         source_bytes=source_bytes,
+        source_format=source_format,
+        conversion_backend=conversion_backend,
         previous_source=previous_restart_source,
     )
 
 
-def store_completed_source(*, session_id: str, source_name: str, source_token: str, source_bytes: bytes, previous_completed_source: dict[str, Any] | None = None) -> dict[str, Any]:
+def store_completed_source(*, session_id: str, source_name: str, source_token: str, source_bytes: bytes, source_format: str = "docx", conversion_backend: str | None = None, previous_completed_source: dict[str, Any] | None = None) -> dict[str, Any]:
     return _store_persisted_source(
         prefix="completed",
         session_id=session_id,
         source_name=source_name,
         source_token=source_token,
         source_bytes=source_bytes,
+        source_format=source_format,
+        conversion_backend=conversion_backend,
         previous_source=previous_completed_source,
     )
 
@@ -95,15 +105,55 @@ def load_restart_source_bytes(restart_source: dict[str, Any] | None) -> bytes | 
     if not restart_source:
         return None
     storage_path = restart_source.get("storage_path")
-    if not isinstance(storage_path, str) or not storage_path:
+    source_token = restart_source.get("token")
+    payload_size = restart_source.get("size")
+    payload_sha256 = restart_source.get("payload_sha256")
+    source_format = str(restart_source.get("source_format", "")).strip().lower()
+    conversion_backend = restart_source.get("conversion_backend")
+    metadata_valid = (
+        isinstance(storage_path, str)
+        and bool(storage_path)
+        and isinstance(source_token, str)
+        and bool(source_token)
+        and isinstance(payload_size, int)
+        and payload_size > 0
+        and isinstance(payload_sha256, str)
+        and bool(re.fullmatch(r"[0-9a-f]{64}", payload_sha256))
+        and source_format in {"docx", "doc", "pdf"}
+        and (source_format == "docx" or isinstance(conversion_backend, str) and bool(conversion_backend.strip()))
+    )
+    if not metadata_valid:
+        _log_persisted_source_rejection(restart_source, reason="invalid_metadata")
+        return None
+    source_path = Path(cast(str, storage_path))
+    if not _is_confined_persisted_source(source_path):
+        _log_persisted_source_rejection(restart_source, reason="unconfined_path")
         return None
     try:
-        source_bytes = Path(storage_path).read_bytes()
+        source_bytes = source_path.read_bytes()
     except OSError:
+        _log_persisted_source_rejection(restart_source, reason="unreadable_payload")
         return None
-    if not source_bytes:
+    if (
+        not source_bytes
+        or len(source_bytes) != payload_size
+        or hashlib.sha256(source_bytes).hexdigest() != payload_sha256
+    ):
+        _log_persisted_source_rejection(restart_source, reason="integrity_mismatch")
         return None
     return source_bytes
+
+
+def _log_persisted_source_rejection(restart_source: dict[str, Any], *, reason: str) -> None:
+    log_event(
+        logging.WARNING,
+        "persisted_source_validation_failed",
+        "Persisted source is unavailable because its identity or payload integrity could not be verified.",
+        reason=reason,
+        filename=str(restart_source.get("filename", "")),
+        source_token=str(restart_source.get("token", "")),
+        storage_kind=str(restart_source.get("storage_kind", "")),
+    )
 
 
 def clear_restart_source(restart_source: dict[str, Any] | None) -> None:

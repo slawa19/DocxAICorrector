@@ -1,5 +1,6 @@
 import queue
 import threading
+import hashlib
 from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
@@ -341,7 +342,7 @@ def test_prepare_run_context_keeps_other_completed_source_tokens(monkeypatch):
 
 
 def test_get_cached_completed_file_loads_bytes_from_store():
-    session_state = SessionState(completed_source={"filename": "report.docx", "token": "report.docx:3:abc", "storage_path": "completed.bin"})
+    session_state = SessionState(completed_source={"filename": "report.docx", "token": "report.docx:3:abc", "storage_path": "completed.bin", "size": 3, "payload_sha256": hashlib.sha256(b"abc").hexdigest(), "source_format": "docx", "conversion_backend": None})
 
     uploaded_file = application_flow.get_cached_completed_file(
         session_state=cast(application_flow.SessionStateLike, session_state),
@@ -349,8 +350,9 @@ def test_get_cached_completed_file_loads_bytes_from_store():
     )
 
     assert uploaded_file is not None
-    assert uploaded_file.name == "report.docx"
-    assert uploaded_file.getvalue() == b"abc"
+    assert uploaded_file.filename == "report.docx"
+    assert uploaded_file.content_bytes == b"abc"
+    assert uploaded_file.file_token == "report.docx:3:abc"
 
 
 def test_consume_completed_source_if_used_clears_persisted_file(monkeypatch):
@@ -782,8 +784,9 @@ def test_restart_flow_restores_uploaded_file_from_run_store_and_cleans_up(tmp_pa
     restart_path = session_state.restart_source["storage_path"]
 
     assert restored_file is not None
-    assert restored_file.name == "report.docx"
-    assert restored_file.getvalue() == b"abc"
+    assert restored_file.filename == "report.docx"
+    assert restored_file.content_bytes == b"abc"
+    assert restored_file.file_token == "report.docx:3:abc"
 
     state.reset_run_state(keep_restart_source=False)
 
@@ -869,7 +872,7 @@ def test_get_cached_restart_file_returns_none_when_storage_missing(monkeypatch):
 
 def test_resolve_effective_uploaded_file_uses_completed_source_after_success():
     session_state = SessionState(
-        completed_source={"filename": "report.docx", "storage_path": "completed.bin", "token": "report.docx:3:abc"}
+        completed_source={"filename": "report.docx", "storage_path": "completed.bin", "token": "report.docx:3:abc", "size": 3, "payload_sha256": hashlib.sha256(b"abc").hexdigest(), "source_format": "docx", "conversion_backend": None}
     )
 
     uploaded_file = application_flow.resolve_effective_uploaded_file(
@@ -880,8 +883,73 @@ def test_resolve_effective_uploaded_file_uses_completed_source_after_success():
     )
 
     assert uploaded_file is not None
-    assert uploaded_file.name == "report.docx"
-    assert uploaded_file.getvalue() == b"abc"
+    assert uploaded_file.filename == "report.docx"
+    assert uploaded_file.content_bytes == b"abc"
+    assert uploaded_file.file_token == "report.docx:3:abc"
+
+
+@pytest.mark.parametrize("source_format", ["pdf", "doc"])
+def test_cached_normalized_source_restores_authoritative_original_token(source_format):
+    source_bytes = b"normalized-docx"
+    source_token = f"report.{source_format}:123:original"
+    record = {
+        "filename": "report.docx",
+        "storage_path": "completed.bin",
+        "token": source_token,
+        "size": len(source_bytes),
+        "payload_sha256": hashlib.sha256(source_bytes).hexdigest(),
+        "source_format": source_format,
+        "conversion_backend": "libreoffice",
+    }
+
+    restored = application_flow.get_cached_completed_file(
+        session_state=cast(application_flow.SessionStateLike, SessionState(completed_source=record)),
+        load_completed_source_bytes_fn=lambda source: source_bytes,
+    )
+
+    assert restored is not None
+    assert restored.file_token == source_token
+    assert restored.source_format == source_format
+    assert restored.conversion_backend == "libreoffice"
+
+
+def test_resolve_preparation_upload_passes_through_frozen_payload_without_reread():
+    # spec-045 P0 seam: a restored persisted source arrives as a FrozenUploadPayload.
+    # It must be passed through as-is (NOT re-frozen, which would crash because
+    # FrozenUploadPayload has no .read/.seek/.getvalue), and its authoritative
+    # SOURCE-derived token must survive rather than being recomputed from the
+    # normalized DOCX bytes. If the isinstance() branch is reverted this test fails.
+    payload = flow_core.FrozenUploadPayload(
+        filename="book.pdf",
+        content_bytes=b"PK\x03\x04normalized-docx-ish-bytes",
+        file_size=len(b"PK\x03\x04normalized-docx-ish-bytes"),
+        content_hash="deadbeef",
+        file_token="book.pdf:100:deadbeef",
+        source_format="pdf",
+        conversion_backend="libreoffice",
+    )
+
+    resolved = flow_core._resolve_preparation_upload(uploaded_file=payload, uploaded_payload=None)
+
+    assert resolved.needs_read_stage is False
+    assert resolved.uploaded_file_token == payload.file_token
+    assert resolved.uploaded_file_bytes == payload.content_bytes
+    assert resolved.uploaded_filename == payload.filename
+
+
+def test_fresh_upload_wins_when_persisted_source_is_unverifiable():
+    fresh_upload = UploadedFileStub("fresh.pdf", b"fresh")
+    session_state = SessionState(
+        processing_outcome="stopped",
+        restart_source={"filename": "report.docx", "storage_path": "missing.bin"},
+    )
+
+    assert application_flow.resolve_effective_uploaded_file(
+        uploaded_file=fresh_upload,
+        current_result=None,
+        session_state=session_state,
+        load_restart_source_bytes_fn=lambda source: None,
+    ) is fresh_upload
 
 
 def test_has_restartable_source_does_not_materialize_restart_bytes(tmp_path, monkeypatch):
@@ -1342,3 +1410,95 @@ def test_prepare_run_context_sync_and_background_share_same_upload_contract(monk
     assert sync_result.uploaded_filename == background_result.uploaded_filename
     assert sync_result.uploaded_file_bytes == background_result.uploaded_file_bytes
     assert sync_result.uploaded_file_token == background_result.uploaded_file_token
+
+
+@pytest.mark.parametrize(
+    ("restore_kind", "source_format", "conversion_backend"),
+    [
+        ("completed", "pdf", "pdf-text-layer"),
+        ("restart", "doc", "libreoffice"),
+        ("completed", "docx", None),
+    ],
+)
+def test_restored_frozen_payload_enters_sync_preparation_without_refreeze_or_reconversion(
+    restore_kind,
+    source_format,
+    conversion_backend,
+    monkeypatch,
+):
+    normalized_bytes = f"normalized-{source_format}".encode()
+    source_token = f"report.{source_format}:{len(normalized_bytes)}:original"
+    source_record = {
+        "filename": "report.docx",
+        "token": source_token,
+        "storage_path": f"{restore_kind}.bin",
+        "size": len(normalized_bytes),
+        "payload_sha256": hashlib.sha256(normalized_bytes).hexdigest(),
+        "source_format": source_format,
+        "conversion_backend": conversion_backend,
+    }
+    session_state = SessionState(
+        selected_source_token="",
+        prepared_source_key="",
+        **{f"{restore_kind}_source": source_record},
+    )
+    load_calls = []
+    restore_fn = (
+        application_flow.get_cached_completed_file
+        if restore_kind == "completed"
+        else application_flow.get_cached_restart_file
+    )
+    load_kwarg = (
+        {"load_completed_source_bytes_fn": lambda record: load_calls.append(record) or normalized_bytes}
+        if restore_kind == "completed"
+        else {"load_restart_source_bytes_fn": lambda record: load_calls.append(record) or normalized_bytes}
+    )
+    restored_payload = restore_fn(
+        session_state=cast(application_flow.SessionStateLike, session_state),
+        **load_kwarg,
+    )
+    assert isinstance(restored_payload, processing_runtime.FrozenUploadPayload)
+
+    freeze_calls = []
+    conversion_calls = []
+    monkeypatch.setattr(flow_core, "validate_docx_source_bytes", lambda source_bytes: None)
+    monkeypatch.setattr(
+        flow_core,
+        "freeze_uploaded_file",
+        lambda uploaded_file: freeze_calls.append(uploaded_file),
+    )
+    monkeypatch.setattr(
+        processing_runtime,
+        "normalize_uploaded_document",
+        lambda **kwargs: conversion_calls.append(kwargs),
+    )
+    prepared_document = SimpleNamespace(
+        source_text="text",
+        paragraphs=["p1"],
+        image_assets=[],
+        jobs=[{"target_text": "block", "target_chars": 5, "context_chars": 0}],
+        prepared_source_key="prepared-key",
+        cached=False,
+    )
+    prepare_calls = []
+
+    result = application_flow.prepare_run_context(
+        uploaded_file=restored_payload,
+        chunk_size=6000,
+        image_mode="safe",
+        keep_all_image_variants=True,
+        session_state=session_state,
+        reset_run_state_fn=lambda **kwargs: None,
+        fail_critical_fn=lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("unexpected critical error")),
+        log_event_fn=lambda *args, **kwargs: None,
+        prepare_document_for_processing_fn=lambda **kwargs: prepare_calls.append(kwargs) or prepared_document,
+    )
+
+    assert load_calls == [source_record]
+    assert freeze_calls == []
+    assert conversion_calls == []
+    assert prepare_calls[0]["uploaded_payload"] is restored_payload
+    assert prepare_calls[0]["uploaded_payload"].source_format == source_format
+    assert prepare_calls[0]["uploaded_payload"].conversion_backend == conversion_backend
+    assert result.uploaded_file_bytes == normalized_bytes
+    assert result.uploaded_file_token == source_token

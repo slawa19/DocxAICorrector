@@ -99,6 +99,8 @@ def write_marker_diagnostics_artifact(
     context_after: str,
     paragraph_ids: Sequence[str] | None,
     diagnostics_dir: Path,
+    run_id: str,
+    source_token: str,
     processed_chunk: str | None = None,
     exc: Exception | None = None,
 ) -> str | None:
@@ -134,6 +136,9 @@ def write_marker_diagnostics_artifact(
         filename_prefix=f"marker_block_{stage}_{block_index:03d}",
         diagnostics_dir=diagnostics_dir,
         diagnostics=diagnostics,
+        scope="live",
+        run_id=run_id,
+        source_token=source_token,
     )
 
 
@@ -142,6 +147,9 @@ def call_docx_restorer_with_optional_registry(
     docx_bytes: bytes,
     paragraphs: Any,
     generated_paragraph_registry: Any,
+    *,
+    run_id: str,
+    source_token: str,
 ) -> bytes:
     # F15: signature-gate the optional generated_paragraph_registry kwarg instead of a
     # TypeError retry, so the restorer is called EXACTLY ONCE and a genuine internal
@@ -151,14 +159,25 @@ def call_docx_restorer_with_optional_registry(
     try:
         signature = inspect.signature(restorer)
     except (TypeError, ValueError):
-        return restorer(docx_bytes, paragraphs, generated_paragraph_registry=generated_paragraph_registry)
+        return restorer(
+            docx_bytes,
+            paragraphs,
+            generated_paragraph_registry=generated_paragraph_registry,
+            run_id=run_id,
+            source_token=source_token,
+        )
     parameters = signature.parameters
-    accepts_registry = "generated_paragraph_registry" in parameters or any(
+    accepts_kwargs = any(
         parameter.kind == inspect.Parameter.VAR_KEYWORD for parameter in parameters.values()
     )
-    if accepts_registry:
-        return restorer(docx_bytes, paragraphs, generated_paragraph_registry=generated_paragraph_registry)
-    return restorer(docx_bytes, paragraphs)
+    kwargs: dict[str, object] = {}
+    if "generated_paragraph_registry" in parameters or accepts_kwargs:
+        kwargs["generated_paragraph_registry"] = generated_paragraph_registry
+    if "run_id" in parameters or accepts_kwargs:
+        kwargs["run_id"] = run_id
+    if "source_token" in parameters or accepts_kwargs:
+        kwargs["source_token"] = source_token
+    return restorer(docx_bytes, paragraphs, **kwargs)
 
 
 def current_markdown(processed_chunks: Sequence[str]) -> str:

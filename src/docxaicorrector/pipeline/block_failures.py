@@ -109,6 +109,8 @@ def handle_block_generation_failure(
             context_before=payload.context_before,
             context_after=payload.context_after,
             paragraph_ids=payload.paragraph_ids,
+            run_id=context.run_id,
+            source_token=context.source_token,
             exc=exc,
         )
     emitters.emit_state(
@@ -352,6 +354,8 @@ def handle_marker_registry_failure(
         context_before=payload.context_before,
         context_after=payload.context_after,
         paragraph_ids=payload.paragraph_ids,
+        run_id=context.run_id,
+        source_token=context.source_token,
         processed_chunk=processed_chunk,
         exc=exc,
     )

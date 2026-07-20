@@ -1502,6 +1502,94 @@ def test_generate_markdown_block_marker_mode_falls_back_to_source_after_persiste
     assert logged_events[-1][0][1] == "markdown_marker_validation_source_fallback"
 
 
+@pytest.mark.parametrize(
+    ("response_factory", "expected_event"),
+    [
+        (
+            lambda: SimpleNamespace(
+                status="incomplete",
+                output=[SimpleNamespace(type="reasoning", status="incomplete")],
+            ),
+            "markdown_incomplete_response_source_fallback",
+        ),
+        (
+            lambda: SimpleNamespace(output_text=""),
+            "markdown_empty_response_source_fallback",
+        ),
+        (
+            lambda: SimpleNamespace(status="failed"),
+            "markdown_non_completed_response_source_fallback",
+        ),
+    ],
+)
+def test_generate_markdown_block_marker_mode_sanitizes_all_controlled_source_fallbacks(
+    monkeypatch,
+    response_factory,
+    expected_event,
+):
+    logged_events = []
+    client = SimpleNamespace(
+        responses=SimpleNamespace(create=lambda **kwargs: response_factory())
+    )
+    monkeypatch.setattr(generation.time, "sleep", lambda *_: None)
+    monkeypatch.setattr(
+        generation,
+        "log_event",
+        lambda *args, **kwargs: logged_events.append((args, kwargs)) or "evt-marker-fallback",
+    )
+
+    source_text = "**Текст [обычный]**\n[[DOCX_IMAGE_img_001]]"
+    result = generation.generate_markdown_block(
+        client=_as_openai_client(client),
+        model="gpt-5.4",
+        system_prompt="system",
+        target_text=f"[[DOCX_PARA_p0001]]\n{source_text}",
+        context_before="before",
+        context_after="after",
+        max_retries=2,
+        expected_paragraph_ids=["p0001"],
+        marker_mode=True,
+    )
+
+    assert result == source_text
+    assert "[[DOCX_PARA_" not in result
+    fallback_event = next(
+        (args, kwargs)
+        for args, kwargs in reversed(logged_events)
+        if len(args) > 1 and args[1] == expected_event
+    )
+    assert fallback_event[1]["target_chars"] == len(source_text)
+
+
+def test_generate_markdown_block_non_marker_fallback_preserves_bracketed_unicode_markdown(monkeypatch):
+    logged_events = []
+    client = SimpleNamespace(
+        responses=SimpleNamespace(create=lambda **kwargs: SimpleNamespace(status="failed"))
+    )
+    monkeypatch.setattr(generation.time, "sleep", lambda *_: None)
+    monkeypatch.setattr(
+        generation,
+        "log_event",
+        lambda *args, **kwargs: logged_events.append((args, kwargs)) or "evt-standard-fallback",
+    )
+
+    source_text = "**Текст [обычный]** [[DOCX_IMAGE_img_001]]"
+    result = generation.generate_markdown_block(
+        client=_as_openai_client(client),
+        model="gpt-5.4",
+        system_prompt="system",
+        target_text=source_text,
+        context_before="before",
+        context_after="after",
+        max_retries=2,
+        marker_mode=False,
+    )
+
+    assert result == source_text
+    assert logged_events[-1][0][1] == "markdown_non_completed_response_source_fallback"
+    assert logged_events[-1][1]["target_chars"] == len(source_text)
+
+
 def test_split_marker_preserved_markdown_raises_structured_marker_diagnostics():
     with pytest.raises(generation.MarkerValidationError) as exc_info:
         generation._split_marker_preserved_markdown(

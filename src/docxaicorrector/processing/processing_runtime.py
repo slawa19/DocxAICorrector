@@ -14,7 +14,7 @@ from collections import OrderedDict
 from dataclasses import dataclass, replace
 from io import BytesIO
 from pathlib import Path
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from typing import cast
 from uuid import uuid4
 
@@ -168,11 +168,13 @@ _ALLOWED_SET_STATE_EVENT_KEYS = {
     "last_background_error",
     "last_error",
     "latest_docx_bytes",
+    "latest_delivery_disposition",
     "latest_markdown",
     "latest_narration_text",
     "latest_marker_diagnostics_artifact",
     "latest_quality_warning",
     "latest_result_notice",
+    "latest_result_notices",
     "processed_block_markdowns",
     "processed_paragraph_registry",
 }
@@ -987,7 +989,7 @@ def _convert_pdf_text_layer_to_docx(*, filename: str, source_bytes: bytes) -> tu
                 continue
             paragraph = payload
             _append_pdf_text_paragraph_to_docx(document, paragraph)
-        document.save(output_path)
+        document.save(str(output_path))
         output_bytes = output_path.read_bytes() if output_path.exists() else b""
         if not output_bytes:
             raise RuntimeError("pdf_text_layer_import_empty_docx")
@@ -1602,10 +1604,13 @@ def build_uploaded_file_selection_marker(uploaded_file) -> str:
     return build_uploaded_file_token(uploaded_file)
 
 
-def build_preparation_request_marker(uploaded_file, *, chunk_size: int, processing_operation: str = "edit") -> str:
+def build_preparation_request_marker(uploaded_file, *, chunk_size: int, processing_operation: str = "edit", source_language: str = "en", target_language: str = "ru") -> str:
     resolved_operation = str(processing_operation or "edit").strip().lower() or "edit"
+    resolved_source_language = str(source_language or "en").strip().lower() or "en"
+    resolved_target_language = str(target_language or "ru").strip().lower() or "ru"
     operation_suffix = "" if resolved_operation == "edit" else f":op={resolved_operation}"
-    return f"{build_uploaded_file_selection_marker(uploaded_file)}:{chunk_size}{operation_suffix}"
+    language_suffix = "" if (resolved_source_language, resolved_target_language) == ("en", "ru") else f":sl={resolved_source_language}:tl={resolved_target_language}"
+    return f"{build_uploaded_file_selection_marker(uploaded_file)}:{chunk_size}{operation_suffix}{language_suffix}"
 
 
 def build_result_bundle(
@@ -1618,7 +1623,22 @@ def build_result_bundle(
     processing_operation: str = "edit",
     audiobook_postprocess_enabled: bool = False,
     quality_warning: Mapping[str, object] | None = None,
+    delivery_disposition: Mapping[str, object] | None = None,
+    result_notices: Sequence[Mapping[str, object]] | None = None,
 ) -> dict[str, object]:
+    resolved_notices = [dict(notice) for notice in result_notices or ()]
+    if delivery_disposition is None:
+        quality_status = str((quality_warning or {}).get("quality_status", "") or "")
+        resolved_disposition: dict[str, object] = {
+            "status": "accepted_with_advisory" if quality_status == "warn" else "accepted"
+        }
+    else:
+        resolved_disposition = dict(delivery_disposition)
+    delivery_status = str(resolved_disposition.get("status", "") or "")
+    if delivery_status not in {"accepted", "accepted_with_advisory", "blocked"}:
+        raise ValueError(f"Unsupported delivery disposition: {delivery_status or '<empty>'}")
+    if delivery_status == "blocked" and not str(resolved_disposition.get("explanation", "") or "").strip():
+        raise ValueError("Blocked delivery disposition requires an explanation")
     return {
         "source_name": source_name,
         "source_token": source_token,
@@ -1628,6 +1648,8 @@ def build_result_bundle(
         "processing_operation": processing_operation,
         "audiobook_postprocess_enabled": audiobook_postprocess_enabled,
         "quality_warning": quality_warning,
+        "delivery_disposition": resolved_disposition,
+        "result_notices": resolved_notices,
     }
 
 
@@ -1635,27 +1657,79 @@ def should_cache_completed_source(*, source_bytes: bytes) -> bool:
     return len(source_bytes) <= MAX_COMPLETED_SOURCE_BYTES
 
 
+def _legacy_notice_duplicates_quality_warning(
+    legacy_notice: Mapping[str, object],
+    quality_warning: Mapping[str, object] | None,
+) -> bool:
+    if not isinstance(quality_warning, Mapping):
+        return False
+    notice_message = str(legacy_notice.get("message", "") or "").strip()
+    quality_message = str(quality_warning.get("message", "") or "").strip()
+    if not notice_message or notice_message != quality_message:
+        return False
+    quality_status = str(quality_warning.get("quality_status", "") or "").strip().lower()
+    expected_level = "warning" if quality_status == "warn" else "error" if quality_status == "fail" else ""
+    notice_level = str(legacy_notice.get("level", "") or "").strip().lower()
+    return bool(expected_level) and notice_level == expected_level
+
+
 def get_current_result_bundle() -> dict[str, object] | None:
     latest_docx_bytes = st.session_state.get("latest_docx_bytes")
     latest_narration_text = get_latest_narration_text()
     processing_operation = get_latest_processing_operation()
+    delivery_disposition = st.session_state.get("latest_delivery_disposition")
+    is_blocked = (
+        isinstance(delivery_disposition, Mapping)
+        and str(delivery_disposition.get("status", "") or "") == "blocked"
+    )
     if latest_docx_bytes is None:
-        if latest_narration_text is None:
+        if latest_narration_text is None and not is_blocked:
             return None
         if processing_operation == "audiobook":
             return None
-    if not latest_docx_bytes and latest_narration_text is None:
+    if not latest_docx_bytes and latest_narration_text is None and not is_blocked:
         return None
-    return build_result_bundle(
-        source_name=get_latest_source_name(),
-        source_token=get_latest_source_token(),
-        docx_bytes=latest_docx_bytes,
-        markdown_text=st.session_state.get("latest_markdown", ""),
-        narration_text=latest_narration_text,
-        processing_operation=processing_operation,
-        audiobook_postprocess_enabled=get_latest_audiobook_postprocess_enabled(),
-        quality_warning=cast(Mapping[str, object] | None, st.session_state.get("latest_quality_warning")),
-    )
+    stored_result_notices = st.session_state.get("latest_result_notices")
+    if isinstance(stored_result_notices, Sequence) and not isinstance(stored_result_notices, (str, bytes, bytearray)):
+        result_notices = [dict(notice) for notice in stored_result_notices if isinstance(notice, Mapping)]
+    else:
+        result_notices = []
+    if not result_notices:
+        latest_result_notice = st.session_state.get("latest_result_notice")
+        quality_warning = st.session_state.get("latest_quality_warning")
+        if isinstance(latest_result_notice, Mapping) and not _legacy_notice_duplicates_quality_warning(
+            latest_result_notice,
+            cast(Mapping[str, object] | None, quality_warning),
+        ):
+            result_notices = [dict(latest_result_notice)]
+    def _render_bundle(disposition: Mapping[str, object] | None) -> dict[str, object]:
+        return build_result_bundle(
+            source_name=get_latest_source_name(),
+            source_token=get_latest_source_token(),
+            docx_bytes=latest_docx_bytes,
+            markdown_text=st.session_state.get("latest_markdown", ""),
+            narration_text=latest_narration_text,
+            processing_operation=processing_operation,
+            audiobook_postprocess_enabled=get_latest_audiobook_postprocess_enabled(),
+            quality_warning=cast(Mapping[str, object] | None, st.session_state.get("latest_quality_warning")),
+            delivery_disposition=disposition,
+            result_notices=cast(Sequence[Mapping[str, object]], result_notices),
+        )
+
+    try:
+        # A valid blocked disposition does NOT raise here; only a genuinely invalid
+        # stored disposition (bad status, or blocked-without-explanation) does. Keep
+        # the render/read path resilient so such a malformed stored value degrades to
+        # a safe accepted fallback instead of crashing the whole Streamlit frame.
+        return _render_bundle(cast(Mapping[str, object] | None, delivery_disposition))
+    except ValueError as exc:
+        log_event(
+            logging.WARNING,
+            "result_bundle_invalid_delivery_disposition",
+            "Stored delivery disposition was invalid; rendering with a safe accepted fallback.",
+            error=str(exc),
+        )
+        return _render_bundle(None)
 
 
 def set_session_values(**values) -> None:
@@ -1907,6 +1981,8 @@ def start_background_processing(
     uploaded_filename: str,
     uploaded_token: str,
     source_bytes: bytes,
+    source_format: str = "docx",
+    conversion_backend: str | None = None,
     prepared_source_key: str | None = None,
     structure_fingerprint: str | None = None,
     jobs: list[dict[str, str | int]],
@@ -1934,6 +2010,8 @@ def start_background_processing(
             source_name=uploaded_filename,
             source_token=uploaded_token,
             source_bytes=source_bytes,
+            source_format=source_format,
+            conversion_backend=conversion_backend,
             previous_restart_source=previous_restart_source,
         ))
     except OSError as exc:

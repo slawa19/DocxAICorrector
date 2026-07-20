@@ -22,10 +22,17 @@ from __future__ import annotations
 import json
 import logging
 import time
+from collections.abc import Callable, Mapping
 from types import SimpleNamespace
+
+import pytest
 
 import docxaicorrector.pipeline.late_phases as late_phases
 import docxaicorrector.pipeline.quality_gate as quality_gate
+import docxaicorrector.pipeline.reader_cleanup_postprocess as reader_cleanup_postprocess
+import docxaicorrector.processing.processing_runtime as processing_runtime
+import docxaicorrector.ui._app as app
+import docxaicorrector.ui._ui as result_ui
 
 # Captured at import time, before any test stubs it, so Finding 7's test can restore the
 # REAL acceptance-verdict builder over ``_install_stubs``' lightweight stub.
@@ -59,6 +66,8 @@ class _RecordingDependencies:
         self.events: list[tuple[int, str, str, dict[str, object]]] = []
         self.write_ui_result_artifacts_calls = 0
         self._artifact_writer = artifact_writer
+        self.should_stop_processing: Callable[[object], bool] = lambda runtime: False
+        self.get_client: Callable[[], object] = lambda: object()
 
     def log_event(self, level, event, message, **context):
         self.events.append((level, event, message, context))
@@ -83,6 +92,15 @@ def _event(deps: _RecordingDependencies, name: str) -> tuple[int, dict[str, obje
         if event == name:
             return level, ctx
     raise AssertionError(f"event not found: {name}")
+
+
+def _state_mapping_value(
+    state_call: Mapping[str, object],
+    state_key: str,
+    nested_key: str,
+) -> object | None:
+    value = state_call.get(state_key)
+    return value.get(nested_key) if isinstance(value, Mapping) else None
 
 
 def _cleanup_result(*, markdown: str, docx_bytes: bytes = b"final-docx"):
@@ -141,6 +159,8 @@ def _make_context():
         source_paragraphs=[],
         model="",
         max_retries=0,
+        run_id="run-main",
+        source_token="source-main",
     )
 
 
@@ -272,6 +292,204 @@ def test_finalize_artifact_save_success_logs_completed_info(monkeypatch, tmp_pat
         if isinstance(notice, dict) and "сохранить файлы результата" in str(notice.get("message", "")):
             unpersisted_notices.append(notice)
     assert not unpersisted_notices
+    assert not any(
+        notice.get("kind") == "persistence"
+        for call in emitters.state_calls
+        for notice in call.get("latest_result_notices", [])
+        if isinstance(notice, Mapping)
+    )
+
+
+def test_finalize_quality_warning_keeps_legacy_notice_while_cleanup_notice_coexists(
+    monkeypatch,
+    tmp_path,
+):
+    gate_input = "translated body"
+    quality_message = (
+        "Перевод завершён. Документ готов к использованию, но требует ручной "
+        "проверки оформления: 2 абзаца с замечаниями. "
+        "Подробности — в отчёте проверки (formatting_review.txt)."
+    )
+    cleanup_message = "Reader cleanup was partially unavailable."
+    cleanup_notice = {
+        "kind": "cleanup",
+        "level": "warning",
+        "message_key": "result.cleanup_advisory_failed",
+        "message": cleanup_message,
+    }
+    cleanup = late_phases.ReaderCleanupPostprocessResult(
+        markdown=gate_input,
+        docx_bytes=b"final-docx",
+        report=None,
+        raw_markdown=None,
+        result_notice={"level": "warning", "message": cleanup_message},
+        final_generated_paragraph_registry=None,
+        result_notices=(cleanup_notice,),
+    )
+    _install_stubs(
+        monkeypatch,
+        gate_input_markdown=gate_input,
+        cleanup_result=cleanup,
+        report_fn=lambda **kwargs: {
+            "quality_status": "warn",
+            "gate_reasons": ["formatting_review_required"],
+            "formatting_review_required_count": 2,
+            "formatting_review_items": [{"count": 2}],
+        },
+    )
+    monkeypatch.setattr(
+        late_phases,
+        "_build_quality_warn_notice_message",
+        lambda report: quality_message,
+    )
+    deps = _RecordingDependencies(artifact_writer=_real_primary_artifact_writer(tmp_path))
+    emitters = _RecordingEmitters()
+
+    result = _run_finalize(
+        context=_make_context(),
+        dependencies=deps,
+        emitters=emitters,
+        state=_make_state(),
+        docx_phase=_make_docx_phase(gate_input),
+    )
+
+    assert result == "succeeded"
+    delivered = next(
+        call for call in reversed(emitters.state_calls) if "latest_delivery_disposition" in call
+    )
+    assert delivered["latest_delivery_disposition"] == {"status": "accepted_with_advisory"}
+    assert delivered["latest_result_notice"] == {
+        "level": "warning",
+        "message": quality_message,
+    }
+    assert delivered["latest_result_notices"] == [cleanup_notice]
+    assert _state_mapping_value(delivered, "latest_quality_warning", "message") == quality_message
+
+
+def test_finalize_primary_persistence_failure_accumulates_typed_degradations(
+    monkeypatch,
+    make_session_state,
+):
+    gate_input = "translated body"
+    cleanup_notice = {
+        "kind": "cleanup",
+        "level": "warning",
+        "message_key": "result.cleanup_advisory_failed",
+    }
+    cleanup = late_phases.ReaderCleanupPostprocessResult(
+        markdown=gate_input,
+        docx_bytes=b"final-docx",
+        report=None,
+        raw_markdown=None,
+        result_notice={"level": "warning", "message": "Cleanup degraded"},
+        final_generated_paragraph_registry=None,
+        result_notices=(cleanup_notice,),
+    )
+    _install_stubs(
+        monkeypatch,
+        gate_input_markdown=gate_input,
+        cleanup_result=cleanup,
+        report_fn=lambda **kwargs: {
+            "quality_status": "warn",
+            "gate_reasons": ["formatting_review_required"],
+            "formatting_review_required_count": 1,
+            "formatting_review_items": [{"count": 1}],
+        },
+    )
+    monkeypatch.setattr(
+        late_phases,
+        "_build_narration_text",
+        lambda **kwargs: (_ for _ in ()).throw(
+            RuntimeError("narration_cleanup_projection_unsafe:missing_final_registry")
+        ),
+    )
+
+    def _raise_oserror():
+        raise OSError("disk full")
+
+    deps = _RecordingDependencies(artifact_writer=_raise_oserror)
+    session_state = make_session_state()
+    monkeypatch.setattr(processing_runtime.st, "session_state", session_state)
+
+    class _ApplyingEmitters(_RecordingEmitters):
+        def emit_state(self, runtime, **values):
+            super().emit_state(runtime, **values)
+            processing_runtime.emit_or_apply_state(None, **values)
+
+    emitters = _ApplyingEmitters()
+
+    result = _run_finalize(
+        context=_make_context(),
+        dependencies=deps,
+        emitters=emitters,
+        state=_make_state(),
+        docx_phase=_make_docx_phase(gate_input),
+    )
+
+    persistence_state = next(
+        call
+        for call in reversed(emitters.state_calls)
+        if isinstance(call.get("latest_result_notice"), Mapping)
+        and "сохранить файлы результата" in str(call["latest_result_notice"].get("message", ""))
+    )
+    assert result == "succeeded"
+    assert persistence_state["latest_result_notice"] == {
+        "level": "warning",
+        "message": "Результат обработан, но не удалось сохранить файлы результата на диск.",
+    }
+    assert persistence_state["latest_result_notices"] == [
+        cleanup_notice,
+        {
+            "kind": "narration",
+            "level": "warning",
+            "message_key": "result.narration_omitted",
+        },
+        {
+            "kind": "persistence",
+            "level": "warning",
+            "message_key": "result.primary_artifacts_not_saved",
+        },
+    ]
+    assert "ui_result_artifacts_saved" not in _events(deps)
+    assert "processing_completed_unpersisted" in _events(deps)
+    assert "processing_completed" not in _events(deps)
+    delivered = next(
+        call for call in emitters.state_calls if "latest_delivery_disposition" in call
+    )
+    assert delivered["latest_delivery_disposition"] == {"status": "accepted_with_advisory"}
+    assert delivered["latest_docx_bytes"] == b"final-docx"
+    assert delivered["latest_markdown"] == gate_input
+
+    monkeypatch.setattr(processing_runtime, "get_latest_source_name", lambda: "report.docx")
+    monkeypatch.setattr(processing_runtime, "get_latest_source_token", lambda: "source-main")
+    monkeypatch.setattr(app, "render_markdown_preview", lambda **kwargs: None)
+    monkeypatch.setattr(app, "t", lambda key, **kwargs: f"localized:{key}")
+    monkeypatch.setattr(result_ui, "t", lambda key, **kwargs: f"localized:{key}")
+    success_calls = []
+    warning_calls = []
+    download_calls = []
+
+    class FakeColumn:
+        def download_button(self, *args, **kwargs):
+            download_calls.append(kwargs)
+
+    monkeypatch.setattr(result_ui.st, "success", lambda message: success_calls.append(message))
+    monkeypatch.setattr(result_ui.st, "warning", lambda message: warning_calls.append(message))
+    monkeypatch.setattr(result_ui.st, "columns", lambda count: [FakeColumn() for _ in range(count)])
+    monkeypatch.setattr(result_ui, "_render_formatting_review_block", lambda **kwargs: None)
+
+    current_result = processing_runtime.get_current_result_bundle()
+    assert current_result is not None
+    app._render_completed_result_view(current_result)
+
+    assert success_calls == ["localized:result.success_document_processed"]
+    assert warning_calls == [
+        "localized:result.cleanup_advisory_failed",
+        "localized:result.narration_omitted",
+        "localized:result.primary_artifacts_not_saved",
+    ]
+    assert len(download_calls) == 2
+    assert all(call["type"] == "primary" for call in download_calls)
 
 
 # --------------------------------------------------------------------------- #
@@ -330,6 +548,12 @@ def test_finalize_registry_only_oserror_completes_without_unpersisted_notice(mon
         if isinstance(notice, dict) and "сохранить файлы результата" in str(notice.get("message", "")):
             unpersisted_notices.append(notice)
     assert not unpersisted_notices
+    assert not any(
+        notice.get("kind") == "persistence"
+        for call in emitters.state_calls
+        for notice in call.get("latest_result_notices", [])
+        if isinstance(notice, Mapping)
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -513,6 +737,15 @@ def test_finalize_caption_heading_conflict_blocks_primary_artifacts(monkeypatch,
     gate_reasons = ctx.get("gate_reasons") or []
     assert isinstance(gate_reasons, list)
     assert "caption_heading_conflict" in gate_reasons
+    blocked_states = [
+        call
+        for call in emitters.state_calls
+        if _state_mapping_value(call, "latest_delivery_disposition", "status") == "blocked"
+    ]
+    assert blocked_states
+    assert _state_mapping_value(
+        blocked_states[-1], "latest_delivery_disposition", "explanation"
+    )
 
     # The PRIMARY UI result artifacts were NEVER written — the fail path returns first.
     assert deps.write_ui_result_artifacts_calls == 0
@@ -566,6 +799,10 @@ def test_finalize_no_caption_conflict_publishes_normally(monkeypatch, tmp_path):
     assert "translation_quality_gate_failed" not in _events(deps)
     assert deps.write_ui_result_artifacts_calls == 1
     assert "processing_completed" in _events(deps)
+    assert any(
+        _state_mapping_value(call, "latest_delivery_disposition", "status") == "accepted"
+        for call in emitters.state_calls
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -587,12 +824,156 @@ def _make_reader_cleanup_context():
     return context
 
 
-def _write_caption_conflict_artifact(diagnostics_dir, name="preserve_001.json"):
+def test_finalize_late_stop_before_cleanup_uses_stopped_outcome_without_persistence(monkeypatch, tmp_path):
+    gate_input = "translated body"
+    cleanup = _cleanup_result(markdown=gate_input)
+    _install_stubs(
+        monkeypatch,
+        gate_input_markdown=gate_input,
+        cleanup_result=cleanup,
+        report_fn=lambda **kwargs: {"quality_status": "pass", "gate_reasons": []},
+    )
+    deps = _RecordingDependencies(artifact_writer=_real_primary_artifact_writer(tmp_path))
+    deps.should_stop_processing = lambda runtime: True
+    emitters = _RecordingEmitters()
+
+    result = _run_finalize(
+        context=_make_reader_cleanup_context(),
+        dependencies=deps,
+        emitters=emitters,
+        state=_make_state(),
+        docx_phase=_make_docx_phase(gate_input),
+    )
+
+    assert result == "stopped"
+    assert deps.write_ui_result_artifacts_calls == 0
+    assert emitters.finalize_calls[-1]["terminal_kind"] == "stopped"
+    assert "processing_completed" not in _events(deps)
+
+
+@pytest.mark.parametrize("stop_during", ["successful_rebuild", "advisory_base_builder"])
+def test_finalize_stop_observed_immediately_after_cleanup_builder_has_no_later_side_effects(
+    monkeypatch,
+    tmp_path,
+    stop_during,
+):
+    gate_input = "translated body"
+    assembly = SimpleNamespace(final_markdown=gate_input, entries=(), diagnostics=None)
+    monkeypatch.setattr(late_phases, "assemble_final_markdown", lambda **kwargs: assembly)
+    monkeypatch.setattr(
+        late_phases,
+        "_build_translation_quality_report",
+        lambda **kwargs: {"quality_status": "pass", "gate_reasons": []},
+    )
+    monkeypatch.setattr(late_phases, "build_report_acceptance_verdict", lambda *args, **kwargs: {})
+    report_writes = []
+    monkeypatch.setattr(
+        late_phases,
+        "_write_quality_report_artifact",
+        lambda **kwargs: report_writes.append(kwargs) or None,
+    )
+    narration_calls = []
+    monkeypatch.setattr(
+        late_phases,
+        "_build_narration_text",
+        lambda **kwargs: narration_calls.append(kwargs) or "must-not-run",
+    )
+    monkeypatch.setattr(
+        late_phases,
+        "build_reassembly_plan",
+        lambda **kwargs: SimpleNamespace(assembly_mode="whole", selected_segment_count=None),
+    )
+    monkeypatch.setattr(late_phases, "build_segment_result_records", lambda **kwargs: [])
+    monkeypatch.setattr(
+        reader_cleanup_postprocess,
+        "_resolve_text_call_target",
+        lambda **kwargs: (object(), "model-id", "model-selector", "provider"),
+    )
+    monkeypatch.setattr(
+        reader_cleanup_postprocess,
+        "_write_reader_cleanup_lineage_artifact",
+        lambda **kwargs: None,
+    )
+
+    stop_requested = False
+
+    def request_stop_and_return_docx(*args, **kwargs):
+        nonlocal stop_requested
+        stop_requested = True
+        return b"PK\x03\x04 final docx"
+
+    if stop_during == "successful_rebuild":
+        monkeypatch.setattr(
+            reader_cleanup_postprocess,
+            "run_reader_cleanup",
+            lambda **kwargs: SimpleNamespace(
+                changed=True,
+                report_payload={"stats": {}, "accepted_cleanup_operations": []},
+                raw_markdown=gate_input,
+                cleaned_markdown="cleaned translated body",
+                accepted_delete_block_ids=[],
+            ),
+        )
+        monkeypatch.setattr(
+            reader_cleanup_postprocess,
+            "_rebuild_docx_for_markdown",
+            request_stop_and_return_docx,
+        )
+    else:
+        monkeypatch.setattr(
+            reader_cleanup_postprocess,
+            "run_reader_cleanup",
+            lambda **kwargs: (_ for _ in ()).throw(RuntimeError("cleanup unavailable")),
+        )
+
+    deps = _RecordingDependencies(artifact_writer=_real_primary_artifact_writer(tmp_path))
+    deps.should_stop_processing = lambda runtime: stop_requested
+    deps.get_client = lambda: object()
+    emitters = _RecordingEmitters()
+    docx_phase = _make_docx_phase(gate_input)
+    if stop_during == "advisory_base_builder":
+        docx_phase["base_docx_builder"] = request_stop_and_return_docx
+
+    result = _run_finalize(
+        context=_make_reader_cleanup_context(),
+        dependencies=deps,
+        emitters=emitters,
+        state=_make_state(),
+        docx_phase=docx_phase,
+    )
+
+    assert result == "stopped"
+    assert stop_requested is True
+    assert emitters.state_calls == []
+    assert narration_calls == []
+    assert deps.write_ui_result_artifacts_calls == 0
+    assert emitters.finalize_calls[-1]["terminal_kind"] == "stopped"
+    assert len(report_writes) == 1  # pre-cleanup report only; no post-stop report write
+    assert not {
+        "reader_cleanup_applied",
+        "processing_completed",
+        "processing_completed_unpersisted",
+        "processing_failed",
+    }.intersection(_events(deps))
+
+
+def _write_caption_conflict_artifact(
+    diagnostics_dir,
+    name="preserve_001.json",
+    *,
+    run_id="run-main",
+    source_token="source-main",
+):
     diagnostics_dir.mkdir(parents=True, exist_ok=True)
     (diagnostics_dir / name).write_text(
         json.dumps(
             {
                 "stage": "preserve",
+                "ownership": {
+                    "scope": "live",
+                    "run_id": run_id,
+                    "source_token": source_token,
+                },
                 "caption_heading_conflicts": [
                     {"paragraph_id": "p0002", "target_heading_level": 2}
                 ],
@@ -632,11 +1013,10 @@ def _run_deferred_finalize_with_final_diagnostics(monkeypatch, tmp_path, *, clea
 
     docx_phase = _make_docx_phase(gate_input)
     # Deferred base build: no docx_bytes at the pre-cleanup gate, and the diagnostics
-    # window (dir + start epoch) is threaded so finalize can RE-COLLECT the final-DOCX
-    # artifacts written during the reader-cleanup build (epoch 0 => collect everything).
+    # diagnostics directory is threaded so finalize can RE-COLLECT only final-DOCX
+    # artifacts owned by this run and source.
     docx_phase["docx_bytes"] = None
     docx_phase["diagnostics_dir"] = diagnostics_dir
-    docx_phase["build_started_at_epoch"] = 0.0
 
     result = _run_finalize(
         context=_make_reader_cleanup_context(),
@@ -661,6 +1041,15 @@ def test_finalize_caption_conflict_in_final_docx_blocks_delivery_markdown_change
     gate_reasons = ctx.get("gate_reasons") or []
     assert isinstance(gate_reasons, list)
     assert "caption_heading_conflict" in gate_reasons
+    blocked_states = [
+        call
+        for call in emitters.state_calls
+        if _state_mapping_value(call, "latest_delivery_disposition", "status") == "blocked"
+    ]
+    assert blocked_states
+    assert _state_mapping_value(
+        blocked_states[-1], "latest_delivery_disposition", "explanation"
+    )
     # Primary UI artifacts were NEVER written — delivery blocked first.
     assert deps.write_ui_result_artifacts_calls == 0
     assert "ui_result_artifacts_saved" not in _events(deps)
@@ -686,6 +1075,12 @@ def test_finalize_caption_conflict_in_final_docx_blocks_delivery_markdown_unchan
     gate_reasons = ctx.get("gate_reasons") or []
     assert isinstance(gate_reasons, list)
     assert "caption_heading_conflict" in gate_reasons
+    blocked_states = [
+        call
+        for call in emitters.state_calls
+        if _state_mapping_value(call, "latest_delivery_disposition", "status") == "blocked"
+    ]
+    assert blocked_states
     assert deps.write_ui_result_artifacts_calls == 0
     assert "ui_result_artifacts_saved" not in _events(deps)
     assert "processing_completed" not in _events(deps)
@@ -700,9 +1095,50 @@ def test_finalize_reader_cleanup_without_caption_conflict_publishes(monkeypatch,
     gate_input = "Чистый переведённый абзац для итоговой проверки."
 
     diagnostics_dir = tmp_path / "formatting_diagnostics"
-    diagnostics_dir.mkdir(parents=True, exist_ok=True)  # present but empty -> zero conflicts
+    # Overlapping foreign runs may write conflicts into the shared directory. Neither
+    # same-run/different-source nor different-run/same-source artifacts belong here.
+    _write_caption_conflict_artifact(
+        diagnostics_dir,
+        "foreign_source.json",
+        source_token="source-foreign",
+    )
+    _write_caption_conflict_artifact(
+        diagnostics_dir,
+        "foreign_run.json",
+        run_id="run-foreign",
+    )
+    owned_path = diagnostics_dir / "owned_non_caption.json"
+    owned_path.write_text(
+        json.dumps(
+            {
+                "stage": "preserve",
+                "ownership": {
+                    "scope": "live",
+                    "run_id": "run-main",
+                    "source_token": "source-main",
+                },
+                "source_count": 5,
+                "target_count": 4,
+                "mapped_count": 4,
+                "unmapped_source_ids": ["p0004"],
+                "unmapped_target_indexes": [],
+                "caption_heading_conflicts": [],
+            }
+        ),
+        encoding="utf-8",
+    )
 
-    report_fn, report_calls = _fail_when_marker_report()
+    report_calls: list[list[str]] = []
+
+    def report_fn(*, formatting_diagnostics_artifacts, **kwargs):
+        report_calls.append(list(formatting_diagnostics_artifacts))
+        return {
+            "quality_status": "pass",
+            "gate_reasons": [],
+            "formatting_diagnostics_artifact_count": len(formatting_diagnostics_artifacts),
+            "formatting_diagnostics_artifact_paths": list(formatting_diagnostics_artifacts),
+        }
+
     cleanup = _cleanup_result(markdown=gate_input, docx_bytes=b"PK\x03\x04 final docx")
     _install_stubs(monkeypatch, gate_input_markdown=gate_input, cleanup_result=cleanup, report_fn=report_fn)
 
@@ -712,7 +1148,6 @@ def test_finalize_reader_cleanup_without_caption_conflict_publishes(monkeypatch,
     docx_phase = _make_docx_phase(gate_input)
     docx_phase["docx_bytes"] = None
     docx_phase["diagnostics_dir"] = diagnostics_dir
-    docx_phase["build_started_at_epoch"] = 0.0
 
     result = _run_finalize(
         context=_make_reader_cleanup_context(),
@@ -723,9 +1158,18 @@ def test_finalize_reader_cleanup_without_caption_conflict_publishes(monkeypatch,
     )
 
     assert result == "succeeded"
-    # Unchanged markdown + no conflict => the re-gate was skipped (only the pre-cleanup call).
-    assert report_calls == [gate_input]
+    # Unchanged markdown still rebuilds the authoritative report when the deferred
+    # build contributes a new exact-owned non-caption diagnostic.
+    assert report_calls == [[], [str(owned_path)]]
     assert "translation_quality_gate_failed_post_cleanup" not in _events(deps)
+    detected_events = [event for event in deps.events if event[1] == "formatting_diagnostics_artifacts_detected"]
+    assert len(detected_events) == 1
+    assert detected_events[0][3]["artifact_paths"] == [str(owned_path)]
+    assert emitters.activity_calls
+    assert any(
+        _state_mapping_value(call, "latest_result_notice", "level") == "info"
+        for call in emitters.state_calls
+    )
     assert deps.write_ui_result_artifacts_calls == 1
     assert "processing_completed" in _events(deps)
 

@@ -1412,23 +1412,23 @@
       "output_bold": 0,
       "output_italic": 0,
       "reason": null,
-      "source_bold": 13,
+      "source_bold": 14,
       "source_italic": 25
     },
     "high_confidence_merge_count": 46,
     "list_restoration_decisions": [],
-    "mapped_count": 474,
+    "mapped_count": 472,
     "mapping_strategy_counts": {
       "adjacent_caption": 1,
-      "bounded_registry_heading_containment": 3,
+      "bounded_registry_heading_containment": 2,
       "exact_text": 20,
       "image_anchor": 3,
-      "local_gap_heading_fallback": 21,
+      "local_gap_heading_fallback": 18,
       "local_gap_toc_fallback": 2,
       "paragraph_id_rebuild_key": 9,
       "paragraph_id_registry": 309,
       "paragraph_id_registry_aggregation_anchor": 7,
-      "paragraph_id_registry_similarity": 65,
+      "paragraph_id_registry_similarity": 67,
       "positional_exact": 24,
       "projected_registry_fuzzy": 5,
       "similarity": 5
@@ -1437,13 +1437,13 @@
       "bad_pair_count": 0,
       "bad_pair_rule": "bad when not exact/contained, token_jaccard < 0.50, source_token_overlap < 0.85, and target_token_overlap < 0.85",
       "bad_strategy_counts": {},
-      "checked_count": 73,
+      "checked_count": 74,
       "indexing_basis": "formatting_diagnostics.target_registry[mapped_target_index]",
       "samples": [],
       "source_text_basis": "runtime.state.final_generated_paragraph_registry when available; source paragraph text fallback",
       "strategy_counts": {
-        "bounded_registry_heading_containment": 3,
-        "paragraph_id_registry_similarity": 65,
+        "bounded_registry_heading_containment": 2,
+        "paragraph_id_registry_similarity": 67,
         "projected_registry_fuzzy": 5
       },
       "strategy_filter": [
@@ -2592,24 +2592,24 @@
         "boundary_confidence": "high",
         "boundary_rationale": null,
         "boundary_source": "raw",
-        "heading_level": 2,
+        "heading_level": null,
         "list_abstract_num_id": null,
         "list_kind": null,
         "list_level": 0,
         "list_num_id": null,
         "list_numbering_format": null,
         "mapped_target_index": 9,
-        "mapping_strategy": "paragraph_id_registry",
+        "mapping_strategy": "paragraph_id_registry_similarity",
         "origin_raw_indexes": [
           7
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0009",
         "relation_ids": [],
-        "role": "heading",
+        "role": "body",
         "role_confidence": "heuristic",
         "source_index": 7,
-        "structural_role": "heading",
+        "structural_role": "body",
         "text_preview": "50x1-hum"
       },
       {
@@ -2802,7 +2802,7 @@
         "boundary_confidence": "high",
         "boundary_rationale": null,
         "boundary_source": "raw",
-        "heading_level": 3,
+        "heading_level": null,
         "list_abstract_num_id": null,
         "list_kind": null,
         "list_level": 0,
@@ -2816,10 +2816,10 @@
         "origin_raw_text_count": 1,
         "paragraph_id": "p0017",
         "relation_ids": [],
-        "role": "heading",
+        "role": "body",
         "role_confidence": "heuristic",
         "source_index": 15,
-        "structural_role": "heading",
+        "structural_role": "body",
         "text_preview": "separatist resistance resistance resistance"
       },
       {
@@ -3101,24 +3101,24 @@
         "boundary_confidence": "high",
         "boundary_rationale": null,
         "boundary_source": "raw",
-        "heading_level": 3,
+        "heading_level": null,
         "list_abstract_num_id": null,
         "list_kind": null,
         "list_level": 0,
         "list_num_id": null,
         "list_numbering_format": null,
         "mapped_target_index": 28,
-        "mapping_strategy": "bounded_registry_heading_containment",
+        "mapping_strategy": "paragraph_id_registry",
         "origin_raw_indexes": [
           41
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0028",
         "relation_ids": [],
-        "role": "heading",
+        "role": "body",
         "role_confidence": "heuristic",
         "source_index": 26,
-        "structural_role": "heading",
+        "structural_role": "body",
         "text_preview": "part ii"
       },
       {
@@ -8917,7 +8917,7 @@
         "boundary_confidence": "high",
         "boundary_rationale": null,
         "boundary_source": "raw",
-        "heading_level": 4,
+        "heading_level": null,
         "list_abstract_num_id": null,
         "list_kind": null,
         "list_level": 0,
@@ -8931,10 +8931,10 @@
         "origin_raw_text_count": 1,
         "paragraph_id": "p0247",
         "relation_ids": [],
-        "role": "heading",
+        "role": "body",
         "role_confidence": "heuristic",
         "source_index": 242,
-        "structural_role": "heading",
+        "structural_role": "body",
         "text_preview": "i1"
       },
       {
@@ -9263,24 +9263,24 @@
         "boundary_confidence": "high",
         "boundary_rationale": null,
         "boundary_source": "raw",
-        "heading_level": 4,
+        "heading_level": null,
         "list_abstract_num_id": null,
         "list_kind": null,
         "list_level": 0,
         "list_num_id": null,
         "list_numbering_format": null,
         "mapped_target_index": 260,
-        "mapping_strategy": "local_gap_heading_fallback",
+        "mapping_strategy": "paragraph_id_registry_similarity",
         "origin_raw_indexes": [
           382
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0260",
         "relation_ids": [],
-        "role": "heading",
+        "role": "body",
         "role_confidence": "heuristic",
         "source_index": 255,
-        "structural_role": "heading",
+        "structural_role": "body",
         "text_preview": "kulaks (the wealthy peas"
       },
       {
@@ -10023,7 +10023,7 @@
         "boundary_confidence": "high",
         "boundary_rationale": null,
         "boundary_source": "raw",
-        "heading_level": 4,
+        "heading_level": null,
         "list_abstract_num_id": null,
         "list_kind": null,
         "list_level": 0,
@@ -10037,10 +10037,10 @@
         "origin_raw_text_count": 1,
         "paragraph_id": "p0288",
         "relation_ids": [],
-        "role": "heading",
+        "role": "body",
         "role_confidence": "heuristic",
         "source_index": 283,
-        "structural_role": "heading",
+        "structural_role": "body",
         "text_preview": "cross-"
       },
       {
@@ -10250,7 +10250,7 @@
         "boundary_confidence": "high",
         "boundary_rationale": null,
         "boundary_source": "raw",
-        "heading_level": 4,
+        "heading_level": null,
         "list_abstract_num_id": null,
         "list_kind": null,
         "list_level": 0,
@@ -10264,10 +10264,10 @@
         "origin_raw_text_count": 1,
         "paragraph_id": "p0296",
         "relation_ids": [],
-        "role": "heading",
+        "role": "body",
         "role_confidence": "heuristic",
         "source_index": 291,
-        "structural_role": "heading",
+        "structural_role": "body",
         "text_preview": "officials, gathered together a"
       },
       {
@@ -13674,7 +13674,7 @@
         "boundary_confidence": "high",
         "boundary_rationale": null,
         "boundary_source": "raw",
-        "heading_level": 4,
+        "heading_level": null,
         "list_abstract_num_id": null,
         "list_kind": null,
         "list_level": 0,
@@ -13688,10 +13688,10 @@
         "origin_raw_text_count": 1,
         "paragraph_id": "p0425",
         "relation_ids": [],
-        "role": "heading",
+        "role": "body",
         "role_confidence": "heuristic",
         "source_index": 419,
-        "structural_role": "heading",
+        "structural_role": "body",
         "text_preview": "out on a"
       },
       {
@@ -13726,7 +13726,7 @@
         "boundary_confidence": "high",
         "boundary_rationale": null,
         "boundary_source": "raw",
-        "heading_level": 4,
+        "heading_level": null,
         "list_abstract_num_id": null,
         "list_kind": null,
         "list_level": 0,
@@ -13740,10 +13740,10 @@
         "origin_raw_text_count": 1,
         "paragraph_id": "p0427",
         "relation_ids": [],
-        "role": "heading",
+        "role": "body",
         "role_confidence": "heuristic",
         "source_index": 421,
-        "structural_role": "heading",
+        "structural_role": "body",
         "text_preview": "ukrainian"
       },
       {
@@ -13895,24 +13895,24 @@
         "boundary_confidence": "high",
         "boundary_rationale": null,
         "boundary_source": "raw",
-        "heading_level": 4,
+        "heading_level": null,
         "list_abstract_num_id": null,
         "list_kind": null,
         "list_level": 0,
         "list_num_id": null,
         "list_numbering_format": null,
-        "mapped_target_index": 433,
-        "mapping_strategy": "local_gap_heading_fallback",
+        "mapped_target_index": null,
+        "mapping_strategy": null,
         "origin_raw_indexes": [
           684
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0433",
         "relation_ids": [],
-        "role": "heading",
+        "role": "body",
         "role_confidence": "heuristic",
         "source_index": 427,
-        "structural_role": "heading",
+        "structural_role": "body",
         "text_preview": "the largest"
       },
       {
@@ -15113,24 +15113,24 @@
         "boundary_confidence": "high",
         "boundary_rationale": null,
         "boundary_source": "raw",
-        "heading_level": 4,
+        "heading_level": null,
         "list_abstract_num_id": null,
         "list_kind": null,
         "list_level": 0,
         "list_num_id": null,
         "list_numbering_format": null,
-        "mapped_target_index": 479,
-        "mapping_strategy": "local_gap_heading_fallback",
+        "mapped_target_index": null,
+        "mapping_strategy": null,
         "origin_raw_indexes": [
           752
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0479",
         "relation_ids": [],
-        "role": "heading",
+        "role": "body",
         "role_confidence": "heuristic",
         "source_index": 473,
-        "structural_role": "heading",
+        "structural_role": "body",
         "text_preview": "lyr 2014/03/05 : cia-rdp81-01043r002300220007-1"
       },
       {
@@ -15723,9 +15723,9 @@
         "text_preview": "oac of s| w ' —- - 6"
       },
       {
-        "heading_level": 2,
+        "heading_level": null,
         "mapped": true,
-        "style_name": "Heading 2",
+        "style_name": "Normal",
         "target_index": 9,
         "text_preview": "50x1-hum"
       },
@@ -15779,9 +15779,9 @@
         "text_preview": "resistance and population factors introduction о о о о о о о, о «. traditional resistance background a. bo c. dn"
       },
       {
-        "heading_level": 3,
+        "heading_level": null,
         "mapped": true,
-        "style_name": "Heading 3",
+        "style_name": "Normal",
         "target_index": 17,
         "text_preview": "separatist resistance resistance resistance"
       },
@@ -15856,9 +15856,9 @@
         "text_preview": "3 3 7 9 13 19 19"
       },
       {
-        "heading_level": 3,
+        "heading_level": null,
         "mapped": true,
-        "style_name": "Heading 3",
+        "style_name": "Normal",
         "target_index": 28,
         "text_preview": "part ii"
       },
@@ -17389,9 +17389,9 @@
         "text_preview": "into leadership posts, and that local independence in economic affairs be granted.23 as a result, ukrainians lost much…"
       },
       {
-        "heading_level": 4,
+        "heading_level": null,
         "mapped": true,
-        "style_name": "Heading 4",
+        "style_name": "Normal",
         "target_index": 247,
         "text_preview": "i1"
       },
@@ -17480,9 +17480,9 @@
         "text_preview": "farms. in 1929, it was decided to eliminate the ants) completely as a class: their land was made"
       },
       {
-        "heading_level": 4,
+        "heading_level": null,
         "mapped": true,
-        "style_name": "Heading 4",
+        "style_name": "Normal",
         "target_index": 260,
         "text_preview": "kulaks (the wealthy peas peas"
       },
@@ -17676,9 +17676,9 @@
         "text_preview": "tivities. in contrast to the situation in the west ukraine, there was in the few east no organized nationalist undergro…"
       },
       {
-        "heading_level": 4,
+        "heading_level": null,
         "mapped": true,
-        "style_name": "Heading 4",
+        "style_name": "Normal",
         "target_index": 288,
         "text_preview": "cross-"
       },
@@ -17732,9 +17732,9 @@
         "text_preview": "1941 authority over the right bank of the ukraine"
       },
       {
-        "heading_level": 4,
+        "heading_level": null,
         "mapped": true,
-        "style_name": "Heading 4",
+        "style_name": "Normal",
         "target_index": 296,
         "text_preview": "officials, gathered together a"
       },
@@ -18635,9 +18635,9 @@
         "text_preview": "resistance activities in the ukraine in the period after gents killed by soviet forces have been decorated and ukrainia…"
       },
       {
-        "heading_level": 4,
+        "heading_level": null,
         "mapped": true,
-        "style_name": "Heading 4",
+        "style_name": "Normal",
         "target_index": 425,
         "text_preview": "out on a"
       },
@@ -18649,9 +18649,9 @@
         "text_preview": "large scale following the pattern of opposition developed by"
       },
       {
-        "heading_level": 4,
+        "heading_level": null,
         "mapped": true,
-        "style_name": "Heading 4",
+        "style_name": "Normal",
         "target_index": 427,
         "text_preview": "ukrainian"
       },
@@ -18691,9 +18691,9 @@
         "text_preview": "men and were no phase of resistance—1948 to 1951—developed on a much"
       },
       {
-        "heading_level": 4,
-        "mapped": true,
-        "style_name": "Heading 4",
+        "heading_level": null,
+        "mapped": false,
+        "style_name": "Normal",
         "target_index": 433,
         "text_preview": "the largest largest"
       },
@@ -19013,9 +19013,9 @@
         "text_preview": "dgclassified in part - sanitized copy approved for release @ s\""
       },
       {
-        "heading_level": 4,
-        "mapped": true,
-        "style_name": "Heading 4",
+        "heading_level": null,
+        "mapped": false,
+        "style_name": "Normal",
         "target_index": 479,
         "text_preview": "lyr 2014/03/05 : cia-rdp81-01043r002300220007-1 cia-rdp81-01043r002300220007-1"
       },
@@ -19183,11 +19183,13 @@
       "p0398",
       "p0419",
       "p0428",
-      "p0469"
+      "p0433",
+      "p0469",
+      "p0479"
     ],
     "unmapped_source_residual_diagnostics": {
       "category_counts": {
-        "single_origin_lost_match": 14,
+        "single_origin_lost_match": 16,
         "true_aggregate_unmapped": 8
       },
       "effective_formatting_coverage_diagnostics": {
@@ -19195,7 +19197,7 @@
         "counts": {
           "format_neutral_body_dissolved_creditable": 1,
           "true_aggregate_relation_gap": 8,
-          "unproven_or_marker_closable": 13
+          "unproven_or_marker_closable": 15
         },
         "evidence_basis": "registry_text_exact_or_fuzzy_overlap_in_already_mapped_neighbor_target",
         "format_neutral_creditable_count": 1,
@@ -19204,17 +19206,17 @@
         "source_neighbor_window": 3
       },
       "first_missing_identity_stage_counts": {
-        "rebuilt_docx_restore_match_missing": 22
+        "rebuilt_docx_restore_match_missing": 24
       },
       "residual_closability_diagnostics": {
         "classification_basis": "full_unmapped_source_set",
         "counts": {
           "target_absent_or_unproven": 8,
-          "target_exists_text_align_missed": 6,
+          "target_exists_text_align_missed": 8,
           "true_aggregate_relation_gap": 8
         },
         "embedded_marker_upper_bound_class": "target_exists_text_align_missed",
-        "embedded_marker_upper_bound_count": 6,
+        "embedded_marker_upper_bound_count": 8,
         "embedded_marker_upper_bound_note": "Counts only candidates on unmapped/free target paragraphs."
       },
       "residual_rows": [
@@ -19858,6 +19860,63 @@
           "text_preview": "as many as liberately shifted their emphasis from, open resistance to propaganda work nationalists during the war. aime…"
         },
         {
+          "effective_formatting_coverage_class": "unproven_or_marker_closable",
+          "first_missing_identity_stage": "rebuilt_docx_restore_match_missing",
+          "free_target_candidate_indexes_containing_registry_text": [
+            433
+          ],
+          "generated_registry_entry_available": true,
+          "generated_registry_merged_ids": [],
+          "generated_text_preview": "The largest",
+          "occupied_candidate_evidence": [
+            {
+              "evidence_type": "exact_contains",
+              "mapped_source_index": 189,
+              "score": 1.0,
+              "source_distance": 244,
+              "target_index": 189,
+              "token_overlap_ratio": 1.0
+            },
+            {
+              "evidence_type": "exact_contains",
+              "mapped_source_index": 297,
+              "score": 1.0,
+              "source_distance": 136,
+              "target_index": 297,
+              "token_overlap_ratio": 1.0
+            },
+            {
+              "evidence_type": "exact_contains",
+              "mapped_source_index": 298,
+              "score": 1.0,
+              "source_distance": 135,
+              "target_index": 298,
+              "token_overlap_ratio": 1.0
+            }
+          ],
+          "occupied_neighbor_candidate_evidence": [],
+          "origin_raw_indexes": [
+            684
+          ],
+          "origin_raw_text_count": 1,
+          "paragraph_id": "p0433",
+          "relation_ids": [],
+          "residual_category": "single_origin_lost_match",
+          "residual_closability_class": "target_exists_text_align_missed",
+          "role": "body",
+          "source_format_role": "body",
+          "source_index": 427,
+          "source_paragraph_id_available": true,
+          "structural_role": "body",
+          "target_candidate_indexes_containing_registry_text": [
+            189,
+            297,
+            298,
+            433
+          ],
+          "text_preview": "the largest"
+        },
+        {
           "effective_formatting_coverage_class": "true_aggregate_relation_gap",
           "first_missing_identity_stage": "rebuilt_docx_restore_match_missing",
           "free_target_candidate_indexes_containing_registry_text": [],
@@ -19882,6 +19941,35 @@
           "structural_role": "body",
           "target_candidate_indexes_containing_registry_text": [],
           "text_preview": "from the standpoint of special forces operations the most promising part of the steppeland is found in the upland areas…"
+        },
+        {
+          "effective_formatting_coverage_class": "unproven_or_marker_closable",
+          "first_missing_identity_stage": "rebuilt_docx_restore_match_missing",
+          "free_target_candidate_indexes_containing_registry_text": [
+            479
+          ],
+          "generated_registry_entry_available": true,
+          "generated_registry_merged_ids": [],
+          "generated_text_preview": "LYr 2014/03/05 : CIA-RDP81-01043R002300220007-1",
+          "occupied_candidate_evidence": [],
+          "occupied_neighbor_candidate_evidence": [],
+          "origin_raw_indexes": [
+            752
+          ],
+          "origin_raw_text_count": 1,
+          "paragraph_id": "p0479",
+          "relation_ids": [],
+          "residual_category": "single_origin_lost_match",
+          "residual_closability_class": "target_exists_text_align_missed",
+          "role": "body",
+          "source_format_role": "body",
+          "source_index": 473,
+          "source_paragraph_id_available": true,
+          "structural_role": "body",
+          "target_candidate_indexes_containing_registry_text": [
+            479
+          ],
+          "text_preview": "lyr 2014/03/05 : cia-rdp81-01043r002300220007-1"
         }
       ],
       "samples": [
@@ -20525,6 +20613,63 @@
           "text_preview": "as many as liberately shifted their emphasis from, open resistance to propaganda work nationalists during the war. aime…"
         },
         {
+          "effective_formatting_coverage_class": "unproven_or_marker_closable",
+          "first_missing_identity_stage": "rebuilt_docx_restore_match_missing",
+          "free_target_candidate_indexes_containing_registry_text": [
+            433
+          ],
+          "generated_registry_entry_available": true,
+          "generated_registry_merged_ids": [],
+          "generated_text_preview": "The largest",
+          "occupied_candidate_evidence": [
+            {
+              "evidence_type": "exact_contains",
+              "mapped_source_index": 189,
+              "score": 1.0,
+              "source_distance": 244,
+              "target_index": 189,
+              "token_overlap_ratio": 1.0
+            },
+            {
+              "evidence_type": "exact_contains",
+              "mapped_source_index": 297,
+              "score": 1.0,
+              "source_distance": 136,
+              "target_index": 297,
+              "token_overlap_ratio": 1.0
+            },
+            {
+              "evidence_type": "exact_contains",
+              "mapped_source_index": 298,
+              "score": 1.0,
+              "source_distance": 135,
+              "target_index": 298,
+              "token_overlap_ratio": 1.0
+            }
+          ],
+          "occupied_neighbor_candidate_evidence": [],
+          "origin_raw_indexes": [
+            684
+          ],
+          "origin_raw_text_count": 1,
+          "paragraph_id": "p0433",
+          "relation_ids": [],
+          "residual_category": "single_origin_lost_match",
+          "residual_closability_class": "target_exists_text_align_missed",
+          "role": "body",
+          "source_format_role": "body",
+          "source_index": 427,
+          "source_paragraph_id_available": true,
+          "structural_role": "body",
+          "target_candidate_indexes_containing_registry_text": [
+            189,
+            297,
+            298,
+            433
+          ],
+          "text_preview": "the largest"
+        },
+        {
           "effective_formatting_coverage_class": "true_aggregate_relation_gap",
           "first_missing_identity_stage": "rebuilt_docx_restore_match_missing",
           "free_target_candidate_indexes_containing_registry_text": [],
@@ -20549,11 +20694,40 @@
           "structural_role": "body",
           "target_candidate_indexes_containing_registry_text": [],
           "text_preview": "from the standpoint of special forces operations the most promising part of the steppeland is found in the upland areas…"
+        },
+        {
+          "effective_formatting_coverage_class": "unproven_or_marker_closable",
+          "first_missing_identity_stage": "rebuilt_docx_restore_match_missing",
+          "free_target_candidate_indexes_containing_registry_text": [
+            479
+          ],
+          "generated_registry_entry_available": true,
+          "generated_registry_merged_ids": [],
+          "generated_text_preview": "LYr 2014/03/05 : CIA-RDP81-01043R002300220007-1",
+          "occupied_candidate_evidence": [],
+          "occupied_neighbor_candidate_evidence": [],
+          "origin_raw_indexes": [
+            752
+          ],
+          "origin_raw_text_count": 1,
+          "paragraph_id": "p0479",
+          "relation_ids": [],
+          "residual_category": "single_origin_lost_match",
+          "residual_closability_class": "target_exists_text_align_missed",
+          "role": "body",
+          "source_format_role": "body",
+          "source_index": 473,
+          "source_paragraph_id_available": true,
+          "structural_role": "body",
+          "target_candidate_indexes_containing_registry_text": [
+            479
+          ],
+          "text_preview": "lyr 2014/03/05 : cia-rdp81-01043r002300220007-1"
         }
       ]
     },
     "unmapped_source_role_counts": {
-      "body": 19,
+      "body": 21,
       "caption": 3
     },
     "unmapped_source_samples": [
@@ -20884,6 +21058,20 @@
         "heading_level": null,
         "list_kind": null,
         "origin_raw_indexes": [
+          684
+        ],
+        "origin_raw_text_count": 1,
+        "paragraph_id": "p0433",
+        "role": "body",
+        "source_index": 427,
+        "structural_role": "body",
+        "text_preview": "the largest"
+      },
+      {
+        "asset_id": null,
+        "heading_level": null,
+        "list_kind": null,
+        "origin_raw_indexes": [
           741,
           742
         ],
@@ -20893,6 +21081,20 @@
         "source_index": 463,
         "structural_role": "body",
         "text_preview": "from the standpoint of special forces operations the most promising part of the steppeland is found in the upland areas…"
+      },
+      {
+        "asset_id": null,
+        "heading_level": null,
+        "list_kind": null,
+        "origin_raw_indexes": [
+          752
+        ],
+        "origin_raw_text_count": 1,
+        "paragraph_id": "p0479",
+        "role": "body",
+        "source_index": 473,
+        "structural_role": "body",
+        "text_preview": "lyr 2014/03/05 : cia-rdp81-01043r002300220007-1"
       }
     ],
     "unmapped_target_indexes": [
@@ -20921,16 +21123,18 @@
       398,
       419,
       428,
-      469
+      433,
+      469,
+      479
     ],
     "unmapped_target_residual_diagnostics": {
       "classification_basis": "full_unmapped_target_set",
       "controlled_fallback_accounting_rule": "Credit unmapped target paragraphs whose text is covered by a generated registry entry from a block explicitly retained through controlled fallback.",
       "controlled_fallback_creditable_count": 0,
       "counts": {
-        "short_note_or_marker": 7,
+        "short_note_or_marker": 8,
         "split_accounting": 4,
-        "spurious_or_unproven": 15
+        "spurious_or_unproven": 16
       },
       "evidence_basis": "target_registry text contained/fuzzy-covered by generated source registry text",
       "residual_rows": [
@@ -21292,6 +21496,13 @@
           "text_evidence_type": "exact_contains"
         },
         {
+          "residual_class": "short_note_or_marker",
+          "target_format_role": "body",
+          "target_index": 433,
+          "target_text_preview": "The largest largest",
+          "target_token_count": 3
+        },
+        {
           "best_source_format_role": "body",
           "best_source_index": 469,
           "best_source_mapped_target_index": null,
@@ -21306,6 +21517,22 @@
           "text_evidence_score": 1.0,
           "text_evidence_token_overlap_ratio": 1.0,
           "text_evidence_type": "exact_contains"
+        },
+        {
+          "best_source_format_role": "body",
+          "best_source_index": 479,
+          "best_source_mapped_target_index": null,
+          "best_source_paragraph_id": "p0479",
+          "best_source_text_preview": "LYr 2014/03/05 : CIA-RDP81-01043R002300220007-1",
+          "residual_class": "spurious_or_unproven",
+          "split_anchor_targets": [],
+          "target_format_role": "body",
+          "target_index": 479,
+          "target_text_preview": "LYr 2014/03/05 : CIA-RDP81-01043R002300220007-1 CIA-RDP81-01043R002300220007-1",
+          "target_token_count": 12,
+          "text_evidence_score": 1.0,
+          "text_evidence_token_overlap_ratio": 1.0,
+          "text_evidence_type": "fuzzy_token_overlap"
         }
       ],
       "samples": [
@@ -23483,10 +23710,6 @@
       432
     ],
     [
-      "p0433",
-      433
-    ],
-    [
       "p0434",
       434
     ],
@@ -23661,10 +23884,6 @@
     [
       "p0478",
       478
-    ],
-    [
-      "p0479",
-      479
     ],
     [
       "p0480",

@@ -1690,6 +1690,61 @@ def test_extract_document_content_from_docx_does_not_promote_inherited_centered_
     assert paragraphs[0].role_confidence == "heuristic"
 
 
+def _short_heading_evidence_triplet(
+    *,
+    candidate_text: str = "Compact section label",
+    candidate_font_size: float | None = 11.0,
+    role_confidence: str = "heuristic",
+    structural_role: str = "body",
+) -> list[ParagraphUnit]:
+    return [
+        ParagraphUnit(
+            text="The preceding paragraph provides sufficiently long ordinary body context for deterministic role preparation.",
+            role="body",
+            structural_role="body",
+            font_size_pt=11.0,
+        ),
+        ParagraphUnit(
+            text=candidate_text,
+            role="body",
+            structural_role=structural_role,
+            role_confidence=role_confidence,
+            font_size_pt=candidate_font_size,
+        ),
+        ParagraphUnit(
+            text="The following paragraph also provides sufficiently long ordinary body context for deterministic role preparation.",
+            role="body",
+            structural_role="body",
+            font_size_pt=11.0,
+        ),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("candidate_font_size", "expected_role"),
+    [(14.0, "heading"), (11.0, "body")],
+)
+def test_promote_short_standalone_headings_requires_source_form_evidence(
+    candidate_font_size,
+    expected_role,
+):
+    paragraphs = _short_heading_evidence_triplet(candidate_font_size=candidate_font_size)
+
+    document.promote_short_standalone_headings(paragraphs)
+
+    assert paragraphs[1].role == expected_role
+    if expected_role == "heading":
+        assert paragraphs[1].structural_role == "heading"
+        assert paragraphs[1].heading_source == "heuristic"
+        assert paragraphs[1].heading_level == 2
+    else:
+        assert paragraphs[1].structural_role == "body"
+        assert paragraphs[1].heading_source is None
+        assert paragraphs[1].heading_level is None
+        assert paragraphs[1].heuristic_role_hint is None
+        assert paragraphs[1].heuristic_heading_level_hint is None
+
+
 def test_extract_document_content_from_docx_promotes_short_larger_subheading_between_body_paragraphs():
     doc = Document()
 
@@ -1726,7 +1781,14 @@ def test_extract_document_content_from_docx_promotes_short_larger_subheading_bet
     )
 
 
-def test_extract_document_content_from_docx_promotes_very_short_subheading_between_body_paragraphs_without_larger_font():
+@pytest.mark.parametrize(
+    ("structure_recovery_enabled", "structure_recovery_mode"),
+    [(False, "legacy"), (True, "ai_first")],
+)
+def test_extract_document_content_from_docx_does_not_promote_very_short_body_without_source_signal(
+    structure_recovery_enabled,
+    structure_recovery_mode,
+):
     doc = Document()
 
     doc.add_paragraph(
@@ -1743,47 +1805,86 @@ def test_extract_document_content_from_docx_promotes_very_short_subheading_betwe
     doc.save(buffer)
     buffer.seek(0)
 
-    paragraphs, _ = extract_document_content_from_docx(buffer)
+    paragraphs, _, _, _, _, _, _ = document.extract_document_content_with_normalization_reports(
+        buffer,
+        app_config={
+            "structure_recovery_enabled": structure_recovery_enabled,
+            "structure_recovery_mode": structure_recovery_mode,
+        },
+    )
 
-    assert [paragraph.role for paragraph in paragraphs] == ["body", "heading", "body"]
-    assert paragraphs[1].heading_source == "heuristic"
-    assert paragraphs[1].heading_level == 2
+    assert [paragraph.role for paragraph in paragraphs] == ["body", "body", "body"]
+    assert paragraphs[1].structural_role == "body"
+    assert paragraphs[1].heading_source is None
+    assert paragraphs[1].heading_level is None
+    assert paragraphs[1].heuristic_role_hint is None
+    assert paragraphs[1].heuristic_heading_level_hint is None
 
 
-def test_promote_short_standalone_headings_ai_first_sets_hint_without_mutating_role():
-    paragraphs = [
-        ParagraphUnit(
-            text="Привлекательность лотерейных билетов с крупными призами отчасти объясняется мечтами о переменах и доступе к новым возможностям.",
-            role="body",
-            structural_role="body",
-            font_size_pt=11,
-        ),
-        ParagraphUnit(
-            text="Переосмысление богатства",
-            role="body",
-            structural_role="body",
-            font_size_pt=11,
-        ),
-        ParagraphUnit(
-            text="Богатство - это то, чего мы все хотим, но его значение зависит не только от денег, а еще и от устойчивости, свободы выбора и качества связей.",
-            role="body",
-            structural_role="body",
-            font_size_pt=11,
-        ),
-    ]
+@pytest.mark.parametrize(
+    "candidate_text",
+    [
+        "LABEL",
+        "7 Compact label",
+        "Compact label:",
+        "Title Case Label",
+        "One",
+    ],
+)
+@pytest.mark.parametrize(
+    ("structure_recovery_enabled", "structure_recovery_mode"),
+    [(False, "legacy"), (True, "ai_first")],
+)
+def test_promote_short_standalone_headings_ignores_text_shape_without_source_signal(
+    candidate_text,
+    structure_recovery_enabled,
+    structure_recovery_mode,
+):
+    paragraphs = _short_heading_evidence_triplet(candidate_text=candidate_text)
 
     document.promote_short_standalone_headings(
         paragraphs,
-        structure_recovery_enabled=True,
-        structure_recovery_mode="ai_first",
+        structure_recovery_enabled=structure_recovery_enabled,
+        structure_recovery_mode=structure_recovery_mode,
     )
 
     assert [paragraph.role for paragraph in paragraphs] == ["body", "body", "body"]
     assert paragraphs[1].structural_role == "body"
     assert paragraphs[1].heading_level is None
     assert paragraphs[1].heading_source is None
-    assert paragraphs[1].heuristic_role_hint == "heading"
-    assert paragraphs[1].heuristic_heading_level_hint == 2
+    assert paragraphs[1].heuristic_role_hint is None
+    assert paragraphs[1].heuristic_heading_level_hint is None
+
+
+@pytest.mark.parametrize(
+    ("structure_recovery_enabled", "structure_recovery_mode"),
+    [(False, "legacy"), (True, "ai_first")],
+)
+def test_extract_document_content_from_docx_preserves_very_short_explicit_heading(
+    structure_recovery_enabled,
+    structure_recovery_mode,
+):
+    doc = Document()
+    doc.add_paragraph("Label", style="Heading 2")
+    doc.add_paragraph("Ordinary narrative body content follows the explicit source heading metadata.")
+    buffer = BytesIO()
+    doc.save(buffer)
+    buffer.seek(0)
+
+    paragraphs, _, _, _, _, _, _ = document.extract_document_content_with_normalization_reports(
+        buffer,
+        app_config={
+            "structure_recovery_enabled": structure_recovery_enabled,
+            "structure_recovery_mode": structure_recovery_mode,
+        },
+    )
+
+    assert paragraphs[0].role == "heading"
+    assert paragraphs[0].structural_role == "heading"
+    assert paragraphs[0].heading_level == 2
+    assert paragraphs[0].heading_source == "explicit"
+    assert paragraphs[0].heuristic_role_hint is None
+    assert paragraphs[0].heuristic_heading_level_hint is None
 
 
 def test_extract_document_content_from_docx_does_not_promote_very_short_sentence_with_terminal_period():
@@ -1838,6 +1939,8 @@ def test_promote_short_standalone_headings_does_not_override_ai_classified_body_
     assert paragraphs[1].role_confidence == "ai"
     assert paragraphs[1].heading_source is None
     assert paragraphs[1].heading_level is None
+    assert paragraphs[1].heuristic_role_hint is None
+    assert paragraphs[1].heuristic_heading_level_hint is None
 
 
 def test_promote_short_standalone_headings_does_not_override_ai_structural_attribution():
@@ -1870,6 +1973,50 @@ def test_promote_short_standalone_headings_does_not_override_ai_structural_attri
     assert paragraphs[1].structural_role == "attribution"
     assert paragraphs[1].role_confidence == "ai"
     assert paragraphs[1].heading_source is None
+    assert paragraphs[1].heading_level is None
+    assert paragraphs[1].heuristic_role_hint is None
+    assert paragraphs[1].heuristic_heading_level_hint is None
+
+
+def test_no_signal_short_body_uses_existing_preparation_stages_without_provider_calls(
+    monkeypatch,
+):
+    doc = Document()
+    doc.add_paragraph(
+        "The preceding paragraph provides sufficiently long ordinary body context for deterministic preparation."
+    )
+    doc.add_paragraph("Compact label")
+    doc.add_paragraph(
+        "The following paragraph provides sufficiently long ordinary body context for deterministic preparation."
+    )
+    buffer = BytesIO()
+    doc.save(buffer)
+    buffer.seek(0)
+
+    role_stage_calls = []
+    provider_calls = []
+    original_promote = document_extraction.promote_short_standalone_headings
+    original_normalize = document_extraction.normalize_front_matter_display_title
+
+    def tracked_promote(*args, **kwargs):
+        role_stage_calls.append("promote")
+        return original_promote(*args, **kwargs)
+
+    def tracked_normalize(*args, **kwargs):
+        role_stage_calls.append("normalize")
+        return original_normalize(*args, **kwargs)
+
+    monkeypatch.setattr(document_extraction, "promote_short_standalone_headings", tracked_promote)
+    monkeypatch.setattr(document_extraction, "normalize_front_matter_display_title", tracked_normalize)
+
+    document.extract_document_content_with_normalization_reports(
+        buffer,
+        app_config={"structure_recovery_enabled": False, "structure_recovery_mode": "legacy"},
+        client_factory=lambda provider: provider_calls.append(provider),
+    )
+
+    assert provider_calls == []
+    assert role_stage_calls == ["promote", "normalize"]
 
 
 def test_promote_short_standalone_headings_does_not_promote_centered_all_caps_attribution_after_italic_quote():

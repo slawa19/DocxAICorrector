@@ -11,11 +11,12 @@ patterns are immutable compiled constants.
 
 import logging
 import re
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 from docxaicorrector.generation._generation import strip_markdown_for_narration
 from docxaicorrector.pipeline.text_call_support import _require_group_int, _resolve_text_call_target
+from docxaicorrector.pipeline.contracts import LatePhaseStopped
 
 
 _ELEVENLABS_TAG_PATTERN = re.compile(r"\[(?:thoughtful|curious|serious|sad|excited|annoyed|sarcastic|whispers|short pause|long pause|sighs|laughs|chuckles|exhales)\]")
@@ -32,15 +33,76 @@ _NARRATION_DISALLOWED_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
 )
 
 
-def _build_narration_text(*, context: Any, dependencies: Any, emitters: Any, state: Any) -> str | None:
+def _project_final_cleanup_narration_chunks(
+    *,
+    context: Any,
+    final_generated_paragraph_registry: Sequence[object] | None,
+) -> list[str]:
+    if final_generated_paragraph_registry is None:
+        raise RuntimeError("narration_cleanup_projection_unsafe:missing_final_registry")
+    jobs = list(getattr(context, "jobs", ()) or ())
+    projected: list[str] = []
+    for raw_entry in final_generated_paragraph_registry:
+        if not isinstance(raw_entry, Mapping):
+            raise RuntimeError("narration_cleanup_projection_unsafe:invalid_registry_entry")
+        text = str(raw_entry.get("text", "") or "").strip()
+        source_block_indexes = raw_entry.get("reader_cleanup_source_block_indexes")
+        if source_block_indexes is None:
+            source_block_indexes = [raw_entry.get("block_index")]
+        if (
+            not isinstance(source_block_indexes, Sequence)
+            or isinstance(source_block_indexes, (str, bytes, bytearray))
+            or not source_block_indexes
+        ):
+            raise RuntimeError("narration_cleanup_projection_unsafe:incomplete_lineage")
+        inclusion_flags: set[bool] = set()
+        for block_index in source_block_indexes:
+            if (
+                isinstance(block_index, bool)
+                or not isinstance(block_index, int)
+                or block_index < 1
+                or block_index > len(jobs)
+            ):
+                raise RuntimeError("narration_cleanup_projection_unsafe:incomplete_lineage")
+            job = jobs[block_index - 1]
+            inclusion_flags.add(
+                bool(job.get("narration_include", True))
+                if isinstance(job, Mapping)
+                else bool(getattr(job, "narration_include", True))
+            )
+        if len(inclusion_flags) != 1:
+            raise RuntimeError("narration_cleanup_projection_unsafe:mixed_join_boundary")
+        # Blank blocks and form-only internal placeholders carry no narratable
+        # content. They still need valid structural lineage, but they do not make
+        # adjacent eligible final text unsafe and must not poison the whole
+        # narration projection.
+        if not strip_markdown_for_narration(text):
+            continue
+        if True in inclusion_flags:
+            projected.append(text)
+    return projected
+
+
+def _build_narration_text(*, context: Any, dependencies: Any, emitters: Any, state: Any, final_generated_paragraph_registry: Sequence[object] | None = None) -> str | None:
+    stop_predicate = getattr(dependencies, "should_stop_processing", None) if dependencies is not None else None
+    if callable(stop_predicate) and stop_predicate(getattr(context, "runtime", None)):
+        raise LatePhaseStopped()
     if context.processing_operation != "audiobook":
         if not _should_run_audiobook_postprocess(context=context):
             return None
+        narration_chunks_override = None
+        cleanup_policy = str(context.app_config.get("reader_cleanup_policy", "advisory") or "advisory").strip().lower()
+        if context.processing_operation == "translate" and bool(context.app_config.get("reader_cleanup_enabled", False)) and cleanup_policy != "off":
+            narration_chunks_override = _project_final_cleanup_narration_chunks(
+                context=context,
+                final_generated_paragraph_registry=final_generated_paragraph_registry,
+            )
         return _run_audiobook_postprocess(
             context=context,
             dependencies=dependencies,
             emitters=emitters,
             state=state,
+            narration_chunks_override=narration_chunks_override,
         )
     narration_source = "\n\n".join(_collect_narration_chunks(state=state))
     if not narration_source:
@@ -134,8 +196,9 @@ def _build_narration_postprocess_groups(*, narration_chunks: Sequence[str], chun
     return groups
 
 
-def _run_audiobook_postprocess(*, context: Any, dependencies: Any, emitters: Any, state: Any) -> str | None:
-    narration_chunks = _collect_narration_chunks(state=state)
+def _run_audiobook_postprocess(*, context: Any, dependencies: Any, emitters: Any, state: Any, narration_chunks_override: Sequence[str] | None = None) -> str | None:
+    narration_chunks = list(narration_chunks_override) if narration_chunks_override is not None else _collect_narration_chunks(state=state)
+    stop_predicate = getattr(dependencies, "should_stop_processing", None)
     if not narration_chunks:
         return None
 
@@ -178,6 +241,8 @@ def _run_audiobook_postprocess(*, context: Any, dependencies: Any, emitters: Any
 
     processed_groups: list[str] = []
     for group in groups:
+        if callable(stop_predicate) and stop_predicate(context.runtime):
+            raise LatePhaseStopped()
         target_text = str(group["target_text"])
         context_before = str(group["context_before"])
         context_after = str(group["context_after"])
@@ -214,6 +279,8 @@ def _run_audiobook_postprocess(*, context: Any, dependencies: Any, emitters: Any
             expected_paragraph_ids=None,
             marker_mode=False,
         )
+        if callable(stop_predicate) and stop_predicate(context.runtime):
+            raise LatePhaseStopped()
         processed_groups.append(processed_chunk)
         dependencies.log_event(
             logging.INFO,

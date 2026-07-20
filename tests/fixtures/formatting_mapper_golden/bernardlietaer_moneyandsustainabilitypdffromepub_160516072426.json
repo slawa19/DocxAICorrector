@@ -40,9 +40,19 @@
         "source_text_preview": "Harding Tibbs, ‘Sustainability’’, *The Deeper News,* Vol. 3, no.1, Jan. 1999, p.5.",
         "target_index": 360,
         "target_text_preview": "Harding Tibbs, ‘Sustainability’’, *The Deeper News,* Vol. 3, no.1, Jan. 1999, p.5."
+      },
+      {
+        "anchor_paragraph_id": "p0409",
+        "anchor_source_index": 409,
+        "kind": "generated_registry_target_aggregation",
+        "paragraph_id": "p0410",
+        "source_index": 410,
+        "source_text_preview": "The social and environmental consequences of a monetary and/or banking crash are felt far longer than the purely financ…",
+        "target_index": 410,
+        "target_text_preview": "The social and environmental consequences of a monetary and/or banking crash are felt far longer than the purely financ…"
       }
     ],
-    "accepted_aggregated_sources_count": 4,
+    "accepted_aggregated_sources_count": 5,
     "accepted_merged_sources": [
       {
         "accepted_merged_sources_count": 2,
@@ -464,6 +474,19 @@
         "anchor_asset_id": null,
         "confidence": "high",
         "member_paragraph_ids": [
+          "p0029",
+          "p0030"
+        ],
+        "rationale": [
+          "contiguous_toc_entries"
+        ],
+        "relation_id": "rel_0005",
+        "relation_kind": "toc_region"
+      },
+      {
+        "anchor_asset_id": null,
+        "confidence": "high",
+        "member_paragraph_ids": [
           "p0043",
           "p0044",
           "p0045"
@@ -471,7 +494,7 @@
         "rationale": [
           "contiguous_toc_entries"
         ],
-        "relation_id": "rel_0005",
+        "relation_id": "rel_0006",
         "relation_kind": "toc_region"
       },
       {
@@ -484,7 +507,7 @@
         "rationale": [
           "contiguous_toc_entries"
         ],
-        "relation_id": "rel_0006",
+        "relation_id": "rel_0007",
         "relation_kind": "toc_region"
       }
     ],
@@ -499,20 +522,20 @@
       "output_bold": 0,
       "output_italic": 0,
       "reason": null,
-      "source_bold": 57,
-      "source_italic": 234
+      "source_bold": 62,
+      "source_italic": 235
     },
     "high_confidence_merge_count": 14,
     "list_restoration_decisions": [],
-    "mapped_count": 468,
+    "mapped_count": 467,
     "mapping_strategy_counts": {
       "bounded_registry_fuzzy": 2,
-      "exact_text": 20,
-      "local_gap_heading_fallback": 12,
+      "exact_text": 21,
+      "local_gap_heading_fallback": 9,
       "paragraph_id_rebuild_key": 9,
-      "paragraph_id_registry": 353,
+      "paragraph_id_registry": 351,
       "paragraph_id_registry_aggregation_anchor": 8,
-      "paragraph_id_registry_similarity": 56,
+      "paragraph_id_registry_similarity": 59,
       "positional_exact": 1,
       "positional_toc_fallback": 1,
       "similarity": 6
@@ -521,13 +544,13 @@
       "bad_pair_count": 0,
       "bad_pair_rule": "bad when not exact/contained, token_jaccard < 0.50, source_token_overlap < 0.85, and target_token_overlap < 0.85",
       "bad_strategy_counts": {},
-      "checked_count": 58,
+      "checked_count": 61,
       "indexing_basis": "formatting_diagnostics.target_registry[mapped_target_index]",
       "samples": [],
       "source_text_basis": "runtime.state.final_generated_paragraph_registry when available; source paragraph text fallback",
       "strategy_counts": {
         "bounded_registry_fuzzy": 2,
-        "paragraph_id_registry_similarity": 56
+        "paragraph_id_registry_similarity": 59
       },
       "strategy_filter": [
         "bounded_registry_fuzzy",
@@ -547,11 +570,11 @@
       "suspicious_count": 0,
       "suspicious_counts": {}
     },
-    "rejected_relation_candidate_count": 2,
-    "relation_count": 6,
+    "rejected_relation_candidate_count": 1,
+    "relation_count": 7,
     "relation_counts": {
       "table_caption": 3,
-      "toc_region": 3
+      "toc_region": 4
     },
     "relation_decisions": [
       {
@@ -643,12 +666,13 @@
       },
       {
         "anchor_asset_id": null,
-        "decision": "reject",
+        "decision": "accept",
         "member_paragraph_ids": [
-          "p0029"
+          "p0029",
+          "p0030"
         ],
         "reasons": [
-          "isolated_toc_entry"
+          "contiguous_toc_entries"
         ],
         "relation_kind": "toc_region",
         "structure_phase": "post_ai_final",
@@ -685,8 +709,8 @@
       }
     ],
     "relation_identity_population": {
-      "relation_id_missing_count": 469,
-      "relation_id_populated_count": 31,
+      "relation_id_missing_count": 467,
+      "relation_id_populated_count": 33,
       "source_count": 500
     },
     "source_count": 500,
@@ -1505,7 +1529,9 @@
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0029",
-        "relation_ids": [],
+        "relation_ids": [
+          "rel_0005"
+        ],
         "role": "body",
         "role_confidence": "heuristic",
         "source_index": 29,
@@ -1518,24 +1544,26 @@
         "boundary_confidence": "high",
         "boundary_rationale": null,
         "boundary_source": "raw",
-        "heading_level": 2,
+        "heading_level": null,
         "list_abstract_num_id": null,
         "list_kind": null,
         "list_level": 0,
         "list_num_id": null,
         "list_numbering_format": null,
         "mapped_target_index": 30,
-        "mapping_strategy": "local_gap_heading_fallback",
+        "mapping_strategy": "exact_text",
         "origin_raw_indexes": [
           30
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0030",
-        "relation_ids": [],
-        "role": "heading",
+        "relation_ids": [
+          "rel_0005"
+        ],
+        "role": "body",
         "role_confidence": "heuristic",
         "source_index": 29,
-        "structural_role": "heading",
+        "structural_role": "toc_entry",
         "text_preview": "academy"
       },
       {
@@ -1870,7 +1898,7 @@
         "origin_raw_text_count": 1,
         "paragraph_id": "p0043",
         "relation_ids": [
-          "rel_0005"
+          "rel_0006"
         ],
         "role": "body",
         "role_confidence": "heuristic",
@@ -1898,7 +1926,7 @@
         "origin_raw_text_count": 1,
         "paragraph_id": "p0044",
         "relation_ids": [
-          "rel_0005"
+          "rel_0006"
         ],
         "role": "body",
         "role_confidence": "heuristic",
@@ -1926,7 +1954,7 @@
         "origin_raw_text_count": 1,
         "paragraph_id": "p0045",
         "relation_ids": [
-          "rel_0005"
+          "rel_0006"
         ],
         "role": "body",
         "role_confidence": "heuristic",
@@ -7742,7 +7770,7 @@
         "origin_raw_text_count": 1,
         "paragraph_id": "p0268",
         "relation_ids": [
-          "rel_0006"
+          "rel_0007"
         ],
         "role": "body",
         "role_confidence": "heuristic",
@@ -7770,7 +7798,7 @@
         "origin_raw_text_count": 1,
         "paragraph_id": "p0269",
         "relation_ids": [
-          "rel_0006"
+          "rel_0007"
         ],
         "role": "body",
         "role_confidence": "heuristic",
@@ -9201,7 +9229,7 @@
         "list_num_id": "27",
         "list_numbering_format": "bullet",
         "mapped_target_index": 324,
-        "mapping_strategy": "paragraph_id_registry",
+        "mapping_strategy": "paragraph_id_registry_similarity",
         "origin_raw_indexes": [
           339
         ],
@@ -9403,24 +9431,24 @@
         "boundary_confidence": "high",
         "boundary_rationale": null,
         "boundary_source": "raw",
-        "heading_level": 2,
+        "heading_level": null,
         "list_abstract_num_id": null,
         "list_kind": null,
         "list_level": 0,
         "list_num_id": null,
         "list_numbering_format": null,
         "mapped_target_index": 332,
-        "mapping_strategy": "paragraph_id_registry",
+        "mapping_strategy": "paragraph_id_registry_similarity",
         "origin_raw_indexes": [
           348
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0332",
         "relation_ids": [],
-        "role": "heading",
+        "role": "body",
         "role_confidence": "heuristic",
         "source_index": 328,
-        "structural_role": "heading",
+        "structural_role": "body",
         "text_preview": "an institutionalised status quo"
       },
       {
@@ -11332,24 +11360,24 @@
         "boundary_confidence": "high",
         "boundary_rationale": null,
         "boundary_source": "raw",
-        "heading_level": 2,
+        "heading_level": null,
         "list_abstract_num_id": null,
         "list_kind": null,
         "list_level": 0,
         "list_num_id": null,
         "list_numbering_format": null,
         "mapped_target_index": 406,
-        "mapping_strategy": "local_gap_heading_fallback",
+        "mapping_strategy": "paragraph_id_registry_similarity",
         "origin_raw_indexes": [
           427
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0406",
         "relation_ids": [],
-        "role": "heading",
+        "role": "body",
         "role_confidence": "heuristic",
         "source_index": 402,
-        "structural_role": "heading",
+        "structural_role": "body",
         "text_preview": "the impact on unemployment"
       },
       {
@@ -11410,24 +11438,24 @@
         "boundary_confidence": "high",
         "boundary_rationale": null,
         "boundary_source": "raw",
-        "heading_level": 2,
+        "heading_level": null,
         "list_abstract_num_id": null,
         "list_kind": null,
         "list_level": 0,
         "list_num_id": null,
         "list_numbering_format": null,
-        "mapped_target_index": 409,
-        "mapping_strategy": "local_gap_heading_fallback",
+        "mapped_target_index": 410,
+        "mapping_strategy": "paragraph_id_registry",
         "origin_raw_indexes": [
           430
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0409",
         "relation_ids": [],
-        "role": "heading",
+        "role": "body",
         "role_confidence": "heuristic",
         "source_index": 405,
-        "structural_role": "heading",
+        "structural_role": "body",
         "text_preview": "human and societal costs"
       },
       {
@@ -11442,8 +11470,8 @@
         "list_level": 0,
         "list_num_id": null,
         "list_numbering_format": null,
-        "mapped_target_index": 410,
-        "mapping_strategy": "paragraph_id_registry",
+        "mapped_target_index": null,
+        "mapping_strategy": null,
         "origin_raw_indexes": [
           431
         ],
@@ -11514,7 +11542,7 @@
         "boundary_confidence": "high",
         "boundary_rationale": null,
         "boundary_source": "raw",
-        "heading_level": 2,
+        "heading_level": null,
         "list_abstract_num_id": null,
         "list_kind": null,
         "list_level": 0,
@@ -11528,10 +11556,10 @@
         "origin_raw_text_count": 1,
         "paragraph_id": "p0413",
         "relation_ids": [],
-        "role": "heading",
+        "role": "body",
         "role_confidence": "heuristic",
         "source_index": 409,
-        "structural_role": "heading",
+        "structural_role": "body",
         "text_preview": "output losses"
       },
       {
@@ -11644,7 +11672,7 @@
         "boundary_confidence": "high",
         "boundary_rationale": null,
         "boundary_source": "raw",
-        "heading_level": 2,
+        "heading_level": null,
         "list_abstract_num_id": null,
         "list_kind": null,
         "list_level": 0,
@@ -11658,10 +11686,10 @@
         "origin_raw_text_count": 1,
         "paragraph_id": "p0418",
         "relation_ids": [],
-        "role": "heading",
+        "role": "body",
         "role_confidence": "heuristic",
         "source_index": 414,
-        "structural_role": "heading",
+        "structural_role": "body",
         "text_preview": "transfer costs"
       },
       {
@@ -13996,9 +14024,9 @@
         "text_preview": "introductory remarks to the report to finance watch and the world business"
       },
       {
-        "heading_level": 2,
+        "heading_level": null,
         "mapped": true,
-        "style_name": "Heading 2",
+        "style_name": "Normal",
         "target_index": 30,
         "text_preview": "academy"
       },
@@ -16110,9 +16138,9 @@
         "text_preview": "what these ideologies all have in common, however, is almost completely overlooked: they all take for granted the monop…"
       },
       {
-        "heading_level": 2,
+        "heading_level": null,
         "mapped": true,
-        "style_name": "Heading 2",
+        "style_name": "Normal",
         "target_index": 332,
         "text_preview": "an institutionalised status quo"
       },
@@ -16628,9 +16656,9 @@
         "text_preview": "for those of us who are not bankers, what is meant on a practical level by one of these crises?"
       },
       {
-        "heading_level": 2,
+        "heading_level": null,
         "mapped": true,
-        "style_name": "Heading 2",
+        "style_name": "Normal",
         "target_index": 406,
         "text_preview": "the impact on unemployment unemployment"
       },
@@ -16649,9 +16677,9 @@
         "text_preview": "any downturn in unemployment is being hailed as ‘the end of the crisis’. history indicates, however, that the impact of…"
       },
       {
-        "heading_level": 2,
-        "mapped": true,
-        "style_name": "Heading 2",
+        "heading_level": null,
+        "mapped": false,
+        "style_name": "Normal",
         "target_index": 409,
         "text_preview": "human and societal costs costs"
       },
@@ -16677,9 +16705,9 @@
         "text_preview": "even countries theoretically immune to the financial side of a crisis end up being hit through unemployment and increas…"
       },
       {
-        "heading_level": 2,
+        "heading_level": null,
         "mapped": true,
-        "style_name": "Heading 2",
+        "style_name": "Normal",
         "target_index": 413,
         "text_preview": "output losses"
       },
@@ -16712,9 +16740,9 @@
         "text_preview": "substantially greater than when each crisis was experienced separately. the average cumulative output loss was 14.4% in…"
       },
       {
-        "heading_level": 2,
+        "heading_level": null,
         "mapped": true,
-        "style_name": "Heading 2",
+        "style_name": "Normal",
         "target_index": 418,
         "text_preview": "transfer costs"
       },
@@ -19150,6 +19178,7 @@
       359,
       385,
       398,
+      409,
       419,
       428,
       430,
@@ -19166,7 +19195,7 @@
       "controlled_fallback_creditable_count": 0,
       "counts": {
         "short_note_or_marker": 5,
-        "split_accounting": 3,
+        "split_accounting": 4,
         "spurious_or_unproven": 24
       },
       "evidence_basis": "target_registry text contained/fuzzy-covered by generated source registry text",
@@ -19517,6 +19546,27 @@
           "text_evidence_score": 1.0,
           "text_evidence_token_overlap_ratio": 1.0,
           "text_evidence_type": "exact_contains"
+        },
+        {
+          "best_source_format_role": "body",
+          "best_source_index": 409,
+          "best_source_mapped_target_index": 410,
+          "best_source_paragraph_id": "p0409",
+          "best_source_text_preview": "**Human and societal costs**",
+          "residual_class": "split_accounting",
+          "split_anchor_targets": [
+            {
+              "kind": "mapped_source_target",
+              "target_index": 410
+            }
+          ],
+          "target_format_role": "body",
+          "target_index": 409,
+          "target_text_preview": "**Human and societal costs** costs**",
+          "target_token_count": 5,
+          "text_evidence_score": 1.0,
+          "text_evidence_token_overlap_ratio": 1.0,
+          "text_evidence_type": "fuzzy_token_overlap"
         },
         {
           "best_source_format_role": "body",
@@ -20004,6 +20054,27 @@
         },
         {
           "best_source_format_role": "body",
+          "best_source_index": 409,
+          "best_source_mapped_target_index": 410,
+          "best_source_paragraph_id": "p0409",
+          "best_source_text_preview": "**Human and societal costs**",
+          "residual_class": "split_accounting",
+          "split_anchor_targets": [
+            {
+              "kind": "mapped_source_target",
+              "target_index": 410
+            }
+          ],
+          "target_format_role": "body",
+          "target_index": 409,
+          "target_text_preview": "**Human and societal costs** costs**",
+          "target_token_count": 5,
+          "text_evidence_score": 1.0,
+          "text_evidence_token_overlap_ratio": 1.0,
+          "text_evidence_type": "fuzzy_token_overlap"
+        },
+        {
+          "best_source_format_role": "body",
           "best_source_index": 419,
           "best_source_mapped_target_index": null,
           "best_source_paragraph_id": "p0419",
@@ -20017,17 +20088,10 @@
           "text_evidence_score": 1.0,
           "text_evidence_token_overlap_ratio": 1.0,
           "text_evidence_type": "exact_contains"
-        },
-        {
-          "residual_class": "short_note_or_marker",
-          "target_format_role": "body",
-          "target_index": 428,
-          "target_text_preview": "**The increase",
-          "target_token_count": 2
         }
       ],
-      "split_accounting_creditable_count": 3,
-      "split_accounting_only_creditable_count": 3,
+      "split_accounting_creditable_count": 4,
+      "split_accounting_only_creditable_count": 4,
       "split_accounting_rule": "Credit only unmapped target paragraphs whose text is covered by a source registry entry and that sit directly adjacent to that source's mapped or accepted aggregate target."
     },
     "unmapped_target_samples": [
@@ -20196,15 +20260,15 @@
         "heading_level": null,
         "mapped": false,
         "style_name": "Normal",
-        "target_index": 419,
-        "text_preview": "another aspect of a banking crisis is the question of who ultimately ends up paying for it. historically, taxpayers hav…"
+        "target_index": 409,
+        "text_preview": "human and societal costs costs"
       },
       {
         "heading_level": null,
         "mapped": false,
         "style_name": "Normal",
-        "target_index": 428,
-        "text_preview": "the increase"
+        "target_index": 419,
+        "text_preview": "another aspect of a banking crisis is the question of who ultimately ends up paying for it. historically, taxpayers hav…"
       }
     ]
   },
@@ -21755,10 +21819,6 @@
     ],
     [
       "p0409",
-      409
-    ],
-    [
-      "p0410",
       410
     ],
     [

@@ -103,7 +103,6 @@ from docxaicorrector.runtime.events import (
 )
 
 REAL_DOCUMENT_ARTIFACT_ROOT = PROJECT_ROOT / "tests" / "artifacts" / "real_document_pipeline"
-FORMATTING_DIAGNOSTICS_DIR = PROJECT_ROOT / ".run" / "formatting_diagnostics"
 HEARTBEAT_INTERVAL_SECONDS = 15.0
 READER_VERIFIER_DEFAULT_SELECTOR = "openrouter:google/gemini-3-flash-preview"
 READER_VERIFIER_TIMEOUT_SECONDS = 180.0
@@ -180,12 +179,12 @@ _READER_VERIFIER_MODEL_FIELDS = frozenset(
 _TERMINAL_OUTPUT_DISABLED = False
 
 
-def _safe_terminal_print(*args: object, **kwargs: object) -> None:
+def _safe_terminal_print(*args: object, flush: bool = False) -> None:
     global _TERMINAL_OUTPUT_DISABLED
     if _TERMINAL_OUTPUT_DISABLED:
         return
     try:
-        print(*args, **kwargs)
+        print(*args, flush=flush)
     except BrokenPipeError:
         _TERMINAL_OUTPUT_DISABLED = True
     except OSError as exc:
@@ -432,7 +431,7 @@ def _resolve_acceptance_unmapped_source_count(
     formatting_diagnostics: Sequence[Mapping[str, object]],
     translation_quality_report: Mapping[str, object],
 ) -> int:
-    return int(
+    return _coerce_int(
         _resolve_acceptance_unmapped_source_summary(
             formatting_diagnostics=formatting_diagnostics,
             translation_quality_report=translation_quality_report,
@@ -445,7 +444,7 @@ def _resolve_acceptance_unmapped_target_count(
     formatting_diagnostics: Sequence[Mapping[str, object]],
     translation_quality_report: Mapping[str, object],
 ) -> int:
-    return int(
+    return _coerce_int(
         _resolve_acceptance_unmapped_target_summary(
             formatting_diagnostics=formatting_diagnostics,
             translation_quality_report=translation_quality_report,
@@ -457,20 +456,6 @@ def _build_run_id(source_path: Path) -> str:
     timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     sanitized_stem = re.sub(r"[^A-Za-z0-9._-]+", "_", source_path.stem).strip("_") or "real_doc"
     return f"{timestamp}_{os.getpid()}_{sanitized_stem}"
-
-
-def _snapshot_formatting_diagnostics_paths() -> set[str]:
-    if not FORMATTING_DIAGNOSTICS_DIR.exists():
-        return set()
-    return {str(path.resolve()) for path in FORMATTING_DIAGNOSTICS_DIR.glob("*.json") if path.is_file()}
-
-
-def _collect_new_formatting_diagnostics_paths(before: set[str], after: set[str]) -> list[str]:
-    new_paths = [Path(path) for path in after - before]
-    return [
-        str(path)
-        for path in sorted(new_paths, key=lambda candidate: (candidate.stat().st_mtime, str(candidate)))
-    ]
 
 
 def _safe_git_head() -> str | None:
@@ -3178,7 +3163,7 @@ def _run_reader_verifier(
                 config_like=app_config,
             )
             raw_response = generate_markdown_block(
-                client=client,
+                client=cast(Any, client),
                 model=resolved_selector.model_id,
                 system_prompt=_build_reader_verifier_system_prompt(),
                 target_text=json.dumps(evidence_payload, ensure_ascii=False, indent=2),
@@ -4315,13 +4300,6 @@ def _match_centered_structural_texts(
     return missing_source, matches
 
 
-def _load_recent_formatting_diagnostics(since_epoch_seconds: float) -> tuple[list[str], list[dict[str, object]]]:
-    artifact_paths = document_pipeline._collect_recent_formatting_diagnostics(
-        since_epoch_seconds=since_epoch_seconds
-    )
-    return artifact_paths, _load_formatting_diagnostics_payloads(artifact_paths)
-
-
 def _load_formatting_diagnostics_payloads(artifact_paths: Sequence[str]) -> list[dict[str, object]]:
     payloads: list[dict[str, object]] = []
     for artifact_path in artifact_paths:
@@ -5211,7 +5189,6 @@ def main() -> None:
         progress=0.0,
         metrics={"run_id": run_id},
     )
-    formatting_diagnostics_before = _snapshot_formatting_diagnostics_paths()
     runtime = processing_runtime.BackgroundRuntime(event_queue, threading.Event())
     runtime_snapshot = {
         "state": {},
@@ -5493,32 +5470,17 @@ def main() -> None:
         tts_artifact.write_text(latest_narration_text, encoding="utf-8")
         tts_artifact_path = tts_artifact
 
-    formatting_diagnostics_after = _snapshot_formatting_diagnostics_paths()
-    snapshot_discovered_paths = _collect_new_formatting_diagnostics_paths(
-        formatting_diagnostics_before,
-        formatting_diagnostics_after,
-    )
     formatting_diagnostics_paths = _extract_run_formatting_diagnostics_paths(event_log)
     formatting_diagnostics_discovery_source = None
-    if snapshot_discovered_paths:
-        formatting_diagnostics_paths = snapshot_discovered_paths
-        formatting_diagnostics_payloads = _load_formatting_diagnostics_payloads(
-            formatting_diagnostics_paths
-        )
-        formatting_diagnostics_discovery_source = "snapshot_diff"
-    elif formatting_diagnostics_paths:
+    if formatting_diagnostics_paths:
         formatting_diagnostics_payloads = _load_formatting_diagnostics_payloads(
             formatting_diagnostics_paths
         )
         formatting_diagnostics_discovery_source = "event_log"
     else:
-        formatting_diagnostics_paths, formatting_diagnostics_payloads = _load_recent_formatting_diagnostics(
-            run_started_at_epoch_seconds
-        )
-        formatting_diagnostics_discovery_source = "recent_scan"
-
-    if not snapshot_discovered_paths and formatting_diagnostics_discovery_source != "event_log":
-        formatting_diagnostics_payloads = _load_formatting_diagnostics_payloads(formatting_diagnostics_paths)
+        formatting_diagnostics_paths = []
+        formatting_diagnostics_payloads = []
+        formatting_diagnostics_discovery_source = "explicit_none"
 
     run_finished_at_epoch_seconds = time.time()
     run_finished_at_utc = datetime.now(UTC)
@@ -5615,9 +5577,7 @@ def main() -> None:
         "formatting_diagnostics_paths": [_path_for_report(Path(path)) for path in formatting_diagnostics_paths],
         "formatting_diagnostics_discovery": {
             "source": formatting_diagnostics_discovery_source,
-            "baseline_count": len(formatting_diagnostics_before),
-            "after_count": len(formatting_diagnostics_after),
-            "new_count": len(snapshot_discovered_paths),
+            "path_count": len(formatting_diagnostics_paths),
         },
         "formatting_diagnostics": formatting_diagnostics_payloads,
         "translation_quality_report": None,

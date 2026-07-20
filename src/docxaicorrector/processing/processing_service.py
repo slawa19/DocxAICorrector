@@ -515,11 +515,20 @@ def build_default_processing_service_dependencies() -> ProcessingServiceDependen
     def _inspect_placeholder_integrity(markdown_text: str, image_assets) -> Mapping[str, str]:
         return inspect_placeholder_integrity(markdown_text, list(image_assets))
 
-    def _preserve_source_paragraph_properties(docx_bytes: bytes, paragraphs, generated_paragraph_registry=None) -> bytes:
+    def _preserve_source_paragraph_properties(
+        docx_bytes: bytes,
+        paragraphs,
+        generated_paragraph_registry=None,
+        *,
+        run_id: str | None = None,
+        source_token: str | None = None,
+    ) -> bytes:
         return preserve_source_paragraph_properties(
             docx_bytes,
             list(paragraphs),
             generated_paragraph_registry=generated_paragraph_registry,
+            run_id=run_id,
+            source_token=source_token,
         )
 
     def _reinsert_inline_images(docx_bytes: bytes, image_assets) -> bytes:

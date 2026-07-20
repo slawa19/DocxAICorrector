@@ -385,6 +385,8 @@ def apply_processing_completion(
                         source_name=str(restart_source.get("filename", "")),
                         source_token=str(restart_source.get("token", "")),
                         source_bytes=source_bytes,
+                        source_format=str(restart_source.get("source_format", "docx") or "docx"),
+                        conversion_backend=restart_source.get("conversion_backend"),
                         previous_completed_source=previous_completed_source,
                     )
                 except OSError as exc:
@@ -630,9 +632,11 @@ def init_session_state() -> None:
     st.session_state.setdefault("latest_markdown", "")
     st.session_state.setdefault("processed_block_markdowns", [])
     st.session_state.setdefault("latest_docx_bytes", None)
+    st.session_state.setdefault("latest_delivery_disposition", None)
     st.session_state.setdefault("latest_narration_text", None)
     st.session_state.setdefault("latest_quality_warning", None)
     st.session_state.setdefault("latest_result_notice", None)
+    st.session_state.setdefault("latest_result_notices", [])
     st.session_state.setdefault("latest_source_name", "")
     st.session_state.setdefault("latest_source_token", "")
     st.session_state.setdefault("latest_processing_operation", "edit")
@@ -756,9 +760,11 @@ def reset_run_state(*, keep_restart_source: bool = True, preserve_preparation: b
         if isinstance(_key, str) and _key.startswith("mdpreview_"):
             del st.session_state[_key]
     st.session_state.latest_docx_bytes = None
+    st.session_state.latest_delivery_disposition = None
     st.session_state.latest_narration_text = None
     st.session_state.latest_quality_warning = None
     st.session_state.latest_result_notice = None
+    st.session_state.latest_result_notices = []
     st.session_state.latest_source_name = ""
     st.session_state.latest_source_token = ""
     st.session_state.latest_processing_operation = "edit"

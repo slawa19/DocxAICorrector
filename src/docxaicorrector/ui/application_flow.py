@@ -10,6 +10,7 @@ cycle by moving the contract down).
 """
 
 import logging
+import hashlib
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -27,7 +28,7 @@ from docxaicorrector.processing.application_flow import (
     sync_selected_file_context,
 )
 from docxaicorrector.processing.preparation import emit_preparation_progress
-from docxaicorrector.processing.processing_runtime import build_in_memory_uploaded_file
+from docxaicorrector.processing.processing_runtime import FrozenUploadPayload, build_in_memory_uploaded_file
 from docxaicorrector.processing.restart_store import clear_restart_source, load_restart_source_bytes
 from docxaicorrector.runtime.state import (
     clear_completed_source,
@@ -70,6 +71,36 @@ class SessionStateLike(Protocol):
     def __setitem__(self, key: str, value: object) -> None: ...
 
 
+def _restore_frozen_upload_payload(source_record: dict[str, object], source_bytes: bytes) -> FrozenUploadPayload | None:
+    source_name = str(source_record.get("filename", ""))
+    source_token = str(source_record.get("token", ""))
+    source_format = str(source_record.get("source_format", "")).strip().lower()
+    conversion_backend = source_record.get("conversion_backend")
+    expected_size = source_record.get("size")
+    expected_digest = source_record.get("payload_sha256")
+    actual_digest = hashlib.sha256(source_bytes).hexdigest()
+    if (
+        not source_name
+        or not source_token
+        or source_format not in {"docx", "doc", "pdf"}
+        or not isinstance(expected_size, int)
+        or expected_size != len(source_bytes)
+        or not isinstance(expected_digest, str)
+        or expected_digest != actual_digest
+        or (source_format != "docx" and not isinstance(conversion_backend, str))
+    ):
+        return None
+    return FrozenUploadPayload(
+        filename=source_name,
+        content_bytes=source_bytes,
+        file_size=len(source_bytes),
+        content_hash=actual_digest[:16],
+        file_token=source_token,
+        source_format=source_format,
+        conversion_backend=conversion_backend if isinstance(conversion_backend, str) else None,
+    )
+
+
 def get_cached_restart_file(
     *,
     session_state: SessionStateLike,
@@ -85,11 +116,10 @@ def get_cached_restart_file(
         return None
     if not restart_source:
         return None
-    source_name = str(restart_source.get("filename", ""))
     source_bytes = load_restart_source_bytes_fn(restart_source)
-    if not source_name or not isinstance(source_bytes, (bytes, bytearray)) or not source_bytes:
+    if not isinstance(source_bytes, (bytes, bytearray)) or not source_bytes:
         return None
-    return build_in_memory_uploaded_file_fn(source_name=source_name, source_bytes=bytes(source_bytes))
+    return _restore_frozen_upload_payload(restart_source, bytes(source_bytes))
 
 
 def get_cached_completed_file(
@@ -107,11 +137,10 @@ def get_cached_completed_file(
         return None
     if not completed_source:
         return None
-    source_name = str(completed_source.get("filename", ""))
     source_bytes = load_completed_source_bytes_fn(completed_source)
-    if not source_name or not isinstance(source_bytes, (bytes, bytearray)) or not source_bytes:
+    if not isinstance(source_bytes, (bytes, bytearray)) or not source_bytes:
         return None
-    return build_in_memory_uploaded_file_fn(source_name=source_name, source_bytes=bytes(source_bytes))
+    return _restore_frozen_upload_payload(completed_source, bytes(source_bytes))
 
 
 def should_log_document_prepared(*, session_state, prepared_source_key: str) -> bool:
