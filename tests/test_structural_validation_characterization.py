@@ -331,3 +331,60 @@ def test_preserve_source_paragraph_properties_adapter_forwards_run_identity(monk
 
     assert captured["run_id"] == "run-42"
     assert captured["source_token"] == "token-7"
+
+
+def _diagnostics_payload(stage: str, epoch_ms: int) -> dict[str, object]:
+    return {"stage": stage, "generated_at_epoch_ms": epoch_ms, "marker": f"{stage}-{epoch_ms}"}
+
+
+def test_canonical_formatting_diagnostics_prefers_newest_restore_regardless_of_order():
+    """Round-11 Fix 3: selection used to be ``payloads[-1]`` over a name-sorted list and
+    landed on the newest ``restore`` artifact only by luck of the filename ordering."""
+
+    payloads = [
+        _diagnostics_payload("restore", 1_700_000_002_000),
+        _diagnostics_payload("marker_block", 1_700_000_009_000),
+        _diagnostics_payload("restore", 1_700_000_005_000),
+        _diagnostics_payload("marker_block", 1_700_000_001_000),
+        _diagnostics_payload("restore", 1_700_000_003_000),
+    ]
+
+    selected = structural._select_canonical_formatting_diagnostics_payload(payloads)
+
+    assert selected is not None
+    assert selected["marker"] == "restore-1700000005000"
+
+    # Same set, shuffled: the verdict must not depend on input order at all.
+    reordered = [payloads[3], payloads[2], payloads[0], payloads[4], payloads[1]]
+
+    assert structural._select_canonical_formatting_diagnostics_payload(reordered) is payloads[2]
+
+
+def test_canonical_formatting_diagnostics_falls_back_to_newest_payload_of_any_stage():
+    """Documented fallback when the run produced no ``restore``-stage payload."""
+
+    payloads = [
+        _diagnostics_payload("marker_block", 1_700_000_007_000),
+        _diagnostics_payload("target_alignment", 1_700_000_004_000),
+    ]
+
+    selected = structural._select_canonical_formatting_diagnostics_payload(payloads)
+
+    assert selected is not None
+    assert selected["marker"] == "marker_block-1700000007000"
+    assert structural._select_canonical_formatting_diagnostics_payload([]) is None
+
+
+def test_canonical_formatting_diagnostics_is_deterministic_without_timestamps():
+    """A missing/unparsable timestamp sorts as -1 and ties resolve to the last such
+    payload in input order, so the choice stays deterministic."""
+
+    payloads = [
+        {"stage": "restore", "marker": "first"},
+        {"stage": "restore", "generated_at_epoch_ms": "not-a-number", "marker": "second"},
+    ]
+
+    selected = structural._select_canonical_formatting_diagnostics_payload(payloads)
+
+    assert selected is not None
+    assert selected["marker"] == "second"

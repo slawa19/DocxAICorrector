@@ -1410,7 +1410,14 @@ def _apply_run_markdown(text: str, run_element) -> str:
     is_underline = _run_toggle_property_is_on(run_properties, "u")
     vertical_align = _extract_vertical_align(run_properties)
 
-    formatted = text
+    # Markdown emphasis delimiters may not be padded by whitespace: a run whose text
+    # is "bold " would become "**bold **", which Pandoc leaves literal and the reader
+    # sees the asterisks in the DOCX. DOCX runs very commonly carry the trailing space
+    # inside the emphasized run, so keep the whitespace OUTSIDE every marker.
+    leading_whitespace = text[: len(text) - len(text.lstrip())]
+    trailing_whitespace = text[len(text.rstrip()) :]
+
+    formatted = text.strip()
     if is_bold and is_italic:
         formatted = f"***{formatted}***"
     elif is_bold:
@@ -1424,7 +1431,7 @@ def _apply_run_markdown(text: str, run_element) -> str:
         formatted = f"<sup>{formatted}</sup>"
     elif vertical_align == "subscript":
         formatted = f"<sub>{formatted}</sub>"
-    return formatted
+    return f"{leading_whitespace}{formatted}{trailing_whitespace}"
 
 
 _OOXML_TOGGLE_OFF_VALUES = {"0", "false", "off", "none"}

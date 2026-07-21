@@ -181,7 +181,6 @@ def get_model_registry(
 
 def resolve_text_model_options(
     *,
-    config_data: dict[str, object],
     models_text_config: dict[str, object],
     parse_csv_env_fn: Any,
     parse_model_options_value_fn: Any,
@@ -196,20 +195,12 @@ def resolve_text_model_options(
             models_text_config.get("options"),
             source_name=f"{config_path}: models.text.options",
         ), "toml:canonical:models.text.options"
-    legacy_env_options = parse_csv_env_fn("DOCX_AI_MODEL_OPTIONS")
-    if legacy_env_options is not None:
-        return tuple(legacy_env_options), "env:legacy:DOCX_AI_MODEL_OPTIONS"
-    if "model_options" in config_data:
-        return parse_model_options_value_fn(
-            config_data.get("model_options"),
-            source_name=f"{config_path}: model_options",
-        ), "toml:legacy:model_options"
+    # Legacy sources DOCX_AI_MODEL_OPTIONS / top-level model_options are no longer read.
     return migration_default_text_model_options, "default:migration:text.options"
 
 
 def resolve_text_default_model(
     *,
-    config_data: dict[str, object],
     models_text_config: dict[str, object],
     coerce_model_name_fn: Any,
     config_path: Any,
@@ -223,14 +214,7 @@ def resolve_text_default_model(
             models_text_config.get("default"),
             source_name=f"{config_path}: models.text.default",
         ), "toml:canonical:models.text.default"
-    legacy_env_value = os.getenv("DOCX_AI_DEFAULT_MODEL", "").strip()
-    if legacy_env_value:
-        return legacy_env_value, "env:legacy:DOCX_AI_DEFAULT_MODEL"
-    if "default_model" in config_data:
-        return coerce_model_name_fn(
-            config_data.get("default_model"),
-            source_name=f"{config_path}: default_model",
-        ), "toml:legacy:default_model"
+    # Legacy sources DOCX_AI_DEFAULT_MODEL / top-level default_model are no longer read.
     return migration_default_text_model, "default:migration:text.default"
 
 
@@ -277,13 +261,19 @@ def log_resolved_model_registry(
     *,
     emitted_model_registry_log_keys: set[str],
     log_event_fn: Any,
+    supported_provider_ids: tuple[str, ...],
 ) -> None:
+    # Mirror the real selector parser (core/config.py::_parse_model_selector): every
+    # provider it accepts must round-trip unchanged here, otherwise the diagnostic
+    # event reports a selector the runtime never uses (e.g. "openai:anthropic:...").
+    normalized_supported_providers = {item.strip().lower() for item in supported_provider_ids}
+
     def _canonicalize_selector(value: str) -> str:
         stripped_value = str(value).strip()
         if ":" in stripped_value:
             provider_name, _, model_id = stripped_value.partition(":")
             normalized_provider = provider_name.strip().lower()
-            if normalized_provider in {"openai", "openrouter"} and model_id.strip():
+            if normalized_provider in normalized_supported_providers and model_id.strip():
                 return f"{normalized_provider}:{model_id.strip()}"
         return f"openai:{stripped_value}"
 
@@ -329,7 +319,7 @@ def emit_legacy_model_config_warnings(
             log_event_fn(
                 logging.WARNING,
                 "legacy_model_config_key_detected",
-                "Обнаружен deprecated legacy model key в config.toml; используйте секцию [models.*].",
+                "Обнаружен legacy model key в config.toml; он больше не читается — используйте секцию [models.*].",
                 legacy_key=legacy_key,
                 replacement="models.text" if legacy_key in {"default_model", "model_options"} else f"models.{legacy_key.removesuffix('_model')}",
             )
@@ -355,14 +345,6 @@ def emit_legacy_model_config_warnings(
             continue
         emitted_model_registry_log_keys.add(dedupe_key)
         warning_message = "Использован deprecated legacy model source; перейдите на canonical registry keys."
-        if role_name == "image_analysis" and source_name in {
-            "env:legacy:DOCX_AI_VALIDATION_MODEL",
-            "toml:legacy:validation_model",
-        }:
-            warning_message = (
-                "Использован deprecated legacy validation model source. Во время миграции он переводится в обе роли: "
-                "image_analysis и image_validation. Перейдите на models.image_analysis/default и models.image_validation/default."
-            )
         log_event_fn(
             logging.WARNING,
             "legacy_model_config_source_used",
@@ -396,11 +378,9 @@ def resolve_model_registry_settings(
     models_image_generation_vision_config = parse_optional_config_section_fn(models_config, "image_generation_vision", parent_name="models")
 
     model_options, text_options_source = resolve_text_model_options_fn(
-        config_data=config_data,
         models_text_config=models_text_config,
     )
     default_model, text_default_source = resolve_text_default_model_fn(
-        config_data=config_data,
         models_text_config=models_text_config,
     )
     text_model_config = build_text_model_config_fn(default_model, model_options)
@@ -424,10 +404,6 @@ def resolve_model_registry_settings(
         new_env_name="DOCX_AI_MODELS_IMAGE_ANALYSIS_DEFAULT",
         new_role_config=models_image_analysis_config,
         fallback_value=migration_default_model_roles["image_analysis"],
-        legacy_env_name="DOCX_AI_VALIDATION_MODEL",
-        legacy_config_data=config_data,
-        legacy_config_label="validation_model",
-        legacy_value_key="validation_model",
     )
     image_validation_model, image_validation_model_source = resolve_model_role_assignment_fn(
         role_name="image_validation",
@@ -435,10 +411,6 @@ def resolve_model_registry_settings(
         new_env_name="DOCX_AI_MODELS_IMAGE_VALIDATION_DEFAULT",
         new_role_config=models_image_validation_config,
         fallback_value=migration_default_model_roles["image_validation"],
-        legacy_env_name="DOCX_AI_VALIDATION_MODEL",
-        legacy_config_data=config_data,
-        legacy_config_label="validation_model",
-        legacy_value_key="validation_model",
     )
     image_reconstruction_model, image_reconstruction_model_source = resolve_model_role_assignment_fn(
         role_name="image_reconstruction",
@@ -446,10 +418,6 @@ def resolve_model_registry_settings(
         new_env_name="DOCX_AI_MODELS_IMAGE_RECONSTRUCTION_DEFAULT",
         new_role_config=models_image_reconstruction_config,
         fallback_value=migration_default_model_roles["image_reconstruction"],
-        legacy_env_name="DOCX_AI_RECONSTRUCTION_MODEL",
-        legacy_config_data=config_data,
-        legacy_config_label="reconstruction_model",
-        legacy_value_key="reconstruction_model",
     )
     image_generation_model, image_generation_model_source = resolve_model_role_assignment_fn(
         role_name="image_generation",

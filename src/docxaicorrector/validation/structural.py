@@ -942,12 +942,51 @@ def _load_formatting_diagnostics_payloads(artifact_paths: Sequence[str]) -> list
     return payloads
 
 
+CANONICAL_FORMATTING_DIAGNOSTICS_STAGE = "restore"
+
+
+def _payload_generated_at_epoch_ms(payload: Mapping[str, object]) -> int:
+    try:
+        return int(cast(Any, payload.get("generated_at_epoch_ms")))
+    except (TypeError, ValueError):
+        return -1
+
+
 def _select_canonical_formatting_diagnostics_payload(
     payloads: Sequence[Mapping[str, object]],
 ) -> Mapping[str, object] | None:
+    """Pick the payload that describes the FINAL formatting state of the run.
+
+    Selected EXPLICITLY from fields the artifact writer always emits
+    (``generation/formatting_diagnostics_retention.write_formatting_diagnostics_artifact``
+    writes ``stage`` and ``generated_at_epoch_ms`` into every payload), never from
+    filename or list ordering: this used to be ``payloads[-1]`` over a name-sorted
+    collection, which landed on the newest ``restore`` artifact only because
+    ``marker_block_*`` happens to sort before ``restore_*`` and the embedded epoch is
+    fixed-width. Spec 048 changed the filename stem, which is exactly the kind of change
+    that silently breaks such an assumption.
+
+    Rule: prefer the ``restore`` stage; among the candidates take the greatest
+    ``generated_at_epoch_ms``. Documented fallback when the run produced no
+    ``restore``-stage payload (e.g. it stopped earlier): the newest payload of ANY stage
+    by the same timestamp. A missing or unparsable timestamp sorts as ``-1``, and ties
+    resolve to the LAST such payload in input order — deterministic in every case.
+    """
     if not payloads:
         return None
-    return payloads[-1]
+    candidates = [
+        payload
+        for payload in payloads
+        if str(payload.get("stage") or "") == CANONICAL_FORMATTING_DIAGNOSTICS_STAGE
+    ] or list(payloads)
+    selected = candidates[0]
+    selected_epoch_ms = _payload_generated_at_epoch_ms(selected)
+    for payload in candidates[1:]:
+        payload_epoch_ms = _payload_generated_at_epoch_ms(payload)
+        if payload_epoch_ms >= selected_epoch_ms:
+            selected = payload
+            selected_epoch_ms = payload_epoch_ms
+    return selected
 
 
 def _max_payload_length(payloads: Sequence[Mapping[str, object]], key: str) -> int:

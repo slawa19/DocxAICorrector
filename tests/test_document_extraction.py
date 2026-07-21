@@ -1396,7 +1396,9 @@ def test_extract_document_content_from_docx_recovers_mixed_format_heading_in_nor
     assert len(paragraphs) == 1
     assert paragraphs[0].role == "heading"
     assert paragraphs[0].heading_level == 2
-    assert build_document_text(paragraphs) == "## **Раздел 1:** Основные результаты** исследования**"
+    # The leading space of the second bold run stays OUTSIDE the markers: "** исследования**"
+    # is not emphasis for Pandoc and would reach the reader as literal asterisks.
+    assert build_document_text(paragraphs) == "## **Раздел 1:** Основные результаты **исследования**"
 
 
 def test_extract_document_content_from_docx_detects_heading_from_inherited_style_alignment_with_text_signal():
@@ -2162,6 +2164,29 @@ def test_apply_run_markdown_combines_bold_and_italic():
     run.italic = True
 
     assert document_extraction._apply_run_markdown("сильно", run._element) == "***сильно***"
+
+
+def test_apply_run_markdown_keeps_run_edge_whitespace_outside_emphasis_markers():
+    """Pandoc reads ``**bold **`` as literal text, so edge whitespace stays outside."""
+    doc = Document()
+    paragraph = doc.add_paragraph()
+    bold_run = paragraph.add_run("жирный ")
+    bold_run.bold = True
+    italic_run = paragraph.add_run(" курсив")
+    italic_run.italic = True
+
+    assert document_extraction._apply_run_markdown("жирный ", bold_run._element) == "**жирный** "
+    assert document_extraction._apply_run_markdown(" курсив", italic_run._element) == " *курсив*"
+
+
+def test_apply_run_markdown_leaves_whitespace_only_bold_run_unmarked():
+    """Anti-vacuum counterpart: a blank run must never become an empty ``****``."""
+    doc = Document()
+    paragraph = doc.add_paragraph()
+    run = paragraph.add_run(" ")
+    run.bold = True
+
+    assert document_extraction._apply_run_markdown(" ", run._element) == " "
 
 
 def test_apply_run_markdown_ignores_explicitly_disabled_toggle_properties():

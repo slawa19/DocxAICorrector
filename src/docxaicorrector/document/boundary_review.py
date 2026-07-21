@@ -122,6 +122,17 @@ def build_ai_review_request_payload(
     timeout_seconds: int,
     max_tokens_per_candidate: int,
 ) -> dict[str, object]:
+    # The API expects the bare provider-side model id, not the provider-qualified
+    # selector ("openai:gpt-5.4-mini"). Resolve it the same way the text pipeline does
+    # (pipeline/text_call_support.py) so a qualified selector does not 404 at the API.
+    from docxaicorrector.core.config import resolve_model_selector
+
+    resolved_model_id = resolve_model_selector(
+        model,
+        "responses_text",
+        source_name="paragraph_boundary_ai_review",
+    ).model_id
+
     system_prompt = (
         "You review ambiguous DOCX paragraph-boundary and grouping candidates. "
         "Return only JSON with a top-level recommendations array. "
@@ -147,7 +158,7 @@ def build_ai_review_request_payload(
         ensure_ascii=False,
     )
     return {
-        "model": model,
+        "model": resolved_model_id,
         "input": [
             {
                 "role": "system",

@@ -101,6 +101,101 @@ def test_load_restart_source_rejects_unconfined_path(tmp_path, monkeypatch):
     assert restart_store.load_restart_source_bytes(record) is None
 
 
+def _pdf_record(storage_path, source_bytes: bytes = b"normalized-docx") -> dict:
+    return {
+        "filename": "report.docx",
+        "token": "report.pdf:11:original",
+        "storage_path": str(storage_path),
+        "size": len(source_bytes),
+        "payload_sha256": hashlib.sha256(source_bytes).hexdigest(),
+        "source_format": "pdf",
+        "conversion_backend": "libreoffice-writer-pdf-import",
+    }
+
+
+def test_structural_metadata_gate_rejects_non_docx_record_without_conversion_backend(tmp_path):
+    # Round-11 Fix 1 (the DRIFT case): the UI restartable gate used to omit exactly this
+    # clause, so a pdf/doc record with no backend was offered and could never restore.
+    for missing_backend in (None, "", "   ", 17):
+        record = {**_pdf_record(tmp_path / "restart_x.docx"), "conversion_backend": missing_backend}
+        assert restart_store.has_valid_persisted_source_metadata(record) is False
+
+
+def test_structural_metadata_gate_accepts_valid_docx_and_pdf_records(tmp_path):
+    # ANTI-VACUUM: the shared helper must keep accepting the records it always accepted.
+    pdf_record = _pdf_record(tmp_path / "restart_x.docx")
+    docx_record = {**pdf_record, "source_format": "docx", "conversion_backend": None}
+
+    assert restart_store.has_valid_persisted_source_metadata(pdf_record) is True
+    assert restart_store.has_valid_persisted_source_metadata(docx_record) is True
+
+
+def test_structural_metadata_gate_and_loader_agree_on_the_same_inputs(tmp_path, monkeypatch):
+    # The two copies of this rule have already drifted once; pin that they now share one.
+    monkeypatch.setattr(restart_store, "RUN_DIR", tmp_path)
+    storage_path = tmp_path / "restart_session_token.docx"
+    storage_path.write_bytes(b"normalized-docx")
+    valid = _pdf_record(storage_path)
+
+    variants = [
+        valid,
+        {**valid, "storage_path": ""},
+        {key: value for key, value in valid.items() if key != "storage_path"},
+        {**valid, "token": ""},
+        {key: value for key, value in valid.items() if key != "token"},
+        {**valid, "size": 0},
+        {**valid, "size": "15"},
+        {**valid, "payload_sha256": "0" * 63},
+        {**valid, "payload_sha256": "0" * 64},
+        {**valid, "source_format": "txt"},
+        {**valid, "conversion_backend": None},
+        {**valid, "source_format": "docx", "conversion_backend": None},
+    ]
+
+    for record in variants:
+        _bytes, reason = restart_store.load_persisted_source_bytes_with_reason(record)
+        assert restart_store.has_valid_persisted_source_metadata(record) is (reason != "invalid_metadata"), record
+
+
+def test_load_persisted_source_bytes_with_reason_reports_every_rejection_reason(tmp_path, monkeypatch):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    monkeypatch.setattr(restart_store, "RUN_DIR", run_dir)
+    good_path = run_dir / "restart_session_token.docx"
+    good_path.write_bytes(b"normalized-docx")
+    outside_path = tmp_path / "restart_outside.docx"
+    outside_path.write_bytes(b"normalized-docx")
+    unreadable_path = run_dir / "restart_session_dir.docx"
+    unreadable_path.mkdir()
+    tampered_path = run_dir / "restart_session_tampered.docx"
+    tampered_path.write_bytes(b"tampered-payload")
+
+    assert restart_store.load_persisted_source_bytes_with_reason(None) == (None, None)
+    assert restart_store.load_persisted_source_bytes_with_reason(_pdf_record(good_path)) == (b"normalized-docx", None)
+    assert restart_store.load_persisted_source_bytes_with_reason(
+        {**_pdf_record(good_path), "conversion_backend": None}
+    ) == (None, "invalid_metadata")
+    assert restart_store.load_persisted_source_bytes_with_reason(_pdf_record(outside_path)) == (None, "unconfined_path")
+    assert restart_store.load_persisted_source_bytes_with_reason(_pdf_record(unreadable_path)) == (
+        None,
+        "unreadable_payload",
+    )
+    assert restart_store.load_persisted_source_bytes_with_reason(_pdf_record(tampered_path)) == (
+        None,
+        "integrity_mismatch",
+    )
+
+
+def test_permanent_rejection_reasons_exclude_the_transient_one():
+    # Fix 2 scoping contract: destroying data on a transient read failure is worse than
+    # an extra retry, so unreadable_payload must never trigger self-healing deletion.
+    assert restart_store.PERMANENT_PERSISTED_SOURCE_REJECTIONS == {
+        "invalid_metadata",
+        "unconfined_path",
+        "integrity_mismatch",
+    }
+
+
 def test_store_restart_source_replaces_previous_file(tmp_path, monkeypatch):
     monkeypatch.setattr(restart_store, "RUN_DIR", tmp_path)
 

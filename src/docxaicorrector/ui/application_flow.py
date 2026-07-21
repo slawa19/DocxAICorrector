@@ -11,7 +11,6 @@ cycle by moving the contract down).
 
 import logging
 import hashlib
-import re
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -30,7 +29,12 @@ from docxaicorrector.processing.application_flow import (
 )
 from docxaicorrector.processing.preparation import emit_preparation_progress
 from docxaicorrector.processing.processing_runtime import FrozenUploadPayload, build_in_memory_uploaded_file
-from docxaicorrector.processing.restart_store import clear_restart_source, load_restart_source_bytes
+from docxaicorrector.processing.restart_store import (
+    PERMANENT_PERSISTED_SOURCE_REJECTIONS,
+    clear_restart_source,
+    has_valid_persisted_source_metadata,
+    load_persisted_source_bytes_with_reason,
+)
 from docxaicorrector.runtime.state import (
     clear_completed_source,
     get_completed_source,
@@ -38,6 +42,7 @@ from docxaicorrector.runtime.state import (
     get_processing_outcome,
     get_restart_source,
     set_prepared_source_key,
+    set_restart_source,
 )
 from docxaicorrector.runtime.workflow_state import IdleViewState, derive_idle_view_state, has_restartable_outcome
 from docxaicorrector.ui.i18n import t
@@ -102,14 +107,32 @@ def _restore_frozen_upload_payload(source_record: dict[str, object], source_byte
     )
 
 
+def _load_persisted_source_bytes_self_healing(
+    source_record: dict[str, object],
+    *,
+    load_source_bytes_fn,
+    drop_permanently_invalid_record,
+):
+    """Load the payload and, when the loader reports a PERMANENTLY invalid record,
+    let the caller drop it so the offer heals instead of failing on every rerun.
+
+    An injected ``load_source_bytes_fn`` (test seam / caller-supplied loader) reports no
+    reason, so nothing is dropped: self-healing acts only on a verdict we produced.
+    """
+    if load_source_bytes_fn is not None:
+        return load_source_bytes_fn(source_record)
+    source_bytes, rejection_reason = load_persisted_source_bytes_with_reason(source_record)
+    if rejection_reason in PERMANENT_PERSISTED_SOURCE_REJECTIONS:
+        drop_permanently_invalid_record()
+    return source_bytes
+
+
 def get_cached_restart_file(
     *,
     session_state: SessionStateLike,
     load_restart_source_bytes_fn=None,
     build_in_memory_uploaded_file_fn=None,
 ):
-    if load_restart_source_bytes_fn is None:
-        load_restart_source_bytes_fn = load_restart_source_bytes
     if build_in_memory_uploaded_file_fn is None:
         build_in_memory_uploaded_file_fn = build_in_memory_uploaded_file
     restart_source = get_restart_source(session_state=session_state)
@@ -117,10 +140,24 @@ def get_cached_restart_file(
         return None
     if not restart_source:
         return None
-    source_bytes = load_restart_source_bytes_fn(restart_source)
+    source_bytes = _load_persisted_source_bytes_self_healing(
+        restart_source,
+        load_source_bytes_fn=load_restart_source_bytes_fn,
+        drop_permanently_invalid_record=lambda: _drop_restart_source_record(
+            restart_source, session_state=session_state
+        ),
+    )
     if not isinstance(source_bytes, (bytes, bytearray)) or not source_bytes:
         return None
     return _restore_frozen_upload_payload(restart_source, bytes(source_bytes))
+
+
+def _drop_restart_source_record(restart_source: dict[str, object], *, session_state: SessionStateLike) -> None:
+    # Deletion stays inside the existing confined helper: it refuses any path outside
+    # RUN_DIR or without the restart_/completed_ prefix (that is exactly the
+    # ``unconfined_path`` case, where only the session record is dropped).
+    clear_restart_source(restart_source)
+    set_restart_source(None, session_state=session_state)
 
 
 def get_cached_completed_file(
@@ -131,14 +168,20 @@ def get_cached_completed_file(
 ):
     if build_in_memory_uploaded_file_fn is None:
         build_in_memory_uploaded_file_fn = build_in_memory_uploaded_file
-    if load_completed_source_bytes_fn is None:
-        load_completed_source_bytes_fn = load_restart_source_bytes
     completed_source = get_completed_source(session_state=session_state)
     if not isinstance(completed_source, dict):
         return None
     if not completed_source:
         return None
-    source_bytes = load_completed_source_bytes_fn(completed_source)
+    source_bytes = _load_persisted_source_bytes_self_healing(
+        completed_source,
+        load_source_bytes_fn=load_completed_source_bytes_fn,
+        drop_permanently_invalid_record=lambda: clear_completed_source(
+            completed_source=completed_source,
+            clear_restart_source_fn=clear_restart_source,
+            session_state=session_state,
+        ),
+    )
     if not isinstance(source_bytes, (bytes, bytearray)) or not source_bytes:
         return None
     return _restore_frozen_upload_payload(completed_source, bytes(source_bytes))
@@ -171,20 +214,16 @@ def has_restartable_source(
     if not has_restartable_outcome(get_processing_outcome(session_state=session_state)):
         return False
     source_name = str(restart_source.get("filename", ""))
-    storage_path = str(restart_source.get("storage_path", ""))
-    if not source_name or not storage_path:
+    if not source_name:
         return False
-    # spec-045: a record without the integrity/format metadata can NEVER be
-    # restored by load_restart_source_bytes (it is rejected as invalid_metadata),
-    # so offering it in the RESTARTABLE view is a permanent dead end. Checked
-    # structurally, without materializing the payload, to keep this predicate cheap.
-    payload_sha256 = restart_source.get("payload_sha256")
-    source_format = str(restart_source.get("source_format", "")).strip().lower()
-    if not isinstance(payload_sha256, str) or not re.fullmatch(r"[0-9a-f]{64}", payload_sha256):
+    # spec-045: a record the loader can NEVER accept is a permanent dead end in the
+    # RESTARTABLE view. The structural half of that rule is shared with the loader
+    # (restart_store.has_valid_persisted_source_metadata) rather than re-implemented
+    # here — the local copy had already drifted, omitting the conversion_backend
+    # requirement for pdf/doc records. It stays cheap: no payload is materialized.
+    if not has_valid_persisted_source_metadata(restart_source):
         return False
-    if source_format not in {"docx", "doc", "pdf"}:
-        return False
-    return Path(storage_path).is_file()
+    return Path(str(restart_source["storage_path"])).is_file()
 
 
 def has_resettable_state(

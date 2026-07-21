@@ -119,8 +119,10 @@ _APP_READY_MARKER_WRITER = AppReadyMarkerWriter(
 SidebarSettings: TypeAlias = tuple[str, int, int, str, bool, str, str, str, bool]
 
 
-@st.cache_resource
 def _cached_load_app_config():
+    # load_app_config() is itself process-wide cached (core/config.py), so the UI no
+    # longer needs its own st.cache_resource layer: a single cache serves the UI and
+    # every non-UI entry point alike (docs/STARTUP_PERFORMANCE_CONTRACT.md §2).
     return load_app_config()
 
 

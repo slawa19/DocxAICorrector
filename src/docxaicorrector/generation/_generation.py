@@ -30,6 +30,7 @@ _WORD_TOKEN_PATTERN = re.compile(r"\w+(?:[-']\w+)*", re.UNICODE)
 _INLINE_HTML_SUP_PATTERN = re.compile(r"<sup>(.*?)</sup>", re.IGNORECASE | re.DOTALL)
 _INLINE_HTML_SUB_PATTERN = re.compile(r"<sub>(.*?)</sub>", re.IGNORECASE | re.DOTALL)
 _INLINE_HTML_BREAK_PATTERN = re.compile(r"<br\s*/?>", re.IGNORECASE)
+_INLINE_HTML_UNDERLINE_PATTERN = re.compile(r"<u>(.*?)</u>", re.IGNORECASE | re.DOTALL)
 _NARRATION_INTERNAL_PLACEHOLDER_PATTERN = re.compile(r"\[\[DOCX_[A-Za-z0-9_]+\]\]")
 _NARRATION_MARKDOWN_LINK_PATTERN = re.compile(r"\[([^\]\n]+)\]\(([^)\n]+)\)")
 _NARRATION_HEADING_PATTERN = re.compile(r"^\s{0,3}#{1,6}\s*(.*)$")
@@ -1155,14 +1156,32 @@ def _preprocess_markdown_for_docx(markdown_text: str) -> str:
     """Convert extractor-emitted inline HTML into Pandoc-friendly markdown.
 
     The extraction layer preserves semantic inline signals as HTML-like tags
-    such as ``<sup>``, ``<sub>``, and ``<br/>``. Pandoc's DOCX writer does not
-    preserve those shapes reliably through the default markdown path, so we
+    such as ``<sup>``, ``<sub>``, ``<u>``, and ``<br/>``. Pandoc's DOCX writer does
+    not preserve those shapes reliably through the default markdown path, so we
     translate them into markdown extensions that round-trip into OOXML.
     """
-    processed = _INLINE_HTML_SUP_PATTERN.sub(lambda match: f"^{match.group(1)}^", markdown_text)
-    processed = _INLINE_HTML_SUB_PATTERN.sub(lambda match: f"~{match.group(1)}~", processed)
+    processed = _INLINE_HTML_SUP_PATTERN.sub(
+        lambda match: f"^{_escape_pandoc_script_spaces(match.group(1))}^", markdown_text
+    )
+    processed = _INLINE_HTML_SUB_PATTERN.sub(
+        lambda match: f"~{_escape_pandoc_script_spaces(match.group(1))}~", processed
+    )
+    processed = _INLINE_HTML_UNDERLINE_PATTERN.sub(lambda match: f"[{match.group(1)}]{{.underline}}", processed)
     processed = _INLINE_HTML_BREAK_PATTERN.sub("\\\n", processed)
     return processed
+
+
+def _escape_pandoc_script_spaces(content: str) -> str:
+    """Escape spaces so ``^…^`` / ``~…~`` stay real superscript/subscript.
+
+    Pandoc's superscript and subscript may not contain unescaped spaces, so
+    ``<sup>note 1</sup>`` would otherwise translate into a literal ``^note 1^``
+    that reaches the reader as raw carets. Escaping keeps the vertical-alignment
+    role; leaving such content untranslated keeps the text but silently demotes
+    it to ordinary body text. The escaped space arrives in OOXML as a
+    non-breaking space, which is the accepted cost of preserving the role.
+    """
+    return content.replace(" ", "\\ ")
 
 
 def _patch_reference_theme_fonts(

@@ -1838,6 +1838,64 @@ def test_convert_markdown_to_docx_bytes_preserves_ordered_list_word_numbering_se
 
 
 @pytest.mark.skipif(not _pandoc_available(), reason="pandoc is unavailable in current runtime")
+def test_convert_markdown_to_docx_bytes_preserves_extractor_underline_tag():
+    """<u> is raw HTML that Pandoc's DOCX writer drops, so it must be translated."""
+    result = generation.convert_markdown_to_docx_bytes("Обычный <u>подчёркнутый</u> текст")
+
+    document = Document(io.BytesIO(result))
+    paragraph = document.paragraphs[0]
+
+    assert paragraph.text == "Обычный подчёркнутый текст"
+    underlined = [run.text for run in paragraph.runs if run.underline]
+    assert underlined == ["подчёркнутый"]
+
+
+@pytest.mark.skipif(not _pandoc_available(), reason="pandoc is unavailable in current runtime")
+def test_convert_markdown_to_docx_bytes_keeps_trailing_space_emphasis_out_of_body_text():
+    """A bold DOCX run carrying its trailing space must not leak literal asterisks."""
+    import docxaicorrector.document.extraction as document_extraction
+
+    source = Document()
+    source_run = source.add_paragraph().add_run("жирный ")
+    source_run.bold = True
+    emphasized = document_extraction._apply_run_markdown("жирный ", source_run._element)
+
+    result = generation.convert_markdown_to_docx_bytes(f"{emphasized}хвост")
+
+    document = Document(io.BytesIO(result))
+    paragraph = document.paragraphs[0]
+
+    assert "*" not in paragraph.text
+    assert paragraph.text == "жирный хвост"
+    assert [run.text for run in paragraph.runs if run.bold] == ["жирный"]
+
+
+@pytest.mark.skipif(not _pandoc_available(), reason="pandoc is unavailable in current runtime")
+def test_convert_markdown_to_docx_bytes_preserves_superscript_containing_a_space():
+    """Pandoc superscript may not hold unescaped spaces, or the carets stay literal."""
+    result = generation.convert_markdown_to_docx_bytes("Ссылка<sup>прим. 1</sup>.")
+
+    document = Document(io.BytesIO(result))
+    paragraph = document.paragraphs[0]
+
+    # Pandoc renders the escaped space as a non-breaking space: the accepted cost of
+    # keeping the superscript role instead of demoting the marker to ordinary body text.
+    non_breaking_space = chr(0x00A0)
+    assert "^" not in paragraph.text
+    assert paragraph.text == f"Ссылкаприм.{non_breaking_space}1."
+    assert [run.text for run in paragraph.runs if run.font.superscript] == [
+        f"прим.{non_breaking_space}1"
+    ]
+
+
+def test_preprocess_markdown_for_docx_leaves_ordinary_body_punctuation_unchanged():
+    """Anti-vacuum guard: legitimate asterisks/carets/brackets are not rewritten."""
+    body_text = "Формула a^2 и звёздочка * в тексте, а также [ссылка](url) и 2 ~ 3."
+
+    assert generation._preprocess_markdown_for_docx(body_text) == body_text
+
+
+@pytest.mark.skipif(not _pandoc_available(), reason="pandoc is unavailable in current runtime")
 def test_convert_markdown_to_docx_bytes_preserves_superscript_and_subscript_inline_tags():
     result = generation.convert_markdown_to_docx_bytes("Alpha<sup>13</sup> beta\n\nH<sub>2</sub>O")
 

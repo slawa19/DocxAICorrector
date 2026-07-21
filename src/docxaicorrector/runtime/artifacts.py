@@ -53,10 +53,59 @@ JOB_RESULT_REGISTRY_MAX_COUNT = 2000
 _active_registry_publications: dict[str, set[str]] = {}
 _active_registry_publications_lock = threading.Lock()
 
+# --- Prune throttling (round-10 performance defect) ---------------------------
+# The family prune is a RECURSIVE glob + one ``stat()`` per non-protected file over
+# the whole family root. ``write_job_result_registry`` is called once per BLOCK
+# (``persist_terminal_job_result``), so pruning on every write costs O(history) per
+# write and O(blocks x history) per run. With a saturated 2000-file history on a
+# 9p-bridged /mnt/d filesystem that measured ~11 s of stat() per block and turned a
+# <=20 min book into an 82 min run.
+#
+# Fix: keep the retention CONTRACT (2000 records, 30-day age bound, family-wide) but
+# only pay for it once per ``_REGISTRY_PRUNE_RECORD_INTERVAL`` published records per
+# family, so a burst of per-record writes performs O(1) amortised scans instead of
+# one scan per write. Count-based (not time-based) is chosen deliberately: the bound
+# it gives is on RECORDS, which is exactly what the cap counts, so the overshoot is
+# deterministic and testable, and it does not vary with wall-clock/filesystem speed.
+#
+# Bounded overshoot: between two prunes at most ``_REGISTRY_PRUNE_RECORD_INTERVAL - 1``
+# newly published records can accumulate, so the family may transiently hold up to
+# ``max_count + interval - 1`` files (2049 for the 2000 cap) before the next prune
+# brings it back to the cap. That is acceptable for a 30-day history cache; an
+# UNBOUNDED family is not, which is why the counter is per-family and always fires
+# again after ``interval`` more records. The first write for a family in this process
+# ALWAYS prunes, so a saturated pre-existing history is reclaimed promptly at startup.
+_REGISTRY_PRUNE_RECORD_INTERVAL = 50
+_registry_prune_pending_records: dict[str, int] = {}
+_registry_prune_throttle_lock = threading.Lock()
+
 
 def _registry_family_key(output_dir: Path) -> str:
     """Stable key for a registry family root (the recursive prune scope)."""
     return str(output_dir)
+
+
+def _should_prune_registry_family(family_key: str, *, published_record_count: int) -> bool:
+    """Throttle decision for one family: prune on the first write, then every
+    ``_REGISTRY_PRUNE_RECORD_INTERVAL`` published records.
+
+    State is per-family (two families must never share a counter) and process-local,
+    guarded by its own lock because concurrent runs publish from multiple threads —
+    the same locking discipline the active-publication registry uses.
+    """
+    interval = max(1, int(_REGISTRY_PRUNE_RECORD_INTERVAL))
+    with _registry_prune_throttle_lock:
+        pending = _registry_prune_pending_records.get(family_key)
+        if pending is None:
+            # First write for this family in this process: always prune.
+            _registry_prune_pending_records[family_key] = 0
+            return True
+        pending += max(0, int(published_record_count))
+        if pending >= interval:
+            _registry_prune_pending_records[family_key] = 0
+            return True
+        _registry_prune_pending_records[family_key] = pending
+        return False
 
 
 def _register_active_publications(family_key: str, paths: set[str]) -> None:
@@ -505,6 +554,11 @@ def _publish_registry_family(
     OTHER in-flight run's freshly published paths for the same family, so two
     concurrent writers can never prune each other's fresh records. History is
     still bounded (F11).
+
+    The prune itself is THROTTLED per family (see
+    ``_should_prune_registry_family``): a burst of per-record writes costs O(1)
+    amortised family scans instead of one full recursive scan per write. The
+    registration/snapshot/unregistration around the write is NOT throttled.
     """
     planned: list[tuple[Path, Path, Mapping[str, object], str]] = []
     for record in records:
@@ -539,15 +593,19 @@ def _publish_registry_family(
             persisted_paths[id_value] = str(artifact_path)
 
         # Protect every in-flight publication (ours + any other live run's) so a
-        # recursive count/age prune only reclaims stale history.
+        # recursive count/age prune only reclaims stale history. Registration,
+        # snapshotting and unregistration are UNCONDITIONAL — only the filesystem
+        # prune below is throttled, so the round-5 concurrency guarantees are
+        # unchanged no matter which call happens to own the prune.
         protected_paths = _snapshot_active_publications(family_key) | set(persisted_paths.values())
-        _prune_registry_family_protecting_current(
-            target_dir=output_dir,
-            glob=glob,
-            max_age_seconds=max_age_seconds,
-            max_count=max_count,
-            protected_paths=protected_paths,
-        )
+        if _should_prune_registry_family(family_key, published_record_count=len(persisted_paths)):
+            _prune_registry_family_protecting_current(
+                target_dir=output_dir,
+                glob=glob,
+                max_age_seconds=max_age_seconds,
+                max_count=max_count,
+                protected_paths=protected_paths,
+            )
     finally:
         _unregister_active_publications(family_key, planned_path_strs)
     return persisted_paths

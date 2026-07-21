@@ -90,6 +90,13 @@ def resolve_semantic_validation_and_runtime_settings(
     # Env override: point the post-pass at any provider/model (e.g. a cheaper Haiku via OpenRouter)
     # without touching config or the run profile; falls back to the config value when unset.
     reader_cleanup_model = parse_optional_str_env_fn("DOCX_AI_READER_CLEANUP_MODEL") or reader_cleanup_model
+    raw_reader_verifier_model = config_data.get("reader_verifier_model", "")
+    if not isinstance(raw_reader_verifier_model, str):
+        raise RuntimeError(f"Некорректное поле reader_verifier_model в {config_path}")
+    reader_verifier_model = raw_reader_verifier_model.strip()
+    # Env override mirrors DOCX_AI_READER_CLEANUP_MODEL so the cleanup pass and its
+    # verifier can be pointed at different providers/models independently.
+    reader_verifier_model = parse_optional_str_env_fn("DOCX_AI_READER_VERIFIER_MODEL") or reader_verifier_model
     reader_cleanup_chunk_size = parse_config_int_fn(config_data, "reader_cleanup_chunk_size", 8000)
     reader_cleanup_overlap_blocks_before = parse_config_int_fn(
         config_data,
@@ -247,6 +254,7 @@ def resolve_semantic_validation_and_runtime_settings(
         ),
         "reader_cleanup_default": reader_cleanup_default,
         "reader_cleanup_model": reader_cleanup_model,
+        "reader_verifier_model": reader_verifier_model,
         "reader_cleanup_chunk_size": clamp_int_fn(reader_cleanup_chunk_size, minimum=3000, maximum=50000),
         "reader_cleanup_overlap_blocks_before": clamp_int_fn(
             reader_cleanup_overlap_blocks_before,

@@ -1321,7 +1321,7 @@
       "output_bold": 0,
       "output_italic": 0,
       "reason": null,
-      "source_bold": 3,
+      "source_bold": 4,
       "source_italic": 103
     },
     "high_confidence_merge_count": 54,
@@ -20241,7 +20241,7 @@
           "best_source_index": 196,
           "best_source_mapped_target_index": 197,
           "best_source_paragraph_id": "p0196",
-          "best_source_text_preview": "**A Numerical Example for the *****Tableau Économique***",
+          "best_source_text_preview": "**A Numerical Example for the** ***Tableau Économique***",
           "residual_class": "split_accounting",
           "split_anchor_targets": [
             {
@@ -20251,7 +20251,7 @@
           ],
           "target_format_role": "body",
           "target_index": 196,
-          "target_text_preview": "**A Numerical Example for the *****Tableau Économique*** Économique***",
+          "target_text_preview": "**A Numerical Example for the** ***Tableau Économique*** Économique***",
           "target_token_count": 8,
           "text_evidence_score": 1.0,
           "text_evidence_token_overlap_ratio": 1.0,
@@ -20750,7 +20750,7 @@
           "best_source_index": 196,
           "best_source_mapped_target_index": 197,
           "best_source_paragraph_id": "p0196",
-          "best_source_text_preview": "**A Numerical Example for the *****Tableau Économique***",
+          "best_source_text_preview": "**A Numerical Example for the** ***Tableau Économique***",
           "residual_class": "split_accounting",
           "split_anchor_targets": [
             {
@@ -20760,7 +20760,7 @@
           ],
           "target_format_role": "body",
           "target_index": 196,
-          "target_text_preview": "**A Numerical Example for the *****Tableau Économique*** Économique***",
+          "target_text_preview": "**A Numerical Example for the** ***Tableau Économique*** Économique***",
           "target_token_count": 8,
           "text_evidence_score": 1.0,
           "text_evidence_token_overlap_ratio": 1.0,

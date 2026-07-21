@@ -39,6 +39,7 @@ def test_constants_paths_resolve_to_repo_root() -> None:
 
 def test_load_app_config_applies_env_overrides_and_clamps(monkeypatch):
     monkeypatch.setattr(config, "CONFIG_PATH", config.CONFIG_PATH.parent / "__missing_config__.toml")
+    # DOCX_AI_MODEL_OPTIONS / DOCX_AI_DEFAULT_MODEL were removed: they must have no effect.
     monkeypatch.setenv("DOCX_AI_MODEL_OPTIONS", "gpt-5.4, custom-model")
     monkeypatch.setenv("DOCX_AI_DEFAULT_MODEL", "gpt-5.1")
     monkeypatch.setenv("DOCX_AI_CHUNK_SIZE", "20000")
@@ -47,10 +48,10 @@ def test_load_app_config_applies_env_overrides_and_clamps(monkeypatch):
     app_config = config.load_app_config()
     models = cast(config.ModelRegistry, app_config["models"])
 
-    assert app_config["default_model"] == "gpt-5.1"
-    assert app_config["model_options"] == ["gpt-5.1", "gpt-5.4", "custom-model"]
-    assert models.text.default == "gpt-5.1"
-    assert models.text.options == ("gpt-5.1", "gpt-5.4", "custom-model")
+    assert app_config["default_model"] == "gpt-5.4-mini"
+    assert app_config["model_options"] == ["gpt-5.4", "gpt-5.4-mini", "gpt-5-mini"]
+    assert models.text.default == "gpt-5.4-mini"
+    assert models.text.options == ("gpt-5.4", "gpt-5.4-mini", "gpt-5-mini")
     assert app_config["chunk_size"] == 12000
     assert app_config["max_retries"] == 1
     assert app_config["processing_operation_default"] == "edit"
@@ -578,6 +579,7 @@ def test_load_app_config_applies_image_env_overrides_and_clamps(monkeypatch):
     monkeypatch.setenv("DOCX_AI_IMAGE_MODE_DEFAULT", "semantic_redraw_direct")
     monkeypatch.setenv("DOCX_AI_SEMANTIC_VALIDATION_POLICY", "strict")
     monkeypatch.setenv("DOCX_AI_KEEP_ALL_IMAGE_VARIANTS", "true")
+    # DOCX_AI_VALIDATION_MODEL / DOCX_AI_RECONSTRUCTION_MODEL were removed: no effect.
     monkeypatch.setenv("DOCX_AI_VALIDATION_MODEL", "gpt-5.4")
     monkeypatch.setenv("DOCX_AI_MIN_SEMANTIC_MATCH_SCORE", "1.2")
     monkeypatch.setenv("DOCX_AI_MIN_TEXT_MATCH_SCORE", "-0.1")
@@ -613,9 +615,9 @@ def test_load_app_config_applies_image_env_overrides_and_clamps(monkeypatch):
     assert app_config["image_mode_default"] == "semantic_redraw_direct"
     assert app_config["semantic_validation_policy"] == "strict"
     assert app_config["keep_all_image_variants"] is True
-    assert app_config["validation_model"] == "gpt-5.4"
-    assert models.image_analysis == "gpt-5.4"
-    assert models.image_validation == "gpt-5.4"
+    assert app_config["validation_model"] == "gpt-5.4-mini"
+    assert models.image_analysis == "gpt-5.4-mini"
+    assert models.image_validation == "gpt-5.4-mini"
     assert app_config["min_semantic_match_score"] == 1.0
     assert app_config["min_text_match_score"] == 0.0
     assert app_config["min_structure_match_score"] == 0.91
@@ -623,8 +625,8 @@ def test_load_app_config_applies_image_env_overrides_and_clamps(monkeypatch):
     assert app_config["allow_accept_with_partial_text_loss"] is True
     assert app_config["prefer_deterministic_reconstruction"] is False
     assert app_config["enable_paragraph_markers"] is True
-    assert app_config["reconstruction_model"] == "gpt-5-mini"
-    assert models.image_reconstruction == "gpt-5-mini"
+    assert app_config["reconstruction_model"] == "gpt-5.4-mini"
+    assert models.image_reconstruction == "gpt-5.4-mini"
     assert app_config["enable_vision_image_analysis"] is False
     assert app_config["enable_vision_image_validation"] is False
     assert app_config["semantic_redraw_max_attempts"] == 2
@@ -1676,3 +1678,130 @@ def test_get_provider_client_cache_is_config_aware(monkeypatch, tmp_path):
     client_a_again = config.get_provider_client("openai", config_like=registry_a)
     assert client_a_again is client_a
     assert len(created) == 2
+
+
+def test_load_app_config_exposes_reader_verifier_model_from_toml(monkeypatch, tmp_path):
+    cfg = tmp_path / "config.toml"
+    cfg.write_text(
+        'reader_cleanup_model = "anthropic:claude-sonnet-4-6"\n'
+        'reader_verifier_model = "openrouter:google/gemini-3.1-flash-lite-preview"\n\n'
+        '[models.text]\ndefault = "gpt-5.4-mini"\noptions = ["gpt-5.4-mini"]\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(config, "CONFIG_PATH", cfg)
+    config.reset_app_config_cache()
+
+    app_config = config.load_app_config()
+
+    assert app_config["reader_cleanup_model"] == "anthropic:claude-sonnet-4-6"
+    assert app_config["reader_verifier_model"] == "openrouter:google/gemini-3.1-flash-lite-preview"
+
+
+def test_load_app_config_applies_reader_verifier_model_env_override(monkeypatch, tmp_path):
+    cfg = tmp_path / "config.toml"
+    cfg.write_text(
+        'reader_verifier_model = "anthropic:claude-sonnet-4-6"\n\n'
+        '[models.text]\ndefault = "gpt-5.4-mini"\noptions = ["gpt-5.4-mini"]\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(config, "CONFIG_PATH", cfg)
+    monkeypatch.setenv("DOCX_AI_READER_VERIFIER_MODEL", "gpt-5-mini")
+    config.reset_app_config_cache()
+
+    app_config = config.load_app_config()
+
+    assert app_config["reader_verifier_model"] == "gpt-5-mini"
+
+
+def test_load_app_config_ignores_removed_legacy_model_env_aliases(monkeypatch, tmp_path):
+    cfg = tmp_path / "config.toml"
+    cfg.write_text("", encoding="utf-8")
+    monkeypatch.setattr(config, "CONFIG_PATH", cfg)
+    monkeypatch.setenv("DOCX_AI_DEFAULT_MODEL", "legacy-model")
+    monkeypatch.setenv("DOCX_AI_MODEL_OPTIONS", "legacy-model,legacy-alt")
+    monkeypatch.setenv("DOCX_AI_VALIDATION_MODEL", "legacy-validation")
+    monkeypatch.setenv("DOCX_AI_RECONSTRUCTION_MODEL", "legacy-reconstruction")
+    config.reset_app_config_cache()
+
+    app_config = config.load_app_config()
+    models = cast(config.ModelRegistry, app_config["models"])
+
+    assert models.text.default == "gpt-5.4-mini"
+    assert "legacy-model" not in models.text.options
+    assert models.image_analysis == "gpt-5.4-mini"
+    assert models.image_validation == "gpt-5.4-mini"
+    assert models.image_reconstruction == "gpt-5.4-mini"
+
+
+def test_load_app_config_ignores_removed_legacy_toml_model_keys(monkeypatch, tmp_path):
+    cfg = tmp_path / "config.toml"
+    cfg.write_text(
+        'default_model = "legacy-text"\n'
+        'model_options = ["legacy-text", "legacy-alt"]\n'
+        'validation_model = "legacy-validation"\n'
+        'reconstruction_model = "legacy-reconstruction"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(config, "CONFIG_PATH", cfg)
+    config.reset_app_config_cache()
+
+    app_config = config.load_app_config()
+    models = cast(config.ModelRegistry, app_config["models"])
+
+    assert models.text.default == "gpt-5.4-mini"
+    assert "legacy-text" not in models.text.options
+    assert models.image_validation == "gpt-5.4-mini"
+    assert models.image_reconstruction == "gpt-5.4-mini"
+
+
+def test_load_app_config_is_cached_process_wide(monkeypatch, tmp_path):
+    cfg = tmp_path / "config.toml"
+    cfg.write_text(
+        '[models.text]\ndefault = "gpt-5.4-mini"\noptions = ["gpt-5.4-mini"]\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(config, "CONFIG_PATH", cfg)
+    config.reset_app_config_cache()
+
+    first = config.load_app_config()
+    second = config.load_app_config()
+
+    assert first is second
+
+    config.reset_app_config_cache()
+    third = config.load_app_config()
+
+    assert third is not first
+    assert third == first
+
+
+def test_model_registry_log_canonicalizes_anthropic_selector_unchanged(monkeypatch):
+    logged: list[dict[str, object]] = []
+    monkeypatch.setattr(config, "_EMITTED_MODEL_REGISTRY_LOG_KEYS", set())
+    monkeypatch.setattr(
+        config,
+        "log_event",
+        lambda level, event, message, **context: logged.append({"event": event, **context}),
+    )
+    models = config.ModelRegistry(
+        text=config.TextModelConfig(
+            default="anthropic:claude-sonnet-4-6",
+            options=("anthropic:claude-sonnet-4-6", "gpt-5.4-mini"),
+        ),
+        structure_recognition=TEST_STRUCTURE_RECOGNITION_MODEL,
+        image_analysis=TEST_IMAGE_ANALYSIS_MODEL,
+        image_validation=TEST_IMAGE_VALIDATION_MODEL,
+        image_reconstruction=TEST_IMAGE_RECONSTRUCTION_MODEL,
+        image_generation=TEST_IMAGE_GENERATION_MODEL,
+        image_edit=TEST_IMAGE_EDIT_MODEL,
+        image_generation_vision=TEST_IMAGE_GENERATION_VISION_MODEL,
+    )
+
+    config._log_resolved_model_registry(models, {"text.default": "toml:canonical:models.text.default"})
+
+    resolved_models = cast(dict[str, object], logged[0]["resolved_models"])
+    assert resolved_models["text.canonical_default"] == "anthropic:claude-sonnet-4-6"
+    assert resolved_models["text.canonical_options"] == [
+        "anthropic:claude-sonnet-4-6",
+        "openai:gpt-5.4-mini",
+    ]
