@@ -2,6 +2,7 @@ from dataclasses import dataclass, replace
 from collections.abc import Callable, Mapping, Sequence
 from threading import Lock
 from typing import Any, cast
+from uuid import uuid4
 
 from docxaicorrector.chapter_workflow.service import build_document_context_prompt as build_chapter_workflow_document_context_prompt
 from docxaicorrector.core.config import (
@@ -319,7 +320,21 @@ class ProcessingService:
                 exc=exc,
                 user_message=error_message,
             )
-            runtime.emit(SetStateEvent(values={"last_error": error_message, "last_background_error": background_error}))
+            # Round-11 F3: a crash after a mid-run ``latest_docx_bytes`` emit would otherwise
+            # leave deliverable bytes with no disposition, which ``build_result_bundle``
+            # defaults to "accepted" — a green success view under a red error. Clear the
+            # delivery state here, mirroring the hygiene in ``pipeline/block_failures.py``.
+            runtime.emit(
+                SetStateEvent(
+                    values={
+                        "last_error": error_message,
+                        "last_background_error": background_error,
+                        "latest_docx_bytes": None,
+                        "latest_narration_text": None,
+                        "latest_delivery_disposition": None,
+                    }
+                )
+            )
             runtime.emit(FinalizeProcessingStatusEvent(stage="Критическая ошибка", detail=error_message, progress=1.0, terminal_kind="error"))
             runtime.emit(PushActivityEvent(message="Фоновый worker аварийно завершился; runtime-state принудительно очищается."))
             runtime.emit(
@@ -414,9 +429,13 @@ class ProcessingService:
         document_context_prompt = build_chapter_workflow_document_context_prompt(
             prepared_run_context=prepared,
         )
+        # Round-11 F1: without a run identity the pipeline context normalizes ``run_id`` to
+        # "" and every live diagnostics artifact loses its ownership; mint one per run.
+        run_id = uuid4().hex
         result = self.run_document_processing(
             uploaded_file=prepared.uploaded_filename,
             source_token=str(getattr(document_context_profile, "source_token", "") or ""),
+            run_id=run_id,
             prepared_source_key=str(getattr(prepared, "prepared_source_key", "") or ""),
             structure_fingerprint=str(getattr(prepared, "structure_fingerprint", "") or ""),
             jobs=cast(Sequence[Mapping[str, object]], jobs),

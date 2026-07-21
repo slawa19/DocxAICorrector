@@ -1091,11 +1091,15 @@ def _preserve_source_paragraph_properties_adapter(
     docx_bytes: bytes,
     paragraphs: Sequence[object],
     generated_paragraph_registry: Sequence[Mapping[str, object]] | None = None,
+    run_id: str | None = None,
+    source_token: str | None = None,
 ) -> bytes:
     return preserve_source_paragraph_properties(
         docx_bytes,
         cast(list[Any], list(paragraphs)),
         generated_paragraph_registry=generated_paragraph_registry,
+        run_id=run_id,
+        source_token=source_token,
     )
 
 

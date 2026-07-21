@@ -250,6 +250,37 @@ def test_drain_processing_events_warns_and_ignores_unknown_set_state_keys(monkey
     assert log_calls[0][1]["unknown_keys"] == ["unexpected_key"]
 
 
+def test_drain_processing_events_retains_controlled_block_fallback_artifact_key(monkeypatch):
+    """Round-11 F4: block_execution emits ``latest_controlled_block_fallback_artifact``;
+    the allowlist must retain it instead of dropping it with an unknown-keys WARNING."""
+
+    session_state = SessionState(
+        processing_event_queue=queue.Queue(),
+        processing_worker=object(),
+        processing_stop_event=object(),
+        processing_stop_requested=True,
+    )
+    monkeypatch.setattr(processing_runtime.st, "session_state", session_state)
+    log_calls = []
+    monkeypatch.setattr(processing_runtime, "log_event", lambda *args, **kwargs: log_calls.append((args, kwargs)))
+
+    session_state.processing_event_queue.put(
+        SetStateEvent(values={"latest_controlled_block_fallback_artifact": "/tmp/fallback.json"})
+    )
+    session_state.processing_event_queue.put(WorkerCompleteEvent(outcome="failed"))
+
+    processing_runtime.drain_processing_events(
+        set_processing_status=lambda **payload: None,
+        finalize_processing_status=lambda stage, detail, progress, terminal_kind=None: None,
+        push_activity=lambda message: None,
+        append_log=lambda **payload: None,
+        append_image_log=lambda **payload: None,
+    )
+
+    assert session_state.latest_controlled_block_fallback_artifact == "/tmp/fallback.json"
+    assert not [call for call in log_calls if call[0][1] == "state_event_unknown_keys"]
+
+
 def test_build_runtime_event_emitters_emits_typed_events_for_background_runtime():
     emitted_events = []
 

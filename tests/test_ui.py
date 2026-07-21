@@ -1626,6 +1626,42 @@ def test_render_result_bundle_advisory_keeps_success_and_coexisting_notice(monke
     assert warning_calls == ["Cleanup degraded"]
 
 
+def test_render_result_bundle_routes_notice_levels_to_matching_streamlit_channel(monkeypatch):
+    # Round-11 Fix C: info-level notices are really produced (late_phases emits
+    # {"level": "info", ...} for a clean formatting-diagnostics summary). Rendering
+    # them through st.warning put a yellow banner on a perfectly successful run.
+    info_calls = []
+    warning_calls = []
+    error_calls = []
+
+    class FakeColumn:
+        def download_button(self, *args, **kwargs):
+            return None
+
+    monkeypatch.setattr(ui.st, "success", lambda message: None)
+    monkeypatch.setattr(ui.st, "info", lambda message: info_calls.append(message))
+    monkeypatch.setattr(ui.st, "warning", lambda message: warning_calls.append(message))
+    monkeypatch.setattr(ui.st, "error", lambda message, *args, **kwargs: error_calls.append(message))
+    monkeypatch.setattr(ui.st, "columns", lambda count: [FakeColumn() for _ in range(count)])
+
+    ui.render_result_bundle(
+        docx_bytes=b"docx",
+        markdown_text="markdown",
+        original_filename="report.docx",
+        success_message="Document processed.",
+        delivery_disposition={"status": "accepted"},
+        result_notices=[
+            {"level": "info", "message": "Formatting diagnostics are clean"},
+            {"kind": "cleanup", "level": "warning", "message": "Cleanup degraded"},
+            {"kind": "persistence", "level": "error", "message": "Result files not saved"},
+        ],
+    )
+
+    assert info_calls == ["Formatting diagnostics are clean"]
+    assert warning_calls == ["Cleanup degraded"]
+    assert error_calls == ["Result files not saved"]
+
+
 def test_render_result_bundle_localizes_multiple_degradation_notice_keys(monkeypatch):
     warnings = []
     monkeypatch.setattr(ui, "t", lambda key, **kwargs: f"localized:{key}")

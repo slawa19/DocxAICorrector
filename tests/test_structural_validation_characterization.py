@@ -306,3 +306,28 @@ def test_build_preparation_diagnostic_snapshot_golden(monkeypatch):
         event_log=_snapshot_event_log(),
     )
     _assert_golden("orchestrator_prep_snapshot", snapshot)
+
+
+def test_preserve_source_paragraph_properties_adapter_forwards_run_identity(monkeypatch):
+    """Round-11 F1: the adapter had no ``run_id``/``source_token`` params, so the
+    signature gate in ``pipeline/support.py`` stripped them and its formatting
+    diagnostics were written offline instead of owned by the live run."""
+
+    captured: dict[str, object] = {}
+
+    def _fake_preserve(docx_bytes, paragraphs, **kwargs):
+        captured.update(kwargs)
+        return docx_bytes
+
+    monkeypatch.setattr(structural, "preserve_source_paragraph_properties", _fake_preserve)
+
+    structural._preserve_source_paragraph_properties_adapter(
+        b"docx",
+        [],
+        None,
+        run_id="run-42",
+        source_token="token-7",
+    )
+
+    assert captured["run_id"] == "run-42"
+    assert captured["source_token"] == "token-7"

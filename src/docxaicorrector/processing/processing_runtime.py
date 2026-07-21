@@ -167,6 +167,7 @@ _ALLOWED_SET_STATE_EVENT_KEYS = {
     "image_assets",
     "last_background_error",
     "last_error",
+    "latest_controlled_block_fallback_artifact",
     "latest_docx_bytes",
     "latest_delivery_disposition",
     "latest_markdown",

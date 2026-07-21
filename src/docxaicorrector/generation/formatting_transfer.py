@@ -157,11 +157,16 @@ def _write_formatting_diagnostics_artifact(
     run_id: str | None = None,
     source_token: str | None = None,
 ) -> str | None:
+    # Round-11 F1: live ownership needs BOTH identities present and non-blank. A blank
+    # identity ("" is not None) used to select "live", which then raised inside the
+    # writer and fail-opened WITHOUT writing any artifact at all. Fall back to "offline"
+    # so the diagnostic is still retained for explicit replay instead of destroyed.
+    has_live_identity = bool((run_id or "").strip()) and bool((source_token or "").strip())
     return write_formatting_diagnostics_artifact(
         stage=stage,
         diagnostics=diagnostics,
         diagnostics_dir=FORMATTING_DIAGNOSTICS_DIR,
-        scope="live" if run_id is not None or source_token is not None else "offline",
+        scope="live" if has_live_identity else "offline",
         run_id=run_id,
         source_token=source_token,
     )

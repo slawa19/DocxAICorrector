@@ -1188,7 +1188,7 @@ def finalize_processing_success(
         quality_report=quality_report,
         latest_result_notice=cast(Mapping[str, str] | None, docx_phase.get("latest_result_notice")),
     )
-    stopped_result = _stop_at_late_boundary("Обработка остановлена до сохранения результата.")
+    stopped_result = _stop_at_late_boundary("Обработка остановлена до публикации результата после проверки качества и narration.")
     if stopped_result is not None:
         return stopped_result
     emitters.emit_state(
@@ -1221,7 +1221,7 @@ def finalize_processing_success(
     # user-facing result files DID reach disk.
     primary_artifacts_persisted = True
     primary_artifacts_persist_error: str | None = None
-    stopped_result = _stop_at_late_boundary("Обработка остановлена до сохранения результата.")
+    stopped_result = _stop_at_late_boundary("Обработка остановлена до сохранения файлов результата на диск.")
     if stopped_result is not None:
         return stopped_result
     try:
@@ -1256,9 +1256,6 @@ def finalize_processing_success(
         # verify markdown + docx are present, on disk, and non-empty. A failure raises
         # OSError so it funnels into the SAME primary-persistence-failure path below.
         _verify_primary_result_artifacts_or_raise(result_artifact_paths)
-        stopped_result = _stop_at_late_boundary("Обработка остановлена после сохранения основного результата.")
-        if stopped_result is not None:
-            return stopped_result
     except OSError as exc:
         primary_artifacts_persisted = False
         primary_artifacts_persist_error = f"ui_result_artifacts_save_failed: {exc}"
@@ -1346,6 +1343,16 @@ def finalize_processing_success(
                 excluded_blocks=int(getattr(state, "excluded_narration_block_count", 0) or 0),
                 mode="standalone" if context.processing_operation == "audiobook" else "postprocess",
             )
+    # Round-11 F2: this checkpoint used to sit INSIDE the try, right after the primary
+    # artifacts were verified — a stop there returned with fully written .result.md /
+    # .result.docx on disk that NO log event ever announced. It now runs only after the
+    # canonical ``ui_result_artifacts_saved`` event and the secondary writes, so a stopped
+    # run always reports a fully announced artifact group. The unpersisted path keeps
+    # falling through to its own notice and the later boundary below.
+    if primary_artifacts_persisted:
+        stopped_result = _stop_at_late_boundary("Обработка остановлена после сохранения основного результата.")
+        if stopped_result is not None:
+            return stopped_result
     # F4 + F12: the delivered result is still available from session state, but when
     # the PRIMARY result files (``.result.md``/``.result.docx``) did not reach disk we
     # surface a user-visible WARNING notice so the UI shows the files were not saved, and

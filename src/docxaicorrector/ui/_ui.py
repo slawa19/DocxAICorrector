@@ -857,8 +857,13 @@ def render_result_bundle(
             continue
         if not message:
             continue
-        if str(notice.get("level", "") or "") == "error":
+        notice_level = str(notice.get("level", "") or "")
+        if notice_level == "error":
             st.error(message)
+        elif notice_level == "info":
+            # Informational notices (e.g. a clean formatting-diagnostics summary) must not
+            # render as a yellow warning on an otherwise successful run.
+            st.info(message)
         else:
             st.warning(message)
     if blocked and not docx_bytes:

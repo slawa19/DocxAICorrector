@@ -945,6 +945,96 @@ def test_run_prepared_background_document_emits_controlled_failure_when_preparat
     assert any(isinstance(event, AppendLogEvent) and event.payload["status"] == "ERROR" for event in emitted_events)
 
 
+def test_run_prepared_background_document_mints_non_empty_run_id_for_processing(monkeypatch):
+    """Round-11 F1: without a minted run identity ``context.run_id`` normalizes to "" and
+    every live diagnostics artifact loses its ownership."""
+
+    captured = {}
+    service = _build_service(
+        run_document_processing_impl_fn=lambda **kwargs: (captured.setdefault("run", kwargs), "succeeded")[1],
+    )
+    prepared = type(
+        "PreparedRunContextStub",
+        (),
+        {
+            "uploaded_filename": "prepared-report.docx",
+            "jobs": [{"target_text": "one"}],
+            "paragraphs": ["p1"],
+            "image_assets": [],
+            "translation_domain": "general",
+            "translation_domain_instructions": "",
+        },
+    )()
+
+    monkeypatch.setattr(processing_service, "freeze_uploaded_file", lambda uploaded_file: uploaded_file)
+    monkeypatch.setattr(processing_service, "prepare_run_context_for_background", lambda **kwargs: prepared)
+
+    service.run_prepared_background_document(
+        uploaded_file="report.docx",
+        chunk_size=123,
+        image_mode="safe",
+        keep_all_image_variants=True,
+        app_config={},
+        model="gpt-5.4",
+        max_retries=2,
+        runtime={"state": {}},
+    )
+
+    assert str(captured["run"]["run_id"] or "").strip() != ""
+
+
+def test_run_processing_worker_crash_clears_mid_run_delivery_state(monkeypatch):
+    """Round-11 F3: a crash after a mid-run ``latest_docx_bytes`` emit must not leave a
+    renderable, implicitly accepted result bundle behind the error."""
+
+    import docxaicorrector.processing.processing_runtime as processing_runtime
+
+    class SessionStateStub(dict):
+        def __getattr__(self, name):
+            try:
+                return self[name]
+            except KeyError as exc:
+                raise AttributeError(name) from exc
+
+        def __setattr__(self, name, value):
+            self[name] = value
+
+    session_state = SessionStateStub(
+        latest_markdown="text",
+        latest_source_name="report.docx",
+        latest_source_token="token",
+        latest_processing_operation="edit",
+    )
+
+    class RuntimeStub:
+        def emit(self, event):
+            if isinstance(event, SetStateEvent):
+                session_state.update(event.values)
+
+    runtime = RuntimeStub()
+
+    def _crash_after_bytes_emit(**kwargs):
+        runtime.emit(SetStateEvent(values={"latest_docx_bytes": b"mid-run-docx"}))
+        raise RuntimeError("finalize exploded")
+
+    service = _build_service(run_document_processing_impl_fn=_crash_after_bytes_emit)
+    service.run_processing_worker(
+        runtime=runtime,
+        uploaded_filename="report.docx",
+        jobs=[{"target_text": "x", "context_before": "", "context_after": "", "target_chars": 1, "context_chars": 0}],
+        image_assets=[],
+        image_mode="safe",
+        app_config={},
+        model="gpt-5.4",
+        max_retries=1,
+    )
+
+    assert session_state["latest_docx_bytes"] is None
+    assert session_state["latest_delivery_disposition"] is None
+    monkeypatch.setattr(processing_runtime.st, "session_state", session_state)
+    assert processing_runtime.get_current_result_bundle() is None
+
+
 def test_clone_processing_service_returns_overridden_copy_without_mutating_singleton(monkeypatch):
     processing_service.reset_processing_service()
     default_service = _build_service()

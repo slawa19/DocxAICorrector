@@ -1369,3 +1369,38 @@ def test_finalize_noop_cleanup_refreshes_output_docx_openable_verdict(monkeypatc
     post_check = _openable_check(written_reports[-1]["acceptance_verdict"])
     assert post_check.get("applicable") is True
     assert post_check.get("passed") is True  # reflects the real, openable DOCX
+
+
+def test_finalize_stop_after_primary_persist_still_logs_artifacts_saved(monkeypatch, tmp_path):
+    """Round-11 F2: the post-persist stop checkpoint used to sit INSIDE the try, before
+    the ``else`` branch, so a stop there left verified ``.result.md``/``.result.docx`` on
+    disk that NO log event ever announced. The stopped run must still emit the canonical
+    ``ui_result_artifacts_saved`` entry point."""
+
+    gate_input = "Чистый переведённый абзац."
+    cleanup = _cleanup_result(markdown=gate_input, docx_bytes=b"final-docx")
+    _install_stubs(
+        monkeypatch,
+        gate_input_markdown=gate_input,
+        cleanup_result=cleanup,
+        report_fn=lambda **kwargs: {"quality_status": "pass", "gate_reasons": []},
+    )
+
+    deps = _RecordingDependencies(artifact_writer=_real_primary_artifact_writer(tmp_path))
+    emitters = _RecordingEmitters()
+    # Stop is requested ONLY at the post-persist boundary: every earlier checkpoint runs
+    # before the artifact writer is called.
+    deps.should_stop_processing = lambda runtime: deps.write_ui_result_artifacts_calls > 0
+
+    result = _run_finalize(
+        context=_make_context(),
+        dependencies=deps,
+        emitters=emitters,
+        state=_make_state(),
+        docx_phase=_make_docx_phase(gate_input),
+    )
+
+    assert result == "stopped"
+    assert emitters.finalize_calls[-1]["terminal_kind"] == "stopped"
+    assert "ui_result_artifacts_saved" in _events(deps)
+    assert "processing_completed" not in _events(deps)

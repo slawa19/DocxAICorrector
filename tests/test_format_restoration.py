@@ -3318,6 +3318,48 @@ def test_write_formatting_diagnostics_artifact_logs_warning_on_write_failure(tmp
     assert context["error_type"] == "TypeError"
 
 
+def test_formatting_diagnostics_wrapper_falls_back_to_offline_on_blank_identity(tmp_path, monkeypatch):
+    # Round-11 F1: "" is not None, so a blank identity used to select scope="live", which
+    # then raised inside the writer and fail-opened WITHOUT writing anything. The artifact
+    # must still be retained (offline), and no write-failure WARNING may be emitted.
+    recorded_events: list[str] = []
+    monkeypatch.setattr(
+        formatting_diagnostics_retention,
+        "log_event",
+        lambda level, event, message, **context: recorded_events.append(event),
+    )
+    monkeypatch.setattr(formatting_transfer, "FORMATTING_DIAGNOSTICS_DIR", tmp_path)
+
+    artifact_path = formatting_transfer._write_formatting_diagnostics_artifact(
+        "restore",
+        {"mapped_count": 1},
+        run_id="",
+        source_token="",
+    )
+
+    assert artifact_path is not None
+    payload = json.loads(Path(artifact_path).read_text(encoding="utf-8"))
+    assert payload["ownership"]["scope"] == "offline"
+    assert "formatting_diagnostics_write_failed" not in recorded_events
+
+
+def test_formatting_diagnostics_wrapper_keeps_live_scope_for_real_identity(tmp_path, monkeypatch):
+    # Anti-vacuum counterpart: the offline fallback above must not swallow genuine live
+    # ownership when both identities are actually present.
+    monkeypatch.setattr(formatting_transfer, "FORMATTING_DIAGNOSTICS_DIR", tmp_path)
+
+    artifact_path = formatting_transfer._write_formatting_diagnostics_artifact(
+        "restore",
+        {"mapped_count": 1},
+        run_id="run-42",
+        source_token="token-7",
+    )
+
+    assert artifact_path is not None
+    payload = json.loads(Path(artifact_path).read_text(encoding="utf-8"))
+    assert payload["ownership"] == {"scope": "live", "run_id": "run-42", "source_token": "token-7"}
+
+
 def test_live_formatting_diagnostics_embed_ownership_and_collect_exact_matches(tmp_path):
     diagnostics_dir = tmp_path / "formatting_diagnostics"
     owned_path = formatting_diagnostics_retention.write_formatting_diagnostics_artifact(

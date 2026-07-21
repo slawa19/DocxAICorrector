@@ -1,7 +1,7 @@
 # Logging and Artifact Retention Contract
 
 Статус: каноническая документация.
-Последняя ревизия: 2026-04-23.
+Последняя ревизия: 2026-07-21.
 Связанные документы: `README.md` (раздел «Логи»), `docs/AI_AGENT_DEVELOPMENT_RULES.md`, `docs/archive/specs/LOGGING_AND_DISK_RETENTION_SPEC_2026-03-27.md` (исходная спецификация).
 
 Назначение документа: зафиксировать единый источник правды по логированию и retention runtime-артефактов, чтобы ИИ-агент при добавлении новых фич:
@@ -98,6 +98,7 @@ bash -c "cd /mnt/d/www/projects/2025/DocxAICorrector && python3 scripts/_list_lo
 - `preparation_cache_hit`, `preparation_cache_miss` — `preparation.py`, INFO.
 - `structure_recognition_debug_artifact_saved`, `structure_recognition_fallback`, `structure_validation_debug_artifact_saved`, `structure_processing_outcome` — `preparation.py`.
 - `restart_source_store_failed` — `processing_runtime.py`.
+- `persisted_source_validation_failed` — `restart_store.py`, WARNING: persisted restart/completed source отклонён и не может быть восстановлен. Context: `{reason, filename, source_token, storage_kind}`, где `reason` ∈ `{invalid_metadata, unconfined_path, unreadable_payload, integrity_mismatch}`.
 
 ### 3.3 Document pipeline (main loop)
 
@@ -109,10 +110,15 @@ bash -c "cd /mnt/d/www/projects/2025/DocxAICorrector && python3 scripts/_list_lo
 - `image_placeholder_integrity_failed`, `image_placeholder_mismatch`, `image_processing_failed`.
 - `docx_build_failed`, `empty_docx_bytes`.
 - `formatting_diagnostics_artifacts_detected`.
+- `formatting_diagnostics_write_failed` — `formatting_diagnostics_retention.py`, WARNING: артефакт diagnostics не записан, run продолжается (fail-open). Context: `{stage, expected_dir, scope, run_id, source_token, error_type, error}`.
 - `invalid_processing_job`, `invalid_processing_plan`, `processing_init_failed`.
 - `ui_result_artifacts_saved`, `ui_audiobook_artifact_saved`.
+- `ui_result_artifacts_save_failed` — `late_phases.py`, WARNING: primary result files (markdown + docx) не дошли до диска. Context: `{filename, error_message}`.
+- `reader_cleanup_diagnostics_save_failed` — `late_phases.py`, WARNING: secondary diagnostics не сохранены; primary result при этом остаётся доставленным.
+- `segment_result_registry_saved` (INFO) / `segment_result_registry_save_failed` (WARNING) — `late_phases.py`: persisted segment result registry пишется ПОСЛЕ primary result files, его отказ не переводит run в unpersisted.
 - `audiobook_postprocess_chunk_started`, `audiobook_postprocess_chunk_completed`.
 - `processing_completed` (INFO, run boundary).
+- `processing_completed_unpersisted` — `late_phases.py`, WARNING, альтернативный run boundary: документ обработан, но primary result files не сохранены. Context: `{reason}` + те же поля, что у `processing_completed`.
 
 ### 3.4 Generation
 
@@ -136,6 +142,17 @@ bash -c "cd /mnt/d/www/projects/2025/DocxAICorrector && python3 scripts/_list_lo
 
 - `state_event_unknown_keys` — `processing_runtime.py`, WARNING: неизвестный ключ в `SetStateEvent`.
 - `artifact_pruned` — `runtime_artifact_retention.py`, DEBUG: после фактического удаления одного или более файлов. Context: `{dir, removed_count, max_age_seconds, max_count}`.
+- `result_bundle_invalid_delivery_disposition` — `processing_runtime.py`, WARNING: сохранённый `delivery_disposition` невалиден (неизвестный status или `blocked` без explanation); bundle рендерится с safe accepted fallback вместо падения frame'а. Context: `{error}`.
+
+### 3.7 Reader cleanup post-pass
+
+- `reader_cleanup_global_plan_started|completed`, `reader_cleanup_chunk_started|completed`, `reader_cleanup_schema_repair_started|completed` — `reader_cleanup_postprocess.py`, INFO.
+- `reader_cleanup_noop`, `reader_cleanup_applied` — `reader_cleanup_postprocess.py`, INFO (terminal-переходы post-pass).
+- `reader_cleanup_drop_back_matter_unsupported` — `reader_cleanup_postprocess.py`, WARNING.
+- `reader_cleanup_strict_failed_base_result_preserved`, `reader_cleanup_failed_base_result_preserved` — `reader_cleanup_postprocess.py`, WARNING: post-pass упал, но base result доставлен.
+- `reader_cleanup_failed` — `reader_cleanup_postprocess.py`, через `present_error` (ERROR + traceback).
+
+Строки вида `reader_cleanup_*` внутри reader-cleanup MVP `service.py` и check-имя `reader_cleanup_stage_completed` в `acceptance.py` — это warning-строки report payload и имя acceptance-check, а НЕ log events; не заводите их как event-имена.
 
 ---
 
@@ -183,7 +200,7 @@ bash -c "cd /mnt/d/www/projects/2025/DocxAICorrector && python3 scripts/_list_lo
 |----------|---------|----------|
 | `.run/app.log` | `RotatingFileHandler`, maxBytes=1_000_000, backupCount=3 | `logger._WSLSafeRotatingFileHandler` |
 | `.run/app.ready` | Throttle window = 15s (не переписывается чаще на render-цикл) | `runtime_artifacts.AppReadyMarkerWriter` |
-| `.run/formatting_diagnostics/*.json` | TTL 7 дней, max 100 файлов, pruning при каждой записи | `formatting_diagnostics_retention.prune_formatting_diagnostics()` |
+| `.run/formatting_diagnostics/*.json` | TTL 7 дней, max 100 файлов, pruning при каждой записи. Retention family-wide и НЕ зависит от ownership envelope | `formatting_diagnostics_retention.prune_formatting_diagnostics()` |
 | `.run/paragraph_boundary_reports/*.json` | TTL 7 дней, max 300 файлов, pruning при каждой записи | `document._write_paragraph_boundary_report_artifact()` → `runtime_artifact_retention.prune_artifact_dir()` |
 | `.run/relation_normalization_reports/*.json` | TTL 7 дней, max 300 файлов, pruning при каждой записи | `document._write_relation_normalization_report_artifact()` → `prune_artifact_dir()` |
 | `.run/paragraph_boundary_ai_review/*.json` | TTL 14 дней, max 200 файлов, pruning при каждой записи | `document._write_paragraph_boundary_ai_review_artifact()` → `prune_artifact_dir()` |
@@ -212,6 +229,7 @@ Root workspace is not an artifact drop zone. Runtime/debug/manual investigation 
 - На каждом фактическом удалении (если было хоть одно) эмитит DEBUG-event `artifact_pruned` с контекстом `{dir, removed_count, max_age_seconds, max_count}`. Writers могут отключить логирование через `emit_log=False`, если артефакт-путь уже освещён событием более высокого уровня.
 - Сначала отбрасываются файлы старше `max_age_seconds`; затем, если превышен `max_count`, удаляются самые старые по mtime (tiebreaker — имя файла). Это делает pruning детерминистичным.
 - Для `.run/ui_results/` retention действует по stem-group: `.result.md`, `.result.docx` и optional `.result.tts.txt` сохраняются и удаляются как единая группа, чтобы не оставлять orphaned narration/download artifacts.
+- Для `.run/formatting_diagnostics/` каждый артефакт несёт ownership envelope `{scope: "live"|"offline", run_id, source_token}` — и в payload (`ownership`), и в имени файла (`<stem>_<run_id>_<source_token>_<epoch_ms>_<uuid>.json` для `live`, `<stem>_offline_<epoch_ms>_<uuid>.json` для `offline`). Live-сборка (`collect_owned_formatting_diagnostics`) отбирает только `scope == "live"` с точным совпадением `run_id` И `source_token`; неполный legacy-контекст не владеет ничем и НЕ расширяется до directory-wide или time-window discovery. Ownership влияет только на collection — retention остаётся family-wide (7 дней / 100 файлов).
 
 ### 5.3 Опциональный `.run`-guardrail (пока не реализовано)
 
@@ -280,4 +298,5 @@ Root workspace is not an artifact drop zone. Runtime/debug/manual investigation 
 
 - 2026-04-19: первая ревизия. Канонизирует текущее состояние `logger.py`, runtime-retention механик и фиксирует гэпы в retention для `paragraph_boundary_reports/`, `relation_normalization_reports/`, `paragraph_boundary_ai_review/`, `structure_maps/`, `structure_validation/`. Описан паттерн добавления новых событий.
 - 2026-04-19 (follow-up): гэп закрыт. Введён `runtime_artifact_retention.py` с `prune_artifact_dir()` и per-family константами. Writers подключены. Добавлено DEBUG-событие `artifact_pruned`. Ручной скрипт `scripts/clean-stale-run-artifacts.sh` очищает whitelisted stale root-файлы `.run/`. Тесты: `tests/test_runtime_artifact_retention.py`. Применена первичная cleanup-волна: `.run/` с 24 MiB сжат до 5.5 MiB, 39 stale артефактов удалено, bounded-директории в пределах квот.
+- 2026-07-21: каталог догнан до текущего кода. В §3 добавлены `persisted_source_validation_failed`, `result_bundle_invalid_delivery_disposition`, `ui_result_artifacts_save_failed`, `reader_cleanup_diagnostics_save_failed`, `segment_result_registry_saved|_save_failed`, `processing_completed_unpersisted`, расширенный context у `formatting_diagnostics_write_failed` и новая секция §3.7 по reader-cleanup post-pass. В §5.1/§5.2 зафиксирован ownership envelope `{scope, run_id, source_token}` для `.run/formatting_diagnostics/*.json` и scoped live-collection; retention семьи не изменился.
 - 2026-04-23: добавлен audiobook/narration contract. `.run/ui_results/` retention переведён на grouped stem pruning для `.result.md` / `.result.docx` / optional `.result.tts.txt`. Зафиксированы события `ui_audiobook_artifact_saved`, `audiobook_postprocess_chunk_started`, `audiobook_postprocess_chunk_completed` и расширенный payload `ui_result_artifacts_saved`.

@@ -11,6 +11,7 @@ cycle by moving the contract down).
 
 import logging
 import hashlib
+import re
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -173,6 +174,16 @@ def has_restartable_source(
     storage_path = str(restart_source.get("storage_path", ""))
     if not source_name or not storage_path:
         return False
+    # spec-045: a record without the integrity/format metadata can NEVER be
+    # restored by load_restart_source_bytes (it is rejected as invalid_metadata),
+    # so offering it in the RESTARTABLE view is a permanent dead end. Checked
+    # structurally, without materializing the payload, to keep this predicate cheap.
+    payload_sha256 = restart_source.get("payload_sha256")
+    source_format = str(restart_source.get("source_format", "")).strip().lower()
+    if not isinstance(payload_sha256, str) or not re.fullmatch(r"[0-9a-f]{64}", payload_sha256):
+        return False
+    if source_format not in {"docx", "doc", "pdf"}:
+        return False
     return Path(storage_path).is_file()
 
 
@@ -204,7 +215,13 @@ def resolve_effective_uploaded_file(
         )
         if completed_file is not None:
             return completed_file
-    if current_result is None and has_restartable_source(session_state=session_state):
+    # Completed-source caching runs only for SUCCEEDED, so any run that ended stopped or
+    # failed — a delivery-blocked result, or a stop observed after the result was already
+    # published — keeps its restart source instead. ``has_restartable_source`` already
+    # encodes exactly that eligibility (restartable outcome + a verifiable record), so it
+    # is the whole condition: without this fall-through those runs render as COMPLETED
+    # with no reprocess control while valid source bytes sit on disk.
+    if has_restartable_source(session_state=session_state):
         return get_cached_restart_file(
             session_state=session_state,
             load_restart_source_bytes_fn=load_restart_source_bytes_fn,

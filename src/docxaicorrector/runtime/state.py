@@ -632,6 +632,7 @@ def init_session_state() -> None:
     st.session_state.setdefault("latest_markdown", "")
     st.session_state.setdefault("processed_block_markdowns", [])
     st.session_state.setdefault("latest_docx_bytes", None)
+    st.session_state.setdefault("latest_controlled_block_fallback_artifact", None)
     st.session_state.setdefault("latest_delivery_disposition", None)
     st.session_state.setdefault("latest_narration_text", None)
     st.session_state.setdefault("latest_quality_warning", None)
@@ -760,6 +761,7 @@ def reset_run_state(*, keep_restart_source: bool = True, preserve_preparation: b
         if isinstance(_key, str) and _key.startswith("mdpreview_"):
             del st.session_state[_key]
     st.session_state.latest_docx_bytes = None
+    st.session_state.latest_controlled_block_fallback_artifact = None
     st.session_state.latest_delivery_disposition = None
     st.session_state.latest_narration_text = None
     st.session_state.latest_quality_warning = None
