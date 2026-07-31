@@ -12,6 +12,7 @@ import docxaicorrector.core.config as config
 import docxaicorrector.generation.formatting_diagnostics_retention as formatting_diagnostics_retention
 import docxaicorrector.generation.formatting_mapping as formatting_mapping
 import docxaicorrector.generation.formatting_transfer as formatting_transfer
+import docxaicorrector.pipeline.support as pipeline_support
 from docx import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml import OxmlElement
@@ -3322,11 +3323,17 @@ def test_formatting_diagnostics_wrapper_falls_back_to_offline_on_blank_identity(
     # Round-11 F1: "" is not None, so a blank identity used to select scope="live", which
     # then raised inside the writer and fail-opened WITHOUT writing anything. The artifact
     # must still be retained (offline), and no write-failure WARNING may be emitted.
-    recorded_events: list[str] = []
+    #
+    # Round-12: retention alone is NOT enough. An offline artifact is invisible to
+    # ``collect_owned_formatting_diagnostics``, so the owning run never rebuilds its
+    # quality report from it and the canonical gate reads the missing evidence as a
+    # perfect zero. The downgrade must therefore be ANNOUNCED, naming the identities that
+    # are blank -- this assertion is what keeps the evidence-loss detector alive.
+    recorded_events: list[tuple[int, str, dict[str, object]]] = []
     monkeypatch.setattr(
         formatting_diagnostics_retention,
         "log_event",
-        lambda level, event, message, **context: recorded_events.append(event),
+        lambda level, event, message, **context: recorded_events.append((level, event, context)),
     )
     monkeypatch.setattr(formatting_transfer, "FORMATTING_DIAGNOSTICS_DIR", tmp_path)
 
@@ -3334,13 +3341,97 @@ def test_formatting_diagnostics_wrapper_falls_back_to_offline_on_blank_identity(
         "restore",
         {"mapped_count": 1},
         run_id="",
-        source_token="",
+        source_token="run-token-only",
     )
 
     assert artifact_path is not None
     payload = json.loads(Path(artifact_path).read_text(encoding="utf-8"))
     assert payload["ownership"]["scope"] == "offline"
-    assert "formatting_diagnostics_write_failed" not in recorded_events
+    assert [event for _level, event, _context in recorded_events] == [
+        "formatting_diagnostics_identity_missing"
+    ]
+    level, _event, context = recorded_events[0]
+    assert level == logging.WARNING
+    # The warning must name WHICH identity is missing, and only that one.
+    assert context["missing_identity_fields"] == ["run_id"]
+    assert context["stage"] == "restore"
+    assert context["downgraded_scope"] == "offline"
+    assert "formatting_diagnostics_write_failed" not in [event for _l, event, _c in recorded_events]
+
+
+def test_marker_diagnostics_artifact_retained_and_announced_on_blank_identity(tmp_path, monkeypatch):
+    # Round-12 (C): ``write_marker_diagnostics_artifact`` hardcoded scope="live", so a blank
+    # identity raised inside the writer's try block and the marker-failure evidence -- the
+    # debugging record of the block that just failed -- was destroyed entirely. It must now
+    # be retained offline AND announced.
+    recorded_events: list[tuple[int, str, dict[str, object]]] = []
+    monkeypatch.setattr(
+        formatting_diagnostics_retention,
+        "log_event",
+        lambda level, event, message, **context: recorded_events.append((level, event, context)),
+    )
+
+    artifact_path = pipeline_support.write_marker_diagnostics_artifact(
+        stage="marker_validation",
+        uploaded_filename="whatever.docx",
+        block_index=3,
+        block_count=9,
+        error_code="missing_marker",
+        target_text="target",
+        context_before="before",
+        context_after="after",
+        paragraph_ids=["p1"],
+        diagnostics_dir=tmp_path,
+        run_id="",
+        source_token="",
+    )
+
+    assert artifact_path is not None  # previously None: the artifact was never written
+    payload = json.loads(Path(artifact_path).read_text(encoding="utf-8"))
+    assert payload["ownership"]["scope"] == "offline"
+    assert payload["error_code"] == "missing_marker"
+    assert [event for _level, event, _context in recorded_events] == [
+        "formatting_diagnostics_identity_missing"
+    ]
+    _level, _event, context = recorded_events[0]
+    assert context["artifact_kind"] == "marker_diagnostics"
+    assert context["missing_identity_fields"] == ["run_id", "source_token"]
+
+
+def test_marker_diagnostics_artifact_keeps_live_scope_for_real_identity(tmp_path, monkeypatch):
+    # Anti-vacuum counterpart: the offline fallback must not swallow genuine live ownership,
+    # otherwise marker diagnostics would stop being collectable by their own run.
+    recorded_events: list[str] = []
+    monkeypatch.setattr(
+        formatting_diagnostics_retention,
+        "log_event",
+        lambda level, event, message, **context: recorded_events.append(event),
+    )
+
+    artifact_path = pipeline_support.write_marker_diagnostics_artifact(
+        stage="marker_validation",
+        uploaded_filename="whatever.docx",
+        block_index=3,
+        block_count=9,
+        error_code="missing_marker",
+        target_text="target",
+        context_before="before",
+        context_after="after",
+        paragraph_ids=["p1"],
+        diagnostics_dir=tmp_path,
+        run_id="run-42",
+        source_token="token-7",
+    )
+
+    assert artifact_path is not None
+    payload = json.loads(Path(artifact_path).read_text(encoding="utf-8"))
+    assert payload["ownership"] == {"scope": "live", "run_id": "run-42", "source_token": "token-7"}
+    assert recorded_events == []
+    assert formatting_diagnostics_retention.collect_owned_formatting_diagnostics(
+        run_id="run-42",
+        source_token="token-7",
+        diagnostics_dir=tmp_path,
+    ) == [artifact_path]
 
 
 def test_formatting_diagnostics_wrapper_keeps_live_scope_for_real_identity(tmp_path, monkeypatch):

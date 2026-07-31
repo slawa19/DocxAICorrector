@@ -94,12 +94,22 @@ _MIGRATION_DEFAULT_MODEL_ROLES = {
     "image_edit": "gpt-image-1.5",
     "image_generation_vision": "gpt-5.4-mini",
 }
-_LEGACY_TOML_MODEL_KEYS = (
-    "default_model",
-    "model_options",
-    "validation_model",
-    "reconstruction_model",
-)
+# Removed legacy key -> canonical replacement. Values must name a role that really
+# exists in ModelRegistry (see tests/test_config.py::
+# test_legacy_model_key_warning_replacements_point_at_existing_registry_roles).
+_LEGACY_TOML_MODEL_KEY_REPLACEMENTS = {
+    "default_model": "models.text.default",
+    "model_options": "models.text.options",
+    "validation_model": "models.image_validation.default",
+    "reconstruction_model": "models.image_reconstruction.default",
+}
+# Removed legacy ENV alias -> canonical ENV variable that is actually read now.
+_LEGACY_ENV_MODEL_KEY_REPLACEMENTS = {
+    "DOCX_AI_DEFAULT_MODEL": "DOCX_AI_MODELS_TEXT_DEFAULT",
+    "DOCX_AI_MODEL_OPTIONS": "DOCX_AI_MODELS_TEXT_OPTIONS",
+    "DOCX_AI_VALIDATION_MODEL": "DOCX_AI_MODELS_IMAGE_VALIDATION_DEFAULT",
+    "DOCX_AI_RECONSTRUCTION_MODEL": "DOCX_AI_MODELS_IMAGE_RECONSTRUCTION_DEFAULT",
+}
 _EMITTED_MODEL_REGISTRY_LOG_KEYS: set[str] = set()
 _APP_CONFIG_CACHE_FINGERPRINT: tuple[object, ...] | None = None
 _APP_CONFIG_CACHE_VALUE: "AppConfig | None" = None
@@ -840,7 +850,8 @@ def _emit_legacy_model_config_warnings(config_data: Mapping[str, object], model_
     _emit_legacy_model_config_warnings_impl(
         config_data,
         model_sources,
-        legacy_toml_model_keys=_LEGACY_TOML_MODEL_KEYS,
+        legacy_toml_model_keys=_LEGACY_TOML_MODEL_KEY_REPLACEMENTS,
+        legacy_env_model_keys=_LEGACY_ENV_MODEL_KEY_REPLACEMENTS,
         emitted_model_registry_log_keys=_EMITTED_MODEL_REGISTRY_LOG_KEYS,
         log_event_fn=log_event,
     )

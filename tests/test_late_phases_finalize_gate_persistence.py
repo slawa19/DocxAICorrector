@@ -22,7 +22,7 @@ from __future__ import annotations
 import json
 import logging
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from types import SimpleNamespace
 
 import pytest
@@ -101,6 +101,18 @@ def _state_mapping_value(
 ) -> object | None:
     value = state_call.get(state_key)
     return value.get(nested_key) if isinstance(value, Mapping) else None
+
+
+def _state_result_notices(state_call: Mapping[str, object]) -> list[Mapping[str, object]]:
+    """Typed accessor for the ``latest_result_notices`` payload of an ``emit_state`` call.
+
+    The recorded state values are ``object``, so the notices must be narrowed before they
+    can be iterated or queried.
+    """
+    value = state_call.get("latest_result_notices")
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
+        return []
+    return [notice for notice in value if isinstance(notice, Mapping)]
 
 
 def _cleanup_result(*, markdown: str, docx_bytes: bytes = b"final-docx"):
@@ -295,8 +307,7 @@ def test_finalize_artifact_save_success_logs_completed_info(monkeypatch, tmp_pat
     assert not any(
         notice.get("kind") == "persistence"
         for call in emitters.state_calls
-        for notice in call.get("latest_result_notices", [])
-        if isinstance(notice, Mapping)
+        for notice in _state_result_notices(call)
     )
 
 
@@ -429,8 +440,8 @@ def test_finalize_primary_persistence_failure_accumulates_typed_degradations(
     persistence_state = next(
         call
         for call in reversed(emitters.state_calls)
-        if isinstance(call.get("latest_result_notice"), Mapping)
-        and "сохранить файлы результата" in str(call["latest_result_notice"].get("message", ""))
+        if "сохранить файлы результата"
+        in str(_state_mapping_value(call, "latest_result_notice", "message") or "")
     )
     assert result == "succeeded"
     assert persistence_state["latest_result_notice"] == {
@@ -551,8 +562,7 @@ def test_finalize_registry_only_oserror_completes_without_unpersisted_notice(mon
     assert not any(
         notice.get("kind") == "persistence"
         for call in emitters.state_calls
-        for notice in call.get("latest_result_notices", [])
-        if isinstance(notice, Mapping)
+        for notice in _state_result_notices(call)
     )
 
 
@@ -1404,3 +1414,180 @@ def test_finalize_stop_after_primary_persist_still_logs_artifacts_saved(monkeypa
     assert emitters.finalize_calls[-1]["terminal_kind"] == "stopped"
     assert "ui_result_artifacts_saved" in _events(deps)
     assert "processing_completed" not in _events(deps)
+
+
+# --------------------------------------------------------------------------- #
+# Round-12 F1 — a NON-OSError raised by a post-delivery SECONDARY write must not
+# destroy an already delivered result. Before the fix such an exception escaped
+# ``finalize_processing_success`` into the worker crash-handler, which clears
+# ``latest_docx_bytes``/``latest_delivery_disposition`` (Round-11 F3): the finished
+# ``.result.docx`` stayed on disk while the UI lost the result block, the download
+# buttons and offered a full paid re-run instead.
+# --------------------------------------------------------------------------- #
+
+
+def _apply_to_session_state_emitters():
+    class _ApplyingEmitters(_RecordingEmitters):
+        def emit_state(self, runtime, **values):
+            super().emit_state(runtime, **values)
+            processing_runtime.emit_or_apply_state(None, **values)
+
+    return _ApplyingEmitters()
+
+
+def test_finalize_non_oserror_secondary_writes_keep_delivered_result_downloadable(
+    monkeypatch,
+    tmp_path,
+    make_session_state,
+):
+    gate_input = "Чистый переведённый абзац."
+    # The REAL ``write_reader_cleanup_diagnostics`` is used: a report payload that json
+    # cannot serialise makes it raise TypeError — exactly the non-OSError shape the old
+    # ``except OSError`` guard let through.
+    cleanup = late_phases.ReaderCleanupPostprocessResult(
+        markdown=gate_input,
+        docx_bytes=b"final-docx",
+        report={"cleanup_summary": object()},
+        raw_markdown="сырой markdown до очистки",
+        result_notice=None,
+        final_generated_paragraph_registry=None,
+    )
+    _install_stubs(
+        monkeypatch,
+        gate_input_markdown=gate_input,
+        cleanup_result=cleanup,
+        report_fn=lambda **kwargs: {"quality_status": "pass", "gate_reasons": []},
+    )
+
+    def _raise_key_error(**kwargs):
+        raise KeyError("segment_id")
+
+    monkeypatch.setattr(late_phases, "build_segment_result_records", _raise_key_error)
+
+    deps = _RecordingDependencies(artifact_writer=_real_primary_artifact_writer(tmp_path))
+    session_state = make_session_state()
+    monkeypatch.setattr(processing_runtime.st, "session_state", session_state)
+    emitters = _apply_to_session_state_emitters()
+
+    result = _run_finalize(
+        context=_make_context(),
+        dependencies=deps,
+        emitters=emitters,
+        state=_make_state(),
+        docx_phase=_make_docx_phase(gate_input),
+    )
+
+    # OBSERVABLE 1 — the run is a success, not a crash.
+    assert result == "succeeded"
+
+    # OBSERVABLE 2 — the user-facing result files are on disk and non-empty.
+    assert (tmp_path / "report.result.md").read_text(encoding="utf-8").strip()
+    assert (tmp_path / "report.result.docx").read_bytes()
+
+    # OBSERVABLE 3 — the delivered result is still renderable/downloadable from state.
+    monkeypatch.setattr(processing_runtime, "get_latest_source_name", lambda: "report.docx")
+    monkeypatch.setattr(processing_runtime, "get_latest_source_token", lambda: "source-main")
+    bundle = processing_runtime.get_current_result_bundle()
+    assert bundle is not None
+    assert bundle["docx_bytes"] == b"final-docx"
+    assert bundle["delivery_disposition"] == {"status": "accepted"}
+    assert session_state["latest_delivery_disposition"] == {"status": "accepted"}
+
+    # OBSERVABLE 4 — the terminal log is the fully persisted success, and BOTH secondary
+    # failures were reported as their own WARNINGs instead of killing the run.
+    assert "processing_completed" in _events(deps)
+    assert "processing_completed_unpersisted" not in _events(deps)
+    diagnostics_level, diagnostics_ctx = _event(deps, "reader_cleanup_diagnostics_save_failed")
+    assert diagnostics_level == logging.WARNING
+    assert diagnostics_ctx["error_type"] == "TypeError"
+    records_level, records_ctx = _event(deps, "segment_result_records_build_failed")
+    assert records_level == logging.WARNING
+    assert records_ctx["error_type"] == "KeyError"
+
+    # OBSERVABLE 5 — no user-facing "result files were not saved" notice.
+    assert not [
+        call
+        for call in emitters.state_calls
+        if "сохранить файлы результата"
+        in str(_state_mapping_value(call, "latest_result_notice", "message") or "")
+    ]
+
+
+def test_finalize_non_oserror_in_registry_write_keeps_delivered_result(monkeypatch, tmp_path):
+    """The registry writer is a pluggable dependency: a tenant implementation may fail with
+    anything (``TypeError`` on a bad record shape, ``ValueError``, a driver error). None of
+    those may cost the user an already delivered result."""
+
+    gate_input = "Чистый переведённый абзац."
+    cleanup = _cleanup_result(markdown=gate_input, docx_bytes=b"final-docx")
+    _install_stubs(
+        monkeypatch,
+        gate_input_markdown=gate_input,
+        cleanup_result=cleanup,
+        report_fn=lambda **kwargs: {"quality_status": "pass", "gate_reasons": []},
+    )
+    monkeypatch.setattr(
+        late_phases, "build_segment_result_records", lambda **k: [{"segment_id": "seg_0001"}]
+    )
+
+    deps = _RecordingDependencies(artifact_writer=_real_primary_artifact_writer(tmp_path))
+
+    def _raise_type_error(*, records):
+        raise TypeError("registry record is not serialisable")
+
+    deps.write_segment_result_registry = _raise_type_error  # type: ignore[method-assign]
+    emitters = _RecordingEmitters()
+
+    result = _run_finalize(
+        context=_make_context(),
+        dependencies=deps,
+        emitters=emitters,
+        state=_make_state(),
+        docx_phase=_make_docx_phase(gate_input),
+    )
+
+    assert result == "succeeded"
+    assert (tmp_path / "report.result.docx").read_bytes()
+    assert "processing_completed" in _events(deps)
+    assert "processing_completed_unpersisted" not in _events(deps)
+    level, ctx = _event(deps, "segment_result_registry_save_failed")
+    assert level == logging.WARNING
+    assert ctx["error_type"] == "TypeError"
+
+
+def test_finalize_post_delivery_secondary_guard_does_not_swallow_cooperative_stop(
+    monkeypatch,
+    tmp_path,
+):
+    """``LatePhaseStopped`` is the cooperative-cancellation signal and derives from
+    ``BaseException`` on purpose: the broadened post-delivery ``except Exception`` guards
+    must let it through instead of downgrading a cancellation to an advisory WARNING."""
+
+    gate_input = "Чистый переведённый абзац."
+    cleanup = _cleanup_result(markdown=gate_input, docx_bytes=b"final-docx")
+    _install_stubs(
+        monkeypatch,
+        gate_input_markdown=gate_input,
+        cleanup_result=cleanup,
+        report_fn=lambda **kwargs: {"quality_status": "pass", "gate_reasons": []},
+    )
+
+    def _raise_stopped(**kwargs):
+        raise late_phases.LatePhaseStopped()
+
+    monkeypatch.setattr(late_phases, "build_segment_result_records", _raise_stopped)
+
+    deps = _RecordingDependencies(artifact_writer=_real_primary_artifact_writer(tmp_path))
+    emitters = _RecordingEmitters()
+
+    with pytest.raises(late_phases.LatePhaseStopped):
+        _run_finalize(
+            context=_make_context(),
+            dependencies=deps,
+            emitters=emitters,
+            state=_make_state(),
+            docx_phase=_make_docx_phase(gate_input),
+        )
+
+    assert "post_delivery_secondary_step_failed" not in _events(deps)
+    assert "segment_result_records_build_failed" not in _events(deps)

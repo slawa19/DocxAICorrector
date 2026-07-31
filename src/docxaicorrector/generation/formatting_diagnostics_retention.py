@@ -30,6 +30,52 @@ def _safe_filename_component(value: str) -> str:
     return normalized[:64]
 
 
+DIAGNOSTICS_IDENTITY_MISSING_EVENT = "formatting_diagnostics_identity_missing"
+
+
+def blank_ownership_identity_fields(*, run_id: str | None, source_token: str | None) -> list[str]:
+    """Name the ownership identities that are absent/blank, in a stable order."""
+    return [
+        field_name
+        for field_name, value in (("run_id", run_id), ("source_token", source_token))
+        if not str(value or "").strip()
+    ]
+
+
+def resolve_owned_diagnostics_scope(
+    *,
+    stage: str,
+    run_id: str | None,
+    source_token: str | None,
+    artifact_kind: str,
+) -> Literal["live", "offline"]:
+    """Pick the ownership scope for a diagnostics artifact, LOUDLY on a downgrade.
+
+    Round-11 F1 made a blank identity fall back to ``offline`` so the artifact is still
+    retained for explicit replay instead of being destroyed by the writer's fail-open.
+    That silenced the ONLY signal of the failure: an offline artifact is invisible to
+    ``collect_owned_formatting_diagnostics``, so the run's quality report is never
+    rebuilt from it and the canonical gate then scores the MISSING evidence as a clean
+    zero. Keep the retention, but never let the downgrade pass unannounced.
+    """
+    missing_identity_fields = blank_ownership_identity_fields(run_id=run_id, source_token=source_token)
+    if not missing_identity_fields:
+        return "live"
+    log_event(
+        logging.WARNING,
+        DIAGNOSTICS_IDENTITY_MISSING_EVENT,
+        "Run identity incomplete: diagnostics artifact downgraded to offline scope and "
+        "will NOT be collected back into this run's quality report.",
+        stage=stage,
+        artifact_kind=artifact_kind,
+        missing_identity_fields=missing_identity_fields,
+        run_id=str(run_id or ""),
+        source_token=str(source_token or ""),
+        downgraded_scope="offline",
+    )
+    return "offline"
+
+
 def collect_owned_formatting_diagnostics(
     *,
     run_id: str,

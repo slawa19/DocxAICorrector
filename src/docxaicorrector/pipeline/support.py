@@ -3,7 +3,10 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
-from docxaicorrector.generation.formatting_diagnostics_retention import write_formatting_diagnostics_artifact
+from docxaicorrector.generation.formatting_diagnostics_retention import (
+    resolve_owned_diagnostics_scope,
+    write_formatting_diagnostics_artifact,
+)
 
 
 def resolve_system_prompt(
@@ -131,12 +134,22 @@ def write_marker_diagnostics_artifact(
     if isinstance(leading_text_preview, str) and leading_text_preview:
         diagnostics["leading_text_preview"] = leading_text_preview[:400]
 
+    # Round-12: a hardcoded scope="live" made the writer raise on a blank identity, so the
+    # marker-failure evidence — the debugging record of the exact block that just failed —
+    # was lost ENTIRELY at the moment it mattered most. Retain it under offline ownership
+    # instead, and announce the downgrade like the formatting-diagnostics path does.
+    scope = resolve_owned_diagnostics_scope(
+        stage=stage,
+        run_id=run_id,
+        source_token=source_token,
+        artifact_kind="marker_diagnostics",
+    )
     return write_formatting_diagnostics_artifact(
         stage=stage,
         filename_prefix=f"marker_block_{stage}_{block_index:03d}",
         diagnostics_dir=diagnostics_dir,
         diagnostics=diagnostics,
-        scope="live",
+        scope=scope,
         run_id=run_id,
         source_token=source_token,
     )

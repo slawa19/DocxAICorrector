@@ -274,6 +274,13 @@ def _build_extraction_checks(document_profile: DocumentProfile, metrics: Mapping
     return checks
 
 
+def _as_string_list(metrics: Mapping[str, object], key: str) -> list[str]:
+    value = metrics.get(key)
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
+        return []
+    return [str(item) for item in value if str(item).strip()]
+
+
 def _build_structural_checks(
     *,
     document_profile: DocumentProfile,
@@ -317,6 +324,22 @@ def _build_structural_checks(
             "passed": _as_int(metrics, "formatting_diagnostics_count") <= document_profile.max_formatting_diagnostics,
             "actual": metrics["formatting_diagnostics_count"],
             "allowed": document_profile.max_formatting_diagnostics,
+        },
+        # Anti-fail-open companion to the threshold above. ``formatting_diagnostics_count``
+        # scores a document, and "0" scores perfectly -- including when the 0 means the run
+        # never managed to COLLECT its diagnostics, so losing the evidence produced the best
+        # possible score. This check closes that hole from the only side that can tell the
+        # two zeros apart: the run's own ``processing_run_identity_missing`` announcement
+        # (pipeline/setup.py), surfaced as ``formatting_diagnostics_identity_status``. A
+        # clean document and a stub/replay harness never emit it, so they stay PASSED; only
+        # a run that provably could not claim its own artifacts fails here.
+        {
+            "name": "formatting_diagnostics_evidence_not_lost",
+            "passed": str(metrics.get("formatting_diagnostics_identity_status") or "complete").strip().lower()
+            != "missing",
+            "identity_status": metrics.get("formatting_diagnostics_identity_status", "complete"),
+            "missing_identity_fields": _as_string_list(metrics, "formatting_diagnostics_missing_identity_fields"),
+            "formatting_diagnostics_count": metrics.get("formatting_diagnostics_count"),
         },
         # spec 039 (A) / Constitution VII: the unmapped-source/-target coverage axes are
         # REVIEW DATA, not a verdict gate. ``passed`` is hardcoded True so the roll-up

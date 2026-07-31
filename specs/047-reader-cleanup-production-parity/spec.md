@@ -4,7 +4,10 @@
 
 **Created**: 2026-07-20
 
-**Status**: Draft
+**Status**: **IMPLEMENTED (2026-07-20) — merged to `main` via PR #6 on 2026-07-31.** Code and
+anti-regression tests landed on `fix/round10-specs-044-048-remediation`; round-11 chain review
+(`c5cdab0`, `2d9d8be`) and a round-12 verification pass reviewed the result before merge. Verify
+with `git log --oneline main --grep="spec 047"` rather than trusting this line.
 
 **Input**: User description: "Activate the existing reader-cleanup contract consistently in the production UI, make its final evidence, cancellation, advisory failures, and narration output agree with the delivered result, while preserving the disabled-by-default posture."
 

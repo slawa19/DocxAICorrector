@@ -4,7 +4,10 @@
 
 **Created**: 2026-07-20
 
-**Status**: Draft
+**Status**: **IMPLEMENTED (2026-07-20) — merged to `main` via PR #6 on 2026-07-31.** Code and
+anti-regression tests landed on `fix/round10-specs-044-048-remediation`; round-11 chain review
+(`c5cdab0`, `2d9d8be`) and a round-12 verification pass reviewed the result before merge. Verify
+with `git log --oneline main --grep="spec 046"` rather than trusting this line.
 
 **Input**: User description: "Remove length-only promotion of very short body paragraphs to headings. Preserve only universal, source-backed heading evidence; if the source has no structural or form signal, do not repair it."
 

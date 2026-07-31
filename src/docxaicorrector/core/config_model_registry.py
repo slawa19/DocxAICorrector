@@ -306,11 +306,17 @@ def emit_legacy_model_config_warnings(
     config_data: Mapping[str, object],
     model_sources: Mapping[str, str],
     *,
-    legacy_toml_model_keys: tuple[str, ...],
+    legacy_toml_model_keys: Mapping[str, str],
+    legacy_env_model_keys: Mapping[str, str],
     emitted_model_registry_log_keys: set[str],
     log_event_fn: Any,
 ) -> None:
-    for legacy_key in legacy_toml_model_keys:
+    # ``legacy_*_model_keys`` map a removed key onto its canonical replacement. The
+    # replacement is spelled out per key instead of derived from the key name: role
+    # sections are named ``models.image_validation`` / ``models.image_reconstruction``,
+    # which a naive ``removesuffix("_model")`` would render as non-existent
+    # ``models.validation`` / ``models.reconstruction`` hints.
+    for legacy_key, replacement in legacy_toml_model_keys.items():
         if legacy_key in config_data:
             dedupe_key = f"legacy-key:{legacy_key}"
             if dedupe_key in emitted_model_registry_log_keys:
@@ -321,8 +327,26 @@ def emit_legacy_model_config_warnings(
                 "legacy_model_config_key_detected",
                 "Обнаружен legacy model key в config.toml; он больше не читается — используйте секцию [models.*].",
                 legacy_key=legacy_key,
-                replacement="models.text" if legacy_key in {"default_model", "model_options"} else f"models.{legacy_key.removesuffix('_model')}",
+                replacement=replacement,
             )
+
+    # Removed legacy ENV aliases are no longer read by any resolver. Without this scan
+    # an operator whose .env still pins DOCX_AI_DEFAULT_MODEL silently runs on a
+    # different model (different price/quality) with no diagnostic line at all.
+    for legacy_env_name, replacement_env_name in legacy_env_model_keys.items():
+        if not os.getenv(legacy_env_name, "").strip():
+            continue
+        dedupe_key = f"legacy-env:{legacy_env_name}"
+        if dedupe_key in emitted_model_registry_log_keys:
+            continue
+        emitted_model_registry_log_keys.add(dedupe_key)
+        log_event_fn(
+            logging.WARNING,
+            "legacy_model_config_key_detected",
+            "Обнаружена legacy model env-переменная; она больше не читается — используйте canonical DOCX_AI_MODELS_* переменную.",
+            legacy_key=legacy_env_name,
+            replacement=replacement_env_name,
+        )
 
     structure_recognition_config = config_data.get("structure_recognition")
     if isinstance(structure_recognition_config, Mapping) and "model" in structure_recognition_config:

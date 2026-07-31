@@ -20,6 +20,22 @@ from tests.conftest import (
 )
 
 
+@pytest.fixture(autouse=True)
+def reset_app_config_cache_between_tests():
+    """Isolate the process-wide load_app_config() cache for every test in this module.
+
+    The cache fingerprint covers CONFIG_PATH/ENV_PATH plus the os.environ snapshot only.
+    Dozens of tests here share the same ``__missing_config__.toml`` path, so any two of
+    them with an identical env snapshot can serve each other a cached AppConfig — and a
+    cached hit also silently ignores monkeypatched module attributes that are not part of
+    the fingerprint (``log_event``, migration defaults, ...). Resetting on both sides of
+    the test keeps this module order-independent in either direction.
+    """
+    config.reset_app_config_cache()
+    yield
+    config.reset_app_config_cache()
+
+
 def test_constants_paths_resolve_to_repo_root() -> None:
     repo_root = Path(__file__).resolve().parents[1]
     resources = repo_root / "src" / "docxaicorrector" / "resources"
@@ -1010,12 +1026,33 @@ def test_load_app_config_emits_legacy_model_warnings_only_once(monkeypatch, tmp_
     log_calls = []
     monkeypatch.setattr(config, "log_event", lambda level, event, message, **context: log_calls.append((event, context)))
 
-    config.load_app_config()
+    # The process-wide load_app_config() cache would otherwise short-circuit the second
+    # call and make this test vacuous (the dedupe guard would never be exercised), so the
+    # cache is dropped between the two loads and the loader body really runs twice.
+    config.reset_app_config_cache()
+    first_app_config = config.load_app_config()
     first_call_count = len(log_calls)
-    config.load_app_config()
+    first_legacy_keys = sorted(
+        context["legacy_key"] for event, context in log_calls if event == "legacy_model_config_key_detected"
+    )
 
+    config.reset_app_config_cache()
+    second_app_config = config.load_app_config()
+
+    # Non-vacuity guard: a cached return would hand back the very same AppConfig instance.
+    assert second_app_config is not first_app_config
     assert first_call_count > 0
+    assert first_legacy_keys == [
+        "default_model",
+        "model_options",
+        "structure_recognition.model",
+        "validation_model",
+    ]
     assert len(log_calls) == first_call_count
+    assert (
+        sorted(context["legacy_key"] for event, context in log_calls if event == "legacy_model_config_key_detected")
+        == first_legacy_keys
+    )
 
 
 def test_parse_csv_env_rejects_empty_effective_list(monkeypatch):
@@ -1713,24 +1750,127 @@ def test_load_app_config_applies_reader_verifier_model_env_override(monkeypatch,
     assert app_config["reader_verifier_model"] == "gpt-5-mini"
 
 
-def test_load_app_config_ignores_removed_legacy_model_env_aliases(monkeypatch, tmp_path):
+def test_load_app_config_warns_about_removed_legacy_model_env_aliases(monkeypatch, tmp_path):
     cfg = tmp_path / "config.toml"
     cfg.write_text("", encoding="utf-8")
     monkeypatch.setattr(config, "CONFIG_PATH", cfg)
+    monkeypatch.setattr(config, "_EMITTED_MODEL_REGISTRY_LOG_KEYS", set())
     monkeypatch.setenv("DOCX_AI_DEFAULT_MODEL", "legacy-model")
     monkeypatch.setenv("DOCX_AI_MODEL_OPTIONS", "legacy-model,legacy-alt")
     monkeypatch.setenv("DOCX_AI_VALIDATION_MODEL", "legacy-validation")
     monkeypatch.setenv("DOCX_AI_RECONSTRUCTION_MODEL", "legacy-reconstruction")
+    log_calls = []
+    monkeypatch.setattr(config, "log_event", lambda level, event, message, **context: log_calls.append((event, context)))
     config.reset_app_config_cache()
 
     app_config = config.load_app_config()
     models = cast(config.ModelRegistry, app_config["models"])
 
+    # The removed aliases still have no effect on the resolved registry...
     assert models.text.default == "gpt-5.4-mini"
     assert "legacy-model" not in models.text.options
     assert models.image_analysis == "gpt-5.4-mini"
     assert models.image_validation == "gpt-5.4-mini"
     assert models.image_reconstruction == "gpt-5.4-mini"
+    # ...but the operator is told, per variable, that the value was dropped and what to use.
+    legacy_env_warnings = {
+        context["legacy_key"]: context["replacement"]
+        for event, context in log_calls
+        if event == "legacy_model_config_key_detected"
+    }
+    assert legacy_env_warnings == {
+        "DOCX_AI_DEFAULT_MODEL": "DOCX_AI_MODELS_TEXT_DEFAULT",
+        "DOCX_AI_MODEL_OPTIONS": "DOCX_AI_MODELS_TEXT_OPTIONS",
+        "DOCX_AI_VALIDATION_MODEL": "DOCX_AI_MODELS_IMAGE_VALIDATION_DEFAULT",
+        "DOCX_AI_RECONSTRUCTION_MODEL": "DOCX_AI_MODELS_IMAGE_RECONSTRUCTION_DEFAULT",
+    }
+
+
+@pytest.mark.parametrize(
+    ("canonical_env_name", "env_value", "assert_effect"),
+    [
+        ("DOCX_AI_MODELS_TEXT_DEFAULT", "gpt-5-mini", lambda models: models.text.default == "gpt-5-mini"),
+        (
+            "DOCX_AI_MODELS_TEXT_OPTIONS",
+            f"gpt-5-mini,{TEST_TEXT_MODEL_DEFAULT}",
+            # TEST_TEXT_MODEL_DEFAULT is absent from the migration defaults, so its
+            # presence can only come from the env override being read.
+            lambda models: TEST_TEXT_MODEL_DEFAULT in models.text.options,
+        ),
+        (
+            "DOCX_AI_MODELS_IMAGE_VALIDATION_DEFAULT",
+            "gpt-5-mini",
+            lambda models: models.image_validation == "gpt-5-mini",
+        ),
+        (
+            "DOCX_AI_MODELS_IMAGE_RECONSTRUCTION_DEFAULT",
+            "gpt-5-mini",
+            lambda models: models.image_reconstruction == "gpt-5-mini",
+        ),
+    ],
+)
+def test_legacy_model_env_warning_replacements_are_env_names_that_really_work(
+    monkeypatch, tmp_path, canonical_env_name, env_value, assert_effect
+):
+    # Every replacement advertised by the legacy-env warning must be a variable the
+    # resolver actually reads, otherwise the advice sends the operator nowhere.
+    assert canonical_env_name in config._LEGACY_ENV_MODEL_KEY_REPLACEMENTS.values()
+    cfg = tmp_path / "config.toml"
+    cfg.write_text("", encoding="utf-8")
+    monkeypatch.setattr(config, "CONFIG_PATH", cfg)
+    monkeypatch.setenv(canonical_env_name, env_value)
+    config.reset_app_config_cache()
+
+    models = cast(config.ModelRegistry, config.load_app_config()["models"])
+
+    assert assert_effect(models)
+
+
+def test_legacy_model_key_warning_replacements_point_at_existing_registry_roles(monkeypatch, tmp_path):
+    cfg = tmp_path / "config.toml"
+    cfg.write_text(
+        'default_model = "legacy-text"\n'
+        'model_options = ["legacy-text", "legacy-alt"]\n'
+        'validation_model = "legacy-validation"\n'
+        'reconstruction_model = "legacy-reconstruction"\n'
+        '[structure_recognition]\nmodel = "legacy-structure"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(config, "CONFIG_PATH", cfg)
+    monkeypatch.setattr(config, "_EMITTED_MODEL_REGISTRY_LOG_KEYS", set())
+    log_calls = []
+    monkeypatch.setattr(config, "log_event", lambda level, event, message, **context: log_calls.append((event, context)))
+    config.reset_app_config_cache()
+
+    config.load_app_config()
+
+    legacy_key_warnings = {
+        context["legacy_key"]: context["replacement"]
+        for event, context in log_calls
+        if event == "legacy_model_config_key_detected"
+    }
+    # Every advertised replacement must address a role/field that really exists on the
+    # resolved registry (models.validation / models.reconstruction never existed).
+    registry = cast(config.ModelRegistry, config.load_app_config()["models"])
+    for legacy_key, replacement in legacy_key_warnings.items():
+        section, _, role_path = replacement.partition(".")
+        role_name, _, attribute_name = role_path.partition(".")
+        assert section == "models", f"{legacy_key} -> {replacement}"
+        assert hasattr(registry, role_name), f"{legacy_key} -> {replacement}: no such registry role"
+        role_value = getattr(registry, role_name)
+        if isinstance(role_value, config.TextModelConfig):
+            assert hasattr(role_value, attribute_name), f"{legacy_key} -> {replacement}: no such text field"
+        else:
+            assert isinstance(role_value, str) and role_value
+            assert attribute_name == "default", f"{legacy_key} -> {replacement}: no such role field"
+
+    assert legacy_key_warnings == {
+        "default_model": "models.text.default",
+        "model_options": "models.text.options",
+        "validation_model": "models.image_validation.default",
+        "reconstruction_model": "models.image_reconstruction.default",
+        "structure_recognition.model": "models.structure_recognition.default",
+    }
 
 
 def test_load_app_config_ignores_removed_legacy_toml_model_keys(monkeypatch, tmp_path):

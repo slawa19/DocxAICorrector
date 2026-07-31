@@ -18,6 +18,7 @@ from docx.text.paragraph import Paragraph
 from docxaicorrector.document.extraction import IMAGE_PLACEHOLDER_PATTERN
 from docxaicorrector.generation.formatting_diagnostics_retention import (
     get_formatting_diagnostics_dir,
+    resolve_owned_diagnostics_scope,
     write_formatting_diagnostics_artifact,
 )
 # The mapper cluster lives in formatting_mapping (spec 033, Step 1). These names are
@@ -160,13 +161,21 @@ def _write_formatting_diagnostics_artifact(
     # Round-11 F1: live ownership needs BOTH identities present and non-blank. A blank
     # identity ("" is not None) used to select "live", which then raised inside the
     # writer and fail-opened WITHOUT writing any artifact at all. Fall back to "offline"
-    # so the diagnostic is still retained for explicit replay instead of destroyed.
-    has_live_identity = bool((run_id or "").strip()) and bool((source_token or "").strip())
+    # so the diagnostic is still retained for explicit replay instead of destroyed —
+    # but the downgrade is announced (round-12): a silently-offline artifact is
+    # invisible to the owning run and the canonical gate reads the missing evidence as
+    # a perfect score.
+    scope = resolve_owned_diagnostics_scope(
+        stage=stage,
+        run_id=run_id,
+        source_token=source_token,
+        artifact_kind="formatting_diagnostics",
+    )
     return write_formatting_diagnostics_artifact(
         stage=stage,
         diagnostics=diagnostics,
         diagnostics_dir=FORMATTING_DIAGNOSTICS_DIR,
-        scope="live" if has_live_identity else "offline",
+        scope=scope,
         run_id=run_id,
         source_token=source_token,
     )

@@ -36,6 +36,7 @@ from docxaicorrector.validation.profiles import (
     load_validation_registry,
     resolve_runtime_resolution,
 )
+from docxaicorrector.pipeline.setup import PROCESSING_RUN_IDENTITY_MISSING_EVENT
 from docxaicorrector.processing.preparation import flatten_structure_repair_metrics
 from docxaicorrector.validation.structural_metrics_common import (  # noqa: F401
     _as_float,
@@ -422,6 +423,7 @@ def run_structural_passthrough_validation(
             validation_execution_mode="passthrough",
         )
 
+    run_missing_identity_fields = _extract_run_identity_missing_fields(event_log)
     formatting_paths = _extract_run_formatting_diagnostics_paths(event_log)
     formatting_diagnostics = _load_formatting_diagnostics_payloads(formatting_paths)
     canonical_formatting_diagnostics = _select_canonical_formatting_diagnostics_payload(formatting_diagnostics)
@@ -484,6 +486,15 @@ def run_structural_passthrough_validation(
             "output_image_count": len(output_image_assets),
             "output_table_count": sum(1 for paragraph in output_paragraphs if paragraph.role == "table"),
             "formatting_diagnostics_count": len(canonical_formatting_payloads),
+            # Disambiguates a zero diagnostics count: "clean run" vs "run could not claim
+            # its own evidence". Sourced from the pipeline's OWN announcement, never
+            # inferred from the empty count itself.
+            "formatting_diagnostics_identity_status": (
+                FORMATTING_DIAGNOSTICS_IDENTITY_STATUS_MISSING
+                if run_missing_identity_fields
+                else FORMATTING_DIAGNOSTICS_IDENTITY_STATUS_COMPLETE
+            ),
+            "formatting_diagnostics_missing_identity_fields": list(run_missing_identity_fields),
             "max_unmapped_source_paragraphs": _max_payload_length(canonical_formatting_payloads, "unmapped_source_ids"),
             "max_unmapped_target_paragraphs": _max_payload_length(canonical_formatting_payloads, "unmapped_target_indexes"),
             "accepted_merged_sources_count": _count_payload_items(canonical_formatting_payloads, "accepted_merged_sources"),
@@ -910,6 +921,37 @@ def _build_validation_processing_service(event_log: list[dict[str, object]]):
         image_model_call_budget_cls=object,
         image_model_call_budget_exceeded_cls=RuntimeError,
     )
+
+
+FORMATTING_DIAGNOSTICS_IDENTITY_STATUS_COMPLETE = "complete"
+FORMATTING_DIAGNOSTICS_IDENTITY_STATUS_MISSING = "missing"
+
+
+def _extract_run_identity_missing_fields(
+    event_log: Sequence[Mapping[str, object]],
+) -> list[str]:
+    """Report the ownership identities the RUN ITSELF announced it was missing.
+
+    ``formatting_diagnostics_count == 0`` is ambiguous on its own: it means either "the
+    document produced no diagnostics" or "the diagnostics exist but this run could not
+    claim them". Only the pipeline knows which, and it says so explicitly at the
+    normalization site (``pipeline/setup.py`` emits
+    ``processing_run_identity_missing`` through the injected event logger). Reading that
+    event -- rather than inferring loss from an empty result -- is what keeps this narrow:
+    a genuinely clean run and a stubbed run both stay silent, so neither is ever
+    mistaken for evidence loss.
+    """
+    for event in reversed(list(event_log)):
+        if str(event.get("event_id") or "") != PROCESSING_RUN_IDENTITY_MISSING_EVENT:
+            continue
+        context = event.get("context")
+        fields = context.get("missing_identity_fields") if isinstance(context, Mapping) else None
+        if isinstance(fields, Sequence) and not isinstance(fields, (str, bytes, bytearray)):
+            normalized = [str(field) for field in fields if str(field).strip()]
+            if normalized:
+                return normalized
+        return ["unknown"]
+    return []
 
 
 def _extract_run_formatting_diagnostics_paths(

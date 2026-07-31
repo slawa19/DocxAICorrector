@@ -1346,8 +1346,11 @@ def test_get_current_result_bundle_preserves_typed_persistence_notice_without_le
     result = processing_runtime.get_current_result_bundle()
 
     assert result is not None
-    assert result["result_notices"] == notices
-    assert result["result_notices"].count(notices[-1]) == 1
+    # get_current_result_bundle() returns dict[str, object]; narrow before using list APIs.
+    result_notices = result["result_notices"]
+    assert isinstance(result_notices, list)
+    assert result_notices == notices
+    assert result_notices.count(notices[-1]) == 1
     assert result["quality_warning"] == quality_warning
     assert result["delivery_disposition"] == {"status": "accepted_with_advisory"}
 

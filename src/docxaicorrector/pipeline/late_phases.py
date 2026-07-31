@@ -587,6 +587,24 @@ def _verify_primary_result_artifacts_or_raise(result_artifact_paths: Mapping[str
             raise OSError(f"primary result artifact '{artifact_key}' is empty on disk: {raw_path}")
 
 
+def _log_post_delivery_secondary_failure(*, dependencies: Any, filename: str, exc: BaseException) -> None:
+    """Round-12 F1 backstop: report a failed post-delivery secondary step WITHOUT ever
+    re-raising. The delivered result is already in session state and on disk; letting an
+    exception out of here would reach the worker crash-handler, which clears the delivery
+    state and turns a finished run into a restartable error."""
+    try:
+        dependencies.log_event(
+            logging.WARNING,
+            "post_delivery_secondary_step_failed",
+            "Вторичный шаг после доставки результата завершился ошибкой; итоговый результат доставлен.",
+            filename=filename,
+            error_type=type(exc).__name__,
+            error_message=str(exc),
+        )
+    except Exception:  # pragma: no cover - logging itself must never break delivery
+        pass
+
+
 def finalize_processing_success(
     *,
     context: Any,
@@ -1274,74 +1292,111 @@ def finalize_processing_success(
             filename=context.uploaded_filename,
             artifact_paths=result_artifact_paths,
         )
-        # F12: reader-cleanup diagnostics are a SECONDARY artifact. A save failure
-        # here must NOT claim the delivered result was not saved — it logs its own
-        # WARNING and the primary result stays reported as persisted.
-        if reader_cleanup_report is not None:
-            try:
-                result_artifact_paths.update(
-                    write_reader_cleanup_diagnostics(
-                        cleaned_artifact_paths=result_artifact_paths,
-                        raw_markdown=reader_cleanup_raw_markdown or gate_input_markdown,
-                        report_payload=reader_cleanup_report,
+        # Round-12 F1: EVERYTHING below this line runs AFTER the result was delivered —
+        # the bytes are in session state and ``.result.md``/``.result.docx`` are verified
+        # on disk and announced by the canonical ``ui_result_artifacts_saved`` event above.
+        # Any exception escaping from here reaches the worker crash-handler in
+        # ``processing/processing_service.run_processing_worker``, which clears
+        # ``latest_docx_bytes``/``latest_delivery_disposition`` (Round-11 F3) and thereby
+        # HIDES an already delivered result behind a restartable error — the user would be
+        # asked to pay for a full LLM re-run on top of a finished document. The secondary
+        # writes are advisory diagnostics / resume caches, so each of them catches
+        # ``Exception`` (not just ``OSError``: ``write_reader_cleanup_diagnostics`` can raise
+        # ``KeyError`` on a missing ``markdown_path`` and ``TypeError`` from
+        # ``json.dumps`` on a non-serialisable report) and logs its own WARNING. The outer
+        # guard is the backstop for every remaining statement in this block, including the
+        # log calls themselves. ``LatePhaseStopped`` derives from ``BaseException`` by
+        # design, so cooperative cancellation still propagates through all of these handlers.
+        try:
+            # F12: reader-cleanup diagnostics are a SECONDARY artifact. A save failure
+            # here must NOT claim the delivered result was not saved — it logs its own
+            # WARNING and the primary result stays reported as persisted.
+            if reader_cleanup_report is not None:
+                try:
+                    result_artifact_paths.update(
+                        write_reader_cleanup_diagnostics(
+                            cleaned_artifact_paths=result_artifact_paths,
+                            raw_markdown=reader_cleanup_raw_markdown or gate_input_markdown,
+                            report_payload=reader_cleanup_report,
+                        )
                     )
-                )
-            except OSError as exc:
-                dependencies.log_event(
-                    logging.WARNING,
-                    "reader_cleanup_diagnostics_save_failed",
-                    "Не удалось сохранить reader cleanup diagnostics; итоговый результат доставлен.",
-                    filename=context.uploaded_filename,
-                    error_message=str(exc),
-                )
-        segment_result_records = build_segment_result_records(
-            source_name=context.uploaded_filename,
-            prepared_source_key=str(getattr(context, "prepared_source_key", "") or ""),
-            structure_fingerprint=str(getattr(context, "structure_fingerprint", "") or ""),
-            plan=reassembly_plan,
-            source_paragraphs=cast(Sequence[object] | None, getattr(context, "source_paragraphs", None)),
-            assembly_entries=cast(Sequence[object], docx_phase.get("assembly_entries") or assembly_result.entries),
-            result_artifact_paths=result_artifact_paths,
-        )
-        if segment_result_records:
+                except Exception as exc:
+                    dependencies.log_event(
+                        logging.WARNING,
+                        "reader_cleanup_diagnostics_save_failed",
+                        "Не удалось сохранить reader cleanup diagnostics; итоговый результат доставлен.",
+                        filename=context.uploaded_filename,
+                        error_type=type(exc).__name__,
+                        error_message=str(exc),
+                    )
+            segment_result_records: list[dict[str, object]] = []
             try:
-                segment_registry_paths = dict(
-                    dependencies.write_segment_result_registry(records=segment_result_records)
+                segment_result_records = build_segment_result_records(
+                    source_name=context.uploaded_filename,
+                    prepared_source_key=str(getattr(context, "prepared_source_key", "") or ""),
+                    structure_fingerprint=str(getattr(context, "structure_fingerprint", "") or ""),
+                    plan=reassembly_plan,
+                    source_paragraphs=cast(Sequence[object] | None, getattr(context, "source_paragraphs", None)),
+                    assembly_entries=cast(Sequence[object], docx_phase.get("assembly_entries") or assembly_result.entries),
+                    result_artifact_paths=result_artifact_paths,
                 )
-            except OSError as exc:
-                # F12: the segment-result registry is a resume/reuse cache written
-                # AFTER the primary result files. Its failure must NOT flip the
-                # terminal state to "unpersisted" — the delivered result reached
-                # disk. Log a DISTINCT WARNING instead.
+            except Exception as exc:
+                # Building the resume/reuse records is pure bookkeeping over already
+                # delivered artifacts; a defect there costs the resume cache, not the run.
                 dependencies.log_event(
                     logging.WARNING,
-                    "segment_result_registry_save_failed",
-                    "Не удалось сохранить persisted segment result registry; итоговый результат доставлен.",
+                    "segment_result_records_build_failed",
+                    "Не удалось построить записи segment result registry; итоговый результат доставлен.",
                     filename=context.uploaded_filename,
+                    error_type=type(exc).__name__,
                     error_message=str(exc),
                 )
-            else:
+            if segment_result_records:
+                try:
+                    segment_registry_paths = dict(
+                        dependencies.write_segment_result_registry(records=segment_result_records)
+                    )
+                except Exception as exc:
+                    # F12: the segment-result registry is a resume/reuse cache written
+                    # AFTER the primary result files. Its failure must NOT flip the
+                    # terminal state to "unpersisted" — the delivered result reached
+                    # disk. Log a DISTINCT WARNING instead.
+                    dependencies.log_event(
+                        logging.WARNING,
+                        "segment_result_registry_save_failed",
+                        "Не удалось сохранить persisted segment result registry; итоговый результат доставлен.",
+                        filename=context.uploaded_filename,
+                        error_type=type(exc).__name__,
+                        error_message=str(exc),
+                    )
+                else:
+                    dependencies.log_event(
+                        logging.INFO,
+                        "segment_result_registry_saved",
+                        "Сохранён persisted segment result registry для итоговой сборки.",
+                        filename=context.uploaded_filename,
+                        segment_count=len(segment_result_records),
+                        artifact_paths=segment_registry_paths,
+                    )
+            if narration_text is not None and "tts_text_path" in result_artifact_paths:
                 dependencies.log_event(
                     logging.INFO,
-                    "segment_result_registry_saved",
-                    "Сохранён persisted segment result registry для итоговой сборки.",
+                    "ui_audiobook_artifact_saved",
+                    "Сохранён итоговый narration artifact для ElevenLabs.",
                     filename=context.uploaded_filename,
-                    segment_count=len(segment_result_records),
-                    artifact_paths=segment_registry_paths,
+                    source_name=context.uploaded_filename,
+                    artifact_paths=result_artifact_paths,
+                    tts_text_path=result_artifact_paths["tts_text_path"],
+                    char_count=len(narration_text),
+                    tag_count=len(_ELEVENLABS_TAG_PATTERN.findall(narration_text)),
+                    excluded_blocks=int(getattr(state, "excluded_narration_block_count", 0) or 0),
+                    mode="standalone" if context.processing_operation == "audiobook" else "postprocess",
                 )
-        if narration_text is not None and "tts_text_path" in result_artifact_paths:
-            dependencies.log_event(
-                logging.INFO,
-                "ui_audiobook_artifact_saved",
-                "Сохранён итоговый narration artifact для ElevenLabs.",
+        except Exception as exc:
+            _log_post_delivery_secondary_failure(
+                dependencies=dependencies,
                 filename=context.uploaded_filename,
-                source_name=context.uploaded_filename,
-                artifact_paths=result_artifact_paths,
-                tts_text_path=result_artifact_paths["tts_text_path"],
-                char_count=len(narration_text),
-                tag_count=len(_ELEVENLABS_TAG_PATTERN.findall(narration_text)),
-                excluded_blocks=int(getattr(state, "excluded_narration_block_count", 0) or 0),
-                mode="standalone" if context.processing_operation == "audiobook" else "postprocess",
+                exc=exc,
             )
     # Round-11 F2: this checkpoint used to sit INSIDE the try, right after the primary
     # artifacts were verified — a stop there returned with fully written .result.md /
@@ -1363,7 +1418,7 @@ def finalize_processing_success(
     # genuinely produced a delivered result, so the "completed" progress frame and the
     # "succeeded" return are unchanged.
     if not primary_artifacts_persisted:
-        persistence_notice = {
+        persistence_notice: dict[str, object] = {
             "kind": "persistence",
             "level": "warning",
             "message_key": "result.primary_artifacts_not_saved",

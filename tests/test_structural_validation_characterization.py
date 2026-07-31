@@ -333,6 +333,117 @@ def test_preserve_source_paragraph_properties_adapter_forwards_run_identity(monk
     assert captured["source_token"] == "token-7"
 
 
+def _identity_metrics(status_fields: list[str] | None) -> dict[str, object]:
+    # A perfectly clean run: zero diagnostics, zero residuals, everything within threshold.
+    metrics: dict[str, object] = {
+        "formatting_diagnostics_count": 0,
+        "max_unmapped_source_paragraphs": 0,
+        "max_unmapped_target_paragraphs": 0,
+        "heading_level_drift": 0,
+        "text_similarity": 0.99,
+        "heading_only_output_detected": False,
+    }
+    if status_fields is None:
+        return metrics
+    metrics["formatting_diagnostics_identity_status"] = "missing"
+    metrics["formatting_diagnostics_missing_identity_fields"] = status_fields
+    return metrics
+
+
+def _structural_checks(metrics: dict[str, object]) -> list[dict[str, object]]:
+    profile = SimpleNamespace(
+        max_formatting_diagnostics=5,
+        max_unmapped_source_paragraphs=5,
+        max_unmapped_target_paragraphs=5,
+        max_heading_level_drift=1,
+        min_text_similarity=0.95,
+        require_numbered_lists_preserved=False,
+        require_nonempty_output=False,
+        forbid_heading_only_collapse=False,
+        require_toc_detected=False,
+        require_pdf_conversion=False,
+        require_no_bullet_headings=False,
+        require_no_toc_body_concat=False,
+        require_translation_domain=None,
+    )
+    return structural._build_structural_checks(
+        document_profile=profile,
+        result="succeeded",
+        metrics=metrics,
+        output_artifacts={"output_docx_openable": True, "output_visible_text_chars": 100},
+    )
+
+
+def _failed_check_names(checks: list[dict[str, object]]) -> list[str]:
+    # Byte-identical to the roll-up in validation/structural.py (_build_validation_result).
+    return [str(check["name"]) for check in checks if not bool(check["passed"])]
+
+
+def _evidence_check(metrics: dict[str, object]) -> dict[str, object]:
+    return next(
+        check
+        for check in _structural_checks(metrics)
+        if check["name"] == "formatting_diagnostics_evidence_not_lost"
+    )
+
+
+def test_formatting_diagnostics_evidence_gate_separates_clean_zero_from_lost_evidence():
+    """Spec: a zero diagnostics count must not score identically whether the document was
+    clean or the run could not claim its own artifacts.
+
+    Before this gate, both produced ``formatting_diagnostics_threshold`` PASSED (0 <= max),
+    so DESTROYING the evidence yielded the perfect score. The discriminator is the run's own
+    ``processing_run_identity_missing`` announcement, so a clean run (no such event) is
+    unaffected -- that asymmetry is what this test pins.
+    """
+
+    clean_checks = _structural_checks(_identity_metrics(None))
+    lost_checks = _structural_checks(_identity_metrics(["run_id"]))
+    clean_zero = _evidence_check(_identity_metrics(None))
+    lost_evidence = _evidence_check(_identity_metrics(["run_id"]))
+
+    assert clean_zero["passed"] is True
+    assert clean_zero["identity_status"] == "complete"
+    assert lost_evidence["passed"] is False
+    assert lost_evidence["missing_identity_fields"] == ["run_id"]
+    # Both sides report the SAME zero count: the verdict difference comes purely from the
+    # identity signal, never from the count.
+    assert clean_zero["formatting_diagnostics_count"] == lost_evidence["formatting_diagnostics_count"] == 0
+    # The threshold gate is blind to the difference -- it passes in BOTH cases. That is the
+    # fail-open being closed here, and the roll-up verdict is what actually diverges.
+    by_name_clean = {check["name"]: check for check in clean_checks}
+    by_name_lost = {check["name"]: check for check in lost_checks}
+    assert by_name_clean["formatting_diagnostics_threshold"]["passed"] is True
+    assert by_name_lost["formatting_diagnostics_threshold"]["passed"] is True
+    assert _failed_check_names(clean_checks) == []
+    assert _failed_check_names(lost_checks) == ["formatting_diagnostics_evidence_not_lost"]
+
+
+def test_run_identity_missing_event_is_read_from_the_run_event_log():
+    """The metric side of the same gate: the status is derived from the pipeline's event
+    log, and silence (stubbed harness / healthy run) is NOT read as loss."""
+
+    assert structural._extract_run_identity_missing_fields([]) == []
+    assert (
+        structural._extract_run_identity_missing_fields(
+            [{"event_id": "formatting_diagnostics_artifacts_detected", "context": {"artifact_paths": ["a.json"]}}]
+        )
+        == []
+    )
+    assert structural._extract_run_identity_missing_fields(
+        [
+            {
+                "event_id": "processing_run_identity_missing",
+                "context": {"missing_identity_fields": ["run_id", "source_token"]},
+            }
+        ]
+    ) == ["run_id", "source_token"]
+    # A malformed context must still be reported as loss, never silently as "complete".
+    assert structural._extract_run_identity_missing_fields(
+        [{"event_id": "processing_run_identity_missing", "context": {}}]
+    ) == ["unknown"]
+
+
 def _diagnostics_payload(stage: str, epoch_ms: int) -> dict[str, object]:
     return {"stage": stage, "generated_at_epoch_ms": epoch_ms, "marker": f"{stage}-{epoch_ms}"}
 
