@@ -94,6 +94,10 @@ OPEN_STATUSES: dict[str, str] = {
     "BLOCKED": "waiting on something",
     "NEEDS DECISION": "waiting on an owner decision",
     "READY": "specified and ready to implement",
+    # Parked by an owner decision, with no date. Still OPEN on purpose: the whole
+    # point of parking it here rather than deleting the spec is that the question
+    # stays visible in docs/WHERE_WE_ARE.md instead of being quietly forgotten.
+    "DEFERRED": "parked by owner decision; keep it visible, do not schedule it",
 }
 
 KNOWN_STATUSES: dict[str, str] = {**CLOSED_STATUSES, **OPEN_STATUSES}
