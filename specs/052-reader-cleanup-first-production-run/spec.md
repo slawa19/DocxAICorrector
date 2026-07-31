@@ -157,12 +157,20 @@ vertical gap asymmetry does (80% versus 2% in the control). ALL-CAPS is an **ant
 times more common in junk than in real headings — so the current prompt's "ALL-CAPS short text may be
 attribution" rule is not merely unlawful, it points the wrong way.
 
-**Consequence for this spec: item 8 below should not be attempted in the first run on a PDF book.**
-Restoring headings during reader cleanup is blocked by the same serializer that blocks the import-stage
-rule — one root cause, two starved consumers. The cheap next step is spec 053's proposed measurement,
-not prompt work here. For the first run, the honest choice is to switch `reclassify_role` off via
-`reader_cleanup_allowed_operations` (`_config.py:70`) rather than run an operation whose only remaining
-basis is the text-shape guessing Constitution VII forbids.
+**Consequence — settled by the owner on 2026-07-31: item 8 is dropped and `reclassify_role` is switched
+off for the run.** Restoring headings during reader cleanup is blocked by the same serializer that
+blocks the import-stage rule — one root cause, two starved consumers — and the owner has accepted that
+as the ceiling of PDF input (spec 053). With no layout evidence reaching the model on PDF books, the
+operation's only remaining basis would be the text-shape guessing Constitution VII forbids, and its
+observed yield is 0–2 per book. So it is disabled rather than reasoned about.
+
+**This turns out to need a small code change, which is item 9.** `reader_cleanup_allowed_operations`
+is read from `app_config` (`_config.py:70`) and an empty value means *allow everything*
+(`_detectors.py:11`) — but the key exists nowhere in the production config model (`core/config.py`
+carries `reader_cleanup_default`, `_model`, `_chunk_size`, `_overlap_*`, `_global_plan_enabled`,
+`_max_failed_chunk_ratio`, and no `_allowed_operations`). Only a validation run profile can set it
+(`validation/profiles.py:100`). So today a production run **cannot** restrict the operation set at all.
+The mechanism exists; it is simply not wired to the path we intend to run on.
 
 ## Proposed: fix before the first run
 
@@ -192,15 +200,19 @@ them needs the run to have happened.
 7. **Stop sending dead instructions.** The `anchor_repair` branch is unreachable in production yet
    occupies ~10 lines of every one of the 107 prompts, and the empty `global_plan` fields ship on every
    request. (~15 lines.)
-8. **Only if the heading hypothesis is in scope for this run:** handle `reclassify_role` in the
-   registry derivation and add restored headings to the protected set in
-   `normalize_false_fragment_headings_markdown`. (~30 lines.) Without both, the run produces a false
-   negative.
+8. ~~Handle `reclassify_role` in the registry derivation and protect restored headings.~~
+   **DROPPED** by the owner decision of 2026-07-31 — see the heading section above. Heading
+   restoration is out of scope; the operation is disabled instead.
+9. **Expose `reader_cleanup_allowed_operations` in the production config** so the run can actually be
+   restricted to the six janitorial operations, and set it to exclude `reclassify_role`. (~10 lines
+   in `core/config.py` + `config_loader_layers.py`, plus a test that an excluded operation is
+   rejected end to end.) Without this the previous item cannot be honoured — production has no way to
+   turn a single operation off.
 
-**Owner decision, not a code change:** whether to rewrite the role rules in the production prompt in
-terms of `layout_signals` (lawful, and the groundwork exists), or to switch `reclassify_role` off for
-this run via the existing `reader_cleanup_allowed_operations` mechanism (`_config.py:70`). Leaving it
-as-is means running a pass that infers structure from text shape, which the Constitution forbids.
+Also drop the role-inference rules from the production prompt (`_prompts.py:19`), which are now dead
+weight in every one of the ~107 requests and, worse, teach the model that ALL-CAPS suggests a heading
+role — spec 053 measured capitalisation as an **anti**-signal, three times commoner in junk than in
+real headings. (~5 lines.)
 
 ## Explicitly not fixed before the run
 

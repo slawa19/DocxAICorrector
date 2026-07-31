@@ -4,14 +4,18 @@
 
 **Created**: 2026-07-31
 
-**Status**: **NEEDS DECISION — measured, but the signal is not on the path that matters.** No code was
-written and none is proposed yet. A discriminating, source-backed rule does exist (95% precision /
+**Status**: **DECISION RECORD — measured, and the owner accepted the PDF ceiling (2026-07-31).** No
+code was written and none will be. A discriminating, source-backed rule does exist (95% precision /
 74% recall on the measured corpus) — but the measurement ran on externally converted DOCX, and on the
-production PDF path the signal it depends on is thrown away before any rule could read it.
-Implementing the rule as measured would repeat spec 049's mistake exactly. Deliberately **not** filed
-as `MEASURED` (which in this repo means "implemented, measured, disproven, reverted" — that was 049):
-nothing was implemented here, and a decision is still owed on whether to run the follow-up measurement
-in `## What to do next`.
+production PDF path the signal it depends on is thrown away before any rule could read it, leaving
+32% recall. The follow-up measurement proposed in `## What to do next` was offered and **declined**:
+short headings lost on PDF-derived books are accepted as the ceiling of PDF input. When structure
+matters, the answer is to supply the book as DOCX, which preserves the typography natively — the
+decision already recorded on 2026-06-22.
+
+This closes the thread opened by spec 046 and continued by 049. Do not reopen it with a new heading
+heuristic: the measurement below is the reason, and the numbers are here so nobody has to re-derive
+them.
 
 **Date**: 2026-07-31
 
@@ -114,6 +118,11 @@ consumers. Neither heading route can work on PDF books until that serializer car
 bold/italic.
 
 ## What to do next — measure once more, then decide
+
+> **Superseded by the owner decision of 2026-07-31: the ceiling is accepted and this measurement was
+> declined.** The section is kept because it states precisely what would have to be true for the rule
+> to be worth building — if the PDF serializer is ever extended for an unrelated reason, this is the
+> check that would tell you whether headings come back for free.
 
 Do **not** implement the rule yet. One cheap, offline, no-LLM check decides everything:
 
