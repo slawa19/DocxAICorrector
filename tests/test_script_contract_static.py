@@ -122,14 +122,10 @@ def test_vscode_test_tasks_normalize_windows_relative_paths() -> None:
     assert ".[dev]" in parity_script
     assert "import docxaicorrector" in parity_script
     assert "bash scripts/test.sh tests/test_typecheck.py -q" in parity_script
-    for static_file in (
-        "test_script_contract_static",
-        "test_network_hardening_defaults",
-        "test_layer_boundaries",
-        "test_documentation_links",
-        "test_dependency_consistency",
-    ):
-        assert static_file in parity_script
+    # The static tier is selected BY MARKER in both ci.yml and here. A hardcoded file
+    # list used to live in both places, so the sixth file to carry `static_workflow`
+    # would have run nowhere at all.
+    assert "bash scripts/test.sh tests/ -q -m static_workflow" in parity_script
     assert "bash scripts/test.sh tests/ -q -m" in parity_script
     assert (
         "not static_workflow and not typecheck and not system_deps and not manual_ai_heavy and not browser_ui"
@@ -285,7 +281,8 @@ def test_ci_exposes_editable_install_and_static_workflow_jobs() -> None:
     assert "needs: [editable-install]" in ci_text
     assert tests_job_text.index("Clean working tree before tests") < tests_job_text.index("Install dependencies")
     assert "Run static workflow checks" in ci_text
-    assert "bash scripts/test.sh tests/test_script_contract_static.py -q" in ci_text
+    # Marker selection, not a file list: see test_ci_runs_the_static_tier_by_marker.
+    assert "bash scripts/test.sh tests/ -q -m static_workflow" in ci_text
 
 
 def test_manual_real_document_workflow_installs_system_deps_and_uploads_artifacts() -> None:
@@ -322,11 +319,45 @@ def test_ci_uses_canonical_bash_test_contract() -> None:
     assert "runs-on: ubuntu-latest" in ci_text
     assert "python -m venv .venv" in ci_text
     assert ". .venv/bin/activate" in ci_text
-    assert "bash scripts/test.sh tests/test_script_contract_static.py -q" in ci_text
+    assert "bash scripts/test.sh tests/ -q -m static_workflow" in ci_text
     assert (
         'bash scripts/test.sh tests/ -q -m "not static_workflow and not typecheck and not system_deps and not manual_ai_heavy and not browser_ui"'
         in ci_text
     )
+
+
+def test_ci_runs_the_static_tier_by_marker_not_by_a_hardcoded_file_list() -> None:
+    """The static tier must be selected by ``-m static_workflow`` everywhere.
+
+    The full suite runs with ``not static_workflow``, so a file carrying that marker
+    runs ONLY in the dedicated static step. That step used to enumerate five test
+    files by name — in ``ci.yml`` and, mirrored, in ``scripts/docker-ci-parity.sh`` —
+    so the sixth file to carry the marker would have executed nowhere at all and no
+    test would have noticed. Marker selection removes the list that could drift.
+    """
+    ci_text = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    parity_script = (REPO_ROOT / "scripts" / "docker-ci-parity.sh").read_text(encoding="utf-8")
+
+    marker_selector = "bash scripts/test.sh tests/ -q -m static_workflow"
+    for name, text in (("ci.yml", ci_text), ("scripts/docker-ci-parity.sh", parity_script)):
+        assert marker_selector in text, (
+            f"{name} must run the static tier as `{marker_selector}` so every file "
+            "marked static_workflow is executed. Do not re-introduce a per-file list."
+        )
+
+    marked_files = sorted(
+        path.name
+        for path in (REPO_ROOT / "tests").glob("test_*.py")
+        if "pytest.mark.static_workflow" in path.read_text(encoding="utf-8")
+    )
+    assert len(marked_files) >= 5, marked_files
+    for name, text in (("ci.yml", ci_text), ("scripts/docker-ci-parity.sh", parity_script)):
+        named_individually = [f for f in marked_files if f in text]
+        assert not named_individually, (
+            f"{name} names static_workflow test files individually ({named_individually}); "
+            "the marker selector already covers them and a hand-kept list silently drops "
+            "whatever is not listed."
+        )
 
 
 def test_inventory_lists_every_top_level_test_file_exactly_once() -> None:

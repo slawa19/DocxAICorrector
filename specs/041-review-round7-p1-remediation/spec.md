@@ -1,9 +1,13 @@
 # Feature Specification: Round-7 P1 remediation — tenant cache identity, cancellable admission, evidence/acceptance order, independent caption-heading gate
 
 Date: 2026-07-17
-Status: **PLANNED (2026-07-17).** Four verified round-7 P1 findings (each confirmed against live code by
-the orchestrator before planning). All four are correctness/isolation defects; two (#1, #4) are gaps in
-prior specs 040 / 038 that this spec closes honestly. Merge of PR #4 is NOT recommended until these land.
+Status: **DONE — all four P1s landed on `main` 2026-07-17 (`890af1b` = P1-1 + P1-2, `4d0e944` = P1-3,
+`d4736e8` = P1-4), and PR #4 was subsequently merged in `78629d3`.** The earlier line "Merge of PR #4 is NOT
+recommended until these land" is WITHDRAWN and no longer blocks anything: the condition it named is satisfied
+and the PR is in `main`. (Header corrected 2026-07-31 — the authoritative answer to "did this land?" lives in
+git, never in this header.) Four verified round-7 P1 findings (each confirmed against live code by
+the orchestrator before planning). All four were correctness/isolation defects; two (#1, #4) were gaps in
+prior specs 040 / 038 that this spec closed honestly.
 "Rejected as overengineering" items (atomic restart-source write, extra PDF pixel guard, quality-gate
 private-import seam) are intentionally OUT of scope.
 

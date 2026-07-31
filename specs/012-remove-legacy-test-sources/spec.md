@@ -1,7 +1,10 @@
 # Feature Specification: Remove legacy/truncated test-source documents and all references
 
 Date: 2026-07-11
-Status: ACTIVE (cleanup). Owner-directed 2026-07-11: "удали легаси из всех рантаймов, тестов и документации".
+Status: DONE — merged to `main` 2026-07-11 in `21cf9d0`. (Header corrected 2026-07-31; it sat at "ACTIVE
+(cleanup)" long after the work landed. Trust `git log` / `git merge-base` over this field — the history is
+authoritative, this line is hand-maintained.) Owner-directed 2026-07-11: "удали легаси из всех рантаймов,
+тестов и документации".
 Owner surface: `corpus_registry.toml`, `tests/sources/archive/`, the real-document harness, CI workflows,
 `.vscode/tasks.json`, benchmark configs, and docs.
 Companion: `docs/specs/GLOBAL_PLAN_2026-06-16.md` (breadth-validation section — RETRACTED, it was run on legacy).

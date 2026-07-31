@@ -1,7 +1,9 @@
 # Feature Specification: Remove the "translation second pass" feature (broken; superseded by edit mode)
 
 Date: 2026-07-13
-Status: DRAFT — removal spec, pre-implementation. Cuts the "Дополнительный литературный проход после перевода"
+Status: DONE — removal spec, merged to `main` 2026-07-13 in `ad8dd4c` (header corrected 2026-07-31; verify with
+`git merge-base --is-ancestor ad8dd4c main` rather than by reading this line). Cut the "Дополнительный
+литературный проход после перевода"
 feature end-to-end (UI control, pipeline code, config fields, i18n keys, tests).
 Owner surface: `ui/_ui.py` + `ui/_app.py` (the checkbox + plumbing), `pipeline/block_execution.py` (the pass),
 `pipeline/setup.py` + `pipeline/late_phases.py` (effective flag / telemetry), `core/config*.py` + `config.toml`

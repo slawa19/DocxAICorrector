@@ -1,7 +1,9 @@
 # Feature Specification: Coverage is review DATA — neutralize the structural passthrough coverage gate
 
 Date: 2026-07-17
-Status: **PLANNED (2026-07-17).** Fix a defect against the Constitution. Constitution VII already
+Status: **DONE — implemented and merged to `main` 2026-07-17 in `9508ae2`.** (Header corrected 2026-07-31; when
+in doubt about a spec's state, ask git rather than the spec.) Fixed a defect against the Constitution.
+Constitution VII already
 binds (lines 139-158): *"Formatting coverage is review DATA, not a verdict gate … Any check that
 treats residual unmapped coverage as a HARD failure — including the real-document structural
 passthrough gate — is a defect against this principle: it MUST emit the residual as review data, and a

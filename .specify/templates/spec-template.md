@@ -18,7 +18,7 @@
 
 **Owner surface**: [the production surface this work steers, e.g. "quality gate + acceptance verdict + formatting_review.txt writer"]
 
-**Companion**: [cross-link to a related living spec, e.g. `docs/specs/GLOBAL_PLAN_2026-06-16.md`, and the items it discharges]
+**Companion**: [cross-link to a related spec in `specs/<NNN>-<slug>/` and the items it discharges. Do NOT cite `docs/specs/GLOBAL_PLAN_2026-06-16.md` as a live plan — it is historical]
 
 **Supersedes**: [cross-link to the spec this one replaces]
 

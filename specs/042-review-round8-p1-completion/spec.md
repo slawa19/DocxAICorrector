@@ -1,11 +1,14 @@
 # Feature Specification: Round-8 P1 completion — tenant cache identity contract + caption-heading conflict blocks delivery
 
 Date: 2026-07-17
-Status: **PLANNED (2026-07-17).** Round-8 verified that two round-7 fixes (spec 041 P1-1 and P1-4) closed
+Status: **DONE — both round-8 P1s (P1-A tenant cache identity contract, P1-B caption→heading conflict blocks
+delivery) merged to `main` 2026-07-17 in `a69f253`.** (Header corrected 2026-07-31; do not plan against this
+line without cross-checking the commit history.) Round-8 verified that two round-7 fixes (spec 041 P1-1 and P1-4) closed
 the MECHANISM but not the actual effect: the cache identity is re-derived from config instead of the
 injected factory, and the caption→heading acceptance-verdict failure never gates delivery. Both confirmed
 against live code by the orchestrator. Owner decision on the identity contract: **Explicit-or-bypass**
-(A below). Merge stays not-recommended until both land.
+(A below). The earlier "merge stays not-recommended until both land" hold is LIFTED — both P1s landed in
+`a69f253`, so nothing here withholds a merge.
 
 ## P1-A — ProcessingService must NOT re-derive the injected factory's cache identity from config
 

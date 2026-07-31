@@ -1,7 +1,9 @@
 # Feature Specification: Caption→heading delivery gate must see the FINAL (post reader-cleanup) DOCX diagnostics
 
 Date: 2026-07-17
-Status: **PLANNED (2026-07-17).** Round-9 P1 (+ related P2). Spec-042 P1-B wired a caption→heading
+Status: **DONE — fixed in `cc5b622` and merged to `main` 2026-07-17 via PR #5 (`23020a9`).** (Header corrected
+2026-07-31; confirm against the merge commit — this field is written by hand and lags reality.) Round-9 P1
+(+ related P2). Spec-042 P1-B wired a caption→heading
 conflict to the delivery gate, but only for the NON-deferred DOCX path. When reader cleanup is enabled the
 base DOCX is built LATE, so the gate runs on an EMPTY / stale formatting-diagnostics list and a caption
 conflict introduced by the FINAL DOCX escapes the gate and publishes. Verified against live code by the

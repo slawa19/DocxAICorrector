@@ -1,7 +1,9 @@
 # Feature Specification: UI minimal-screen, fewer-steps, and unified result (incl. formatting-review presentation)
 
 Date: 2026-07-13
-Status: DRAFT — approved scope (Tier-1 п.1–6 + Tier-2 п.7–10), pre-implementation. A UI/UX consolidation of the
+Status: DONE — approved scope (Tier-1 п.1–6 + Tier-2 п.7–10) implemented and merged to `main` 2026-07-13 in
+`58aaf2a`. (The old "pre-implementation" wording survived the merge and was corrected 2026-07-31. If this field
+and the repository disagree, the repository wins — read the commit graph, not this line.) A UI/UX consolidation of the
 Streamlit app: fewer always-visible controls, fewer clicks, canonical Streamlit styling (minimal custom CSS),
 Russian consistency, and a single result screen — into which the formatting-review presentation slice is folded.
 Owner surface: `ui/_app.py`, `ui/_ui.py`, `ui/structure_review_panel.py`, and the existing `quality_warning`

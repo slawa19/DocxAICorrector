@@ -1,7 +1,8 @@
 # Feature Specification: Preserve authored tables; flatten only scan-origin (OCR) tables
 
 Date: 2026-07-14
-Status: DRAFT — approved scope, pre-implementation. Two-part import/render fix: (1) make genuine tables SURVIVE the
+Status: DONE — merged to `main` 2026-07-14 in `5296c68` (header corrected 2026-07-31; treat this field as a hint
+and the git history as the fact). Two-part import/render fix: (1) make genuine tables SURVIVE the
 render into the output DOCX (they are currently dropped for every input), and (2) flatten tables to linear text ONLY
 for scan-origin (OCR) documents, so authored data tables are kept (canon: keep STRUCTURE) while scanned column-layout
 "tables" are dropped (canon: drop GEOMETRY).

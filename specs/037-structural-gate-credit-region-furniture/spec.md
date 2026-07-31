@@ -1,7 +1,13 @@
 # Feature Specification: Structural passthrough gate credits region furniture; gates only genuine unmapped
 
 Date: 2026-07-17
-Status: **PLANNED (2026-07-17).** Align the real-document structural passthrough gate with the
+Status: **IMPLEMENTED then SUPERSEDED — landed on `main` 2026-07-17 in `6cd7e37`; its GATE decision (variant 2,
+"hard-gate the genuine remainder") was superseded hours later by spec 038 (`9508ae2`), which made the coverage
+checks advisory. What survives from this spec is the furniture-crediting arithmetic
+(`resolve_genuine_unmapped_count` + the credited/genuine audit fields), which now feeds review DATA instead of a
+pass/fail branch — do NOT re-plan the gate from the text below.** (Header corrected 2026-07-31; a spec header can
+go stale silently, a merge commit cannot — check there first.) Original intent: align the real-document
+structural passthrough gate with the
 Constitution clause "formatting coverage is review DATA, not a gate" + specs 008/010/011: the
 `unmapped_source_threshold` / `unmapped_target_threshold` acceptance checks must EXCLUDE agreed
 passthrough furniture (front-matter / bounded-TOC / references / index / captions / part-dividers /

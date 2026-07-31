@@ -66,13 +66,13 @@ jobs:
           . .venv/bin/activate
           pip install -r requirements.txt
 
+      # Selected BY MARKER, not by a hand-maintained file list. The list used to be
+      # spelled out here (and mirrored in two other places), so the sixth file to
+      # carry `static_workflow` would have silently never run in CI: the full-suite
+      # step below deselects the marker, and only files named here re-selected it.
+      # `-m static_workflow` cannot drift — adding the marker is enough.
       - name: Run static workflow checks
-        run: |
-          bash scripts/test.sh tests/test_script_contract_static.py -q
-          bash scripts/test.sh tests/test_network_hardening_defaults.py -q
-          bash scripts/test.sh tests/test_layer_boundaries.py -q
-          bash scripts/test.sh tests/test_documentation_links.py -q
-          bash scripts/test.sh tests/test_dependency_consistency.py -q
+        run: bash scripts/test.sh tests/ -q -m static_workflow
 
       - name: Run full test suite
         run: bash scripts/test.sh tests/ -q -m "not static_workflow and not typecheck and not system_deps and not manual_ai_heavy and not browser_ui"

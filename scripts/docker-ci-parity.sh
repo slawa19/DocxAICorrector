@@ -23,15 +23,10 @@ python -c "import docxaicorrector"
 # Pyright ratchet — same wrapper CI uses.
 bash scripts/test.sh tests/test_typecheck.py -q
 
-# Full static tier — the five static_workflow files CI runs explicitly.
-for static_file in \
-	test_script_contract_static \
-	test_network_hardening_defaults \
-	test_layer_boundaries \
-	test_documentation_links \
-	test_dependency_consistency; do
-	bash scripts/test.sh "tests/${static_file}.py" -q
-done
+# Full static tier — selected BY MARKER, exactly as ci.yml. This used to be a
+# hardcoded list of five files, which meant a sixth file carrying the marker ran
+# nowhere: the marker-excluded suite below deselects it and the list did not name it.
+bash scripts/test.sh tests/ -q -m static_workflow
 
 # Marker-excluded suite, exactly as ci.yml.
 bash scripts/test.sh tests/ -q -m "not static_workflow and not typecheck and not system_deps and not manual_ai_heavy and not browser_ui"

@@ -1,7 +1,9 @@
 # Feature Specification: Simplify the preparation summary + prune stale prep telemetry
 
 Date: 2026-07-13
-Status: DRAFT — approved scope, pre-implementation. Presentation + dead-code cleanup: reduce the post-preparation
+Status: DONE — merged to `main` 2026-07-13 in `58aaf2a`, together with spec 013 (header corrected 2026-07-31;
+this line is documentation, not state — the merge history is the only reliable status check). Presentation +
+dead-code cleanup: reduce the post-preparation
 UI summary to only user-meaningful lines, and remove stale reason-labels / vestigial report status-notes left
 over from the removed structure-recognition feature. NO change to what preparation computes (paragraphs, segments,
 blocks, furniture flags) — only what it SURFACES and which dead strings it carries.
