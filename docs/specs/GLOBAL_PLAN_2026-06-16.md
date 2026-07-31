@@ -1,7 +1,20 @@
 # Global Plan — Book Translation Pipeline
 
+> ## ⚠️ HISTORICAL DOCUMENT — DO NOT PLAN FROM IT
+>
+> This file is a dated log of how decisions were made in June–July 2026. Its *direction* is out of date:
+> what it calls "next" has already shipped. In particular the UI slice — which this document repeatedly
+> names as the next step — was delivered by `specs/013-ui-minimal-screen-and-result/spec.md` and merged
+> into `main` on 2026-07-13 (commit 58aaf2a).
+>
+> - **Where the project stands now:** `docs/WHERE_WE_ARE.md`.
+> - **Source of truth:** the code and the git history, not this file.
+>
+> Read on for history. Do not copy a "next step" from here into a plan or a prompt — the statements below
+> have been overtaken by later work, and the individual ones about UI are marked as such inline.
+
 Date: 2026-06-16
-Status: Active. Single forward reference for the pipeline.
+Status: HISTORICAL (see the banner above). Was: "Active. Single forward reference for the pipeline."
 Supersedes (for forward work): the planning docs now archived under
 `docs/archive/specs/` (roadmap, MVP spec/backlog, reader-cleanup experiments,
 PDF-import pivot, structure-recognition migration). Those remain as lineage only.
@@ -12,12 +25,17 @@ Active companions:
   (wrong model gpt-5-mini vs Gemini, env-override, WSL backgrounding, CRLF launchers).
 - `docs/specs/UI/FORMATTING_DISCREPANCY_REPORTING_SPEC_2026-06-15.md` — the first
   UI slice (how residual discrepancies reach the user).
+  **Outdated:** this slice is built and shipped (`specs/013-ui-minimal-screen-and-result/spec.md`, merged
+  into `main` as 58aaf2a); the spec is now history, not upcoming work.
 - `docs/specs/GATE_TRUSTWORTHINESS_AND_UI_DATA_REFACTOR_2026-07-09.md` — **IMPLEMENTED / SUPERSEDED 2026-07-11**
   by `specs/001…009`. Was the planning spec for making the PRODUCTION gate emit trustworthy discrepancy data +
   a policy-consistent verdict; all six blockers discharged (see its "Discharge status" table). Kept as lineage.
   One residual UI-data gap: `[КРИТ]` rendering is never exercised (no book has `bad_pair_count > 0`).
 
-## ═══ NAVIGATION / RESUME POINT (read this first) — updated 2026-06-22 ═══
+## ═══ NAVIGATION / RESUME POINT (frozen 2026-07-11 — no longer current) ═══
+
+> **Outdated — do not resume from this block.** It was the live entry point until 2026-07-11 and has since been
+> overtaken; its "next step is UI" conclusion is wrong. Current navigation: `docs/WHERE_WE_ARE.md`.
 
 > **RESUME POINT 2026-07-11 — this block supersedes the 2026-06-22 "WE ARE HERE / FORWARD SEQUENCE" navigation
 > below.** The gate-honesty + reliability workstream is CLOSED; the five Remaining-Work items are discharged.
@@ -48,7 +66,9 @@ Active companions:
 > non-deterministic Gemini translation (documented in the spec's closing note). The residual coupling (list
 > structure produced by the residual-bullet glyph fixup) is an ACCEPTED latent smell.
 >
-> **What remains before/with UI (scoped, not reliability blockers):**
+> **What remains before/with UI (scoped, not reliability blockers):** — **Outdated:** nothing here still
+> "remains before UI". The UI shipped in `specs/013-ui-minimal-screen-and-result/spec.md` (merged into `main`
+> as 58aaf2a).
 > 1. ~~Acceptance PRODUCT semantics~~ — DECIDED (`specs/010`, Option A: coverage = review-data, not a gate).
 > 2. ~~UI-data contract gaps~~ — RESOLVED (`specs/011`: `unmapped_target` items emitted; `[КРИТ]`/false_pair
 >    kept correct-and-latent + test-covered; `note_fragment` scoped out as a UI-copy concern, footnotes out of
@@ -62,7 +82,8 @@ Active companions:
 >    NOT the real full books, so they are NOT valid breadth evidence. Breadth must be re-run on the real full
 >    books in `tests/sources/book/` (lietaer / mazzucato / creatingwealth / money-sustainability PDFs). See
 >    "Breadth result" below (retracted).
-> Then the UI slice (`FORMATTING_DISCREPANCY_REPORTING`). See
+> Then the UI slice (`FORMATTING_DISCREPANCY_REPORTING`). — **Outdated:** that slice is done, not pending
+> (spec 013, in `main` as 58aaf2a). See
 > `docs/specs/GATE_TRUSTWORTHINESS_AND_UI_DATA_REFACTOR_2026-07-09.md` → "Discharge status" for the blocker→spec map.
 
 **DONE this session (2026-06-22):** (1) Money main-text CLOSED via import fixes (sentence-breaks 89→1, 37
@@ -171,17 +192,21 @@ acceptance passed, images 43/43, breaks 4). Director flagged structure defects; 
 WHAT REMAINS TO CLOSE (director asked): (a) gate is BLIND to body-structure damage — it passed Money with 4
 chapter headings destroyed → a **body-integrity axis** (heading-demoted-to-list, sentence-breaks) belongs in
 item 1‑D / item 3. (b) The five "Remaining Work Before UI" items 2–5 (reliability controlled-fallback,
-acceptance meaning, harness↔prod parity, Mazzucato tail). (c) Then UI. Structure/formatting cleanliness — the
+acceptance meaning, harness↔prod parity, Mazzucato tail). (c) Then UI [**outdated** — UI shipped as spec 013,
+in `main` as 58aaf2a]. Structure/formatting cleanliness — the
 director's stated priority — is now in good shape (bold/italic transferred, chapter/part/section headings +
 levels, images, clean prose); remaining structure gaps are the ACCEPTED semantic tail above.
 
 **FORWARD SEQUENCE (the main line — do NOT lose it):** ⟵ SUPERSEDED 2026-07-11; see the RESUME POINT block at
 the top of this section. Items 1–5 are DONE (via `specs/001…009`); what remains before UI is the acceptance
 product-semantics decision + the UI-data contract gaps + breadth validation, then the UI slice.
+**Outdated:** this whole sequence is finished, UI included (spec 013, in `main` as 58aaf2a). It is not a
+to-do list.
 1. ~~item 1: gate stability/vision (A→B→C→D)~~ — DONE (`specs/001/002/003/005/006/008`).
 2. ~~items 2–5: reliability (controlled-fallback), acceptance meaning, harness↔prod parity, Mazzucato tail~~ —
    DONE (`specs/009` reliability; `specs/002` acceptance honesty + parity; `specs/006` delivered-markdown parity).
-3. **UI** (FORMATTING_DISCREPANCY_REPORTING spec) — next, after the two scoped decisions in the RESUME POINT.
+3. ~~**UI** (FORMATTING_DISCREPANCY_REPORTING spec) — next, after the two scoped decisions in the RESUME POINT.~~
+   — DONE (spec 013, merged into `main` as 58aaf2a).
 Parked follow-ups: de-hyphenation (parallel); "О" reassembly caption-drop; footnote end-to-end confirm;
 cross-role sentence-break tail (ACCEPTED, diminishing returns).
 
@@ -253,7 +278,8 @@ these and refocus accordingly:
 
 **Refocus (agreed 2026-06-18).** Reader-cleanup is an OFF-by-default enhancement, not
 a UI-blocker, and is now image-blocked; stop polishing it (and stop re-running the same
-three books). Return to the real path to UI: items 1–4 below — make the gate trustworthy
+three books). [**Outdated:** the "path to UI" below ended in 2026-07; UI shipped as spec 013, in `main` as
+58aaf2a.] Return to the real path to UI: items 1–4 below — make the gate trustworthy
 (item 1) and go for **breadth** (2–3 NEW, differently-formatted books, which is what
 exposes the remaining stale gates). Reader-cleanup prod-enablement is parked behind the
 P0 image fix.
@@ -676,6 +702,10 @@ to fix or to consciously accept, with a reason.
 
 ## Remaining Work Before Returning to UI
 
+> **Outdated heading:** nothing here is remaining, and there is no "returning to UI" — the UI shipped as
+> `specs/013-ui-minimal-screen-and-result/spec.md`, merged into `main` as 58aaf2a. The repeated "before UI"
+> rationales in this section are history. Current status: `docs/WHERE_WE_ARE.md`.
+
 > ⚠️ **HISTORICAL SECTION — not the authoritative status.** Everything from here to the end of the file is the
 > dated working log written while this work was in flight; it still contains old "CURRENT / NOW / NEXT / before
 > UI" phrasing that a text search can land on. The AUTHORITATIVE, current status is the **RESUME POINT block at
@@ -842,6 +872,8 @@ Consistent verdict across all 4:
 
 **Conclusion: the pipeline reliably reconstructs the real books at acceptable quality and the gate is
 trustworthy. All pre-UI work is validated. Cleared to return to the UI slice.**
+**Outdated:** that clearance was acted on — the UI slice was built (spec 013) and merged into `main` as
+58aaf2a. This is a record of the 2026-07-11 decision, not a pending action.
 
 ## Runs Alongside: Architecture Hygiene (secondary, opportunistic)
 
@@ -987,6 +1019,10 @@ held-out validation, not as more patches.
 
 ## Then: UI
 
+> **Outdated:** this already happened. The UI slice was implemented by
+> `specs/013-ui-minimal-screen-and-result/spec.md` and merged into `main` on 2026-07-13 (commit 58aaf2a).
+> Nothing in this section is upcoming work.
+
 Once items 1–4 are solid, return to UI. The first UI slice is already specified:
 `docs/specs/UI/FORMATTING_DISCREPANCY_REPORTING_SPEC_2026-06-15.md` — surface the
 residual to the user via the existing result-notice / activity surfaces plus a
@@ -1022,6 +1058,9 @@ stable, meaningful residual, which items 1–3 deliver.
     measurable effect on the output.
 
 ## Non-Goals (defer; not blocking UI)
+
+> **Outdated framing:** "not blocking UI" made sense while UI was ahead of us; it shipped as spec 013
+> (in `main` as 58aaf2a). Whether these items are still deferred is decided today, not here.
 
 - Full-book cost/time optimisation (~20–35 min/run).
 - Audiobook postprocess and other separate features.

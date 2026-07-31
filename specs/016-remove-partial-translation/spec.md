@@ -1,7 +1,8 @@
 # Feature Specification: Remove partial translation + the structure-review panel (full-document-only)
 
 Date: 2026-07-13
-Status: DRAFT — approved scope, pre-implementation. Removes the "partial translation" feature (translating only
+Status: DONE — merged to `main` 2026-07-13 in `d39e90e` (header corrected 2026-07-31; spec headers here drift
+silently, `git log --oneline main` does not). Removed the "partial translation" feature (translating only
 selected sections) AND the entire structure-review panel, leaving a single full-document processing flow. Keeps
 the segmentation infrastructure (load-bearing for full-document translate context).
 Owner surface: `ui/structure_review_panel.py` (deleted), `ui/_app.py` (dispatch + start plumbing),

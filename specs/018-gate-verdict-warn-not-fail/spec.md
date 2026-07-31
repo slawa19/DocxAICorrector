@@ -1,7 +1,9 @@
 # Feature Specification: Gate verdict — produced-but-flagged translation is "completed, needs review" (warn), not a blocking failure
 
 Date: 2026-07-14
-Status: DRAFT — approved scope (both levels: verdict classification + presentation), pre-implementation.
+Status: DONE — approved scope (both levels: verdict classification + presentation) merged to `main` 2026-07-14
+in `9d19588`. Header corrected 2026-07-31; before acting on any status in this directory, confirm it against the
+commit graph first.
 Owner surface: the document-level translation quality gate + its finalization in `pipeline/late_phases.py`
 (`quality_status` determination, the `fail` vs `warn` finalize branches, the result-notice), the humanized
 reason labels (`processing/preparation.py`), and the completed-result delivery path.

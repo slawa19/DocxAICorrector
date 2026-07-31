@@ -2,6 +2,15 @@
 
 Короткий front-door для ассистентов и automation в этом репозитории.
 
+## Где мы сейчас
+
+Прежде чем что-то планировать, прочитайте `docs/WHERE_WE_ARE.md` — это текущая навигация по состоянию
+проекта. Источник правды — код и история git; markdown-документы отстают от них.
+
+Не берите направление работ из датированных документов вроде `docs/specs/GLOBAL_PLAN_2026-06-16.md` или
+`docs/HANDOFF_2026-07-11.md`: они исторические. Их «следующий шаг» уже сделан (например, UI-слайс —
+`specs/013-ui-minimal-screen-and-result/spec.md`, влит в `main`), и повтор такой задачи — потерянное время.
+
 ## Spec Kit Contract
 
 Spec Kit is part of the repository workflow, not a local experiment. Commit
@@ -17,8 +26,12 @@ Two spec homes, not interchangeable:
 
 - `specs/<NNN>-<slug>/` — one unit of work (`spec.md`, `plan.md`, `tasks.md`).
   ALL new specs go here.
-- `docs/specs/` — long-lived documents only: `GLOBAL_PLAN_2026-06-16.md` (living
-  roadmap) and pre-Spec-Kit forward specs. Create NO new spec here.
+- `docs/specs/` — long-lived and historical documents only, including
+  `GLOBAL_PLAN_2026-06-16.md` (historical: a log of past decisions, NOT a roadmap —
+  do not plan from it) and pre-Spec-Kit forward specs. Create NO new spec here.
+
+Forward planning starts from `docs/WHERE_WE_ARE.md` plus the code and git history, and
+lands in a new `specs/<NNN>-<slug>/`. No document in `docs/specs/` is a to-do list.
 
 Every `spec.md` in this repo MUST carry `## Non-goals` and `## Anti-regression` in
 addition to Spec Kit's stock sections; see the constitution's Spec Format Contract.
@@ -360,6 +373,7 @@ echo START && powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\Users\
 
 ## Extended Canonical Docs
 
+- `docs/WHERE_WE_ARE.md`
 - `README.md`
 - `CONTRIBUTING.md`
 - `docs/WORKFLOW_AND_IMAGE_MODES.md`
@@ -384,7 +398,7 @@ echo START && powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\Users\
 
 1. Прочитать последний run report из `tests/artifacts/real_document_pipeline/<profile>_pdf_full_benchmark_report.json` (генерируемый артефакт) или `tests/artifacts/real_document_pipeline/runs/<latest_run_id>/`.
 2. Дословно процитировать массив `failed_checks` и для каждого check записать пару `actual` / `threshold` и overage ratio.
-3. Сопоставить эти числа с разделом `## 5.0 Live Failure Inventory` в `docs/archive/specs/STRUCTURE_RECOGNITION_COMPLETION_PLAN_2026-05-14.md`. Если таблица устарела относительно последнего report — сначала обновить таблицу, потом думать дальше.
+3. При необходимости сверить эти числа с разделом `## 5.0 Live Failure Inventory` в `docs/archive/specs/STRUCTURE_RECOGNITION_COMPLETION_PLAN_2026-05-14.md` — но только как с исторической справкой: документ архивный, его цифры от 2026-05-14, и описанная в нём фича structure-recognition из кода удалена. Расхождение с ним ничего не значит; править архивный документ не нужно. Актуальны только числа из свежего run report.
 4. Только после этих трёх шагов формулировать гипотезы.
 
 Запрещено:

@@ -231,12 +231,15 @@ The repository has two spec homes. They are not interchangeable:
   and their Spec Kit companions. Created by `$speckit-specify`. This is where ALL
   new specs go.
 - **`docs/specs/`** — long-lived documents that do not fit the one-feature-one-folder
-  model: `GLOBAL_PLAN_2026-06-16.md` (the living roadmap and dated update log) and
-  forward specs written before Spec Kit existed. No NEW spec is created here.
+  model, including `GLOBAL_PLAN_2026-06-16.md` and forward specs written before Spec Kit
+  existed. No NEW spec is created here.
 
-`GLOBAL_PLAN` remains the roadmap and SHOULD link to the `specs/<NNN>-…/` folders
-that discharge its Remaining-Work items. `docs/ARCHIVE_INDEX.md` governs retirement
-for both locations.
+Current direction lives in `docs/WHERE_WE_ARE.md`, and it is navigation only — the source
+of truth is the code and `git`. `GLOBAL_PLAN_2026-06-16.md` is HISTORICAL: a dated log of how
+decisions were reached, not a roadmap. Do not plan from it and do not treat a `Status:` line in
+any spec as authoritative; both have drifted for months at a time, and in one case sent a session
+off to rebuild a feature that had shipped weeks earlier. `docs/ARCHIVE_INDEX.md` governs
+retirement for both locations.
 
 ## Spec Format Contract
 

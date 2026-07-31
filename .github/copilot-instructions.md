@@ -239,7 +239,7 @@ Rules:
 
 - Before starting any refactoring that moves, renames, splits, or merges modules, functions across files, or changes public API boundaries, write a specification document first.
 - The specification must describe: the problem being solved, current state of affected code, proposed changes with module boundaries and dependency direction, consumer update plan, what does not change, and verification criteria.
-- Place new and active specifications in `docs/` following the naming convention `DESCRIPTIVE_NAME_SPEC_YYYY-MM-DD.md`.
+- Place the specification in a new `specs/<NNN>-<slug>/` folder, as required by the Spec Kit Contract in `AGENTS.md`. The older convention of writing `DESCRIPTIVE_NAME_SPEC_YYYY-MM-DD.md` into `docs/` is retired; those files are history and must not be extended with new plans.
 - Use `docs/archive/` only for historical, superseded, or already-realized materials; do not place new plans or active specs there.
 - Present the specification to the user and wait for explicit approval before making any code changes.
 - Do not treat a user's exploratory question about possible refactoring as permission to start implementing it.
