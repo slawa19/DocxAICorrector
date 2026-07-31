@@ -113,10 +113,12 @@ def resolve_semantic_validation_and_runtime_settings(
         "reader_cleanup_global_plan_enabled",
         False,
     )
+    # Spec 052 item 2: 1.0 disables the abort outright; 0.1 makes a partially executed pass
+    # an explicit failure. The threshold is the largest failed-chunk share still tolerated.
     reader_cleanup_max_failed_chunk_ratio = parse_config_float_fn(
         config_data,
         "reader_cleanup_max_failed_chunk_ratio",
-        1.0,
+        0.1,
     )
 
     image_mode_default = parse_image_mode_fn(

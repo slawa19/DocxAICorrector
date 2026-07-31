@@ -1,35 +1,58 @@
 from __future__ import annotations
 
+import json
 import re
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 
-from ._constants import _ALLOWED_OPERATIONS
+from ._constants import _ALLOWED_OPERATIONS, _DEFAULT_CLEANUP_CHUNK_SIZE
 from ._models import CleanupBlock, ReaderCleanupConfig
+
+# Targets carry only block-specific evidence; the per-category rules that used to be copied
+# into every target live once in build_reader_cleanup_system_prompt(). The per-chunk limit is
+# therefore a serialized-character budget rather than a target count: the old fixed count of
+# 20 truncated 19-28% of chunks on the three replay books, so blocks near the end of a chunk
+# systematically got no hints. Callers pass the chunk size, so hints can never outweigh the
+# text they annotate; measured on the replay books that budget truncates no chunk at all.
+_OPERATION_SELECTION_TARGETS_CHAR_BUDGET = _DEFAULT_CLEANUP_CHUNK_SIZE
 
 
 def _allowed_operations_for_config(config: ReaderCleanupConfig) -> set[str]:
     return set(config.allowed_operations) if config.allowed_operations else set(_ALLOWED_OPERATIONS)
 
 
-def _build_operation_selection_targets(*, blocks: Sequence[CleanupBlock]) -> list[dict[str, object]]:
+def _build_operation_selection_targets(
+    *,
+    blocks: Sequence[CleanupBlock],
+    char_budget: int = _OPERATION_SELECTION_TARGETS_CHAR_BUDGET,
+) -> list[dict[str, object]]:
     targets: list[dict[str, object]] = []
+    spent = 0
+    for target in _iter_operation_selection_targets(blocks=blocks):
+        cost = len(json.dumps(target, ensure_ascii=False))
+        if targets and spent + cost > char_budget:
+            break
+        targets.append(target)
+        spent += cost
+    return targets
+
+
+def _iter_operation_selection_targets(*, blocks: Sequence[CleanupBlock]) -> Iterator[dict[str, object]]:
     for index, block in enumerate(blocks):
         duplicate_target = _build_duplicate_semantic_heading_target(block=block)
         if duplicate_target is not None:
-            targets.append(duplicate_target)
+            yield duplicate_target
         isolated_numeric_heading_target = _build_isolated_semantic_heading_numeric_prefix_target(block=block)
         if isolated_numeric_heading_target is not None:
-            targets.append(isolated_numeric_heading_target)
+            yield isolated_numeric_heading_target
         else:
             semantic_title_target = _build_semantic_page_title_deletion_risk_target(block=block)
             if semantic_title_target is not None:
-                targets.append(semantic_title_target)
+                yield semantic_title_target
         next_block = blocks[index + 1] if index + 1 < len(blocks) else None
         heading_fused_target = _build_heading_fused_with_body_target(block=block, next_block=next_block)
         if heading_fused_target is not None:
-            targets.append(heading_fused_target)
-        targets.extend(_build_side_heading_island_targets(block=block))
-    return targets[:20]
+            yield heading_fused_target
+        yield from _build_side_heading_island_targets(block=block)
 
 
 def _build_heading_fused_with_body_target(
@@ -43,13 +66,9 @@ def _build_heading_fused_with_body_target(
             "category": "heading_fused_with_body_candidate",
             "id": block.block_id,
             "text_hash": block.text_hash,
-            "preferred_operation": "normalize_heading_boundary",
-            "reason_hint": "heading_fused_with_body",
             "heading_substring": single_block_candidate["heading_substring"],
             "body_substring": single_block_candidate["body_substring"],
             "expected_after_preview": single_block_candidate["expected_after_preview"],
-            "forbidden_operations": ["remove_inline_noise", "delete_block"],
-            "safety_note": "This is a semantic heading/body boundary, not noise. Preserve the full heading and full body text exactly; skip if exact substrings do not match.",
         }
 
     if next_block is None:
@@ -61,15 +80,11 @@ def _build_heading_fused_with_body_target(
         "category": "heading_fused_with_body_candidate",
         "id": block.block_id,
         "text_hash": block.text_hash,
-        "preferred_operation_chain": ["join_fragmented_paragraph", "normalize_heading_boundary"],
-        "reason_hint": "heading_fused_with_body",
         "next_id": next_block.block_id,
         "next_text_hash": next_block.text_hash,
         "heading_substring": wrapped_candidate["heading_substring"],
         "body_substring": wrapped_candidate["body_substring"],
         "expected_after_preview": wrapped_candidate["expected_after_preview"],
-        "forbidden_operations": ["remove_inline_noise", "delete_block"],
-        "safety_note": "The heading wraps into the adjacent block. Join the exact adjacent block first, then normalize the heading/body boundary; preserve all semantic text.",
     }
 
 
@@ -163,13 +178,9 @@ def _build_isolated_semantic_heading_numeric_prefix_target(*, block: CleanupBloc
         "category": "isolated_semantic_heading_numeric_prefix",
         "id": block.block_id,
         "text_hash": block.text_hash,
-        "preferred_operation": "remove_inline_noise",
-        "reason_hint": "page_number",
-        "forbidden_operation": "full-heading remove_inline_noise",
         "numeric_prefix": numeric_prefix,
         "semantic_heading_must_remain": heading,
         "expected_after_preview": candidate["expected_after_preview"],
-        "safety_note": "Remove only the exact numeric prefix if it is still present once; never remove the semantic heading text.",
     }
 
 
@@ -227,11 +238,8 @@ def _build_duplicate_semantic_heading_target(*, block: CleanupBlock) -> dict[str
         "category": "duplicate_semantic_heading_text",
         "id": block.block_id,
         "text_hash": block.text_hash,
-        "operation_hint": "remove_inline_noise",
-        "reason_hint": "duplicate_fragment",
         "noise_substring": noise_substring,
         "expected_after_preview": _inline_noise_removed_text(current_text=block.text, noise=noise_substring),
-        "safety_note": "Apply only if this exact adjacent repeated phrase is still present once in the editable block.",
     }
 
 
@@ -270,15 +278,6 @@ def _build_semantic_page_title_deletion_risk_target(*, block: CleanupBlock) -> d
         "semantic_title_candidate": candidate["semantic_title_candidate"],
         "page_like_number": candidate["page_like_number"],
         "numeric_prefix": candidate["numeric_prefix"],
-        "forbidden_operation": "remove_inline_noise",
-        "operation_hint": "preserve_title_with_exact_structural_operation_or_skip",
-        "after_structural_split_followup_operation": "remove_inline_noise",
-        "same_pass_followup_supported": True,
-        "followup_targets_same_original_block_id": True,
-        "after_structural_split_noise_substring": candidate["numeric_prefix"],
-        "semantic_heading_must_remain_after_followup": candidate["semantic_title_candidate"],
-        "after_structural_split_expected_after_preview": candidate["semantic_title_candidate"],
-        "safety_note": "A page-like number adjacent to a semantic section title is not enough to classify the title as noise. Do not delete the title with remove_inline_noise; remove only exact non-semantic page residue if safe, or skip with a warning.",
     }
 
 
@@ -344,13 +343,6 @@ def _build_side_heading_island_targets(*, block: CleanupBlock) -> list[dict[str,
                     "id": block.block_id,
                     "text_hash": block.text_hash,
                     "heading_candidate": phrase,
-                    "operation_hint": "preserve_heading_text_with_split_block_or_normalize_heading_boundary",
-                    "preferred_operation_order": ["split_block", "normalize_heading_boundary"],
-                    "reattach_operation_hint": "extract_side_heading_and_reattach_body",
-                    "forbidden_default_operation": "remove_inline_noise",
-                    "stub_continuation_risk": "If this heading interrupts one sentence, do not leave a pre-heading stub or orphan post-heading continuation; use exact reattach operation or skip.",
-                    "reattach_expected_after_preview_shape": "heading_substring + blank line + pre_body_stub + space + post_body_continuation; no labels and no body-first preview.",
-                    "safety_note": "Semantic heading islands are not noise. Do not delete with remove_inline_noise; preserve all semantic text with exact extract_side_heading_and_reattach_body, split_block, or normalize_heading_boundary, or skip if boundaries are unclear.",
                 }
             )
             if len(targets) >= 3:

@@ -2,13 +2,9 @@ from __future__ import annotations
 
 import re
 from collections import Counter
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 
-from ._constants import (
-    _ALLOWED_RECLASSIFY_TARGET_ROLES,
-    _DOCX_IMAGE_PLACEHOLDER_PATTERN,
-    _RECLASSIFY_MARKDOWN_HEADING_PREFIX,
-)
+from ._constants import _DOCX_IMAGE_PLACEHOLDER_PATTERN
 from ._detectors import (
     _allowed_operations_for_config,
     _has_side_heading_left_context,
@@ -32,7 +28,6 @@ from ._validate import (
     _canonicalize_cleanup_operation_sequence,
     _is_exact_isolated_semantic_heading_numeric_prefix_cleanup,
     _is_safe_inline_noise_substring,
-    _max_allowed_reclassify_operations,
     _validate_duplicate_fragment_delete,
     _validate_operation,
     _validate_same_block_operation_sequence,
@@ -47,9 +42,42 @@ def _apply_cleanup_operations(
     operations: Sequence[CleanupOperation],
     config: ReaderCleanupConfig,
     global_candidate_block_ids: set[str],
-) -> tuple[str, dict[str, dict[str, object]], list[dict[str, object]], list[dict[str, object]]]:
+) -> tuple[
+    str,
+    dict[str, dict[str, object]],
+    list[dict[str, object]],
+    list[dict[str, object]],
+    dict[int, tuple[str, ...]],
+]:
+    """Apply the bounded cleanup operations and report which image anchors each one DESTROYED.
+
+    The fifth return value maps an operation's index in ``operations`` to the
+    ``[[DOCX_IMAGE_*]]`` ids that disappeared while it ran. It is measured, per operation, as
+    the difference between the anchor ids present in the slots it wrote BEFORE it ran and the
+    ids present in those same slots AFTER — a direct causal test, not a provenance guess.
+    Only operations that actually destroyed an anchor appear in it.
+
+    Attribution by the operation's declared ``block_id``/``next_id`` was wrong to begin with:
+    ``normalize_heading_boundary`` can absorb the NEXT block
+    (``_apply_heading_boundary_across_adjacent_block``) or rewrite the PREVIOUS one after a
+    join (``_apply_heading_boundary_to_joined_previous_block``), and neither carries a
+    ``next_id``. The first repair — carrying a *write set* of raw block ids along with the
+    text — fixed that but over-blamed: a join merges two blocks' provenance into one slot, so
+    every later operation on that slot inherited the join's blame and the join inherited
+    theirs. In the shape the prompt itself prescribes (join a fragmented paragraph, then
+    normalize the heading boundary of the joined text — right next to a figure block), the
+    join was reported as having lost an anchor it carried safely, and with three operations
+    the smear escalated into discarding the whole book's cleanup. Diffing the anchors
+    themselves cannot smear: an operation is on the hook for exactly the anchors that stopped
+    existing while it ran.
+
+    Two properties this preserves. An operation that changed nothing writes no slot, so its
+    diff is empty and it can never be blamed. An operation that mutated a slot and THEN
+    reported failure is still measured — the diff is taken before the applied/not-applied
+    split — so it stays on the hook for what it destroyed.
+    """
     if not operations:
-        return raw_markdown, {}, [], []
+        return raw_markdown, {}, [], [], {}
 
     protected_ids = _build_protected_block_ids(blocks=blocks, keep_toc=config.keep_toc)
     accepted: dict[str, dict[str, object]] = {}
@@ -58,12 +86,11 @@ def _apply_cleanup_operations(
     same_block_operation_history: dict[str, list[str]] = {}
     same_block_applied_history: dict[str, list[str]] = {}
     rewritten_blocks: list[str | None] = [block.text for block in blocks]
+    lost_docx_image_ids_by_operation_index: dict[int, tuple[str, ...]] = {}
     operations_by_index = _canonicalize_cleanup_operation_sequence(blocks=blocks, operations=operations)
     allowed_operations = _allowed_operations_for_config(config)
-    accepted_reclassify_count = 0
-    max_reclassify_count = _max_allowed_reclassify_operations(blocks=blocks, config=config)
 
-    for _, _, _, operation, sequence_decision in operations_by_index:
+    for _, _, operation_index, operation, sequence_decision in operations_by_index:
         block = _block_by_id(blocks, operation.block_id)
         if operation.operation not in allowed_operations:
             ignored.append(
@@ -71,16 +98,6 @@ def _apply_cleanup_operations(
                     **_serialize_cleanup_operation(operation=operation, block=block),
                     "chunk_index": operation.chunk_index,
                     "ignored_reason": "operation_not_allowed_by_cleanup_contract",
-                    **({"sequence_decision": sequence_decision} if sequence_decision else {}),
-                }
-            )
-            continue
-        if operation.operation == "reclassify_role" and accepted_reclassify_count >= max_reclassify_count:
-            ignored.append(
-                {
-                    **_serialize_cleanup_operation(operation=operation, block=block),
-                    "chunk_index": operation.chunk_index,
-                    "ignored_reason": "reclassify_global_safety_limit_exceeded",
                     **({"sequence_decision": sequence_decision} if sequence_decision else {}),
                 }
             )
@@ -122,12 +139,27 @@ def _apply_cleanup_operations(
             )
             continue
 
+        slot_texts_before_operation = list(rewritten_blocks)
         applied, after_state, apply_ignore_reason = _apply_single_operation_to_blocks(
             blocks=blocks,
             rewritten_blocks=rewritten_blocks,
             operation=operation,
             block=block,
         )
+        # Recorded from the OBSERVED diff, before the applied/not-applied split, so that an
+        # operation which mutates a slot and then reports failure is still on the hook for
+        # what it destroyed. Only the slots this operation touched are compared: every other
+        # slot is untouched by construction, so a document-wide diff would give the same
+        # answer at the cost of re-scanning the whole book once per operation.
+        written_slot_indexes = [
+            index for index, text in enumerate(rewritten_blocks) if text != slot_texts_before_operation[index]
+        ]
+        if written_slot_indexes:
+            lost_docx_image_ids = _docx_image_anchor_counts(
+                slot_texts_before_operation[index] for index in written_slot_indexes
+            ) - _docx_image_anchor_counts(rewritten_blocks[index] for index in written_slot_indexes)
+            if lost_docx_image_ids:
+                lost_docx_image_ids_by_operation_index[operation_index] = tuple(sorted(lost_docx_image_ids.elements()))
         if not applied:
             ignored.append(
                 {
@@ -144,8 +176,6 @@ def _apply_cleanup_operations(
                 "confidence": operation.confidence,
                 "chunk_index": operation.chunk_index,
             }
-        if operation.operation == "reclassify_role":
-            accepted_reclassify_count += 1
         accepted_cleanup_operations.append(
             {
                 **_serialize_cleanup_operation(operation=operation, block=block),
@@ -157,29 +187,133 @@ def _apply_cleanup_operations(
         same_block_applied_history.setdefault(block.block_id, []).append(operation.operation)
 
     if not accepted_cleanup_operations:
-        return raw_markdown, {}, [], ignored
+        return raw_markdown, {}, [], ignored, {}
 
     if _violates_global_safety(blocks=blocks, accepted_ids=tuple(accepted.keys()), config=config):
-        for block_id, metadata in list(accepted.items()):
-            block = _block_by_id(blocks, block_id)
-            ignored.append(
-                {
-                    **_serialize_delete_block(block=block, reason=str(metadata["reason"]), confidence=str(metadata["confidence"])),
-                    "chunk_index": metadata["chunk_index"],
-                    "ignored_reason": "global_safety_limit_exceeded",
-                }
-            )
-            accepted.pop(block_id, None)
-        accepted_cleanup_operations = [entry for entry in accepted_cleanup_operations if entry.get("operation") != "delete_block"]
-
-    if not accepted_cleanup_operations:
-        return raw_markdown, {}, [], ignored
+        return _reapply_without_delete_operations(
+            raw_markdown=raw_markdown,
+            blocks=blocks,
+            operations=operations,
+            config=config,
+            global_candidate_block_ids=global_candidate_block_ids,
+            accepted_deletes=accepted,
+            first_pass_ignored=ignored,
+        )
 
     kept_blocks = [block_text for block_text in rewritten_blocks if block_text is not None and block_text.strip()]
     cleaned_markdown = "\n\n".join(kept_blocks)
     if not cleaned_markdown.strip():
-        return raw_markdown, {}, [], ignored
-    return cleaned_markdown, accepted, accepted_cleanup_operations, ignored
+        return raw_markdown, {}, [], ignored, {}
+    return cleaned_markdown, accepted, accepted_cleanup_operations, ignored, lost_docx_image_ids_by_operation_index
+
+
+def _docx_image_anchor_counts(texts: Iterable[str | None]) -> Counter[str]:
+    """Multiset of ``[[DOCX_IMAGE_*]]`` ids across the given slot texts (``None`` = deleted).
+
+    A multiset, not a set: a duplicated anchor must not mask a lost one, and an operation
+    that turns two occurrences into one has destroyed an anchor even though the id survives.
+    """
+    counts: Counter[str] = Counter()
+    for text in texts:
+        if not text:
+            continue
+        for match in _DOCX_IMAGE_PLACEHOLDER_PATTERN.finditer(text):
+            placeholder = match.group(0)
+            counts[placeholder[len("[[DOCX_IMAGE_") : -len("]]")]] += 1
+    return counts
+
+
+def _reapply_without_delete_operations(
+    *,
+    raw_markdown: str,
+    blocks: Sequence[CleanupBlock],
+    operations: Sequence[CleanupOperation],
+    config: ReaderCleanupConfig,
+    global_candidate_block_ids: set[str],
+    accepted_deletes: dict[str, dict[str, object]],
+    first_pass_ignored: list[dict[str, object]],
+) -> tuple[
+    str,
+    dict[str, dict[str, object]],
+    list[dict[str, object]],
+    list[dict[str, object]],
+    dict[int, tuple[str, ...]],
+]:
+    """Roll the global-safety limit back for real: re-apply the run WITHOUT any deletion.
+
+    The rollback used to be a bookkeeping-only edit — the accepted deletions were moved into
+    the ignore list as ``global_safety_limit_exceeded`` and stripped from the accepted
+    operations, but ``rewritten_blocks`` still held ``None`` in every deleted slot. When no
+    other operation had been accepted the function returned ``raw_markdown`` and the lie was
+    invisible; the moment ONE non-delete operation was accepted (the measured lietaer run:
+    49 proposed deletions, limit tripped, 44 operations still accepted) the deleted blocks
+    were dropped from the delivered markdown anyway, while the report insisted they had been
+    REJECTED. Text left the book silently and the diagnostics pointed the other way.
+
+    Undoing the deletions slot-by-slot is not sound: by the time the limit is known, a join
+    or a heading-boundary absorption may have moved a deleted block's neighbour into another
+    slot, so restoring a slot could resurrect text a later operation legitimately rewrote.
+    Instead the remainder is re-applied from scratch over the pristine blocks, exactly as
+    ``service._reject_operations_losing_docx_image_anchors`` does when it drops the
+    operations that lost an image anchor.
+
+    EVERY ``delete_block`` operation is withheld from the retry, not only the accepted ones.
+    That is what makes the retry terminal: with no deletion in the set the retry's accepted
+    delete map is empty, ``_violates_global_safety`` short-circuits on it, and the rollback
+    cannot re-enter. It also matches the reported outcome — the limit rejects deletion as a
+    class, so no deletion may ship. Deletions the first pass had already refused for their
+    own reasons keep those reasons, carried over here, rather than being re-judged against a
+    document state that no longer exists.
+
+    The retry's anchor-loss records are keyed by position in the RETAINED list, so they are
+    remapped onto the caller's original operation indexes before returning: the anchor-loss
+    attribution in ``service`` indexes the full operation sequence, and an off-by-N there
+    would blame the wrong operation for a lost image.
+    """
+    # ``operation`` is not decoration: the very next statement — and every consumer that
+    # counts refused deletions — selects ignore entries with ``entry["operation"] ==
+    # "delete_block"``. Built through ``_serialize_delete_block`` alone these entries carried
+    # no ``operation`` key at all, so the rollback's own records were invisible to the filter
+    # that exists to find them.
+    global_safety_ignored = [
+        {
+            **_serialize_delete_block(
+                block=_block_by_id(blocks, block_id),
+                reason=str(metadata["reason"]),
+                confidence=str(metadata["confidence"]),
+            ),
+            "operation": "delete_block",
+            "chunk_index": metadata["chunk_index"],
+            "ignored_reason": "global_safety_limit_exceeded",
+        }
+        for block_id, metadata in accepted_deletes.items()
+    ]
+    already_refused_delete_ignored = [entry for entry in first_pass_ignored if entry.get("operation") == "delete_block"]
+    original_indexes = [index for index, operation in enumerate(operations) if operation.operation != "delete_block"]
+    retained_operations = [operations[index] for index in original_indexes]
+    (
+        retry_markdown,
+        retry_accepted,
+        retry_accepted_cleanup_operations,
+        retry_ignored,
+        retry_lost_docx_image_ids_by_operation_index,
+    ) = _apply_cleanup_operations(
+        raw_markdown=raw_markdown,
+        blocks=blocks,
+        operations=retained_operations,
+        config=config,
+        global_candidate_block_ids=global_candidate_block_ids,
+    )
+    return (
+        retry_markdown,
+        retry_accepted,
+        retry_accepted_cleanup_operations,
+        [*retry_ignored, *already_refused_delete_ignored, *global_safety_ignored],
+        {
+            original_indexes[retry_index]: lost_docx_image_ids
+            for retry_index, lost_docx_image_ids in retry_lost_docx_image_ids_by_operation_index.items()
+        },
+    )
 
 
 def _apply_reannotation_decisions(
@@ -452,16 +586,6 @@ def _apply_single_operation_to_blocks(
             return False, "", ignore_reason or "heading_boundary_not_applicable"
         rewritten_blocks[block.index] = applied_text
         return True, "heading_boundary_normalized", None
-    if operation.operation == "reclassify_role":
-        applied_text, ignore_reason = _apply_reclassify_role_to_text(
-            current_text=current_text,
-            block=block,
-            operation=operation,
-        )
-        if applied_text is None:
-            return False, "", ignore_reason or "reclassify_role_not_applicable"
-        rewritten_blocks[block.index] = applied_text
-        return True, f"role_reclassified_to_{operation.target_role}", None
     return False, "", "unsupported_operation"
 
 
@@ -617,6 +741,16 @@ def _apply_heading_boundary_to_text(
     body_start = current_text.find(body)
     if heading_start > body_start:
         return None, "heading_boundary_order_invalid"
+    # The two substrings must PARTITION the block, not overlap it. Nothing checked that, and
+    # the "no unaccounted text" guard could not: with ``0 < body_start < len(heading)`` the
+    # gap slice ``current_text[len(heading):body_start]`` runs backwards and is always empty,
+    # so the guard passed vacuously while the output ``heading + body`` emitted the shared
+    # span TWICE. A block whose overlap contained ``[[DOCX_IMAGE_img_014]]`` was delivered
+    # with the anchor duplicated — reconciliation only fails closed on anchors that go
+    # MISSING, so this shipped as ``stage_status: completed`` — and any other overlapping
+    # prose was duplicated with no signal at all.
+    if body_start < heading_start + len(heading):
+        return None, "heading_boundary_substrings_overlap"
     body_end = body_start + len(body)
     if heading_start == 0 and body_start > heading_start:
         preserved_body = current_text[body_start:].strip()
@@ -628,43 +762,3 @@ def _apply_heading_boundary_to_text(
     if remainder and len(re.sub(r"\s+", "", remainder)) > 12:
         return None, "heading_boundary_unaccounted_text"
     return f"{heading}\n\n{body}", None
-
-
-def _apply_reclassify_role_to_text(
-    *,
-    current_text: str,
-    block: CleanupBlock,
-    operation: CleanupOperation,
-) -> tuple[str | None, str | None]:
-    target_role = operation.target_role.strip().lower()
-    if target_role not in _ALLOWED_RECLASSIFY_TARGET_ROLES:
-        return None, "reclassify_target_role_invalid"
-    if "\n" in current_text.strip():
-        return None, "reclassify_multiline_block_unsupported"
-    expected = _reclassify_role_expected_markdown(current_text=current_text, target_role=target_role)
-    if expected is None:
-        return None, "reclassify_role_not_applicable"
-    if operation.expected_after_preview.strip() != expected:
-        return None, "reclassify_expected_after_preview_mismatch"
-    if target_role == "heading" and block.is_heading:
-        return None, "reclassify_role_noop"
-    if target_role != "heading" and not block.is_heading:
-        return None, "reclassify_source_role_incompatible"
-    if _strip_markdown_heading_marker(current_text) != _strip_markdown_heading_marker(expected):
-        return None, "reclassify_would_change_visible_text"
-    return expected, None
-
-
-def _reclassify_role_expected_markdown(*, current_text: str, target_role: str) -> str | None:
-    visible_text = _strip_markdown_heading_marker(current_text).strip()
-    if not visible_text:
-        return None
-    if target_role == "heading":
-        return f"{_RECLASSIFY_MARKDOWN_HEADING_PREFIX}{visible_text}"
-    if target_role in {"body", "attribution", "caption"}:
-        return visible_text
-    return None
-
-
-def _strip_markdown_heading_marker(text: str) -> str:
-    return re.sub(r"^\s*#{1,6}\s+", "", str(text or "").strip(), count=1)

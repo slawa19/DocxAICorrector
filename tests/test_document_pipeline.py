@@ -1992,6 +1992,7 @@ def test_run_document_processing_reader_cleanup_applies_runtime_anchor_repair(tm
     events, log_event = _capture_log_events()
     artifact_calls = {}
     cleanup_payloads = []
+    cleanup_prompts: list[tuple[str, str]] = []
     target = "КАК ЭТО РАБОТАЕТ: Местные органы власти могут помочь."
     raw_markdown = f"Intro\n\n{target}\n\nOutro"
     blocks = build_cleanup_blocks(raw_markdown)
@@ -2000,6 +2001,7 @@ def test_run_document_processing_reader_cleanup_applies_runtime_anchor_repair(tm
         if kwargs["system_prompt"].startswith("You are cleaning translated book Markdown"):
             payload = json.loads(kwargs["target_text"])
             cleanup_payloads.append(payload)
+            cleanup_prompts.append((str(payload.get("pass_name") or ""), kwargs["system_prompt"]))
             if payload.get("pass_name") == "anchor_repair":
                 target_block = next(block for block in payload["blocks"] if block["id"] == blocks[1].block_id)
                 return json.dumps(
@@ -2091,6 +2093,18 @@ def test_run_document_processing_reader_cleanup_applies_runtime_anchor_repair(tm
     assert artifact_calls["kwargs"]["markdown_text"] == runtime["state"]["latest_markdown"]
     assert any(payload.get("pass_name") == "anchor_repair" for payload in cleanup_payloads)
 
+    # Spec 052 seam: the system prompt used to be built ONCE, ~170 lines before
+    # ``anchor_targets`` were even resolved, and without ``include_anchor_repair_guidance``
+    # — so this anchor-repair request would have gone out without the instructions it
+    # depends on, while flipping the flag at that single call site would have shipped the
+    # dead guidance in all ~107 ordinary requests. The guidance now attaches to exactly the
+    # requests whose mode is on.
+    anchor_guidance = "If the request pass_name is anchor_repair, operate only inside the listed anchor_targets"
+    anchor_prompts = [prompt for pass_name, prompt in cleanup_prompts if pass_name == "anchor_repair"]
+    cleanup_only_prompts = [prompt for pass_name, prompt in cleanup_prompts if pass_name != "anchor_repair"]
+    assert anchor_prompts and all(anchor_guidance in prompt for prompt in anchor_prompts)
+    assert cleanup_only_prompts and not any(anchor_guidance in prompt for prompt in cleanup_only_prompts)
+
     report_path = tmp_path / "final.reader_cleanup_report.json"
     report_payload = json.loads(report_path.read_text(encoding="utf-8"))
     anchor_pass = report_payload["passes"]["anchor_repair_pass"]
@@ -2169,14 +2183,37 @@ def test_run_document_processing_preserves_base_result_when_reader_cleanup_fails
     info_events = [event for event in events if event["level"] == logging.INFO]
     noop_event = next(event for event in info_events if event["event_id"] == "reader_cleanup_noop")
     assert any("reader_cleanup_chunk_failed" in warning for warning in noop_event["context"]["warnings"])
-    assert runtime["state"]["latest_result_notices"] == [
+    # Spec 052 item 2, end to end. The pass lost its only chunk — a 100% failure rate — and
+    # applied nothing. It used to surface as the same yellow "only partially available"
+    # warning a single unavailable chunk in a hundred produces; the abort is now its own
+    # error-level notice that names the numbers, and it reaches ``latest_result_notices``,
+    # which is what the UI renders.
+    cleanup_notices = [
+        notice for notice in runtime["state"]["latest_result_notices"] if notice.get("kind") == "cleanup"
+    ]
+    assert cleanup_notices == [
         {
             "kind": "cleanup",
-            "level": "warning",
-            "message_key": "result.cleanup_advisory_failed",
-            "message": "Reader cleanup was only partially available; the accepted base content was preserved.",
+            "level": "error",
+            "message_key": "result.cleanup_aborted_failed_chunk_ratio",
+            "params": {
+                "failed_chunk_count": 1,
+                "cleanup_chunk_count": 1,
+                "failed_chunk_ratio_pct": 100.0,
+                "max_failed_chunk_ratio_pct": 10.0,
+            },
+            "message": (
+                "Reader cleanup was aborted: 1 of 1 chunks failed (100.0%), above the allowed 10.0%. "
+                "No cleanup was applied; the translated document was preserved."
+            ),
         }
     ]
+    abort_event = next(
+        event for event in events if event["event_id"] == "reader_cleanup_failed_chunk_ratio_exceeded"
+    )
+    assert abort_event["level"] == logging.WARNING
+    assert abort_event["context"]["failed_chunk_count"] == 1
+    assert abort_event["context"]["max_failed_chunk_ratio_pct"] == 10.0
 
 
 def test_run_document_processing_reader_cleanup_rebuild_preserves_images():
@@ -6379,6 +6416,288 @@ def test_reader_cleanup_noop_restores_image_heading_concats_from_registry():
         {"block_index": 1, "paragraph_id": "p0026", "text": "## Глава восьмая", "target_paragraph_indexes": [1]},
         {"block_index": 2, "paragraph_id": "p0027", "text": "Body paragraph", "target_paragraph_indexes": [2]},
     ]
+
+
+def test_reader_cleanup_postprocess_reports_an_image_anchor_discard_as_an_error_notice():
+    # Round-9 P1-A, end to end through the post-pass. A cleanup discarded to keep an image
+    # anchor in place applies NOTHING, exactly like a run that found nothing to clean — and
+    # that is what the owner used to see: an unchanged book, ``stage_status="completed"``,
+    # no notice, and a report still counting the thrown-away operations as accepted. It now
+    # carries its own error-level notice with the numbers, on the same footing as the
+    # failed-chunk-ratio abort.
+    anchor_block = "[[DOCX_IMAGE_img_014]] РИСУНОК 2.1 Архетип пределы роста"
+    page_block = "стр. 42"
+    raw_markdown = (
+        "Вступительный абзац достаточной длины, чтобы его сохранить.\n\n"
+        f"{page_block}\n\n"
+        f"{anchor_block}\n\n"
+        "Заключительный абзац достаточной длины."
+    )
+    runtime = _build_runtime_capture()
+    log_events = []
+
+    def _anchor_splitting_boundary(block, *, split_at):
+        text = str(block["text"])
+        return {
+            "id": block["id"],
+            "text_hash": block["text_hash"],
+            "operation": "normalize_heading_boundary",
+            "reason": "heading_fused_with_body",
+            "confidence": "high",
+            "evidence_before": text,
+            "expected_after_preview": text[:split_at] + "\n\n" + text[split_at:],
+            "safety_note": "adversarial anchor-splitting boundary",
+            "heading_substring": text[:split_at],
+            "body_substring": text[split_at:],
+        }
+
+    def generate_markdown_block(**kwargs):
+        payload = json.loads(kwargs["target_text"])
+        anchor = next(block for block in payload["blocks"] if block["text"] == anchor_block)
+        page = next(block for block in payload["blocks"] if block["text"] == page_block)
+        return json.dumps(
+            {
+                "cleanup_operations": [
+                    {
+                        "id": page["id"],
+                        "text_hash": page["text_hash"],
+                        "operation": "delete_block",
+                        "reason": "page_number",
+                        "confidence": "high",
+                        "evidence_before": page_block,
+                        "expected_after_preview": "",
+                        "safety_note": "page furniture",
+                    },
+                    _anchor_splitting_boundary(anchor, split_at=len("[[DOCX_IMAGE_")),
+                    _anchor_splitting_boundary(anchor, split_at=len("[[DOCX_IMAGE_img_")),
+                ],
+                "warnings": [],
+            },
+            ensure_ascii=False,
+        )
+
+    result = document_pipeline_late_phases._run_reader_cleanup_postprocess(
+        context=SimpleNamespace(
+            processing_operation="translate",
+            app_config={
+                "reader_cleanup_enabled": True,
+                "reader_cleanup_policy": "advisory",
+                "reader_cleanup_chunk_size": 5000,
+                "reader_cleanup_max_delete_block_ratio": 0.8,
+                "reader_cleanup_max_delete_char_ratio": 0.8,
+            },
+            model="anthropic:claude-sonnet-4-6",
+            max_retries=1,
+            uploaded_filename="book.docx",
+            runtime=runtime,
+            source_paragraphs=[],
+        ),
+        dependencies=SimpleNamespace(
+            get_client=lambda: object(),
+            generate_markdown_block=generate_markdown_block,
+            convert_markdown_to_docx_bytes=lambda markdown_text: markdown_text.encode("utf-8"),
+            preserve_source_paragraph_properties=lambda docx_bytes, paragraphs, generated_paragraph_registry=None: docx_bytes,
+            reinsert_inline_images=lambda docx_bytes, image_assets: docx_bytes,
+            log_event=lambda level, event_id, message, **context: log_events.append(
+                {"level": level, "event_id": event_id, "message": message, "context": context}
+            ),
+            present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
+        ),
+        emitters=SimpleNamespace(
+            emit_activity=lambda *args, **kwargs: None,
+            emit_state=lambda *args, **kwargs: None,
+        ),
+        state=SimpleNamespace(generated_paragraph_registry=[]),
+        cleanup_input_markdown=raw_markdown,
+        runtime_display_markdown=raw_markdown,
+        base_docx_bytes=b"base-docx",
+        job_count=1,
+        processed_image_assets=[],
+        formatting_registry=[],
+    )
+
+    assert result.markdown == raw_markdown
+    report = result.report
+    assert report is not None
+    assert report["stage_status"] == "failed"
+    assert _as_mapping(report["failure"])["kind"] == "docx_image_anchor_lost_cleanup_discarded"
+    assert _as_mapping(report["stats"])["accepted_cleanup_operation_count"] == 0
+    assert result.result_notices == (
+        {
+            "kind": "cleanup",
+            "level": "error",
+            "message_key": "result.cleanup_discarded_image_anchor_lost",
+            # Round-10 P3: ``rejected_cleanup_operation_count`` is gone from both the failure
+            # and this notice. It was provably always 0 — the entries it counted are only
+            # written on the branch where the rejection SUCCEEDED, which is the branch that
+            # never reaches this discard — so it reported a constant as a measurement.
+            "params": {
+                "missing_image_id_count": 1,
+                "discarded_cleanup_operation_count": 2,
+            },
+            "message": (
+                "Reader cleanup was discarded: 1 image anchor(s) would have been lost, and the operation "
+                "responsible could not be identified and rejected. All 2 accepted operation(s) were dropped; "
+                "the translated document was preserved with every image in place."
+            ),
+        },
+    )
+    discard_event = next(
+        event for event in log_events if event["event_id"] == "reader_cleanup_image_anchor_lost_cleanup_discarded"
+    )
+    assert discard_event["level"] == logging.WARNING
+    assert discard_event["context"]["missing_image_id_count"] == 1
+    assert discard_event["context"]["discarded_cleanup_operation_count"] == 2
+
+
+def test_reader_cleanup_postprocess_reports_an_anchor_repair_rollback_as_a_warning_notice():
+    # Round-10 P2-2. The anchor-repair increment lost an image anchor and was rolled back,
+    # so the figure captions the owner asked to be repaired were NOT repaired. The rollback
+    # left ``stage_status="completed"`` (correct — the first pass ships), no ``failure``, and
+    # nothing but a raw string in ``warnings``, which the UI never renders: the owner paid
+    # for the pass and had no way to learn it did not land. It now carries its own
+    # warning-level notice with the numbers, matching the parity the wholesale discard got.
+    anchor_block = "[[DOCX_IMAGE_img_014]] РИСУНОК 2.1 Архетип пределы роста"
+    page_block = "стр. 42"
+    raw_markdown = (
+        "Вступительный абзац достаточной длины, чтобы его сохранить.\n\n"
+        f"{page_block}\n\n"
+        f"{anchor_block}\n\n"
+        "Заключительный абзац достаточной длины."
+    )
+    runtime = _build_runtime_capture()
+    log_events = []
+
+    def generate_markdown_block(**kwargs):
+        payload = json.loads(kwargs["target_text"])
+        if str(payload.get("pass_name") or "") == "anchor_repair":
+            anchor = next(block for block in payload["blocks"] if block["text"] == anchor_block)
+            split_at = len("[[DOCX_IMAGE_")
+            return json.dumps(
+                {
+                    "cleanup_operations": [
+                        {
+                            "id": anchor["id"],
+                            "text_hash": anchor["text_hash"],
+                            "operation": "normalize_heading_boundary",
+                            "reason": "heading_fused_with_body",
+                            "confidence": "high",
+                            "evidence_before": anchor_block,
+                            "expected_after_preview": anchor_block[:split_at] + "\n\n" + anchor_block[split_at:],
+                            "safety_note": "adversarial anchor-splitting boundary",
+                            "heading_substring": anchor_block[:split_at],
+                            "body_substring": anchor_block[split_at:],
+                        }
+                    ],
+                    "warnings": [],
+                },
+                ensure_ascii=False,
+            )
+        page = next((block for block in payload["blocks"] if block["text"] == page_block), None)
+        if page is None:
+            return json.dumps({"cleanup_operations": [], "warnings": []}, ensure_ascii=False)
+        return json.dumps(
+            {
+                "cleanup_operations": [
+                    {
+                        "id": page["id"],
+                        "text_hash": page["text_hash"],
+                        "operation": "delete_block",
+                        "reason": "page_number",
+                        "confidence": "high",
+                        "evidence_before": page_block,
+                        "expected_after_preview": "",
+                        "safety_note": "page furniture",
+                    }
+                ],
+                "warnings": [],
+            },
+            ensure_ascii=False,
+        )
+
+    result = document_pipeline_late_phases._run_reader_cleanup_postprocess(
+        context=SimpleNamespace(
+            processing_operation="translate",
+            app_config={
+                "reader_cleanup_enabled": True,
+                "reader_cleanup_policy": "advisory",
+                "reader_cleanup_chunk_size": 5000,
+                "reader_cleanup_max_delete_block_ratio": 0.8,
+                "reader_cleanup_max_delete_char_ratio": 0.8,
+                "reader_cleanup_anchor_repair_enabled": True,
+                "reader_cleanup_anchor_targets": [
+                    {
+                        "category": "heading_fused_with_body",
+                        "block_id": "b_000002",
+                        "anchor_id": "a1",
+                        "snippet": "РИСУНОК 2.1",
+                    }
+                ],
+            },
+            model="anthropic:claude-sonnet-4-6",
+            max_retries=1,
+            uploaded_filename="book.docx",
+            runtime=runtime,
+            source_paragraphs=[],
+        ),
+        dependencies=SimpleNamespace(
+            get_client=lambda: object(),
+            generate_markdown_block=generate_markdown_block,
+            convert_markdown_to_docx_bytes=lambda markdown_text: markdown_text.encode("utf-8"),
+            preserve_source_paragraph_properties=lambda docx_bytes, paragraphs, generated_paragraph_registry=None: docx_bytes,
+            reinsert_inline_images=lambda docx_bytes, image_assets: docx_bytes,
+            log_event=lambda level, event_id, message, **context: log_events.append(
+                {"level": level, "event_id": event_id, "message": message, "context": context}
+            ),
+            present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
+        ),
+        emitters=SimpleNamespace(
+            emit_activity=lambda *args, **kwargs: None,
+            emit_state=lambda *args, **kwargs: None,
+        ),
+        state=SimpleNamespace(generated_paragraph_registry=[]),
+        cleanup_input_markdown=raw_markdown,
+        runtime_display_markdown=raw_markdown,
+        base_docx_bytes=b"base-docx",
+        job_count=1,
+        processed_image_assets=[],
+        formatting_registry=[],
+    )
+
+    report = result.report
+    assert report is not None
+    image_reconciliation = _as_mapping(report["image_reconciliation"])
+    assert image_reconciliation["anchor_repair_discarded_for_missing_image_ids"] is True
+    # The first pass IS delivered — this is not a stage failure, which is exactly why it
+    # needed a signal of its own rather than a ``failure`` entry.
+    assert report["stage_status"] == "completed"
+    assert "failure" not in report
+    assert page_block not in result.markdown
+    assert "[[DOCX_IMAGE_img_014]]" in result.markdown
+    assert result.result_notices == (
+        {
+            "kind": "cleanup",
+            "level": "warning",
+            "message_key": "result.cleanup_anchor_repair_rolled_back",
+            "params": {
+                "missing_image_id_count": 1,
+                "discarded_cleanup_operation_count": 1,
+            },
+            "message": (
+                "The reader-cleanup image-anchor repair pass was rolled back: it would have lost 1 image "
+                "anchor(s), so its 1 operation(s) were dropped. The rest of the cleanup was delivered with "
+                "every image in place."
+            ),
+        },
+    )
+    rollback_event = next(
+        event
+        for event in log_events
+        if event["event_id"] == "reader_cleanup_anchor_repair_discarded_for_missing_image_anchor"
+    )
+    assert rollback_event["level"] == logging.WARNING
+    assert rollback_event["context"]["missing_image_id_count"] == 1
+    assert rollback_event["context"]["discarded_cleanup_operation_count"] == 1
 
 
 def test_reader_cleanup_postprocess_persists_final_generated_registry_in_runtime_state(

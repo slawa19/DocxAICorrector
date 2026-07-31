@@ -10,6 +10,7 @@ from ._constants import (
     _ALLOWED_POLICIES,
     _DEFAULT_CLEANUP_CHUNK_SIZE,
     _DEFAULT_GLOBAL_PLAN_ENABLED,
+    _DEFAULT_MAX_FAILED_CHUNK_RATIO,
     _DEFAULT_OVERLAP_BLOCKS_AFTER,
     _DEFAULT_OVERLAP_BLOCKS_BEFORE,
 )
@@ -48,13 +49,12 @@ def resolve_reader_cleanup_config(*, app_config: Mapping[str, object], fallback_
         drop_back_matter=bool(app_config.get("reader_cleanup_drop_back_matter", False)),
         max_delete_block_ratio=_coerce_float(app_config.get("reader_cleanup_max_delete_block_ratio", 0.03), default=0.03),
         max_delete_char_ratio=_coerce_float(app_config.get("reader_cleanup_max_delete_char_ratio", 0.05), default=0.05),
-        max_reclassify_block_ratio=_coerce_float(
-            app_config.get("reader_cleanup_max_reclassify_block_ratio", 0.05),
-            default=0.05,
-        ),
+        # Spec 052 item 2: 1.0 meant "abort only when EVERY chunk failed" — 106 of 107
+        # chunks could fail and the run still reported completed/changed. 0.1 makes a
+        # partially executed pass an explicit, visible failure instead.
         max_failed_chunk_ratio=_coerce_float(
-            app_config.get("reader_cleanup_max_failed_chunk_ratio", 1.0),
-            default=1.0,
+            app_config.get("reader_cleanup_max_failed_chunk_ratio", _DEFAULT_MAX_FAILED_CHUNK_RATIO),
+            default=_DEFAULT_MAX_FAILED_CHUNK_RATIO,
         ),
         max_consecutive_deleted_blocks=_coerce_int(
             app_config.get("reader_cleanup_max_consecutive_deleted_blocks", 3),

@@ -7,7 +7,10 @@ from typing import Literal
 CleanupPolicy = Literal["off", "advisory", "strict"]
 CleanupConfidence = Literal["low", "medium", "high"]
 
-READER_CLEANUP_DEFAULT_SELECTOR = "openrouter:google/gemini-3-flash-preview"
+# Last-resort selector, used only when app_config carries no reader_cleanup_model at
+# all. Kept identical to resources/config.toml so model resolution has ONE answer:
+# the selector all three measured replay runs used (spec 052 item 1).
+READER_CLEANUP_DEFAULT_SELECTOR = "openrouter:anthropic/claude-haiku-4.5"
 _ALLOWED_POLICIES = {"off", "advisory", "strict"}
 _ALLOWED_CONFIDENCE = {"low", "medium", "high"}
 _ALLOWED_DELETE_REASONS = {
@@ -36,11 +39,8 @@ _ALLOWED_OPERATIONS = {
     "remove_inline_noise",
     "join_fragmented_paragraph",
     "normalize_heading_boundary",
-    "reclassify_role",
 }
-_ALLOWED_RECLASSIFY_TARGET_ROLES = {"heading", "body", "attribution", "caption"}
 _ALLOWED_REANNOTATION_ROLES = {"heading", "body", "list_item", "caption", "footnote"}
-_RECLASSIFY_MARKDOWN_HEADING_PREFIX = "## "
 _TOP_LEVEL_RESPONSE_FIELDS = {"cleanup_operations", "delete_blocks", "warnings"}
 _BLOCK_RESPONSE_FIELDS = {"id", "text_hash", "reason", "confidence"}
 _OPERATION_RESPONSE_FIELDS = {
@@ -60,7 +60,6 @@ _OPERATION_RESPONSE_FIELDS = {
     "heading_substring",
     "body_substring",
     "post_body_continuation",
-    "target_role",
 }
 _SAFE_CONFIDENCE_INFERENCE = {
     "page_number": "page_number",
@@ -72,11 +71,44 @@ _PAGE_NUMBER_PATTERN = re.compile(r"^(?:\(?\d{1,4}\)?|[Pp]age\s+\d{1,4}|стр\.
 _BLANK_PAGE_PATTERN = re.compile(r"^(?:blank\s+page|this page intentionally left blank)$", re.IGNORECASE)
 _ORPHAN_FOOTNOTE_PATTERN = re.compile(r"^(?:\[?\d{1,3}\]?|\(\d{1,3}\))$")
 _FOOTNOTE_BODY_PATTERN = re.compile(r"^(?:\[\d{1,3}\]|\(\d{1,3}\))\s+\S")
-_TOC_LIKE_PATTERN = re.compile(r"(?:\.{3,}|…{2,}|\s\d{1,4}\s*$)")
+# Spec 052 item 6. The old pattern was ``(?:\.{3,}|…{2,}|\s\d{1,4}\s*$)`` and a TOC-like
+# block is immune to every operation, so both of its branches leaked prose:
+#
+#   * ``\s\d{1,4}\s*$`` made ANY paragraph ending in a space and a number TOC-like —
+#     e.g. lietaer b_000871, 922 characters of prose ending "...миллениалов 2000".
+#   * ``\.{3,}`` fired on an ellipsis typed as three periods, so lietaer b_000006 — the
+#     3 481-character block of jacket endorsements containing "разрушительный рост..." —
+#     was TOC-like too. That is the block the spec cites.
+#
+# Both branches now require what actually distinguishes a contents line: a PAGE NUMBER.
+# A leader must be followed by one; a bare trailing number is accepted only on a single
+# line short enough to be one entry. Longer real contents/index runs do exist (lietaer's
+# table of contents is 140-163 chars, its subject index runs to 900), and they are
+# recovered by the page-reference density rule in ``_utils._is_toc_like_text`` — length
+# does not separate them from prose, page-number density does.
+_TOC_ENTRY_MAX_CHARS = 100
+_TOC_LIKE_PATTERN = re.compile(
+    r"(?:(?:\.{3,}|…{2,})\s*\d{1,4}|\A(?=.{1," + str(_TOC_ENTRY_MAX_CHARS) + r"}\Z).*\s\d{1,4}\s*\Z)"
+)
+# A contents/index run: it carries contents punctuation (a trailing page number or a
+# leader), AND page references are dense enough that it cannot be read as a sentence.
+# Prose that merely ends in a number, or merely contains an ellipsis, clears one bar but
+# never both.
+_TOC_PAGE_REFERENCE_TAIL_PATTERN = re.compile(r"(?:\s\d{1,4}\s*\Z|\.{3,}|…{2,})")
+_TOC_PAGE_REFERENCE_TOKEN_PATTERN = re.compile(r"\d{1,4}")
+_TOC_MIN_PAGE_REFERENCE_TOKENS = 3
+_TOC_MIN_PAGE_REFERENCE_TOKEN_RATIO = 0.15
 _EXTRACTION_ARTIFACT_PATTERN = re.compile(
     r"^(?:\[\[DOCX_[A-Za-z0-9_]+\]\]|\[\[IMAGE_[A-Za-z0-9_]+\]\]|<\/?placeholder>|---+|===+)$",
     re.IGNORECASE,
 )
+# Spec 052 item 4. ``_EXTRACTION_ARTIFACT_PATTERN`` above matches ``[[DOCX_IMAGE_*]]``
+# too, and on the three measured books EVERY block it classified was an image anchor
+# (43/43, 55/55, 24/24). ``extraction_artifact`` is an allowed delete reason while the
+# prompt forbids touching anchors, so payload and prompt contradicted each other and the
+# only thing standing between the model and 20-37 lost images per book was a single
+# validator check. Anchors now carry their own kind, which is on no deletion list.
+_DOCX_IMAGE_ANCHOR_KIND = "docx_image_anchor"
 _DOCX_IMAGE_PLACEHOLDER_PATTERN = re.compile(r"\[\[DOCX_IMAGE_[A-Za-z0-9_]+\]\]")
 _DOCX_IMAGE_PLACEHOLDER_ONLY_PATTERN = re.compile(r"^\s*\[\[DOCX_IMAGE_[A-Za-z0-9_]+\]\]\s*$")
 _SAFE_INLINE_NOISE_PATTERN = re.compile(
@@ -150,3 +182,6 @@ _DEFAULT_CLEANUP_CHUNK_SIZE = 8000
 _DEFAULT_OVERLAP_BLOCKS_BEFORE = 3
 _DEFAULT_OVERLAP_BLOCKS_AFTER = 3
 _DEFAULT_GLOBAL_PLAN_ENABLED = False
+# Spec 052 item 2. At the previous 1.0 the abort only triggered when literally every
+# chunk failed, so 106 of 107 failures still reported stage_status="completed".
+_DEFAULT_MAX_FAILED_CHUNK_RATIO = 0.1

@@ -4,6 +4,19 @@ from pathlib import Path
 import pytest
 from typing import Any
 
+from docxaicorrector.reader_cleanup_mvp._constants import (
+    _ALLOWED_DELETE_REASONS,
+    _ALLOWED_OPERATIONS,
+    _TOC_ENTRY_MAX_CHARS,
+    _TOC_LIKE_PATTERN,
+)
+from docxaicorrector.reader_cleanup_mvp._report import (
+    _extract_docx_image_placeholder_ids,
+    _failed_chunk_ratio_exceeds_threshold,
+    _image_reconciliation_warnings,
+    _reconcile_docx_image_placeholders,
+)
+from docxaicorrector.reader_cleanup_mvp._utils import _detect_block_kind
 from docxaicorrector.reader_cleanup_mvp import (
     ReaderCleanupConfig,
     ReaderCleanupStageError,
@@ -48,14 +61,16 @@ def _delete_block_operation(
     return payload
 
 
-def _reclassify_role_operation(
+def _unknown_operation_item(
     block: Any,
     *,
-    target_role: str,
-    expected_after_preview: str,
+    operation: str,
+    expected_after_preview: str = "",
     confidence: str = "high",
     reason: str = "role_assignment_correction",
+    extra: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    """A cleanup_operations item naming an operation this build does not implement."""
     if isinstance(block, dict):
         block_id = str(block["id"])
         text_hash = str(block["text_hash"])
@@ -64,17 +79,18 @@ def _reclassify_role_operation(
         block_id = str(block.block_id)
         text_hash = str(block.text_hash)
         text = str(block.text)
-    return {
+    payload = {
         "id": block_id,
         "text_hash": text_hash,
-        "operation": "reclassify_role",
+        "operation": operation,
         "reason": reason,
         "confidence": confidence,
         "evidence_before": text,
         "expected_after_preview": expected_after_preview,
         "safety_note": "Change only the local role marker; preserve visible text.",
-        "target_role": target_role,
     }
+    payload.update(extra or {})
+    return payload
 
 
 class _FakeAuthError(Exception):
@@ -143,19 +159,6 @@ def test_resolve_reader_cleanup_config_accepts_overlap_and_string_global_plan_fl
     assert config.overlap_blocks_before == 3
     assert config.overlap_blocks_after == 3
     assert config.global_plan_enabled is False
-    assert config.max_reclassify_block_ratio == 0.05
-
-
-def test_resolve_reader_cleanup_config_accepts_reclassify_cap() -> None:
-    config = resolve_reader_cleanup_config(
-        app_config={
-            "reader_cleanup_enabled": True,
-            "reader_cleanup_max_reclassify_block_ratio": 0.12,
-        },
-        fallback_model="fallback:model",
-    )
-
-    assert config.max_reclassify_block_ratio == 0.12
 
 
 def test_resolve_reader_cleanup_config_defaults_to_canonical_small_overlap_shape() -> None:
@@ -329,6 +332,1102 @@ def test_run_reader_cleanup_preserves_image_ids_on_four_replay_books() -> None:
         assert image_reconciliation["before_image_id_count"] == image_reconciliation["after_image_id_count"], markdown_path
         assert image_reconciliation["missing_image_ids"] == [], markdown_path
         assert image_reconciliation["missing_after_repair"] == [], markdown_path
+        # Spec 052 item 5 strengthens this from "the ids all came back" to "no image
+        # MOVED". Counting ids could be satisfied by pasting a lost anchor at the end of
+        # the document, which is exactly what the reconciler used to do: on the real
+        # replay of creating_wealth four figures from chapters 2 and 10 were re-appended
+        # after the last page while the report stayed green. Comparing the ORDERED anchor
+        # sequence cannot be satisfied that way.
+        assert _extract_docx_image_placeholder_ids(result.cleaned_markdown) == _extract_docx_image_placeholder_ids(
+            markdown
+        ), markdown_path
+        assert image_reconciliation["reinserted_image_ids"] == [], markdown_path
+        assert image_reconciliation["cleanup_discarded_for_missing_image_ids"] is False, markdown_path
+
+        # Second adversarial pass on the same real books, and the one that matters now.
+        # Deleting anchor blocks was never the route by which images actually moved — that
+        # is refused by ``docx_image_anchor_protected`` — so the delete pass above cannot
+        # tell whether the reconciler re-appends. The measured route was an ACCEPTED
+        # ``normalize_heading_boundary`` cutting a figure block between "[[DOCX_IMAGE_" and
+        # "img_014]]", which broke the placeholder and sent the figure to the end of the
+        # book. This pass proposes exactly that, on every figure block of every book.
+        #
+        # What this pass DOES verify, at real-book scale: every one of those operations is
+        # rejected by name and no anchor moves. What it does NOT verify is the reconciler's
+        # re-append behaviour — the rejection layer answers first, so the reconciler is
+        # never reached and a mutation restoring re-append leaves this pass green. The
+        # reconciler's own contract is pinned by
+        # ``test_reconcile_discards_the_cleanup_when_an_anchor_cannot_be_restored`` and
+        # ``test_unattributable_anchor_loss_fails_the_pass_visibly``, which run in CI
+        # without the ``.run/`` corpora.
+        def boundary_provider(payload: dict[str, Any], chunk_index: int, chunk_count: int) -> str:
+            operations = []
+            for block in payload["blocks"]:
+                text = str(block.get("text") or "")
+                if not text.startswith("[[DOCX_IMAGE_") or len(text) <= len("[[DOCX_IMAGE_"):
+                    continue
+                operations.append(
+                    {
+                        "id": block["id"],
+                        "text_hash": block["text_hash"],
+                        "operation": "normalize_heading_boundary",
+                        "reason": "heading_fused_with_body",
+                        "confidence": "high",
+                        "evidence_before": text,
+                        "expected_after_preview": "[[DOCX_IMAGE_\n\n" + text[len("[[DOCX_IMAGE_") :],
+                        "safety_note": "adversarial anchor-splitting boundary",
+                        "heading_substring": "[[DOCX_IMAGE_",
+                        "body_substring": text[len("[[DOCX_IMAGE_") :],
+                    }
+                )
+            return json.dumps({"cleanup_operations": operations, "warnings": []}, ensure_ascii=False)
+
+        boundary_result = run_reader_cleanup(
+            markdown_text=markdown,
+            config=ReaderCleanupConfig(enabled=True, chunk_size=50000, keep_toc=False),
+            operation_provider=boundary_provider,
+        )
+
+        assert _extract_docx_image_placeholder_ids(
+            boundary_result.cleaned_markdown
+        ) == _extract_docx_image_placeholder_ids(markdown), markdown_path
+        assert boundary_result.report_payload["image_reconciliation"]["reinserted_image_ids"] == [], markdown_path
+        # Say which layer answered, so a change of layer shows up here instead of passing
+        # quietly: every anchor-splitting operation is refused, none is accepted.
+        assert not [
+            entry
+            for entry in boundary_result.report_payload["accepted_cleanup_operations"]
+            if entry.get("operation") == "normalize_heading_boundary"
+        ], markdown_path
+
+
+_ANCHOR_FIGURE_BLOCK = "[[DOCX_IMAGE_img_014]] РИСУНОК 2.1 Архетип пределы роста"
+_PAGE_FURNITURE_BLOCK = "стр. 42"
+_ANCHOR_MARKDOWN = (
+    "Вступительный абзац достаточной длины, чтобы его сохранить.\n\n"
+    f"{_PAGE_FURNITURE_BLOCK}\n\n"
+    f"{_ANCHOR_FIGURE_BLOCK}\n\n"
+    "Заключительный абзац достаточной длины."
+)
+
+
+def _anchor_splitting_boundary_operation(block: dict[str, Any], *, split_at: int) -> dict[str, Any]:
+    """A ``normalize_heading_boundary`` that cuts an image placeholder in half.
+
+    This is the measured route by which figures actually moved: the placeholder stops
+    matching, the id "disappears", and the old reconciler pasted it after the last page.
+    """
+    text = str(block["text"])
+    return {
+        "id": block["id"],
+        "text_hash": block["text_hash"],
+        "operation": "normalize_heading_boundary",
+        "reason": "heading_fused_with_body",
+        "confidence": "high",
+        "evidence_before": text,
+        "expected_after_preview": text[:split_at] + "\n\n" + text[split_at:],
+        "safety_note": "adversarial anchor-splitting boundary",
+        "heading_substring": text[:split_at],
+        "body_substring": text[split_at:],
+    }
+
+
+def _page_furniture_delete_operation(block: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": block["id"],
+        "text_hash": block["text_hash"],
+        "operation": "delete_block",
+        "reason": "page_number",
+        "confidence": "high",
+        "evidence_before": str(block["text"]),
+        "expected_after_preview": "",
+        "safety_note": "page furniture",
+    }
+
+
+def _permissive_anchor_config() -> ReaderCleanupConfig:
+    return ReaderCleanupConfig(enabled=True, max_delete_block_ratio=1.0, max_delete_char_ratio=1.0)
+
+
+def test_anchor_breaking_operation_is_rejected_and_the_rest_of_the_cleanup_survives() -> None:
+    # Spec 052 item 5, in CI and without the gitignored replay corpora. The operation that
+    # breaks a figure anchor is dropped BY NAME; the unrelated page-number deletion in the
+    # same response still ships. "Reject the operation that lost it" is only worth anything
+    # if the rest of the cleanup survives the rejection.
+    def provider(payload: dict[str, Any], chunk_index: int, chunk_count: int) -> str:
+        anchor = next(block for block in payload["blocks"] if block["text"] == _ANCHOR_FIGURE_BLOCK)
+        page = next(block for block in payload["blocks"] if block["text"] == _PAGE_FURNITURE_BLOCK)
+        return json.dumps(
+            {
+                "cleanup_operations": [
+                    _page_furniture_delete_operation(page),
+                    _anchor_splitting_boundary_operation(anchor, split_at=len("[[DOCX_IMAGE_")),
+                ],
+                "warnings": [],
+            },
+            ensure_ascii=False,
+        )
+
+    result = run_reader_cleanup(
+        markdown_text=_ANCHOR_MARKDOWN,
+        config=_permissive_anchor_config(),
+        operation_provider=provider,
+    )
+    report = result.report_payload
+
+    assert result.changed is True
+    assert _extract_docx_image_placeholder_ids(result.cleaned_markdown) == _extract_docx_image_placeholder_ids(
+        _ANCHOR_MARKDOWN
+    )
+    assert _PAGE_FURNITURE_BLOCK not in result.cleaned_markdown
+    assert report["stage_status"] == "completed"
+    assert "failure" not in report
+    assert [entry["operation"] for entry in report["accepted_cleanup_operations"]] == ["delete_block"]
+    rejected = [
+        entry
+        for entry in report["ignored_cleanup_operations"]
+        if entry.get("ignored_reason") == "docx_image_anchor_lost_by_operation"
+    ]
+    assert [entry["operation"] for entry in rejected] == ["normalize_heading_boundary"]
+    assert rejected[0]["lost_docx_image_ids"] == ["img_014"]
+
+
+def test_anchor_lost_by_an_operation_targeting_a_different_block_is_still_attributed() -> None:
+    # Round-9 P1-B. The operation names ``b_000002`` (the fused-heading block); the anchor
+    # it destroys lives in ``b_000003``, absorbed through
+    # ``_apply_heading_boundary_across_adjacent_block``. Attribution by declared
+    # ``block_id``/``next_id`` blamed nobody here (``normalize_heading_boundary`` has no
+    # ``next_id`` at all), so the loss was unattributable and the ENTIRE book's cleanup was
+    # thrown away. Blame follows the anchors the operation actually destroyed instead.
+    heading_block = "Заголовок раздела Текст"
+    markdown = (
+        "Вступительный абзац достаточной длины, чтобы его сохранить.\n\n"
+        f"{_PAGE_FURNITURE_BLOCK}\n\n"
+        f"{heading_block}\n\n"
+        "[[DOCX_IMAGE_img_009]]\n\n"
+        "Заключительный абзац достаточной длины."
+    )
+
+    def provider(payload: dict[str, Any], chunk_index: int, chunk_count: int) -> str:
+        target = next(block for block in payload["blocks"] if block["text"] == heading_block)
+        page = next(block for block in payload["blocks"] if block["text"] == _PAGE_FURNITURE_BLOCK)
+        return json.dumps(
+            {
+                "cleanup_operations": [
+                    _page_furniture_delete_operation(page),
+                    {
+                        "id": target["id"],
+                        "text_hash": target["text_hash"],
+                        "operation": "normalize_heading_boundary",
+                        "reason": "heading_fused_with_body",
+                        "confidence": "high",
+                        "evidence_before": heading_block,
+                        "expected_after_preview": "Заголовок раздела Текст [[DOCX\n\n_IMAGE_img_009]]",
+                        "safety_note": "boundary reaching into the next block",
+                        "heading_substring": "Заголовок раздела Текст [[DOCX",
+                        "body_substring": "_IMAGE_img_009]]",
+                    },
+                ],
+                "warnings": [],
+            },
+            ensure_ascii=False,
+        )
+
+    result = run_reader_cleanup(
+        markdown_text=markdown,
+        config=_permissive_anchor_config(),
+        operation_provider=provider,
+    )
+    report = result.report_payload
+
+    assert _extract_docx_image_placeholder_ids(result.cleaned_markdown) == ["img_009"]
+    assert report["stage_status"] == "completed"
+    assert "failure" not in report
+    assert report["image_reconciliation"]["cleanup_discarded_for_missing_image_ids"] is False
+    rejected = [
+        entry
+        for entry in report["ignored_cleanup_operations"]
+        if entry.get("ignored_reason") == "docx_image_anchor_lost_by_operation"
+    ]
+    assert [entry["operation"] for entry in rejected] == ["normalize_heading_boundary"]
+    # The operation declared only the fused-heading block (b_000002); the anchor it destroyed
+    # lived in b_000003, which it never named. Blame lands on it anyway, because what is
+    # measured is the anchor that stopped existing while it ran.
+    assert rejected[0]["id"] == "b_000002"
+    assert rejected[0]["lost_docx_image_ids"] == ["img_009"]
+    # And the unrelated deletion in the same response still ships.
+    assert [entry["operation"] for entry in report["accepted_cleanup_operations"]] == ["delete_block"]
+    assert result.changed is True
+
+
+def test_operation_refused_for_its_own_reason_is_not_blamed_for_a_lost_anchor() -> None:
+    # Round-9 P2-2. The join is refused in the first attempt as
+    # ``join_next_text_hash_mismatch`` — it never ran, so it cannot have lost anything. The
+    # rejection layer used to stamp ``docx_image_anchor_lost_by_operation`` over every
+    # index it considered, replacing the real reason with a fabricated one.
+    fragment = "Начало фрагмента, который обрывается"
+    markdown = (
+        "Вступительный абзац достаточной длины, чтобы его сохранить.\n\n"
+        f"{fragment}\n\n"
+        f"{_ANCHOR_FIGURE_BLOCK}\n\n"
+        "Заключительный абзац достаточной длины."
+    )
+
+    def provider(payload: dict[str, Any], chunk_index: int, chunk_count: int) -> str:
+        fragment_block = next(block for block in payload["blocks"] if block["text"] == fragment)
+        anchor = next(block for block in payload["blocks"] if block["text"] == _ANCHOR_FIGURE_BLOCK)
+        return json.dumps(
+            {
+                "cleanup_operations": [
+                    _anchor_splitting_boundary_operation(anchor, split_at=len("[[DOCX_IMAGE_")),
+                    {
+                        "id": fragment_block["id"],
+                        "text_hash": fragment_block["text_hash"],
+                        "operation": "join_fragmented_paragraph",
+                        "reason": "fragmented_paragraph",
+                        "confidence": "high",
+                        "evidence_before": fragment,
+                        "expected_after_preview": f"{fragment} {_ANCHOR_FIGURE_BLOCK}",
+                        "safety_note": "join with a stale next-block hash",
+                        "next_id": anchor["id"],
+                        "next_text_hash": "deadbeefdeadbeef",
+                    },
+                ],
+                "warnings": [],
+            },
+            ensure_ascii=False,
+        )
+
+    result = run_reader_cleanup(
+        markdown_text=markdown,
+        config=_permissive_anchor_config(),
+        operation_provider=provider,
+    )
+    report = result.report_payload
+
+    assert _extract_docx_image_placeholder_ids(result.cleaned_markdown) == ["img_014"]
+    reasons_by_operation = {
+        str(entry["operation"]): str(entry["ignored_reason"]) for entry in report["ignored_cleanup_operations"]
+    }
+    assert reasons_by_operation["join_fragmented_paragraph"] == "join_next_text_hash_mismatch"
+    assert reasons_by_operation["normalize_heading_boundary"] == "docx_image_anchor_lost_by_operation"
+
+
+_FRAGMENT_BLOCK = "Первая часть фразы продолжается"
+_JOINED_WITH_ANCHOR = f"{_FRAGMENT_BLOCK} {_ANCHOR_FIGURE_BLOCK}"
+_JOIN_THEN_BOUNDARY_MARKDOWN = (
+    "Вступительный абзац достаточной длины, чтобы его сохранить в выдаче целиком.\n\n"
+    f"{_FRAGMENT_BLOCK}\n\n"
+    f"{_ANCHOR_FIGURE_BLOCK}\n\n"
+    "Заключительный абзац достаточной длины, чтобы его сохранить в выдаче."
+)
+
+
+def _join_operation(block: dict[str, Any], next_block: dict[str, Any], *, expected_after_preview: str) -> dict[str, Any]:
+    return {
+        "id": block["id"],
+        "text_hash": block["text_hash"],
+        "operation": "join_fragmented_paragraph",
+        "reason": "fragmented_paragraph",
+        "confidence": "high",
+        "evidence_before": str(block["text"]),
+        "expected_after_preview": expected_after_preview,
+        "safety_note": "Join only the adjacent block using exact next_id and next_text_hash.",
+        "next_id": next_block["id"],
+        "next_text_hash": next_block["text_hash"],
+    }
+
+
+def _boundary_operation_on_text(block: dict[str, Any], *, text: str, split_at: int) -> dict[str, Any]:
+    """A ``normalize_heading_boundary`` whose exact parts describe ``text``, not the block."""
+    return {
+        "id": block["id"],
+        "text_hash": block["text_hash"],
+        "operation": "normalize_heading_boundary",
+        "reason": "heading_fused_with_body",
+        "confidence": "high",
+        "evidence_before": text,
+        "expected_after_preview": f"{text[:split_at]}\n\n{text[split_at:]}",
+        "safety_note": "anchor-splitting boundary on the joined slot",
+        "heading_substring": text[:split_at],
+        "body_substring": text[split_at:],
+    }
+
+
+def test_a_join_that_carried_an_anchor_safely_is_not_blamed_for_a_later_operations_loss() -> None:
+    # Round-10 P1. "Join the fragmented paragraph, then normalize the heading boundary of the
+    # joined text" is the sequence the cleanup prompt itself prescribes for
+    # ``heading_fused_with_body``, and it happens right next to figure blocks. Attribution by
+    # block-id write sets merged the join's two blocks into one provenance set and handed
+    # that set to every later write on the slot, so the join — which carried the anchor
+    # across intact — was reported as having lost it. The anchor diff cannot smear: the join
+    # takes ``[[DOCX_IMAGE_img_014]]`` from one slot and puts the same anchor in another, so
+    # nothing stopped existing while it ran.
+    def provider(payload: dict[str, Any], chunk_index: int, chunk_count: int) -> str:
+        fragment = next(block for block in payload["blocks"] if block["text"] == _FRAGMENT_BLOCK)
+        anchor = next(block for block in payload["blocks"] if block["text"] == _ANCHOR_FIGURE_BLOCK)
+        return json.dumps(
+            {
+                "cleanup_operations": [
+                    _join_operation(fragment, anchor, expected_after_preview=_JOINED_WITH_ANCHOR),
+                    _boundary_operation_on_text(
+                        fragment,
+                        text=_JOINED_WITH_ANCHOR,
+                        split_at=_JOINED_WITH_ANCHOR.index("[[DOCX_IMAGE_") + len("[[DOCX_IMAGE_"),
+                    ),
+                ],
+                "warnings": [],
+            },
+            ensure_ascii=False,
+        )
+
+    result = run_reader_cleanup(
+        markdown_text=_JOIN_THEN_BOUNDARY_MARKDOWN,
+        config=ReaderCleanupConfig(enabled=True, chunk_size=100000),
+        operation_provider=provider,
+    )
+    report = result.report_payload
+
+    # Exactly one operation is blamed, and it is the one that cut the placeholder in half.
+    rejected = [
+        entry
+        for entry in report["ignored_cleanup_operations"]
+        if entry.get("ignored_reason") == "docx_image_anchor_lost_by_operation"
+    ]
+    assert [entry["operation"] for entry in rejected] == ["normalize_heading_boundary"]
+    assert rejected[0]["lost_docx_image_ids"] == ["img_014"]
+    # The innocent join keeps its place, so the paragraph is still repaired and delivered.
+    assert [entry["operation"] for entry in report["accepted_cleanup_operations"]] == ["join_fragmented_paragraph"]
+    assert result.changed is True
+    assert _JOINED_WITH_ANCHOR in result.cleaned_markdown
+    assert _extract_docx_image_placeholder_ids(result.cleaned_markdown) == ["img_014"]
+    assert report["stage_status"] == "completed"
+    assert "reader_cleanup_image_anchor_lost_by_operation:1:rejected_operations=1" in report["warnings"]
+
+
+def test_smeared_anchor_blame_does_not_escalate_into_discarding_the_whole_cleanup() -> None:
+    # Round-10 P1, the consequence that makes it a P1 rather than a reporting wart. A third
+    # operation splits the figure block itself; it is inert while the join holds that block's
+    # text, and destructive the moment the join is rolled back. Smeared blame rejected the
+    # innocent join together with the real culprit, which freed the third operation to run,
+    # which lost the anchor again — and an anchor still missing after the rejection retry
+    # discards the ENTIRE book's cleanup. Rejecting only the culprit keeps the join, which
+    # keeps the third operation inapplicable, which ships the cleanup.
+    def provider(payload: dict[str, Any], chunk_index: int, chunk_count: int) -> str:
+        fragment = next(block for block in payload["blocks"] if block["text"] == _FRAGMENT_BLOCK)
+        anchor = next(block for block in payload["blocks"] if block["text"] == _ANCHOR_FIGURE_BLOCK)
+        return json.dumps(
+            {
+                "cleanup_operations": [
+                    _join_operation(fragment, anchor, expected_after_preview=_JOINED_WITH_ANCHOR),
+                    _boundary_operation_on_text(
+                        fragment,
+                        text=_JOINED_WITH_ANCHOR,
+                        split_at=_JOINED_WITH_ANCHOR.index("[[DOCX_IMAGE_") + len("[[DOCX_IMAGE_"),
+                    ),
+                    _anchor_splitting_boundary_operation(anchor, split_at=len("[[DOCX_IMAGE_")),
+                ],
+                "warnings": [],
+            },
+            ensure_ascii=False,
+        )
+
+    result = run_reader_cleanup(
+        markdown_text=_JOIN_THEN_BOUNDARY_MARKDOWN,
+        config=ReaderCleanupConfig(enabled=True, chunk_size=100000),
+        operation_provider=provider,
+    )
+    report = result.report_payload
+
+    assert report["stage_status"] == "completed"
+    assert "failure" not in report
+    assert result.changed is True
+    assert result.cleaned_markdown != _JOIN_THEN_BOUNDARY_MARKDOWN
+    assert _extract_docx_image_placeholder_ids(result.cleaned_markdown) == ["img_014"]
+    assert [entry["operation"] for entry in report["accepted_cleanup_operations"]] == ["join_fragmented_paragraph"]
+    assert [
+        entry["id"]
+        for entry in report["ignored_cleanup_operations"]
+        if entry.get("ignored_reason") == "docx_image_anchor_lost_by_operation"
+    ] == ["b_000001"]
+
+
+def test_an_operation_that_changed_nothing_is_never_blamed_for_a_lost_anchor() -> None:
+    # The invariant the anchor diff must not lose while gaining precision. The boundary
+    # operation destroys the anchor; the delete operation in the same response is refused
+    # before it can touch a slot. A refused operation writes nothing, so its anchor diff is
+    # empty and it keeps its own ignore reason instead of a stamped-on anchor-loss verdict.
+    def provider(payload: dict[str, Any], chunk_index: int, chunk_count: int) -> str:
+        anchor = next(block for block in payload["blocks"] if block["text"] == _ANCHOR_FIGURE_BLOCK)
+        page = next(block for block in payload["blocks"] if block["text"] == _PAGE_FURNITURE_BLOCK)
+        stale_delete = _page_furniture_delete_operation(page)
+        stale_delete["text_hash"] = "0" * 64
+        return json.dumps(
+            {
+                "cleanup_operations": [
+                    stale_delete,
+                    _anchor_splitting_boundary_operation(anchor, split_at=len("[[DOCX_IMAGE_")),
+                ],
+                "warnings": [],
+            },
+            ensure_ascii=False,
+        )
+
+    result = run_reader_cleanup(
+        markdown_text=_ANCHOR_MARKDOWN,
+        config=_permissive_anchor_config(),
+        operation_provider=provider,
+    )
+    report = result.report_payload
+
+    reasons_by_operation = {
+        str(entry["operation"]): str(entry["ignored_reason"]) for entry in report["ignored_cleanup_operations"]
+    }
+    assert reasons_by_operation["normalize_heading_boundary"] == "docx_image_anchor_lost_by_operation"
+    assert reasons_by_operation["delete_block"] != "docx_image_anchor_lost_by_operation"
+    assert _extract_docx_image_placeholder_ids(result.cleaned_markdown) == ["img_014"]
+
+
+_OVERLAP_CAPTION_BLOCK = "[[DOCX_IMAGE_img_014]] Подпись к рисунку продолжается дальше в тексте книги."
+_OVERLAP_MARKDOWN = (
+    "Вступительный абзац достаточной длины, чтобы его сохранить.\n\n"
+    f"{_OVERLAP_CAPTION_BLOCK}\n\n"
+    "Заключительный абзац достаточной длины."
+)
+
+
+def _overlapping_boundary_provider(*, heading: str, body: str):
+    def provider(payload: dict[str, Any], chunk_index: int, chunk_count: int) -> str:
+        block = next(item for item in payload["blocks"] if item["text"] == _OVERLAP_CAPTION_BLOCK)
+        return json.dumps(
+            {
+                "cleanup_operations": [
+                    {
+                        "id": block["id"],
+                        "text_hash": block["text_hash"],
+                        "operation": "normalize_heading_boundary",
+                        "reason": "heading_fused_with_body",
+                        "confidence": "high",
+                        "evidence_before": _OVERLAP_CAPTION_BLOCK,
+                        "expected_after_preview": f"{heading}\n\n{body}",
+                        "safety_note": "overlapping heading and body substrings",
+                        "heading_substring": heading,
+                        "body_substring": body,
+                    }
+                ],
+                "warnings": [],
+            },
+            ensure_ascii=False,
+        )
+
+    return provider
+
+
+@pytest.mark.parametrize(
+    ("heading_end", "body_start"),
+    [
+        # The two substrings overlap in the middle of the block...
+        (40, 10),
+        # ...and the degenerate case where the heading is a prefix of the body, which puts
+        # the whole image placeholder inside the overlap.
+        (40, 0),
+    ],
+)
+def test_overlapping_heading_and_body_substrings_are_refused(heading_end: int, body_start: int) -> None:
+    # Round-10 P2-3. ``normalize_heading_boundary`` emits ``heading + "\n\n" + body`` and
+    # relied on a "no unaccounted text" guard to prove the two parts covered the block. That
+    # guard computed the gap as ``current_text[len(heading):body_start]``, which for an
+    # overlap runs backwards and is ALWAYS empty — so it passed vacuously while the shared
+    # span was emitted twice. With the image placeholder inside the overlap the run delivered
+    # ``['img_014', 'img_014']`` from a source holding one, and reported
+    # ``stage_status: completed``: reconciliation fails closed on anchors that go missing,
+    # never on anchors that multiply.
+    result = run_reader_cleanup(
+        markdown_text=_OVERLAP_MARKDOWN,
+        config=_permissive_anchor_config(),
+        operation_provider=_overlapping_boundary_provider(
+            heading=_OVERLAP_CAPTION_BLOCK[:heading_end],
+            body=_OVERLAP_CAPTION_BLOCK[body_start:],
+        ),
+    )
+    report = result.report_payload
+
+    assert result.changed is False
+    assert result.cleaned_markdown == _OVERLAP_MARKDOWN
+    assert [entry["ignored_reason"] for entry in report["ignored_cleanup_operations"]] == [
+        "heading_boundary_substrings_overlap"
+    ]
+    assert report["accepted_cleanup_operations"] == []
+    # No anchor multiplied, and no prose was duplicated either.
+    assert _extract_docx_image_placeholder_ids(result.cleaned_markdown) == ["img_014"]
+    assert report["image_reconciliation"]["extra_image_ids"] == []
+    assert result.cleaned_markdown.count("Подпись к рисунку") == 1
+
+
+def test_unattributable_anchor_loss_fails_the_pass_visibly() -> None:
+    # Round-9 P1-A. Two boundary operations target the same figure block: the first applies
+    # and breaks the anchor, the second is refused as a same-block sequence violation. Drop
+    # the culprit and the second one is now free to apply — and breaks the same anchor
+    # again. Nothing can be delivered, so the cleanup is discarded wholesale.
+    #
+    # That discard used to be invisible: ``stage_status="completed"``, no ``failure``, and
+    # the thrown-away operations still counted as ACCEPTED in the stats, in
+    # ``accepted_cleanup_operations`` and in ``accepted_delete_block_ids`` — which the
+    # lineage-rebuild harness turns into registry deletions for a document whose markdown
+    # never changed.
+    def provider(payload: dict[str, Any], chunk_index: int, chunk_count: int) -> str:
+        anchor = next(block for block in payload["blocks"] if block["text"] == _ANCHOR_FIGURE_BLOCK)
+        page = next(block for block in payload["blocks"] if block["text"] == _PAGE_FURNITURE_BLOCK)
+        return json.dumps(
+            {
+                "cleanup_operations": [
+                    _page_furniture_delete_operation(page),
+                    _anchor_splitting_boundary_operation(anchor, split_at=len("[[DOCX_IMAGE_")),
+                    _anchor_splitting_boundary_operation(anchor, split_at=len("[[DOCX_IMAGE_img_")),
+                ],
+                "warnings": [],
+            },
+            ensure_ascii=False,
+        )
+
+    result = run_reader_cleanup(
+        markdown_text=_ANCHOR_MARKDOWN,
+        config=_permissive_anchor_config(),
+        operation_provider=provider,
+    )
+    report = result.report_payload
+
+    assert result.changed is False
+    assert result.cleaned_markdown == _ANCHOR_MARKDOWN
+    assert report["stage_status"] == "failed"
+    assert report["failure"]["kind"] == "docx_image_anchor_lost_cleanup_discarded"
+    assert report["failure"]["missing_docx_image_id_count"] == 1
+    assert report["failure"]["missing_docx_image_ids"] == ["img_014"]
+    assert report["failure"]["discarded_cleanup_operation_count"] == 2
+    # Round-10 P3: the failure no longer publishes ``rejected_cleanup_operation_count``. It
+    # was unreachable-by-construction zero — ``docx_image_anchor_lost_by_operation`` entries
+    # exist only where the rejection SUCCEEDED, and a successful rejection leaves no missing
+    # anchor for this branch to discard over.
+    assert "rejected_cleanup_operation_count" not in report["failure"]
+    # Nothing thrown away is reported as accepted, anywhere.
+    assert report["accepted_cleanup_operations"] == []
+    assert report["accepted_delete_blocks"] == []
+    assert report["stats"]["accepted_cleanup_operation_count"] == 0
+    assert report["stats"]["accepted_delete_block_count"] == 0
+    assert report["stats"]["deleted_non_whitespace_char_count"] == 0
+    assert result.accepted_delete_block_ids == ()
+    discarded = [
+        entry
+        for entry in report["ignored_cleanup_operations"]
+        if entry.get("ignored_reason") == "cleanup_discarded_for_missing_docx_image_anchor"
+    ]
+    assert sorted(str(entry["operation"]) for entry in discarded) == ["delete_block", "normalize_heading_boundary"]
+    assert all(entry["lost_docx_image_ids"] == ["img_014"] for entry in discarded)
+
+
+_GLOBAL_SAFETY_NOISE_BLOCK = (
+    "150 РАЗДЕЛ ОТЧЕТА Через призму рабочего процесса можно увидеть новые возможности для команды."
+)
+_GLOBAL_SAFETY_NOISE_SUBSTRING = "150 РАЗДЕЛ ОТЧЕТА "
+_GLOBAL_SAFETY_CLEANED_NOISE_BLOCK = "Через призму рабочего процесса можно увидеть новые возможности для команды."
+
+
+def _inline_noise_operation(block: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": block["id"],
+        "text_hash": block["text_hash"],
+        "operation": "remove_inline_noise",
+        "reason": "page_furniture_inline",
+        "confidence": "high",
+        "evidence_before": "Page furniture is fused to the semantic paragraph prefix.",
+        "expected_after_preview": _GLOBAL_SAFETY_CLEANED_NOISE_BLOCK,
+        "safety_note": "Only the exact non-semantic heading fragment should be removed.",
+        "noise_substring": _GLOBAL_SAFETY_NOISE_SUBSTRING,
+    }
+
+
+def test_global_safety_rollback_puts_the_rejected_text_back_in_the_delivered_markdown() -> None:
+    # The rollback used to be bookkeeping only. It moved the accepted deletions into the
+    # ignore list as ``global_safety_limit_exceeded`` and stripped them from the accepted
+    # operations, but never restored the emptied block slots — so as soon as ONE non-delete
+    # operation was accepted, the "rejected" blocks were still dropped from the delivered
+    # markdown while the report insisted they had been rejected. The recorded lietaer run is
+    # exactly this shape: 37 deletions rolled back by the limit, 44 non-delete operations
+    # accepted, and all 37 blocks missing from the shipped book.
+    markdown = (
+        "Вступительный абзац достаточной длины, чтобы его сохранить в выдаче.\n\n"
+        "стр. 42\n\n"
+        "Первый содержательный абзац, который остаётся в книге без изменений.\n\n"
+        f"{_GLOBAL_SAFETY_NOISE_BLOCK}\n\n"
+        "Второй содержательный абзац, который остаётся в книге без изменений.\n\n"
+        "стр. 43\n\n"
+        "Заключительный абзац достаточной длины, чтобы его сохранить в выдаче."
+    )
+
+    def provider(payload: dict[str, Any], chunk_index: int, chunk_count: int) -> str:
+        return json.dumps(
+            {
+                "cleanup_operations": [
+                    *(
+                        _page_furniture_delete_operation(block)
+                        for block in payload["blocks"]
+                        if block["text"] in {"стр. 42", "стр. 43"}
+                    ),
+                    *(
+                        _inline_noise_operation(block)
+                        for block in payload["blocks"]
+                        if block["text"] == _GLOBAL_SAFETY_NOISE_BLOCK
+                    ),
+                ],
+                "warnings": [],
+            },
+            ensure_ascii=False,
+        )
+
+    result = run_reader_cleanup(
+        markdown_text=markdown,
+        config=ReaderCleanupConfig(enabled=True, chunk_size=100000),
+        operation_provider=provider,
+    )
+    report = result.report_payload
+
+    # The report's verdict on the deletions, unchanged: rejected by the global limit.
+    assert [
+        str(entry["raw_text_preview"])
+        for entry in report["ignored_cleanup_operations"]
+        if entry.get("ignored_reason") == "global_safety_limit_exceeded"
+    ] == ["стр. 42", "стр. 43"]
+    assert report["stats"]["accepted_delete_block_count"] == 0
+    assert result.accepted_delete_block_ids == ()
+    # ...and the delivered text now agrees with it.
+    assert "стр. 42" in result.cleaned_markdown
+    assert "стр. 43" in result.cleaned_markdown
+    assert len(build_cleanup_blocks(result.cleaned_markdown)) == len(build_cleanup_blocks(markdown))
+    # The non-delete operation that made the loss visible still ships.
+    assert [entry["operation"] for entry in report["accepted_cleanup_operations"]] == ["remove_inline_noise"]
+    assert _GLOBAL_SAFETY_CLEANED_NOISE_BLOCK in result.cleaned_markdown
+    assert _GLOBAL_SAFETY_NOISE_SUBSTRING not in result.cleaned_markdown
+    assert result.changed is True
+
+
+def test_global_safety_rollback_keeps_anchor_loss_blamed_on_the_operation_that_ran() -> None:
+    # The rollback re-applies the remainder from scratch, so the write sets it returns are
+    # keyed by position in the RETAINED list. ``service._reject_operations_losing_docx_image_anchors``
+    # indexes the FULL operation sequence, so they have to be mapped back. Here the two
+    # deletions come first, so an unmapped write set would blame a deletion for the anchor
+    # the boundary operation destroyed, the boundary operation would run again in the retry,
+    # the anchor would still be gone — and the whole book's cleanup would be discarded
+    # instead of one operation being dropped.
+    markdown = (
+        "Вступительный абзац достаточной длины, чтобы его сохранить.\n\n"
+        "стр. 42\n\n"
+        f"{_GLOBAL_SAFETY_NOISE_BLOCK}\n\n"
+        f"{_ANCHOR_FIGURE_BLOCK}\n\n"
+        "стр. 43\n\n"
+        "Заключительный абзац достаточной длины."
+    )
+
+    def provider(payload: dict[str, Any], chunk_index: int, chunk_count: int) -> str:
+        anchor = next(block for block in payload["blocks"] if block["text"] == _ANCHOR_FIGURE_BLOCK)
+        noise = next(block for block in payload["blocks"] if block["text"] == _GLOBAL_SAFETY_NOISE_BLOCK)
+        return json.dumps(
+            {
+                "cleanup_operations": [
+                    *(
+                        _page_furniture_delete_operation(block)
+                        for block in payload["blocks"]
+                        if block["text"] in {"стр. 42", "стр. 43"}
+                    ),
+                    _inline_noise_operation(noise),
+                    _anchor_splitting_boundary_operation(anchor, split_at=len("[[DOCX_IMAGE_")),
+                ],
+                "warnings": [],
+            },
+            ensure_ascii=False,
+        )
+
+    result = run_reader_cleanup(
+        markdown_text=markdown,
+        config=ReaderCleanupConfig(enabled=True, chunk_size=100000),
+        operation_provider=provider,
+    )
+    report = result.report_payload
+
+    # One operation dropped, not the book: the figure keeps its anchor, the deletions the
+    # limit rejected are back in the text, and the unrelated inline cleanup still ships.
+    assert _extract_docx_image_placeholder_ids(result.cleaned_markdown) == ["img_014"]
+    assert report["image_reconciliation"]["cleanup_discarded_for_missing_image_ids"] is False
+    assert "стр. 42" in result.cleaned_markdown
+    assert "стр. 43" in result.cleaned_markdown
+    assert [entry["operation"] for entry in report["accepted_cleanup_operations"]] == ["remove_inline_noise"]
+    assert [
+        str(entry["operation"])
+        for entry in report["ignored_cleanup_operations"]
+        if entry.get("ignored_reason") == "docx_image_anchor_lost_by_operation"
+    ] == ["normalize_heading_boundary"]
+    assert [
+        str(entry["raw_text_preview"])
+        for entry in report["ignored_cleanup_operations"]
+        if entry.get("ignored_reason") == "global_safety_limit_exceeded"
+    ] == ["стр. 42", "стр. 43"]
+
+
+def test_global_safety_rollback_records_carry_the_delete_block_operation_key() -> None:
+    # Round-10 P3. These entries were built through ``_serialize_delete_block`` alone, which
+    # emits no ``operation`` key — while the line directly beneath them, and every consumer
+    # that counts refused deletions, selects ignore entries by
+    # ``entry["operation"] == "delete_block"``. The rollback's own records were invisible to
+    # the filter written to find them.
+    markdown = (
+        "Вступительный абзац достаточной длины, чтобы его сохранить.\n\n"
+        "стр. 42\n\n"
+        f"{_GLOBAL_SAFETY_NOISE_BLOCK}\n\n"
+        "стр. 43\n\n"
+        "Заключительный абзац достаточной длины."
+    )
+
+    def provider(payload: dict[str, Any], chunk_index: int, chunk_count: int) -> str:
+        noise = next(block for block in payload["blocks"] if block["text"] == _GLOBAL_SAFETY_NOISE_BLOCK)
+        return json.dumps(
+            {
+                "cleanup_operations": [
+                    *(
+                        _page_furniture_delete_operation(block)
+                        for block in payload["blocks"]
+                        if block["text"] in {"стр. 42", "стр. 43"}
+                    ),
+                    _inline_noise_operation(noise),
+                ],
+                "warnings": [],
+            },
+            ensure_ascii=False,
+        )
+
+    result = run_reader_cleanup(
+        markdown_text=markdown,
+        config=ReaderCleanupConfig(enabled=True, chunk_size=100000),
+        operation_provider=provider,
+    )
+    rolled_back = [
+        entry
+        for entry in result.report_payload["ignored_cleanup_operations"]
+        if entry.get("ignored_reason") == "global_safety_limit_exceeded"
+    ]
+
+    assert len(rolled_back) == 2
+    assert [entry.get("operation") for entry in rolled_back] == ["delete_block", "delete_block"]
+    # ...which is exactly the shape the neighbouring carry-over filter selects on.
+    assert [entry for entry in rolled_back if entry.get("operation") == "delete_block"] == rolled_back
+
+
+def test_anchor_repair_pass_losing_an_anchor_rolls_back_only_itself() -> None:
+    # Round-9 P2-1. ``missing_after_repair`` was hardcoded to ``[]``, so the warning branch
+    # for a repair-pass anchor loss was unreachable — and because the second reconciliation
+    # was taken against the RAW source, the rollback also threw away the first pass, which
+    # had lost nothing. Silently. The repair pass now rolls back to the first pass's
+    # output, says so, and stops reporting its rolled-back operations as accepted.
+    def main_provider(payload: dict[str, Any], chunk_index: int, chunk_count: int) -> str:
+        page = next((block for block in payload["blocks"] if block["text"] == _PAGE_FURNITURE_BLOCK), None)
+        if page is None:
+            return json.dumps({"cleanup_operations": [], "warnings": []}, ensure_ascii=False)
+        return json.dumps(
+            {"cleanup_operations": [_page_furniture_delete_operation(page)], "warnings": []},
+            ensure_ascii=False,
+        )
+
+    def anchor_provider(payload: dict[str, Any], chunk_index: int, chunk_count: int) -> str:
+        if str(payload.get("pass_name") or "") != "anchor_repair":
+            return main_provider(payload, chunk_index, chunk_count)
+        anchor = next((block for block in payload["blocks"] if block["text"] == _ANCHOR_FIGURE_BLOCK), None)
+        if anchor is None:
+            return json.dumps({"cleanup_operations": [], "warnings": []}, ensure_ascii=False)
+        return json.dumps(
+            {
+                "cleanup_operations": [_anchor_splitting_boundary_operation(anchor, split_at=len("[[DOCX_IMAGE_"))],
+                "warnings": [],
+            },
+            ensure_ascii=False,
+        )
+
+    result = run_reader_cleanup(
+        markdown_text=_ANCHOR_MARKDOWN,
+        config=_permissive_anchor_config(),
+        operation_provider=main_provider,
+        anchor_operation_provider=anchor_provider,
+        anchor_targets=[
+            {
+                "category": "heading_fused_with_body",
+                "block_id": "b_000002",
+                "anchor_id": "a1",
+                "snippet": "РИСУНОК 2.1",
+            }
+        ],
+    )
+    report = result.report_payload
+
+    assert result.changed is True
+    assert result.cleaned_markdown == _ANCHOR_MARKDOWN.replace(f"{_PAGE_FURNITURE_BLOCK}\n\n", "")
+    assert _extract_docx_image_placeholder_ids(result.cleaned_markdown) == ["img_014"]
+    assert report["image_reconciliation"]["missing_after_repair"] == ["img_014"]
+    assert report["image_reconciliation"]["anchor_repair_discarded_for_missing_image_ids"] is True
+    assert "reader_cleanup_image_ids_missing_after_reconcile:1" in report["warnings"]
+    assert [entry["operation"] for entry in report["accepted_cleanup_operations"]] == ["delete_block"]
+    assert report["stats"]["accepted_cleanup_operation_count"] == 1
+    assert {
+        str(entry["ignored_reason"])
+        for entry in report["ignored_cleanup_operations"]
+        if entry.get("pass_name") == "anchor_repair" and entry.get("operation") == "normalize_heading_boundary"
+    } == {"anchor_repair_discarded_for_missing_docx_image_anchor"}
+
+
+def test_rolled_back_anchor_repair_pass_is_un_accepted_in_its_own_sub_report_too() -> None:
+    # Round-10 P2-1. The rollback fixed the top-level stats and chunk results and left
+    # ``passes.anchor_repair_pass`` untouched, so one report asserted both "1 accepted" and
+    # "0 accepted" about the same operation. The sub-report is not decoration: the
+    # real-document validation harness reads ``passes.anchor_repair_pass.stats.
+    # accepted_cleanup_operation_count`` to decide whether the pass ran, so a pass that
+    # shipped nothing was recorded as ``anchor_repair_status="runtime_applied"``.
+    def main_provider(payload: dict[str, Any], chunk_index: int, chunk_count: int) -> str:
+        page = next((block for block in payload["blocks"] if block["text"] == _PAGE_FURNITURE_BLOCK), None)
+        if page is None:
+            return json.dumps({"cleanup_operations": [], "warnings": []}, ensure_ascii=False)
+        return json.dumps(
+            {"cleanup_operations": [_page_furniture_delete_operation(page)], "warnings": []},
+            ensure_ascii=False,
+        )
+
+    def anchor_provider(payload: dict[str, Any], chunk_index: int, chunk_count: int) -> str:
+        if str(payload.get("pass_name") or "") != "anchor_repair":
+            return main_provider(payload, chunk_index, chunk_count)
+        anchor = next((block for block in payload["blocks"] if block["text"] == _ANCHOR_FIGURE_BLOCK), None)
+        if anchor is None:
+            return json.dumps({"cleanup_operations": [], "warnings": []}, ensure_ascii=False)
+        return json.dumps(
+            {
+                "cleanup_operations": [_anchor_splitting_boundary_operation(anchor, split_at=len("[[DOCX_IMAGE_"))],
+                "warnings": [],
+            },
+            ensure_ascii=False,
+        )
+
+    result = run_reader_cleanup(
+        markdown_text=_ANCHOR_MARKDOWN,
+        config=_permissive_anchor_config(),
+        operation_provider=main_provider,
+        anchor_operation_provider=anchor_provider,
+        anchor_targets=[
+            {
+                "category": "heading_fused_with_body",
+                "block_id": "b_000002",
+                "anchor_id": "a1",
+                "snippet": "РИСУНОК 2.1",
+            }
+        ],
+    )
+    report = result.report_payload
+    anchor_repair_pass = report["passes"]["anchor_repair_pass"]
+
+    assert anchor_repair_pass["stats"]["accepted_cleanup_operation_count"] == 0
+    assert anchor_repair_pass["stats"]["accepted_delete_block_count"] == 0
+    assert anchor_repair_pass["stats"]["ignored_cleanup_operation_count"] == 1
+    assert anchor_repair_pass["stats"]["deleted_non_whitespace_char_count"] == 0
+    assert anchor_repair_pass["stats"]["deleted_char_ratio"] == 0.0
+    assert anchor_repair_pass["discarded_for_missing_docx_image_anchor"] is True
+    assert anchor_repair_pass["lost_docx_image_ids"] == ["img_014"]
+    assert [entry["accepted_cleanup_operation_count"] for entry in anchor_repair_pass["chunk_results"]] == [0]
+    assert [entry["ignored_cleanup_operation_count"] for entry in anchor_repair_pass["chunk_results"]] == [1]
+    # The first pass is untouched by the rollback and still ships its own deletion.
+    assert report["stats"]["accepted_cleanup_operation_count"] == 1
+    # The rollback also publishes the count the owner-facing notice is built from.
+    assert report["image_reconciliation"]["anchor_repair_discarded_cleanup_operation_count"] == 1
+
+
+def test_rolled_back_anchor_repair_delete_block_is_discarded_once_not_twice() -> None:
+    # Round-11. An accepted ``delete_block`` is present in the report TWICE by construction:
+    # ``_apply`` records the full operation in ``accepted_cleanup_operations`` and ``_parse``
+    # records the SAME deletion again, more thinly, in ``accepted_delete_blocks``. The
+    # rollback concatenated both lists, so one rolled-back deletion produced two ignore
+    # records and inflated everything built from them — the owner-facing
+    # "N operation(s) were dropped" notice, ``chunk_results`` and
+    # ``passes.anchor_repair_pass.stats`` (which then reported more ignored operations than
+    # the pass ever proposed). The duplicate also carried no ``operation`` key, so it was
+    # invisible to the ``entry["operation"] == "delete_block"`` filters — the same blind spot
+    # the ``global_safety_limit_exceeded`` rollback already had to close.
+    page_anchor_block = "стр. 43"
+    markdown = (
+        "Вступительный абзац достаточной длины, чтобы его сохранить.\n\n"
+        f"{_PAGE_FURNITURE_BLOCK}\n\n"
+        f"{_ANCHOR_FIGURE_BLOCK}\n\n"
+        f"{page_anchor_block}\n\n"
+        "Заключительный абзац достаточной длины."
+    )
+
+    def main_provider(payload: dict[str, Any], chunk_index: int, chunk_count: int) -> str:
+        page = next((block for block in payload["blocks"] if block["text"] == _PAGE_FURNITURE_BLOCK), None)
+        if page is None:
+            return json.dumps({"cleanup_operations": [], "warnings": []}, ensure_ascii=False)
+        return json.dumps(
+            {"cleanup_operations": [_page_furniture_delete_operation(page)], "warnings": []},
+            ensure_ascii=False,
+        )
+
+    def anchor_provider(payload: dict[str, Any], chunk_index: int, chunk_count: int) -> str:
+        if str(payload.get("pass_name") or "") != "anchor_repair":
+            return main_provider(payload, chunk_index, chunk_count)
+        figure = next((block for block in payload["blocks"] if block["text"] == _ANCHOR_FIGURE_BLOCK), None)
+        page = next((block for block in payload["blocks"] if block["text"] == page_anchor_block), None)
+        if figure is None or page is None:
+            return json.dumps({"cleanup_operations": [], "warnings": []}, ensure_ascii=False)
+        # Two operations, one of them a deletion, and the other one destroys the figure
+        # anchor — so the whole pass is rolled back and BOTH are un-accepted.
+        return json.dumps(
+            {
+                "cleanup_operations": [
+                    _page_furniture_delete_operation(page),
+                    _anchor_splitting_boundary_operation(figure, split_at=len("[[DOCX_IMAGE_")),
+                ],
+                "warnings": [],
+            },
+            ensure_ascii=False,
+        )
+
+    result = run_reader_cleanup(
+        markdown_text=markdown,
+        config=_permissive_anchor_config(),
+        operation_provider=main_provider,
+        anchor_operation_provider=anchor_provider,
+        # Block ids are those of the post-first-pass document the anchor pass actually sees,
+        # i.e. after "стр. 42" was deleted: figure b_000001, "стр. 43" b_000002.
+        anchor_targets=[
+            {
+                "category": "heading_fused_with_body",
+                "block_id": "b_000001",
+                "anchor_id": "a1",
+                "snippet": "РИСУНОК 2.1",
+            },
+            {
+                "category": "fragmented_paragraph",
+                "block_id": "b_000002",
+                "anchor_id": "a2",
+                "snippet": page_anchor_block,
+            },
+        ],
+    )
+    report = result.report_payload
+    discarded = [
+        entry
+        for entry in report["ignored_cleanup_operations"]
+        if entry.get("ignored_reason") == "anchor_repair_discarded_for_missing_docx_image_anchor"
+    ]
+
+    # The pass really did accept two operations and really did lose the anchor.
+    assert report["image_reconciliation"]["missing_after_repair"] == ["img_014"]
+    assert result.cleaned_markdown == markdown.replace(f"{_PAGE_FURNITURE_BLOCK}\n\n", "")
+
+    # Two operations rolled back => two records, no more and no fewer, and NOTHING lost:
+    # the deletion is still there, still identifiable, with its target block id intact.
+    assert len(discarded) == 2
+    assert sorted(str(entry["operation"]) for entry in discarded) == ["delete_block", "normalize_heading_boundary"]
+    assert all("operation" in entry for entry in discarded)
+    deleted = next(entry for entry in discarded if entry["operation"] == "delete_block")
+    assert deleted["raw_text_preview"] == page_anchor_block
+    assert sum(1 for entry in discarded if entry.get("operation") == "delete_block") == 1
+
+    # Every counter fed from that list agrees, including the one the notice is built from.
+    assert report["image_reconciliation"]["anchor_repair_discarded_cleanup_operation_count"] == 2
+    anchor_chunk_results = [entry for entry in report["chunk_results"] if entry.get("pass_name") == "anchor_repair"]
+    assert [entry["ignored_cleanup_operation_count"] for entry in anchor_chunk_results] == [2]
+    assert [entry["ignored_delete_block_count"] for entry in anchor_chunk_results] == [2]
+    anchor_repair_pass = report["passes"]["anchor_repair_pass"]
+    assert anchor_repair_pass["stats"]["ignored_cleanup_operation_count"] == 2
+    assert anchor_repair_pass["stats"]["ignored_delete_block_count"] == 2
+    # A pass can never ignore more operations than it proposed.
+    assert (
+        anchor_repair_pass["stats"]["ignored_cleanup_operation_count"]
+        <= anchor_repair_pass["stats"]["proposed_cleanup_operation_count"]
+    )
+    # The first pass is untouched by the rollback and still ships its own deletion.
+    assert report["stats"]["accepted_cleanup_operation_count"] == 1
+
+
+def test_schema_repair_prompt_states_required_fields_for_every_operation() -> None:
+    # Round-11. The allowed-operations line was fixed to name
+    # ``extract_side_heading_and_reattach_body``, but the line listing each operation's
+    # mandatory fields still covered only five of six, so the repair model was told to keep
+    # an operation whose schema it had never been given. The cleanup prompt has always named
+    # the three fields; the two prompts must state the same contract.
+    def _required_fields_line(prompt: str) -> str:
+        return next(line for line in prompt.splitlines() if "must include split_substrings" in line)
+
+    repair_line = _required_fields_line(build_reader_cleanup_schema_repair_system_prompt())
+    assert repair_line == _required_fields_line(build_reader_cleanup_system_prompt())
+    for field in ("pre_body_stub", "heading_substring", "post_body_continuation"):
+        assert field in repair_line, field
+
+
+def test_schema_repair_prompt_names_every_allowed_operation() -> None:
+    # Round-10 P3. The line enumerating the allowed operations was edited when
+    # ``reclassify_role`` was removed and left listing five of six — the schema-repair model
+    # was told ``extract_side_heading_and_reattach_body`` does not exist while the applier
+    # accepts it, so a repair pass could legitimately drop a valid operation.
+    prompt = build_reader_cleanup_schema_repair_system_prompt()
+    allowed_line = next(line for line in prompt.splitlines() if line.startswith("Keep the allowed operations unchanged:"))
+    for operation in _ALLOWED_OPERATIONS:
+        assert operation in allowed_line, operation
+
+
+def test_max_failed_chunk_ratio_of_one_is_an_explicit_off_switch() -> None:
+    # Round-10 P3. Changing ``>=`` to ``>`` silently turned 1.0 from "abort only when EVERY
+    # chunk failed" into an unreachable threshold. That IS what the only caller setting it
+    # wants (the research matrix disables the abort on purpose), but leaving it as an
+    # arithmetic accident meant nothing said so and nothing tested it. It is now stated.
+    def _chunk_results(*, failed: int, total: int) -> list[dict[str, object]]:
+        results: list[dict[str, object]] = []
+        for index in range(total):
+            results.append({"status": "failed" if index < failed else "completed"})
+        return results
+
+    off = ReaderCleanupConfig(enabled=True, max_failed_chunk_ratio=1.0)
+    assert _failed_chunk_ratio_exceeds_threshold(chunk_results=_chunk_results(failed=10, total=10), config=off) is False
+    assert _failed_chunk_ratio_exceeds_threshold(chunk_results=_chunk_results(failed=9, total=10), config=off) is False
+    # Every threshold below the off-switch still aborts a total failure, so "abort when the
+    # whole book failed" remains expressible — it is the default behaviour of any real limit.
+    for threshold in (0.0, 0.1, 0.5, 0.9):
+        config = ReaderCleanupConfig(enabled=True, max_failed_chunk_ratio=threshold)
+        assert _failed_chunk_ratio_exceeds_threshold(chunk_results=_chunk_results(failed=10, total=10), config=config) is True
+
+
+def test_toc_entry_max_chars_constant_drives_the_toc_like_pattern() -> None:
+    # Round-9 P3. ``_TOC_ENTRY_MAX_CHARS`` documented the single-entry length limit while the
+    # regex hardcoded its own copy of it, so the two could drift apart with nothing to say
+    # so. The constant is now the only place the number is written down.
+    assert _TOC_ENTRY_MAX_CHARS == 100
+    assert f".{{1,{_TOC_ENTRY_MAX_CHARS}}}" in _TOC_LIKE_PATTERN.pattern
+    assert _TOC_LIKE_PATTERN.search("Введение .......... 12") is not None
+    assert _TOC_LIKE_PATTERN.search("x" * (_TOC_ENTRY_MAX_CHARS - 4) + " 12") is not None
+    assert _TOC_LIKE_PATTERN.search("x" * (_TOC_ENTRY_MAX_CHARS + 1) + " 12") is None
+
+
+def test_reconcile_discards_the_cleanup_when_an_anchor_cannot_be_restored() -> None:
+    # The reconciler's own contract, reached directly because the rejection layer answers
+    # first in every end-to-end path: a lost anchor is never re-appended anywhere, and the
+    # delivered markdown is the source, unchanged.
+    raw_markdown = f"Intro paragraph.\n\n{_ANCHOR_FIGURE_BLOCK}\n\nOutro paragraph."
+    cleaned_markdown = raw_markdown.replace("[[DOCX_IMAGE_img_014]]", "[[DOCX_IMAGE_\n\nimg_014]]")
+    blocks = build_cleanup_blocks(raw_markdown)
+
+    reconciled_markdown, image_reconciliation = _reconcile_docx_image_placeholders(
+        raw_markdown=raw_markdown,
+        cleaned_markdown=cleaned_markdown,
+        raw_blocks=blocks,
+    )
+
+    assert reconciled_markdown == raw_markdown
+    assert image_reconciliation["cleanup_discarded_for_missing_image_ids"] is True
+    assert image_reconciliation["missing_image_ids"] == ["img_014"]
+    assert image_reconciliation["reinserted_image_ids"] == []
+    assert image_reconciliation["lost_image_source_block_ids"] == ["b_000001"]
+    assert _extract_docx_image_placeholder_ids(reconciled_markdown) == ["img_014"]
 
 
 def test_run_reader_cleanup_reannotation_applies_heading_body_boundary_with_containment() -> None:
@@ -694,7 +1793,11 @@ def test_run_reader_cleanup_all_chunks_failed_exceeds_default_ratio_gate() -> No
     )
 
 
-def test_run_reader_cleanup_partial_chunk_failure_below_default_ratio_stays_completed() -> None:
+def test_run_reader_cleanup_one_third_of_chunks_failing_aborts_the_pass() -> None:
+    # Spec 052 item 2. This case used to report ``completed`` / ``changed: True`` and deliver
+    # a book cleaned by two chunks out of three. At ``max_failed_chunk_ratio = 1.0`` the abort
+    # fired only when EVERY chunk failed, so 106 of 107 failures were silent. One failure in
+    # three is a 33% failure rate and must now abort with nothing applied.
     markdown = "Intro\n\nPage 1\n\nBody paragraph"
 
     def operation_provider(payload: dict[str, Any], chunk_index: int, chunk_count: int) -> str:
@@ -721,12 +1824,126 @@ def test_run_reader_cleanup_partial_chunk_failure_below_default_ratio_stays_comp
         operation_provider=operation_provider,
     )
 
-    assert result.changed is True
-    assert result.cleaned_markdown == "Intro\n\nBody paragraph"
-    assert result.report_payload["stage_status"] == "completed"
+    assert result.changed is False
+    assert result.cleaned_markdown == markdown
+    assert result.report_payload["stage_status"] == "failed"
+    assert result.report_payload["failure"]["kind"] == "failed_chunk_ratio_exceeded"
+    assert result.report_payload["failure"]["max_failed_chunk_ratio"] == 0.1
     assert result.report_payload["stats"]["cleanup_chunk_count"] == 3
     assert result.report_payload["stats"]["failed_chunk_count"] == 1
-    assert result.report_payload["accepted_delete_blocks"][0]["raw_text_preview"] == "Page 1"
+    assert result.report_payload["accepted_delete_blocks"] == []
+    assert any(
+        warning.startswith("reader_cleanup_failed_chunk_ratio_exceeded:")
+        for warning in result.report_payload["warnings"]
+    )
+
+
+def test_run_reader_cleanup_failure_rate_below_the_default_ratio_still_completes() -> None:
+    # The other side of spec 052 item 2: 1 unavailable chunk out of 12 is 8.3%, below the
+    # 10% default, so the pass still applies what it could and reports ``completed``.
+    blocks = ["Intro", *[f"Body paragraph {index}" for index in range(1, 11)], "Page 1", "Outro"]
+    markdown = "\n\n".join(blocks)
+
+    def operation_provider(payload: dict[str, Any], chunk_index: int, chunk_count: int) -> str:
+        if chunk_index == 3:
+            raise TimeoutError("timeout")
+        operations = [
+            _delete_block_operation(block, reason="page_number")
+            for block in payload["blocks"]
+            if block["text"] == "Page 1"
+        ]
+        return json.dumps({"cleanup_operations": operations, "warnings": []}, ensure_ascii=False)
+
+    result = run_reader_cleanup(
+        markdown_text=markdown,
+        config=ReaderCleanupConfig(
+            enabled=True,
+            policy="advisory",
+            chunk_size=6,
+            overlap_blocks_before=0,
+            overlap_blocks_after=0,
+            max_delete_block_ratio=0.8,
+            max_delete_char_ratio=0.8,
+        ),
+        operation_provider=operation_provider,
+    )
+
+    assert result.report_payload["stats"]["cleanup_chunk_count"] == 13
+    assert result.report_payload["stats"]["failed_chunk_count"] == 1
+    assert result.report_payload["stage_status"] == "completed"
+    assert "failure" not in result.report_payload
+    assert result.changed is True
+    assert "Page 1" not in result.cleaned_markdown
+
+
+def test_run_reader_cleanup_failure_rate_exactly_at_the_ratio_still_completes() -> None:
+    # Round-9 P2-3. The comparison was ``>=``, so a ten-chunk document that lost exactly one
+    # chunk to a transient error hit ``0.1 >= 0.1`` and had its whole cleanup cancelled —
+    # while the notice told the owner the rate was "above the allowed 10.0%", which it was
+    # not. ``max_failed_chunk_ratio`` is the largest share still tolerated; 10 % of 10
+    # chunks is tolerated, and only MORE than that aborts.
+    blocks = ["Intro", *[f"Body paragraph {index}" for index in range(1, 8)], "Page 1", "Outro"]
+    markdown = "\n\n".join(blocks)
+
+    def operation_provider(payload: dict[str, Any], chunk_index: int, chunk_count: int) -> str:
+        if chunk_index == 3:
+            raise TimeoutError("timeout")
+        operations = [
+            _delete_block_operation(block, reason="page_number")
+            for block in payload["blocks"]
+            if block["text"] == "Page 1"
+        ]
+        return json.dumps({"cleanup_operations": operations, "warnings": []}, ensure_ascii=False)
+
+    config = ReaderCleanupConfig(
+        enabled=True,
+        policy="advisory",
+        chunk_size=6,
+        overlap_blocks_before=0,
+        overlap_blocks_after=0,
+        max_delete_block_ratio=0.8,
+        max_delete_char_ratio=0.8,
+    )
+    result = run_reader_cleanup(markdown_text=markdown, config=config, operation_provider=operation_provider)
+
+    assert result.report_payload["stats"]["cleanup_chunk_count"] == 10
+    assert result.report_payload["stats"]["failed_chunk_count"] == 1
+    assert config.max_failed_chunk_ratio == 0.1
+    assert result.report_payload["stage_status"] == "completed"
+    assert "failure" not in result.report_payload
+    assert result.changed is True
+    assert "Page 1" not in result.cleaned_markdown
+
+
+def test_run_reader_cleanup_zero_tolerance_ratio_does_not_abort_a_run_without_failures() -> None:
+    # The same off-by-one, at the other end: ``max_failed_chunk_ratio = 0.0`` used to make
+    # ``0.0 >= 0.0`` true and abort every run, including runs where nothing failed at all.
+    markdown = "Intro\n\nPage 1\n\nBody paragraph"
+
+    def operation_provider(payload: dict[str, Any], chunk_index: int, chunk_count: int) -> str:
+        operations = [
+            _delete_block_operation(block, reason="page_number")
+            for block in payload["blocks"]
+            if block["text"] == "Page 1"
+        ]
+        return json.dumps({"cleanup_operations": operations, "warnings": []}, ensure_ascii=False)
+
+    result = run_reader_cleanup(
+        markdown_text=markdown,
+        config=ReaderCleanupConfig(
+            enabled=True,
+            policy="advisory",
+            max_failed_chunk_ratio=0.0,
+            max_delete_block_ratio=0.8,
+            max_delete_char_ratio=0.8,
+        ),
+        operation_provider=operation_provider,
+    )
+
+    assert result.report_payload["stats"]["failed_chunk_count"] == 0
+    assert result.report_payload["stage_status"] == "completed"
+    assert "failure" not in result.report_payload
+    assert "Page 1" not in result.cleaned_markdown
 
 
 def test_run_reader_cleanup_clean_noop_stays_completed() -> None:
@@ -756,40 +1973,28 @@ def test_reader_cleanup_schema_repair_prompt_forbids_rewritten_markdown() -> Non
     assert "Do not return rewritten Markdown, cleaned Markdown, commentary, or extra top-level fields." in prompt
     assert "Repair every invalid cleanup operation item in the response, not only the first broken one." in prompt
     assert "If the original response uses legacy delete_blocks, convert it into cleanup_operations" in prompt
-    assert "If pass_name is anchor_repair" in prompt
     assert "If a duplicate_fragment candidate is only similar to nearby prose" in prompt
     assert "Do not widen remove_inline_noise to consume a semantic heading" in prompt
     assert "noise_substring combines a page-like number with semantic section-title text" in prompt
 
 
-def test_reader_cleanup_system_prompt_mentions_anchor_repair_constraints() -> None:
+def test_reader_cleanup_system_prompt_states_the_target_selection_contract() -> None:
     prompt = build_reader_cleanup_system_prompt()
 
     assert "Return only a single valid JSON object" in prompt
     assert "Do not wrap it in markdown fences" in prompt
     assert '{"cleanup_operations":[],"warnings":[]}' in prompt
-    assert "If the request pass_name is anchor_repair" in prompt
-    assert "If one anchored block needs both page-furniture removal and heading/body repair" in prompt
-    assert "For fragmented paragraph anchors, use neighbor context" in prompt
-    assert "For anchor_repair fragmented_paragraph targets, first inspect only adjacent payload blocks" in prompt
-    assert "copy next_id and next_text_hash exactly from the current payload block list" in prompt
-    assert "exact normalized text already preserved in one nearby payload block" in prompt
-    assert "For anchor_repair page_furniture_inline targets, first propose remove_inline_noise" in prompt
-    assert "do not use join_fragmented_paragraph or delete_block as a substitute for that cleanup" in prompt
+    assert "If one block needs both page-furniture removal and heading/body repair" in prompt
+    assert "For fragmented paragraphs, use neighbor context" in prompt
     assert "For inline endnote/page marker artifacts inside prose" in prompt
     assert "exact deleted span in noise_substring" in prompt
-    assert "reclassify_role" in prompt
-    assert "target_role as one of heading, body, attribution, caption" in prompt
-    assert "Do not assign heading_level, hierarchy, anchors, or cross-chunk structure" in prompt
-    assert "ALL-CAPS short text after a heading may be attribution" in prompt
-    assert "Figure/Table/Рис./Таблица/Источник lines are caption" in prompt
     assert "For duplicate semantic heading text repeated inline" in prompt
-    assert "operation_selection_targets lists a duplicate_semantic_heading_text candidate" in prompt
-    assert "operation_selection_targets lists a side_heading_island_candidate" in prompt
-    assert "operation_selection_targets lists a semantic_page_title_deletion_risk candidate" in prompt
-    assert "operation_selection_targets lists an isolated_semantic_heading_numeric_prefix candidate" in prompt
-    assert "operation_selection_targets lists a heading_fused_with_body_candidate" in prompt
-    assert "join_fragmented_paragraph then normalize_heading_boundary chain" in prompt
+    assert "Target category duplicate_semantic_heading_text" in prompt
+    assert "Target category side_heading_island_candidate" in prompt
+    assert "Target category semantic_page_title_deletion_risk" in prompt
+    assert "Target category isolated_semantic_heading_numeric_prefix" in prompt
+    assert "Target category heading_fused_with_body_candidate" in prompt
+    assert "run join_fragmented_paragraph with that exact next block first, then normalize_heading_boundary" in prompt
     assert "Semantic heading islands are not noise" in prompt
     assert "Do not delete semantic heading islands with remove_inline_noise" in prompt
     assert "Semantic section titles and page-heading-like titles are not remove_inline_noise targets" in prompt
@@ -800,7 +2005,7 @@ def test_reader_cleanup_system_prompt_mentions_anchor_repair_constraints() -> No
     assert "do not leave a short pre-heading sentence stub" in prompt
     assert "expected_after_preview must be exactly: heading_substring, then a blank line" in prompt
     assert "do not add labels like '[Heading: ...]'" in prompt
-    assert "add a separate same-block follow-up remove_inline_noise for only the exact numeric prefix in the same pass" in prompt
+    assert "a same-pass follow-up remove_inline_noise on the same original block id is supported" in prompt
     assert "do not remove the title with remove_inline_noise" in prompt
     assert "remove only the exact numeric prefix when safe; never remove the heading text" in prompt
     assert "do not propose remove_inline_noise for that combined span" in prompt
@@ -839,20 +2044,27 @@ def test_reader_cleanup_system_prompt_forbids_title_subtitle_as_heading_body() -
     assert "TOC-like rows are not heading/body prose" in prompt
 
 
-def test_run_reader_cleanup_reclassifies_body_subheading_to_markdown_heading() -> None:
+def test_run_reader_cleanup_ignores_removed_reclassify_role_without_failing_the_chunk() -> None:
+    """A model that still remembers the old contract must not cost us the chunk."""
     markdown = "Intro paragraph\n\nTHE MERCANTILISTS: TRADE AND TREASURE\n\nBody paragraph\n\nOutro paragraph"
+    repair_calls: list[int] = []
+
+    def repair_provider(payload: dict[str, Any], chunk_index: int, chunk_count: int) -> str:
+        repair_calls.append(chunk_index)
+        return json.dumps({"cleanup_operations": [], "warnings": []})
 
     result = run_reader_cleanup(
         markdown_text=markdown,
-        config=ReaderCleanupConfig(enabled=True, max_reclassify_block_ratio=0.5),
+        config=ReaderCleanupConfig(enabled=True),
         operation_provider=lambda payload, chunk_index, chunk_count: json.dumps(
             {
                 "cleanup_operations": [
-                    _reclassify_role_operation(
+                    _unknown_operation_item(
                         block,
-                        target_role="heading",
+                        operation="reclassify_role",
                         expected_after_preview="## THE MERCANTILISTS: TRADE AND TREASURE",
                         reason="semantic_heading",
+                        extra={"target_role": "heading"},
                     )
                     for block in payload["blocks"]
                     if block["text"] == "THE MERCANTILISTS: TRADE AND TREASURE"
@@ -861,128 +2073,46 @@ def test_run_reader_cleanup_reclassifies_body_subheading_to_markdown_heading() -
             },
             ensure_ascii=False,
         ),
+        repair_provider=repair_provider,
     )
 
-    assert result.changed is True
-    assert result.cleaned_markdown == (
-        "Intro paragraph\n\n## THE MERCANTILISTS: TRADE AND TREASURE\n\nBody paragraph\n\nOutro paragraph"
-    )
-    assert build_cleanup_blocks(result.cleaned_markdown)[1].is_heading is True
-    accepted = result.report_payload["accepted_cleanup_operations"]
-    assert accepted[0]["operation"] == "reclassify_role"
-    assert accepted[0]["target_role"] == "heading"
-    assert accepted[0]["after_state"] == "role_reclassified_to_heading"
-
-
-def test_run_reader_cleanup_reclassifies_heading_attribution_to_body_markdown() -> None:
-    markdown = "Intro paragraph\n\n# VIRGIL\n\nQuoted paragraph body.\n\nOutro paragraph"
-
-    result = run_reader_cleanup(
-        markdown_text=markdown,
-        config=ReaderCleanupConfig(enabled=True, max_reclassify_block_ratio=0.5),
-        operation_provider=lambda payload, chunk_index, chunk_count: json.dumps(
-            {
-                "cleanup_operations": [
-                    _reclassify_role_operation(
-                        block,
-                        target_role="attribution",
-                        expected_after_preview="VIRGIL",
-                        reason="semantic_attribution",
-                    )
-                    for block in payload["blocks"]
-                    if block["text"] == "# VIRGIL"
-                ],
-                "warnings": [],
-            },
-            ensure_ascii=False,
-        ),
-    )
-
-    assert result.changed is True
-    assert result.cleaned_markdown == "Intro paragraph\n\nVIRGIL\n\nQuoted paragraph body.\n\nOutro paragraph"
-    assert build_cleanup_blocks(result.cleaned_markdown)[1].is_heading is False
-    accepted = result.report_payload["accepted_cleanup_operations"]
-    assert accepted[0]["target_role"] == "attribution"
-    assert accepted[0]["after_state"] == "role_reclassified_to_attribution"
-
-
-def test_run_reader_cleanup_reclassifies_heading_caption_to_body_markdown() -> None:
-    markdown = "Intro paragraph\n\n# FIGURE 1. Productive and unproductive investment\n\nBody paragraph\n\nOutro paragraph"
-
-    result = run_reader_cleanup(
-        markdown_text=markdown,
-        config=ReaderCleanupConfig(enabled=True, max_reclassify_block_ratio=0.5),
-        operation_provider=lambda payload, chunk_index, chunk_count: json.dumps(
-            {
-                "cleanup_operations": [
-                    _reclassify_role_operation(
-                        block,
-                        target_role="caption",
-                        expected_after_preview="FIGURE 1. Productive and unproductive investment",
-                        reason="semantic_caption",
-                    )
-                    for block in payload["blocks"]
-                    if block["text"].startswith("# FIGURE 1.")
-                ],
-                "warnings": [],
-            },
-            ensure_ascii=False,
-        ),
-    )
-
-    assert result.changed is True
-    assert "# FIGURE" not in result.cleaned_markdown
-    accepted = result.report_payload["accepted_cleanup_operations"]
-    assert accepted[0]["target_role"] == "caption"
-
-
-def test_run_reader_cleanup_rejects_invalid_reclassify_direction() -> None:
-    markdown = "Intro paragraph\n\nFIGURE 1. Productive and unproductive investment\n\nBody paragraph\n\nOutro paragraph"
-
-    result = run_reader_cleanup(
-        markdown_text=markdown,
-        config=ReaderCleanupConfig(enabled=True, max_reclassify_block_ratio=0.5),
-        operation_provider=lambda payload, chunk_index, chunk_count: json.dumps(
-            {
-                "cleanup_operations": [
-                    _reclassify_role_operation(
-                        block,
-                        target_role="caption",
-                        expected_after_preview="FIGURE 1. Productive and unproductive investment",
-                        reason="semantic_caption",
-                    )
-                    for block in payload["blocks"]
-                    if block["text"].startswith("FIGURE 1.")
-                ],
-                "warnings": [],
-            },
-            ensure_ascii=False,
-        ),
-    )
-
+    assert [entry["status"] for entry in result.report_payload["chunk_results"]] == ["completed"]
+    assert result.report_payload["stage_status"] == "completed"
+    assert result.report_payload["stats"]["failed_chunk_count"] == 0
+    assert repair_calls == []
     assert result.changed is False
+    assert result.cleaned_markdown == markdown
+    assert result.report_payload["accepted_cleanup_operations"] == []
     ignored = result.report_payload["ignored_cleanup_operations"]
-    assert ignored[0]["ignored_reason"] == "reclassify_source_role_incompatible"
-    assert ignored[0]["target_role"] == "caption"
+    assert [(entry["operation"], entry["ignored_reason"]) for entry in ignored] == [
+        ("reclassify_role", "operation_not_supported")
+    ]
+    assert ignored[0]["id"] == build_cleanup_blocks(markdown)[1].block_id
+    assert any(
+        warning.startswith("reader_cleanup_unsupported_operation_ignored:")
+        and warning.endswith(":reclassify_role")
+        for warning in result.report_payload["warnings"]
+    )
 
 
-def test_run_reader_cleanup_caps_reclassify_role_operations() -> None:
-    markdown = "Intro paragraph\n\nFIRST MISSED SUBHEADING\n\nSECOND MISSED SUBHEADING\n\nBody paragraph\n\nOutro paragraph"
+def test_run_reader_cleanup_ignores_any_unknown_operation_name_with_a_recorded_reason() -> None:
+    markdown = "Intro paragraph\n\nMiddle paragraph\n\nBody paragraph\n\nOutro paragraph"
 
     result = run_reader_cleanup(
         markdown_text=markdown,
-        config=ReaderCleanupConfig(enabled=True, max_reclassify_block_ratio=0.3),
+        config=ReaderCleanupConfig(enabled=True),
         operation_provider=lambda payload, chunk_index, chunk_count: json.dumps(
             {
                 "cleanup_operations": [
-                    _reclassify_role_operation(
+                    _unknown_operation_item(
                         block,
-                        target_role="heading",
-                        expected_after_preview=f"## {block['text']}",
-                        reason="semantic_heading",
+                        operation="rewrite_paragraph",
+                        expected_after_preview="A nicer sentence.",
+                        reason="page_number",
+                        extra={"invented_field": "whatever"},
                     )
                     for block in payload["blocks"]
-                    if str(block["text"]).endswith("MISSED SUBHEADING")
+                    if block["text"] == "Middle paragraph"
                 ],
                 "warnings": [],
             },
@@ -990,16 +2120,45 @@ def test_run_reader_cleanup_caps_reclassify_role_operations() -> None:
         ),
     )
 
-    assert result.changed is True
-    assert result.cleaned_markdown.count("## ") == 1
-    assert result.report_payload["stats"]["accepted_reclassify_role_count"] == 1
+    assert [entry["status"] for entry in result.report_payload["chunk_results"]] == ["completed"]
+    assert result.changed is False
+    assert result.cleaned_markdown == markdown
     ignored = result.report_payload["ignored_cleanup_operations"]
-    assert ignored[0]["ignored_reason"] == "reclassify_global_safety_limit_exceeded"
-    assert ignored[0]["target_role"] == "heading"
+    assert [(entry["operation"], entry["ignored_reason"]) for entry in ignored] == [
+        ("rewrite_paragraph", "operation_not_supported")
+    ]
+
+
+def test_reader_cleanup_contract_advertises_six_operations_without_reclassify_role() -> None:
+    markdown = "Intro paragraph\n\nMiddle paragraph\n\nOutro paragraph"
+    captured: list[dict[str, Any]] = []
+
+    def provider(payload: dict[str, Any], chunk_index: int, chunk_count: int) -> str:
+        captured.append(payload)
+        return json.dumps({"cleanup_operations": [], "warnings": []})
+
+    run_reader_cleanup(
+        markdown_text=markdown,
+        config=ReaderCleanupConfig(enabled=True),
+        operation_provider=provider,
+    )
+
+    contract = captured[0]["response_contract"]
+    assert contract["allowed_operations"] == [
+        "delete_block",
+        "extract_side_heading_and_reattach_body",
+        "join_fragmented_paragraph",
+        "normalize_heading_boundary",
+        "remove_inline_noise",
+        "split_block",
+    ]
+    assert "reclassify" not in json.dumps(captured[0], ensure_ascii=False)
+    assert "reclassify" not in build_reader_cleanup_system_prompt()
+    assert "reclassify" not in build_reader_cleanup_schema_repair_system_prompt()
 
 
 def test_reader_cleanup_schema_repair_prompt_mentions_fragmented_anchor_join_safety() -> None:
-    prompt = build_reader_cleanup_schema_repair_system_prompt()
+    prompt = build_reader_cleanup_schema_repair_system_prompt(include_anchor_repair_guidance=True)
 
     assert "For anchor_repair fragmented_paragraph items" in prompt
     assert "next_id and next_text_hash are copied from an adjacent block in the current request payload" in prompt
@@ -2077,15 +3236,73 @@ def test_run_reader_cleanup_rejects_missing_confidence_extraction_artifact_delet
 
     assert result.changed is False
     assert result.cleaned_markdown == markdown
-    assert "reader_cleanup_missing_confidence_inferred:b_000001:high" in result.report_payload["warnings"]
+    # Spec 052 item 4: the anchor is no longer an ``extraction_artifact`` block, so the
+    # "safe" confidence inference that used to promote this delete to ``high`` on the
+    # strength of the reason matching the kind cannot fire at all. The delete is now
+    # refused a step earlier than the ``docx_image_anchor_protected`` validator check,
+    # which is exactly the point of giving anchors their own kind.
+    assert not any(
+        warning.startswith("reader_cleanup_missing_confidence_inferred")
+        for warning in result.report_payload["warnings"]
+    )
     assert result.report_payload["stats"]["accepted_delete_block_count"] == 0
-    assert result.report_payload["image_reconciliation"]["before_image_id_count"] == 1
-    assert result.report_payload["image_reconciliation"]["after_image_id_count"] == 1
-    assert {
-        entry["ignored_reason"]
-        for entry in result.report_payload["ignored_cleanup_operations"]
-        if entry.get("id") == "b_000001"
-    } == {"docx_image_anchor_protected"}
+    assert _extract_docx_image_placeholder_ids(result.cleaned_markdown) == ["img_001"]
+    # The item without a confidence never becomes a valid operation now, so the chunk is a
+    # schema failure rather than a silently downgraded delete.
+    assert any(
+        "reader_cleanup_missing_field:confidence" in warning for warning in result.report_payload["warnings"]
+    )
+
+
+def test_image_anchor_blocks_carry_their_own_kind_not_extraction_artifact() -> None:
+    # Spec 052 item 4. ``extraction_artifact`` is on the allowed-deletion list while the
+    # prompt forbids touching anchors; on the three measured books 100% of the blocks that
+    # carried that kind were image anchors (43/43, 55/55, 24/24).
+    blocks = build_cleanup_blocks(
+        "Intro\n\n[[DOCX_IMAGE_img_001]]\n\n[[DOCX_IMAGE_img_002]]\n[[DOCX_IMAGE_img_003]]\n\n"
+        "[[DOCX_IMAGE_img_004]] Рисунок 1. Подпись\n\n<placeholder>\n\nOutro"
+    )
+    kinds = {block.block_id: block.kind for block in blocks}
+
+    assert kinds["b_000001"] == "docx_image_anchor"
+    # A block of several anchors and nothing else is still just anchors.
+    assert kinds["b_000002"] == "docx_image_anchor"
+    # An anchor fused with a caption is ordinary text, not an anchor block.
+    assert kinds["b_000003"] == "paragraph"
+    # A genuine extraction artifact keeps its kind — the deletion route is not removed.
+    assert kinds["b_000004"] == "extraction_artifact"
+    assert "docx_image_anchor" not in _ALLOWED_DELETE_REASONS
+
+
+def test_run_reader_cleanup_rejects_extraction_artifact_delete_of_image_anchor_on_kind() -> None:
+    # Defence in depth (spec 052 item 4): the anchor kind makes the reason incompatible AND
+    # the ``docx_image_anchor_protected`` validator still fires. The class of defect this
+    # guards once cost 20-37 images per book, so it keeps two independent refusals.
+    markdown = "Intro\n\n[[DOCX_IMAGE_img_001]]\n\nBody paragraph\n\nOutro"
+
+    result = run_reader_cleanup(
+        markdown_text=markdown,
+        config=ReaderCleanupConfig(enabled=True, max_delete_block_ratio=0.8, max_delete_char_ratio=0.8),
+        operation_provider=lambda payload, chunk_index, chunk_count: json.dumps(
+            {
+                "cleanup_operations": [
+                    _delete_block_operation(block, reason="extraction_artifact", confidence="high")
+                    for block in payload["blocks"]
+                    if block["text"] == "[[DOCX_IMAGE_img_001]]"
+                ],
+                "warnings": [],
+            },
+            ensure_ascii=False,
+        ),
+    )
+
+    assert result.changed is False
+    assert "[[DOCX_IMAGE_img_001]]" in result.cleaned_markdown
+    ignored = [
+        entry for entry in result.report_payload["ignored_cleanup_operations"] if entry.get("id") == "b_000001"
+    ]
+    assert [entry["ignored_reason"] for entry in ignored] == ["docx_image_anchor_protected"]
+    assert [entry["kind"] for entry in ignored] == ["docx_image_anchor"]
 
 
 def test_run_reader_cleanup_rejects_incompatible_duplicate_operation_with_explicit_reason() -> None:
@@ -3638,8 +4855,6 @@ def test_reader_cleanup_request_targets_duplicate_semantic_heading_for_operation
     duplicate_target = next(
         target for target in targets if target["category"] == "duplicate_semantic_heading_text"
     )
-    assert duplicate_target["operation_hint"] == "remove_inline_noise"
-    assert duplicate_target["reason_hint"] == "duplicate_fragment"
     assert duplicate_target["noise_substring"] == "Национальные валюты "
     assert duplicate_target["expected_after_preview"] == (
         "Во многих странах национальные валюты будут использоваться еще долгое время."
@@ -3701,8 +4916,6 @@ def test_reader_cleanup_request_targets_fused_heading_body_for_normalize_boundar
     assert result.changed is False
     targets = seen_payloads[0]["operation_selection_targets"]
     fused_target = next(target for target in targets if target["category"] == "heading_fused_with_body_candidate")
-    assert fused_target["preferred_operation"] == "normalize_heading_boundary"
-    assert fused_target["reason_hint"] == "heading_fused_with_body"
     assert fused_target["heading_substring"] == "ПЯТЬ МИЛЛИАРДОВ ЛЮДЕЙ НЕ ИМЕЮТ ДОСТУПА К ИНТЕРНЕТУ"
     assert fused_target["body_substring"] == (
         "Вдохновившись примером Куритибы, предприниматель задумал создать новую валюту."
@@ -3711,8 +4924,6 @@ def test_reader_cleanup_request_targets_fused_heading_body_for_normalize_boundar
         "ПЯТЬ МИЛЛИАРДОВ ЛЮДЕЙ НЕ ИМЕЮТ ДОСТУПА К ИНТЕРНЕТУ\n\n"
         "Вдохновившись примером Куритибы, предприниматель задумал создать новую валюту."
     )
-    assert fused_target["forbidden_operations"] == ["remove_inline_noise", "delete_block"]
-    assert "not noise" in fused_target["safety_note"]
 
 
 def test_reader_cleanup_request_targets_wrapped_fused_heading_chain() -> None:
@@ -3731,10 +4942,6 @@ def test_reader_cleanup_request_targets_wrapped_fused_heading_chain() -> None:
     targets = seen_payloads[0]["operation_selection_targets"]
     fused_target = next(target for target in targets if target["category"] == "heading_fused_with_body_candidate")
     second_block = next(block for block in seen_payloads[0]["blocks"] if block["text"] == second)
-    assert fused_target["preferred_operation_chain"] == [
-        "join_fragmented_paragraph",
-        "normalize_heading_boundary",
-    ]
     assert fused_target["next_id"] == second_block["id"]
     assert fused_target["next_text_hash"] == second_block["text_hash"]
     assert fused_target["heading_substring"] == "ВАЛЮТА, ОБЪЕДИНЯЮЩАЯ ЭФФЕКТИВНОСТЬ И СПРАВЕДЛИВОСТЬ."
@@ -3743,7 +4950,6 @@ def test_reader_cleanup_request_targets_wrapped_fused_heading_chain() -> None:
         "ВАЛЮТА, ОБЪЕДИНЯЮЩАЯ ЭФФЕКТИВНОСТЬ И СПРАВЕДЛИВОСТЬ.\n\n"
         "Авиабизнес отличается жесткой конкуренцией."
     )
-    assert fused_target["forbidden_operations"] == ["remove_inline_noise", "delete_block"]
 
 
 def test_reader_cleanup_request_targets_side_heading_island_without_inline_delete_hint() -> None:
@@ -3764,21 +4970,6 @@ def test_reader_cleanup_request_targets_side_heading_island_without_inline_delet
     targets = seen_payloads[0]["operation_selection_targets"]
     side_heading_target = next(target for target in targets if target["category"] == "side_heading_island_candidate")
     assert side_heading_target["heading_candidate"] == "Три мультинациональные валюты"
-    assert side_heading_target["operation_hint"] == (
-        "preserve_heading_text_with_split_block_or_normalize_heading_boundary"
-    )
-    assert side_heading_target["preferred_operation_order"] == ["split_block", "normalize_heading_boundary"]
-    assert side_heading_target["reattach_operation_hint"] == "extract_side_heading_and_reattach_body"
-    assert side_heading_target["forbidden_default_operation"] == "remove_inline_noise"
-    assert "pre-heading stub or orphan post-heading continuation" in side_heading_target[
-        "stub_continuation_risk"
-    ]
-    assert side_heading_target["reattach_expected_after_preview_shape"] == (
-        "heading_substring + blank line + pre_body_stub + space + post_body_continuation; "
-        "no labels and no body-first preview."
-    )
-    assert "Semantic heading islands are not noise" in side_heading_target["safety_note"]
-    assert "Do not delete with remove_inline_noise" in side_heading_target["safety_note"]
     assert side_heading_target["id"].startswith("b_")
 
 
@@ -3801,15 +4992,6 @@ def test_reader_cleanup_request_targets_semantic_page_title_deletion_risk() -> N
     assert semantic_title_target["semantic_title_candidate"] == "НОВЫЕ ФОРМЫ ДЕНЕГ?"
     assert semantic_title_target["page_like_number"] == "20"
     assert semantic_title_target["numeric_prefix"] == "20 "
-    assert semantic_title_target["forbidden_operation"] == "remove_inline_noise"
-    assert semantic_title_target["operation_hint"] == "preserve_title_with_exact_structural_operation_or_skip"
-    assert semantic_title_target["after_structural_split_followup_operation"] == "remove_inline_noise"
-    assert semantic_title_target["same_pass_followup_supported"] is True
-    assert semantic_title_target["followup_targets_same_original_block_id"] is True
-    assert semantic_title_target["after_structural_split_noise_substring"] == "20 "
-    assert semantic_title_target["semantic_heading_must_remain_after_followup"] == "НОВЫЕ ФОРМЫ ДЕНЕГ?"
-    assert semantic_title_target["after_structural_split_expected_after_preview"] == "НОВЫЕ ФОРМЫ ДЕНЕГ?"
-    assert "Do not delete the title with remove_inline_noise" in semantic_title_target["safety_note"]
 
 
 def test_reader_cleanup_request_targets_isolated_semantic_heading_numeric_prefix() -> None:
@@ -3828,13 +5010,9 @@ def test_reader_cleanup_request_targets_isolated_semantic_heading_numeric_prefix
     numeric_prefix_target = next(
         target for target in targets if target["category"] == "isolated_semantic_heading_numeric_prefix"
     )
-    assert numeric_prefix_target["preferred_operation"] == "remove_inline_noise"
-    assert numeric_prefix_target["reason_hint"] == "page_number"
-    assert numeric_prefix_target["forbidden_operation"] == "full-heading remove_inline_noise"
     assert numeric_prefix_target["numeric_prefix"] == "20 "
     assert numeric_prefix_target["semantic_heading_must_remain"] == "НОВЫЕ ФОРМЫ ДЕНЕГ?"
     assert numeric_prefix_target["expected_after_preview"] == "НОВЫЕ ФОРМЫ ДЕНЕГ?"
-    assert "never remove the semantic heading text" in numeric_prefix_target["safety_note"]
 
 
 def test_reader_cleanup_request_targets_one_word_isolated_semantic_heading_numeric_prefix() -> None:
@@ -3856,6 +5034,251 @@ def test_reader_cleanup_request_targets_one_word_isolated_semantic_heading_numer
     assert numeric_prefix_target["numeric_prefix"] == "21 "
     assert numeric_prefix_target["semantic_heading_must_remain"] == "РОТТЕРДАМ."
     assert numeric_prefix_target["expected_after_preview"] == "РОТТЕРДАМ."
+
+
+_SIDE_HEADING_ISLAND_BLOCK = (
+    "Стало очевидно, что региональная {phrase} экономическая интеграция "
+    "может достичь зрелости только тогда, когда единая валюта уравнивает условия."
+)
+
+_SIDE_HEADING_ISLAND_PHRASES = (
+    "Три мультинациональные валюты",
+    "Четыре региональные системы",
+    "Пять локальных инициатив",
+    "Шесть городских экспериментов",
+    "Семь кооперативных проектов",
+    "Восемь отраслевых площадок",
+    "Девять муниципальных программ",
+    "Десять партнёрских соглашений",
+    "Одиннадцать отраслевых стандартов",
+    "Двенадцать финансовых институтов",
+)
+
+# Every field a target of a given category may carry. Anything else would be instruction
+# prose that is identical for every target of that category and therefore belongs in the
+# system prompt, not in the ~1 400 targets a book produces.
+_ALLOWED_TARGET_FIELDS_BY_CATEGORY = {
+    "duplicate_semantic_heading_text": {"category", "id", "text_hash", "noise_substring", "expected_after_preview"},
+    "isolated_semantic_heading_numeric_prefix": {
+        "category",
+        "id",
+        "text_hash",
+        "numeric_prefix",
+        "semantic_heading_must_remain",
+        "expected_after_preview",
+    },
+    "semantic_page_title_deletion_risk": {
+        "category",
+        "id",
+        "text_hash",
+        "semantic_title_candidate",
+        "page_like_number",
+        "numeric_prefix",
+    },
+    "heading_fused_with_body_candidate": {
+        "category",
+        "id",
+        "text_hash",
+        "next_id",
+        "next_text_hash",
+        "heading_substring",
+        "body_substring",
+        "expected_after_preview",
+    },
+    "side_heading_island_candidate": {"category", "id", "text_hash", "heading_candidate"},
+}
+
+
+def _capture_first_payload(markdown: str, *, config: ReaderCleanupConfig | None = None) -> dict[str, Any]:
+    seen_payloads: list[dict[str, Any]] = []
+
+    def provider(payload: dict[str, Any], chunk_index: int, chunk_count: int) -> str:
+        seen_payloads.append(payload)
+        return json.dumps({"cleanup_operations": [], "warnings": []}, ensure_ascii=False)
+
+    run_reader_cleanup(
+        markdown_text=markdown,
+        config=config or ReaderCleanupConfig(enabled=True),
+        operation_provider=provider,
+    )
+    return seen_payloads[0]
+
+
+def test_operation_selection_targets_carry_only_block_specific_evidence() -> None:
+    """The per-category instruction prose belongs in the system prompt, not in every target."""
+    markdown = "\n\n".join(
+        [
+            "Intro",
+            "Во многих странах национальные валюты Национальные валюты будут использоваться еще долгое время.",
+            "20 НОВЫЕ ФОРМЫ ДЕНЕГ?",
+            "Абзац завершается указателем следующего раздела 20 ДРУГИЕ ФОРМЫ ДЕНЕГ?",
+            (
+                "ПЯТЬ МИЛЛИАРДОВ ЛЮДЕЙ НЕ ИМЕЮТ ДОСТУПА К ИНТЕРНЕТУ "
+                "Вдохновившись примером Куритибы, предприниматель задумал создать новую валюту."
+            ),
+            _SIDE_HEADING_ISLAND_BLOCK.format(phrase="Три мультинациональные валюты"),
+            "Outro",
+        ]
+    )
+
+    targets = _capture_first_payload(markdown)["operation_selection_targets"]
+
+    seen_categories = {str(target["category"]) for target in targets}
+    assert seen_categories == set(_ALLOWED_TARGET_FIELDS_BY_CATEGORY)
+    for target in targets:
+        allowed = _ALLOWED_TARGET_FIELDS_BY_CATEGORY[str(target["category"])]
+        assert set(target) <= allowed, f"{target['category']} carries extra fields: {sorted(set(target) - allowed)}"
+    # No target value may be instruction prose: every string a target carries is either a
+    # short identifier or an exact substring taken from the block it describes.
+    blocks_by_id = {str(block["id"]): str(block["text"]) for block in _capture_first_payload(markdown)["blocks"]}
+    for target in targets:
+        block_text = blocks_by_id[str(target["id"])]
+        for field, value in target.items():
+            if field in {"category", "id", "text_hash", "next_id", "next_text_hash", "expected_after_preview"}:
+                continue
+            assert str(value) in block_text, f"{target['category']}.{field} is not copied from the block"
+
+
+def test_system_prompt_states_every_rule_removed_from_the_targets() -> None:
+    """The trimmed boilerplate must survive as rules, once, in the system prompt."""
+    prompt = build_reader_cleanup_system_prompt()
+    rules_by_category = {
+        line.split(":", 1)[0].removeprefix("Target category ").strip(): line
+        for line in prompt.splitlines()
+        if line.startswith("Target category ")
+    }
+    assert set(rules_by_category) == set(_ALLOWED_TARGET_FIELDS_BY_CATEGORY)
+
+    duplicate_rule = rules_by_category["duplicate_semantic_heading_text"]
+    assert "remove_inline_noise" in duplicate_rule
+    assert "duplicate_fragment" in duplicate_rule
+    assert "exact adjacent repeated phrase is still present once" in duplicate_rule
+
+    numeric_rule = rules_by_category["isolated_semantic_heading_numeric_prefix"]
+    assert "remove_inline_noise" in numeric_rule
+    assert "page_number" in numeric_rule
+    assert "Full-heading remove_inline_noise is forbidden" in numeric_rule
+    assert "semantic_heading_must_remain" in numeric_rule and "never be removed" in numeric_rule
+
+    title_rule = rules_by_category["semantic_page_title_deletion_risk"]
+    assert "forbidden operation" in title_rule
+    assert "not enough to classify the title as noise" in title_rule
+    assert "skip with a warning" in title_rule
+    assert "same-pass follow-up remove_inline_noise on the same original block id" in title_rule
+    assert "numeric_prefix" in title_rule and "semantic_title_candidate" in title_rule
+
+    fused_rule = rules_by_category["heading_fused_with_body_candidate"]
+    assert "not noise" in fused_rule
+    assert "normalize_heading_boundary" in fused_rule
+    assert "remove_inline_noise and delete_block are forbidden" in fused_rule
+    assert "skip if the exact substrings no longer match" in fused_rule
+    assert "next_id and next_text_hash" in fused_rule
+    assert "join_fragmented_paragraph with that exact next block first" in fused_rule
+
+    island_rule = rules_by_category["side_heading_island_candidate"]
+    assert "Semantic heading islands are not noise" in island_rule
+    assert "forbidden default operation" in island_rule
+    assert "extract_side_heading_and_reattach_body" in island_rule
+    assert "pre_body_stub" in island_rule and "post_body_continuation" in island_rule
+    assert "first try split_block, then normalize_heading_boundary" in island_rule
+    assert "stub" in island_rule and "orphan" in island_rule
+    assert "skip and add a warning" in island_rule
+    # The reattach preview shape used to ride along in every island target; it is stated
+    # once as part of the operation contract.
+    assert (
+        "For extract_side_heading_and_reattach_body, expected_after_preview must be exactly: "
+        "heading_substring, then a blank line, then pre_body_stub plus one space plus post_body_continuation."
+    ) in prompt
+
+
+def test_operation_selection_targets_are_bounded_by_characters_not_by_a_count_of_twenty() -> None:
+    """The old targets[:20] cap starved the tail of every busy chunk."""
+    markdown = "\n\n".join(
+        ["Intro"]
+        + [_SIDE_HEADING_ISLAND_BLOCK.format(phrase=phrase) for phrase in _SIDE_HEADING_ISLAND_PHRASES]
+        + ["Outro"]
+    )
+    payload = _capture_first_payload(markdown)
+    targets = payload["operation_selection_targets"]
+
+    assert len(targets) > 20
+    # Every block that has a candidate gets one, including the last one in the chunk.
+    last_island_block = next(
+        block
+        for block in reversed(payload["blocks"])
+        if _SIDE_HEADING_ISLAND_PHRASES[-1] in str(block["text"])
+    )
+    assert any(target["id"] == last_island_block["id"] for target in targets)
+    # ... and the hints still cannot outweigh the text they annotate.
+    assert len(json.dumps(targets, ensure_ascii=False)) <= ReaderCleanupConfig(enabled=True).chunk_size
+
+
+def test_operation_selection_targets_stop_at_the_configured_character_budget() -> None:
+    from docxaicorrector.reader_cleanup_mvp._detectors import _build_operation_selection_targets
+
+    blocks = build_cleanup_blocks(
+        "\n\n".join(_SIDE_HEADING_ISLAND_BLOCK.format(phrase=phrase) for phrase in _SIDE_HEADING_ISLAND_PHRASES)
+    )
+    unlimited = _build_operation_selection_targets(blocks=blocks, char_budget=10**9)
+    bounded = _build_operation_selection_targets(blocks=blocks, char_budget=600)
+
+    assert len(bounded) < len(unlimited)
+    assert bounded == unlimited[: len(bounded)]
+    assert len(json.dumps(bounded, ensure_ascii=False)) <= 600
+
+
+def test_chunk_request_payload_omits_the_always_empty_global_plan_fields() -> None:
+    """global_plan_enabled is false by default, so these lists never carry anything."""
+    markdown = "\n\n".join(["Intro", "Повторяющийся колонтитул", "Тело главы", "Повторяющийся колонтитул", "Outro"])
+
+    global_plan = _capture_first_payload(markdown)["global_plan"]
+
+    assert "document_specific_running_headers" not in global_plan
+    assert "examples_do_not_delete" not in global_plan
+    assert "likely_heading_body_patterns" not in global_plan
+    assert "likely_fragmentation_patterns" not in global_plan
+    assert not any(value == [] for value in global_plan.values())
+    # What the pass actually computed locally still ships.
+    assert global_plan["candidate_block_ids"]
+    assert global_plan["repeated_noise_patterns"]
+
+
+def test_anchor_repair_guidance_ships_only_when_the_anchor_pass_is_enabled() -> None:
+    """The anchor_repair branch is unreachable unless a caller supplies anchor_targets."""
+    anchor_only_cleanup_rules = (
+        "If the request pass_name is anchor_repair, operate only inside the listed anchor_targets",
+        "For anchor_repair, every returned operation still needs full audit fields",
+        "For anchor_repair fragmented_paragraph targets, first inspect only adjacent payload blocks",
+        "For anchor_repair join_fragmented_paragraph, copy next_id and next_text_hash exactly",
+        "For anchor_repair fragmented_paragraph targets, do not propose delete_block duplicate_fragment",
+        "do not combine split_block and join_fragmented_paragraph on the same evidence",
+        "For anchor_repair page_furniture_inline targets, first propose remove_inline_noise",
+        "- Anchor fragmented paragraph through caption/page boundary",
+        "- Anchor fragmented paragraph that looks like a duplicate tail",
+        "- Anchor fragmented paragraph with page furniture between prose",
+        "- Anchor page furniture plus caption between sentence parts",
+    )
+    anchor_only_repair_rules = (
+        "If pass_name is anchor_repair, keep the repaired response limited to anchor_targets",
+        "For anchor_repair fragmented_paragraph items, keep a join_fragmented_paragraph operation only when",
+        "For anchor_repair fragmented_paragraph items, do not convert a non-exact duplicate-looking tail",
+        "For anchor_repair page_furniture_inline items, keep join_fragmented_paragraph only as a follow-up",
+    )
+
+    production_prompt = build_reader_cleanup_system_prompt()
+    production_repair_prompt = build_reader_cleanup_schema_repair_system_prompt()
+    anchor_prompt = build_reader_cleanup_system_prompt(include_anchor_repair_guidance=True)
+    anchor_repair_prompt = build_reader_cleanup_schema_repair_system_prompt(include_anchor_repair_guidance=True)
+
+    for rule in anchor_only_cleanup_rules:
+        assert rule not in production_prompt
+        assert rule in anchor_prompt
+    for rule in anchor_only_repair_rules:
+        assert rule not in production_repair_prompt
+        assert rule in anchor_repair_prompt
+    assert "anchor_repair" not in production_prompt
+    assert anchor_prompt.startswith(production_prompt)
+    assert anchor_repair_prompt.startswith(production_repair_prompt)
 
 
 def test_reader_cleanup_request_does_not_target_numbered_list_as_semantic_heading_prefix() -> None:
@@ -5823,3 +7246,228 @@ def test_run_reader_cleanup_strict_failure_raises_with_reviewable_report() -> No
     assert report_payload["changed"] is False
     assert report_payload["failure"]["kind"] == "chunk_failed"
     assert report_payload["stats"]["failed_chunk_count"] == 1
+
+
+def _normalize_heading_boundary_operation(
+    block: Any,
+    *,
+    heading_substring: str,
+    body_substring: str,
+) -> dict[str, Any]:
+    return {
+        "id": str(block["id"]),
+        "text_hash": str(block["text_hash"]),
+        "operation": "normalize_heading_boundary",
+        "reason": "heading_fused_with_body",
+        "confidence": "high",
+        "evidence_before": str(block["text"]),
+        "expected_after_preview": f"{heading_substring}\n\n{body_substring}",
+        "safety_note": "separate the heading from the body it is fused with",
+        "heading_substring": heading_substring,
+        "body_substring": body_substring,
+    }
+
+
+def test_run_reader_cleanup_rejects_the_operation_that_breaks_an_image_anchor() -> None:
+    # Spec 052 item 5, reproducing the defect measured on the real replay books: four
+    # accepted ``normalize_heading_boundary`` operations on creating_wealth (and one on
+    # mazzucato) cut a figure block between "[[DOCX_IMAGE_" and "img_014]]". The anchor
+    # stopped parsing, and the reconciler pasted the figure at the END of the document --
+    # a chapter-2 diagram landing after the last page, with a green report.
+    figure_block = "[[DOCX_IMAGE_img_014]] РИСУНОК 2.1. Архетип «Пределы роста»"
+    markdown = f"Intro\n\n{figure_block}\n\nBody paragraph\n\nOutro"
+
+    def provider(payload: dict[str, Any], chunk_index: int, chunk_count: int) -> str:
+        target = next(block for block in payload["blocks"] if block["text"] == figure_block)
+        return json.dumps(
+            {
+                "cleanup_operations": [
+                    _normalize_heading_boundary_operation(
+                        target,
+                        heading_substring="[[DOCX_IMAGE_",
+                        body_substring="img_014]] РИСУНОК 2.1. Архетип «Пределы роста»",
+                    )
+                ],
+                "warnings": [],
+            },
+            ensure_ascii=False,
+        )
+
+    result = run_reader_cleanup(
+        markdown_text=markdown,
+        config=ReaderCleanupConfig(enabled=True),
+        operation_provider=provider,
+    )
+
+    # The operation is rejected by name, not patched up afterwards.
+    assert [
+        entry["ignored_reason"]
+        for entry in result.report_payload["ignored_cleanup_operations"]
+        if entry.get("operation") == "normalize_heading_boundary"
+    ] == ["docx_image_anchor_lost_by_operation"]
+    assert result.report_payload["accepted_cleanup_operations"] == []
+    assert any(
+        warning.startswith("reader_cleanup_image_anchor_lost_by_operation:")
+        for warning in result.report_payload["warnings"]
+    )
+    # The anchor is intact and still in its own place -- not appended after "Outro".
+    assert figure_block in result.cleaned_markdown
+    assert result.cleaned_markdown.strip().endswith("Outro")
+    assert result.report_payload["image_reconciliation"]["missing_image_ids"] == []
+    assert result.report_payload["image_reconciliation"]["reinserted_image_ids"] == []
+
+
+def test_run_reader_cleanup_keeps_unrelated_operations_when_rejecting_an_anchor_breaker() -> None:
+    # Rejection is targeted: only the operation that lost the anchor is dropped. A clean
+    # operation elsewhere in the document still applies.
+    figure_block = "[[DOCX_IMAGE_img_014]] РИСУНОК 2.1. Архетип «Пределы роста»"
+    fused_block = "ЗАГОЛОВОК РАЗДЕЛА Дальше идёт обычный текст параграфа без картинок."
+    markdown = f"Intro\n\n{figure_block}\n\n{fused_block}\n\nOutro"
+
+    def provider(payload: dict[str, Any], chunk_index: int, chunk_count: int) -> str:
+        figure_target = next(block for block in payload["blocks"] if block["text"] == figure_block)
+        fused_target = next(block for block in payload["blocks"] if block["text"] == fused_block)
+        return json.dumps(
+            {
+                "cleanup_operations": [
+                    _normalize_heading_boundary_operation(
+                        figure_target,
+                        heading_substring="[[DOCX_IMAGE_",
+                        body_substring="img_014]] РИСУНОК 2.1. Архетип «Пределы роста»",
+                    ),
+                    _normalize_heading_boundary_operation(
+                        fused_target,
+                        heading_substring="ЗАГОЛОВОК РАЗДЕЛА",
+                        body_substring="Дальше идёт обычный текст параграфа без картинок.",
+                    ),
+                ],
+                "warnings": [],
+            },
+            ensure_ascii=False,
+        )
+
+    result = run_reader_cleanup(
+        markdown_text=markdown,
+        config=ReaderCleanupConfig(enabled=True),
+        operation_provider=provider,
+    )
+
+    assert [entry["id"] for entry in result.report_payload["accepted_cleanup_operations"]] == ["b_000002"]
+    assert [
+        entry["ignored_reason"]
+        for entry in result.report_payload["ignored_cleanup_operations"]
+        if entry.get("id") == "b_000001"
+    ] == ["docx_image_anchor_lost_by_operation"]
+    assert figure_block in result.cleaned_markdown
+    assert "ЗАГОЛОВОК РАЗДЕЛА\n\nДальше идёт обычный текст" in result.cleaned_markdown
+
+
+def test_reconcile_docx_image_placeholders_discards_cleanup_instead_of_appending() -> None:
+    # Spec 052 item 5, the backstop: when an anchor is still missing after the responsible
+    # operation could not be identified, the cleanup is discarded wholesale. It is never
+    # "repaired" by pasting the anchor somewhere it did not come from.
+    raw_markdown = "Intro\n\n[[DOCX_IMAGE_img_001]]\n\nChapter three body\n\nBibliography"
+    cleaned_markdown = "Intro\n\nChapter three body\n\nBibliography"
+    raw_blocks = build_cleanup_blocks(raw_markdown)
+
+    reconciled, diagnostics = _reconcile_docx_image_placeholders(
+        raw_markdown=raw_markdown,
+        cleaned_markdown=cleaned_markdown,
+        raw_blocks=raw_blocks,
+    )
+
+    assert reconciled == raw_markdown
+    assert not reconciled.strip().endswith("[[DOCX_IMAGE_img_001]]")
+    assert diagnostics["cleanup_discarded_for_missing_image_ids"] is True
+    assert diagnostics["missing_image_ids"] == ["img_001"]
+    assert diagnostics["reinserted_image_ids"] == []
+    assert diagnostics["missing_after_repair"] == []
+    assert diagnostics["lost_image_source_block_ids"] == ["b_000001"]
+    assert _image_reconciliation_warnings(diagnostics) == ["reader_cleanup_image_ids_lost_cleanup_discarded:1"]
+
+
+def test_toc_like_no_longer_captures_prose_that_merely_ends_in_a_number() -> None:
+    # Spec 052 item 6. ``\s\d{1,4}\s*$`` made any paragraph ending in a number immune to
+    # every operation. Measured on the three books: 0.5-4.1% of blocks.
+    prose = (
+        "Джеффри Фрид, автор бестселлера и классического труда в области образования, "
+        "определил особенности стиля обучения современных студентов и показал, почему "
+        "школьная система перестала отвечать их потребностям уже к 2000"
+    )
+
+    assert _detect_block_kind(prose) == "paragraph"
+
+
+def test_toc_like_no_longer_captures_prose_containing_an_ellipsis() -> None:
+    # The other leaking branch: ``\.{3,}`` fired on an ellipsis typed as three periods, so
+    # lietaer b_000006 -- 3 481 characters of jacket endorsements -- was "TOC-like" too.
+    prose = (
+        "«Лиетар и Данн объясняют, как и почему наша денежная система не может "
+        "сбалансировать спрос и предложение, подрывает демократию и вознаграждает "
+        "неустойчивый, разрушительный рост... Не умаляя того, что деньги дают нам "
+        "сегодня, они проводят экскурсию по целому ряду реальных альтернатив»."
+    )
+
+    assert _detect_block_kind(prose) == "paragraph"
+
+
+def test_toc_like_still_captures_genuine_contents_and_index_lines() -> None:
+    # Narrowing must not cost real contents protection. All four shapes are taken verbatim
+    # from the measured books.
+    single_entry = "Глава 1"
+    dot_leader_entry = "Введение: от дефицита к процветанию ......... 12"
+    contents_run = (
+        "1 Крах денег: конкурентное общество 11 2 Миф о деньгах: что это такое на самом деле 23 "
+        "3 Судьба хуже долга: скрытые последствия процентов 37"
+    )
+    index_run = (
+        "Экологически чистые продукты, 152, 186; Гринвошинг, 198; Валовой внутренний продукт "
+        "(ВВП), 34–35, 131, 146; Валовое национальное счастье, 131"
+    )
+
+    assert _detect_block_kind(single_entry) == "toc_like"
+    assert _detect_block_kind(dot_leader_entry) == "toc_like"
+    assert _detect_block_kind(contents_run) == "toc_like"
+    assert _detect_block_kind(index_run) == "toc_like"
+
+
+def test_toc_narrowing_frees_prose_for_operations_that_immunity_used_to_block() -> None:
+    # Effect, not mechanism: a paragraph of prose ending in a number used to be refused with
+    # ``toc_protected``. It is now an ordinary block and a lawful operation applies to it.
+    prose_block = (
+        "ЗАКЛЮЧЕНИЕ ГЛАВЫ Экономика устойчивого роста требует терпения и долгого горизонта "
+        "планирования, а первые результаты такой политики проявляются не раньше чем через 10"
+    )
+    markdown = f"Intro\n\n{prose_block}\n\nOutro"
+
+    def provider(payload: dict[str, Any], chunk_index: int, chunk_count: int) -> str:
+        target = next(block for block in payload["blocks"] if block["text"] == prose_block)
+        return json.dumps(
+            {
+                "cleanup_operations": [
+                    _normalize_heading_boundary_operation(
+                        target,
+                        heading_substring="ЗАКЛЮЧЕНИЕ ГЛАВЫ",
+                        body_substring=(
+                            "Экономика устойчивого роста требует терпения и долгого горизонта "
+                            "планирования, а первые результаты такой политики проявляются не раньше чем через 10"
+                        ),
+                    )
+                ],
+                "warnings": [],
+            },
+            ensure_ascii=False,
+        )
+
+    result = run_reader_cleanup(
+        markdown_text=markdown,
+        config=ReaderCleanupConfig(enabled=True),
+        operation_provider=provider,
+    )
+
+    assert "toc_protected" not in {
+        str(entry.get("ignored_reason")) for entry in result.report_payload["ignored_cleanup_operations"]
+    }
+    assert [entry["operation"] for entry in result.report_payload["accepted_cleanup_operations"]] == [
+        "normalize_heading_boundary"
+    ]

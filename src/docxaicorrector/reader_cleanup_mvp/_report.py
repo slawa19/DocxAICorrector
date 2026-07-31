@@ -94,9 +94,6 @@ def _build_cleanup_stats(
     proposed_delete_block_count = sum(
         _coerce_int(entry.get("proposed_delete_block_count"), default=0, minimum=0) for entry in chunk_results
     )
-    accepted_reclassify_role_count = sum(
-        1 for entry in accepted_cleanup_operations if entry.get("operation") == "reclassify_role"
-    )
     return {
         "raw_block_count": len(blocks),
         "raw_char_count": len(raw_markdown),
@@ -106,7 +103,6 @@ def _build_cleanup_stats(
         "proposed_delete_block_count": proposed_delete_block_count,
         "accepted_cleanup_operation_count": len(accepted_cleanup_operations),
         "accepted_delete_block_count": len(accepted_delete_blocks),
-        "accepted_reclassify_role_count": accepted_reclassify_role_count,
         "ignored_cleanup_operation_count": len(ignored_cleanup_operations),
         "ignored_delete_block_count": len(ignored_cleanup_operations),
         "deleted_non_whitespace_char_count": deleted_char_count,
@@ -127,12 +123,56 @@ def _docx_image_placeholder_counts(text: str) -> Counter[str]:
     return Counter(_extract_docx_image_placeholder_ids(text))
 
 
+def _missing_docx_image_placeholder_ids(*, raw_markdown: str, cleaned_markdown: str) -> list[str]:
+    """Image anchor ids present in the source markdown but absent from the cleaned one."""
+    before_counts = _docx_image_placeholder_counts(raw_markdown)
+    after_counts = _docx_image_placeholder_counts(cleaned_markdown)
+    return sorted((before_counts - after_counts).elements())
+
+
+def _docx_image_anchor_source_block_ids(
+    *,
+    raw_blocks: Sequence[CleanupBlock],
+    image_ids: Sequence[str],
+) -> set[str]:
+    """Ids of the source blocks the given anchors came from.
+
+    This is one half of anchor attribution: it says WHERE the lost anchor lived. The other
+    half — which operation wrote over that block — is the write set
+    ``_apply_cleanup_operations`` records per applied operation. An operation's declared
+    ``block_id``/``next_id`` is NOT that write set: ``normalize_heading_boundary`` can
+    absorb the following block or rewrite the preceding one after a join, and a join moves
+    a block's characters into a slot another operation may later overwrite.
+    """
+    wanted = {str(image_id) for image_id in image_ids if str(image_id).strip()}
+    if not wanted:
+        return set()
+    return {
+        block.block_id
+        for block in raw_blocks
+        if wanted.intersection(_extract_docx_image_placeholder_ids(block.text))
+    }
+
+
 def _reconcile_docx_image_placeholders(
     *,
     raw_markdown: str,
     cleaned_markdown: str,
     raw_blocks: Sequence[CleanupBlock],
 ) -> tuple[str, dict[str, object]]:
+    """Verify every image anchor survived; discard the whole cleanup if one did not.
+
+    Spec 052 item 5. This used to re-append a lost anchor at the END of the document: the
+    count reconciled, the report went green, and a chapter-3 figure landed after the
+    bibliography. "Nothing was lost" was true of the id list and false of the book.
+
+    There is no correct place to put an anchor whose position is unknown, so this refuses
+    to guess. The caller has already had its chance to reject the specific operation that
+    lost the anchor (``service._reject_operations_losing_docx_image_anchors``); by the
+    time an anchor is still missing here, the cleanup as a whole cannot be delivered
+    without relocating an image, and the fail-closed answer is to deliver the original
+    markdown unchanged. A cleanup worth 12-44 operations is not worth a misplaced figure.
+    """
     before_counts = _docx_image_placeholder_counts(raw_markdown)
     after_counts = _docx_image_placeholder_counts(cleaned_markdown)
     missing_ids = sorted((before_counts - after_counts).elements())
@@ -142,40 +182,32 @@ def _reconcile_docx_image_placeholders(
             "before_image_id_count": sum(before_counts.values()),
             "after_image_id_count": sum(after_counts.values()),
             "missing_image_ids": [],
+            # Owned by the caller, not by this function: it means "still missing after the
+            # anchor-repair pass ran", and only ``run_reader_cleanup`` knows whether that
+            # pass ran. This function reconciles a single application step.
             "missing_after_repair": [],
             "extra_image_ids": extra_ids,
             "reinserted_image_ids": [],
+            "cleanup_discarded_for_missing_image_ids": False,
+            "lost_image_source_block_ids": [],
             "touched": bool(extra_ids),
         }
 
-    missing_counter = Counter(missing_ids)
-    reinsertion_blocks: list[str] = []
-    for block in raw_blocks:
-        block_ids = _extract_docx_image_placeholder_ids(block.text)
-        if not block_ids:
-            continue
-        selected_ids: list[str] = []
-        for image_id in block_ids:
-            if missing_counter[image_id] <= 0:
-                continue
-            missing_counter[image_id] -= 1
-            selected_ids.append(image_id)
-        if selected_ids:
-            reinsertion_blocks.append("\n".join(f"[[DOCX_IMAGE_{image_id}]]" for image_id in selected_ids))
-
-    rebuilt = cleaned_markdown.strip()
-    if reinsertion_blocks:
-        rebuilt = "\n\n".join([part for part in [rebuilt, *reinsertion_blocks] if part.strip()])
-
-    reconciled_counts = _docx_image_placeholder_counts(rebuilt)
-    remaining_missing_ids = sorted((before_counts - reconciled_counts).elements())
-    return rebuilt, {
+    restored_counts = _docx_image_placeholder_counts(raw_markdown)
+    return raw_markdown, {
         "before_image_id_count": sum(before_counts.values()),
-        "after_image_id_count": sum(reconciled_counts.values()),
+        "after_image_id_count": sum(restored_counts.values()),
         "missing_image_ids": missing_ids,
-        "missing_after_repair": remaining_missing_ids,
+        # Nothing is missing after the discard — the delivered markdown IS the source.
+        # ``run_reader_cleanup`` overwrites this if a later anchor-repair pass loses one.
+        "missing_after_repair": [],
         "extra_image_ids": extra_ids,
-        "reinserted_image_ids": sorted((reconciled_counts - after_counts).elements()),
+        # Never again: an anchor is never re-inserted at a position it did not come from.
+        "reinserted_image_ids": [],
+        "cleanup_discarded_for_missing_image_ids": True,
+        "lost_image_source_block_ids": sorted(
+            _docx_image_anchor_source_block_ids(raw_blocks=raw_blocks, image_ids=missing_ids)
+        ),
         "touched": True,
     }
 
@@ -186,7 +218,7 @@ def _image_reconciliation_warnings(image_reconciliation: Mapping[str, object]) -
     extra = [str(item) for item in image_reconciliation.get("extra_image_ids") or [] if str(item).strip()]
     warnings: list[str] = []
     if missing:
-        warnings.append(f"reader_cleanup_image_ids_reinserted:{len(missing)}")
+        warnings.append(f"reader_cleanup_image_ids_lost_cleanup_discarded:{len(missing)}")
     if remaining:
         warnings.append(f"reader_cleanup_image_ids_missing_after_reconcile:{len(remaining)}")
     if extra:
@@ -238,10 +270,31 @@ def _failed_chunk_ratio_exceeds_threshold(
     chunk_results: Sequence[Mapping[str, object]],
     config: ReaderCleanupConfig,
 ) -> bool:
+    """True when the failed-chunk share is ABOVE ``max_failed_chunk_ratio``.
+
+    Strictly above, and both the setting's name ("max") and every message about it say so.
+    The comparison used to be ``>=``, which meant a ten-chunk document losing exactly one
+    chunk to a transient error hit ``0.1 >= 0.1`` and had its entire cleanup cancelled,
+    while the notice told the owner the rate was "above the allowed 10.0%" — it was equal
+    to it. Worse, ``max_failed_chunk_ratio = 0.0`` aborted every run, including runs with
+    zero failures. The threshold is the largest failure share still tolerated.
+
+    ``1.0`` therefore means the abort is OFF, and says so here rather than leaving it as an
+    arithmetic accident (a share can never exceed 1.0). Under the old ``>=`` it meant
+    "abort only when EVERY chunk failed"; that reading is gone and is not coming back as a
+    ratio, because no fixed number expresses "all but not almost all" — the largest partial
+    share is ``(n-1)/n``, which depends on the document. Nothing needs it: every threshold
+    below 1.0 already aborts a total failure, and the one caller that sets 1.0
+    (``scripts/run-reader-cleanup-structural-matrix.py``, a research sweep that deliberately
+    drives models into failing chunks) wants the abort disabled, not narrowed. That sweep
+    reads the failure counts back out of each cell's score instead.
+    """
     if not chunk_results:
         return False
     threshold = min(1.0, max(0.0, float(config.max_failed_chunk_ratio)))
-    return _failed_chunk_ratio(chunk_results) >= threshold
+    if threshold >= 1.0:
+        return False
+    return _failed_chunk_ratio(chunk_results) > threshold
 
 
 def _serialize_cleanup_settings(config: ReaderCleanupConfig) -> dict[str, object]:
@@ -252,7 +305,6 @@ def _serialize_cleanup_settings(config: ReaderCleanupConfig) -> dict[str, object
         "overlap_blocks_after": config.overlap_blocks_after,
         "global_plan_enabled": config.global_plan_enabled,
         "allowed_operations": sorted(config.allowed_operations),
-        "max_reclassify_block_ratio": config.max_reclassify_block_ratio,
         "max_failed_chunk_ratio": config.max_failed_chunk_ratio,
     }
 

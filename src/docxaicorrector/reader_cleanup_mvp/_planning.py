@@ -9,7 +9,6 @@ from ._constants import (
     _ALLOWED_CONFIDENCE,
     _ALLOWED_DELETE_REASONS,
     _ALLOWED_REANNOTATION_ROLES,
-    _ALLOWED_RECLASSIFY_TARGET_ROLES,
     _REMOVE_INLINE_NOISE_REASON_GUIDANCE,
 )
 from ._detectors import _allowed_operations_for_config, _build_operation_selection_targets
@@ -123,6 +122,25 @@ def _parse_global_plan_response(raw_response: str) -> dict[str, object]:
     return normalized
 
 
+def _compact_global_plan_for_payload(global_plan: Mapping[str, object]) -> dict[str, object]:
+    """Drop the global-plan fields that are empty for this document.
+
+    ``reader_cleanup_global_plan_enabled`` is false by default, so
+    ``document_specific_running_headers``, ``examples_do_not_delete``,
+    ``likely_heading_body_patterns`` and ``likely_fragmentation_patterns`` are empty on
+    every production run. An absent field means the same thing as an empty one, so they
+    are not worth shipping in every chunk request. The report keeps the full plan.
+    """
+    compacted: dict[str, object] = {}
+    for key, value in global_plan.items():
+        if value is None:
+            continue
+        if isinstance(value, (str, bytes, list, tuple, set, frozenset, dict)) and len(value) == 0:
+            continue
+        compacted[key] = value
+    return compacted
+
+
 def _build_chunk_request_payload(
     *,
     chunk: CleanupChunk,
@@ -131,7 +149,10 @@ def _build_chunk_request_payload(
 ) -> dict[str, object]:
     readonly_before = [block.to_payload() for block in chunk.context_before_blocks]
     readonly_after = [block.to_payload() for block in chunk.context_after_blocks]
-    operation_selection_targets = _build_operation_selection_targets(blocks=chunk.blocks)
+    operation_selection_targets = _build_operation_selection_targets(
+        blocks=chunk.blocks,
+        char_budget=config.chunk_size,
+    )
     allowed_operations = _allowed_operations_for_config(config)
     payload: dict[str, object] = {
         "policy": config.policy,
@@ -163,13 +184,6 @@ def _build_chunk_request_payload(
                 "delete_block": sorted(_ALLOWED_DELETE_REASONS),
                 "extract_side_heading_and_reattach_body": ["heading_fused_with_body", "extraction_artifact"],
                 "remove_inline_noise": sorted(_REMOVE_INLINE_NOISE_REASON_GUIDANCE),
-                "reclassify_role": [
-                    "semantic_heading",
-                    "semantic_body",
-                    "semantic_attribution",
-                    "semantic_caption",
-                    "role_assignment_correction",
-                ],
             },
             "operation_specific_fields": {
                 "extract_side_heading_and_reattach_body": [
@@ -181,9 +195,7 @@ def _build_chunk_request_payload(
                 "remove_inline_noise": ["noise_substring"],
                 "join_fragmented_paragraph": ["next_id", "next_text_hash"],
                 "normalize_heading_boundary": ["heading_substring", "body_substring"],
-                "reclassify_role": ["target_role"],
             },
-            "allowed_reclassify_target_roles": sorted(_ALLOWED_RECLASSIFY_TARGET_ROLES),
             "allowed_confidence": ["low", "medium", "high"],
             "example": {
                 "cleanup_operations": [
@@ -204,7 +216,7 @@ def _build_chunk_request_payload(
         "editable_block_ids": [block.block_id for block in chunk.blocks],
         "context_before_preview": chunk.context_before[:240],
         "context_after_preview": chunk.context_after[:240],
-        "global_plan": global_plan,
+        "global_plan": _compact_global_plan_for_payload(global_plan),
         "operation_selection_targets": operation_selection_targets,
         "blocks": [block.to_payload() for block in chunk.blocks],
     }

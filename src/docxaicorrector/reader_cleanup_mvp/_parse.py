@@ -7,14 +7,13 @@ from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any, cast
 
-from ._apply import _apply_cleanup_operations, _reclassify_role_expected_markdown
+from ._apply import _apply_cleanup_operations
 from ._blocks import build_cleanup_blocks
 from ._chunking import _build_anchor_repair_chunks, _normalize_anchor_targets
 from ._constants import (
     _ALLOWED_CONFIDENCE,
     _ALLOWED_DELETE_REASONS,
     _ALLOWED_OPERATIONS,
-    _ALLOWED_RECLASSIFY_TARGET_ROLES,
     _BLOCK_RESPONSE_FIELDS,
     _INLINE_NOISE_REASON_GUIDANCE,
     _OPERATION_RESPONSE_FIELDS,
@@ -283,7 +282,13 @@ def _run_anchor_repair_pass(
             }
         )
 
-    cleaned_markdown, accepted_ids, accepted_cleanup_operations, apply_ignored_cleanup_operations = _apply_cleanup_operations(
+    (
+        cleaned_markdown,
+        accepted_ids,
+        accepted_cleanup_operations,
+        apply_ignored_cleanup_operations,
+        _lost_docx_image_ids_by_operation_index,
+    ) = _apply_cleanup_operations(
         raw_markdown=raw_markdown,
         blocks=blocks,
         operations=all_operations,
@@ -525,6 +530,36 @@ def _merge_anchor_repair_pass_into_report(
     return merged_report
 
 
+def _serialize_unsupported_operation_item(
+    *,
+    item: Mapping[str, object],
+    operation_name: str,
+    editable_blocks: Mapping[str, CleanupBlock],
+    readonly_context_blocks: Mapping[str, CleanupBlock] | None,
+    chunk_index: int,
+) -> dict[str, object]:
+    block_id = str(item.get("id") or "").strip()
+    reason = str(item.get("reason") or "").strip()
+    confidence = str(item.get("confidence") or "").strip().lower()
+    block = editable_blocks.get(block_id) or (readonly_context_blocks or {}).get(block_id)
+    entry: dict[str, object] = (
+        _serialize_delete_block(block=block, reason=reason, confidence=confidence)
+        if block is not None
+        else {"id": block_id, "text_hash": str(item.get("text_hash") or "").strip(), "reason": reason, "confidence": confidence}
+    )
+    entry.update(
+        {
+            "operation": operation_name,
+            "evidence_before": str(item.get("evidence_before") or "").strip(),
+            "expected_after_preview": str(item.get("expected_after_preview") or "").strip(),
+            "safety_note": str(item.get("safety_note") or "").strip(),
+            "chunk_index": chunk_index,
+            "ignored_reason": "operation_not_supported",
+        }
+    )
+    return entry
+
+
 def _parse_cleanup_response(
     *,
     raw_response: str,
@@ -569,6 +604,25 @@ def _parse_cleanup_response(
         item_with_operation = dict(item)
         if "operation" not in item_with_operation:
             item_with_operation["operation"] = "delete_block"
+        # An operation name this build no longer knows (for example `reclassify_role`,
+        # removed in spec 052 item 9) must never fail the chunk: a model that saw an older
+        # response contract may still emit it. Record it as ignored and move on.
+        candidate_operation_name = str(item_with_operation.get("operation") or "").strip()
+        if candidate_operation_name and candidate_operation_name not in _ALLOWED_OPERATIONS:
+            ignored_operations.append(
+                _serialize_unsupported_operation_item(
+                    item=item_with_operation,
+                    operation_name=candidate_operation_name,
+                    editable_blocks=editable_blocks,
+                    readonly_context_blocks=readonly_context_blocks,
+                    chunk_index=chunk_index,
+                )
+            )
+            warnings.append(
+                "reader_cleanup_unsupported_operation_ignored:"
+                f"{chunk_index}:{str(item_with_operation.get('id') or '').strip()}:{candidate_operation_name}"
+            )
+            continue
         normalized_item, normalization_warnings = _normalize_delete_block_item(
             item=item_with_operation,
             editable_blocks=editable_blocks,
@@ -592,18 +646,10 @@ def _parse_cleanup_response(
         if unknown_block_fields:
             raise RuntimeError(f"reader_cleanup_unknown_operation_fields:{','.join(unknown_block_fields)}")
 
-        if operation_name not in _ALLOWED_OPERATIONS:
-            raise RuntimeError(f"reader_cleanup_unknown_operation:{operation_name}")
         if operation_name == "delete_block" and reason not in _ALLOWED_DELETE_REASONS:
             raise RuntimeError(f"reader_cleanup_unknown_reason:{reason}")
         if confidence not in _ALLOWED_CONFIDENCE:
             raise RuntimeError(f"reader_cleanup_unknown_confidence:{confidence}")
-        target_role = str(normalized_item.get("target_role") or "").strip().lower()
-        if operation_name == "reclassify_role":
-            if not target_role:
-                raise RuntimeError(f"reader_cleanup_operation_missing_required_field:{block_id}:target_role")
-            if target_role not in _ALLOWED_RECLASSIFY_TARGET_ROLES:
-                raise RuntimeError(f"reader_cleanup_unknown_target_role:{target_role}")
         split_substrings = normalized_item.get("split_substrings")
         readonly_context_block = (readonly_context_blocks or {}).get(block_id)
         if block_id not in editable_blocks:
@@ -631,7 +677,6 @@ def _parse_cleanup_response(
                 heading_substring=str(normalized_item.get("heading_substring") or ""),
                 body_substring=str(normalized_item.get("body_substring") or ""),
                 post_body_continuation=str(normalized_item.get("post_body_continuation") or ""),
-                target_role=target_role,
             )
             ignored_operations.append(
                 {
@@ -690,8 +735,7 @@ def _parse_cleanup_response(
                     heading_substring=str(normalized_item.get("heading_substring") or ""),
                     body_substring=str(normalized_item.get("body_substring") or ""),
                     post_body_continuation=str(normalized_item.get("post_body_continuation") or ""),
-                    target_role=target_role,
-                )
+                    )
                 ignored_operations.append(
                     {
                         **_serialize_cleanup_operation(operation=ignored_operation, block=editable_blocks[block_id]),
@@ -741,7 +785,6 @@ def _parse_cleanup_response(
                 heading_substring=str(normalized_item.get("heading_substring") or ""),
                 body_substring=str(normalized_item.get("body_substring") or ""),
                 post_body_continuation=str(normalized_item.get("post_body_continuation") or ""),
-                target_role=target_role,
             )
         )
 
@@ -787,11 +830,6 @@ def _recover_expected_after_preview(
         if next_block.text_hash != next_text_hash:
             return None
         return f"{current_text.rstrip()} {next_block.text.lstrip()}"
-    if operation_name == "reclassify_role":
-        target_role = str(normalized_item.get("target_role") or "").strip().lower()
-        if target_role not in _ALLOWED_RECLASSIFY_TARGET_ROLES:
-            return None
-        return _reclassify_role_expected_markdown(current_text=current_text, target_role=target_role)
     return None
 
 

@@ -4,7 +4,6 @@ import re
 from collections.abc import Mapping, Sequence
 
 from ._constants import (
-    _ALLOWED_RECLASSIFY_TARGET_ROLES,
     _DOCX_IMAGE_PLACEHOLDER_PATTERN,
     _DUPLICATE_FRAGMENT_MAX_NEARBY_BLOCK_DISTANCE,
     _DUPLICATE_FRAGMENT_MIN_NON_WHITESPACE_CHARS,
@@ -322,14 +321,6 @@ def _violates_global_safety(
     return longest_run > config.max_consecutive_deleted_blocks
 
 
-def _max_allowed_reclassify_operations(*, blocks: Sequence[CleanupBlock], config: ReaderCleanupConfig) -> int:
-    ratio = max(0.0, config.max_reclassify_block_ratio)
-    if ratio <= 0.0 or not blocks:
-        return 0
-    count = int(len(blocks) * ratio)
-    return max(1, count)
-
-
 def _build_protected_block_ids(*, blocks: Sequence[CleanupBlock], keep_toc: bool) -> set[str]:
     protected_ids: set[str] = set()
     nonempty_blocks = [block for block in blocks if block.text.strip()]
@@ -356,8 +347,6 @@ def _validate_operation(
         return "text_hash_mismatch"
     if operation.confidence == "low":
         return "low_confidence"
-    if operation.operation == "reclassify_role":
-        return _validate_reclassify_role_operation(block=block, operation=operation, protected_ids=protected_ids)
     if operation.operation != "delete_block":
         if block.kind == "footnote_body":
             return "footnote_body_protected"
@@ -403,32 +392,6 @@ def _validate_operation(
         return "standalone_number_delete_requires_page_context"
     if block.char_count > config.max_deleted_block_chars:
         return "block_char_limit_exceeded"
-    return None
-
-
-def _validate_reclassify_role_operation(
-    *,
-    block: CleanupBlock,
-    operation: CleanupOperation,
-    protected_ids: set[str],
-) -> str | None:
-    target_role = operation.target_role.strip().lower()
-    if target_role not in _ALLOWED_RECLASSIFY_TARGET_ROLES:
-        return "reclassify_target_role_invalid"
-    if block.kind == "footnote_body":
-        return "footnote_body_protected"
-    if block.is_toc_like:
-        return "toc_protected"
-    if block.block_id in protected_ids:
-        return "protected_block"
-    if target_role == "heading":
-        if block.is_heading:
-            return "reclassify_role_noop"
-        if block.kind not in {"paragraph", "blockquote"}:
-            return "reclassify_source_kind_incompatible"
-        return None
-    if not block.is_heading:
-        return "reclassify_source_role_incompatible"
     return None
 
 
@@ -520,8 +483,6 @@ def _same_block_operation_phase(*, operation_name: str, seen_split: bool) -> int
         return 4
     if operation_name == "join_fragmented_paragraph":
         return 5
-    if operation_name == "reclassify_role":
-        return 6
     if operation_name == "delete_block":
         return 7
     return 99

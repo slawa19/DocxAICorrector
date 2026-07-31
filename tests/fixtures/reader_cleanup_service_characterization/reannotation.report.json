@@ -24,7 +24,7 @@
       "elapsed_ms": "<elapsed_ms>",
       "ignored_cleanup_operation_count": 0,
       "proposed_reannotation_count": 1,
-      "request_payload_char_count": 2143,
+      "request_payload_char_count": 2107,
       "status": "completed",
       "target_block_count": 3,
       "target_chars": 73
@@ -34,8 +34,7 @@
     "allowed_operations": [],
     "chunk_size": 8000,
     "global_plan_enabled": false,
-    "max_failed_chunk_ratio": 1.0,
-    "max_reclassify_block_ratio": 0.05,
+    "max_failed_chunk_ratio": 0.1,
     "model_selector": "",
     "overlap_blocks_after": 3,
     "overlap_blocks_before": 3
@@ -54,7 +53,9 @@
   "image_reconciliation": {
     "after_image_id_count": 0,
     "before_image_id_count": 0,
+    "cleanup_discarded_for_missing_image_ids": false,
     "extra_image_ids": [],
+    "lost_image_source_block_ids": [],
     "missing_after_repair": [],
     "missing_image_ids": [],
     "reinserted_image_ids": [],
@@ -70,7 +71,6 @@
   "stats": {
     "accepted_cleanup_operation_count": 1,
     "accepted_delete_block_count": 0,
-    "accepted_reclassify_role_count": 0,
     "cleanup_chunk_count": 1,
     "deleted_char_ratio": 0.0,
     "deleted_non_whitespace_char_count": 0,
