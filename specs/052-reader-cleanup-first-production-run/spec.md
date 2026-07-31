@@ -157,20 +157,37 @@ vertical gap asymmetry does (80% versus 2% in the control). ALL-CAPS is an **ant
 times more common in junk than in real headings — so the current prompt's "ALL-CAPS short text may be
 attribution" rule is not merely unlawful, it points the wrong way.
 
-**Consequence — settled by the owner on 2026-07-31: item 8 is dropped and `reclassify_role` is switched
-off for the run.** Restoring headings during reader cleanup is blocked by the same serializer that
+**Consequence — settled by the owner on 2026-07-31: item 8 is dropped and `reclassify_role` is removed
+outright (item 9).** Restoring headings during reader cleanup is blocked by the same serializer that
 blocks the import-stage rule — one root cause, two starved consumers — and the owner has accepted that
 as the ceiling of PDF input (spec 053). With no layout evidence reaching the model on PDF books, the
 operation's only remaining basis would be the text-shape guessing Constitution VII forbids, and its
 observed yield is 0–2 per book. So it is disabled rather than reasoned about.
 
-**This turns out to need a small code change, which is item 9.** `reader_cleanup_allowed_operations`
-is read from `app_config` (`_config.py:70`) and an empty value means *allow everything*
-(`_detectors.py:11`) — but the key exists nowhere in the production config model (`core/config.py`
-carries `reader_cleanup_default`, `_model`, `_chunk_size`, `_overlap_*`, `_global_plan_enabled`,
-`_max_failed_chunk_ratio`, and no `_allowed_operations`). Only a validation run profile can set it
-(`validation/profiles.py:100`). So today a production run **cannot** restrict the operation set at all.
-The mechanism exists; it is simply not wired to the path we intend to run on.
+**And then the owner asked the better question: why switch it off rather than remove it?** That is the
+right call, and it makes the change smaller rather than larger.
+
+Disabling would have needed new code of its own: `reader_cleanup_allowed_operations` is read from
+`app_config` (`_config.py:70`) and an empty value means *allow everything* (`_detectors.py:11`), but
+the key exists nowhere in the production config model — `core/config.py` carries
+`reader_cleanup_default`, `_model`, `_chunk_size`, `_overlap_*`, `_global_plan_enabled` and
+`_max_failed_chunk_ratio`, and no `_allowed_operations`. Only a validation run profile can set it
+(`validation/profiles.py:100`). So a production run cannot restrict the operation set at all today,
+and honouring the decision by configuration would mean **adding a config key whose only purpose is to
+keep a disabled feature alive**.
+
+Removal is cleaner on every axis: no new config surface; no flag someone flips in six months to
+resurrect behaviour the Constitution forbids; ~58 mentions across 10 files in
+`reader_cleanup_mvp/` deleted, including nine lines of prompt that ship in every one of the ~107
+requests per book. Nothing outside the package depends on it — the `reclassify` hits in
+`document/roles.py` and `document/extraction.py` are `reclassify_adjacent_captions`, an unrelated
+function, and no gate or acceptance check reads the operation's report fields.
+
+**The capability is not being lost, only the unlawful implementation of it.** The evidence-based
+design already exists in the unused reannotation path (`_prompts.py:156-178`), which decides roles
+from `layout_signals` and defaults to body when the evidence is weak. That stays (see "Explicitly not
+fixed"). If heading work is ever revived — on DOCX input, where the signals actually survive — it
+should start from there, not from an operation that reasons about capitalisation.
 
 ## Proposed: fix before the first run
 
@@ -203,16 +220,19 @@ them needs the run to have happened.
 8. ~~Handle `reclassify_role` in the registry derivation and protect restored headings.~~
    **DROPPED** by the owner decision of 2026-07-31 — see the heading section above. Heading
    restoration is out of scope; the operation is disabled instead.
-9. **Expose `reader_cleanup_allowed_operations` in the production config** so the run can actually be
-   restricted to the six janitorial operations, and set it to exclude `reclassify_role`. (~10 lines
-   in `core/config.py` + `config_loader_layers.py`, plus a test that an excluded operation is
-   rejected end to end.) Without this the previous item cannot be honoured — production has no way to
-   turn a single operation off.
+9. **Remove `reclassify_role` outright** — the operation, its validation and apply branches, its
+   prompt lines, its `max_reclassify_block_ratio` config and its tests. (~58 mentions across 10 files
+   in `reader_cleanup_mvp/`; contained, no external dependents.) The pass keeps six operations, all of
+   which move or delete text the source already contains. This subsumes the role-inference rules in
+   the production prompt (`_prompts.py:19`), which are the ones that teach the model that ALL-CAPS
+   suggests a heading — spec 053 measured capitalisation as an **anti**-signal, three times commoner
+   in junk than in real headings.
+   *Detail worth getting right:* the response contract sent to the model must stop advertising the
+   operation, and an operation name the code no longer knows must be **ignored with a recorded
+   reason**, not crash the chunk — a model that has seen the old contract may still emit it.
 
-Also drop the role-inference rules from the production prompt (`_prompts.py:19`), which are now dead
-weight in every one of the ~107 requests and, worse, teach the model that ALL-CAPS suggests a heading
-role — spec 053 measured capitalisation as an **anti**-signal, three times commoner in junk than in
-real headings. (~5 lines.)
+Removing item 9's predecessor (a config key to disable the operation) is deliberate: it would have been
+new surface whose only purpose was to keep a disabled feature alive.
 
 ## Explicitly not fixed before the run
 
@@ -255,5 +275,6 @@ Proposed criteria, to be agreed before the run:
 3. A paragraph of prose ending in a number is not `toc_like`, while a genuine TOC line still is.
 4. Trimming the target boilerplate does not change which operations are accepted on the three replay
    books — byte-identical accepted-operation sets.
-5. If item 8 lands: a restored heading survives to the delivered DOCX as a real heading style, and its
-   registry entry keeps its paragraph indexes.
+5. After item 9: the pass advertises six operations, never seven; a response still naming
+   `reclassify_role` is ignored with a recorded reason rather than failing its chunk; and the three
+   replay books produce the same accepted-operation sets as before, minus the 1/2/0 reclassifications.
