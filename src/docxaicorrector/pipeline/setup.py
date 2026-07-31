@@ -2,10 +2,53 @@ import logging
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any, Literal
 
+from docxaicorrector.core.logger import log_event as _module_log_event
 from docxaicorrector.core.models import ImageMode
+from docxaicorrector.generation.formatting_diagnostics_retention import (
+    blank_ownership_identity_fields,
+)
 
 
 PipelineResult = Literal["succeeded", "failed", "stopped"]
+
+PROCESSING_RUN_IDENTITY_MISSING_EVENT = "processing_run_identity_missing"
+
+
+def _warn_on_missing_run_identity(
+    *,
+    run_id: str,
+    source_token: str,
+    uploaded_filename: str,
+    dependencies: Any,
+) -> list[str]:
+    """Announce a pipeline run that starts WITHOUT a complete ownership identity.
+
+    This normalization site is the pipeline entrance: every run that reaches it is a
+    real processing run, so a blank ``run_id``/``source_token`` here is never an
+    intentional offline/replay invocation — it is a production path that has LOST its
+    identity. Downstream that is silently destructive: ownership-filtered collection
+    (``collect_owned_formatting_diagnostics``) returns nothing, the quality report is
+    never rebuilt from the run's own diagnostics, and the canonical gate then scores the
+    absent evidence as a perfect zero. Warn, never raise: offline/replay callers that
+    legitimately have no identity must keep working (round-11).
+    """
+    missing_identity_fields = blank_ownership_identity_fields(run_id=run_id, source_token=source_token)
+    if not missing_identity_fields:
+        return []
+    emit = getattr(dependencies, "log_event", None)
+    if not callable(emit):
+        emit = _module_log_event
+    emit(
+        logging.WARNING,
+        PROCESSING_RUN_IDENTITY_MISSING_EVENT,
+        "Запуск обработки без полной идентичности прогона: диагностика форматирования "
+        "не будет собрана обратно в этот прогон.",
+        filename=uploaded_filename,
+        missing_identity_fields=missing_identity_fields,
+        run_id=run_id,
+        source_token=source_token,
+    )
+    return missing_identity_fields
 
 
 def _coerce_job_segment_id(job: Mapping[str, object] | object) -> str | None:
@@ -153,11 +196,20 @@ def build_processing_context(
         for segment_id in (selected_segment_ids or ())
         if str(segment_id).strip()
     )
+    normalized_source_token = str(source_token or "").strip()
+    normalized_run_id = str(run_id or "").strip()
+    resolved_uploaded_filename = dependencies.resolve_uploaded_filename(uploaded_file)
+    _warn_on_missing_run_identity(
+        run_id=normalized_run_id,
+        source_token=normalized_source_token,
+        uploaded_filename=str(resolved_uploaded_filename or ""),
+        dependencies=dependencies,
+    )
     return context_factory_fn(
         uploaded_file=uploaded_file,
-        uploaded_filename=dependencies.resolve_uploaded_filename(uploaded_file),
-        source_token=str(source_token or "").strip(),
-        run_id=str(run_id or "").strip(),
+        uploaded_filename=resolved_uploaded_filename,
+        source_token=normalized_source_token,
+        run_id=normalized_run_id,
         prepared_source_key=str(prepared_source_key or "").strip(),
         structure_fingerprint=str(structure_fingerprint or "").strip(),
         jobs=jobs,

@@ -227,14 +227,6 @@ def promote_short_standalone_headings(
         if _is_short_centered_epigraph_attribution_candidate(paragraph, previous_paragraph=previous_paragraph):
             continue
 
-        if _is_very_short_standalone_heading_text(paragraph.text):
-            _apply_or_hint_short_heading(
-                paragraph,
-                heading_level=_infer_contextual_heading_level(paragraphs, index),
-                ai_first_mode=ai_first_mode,
-            )
-            continue
-
         candidate_font_size = paragraph.font_size_pt
         if candidate_font_size is None:
             continue
@@ -459,14 +451,6 @@ def _is_short_standalone_heading_text(text: str) -> bool:
     if stripped_text.count(".") > 0:
         return False
     return True
-
-
-def _is_very_short_standalone_heading_text(text: str) -> bool:
-    stripped_text = _normalize_text_for_heading_heuristics(text)
-    if not _is_short_standalone_heading_text(stripped_text):
-        return False
-    word_count = len(stripped_text.split())
-    return word_count <= 4 and len(stripped_text) <= 48
 
 
 def _has_body_context_signal(text: str) -> bool:

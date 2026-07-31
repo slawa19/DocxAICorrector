@@ -1124,3 +1124,171 @@ def test_write_segment_result_registry_concurrent_writers_keep_each_others_fresh
             assert Path(path).exists(), path
     # The stale historical leaf is still reclaimed by the family prune.
     assert not stale_path.exists()
+
+
+# --- Prune throttling (round-10 performance defect) ---------------------------
+
+
+def _throttle_job_record(index: int) -> dict[str, object]:
+    return {
+        "schema_version": 1,
+        "prepared_source_key": "prep:report:1234",
+        "structure_fingerprint": "struct-abc",
+        "job_id": f"job_{index:05d}",
+        "segment_id": f"seg_{index:05d}",
+        "status": "completed",
+    }
+
+
+def test_write_job_result_registry_throttled_prune_still_bounds_the_family(tmp_path, monkeypatch):
+    # Anti-vacuum: throttling the prune must NOT degrade into "never prune". After a
+    # long burst of per-record writes the family stays within cap + interval, and the
+    # next prune brings it back to at-or-below the cap.
+    monkeypatch.setattr(runtime_artifacts, "JOB_RESULT_REGISTRY_MAX_COUNT", 20)
+    monkeypatch.setattr(runtime_artifacts, "JOB_RESULT_REGISTRY_MAX_AGE_SECONDS", 10_000)
+    monkeypatch.setattr(runtime_artifacts, "_REGISTRY_PRUNE_RECORD_INTERVAL", 10)
+
+    for index in range(200):
+        write_job_result_registry(records=[_throttle_job_record(index)], output_dir=tmp_path)
+
+    burst_files = list(tmp_path.rglob("*.job-result.json"))
+    # 200 distinct records were published against a cap of 20: an unthrottled-into-
+    # never-pruning family would hold all 200. The bounded overshoot is at most
+    # ``interval - 1`` records above the cap.
+    assert len(burst_files) <= 20 + 10, len(burst_files)
+
+    # A batch that reaches the interval forces the next prune: back to the cap.
+    write_job_result_registry(
+        records=[_throttle_job_record(1000 + offset) for offset in range(10)],
+        output_dir=tmp_path,
+    )
+    assert len(list(tmp_path.rglob("*.job-result.json"))) <= 20
+
+
+def test_write_job_result_registry_throttled_prune_keeps_stat_cost_linear(tmp_path, monkeypatch):
+    # Complexity: N per-record writes must issue O(N) filesystem stat() calls, not
+    # O(N^2). The unthrottled behaviour (interval=1, i.e. the pre-fix code path) is
+    # measured in the same test as the quadratic baseline to compare against.
+    monkeypatch.setattr(runtime_artifacts, "JOB_RESULT_REGISTRY_MAX_COUNT", 10_000)
+    monkeypatch.setattr(runtime_artifacts, "JOB_RESULT_REGISTRY_MAX_AGE_SECONDS", 10_000_000)
+
+    record_count = 120
+    throttle_interval = 30
+    real_stat = Path.stat
+    real_prune = runtime_artifacts._prune_registry_family_protecting_current
+
+    def _measure(*, target_dir: Path, interval: int) -> dict[str, int]:
+        monkeypatch.setattr(runtime_artifacts, "_REGISTRY_PRUNE_RECORD_INTERVAL", interval)
+        counts = {"stat": 0, "prune": 0}
+
+        def _counting_stat(self, *args, **kwargs):
+            counts["stat"] += 1
+            return real_stat(self, *args, **kwargs)
+
+        def _counting_prune(**kwargs):
+            counts["prune"] += 1
+            return real_prune(**kwargs)
+
+        monkeypatch.setattr(runtime_artifacts, "_prune_registry_family_protecting_current", _counting_prune)
+        monkeypatch.setattr(Path, "stat", _counting_stat)
+        try:
+            for index in range(record_count):
+                write_job_result_registry(records=[_throttle_job_record(index)], output_dir=target_dir)
+        finally:
+            monkeypatch.setattr(Path, "stat", real_stat)
+            monkeypatch.setattr(runtime_artifacts, "_prune_registry_family_protecting_current", real_prune)
+        return counts
+
+    throttled = _measure(target_dir=tmp_path / "throttled", interval=throttle_interval)
+    unthrottled = _measure(target_dir=tmp_path / "unthrottled", interval=1)
+
+    # One prune per ``interval`` records, plus the mandatory first-write prune.
+    assert 2 <= throttled["prune"] <= record_count // throttle_interval + 1
+    assert unthrottled["prune"] == record_count
+
+    quadratic_reference = record_count * (record_count - 1)
+    # Sanity: the unthrottled path really is quadratic in stat() calls.
+    assert unthrottled["stat"] > quadratic_reference // 4
+    # The throttled path is linear: a small constant per write plus one family scan
+    # per ``interval`` writes. The bound is deliberately loose (10x record_count) so
+    # the assertion is not brittle to a stat or two of platform variation.
+    assert throttled["stat"] < 10 * record_count, (throttled, unthrottled)
+    assert throttled["stat"] * 4 < unthrottled["stat"], (throttled, unthrottled)
+
+
+def test_write_job_result_registry_age_bound_still_applies_at_next_throttled_prune(tmp_path, monkeypatch):
+    monkeypatch.setattr(runtime_artifacts, "JOB_RESULT_REGISTRY_MAX_COUNT", 10_000)
+    monkeypatch.setattr(runtime_artifacts, "JOB_RESULT_REGISTRY_MAX_AGE_SECONDS", 60)
+    monkeypatch.setattr(runtime_artifacts, "_REGISTRY_PRUNE_RECORD_INTERVAL", 5)
+
+    # First write for the family always prunes (saturated pre-existing history is
+    # reclaimed promptly), so create the stale leaf AFTER it.
+    write_job_result_registry(records=[_throttle_job_record(0)], output_dir=tmp_path)
+
+    stale_leaf = tmp_path / "prep_old" / "struct-old"
+    stale_leaf.mkdir(parents=True, exist_ok=True)
+    stale_path = stale_leaf / "job_stale.job-result.json"
+    stale_path.write_text(json.dumps({"job_id": "job_stale", "status": "failed"}), encoding="utf-8")
+    os.utime(stale_path, (10.0, 10.0))
+
+    for index in range(1, 5):
+        write_job_result_registry(records=[_throttle_job_record(index)], output_dir=tmp_path)
+    # Throttle is genuinely active: no prune ran during these writes.
+    assert stale_path.exists()
+
+    write_job_result_registry(records=[_throttle_job_record(5)], output_dir=tmp_path)
+    # The age bound is unchanged — the over-age leaf goes as soon as a prune runs.
+    assert not stale_path.exists()
+
+
+def test_write_job_result_registry_registers_in_flight_paths_even_when_prune_is_throttled(tmp_path, monkeypatch):
+    # Round-5 concurrency protection must be untouched by the throttle: every call
+    # still registers its paths before writing, snapshots the in-flight registry, and
+    # unregisters afterwards — even the calls whose prune is skipped.
+    monkeypatch.setattr(runtime_artifacts, "JOB_RESULT_REGISTRY_MAX_COUNT", 10_000)
+    monkeypatch.setattr(runtime_artifacts, "JOB_RESULT_REGISTRY_MAX_AGE_SECONDS", 10_000)
+    monkeypatch.setattr(runtime_artifacts, "_REGISTRY_PRUNE_RECORD_INTERVAL", 1000)
+
+    counts = {"register": 0, "unregister": 0, "snapshot": 0, "prune": 0}
+    observed_snapshots: list[set[str]] = []
+    real_register = runtime_artifacts._register_active_publications
+    real_unregister = runtime_artifacts._unregister_active_publications
+    real_snapshot = runtime_artifacts._snapshot_active_publications
+    real_prune = runtime_artifacts._prune_registry_family_protecting_current
+
+    def _counting_register(family_key, paths):
+        counts["register"] += 1
+        return real_register(family_key, paths)
+
+    def _counting_unregister(family_key, paths):
+        counts["unregister"] += 1
+        return real_unregister(family_key, paths)
+
+    def _counting_snapshot(family_key):
+        counts["snapshot"] += 1
+        snapshot = real_snapshot(family_key)
+        observed_snapshots.append(snapshot)
+        return snapshot
+
+    def _counting_prune(**kwargs):
+        counts["prune"] += 1
+        return real_prune(**kwargs)
+
+    monkeypatch.setattr(runtime_artifacts, "_register_active_publications", _counting_register)
+    monkeypatch.setattr(runtime_artifacts, "_unregister_active_publications", _counting_unregister)
+    monkeypatch.setattr(runtime_artifacts, "_snapshot_active_publications", _counting_snapshot)
+    monkeypatch.setattr(runtime_artifacts, "_prune_registry_family_protecting_current", _counting_prune)
+
+    for index in range(5):
+        write_job_result_registry(records=[_throttle_job_record(index)], output_dir=tmp_path)
+
+    assert counts["register"] == 5
+    assert counts["unregister"] == 5
+    assert counts["snapshot"] == 5
+    # Only the mandatory first-write prune ran; the rest were throttled away.
+    assert counts["prune"] == 1
+    # Each call's own in-flight path was registered BEFORE its write, so any
+    # concurrent pruner snapshotting at that moment would have protected it.
+    assert all(len(snapshot) == 1 for snapshot in observed_snapshots), observed_snapshots
+    # No leaked registrations once the calls returned.
+    assert not runtime_artifacts._active_registry_publications.get(str(tmp_path))

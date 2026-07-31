@@ -36,6 +36,7 @@ from docxaicorrector.validation.profiles import (
     load_validation_registry,
     resolve_runtime_resolution,
 )
+from docxaicorrector.pipeline.setup import PROCESSING_RUN_IDENTITY_MISSING_EVENT
 from docxaicorrector.processing.preparation import flatten_structure_repair_metrics
 from docxaicorrector.validation.structural_metrics_common import (  # noqa: F401
     _as_float,
@@ -135,7 +136,6 @@ from docxaicorrector.validation.structural_prep_snapshot_helpers import (  # noq
 from docxaicorrector.structure.validation import validate_structure_quality
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
-FORMATTING_DIAGNOSTICS_DIR = PROJECT_ROOT / ".run" / "formatting_diagnostics"
 
 
 def _extract_quality_report_artifact_path(event_log: Sequence[Mapping[str, object]]) -> str | None:
@@ -218,13 +218,13 @@ def _emit_target_alignment_trace_artifact(
     topology_projection: object | None,
     formatting_payload: Mapping[str, object] | None,
     generated_paragraph_registry: Sequence[Mapping[str, object]] | None,
-) -> None:
+) -> str | None:
     if formatting_payload is None or not generated_paragraph_registry:
-        return
+        return None
 
     raw_unmapped_target_indexes = formatting_payload.get("unmapped_target_indexes")
     if not isinstance(raw_unmapped_target_indexes, list):
-        return
+        return None
 
     unmapped_target_indexes: list[int] = []
     for value in raw_unmapped_target_indexes:
@@ -233,7 +233,7 @@ def _emit_target_alignment_trace_artifact(
         except (TypeError, ValueError):
             continue
     if not unmapped_target_indexes:
-        return
+        return None
 
     paragraph_unit_keys, _ = _build_source_paragraph_unit_membership(source_paragraphs, topology_projection)
     generated_registry_alignments, _ = _align_target_indexes_from_generated_registry(
@@ -265,9 +265,10 @@ def _emit_target_alignment_trace_artifact(
     )
     aligned_via_full_inference = sum(1 for target_index in unmapped_target_indexes if full_alignments.get(target_index))
 
-    write_formatting_diagnostics_artifact(
+    return write_formatting_diagnostics_artifact(
         stage="target_alignment_trace",
         filename_prefix="target_alignment_trace",
+        scope="offline",
         diagnostics={
             "unmapped_target_indexes": unmapped_target_indexes,
             "generated_registry_alignment_trace": compact_trace,
@@ -373,7 +374,6 @@ def run_structural_passthrough_validation(
     runtime_config = apply_runtime_resolution_to_app_config(app_config, runtime_resolution)
     runtime = _build_runtime_capture()
     event_log: list[dict[str, object]] = []
-    formatting_before = _snapshot_formatting_diagnostics_paths()
     try:
         result, prepared = _build_validation_processing_service(event_log).run_prepared_background_document(
             uploaded_file=UploadedFileStub(source_path.name, source_bytes),
@@ -423,8 +423,8 @@ def run_structural_passthrough_validation(
             validation_execution_mode="passthrough",
         )
 
-    formatting_after = _snapshot_formatting_diagnostics_paths()
-    formatting_paths = _collect_new_formatting_diagnostics_paths(formatting_before, formatting_after)
+    run_missing_identity_fields = _extract_run_identity_missing_fields(event_log)
+    formatting_paths = _extract_run_formatting_diagnostics_paths(event_log)
     formatting_diagnostics = _load_formatting_diagnostics_payloads(formatting_paths)
     canonical_formatting_diagnostics = _select_canonical_formatting_diagnostics_payload(formatting_diagnostics)
     canonical_formatting_payloads = [] if canonical_formatting_diagnostics is None else [canonical_formatting_diagnostics]
@@ -486,6 +486,15 @@ def run_structural_passthrough_validation(
             "output_image_count": len(output_image_assets),
             "output_table_count": sum(1 for paragraph in output_paragraphs if paragraph.role == "table"),
             "formatting_diagnostics_count": len(canonical_formatting_payloads),
+            # Disambiguates a zero diagnostics count: "clean run" vs "run could not claim
+            # its own evidence". Sourced from the pipeline's OWN announcement, never
+            # inferred from the empty count itself.
+            "formatting_diagnostics_identity_status": (
+                FORMATTING_DIAGNOSTICS_IDENTITY_STATUS_MISSING
+                if run_missing_identity_fields
+                else FORMATTING_DIAGNOSTICS_IDENTITY_STATUS_COMPLETE
+            ),
+            "formatting_diagnostics_missing_identity_fields": list(run_missing_identity_fields),
             "max_unmapped_source_paragraphs": _max_payload_length(canonical_formatting_payloads, "unmapped_source_ids"),
             "max_unmapped_target_paragraphs": _max_payload_length(canonical_formatting_payloads, "unmapped_target_indexes"),
             "accepted_merged_sources_count": _count_payload_items(canonical_formatting_payloads, "accepted_merged_sources"),
@@ -553,12 +562,16 @@ def run_structural_passthrough_validation(
         formatting_payload=canonical_formatting_diagnostics,
         generated_paragraph_registry=cast(Sequence[Mapping[str, object]] | None, generated_paragraph_registry),
     )
-    _emit_target_alignment_trace_artifact(
+    target_alignment_trace_path = _emit_target_alignment_trace_artifact(
         source_paragraphs=source_paragraphs,
         topology_projection=getattr(prepared, "document_topology_projection", None),
         formatting_payload=canonical_formatting_diagnostics,
         generated_paragraph_registry=cast(Sequence[Mapping[str, object]] | None, generated_paragraph_registry),
     )
+    if target_alignment_trace_path:
+        formatting_diagnostics.extend(
+            _load_formatting_diagnostics_payloads([target_alignment_trace_path])
+        )
     _apply_metric_snapshot_fields(preparation_diagnostic_snapshot, metrics)
     _normalize_snapshot_or_metric_statuses(metrics)
     checks = _build_extraction_checks(document_profile, metrics)
@@ -910,15 +923,53 @@ def _build_validation_processing_service(event_log: list[dict[str, object]]):
     )
 
 
-def _snapshot_formatting_diagnostics_paths() -> set[str]:
-    if not FORMATTING_DIAGNOSTICS_DIR.exists():
-        return set()
-    return {str(path.resolve()) for path in FORMATTING_DIAGNOSTICS_DIR.glob("*.json") if path.is_file()}
+FORMATTING_DIAGNOSTICS_IDENTITY_STATUS_COMPLETE = "complete"
+FORMATTING_DIAGNOSTICS_IDENTITY_STATUS_MISSING = "missing"
 
 
-def _collect_new_formatting_diagnostics_paths(before: set[str], after: set[str]) -> list[str]:
-    new_paths = [Path(path) for path in after - before]
-    return [str(path) for path in sorted(new_paths, key=lambda candidate: (candidate.stat().st_mtime, str(candidate)))]
+def _extract_run_identity_missing_fields(
+    event_log: Sequence[Mapping[str, object]],
+) -> list[str]:
+    """Report the ownership identities the RUN ITSELF announced it was missing.
+
+    ``formatting_diagnostics_count == 0`` is ambiguous on its own: it means either "the
+    document produced no diagnostics" or "the diagnostics exist but this run could not
+    claim them". Only the pipeline knows which, and it says so explicitly at the
+    normalization site (``pipeline/setup.py`` emits
+    ``processing_run_identity_missing`` through the injected event logger). Reading that
+    event -- rather than inferring loss from an empty result -- is what keeps this narrow:
+    a genuinely clean run and a stubbed run both stay silent, so neither is ever
+    mistaken for evidence loss.
+    """
+    for event in reversed(list(event_log)):
+        if str(event.get("event_id") or "") != PROCESSING_RUN_IDENTITY_MISSING_EVENT:
+            continue
+        context = event.get("context")
+        fields = context.get("missing_identity_fields") if isinstance(context, Mapping) else None
+        if isinstance(fields, Sequence) and not isinstance(fields, (str, bytes, bytearray)):
+            normalized = [str(field) for field in fields if str(field).strip()]
+            if normalized:
+                return normalized
+        return ["unknown"]
+    return []
+
+
+def _extract_run_formatting_diagnostics_paths(
+    event_log: Sequence[Mapping[str, object]],
+) -> list[str]:
+    for event in reversed(event_log):
+        if str(event.get("event_id") or "") != "formatting_diagnostics_artifacts_detected":
+            continue
+        context = event.get("context")
+        if not isinstance(context, Mapping):
+            continue
+        artifact_paths = context.get("artifact_paths")
+        if not isinstance(artifact_paths, Sequence) or isinstance(
+            artifact_paths, (str, bytes, bytearray)
+        ):
+            continue
+        return [str(path) for path in artifact_paths if isinstance(path, str) and path]
+    return []
 
 
 def _load_formatting_diagnostics_payloads(artifact_paths: Sequence[str]) -> list[dict[str, object]]:
@@ -933,12 +984,51 @@ def _load_formatting_diagnostics_payloads(artifact_paths: Sequence[str]) -> list
     return payloads
 
 
+CANONICAL_FORMATTING_DIAGNOSTICS_STAGE = "restore"
+
+
+def _payload_generated_at_epoch_ms(payload: Mapping[str, object]) -> int:
+    try:
+        return int(cast(Any, payload.get("generated_at_epoch_ms")))
+    except (TypeError, ValueError):
+        return -1
+
+
 def _select_canonical_formatting_diagnostics_payload(
     payloads: Sequence[Mapping[str, object]],
 ) -> Mapping[str, object] | None:
+    """Pick the payload that describes the FINAL formatting state of the run.
+
+    Selected EXPLICITLY from fields the artifact writer always emits
+    (``generation/formatting_diagnostics_retention.write_formatting_diagnostics_artifact``
+    writes ``stage`` and ``generated_at_epoch_ms`` into every payload), never from
+    filename or list ordering: this used to be ``payloads[-1]`` over a name-sorted
+    collection, which landed on the newest ``restore`` artifact only because
+    ``marker_block_*`` happens to sort before ``restore_*`` and the embedded epoch is
+    fixed-width. Spec 048 changed the filename stem, which is exactly the kind of change
+    that silently breaks such an assumption.
+
+    Rule: prefer the ``restore`` stage; among the candidates take the greatest
+    ``generated_at_epoch_ms``. Documented fallback when the run produced no
+    ``restore``-stage payload (e.g. it stopped earlier): the newest payload of ANY stage
+    by the same timestamp. A missing or unparsable timestamp sorts as ``-1``, and ties
+    resolve to the LAST such payload in input order — deterministic in every case.
+    """
     if not payloads:
         return None
-    return payloads[-1]
+    candidates = [
+        payload
+        for payload in payloads
+        if str(payload.get("stage") or "") == CANONICAL_FORMATTING_DIAGNOSTICS_STAGE
+    ] or list(payloads)
+    selected = candidates[0]
+    selected_epoch_ms = _payload_generated_at_epoch_ms(selected)
+    for payload in candidates[1:]:
+        payload_epoch_ms = _payload_generated_at_epoch_ms(payload)
+        if payload_epoch_ms >= selected_epoch_ms:
+            selected = payload
+            selected_epoch_ms = payload_epoch_ms
+    return selected
 
 
 def _max_payload_length(payloads: Sequence[Mapping[str, object]], key: str) -> int:
@@ -1082,11 +1172,15 @@ def _preserve_source_paragraph_properties_adapter(
     docx_bytes: bytes,
     paragraphs: Sequence[object],
     generated_paragraph_registry: Sequence[Mapping[str, object]] | None = None,
+    run_id: str | None = None,
+    source_token: str | None = None,
 ) -> bytes:
     return preserve_source_paragraph_properties(
         docx_bytes,
         cast(list[Any], list(paragraphs)),
         generated_paragraph_registry=generated_paragraph_registry,
+        run_id=run_id,
+        source_token=source_token,
     )
 
 

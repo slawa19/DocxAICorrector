@@ -3,7 +3,10 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
-from docxaicorrector.generation.formatting_diagnostics_retention import write_formatting_diagnostics_artifact
+from docxaicorrector.generation.formatting_diagnostics_retention import (
+    resolve_owned_diagnostics_scope,
+    write_formatting_diagnostics_artifact,
+)
 
 
 def resolve_system_prompt(
@@ -99,6 +102,8 @@ def write_marker_diagnostics_artifact(
     context_after: str,
     paragraph_ids: Sequence[str] | None,
     diagnostics_dir: Path,
+    run_id: str,
+    source_token: str,
     processed_chunk: str | None = None,
     exc: Exception | None = None,
 ) -> str | None:
@@ -129,11 +134,24 @@ def write_marker_diagnostics_artifact(
     if isinstance(leading_text_preview, str) and leading_text_preview:
         diagnostics["leading_text_preview"] = leading_text_preview[:400]
 
+    # Round-12: a hardcoded scope="live" made the writer raise on a blank identity, so the
+    # marker-failure evidence — the debugging record of the exact block that just failed —
+    # was lost ENTIRELY at the moment it mattered most. Retain it under offline ownership
+    # instead, and announce the downgrade like the formatting-diagnostics path does.
+    scope = resolve_owned_diagnostics_scope(
+        stage=stage,
+        run_id=run_id,
+        source_token=source_token,
+        artifact_kind="marker_diagnostics",
+    )
     return write_formatting_diagnostics_artifact(
         stage=stage,
         filename_prefix=f"marker_block_{stage}_{block_index:03d}",
         diagnostics_dir=diagnostics_dir,
         diagnostics=diagnostics,
+        scope=scope,
+        run_id=run_id,
+        source_token=source_token,
     )
 
 
@@ -142,6 +160,9 @@ def call_docx_restorer_with_optional_registry(
     docx_bytes: bytes,
     paragraphs: Any,
     generated_paragraph_registry: Any,
+    *,
+    run_id: str,
+    source_token: str,
 ) -> bytes:
     # F15: signature-gate the optional generated_paragraph_registry kwarg instead of a
     # TypeError retry, so the restorer is called EXACTLY ONCE and a genuine internal
@@ -151,14 +172,25 @@ def call_docx_restorer_with_optional_registry(
     try:
         signature = inspect.signature(restorer)
     except (TypeError, ValueError):
-        return restorer(docx_bytes, paragraphs, generated_paragraph_registry=generated_paragraph_registry)
+        return restorer(
+            docx_bytes,
+            paragraphs,
+            generated_paragraph_registry=generated_paragraph_registry,
+            run_id=run_id,
+            source_token=source_token,
+        )
     parameters = signature.parameters
-    accepts_registry = "generated_paragraph_registry" in parameters or any(
+    accepts_kwargs = any(
         parameter.kind == inspect.Parameter.VAR_KEYWORD for parameter in parameters.values()
     )
-    if accepts_registry:
-        return restorer(docx_bytes, paragraphs, generated_paragraph_registry=generated_paragraph_registry)
-    return restorer(docx_bytes, paragraphs)
+    kwargs: dict[str, object] = {}
+    if "generated_paragraph_registry" in parameters or accepts_kwargs:
+        kwargs["generated_paragraph_registry"] = generated_paragraph_registry
+    if "run_id" in parameters or accepts_kwargs:
+        kwargs["run_id"] = run_id
+    if "source_token" in parameters or accepts_kwargs:
+        kwargs["source_token"] = source_token
+    return restorer(docx_bytes, paragraphs, **kwargs)
 
 
 def current_markdown(processed_chunks: Sequence[str]) -> str:

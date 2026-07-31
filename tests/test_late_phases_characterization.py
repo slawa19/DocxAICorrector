@@ -446,36 +446,36 @@ def test_write_quality_report_artifact_logs_warning_on_write_failure(tmp_path, m
 # --------------------------------------------------------------------------- #
 
 
-def test_run_docx_build_phase_observes_patched_collect_recent(tmp_path, monkeypatch):
-    """``run_docx_build_phase`` reads ``collect_recent_formatting_diagnostics_artifacts``
+def test_run_docx_build_phase_observes_patched_collect_owned(tmp_path, monkeypatch):
+    """``run_docx_build_phase`` reads ``collect_owned_formatting_diagnostics_artifacts``
     as a ``late_phases`` module global. Patching that global via monkeypatch MUST be
     observed by the function — this pins the re-export contract for later decomposition
     steps (Cluster D), where the function moves out but is re-exported back."""
     observed: list[dict[str, object]] = []
 
-    def _fake_collect(*, since_epoch_seconds, diagnostics_dir):
+    def _fake_collect(*, run_id, source_token, diagnostics_dir):
         observed.append(
-            {"since_epoch_seconds": since_epoch_seconds, "diagnostics_dir": str(diagnostics_dir)}
+            {"run_id": run_id, "source_token": source_token, "diagnostics_dir": str(diagnostics_dir)}
         )
         return []
 
     monkeypatch.setattr(
-        late_phases, "collect_recent_formatting_diagnostics_artifacts", _fake_collect
+        late_phases, "collect_owned_formatting_diagnostics_artifacts", _fake_collect
     )
 
     diagnostics_dir = tmp_path / "formatting_diagnostics"
 
     context = SimpleNamespace(
         # processing_operation != "translate" keeps reader-cleanup OFF, so the base
-        # DOCX is built inline and ``collect_recent_...`` is reached.
+        # DOCX is built inline and the exact owned collector is reached.
         processing_operation="correct",
         app_config={},
         output_mode="",
         jobs=[{"target_text": "block", "context_before": "", "context_after": "", "target_chars": 5, "context_chars": 0}],
         source_paragraphs=[],
         uploaded_filename="report.docx",
-        source_token="",
-        run_id="",
+        source_token="source-token",
+        run_id="run-id",
         runtime={},
         on_progress=lambda **kwargs: None,
     )
@@ -506,9 +506,11 @@ def test_run_docx_build_phase_observes_patched_collect_recent(tmp_path, monkeypa
         job_count=1,
         diagnostics_dir=diagnostics_dir,
         current_markdown_fn=lambda chunks: "",
-        call_docx_restorer_with_optional_registry_fn=lambda fn, docx_bytes, paragraphs, registry: docx_bytes,
+        call_docx_restorer_with_optional_registry_fn=lambda fn, docx_bytes, paragraphs, registry, **kwargs: docx_bytes,
     )
 
     assert result is not None
-    assert len(observed) == 1, "patched collect_recent_... was not observed"
+    assert len(observed) == 1, "patched collect_owned_... was not observed"
+    assert observed[0]["run_id"] == "run-id"
+    assert observed[0]["source_token"] == "source-token"
     assert observed[0]["diagnostics_dir"] == str(diagnostics_dir)

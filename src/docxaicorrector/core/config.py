@@ -94,13 +94,25 @@ _MIGRATION_DEFAULT_MODEL_ROLES = {
     "image_edit": "gpt-image-1.5",
     "image_generation_vision": "gpt-5.4-mini",
 }
-_LEGACY_TOML_MODEL_KEYS = (
-    "default_model",
-    "model_options",
-    "validation_model",
-    "reconstruction_model",
-)
+# Removed legacy key -> canonical replacement. Values must name a role that really
+# exists in ModelRegistry (see tests/test_config.py::
+# test_legacy_model_key_warning_replacements_point_at_existing_registry_roles).
+_LEGACY_TOML_MODEL_KEY_REPLACEMENTS = {
+    "default_model": "models.text.default",
+    "model_options": "models.text.options",
+    "validation_model": "models.image_validation.default",
+    "reconstruction_model": "models.image_reconstruction.default",
+}
+# Removed legacy ENV alias -> canonical ENV variable that is actually read now.
+_LEGACY_ENV_MODEL_KEY_REPLACEMENTS = {
+    "DOCX_AI_DEFAULT_MODEL": "DOCX_AI_MODELS_TEXT_DEFAULT",
+    "DOCX_AI_MODEL_OPTIONS": "DOCX_AI_MODELS_TEXT_OPTIONS",
+    "DOCX_AI_VALIDATION_MODEL": "DOCX_AI_MODELS_IMAGE_VALIDATION_DEFAULT",
+    "DOCX_AI_RECONSTRUCTION_MODEL": "DOCX_AI_MODELS_IMAGE_RECONSTRUCTION_DEFAULT",
+}
 _EMITTED_MODEL_REGISTRY_LOG_KEYS: set[str] = set()
+_APP_CONFIG_CACHE_FINGERPRINT: tuple[object, ...] | None = None
+_APP_CONFIG_CACHE_VALUE: "AppConfig | None" = None
 
 
 
@@ -283,6 +295,7 @@ class AppConfig(Mapping[str, Any]):
     image_output_trim_max_loss_ratio: float
     reader_cleanup_default: bool = False
     reader_cleanup_model: str = ""
+    reader_verifier_model: str = ""
     reader_cleanup_chunk_size: int = 8000
     reader_cleanup_overlap_blocks_before: int = 3
     reader_cleanup_overlap_blocks_after: int = 3
@@ -771,11 +784,9 @@ def describe_provider_availability(
 
 def _resolve_text_model_options(
     *,
-    config_data: dict[str, object],
     models_text_config: dict[str, object],
 ) -> tuple[tuple[str, ...], str]:
     return _resolve_text_model_options_impl(
-        config_data=config_data,
         models_text_config=models_text_config,
         parse_csv_env_fn=parse_csv_env,
         parse_model_options_value_fn=_parse_model_options_value,
@@ -786,11 +797,9 @@ def _resolve_text_model_options(
 
 def _resolve_text_default_model(
     *,
-    config_data: dict[str, object],
     models_text_config: dict[str, object],
 ) -> tuple[str, str]:
     return _resolve_text_default_model_impl(
-        config_data=config_data,
         models_text_config=models_text_config,
         coerce_model_name_fn=_coerce_model_name,
         config_path=CONFIG_PATH,
@@ -833,6 +842,7 @@ def _log_resolved_model_registry(models: ModelRegistry, model_sources: Mapping[s
         model_sources,
         emitted_model_registry_log_keys=_EMITTED_MODEL_REGISTRY_LOG_KEYS,
         log_event_fn=log_event,
+        supported_provider_ids=_SUPPORTED_PROVIDER_IDS,
     )
 
 
@@ -840,7 +850,8 @@ def _emit_legacy_model_config_warnings(config_data: Mapping[str, object], model_
     _emit_legacy_model_config_warnings_impl(
         config_data,
         model_sources,
-        legacy_toml_model_keys=_LEGACY_TOML_MODEL_KEYS,
+        legacy_toml_model_keys=_LEGACY_TOML_MODEL_KEY_REPLACEMENTS,
+        legacy_env_model_keys=_LEGACY_ENV_MODEL_KEY_REPLACEMENTS,
         emitted_model_registry_log_keys=_EMITTED_MODEL_REGISTRY_LOG_KEYS,
         log_event_fn=log_event,
     )
@@ -1247,7 +1258,43 @@ def _build_app_config(
     )
 
 
+def _app_config_cache_fingerprint() -> tuple[object, ...]:
+    # The resolved config is a pure function of the two source paths plus the process
+    # environment (dotenv values are merged into os.environ by load_project_dotenv).
+    # File CONTENT at a fixed path is the one input not covered here; tests that rewrite
+    # a config file in place must call reset_app_config_cache().
+    return (str(CONFIG_PATH), str(ENV_PATH), tuple(sorted(os.environ.items())))
+
+
+def reset_app_config_cache() -> None:
+    """Drop the process-wide load_app_config() cache.
+
+    Required by tests that monkeypatch CONFIG_PATH/ENV_PATH and then rewrite the file
+    contents behind an unchanged path.
+    """
+    global _APP_CONFIG_CACHE_FINGERPRINT, _APP_CONFIG_CACHE_VALUE
+    _APP_CONFIG_CACHE_FINGERPRINT = None
+    _APP_CONFIG_CACHE_VALUE = None
+
+
 def load_app_config() -> AppConfig:
+    """Process-wide cached application config (docs/STARTUP_PERFORMANCE_CONTRACT.md §2).
+
+    A full TOML parse + section resolution + provider validation runs only when the
+    resolved inputs change; every other caller reuses the frozen AppConfig instance.
+    """
+    global _APP_CONFIG_CACHE_FINGERPRINT, _APP_CONFIG_CACHE_VALUE
+    if _APP_CONFIG_CACHE_VALUE is not None and _APP_CONFIG_CACHE_FINGERPRINT == _app_config_cache_fingerprint():
+        return _APP_CONFIG_CACHE_VALUE
+    resolved_app_config = _load_app_config_uncached()
+    # Recompute after the load: load_project_dotenv() merges .env values into os.environ,
+    # so the post-load fingerprint is the stable one subsequent calls will present.
+    _APP_CONFIG_CACHE_FINGERPRINT = _app_config_cache_fingerprint()
+    _APP_CONFIG_CACHE_VALUE = resolved_app_config
+    return resolved_app_config
+
+
+def _load_app_config_uncached() -> AppConfig:
     config_data = load_config_data(
         config_path=CONFIG_PATH,
         load_project_dotenv_fn=load_project_dotenv,

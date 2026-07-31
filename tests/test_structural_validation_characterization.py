@@ -158,15 +158,16 @@ def test_derive_unit_aware_unmapped_fields_topology_golden():
 def test_emit_target_alignment_trace_artifact_golden(monkeypatch):
     captured: dict[str, object] = {}
 
-    def _capture(*, stage, filename_prefix, diagnostics):
+    def _capture(*, stage, filename_prefix, diagnostics, scope):
         captured["stage"] = stage
         captured["filename_prefix"] = filename_prefix
         captured["diagnostics"] = diagnostics
-        return None
+        captured["scope"] = scope
+        return "/tmp/owned-offline-trace.json"
 
     monkeypatch.setattr(structural, "write_formatting_diagnostics_artifact", _capture)
 
-    structural._emit_target_alignment_trace_artifact(
+    artifact_path = structural._emit_target_alignment_trace_artifact(
         source_paragraphs=_source_paragraphs(),
         topology_projection=_unit_alignment_projection(),
         formatting_payload=_unit_alignment_payload(),
@@ -174,6 +175,8 @@ def test_emit_target_alignment_trace_artifact_golden(monkeypatch):
     )
 
     assert captured, "write_formatting_diagnostics_artifact was not called"
+    assert artifact_path == "/tmp/owned-offline-trace.json"
+    assert captured.pop("scope") == "offline"
     _assert_golden("cluster_e_target_alignment_trace", captured)
 
 
@@ -303,3 +306,196 @@ def test_build_preparation_diagnostic_snapshot_golden(monkeypatch):
         event_log=_snapshot_event_log(),
     )
     _assert_golden("orchestrator_prep_snapshot", snapshot)
+
+
+def test_preserve_source_paragraph_properties_adapter_forwards_run_identity(monkeypatch):
+    """Round-11 F1: the adapter had no ``run_id``/``source_token`` params, so the
+    signature gate in ``pipeline/support.py`` stripped them and its formatting
+    diagnostics were written offline instead of owned by the live run."""
+
+    captured: dict[str, object] = {}
+
+    def _fake_preserve(docx_bytes, paragraphs, **kwargs):
+        captured.update(kwargs)
+        return docx_bytes
+
+    monkeypatch.setattr(structural, "preserve_source_paragraph_properties", _fake_preserve)
+
+    structural._preserve_source_paragraph_properties_adapter(
+        b"docx",
+        [],
+        None,
+        run_id="run-42",
+        source_token="token-7",
+    )
+
+    assert captured["run_id"] == "run-42"
+    assert captured["source_token"] == "token-7"
+
+
+def _identity_metrics(status_fields: list[str] | None) -> dict[str, object]:
+    # A perfectly clean run: zero diagnostics, zero residuals, everything within threshold.
+    metrics: dict[str, object] = {
+        "formatting_diagnostics_count": 0,
+        "max_unmapped_source_paragraphs": 0,
+        "max_unmapped_target_paragraphs": 0,
+        "heading_level_drift": 0,
+        "text_similarity": 0.99,
+        "heading_only_output_detected": False,
+    }
+    if status_fields is None:
+        return metrics
+    metrics["formatting_diagnostics_identity_status"] = "missing"
+    metrics["formatting_diagnostics_missing_identity_fields"] = status_fields
+    return metrics
+
+
+def _structural_checks(metrics: dict[str, object]) -> list[dict[str, object]]:
+    profile = SimpleNamespace(
+        max_formatting_diagnostics=5,
+        max_unmapped_source_paragraphs=5,
+        max_unmapped_target_paragraphs=5,
+        max_heading_level_drift=1,
+        min_text_similarity=0.95,
+        require_numbered_lists_preserved=False,
+        require_nonempty_output=False,
+        forbid_heading_only_collapse=False,
+        require_toc_detected=False,
+        require_pdf_conversion=False,
+        require_no_bullet_headings=False,
+        require_no_toc_body_concat=False,
+        require_translation_domain=None,
+    )
+    return structural._build_structural_checks(
+        document_profile=profile,
+        result="succeeded",
+        metrics=metrics,
+        output_artifacts={"output_docx_openable": True, "output_visible_text_chars": 100},
+    )
+
+
+def _failed_check_names(checks: list[dict[str, object]]) -> list[str]:
+    # Byte-identical to the roll-up in validation/structural.py (_build_validation_result).
+    return [str(check["name"]) for check in checks if not bool(check["passed"])]
+
+
+def _evidence_check(metrics: dict[str, object]) -> dict[str, object]:
+    return next(
+        check
+        for check in _structural_checks(metrics)
+        if check["name"] == "formatting_diagnostics_evidence_not_lost"
+    )
+
+
+def test_formatting_diagnostics_evidence_gate_separates_clean_zero_from_lost_evidence():
+    """Spec: a zero diagnostics count must not score identically whether the document was
+    clean or the run could not claim its own artifacts.
+
+    Before this gate, both produced ``formatting_diagnostics_threshold`` PASSED (0 <= max),
+    so DESTROYING the evidence yielded the perfect score. The discriminator is the run's own
+    ``processing_run_identity_missing`` announcement, so a clean run (no such event) is
+    unaffected -- that asymmetry is what this test pins.
+    """
+
+    clean_checks = _structural_checks(_identity_metrics(None))
+    lost_checks = _structural_checks(_identity_metrics(["run_id"]))
+    clean_zero = _evidence_check(_identity_metrics(None))
+    lost_evidence = _evidence_check(_identity_metrics(["run_id"]))
+
+    assert clean_zero["passed"] is True
+    assert clean_zero["identity_status"] == "complete"
+    assert lost_evidence["passed"] is False
+    assert lost_evidence["missing_identity_fields"] == ["run_id"]
+    # Both sides report the SAME zero count: the verdict difference comes purely from the
+    # identity signal, never from the count.
+    assert clean_zero["formatting_diagnostics_count"] == lost_evidence["formatting_diagnostics_count"] == 0
+    # The threshold gate is blind to the difference -- it passes in BOTH cases. That is the
+    # fail-open being closed here, and the roll-up verdict is what actually diverges.
+    by_name_clean = {check["name"]: check for check in clean_checks}
+    by_name_lost = {check["name"]: check for check in lost_checks}
+    assert by_name_clean["formatting_diagnostics_threshold"]["passed"] is True
+    assert by_name_lost["formatting_diagnostics_threshold"]["passed"] is True
+    assert _failed_check_names(clean_checks) == []
+    assert _failed_check_names(lost_checks) == ["formatting_diagnostics_evidence_not_lost"]
+
+
+def test_run_identity_missing_event_is_read_from_the_run_event_log():
+    """The metric side of the same gate: the status is derived from the pipeline's event
+    log, and silence (stubbed harness / healthy run) is NOT read as loss."""
+
+    assert structural._extract_run_identity_missing_fields([]) == []
+    assert (
+        structural._extract_run_identity_missing_fields(
+            [{"event_id": "formatting_diagnostics_artifacts_detected", "context": {"artifact_paths": ["a.json"]}}]
+        )
+        == []
+    )
+    assert structural._extract_run_identity_missing_fields(
+        [
+            {
+                "event_id": "processing_run_identity_missing",
+                "context": {"missing_identity_fields": ["run_id", "source_token"]},
+            }
+        ]
+    ) == ["run_id", "source_token"]
+    # A malformed context must still be reported as loss, never silently as "complete".
+    assert structural._extract_run_identity_missing_fields(
+        [{"event_id": "processing_run_identity_missing", "context": {}}]
+    ) == ["unknown"]
+
+
+def _diagnostics_payload(stage: str, epoch_ms: int) -> dict[str, object]:
+    return {"stage": stage, "generated_at_epoch_ms": epoch_ms, "marker": f"{stage}-{epoch_ms}"}
+
+
+def test_canonical_formatting_diagnostics_prefers_newest_restore_regardless_of_order():
+    """Round-11 Fix 3: selection used to be ``payloads[-1]`` over a name-sorted list and
+    landed on the newest ``restore`` artifact only by luck of the filename ordering."""
+
+    payloads = [
+        _diagnostics_payload("restore", 1_700_000_002_000),
+        _diagnostics_payload("marker_block", 1_700_000_009_000),
+        _diagnostics_payload("restore", 1_700_000_005_000),
+        _diagnostics_payload("marker_block", 1_700_000_001_000),
+        _diagnostics_payload("restore", 1_700_000_003_000),
+    ]
+
+    selected = structural._select_canonical_formatting_diagnostics_payload(payloads)
+
+    assert selected is not None
+    assert selected["marker"] == "restore-1700000005000"
+
+    # Same set, shuffled: the verdict must not depend on input order at all.
+    reordered = [payloads[3], payloads[2], payloads[0], payloads[4], payloads[1]]
+
+    assert structural._select_canonical_formatting_diagnostics_payload(reordered) is payloads[2]
+
+
+def test_canonical_formatting_diagnostics_falls_back_to_newest_payload_of_any_stage():
+    """Documented fallback when the run produced no ``restore``-stage payload."""
+
+    payloads = [
+        _diagnostics_payload("marker_block", 1_700_000_007_000),
+        _diagnostics_payload("target_alignment", 1_700_000_004_000),
+    ]
+
+    selected = structural._select_canonical_formatting_diagnostics_payload(payloads)
+
+    assert selected is not None
+    assert selected["marker"] == "marker_block-1700000007000"
+    assert structural._select_canonical_formatting_diagnostics_payload([]) is None
+
+
+def test_canonical_formatting_diagnostics_is_deterministic_without_timestamps():
+    """A missing/unparsable timestamp sorts as -1 and ties resolve to the last such
+    payload in input order, so the choice stays deterministic."""
+
+    payloads = [
+        {"stage": "restore", "marker": "first"},
+        {"stage": "restore", "generated_at_epoch_ms": "not-a-number", "marker": "second"},
+    ]
+
+    selected = structural._select_canonical_formatting_diagnostics_payload(payloads)
+
+    assert selected is not None
+    assert selected["marker"] == "second"

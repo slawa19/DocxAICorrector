@@ -42,6 +42,28 @@ def isolate_repo_dotenv(monkeypatch: pytest.MonkeyPatch) -> None:
             monkeypatch.delenv(env_name, raising=False)
 
 
+@pytest.fixture(autouse=True)
+def isolate_formatting_diagnostics_dir(
+    tmp_path_factory: pytest.TempPathFactory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Keep test-run diagnostics out of the operator-facing ``.run`` directory.
+
+    Retention for formatting diagnostics is family-wide (7 days / 100 artifacts),
+    so test artifacts written into the real runtime directory crowd out genuine
+    operator evidence. Each consumer captures the directory at import time, so
+    every module-level copy is redirected here.
+    """
+    import docxaicorrector.generation.formatting_diagnostics_retention as formatting_diagnostics_retention
+    import docxaicorrector.generation.formatting_transfer as formatting_transfer
+    import docxaicorrector.pipeline._pipeline as pipeline
+
+    diagnostics_dir = tmp_path_factory.mktemp("formatting_diagnostics")
+    monkeypatch.setattr(formatting_diagnostics_retention, "FORMATTING_DIAGNOSTICS_DIR", diagnostics_dir)
+    monkeypatch.setattr(formatting_transfer, "FORMATTING_DIAGNOSTICS_DIR", diagnostics_dir)
+    monkeypatch.setattr(pipeline, "FORMATTING_DIAGNOSTICS_DIR", diagnostics_dir)
+
+
 @pytest.fixture
 def fake_png_bytes() -> bytes:
     return base64.b64decode(

@@ -3,12 +3,18 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+from collections.abc import Mapping
 from io import BytesIO
 from pathlib import Path
 
 from docx import Document
 
 from docxaicorrector.validation.formatting_replay import replay_formatting_diagnostics_from_report
+
+
+def _require_mapping(value: object) -> Mapping[str, object]:
+    assert isinstance(value, Mapping)
+    return value
 
 
 def _build_docx_bytes(paragraphs: list[str]) -> bytes:
@@ -246,10 +252,12 @@ def test_replay_formatting_diagnostics_from_report_reconstructs_from_final_gener
     assert replayed["saved_source_count"] == 2
     assert replayed["replayed_source_count"] == 2
     assert replayed["saved_mapped_count"] is None
-    assert replayed["replayed_diagnostics"]["mapped_count"] == 2
-    assert replayed["replayed_summary"]["unmapped_source_count"] == 0
-    role_aware_summary = replayed["replayed_summary"]["role_aware_summary"]
-    assert role_aware_summary is None or role_aware_summary["effective_unmapped_source_count"] == 0
+    replayed_diagnostics = _require_mapping(replayed["replayed_diagnostics"])
+    replayed_summary = _require_mapping(replayed["replayed_summary"])
+    assert replayed_diagnostics["mapped_count"] == 2
+    assert replayed_summary["unmapped_source_count"] == 0
+    role_aware_summary = replayed_summary["role_aware_summary"]
+    assert role_aware_summary is None or _require_mapping(role_aware_summary)["effective_unmapped_source_count"] == 0
 
 
 def test_replay_formatting_diagnostics_prefers_final_registry_over_source_language_preview(tmp_path: Path):
@@ -308,8 +316,10 @@ def test_replay_formatting_diagnostics_prefers_final_registry_over_source_langua
 
     assert replayed["source_reconstruction_basis"] == "final_generated_paragraph_registry"
     assert replayed["replay_fidelity"] == "current_output_registry_replay"
-    assert replayed["replayed_diagnostics"]["mapped_count"] == 2
-    assert replayed["replayed_summary"]["unmapped_source_count"] == 0
+    replayed_diagnostics = _require_mapping(replayed["replayed_diagnostics"])
+    replayed_summary = _require_mapping(replayed["replayed_summary"])
+    assert replayed_diagnostics["mapped_count"] == 2
+    assert replayed_summary["unmapped_source_count"] == 0
 
 
 def test_classify_formatting_residuals_replay_mode_reports_replayed_restore_diagnostics(tmp_path: Path):

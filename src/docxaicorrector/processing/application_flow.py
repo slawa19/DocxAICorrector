@@ -230,6 +230,8 @@ def _resolve_preparation_dependencies(
 def _resolve_preparation_upload(*, uploaded_file=None, uploaded_payload: FrozenUploadPayload | None = None) -> ResolvedPreparationUpload:
     if uploaded_payload is not None:
         return ResolvedPreparationUpload(uploaded_payload=uploaded_payload, needs_read_stage=False)
+    if isinstance(uploaded_file, FrozenUploadPayload):
+        return ResolvedPreparationUpload(uploaded_payload=uploaded_file, needs_read_stage=False)
     if uploaded_file is None:
         raise ValueError("Для синхронной подготовки требуется uploaded_file.")
     return ResolvedPreparationUpload(uploaded_payload=freeze_uploaded_file(uploaded_file), needs_read_stage=True)

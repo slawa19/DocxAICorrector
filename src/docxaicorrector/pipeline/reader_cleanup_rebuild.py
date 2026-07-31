@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from docxaicorrector.reader_cleanup_mvp import build_cleanup_blocks
+from docxaicorrector.pipeline.support import call_docx_restorer_with_optional_registry
 from docxaicorrector.runtime.artifact_retention import (
     READER_CLEANUP_LINEAGE_MAX_AGE_SECONDS,
     READER_CLEANUP_LINEAGE_MAX_COUNT,
@@ -40,11 +41,15 @@ class ReaderCleanupPostprocessResult:
     raw_markdown: str | None
     result_notice: dict[str, str] | None
     final_generated_paragraph_registry: Sequence[Mapping[str, object]] | None
+    result_notices: tuple[dict[str, str], ...] = ()
 
 
 def _should_run_reader_cleanup(*, context: Any) -> bool:
-    return context.processing_operation == "translate" and bool(
-        context.app_config.get("reader_cleanup_enabled", False)
+    policy = str(context.app_config.get("reader_cleanup_policy", "advisory") or "advisory").strip().lower()
+    return (
+        context.processing_operation == "translate"
+        and bool(context.app_config.get("reader_cleanup_enabled", False))
+        and policy != "off"
     )
 
 
@@ -82,10 +87,13 @@ def _rebuild_docx_for_markdown(
     )
     docx_bytes = dependencies.convert_markdown_to_docx_bytes(markdown_text)
     if context.source_paragraphs:
-        docx_bytes = dependencies.preserve_source_paragraph_properties(
+        docx_bytes = call_docx_restorer_with_optional_registry(
+            dependencies.preserve_source_paragraph_properties,
             docx_bytes,
             context.source_paragraphs,
             rebuild_identity_registry or formatting_registry,
+            run_id=str(getattr(context, "run_id", "") or ""),
+            source_token=str(getattr(context, "source_token", "") or ""),
         )
     if processed_image_assets:
         docx_bytes = dependencies.reinsert_inline_images(docx_bytes, processed_image_assets)
@@ -113,6 +121,8 @@ def _resolve_docx_phase_bytes(docx_phase: Mapping[str, object]) -> bytes:
     builder = docx_phase.get("base_docx_builder")
     if callable(builder):
         resolved_docx_bytes = builder()
+        if not isinstance(resolved_docx_bytes, bytes):
+            return b""
         if isinstance(docx_phase, dict):
             docx_phase["docx_bytes"] = resolved_docx_bytes
         return resolved_docx_bytes
@@ -319,6 +329,19 @@ def _registry_entry_paragraph_ids(entry: Mapping[str, object] | None) -> list[st
         if paragraph_id_value not in deduped:
             deduped.append(paragraph_id_value)
     return deduped
+
+
+def _registry_entry_source_block_indexes(entry: Mapping[str, object]) -> list[int]:
+    raw_indexes = entry.get("reader_cleanup_source_block_indexes")
+    if not isinstance(raw_indexes, Sequence) or isinstance(raw_indexes, (str, bytes, bytearray)):
+        raw_indexes = [entry.get("block_index")]
+    indexes: list[int] = []
+    for value in raw_indexes:
+        if isinstance(value, bool) or not isinstance(value, int):
+            continue
+        if value not in indexes:
+            indexes.append(value)
+    return indexes
 
 
 def _dedupe_paragraph_ids(paragraph_ids: Sequence[object]) -> list[str]:
@@ -668,6 +691,12 @@ def _derive_reader_cleanup_generated_paragraph_registry(
                 current_entry["paragraph_id"] = merged_ids[0]
                 if len(merged_ids) > 1:
                     current_entry["merged_paragraph_ids"] = merged_ids
+            source_block_indexes = _registry_entry_source_block_indexes(
+                current_entry
+            ) + _registry_entry_source_block_indexes(next_entry)
+            current_entry["reader_cleanup_source_block_indexes"] = list(
+                dict.fromkeys(source_block_indexes)
+            )
             _append_reader_cleanup_lineage_operation(current_entry, operation_name)
             mutable_entries[next_index] = None
             applied_operations += 1

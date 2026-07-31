@@ -2,7 +2,7 @@ import logging
 import json
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
-from typing import Literal, TypeAlias, cast
+from typing import TypeAlias, cast
 
 from docxaicorrector.generation.formatting_diagnostics_retention import (
     get_formatting_diagnostics_dir,
@@ -10,7 +10,6 @@ from docxaicorrector.generation.formatting_diagnostics_retention import (
 )
 from docxaicorrector.pipeline.late_phases import (
     build_formatting_diagnostics_user_feedback as _build_formatting_diagnostics_user_feedback_impl,
-    collect_recent_formatting_diagnostics_artifacts as _collect_recent_formatting_diagnostics_impl,
     emit_failed_result as _emit_failed_result_impl,
     emit_stopped_result as _emit_stopped_result_impl,
     fail_empty_processing_plan as _fail_empty_processing_plan_impl,
@@ -44,6 +43,7 @@ from docxaicorrector.pipeline.job_parsing import (
     parse_processing_job as _parse_processing_job_impl,
 )
 from docxaicorrector.pipeline.output_validation import (
+    ProcessedBlockStatus,
     classify_processed_block as _classify_processed_block_impl,
 )
 from docxaicorrector.pipeline.setup import (
@@ -109,14 +109,6 @@ from docxaicorrector.runtime.artifacts import (
 JobValue: TypeAlias = object
 ProcessingJob: TypeAlias = Mapping[str, JobValue]
 PipelineResult: TypeAlias = ContractsPipelineResult
-ProcessedBlockStatus: TypeAlias = Literal[
-    "valid",
-    "empty",
-    "heading_only_output",
-    "bullet_heading_output",
-    "toc_body_concat",
-    "english_residual_output",
-]
 FORMATTING_DIAGNOSTICS_DIR = get_formatting_diagnostics_dir()
 
 
@@ -167,13 +159,6 @@ def _classify_processed_block(target_text: str, processed_chunk: str) -> Process
     return _classify_processed_block_impl(target_text, processed_chunk)
 
 
-def _collect_recent_formatting_diagnostics(*, since_epoch_seconds: float) -> list[str]:
-    return _collect_recent_formatting_diagnostics_impl(
-        since_epoch_seconds=since_epoch_seconds,
-        diagnostics_dir=FORMATTING_DIAGNOSTICS_DIR,
-    )
-
-
 def _build_formatting_diagnostics_user_feedback(artifact_paths: Sequence[str]) -> tuple[str, str, str]:
     return _build_formatting_diagnostics_user_feedback_impl(artifact_paths)
 
@@ -193,6 +178,8 @@ def _write_marker_diagnostics_artifact(
     context_before: str,
     context_after: str,
     paragraph_ids: Sequence[str] | None,
+    run_id: str,
+    source_token: str,
     processed_chunk: str | None = None,
     exc: Exception | None = None,
 ) -> str | None:
@@ -207,6 +194,8 @@ def _write_marker_diagnostics_artifact(
         context_after=context_after,
         paragraph_ids=paragraph_ids,
         diagnostics_dir=FORMATTING_DIAGNOSTICS_DIR,
+        run_id=run_id,
+        source_token=source_token,
         processed_chunk=processed_chunk,
         exc=exc,
     )
@@ -228,12 +217,22 @@ def _build_processed_paragraph_registry_entries(*, block_index: int, paragraph_i
     )
 
 
-def _call_docx_restorer_with_optional_registry(restorer, docx_bytes: bytes, paragraphs, generated_paragraph_registry):
+def _call_docx_restorer_with_optional_registry(
+    restorer,
+    docx_bytes: bytes,
+    paragraphs,
+    generated_paragraph_registry,
+    *,
+    run_id: str,
+    source_token: str,
+):
     return _call_docx_restorer_with_optional_registry_impl(
         restorer,
         docx_bytes,
         paragraphs,
         generated_paragraph_registry,
+        run_id=run_id,
+        source_token=source_token,
     )
 
 
@@ -911,7 +910,6 @@ def _run_docx_build_phase(
         result_manifest=cast(Mapping[str, object] | None, phase_result.get("result_manifest")),
         processed_image_assets=list(cast(Sequence[ImageAssetLike], phase_result.get("processed_image_assets") or [])),
         base_docx_builder=cast(Callable[[], bytes] | None, phase_result.get("base_docx_builder")),
-        build_started_at_epoch=cast(float, phase_result.get("build_started_at_epoch") or 0.0),
         diagnostics_dir=cast(Path | None, phase_result.get("diagnostics_dir")),
     )
 
@@ -941,9 +939,7 @@ def _finalize_processing_success(
             "assembly_entries": list(docx_phase.assembly_entries),
             "result_manifest": docx_phase.result_manifest,
             "processed_image_assets": list(docx_phase.processed_image_assets),
-            # spec 043 P1: carry the diagnostics window through so finalize can RE-COLLECT
-            # the FINAL-DOCX formatting diagnostics after a deferred (reader-cleanup) build.
-            "build_started_at_epoch": docx_phase.build_started_at_epoch,
+            # Deferred builds re-collect only artifacts owned by this processing context.
             "diagnostics_dir": docx_phase.diagnostics_dir,
         },
         job_count=job_count,

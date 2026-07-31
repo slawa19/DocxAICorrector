@@ -8,7 +8,7 @@ from io import BytesIO
 from pathlib import Path
 from contextlib import redirect_stdout
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from docx import Document
@@ -987,11 +987,23 @@ def test_prod_pipeline_quality_report_matches_validation_harness_replay_basis(tm
     def _emit_status(runtime, **payload):
         runtime.setdefault("status", []).append(payload)
 
-    def _preserve_with_role_aware_diagnostics(docx_bytes, paragraphs, generated_paragraph_registry=None):
+    def _preserve_with_role_aware_diagnostics(
+        docx_bytes,
+        paragraphs,
+        generated_paragraph_registry=None,
+        *,
+        run_id=None,
+        source_token=None,
+    ):
         (diagnostics_dir / "restore_replay.json").write_text(
             json.dumps(
-                {
-                    "stage": "restore",
+                    {
+                        "stage": "restore",
+                        "ownership": {
+                            "scope": "live",
+                            "run_id": run_id,
+                            "source_token": source_token,
+                        },
                     "source_count": 2,
                     "target_count": 2,
                     "mapped_count": 1,
@@ -1038,6 +1050,8 @@ def test_prod_pipeline_quality_report_matches_validation_harness_replay_basis(tm
 
     result = document_pipeline.run_document_processing(
         uploaded_file="report.docx",
+        run_id="replay-run",
+        source_token="replay-source",
         jobs=[{"target_text": "block", "context_before": "", "context_after": "", "target_chars": 5, "context_chars": 0}],
         source_paragraphs=[ParagraphUnit(text="Body", role="body", structural_role="body", paragraph_id="p0000")],
         image_assets=[],
@@ -2835,10 +2849,7 @@ def test_main_uses_processing_service_facade_and_runtime_config_only(tmp_path, m
     )
     monkeypatch.setattr(validation, "apply_runtime_resolution_to_app_config", lambda app_config, resolution: {"x": 1})
     monkeypatch.setattr(validation, "evaluate_lietaer_acceptance", lambda report, **kwargs: {"passed": True, "failed_checks": [], "checks": []})
-    monkeypatch.setattr(validation, "_snapshot_formatting_diagnostics_paths", lambda: set())
-    monkeypatch.setattr(validation, "_collect_new_formatting_diagnostics_paths", lambda before, after: [])
     monkeypatch.setattr(validation, "_extract_run_formatting_diagnostics_paths", lambda event_log: [])
-    monkeypatch.setattr(validation, "_load_recent_formatting_diagnostics", lambda started_at: ([], []))
     monkeypatch.setattr(validation, "_load_formatting_diagnostics_payloads", lambda paths: [])
     monkeypatch.setattr(validation, "_print_terminal_completion_summary", lambda **kwargs: None)
     monkeypatch.setattr(validation.processing_service, "clone_processing_service", lambda **kwargs: _ValidationServiceStub(kwargs["log_event_fn"]))
@@ -3094,10 +3105,7 @@ def test_main_comparison_only_reader_cleanup_reports_non_acceptance_artifacts_fo
         "evaluate_lietaer_acceptance",
         lambda report, **kwargs: {"passed": False, "failed_checks": ["false_fragment_headings_present"], "checks": []},
     )
-    monkeypatch.setattr(validation, "_snapshot_formatting_diagnostics_paths", lambda: set())
-    monkeypatch.setattr(validation, "_collect_new_formatting_diagnostics_paths", lambda before, after: [])
     monkeypatch.setattr(validation, "_extract_run_formatting_diagnostics_paths", lambda event_log: [])
-    monkeypatch.setattr(validation, "_load_recent_formatting_diagnostics", lambda started_at: ([], []))
     monkeypatch.setattr(validation, "_load_formatting_diagnostics_payloads", lambda paths: [])
     monkeypatch.setattr(validation, "_load_translation_quality_report", lambda event_log: (None, None))
     monkeypatch.setattr(validation, "_print_terminal_completion_summary", lambda **kwargs: None)
@@ -3651,7 +3659,7 @@ def test_parse_reader_verifier_completed_review_dedupes_matching_pre_audit_issue
     evidence_path.write_text("{}", encoding="utf-8")
     evidence_payload = _reader_verifier_test_evidence_payload()
     evidence_payload["pre_audit_issue_counts"] = {
-        **evidence_payload["pre_audit_issue_counts"],
+        **cast(dict[str, int], evidence_payload["pre_audit_issue_counts"]),
         "heading_fused_with_body": 1,
     }
     evidence_payload["pre_audit_findings"] = [
@@ -4786,10 +4794,7 @@ def test_main_comparison_only_reader_verifier_writes_artifacts_and_metadata(tmp_
         "evaluate_lietaer_acceptance",
         lambda report, **kwargs: {"passed": False, "failed_checks": ["false_fragment_headings_present"], "checks": []},
     )
-    monkeypatch.setattr(validation, "_snapshot_formatting_diagnostics_paths", lambda: set())
-    monkeypatch.setattr(validation, "_collect_new_formatting_diagnostics_paths", lambda before, after: [])
     monkeypatch.setattr(validation, "_extract_run_formatting_diagnostics_paths", lambda event_log: [])
-    monkeypatch.setattr(validation, "_load_recent_formatting_diagnostics", lambda started_at: ([], []))
     monkeypatch.setattr(validation, "_load_formatting_diagnostics_payloads", lambda paths: [])
     monkeypatch.setattr(validation, "_load_translation_quality_report", lambda event_log: (None, None))
     monkeypatch.setattr(validation, "_print_terminal_completion_summary", lambda **kwargs: None)
@@ -6006,10 +6011,7 @@ def test_main_comparison_only_reader_verifier_failure_is_non_blocking(tmp_path, 
         "evaluate_lietaer_acceptance",
         lambda report, **kwargs: {"passed": False, "failed_checks": ["false_fragment_headings_present"], "checks": []},
     )
-    monkeypatch.setattr(validation, "_snapshot_formatting_diagnostics_paths", lambda: set())
-    monkeypatch.setattr(validation, "_collect_new_formatting_diagnostics_paths", lambda before, after: [])
     monkeypatch.setattr(validation, "_extract_run_formatting_diagnostics_paths", lambda event_log: [])
-    monkeypatch.setattr(validation, "_load_recent_formatting_diagnostics", lambda started_at: ([], []))
     monkeypatch.setattr(validation, "_load_formatting_diagnostics_payloads", lambda paths: [])
     monkeypatch.setattr(validation, "_load_translation_quality_report", lambda event_log: (None, None))
     monkeypatch.setattr(validation, "_print_terminal_completion_summary", lambda **kwargs: None)
@@ -6180,10 +6182,7 @@ def test_main_falls_back_to_prepared_snapshot_statuses_when_event_log_lacks_stru
     )
     monkeypatch.setattr(validation, "apply_runtime_resolution_to_app_config", lambda app_config, resolution: {"x": 1})
     monkeypatch.setattr(validation, "evaluate_lietaer_acceptance", lambda report, **kwargs: {"passed": True, "failed_checks": [], "checks": []})
-    monkeypatch.setattr(validation, "_snapshot_formatting_diagnostics_paths", lambda: set())
-    monkeypatch.setattr(validation, "_collect_new_formatting_diagnostics_paths", lambda before, after: [])
     monkeypatch.setattr(validation, "_extract_run_formatting_diagnostics_paths", lambda event_log: [])
-    monkeypatch.setattr(validation, "_load_recent_formatting_diagnostics", lambda started_at: ([], []))
     monkeypatch.setattr(validation, "_load_formatting_diagnostics_payloads", lambda paths: [])
     monkeypatch.setattr(validation, "_print_terminal_completion_summary", lambda **kwargs: None)
     monkeypatch.setattr(validation.processing_service, "clone_processing_service", lambda **kwargs: _ValidationServiceStub(kwargs["log_event_fn"]))
@@ -6251,23 +6250,21 @@ def test_extract_run_formatting_diagnostics_paths_prefers_current_run_artifacts(
     ]
 
 
-def test_collect_new_formatting_diagnostics_paths_returns_only_new_files_sorted(tmp_path) -> None:
+def test_event_owned_formatting_paths_exclude_concurrently_created_foreign_file(tmp_path) -> None:
     validation = _load_validation_module()
-
-    old_path = tmp_path / "old.json"
-    new_first = tmp_path / "new_first.json"
-    new_second = tmp_path / "new_second.json"
-    old_path.write_text("{}", encoding="utf-8")
-    new_first.write_text("{}", encoding="utf-8")
-    new_second.write_text("{}", encoding="utf-8")
-
-    before = {str(old_path.resolve())}
-    after = {str(old_path.resolve()), str(new_second.resolve()), str(new_first.resolve())}
-
-    assert validation._collect_new_formatting_diagnostics_paths(before, after) == [
-        str(new_first),
-        str(new_second),
+    owned_path = tmp_path / "owned.json"
+    foreign_path = tmp_path / "foreign-created-concurrently.json"
+    owned_path.write_text("{}", encoding="utf-8")
+    foreign_path.write_text("{}", encoding="utf-8")
+    event_log = [
+        {
+            "event_id": "formatting_diagnostics_artifacts_detected",
+            "context": {"artifact_paths": [str(owned_path)]},
+        }
     ]
+
+    assert validation._extract_run_formatting_diagnostics_paths(event_log) == [str(owned_path)]
+    assert str(foreign_path) not in validation._extract_run_formatting_diagnostics_paths(event_log)
 
 
 def test_build_environment_snapshot_reports_workspace_runtime(monkeypatch) -> None:

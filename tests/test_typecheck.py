@@ -46,7 +46,16 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 # helper (_run_pdf_parse_within_wallclock_budget) with the concrete unified
 # deadline runner removed one pre-existing inference error; the new subprocess
 # machinery and tests add none.
-_ERROR_BASELINE = 246
+# 2026-07-20 (cumulative specs 044-048): tightened 246 -> 196 after removing
+# newly exposed callback-protocol and structured-state typing debt; canonical
+# WSL verification measured 196 with pinned pyright 1.1.409.
+# 2026-07-30 (round-10 remediation): 196 -> 192. Four errors this branch introduced were
+# cleared with real types, not suppressions: the ``persistence_notice`` literal in
+# ``pipeline/late_phases`` is now annotated ``dict[str, object]`` so it matches the
+# invariant ``result_notices`` element type, and the recorded ``emit_state`` payloads in
+# ``tests/test_late_phases_finalize_gate_persistence`` are narrowed through typed accessors
+# (``_state_result_notices`` / ``_state_mapping_value``) instead of indexing ``object``.
+_ERROR_BASELINE = 192
 
 
 def _run_pyright() -> dict:

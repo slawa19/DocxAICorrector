@@ -1502,6 +1502,94 @@ def test_generate_markdown_block_marker_mode_falls_back_to_source_after_persiste
     assert logged_events[-1][0][1] == "markdown_marker_validation_source_fallback"
 
 
+@pytest.mark.parametrize(
+    ("response_factory", "expected_event"),
+    [
+        (
+            lambda: SimpleNamespace(
+                status="incomplete",
+                output=[SimpleNamespace(type="reasoning", status="incomplete")],
+            ),
+            "markdown_incomplete_response_source_fallback",
+        ),
+        (
+            lambda: SimpleNamespace(output_text=""),
+            "markdown_empty_response_source_fallback",
+        ),
+        (
+            lambda: SimpleNamespace(status="failed"),
+            "markdown_non_completed_response_source_fallback",
+        ),
+    ],
+)
+def test_generate_markdown_block_marker_mode_sanitizes_all_controlled_source_fallbacks(
+    monkeypatch,
+    response_factory,
+    expected_event,
+):
+    logged_events = []
+    client = SimpleNamespace(
+        responses=SimpleNamespace(create=lambda **kwargs: response_factory())
+    )
+    monkeypatch.setattr(generation.time, "sleep", lambda *_: None)
+    monkeypatch.setattr(
+        generation,
+        "log_event",
+        lambda *args, **kwargs: logged_events.append((args, kwargs)) or "evt-marker-fallback",
+    )
+
+    source_text = "**Текст [обычный]**\n[[DOCX_IMAGE_img_001]]"
+    result = generation.generate_markdown_block(
+        client=_as_openai_client(client),
+        model="gpt-5.4",
+        system_prompt="system",
+        target_text=f"[[DOCX_PARA_p0001]]\n{source_text}",
+        context_before="before",
+        context_after="after",
+        max_retries=2,
+        expected_paragraph_ids=["p0001"],
+        marker_mode=True,
+    )
+
+    assert result == source_text
+    assert "[[DOCX_PARA_" not in result
+    fallback_event = next(
+        (args, kwargs)
+        for args, kwargs in reversed(logged_events)
+        if len(args) > 1 and args[1] == expected_event
+    )
+    assert fallback_event[1]["target_chars"] == len(source_text)
+
+
+def test_generate_markdown_block_non_marker_fallback_preserves_bracketed_unicode_markdown(monkeypatch):
+    logged_events = []
+    client = SimpleNamespace(
+        responses=SimpleNamespace(create=lambda **kwargs: SimpleNamespace(status="failed"))
+    )
+    monkeypatch.setattr(generation.time, "sleep", lambda *_: None)
+    monkeypatch.setattr(
+        generation,
+        "log_event",
+        lambda *args, **kwargs: logged_events.append((args, kwargs)) or "evt-standard-fallback",
+    )
+
+    source_text = "**Текст [обычный]** [[DOCX_IMAGE_img_001]]"
+    result = generation.generate_markdown_block(
+        client=_as_openai_client(client),
+        model="gpt-5.4",
+        system_prompt="system",
+        target_text=source_text,
+        context_before="before",
+        context_after="after",
+        max_retries=2,
+        marker_mode=False,
+    )
+
+    assert result == source_text
+    assert logged_events[-1][0][1] == "markdown_non_completed_response_source_fallback"
+    assert logged_events[-1][1]["target_chars"] == len(source_text)
+
+
 def test_split_marker_preserved_markdown_raises_structured_marker_diagnostics():
     with pytest.raises(generation.MarkerValidationError) as exc_info:
         generation._split_marker_preserved_markdown(
@@ -1747,6 +1835,153 @@ def test_convert_markdown_to_docx_bytes_preserves_ordered_list_word_numbering_se
     assert signatures[0]["lvl_text"] == "%1."
     assert signatures[0]["left"] is not None
     assert signatures[0]["hanging"] is not None
+
+
+@pytest.mark.skipif(not _pandoc_available(), reason="pandoc is unavailable in current runtime")
+def test_convert_markdown_to_docx_bytes_preserves_extractor_underline_tag():
+    """<u> is raw HTML that Pandoc's DOCX writer drops, so it must be translated."""
+    result = generation.convert_markdown_to_docx_bytes("Обычный <u>подчёркнутый</u> текст")
+
+    document = Document(io.BytesIO(result))
+    paragraph = document.paragraphs[0]
+
+    assert paragraph.text == "Обычный подчёркнутый текст"
+    underlined = [run.text for run in paragraph.runs if run.underline]
+    assert underlined == ["подчёркнутый"]
+
+
+@pytest.mark.skipif(not _pandoc_available(), reason="pandoc is unavailable in current runtime")
+@pytest.mark.parametrize(
+    ("markdown_text", "expected_text", "expected_underlined"),
+    [
+        # DOCX splits runs anywhere, so an underlined footnote/reference tail such as
+        # "1]" or "см. п. 5]" arrives as its own <u> run. Unescaped, its bracket closed
+        # Pandoc's span early and the reader saw literal "[1]]{.underline}" in the body.
+        ("Text <u>a] b</u> more", "Text a] b more", ["a] b"]),
+        ("Text <u>1]</u> more", "Text 1] more", ["1]"]),
+        ("Text <u>note]</u> more", "Text note] more", ["note]"]),
+        ("Text <u>see [1</u> more", "Text see [1 more", ["see [1"]),
+        ("Text <u>]a[</u> more", "Text ]a[ more", ["]a["]),
+        ("Текст <u>см. п. 5]</u> дальше", "Текст см. п. 5] дальше", ["см. п. 5]"]),
+        ("Text <u>C:\\</u> more", "Text C:\\ more", ["C:\\"]),
+        # A "!" in front of the span turned it into Pandoc image syntax.
+        ("Text!<u>x</u> more", "Text!x more", ["x"]),
+        # Balanced brackets must keep working: escaping may not cost the underline.
+        ("Text <u>see [1]</u> more", "Text see [1] more", ["see [1]"]),
+        ("Текст <u>[прим. 3]</u> дальше", "Текст [прим. 3] дальше", ["[прим. 3]"]),
+    ],
+)
+def test_convert_markdown_to_docx_bytes_keeps_underline_span_markup_out_of_body_text(
+    markdown_text: str, expected_text: str, expected_underlined: list[str]
+):
+    """Underlined content may not leak Pandoc span markup into the delivered text."""
+    result = generation.convert_markdown_to_docx_bytes(markdown_text)
+
+    document = Document(io.BytesIO(result))
+    paragraph = document.paragraphs[0]
+
+    assert "{.underline}" not in paragraph.text
+    assert paragraph.text == expected_text
+    assert [run.text for run in paragraph.runs if run.underline] == expected_underlined
+
+
+@pytest.mark.skipif(not _pandoc_available(), reason="pandoc is unavailable in current runtime")
+def test_convert_markdown_to_docx_bytes_keeps_underlined_superscript_role_with_bracket_tail():
+    """Escaping the span must not disturb the superscript/subscript escaping around it."""
+    non_breaking_space = chr(0x00A0)
+
+    result = generation.convert_markdown_to_docx_bytes(
+        "Text <u>see<sup>note 1</sup></u> more\n\n"
+        "Text <sup><u>a]</u></sup> more\n\n"
+        "Text <u>x<sub>2]</sub></u> more"
+    )
+
+    document = Document(io.BytesIO(result))
+    nested, wrapping, subscripted = document.paragraphs[:3]
+
+    assert "{.underline}" not in nested.text
+    assert nested.text == f"Text seenote{non_breaking_space}1 more"
+    assert [run.text for run in nested.runs if run.underline] == ["see", f"note{non_breaking_space}1"]
+    assert [run.text for run in nested.runs if run.font.superscript] == [f"note{non_breaking_space}1"]
+
+    assert "{.underline}" not in wrapping.text
+    assert wrapping.text == "Text a] more"
+    assert [run.text for run in wrapping.runs if run.underline] == ["a]"]
+    assert [run.text for run in wrapping.runs if run.font.superscript] == ["a]"]
+
+    assert "{.underline}" not in subscripted.text
+    assert subscripted.text == "Text x2] more"
+    assert [run.text for run in subscripted.runs if run.underline] == ["x", "2]"]
+    assert [run.text for run in subscripted.runs if run.font.subscript] == ["2]"]
+
+
+@pytest.mark.skipif(not _pandoc_available(), reason="pandoc is unavailable in current runtime")
+def test_convert_markdown_to_docx_bytes_keeps_emphasis_inside_underline_with_bracket_tail():
+    """Bold/italic nested in an underlined run keep both roles once the span is escaped."""
+    result = generation.convert_markdown_to_docx_bytes("Text <u>**bold]** x</u> more")
+
+    document = Document(io.BytesIO(result))
+    paragraph = document.paragraphs[0]
+
+    assert "{.underline}" not in paragraph.text
+    assert "*" not in paragraph.text
+    assert paragraph.text == "Text bold] x more"
+    assert [run.text for run in paragraph.runs if run.bold] == ["bold]"]
+    assert [run.text for run in paragraph.runs if run.underline] == ["bold]", " ", "x"]
+
+
+def test_preprocess_markdown_for_docx_escapes_span_metacharacters_before_script_escaping():
+    """Ordering guard: span escaping may not double the backslashes ^…^ needs for spaces."""
+    assert generation._preprocess_markdown_for_docx("Text <u>1]</u>") == "Text [1\\]]{.underline}"
+    assert (
+        generation._preprocess_markdown_for_docx("Text <u>see<sup>note 1</sup></u>")
+        == "Text [see^note\\ 1^]{.underline}"
+    )
+
+
+@pytest.mark.skipif(not _pandoc_available(), reason="pandoc is unavailable in current runtime")
+def test_convert_markdown_to_docx_bytes_keeps_trailing_space_emphasis_out_of_body_text():
+    """A bold DOCX run carrying its trailing space must not leak literal asterisks."""
+    import docxaicorrector.document.extraction as document_extraction
+
+    source = Document()
+    source_run = source.add_paragraph().add_run("жирный ")
+    source_run.bold = True
+    emphasized = document_extraction._apply_run_markdown("жирный ", source_run._element)
+
+    result = generation.convert_markdown_to_docx_bytes(f"{emphasized}хвост")
+
+    document = Document(io.BytesIO(result))
+    paragraph = document.paragraphs[0]
+
+    assert "*" not in paragraph.text
+    assert paragraph.text == "жирный хвост"
+    assert [run.text for run in paragraph.runs if run.bold] == ["жирный"]
+
+
+@pytest.mark.skipif(not _pandoc_available(), reason="pandoc is unavailable in current runtime")
+def test_convert_markdown_to_docx_bytes_preserves_superscript_containing_a_space():
+    """Pandoc superscript may not hold unescaped spaces, or the carets stay literal."""
+    result = generation.convert_markdown_to_docx_bytes("Ссылка<sup>прим. 1</sup>.")
+
+    document = Document(io.BytesIO(result))
+    paragraph = document.paragraphs[0]
+
+    # Pandoc renders the escaped space as a non-breaking space: the accepted cost of
+    # keeping the superscript role instead of demoting the marker to ordinary body text.
+    non_breaking_space = chr(0x00A0)
+    assert "^" not in paragraph.text
+    assert paragraph.text == f"Ссылкаприм.{non_breaking_space}1."
+    assert [run.text for run in paragraph.runs if run.font.superscript] == [
+        f"прим.{non_breaking_space}1"
+    ]
+
+
+def test_preprocess_markdown_for_docx_leaves_ordinary_body_punctuation_unchanged():
+    """Anti-vacuum guard: legitimate asterisks/carets/brackets are not rewritten."""
+    body_text = "Формула a^2 и звёздочка * в тексте, а также [ссылка](url) и 2 ~ 3."
+
+    assert generation._preprocess_markdown_for_docx(body_text) == body_text
 
 
 @pytest.mark.skipif(not _pandoc_available(), reason="pandoc is unavailable in current runtime")

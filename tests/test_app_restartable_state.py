@@ -1,8 +1,13 @@
 import pytest
 
+import ast
+import inspect
+
 import docxaicorrector.ui._app as app
+import docxaicorrector.ui._ui as result_ui
 import docxaicorrector.ui.application_flow as application_flow
 import docxaicorrector.ui.compare_panel as compare_panel
+import docxaicorrector.processing.processing_runtime as processing_runtime
 from docxaicorrector.core.constants import MAX_DOCX_ARCHIVE_SIZE_BYTES
 from conftest import SessionState as SessionState
 
@@ -45,6 +50,22 @@ class UploadedFileStub:
         return self._position
 
 
+def test_both_ui_preparation_marker_calls_include_resolved_languages():
+    module = ast.parse(inspect.getsource(app))
+    marker_calls = [
+        node
+        for node in ast.walk(module)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "build_preparation_request_marker"
+    ]
+
+    assert len(marker_calls) == 2
+    for marker_call in marker_calls:
+        keyword_names = {keyword.arg for keyword in marker_call.keywords}
+        assert {"source_language", "target_language"} <= keyword_names
+
+
 def _build_prepared_run_context(**overrides):
     payload = {
         "uploaded_filename": "report.docx",
@@ -65,6 +86,143 @@ def _build_prepared_run_context(**overrides):
     }
     payload.update(overrides)
     return application_flow.PreparedRunContext(**payload)
+
+
+def test_same_source_rerun_forwards_blocked_delivery_contract_to_shared_renderer(monkeypatch):
+    captured = {}
+    blocked_result = {
+        "source_name": "report.docx",
+        "source_token": "report.docx:3:token",
+        "docx_bytes": b"blocked-docx",
+        "markdown_text": "blocked markdown",
+        "narration_text": None,
+        "processing_operation": "translate",
+        "audiobook_postprocess_enabled": False,
+        "quality_warning": None,
+        "delivery_disposition": {
+            "status": "blocked",
+            "explanation": "Result blocked by quality gate",
+        },
+        "result_notices": [
+            {"kind": "delivery", "level": "error", "message": "Result blocked by quality gate"}
+        ],
+    }
+    monkeypatch.setattr(app, "render_markdown_preview", lambda **kwargs: None)
+    monkeypatch.setattr(app, "render_result_bundle", lambda **kwargs: captured.update(kwargs))
+
+    selected_result = app._select_current_result_for_source(
+        blocked_result,
+        source_token="report.docx:3:token",
+    )
+    assert selected_result is blocked_result
+    assert selected_result is not None
+    app._render_completed_result_view(selected_result)
+
+    assert captured["delivery_disposition"] == blocked_result["delivery_disposition"]
+    assert captured["result_notices"] == blocked_result["result_notices"]
+
+    blocked_result_without_bytes = {**blocked_result, "docx_bytes": None}
+    assert app._select_current_result_for_source(
+        blocked_result_without_bytes,
+        source_token="report.docx:3:token",
+    ) is blocked_result_without_bytes
+    assert app._select_current_result_for_source(
+        blocked_result,
+        source_token="other.docx:3:token",
+    ) is None
+
+
+def test_completed_unpersisted_result_rerender_shows_typed_warning_and_normal_downloads(monkeypatch):
+    notices = [
+        {"kind": "cleanup", "level": "warning", "message_key": "result.cleanup_advisory_failed"},
+        {"kind": "persistence", "level": "warning", "message_key": "result.primary_artifacts_not_saved"},
+    ]
+    session_state = SessionState(
+        latest_docx_bytes=b"accepted-docx",
+        latest_markdown="accepted markdown",
+        latest_delivery_disposition={"status": "accepted_with_advisory"},
+        latest_result_notices=notices,
+        latest_result_notice={
+            "level": "warning",
+            "message": "Result processed, but result files could not be saved to disk.",
+        },
+    )
+    monkeypatch.setattr(processing_runtime.st, "session_state", session_state)
+    monkeypatch.setattr(processing_runtime, "get_latest_source_name", lambda: "report.docx")
+    monkeypatch.setattr(processing_runtime, "get_latest_source_token", lambda: "report.docx:3:token")
+    monkeypatch.setattr(app, "render_markdown_preview", lambda **kwargs: None)
+    monkeypatch.setattr(app, "t", lambda key, **kwargs: f"localized:{key}")
+    monkeypatch.setattr(result_ui, "t", lambda key, **kwargs: f"localized:{key}")
+    success_calls = []
+    warning_calls = []
+    download_calls = []
+
+    class FakeColumn:
+        def download_button(self, *args, **kwargs):
+            download_calls.append(kwargs)
+
+    monkeypatch.setattr(result_ui.st, "success", lambda message: success_calls.append(message))
+    monkeypatch.setattr(result_ui.st, "warning", lambda message: warning_calls.append(message))
+    monkeypatch.setattr(result_ui.st, "columns", lambda count: [FakeColumn() for _ in range(count)])
+    monkeypatch.setattr(result_ui, "_render_formatting_review_block", lambda **kwargs: None)
+
+    current_result = processing_runtime.get_current_result_bundle()
+    assert current_result is not None
+    app._render_completed_result_view(current_result)
+
+    assert success_calls == ["localized:result.success_document_processed"]
+    assert warning_calls == [
+        "localized:result.cleanup_advisory_failed",
+        "localized:result.primary_artifacts_not_saved",
+    ]
+    assert len(download_calls) == 2
+    assert all(call["type"] == "primary" for call in download_calls)
+
+
+def test_completed_quality_warning_rerender_deduplicates_semantic_legacy_notice(monkeypatch):
+    quality_message = "Review formatting"
+    quality_warning = {
+        "kind": "translation_quality_gate",
+        "quality_status": "warn",
+        "message": quality_message,
+    }
+    session_state = SessionState(
+        latest_docx_bytes=b"accepted-docx",
+        latest_markdown="accepted markdown",
+        latest_delivery_disposition={"status": "accepted_with_advisory"},
+        latest_quality_warning=quality_warning,
+        latest_result_notices=[],
+        latest_result_notice={"level": "warning", "message": quality_message},
+    )
+    monkeypatch.setattr(processing_runtime.st, "session_state", session_state)
+    monkeypatch.setattr(processing_runtime, "get_latest_source_name", lambda: "report.docx")
+    monkeypatch.setattr(processing_runtime, "get_latest_source_token", lambda: "report.docx:3:token")
+    monkeypatch.setattr(app, "render_markdown_preview", lambda **kwargs: None)
+    success_calls = []
+    warning_calls = []
+    review_calls = []
+
+    class FakeColumn:
+        def download_button(self, *args, **kwargs):
+            return None
+
+    monkeypatch.setattr(result_ui.st, "success", lambda message: success_calls.append(message))
+    monkeypatch.setattr(result_ui.st, "warning", lambda message: warning_calls.append(message))
+    monkeypatch.setattr(result_ui.st, "columns", lambda count: [FakeColumn() for _ in range(count)])
+    monkeypatch.setattr(
+        result_ui,
+        "_render_formatting_review_block",
+        lambda **kwargs: review_calls.append(kwargs["quality_warning"]),
+    )
+
+    current_result = processing_runtime.get_current_result_bundle()
+    assert current_result is not None
+    assert current_result["result_notices"] == []
+    app._render_completed_result_view(current_result)
+
+    assert success_calls
+    assert warning_calls == []
+    assert review_calls == [quality_warning]
 
 
 @pytest.mark.parametrize("outcome", ["stopped", "failed"])

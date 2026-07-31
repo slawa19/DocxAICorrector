@@ -1211,3 +1211,32 @@ def test_run_paragraph_boundary_ai_review_omits_factory_kwarg_for_legacy_impl(mo
     )
 
     assert artifact_path is not None
+
+
+def test_build_ai_review_request_payload_sends_bare_model_id_for_qualified_selector():
+    # The API model field must carry the provider-side model id, not the
+    # provider-qualified selector, otherwise a qualified selector 404s at the API.
+    config.reset_app_config_cache()
+
+    openai_payload = boundary_review_module.build_ai_review_request_payload(
+        model="openai:gpt-5.4-mini",
+        candidates=[{"candidate_id": "0:1"}],
+        timeout_seconds=5,
+        max_tokens_per_candidate=100,
+    )
+    anthropic_payload = boundary_review_module.build_ai_review_request_payload(
+        model="anthropic:claude-sonnet-4-6",
+        candidates=[{"candidate_id": "0:1"}],
+        timeout_seconds=5,
+        max_tokens_per_candidate=100,
+    )
+    bare_payload = boundary_review_module.build_ai_review_request_payload(
+        model="gpt-5.4-mini",
+        candidates=[{"candidate_id": "0:1"}],
+        timeout_seconds=5,
+        max_tokens_per_candidate=100,
+    )
+
+    assert openai_payload["model"] == "gpt-5.4-mini"
+    assert anthropic_payload["model"] == "claude-sonnet-4-6"
+    assert bare_payload["model"] == "gpt-5.4-mini"

@@ -1,8 +1,10 @@
 import json
 import logging
+import re
 import time
 from pathlib import Path
-from typing import Mapping, Sequence
+from typing import Literal, Mapping, Sequence
+from uuid import uuid4
 
 from docxaicorrector.core.logger import log_event
 
@@ -16,20 +18,96 @@ def get_formatting_diagnostics_dir() -> Path:
     return FORMATTING_DIAGNOSTICS_DIR
 
 
-def collect_recent_formatting_diagnostics(*, since_epoch_seconds: float, diagnostics_dir: Path | None = None) -> list[str]:
+def _require_nonempty_identity(value: str | None, *, field_name: str) -> str:
+    normalized = str(value or "").strip()
+    if not normalized:
+        raise ValueError(f"{field_name} must be non-empty")
+    return normalized
+
+
+def _safe_filename_component(value: str) -> str:
+    normalized = re.sub(r"[^A-Za-z0-9_.-]+", "_", value).strip("._") or "unknown"
+    return normalized[:64]
+
+
+DIAGNOSTICS_IDENTITY_MISSING_EVENT = "formatting_diagnostics_identity_missing"
+
+
+def blank_ownership_identity_fields(*, run_id: str | None, source_token: str | None) -> list[str]:
+    """Name the ownership identities that are absent/blank, in a stable order."""
+    return [
+        field_name
+        for field_name, value in (("run_id", run_id), ("source_token", source_token))
+        if not str(value or "").strip()
+    ]
+
+
+def resolve_owned_diagnostics_scope(
+    *,
+    stage: str,
+    run_id: str | None,
+    source_token: str | None,
+    artifact_kind: str,
+) -> Literal["live", "offline"]:
+    """Pick the ownership scope for a diagnostics artifact, LOUDLY on a downgrade.
+
+    Round-11 F1 made a blank identity fall back to ``offline`` so the artifact is still
+    retained for explicit replay instead of being destroyed by the writer's fail-open.
+    That silenced the ONLY signal of the failure: an offline artifact is invisible to
+    ``collect_owned_formatting_diagnostics``, so the run's quality report is never
+    rebuilt from it and the canonical gate then scores the MISSING evidence as a clean
+    zero. Keep the retention, but never let the downgrade pass unannounced.
+    """
+    missing_identity_fields = blank_ownership_identity_fields(run_id=run_id, source_token=source_token)
+    if not missing_identity_fields:
+        return "live"
+    log_event(
+        logging.WARNING,
+        DIAGNOSTICS_IDENTITY_MISSING_EVENT,
+        "Run identity incomplete: diagnostics artifact downgraded to offline scope and "
+        "will NOT be collected back into this run's quality report.",
+        stage=stage,
+        artifact_kind=artifact_kind,
+        missing_identity_fields=missing_identity_fields,
+        run_id=str(run_id or ""),
+        source_token=str(source_token or ""),
+        downgraded_scope="offline",
+    )
+    return "offline"
+
+
+def collect_owned_formatting_diagnostics(
+    *,
+    run_id: str,
+    source_token: str,
+    diagnostics_dir: Path | None = None,
+) -> list[str]:
+    try:
+        expected_run_id = _require_nonempty_identity(run_id, field_name="run_id")
+        expected_source_token = _require_nonempty_identity(source_token, field_name="source_token")
+    except ValueError:
+        # An incomplete legacy context owns nothing; critically, it must not widen
+        # collection to directory-wide or time-window discovery.
+        return []
     target_dir = diagnostics_dir or get_formatting_diagnostics_dir()
     if not target_dir.exists():
         return []
 
-    recent_artifacts: list[str] = []
-    threshold = max(0.0, since_epoch_seconds - 1.0)
+    owned_artifacts: list[str] = []
     for artifact_path in sorted(target_dir.glob("*.json")):
         try:
-            if artifact_path.stat().st_mtime >= threshold:
-                recent_artifacts.append(str(artifact_path))
-        except OSError:
+            payload = json.loads(artifact_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, TypeError, ValueError):
             continue
-    return recent_artifacts
+        if not isinstance(payload, dict):
+            continue
+        ownership = payload.get("ownership")
+        if not isinstance(ownership, dict) or ownership.get("scope") != "live":
+            continue
+        if ownership.get("run_id") != expected_run_id or ownership.get("source_token") != expected_source_token:
+            continue
+        owned_artifacts.append(str(artifact_path))
+    return owned_artifacts
 
 
 def write_formatting_diagnostics_artifact(
@@ -39,18 +117,41 @@ def write_formatting_diagnostics_artifact(
     filename_prefix: str | None = None,
     diagnostics_dir: Path | None = None,
     now_epoch_ms: int | None = None,
+    scope: Literal["live", "offline"] = "offline",
+    run_id: str | None = None,
+    source_token: str | None = None,
 ) -> str | None:
     target_dir = diagnostics_dir or get_formatting_diagnostics_dir()
     generated_at_epoch_ms = int(now_epoch_ms if now_epoch_ms is not None else time.time() * 1000)
     stem = filename_prefix or stage
 
     try:
+        if scope not in {"live", "offline"}:
+            raise ValueError("scope must be 'live' or 'offline'")
+        ownership: dict[str, str] = {"scope": scope}
+        if scope == "live":
+            ownership["run_id"] = _require_nonempty_identity(run_id, field_name="run_id")
+            ownership["source_token"] = _require_nonempty_identity(source_token, field_name="source_token")
         target_dir.mkdir(parents=True, exist_ok=True)
-        artifact_path = target_dir / f"{stem}_{generated_at_epoch_ms}.json"
+        filename_parts = [
+            _safe_filename_component(stem),
+            *(
+                [
+                    _safe_filename_component(ownership["run_id"]),
+                    _safe_filename_component(ownership["source_token"]),
+                ]
+                if scope == "live"
+                else ["offline"]
+            ),
+            str(generated_at_epoch_ms),
+            uuid4().hex,
+        ]
+        artifact_path = target_dir / f"{'_'.join(filename_parts)}.json"
         payload = {
+            **dict(diagnostics),
             "stage": stage,
             "generated_at_epoch_ms": generated_at_epoch_ms,
-            **dict(diagnostics),
+            "ownership": ownership,
         }
         artifact_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         prune_formatting_diagnostics(diagnostics_dir=target_dir)
@@ -64,6 +165,9 @@ def write_formatting_diagnostics_artifact(
             "Failed to write the formatting-diagnostics artifact; continuing without it.",
             stage=stage,
             expected_dir=str(target_dir),
+            scope=scope,
+            run_id=run_id,
+            source_token=source_token,
             error_type=type(exc).__name__,
             error=str(exc),
         )

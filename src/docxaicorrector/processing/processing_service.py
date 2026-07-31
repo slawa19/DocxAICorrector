@@ -2,6 +2,7 @@ from dataclasses import dataclass, replace
 from collections.abc import Callable, Mapping, Sequence
 from threading import Lock
 from typing import Any, cast
+from uuid import uuid4
 
 from docxaicorrector.chapter_workflow.service import build_document_context_prompt as build_chapter_workflow_document_context_prompt
 from docxaicorrector.core.config import (
@@ -53,6 +54,41 @@ from docxaicorrector.processing.preparation import prepare_document_for_processi
 from docxaicorrector.processing.service_ports import normalize_background_error, should_stop_processing
 from docxaicorrector.processing.upload_ports import resolve_uploaded_filename
 from docxaicorrector.runtime.events import AppendLogEvent, FinalizeProcessingStatusEvent, PushActivityEvent, SetStateEvent, WorkerCompleteEvent
+
+
+class _DeliveryObservingRuntime:
+    """Transparent runtime proxy that remembers the LAST delivery disposition the run
+    emitted.
+
+    The background worker writes into session state through a one-way event queue, so on a
+    crash it cannot ask the UI whether the result was already delivered. This proxy answers
+    that question from the events the run itself produced: ``latest_delivery_disposition``
+    is emitted ONLY at the three points in ``pipeline/late_phases`` where the pipeline has
+    reached a delivery decision (``blocked`` at the quality gates, ``accepted`` /
+    ``accepted_with_advisory`` at publication). Round-11 F3's dangerous shape — deliverable
+    bytes emitted mid-run with NO disposition, which ``build_result_bundle`` defaults to
+    "accepted" — never sets it, so that scenario is still detected as "not delivered".
+    """
+
+    def __init__(self, runtime: Any) -> None:
+        self._runtime = runtime
+        self._delivery_disposition: object | None = None
+
+    def emit(self, event: Any) -> None:
+        values = getattr(event, "values", None)
+        if isinstance(event, SetStateEvent) and isinstance(values, Mapping) and "latest_delivery_disposition" in values:
+            self._delivery_disposition = values["latest_delivery_disposition"]
+        self._runtime.emit(event)
+
+    def should_stop(self) -> bool:
+        return bool(self._runtime.should_stop())
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._runtime, name)
+
+    @property
+    def result_was_delivered(self) -> bool:
+        return self._delivery_disposition is not None
 
 
 def _normalize_segment_selection_ids(
@@ -280,6 +316,7 @@ class ProcessingService:
     ) -> None:
         outcome = "failed"
         deps = self.dependencies
+        observed_runtime = _DeliveryObservingRuntime(runtime)
         try:
             outcome = self.run_document_processing(
                 uploaded_file=uploaded_filename,
@@ -304,7 +341,7 @@ class ProcessingService:
                 source_language=source_language,
                 target_language=target_language,
                 on_progress=lambda **kwargs: None,
-                runtime=runtime,
+                runtime=observed_runtime,
             )
         except Exception as exc:
             error_message = deps.present_error_fn(
@@ -319,9 +356,42 @@ class ProcessingService:
                 exc=exc,
                 user_message=error_message,
             )
-            runtime.emit(SetStateEvent(values={"last_error": error_message, "last_background_error": background_error}))
+            # Round-11 F3: a crash after a mid-run ``latest_docx_bytes`` emit would otherwise
+            # leave deliverable bytes with no disposition, which ``build_result_bundle``
+            # defaults to "accepted" — a green success view under a red error. Clear the
+            # delivery state here, mirroring the hygiene in ``pipeline/block_failures.py``.
+            #
+            # Round-12 F1: clear it ONLY while the run has not reached a delivery decision.
+            # Once a ``latest_delivery_disposition`` was emitted, the bytes in session state
+            # are a DELIVERED result carrying its own honest disposition (``accepted`` /
+            # ``accepted_with_advisory`` / ``blocked``) — wiping it would hide a finished
+            # document behind a restartable error and invite a full paid re-run. The error
+            # banner is emitted either way; the discriminator is exactly the condition F3
+            # was written for (bytes WITHOUT a disposition).
+            crash_state_values: dict[str, object] = {
+                "last_error": error_message,
+                "last_background_error": background_error,
+            }
+            if not observed_runtime.result_was_delivered:
+                crash_state_values.update(
+                    {
+                        "latest_docx_bytes": None,
+                        "latest_narration_text": None,
+                        "latest_delivery_disposition": None,
+                    }
+                )
+            runtime.emit(SetStateEvent(values=crash_state_values))
             runtime.emit(FinalizeProcessingStatusEvent(stage="Критическая ошибка", detail=error_message, progress=1.0, terminal_kind="error"))
-            runtime.emit(PushActivityEvent(message="Фоновый worker аварийно завершился; runtime-state принудительно очищается."))
+            runtime.emit(
+                PushActivityEvent(
+                    message=(
+                        "Фоновый worker аварийно завершился уже после доставки результата; "
+                        "готовый результат сохранён."
+                        if observed_runtime.result_was_delivered
+                        else "Фоновый worker аварийно завершился; runtime-state принудительно очищается."
+                    )
+                )
+            )
             runtime.emit(
                 AppendLogEvent(
                     payload={
@@ -414,9 +484,13 @@ class ProcessingService:
         document_context_prompt = build_chapter_workflow_document_context_prompt(
             prepared_run_context=prepared,
         )
+        # Round-11 F1: without a run identity the pipeline context normalizes ``run_id`` to
+        # "" and every live diagnostics artifact loses its ownership; mint one per run.
+        run_id = uuid4().hex
         result = self.run_document_processing(
             uploaded_file=prepared.uploaded_filename,
             source_token=str(getattr(document_context_profile, "source_token", "") or ""),
+            run_id=run_id,
             prepared_source_key=str(getattr(prepared, "prepared_source_key", "") or ""),
             structure_fingerprint=str(getattr(prepared, "structure_fingerprint", "") or ""),
             jobs=cast(Sequence[Mapping[str, object]], jobs),
@@ -515,11 +589,20 @@ def build_default_processing_service_dependencies() -> ProcessingServiceDependen
     def _inspect_placeholder_integrity(markdown_text: str, image_assets) -> Mapping[str, str]:
         return inspect_placeholder_integrity(markdown_text, list(image_assets))
 
-    def _preserve_source_paragraph_properties(docx_bytes: bytes, paragraphs, generated_paragraph_registry=None) -> bytes:
+    def _preserve_source_paragraph_properties(
+        docx_bytes: bytes,
+        paragraphs,
+        generated_paragraph_registry=None,
+        *,
+        run_id: str | None = None,
+        source_token: str | None = None,
+    ) -> bytes:
         return preserve_source_paragraph_properties(
             docx_bytes,
             list(paragraphs),
             generated_paragraph_registry=generated_paragraph_registry,
+            run_id=run_id,
+            source_token=source_token,
         )
 
     def _reinsert_inline_images(docx_bytes: bytes, image_assets) -> bytes:

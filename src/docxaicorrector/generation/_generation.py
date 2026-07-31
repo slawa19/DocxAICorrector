@@ -30,6 +30,10 @@ _WORD_TOKEN_PATTERN = re.compile(r"\w+(?:[-']\w+)*", re.UNICODE)
 _INLINE_HTML_SUP_PATTERN = re.compile(r"<sup>(.*?)</sup>", re.IGNORECASE | re.DOTALL)
 _INLINE_HTML_SUB_PATTERN = re.compile(r"<sub>(.*?)</sub>", re.IGNORECASE | re.DOTALL)
 _INLINE_HTML_BREAK_PATTERN = re.compile(r"<br\s*/?>", re.IGNORECASE)
+_INLINE_HTML_UNDERLINE_PATTERN = re.compile(
+    r"(?P<prefix>\\*!?)<u>(?P<content>.*?)</u>", re.IGNORECASE | re.DOTALL
+)
+_PANDOC_SPAN_SPECIAL_PATTERN = re.compile(r"[\\\[\]]")
 _NARRATION_INTERNAL_PLACEHOLDER_PATTERN = re.compile(r"\[\[DOCX_[A-Za-z0-9_]+\]\]")
 _NARRATION_MARKDOWN_LINK_PATTERN = re.compile(r"\[([^\]\n]+)\]\(([^)\n]+)\)")
 _NARRATION_HEADING_PATTERN = re.compile(r"^\s{0,3}#{1,6}\s*(.*)$")
@@ -550,7 +554,7 @@ def _call_responses_create(client: "OpenAI", request_kwargs: dict[str, Any]) -> 
     )
 
 
-def _is_openrouter_client(client: "OpenAI") -> bool:
+def _is_openrouter_client(client: object) -> bool:
     base_url = getattr(client, "base_url", None)
     if base_url is None:
         return False
@@ -1053,10 +1057,10 @@ def generate_markdown_block(
                     "markdown_incomplete_response_source_fallback",
                     "Recovery для блока снова завершился incomplete_response; сохраняю исходный текст блока как controlled fallback.",
                     model=model,
-                    target_chars=len(target_text),
+                    target_chars=len(target_text_for_leakage),
                     marker_mode=marker_mode,
                 )
-                return target_text
+                return target_text_for_leakage
             if _is_retryable_marker_validation_error(recovery_exc) and _can_fallback_to_source_text_after_marker_validation_failure(
                 target_text_for_leakage,
                 marker_mode=marker_mode,
@@ -1079,11 +1083,11 @@ def generate_markdown_block(
                     "markdown_empty_response_source_fallback",
                     "Recovery для блока снова завершился empty_response; сохраняю исходный текст блока как controlled fallback.",
                     model=model,
-                    target_chars=len(target_text),
+                    target_chars=len(target_text_for_leakage),
                     marker_mode=marker_mode,
                     recovery_error=str(recovery_exc),
                 )
-                return target_text
+                return target_text_for_leakage
             if _is_retryable_empty_generation_error(recovery_exc) or _is_retryable_marker_validation_error(recovery_exc):
                 raise recovery_exc
             raise recovery_exc
@@ -1098,10 +1102,10 @@ def generate_markdown_block(
             "markdown_non_completed_response_source_fallback",
             "Модель повторно вернула non_completed_response; сохраняю исходный текст блока как controlled fallback.",
             model=model,
-            target_chars=len(target_text),
+            target_chars=len(target_text_for_leakage),
             marker_mode=marker_mode,
         )
-        return target_text
+        return target_text_for_leakage
 
     if last_exception is not None:
         raise last_exception
@@ -1155,14 +1159,71 @@ def _preprocess_markdown_for_docx(markdown_text: str) -> str:
     """Convert extractor-emitted inline HTML into Pandoc-friendly markdown.
 
     The extraction layer preserves semantic inline signals as HTML-like tags
-    such as ``<sup>``, ``<sub>``, and ``<br/>``. Pandoc's DOCX writer does not
-    preserve those shapes reliably through the default markdown path, so we
+    such as ``<sup>``, ``<sub>``, ``<u>``, and ``<br/>``. Pandoc's DOCX writer does
+    not preserve those shapes reliably through the default markdown path, so we
     translate them into markdown extensions that round-trip into OOXML.
     """
-    processed = _INLINE_HTML_SUP_PATTERN.sub(lambda match: f"^{match.group(1)}^", markdown_text)
-    processed = _INLINE_HTML_SUB_PATTERN.sub(lambda match: f"~{match.group(1)}~", processed)
+    # Underline runs FIRST. Its escaping must not see the backslashes that
+    # _escape_pandoc_script_spaces injects for ^…^/~…~: doubling those would turn
+    # the escaped space into a literal backslash and demote the script role.
+    # Nested tags survive because ``<sup>``/``<sub>``/``<br/>`` carry no span
+    # metacharacters, so the later passes still rewrite them inside the span.
+    processed = _INLINE_HTML_UNDERLINE_PATTERN.sub(_render_pandoc_underline_span, markdown_text)
+    processed = _INLINE_HTML_SUP_PATTERN.sub(
+        lambda match: f"^{_escape_pandoc_script_spaces(match.group(1))}^", processed
+    )
+    processed = _INLINE_HTML_SUB_PATTERN.sub(
+        lambda match: f"~{_escape_pandoc_script_spaces(match.group(1))}~", processed
+    )
     processed = _INLINE_HTML_BREAK_PATTERN.sub("\\\n", processed)
     return processed
+
+
+def _render_pandoc_underline_span(match: "re.Match[str]") -> str:
+    """Wrap underlined content into Pandoc's ``[…]{.underline}`` span, escaped.
+
+    The span delimiters are markdown syntax, so unescaped ``[``/``]``/``\\`` in
+    the *content* terminate or escape them early and the construct collapses:
+    an underlined run reading ``1]`` (DOCX splits runs anywhere, so a trailing
+    footnote bracket easily lands in its own underlined run) produced
+    ``[1]]{.underline}`` and the reader saw the literal markup in the delivered
+    text. Escaping keeps the characters as body text and the underline as a role.
+    """
+    prefix = _neutralize_pandoc_span_prefix(match.group("prefix"))
+    content = _PANDOC_SPAN_SPECIAL_PATTERN.sub(lambda special: f"\\{special.group(0)}", match.group("content"))
+    return f"{prefix}[{content}]{{.underline}}"
+
+
+def _neutralize_pandoc_span_prefix(prefix: str) -> str:
+    """Stop the character in front of the span from consuming its opening ``[``.
+
+    ``!`` immediately before ``[`` starts Pandoc's image syntax and an odd run of
+    backslashes escapes the bracket outright; either way the span degrades to
+    literal ``[…]{.underline}`` in the document. Both are neutralized without
+    changing the text the reader sees.
+    """
+    if prefix.endswith("!"):
+        backslashes = prefix[:-1]
+        if len(backslashes) % 2 == 1:
+            # Already escaped by the preceding backslash: cannot open an image.
+            return prefix
+        return f"{backslashes}\\!"
+    if len(prefix) % 2 == 1:
+        return f"{prefix}\\"
+    return prefix
+
+
+def _escape_pandoc_script_spaces(content: str) -> str:
+    """Escape spaces so ``^…^`` / ``~…~`` stay real superscript/subscript.
+
+    Pandoc's superscript and subscript may not contain unescaped spaces, so
+    ``<sup>note 1</sup>`` would otherwise translate into a literal ``^note 1^``
+    that reaches the reader as raw carets. Escaping keeps the vertical-alignment
+    role; leaving such content untranslated keeps the text but silently demotes
+    it to ordinary body text. The escaped space arrives in OOXML as a
+    non-breaking space, which is the accepted cost of preserving the role.
+    """
+    return content.replace(" ", "\\ ")
 
 
 def _patch_reference_theme_fonts(

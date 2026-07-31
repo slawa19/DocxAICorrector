@@ -1,5 +1,6 @@
 import queue
 import threading
+import hashlib
 from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
@@ -341,7 +342,7 @@ def test_prepare_run_context_keeps_other_completed_source_tokens(monkeypatch):
 
 
 def test_get_cached_completed_file_loads_bytes_from_store():
-    session_state = SessionState(completed_source={"filename": "report.docx", "token": "report.docx:3:abc", "storage_path": "completed.bin"})
+    session_state = SessionState(completed_source={"filename": "report.docx", "token": "report.docx:3:abc", "storage_path": "completed.bin", "size": 3, "payload_sha256": hashlib.sha256(b"abc").hexdigest(), "source_format": "docx", "conversion_backend": None})
 
     uploaded_file = application_flow.get_cached_completed_file(
         session_state=cast(application_flow.SessionStateLike, session_state),
@@ -349,8 +350,9 @@ def test_get_cached_completed_file_loads_bytes_from_store():
     )
 
     assert uploaded_file is not None
-    assert uploaded_file.name == "report.docx"
-    assert uploaded_file.getvalue() == b"abc"
+    assert uploaded_file.filename == "report.docx"
+    assert uploaded_file.content_bytes == b"abc"
+    assert uploaded_file.file_token == "report.docx:3:abc"
 
 
 def test_consume_completed_source_if_used_clears_persisted_file(monkeypatch):
@@ -782,8 +784,9 @@ def test_restart_flow_restores_uploaded_file_from_run_store_and_cleans_up(tmp_pa
     restart_path = session_state.restart_source["storage_path"]
 
     assert restored_file is not None
-    assert restored_file.name == "report.docx"
-    assert restored_file.getvalue() == b"abc"
+    assert restored_file.filename == "report.docx"
+    assert restored_file.content_bytes == b"abc"
+    assert restored_file.file_token == "report.docx:3:abc"
 
     state.reset_run_state(keep_restart_source=False)
 
@@ -837,7 +840,7 @@ def test_sync_selected_file_context_resets_run_state_for_new_file(monkeypatch):
 def test_has_resettable_state_depends_on_restartable_source(tmp_path):
     restart_path = tmp_path / "restart.bin"
     restart_path.write_bytes(b"abc")
-    session_state = SessionState(processing_outcome="stopped", restart_source={"filename": "report.docx", "storage_path": str(restart_path)})
+    session_state = SessionState(processing_outcome="stopped", restart_source=_valid_restart_record(restart_path))
 
     assert application_flow.has_resettable_state(current_result=None, session_state=session_state) is True  # type: ignore[arg-type]
 
@@ -849,7 +852,7 @@ def test_has_resettable_state_depends_on_restartable_source(tmp_path):
 def test_derive_idle_view_state_covers_idle_paths(tmp_path):
     restart_path = tmp_path / "restart.bin"
     restart_path.write_bytes(b"abc")
-    session_state = SessionState(processing_outcome="stopped", restart_source={"filename": "report.docx", "storage_path": str(restart_path)})
+    session_state = SessionState(processing_outcome="stopped", restart_source=_valid_restart_record(restart_path))
 
     assert application_flow.derive_app_idle_view_state(current_result=None, uploaded_file=object(), session_state=session_state) == "file_selected"
     assert application_flow.derive_app_idle_view_state(current_result={"docx_bytes": b"x"}, uploaded_file=None, session_state=session_state) == "completed"
@@ -862,14 +865,18 @@ def test_derive_idle_view_state_covers_idle_paths(tmp_path):
 
 def test_get_cached_restart_file_returns_none_when_storage_missing(monkeypatch):
     session_state = SessionState(restart_source={"filename": "report.docx", "storage_path": "missing.bin"})
-    monkeypatch.setattr(application_flow, "load_restart_source_bytes", lambda restart_source: None)
+    monkeypatch.setattr(
+        application_flow,
+        "load_persisted_source_bytes_with_reason",
+        lambda restart_source: (None, "unreadable_payload"),
+    )
 
     assert application_flow.get_cached_restart_file(session_state=session_state) is None  # type: ignore[arg-type]
 
 
 def test_resolve_effective_uploaded_file_uses_completed_source_after_success():
     session_state = SessionState(
-        completed_source={"filename": "report.docx", "storage_path": "completed.bin", "token": "report.docx:3:abc"}
+        completed_source={"filename": "report.docx", "storage_path": "completed.bin", "token": "report.docx:3:abc", "size": 3, "payload_sha256": hashlib.sha256(b"abc").hexdigest(), "source_format": "docx", "conversion_backend": None}
     )
 
     uploaded_file = application_flow.resolve_effective_uploaded_file(
@@ -880,16 +887,85 @@ def test_resolve_effective_uploaded_file_uses_completed_source_after_success():
     )
 
     assert uploaded_file is not None
-    assert uploaded_file.name == "report.docx"
-    assert uploaded_file.getvalue() == b"abc"
+    assert uploaded_file.filename == "report.docx"
+    assert uploaded_file.content_bytes == b"abc"
+    assert uploaded_file.file_token == "report.docx:3:abc"
+
+
+@pytest.mark.parametrize("source_format", ["pdf", "doc"])
+def test_cached_normalized_source_restores_authoritative_original_token(source_format):
+    source_bytes = b"normalized-docx"
+    source_token = f"report.{source_format}:123:original"
+    record = {
+        "filename": "report.docx",
+        "storage_path": "completed.bin",
+        "token": source_token,
+        "size": len(source_bytes),
+        "payload_sha256": hashlib.sha256(source_bytes).hexdigest(),
+        "source_format": source_format,
+        "conversion_backend": "libreoffice",
+    }
+
+    restored = application_flow.get_cached_completed_file(
+        session_state=cast(application_flow.SessionStateLike, SessionState(completed_source=record)),
+        load_completed_source_bytes_fn=lambda source: source_bytes,
+    )
+
+    assert restored is not None
+    assert restored.file_token == source_token
+    assert restored.source_format == source_format
+    assert restored.conversion_backend == "libreoffice"
+
+
+def test_resolve_preparation_upload_passes_through_frozen_payload_without_reread():
+    # spec-045 P0 seam: a restored persisted source arrives as a FrozenUploadPayload.
+    # It must be passed through as-is (NOT re-frozen, which would crash because
+    # FrozenUploadPayload has no .read/.seek/.getvalue), and its authoritative
+    # SOURCE-derived token must survive rather than being recomputed from the
+    # normalized DOCX bytes. If the isinstance() branch is reverted this test fails.
+    payload = flow_core.FrozenUploadPayload(
+        filename="book.pdf",
+        content_bytes=b"PK\x03\x04normalized-docx-ish-bytes",
+        file_size=len(b"PK\x03\x04normalized-docx-ish-bytes"),
+        content_hash="deadbeef",
+        file_token="book.pdf:100:deadbeef",
+        source_format="pdf",
+        conversion_backend="libreoffice",
+    )
+
+    resolved = flow_core._resolve_preparation_upload(uploaded_file=payload, uploaded_payload=None)
+
+    assert resolved.needs_read_stage is False
+    assert resolved.uploaded_file_token == payload.file_token
+    assert resolved.uploaded_file_bytes == payload.content_bytes
+    assert resolved.uploaded_filename == payload.filename
+
+
+def test_fresh_upload_wins_when_persisted_source_is_unverifiable():
+    fresh_upload = UploadedFileStub("fresh.pdf", b"fresh")
+    session_state = SessionState(
+        processing_outcome="stopped",
+        restart_source={"filename": "report.docx", "storage_path": "missing.bin"},
+    )
+
+    assert application_flow.resolve_effective_uploaded_file(
+        uploaded_file=fresh_upload,
+        current_result=None,
+        session_state=session_state,
+        load_restart_source_bytes_fn=lambda source: None,
+    ) is fresh_upload
 
 
 def test_has_restartable_source_does_not_materialize_restart_bytes(tmp_path, monkeypatch):
     restart_path = tmp_path / "restart.bin"
     restart_path.write_bytes(b"abc")
-    session_state = SessionState(processing_outcome="stopped", restart_source={"filename": "report.docx", "storage_path": str(restart_path)})
+    session_state = SessionState(processing_outcome="stopped", restart_source=_valid_restart_record(restart_path))
     load_calls = []
-    monkeypatch.setattr(application_flow, "load_restart_source_bytes", lambda restart_source: load_calls.append(restart_source) or b"abc")
+    monkeypatch.setattr(
+        application_flow,
+        "load_persisted_source_bytes_with_reason",
+        lambda restart_source: (load_calls.append(restart_source) or b"abc", None),
+    )
 
     assert application_flow.has_restartable_source(session_state=session_state) is True  # type: ignore[arg-type]
     assert load_calls == []
@@ -898,10 +974,326 @@ def test_has_restartable_source_does_not_materialize_restart_bytes(tmp_path, mon
 def test_has_restartable_source_returns_false_when_restart_file_was_removed(tmp_path):
     restart_path = tmp_path / "restart.bin"
     restart_path.write_bytes(b"abc")
-    session_state = SessionState(processing_outcome="stopped", restart_source={"filename": "report.docx", "storage_path": str(restart_path)})
+    session_state = SessionState(processing_outcome="stopped", restart_source=_valid_restart_record(restart_path))
     restart_path.unlink()
 
     assert application_flow.has_restartable_source(session_state=session_state) is False  # type: ignore[arg-type]
+
+
+def _valid_restart_record(restart_path, source_bytes: bytes = b"abc") -> dict[str, object]:
+    return {
+        "filename": "report.docx",
+        "token": "report.docx:3:abc",
+        "storage_path": str(restart_path),
+        "size": len(source_bytes),
+        "payload_sha256": hashlib.sha256(source_bytes).hexdigest(),
+        "source_format": "docx",
+        "conversion_backend": None,
+        "storage_kind": "restart",
+    }
+
+
+def test_blocked_result_falls_back_to_restart_source_for_reprocess(tmp_path):
+    # Round-11 Fix A: a BLOCKED run is terminal-failed, so completed-source caching
+    # (SUCCEEDED-only) never ran, yet it DOES produce a current_result bundle. Before
+    # the fix the restart branch was skipped and the blocked view offered only Reset.
+    restart_path = tmp_path / "restart.bin"
+    restart_path.write_bytes(b"abc")
+    session_state = SessionState(
+        processing_outcome="failed",
+        restart_source=_valid_restart_record(restart_path),
+    )
+
+    restored = application_flow.resolve_effective_uploaded_file(
+        uploaded_file=None,
+        current_result={"docx_bytes": None, "delivery_disposition": {"status": "blocked", "explanation": "gate"}},
+        session_state=session_state,
+        load_restart_source_bytes_fn=lambda source: b"abc",
+    )
+
+    assert restored is not None
+    assert restored.filename == "report.docx"
+    assert restored.file_token == "report.docx:3:abc"
+    assert restored.content_bytes == b"abc"
+
+
+def test_accepted_succeeded_result_never_falls_back_to_restart_source(tmp_path):
+    # Anti-regression for Fix A: the fall-through is keyed on restart ELIGIBILITY
+    # (a stopped/failed outcome that kept its record), never on byte presence. A
+    # SUCCEEDED run — the only outcome that pairs with an accepted delivery in
+    # practice — must behave exactly as before and yield no restart file, even if a
+    # stale record is still lying around.
+    restart_path = tmp_path / "restart.bin"
+    restart_path.write_bytes(b"abc")
+    session_state = SessionState(
+        processing_outcome="succeeded",
+        restart_source=_valid_restart_record(restart_path),
+    )
+
+    assert application_flow.resolve_effective_uploaded_file(
+        uploaded_file=None,
+        current_result={"docx_bytes": b"done", "delivery_disposition": {"status": "accepted"}},
+        session_state=session_state,
+        load_restart_source_bytes_fn=lambda source: b"abc",
+    ) is None
+
+
+def test_stopped_after_publication_still_offers_restart_source(tmp_path):
+    # Round-11 R1: a stop observed AFTER the result was published leaves an accepted
+    # bundle plus a retained restart record (completed-source caching is SUCCEEDED-only).
+    # Keying the fall-through on the blocked disposition alone missed this class, so the
+    # run rendered as COMPLETED with no reprocess control while valid bytes sat on disk.
+    restart_path = tmp_path / "restart.bin"
+    restart_path.write_bytes(b"abc")
+    session_state = SessionState(
+        processing_outcome="stopped",
+        restart_source=_valid_restart_record(restart_path),
+    )
+
+    restored = application_flow.resolve_effective_uploaded_file(
+        uploaded_file=None,
+        current_result={"docx_bytes": b"done", "delivery_disposition": {"status": "accepted"}},
+        session_state=session_state,
+        load_restart_source_bytes_fn=lambda source: b"abc",
+    )
+
+    assert restored is not None
+    assert restored.file_token == "report.docx:3:abc"
+
+
+def test_missing_result_bundle_still_uses_restart_source(tmp_path):
+    # Anti-regression for Fix A: the no-bundle path is untouched.
+    restart_path = tmp_path / "restart.bin"
+    restart_path.write_bytes(b"abc")
+    session_state = SessionState(
+        processing_outcome="failed",
+        restart_source=_valid_restart_record(restart_path),
+    )
+
+    restored = application_flow.resolve_effective_uploaded_file(
+        uploaded_file=None,
+        current_result=None,
+        session_state=session_state,
+        load_restart_source_bytes_fn=lambda source: b"abc",
+    )
+
+    assert restored is not None
+    assert restored.file_token == "report.docx:3:abc"
+
+
+def test_has_restartable_source_rejects_record_without_spec045_metadata(tmp_path):
+    # Round-11 Fix B: a record missing payload_sha256/source_format is rejected by
+    # load_restart_source_bytes as invalid_metadata on EVERY rerun, so the RESTARTABLE
+    # offer could never work. It must not reach the view at all.
+    restart_path = tmp_path / "restart.bin"
+    restart_path.write_bytes(b"abc")
+    legacy_record = {"filename": "report.docx", "storage_path": str(restart_path)}
+    session_state = SessionState(processing_outcome="stopped", restart_source=legacy_record)
+
+    assert application_flow.has_restartable_source(session_state=session_state) is False  # type: ignore[arg-type]
+    assert application_flow.derive_app_idle_view_state(
+        current_result=None, uploaded_file=None, session_state=session_state
+    ) == "empty"
+
+
+def test_has_restartable_source_rejects_record_with_malformed_payload_digest(tmp_path):
+    restart_path = tmp_path / "restart.bin"
+    restart_path.write_bytes(b"abc")
+    record = _valid_restart_record(restart_path)
+    record["payload_sha256"] = "not-a-digest"
+    session_state = SessionState(processing_outcome="stopped", restart_source=record)
+
+    assert application_flow.has_restartable_source(session_state=session_state) is False  # type: ignore[arg-type]
+
+
+def test_has_restartable_source_still_offers_and_restores_a_valid_record(tmp_path):
+    # ANTI-VACUUM for Fix B: the added structural gate must not swallow good records.
+    restart_path = tmp_path / "restart.bin"
+    restart_path.write_bytes(b"abc")
+    record = _valid_restart_record(restart_path)
+    session_state = SessionState(processing_outcome="stopped", restart_source=record)
+
+    assert application_flow.has_restartable_source(session_state=session_state) is True  # type: ignore[arg-type]
+    assert application_flow.derive_app_idle_view_state(
+        current_result=None, uploaded_file=None, session_state=session_state
+    ) == "restartable"
+
+    restored = application_flow.get_cached_restart_file(
+        session_state=cast(application_flow.SessionStateLike, session_state),
+        load_restart_source_bytes_fn=lambda source: b"abc",
+    )
+
+    assert restored is not None
+    assert restored.content_bytes == b"abc"
+
+
+def test_transient_unreadable_payload_keeps_restart_record_and_file(tmp_path):
+    # Fix B must stay non-destructive: a momentarily unreadable payload (e.g. a locked
+    # file) is NOT a permanently bad record, so neither the session record nor the file
+    # may be dropped.
+    restart_path = tmp_path / "restart.bin"
+    restart_path.write_bytes(b"abc")
+    record = _valid_restart_record(restart_path)
+    session_state = SessionState(processing_outcome="stopped", restart_source=record)
+
+    assert application_flow.get_cached_restart_file(
+        session_state=cast(application_flow.SessionStateLike, session_state),
+        load_restart_source_bytes_fn=lambda source: None,
+    ) is None
+    assert session_state.restart_source == record
+    assert restart_path.is_file()
+    assert application_flow.has_restartable_source(session_state=session_state) is True  # type: ignore[arg-type]
+
+
+def _confined_restart_record(run_dir: Path, source_bytes: bytes = b"abc") -> dict[str, object]:
+    """A record whose file satisfies restart_store's confined-path rule (inside RUN_DIR,
+    ``restart_`` prefix), so the real loader and the real clear helper both engage."""
+    restart_path = run_dir / "restart_session_token.docx"
+    restart_path.write_bytes(source_bytes)
+    return {
+        "filename": "report.docx",
+        "token": "report.docx:3:abc",
+        "storage_path": str(restart_path),
+        "size": len(source_bytes),
+        "payload_sha256": hashlib.sha256(source_bytes).hexdigest(),
+        "source_format": "docx",
+        "conversion_backend": None,
+        "storage_kind": "restart",
+    }
+
+
+def test_restart_record_with_permanently_bad_metadata_self_heals(tmp_path, monkeypatch):
+    # Round-11 Fix 2: invalid_metadata is a DETERMINISTIC verdict — every rerun re-reads
+    # and re-rejects the same record. The offer must heal itself: session record cleared
+    # and the file removed through the confined helper.
+    monkeypatch.setattr(restart_store, "RUN_DIR", tmp_path)
+    record = _confined_restart_record(tmp_path)
+    record.pop("token")
+    restart_path = Path(str(record["storage_path"]))
+    session_state = SessionState(processing_outcome="stopped", restart_source=record)
+
+    assert application_flow.get_cached_restart_file(
+        session_state=cast(application_flow.SessionStateLike, session_state)
+    ) is None
+    assert session_state.restart_source is None
+    assert not restart_path.exists()
+    assert application_flow.has_restartable_source(session_state=session_state) is False  # type: ignore[arg-type]
+
+
+def test_restart_record_with_integrity_mismatch_self_heals(tmp_path, monkeypatch):
+    # Same for integrity_mismatch: the stored digest can never match the bytes on disk.
+    monkeypatch.setattr(restart_store, "RUN_DIR", tmp_path)
+    record = _confined_restart_record(tmp_path)
+    restart_path = Path(str(record["storage_path"]))
+    restart_path.write_bytes(b"tampered")
+    session_state = SessionState(processing_outcome="stopped", restart_source=record)
+
+    assert application_flow.get_cached_restart_file(
+        session_state=cast(application_flow.SessionStateLike, session_state)
+    ) is None
+    assert session_state.restart_source is None
+    assert not restart_path.exists()
+    assert application_flow.has_restartable_source(session_state=session_state) is False  # type: ignore[arg-type]
+
+
+def test_unconfined_restart_record_is_dropped_without_deleting_the_outside_file(tmp_path, monkeypatch):
+    # unconfined_path is deterministic too, so the session record goes; but deletion stays
+    # inside the confined helper, which refuses a path outside RUN_DIR. Self-healing must
+    # never widen the deletion scope.
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    monkeypatch.setattr(restart_store, "RUN_DIR", run_dir)
+    outside_path = tmp_path / "restart_outside.docx"
+    outside_path.write_bytes(b"abc")
+    record = _confined_restart_record(run_dir)
+    record["storage_path"] = str(outside_path)
+    session_state = SessionState(processing_outcome="stopped", restart_source=record)
+
+    assert application_flow.get_cached_restart_file(
+        session_state=cast(application_flow.SessionStateLike, session_state)
+    ) is None
+    assert session_state.restart_source is None
+    assert outside_path.is_file()
+
+
+def test_unreadable_restart_payload_preserves_record_and_file(tmp_path, monkeypatch):
+    # COUNTER-PROOF that the self-heal is scoped, not indiscriminate: unreadable_payload
+    # can be transient (a momentarily locked file), so both the session record and the
+    # stored file survive and the record stays on offer.
+    monkeypatch.setattr(restart_store, "RUN_DIR", tmp_path)
+    record = _confined_restart_record(tmp_path)
+    restart_path = Path(str(record["storage_path"]))
+    restart_path.unlink()
+    restart_path.mkdir()  # a path that exists but raises OSError on read_bytes
+    session_state = SessionState(processing_outcome="stopped", restart_source=record)
+
+    assert application_flow.get_cached_restart_file(
+        session_state=cast(application_flow.SessionStateLike, session_state)
+    ) is None
+    assert session_state.restart_source == record
+    assert restart_path.exists()
+
+
+def test_valid_restart_record_is_restored_and_left_untouched(tmp_path, monkeypatch):
+    # ANTI-VACUUM for Fix 2: self-healing must not touch a record that loads fine.
+    monkeypatch.setattr(restart_store, "RUN_DIR", tmp_path)
+    record = _confined_restart_record(tmp_path)
+    restart_path = Path(str(record["storage_path"]))
+    session_state = SessionState(processing_outcome="stopped", restart_source=record)
+
+    restored = application_flow.get_cached_restart_file(
+        session_state=cast(application_flow.SessionStateLike, session_state)
+    )
+
+    assert restored is not None
+    assert restored.content_bytes == b"abc"
+    assert session_state.restart_source == record
+    assert restart_path.is_file()
+
+
+def test_completed_record_with_permanently_bad_metadata_self_heals(tmp_path, monkeypatch):
+    # The completed-source cache heals through its own existing confined helper.
+    monkeypatch.setattr(restart_store, "RUN_DIR", tmp_path)
+    record = _confined_restart_record(tmp_path)
+    record["payload_sha256"] = "not-a-digest"
+    completed_path = Path(str(record["storage_path"]))
+    session_state = SessionState(completed_source=record)
+
+    assert application_flow.get_cached_completed_file(
+        session_state=cast(application_flow.SessionStateLike, session_state)
+    ) is None
+    assert session_state.completed_source is None
+    assert not completed_path.exists()
+
+
+def test_has_restartable_source_rejects_pdf_record_without_conversion_backend(tmp_path):
+    # Round-11 Fix 1 (the DRIFT case): the gate re-implemented only a subset of the
+    # loader's rule and omitted conversion_backend, so this record was offered in the
+    # RESTARTABLE view and then always failed to restore.
+    restart_path = tmp_path / "restart.bin"
+    restart_path.write_bytes(b"abc")
+    record = _valid_restart_record(restart_path)
+    record["source_format"] = "pdf"
+    record["conversion_backend"] = None
+    session_state = SessionState(processing_outcome="stopped", restart_source=record)
+
+    assert application_flow.has_restartable_source(session_state=session_state) is False  # type: ignore[arg-type]
+
+    record["conversion_backend"] = "   "
+
+    assert application_flow.has_restartable_source(session_state=session_state) is False  # type: ignore[arg-type]
+
+
+def test_has_restartable_source_still_offers_pdf_record_with_conversion_backend(tmp_path):
+    # ANTI-VACUUM for Fix 1: the shared helper must not start rejecting good records.
+    restart_path = tmp_path / "restart.bin"
+    restart_path.write_bytes(b"abc")
+    record = _valid_restart_record(restart_path)
+    record["source_format"] = "pdf"
+    record["conversion_backend"] = "libreoffice-writer-pdf-import"
+    session_state = SessionState(processing_outcome="stopped", restart_source=record)
+
+    assert application_flow.has_restartable_source(session_state=session_state) is True  # type: ignore[arg-type]
 
 
 def test_prepare_run_context_for_background_uses_frozen_upload_payload(monkeypatch):
@@ -1342,3 +1734,95 @@ def test_prepare_run_context_sync_and_background_share_same_upload_contract(monk
     assert sync_result.uploaded_filename == background_result.uploaded_filename
     assert sync_result.uploaded_file_bytes == background_result.uploaded_file_bytes
     assert sync_result.uploaded_file_token == background_result.uploaded_file_token
+
+
+@pytest.mark.parametrize(
+    ("restore_kind", "source_format", "conversion_backend"),
+    [
+        ("completed", "pdf", "pdf-text-layer"),
+        ("restart", "doc", "libreoffice"),
+        ("completed", "docx", None),
+    ],
+)
+def test_restored_frozen_payload_enters_sync_preparation_without_refreeze_or_reconversion(
+    restore_kind,
+    source_format,
+    conversion_backend,
+    monkeypatch,
+):
+    normalized_bytes = f"normalized-{source_format}".encode()
+    source_token = f"report.{source_format}:{len(normalized_bytes)}:original"
+    source_record = {
+        "filename": "report.docx",
+        "token": source_token,
+        "storage_path": f"{restore_kind}.bin",
+        "size": len(normalized_bytes),
+        "payload_sha256": hashlib.sha256(normalized_bytes).hexdigest(),
+        "source_format": source_format,
+        "conversion_backend": conversion_backend,
+    }
+    session_state = SessionState(
+        selected_source_token="",
+        prepared_source_key="",
+        **{f"{restore_kind}_source": source_record},
+    )
+    load_calls = []
+    restore_fn = (
+        application_flow.get_cached_completed_file
+        if restore_kind == "completed"
+        else application_flow.get_cached_restart_file
+    )
+    load_kwarg = (
+        {"load_completed_source_bytes_fn": lambda record: load_calls.append(record) or normalized_bytes}
+        if restore_kind == "completed"
+        else {"load_restart_source_bytes_fn": lambda record: load_calls.append(record) or normalized_bytes}
+    )
+    restored_payload = restore_fn(
+        session_state=cast(application_flow.SessionStateLike, session_state),
+        **load_kwarg,
+    )
+    assert isinstance(restored_payload, processing_runtime.FrozenUploadPayload)
+
+    freeze_calls = []
+    conversion_calls = []
+    monkeypatch.setattr(flow_core, "validate_docx_source_bytes", lambda source_bytes: None)
+    monkeypatch.setattr(
+        flow_core,
+        "freeze_uploaded_file",
+        lambda uploaded_file: freeze_calls.append(uploaded_file),
+    )
+    monkeypatch.setattr(
+        processing_runtime,
+        "normalize_uploaded_document",
+        lambda **kwargs: conversion_calls.append(kwargs),
+    )
+    prepared_document = SimpleNamespace(
+        source_text="text",
+        paragraphs=["p1"],
+        image_assets=[],
+        jobs=[{"target_text": "block", "target_chars": 5, "context_chars": 0}],
+        prepared_source_key="prepared-key",
+        cached=False,
+    )
+    prepare_calls = []
+
+    result = application_flow.prepare_run_context(
+        uploaded_file=restored_payload,
+        chunk_size=6000,
+        image_mode="safe",
+        keep_all_image_variants=True,
+        session_state=session_state,
+        reset_run_state_fn=lambda **kwargs: None,
+        fail_critical_fn=lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("unexpected critical error")),
+        log_event_fn=lambda *args, **kwargs: None,
+        prepare_document_for_processing_fn=lambda **kwargs: prepare_calls.append(kwargs) or prepared_document,
+    )
+
+    assert load_calls == [source_record]
+    assert freeze_calls == []
+    assert conversion_calls == []
+    assert prepare_calls[0]["uploaded_payload"] is restored_payload
+    assert prepare_calls[0]["uploaded_payload"].source_format == source_format
+    assert prepare_calls[0]["uploaded_payload"].conversion_backend == conversion_backend
+    assert result.uploaded_file_bytes == normalized_bytes
+    assert result.uploaded_file_token == source_token

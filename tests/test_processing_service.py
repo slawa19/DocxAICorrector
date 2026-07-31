@@ -945,6 +945,96 @@ def test_run_prepared_background_document_emits_controlled_failure_when_preparat
     assert any(isinstance(event, AppendLogEvent) and event.payload["status"] == "ERROR" for event in emitted_events)
 
 
+def test_run_prepared_background_document_mints_non_empty_run_id_for_processing(monkeypatch):
+    """Round-11 F1: without a minted run identity ``context.run_id`` normalizes to "" and
+    every live diagnostics artifact loses its ownership."""
+
+    captured = {}
+    service = _build_service(
+        run_document_processing_impl_fn=lambda **kwargs: (captured.setdefault("run", kwargs), "succeeded")[1],
+    )
+    prepared = type(
+        "PreparedRunContextStub",
+        (),
+        {
+            "uploaded_filename": "prepared-report.docx",
+            "jobs": [{"target_text": "one"}],
+            "paragraphs": ["p1"],
+            "image_assets": [],
+            "translation_domain": "general",
+            "translation_domain_instructions": "",
+        },
+    )()
+
+    monkeypatch.setattr(processing_service, "freeze_uploaded_file", lambda uploaded_file: uploaded_file)
+    monkeypatch.setattr(processing_service, "prepare_run_context_for_background", lambda **kwargs: prepared)
+
+    service.run_prepared_background_document(
+        uploaded_file="report.docx",
+        chunk_size=123,
+        image_mode="safe",
+        keep_all_image_variants=True,
+        app_config={},
+        model="gpt-5.4",
+        max_retries=2,
+        runtime={"state": {}},
+    )
+
+    assert str(captured["run"]["run_id"] or "").strip() != ""
+
+
+def test_run_processing_worker_crash_clears_mid_run_delivery_state(monkeypatch):
+    """Round-11 F3: a crash after a mid-run ``latest_docx_bytes`` emit must not leave a
+    renderable, implicitly accepted result bundle behind the error."""
+
+    import docxaicorrector.processing.processing_runtime as processing_runtime
+
+    class SessionStateStub(dict):
+        def __getattr__(self, name):
+            try:
+                return self[name]
+            except KeyError as exc:
+                raise AttributeError(name) from exc
+
+        def __setattr__(self, name, value):
+            self[name] = value
+
+    session_state = SessionStateStub(
+        latest_markdown="text",
+        latest_source_name="report.docx",
+        latest_source_token="token",
+        latest_processing_operation="edit",
+    )
+
+    class RuntimeStub:
+        def emit(self, event):
+            if isinstance(event, SetStateEvent):
+                session_state.update(event.values)
+
+    runtime = RuntimeStub()
+
+    def _crash_after_bytes_emit(**kwargs):
+        runtime.emit(SetStateEvent(values={"latest_docx_bytes": b"mid-run-docx"}))
+        raise RuntimeError("finalize exploded")
+
+    service = _build_service(run_document_processing_impl_fn=_crash_after_bytes_emit)
+    service.run_processing_worker(
+        runtime=runtime,
+        uploaded_filename="report.docx",
+        jobs=[{"target_text": "x", "context_before": "", "context_after": "", "target_chars": 1, "context_chars": 0}],
+        image_assets=[],
+        image_mode="safe",
+        app_config={},
+        model="gpt-5.4",
+        max_retries=1,
+    )
+
+    assert session_state["latest_docx_bytes"] is None
+    assert session_state["latest_delivery_disposition"] is None
+    monkeypatch.setattr(processing_runtime.st, "session_state", session_state)
+    assert processing_runtime.get_current_result_bundle() is None
+
+
 def test_clone_processing_service_returns_overridden_copy_without_mutating_singleton(monkeypatch):
     processing_service.reset_processing_service()
     default_service = _build_service()
@@ -1128,3 +1218,157 @@ def test_run_prepared_background_document_bypasses_shared_cache_when_identity_no
     assert len(preparation._shared_preparation_cache) == 0
 
     preparation.clear_preparation_cache(clear_shared=True)
+
+
+# --- Round-12 F1: the worker crash-handler's delivery-state hygiene (Round-11 F3) must
+# distinguish a crash BEFORE the run reached a delivery decision from a crash AFTER the
+# result was already delivered. Clearing the delivery state in the second case hides a
+# finished document: the .result.docx sits on disk while the UI drops the result block and
+# the download buttons and offers a full paid LLM re-run instead.
+
+
+class _CrashHandlerSessionStateStub(dict):
+    def __getattr__(self, name):
+        try:
+            return self[name]
+        except KeyError as exc:
+            raise AttributeError(name) from exc
+
+    def __setattr__(self, name, value):
+        self[name] = value
+
+
+class _CrashHandlerRuntimeStub:
+    def __init__(self, session_state):
+        self._session_state = session_state
+        self.activity_messages: list[str] = []
+
+    def emit(self, event):
+        if isinstance(event, SetStateEvent):
+            self._session_state.update(event.values)
+        elif isinstance(event, processing_service.PushActivityEvent):
+            self.activity_messages.append(event.message)
+
+    def should_stop(self):
+        return False
+
+
+def _run_crashing_worker(*, session_state, emit_before_crash):
+    runtime = _CrashHandlerRuntimeStub(session_state)
+
+    def _crash(**kwargs):
+        # Emit through the runtime the pipeline actually receives, exactly as the real
+        # late-phase emitters do.
+        emit_before_crash(kwargs["runtime"])
+        raise RuntimeError("finalize exploded after the result was delivered")
+
+    service = _build_service(run_document_processing_impl_fn=_crash)
+    service.run_processing_worker(
+        runtime=runtime,
+        uploaded_filename="report.docx",
+        jobs=[{"target_text": "x", "context_before": "", "context_after": "", "target_chars": 1, "context_chars": 0}],
+        image_assets=[],
+        image_mode="safe",
+        app_config={},
+        model="gpt-5.4",
+        max_retries=1,
+    )
+    return runtime
+
+
+def test_run_processing_worker_crash_after_delivery_keeps_delivered_result(monkeypatch):
+    import docxaicorrector.processing.processing_runtime as processing_runtime
+
+    session_state = _CrashHandlerSessionStateStub(
+        latest_markdown="итоговый текст",
+        latest_source_name="report.docx",
+        latest_source_token="token",
+        latest_processing_operation="translate",
+    )
+
+    def _deliver(runtime):
+        runtime.emit(
+            SetStateEvent(
+                values={
+                    "latest_docx_bytes": b"delivered-docx",
+                    "latest_delivery_disposition": {"status": "accepted"},
+                }
+            )
+        )
+
+    runtime = _run_crashing_worker(session_state=session_state, emit_before_crash=_deliver)
+
+    # The error is still surfaced...
+    assert session_state["last_error"]
+    assert session_state["last_background_error"]["stage"] == "processing"
+    # ...but the DELIVERED result survives and stays downloadable.
+    assert session_state["latest_docx_bytes"] == b"delivered-docx"
+    assert session_state["latest_delivery_disposition"] == {"status": "accepted"}
+    monkeypatch.setattr(processing_runtime.st, "session_state", session_state)
+    bundle = processing_runtime.get_current_result_bundle()
+    assert bundle is not None
+    assert bundle["docx_bytes"] == b"delivered-docx"
+    assert bundle["delivery_disposition"] == {"status": "accepted"}
+    assert any("после доставки результата" in message for message in runtime.activity_messages)
+
+
+def test_run_processing_worker_crash_before_delivery_still_clears_state(monkeypatch):
+    """Round-11 F3 stays alive through the narrowed handler: bytes emitted mid-run WITHOUT
+    a delivery disposition are exactly the shape ``build_result_bundle`` would default to
+    "accepted", so they must still be wiped."""
+
+    import docxaicorrector.processing.processing_runtime as processing_runtime
+
+    session_state = _CrashHandlerSessionStateStub(
+        latest_markdown="text",
+        latest_source_name="report.docx",
+        latest_source_token="token",
+        latest_processing_operation="edit",
+    )
+
+    def _emit_mid_run_bytes(runtime):
+        runtime.emit(SetStateEvent(values={"latest_docx_bytes": b"mid-run-docx"}))
+
+    runtime = _run_crashing_worker(session_state=session_state, emit_before_crash=_emit_mid_run_bytes)
+
+    assert session_state["latest_docx_bytes"] is None
+    assert session_state["latest_delivery_disposition"] is None
+    monkeypatch.setattr(processing_runtime.st, "session_state", session_state)
+    assert processing_runtime.get_current_result_bundle() is None
+    assert any("принудительно очищается" in message for message in runtime.activity_messages)
+
+
+def test_run_processing_worker_crash_after_blocked_disposition_keeps_blocked_result(monkeypatch):
+    """A ``blocked`` disposition is also a reached delivery decision: the bundle renders the
+    honest block notice, so clearing it would replace a truthful verdict with nothing."""
+
+    import docxaicorrector.processing.processing_runtime as processing_runtime
+
+    session_state = _CrashHandlerSessionStateStub(
+        latest_markdown="итоговый текст",
+        latest_source_name="report.docx",
+        latest_source_token="token",
+        latest_processing_operation="translate",
+    )
+    blocked_disposition = {
+        "status": "blocked",
+        "explanation": "Результат заблокирован document-level quality gate.",
+    }
+
+    def _block(runtime):
+        runtime.emit(
+            SetStateEvent(
+                values={
+                    "latest_docx_bytes": b"blocked-docx",
+                    "latest_delivery_disposition": dict(blocked_disposition),
+                }
+            )
+        )
+
+    _run_crashing_worker(session_state=session_state, emit_before_crash=_block)
+
+    assert session_state["latest_delivery_disposition"] == blocked_disposition
+    monkeypatch.setattr(processing_runtime.st, "session_state", session_state)
+    bundle = processing_runtime.get_current_result_bundle()
+    assert bundle is not None
+    assert bundle["delivery_disposition"] == blocked_disposition

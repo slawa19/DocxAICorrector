@@ -18,6 +18,7 @@ from docx.text.paragraph import Paragraph
 from docxaicorrector.document.extraction import IMAGE_PLACEHOLDER_PATTERN
 from docxaicorrector.generation.formatting_diagnostics_retention import (
     get_formatting_diagnostics_dir,
+    resolve_owned_diagnostics_scope,
     write_formatting_diagnostics_artifact,
 )
 # The mapper cluster lives in formatting_mapping (spec 033, Step 1). These names are
@@ -150,11 +151,33 @@ def _collect_target_paragraphs(document) -> list[Paragraph]:
     ]
 
 
-def _write_formatting_diagnostics_artifact(stage: str, diagnostics: dict[str, object]) -> str | None:
+def _write_formatting_diagnostics_artifact(
+    stage: str,
+    diagnostics: dict[str, object],
+    *,
+    run_id: str | None = None,
+    source_token: str | None = None,
+) -> str | None:
+    # Round-11 F1: live ownership needs BOTH identities present and non-blank. A blank
+    # identity ("" is not None) used to select "live", which then raised inside the
+    # writer and fail-opened WITHOUT writing any artifact at all. Fall back to "offline"
+    # so the diagnostic is still retained for explicit replay instead of destroyed —
+    # but the downgrade is announced (round-12): a silently-offline artifact is
+    # invisible to the owning run and the canonical gate reads the missing evidence as
+    # a perfect score.
+    scope = resolve_owned_diagnostics_scope(
+        stage=stage,
+        run_id=run_id,
+        source_token=source_token,
+        artifact_kind="formatting_diagnostics",
+    )
     return write_formatting_diagnostics_artifact(
         stage=stage,
         diagnostics=diagnostics,
         diagnostics_dir=FORMATTING_DIAGNOSTICS_DIR,
+        scope=scope,
+        run_id=run_id,
+        source_token=source_token,
     )
 
 
@@ -167,11 +190,16 @@ def restore_source_formatting(
     docx_bytes: bytes,
     paragraphs: list[ParagraphUnit],
     generated_paragraph_registry: Sequence[Mapping[str, object]] | None = None,
+    *,
+    run_id: str | None = None,
+    source_token: str | None = None,
 ) -> bytes:
     return _restore_source_formatting_impl(
         docx_bytes,
         paragraphs,
         generated_paragraph_registry=generated_paragraph_registry,
+        run_id=run_id,
+        source_token=source_token,
         mismatch_event_name="paragraph_count_mismatch_restore",
         mismatch_log_message=(
             "Число source/target абзацев не совпадает при unified formatting restore; "
@@ -184,12 +212,17 @@ def preserve_source_paragraph_properties(
     docx_bytes: bytes,
     paragraphs: list[ParagraphUnit],
     generated_paragraph_registry: Sequence[Mapping[str, object]] | None = None,
+    *,
+    run_id: str | None = None,
+    source_token: str | None = None,
 ) -> bytes:
     """Canonical public formatting entry point for the current transition wave."""
     return apply_output_formatting(
         docx_bytes,
         paragraphs,
         generated_paragraph_registry=generated_paragraph_registry,
+        run_id=run_id,
+        source_token=source_token,
         mismatch_event_name="paragraph_count_mismatch_preserve",
         mismatch_log_message=(
             "Число source/target абзацев не совпадает при переносе свойств форматирования; "
@@ -203,6 +236,8 @@ def apply_output_formatting(
     paragraphs: list[ParagraphUnit],
     *,
     generated_paragraph_registry: Sequence[Mapping[str, object]] | None = None,
+    run_id: str | None = None,
+    source_token: str | None = None,
     mismatch_event_name: str,
     mismatch_log_message: str,
 ) -> bytes:
@@ -247,7 +282,12 @@ def apply_output_formatting(
     # whenever the AI added or removed even one paragraph in its output.
     diagnostics["list_restoration_decisions"] = _restore_list_numbering_for_mapped_paragraphs(document, mapping_pairs)
 
-    artifact_path = _write_formatting_diagnostics_artifact("restore", diagnostics)
+    artifact_path = _write_formatting_diagnostics_artifact(
+        "restore",
+        diagnostics,
+        run_id=run_id,
+        source_token=source_token,
+    )
     if mismatch_detected:
         log_event(
             logging.WARNING,
@@ -275,6 +315,8 @@ def _restore_source_formatting_impl(
     paragraphs: list[ParagraphUnit],
     *,
     generated_paragraph_registry: Sequence[Mapping[str, object]] | None = None,
+    run_id: str | None = None,
+    source_token: str | None = None,
     mismatch_event_name: str,
     mismatch_log_message: str,
 ) -> bytes:
@@ -282,6 +324,8 @@ def _restore_source_formatting_impl(
         docx_bytes,
         paragraphs,
         generated_paragraph_registry=generated_paragraph_registry,
+        run_id=run_id,
+        source_token=source_token,
         mismatch_event_name=mismatch_event_name,
         mismatch_log_message=mismatch_log_message,
     )

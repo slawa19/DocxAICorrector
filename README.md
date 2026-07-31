@@ -349,10 +349,10 @@ streamlit run app.py
 
 - balanced refresh убирает `gpt-4.1-mini` из канонического sidebar shortlist; legacy compatibility может сохраняться только как временный migration input, но не как рекомендуемый новый baseline.
 - analysis, validation, reconstruction и generation-time vision теперь разведены по отдельным role keys даже если часть значений совпадает.
-- canonical baseline в `config.toml` теперь использует только `models.*`; legacy keys `default_model`, `model_options`, `validation_model`, `reconstruction_model` и `[structure_recognition].model` больше не являются допустимой формой для новых конфигов и примеров.
-- legacy source `DOCX_AI_VALIDATION_MODEL` и top-level `validation_model` во время миграции транслируются сразу в две роли: `models.image_analysis.default` и `models.image_validation.default`, потому что исторически один key обслуживал обе стадии.
-- до полного removal legacy aliases остаются только migration-compatible inputs внутри `config.py`; при их использовании loader пишет warning-события в лог, чтобы такие источники drift было легче убрать.
-- removal point для legacy aliases: после текущего migration window, когда registry-only config будет считаться стабильным контрактом, loader перестанет читать legacy model keys и env aliases. Новые конфиги и automation не должны зависеть от них уже сейчас.
+- canonical baseline в `config.toml` использует только `models.*`.
+- legacy model keys **удалены**: loader больше не читает top-level `default_model`, `model_options`, `validation_model`, `reconstruction_model` и env aliases `DOCX_AI_DEFAULT_MODEL`, `DOCX_AI_MODEL_OPTIONS`, `DOCX_AI_VALIDATION_MODEL`, `DOCX_AI_RECONSTRUCTION_MODEL`. Значения из них игнорируются; если такой key всё ещё лежит в `config.toml`, loader пишет warning-событие `legacy_model_config_key_detected`, но использует canonical registry или migration default.
+- в частности, `DOCX_AI_VALIDATION_MODEL` / `validation_model` больше не транслируются в `models.image_analysis.default` и `models.image_validation.default`; эти роли задаются только своими canonical keys.
+- единственный оставшийся legacy source — `[structure_recognition].model` и `DOCX_AI_STRUCTURE_RECOGNITION_MODEL` для роли `structure_recognition`. Он ещё читается, потому что canonical `[models.structure_recognition]` в поставляемом `config.toml` намеренно необязателен (роль по умолчанию наследует `[models.text].default`), то есть canonical key реально может отсутствовать. При его использовании loader пишет warning-событие `legacy_model_config_source_used`.
 
 Базовые значения лежат в `config.toml`:
 
@@ -405,15 +405,6 @@ enable_vision_image_validation = true
 semantic_redraw_max_attempts = 2
 semantic_redraw_max_model_calls_per_image = 9
 
-[structure_recognition]
-mode = "auto"
-max_window_paragraphs = 1800
-overlap_paragraphs = 50
-timeout_seconds = 60
-min_confidence = "medium"
-cache_enabled = true
-save_debug_artifacts = true
-
 [structure_validation]
 enabled = true
 min_paragraphs_for_auto_gate = 40
@@ -436,13 +427,6 @@ DOCX_AI_CHUNK_SIZE=6000
 DOCX_AI_MAX_RETRIES=3
 # Optional override. When omitted, structure recognition inherits DOCX_AI_MODELS_TEXT_DEFAULT.
 # DOCX_AI_MODELS_STRUCTURE_RECOGNITION_DEFAULT=openrouter:google/gemini-3.1-flash-lite-preview
-DOCX_AI_STRUCTURE_RECOGNITION_MODE=auto
-DOCX_AI_STRUCTURE_RECOGNITION_MAX_WINDOW_PARAGRAPHS=1800
-DOCX_AI_STRUCTURE_RECOGNITION_OVERLAP_PARAGRAPHS=50
-DOCX_AI_STRUCTURE_RECOGNITION_TIMEOUT_SECONDS=60
-DOCX_AI_STRUCTURE_RECOGNITION_MIN_CONFIDENCE=medium
-DOCX_AI_STRUCTURE_RECOGNITION_CACHE_ENABLED=true
-DOCX_AI_STRUCTURE_RECOGNITION_SAVE_DEBUG_ARTIFACTS=true
 DOCX_AI_STRUCTURE_VALIDATION_ENABLED=true
 DOCX_AI_STRUCTURE_VALIDATION_MIN_PARAGRAPHS_FOR_AUTO_GATE=40
 DOCX_AI_STRUCTURE_VALIDATION_MIN_EXPLICIT_HEADING_DENSITY=0.003
@@ -467,7 +451,7 @@ DOCX_AI_SEMANTIC_REDRAW_MAX_ATTEMPTS=2
 DOCX_AI_SEMANTIC_REDRAW_MAX_MODEL_CALLS_PER_IMAGE=9
 ```
 
-`DOCX_AI_STRUCTURE_RECOGNITION_ENABLED` остаётся только как deprecated compatibility override. Для новых конфигов и automation канонический контракт: `structure_recognition.mode` и `DOCX_AI_STRUCTURE_RECOGNITION_MODE`.
+Секция `[structure_recognition]` (`mode`, `max_window_paragraphs`, `overlap_paragraphs`, `timeout_seconds`, `min_confidence`, `cache_enabled`, `save_debug_artifacts`) и env-семейство `DOCX_AI_STRUCTURE_RECOGNITION_*` (включая `DOCX_AI_STRUCTURE_RECOGNITION_MODE` и `DOCX_AI_STRUCTURE_RECOGNITION_ENABLED`) **больше не читаются кодом**: отдельная AI-стадия structure recognition удалена 2026-06-22. Единственное исключение — deprecated `DOCX_AI_STRUCTURE_RECOGNITION_MODEL` / `[structure_recognition].model`, которые всё ещё участвуют в разрешении model role `structure_recognition` (см. раздел про legacy model keys выше). Роль `structure_recognition` сохранена в registry как selector для `paragraph_boundary_ai_review`.
 
 Системный промпт хранится в `src/docxaicorrector/resources/prompts/system_prompt.txt`.
 Prompt registry для изображений хранится в `src/docxaicorrector/resources/prompts/image_prompt_registry.toml`, а profile-файлы — в `src/docxaicorrector/resources/prompts/image_profiles/`.

@@ -6,7 +6,7 @@ diagnostics payload into a WARN/INFO user message. ``late_phases`` re-exports th
 names so ``late_phases.<name>`` keeps resolving for the test namespace and the harness
 importer.
 
-``collect_recent_formatting_diagnostics_artifacts`` is monkeypatched by tests as a
+``collect_owned_formatting_diagnostics_artifacts`` is monkeypatched by tests as a
 ``late_phases`` global and its in-module caller (``run_docx_build_phase``) stays in
 ``late_phases``; the re-export therefore keeps the patch landing (spec 031 situation 1 —
 no test migration required). There is no module-level mutable state.
@@ -16,14 +16,20 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 from docxaicorrector.generation.formatting_diagnostics_retention import (
-    collect_recent_formatting_diagnostics,
+    collect_owned_formatting_diagnostics,
     load_formatting_diagnostics_payloads,
 )
 
 
-def collect_recent_formatting_diagnostics_artifacts(*, since_epoch_seconds: float, diagnostics_dir: Path) -> list[str]:
-    return collect_recent_formatting_diagnostics(
-        since_epoch_seconds=since_epoch_seconds,
+def collect_owned_formatting_diagnostics_artifacts(
+    *,
+    run_id: str,
+    source_token: str,
+    diagnostics_dir: Path,
+) -> list[str]:
+    return collect_owned_formatting_diagnostics(
+        run_id=run_id,
+        source_token=source_token,
         diagnostics_dir=diagnostics_dir,
     )
 
