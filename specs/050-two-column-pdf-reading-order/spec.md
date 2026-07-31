@@ -4,9 +4,17 @@
 
 **Created**: 2026-07-21
 
-**Status**: **CONCEPT — NOT A SOLUTION SPEC.** This document records what is verified, what is
-merely traced from code, and what contradicts it. It exists to be argued with and then settled by
-measurement. Do NOT implement anything from it until the experiment in `## Decision plan` has run.
+**Status**: **DEFERRED — parked by owner decision on 2026-07-31, with no date.** The blocker is
+material, not priority: the decision plan below needs a real two-column **PDF**, and the owner does
+not have one. The two-column document they recalled working with is a **DOCX**, which goes through
+an entirely different import path and therefore cannot answer the question this spec asks. Nothing
+here is retracted and nothing is scheduled — the spec is kept OPEN so the question stays visible in
+`docs/WHERE_WE_ARE.md` rather than being quietly forgotten. Do not raise it again unsolicited; when
+a genuine two-column PDF turns up, start from the `## Decision plan` below.
+
+Before the deferral this was: **CONCEPT — NOT A SOLUTION SPEC.** That still holds — the document
+records what is verified, what is merely traced from code, and what contradicts it, and nothing in
+it may be implemented until the experiment in `## Decision plan` has actually run.
 
 **Date**: 2026-07-21
 
