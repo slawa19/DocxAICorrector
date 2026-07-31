@@ -19,7 +19,6 @@ from ._constants import (  # noqa: F401
     _ALLOWED_OPERATIONS,
     _ALLOWED_POLICIES,
     _ALLOWED_REANNOTATION_ROLES,
-    _ALLOWED_RECLASSIFY_TARGET_ROLES,
     _BLANK_PAGE_PATTERN,
     _BLOCK_RESPONSE_FIELDS,
     _DEFAULT_CLEANUP_CHUNK_SIZE,
@@ -40,7 +39,6 @@ from ._constants import (  # noqa: F401
     _OPERATION_RESPONSE_FIELDS,
     _ORPHAN_FOOTNOTE_PATTERN,
     _PAGE_NUMBER_PATTERN,
-    _RECLASSIFY_MARKDOWN_HEADING_PREFIX,
     _REMOVE_INLINE_NOISE_REASON_GUIDANCE,
     _RUNNING_HEADER_TRAILING_PUNCTUATION,
     _SAFE_CONFIDENCE_INFERENCE,
@@ -368,18 +366,44 @@ def run_reader_cleanup(
             accepted_delete_block_ids=(),
         )
 
-    cleaned_markdown, accepted_ids, accepted_cleanup_operations, ignored = _apply_cleanup_operations(
+    global_candidate_block_ids = {
+        str(block_id)
+        for block_id in cast(Sequence[object], global_plan.get("candidate_block_ids") or [])
+        if str(block_id).strip()
+    }
+    (
+        cleaned_markdown,
+        accepted_ids,
+        accepted_cleanup_operations,
+        ignored,
+        lost_docx_image_ids_by_operation_index,
+    ) = _apply_cleanup_operations(
         raw_markdown=raw_markdown,
         blocks=blocks,
         operations=all_operations,
         config=config,
-        global_candidate_block_ids={
-            str(block_id)
-            for block_id in cast(Sequence[object], global_plan.get("candidate_block_ids") or [])
-            if str(block_id).strip()
-        },
+        global_candidate_block_ids=global_candidate_block_ids,
+    )
+    (
+        cleaned_markdown,
+        accepted_ids,
+        accepted_cleanup_operations,
+        ignored,
+        anchor_loss_warnings,
+    ) = _reject_operations_losing_docx_image_anchors(
+        raw_markdown=raw_markdown,
+        cleaned_markdown=cleaned_markdown,
+        blocks=blocks,
+        operations=all_operations,
+        lost_docx_image_ids_by_operation_index=lost_docx_image_ids_by_operation_index,
+        accepted_ids=accepted_ids,
+        accepted_cleanup_operations=accepted_cleanup_operations,
+        ignored=ignored,
+        config=config,
+        global_candidate_block_ids=global_candidate_block_ids,
     )
     ignored_cleanup_operations.extend(ignored)
+    warnings.extend(anchor_loss_warnings)
     cleaned_markdown, image_reconciliation = _reconcile_docx_image_placeholders(
         raw_markdown=raw_markdown,
         cleaned_markdown=cleaned_markdown,
@@ -387,6 +411,31 @@ def run_reader_cleanup(
     )
     image_reconciliation_warnings = _image_reconciliation_warnings(image_reconciliation)
     warnings.extend(image_reconciliation_warnings)
+
+    # Spec 052 item 5 + round-9 P1-A. The discard above already restored the source
+    # markdown; what follows is the part that used to be missing. The report kept
+    # reporting the thrown-away operations as ACCEPTED, with stage_status="completed" and
+    # no failure — so an owner who had just spent a million tokens saw an unchanged book
+    # and could not tell "the pass found nothing" from "the pass threw everything away",
+    # and every downstream consumer of ``accepted_delete_blocks`` (the lineage-rebuild
+    # harness builds registry deletions from it) acted on operations that never shipped.
+    cleanup_discarded_for_missing_image_ids = bool(image_reconciliation.get("cleanup_discarded_for_missing_image_ids"))
+    missing_image_ids: list[str] = []
+    discarded_cleanup_operation_count = 0
+    if cleanup_discarded_for_missing_image_ids:
+        missing_image_ids = [str(item) for item in cast(Sequence[object], image_reconciliation.get("missing_image_ids") or [])]
+        discarded_cleanup_operations = [
+            {
+                **entry,
+                "ignored_reason": "cleanup_discarded_for_missing_docx_image_anchor",
+                "lost_docx_image_ids": list(missing_image_ids),
+            }
+            for entry in accepted_cleanup_operations
+        ]
+        discarded_cleanup_operation_count = len(discarded_cleanup_operations)
+        ignored_cleanup_operations.extend(discarded_cleanup_operations)
+        accepted_ids = {}
+        accepted_cleanup_operations = []
 
     accepted_delete_blocks: list[dict[str, object]] = []
     accepted_counts_by_chunk: Counter[int] = Counter()
@@ -419,6 +468,48 @@ def run_reader_cleanup(
         chunk_result["ignored_cleanup_operation_count"] = ignored_counts_by_chunk.get(chunk_index, 0)
 
     deleted_char_count = sum(_block_by_id(blocks, block_id).non_whitespace_char_count for block_id in accepted_ids)
+    if cleanup_discarded_for_missing_image_ids:
+        # No ``rejected_cleanup_operation_count`` here, deliberately. It used to be reported
+        # and was provably always 0: ``docx_image_anchor_lost_by_operation`` entries are only
+        # produced on the branch where the rejection SUCCEEDED, and a successful rejection
+        # leaves no anchor missing, so this discard branch cannot see one. Reporting a
+        # hardcoded zero as a measurement told the owner "no operation was identified" even
+        # in the cases where that was the whole story anyway.
+        report_payload = _build_reader_cleanup_report_payload(
+            raw_markdown=raw_markdown,
+            config=config,
+            blocks=blocks,
+            global_plan=global_plan,
+            warnings=warnings,
+            accepted_delete_blocks=accepted_delete_blocks,
+            accepted_cleanup_operations=accepted_cleanup_operations,
+            ignored_cleanup_operations=ignored_cleanup_operations,
+            chunk_results=chunk_results,
+            deleted_char_count=deleted_char_count,
+            changed=False,
+            model_resolution=model_resolution,
+            image_reconciliation=image_reconciliation,
+            failure={
+                "kind": "docx_image_anchor_lost_cleanup_discarded",
+                "missing_docx_image_id_count": len(missing_image_ids),
+                "missing_docx_image_ids": list(missing_image_ids),
+                "lost_image_source_block_ids": [
+                    str(item)
+                    for item in cast(Sequence[object], image_reconciliation.get("lost_image_source_block_ids") or [])
+                ],
+                "discarded_cleanup_operation_count": discarded_cleanup_operation_count,
+            },
+        )
+        # No anchor-repair pass on a discarded cleanup: it exists to place caption anchors
+        # in a cleaned document, and there is no cleaned document to place them in.
+        return ReaderCleanupResult(
+            changed=False,
+            raw_markdown=raw_markdown,
+            cleaned_markdown=raw_markdown,
+            report_payload=report_payload,
+            accepted_delete_block_ids=(),
+        )
+
     report_payload = _build_reader_cleanup_report_payload(
         raw_markdown=raw_markdown,
         config=config,
@@ -436,6 +527,15 @@ def run_reader_cleanup(
     )
 
     if anchor_operation_provider is not None and anchor_targets:
+        # The anchor-repair pass starts from the cleanup the main pass already reconciled,
+        # so its OWN reconciliation baseline is that markdown — not ``raw_markdown``.
+        # Reconciling against the raw source made a repair-pass anchor loss roll the
+        # delivered document all the way back to uncleaned, throwing away a main pass that
+        # had lost nothing, and it did so silently: ``missing_after_repair`` was hardcoded
+        # to ``[]`` in ``_reconcile_docx_image_placeholders``, so the warning branch below
+        # was unreachable. Rolling back only the repair increment restores exactly the same
+        # anchors and keeps the cleanup that earned its place.
+        pre_anchor_repair_markdown = cleaned_markdown
         anchor_pass_result = _run_anchor_repair_pass(
             markdown_text=cleaned_markdown,
             config=config,
@@ -451,15 +551,48 @@ def run_reader_cleanup(
             raw_blocks=blocks,
             anchor_pass_result=anchor_pass_result,
         )
-        cleaned_markdown, image_reconciliation = _reconcile_docx_image_placeholders(
-            raw_markdown=raw_markdown,
+        cleaned_markdown, anchor_repair_reconciliation = _reconcile_docx_image_placeholders(
+            raw_markdown=pre_anchor_repair_markdown,
             cleaned_markdown=cleaned_markdown,
             raw_blocks=blocks,
         )
+        image_reconciliation = {
+            **image_reconciliation,
+            "after_image_id_count": anchor_repair_reconciliation.get("after_image_id_count"),
+            "missing_after_repair": list(
+                cast(Sequence[object], anchor_repair_reconciliation.get("missing_image_ids") or [])
+            ),
+            "anchor_repair_discarded_for_missing_image_ids": bool(
+                anchor_repair_reconciliation.get("cleanup_discarded_for_missing_image_ids")
+            ),
+            "anchor_repair_lost_image_source_block_ids": list(
+                cast(Sequence[object], anchor_repair_reconciliation.get("lost_image_source_block_ids") or [])
+            ),
+        }
         if image_reconciliation.get("missing_after_repair"):
             report_payload.setdefault("warnings", [])
             if isinstance(report_payload["warnings"], list):
-                report_payload["warnings"].extend(_image_reconciliation_warnings(image_reconciliation))
+                report_payload["warnings"].extend(
+                    _image_reconciliation_warnings(
+                        {"missing_after_repair": image_reconciliation["missing_after_repair"]}
+                    )
+                )
+            report_payload, anchor_repair_discarded_operation_count = _discard_anchor_repair_pass_from_report(
+                report_payload=report_payload,
+                raw_markdown=raw_markdown,
+                blocks=blocks,
+                first_pass_deleted_char_count=deleted_char_count,
+                missing_image_ids=[str(item) for item in image_reconciliation["missing_after_repair"] or []],
+            )
+            # Round-10 P2-2. The rollback used to leave no trace an owner could see:
+            # stage_status stayed "completed" (correctly — the first pass IS delivered),
+            # there was no ``failure``, and the only record was a string in ``warnings``,
+            # which the UI does not render. The wholesale discard got its own visible notice
+            # a round ago; the partial one gets the same treatment through this counter,
+            # which is what ``pipeline.reader_cleanup_postprocess`` builds the notice from.
+            image_reconciliation["anchor_repair_discarded_cleanup_operation_count"] = (
+                anchor_repair_discarded_operation_count
+            )
         report_payload["image_reconciliation"] = image_reconciliation
 
     return ReaderCleanupResult(
@@ -468,6 +601,274 @@ def run_reader_cleanup(
         cleaned_markdown=cleaned_markdown,
         report_payload=report_payload,
         accepted_delete_block_ids=tuple(accepted_ids.keys()),
+    )
+
+
+def _discard_anchor_repair_pass_from_report(
+    *,
+    report_payload: dict[str, object],
+    raw_markdown: str,
+    blocks: Sequence[CleanupBlock],
+    first_pass_deleted_char_count: int,
+    missing_image_ids: Sequence[str],
+) -> tuple[dict[str, object], int]:
+    """Un-accept the anchor-repair pass whose output was rolled back for a lost anchor.
+
+    The delivered markdown is the first pass's, so the repair pass's operations shipped
+    nothing and must not be counted as accepted ANYWHERE — the same lie P1-A fixed for the
+    wholesale discard. They move to ``ignored_cleanup_operations`` with a reason, and the
+    stats and per-chunk counters are rebuilt from what actually survived.
+
+    "Anywhere" includes ``passes.anchor_repair_pass``, which this used to skip. The result
+    was a report that contradicted itself: the top-level stats honestly showed the pass's
+    operation as ignored while ``passes.anchor_repair_pass.stats`` still reported
+    ``accepted_cleanup_operation_count: 1, ignored: 0``. That sub-report is not decorative —
+    the real-document validation harness reads exactly that counter to decide whether the
+    anchor-repair pass ran (``run_lietaer_validation._load_reader_cleanup_evidence``), so a
+    rolled-back pass was recorded as ``anchor_repair_status="runtime_applied"`` in the
+    validation evidence for the run.
+
+    Returns the patched report and the number of operations the rollback un-accepted, which
+    the caller turns into the owner-visible notice.
+    """
+    accepted_cleanup_operations = [
+        dict(entry) for entry in cast(Sequence[Mapping[str, object]], report_payload.get("accepted_cleanup_operations") or [])
+    ]
+    accepted_delete_blocks = [
+        dict(entry) for entry in cast(Sequence[Mapping[str, object]], report_payload.get("accepted_delete_blocks") or [])
+    ]
+    ignored_cleanup_operations = [
+        dict(entry) for entry in cast(Sequence[Mapping[str, object]], report_payload.get("ignored_cleanup_operations") or [])
+    ]
+    chunk_results = [dict(entry) for entry in cast(Sequence[Mapping[str, object]], report_payload.get("chunk_results") or [])]
+
+    def _is_anchor_repair(entry: Mapping[str, object]) -> bool:
+        return str(entry.get("pass_name") or "") == "anchor_repair"
+
+    # Round-11. One rolled-back operation must produce exactly ONE discard record. An
+    # accepted ``delete_block`` is in the report TWICE by construction: ``_apply`` records it
+    # in ``accepted_cleanup_operations`` (full audit shape, ``operation`` key present) and
+    # ``_parse`` builds a second, thinner record of the same deletion in
+    # ``accepted_delete_blocks`` (no ``operation`` key at all). Concatenating the two lists
+    # counted that deletion twice: the owner-facing notice said "2 operation(s) were dropped"
+    # for one operation, the same inflation reached ``chunk_results`` and
+    # ``passes.anchor_repair_pass.stats`` (which then contradicted its own
+    # ``proposed_cleanup_operation_count``), and the duplicate was invisible to
+    # ``entry["operation"] == "delete_block"`` filters — the exact blind spot the
+    # ``global_safety_limit_exceeded`` rollback already had to close in ``_apply``.
+    # The deletion is kept in its richer cleanup-operation form; a delete record with no
+    # cleanup-operation twin (defensive — ``accepted_delete_blocks`` is built from the same
+    # apply result) is still discarded, and gets the ``operation`` key stamped on.
+    discarded = [entry for entry in accepted_cleanup_operations if _is_anchor_repair(entry)]
+    discarded_delete_block_ids = {
+        str(entry.get("id") or "") for entry in discarded if entry.get("operation") == "delete_block"
+    }
+    discarded += [
+        {"operation": "delete_block", **entry}
+        for entry in accepted_delete_blocks
+        if _is_anchor_repair(entry) and str(entry.get("id") or "") not in discarded_delete_block_ids
+    ]
+    kept_cleanup_operations = [entry for entry in accepted_cleanup_operations if not _is_anchor_repair(entry)]
+    kept_delete_blocks = [entry for entry in accepted_delete_blocks if not _is_anchor_repair(entry)]
+    ignored_cleanup_operations.extend(
+        {
+            **entry,
+            "ignored_reason": "anchor_repair_discarded_for_missing_docx_image_anchor",
+            "lost_docx_image_ids": list(missing_image_ids),
+        }
+        for entry in discarded
+    )
+
+    ignored_counts_by_chunk: Counter[int] = Counter()
+    for entry in ignored_cleanup_operations:
+        if not _is_anchor_repair(entry):
+            continue
+        chunk_index = entry.get("chunk_index")
+        if isinstance(chunk_index, int):
+            ignored_counts_by_chunk[chunk_index] += 1
+    for chunk_result in chunk_results:
+        if not _is_anchor_repair(chunk_result):
+            continue
+        chunk_index = chunk_result.get("chunk_index")
+        chunk_result["accepted_cleanup_operation_count"] = 0
+        chunk_result["accepted_delete_block_count"] = 0
+        if isinstance(chunk_index, int):
+            chunk_result["ignored_cleanup_operation_count"] = ignored_counts_by_chunk.get(chunk_index, 0)
+            chunk_result["ignored_delete_block_count"] = ignored_counts_by_chunk.get(chunk_index, 0)
+
+    report_payload["accepted_cleanup_operations"] = kept_cleanup_operations
+    report_payload["accepted_delete_blocks"] = kept_delete_blocks
+    report_payload["ignored_cleanup_operations"] = ignored_cleanup_operations
+    report_payload["ignored_delete_blocks"] = ignored_cleanup_operations
+    report_payload["chunk_results"] = chunk_results
+    report_payload["heading_boundary_application_diagnostics"] = _build_heading_boundary_application_diagnostics(
+        accepted_cleanup_operations=kept_cleanup_operations,
+        ignored_cleanup_operations=ignored_cleanup_operations,
+    )
+    report_payload["stats"] = _build_cleanup_stats(
+        raw_markdown=raw_markdown,
+        blocks=blocks,
+        accepted_delete_blocks=kept_delete_blocks,
+        accepted_cleanup_operations=kept_cleanup_operations,
+        ignored_cleanup_operations=ignored_cleanup_operations,
+        chunk_results=chunk_results,
+        deleted_char_count=first_pass_deleted_char_count,
+    )
+    report_payload["passes"] = _discard_anchor_repair_pass_sub_report(
+        passes=report_payload.get("passes"),
+        anchor_repair_ignored_count_by_chunk=ignored_counts_by_chunk,
+        missing_image_ids=missing_image_ids,
+    )
+    return report_payload, len(discarded)
+
+
+def _discard_anchor_repair_pass_sub_report(
+    *,
+    passes: object,
+    anchor_repair_ignored_count_by_chunk: Counter[int],
+    missing_image_ids: Sequence[str],
+) -> object:
+    """Rewrite ``passes.anchor_repair_pass`` so it agrees with the rolled-back top level.
+
+    Only the counters that the rollback falsifies are touched: the accepted counts, the
+    deletion totals and the per-chunk acceptance counters become zero, because nothing from
+    this pass was delivered.
+
+    ``raw_block_count`` / ``raw_char_count`` are left alone, and — contrary to what this
+    docstring used to claim — they do NOT describe the document the pass was asked to repair.
+    ``_parse._merge_anchor_repair_pass_into_report`` builds this sub-report's stats over
+    ``anchor_pass_result.cleaned_markdown``, i.e. the pass's OUTPUT. Measured on a rolled-back
+    run: the pass was handed 4 blocks / 167 chars and the sub-report says 5 / 169, the extra
+    block being the one the rolled-back operation created. They are not corrected here because
+    re-basing them on the pass input is a change to the stats builder in ``_parse``, not to the
+    rollback — it would also move the denominator of that sub-report's ``deleted_char_ratio``
+    and rewrite the characterization golden, for two fields no consumer reads. Stated instead
+    of mis-stated.
+    """
+    if not isinstance(passes, dict):
+        return passes
+    anchor_repair_pass = passes.get("anchor_repair_pass")
+    if not isinstance(anchor_repair_pass, Mapping):
+        return passes
+    patched_pass = dict(anchor_repair_pass)
+    pass_chunk_results = [
+        dict(entry) for entry in cast(Sequence[Mapping[str, object]], patched_pass.get("chunk_results") or [])
+    ]
+    for chunk_result in pass_chunk_results:
+        chunk_result["accepted_cleanup_operation_count"] = 0
+        chunk_result["accepted_delete_block_count"] = 0
+        chunk_index = chunk_result.get("chunk_index")
+        if isinstance(chunk_index, int):
+            chunk_result["ignored_cleanup_operation_count"] = anchor_repair_ignored_count_by_chunk.get(chunk_index, 0)
+            chunk_result["ignored_delete_block_count"] = anchor_repair_ignored_count_by_chunk.get(chunk_index, 0)
+    ignored_count = sum(anchor_repair_ignored_count_by_chunk.values())
+    patched_stats = dict(cast(Mapping[str, object], patched_pass.get("stats") or {}))
+    patched_stats.update(
+        {
+            "accepted_cleanup_operation_count": 0,
+            "accepted_delete_block_count": 0,
+            "ignored_cleanup_operation_count": ignored_count,
+            "ignored_delete_block_count": ignored_count,
+            "deleted_non_whitespace_char_count": 0,
+            "deleted_char_ratio": 0.0,
+        }
+    )
+    patched_pass["stats"] = patched_stats
+    patched_pass["chunk_results"] = pass_chunk_results
+    patched_pass["discarded_for_missing_docx_image_anchor"] = True
+    patched_pass["lost_docx_image_ids"] = [str(item) for item in missing_image_ids]
+    return {**passes, "anchor_repair_pass": patched_pass}
+
+
+def _reject_operations_losing_docx_image_anchors(
+    *,
+    raw_markdown: str,
+    cleaned_markdown: str,
+    blocks: Sequence[CleanupBlock],
+    operations: Sequence[CleanupOperation],
+    lost_docx_image_ids_by_operation_index: Mapping[int, Sequence[str]],
+    accepted_ids: dict[str, dict[str, object]],
+    accepted_cleanup_operations: list[dict[str, object]],
+    ignored: list[dict[str, object]],
+    config: ReaderCleanupConfig,
+    global_candidate_block_ids: set[str],
+) -> tuple[str, dict[str, dict[str, object]], list[dict[str, object]], list[dict[str, object]], list[str]]:
+    """Reject the operations that dropped an image anchor and re-apply the rest.
+
+    Spec 052 item 5. The old answer to a lost anchor was to paste it at the end of the
+    document, which reconciled the count and moved a figure hundreds of pages. The right
+    answer is to identify what lost it and drop that, keeping the rest of the cleanup.
+
+    Blame follows the ANCHORS THEMSELVES. ``_apply_cleanup_operations`` records, per
+    operation, which ``[[DOCX_IMAGE_*]]`` ids stopped existing while that operation ran; the
+    culprits are the operations whose loss set meets the ids missing from the delivered
+    markdown. Three things this gets right that the predecessors did not. An operation that
+    writes into a block it never names (``normalize_heading_boundary`` absorbing the next
+    block, or rewriting the previous one after a join — the latter has no ``next_id`` at all)
+    is still caught, because the measurement never consults declared ids. An operation that
+    never ran — refused as ``join_next_text_hash_mismatch``, say — destroyed nothing and
+    keeps its own ignore reason instead of a stamped-on
+    ``docx_image_anchor_lost_by_operation``. And an operation that MOVED an anchor safely is
+    not blamed for a later operation's destruction of it: block-id write sets merged the
+    provenance of a join's two blocks and handed the union to both the join and everything
+    that touched the joined slot afterwards, so "join the fragment, then fix the heading
+    boundary" — the exact sequence the cleanup prompt asks for, and the one that occurs next
+    to figure blocks — reported the innocent join as an anchor-losing operation and, with a
+    third operation in play, escalated into discarding the entire book's cleanup.
+
+    The culprits are removed and ``_apply_cleanup_operations`` — a pure function of its
+    inputs — is re-run over the remainder; operations refused for their own reasons stay in
+    that remainder and are refused again, with their own reasons, in the retry's ignore
+    list. If anchors are STILL missing afterwards nothing is patched up here: the caller
+    discards the cleanup wholesale, visibly, rather than deliver a relocated image.
+    """
+    missing_ids = _missing_docx_image_placeholder_ids(raw_markdown=raw_markdown, cleaned_markdown=cleaned_markdown)
+    if not missing_ids:
+        return cleaned_markdown, accepted_ids, accepted_cleanup_operations, ignored, []
+
+    missing_id_set = set(missing_ids)
+    lost_ids_by_rejected_index = {
+        index: sorted(missing_id_set.intersection(lost_docx_image_ids))
+        for index, lost_docx_image_ids in lost_docx_image_ids_by_operation_index.items()
+        if 0 <= index < len(operations) and missing_id_set.intersection(lost_docx_image_ids)
+    }
+    rejected_indexes = set(lost_ids_by_rejected_index)
+    warnings = [
+        f"reader_cleanup_image_anchor_lost_by_operation:{len(missing_ids)}:rejected_operations={len(rejected_indexes)}"
+    ]
+    if not rejected_indexes:
+        # No operation can account for the loss; leave the fail-closed discard to the caller.
+        return cleaned_markdown, accepted_ids, accepted_cleanup_operations, ignored, warnings
+
+    retained_operations = [operation for index, operation in enumerate(operations) if index not in rejected_indexes]
+    retry_markdown, retry_accepted_ids, retry_accepted_operations, retry_ignored, _retry_lost_docx_image_ids = (
+        _apply_cleanup_operations(
+            raw_markdown=raw_markdown,
+            blocks=blocks,
+            operations=retained_operations,
+            config=config,
+            global_candidate_block_ids=global_candidate_block_ids,
+        )
+    )
+    if _missing_docx_image_placeholder_ids(raw_markdown=raw_markdown, cleaned_markdown=retry_markdown):
+        return cleaned_markdown, accepted_ids, accepted_cleanup_operations, ignored, warnings
+
+    rejected_entries = [
+        {
+            **_serialize_cleanup_operation(operation=operations[index], block=_block_by_id(blocks, operations[index].block_id)),
+            "chunk_index": operations[index].chunk_index,
+            "ignored_reason": "docx_image_anchor_lost_by_operation",
+            # The anchors THIS operation destroyed, not every anchor missing from the run.
+            "lost_docx_image_ids": list(lost_ids_by_rejected_index[index]),
+        }
+        for index in sorted(rejected_indexes)
+    ]
+    return (
+        retry_markdown,
+        retry_accepted_ids,
+        retry_accepted_operations,
+        [*retry_ignored, *rejected_entries],
+        warnings,
     )
 
 
@@ -767,6 +1168,7 @@ from ._report import (  # noqa: F401
     _build_heading_boundary_application_diagnostics,
     _build_heading_boundary_diagnostic_example,
     _build_reader_cleanup_report_payload,
+    _docx_image_anchor_source_block_ids,
     _docx_image_placeholder_counts,
     _extract_docx_image_placeholder_ids,
     _extract_http_status_code,
@@ -775,6 +1177,7 @@ from ._report import (  # noqa: F401
     _image_reconciliation_warnings,
     _is_auth_or_credential_error,
     _iter_exception_chain,
+    _missing_docx_image_placeholder_ids,
     _preview_text,
     _reconcile_docx_image_placeholders,
     _serialize_cleanup_settings,
@@ -808,18 +1211,15 @@ from ._apply import (  # noqa: F401
     _apply_heading_boundary_to_joined_previous_block,
     _apply_heading_boundary_to_text,
     _apply_reannotation_decisions,
-    _apply_reclassify_role_to_text,
     _apply_side_heading_reattach_to_text,
     _apply_single_operation_to_blocks,
     _join_body_stub_and_continuation,
     _list_visible_content_fingerprint,
     _ordered_substrings_cover_text,
     _reannotation_replacement_preserves_visible_content,
-    _reclassify_role_expected_markdown,
     _replacement_for_reannotation_decision,
     _replacement_for_reannotation_footnote_marker,
     _replacement_for_reannotation_list_items,
-    _strip_markdown_heading_marker,
     _visible_content_fingerprint,
 )
 
@@ -837,13 +1237,11 @@ from ._validate import (  # noqa: F401
     _looks_like_numeric_uppercase_running_header_noise,
     _looks_like_page_furniture_caption_bridge_noise,
     _looks_like_title_case_running_header_noise,
-    _max_allowed_reclassify_operations,
     _same_block_operation_phase,
     _same_block_original_phase,
     _semantic_word_tokens,
     _validate_duplicate_fragment_delete,
     _validate_operation,
-    _validate_reclassify_role_operation,
     _validate_same_block_operation_sequence,
     _violates_global_safety,
 )

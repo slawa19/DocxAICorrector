@@ -8,6 +8,8 @@ import pytest
 
 import docxaicorrector.core.config as config
 import docxaicorrector.core.constants as constants
+from docxaicorrector.reader_cleanup_mvp import resolve_reader_cleanup_config
+from docxaicorrector.reader_cleanup_mvp._constants import READER_CLEANUP_DEFAULT_SELECTOR
 from tests.conftest import (
     TEST_IMAGE_ANALYSIS_MODEL,
     TEST_IMAGE_EDIT_MODEL,
@@ -192,7 +194,7 @@ def test_load_app_config_exposes_image_validation_defaults(monkeypatch):
     assert app_config["image_output_trim_padding_min_px"] == 4
     assert app_config["image_output_trim_max_loss_ratio"] == 0.15
     assert app_config["reader_cleanup_default"] is False
-    assert app_config["reader_cleanup_model"] == "anthropic:claude-sonnet-4-6"
+    assert app_config["reader_cleanup_model"] == "openrouter:anthropic/claude-haiku-4.5"
     assert app_config["reader_cleanup_chunk_size"] == 8000
     assert app_config["reader_cleanup_overlap_blocks_before"] == 3
     assert app_config["reader_cleanup_overlap_blocks_after"] == 3
@@ -1945,3 +1947,63 @@ def test_model_registry_log_canonicalizes_anthropic_selector_unchanged(monkeypat
         "anthropic:claude-sonnet-4-6",
         "openai:gpt-5.4-mini",
     ]
+
+
+def _read_env_example_setting(key: str) -> str | None:
+    """The value an operator gets by copying .env.example verbatim, or None if absent."""
+    env_example_path = Path(__file__).resolve().parents[1] / ".env.example"
+    for line in env_example_path.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if stripped.startswith("#") or "=" not in stripped:
+            continue
+        name, _, value = stripped.partition("=")
+        if name.strip() == key:
+            return value.strip()
+    return None
+
+
+def test_env_example_pins_the_reader_cleanup_model_it_does_not_leave_it_blank(monkeypatch):
+    # Spec 052 item 1. .env.example used to ship DOCX_AI_READER_CLEANUP_MODEL empty, so an
+    # operator who enabled the pass by copying the example silently got the config.toml
+    # value — a direct Sonnet selector needing a second API key, at several times the cost,
+    # and NOT the model any of the three measured replay runs used. The example now names
+    # the measured selector outright.
+    monkeypatch.setattr(config, "CONFIG_PATH", config.CONFIG_PATH)
+    app_config = config.load_app_config()
+
+    env_example_model = _read_env_example_setting("DOCX_AI_READER_CLEANUP_MODEL")
+
+    assert env_example_model == "openrouter:anthropic/claude-haiku-4.5"
+    # ...and it agrees with the shipped config default, so the resolution has one answer
+    # whether or not the operator keeps the line.
+    assert env_example_model == app_config["reader_cleanup_model"]
+
+
+def test_reader_cleanup_code_default_selector_matches_the_shipped_config_default(monkeypatch):
+    # The third place model resolution could diverge: the package's last-resort selector,
+    # used when app_config carries no reader_cleanup_model at all.
+    monkeypatch.setattr(config, "CONFIG_PATH", config.CONFIG_PATH)
+    app_config = config.load_app_config()
+
+    assert READER_CLEANUP_DEFAULT_SELECTOR == app_config["reader_cleanup_model"]
+    assert resolve_reader_cleanup_config(app_config={}, fallback_model="gpt-5.4").model == (
+        READER_CLEANUP_DEFAULT_SELECTOR
+    )
+
+
+def test_reader_cleanup_max_failed_chunk_ratio_default_is_ten_percent(monkeypatch):
+    # Spec 052 item 2. At the previous default of 1.0 the pass aborted only when EVERY
+    # chunk failed: 106 of 107 could fail and the run still reported completed/changed.
+    monkeypatch.setattr(config, "CONFIG_PATH", config.CONFIG_PATH)
+    app_config = config.load_app_config()
+
+    assert app_config["reader_cleanup_max_failed_chunk_ratio"] == 0.1
+    assert resolve_reader_cleanup_config(app_config={}, fallback_model="gpt-5.4").max_failed_chunk_ratio == 0.1
+
+
+def test_reader_cleanup_max_failed_chunk_ratio_default_survives_a_missing_config_file(monkeypatch):
+    monkeypatch.setattr(config, "CONFIG_PATH", config.CONFIG_PATH.parent / "__missing_config__.toml")
+
+    app_config = config.load_app_config()
+
+    assert app_config["reader_cleanup_max_failed_chunk_ratio"] == 0.1

@@ -1,55 +1,71 @@
 from __future__ import annotations
 
+# Guidance that only applies to the anchor_repair pass. That pass runs only when a caller
+# supplies anchor_targets (run_reader_cleanup_anchor_repair / the anchor_operation_provider
+# argument); the production pipeline resolves them from the app_config keys
+# reader_cleanup_anchor_repair_enabled / reader_cleanup_anchor_targets, which the production
+# config model does not define, so these lines must not ship in the normal cleanup prompt.
+_ANCHOR_REPAIR_CLEANUP_GUIDANCE = (
+    "\nIf the request pass_name is anchor_repair, operate only inside the listed anchor_targets and anchor_window_block_ids.\n"
+    "For anchor_repair, every returned operation still needs full audit fields: evidence_before, expected_after_preview, and safety_note are never optional.\n"
+    "For anchor_repair fragmented_paragraph targets, first inspect only adjacent payload blocks. Prefer one join_fragmented_paragraph operation when the current block and the next block are a single paragraph split by a page, caption, or image boundary.\n"
+    "For anchor_repair join_fragmented_paragraph, copy next_id and next_text_hash exactly from the current payload block list; do not reuse stale ids or hashes from a prior raw/cleaned artifact.\n"
+    "For anchor_repair fragmented_paragraph targets, do not propose delete_block duplicate_fragment unless the full candidate block is exact normalized text already preserved in one nearby payload block.\n"
+    "For anchor_repair fragmented_paragraph targets, do not combine split_block and join_fragmented_paragraph on the same evidence unless split_substrings exactly cover one extraction-artifact block and the following join still uses adjacent current payload hashes.\n"
+    "For anchor_repair page_furniture_inline targets, first propose remove_inline_noise for the exact non-semantic page-number/running-header prefix or island; do not use join_fragmented_paragraph or delete_block as a substitute for that cleanup.\n"
+    "- Anchor fragmented paragraph through caption/page boundary: if the anchored block ends mid-sentence and the immediately next payload block starts with lowercase continuation prose, use join_fragmented_paragraph with that next block's exact id/hash; do not split or delete.\n"
+    "- Anchor fragmented paragraph that looks like a duplicate tail: if the full anchored block is not exact normalized text already preserved nearby, keep it and add a warning instead of delete_block duplicate_fragment.\n"
+    "- Anchor fragmented paragraph with page furniture between prose: remove only the exact page-furniture substring or block when safe, then join only adjacent current payload blocks with exact hashes; if adjacency is unclear, keep the text.\n"
+    "- Anchor page furniture plus caption between sentence parts: remove exactly the page header and caption span, keep the lowercase prose continuation, then join the previous unfinished block to the cleaned anchor block with exact ids/hashes."
+)
 
-def build_reader_cleanup_system_prompt() -> str:
-    return (
+_ANCHOR_REPAIR_SCHEMA_REPAIR_GUIDANCE = (
+    "\nIf pass_name is anchor_repair, keep the repaired response limited to anchor_targets, anchor_window_block_ids, editable_block_ids, and exact evidence already present in the request.\n"
+    "For anchor_repair fragmented_paragraph items, keep a join_fragmented_paragraph operation only when next_id and next_text_hash are copied from an adjacent block in the current request payload; otherwise drop it and add a warning.\n"
+    "For anchor_repair fragmented_paragraph items, do not convert a non-exact duplicate-looking tail into delete_block duplicate_fragment; drop unsafe deletion instead.\n"
+    "For anchor_repair page_furniture_inline items, keep join_fragmented_paragraph only as a follow-up from the previous adjacent block to the page-furniture anchor block when the response also has exact remove_inline_noise on that anchor block."
+)
+
+
+def build_reader_cleanup_system_prompt(*, include_anchor_repair_guidance: bool = False) -> str:
+    prompt = (
         "You are cleaning translated book Markdown for reading.\n"
         "Do not translate, rewrite, summarize, reorder, or reformat the book.\n"
         "Return JSON only with top-level fields cleanup_operations and warnings.\n"
         "Return only a single valid JSON object. Do not wrap it in markdown fences. Do not add prose before or after JSON.\n"
         'For no-op chunks, return exactly {"cleanup_operations":[],"warnings":[]} or the same object with string warnings.\n'
-        "Allowed operations are delete_block, extract_side_heading_and_reattach_body, split_block, remove_inline_noise, join_fragmented_paragraph, normalize_heading_boundary, and reclassify_role.\n"
+        "Allowed operations are delete_block, extract_side_heading_and_reattach_body, split_block, remove_inline_noise, join_fragmented_paragraph, and normalize_heading_boundary.\n"
         "If response_contract.allowed_operations lists fewer operations, obey that narrower contract and skip any cleanup that needs an operation outside it.\n"
         "Only blocks listed in editable_block_ids are mutation targets; readonly_context_blocks_before and readonly_context_blocks_after are context only and must not be edited.\n"
         "Do not reconstruct TOC or chapters as a structure-recognition task. Do not change semantic order or remove semantic content.\n"
-        "For extract_side_heading_and_reattach_body, split_block, remove_inline_noise, join_fragmented_paragraph, normalize_heading_boundary, and reclassify_role, provide only the minimal exact-match diff fields, not a rewritten document.\n"
-        "Use reclassify_role only for local role correction inside this chunk: heading to body, attribution, or caption; or body/paragraph to heading. Do not assign heading_level, hierarchy, anchors, or cross-chunk structure.\n"
-        "For reclassify_role, include target_role as one of heading, body, attribution, caption. expected_after_preview must be the exact single-block Markdown after changing only the role marker.\n"
-        "For reclassify_role to heading, add only the standard Markdown heading marker to the existing block text. For reclassify_role to body, attribution, or caption, remove the Markdown heading marker and preserve the exact visible text.\n"
-        "Role rules for reclassify_role: ALL-CAPS short text after a heading may be attribution rather than another heading; text starting with an em dash or en dash followed by a name is attribution; Figure/Table/Рис./Таблица/Источник lines are caption; a short topic-introducing line may be heading when the surrounding prose shows it starts a new topic.\n"
+        "For extract_side_heading_and_reattach_body, split_block, remove_inline_noise, join_fragmented_paragraph, and normalize_heading_boundary, provide only the minimal exact-match diff fields, not a rewritten document.\n"
+        "Do not change a block's role. There is no operation for turning a paragraph into a heading or a heading into body text; if a block's role looks wrong, leave it and add a warning.\n"
         "Image placeholders like [[DOCX_IMAGE_img_001]] are content anchors: do not delete, rename, split, join away, or otherwise change them.\n"
         "Use delete_block only for non-semantic PDF/OCR/layout noise: repeated running headers, footers, "
         "page numbers, blank-page markers, orphaned footnote markers, and obvious extraction artifacts.\n"
         "Do not delete a standalone numeric block such as '8' or '12' by page_number reason unless nearby page-boundary context, repeated header/footer evidence, or explicit page-label evidence makes it safe.\n"
         "Use remove_inline_noise for exact page furniture/page number/running header substrings embedded before or inside a semantic paragraph.\n"
         "For remove_inline_noise, prefer reasons such as page_furniture_inline, page_furniture_heading, page_number, orphan_footnote_marker, or repeated_running_header when they match the exact residue being removed.\n"
-        "If operation_selection_targets lists a duplicate_semantic_heading_text candidate, inspect that block first and use remove_inline_noise with reason duplicate_fragment only if the exact adjacent repeated phrase and full expected_after_preview are still valid.\n"
-        "If operation_selection_targets lists a side_heading_island_candidate, classify it as a possible PDF/two-column side heading embedded in prose. If the heading interrupts one sentence, use extract_side_heading_and_reattach_body with exact pre_body_stub, heading_substring, and post_body_continuation; otherwise first try split_block, then normalize_heading_boundary only when exact substrings can preserve all semantic text.\n"
-        "If operation_selection_targets lists a semantic_page_title_deletion_risk candidate, preserve the title; if you split it into its own block, add a separate same-block follow-up remove_inline_noise for only the exact numeric prefix in the same pass.\n"
-        "If operation_selection_targets lists an isolated_semantic_heading_numeric_prefix candidate, use remove_inline_noise only for the exact numeric prefix; never remove the heading text.\n"
-        "If operation_selection_targets lists a heading_fused_with_body_candidate, prefer the listed exact normalize_heading_boundary operation, or the listed join_fragmented_paragraph then normalize_heading_boundary chain when the heading wraps into the adjacent block.\n"
-        "Semantic heading islands are not noise. Do not delete semantic heading islands with remove_inline_noise; do not leave a short pre-heading sentence stub or orphan mid-sentence continuation as its own paragraph. If exact structural repair cannot preserve all semantic text and body continuity, skip and add a warning.\n"
+        "operation_selection_targets are precomputed per-block hints. Every target carries only block-specific evidence: category, id, text_hash and the exact candidate substrings found in that block. The preferred and forbidden operations, the follow-up chains and the safety rules for each category are stated once below and apply to every target of that category.\n"
+        "Target category duplicate_semantic_heading_text: inspect that block first and use remove_inline_noise with reason duplicate_fragment, and only if this exact adjacent repeated phrase is still present once in the editable block and the listed expected_after_preview is still the full valid result.\n"
+        "Target category isolated_semantic_heading_numeric_prefix: the preferred operation is remove_inline_noise with reason page_number for the exact listed numeric_prefix, applied only while that prefix is still present once. Full-heading remove_inline_noise is forbidden for this category, and the listed semantic_heading_must_remain text must never be removed.\n"
+        "Target category semantic_page_title_deletion_risk: remove_inline_noise on that title is a forbidden operation. A page-like number adjacent to a semantic section title is not enough to classify the title as noise, so preserve the title with an exact structural operation, remove only exact non-semantic page residue if that is safe, or skip with a warning. If you split the title into its own block, a same-pass follow-up remove_inline_noise on the same original block id is supported: its noise_substring is then the listed numeric_prefix, its expected_after_preview is the listed semantic_title_candidate, and that title must remain.\n"
+        "Target category heading_fused_with_body_candidate: this is a semantic heading/body boundary, not noise. The preferred operation is normalize_heading_boundary with the listed exact heading_substring and body_substring; remove_inline_noise and delete_block are forbidden for this category. Preserve the full heading and full body text exactly, and skip if the exact substrings no longer match. When the target also carries next_id and next_text_hash, the heading wraps into that adjacent block: run join_fragmented_paragraph with that exact next block first, then normalize_heading_boundary on the joined text.\n"
+        "Target category side_heading_island_candidate: classify the listed heading_candidate as a possible PDF/two-column side heading embedded in prose. Semantic heading islands are not noise. Do not delete semantic heading islands with remove_inline_noise; it is the forbidden default operation for this category, and do not leave a short pre-heading sentence stub or orphan mid-sentence continuation as its own paragraph. If the heading interrupts one sentence, use extract_side_heading_and_reattach_body with exact pre_body_stub, heading_substring, and post_body_continuation; otherwise first try split_block, then normalize_heading_boundary only when exact substrings can preserve all semantic text. If exact structural repair cannot preserve all semantic text and body continuity, skip and add a warning.\n"
         "Semantic section titles and page-heading-like titles are not remove_inline_noise targets. A page-like number adjacent to a semantic title is not permission to delete the title.\n"
         "For extract_side_heading_and_reattach_body, expected_after_preview must be exactly: heading_substring, then a blank line, then pre_body_stub plus one space plus post_body_continuation. Do not put the body first, do not add labels like '[Heading: ...]', and do not invent or delete words.\n"
         "Use split_block for one block that should become 2-3 exact substrings from the original block.\n"
         "Use join_fragmented_paragraph only for adjacent blocks that are one paragraph split by a page/caption boundary.\n"
         "Use normalize_heading_boundary only to move an exact heading-like prefix into a separate heading block and keep exact body text as a paragraph.\n"
-        "If the request pass_name is anchor_repair, operate only inside the listed anchor_targets and anchor_window_block_ids.\n"
-        "For anchor_repair, every returned operation still needs full audit fields: evidence_before, expected_after_preview, and safety_note are never optional.\n"
-        "For anchor_repair fragmented_paragraph targets, first inspect only adjacent payload blocks. Prefer one join_fragmented_paragraph operation when the current block and the next block are a single paragraph split by a page, caption, or image boundary.\n"
-        "For anchor_repair join_fragmented_paragraph, copy next_id and next_text_hash exactly from the current payload block list; do not reuse stale ids or hashes from a prior raw/cleaned artifact.\n"
-        "For anchor_repair fragmented_paragraph targets, do not propose delete_block duplicate_fragment unless the full candidate block is exact normalized text already preserved in one nearby payload block.\n"
-        "For anchor_repair fragmented_paragraph targets, do not combine split_block and join_fragmented_paragraph on the same evidence unless split_substrings exactly cover one extraction-artifact block and the following join still uses adjacent current payload hashes.\n"
-        "For anchor_repair page_furniture_inline targets, first propose remove_inline_noise for the exact non-semantic page-number/running-header prefix or island; do not use join_fragmented_paragraph or delete_block as a substitute for that cleanup.\n"
         "For inline endnote/page marker artifacts inside prose, such as a standalone digit between two words, use remove_inline_noise with the exact deleted span in noise_substring and the full post-removal block in expected_after_preview.\n"
         "For duplicate semantic heading text repeated inline, use remove_inline_noise with reason duplicate_fragment only when the deleted phrase is an exact adjacent repeated phrase and expected_after_preview is the full resulting block.\n"
-        "If page furniture plus an image caption sits between two parts of one sentence, propose remove_inline_noise for the exact full noise span and then a separate join_fragmented_paragraph from the previous adjacent block to the cleaned anchor block.\n"
-        "If one anchored block needs both page-furniture removal and heading/body repair, return two bounded exact-match operations on that same block instead of rewriting the block.\n"
+        "If page furniture plus an image caption sits between two parts of one sentence, propose remove_inline_noise for the exact full noise span and then a separate join_fragmented_paragraph from the previous adjacent block to the cleaned block.\n"
+        "If one block needs both page-furniture removal and heading/body repair, return two bounded exact-match operations on that same block instead of rewriting the block.\n"
         "If non-heading text remains before the heading candidate, such as a quote, caption, or footnote marker, do not use normalize_heading_boundary; use split_block with exact substrings instead.\n"
         "Preserve chapters, headings, normal paragraphs, lists, quotes, footnote bodies, bibliography, "
         "index, and TOC unless the chunk payload explicitly marks them safe to delete.\n"
         "Each cleanup_operations item must contain id, text_hash, operation, reason, confidence, evidence_before, expected_after_preview, and safety_note. Never omit confidence.\n"
-        "extract_side_heading_and_reattach_body must include pre_body_stub, heading_substring, and post_body_continuation; split_block must include split_substrings; remove_inline_noise must include noise_substring; join_fragmented_paragraph must include next_id and next_text_hash; normalize_heading_boundary must include heading_substring and body_substring; reclassify_role must include target_role.\n"
+        "extract_side_heading_and_reattach_body must include pre_body_stub, heading_substring, and post_body_continuation; split_block must include split_substrings; remove_inline_noise must include noise_substring; join_fragmented_paragraph must include next_id and next_text_hash; normalize_heading_boundary must include heading_substring and body_substring.\n"
         "For normalize_heading_boundary, use an exact heading prefix from the current block and copy body_substring verbatim as the full semantic body remainder after that boundary, not just a teaser; do not rewrite, retranslate, shorten, reorder, or normalize punctuation on either side.\n"
         "Use normalize_heading_boundary only when the heading is an exact prefix and body_substring is the exact full remaining semantic body text inside the same block.\n"
         "If a block starts with page number plus running-header prefix plus prose, always propose remove_inline_noise for the exact non-semantic prefix first.\n"
@@ -92,12 +108,8 @@ def build_reader_cleanup_system_prompt() -> str:
         "- Section heading plus first sentence: use normalize_heading_boundary only if the heading comes first and the body remainder is exact.\n"
         "- Part title after a preceding quote: use split_block, not normalize_heading_boundary, because text exists before the heading.\n"
         "- Duplicate tail carryover as its own block: use delete_block with reason duplicate_fragment only when that full block is already preserved nearby as exact repeated text.\n"
-        "For fragmented paragraph anchors, use neighbor context to decide whether a page or caption boundary split one paragraph across adjacent blocks, and use join_fragmented_paragraph only when the exact adjacent hashes match that evidence.\n"
-        "- Anchor fragmented paragraph through caption/page boundary: if the anchored block ends mid-sentence and the immediately next payload block starts with lowercase continuation prose, use join_fragmented_paragraph with that next block's exact id/hash; do not split or delete.\n"
-        "- Anchor fragmented paragraph that looks like a duplicate tail: if the full anchored block is not exact normalized text already preserved nearby, keep it and add a warning instead of delete_block duplicate_fragment.\n"
-        "- Anchor fragmented paragraph with page furniture between prose: remove only the exact page-furniture substring or block when safe, then join only adjacent current payload blocks with exact hashes; if adjacency is unclear, keep the text.\n"
-        "- Anchor page furniture prefix: for '190 СЕКРЕТЫ ХОРОШЕГО УРОЖАЯ Особый интерес...' use remove_inline_noise with noise_substring='190 СЕКРЕТЫ ХОРОШЕГО УРОЖАЯ ' and keep the following prose.\n"
-        "- Anchor page furniture plus caption between sentence parts: remove exactly the page header and caption span, keep the lowercase prose continuation, then join the previous unfinished block to the cleaned anchor block with exact ids/hashes.\n"
+        "For fragmented paragraphs, use neighbor context to decide whether a page or caption boundary split one paragraph across adjacent blocks, and use join_fragmented_paragraph only when the exact adjacent hashes match that evidence.\n"
+        "- Page furniture prefix: for '190 СЕКРЕТЫ ХОРОШЕГО УРОЖАЯ Особый интерес...' use remove_inline_noise with noise_substring='190 СЕКРЕТЫ ХОРОШЕГО УРОЖАЯ ' and keep the following prose.\n"
         "A leading or inline number may be removed only when it is exact non-semantic page furniture or an orphan inline note marker; if the number is semantic content inside a sentence, date, quantity, title, or citation, keep it.\n"
         "Standalone numeric lines can be footnotes, citations, list markers, or semantic numbering; if page context is uncertain, keep them and add a warning.\n"
         "For obvious non-semantic noise such as standalone page numbers, "
@@ -107,10 +119,13 @@ def build_reader_cleanup_system_prompt() -> str:
         '{"cleanup_operations":[],"warnings":["preserved image placeholder anchor [[DOCX_IMAGE_img_001]]"]}\n'
         "If uncertain, keep the text and add a warning."
     )
+    if include_anchor_repair_guidance:
+        return prompt + _ANCHOR_REPAIR_CLEANUP_GUIDANCE
+    return prompt
 
 
-def build_reader_cleanup_schema_repair_system_prompt() -> str:
-    return (
+def build_reader_cleanup_schema_repair_system_prompt(*, include_anchor_repair_guidance: bool = False) -> str:
+    prompt = (
         "You repair JSON for reader cleanup chunk responses.\n"
         "Return JSON only with top-level fields cleanup_operations and warnings.\n"
         "Return only a single valid JSON object. Do not wrap it in markdown fences. Do not add prose before or after JSON.\n"
@@ -119,26 +134,26 @@ def build_reader_cleanup_schema_repair_system_prompt() -> str:
         "You may only correct schema and field mistakes inside cleanup_operations and warnings.\n"
         "Repair every invalid cleanup operation item in the response, not only the first broken one.\n"
         "If the original response uses legacy delete_blocks, convert it into cleanup_operations with full audit fields instead of preserving the legacy shortcut.\n"
-        "Keep the allowed operations unchanged: delete_block, split_block, remove_inline_noise, join_fragmented_paragraph, normalize_heading_boundary, and reclassify_role.\n"
+        "Keep the allowed operations unchanged: delete_block, split_block, remove_inline_noise, join_fragmented_paragraph, normalize_heading_boundary, and extract_side_heading_and_reattach_body.\n"
+        "There is no role-change operation. Drop any operation that would change a block's role and add a warning instead.\n"
         "Do not invent new block ids, text hashes, or rewritten text. Use only exact ids and text_hash values already present in the request.\n"
-        "If pass_name is anchor_repair, keep the repaired response limited to anchor_targets, anchor_window_block_ids, editable_block_ids, and exact evidence already present in the request.\n"
         "Drop or repair any operation that targets a readonly_context block instead of an editable_block_id.\n"
         "You may fill missing audit fields only from exact block text, context previews, anchor_targets, and the original response; do not fabricate rewritten prose.\n"
         "Each cleanup_operations item must contain id, text_hash, operation, reason, confidence, evidence_before, expected_after_preview, and safety_note.\n"
         "duplicate_fragment is an allowed delete_block reason only for exact nearby repeated carryover text that is already preserved elsewhere nearby.\n"
         "If a duplicate_fragment candidate is only similar to nearby prose but not an exact normalized nearby preserved block, drop it and add a warning instead of widening the deletion.\n"
-        "For anchor_repair fragmented_paragraph items, keep a join_fragmented_paragraph operation only when next_id and next_text_hash are copied from an adjacent block in the current request payload; otherwise drop it and add a warning.\n"
-        "For anchor_repair fragmented_paragraph items, do not convert a non-exact duplicate-looking tail into delete_block duplicate_fragment; drop unsafe deletion instead.\n"
-        "For anchor_repair page_furniture_inline items, keep join_fragmented_paragraph only as a follow-up from the previous adjacent block to the page-furniture anchor block when the response also has exact remove_inline_noise on that anchor block.\n"
         "For remove_inline_noise, page_furniture_inline, page_furniture_heading, page_number, orphan_footnote_marker, duplicate_fragment, and repeated_running_header are the preferred bounded audit reasons.\n"
         "Do not widen remove_inline_noise to consume a semantic heading after a numeric running-header prefix; keep exact prefix removal separate from normalize_heading_boundary.\n"
         "Do not keep a repaired remove_inline_noise operation when its noise_substring combines a page-like number with semantic section-title text; preserve the title and drop the deletion if no exact structural operation is available.\n"
         "If the original response already isolates a title-case running-header island with connector words or acronyms plus a trailing page number, keep it as remove_inline_noise instead of widening the substring into neighboring prose.\n"
-        "split_block must include split_substrings; remove_inline_noise must include noise_substring; join_fragmented_paragraph must include next_id and next_text_hash; normalize_heading_boundary must include heading_substring and body_substring; reclassify_role must include target_role.\n"
+        "extract_side_heading_and_reattach_body must include pre_body_stub, heading_substring, and post_body_continuation; split_block must include split_substrings; remove_inline_noise must include noise_substring; join_fragmented_paragraph must include next_id and next_text_hash; normalize_heading_boundary must include heading_substring and body_substring.\n"
         "For normalize_heading_boundary, keep exact copied substrings only; never invent a cleaner heading or shortened body.\n"
         "If one block needs composed cleanup, keep each operation separate and fully populated instead of merging them into rewritten Markdown.\n"
         "If an operation cannot be repaired safely, drop it and add a warning instead of inventing content."
     )
+    if include_anchor_repair_guidance:
+        return prompt + _ANCHOR_REPAIR_SCHEMA_REPAIR_GUIDANCE
+    return prompt
 
 
 def build_reader_cleanup_global_plan_system_prompt() -> str:

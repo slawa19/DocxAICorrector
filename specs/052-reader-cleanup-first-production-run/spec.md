@@ -4,11 +4,23 @@
 
 **Created**: 2026-07-31
 
-**Status**: **PROPOSED — awaiting a go/no-go decision on scope.** The reader-cleanup pass has never
-run in the production UI: its toggle was dead until spec 047 fixed it, so every real-world execution
-so far has been an offline replay. Before the owner spends a full book on it, this spec records what
-the pass actually is, what it cannot be, and the short list of defects worth fixing first. Nothing
-here is implemented yet.
+**Status**: **IMPLEMENTED (2026-07-31) — all nine items landed; the pass is ready for its first
+production run, which has NOT been done yet.** The reader-cleanup pass had never run in the
+production UI: its toggle was dead until spec 047 fixed it, so every real-world execution so far has
+been an offline replay. This spec records what the pass actually is, what it cannot be, and the
+defects that had to be fixed before spending a book on it.
+
+Implementation took **three rounds of fixes and three adversarial review passes**, and each round
+found real defects in the previous one — see `## What the review rounds found` below. The most
+consequential result was not on the original list: the forensic work traced the long-standing
+image-anchor P0 (Lietaer losing 37 of 55 images "with zero logged operations") to its actual root
+cause and fixed it. Verified on the final tree: full suite **2356+ passed / 0 failed**, canonical
+pyright gate at baseline, canonical real-document quality gate green, and the three-book offline
+replay byte-identical apart from the changes each fix explains.
+
+**Still owed before the run itself:** agree the success criteria in `## Define success before
+spending the book`, and re-enable `DOCX_AI_READER_CLEANUP_ENABLED` (set to `false` on 2026-07-31 so
+the pass could not switch itself on as a side effect of merging).
 
 **Date**: 2026-07-31
 
@@ -265,6 +277,41 @@ Proposed criteria, to be agreed before the run:
   same book. Operation counts are not evidence of readability.
 - **Cost:** measured tokens and money for one book, against the eyes-on improvement. If the pass costs
   a million tokens to fix four paragraphs, that is a finding, not a disappointment.
+
+## What the review rounds found
+
+Recorded because the pattern is the point: every round found a real defect in the previous one, and
+the full test suite was green throughout — none of these paths had coverage.
+
+**The image-anchor P0 finally has its real root cause.** The June record says Lietaer lost 37 of 55
+image IDs "with **zero** logged operations referencing them", and the loss was attributed to
+unaudited block reconstruction. It was not. In `_apply_cleanup_operations`, `delete_block` sets its
+slot to `None`; when `_violates_global_safety` then rolls the deletions back, they are moved into
+`ignored` — **but the slots were never restored**. With at least one non-delete operation accepted,
+the text is still delivered without them. That is exactly why no accepted operation referenced the
+lost anchors: the report called them *rejected*. Verified directly against the recorded run
+artifacts: all 37 `global_safety_limit_exceeded` entries are image anchors, and all 37 reference IDs
+absent from the delivered markdown (55 → 18). The rollback now re-applies the surviving operation set
+from scratch, so the rejection is real rather than bookkeeping.
+
+**Round 1 review — two P1s in the original nine items.** (a) The fail-closed discard added by item 5
+threw the entire paid pass away *silently*: `stage_status` stayed `completed`, the report still
+counted the discarded operations as accepted, and no notice reached the user — the owner would have
+been unable to tell "found nothing" from "threw everything away". (b) Attribution of *which*
+operation lost an anchor matched only the operation's declared ids, while two apply branches write to
+a neighbouring slot, so the real culprit escaped and the whole book's cleanup was discarded instead.
+
+**Round 2 review — one P1 in the round-1 fix.** The write-set introduced to fix (b) accumulated block
+provenance and assigned the union back to every touched slot, so after a `join` both slots carried
+both ids and a legitimate join was blamed alongside the real culprit — in a three-operation
+configuration escalating to a whole-book discard. Notably this is the exact shape the prompt itself
+prescribes (`join_fragmented_paragraph` then `normalize_heading_boundary`), next to figure blocks.
+Replaced with a direct causal test: an operation is blamed for anchor X only if X was present in the
+slots it wrote before and absent after. The provenance map is gone entirely.
+
+**Round 3 review — no P1 or P2.** Three diagnostic-only P3s (a delete counted twice on the
+anchor-repair rollback, a docstring describing the wrong document, and the schema-repair prompt naming
+an operation without its required fields), all closed. That convergence is why the rounds stopped.
 
 ## Anti-regression (mandatory, once implemented)
 

@@ -2514,6 +2514,67 @@ def test_load_reader_cleanup_evidence_reports_runtime_anchor_repair_status(tmp_p
     assert evidence["recommended_anchor_target_count"] == 1
 
 
+def test_load_reader_cleanup_evidence_does_not_call_a_rolled_back_anchor_pass_applied(tmp_path) -> None:
+    # Round-10 P2-1, the consumer end. This function decides whether the anchor-repair pass
+    # ran purely from ``passes.anchor_repair_pass.stats.accepted_cleanup_operation_count``.
+    # A pass rolled back for a lost image anchor kept reporting 1 accepted operation in that
+    # sub-report even after the top-level report un-accepted it, so a pass that delivered
+    # nothing was written into the validation evidence as "runtime_applied".
+    validation = _load_validation_module()
+
+    cleanup_report_path = tmp_path / "ui_results" / "chapter.reader_cleanup_report.json"
+    cleanup_report_path.parent.mkdir(parents=True, exist_ok=True)
+    anchor_target = {
+        "anchor_id": "anchor-1",
+        "category": "heading_fused_with_body",
+        "block_id": "b_000002",
+        "line_ref": "cleaned_markdown:3",
+        "snippet": "РИСУНОК 2.1",
+    }
+    cleanup_report_path.write_text(
+        json.dumps(
+            {
+                "stage_status": "completed",
+                "changed": True,
+                "stats": {
+                    "proposed_delete_block_count": 0,
+                    "accepted_delete_block_count": 0,
+                    "ignored_delete_block_count": 1,
+                    "failed_chunk_count": 0,
+                },
+                "accepted_delete_blocks": [],
+                "image_reconciliation": {
+                    "missing_after_repair": ["img_014"],
+                    "anchor_repair_discarded_for_missing_image_ids": True,
+                    "anchor_repair_discarded_cleanup_operation_count": 1,
+                },
+                "passes": {
+                    "anchor_repair_pass": {
+                        "selected_anchor_count": 1,
+                        "selected_anchors": [anchor_target],
+                        "discarded_for_missing_docx_image_anchor": True,
+                        "lost_docx_image_ids": ["img_014"],
+                        "stats": {
+                            "accepted_cleanup_operation_count": 0,
+                            "accepted_delete_block_count": 0,
+                            "ignored_cleanup_operation_count": 1,
+                        },
+                    }
+                },
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    evidence = validation._build_reader_cleanup_evidence_from_artifact_paths(
+        {"reader_cleanup_report_path": str(cleanup_report_path)}
+    )
+
+    assert evidence["anchor_repair_status"] == "runtime_attempted_no_safe_ops"
+    assert evidence["anchor_repair_discarded_for_missing_image_anchor"] is True
+
+
 def test_apply_repeat_count_override_ignores_invalid_value() -> None:
     validation = _load_validation_module()
     run_profile = validation.load_validation_registry().get_run_profile("ui-parity-default")
@@ -3150,6 +3211,10 @@ def test_main_comparison_only_reader_cleanup_reports_non_acceptance_artifacts_fo
             "cleanup_chunk_count": None,
             "cleanup_settings": {},
             "anchor_repair_status": "diagnostic_only_not_applied",
+            # Round-10 P2-1: the evidence records WHY an anchor-repair pass shipped nothing,
+            # so "attempted, nothing safe" is distinguishable from "rolled back to keep an
+            # image anchor". This run had no runtime pass at all, hence False.
+            "anchor_repair_discarded_for_missing_image_anchor": False,
             "recommended_anchor_targets": report["reader_cleanup_evidence"]["recommended_anchor_targets"],
         "recommended_anchor_target_count": report["reader_cleanup_evidence"]["recommended_anchor_target_count"],
         "verifier_recommended_anchor_targets": report["reader_cleanup_evidence"]["verifier_recommended_anchor_targets"],

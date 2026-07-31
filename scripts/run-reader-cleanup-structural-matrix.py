@@ -441,6 +441,13 @@ def _score(raw_markdown: str, cleaned_markdown: str, report: Mapping[str, object
     caught["footnote_markers_detached"] = _footnote_markers_are_detached(cleaned_markdown=cleaned_markdown)
     image_reconciliation = cast(Mapping[str, object], report.get("image_reconciliation") or {})
     containment_violation_count = _containment_violation_count(raw_markdown=raw_markdown, cleaned_markdown=cleaned_markdown, ignored=ignored)
+    # The cell's own failure signal. ``_run_config`` turns the failed-chunk abort OFF
+    # (max_failed_chunk_ratio = 1.0) precisely so a sweep that provokes chunk failures still
+    # produces data — which is only defensible if the failures are then visible per cell.
+    # They were not: the summary carried neither the failed-chunk count nor the stage status,
+    # so a cell where half the chunks died scored like a clean one.
+    stats = cast(Mapping[str, object], report.get("stats") or {})
+    failure = cast(Mapping[str, object], report.get("failure") or {})
     return {
         "caught": caught,
         "caught_count": sum(1 for value in caught.values() if value),
@@ -448,6 +455,10 @@ def _score(raw_markdown: str, cleaned_markdown: str, report: Mapping[str, object
         "containment_violation_count": containment_violation_count,
         "accepted_operation_count": len(accepted),
         "ignored_operation_count": len(ignored),
+        "stage_status": report.get("stage_status"),
+        "failure_kind": failure.get("kind"),
+        "failed_chunk_count": stats.get("failed_chunk_count"),
+        "cleanup_chunk_count": stats.get("cleanup_chunk_count"),
         "images_touched": bool(image_reconciliation.get("touched")),
         "image_before_count": image_reconciliation.get("before_image_id_count"),
         "image_after_count": image_reconciliation.get("after_image_id_count"),
@@ -520,6 +531,14 @@ def _run_config(
             "reader_cleanup_overlap_blocks_after": 2,
             "reader_cleanup_global_plan_enabled": False,
             "reader_cleanup_keep_toc": False,
+            # A research matrix deliberately drives models and layouts that fail chunks —
+            # that IS the measurement. The production default (0.1) would abort those runs
+            # and return an empty report instead of the data the sweep exists to collect.
+            # 1.0 is the explicit off-switch for that abort (see
+            # ``_report._failed_chunk_ratio_exceeds_threshold``); the failures themselves are
+            # not swept under the rug but reported per cell by ``_score`` as
+            # ``failed_chunk_count`` / ``cleanup_chunk_count`` / ``stage_status``.
+            "reader_cleanup_max_failed_chunk_ratio": 1.0,
         }
     )
     cleanup_config = resolve_reader_cleanup_config(app_config=app_config, fallback_model=config.model_selector)

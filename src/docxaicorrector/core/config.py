@@ -300,7 +300,8 @@ class AppConfig(Mapping[str, Any]):
     reader_cleanup_overlap_blocks_before: int = 3
     reader_cleanup_overlap_blocks_after: int = 3
     reader_cleanup_global_plan_enabled: bool = False
-    reader_cleanup_max_failed_chunk_ratio: float = 1.0
+    # Spec 052 item 2: at 1.0 the pass aborted only when EVERY chunk failed.
+    reader_cleanup_max_failed_chunk_ratio: float = 0.1
 
     def __getitem__(self, key: str) -> object:
         try:

@@ -48,6 +48,129 @@ def _reader_cleanup_count_is_positive(value: object) -> bool:
         return False
 
 
+def _reader_cleanup_failed_chunk_ratio_notice(report_payload: Mapping[str, object] | None) -> dict[str, object] | None:
+    """Typed result notice for a pass aborted by ``max_failed_chunk_ratio`` (spec 052 item 2).
+
+    ``run_reader_cleanup`` does not raise for this: under ``policy="advisory"`` it returns a
+    report with ``stage_status="failed"`` and ``changed=False``. Without this branch the run
+    reached the user as the same yellow "cleanup was only partially available" warning a
+    single unavailable chunk produces — i.e. a book that was cleaned not at all looked exactly
+    like a book that was cleaned almost entirely.
+    """
+    if not isinstance(report_payload, Mapping):
+        return None
+    failure = report_payload.get("failure")
+    if not isinstance(failure, Mapping) or str(failure.get("kind") or "") != "failed_chunk_ratio_exceeded":
+        return None
+    stats = report_payload.get("stats")
+    stats_mapping = stats if isinstance(stats, Mapping) else {}
+    failed_chunk_count = stats_mapping.get("failed_chunk_count")
+    cleanup_chunk_count = stats_mapping.get("cleanup_chunk_count")
+    try:
+        failed_chunk_ratio_pct = round(float(cast(Any, failure.get("failed_chunk_ratio"))) * 100, 1)
+    except (TypeError, ValueError):
+        failed_chunk_ratio_pct = 0.0
+    try:
+        max_failed_chunk_ratio_pct = round(float(cast(Any, failure.get("max_failed_chunk_ratio"))) * 100, 1)
+    except (TypeError, ValueError):
+        max_failed_chunk_ratio_pct = 0.0
+    params: dict[str, object] = {
+        "failed_chunk_count": failed_chunk_count if isinstance(failed_chunk_count, int) else 0,
+        "cleanup_chunk_count": cleanup_chunk_count if isinstance(cleanup_chunk_count, int) else 0,
+        "failed_chunk_ratio_pct": failed_chunk_ratio_pct,
+        "max_failed_chunk_ratio_pct": max_failed_chunk_ratio_pct,
+    }
+    return {
+        "kind": "cleanup",
+        "level": "error",
+        "message_key": "result.cleanup_aborted_failed_chunk_ratio",
+        "params": params,
+        "message": (
+            f"Reader cleanup was aborted: {params['failed_chunk_count']} of {params['cleanup_chunk_count']} "
+            f"chunks failed ({failed_chunk_ratio_pct}%), above the allowed {max_failed_chunk_ratio_pct}%. "
+            "No cleanup was applied; the translated document was preserved."
+        ),
+    }
+
+
+def _reader_cleanup_image_anchor_discard_notice(report_payload: Mapping[str, object] | None) -> dict[str, object] | None:
+    """Typed result notice for a cleanup discarded to keep an image anchor in place.
+
+    Spec 052 item 5 refuses to deliver a cleanup that lost an image anchor, because the
+    only alternative — re-appending the anchor — moves a figure to the end of the book.
+    Refusing is right; refusing SILENTLY was not. The discard produced ``changed=False``
+    with ``stage_status="completed"``, no failure and no notice, so a run that threw away
+    every accepted operation was indistinguishable from a run that found nothing to do.
+    """
+    if not isinstance(report_payload, Mapping):
+        return None
+    failure = report_payload.get("failure")
+    if not isinstance(failure, Mapping) or str(failure.get("kind") or "") != "docx_image_anchor_lost_cleanup_discarded":
+        return None
+    missing_image_id_count = failure.get("missing_docx_image_id_count")
+    discarded_cleanup_operation_count = failure.get("discarded_cleanup_operation_count")
+    # No ``rejected_cleanup_operation_count`` param: the failure never carried a real one.
+    # Reaching this branch means the rejection did NOT succeed, and the entries it counted are
+    # only written when it did, so the number was a hardcoded zero dressed as a measurement.
+    params: dict[str, object] = {
+        "missing_image_id_count": missing_image_id_count if isinstance(missing_image_id_count, int) else 0,
+        "discarded_cleanup_operation_count": (
+            discarded_cleanup_operation_count if isinstance(discarded_cleanup_operation_count, int) else 0
+        ),
+    }
+    return {
+        "kind": "cleanup",
+        "level": "error",
+        "message_key": "result.cleanup_discarded_image_anchor_lost",
+        "params": params,
+        "message": (
+            f"Reader cleanup was discarded: {params['missing_image_id_count']} image anchor(s) would have been "
+            f"lost, and the operation responsible could not be identified and rejected. All "
+            f"{params['discarded_cleanup_operation_count']} accepted operation(s) were dropped; the translated "
+            "document was preserved with every image in place."
+        ),
+    }
+
+
+def _reader_cleanup_anchor_repair_rollback_notice(report_payload: Mapping[str, object] | None) -> dict[str, object] | None:
+    """Typed result notice for an anchor-repair pass rolled back to keep an anchor in place.
+
+    Round-10 P2-2. The partial sibling of the wholesale discard above: the first pass ships,
+    but the anchor-repair increment lost an image anchor and was thrown away. It is not a
+    stage failure — ``stage_status`` stays "completed" and the delivered document is a real
+    cleanup — so it gets a warning, not an error. What it must not be is invisible, which is
+    what it was: no ``failure``, no notice, and the only record a raw string in ``warnings``
+    that the UI never renders. The owner asked for figure captions to be repaired, paid for
+    the pass, and got a document where they were not, with nothing on screen saying so.
+    """
+    if not isinstance(report_payload, Mapping):
+        return None
+    image_reconciliation = report_payload.get("image_reconciliation")
+    if not isinstance(image_reconciliation, Mapping):
+        return None
+    if not image_reconciliation.get("anchor_repair_discarded_for_missing_image_ids"):
+        return None
+    missing_after_repair = image_reconciliation.get("missing_after_repair")
+    missing_image_id_count = len(missing_after_repair) if isinstance(missing_after_repair, (list, tuple)) else 0
+    discarded_count = image_reconciliation.get("anchor_repair_discarded_cleanup_operation_count")
+    params: dict[str, object] = {
+        "missing_image_id_count": missing_image_id_count,
+        "discarded_cleanup_operation_count": discarded_count if isinstance(discarded_count, int) else 0,
+    }
+    return {
+        "kind": "cleanup",
+        "level": "warning",
+        "message_key": "result.cleanup_anchor_repair_rolled_back",
+        "params": params,
+        "message": (
+            f"The reader-cleanup image-anchor repair pass was rolled back: it would have lost "
+            f"{params['missing_image_id_count']} image anchor(s), so its "
+            f"{params['discarded_cleanup_operation_count']} operation(s) were dropped. The rest of the "
+            "cleanup was delivered with every image in place."
+        ),
+    }
+
+
 def _run_reader_cleanup_postprocess(
     *,
     context: Any,
@@ -120,8 +243,20 @@ def _run_reader_cleanup_postprocess(
             model=config.model,
         )
 
+    # The anchor-repair guidance must ship with the anchor-repair requests and ONLY with
+    # them. Both prompts used to be built once, before ``anchor_targets`` was even
+    # resolved (~170 lines below), and without the flag — so an anchor-repair pass would
+    # have gone out without its own instructions, while every ordinary cleanup request
+    # would have carried them had the flag simply been set here. Build both variants and
+    # pick per request from the payload's ``pass_name``, which ``run_reader_cleanup`` sets
+    # to "anchor_repair" for that pass and which the schema-repair payload copies through
+    # (``_parse._build_cleanup_schema_repair_payload``).
     system_prompt = build_reader_cleanup_system_prompt()
+    anchor_repair_system_prompt = build_reader_cleanup_system_prompt(include_anchor_repair_guidance=True)
     schema_repair_system_prompt = build_reader_cleanup_schema_repair_system_prompt()
+    anchor_repair_schema_repair_system_prompt = build_reader_cleanup_schema_repair_system_prompt(
+        include_anchor_repair_guidance=True
+    )
     global_plan_system_prompt = build_reader_cleanup_global_plan_system_prompt()
     fallback_client = None
     if not callable(getattr(dependencies, "resolve_model_selector", None)) or not callable(
@@ -192,6 +327,7 @@ def _run_reader_cleanup_postprocess(
         context_before = str(request_payload.get("context_before_preview", "") or "")
         context_after = str(request_payload.get("context_after_preview", "") or "")
         pass_name = str(request_payload.get("pass_name") or "reader_cleanup")
+        request_system_prompt = anchor_repair_system_prompt if pass_name == "anchor_repair" else system_prompt
         started_at = time.perf_counter()
         dependencies.log_event(
             logging.INFO,
@@ -213,7 +349,7 @@ def _run_reader_cleanup_postprocess(
         response = dependencies.generate_markdown_block(
             client=client,
             model=model_id,
-            system_prompt=system_prompt,
+            system_prompt=request_system_prompt,
             target_text=target_text,
             context_before=context_before,
             context_after=context_after,
@@ -243,6 +379,12 @@ def _run_reader_cleanup_postprocess(
     def _repair_provider(request_payload: Mapping[str, object], chunk_index: int, chunk_count: int) -> str:
         _raise_if_stopped()
         target_text = json.dumps(request_payload, ensure_ascii=False, indent=2)
+        repair_pass_name = str(request_payload.get("pass_name") or "reader_cleanup")
+        request_system_prompt = (
+            anchor_repair_schema_repair_system_prompt
+            if repair_pass_name == "anchor_repair"
+            else schema_repair_system_prompt
+        )
         started_at = time.perf_counter()
         dependencies.log_event(
             logging.INFO,
@@ -262,7 +404,7 @@ def _run_reader_cleanup_postprocess(
         response = dependencies.generate_markdown_block(
             client=client,
             model=model_id,
-            system_prompt=schema_repair_system_prompt,
+            system_prompt=request_system_prompt,
             target_text=target_text,
             context_before="",
             context_after="",
@@ -318,18 +460,68 @@ def _run_reader_cleanup_postprocess(
                 generated_paragraph_registry=active_formatting_registry,
             )
             stats = cast(Mapping[str, object], cleanup_result.report_payload.get("stats") or {})
-            cleanup_notice = None
+            cleanup_notice: dict[str, object] | None = None
             legacy_cleanup_notice = None
-            if _reader_cleanup_count_is_positive(stats.get("failed_chunk_count")):
+            # Spec 052 item 2: a run aborted by the failed-chunk ratio must not read like an
+            # ordinary "nothing to clean" run. It carries stage_status="failed" and applied
+            # NOTHING, so it gets its own error-level notice naming the numbers, not the
+            # generic advisory warning a single unavailable chunk produces.
+            aborted_notice = _reader_cleanup_failed_chunk_ratio_notice(cleanup_result.report_payload)
+            # Spec 052 item 5 + round-9 P1-A: the other way a pass can apply nothing while
+            # having done all the work — every accepted operation discarded to keep an
+            # image anchor where it belongs. Same standing as the ratio abort: an
+            # error-level notice with the numbers, not silence.
+            discarded_notice = _reader_cleanup_image_anchor_discard_notice(cleanup_result.report_payload)
+            # Round-10 P2-2: and the partial form of the same event. Reachable here too — a
+            # first pass that changed nothing still runs the anchor-repair pass, and rolling
+            # that increment back leaves the run at changed=False.
+            anchor_rollback_notice = _reader_cleanup_anchor_repair_rollback_notice(cleanup_result.report_payload)
+            if aborted_notice is not None:
+                cleanup_notice = aborted_notice
+                dependencies.log_event(
+                    logging.WARNING,
+                    "reader_cleanup_failed_chunk_ratio_exceeded",
+                    "Reader cleanup post-pass прерван: доля упавших чанков превысила порог; очистка не применялась.",
+                    filename=context.uploaded_filename,
+                    policy=config.policy,
+                    model=config.model,
+                    # ``params`` already carries cleanup_chunk_count / failed_chunk_count
+                    # and the two percentages; do not also pass them explicitly.
+                    **cast(Mapping[str, object], aborted_notice.get("params") or {}),
+                )
+            elif discarded_notice is not None:
+                cleanup_notice = discarded_notice
+                dependencies.log_event(
+                    logging.WARNING,
+                    "reader_cleanup_image_anchor_lost_cleanup_discarded",
+                    "Reader cleanup post-pass отброшен целиком: очистка потеряла якорь изображения; документ сохранён.",
+                    filename=context.uploaded_filename,
+                    policy=config.policy,
+                    model=config.model,
+                    **cast(Mapping[str, object], discarded_notice.get("params") or {}),
+                )
+            elif anchor_rollback_notice is not None:
+                cleanup_notice = anchor_rollback_notice
+                dependencies.log_event(
+                    logging.WARNING,
+                    "reader_cleanup_anchor_repair_discarded_for_missing_image_anchor",
+                    "Anchor-repair проход reader cleanup откачен: он терял якорь изображения; остальная очистка сохранена.",
+                    filename=context.uploaded_filename,
+                    policy=config.policy,
+                    model=config.model,
+                    **cast(Mapping[str, object], anchor_rollback_notice.get("params") or {}),
+                )
+            elif _reader_cleanup_count_is_positive(stats.get("failed_chunk_count")):
                 cleanup_notice = {
                     "kind": "cleanup",
                     "level": "warning",
                     "message_key": "result.cleanup_advisory_failed",
                     "message": "Reader cleanup was only partially available; the accepted base content was preserved.",
                 }
+            if cleanup_notice is not None:
                 legacy_cleanup_notice = {
-                    "level": cleanup_notice["level"],
-                    "message": cleanup_notice["message"],
+                    "level": str(cleanup_notice["level"]),
+                    "message": str(cleanup_notice["message"]),
                 }
             dependencies.log_event(
                 logging.INFO,
@@ -427,16 +619,33 @@ def _run_reader_cleanup_postprocess(
         stats = cast(Mapping[str, object], cleanup_result.report_payload.get("stats") or {})
         cleanup_notice = None
         legacy_cleanup_notice = None
-        if _reader_cleanup_count_is_positive(stats.get("failed_chunk_count")):
+        # Round-10 P2-2. This is the ordinary way an anchor-repair rollback reaches an owner:
+        # the first pass changed the document, so delivery goes down this branch. It takes
+        # precedence over the generic "some chunks were unavailable" advisory because it names
+        # a specific thing that did not happen to the delivered book.
+        anchor_rollback_notice = _reader_cleanup_anchor_repair_rollback_notice(cleanup_result.report_payload)
+        if anchor_rollback_notice is not None:
+            cleanup_notice = anchor_rollback_notice
+            dependencies.log_event(
+                logging.WARNING,
+                "reader_cleanup_anchor_repair_discarded_for_missing_image_anchor",
+                "Anchor-repair проход reader cleanup откачен: он терял якорь изображения; остальная очистка доставлена.",
+                filename=context.uploaded_filename,
+                policy=config.policy,
+                model=config.model,
+                **cast(Mapping[str, object], anchor_rollback_notice.get("params") or {}),
+            )
+        elif _reader_cleanup_count_is_positive(stats.get("failed_chunk_count")):
             cleanup_notice = {
                 "kind": "cleanup",
                 "level": "warning",
                 "message_key": "result.cleanup_advisory_failed",
                 "message": "Reader cleanup completed with unavailable chunks; accepted cleanup operations were preserved.",
             }
+        if cleanup_notice is not None:
             legacy_cleanup_notice = {
-                "level": cleanup_notice["level"],
-                "message": cleanup_notice["message"],
+                "level": str(cleanup_notice["level"]),
+                "message": str(cleanup_notice["message"]),
             }
         dependencies.log_event(
             logging.INFO,

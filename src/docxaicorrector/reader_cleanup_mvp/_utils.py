@@ -6,13 +6,55 @@ from typing import Any, cast
 
 from ._constants import (
     _BLANK_PAGE_PATTERN,
+    _DOCX_IMAGE_ANCHOR_KIND,
+    _DOCX_IMAGE_PLACEHOLDER_PATTERN,
     _EXTRACTION_ARTIFACT_PATTERN,
     _FOOTNOTE_BODY_PATTERN,
     _ORPHAN_FOOTNOTE_PATTERN,
     _PAGE_NUMBER_PATTERN,
     _TOC_LIKE_PATTERN,
+    _TOC_MIN_PAGE_REFERENCE_TOKEN_RATIO,
+    _TOC_MIN_PAGE_REFERENCE_TOKENS,
+    _TOC_PAGE_REFERENCE_TAIL_PATTERN,
+    _TOC_PAGE_REFERENCE_TOKEN_PATTERN,
 )
 from ._models import CleanupBlock, CleanupOperation
+
+
+def _is_toc_like_text(stripped: str) -> bool:
+    """Whether a block should be treated as contents/index material (spec 052 item 6).
+
+    Two shapes qualify. A single contents entry — a leader followed by a page number, or
+    one short line ending in a page number. Or a *run* of page references: it carries
+    contents punctuation AND enough numeric tokens, relative to its word count, that it
+    cannot be read as a sentence. Real tables of contents and subject indexes are long
+    (140-922 characters on the measured books), so length cannot be the only filter;
+    page-number density is what separates them from a paragraph of prose whose last word
+    happens to be a number or which contains an ellipsis.
+    """
+    if _TOC_LIKE_PATTERN.search(stripped):
+        return True
+    if not _TOC_PAGE_REFERENCE_TAIL_PATTERN.search(stripped):
+        return False
+    page_reference_count = len(_TOC_PAGE_REFERENCE_TOKEN_PATTERN.findall(stripped))
+    if page_reference_count < _TOC_MIN_PAGE_REFERENCE_TOKENS:
+        return False
+    word_count = len(stripped.split())
+    if word_count <= 0:
+        return False
+    return page_reference_count / word_count >= _TOC_MIN_PAGE_REFERENCE_TOKEN_RATIO
+
+
+def _is_docx_image_anchor_text(stripped: str) -> bool:
+    """True when the block is nothing but one or more ``[[DOCX_IMAGE_*]]`` anchors.
+
+    Spec 052 item 4: these must never be classified ``extraction_artifact``, which is an
+    allowed ``delete_block`` reason. Blocks that mix an anchor with real text (a caption,
+    say) are ordinary paragraphs and keep their previous kind.
+    """
+    if not _DOCX_IMAGE_PLACEHOLDER_PATTERN.search(stripped):
+        return False
+    return not _DOCX_IMAGE_PLACEHOLDER_PATTERN.sub("", stripped).strip()
 
 
 def _detect_block_kind(text: str) -> str:
@@ -22,6 +64,8 @@ def _detect_block_kind(text: str) -> str:
     first_line = stripped.splitlines()[0].strip()
     if first_line.startswith("#"):
         return "heading"
+    if _is_docx_image_anchor_text(stripped):
+        return _DOCX_IMAGE_ANCHOR_KIND
     if _PAGE_NUMBER_PATTERN.fullmatch(stripped):
         return "page_number"
     if _BLANK_PAGE_PATTERN.fullmatch(stripped):
@@ -32,7 +76,7 @@ def _detect_block_kind(text: str) -> str:
         return "footnote_body"
     if _EXTRACTION_ARTIFACT_PATTERN.fullmatch(stripped):
         return "extraction_artifact"
-    if _TOC_LIKE_PATTERN.search(stripped):
+    if _is_toc_like_text(stripped):
         return "toc_like"
     if first_line.startswith(">"):
         return "blockquote"
@@ -109,8 +153,6 @@ def _serialize_cleanup_operation(*, operation: CleanupOperation, block: CleanupB
         payload["body_substring"] = operation.body_substring
     if operation.post_body_continuation:
         payload["post_body_continuation"] = operation.post_body_continuation
-    if operation.target_role:
-        payload["target_role"] = operation.target_role
     return payload
 
 

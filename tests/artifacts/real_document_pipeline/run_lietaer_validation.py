@@ -4426,6 +4426,11 @@ def _build_reader_cleanup_evidence_from_artifact_paths(artifact_paths: Mapping[s
     runtime_anchor_applied = bool(anchor_repair_pass)
     runtime_anchor_stats = cast(Mapping[str, object], anchor_repair_pass.get("stats") or {})
     runtime_anchor_accepted_count = _coerce_int(runtime_anchor_stats.get("accepted_cleanup_operation_count"))
+    # Round-10 P2-1. ``accepted_cleanup_operation_count`` is now zeroed when the pass was
+    # rolled back for a lost image anchor, so this no longer reads "runtime_applied" for a
+    # pass that shipped nothing; the flag is carried into the evidence so the reason for
+    # "runtime_attempted_no_safe_ops" is legible rather than guessed.
+    runtime_anchor_discarded = bool(anchor_repair_pass.get("discarded_for_missing_docx_image_anchor"))
     if runtime_anchor_applied and runtime_anchor_accepted_count > 0:
         anchor_repair_status = "runtime_applied"
     elif runtime_anchor_applied:
@@ -4459,6 +4464,7 @@ def _build_reader_cleanup_evidence_from_artifact_paths(artifact_paths: Mapping[s
             "cleanup_chunk_count": stats.get("cleanup_chunk_count"),
             "cleanup_settings": dict(cleanup_settings),
             "anchor_repair_status": anchor_repair_status,
+            "anchor_repair_discarded_for_missing_image_anchor": runtime_anchor_discarded,
             "recommended_anchor_targets": list(cast(Sequence[object], anchor_repair_pass.get("selected_anchors") or [])),
             "recommended_anchor_target_count": runtime_anchor_selected_count,
             "deleted_block_previews": deleted_block_previews,

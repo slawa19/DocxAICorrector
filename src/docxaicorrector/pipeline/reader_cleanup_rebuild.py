@@ -41,7 +41,11 @@ class ReaderCleanupPostprocessResult:
     raw_markdown: str | None
     result_notice: dict[str, str] | None
     final_generated_paragraph_registry: Sequence[Mapping[str, object]] | None
-    result_notices: tuple[dict[str, str], ...] = ()
+    # ``dict[str, object]``, not ``dict[str, str]``: a typed notice may carry a ``params``
+    # mapping for ``t(message_key, **params)`` (spec 052 item 2's abort notice does).
+    # ``result_notice`` stays string-only — it is the legacy single-notice field the UI
+    # renders verbatim. ``late_phases`` already consumes these as ``Mapping[str, object]``.
+    result_notices: tuple[Mapping[str, object], ...] = ()
 
 
 def _should_run_reader_cleanup(*, context: Any) -> bool:

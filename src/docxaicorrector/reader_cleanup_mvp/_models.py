@@ -9,6 +9,7 @@ from ._constants import (
     CleanupPolicy,
     _DEFAULT_CLEANUP_CHUNK_SIZE,
     _DEFAULT_GLOBAL_PLAN_ENABLED,
+    _DEFAULT_MAX_FAILED_CHUNK_RATIO,
     _DEFAULT_OVERLAP_BLOCKS_AFTER,
     _DEFAULT_OVERLAP_BLOCKS_BEFORE,
 )
@@ -26,8 +27,7 @@ class ReaderCleanupConfig:
     drop_back_matter: bool = False
     max_delete_block_ratio: float = 0.03
     max_delete_char_ratio: float = 0.05
-    max_reclassify_block_ratio: float = 0.05
-    max_failed_chunk_ratio: float = 1.0
+    max_failed_chunk_ratio: float = _DEFAULT_MAX_FAILED_CHUNK_RATIO
     max_consecutive_deleted_blocks: int = 3
     max_deleted_block_chars: int = 300
     policy: CleanupPolicy = "advisory"
@@ -100,7 +100,6 @@ class CleanupOperation:
     heading_substring: str = ""
     body_substring: str = ""
     post_body_continuation: str = ""
-    target_role: str = ""
 
 
 class ReaderCleanupStageError(RuntimeError):
