@@ -23,6 +23,42 @@ structural signal to key on, the defect is ACCEPTED; structure is never reconstr
 from the shape of the text (leading ordinal, capitalisation, length, position). Fix the
 import so a signal exists, or accept. Recorded from Mazzucato chapter 7, which arrives
 as role=body / heading_level=None and therefore renders as body text.
+
+Version change: 1.1.1 -> 1.2.0 (amended 2026-07-31 in commit 4331c29; recorded here
+retroactively on 2026-08-01, MINOR: material governance section changed)
+Modified sections: Spec Locations. GLOBAL_PLAN_2026-06-16.md stopped being "the living
+roadmap and dated update log" and became explicitly HISTORICAL; docs/WHERE_WE_ARE.md
+became the place where current direction lives, as navigation only; a spec's Status line
+was declared non-authoritative.
+Rationale: the amendment was made and merged without touching the version, the date or
+this report, which the Governance section requires. It is recorded now rather than
+folded silently into the next bump, because the omission is exactly the class of drift
+the amended section is about. No principle was redefined, so MINOR.
+
+Version change: 1.2.0 -> 2.0.0 (2026-08-01, MAJOR: a principle is redefined)
+Modified principles: III. Spec Before Code For Non-Trivial Work — the unconditional
+"MUST go through Spec -> Plan -> Tasks -> Implement" becomes a two-tier requirement:
+a spec.md is always required, while plan.md and tasks.md are required only for work
+that introduces a new module or contract, spans several modules whose order of change
+matters, or has design alternatives worth reviewing before code exists.
+Modified sections: Spec Kit Routing (steps 3-4 made conditional on the tier); Spec
+Locations (the specs/<NNN>-<slug>/ bullet no longer implies plan.md and tasks.md are
+always present).
+Rationale: the unconditional sequence had never been the practice. Of 53 specs, 5
+(044-048) carry plan.md and tasks.md; the other 48 are spec.md alone, and that includes
+every review round, every measurement and every decision record. A rule broken in 90% of
+cases governs nothing — it only makes an external reviewer report the repository as
+non-compliant, which is what happened on 2026-07-31. The tiers below describe what the
+project already does. MAJOR because a principle's obligation is narrowed, which the
+Governance section classifies as redefining a principle, even though the principle's
+core requirement — write the spec before the code — is untouched.
+Templates requiring updates: none. .specify/templates/spec-template.md governs spec.md
+only and is unaffected.
+Follow-up TODOs: OWNER RATIFICATION PENDING for 2.0.0. The tier boundary was written
+from observed practice, not from a decision the owner recorded. If the owner wants the
+full cycle mandatory more often, or not at all, the "Two tiers" list in Principle III is
+the paragraph to change. What is NOT open for reinterpretation: plan.md and tasks.md are
+never written retroactively for work that is already implemented.
 -->
 
 # DocxAICorrector Constitution
@@ -57,19 +93,41 @@ contracts that direct runners do not preserve.
 
 Feature work that changes user-visible behavior, pipeline architecture,
 document-structure recognition, validation gates, artifact contracts, or
-cross-module workflows MUST go through the Spec Kit sequence:
+cross-module workflows MUST be written down as `specs/<NNN>-<slug>/spec.md`
+BEFORE the code is written.
 
-```text
-Spec -> Plan -> Tasks -> Implement
-```
+**Two tiers, and the smaller one is the normal case.**
 
-Agents MAY skip Spec Kit for narrow bug fixes, direct diagnostic/test requests,
-format-only edits, and isolated test expectation updates where expected behavior
-is already unambiguous.
+- **Spec only.** The default. Applies to defect-driven remediation, review-round
+  follow-ups, measurements, negative results and decision records — work whose
+  scope is already bounded by the finding that prompted it, and whose
+  verification is a test run rather than a design review. 48 of the repository's
+  53 specs are this tier.
+- **Spec -> Plan -> Tasks -> Implement.** The full cycle. Required when the work
+  introduces a new module or a new contract, spans several modules whose order of
+  change matters, or has design alternatives that are worth arguing about before
+  anyone writes code. Specs 044-048 are the worked examples; read one before
+  deciding your work belongs here.
+
+When it is not obvious which tier applies, ask the owner. Guessing "full cycle"
+is not the safe default: it spends a review budget on paperwork that the spec
+already covered.
+
+**Never write `plan.md` or `tasks.md` after the fact.** A plan produced once the
+code exists documents nothing, and it misleads the next reader about how the
+decision was actually reached. If finished work is missing them, the honest
+remedy is a Changelog entry in its `spec.md`, not a reconstructed plan.
+
+Agents MAY skip Spec Kit entirely for narrow bug fixes, direct diagnostic/test
+requests, format-only edits, and isolated test expectation updates where expected
+behavior is already unambiguous.
 
 Rationale: this codebase has many interlocking contracts. Written specs make
 assumptions, success criteria, verification commands, and scope boundaries
-auditable before implementation begins.
+auditable before implementation begins. The tiers exist because the previous
+wording demanded the full cycle for everything and the project complied with it
+five times out of fifty-three — a rule nobody follows does not protect anything,
+it only produces false findings when someone audits against it.
 
 ### IV. Real-Document Evidence Before Hypotheses
 
@@ -215,10 +273,14 @@ When using Spec Kit:
 
 1. Start with `$speckit-specify` when no current spec exists.
 2. Use `$speckit-clarify` when requirements have material ambiguity.
-3. Use `$speckit-plan` to create `plan.md`, `research.md`, `data-model.md`,
-   `contracts/` when applicable, and `quickstart.md`.
-4. Use `$speckit-tasks` to create small, ordered, independently verifiable tasks.
+3. **Only for the full-cycle tier of Principle III:** use `$speckit-plan` to create
+   `plan.md`, `research.md`, `data-model.md`, `contracts/` when applicable, and
+   `quickstart.md`.
+4. **Only for the full-cycle tier:** use `$speckit-tasks` to create small, ordered,
+   independently verifiable tasks.
 5. Use `$speckit-implement` for selected tasks only, not for open-ended rewrites.
+   Spec-only work implements against the spec's own acceptance criteria and
+   `## Anti-regression` section.
 
 Generated specs under `specs/` are project documentation and SHOULD be committed
 when they describe accepted or in-progress product behavior.
@@ -227,9 +289,11 @@ when they describe accepted or in-progress product behavior.
 
 The repository has two spec homes. They are not interchangeable:
 
-- **`specs/<NNN>-<slug>/`** — one unit of work: `spec.md`, `plan.md`, `tasks.md`
-  and their Spec Kit companions. Created by `$speckit-specify`. This is where ALL
-  new specs go.
+- **`specs/<NNN>-<slug>/`** — one unit of work. Always `spec.md`; plus `plan.md`,
+  `tasks.md` and their Spec Kit companions when the work falls into the
+  full-cycle tier of Principle III. Created by `$speckit-specify`. This is where
+  ALL new specs go. A folder holding only `spec.md` is the normal shape, not an
+  incomplete one.
 - **`docs/specs/`** — long-lived documents that do not fit the one-feature-one-folder
   model, including `GLOBAL_PLAN_2026-06-16.md` and forward specs written before Spec Kit
   existed. No NEW spec is created here.
@@ -275,10 +339,12 @@ or logging/artifact retention.
 
 ## Governance
 
-This constitution governs Spec Kit plans, tasks, and implementation work in this
-repository. Any feature plan MUST include a Constitution Check that explains how
-the work preserves runtime, verification, evidence, observability, and scope
-contracts.
+This constitution governs Spec Kit specs, plans, tasks, and implementation work in
+this repository. Any feature plan MUST include a Constitution Check that explains
+how the work preserves runtime, verification, evidence, observability, and scope
+contracts. Spec-only work carries the same obligation in its `spec.md`: the
+`## Non-goals` and `## Anti-regression` sections are where scope and invariants
+are stated, and evidence citations carry the verification date.
 
 Amendments require:
 
@@ -293,4 +359,10 @@ Versioning follows semantic versioning:
 - MINOR for adding principles or material governance sections;
 - PATCH for wording clarifications.
 
-**Version**: 1.1.1 | **Ratified**: 2026-07-09 | **Last Amended**: 2026-07-10
+**Version**: 2.0.0 (⚠ NOT YET RATIFIED BY THE OWNER — see the Sync Impact Report) | **Ratified**: 2026-07-09 | **Last Amended**: 2026-08-01
+
+The 2.0.0 step narrows an obligation in Principle III (when the full Spec → Plan → Tasks cycle is
+required, versus a spec on its own). It was written to match how the repository has actually worked —
+48 of 53 specs carry only `spec.md` — but redefining a principle is the owner's call, not an agent's.
+Until the owner signs it off, treat the *description* of current practice as accurate and the *rule*
+as provisional: if the two conflict on a real decision, ask rather than cite this document.

@@ -168,7 +168,30 @@ vacuous passes.
   both the workflow and its guard rather than derived from the actual markers — a sixth marked file would
   silently fall out of CI again.
 
-## Anti-regression (mandatory)
+  **Update 2026-08-01: the hard-coded list is gone.** Commit `4331c29` replaced it with `-m
+  static_workflow` in `.github/workflows/ci.yml`, in `scripts/docker-ci-parity.sh` and in the guard, and
+  added a check that fails if a filename list comes back. The deselected markers (now including
+  `browser_ui`) are still deselected, and that half of the finding stands.
+
+## Non-goals
+
+This round is a pre-merge verification pass over someone else's branch, not an improvement round. It
+deliberately does **not**:
+
+- **Re-litigate the round-10/11 design.** Specs 044-050 were reviewed on their own terms. Only defects
+  introduced or left by `c5cdab0` and `2d9d8be` are in scope here.
+- **Fix `formatting_diagnostics_threshold` so it can actually fire.** The metric is 0 or 1 while the
+  corpus profiles threshold it at 5 and 12, so it never trips. Repairing that means changing the metric
+  and all four corpus profiles at once; it needs its own spec and its own measurement.
+- **Close the P3 tail.** The four P3s below are recorded, reproduced in reasoning, and left alone —
+  each is either unreachable in practice or a two-line fix better made when its module is next touched.
+  Fixing them here would widen the blast radius of a merge-unblocking round.
+- **Decide the PDF short-heading question.** The `document/roles.py` no-op is a product decision, and it
+  was taken separately (spec 053, owner decision 2026-07-31).
+- **Raise or lower the pyright baseline as a goal in itself.** The baseline moves only as a side effect
+  of fixing the errors this branch introduced.
+
+## Anti-regression
 
 1. A non-`OSError` (`KeyError`, `TypeError`) from any post-delivery secondary write leaves the run
    `succeeded`, the bytes downloadable, the disposition intact and both `.result.*` on disk.
@@ -207,10 +230,17 @@ Recorded so the next round does not rediscover them, and so nobody assumes they 
   entries and gained none, among them real in-chapter subheadings. Spec 049 measured the obvious remedy
   (carry font size through PDF import) and disproved it: 0 recovered, 1 lost. Whether to accept this as the
   PDF ceiling or to look for a different heading signal is an owner decision, not a merge blocker.
+
+  **Update 2026-08-01: decided.** Spec 053 measured the remaining signals and the owner accepted the PDF
+  ceiling on 2026-07-31. Do not reopen it with a new heading heuristic.
 - **Operational note.** `reader_cleanup_default = true` now genuinely enables the reader-cleanup pass in the
   interactive UI (spec 047 fixed the dead toggle). The repository's own `.env` carries
   `DOCX_AI_READER_CLEANUP_ENABLED=true`, so on this machine the pass becomes active after this merge, with
   the extra LLM cost and the deferred-DOCX build path that implies. `.env.example` ships `false`.
+
+  **Update 2026-08-01: resolved.** The local `.env` was set to `DOCX_AI_READER_CLEANUP_ENABLED=false` on
+  2026-07-31, so the pass no longer switches itself on as a side effect of a merge. Turning it back on is
+  now a deliberate step before the first production run — see `specs/052-reader-cleanup-first-production-run/spec.md`.
 
 ## SaaS rationale
 
@@ -218,3 +248,15 @@ Both P1 and the diagnostics P2 are multi-tenant hazards, not just local annoyanc
 delivered, already-paid-for document into an invitation to re-run it, and the second lets a run whose
 identity threading broke score a perfect formatting verdict while its delivery gate silently stops
 enforcing. Ownership-scoped evidence is only worth what its failure signal is worth.
+
+## Changelog
+
+- **2026-07-31** — written and implemented; merged to `main` via PR #6.
+- **2026-08-01** — process debt closed after an external review. Added the `## Non-goals` section the
+  repository's spec format contract requires. Three statements that were true when written and have since
+  been overtaken are marked with dated updates rather than deleted, so the record of what was known at
+  merge time stays readable: the hard-coded static-tier file list in CI (fixed by `4331c29`), the local
+  `.env` carrying reader cleanup enabled (set to `false` on 2026-07-31), and the open owner question about
+  short headings on PDF (decided in spec 053 on 2026-07-31). The two "measured" numbers in `## Build
+  quality` are left as they were: they are a dated measurement of this branch, not a claim about the
+  present state of `main` — for that, run the commands in `docs/WHERE_WE_ARE.md`.

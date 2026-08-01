@@ -1,7 +1,7 @@
 # Logging and Artifact Retention Contract
 
 Статус: каноническая документация.
-Последняя ревизия: 2026-07-21.
+Последняя ревизия: 2026-08-01.
 Связанные документы: `README.md` (раздел «Логи»), `docs/AI_AGENT_DEVELOPMENT_RULES.md`, `docs/archive/specs/LOGGING_AND_DISK_RETENTION_SPEC_2026-03-27.md` (исходная спецификация).
 
 Назначение документа: зафиксировать единый источник правды по логированию и retention runtime-артефактов, чтобы ИИ-агент при добавлении новых фич:
@@ -46,6 +46,8 @@
 ### 1.4 Event-callback контракт
 
 Функции нижнего слоя, которые не импортируют `logger` напрямую (`application_flow.py`, `state.py`, `image_pipeline.py`, `processing_service.py`, `real_document_validation_*.py`), принимают callable `log_event_fn: (level, event_id, message, **context) -> None`. Production-call site передаёт `log_event` из `logger.py`. Тесты передают lambda-stub. Это единственный разрешённый способ инверсии зависимости от логгера — новые модули низкого слоя должны следовать тому же паттерну.
+
+**Расхождение практики и документа, зафиксировано 2026-08-01 и ждёт решения владельца.** Правило выше сформулировано через список модулей, а пункт 8 чек-листа §4 — через условие «нижний слой без прямого импорта `logger`». Ни та, ни другая формулировка не отвечает на вопрос, что делать модулю, который импортирует логгер напрямую и в списке не значится. Пакет `src/docxaicorrector/generation/` поступает именно так: `resolve_owned_diagnostics_scope` в `src/docxaicorrector/generation/formatting_diagnostics_retention.py` берёт глобальный `log_event`, ровно как это давно делает соседний `src/docxaicorrector/generation/formatting_transfer.py`. То есть это сложившийся стиль пакета, а не регрессия одной функции. Внешнее ревью прочитало это как нарушение — значит, текст допускает два прочтения. Развилка: либо документ признаёт прямой импорт нормой для верхних и средних слоёв и оставляет инъекцию обязательной только там, где её требует тестируемость, либо инъекция объявляется обязательной везде и пакет `generation/` приводится к ней целиком. Второе — это правка кода, а не документации, и по объёму тянет на отдельную спеку. До решения новые функции в `generation/` пишите в стиле пакета: расхождение внутри одного модуля хуже, чем расхождение между модулем и документом.
 
 ### 1.5 Когда НЕ логировать
 
@@ -111,11 +113,15 @@ bash -c "cd /mnt/d/www/projects/2025/DocxAICorrector && python3 scripts/_list_lo
 - `docx_build_failed`, `empty_docx_bytes`.
 - `formatting_diagnostics_artifacts_detected`.
 - `formatting_diagnostics_write_failed` — `formatting_diagnostics_retention.py`, WARNING: артефакт diagnostics не записан, run продолжается (fail-open). Context: `{stage, expected_dir, scope, run_id, source_token, error_type, error}`.
+- `formatting_diagnostics_identity_missing` — `src/docxaicorrector/generation/formatting_diagnostics_retention.py` (`resolve_owned_diagnostics_scope`), WARNING: артефакт пишется, но `run_id` и/или `source_token` пустые, поэтому его ownership понижается с `live` до `offline`. Файл останется на диске, а вот собрать его обратно в отчёт этого прогона уже нельзя — ownership-фильтр его не увидит. Событие существует именно затем, чтобы потеря доказательства не была бесшумной: до спеки 051 понижение происходило молча и «нулевая» метрика формата выглядела как идеальный результат. Context: `{stage, artifact_kind, missing_identity_fields, downgraded_scope}`.
+- `processing_run_identity_missing` — `src/docxaicorrector/pipeline/setup.py` (`_warn_on_missing_run_identity`), WARNING через инъецированный `log_event`: run стартует с пустым `run_id`/`source_token`. Не поднимает исключение — offline-прогоны и replay законно живут без идентичности. Это событие потом читает `src/docxaicorrector/validation/structural.py`, чтобы отличить «диагностики не было» от «диагностику потеряли», и на этом основан check `formatting_diagnostics_evidence_not_lost`.
 - `invalid_processing_job`, `invalid_processing_plan`, `processing_init_failed`.
 - `ui_result_artifacts_saved`, `ui_audiobook_artifact_saved`.
 - `ui_result_artifacts_save_failed` — `late_phases.py`, WARNING: primary result files (markdown + docx) не дошли до диска. Context: `{filename, error_message}`.
 - `reader_cleanup_diagnostics_save_failed` — `late_phases.py`, WARNING: secondary diagnostics не сохранены; primary result при этом остаётся доставленным.
 - `segment_result_registry_saved` (INFO) / `segment_result_registry_save_failed` (WARNING) — `late_phases.py`: persisted segment result registry пишется ПОСЛЕ primary result files, его отказ не переводит run в unpersisted.
+- `segment_result_records_build_failed` — `late_phases.py` (`finalize_processing_success`), WARNING: сборка записей segment result registry упала уже после доставки результата. Теряется только кэш для возобновления, доставленный результат остаётся доставленным. Context: `{filename, error_type, error_message}`.
+- `post_delivery_secondary_step_failed` — `late_phases.py` (`_log_post_delivery_secondary_failure`), WARNING: внешний страховочный обработчик вокруг всего блока вторичных записей после доставки результата. Ловит всё, что не поймали частные обработчики выше, и намеренно НЕ перевыбрасывает: до спеки 051 такое исключение обнуляло уже доставленный документ и предлагало пользователю оплатить повторный прогон. Сам вызов логгера обёрнут в `except Exception: pass` — отказ логирования не должен воскресить исходную проблему.
 - `audiobook_postprocess_chunk_started`, `audiobook_postprocess_chunk_completed`.
 - `processing_completed` (INFO, run boundary).
 - `processing_completed_unpersisted` — `late_phases.py`, WARNING, альтернативный run boundary: документ обработан, но primary result files не сохранены. Context: `{reason}` + те же поля, что у `processing_completed`.
@@ -151,8 +157,60 @@ bash -c "cd /mnt/d/www/projects/2025/DocxAICorrector && python3 scripts/_list_lo
 - `reader_cleanup_drop_back_matter_unsupported` — `reader_cleanup_postprocess.py`, WARNING.
 - `reader_cleanup_strict_failed_base_result_preserved`, `reader_cleanup_failed_base_result_preserved` — `reader_cleanup_postprocess.py`, WARNING: post-pass упал, но base result доставлен.
 - `reader_cleanup_failed` — `reader_cleanup_postprocess.py`, через `present_error` (ERROR + traceback).
+- `reader_cleanup_failed_chunk_ratio_exceeded` — `reader_cleanup_postprocess.py`, WARNING: доля упавших чанков вычитки превысила `max_failed_chunk_ratio`, проход прерван, не применено ничего. Пользователь получает не общий совет «результат доступен частично», а конкретную причину с числами. Context несёт долю и порог. Обратите внимание: та же строка встречается в `src/docxaicorrector/reader_cleanup_mvp/service.py` внутри `warnings` отчёта — там это не log event, а payload-строка, порождающая условие для события выше.
+- `reader_cleanup_image_anchor_lost_cleanup_discarded` — `reader_cleanup_postprocess.py`, WARNING: применение принятых операций теряло якоря картинок в DOCX, а виновную операцию изолировать не удалось, поэтому отброшена вся вычитка целиком. Документ доставляется без изменений, но со всеми картинками. Context: `{missing_image_id_count, discarded_cleanup_operation_count}`.
+- `reader_cleanup_anchor_repair_discarded_for_missing_image_anchor` — `reader_cleanup_postprocess.py`, WARNING, две точки эмиссии: подпроход починки якорей откачен, а остальная вычитка при этом либо не изменила ничего, либо доставлена. Уровень WARNING, а не ERROR, потому что стадия завершается штатно (`stage_status = completed`).
 
 Строки вида `reader_cleanup_*` внутри reader-cleanup MVP `service.py` и check-имя `reader_cleanup_stage_completed` в `acceptance.py` — это warning-строки report payload и имя acceptance-check, а НЕ log events; не заводите их как event-имена.
+
+### 3.8 Зарегистрированы по имени, но ещё не описаны
+
+Сверка каталога с кодом 2026-08-01 показала, что §3.1–§3.7 покрывают не все события: код эмитит
+их больше, чем описано здесь. Перечисленные ниже 59 имён **заняты** — этого достаточно, чтобы
+пункт 1 чек-листа §4 (не заводить дубликат имени) работал честно. Описание уровня, смысла и
+context-ключей добавляется для события, когда его модуль в следующий раз меняют: выдумывать
+семантику по имени было бы ровно тем враньём документации, против которого этот документ и написан.
+
+- `src/docxaicorrector/document/layout_cleanup.py`: `layout_artifact_cleanup_outcome`.
+- `src/docxaicorrector/generation/_generation.py`: `markdown_marker_validation_source_fallback`, `markdown_non_completed_response_source_fallback`, `provider_text_api_fallback_engaged`.
+- `src/docxaicorrector/generation/formatting_restoration.py`: `alignment_restoration_skipped`.
+- `src/docxaicorrector/generation/formatting_transfer.py`: `paragraph_count_mismatch_restore`, `paragraph_count_mismatch_preserve` (имя передаётся параметром `mismatch_event_name`).
+- `src/docxaicorrector/image/analysis.py`: `image_analysis_skipped_over_budget`, `image_document_pixel_budget_exceeded`, `image_encoded_byte_budget_exceeded`, `image_pixel_budget_decompression_bomb`, `image_pixel_budget_exceeded`.
+- `src/docxaicorrector/image/generation.py`: `image_generation_skipped_over_budget`.
+- `src/docxaicorrector/image/pipeline.py`: `image_compare_variant_failed`, `image_document_pixel_budget_skip`, `image_fallback_applied`, `image_processing_budget_exhausted`, `image_processing_skipped_unsupported_source`, `image_validation_advisory_accept`, `semantic_candidate_attempt_failed`, `semantic_candidate_budget_exhausted`, `semantic_candidate_evaluated`, `semantic_candidate_resolved_to_safe_fallback`.
+- `src/docxaicorrector/pdf_import/images.py`: `pdf_image_extraction_dropped_images`, `pdf_image_extraction_page_budget_exceeded`, `pdf_image_extraction_summary`.
+- `src/docxaicorrector/pipeline/block_execution.py`: `block_controlled_fallback`, `controlled_fallback_registry_build_failed`, `toc_prompt_routing_selected`, `toc_validation_rejected`.
+- `src/docxaicorrector/pipeline/block_failures.py`: `toc_validation_failed_terminal`.
+- `src/docxaicorrector/pipeline/job_results.py`: `job_result_registry_save_failed`.
+- `src/docxaicorrector/pipeline/late_phases.py`: `audiobook_artifact_validation_failed`, `audiobook_artifact_validation_failed_base_result_preserved`, `audiobook_postprocess_failed`, `audiobook_postprocess_failed_base_result_preserved`, `boundary_recovery_diagnostics`, `quality_report_saved`, `translation_quality_gate_failed`, `translation_quality_gate_failed_post_cleanup`.
+- `src/docxaicorrector/pipeline/quality_report_retention.py`: `quality_report_write_failed`.
+- `src/docxaicorrector/pipeline/terminal_results.py`: `empty_processing_plan`.
+- `src/docxaicorrector/processing/application_flow.py` (все через `fail_critical_fn`, то есть CRITICAL + прерывание): `doc_conversion_failed`, `doc_validation_failed`, `empty_target_block`, `no_jobs_built`, `quality_gate_blocked`.
+- `src/docxaicorrector/processing/preparation.py`: `preparation_outcome`.
+- `src/docxaicorrector/processing/processing_runtime.py`: `materialized_upload_cache_hit`, `pdf_import_over_budget`, `pdf_text_layer_image_extraction_failed`, `pdf_text_layer_image_render_dropped`, `pdf_text_layer_import_succeeded`.
+- `src/docxaicorrector/processing/processing_service.py` (через `present_error_fn`): `preparation_worker_crashed`, `processing_worker_crashed`.
+- `src/docxaicorrector/processing/restart_store.py`: `restart_source_delete_refused`.
+- `src/docxaicorrector/processing/upload_ports.py`: `heartbeat_callback_failed`.
+- `src/docxaicorrector/runtime/state.py`: `completed_source_store_failed`.
+- `src/docxaicorrector/ui/application_flow.py`: `document_prepared`.
+
+### 3.9 Чего `scripts/_list_log_events.py` не видит
+
+Скрипт полезен, но он не является полным индексом, и полагаться на его молчание нельзя. Проверено
+2026-08-01, три слепые зоны:
+
+1. **Инъецированные логгеры.** Регулярка ищет `log_event(`, а не `log_event_fn(` /
+   `present_error_fn(` / `fail_critical_fn(` / `dependencies.log_event(`. Из-за этого выпадают целые
+   модули — `src/docxaicorrector/processing/application_flow.py`, `src/docxaicorrector/ui/application_flow.py`, `src/docxaicorrector/image/pipeline.py`,
+   `src/docxaicorrector/runtime/state.py`, `src/docxaicorrector/core/config_model_registry.py` — притом что §1.4 предписывает нижним слоям
+   именно инъекцию. Инструмент аудита не видит того, что документ рекомендует как правильный стиль.
+2. **Имена в константах.** `formatting_diagnostics_identity_missing` и
+   `processing_run_identity_missing` объявлены константами, а не литералами в вызове, и скрипт их
+   не находит.
+3. **Захардкоженный список файлов.** `TARGETS` перечисляет модули поимённо, отсутствующие файлы
+   пропускаются молча; новый модуль в индекс не попадёт, пока его туда не впишут руками.
+
+Пока это так, сверять новое имя нужно и с §3, и грепом по `src/`, а не одним скриптом.
 
 ---
 
@@ -299,4 +357,5 @@ Root workspace is not an artifact drop zone. Runtime/debug/manual investigation 
 - 2026-04-19: первая ревизия. Канонизирует текущее состояние `logger.py`, runtime-retention механик и фиксирует гэпы в retention для `paragraph_boundary_reports/`, `relation_normalization_reports/`, `paragraph_boundary_ai_review/`, `structure_maps/`, `structure_validation/`. Описан паттерн добавления новых событий.
 - 2026-04-19 (follow-up): гэп закрыт. Введён `runtime_artifact_retention.py` с `prune_artifact_dir()` и per-family константами. Writers подключены. Добавлено DEBUG-событие `artifact_pruned`. Ручной скрипт `scripts/clean-stale-run-artifacts.sh` очищает whitelisted stale root-файлы `.run/`. Тесты: `tests/test_runtime_artifact_retention.py`. Применена первичная cleanup-волна: `.run/` с 24 MiB сжат до 5.5 MiB, 39 stale артефактов удалено, bounded-директории в пределах квот.
 - 2026-07-21: каталог догнан до текущего кода. В §3 добавлены `persisted_source_validation_failed`, `result_bundle_invalid_delivery_disposition`, `ui_result_artifacts_save_failed`, `reader_cleanup_diagnostics_save_failed`, `segment_result_registry_saved|_save_failed`, `processing_completed_unpersisted`, расширенный context у `formatting_diagnostics_write_failed` и новая секция §3.7 по reader-cleanup post-pass. В §5.1/§5.2 зафиксирован ownership envelope `{scope, run_id, source_token}` для `.run/formatting_diagnostics/*.json` и scoped live-collection; retention семьи не изменился.
+- 2026-08-01: каталог снова догнан до кода. В §3.3 добавлены `formatting_diagnostics_identity_missing`, `processing_run_identity_missing`, `segment_result_records_build_failed`, `post_delivery_secondary_step_failed`; в §3.7 — `reader_cleanup_failed_chunk_ratio_exceeded`, `reader_cleanup_image_anchor_lost_cleanup_discarded`, `reader_cleanup_anchor_repair_discarded_for_missing_image_anchor` (все семь появились со спеками 051 и 052 и не были зарегистрированы, хотя §4 этого требует). Полная сверка показала, что расхождение шире семи имён: заведена §3.8 с ещё 59 событиями, зарегистрированными по имени и модулю, но пока без описания — это честно признанный долг, а не свежая находка. В §3.9 описаны три слепые зоны `scripts/_list_log_events.py`, из-за которых его молчание нельзя считать доказательством. В §1.4 зафиксировано расхождение между правилом об инъекции логгера и практикой пакета `generation/`, требующее решения владельца.
 - 2026-04-23: добавлен audiobook/narration contract. `.run/ui_results/` retention переведён на grouped stem pruning для `.result.md` / `.result.docx` / optional `.result.tts.txt`. Зафиксированы события `ui_audiobook_artifact_saved`, `audiobook_postprocess_chunk_started`, `audiobook_postprocess_chunk_completed` и расширенный payload `ui_result_artifacts_saved`.

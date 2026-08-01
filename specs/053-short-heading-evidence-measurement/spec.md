@@ -117,6 +117,25 @@ DOCX**. So on PDF input they are as empty as `font_size_pt` is here — one seri
 consumers. Neither heading route can work on PDF books until that serializer carries more than
 bold/italic.
 
+## Non-goals
+
+This spec measures and records. It deliberately does **not**:
+
+- **Implement the candidate rule.** Its 95%/74% score was earned on externally converted DOCX. On the
+  production PDF path the winning signal does not exist, so shipping the rule would repeat spec 049's
+  mistake one layer higher. The score is recorded so nobody has to re-derive it, not as a mandate.
+- **Extend the PDF serializer to carry vertical gap, alignment and indent.** That is the measurement
+  proposed below, and it was declined by the owner. Doing it anyway would be an unbudgeted change to the
+  import path with no committed consumer.
+- **Reopen spec 046's removal of the length-only rule.** The measurement confirms it: text length alone
+  scored 63.7% precision, and the shape-of-the-text signals Constitution VII forbids are exactly the ones
+  that would have to come back.
+- **Label the corpus by eye against the original PDFs.** Labelling is by surrounding context, which is
+  enough to separate signals that differ by an order of magnitude (80% vs 2%) and not enough to defend a
+  five-point difference. See `## Limits of this measurement`.
+- **Touch the reader-cleanup pass.** Its heading route is starved by the same serializer; that is stated
+  here as a shared root cause, and the pass itself is spec 052's subject.
+
 ## What to do next — measure once more, then decide
 
 > **Superseded by the owner decision of 2026-07-31: the ceiling is accepted and this measurement was
@@ -156,3 +175,31 @@ Stated so nobody over-reads it:
   are `False` for all of them — none of these carried information where the rule runs.
 - `keepNext` is present in the paragraph properties but was `0` for both headings and body in every
   case checked; the converter does not set it.
+
+## Anti-regression
+
+No code changed here, so there is nothing to keep from breaking in the usual sense. What this spec has
+to protect is the *decision* — the invariants below are what a future change must not quietly undo.
+
+1. **No heading promotion keyed on the shape of the text.** Length, leading ordinal, capitalisation and
+   position stay forbidden (Constitution VII). `document/roles.py::promote_short_standalone_headings`
+   must keep requiring a source-carried signal. The counter-proof already exists in the golden fixtures:
+   re-introducing a shape-based rule changes their `role: heading` counts, which is a visible diff.
+2. **ALL-CAPS is never treated as heading evidence** — not in a rule and not in a prompt. It is three
+   times more common in junk than in real headings. Any prompt or detector that starts crediting it is
+   wrong on the measured data, not merely unlawful under the constitution.
+3. **The surviving font-size rule stays honest about being a no-op on PDF input.** If someone "fixes"
+   it so it starts firing on PDF-derived books, that means a new signal appeared upstream — which
+   requires re-running the measurement in `## What to do next`, not trusting the rule.
+4. **A measured negative result is not deleted when it becomes inconvenient.** Specs 049 and 053 exist
+   to stop the same idea being rediscovered. If a future spec proposes recovering short headings on PDF,
+   it must cite the number it expects to beat (32% recall from bold/italic alone) and how it measured it.
+
+## Changelog
+
+- **2026-07-31** — measured and written; the owner accepted the PDF ceiling the same day, which turned
+  the spec into a decision record.
+- **2026-08-01** — process debt closed after an external review. Added the `## Non-goals` and
+  `## Anti-regression` sections the repository's spec format contract requires; no measurement, number or
+  conclusion was changed. No `plan.md` or `tasks.md` was written: there was never any implementation to
+  plan, and reconstructing one after the fact is forbidden by Principle III of the constitution.

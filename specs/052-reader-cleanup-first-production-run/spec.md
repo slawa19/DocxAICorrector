@@ -37,22 +37,28 @@ the pass could not switch itself on as a side effect of merging).
 The owner's stated goal is maximum readability: remove residual garbage, *polish phrasing where
 needed*, tidy formatting. The first two are in scope. The third is not, and no prompt can add it.
 
-Every one of the seven operations either deletes a block or rearranges text the source already
-contains, and each is verified against the original characters before it is applied:
+Every one of the operations either deletes a block or rearranges text the source already contains,
+and each is verified against the original characters before it is applied (references re-checked
+2026-08-01 against the implemented tree):
 
-- `reclassify_role` rejects itself outright if the visible text would change —
-  `reclassify_would_change_visible_text` (`reader_cleanup_mvp/_apply.py:653`).
-- `split_block` requires its substrings to cover the block exactly, with no remainder
-  (`_apply.py:391`).
-- `extract_side_heading_and_reattach_body` compares the character multiset before and after
-  (`_apply.py:536`).
-- `remove_inline_noise` deletes one exact substring and demands ≥20 non-space characters survive
-  (`_validate.py:24`).
+- `split_block` requires its substrings to cover the block exactly, with no remainder — the branch is
+  at `reader_cleanup_mvp/_apply.py:520-531`, the guard `_ordered_substrings_cover_text` at
+  `_apply.py:667`.
+- `extract_side_heading_and_reattach_body` compares the character multiset before and after — the
+  `Counter` comparison is at `_apply.py:660-663`, inside `_apply_side_heading_reattach_to_text`
+  (`_apply.py:616`).
+- `remove_inline_noise` deletes one exact substring (`_validate.py:23`) and demands ≥20 non-space
+  characters survive (`_apply.py:545`).
+
+There was a seventh operation, `reclassify_role`, and it too refused to change visible text — it
+rejected itself through `reclassify_would_change_visible_text`. It was removed outright by item 9
+below, so neither the operation nor that function exists any more; the argument stands on the six
+that remain.
 
 The model does emit a free-text field, `expected_after_preview` — but it is only ever used as a
 cross-check that the model and the code agree; a mismatch **rejects** the operation
-(`_apply.py:647`). The delivered text is always computed by code from the original. There is no path
-by which a sentence the model wrote reaches the document.
+(`_apply.py:657-659`). The delivered text is always computed by code from the original. There is no
+path by which a sentence the model wrote reaches the document.
 
 So the honest framing is: this pass is a **structural janitor**, not an editor. Asking it to polish
 prose would require a different pass that does not exist — one that accepts model-authored text,
@@ -63,12 +69,17 @@ with eyes open, not smuggled in as "improve the prompt".
 
 ## What the pass can actually do
 
-Seven operations (`reader_cleanup_mvp/_constants.py:32`): delete a block; remove an exact inline
-noise substring; split a block; join a fragmented paragraph with the next one; separate a heading
-fused to its body; pull a side-heading out of a sentence and reattach the remainder; and flip a
-block's role marker.
+**Six operations** — `_ALLOWED_OPERATIONS` in `reader_cleanup_mvp/_constants.py:35-42`, advertised to
+the model at `_prompts.py:37`: delete a block; remove an exact inline noise substring; split a block;
+join a fragmented paragraph with the next one; separate a heading fused to its body
+(`normalize_heading_boundary`); and pull a side-heading out of a sentence and reattach the remainder.
 
-Measured on the three real replay runs already in `.run/reader_cleanup_faithful_replay/`:
+A seventh, `reclassify_role`, flipped a block's role marker. It was removed by item 9; the reasoning
+is in `## The owner's heading hypothesis`.
+
+Measured on the three real replay runs already in `.run/reader_cleanup_faithful_replay/`. These are
+**pre-removal** numbers — they are what the seven-operation pass did, and they are kept because they
+are the evidence the removal decision rests on:
 
 | Book | Proposed | Accepted | Characters deleted | `reclassify_role` accepted |
 |---|---|---|---|---|
@@ -77,14 +88,21 @@ Measured on the three real replay runs already in `.run/reader_cleanup_faithful_
 | mazzucato | 16 | 12 | 110 of 804 000 (0.014%) | 0 |
 
 Lietaer is worth reading twice: the model proposed 49 deletions, they exceeded
-`max_delete_block_ratio = 0.03`, and the code rolled back **every deletion at once**
-(`_apply.py:162`). The report still says "44 accepted" — but not one character was removed. The
-safety limit worked exactly as designed; the reporting makes it invisible.
+`max_delete_block_ratio` (default `0.03`, `_config.py:50`), and the code rolled back **every deletion
+at once**. The report still said "44 accepted" — but not one character was removed. The safety limit
+worked exactly as designed; the reporting made it invisible.
+
+**Fixed since.** The rollback no longer patches the outcome after the fact: `_apply.py:192` now hands
+control to `_reapply_without_delete_operations` (`_apply.py:226`), which re-applies the surviving
+operation set from scratch, so a rejected deletion is genuinely rejected in the report as well as in
+the text. This is the same fix that finally closed the image-anchor P0 — see `## What the review
+rounds found`.
 
 ## What it costs
 
-Chunking is by characters, 8 000 per chunk (`_constants.py:149`), with 3 read-only blocks of context
-on each side. Measured on the real books:
+Chunking is by characters, 8 000 per chunk (`_DEFAULT_CLEANUP_CHUNK_SIZE`, `_constants.py:181`), with
+3 read-only blocks of context on each side. Measured on the real books, before the payload fixes
+below:
 
 | Book | Blocks | Requests | Payload characters | ≈ input tokens |
 |---|---|---|---|---|
@@ -92,64 +110,81 @@ on each side. Measured on the real books:
 | lietaer | 1 898 | 70 | 2.73 M | ~1.09 M |
 | mazzucato | 2 099 | 107 | 4.01 M | ~1.60 M |
 
-The payload is **~5× the size of the book itself**, and the largest single component is not the text:
-`operation_selection_targets` is 36.4% of it, of which 89% is boilerplate — 1 403 of 1 419 targets are
-`side_heading_island_candidate`, each carrying the same ~1 000 characters of `safety_note` /
-`stub_continuation_risk` / `reattach_expected_after_preview_shape` prose
-(`_detectors.py:341-353`). The same paragraph of instruction, repeated a thousand times, instead of
-once in the system prompt. Meanwhile `targets[:20]` (`_detectors.py:32`) truncates 28% of chunks, so
-blocks near the end of a chunk systematically get no hints at all.
+The payload was **~5× the size of the book itself**, and the largest single component was not the
+text: `operation_selection_targets` was 36.4% of it, of which 89% was boilerplate — 1 403 of 1 419
+targets were `side_heading_island_candidate`, each carrying the same ~1 000 characters of
+`safety_note` / `stub_continuation_risk` / `reattach_expected_after_preview_shape` prose. The same
+paragraph of instruction, repeated a thousand times, instead of once in the system prompt. Meanwhile a
+flat `targets[:20]` cap truncated 28% of chunks, so blocks near the end of a chunk systematically got
+no hints at all.
 
-**Model resolution is a trap.** `config.toml:66` sets `reader_cleanup_model =
-"anthropic:claude-sonnet-4-6"`, and the code default is only consulted when that is empty
-(`_config.py:24`). The repository `.env` overrides it to `openrouter:anthropic/claude-haiku-4.5` —
-which is what all three replay runs actually used — but `.env.example:39` ships the value **empty**.
-An operator who enables the pass by copying the example gets Sonnet, at many times the cost, without
-being told.
+**Both are fixed (items 3 and 7).** `_build_side_heading_island_targets` (`_detectors.py:321-350`) now
+emits only `category`, `id`, `text_hash` and `heading_candidate`; the three boilerplate fields no
+longer exist anywhere in the package, and the safety rules are stated once in the system prompt. The
+flat cap is gone too: `_build_operation_selection_targets` (`_detectors.py:23-36`) fills a serialized
+character budget instead (`_OPERATION_SELECTION_TARGETS_CHAR_BUDGET`, `_detectors.py:16`), so
+truncation is driven by payload size rather than by an arbitrary count.
+
+**Model resolution was a trap, and that is fixed too (item 1).** `config.toml` set
+`reader_cleanup_model = "anthropic:claude-sonnet-4-6"`, the code default was consulted only when that
+was empty (`_config.py:25`), and `.env.example` shipped the value blank — so an operator who enabled
+the pass by copying the example silently got Sonnet, at many times the cost of the Haiku the three
+replay runs actually used. Today `src/docxaicorrector/resources/config.toml:74`, the code default
+(`READER_CLEANUP_DEFAULT_SELECTOR`, `_constants.py:13`), `.env:43` and `.env.example:43` all name
+`openrouter:anthropic/claude-haiku-4.5`. Copying the example now gets you the model the measurements
+were made with.
 
 ## The owner's heading hypothesis
 
-**Verdict: technically real, currently useless, and — as the prompt is written today — a Constitution
-VII violation. All three are fixable, but not by prompt wording alone.**
+**Verdict: technically real, useless in practice, and — as the prompt was written at the time — a
+Constitution VII violation. The section is written in the past tense because the operation it analyses
+was removed by item 9; the analysis is kept because it is the reason for that removal.**
 
-*It works mechanically.* `reclassify_role` with `target_role="heading"` rewrites the block as `## text`
-(`_apply.py:658`), and because the changed path rebuilds the DOCX by running pandoc over the whole
-markdown (`reader_cleanup_rebuild.py:88`), that `##` becomes a genuine Word `Heading 2`.
+*It worked mechanically.* `reclassify_role` with `target_role="heading"` rewrote the block as
+`## text`, and because the changed path rebuilds the DOCX by running pandoc over the whole markdown
+(`_rebuild_docx_for_markdown`, `pipeline/reader_cleanup_rebuild.py:92`), that `##` became a genuine
+Word `Heading 2`. The `## ` prefixing survives today only in the dormant reannotation path
+(`_apply.py:411`, `:415`).
 
-*It is useless in practice.* The level is hardcoded to H2 (`_constants.py:43`) with no hierarchy;
-multi-line blocks are refused (`_apply.py:642`); only `paragraph` and `blockquote` are eligible
-(`_validate.py:427`); and the observed yield is 1, 2 and 0 accepted reclassifications per book.
+*It was useless in practice.* The level was hardcoded to H2 with no hierarchy; multi-line blocks were
+refused; only `paragraph` and `blockquote` were eligible; and the observed yield was 1, 2 and 0
+accepted reclassifications per book.
 
-*Two delivery holes would make a run inconclusive even if the model got it right.* The registry
-derivation handles `delete_block`, `join_fragmented_paragraph` and the four text operations, and
-lets `reclassify_role` fall through to `skipped_operations`
-(`reader_cleanup_rebuild.py:726`) — so the registry entry still reads `Заголовок` while the markdown
-now reads `## Заголовок`. Text matching does not strip heading markers, so that entry loses its
-paragraph indexes and its formatting degrades. Worse, the new heading is not in the protected set of
-`normalize_false_fragment_headings_markdown` (`output_validation.py:1779`), so display hygiene can
-merge it straight back into the previous paragraph — silently. A correctly restored heading can
-therefore disappear before delivery, and the hypothesis would be buried by a delivery defect rather
-than judged on its merits.
+*Two delivery holes would have made a run inconclusive even if the model got it right.* The registry
+derivation handles `delete_block`, `join_fragmented_paragraph` and the text operations, and let
+`reclassify_role` fall through to `skipped_operations` — so the registry entry still read `Заголовок`
+while the markdown now read `## Заголовок`. Text matching does not strip heading markers, so that
+entry lost its paragraph indexes and its formatting degraded. Worse, the new heading was not in the
+protected set of `normalize_false_fragment_headings_markdown` (the check is at
+`pipeline/output_validation.py:1779`), so display hygiene could merge it straight back into the
+previous paragraph — silently. A correctly restored heading could therefore disappear before delivery,
+and the hypothesis would have been buried by a delivery defect rather than judged on its merits. Both
+holes are moot now: no operation creates headings. The generic unknown-operation fall-through remains
+at `reader_cleanup_rebuild.py:730`, and nothing reaches it any more.
 
 *The constitutional problem, stated plainly.* Constitution VII forbids reconstructing structure from
 the shape of the text — "a leading ordinal, capitalisation, length, position", and "no source signal,
-no repair". The production prompt instructs exactly that: *"ALL-CAPS short text after a heading may be
+no repair". The production prompt instructed exactly that: *"ALL-CAPS short text after a heading may be
 attribution"*, *"a short topic-introducing line may be heading when the surrounding prose shows it
-starts a new topic"* (`_prompts.py:19`). That is capitalisation, length and position — three of the
-four named prohibitions.
+starts a new topic"*. That is capitalisation, length and position — three of the four named
+prohibitions. Those lines went with the operation: there is no longer any occurrence of `ALL-CAPS` or
+`attribution` in `_prompts.py`. (An unrelated ALL-CAPS rule still lives in a different pass,
+`src/docxaicorrector/resources/prompts/structure_recognition_system.txt:41`, and is out of scope here.)
 
 *But the lawful version is already half-built, and nobody wired it up.* Real layout evidence from the
 source — `font_size` versus `body_font_size`, `left_indent`, `first_line_indent`, `alignment`,
-`centered`, `superscript` — is already extracted (`reader_cleanup_rebuild.py:365`), already attached
-to each block (`_blocks.py:42`) and already serialised into the payload (`_models.py:67`).
+`centered`, `superscript` — is already extracted
+(`_reader_cleanup_layout_signals_from_registry_entry`, `reader_cleanup_rebuild.py:369`), already
+attached to each block (`_blocks.py:42`) and already serialised into the payload (`_models.py:67-68`).
 **The production prompt never mentions it once.** A second, unused prompt
-(`_prompts.py:156-178`) is built entirely on those signals and carries the right default: *"Never
-infer heading/list/footnote from text alone when layout/context evidence is weak; default to body."*
-Its entry point `run_reader_cleanup_reannotation` (`service.py:474`) is referenced only by the
+(`build_reader_cleanup_reannotation_system_prompt`, `_prompts.py:171-193`) is built entirely on those
+signals and carries the right default: *"Never infer heading/list/footnote from text alone when
+layout/context evidence is weak; default to body."* (`_prompts.py:183`). Its entry point
+`run_reader_cleanup_reannotation` (`reader_cleanup_mvp/service.py:875`) is referenced only by the
 package exports and tests — the pipeline never calls it.
 
 So heading restoration by *reading a source signal* is constitutional and reachable. Heading
-restoration by *guessing from text shape* is neither, and is what is wired up today.
+restoration by *guessing from text shape* is neither, and it is what was wired up.
 
 ### Measured: on PDF books the layout signal is not there
 
@@ -180,84 +215,137 @@ observed yield is 0–2 per book. So it is disabled rather than reasoned about.
 right call, and it makes the change smaller rather than larger.
 
 Disabling would have needed new code of its own: `reader_cleanup_allowed_operations` is read from
-`app_config` (`_config.py:70`) and an empty value means *allow everything* (`_detectors.py:11`), but
-the key exists nowhere in the production config model — `core/config.py` carries
-`reader_cleanup_default`, `_model`, `_chunk_size`, `_overlap_*`, `_global_plan_enabled` and
-`_max_failed_chunk_ratio`, and no `_allowed_operations`. Only a validation run profile can set it
-(`validation/profiles.py:100`). So a production run cannot restrict the operation set at all today,
-and honouring the decision by configuration would mean **adding a config key whose only purpose is to
-keep a disabled feature alive**.
+`app_config` (`_config.py:70`) and an empty value means *allow everything*
+(`_allowed_operations_for_config`, `_detectors.py:19-20`), but the key exists nowhere in the
+production config model — `core/config.py:296-304` carries `reader_cleanup_default`, `_model`,
+`_verifier_model`, `_chunk_size`, `_overlap_*`, `_global_plan_enabled` and `_max_failed_chunk_ratio`,
+and no `_allowed_operations`. Only a validation run profile can set it (`validation/profiles.py:100`).
+So a production run cannot restrict the operation set at all, and honouring the decision by
+configuration would have meant **adding a config key whose only purpose is to keep a disabled feature
+alive**.
 
 Removal is cleaner on every axis: no new config surface; no flag someone flips in six months to
 resurrect behaviour the Constitution forbids; ~58 mentions across 10 files in
-`reader_cleanup_mvp/` deleted, including nine lines of prompt that ship in every one of the ~107
-requests per book. Nothing outside the package depends on it — the `reclassify` hits in
-`document/roles.py` and `document/extraction.py` are `reclassify_adjacent_captions`, an unrelated
-function, and no gate or acceptance check reads the operation's report fields.
+`reader_cleanup_mvp/` deleted, including nine lines of prompt that shipped in every one of the ~107
+requests per book. Nothing outside the package depended on it — the `reclassify` hits in
+`document/roles.py:306` and `document/extraction.py` are `reclassify_adjacent_captions`, an unrelated
+function that is still in use, and no gate or acceptance check read the operation's report fields.
 
 **The capability is not being lost, only the unlawful implementation of it.** The evidence-based
-design already exists in the unused reannotation path (`_prompts.py:156-178`), which decides roles
+design already exists in the unused reannotation path (`_prompts.py:171-193`), which decides roles
 from `layout_signals` and defaults to body when the evidence is weak. That stays (see "Explicitly not
 fixed"). If heading work is ever revived — on DOCX input, where the signals actually survive — it
 should start from there, not from an operation that reasons about capitalisation.
 
-## Proposed: fix before the first run
+## Fixed before the first run
+
+All nine items below landed on 2026-07-31 (item 8 as a deliberate drop). They are kept in their
+original ranked form, because the ranking — effect per unit of work — is the reasoning, and because
+each item names the defect it removed. Present-tense descriptions of a defect below mean "this is what
+the code did before the item landed".
 
 Ranked by effect per unit of work. Each is justified statically or from existing artifacts — none of
 them needs the run to have happened.
 
-1. **Pin the model explicitly.** Fill `DOCX_AI_READER_CLEANUP_MODEL` in `.env.example`, or make
-   `config.toml:66` a deliberate choice. (~5 lines.) Otherwise the first production run silently
-   costs several times what the replays did.
-2. **Lower `max_failed_chunk_ratio` from 1.0 to ~0.1** (`_config.py:57`). At 1.0, 106 of 107 chunks
-   can fail and the run still reports `completed` / `changed: true` with no signal. The first run must
-   be honest about partial execution, or its result cannot be interpreted. (1 line.)
+1. **Pin the model explicitly.** The config named Sonnet, `.env.example` shipped the key blank, and
+   the code default was reached only when the config was empty — so copying the example bought a
+   several-times-more-expensive model without saying so.
+   *Landed:* config, code default, `.env` and `.env.example` all name
+   `openrouter:anthropic/claude-haiku-4.5` (`resources/config.toml:74`, `_constants.py:13`,
+   `.env.example:43`).
+2. **Lower `max_failed_chunk_ratio` from 1.0 to ~0.1.** At 1.0, 106 of 107 chunks could fail and the
+   run would still report `completed` / `changed: true` with no signal. The first run must be honest
+   about partial execution, or its result cannot be interpreted.
+   *Landed:* `_DEFAULT_MAX_FAILED_CHUNK_RATIO = 0.1` (`_constants.py:187`), read at `_config.py:55-58`,
+   mirrored in `resources/config.toml:82` and `core/config.py:304`. Breaching it now emits
+   `reader_cleanup_failed_chunk_ratio_exceeded`.
 3. **Move the target boilerplate into the system prompt.** Keep `category`, `id`, `text_hash` and the
-   actual substrings per target; state the safety rules once. (~40 lines.) Cuts roughly a third of the
-   pass's cost with no behavioural change — the model reads the same rules, just not 1 403 times.
-4. **Stop classifying image anchors as `extraction_artifact`.** `_EXTRACTION_ARTIFACT_PATTERN`
-   (`_constants.py:76`) matches `[[DOCX_IMAGE_*]]`, so every image anchor is labelled with a `kind`
-   that is on the allowed-deletion list, while the prompt tells the model not to touch them. The
-   validator currently catches it (`_validate.py:369`), but this is the exact contradiction that once
-   cost 20–37 images per book; it should not survive on one check. (~5 lines + test.)
-5. **Do not re-append lost image anchors at the end of the document.** `_report.py:166` restores a
-   dropped anchor by pasting it at the end — the count reconciles while a chapter-3 figure lands after
-   the bibliography. Reject the operation that lost it instead. (~20 lines.)
-6. **Narrow `_TOC_LIKE_PATTERN`** (`_constants.py:75`). `\s\d{1,4}\s*$` makes any paragraph ending in
-   a number "TOC-like" and immune to every operation: 0.5–4.1% of blocks, up to 60% of them real prose.
-   (~3 lines + test.)
+   actual substrings per target; state the safety rules once. Cuts roughly a third of the pass's cost
+   with no behavioural change — the model reads the same rules, just not 1 403 times.
+   *Landed:* `_build_side_heading_island_targets` (`_detectors.py:321-350`) emits four fields; the
+   `safety_note` / `stub_continuation_risk` / `reattach_expected_after_preview_shape` prose is gone
+   from the package.
+4. **Stop classifying image anchors as `extraction_artifact`.** `_EXTRACTION_ARTIFACT_PATTERN` matched
+   `[[DOCX_IMAGE_*]]`, so every image anchor carried a `kind` on the allowed-deletion list while the
+   prompt told the model not to touch them. The validator caught it, but this is the exact
+   contradiction that once cost 20–37 images per book; it should not survive on one check.
+   *Landed:* the pattern is at `_constants.py:101-104` and anchors now carry their own
+   `_DOCX_IMAGE_ANCHOR_KIND = "docx_image_anchor"` (`_constants.py:111`), which is on no deletion list.
+   The validator's second line of defence remains (`_validate.py:358`).
+5. **Do not re-append lost image anchors at the end of the document.** The reconciliation step restored
+   a dropped anchor by pasting it at the end — the count reconciled while a chapter-3 figure landed
+   after the bibliography. Reject the operation that lost it instead.
+   *Landed:* `_reconcile_docx_image_placeholders` (`_report.py:157`) now discards the whole cleanup and
+   returns the untouched markdown (`_report.py:196-212`), reporting
+   `reader_cleanup_image_anchor_lost_cleanup_discarded`. Nothing is ever re-appended.
+6. **Narrow `_TOC_LIKE_PATTERN`.** `\s\d{1,4}\s*$` made any paragraph ending in a number "TOC-like"
+   and immune to every operation: 0.5–4.1% of blocks, up to 60% of them real prose.
+   *Landed:* `_constants.py:90-92` — both branches require a page number, a bare trailing number counts
+   only when the whole line is within `_TOC_ENTRY_MAX_CHARS = 100` (`_constants.py:89`), plus a density
+   rule (`_constants.py:97-100`).
 7. **Stop sending dead instructions.** The `anchor_repair` branch is unreachable in production yet
-   occupies ~10 lines of every one of the 107 prompts, and the empty `global_plan` fields ship on every
-   request. (~15 lines.)
+   occupied ~10 lines of every one of the 107 prompts, and the empty `global_plan` fields shipped on
+   every request.
+   *Landed:* `build_reader_cleanup_system_prompt` takes `include_anchor_repair_guidance: bool = False`
+   (`_prompts.py:30`) and the guidance is an opt-in constant; the plan is compacted by
+   `_compact_global_plan_for_payload` (`_planning.py:125`, used at `_planning.py:219`).
 8. ~~Handle `reclassify_role` in the registry derivation and protect restored headings.~~
    **DROPPED** by the owner decision of 2026-07-31 — see the heading section above. Heading
-   restoration is out of scope; the operation is disabled instead.
+   restoration is out of scope; the operation was removed instead.
 9. **Remove `reclassify_role` outright** — the operation, its validation and apply branches, its
-   prompt lines, its `max_reclassify_block_ratio` config and its tests. (~58 mentions across 10 files
-   in `reader_cleanup_mvp/`; contained, no external dependents.) The pass keeps six operations, all of
-   which move or delete text the source already contains. This subsumes the role-inference rules in
-   the production prompt (`_prompts.py:19`), which are the ones that teach the model that ALL-CAPS
-   suggests a heading — spec 053 measured capitalisation as an **anti**-signal, three times commoner
-   in junk than in real headings.
-   *Detail worth getting right:* the response contract sent to the model must stop advertising the
-   operation, and an operation name the code no longer knows must be **ignored with a recorded
-   reason**, not crash the chunk — a model that has seen the old contract may still emit it.
+   prompt lines, its `max_reclassify_block_ratio` config and its tests. This subsumed the
+   role-inference rules in the production prompt, the ones that taught the model that ALL-CAPS suggests
+   a heading — spec 053 measured capitalisation as an **anti**-signal, three times commoner in junk
+   than in real headings.
+   *Landed:* `_ALLOWED_OPERATIONS` lists six (`_constants.py:35-42`); `max_reclassify_block_ratio` and
+   `reclassify_would_change_visible_text` are gone from `src/` and `tests/`; an unknown operation name
+   is recorded as ignored rather than failing its chunk (`_parse.py:607`), because a model that has
+   seen the old contract may still emit it. `tests/test_reader_cleanup_mvp.py` keeps
+   `reclassify_role` as a removed-operation fixture: it asserts the name is ignored with
+   `operation_not_supported` and that the advertised contract names six operations.
 
-Removing item 9's predecessor (a config key to disable the operation) is deliberate: it would have been
-new surface whose only purpose was to keep a disabled feature alive.
+Removing item 9's predecessor (a config key to disable the operation) was deliberate: it would have
+been new surface whose only purpose was to keep a disabled feature alive.
+
+## Non-goals
+
+- **Not a prose editor, and not the first step towards one.** A pass that accepts model-authored
+  sentences is a different thing with a different risk profile: it would need its own faithfulness
+  gate, because nothing would then guarantee the translation still says what the source says. Wanting
+  it is a legitimate owner decision; it must be taken deliberately, not smuggled in as "improve the
+  prompt".
+- **Not heading restoration.** Dropped by the owner on 2026-07-31 once spec 053 showed the layout
+  evidence never reaches the model on PDF input. The dormant reannotation path is preserved but not
+  wired up here.
+- **No new configuration surface.** Specifically no `reader_cleanup_allowed_operations` key in the
+  production config model: a flag whose only purpose is to keep a removed feature switchable is worse
+  than the removal.
+- **No re-tuning of chunk size, overlap or prompt wording before the first run.** The three replay runs
+  are the only baseline that exists; changing the inputs now would destroy the comparison the run is
+  supposed to provide.
+- **No change to what the pass costs beyond removing waste.** Items 3 and 7 delete duplicated payload;
+  they do not trade quality for tokens, and the accepted-operation sets on the replay books must stay
+  byte-identical.
+- **Not the run itself.** This spec ends where the run begins. The success criteria are proposed here
+  and still have to be agreed.
 
 ## Explicitly not fixed before the run
 
 These are real, and deliberately left alone until there is a real result to look at: the
 `expected_after_preview` divergence (6 cases in 56 operations across three books); the ≤12-character
-silent loss in `normalize_heading_boundary` (`_apply.py:624`) whose threshold was tuned against a
-specific regression; the hardcoded `##` and missing heading hierarchy; the fact that `attribution`,
-`caption` and `body` are indistinguishable (`_apply.py:664`); the duplicated `ignored_delete_blocks`
-in the report; and the chunk size and overlap — changing 8 000 / 3+3 now would throw away the only
-baseline the three replay runs give us.
+silent loss in `normalize_heading_boundary`, whose threshold was tuned against a specific regression
+(`_apply_heading_boundary_to_text`, `_apply.py:725`; the two `> 12` guards at `_apply.py:758` and
+`:762`); the duplicated `ignored_delete_blocks` in the report; and the chunk size and overlap —
+changing 8 000 / 3+3 now would throw away the only baseline the three replay runs give us.
 
-**Do not delete the dead reannotation path** (`service.py:474`, `_apply.py:185-327`,
-`_prompts.py:156-178`). It is the only evidence-based part of the package and is the most likely
+Two items on the original list belonged to `reclassify_role` and are moot after item 9: the hardcoded
+`##` with no heading hierarchy, and the indistinguishability of `attribution`, `caption` and `body`.
+They now apply only to the dormant reannotation path, which no production run reaches. Noted rather
+than deleted, because whoever revives that path will meet both.
+
+**Do not delete the dead reannotation path** (`reader_cleanup_mvp/service.py:875`,
+`_apply_reannotation_decisions` at `_apply.py:319-384`, with its helpers through `_apply.py:480`, and
+`_prompts.py:171-193`). It is the only evidence-based part of the package and is the most likely
 foundation for lawful heading restoration.
 
 ## Define success before spending the book
@@ -313,7 +401,7 @@ slots it wrote before and absent after. The provenance map is gone entirely.
 anchor-repair rollback, a docstring describing the wrong document, and the schema-repair prompt naming
 an operation without its required fields), all closed. That convergence is why the rounds stopped.
 
-## Anti-regression (mandatory, once implemented)
+## Anti-regression
 
 1. A chunk failure rate above the configured ratio fails the pass visibly; it must not report
    `completed`.
@@ -322,6 +410,27 @@ an operation without its required fields), all closed. That convergence is why t
 3. A paragraph of prose ending in a number is not `toc_like`, while a genuine TOC line still is.
 4. Trimming the target boilerplate does not change which operations are accepted on the three replay
    books — byte-identical accepted-operation sets.
-5. After item 9: the pass advertises six operations, never seven; a response still naming
-   `reclassify_role` is ignored with a recorded reason rather than failing its chunk; and the three
-   replay books produce the same accepted-operation sets as before, minus the 1/2/0 reclassifications.
+5. The pass advertises six operations, never seven; a response still naming `reclassify_role` is
+   ignored with a recorded reason rather than failing its chunk; and the three replay books produce
+   the same accepted-operation sets as before, minus the 1/2/0 reclassifications.
+6. A rejected deletion is rejected in the report as well as in the text: the rollback re-applies the
+   surviving operation set from scratch, so "accepted" counts can never describe operations whose
+   effect was thrown away.
+
+## Changelog
+
+- **2026-07-31** — written, implemented over three rounds of fixes and three adversarial reviews, and
+  merged to `main`.
+- **2026-08-01** — brought into line with the code it describes, after an external review found the
+  text still written as if nothing had been implemented. The pass has **six** operations, not seven;
+  `reclassify_role`, `reclassify_would_change_visible_text` and `max_reclassify_block_ratio` no longer
+  exist, and every statement about them is now in the past tense. All `file:line` citations were
+  re-checked against the implemented tree and corrected — the implementation moved line numbers
+  throughout `reader_cleanup_mvp/`, so most were off, and several pointed at code that had been
+  deleted. Nine defect descriptions that items 1-7 had already fixed were still written as open
+  problems; each now says what landed. Added the `## Non-goals` section the spec format contract
+  requires and dropped "(mandatory, once implemented)" from the anti-regression heading, since it is
+  implemented. **The reasoning was not touched** — in particular the argument for removing
+  `reclassify_role`, which is the most valuable part of this spec, is preserved word for word apart
+  from tense. No `plan.md` or `tasks.md` was written: the work is done, and reconstructing a plan
+  afterwards is forbidden by Principle III of the constitution.
