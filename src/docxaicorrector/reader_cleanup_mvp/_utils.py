@@ -13,76 +13,89 @@ from ._constants import (
     _ORPHAN_FOOTNOTE_PATTERN,
     _PAGE_NUMBER_PATTERN,
     _TOC_ENTRY_BOUNDARY_TRIM_CHARS,
-    _TOC_INDEX_ENTRY_TAIL_PATTERN,
     _TOC_INDEX_PAGE_REFERENCE_PATTERN,
     _TOC_LEADER_ENTRY_PATTERN,
-    _TOC_MIN_CONTENTS_ENTRY_BOUNDARY_RATIO,
     _TOC_MIN_CONTENTS_ENTRY_TOKENS,
     _TOC_MIN_CONTENTS_ENTRY_TOKENS_WITH_ROMAN,
     _TOC_MIN_PAGE_REFERENCE_TOKEN_RATIO,
     _TOC_MIN_PAGE_REFERENCE_TOKENS,
+    _TOC_MIN_ROMAN_PAGE_NUMBER_CHARS,
     _TOC_PAGE_RANGE_PATTERN,
     _TOC_PAGE_REFERENCE_RUN_PATTERN,
     _TOC_PAGE_REFERENCE_TOKEN_PATTERN,
-    _TOC_ROMAN_PAGE_NUMBER_LOOKALIKE_WORDS,
     _TOC_ROMAN_PAGE_NUMBER_PATTERN,
-    _TOC_SHORT_INDEX_ENTRY_MAX_WORDS,
 )
 from ._models import CleanupBlock, CleanupOperation
 
 
+def _is_at_entry_boundary(words: Sequence[str], index: int) -> bool:
+    """Whether the word at ``index`` ends a contents entry.
+
+    A page number in a table of contents ends its entry, so the word after it opens the
+    next one — the next entry's number, a capitalised title, or nothing at all. In prose
+    the sentence simply carries on in lowercase.
+    """
+    if index == len(words) - 1:
+        return True
+    following = words[index + 1].strip(_TOC_ENTRY_BOUNDARY_TRIM_CHARS)
+    return following.isdigit() or (following.isalpha() and following[:1].isupper())
+
+
 def _is_roman_page_number(word: str) -> bool:
-    """Whether a whitespace-delimited word is a lowercase roman front-matter page number."""
-    if len(word) < 2 or word in _TOC_ROMAN_PAGE_NUMBER_LOOKALIKE_WORDS:
+    """Whether a word has the FORM of a lowercase front-matter page number.
+
+    Form only, never vocabulary: a numeral of at least two characters, spelled from the
+    symbols a book's front matter can reach (i, v, x, l — below one hundred). Whether the
+    token is ALSO a word in some language is not asked here; position decides that, in
+    ``_is_contents_entry_run``. See ``_constants`` for why each half is what it is.
+    """
+    if len(word) < _TOC_MIN_ROMAN_PAGE_NUMBER_CHARS:
         return False
     return bool(_TOC_ROMAN_PAGE_NUMBER_PATTERN.fullmatch(word))
 
 
 def _is_contents_entry_run(stripped: str) -> bool:
-    """A run of contents entries: bare page numbers, nearly all at an entry boundary.
+    """A run of contents entries: page numbers, every one of them at an entry boundary.
 
-    A page number in a table of contents ends its entry, so the word after it opens the
-    next one — the next entry's number, a capitalised title, or nothing at all. In prose
-    the sentence simply carries on in lowercase, which is what tells "1 Крах денег:
-    конкурентное общество 11 2 Миф о деньгах ... 23" from "In 1990 value was 5 and in 2000
-    rose to 10" even though the second is the denser of the two.
+    Entry boundaries are what tell "1 Крах денег: конкурентное общество 11 2 Миф о деньгах
+    ... 23" from "In 1990 value was 5 and in 2000 rose to 10" even though the second is the
+    denser of the two. Arabic page numbers carry the run: at least one is required, and any
+    that does not end its entry disqualifies the block. A roman page number joins the count
+    only where an arabic one would be counted — at an entry boundary — which is what lets
+    the line crossing the front-matter pagination seam ("Предисловие ix Введение: ... 1") in
+    on two references instead of three.
     """
     words = stripped.split()
-    number_positions = [
-        index
+    arabic_positions = [index for index, word in enumerate(words) if word.isdigit() and len(word) <= 4]
+    if not arabic_positions:
+        return False
+    if not all(_is_at_entry_boundary(words, index) for index in arabic_positions):
+        return False
+    roman_count = sum(
+        1
         for index, word in enumerate(words)
-        if (word.isdigit() and len(word) <= 4) or _is_roman_page_number(word)
-    ]
-    if not number_positions:
-        return False
-    has_roman = any(not words[index].isdigit() for index in number_positions)
-    minimum_tokens = _TOC_MIN_CONTENTS_ENTRY_TOKENS_WITH_ROMAN if has_roman else _TOC_MIN_CONTENTS_ENTRY_TOKENS
-    if len(number_positions) < minimum_tokens:
-        return False
-    boundary_count = 0
-    for index in number_positions:
-        if index == len(words) - 1:
-            boundary_count += 1
-            continue
-        following = words[index + 1].strip(_TOC_ENTRY_BOUNDARY_TRIM_CHARS)
-        if following.isdigit() or (following.isalpha() and following[:1].isupper()):
-            boundary_count += 1
-    return boundary_count / len(number_positions) >= _TOC_MIN_CONTENTS_ENTRY_BOUNDARY_RATIO
+        if _is_roman_page_number(word) and _is_at_entry_boundary(words, index)
+    )
+    minimum = _TOC_MIN_CONTENTS_ENTRY_TOKENS_WITH_ROMAN if roman_count else _TOC_MIN_CONTENTS_ENTRY_TOKENS
+    return len(arabic_positions) + roman_count >= minimum
 
 
 def _is_toc_like_text(stripped: str) -> bool:
-    """Whether a block should be treated as contents/index material.
+    """Whether a block should be passed through as contents/index material.
 
     ``toc_like`` grants immunity from every cleanup operation, so the question is not
     "does this contain a number?" but "is this number in a position only a contents or
     index line puts it in?". Four shapes answer yes: a dotted leader terminated by a page
     number; a block that is nothing but page numbers and separators; an index run, whose
     page references are introduced by a comma or semicolon (or written as ranges) and are
-    dense against the word count; and a contents run of bare page numbers sitting at entry
-    boundaries. See ``_constants`` for what each spelling is paying for.
+    dense against the word count; and a contents run of page numbers, arabic or roman,
+    every one of them at an entry boundary. See ``_constants`` for what each spelling is
+    paying for.
 
     A paragraph of prose that merely ends in a number matches none of them; that used to
     be sufficient on its own, and it is the reason the pass did nothing on those blocks.
+    Telling contents from index from bibliography is NOT attempted: all of them are
+    pass-through material, so a mislabel among them changes nothing.
     """
     text = stripped.strip()
     if not text:
@@ -95,20 +108,12 @@ def _is_toc_like_text(stripped: str) -> bool:
     ):
         return True
     word_count = len(text.split())
-    if word_count <= 0:
-        return False
     page_reference_count = len(_TOC_INDEX_PAGE_REFERENCE_PATTERN.findall(text)) + len(
         _TOC_PAGE_RANGE_PATTERN.findall(text)
     )
     if (
         page_reference_count >= _TOC_MIN_PAGE_REFERENCE_TOKENS
         and page_reference_count / word_count >= _TOC_MIN_PAGE_REFERENCE_TOKEN_RATIO
-    ):
-        return True
-    if (
-        page_reference_count >= 1
-        and word_count <= _TOC_SHORT_INDEX_ENTRY_MAX_WORDS
-        and _TOC_INDEX_ENTRY_TAIL_PATTERN.search(text)
     ):
         return True
     return _is_contents_entry_run(text)
