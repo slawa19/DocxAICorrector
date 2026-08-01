@@ -95,6 +95,7 @@ This inventory is intentionally pragmatic:
 - `tests/test_script_contract_static.py`
 - `tests/test_script_log_retention.py`
 - `tests/test_spec_status_consistency.py`
+- `tests/test_where_we_are_freshness.py`
 
 ## Typecheck
 
