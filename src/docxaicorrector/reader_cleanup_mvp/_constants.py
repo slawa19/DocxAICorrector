@@ -71,33 +71,78 @@ _PAGE_NUMBER_PATTERN = re.compile(r"^(?:\(?\d{1,4}\)?|[Pp]age\s+\d{1,4}|стр\.
 _BLANK_PAGE_PATTERN = re.compile(r"^(?:blank\s+page|this page intentionally left blank)$", re.IGNORECASE)
 _ORPHAN_FOOTNOTE_PATTERN = re.compile(r"^(?:\[?\d{1,3}\]?|\(\d{1,3}\))$")
 _FOOTNOTE_BODY_PATTERN = re.compile(r"^(?:\[\d{1,3}\]|\(\d{1,3}\))\s+\S")
-# Spec 052 item 6. The old pattern was ``(?:\.{3,}|…{2,}|\s\d{1,4}\s*$)`` and a TOC-like
-# block is immune to every operation, so both of its branches leaked prose:
+# ``toc_like`` means "pass this block through untouched": it is immune to every cleanup
+# operation. Contents, index, bibliography and front matter are all pass-through material
+# (Constitution VII), so telling them apart from EACH OTHER buys nothing — a mislabel
+# inside reference material is harmless by construction. Only two properties matter, and
+# the rule is the smallest one that holds both:
 #
-#   * ``\s\d{1,4}\s*$`` made ANY paragraph ending in a space and a number TOC-like —
-#     e.g. lietaer b_000871, 922 characters of prose ending "...миллениалов 2000".
-#   * ``\.{3,}`` fired on an ellipsis typed as three periods, so lietaer b_000006 — the
-#     3 481-character block of jacket endorsements containing "разрушительный рост..." —
-#     was TOC-like too. That is the block the spec cites.
+#   * ordinary prose must NOT become immune, or the pass silently does nothing on the body
+#     of the book (that was the defect: "a line ending in a number" was sufficient, which
+#     made "Он родился в 1990" and "In 1990 value was 5 and in 2000 rose to 10" immune);
+#   * reference material must be roughly protected, so cleanup operations do not chew
+#     through a contents list or a subject index. Rough is enough; precise is not the goal.
 #
-# Both branches now require what actually distinguishes a contents line: a PAGE NUMBER.
-# A leader must be followed by one; a bare trailing number is accepted only on a single
-# line short enough to be one entry. Longer real contents/index runs do exist (lietaer's
-# table of contents is 140-163 chars, its subject index runs to 900), and they are
-# recovered by the page-reference density rule in ``_utils._is_toc_like_text`` — length
-# does not separate them from prose, page-number density does.
-_TOC_ENTRY_MAX_CHARS = 100
-_TOC_LIKE_PATTERN = re.compile(
-    r"(?:(?:\.{3,}|…{2,})\s*\d{1,4}|\A(?=.{1," + str(_TOC_ENTRY_MAX_CHARS) + r"}\Z).*\s\d{1,4}\s*\Z)"
-)
-# A contents/index run: it carries contents punctuation (a trailing page number or a
-# leader), AND page references are dense enough that it cannot be read as a sentence.
-# Prose that merely ends in a number, or merely contains an ellipsis, clears one bar but
-# never both.
-_TOC_PAGE_REFERENCE_TAIL_PATTERN = re.compile(r"(?:\s\d{1,4}\s*\Z|\.{3,}|…{2,})")
+# Length is not the discriminator — lietaer's real contents lines run to 163 characters and
+# its subject index to 784. WHERE the numbers sit is. Four shapes qualify:
+#
+#   1. a dotted leader terminated by a page number ("Введение ......... 12");
+#   2. a block that is nothing but page numbers, ranges and separators ("99, 102",
+#      "179– 180") — an index column continued across a page break;
+#   3. an index run: at least three page references introduced by a comma or semicolon
+#      ("Куритиба, 142; устойчивое, 5–6, 55, 224") or written as page ranges, dense enough
+#      against the word count that the block cannot be read as a sentence;
+#   4. a contents run: at least three whitespace-delimited bare page numbers, EVERY one of
+#      them at an entry boundary — followed by the next entry's number, by the capitalised
+#      start of the next title, or by the end of the block. Front matter is paginated in
+#      lowercase roman numerals, so a roman page number counts here too, on the terms below.
+#
+# Every narrow spelling below is paid for by a measured PROSE false positive, not by
+# tidiness inside reference material: requiring a space after the comma in (3) keeps
+# Russian decimal commas out ("Он заплатил 0,72 доллара в 1990 г."); capping the page
+# reference at three digits keeps comma-separated year lists out ("Кризисы 1929, 1987,
+# 2008, 2020 и 2023 годов"); the density ratio keeps statistics-heavy paragraphs out
+# (lietaer b_000091, "; 49 процентов ... , 18 процентов ... , 26 процентов" — 3 references
+# in 165 words; and creating_wealth b_000734, 3 in 315); requiring the tokens in (4) to be
+# whitespace-delimited keeps endnote superscripts glued to a full stop out
+# ("непроизводительными.54 Тем не менее"); and requiring the word after the boundary to be
+# a plain capitalised word keeps currency amounts out ("зачисляется 10 L15, а со счета").
+_TOC_LEADER_ENTRY_PATTERN = re.compile(r"(?:\.{3,}|…{2,})\s*\d{1,4}\s*\Z")
+_TOC_PAGE_REFERENCE_RUN_PATTERN = re.compile(r"[\d\s.,;:–—−-]+")
 _TOC_PAGE_REFERENCE_TOKEN_PATTERN = re.compile(r"\d{1,4}")
+# "..., 142", "...; 5", "..., 226n13" — a page reference introduced by index punctuation.
+# The trailing ``(?!\w)`` is what tells "1d, 2a, 2b, 2c" (a figure-step list) from an index.
+_TOC_INDEX_PAGE_REFERENCE_PATTERN = re.compile(r"[,;]\s+\d{1,3}(?:[nн]\d{1,3})?(?!\w)")
+_TOC_PAGE_RANGE_PATTERN = re.compile(r"(?<!\w)\d{1,3}\s*[–—−]\s*\d{1,3}(?!\w)")
 _TOC_MIN_PAGE_REFERENCE_TOKENS = 3
 _TOC_MIN_PAGE_REFERENCE_TOKEN_RATIO = 0.15
+_TOC_MIN_CONTENTS_ENTRY_TOKENS = 3
+_TOC_ENTRY_BOUNDARY_TRIM_CHARS = "«»\"'“”„‟()[]{}.,;:!?—–-*_"
+# A contents line that crosses the roman→arabic pagination seam ("Предисловие ix Введение:
+# ... 1", lietaer b_000020) carries only two page references — one short of the bare-number
+# count above — so the roman one has to be readable as a page number for the line to be
+# recognised at all. Nothing lexical decides that: no list of numerals, of look-alike words
+# or of book lines is consulted. Two properties do, and both are about form and place.
+#
+#   * MAGNITUDE. Front matter does not run past its ninety-ninth page, so its numerals are
+#     spelled from i, v, x and l alone; the hundreds and thousands symbols are not part of
+#     the grammar. That is the same species of cap as the three-digit limit on an arabic
+#     page reference above, and it is what stops "mix", "ci", "di" and "mi" (1009, 101, 501
+#     and 1001) from being page numbers at all — by arithmetic, not by vocabulary. Measured:
+#     lift the cap and lietaer b_001398 ("Rivista di Storia Economica 1, no. 1 (Турин,
+#     1936)") reads as a contents line. A single letter is excluded for the same formal
+#     reason a bare "1" is not an index entry: one character carries no shape ("i", "v" and
+#     "x" stand alone in prose as words and list markers).
+#   * POSITION. A roman token is counted only where an arabic page number would be counted
+#     — at an entry boundary — and only in a block that ALREADY carries an arabic page
+#     number at an entry boundary. So the roman numeral can corroborate a contents run; it
+#     can never establish one. What survives the magnitude cap and is still a word ("vi",
+#     "li") therefore has to sit at an entry boundary in a block that is already paginated
+#     to matter, which is a bibliography or a foreign-language title at worst — reference
+#     material, which this pass ignores rather than polishes, so the mislabel costs nothing.
+_TOC_ROMAN_PAGE_NUMBER_PATTERN = re.compile(r"(?:xc|xl|l?x{0,3})(?:ix|iv|v?i{0,3})")
+_TOC_MIN_ROMAN_PAGE_NUMBER_CHARS = 2
+_TOC_MIN_CONTENTS_ENTRY_TOKENS_WITH_ROMAN = 2
 _EXTRACTION_ARTIFACT_PATTERN = re.compile(
     r"^(?:\[\[DOCX_[A-Za-z0-9_]+\]\]|\[\[IMAGE_[A-Za-z0-9_]+\]\]|<\/?placeholder>|---+|===+)$",
     re.IGNORECASE,

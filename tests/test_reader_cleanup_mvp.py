@@ -7,8 +7,10 @@ from typing import Any
 from docxaicorrector.reader_cleanup_mvp._constants import (
     _ALLOWED_DELETE_REASONS,
     _ALLOWED_OPERATIONS,
-    _TOC_ENTRY_MAX_CHARS,
-    _TOC_LIKE_PATTERN,
+    _TOC_MIN_CONTENTS_ENTRY_TOKENS,
+    _TOC_MIN_CONTENTS_ENTRY_TOKENS_WITH_ROMAN,
+    _TOC_MIN_PAGE_REFERENCE_TOKEN_RATIO,
+    _TOC_MIN_PAGE_REFERENCE_TOKENS,
 )
 from docxaicorrector.reader_cleanup_mvp._report import (
     _extract_docx_image_placeholder_ids,
@@ -1397,15 +1399,21 @@ def test_max_failed_chunk_ratio_of_one_is_an_explicit_off_switch() -> None:
         assert _failed_chunk_ratio_exceeds_threshold(chunk_results=_chunk_results(failed=10, total=10), config=config) is True
 
 
-def test_toc_entry_max_chars_constant_drives_the_toc_like_pattern() -> None:
-    # Round-9 P3. ``_TOC_ENTRY_MAX_CHARS`` documented the single-entry length limit while the
-    # regex hardcoded its own copy of it, so the two could drift apart with nothing to say
-    # so. The constant is now the only place the number is written down.
-    assert _TOC_ENTRY_MAX_CHARS == 100
-    assert f".{{1,{_TOC_ENTRY_MAX_CHARS}}}" in _TOC_LIKE_PATTERN.pattern
-    assert _TOC_LIKE_PATTERN.search("Введение .......... 12") is not None
-    assert _TOC_LIKE_PATTERN.search("x" * (_TOC_ENTRY_MAX_CHARS - 4) + " 12") is not None
-    assert _TOC_LIKE_PATTERN.search("x" * (_TOC_ENTRY_MAX_CHARS + 1) + " 12") is None
+def test_toc_like_does_not_depend_on_block_length() -> None:
+    # The rule used to accept "one line of at most 100 characters ending in a number" as a
+    # sufficient contents signal, and length was doing all the work: the same sentence was
+    # TOC-like at 99 characters and prose at 101. Length is no longer consulted at all — a
+    # short line of prose and a long one are classified the same way, and a genuine index
+    # line stays TOC-like at any length.
+    short_prose = "Он родился в 1990"
+    long_prose = short_prose + " " + "и вырос" * 30 + " 1995"
+    assert _detect_block_kind(short_prose) == "paragraph"
+    assert _detect_block_kind(long_prose) == "paragraph"
+
+    short_index_entry = "Изобилие: в Куритибе, 142; устойчивое, 5–6, 55, 224"
+    long_index_entry = short_index_entry + "; и ценность, 80" * 12
+    assert _detect_block_kind(short_index_entry) == "toc_like"
+    assert _detect_block_kind(long_index_entry) == "toc_like"
 
 
 def test_reconcile_discards_the_cleanup_when_an_anchor_cannot_be_restored() -> None:
@@ -7386,15 +7394,41 @@ def test_reconcile_docx_image_placeholders_discards_cleanup_instead_of_appending
     assert _image_reconciliation_warnings(diagnostics) == ["reader_cleanup_image_ids_lost_cleanup_discarded:1"]
 
 
-def test_toc_like_no_longer_captures_prose_that_merely_ends_in_a_number() -> None:
-    # Spec 052 item 6. ``\s\d{1,4}\s*$`` made any paragraph ending in a number immune to
-    # every operation. Measured on the three books: 0.5-4.1% of blocks.
-    prose = (
-        "Джеффри Фрид, автор бестселлера и классического труда в области образования, "
-        "определил особенности стиля обучения современных студентов и показал, почему "
-        "школьная система перестала отвечать их потребностям уже к 2000"
-    )
-
+@pytest.mark.parametrize(
+    "prose",
+    [
+        # SHORT prose is the case the previous anti-regression missed: it only exercised a
+        # 180-character paragraph, which passed for the one reason that had nothing to do
+        # with the rule — it was over the 100-character cap. Every line below is under the
+        # cap and was ``toc_like``, i.e. immune to the entire pass, until this fix.
+        "In 1990 value was 5 and in 2000 rose to 10",
+        "Between 1990 and 2000 revenue grew to 10",
+        "Между 1990 и 2000 выручка выросла до 10",
+        "Он родился в 1990",
+        "Стоимость выросла до 10",
+        "К 2000 году выручка достигла 10",
+        "Компания открыла филиалы в Москве и Твери, а выручка выросла до 10",
+        "Стартовая зарплата составляла менее 11",
+        "The chapter closes on page 42",
+        "Глава 1",
+        # A decimal comma is not index punctuation: the page-reference pattern requires a
+        # SPACE after the comma, which is the only thing keeping this line out.
+        "Он заплатил 0,72 доллара в 1990 г.",
+        # A comma-separated list of YEARS is the false positive the three-digit cap on a
+        # page reference pays for: widen it to four digits and this sentence is immune.
+        "Кризисы 1929, 1987, 2008, 2020 и 2023 годов изменили мировую экономику",
+        # ...and the long shapes the previous test did cover, kept so the fix cannot be
+        # rolled back to "long is prose, short is contents".
+        (
+            "Джеффри Фрид, автор бестселлера и классического труда в области образования, "
+            "определил особенности стиля обучения современных студентов и показал, почему "
+            "школьная система перестала отвечать их потребностям уже к 2000"
+        ),
+    ],
+)
+def test_toc_like_no_longer_captures_prose_that_merely_ends_in_a_number(prose: str) -> None:
+    # A ``toc_like`` block is withheld from the model entirely, so a false positive here is
+    # not a cosmetic mislabel — it is the pass silently doing nothing on that paragraph.
     assert _detect_block_kind(prose) == "paragraph"
 
 
@@ -7411,24 +7445,136 @@ def test_toc_like_no_longer_captures_prose_containing_an_ellipsis() -> None:
     assert _detect_block_kind(prose) == "paragraph"
 
 
-def test_toc_like_still_captures_genuine_contents_and_index_lines() -> None:
-    # Narrowing must not cost real contents protection. All four shapes are taken verbatim
-    # from the measured books.
-    single_entry = "Глава 1"
-    dot_leader_entry = "Введение: от дефицита к процветанию ......... 12"
-    contents_run = (
-        "1 Крах денег: конкурентное общество 11 2 Миф о деньгах: что это такое на самом деле 23 "
-        "3 Судьба хуже долга: скрытые последствия процентов 37"
-    )
-    index_run = (
-        "Экологически чистые продукты, 152, 186; Гринвошинг, 198; Валовой внутренний продукт "
-        "(ВВП), 34–35, 131, 146; Валовое национальное счастье, 131"
+@pytest.mark.parametrize(
+    ("block_id", "contents_line"),
+    [
+        # lietaer's real table of contents, verbatim — including the line that crosses the
+        # roman→arabic pagination seam and so carries only two page references.
+        ("b_000020", "Предисловие ix Введение: от дефицита к процветанию в рамках одного поколения 1"),
+        (
+            "b_000022",
+            "1 Крах денег: конкурентное общество 11 2 Миф о деньгах: что это такое на самом деле 23 "
+            "3 Судьба хуже долга: скрытые последствия процентов 37",
+        ),
+        ("b_000024", "4 Летучие рыбы: новый взгляд на деньги 57 5 Будущее уже наступило, но распределено неравномерно..."),
+        (
+            "b_000025",
+            "Пока что! 73 6 Стратегии для банковской сферы 95 7 Стратегии для бизнеса и предпринимателей 119 "
+            "8 Стратегии для государственных органов 141 9 Стратегии для НКО 159",
+        ),
+        # ...and its subject index: the head, a bare page-reference column continued across
+        # a page break, and the dense multi-entry runs — including the three blocks the
+        # recorded lietaer run proposed operations on, which must stay refused.
+        ("b_001723", "**ПРЕДМЕТНЫЙ УКАЗАТЕЛЬ** Изобилие: в Куритибе, 142; устойчивое, 5–6, 55, 224; и ценность, 80"),
+        ("b_001789", "99, 102"),
+        ("b_001809", "179– 180"),
+        (
+            "b_001763",
+            "Демократия: на Бали, 187–188, 190–191; гражданское общество и, 147–148; концентрация богатства "
+            "и, 21–22, 52–53; в принципиальном обществе, 193–194; регио и, 191; социальный капитал и, 46.",
+        ),
+        (
+            "b_001828",
+            "Рационализм, 217; эпоха Просвещения, 15, 29–30; рынки как проявление, 4; "
+            "сберегательно-кредитная система, 112; сберегательные баллы, 110 Реализм, 30 Саваяка Фукуси, 166–167",
+        ),
+        (
+            "b_001792",
+            "Экологически чистые продукты, 152, 186; Гринвошинг, 198; Валовой внутренний продукт "
+            "(ВВП), 34–35, 131, 146; Валовое национальное счастье, 131",
+        ),
+        # A dotted leader terminated by a page number — the classic contents entry.
+        ("synthetic", "Введение: от дефицита к процветанию ......... 12"),
+    ],
+)
+def test_toc_like_still_captures_genuine_contents_and_index_lines(block_id: str, contents_line: str) -> None:
+    # The rule must keep contents/index material out of the model's hands: every line here
+    # is taken verbatim from lietaer's contents and subject index (the one exception is
+    # labelled synthetic), and each one is measured ``toc_like``.
+    assert _detect_block_kind(contents_line) == "toc_like", block_id
+
+
+@pytest.mark.parametrize(
+    ("what_it_would_have_been", "not_contents"),
+    [
+        # Each line below is a measured near-miss from the three books: it carries numbers
+        # in almost the right place, and one specific narrowing in the rule is the only
+        # thing keeping it out. Loosen that spelling and the block silently goes immune.
+        ("a notes-section chapter header", "Глава 1"),
+        ("a publisher address", "235 Montgomery Street, Suite 650"),
+        ("an endnote continued mid-sentence", "3. “$22,350 a Year for a Family of Four or $10,890 for an Individual in the 48"),
+        ("a citation ending in a date", "52. Дж. Сакс, «Лекарство, которое разоряет Америку», Huffington Post, 16"),
+        ("a citation ending in a page", "29. Р. Райх, «Экономист Джон Мейнард Кейнс», журнал TIME, 29"),
+        ("an ellipsis followed by a number mid-sentence", "Нужно всего три вещи... 50 долларов, пульс и умение поставить свою подпись"),
+        ("a bibliography year after a comma", "14. Forbes, 2017."),
+        ("a journal volume and page range", "Business Review, 89 (2011), стр. 62–77."),
+        ("Russian decimal commas", "0,72 в 1990 г.; 1,11 в 2000 г. и 0,39 в 2001 г. В США он составлял 0 в 1999 г."),
+        ("endnote superscripts glued to a full stop", "Первая версия появилась в 1953 году.12 СНС позиционирует себя как база.13 Она определяет счетоводство.14 ВВП это мера.15"),
+        ("currency amounts before a capitalised unit", "Таким образом, на счет Лизы зачисляется 10 L15, а со счета Энн списывается 10 L15. Ей нужно 30 L15."),
+        (
+            # lietaer b_000091, trimmed: three comma-introduced numbers, but 26 words —
+            # the density ratio is the only thing keeping this paragraph out.
+            "a statistics-heavy paragraph",
+            "Половина живет в семьях, возглавляемых супружеской парой; 49 процентов живут в пригородах. "
+            "Почти половина — белые нелатиноамериканского происхождения, 18 процентов — чернокожие, "
+            "26 процентов — латиноамериканцы.",
+        ),
+        ("a title in an italian bibliography entry", "Rivoluzione francese,” Rivista di Storia Economica 1, no. 1 (Турин, 1936)."),
+        ("a figure-step list", "(на этапах 1d, 2a, 2b, 2c и 4a) обозначают операционный жизненный цикл обращения Terra."),
+        ("a dateline", "ДУБЛИН, ИРЛАНДИЯ, 5 АВГУСТА 2020 Г."),
+        ("a URL ending in digits", "BBC, 10 апреля 2017 г.: http://www.bbc.co.uk/news/business-39548313"),
+    ],
+)
+def test_toc_like_rejects_the_measured_near_misses(what_it_would_have_been: str, not_contents: str) -> None:
+    assert _detect_block_kind(not_contents) != "toc_like", what_it_would_have_been
+
+
+def test_toc_like_thresholds_are_driven_by_their_constants() -> None:
+    # Every threshold the rule turns on, exercised on both sides so a change to any of the
+    # constants has to be a deliberate one.
+
+    # An index run needs the minimum number of page references, whatever its length.
+    references = "; понятие, 55" * (_TOC_MIN_PAGE_REFERENCE_TOKENS - 1)
+    assert _detect_block_kind("Начало раздела и его продолжение" + references) == "paragraph"
+    assert _detect_block_kind("Начало раздела и его продолжение" + references + "; понятие, 55") == "toc_like"
+
+    # ...and they must be dense against the word count: the same references diluted by
+    # enough prose read as a paragraph that happens to cite pages, not as an index.
+    diluted = " слово" * (int(_TOC_MIN_PAGE_REFERENCE_TOKENS / _TOC_MIN_PAGE_REFERENCE_TOKEN_RATIO) + 1)
+    assert (
+        _detect_block_kind("Начало раздела и его продолжение" + references + "; понятие, 55" + diluted)
+        == "paragraph"
     )
 
-    assert _detect_block_kind(single_entry) == "toc_like"
-    assert _detect_block_kind(dot_leader_entry) == "toc_like"
-    assert _detect_block_kind(contents_run) == "toc_like"
-    assert _detect_block_kind(index_run) == "toc_like"
+    # A contents run needs the minimum number of bare page numbers at entry boundaries.
+    entries = "".join(f" Раздел {10 + index}" for index in range(_TOC_MIN_CONTENTS_ENTRY_TOKENS - 1))
+    assert _detect_block_kind("Оглавление" + entries) == "paragraph"
+    assert _detect_block_kind("Оглавление" + entries + " Раздел 99") == "toc_like"
+
+
+def test_toc_like_reads_a_roman_page_number_by_its_form_and_position_only() -> None:
+    # lietaer b_000020 is the contents line that crosses the front-matter pagination seam:
+    # it carries exactly two page references, one roman and one arabic, so it is one short
+    # of the bare-number count and is recognised only if the roman one reads as a page.
+    seam_line = "Предисловие ix Введение: от дефицита к процветанию в рамках одного поколения 1"
+    assert _detect_block_kind(seam_line) == "toc_like"
+    assert _TOC_MIN_CONTENTS_ENTRY_TOKENS_WITH_ROMAN < _TOC_MIN_CONTENTS_ENTRY_TOKENS
+
+    # Nothing lexical decides that a token is a numeral — no list of words, no list of
+    # numerals. MAGNITUDE does: front matter stops short of its hundredth page, so a numeral
+    # spelled with the hundreds or thousands symbols is not a front-matter page number at
+    # all. That is what keeps lietaer b_001398's Italian title out ("di" is 501), where the
+    # previous spelling of this rule needed a hand-kept list of look-alike words.
+    assert _detect_block_kind("Rivoluzione francese,” Rivista di Storia Economica 1, no. 1 (Турин, 1936).") == "paragraph"
+    assert _detect_block_kind("Предисловие mix Введение: от дефицита 1") == "paragraph"  # mix = 1009
+    assert _detect_block_kind("Предисловие ci Введение: от дефицита 1") == "paragraph"  # ci = 101
+    assert _detect_block_kind("Предисловие i Введение: от дефицита 1") == "paragraph"  # one letter is no shape
+
+    # ...and POSITION does the rest: the numeral counts only where an arabic page number
+    # would count — at an entry boundary — and only in a block an arabic page number already
+    # paginates. It can corroborate a contents run; it can never establish one.
+    assert _detect_block_kind("Мы использовали vi чтобы открыть Файл 12") == "paragraph"
+    assert _detect_block_kind("Предисловие ix Введение к теме") == "paragraph"
 
 
 def test_toc_narrowing_frees_prose_for_operations_that_immunity_used_to_block() -> None:
