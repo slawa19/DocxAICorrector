@@ -7,8 +7,8 @@ from typing import Any
 from docxaicorrector.reader_cleanup_mvp._constants import (
     _ALLOWED_DELETE_REASONS,
     _ALLOWED_OPERATIONS,
-    _TOC_ENTRY_MAX_CHARS,
-    _TOC_LIKE_PATTERN,
+    _TOC_MIN_PAGE_REFERENCE_TOKENS,
+    _TOC_SHORT_INDEX_ENTRY_MAX_WORDS,
 )
 from docxaicorrector.reader_cleanup_mvp._report import (
     _extract_docx_image_placeholder_ids,
@@ -1397,15 +1397,21 @@ def test_max_failed_chunk_ratio_of_one_is_an_explicit_off_switch() -> None:
         assert _failed_chunk_ratio_exceeds_threshold(chunk_results=_chunk_results(failed=10, total=10), config=config) is True
 
 
-def test_toc_entry_max_chars_constant_drives_the_toc_like_pattern() -> None:
-    # Round-9 P3. ``_TOC_ENTRY_MAX_CHARS`` documented the single-entry length limit while the
-    # regex hardcoded its own copy of it, so the two could drift apart with nothing to say
-    # so. The constant is now the only place the number is written down.
-    assert _TOC_ENTRY_MAX_CHARS == 100
-    assert f".{{1,{_TOC_ENTRY_MAX_CHARS}}}" in _TOC_LIKE_PATTERN.pattern
-    assert _TOC_LIKE_PATTERN.search("Введение .......... 12") is not None
-    assert _TOC_LIKE_PATTERN.search("x" * (_TOC_ENTRY_MAX_CHARS - 4) + " 12") is not None
-    assert _TOC_LIKE_PATTERN.search("x" * (_TOC_ENTRY_MAX_CHARS + 1) + " 12") is None
+def test_toc_like_does_not_depend_on_block_length() -> None:
+    # The rule used to accept "one line of at most 100 characters ending in a number" as a
+    # sufficient contents signal, and length was doing all the work: the same sentence was
+    # TOC-like at 99 characters and prose at 101. Length is no longer consulted at all — a
+    # short line of prose and a long one are classified the same way, and a genuine index
+    # line stays TOC-like at any length.
+    short_prose = "Он родился в 1990"
+    long_prose = short_prose + " " + "и вырос" * 30 + " 1995"
+    assert _detect_block_kind(short_prose) == "paragraph"
+    assert _detect_block_kind(long_prose) == "paragraph"
+
+    short_index_entry = "Апокалипсис, 14"
+    long_index_entry = short_index_entry + "; устойчивое, 5–6, 55, 224; и ценность, 80" * 12
+    assert _detect_block_kind(short_index_entry) == "toc_like"
+    assert _detect_block_kind(long_index_entry) == "toc_like"
 
 
 def test_reconcile_discards_the_cleanup_when_an_anchor_cannot_be_restored() -> None:
@@ -7386,15 +7392,33 @@ def test_reconcile_docx_image_placeholders_discards_cleanup_instead_of_appending
     assert _image_reconciliation_warnings(diagnostics) == ["reader_cleanup_image_ids_lost_cleanup_discarded:1"]
 
 
-def test_toc_like_no_longer_captures_prose_that_merely_ends_in_a_number() -> None:
-    # Spec 052 item 6. ``\s\d{1,4}\s*$`` made any paragraph ending in a number immune to
-    # every operation. Measured on the three books: 0.5-4.1% of blocks.
-    prose = (
-        "Джеффри Фрид, автор бестселлера и классического труда в области образования, "
-        "определил особенности стиля обучения современных студентов и показал, почему "
-        "школьная система перестала отвечать их потребностям уже к 2000"
-    )
-
+@pytest.mark.parametrize(
+    "prose",
+    [
+        # SHORT prose is the case the previous anti-regression missed: it only exercised a
+        # 180-character paragraph, which passed for the one reason that had nothing to do
+        # with the rule — it was over the 100-character cap. Every line below is under the
+        # cap and was ``toc_like``, i.e. immune to the entire pass, until this fix.
+        "In 1990 value was 5 and in 2000 rose to 10",
+        "Between 1990 and 2000 revenue grew to 10",
+        "Он родился в 1990",
+        "Стоимость выросла до 10",
+        "К 2000 году выручка достигла 10",
+        "Компания открыла филиалы в Москве и Твери, а выручка выросла до 10",
+        "Стартовая зарплата составляла менее 11",
+        "The chapter closes on page 42",
+        # ...and the long shapes the previous test did cover, kept so the fix cannot be
+        # rolled back to "long is prose, short is contents".
+        (
+            "Джеффри Фрид, автор бестселлера и классического труда в области образования, "
+            "определил особенности стиля обучения современных студентов и показал, почему "
+            "школьная система перестала отвечать их потребностям уже к 2000"
+        ),
+    ],
+)
+def test_toc_like_no_longer_captures_prose_that_merely_ends_in_a_number(prose: str) -> None:
+    # A ``toc_like`` block is withheld from the model entirely, so a false positive here is
+    # not a cosmetic mislabel — it is the pass silently doing nothing on that paragraph.
     assert _detect_block_kind(prose) == "paragraph"
 
 
@@ -7411,24 +7435,91 @@ def test_toc_like_no_longer_captures_prose_containing_an_ellipsis() -> None:
     assert _detect_block_kind(prose) == "paragraph"
 
 
-def test_toc_like_still_captures_genuine_contents_and_index_lines() -> None:
-    # Narrowing must not cost real contents protection. All four shapes are taken verbatim
-    # from the measured books.
-    single_entry = "Глава 1"
-    dot_leader_entry = "Введение: от дефицита к процветанию ......... 12"
-    contents_run = (
-        "1 Крах денег: конкурентное общество 11 2 Миф о деньгах: что это такое на самом деле 23 "
-        "3 Судьба хуже долга: скрытые последствия процентов 37"
-    )
-    index_run = (
-        "Экологически чистые продукты, 152, 186; Гринвошинг, 198; Валовой внутренний продукт "
-        "(ВВП), 34–35, 131, 146; Валовое национальное счастье, 131"
-    )
+@pytest.mark.parametrize(
+    ("block_id", "contents_line"),
+    [
+        # lietaer's real table of contents, verbatim — the four blocks the previous
+        # measurement named (b_000020/22/24/25) plus the fifth the narrowing recovers.
+        ("b_000020", "Предисловие ix Введение: от дефицита к процветанию в рамках одного поколения 1"),
+        (
+            "b_000022",
+            "1 Крах денег: конкурентное общество 11 2 Миф о деньгах: что это такое на самом деле 23 "
+            "3 Судьба хуже долга: скрытые последствия процентов 37",
+        ),
+        ("b_000024", "4 Летучие рыбы: новый взгляд на деньги 57 5 Будущее уже наступило, но распределено неравномерно..."),
+        (
+            "b_000025",
+            "Пока что! 73 6 Стратегии для банковской сферы 95 7 Стратегии для бизнеса и предпринимателей 119 "
+            "8 Стратегии для государственных органов 141 9 Стратегии для НКО 159",
+        ),
+        # ...and its subject index: the head, a one-entry line, a bare page-reference
+        # column continued across a page break, and a dense multi-entry run.
+        ("b_001723", "**ПРЕДМЕТНЫЙ УКАЗАТЕЛЬ** Изобилие: в Куритибе, 142; устойчивое, 5–6, 55, 224; и ценность, 80"),
+        ("b_001732", "Апокалипсис, 14"),
+        ("b_001745", "52; Terra и, 134"),
+        ("b_001789", "99, 102"),
+        ("b_001809", "179– 180"),
+        ("b_001818", "Move Your Money, 95"),
+        ("b_001853", "Треугольник, 171"),
+        ("b_001863", "Жертва, 78–79"),
+        (
+            "b_001792",
+            "Экологически чистые продукты, 152, 186; Гринвошинг, 198; Валовой внутренний продукт "
+            "(ВВП), 34–35, 131, 146; Валовое национальное счастье, 131",
+        ),
+        # A dotted leader terminated by a page number — the classic contents entry.
+        ("synthetic", "Введение: от дефицита к процветанию ......... 12"),
+    ],
+)
+def test_toc_like_still_captures_genuine_contents_and_index_lines(block_id: str, contents_line: str) -> None:
+    # Narrowing must not cost real contents protection: every line here is taken verbatim
+    # from lietaer's contents and subject index (the one exception is labelled synthetic),
+    # and each one was measured ``toc_like`` before and after the change.
+    assert _detect_block_kind(contents_line) == "toc_like", block_id
 
-    assert _detect_block_kind(single_entry) == "toc_like"
-    assert _detect_block_kind(dot_leader_entry) == "toc_like"
-    assert _detect_block_kind(contents_run) == "toc_like"
-    assert _detect_block_kind(index_run) == "toc_like"
+
+@pytest.mark.parametrize(
+    ("what_it_would_have_been", "not_contents"),
+    [
+        # Each line below is a measured near-miss from the three books: it carries numbers
+        # in almost the right place, and one specific narrowing in the rule is the only
+        # thing keeping it out. Loosen that spelling and the block silently goes immune.
+        ("a notes-section chapter header", "Глава 1"),
+        ("a publisher address", "235 Montgomery Street, Suite 650"),
+        ("an endnote continued mid-sentence", "3. “$22,350 a Year for a Family of Four or $10,890 for an Individual in the 48"),
+        ("a citation ending in a date", "52. Дж. Сакс, «Лекарство, которое разоряет Америку», Huffington Post, 16"),
+        ("a citation ending in a page", "29. Р. Райх, «Экономист Джон Мейнард Кейнс», журнал TIME, 29"),
+        ("an ellipsis followed by a number mid-sentence", "Нужно всего три вещи... 50 долларов, пульс и умение поставить свою подпись"),
+        ("a bibliography year after a comma", "14. Forbes, 2017."),
+        ("a journal volume and page range", "Business Review, 89 (2011), стр. 62–77."),
+        ("Russian decimal commas", "0,72 в 1990 г.; 1,11 в 2000 г. и 0,39 в 2001 г. В США он составлял 0 в 1999 г."),
+        ("endnote superscripts glued to a full stop", "Первая версия появилась в 1953 году.12 СНС позиционирует себя как база.13 Она определяет счетоводство.14 ВВП это мера.15"),
+        ("currency amounts before a capitalised unit", "Таким образом, на счет Лизы зачисляется 10 L15, а со счета Энн списывается 10 L15. Ей нужно 30 L15."),
+        ("a roman-numeral lookalike word in a title", "Rivoluzione francese,” Rivista di Storia Economica 1, no. 1 (Турин, 1936)."),
+        ("a figure-step list", "(на этапах 1d, 2a, 2b, 2c и 4a) обозначают операционный жизненный цикл обращения Terra."),
+        ("a dateline", "ДУБЛИН, ИРЛАНДИЯ, 5 АВГУСТА 2020 Г."),
+        ("a URL ending in digits", "BBC, 10 апреля 2017 г.: http://www.bbc.co.uk/news/business-39548313"),
+    ],
+)
+def test_toc_like_rejects_the_measured_near_misses(what_it_would_have_been: str, not_contents: str) -> None:
+    assert _detect_block_kind(not_contents) != "toc_like", what_it_would_have_been
+
+
+def test_toc_like_thresholds_are_driven_by_their_constants() -> None:
+    # The two numbers the index branches turn on, exercised on both sides so a change to
+    # either constant has to be a deliberate one.
+    entry = "Термин, 14"
+    padding = " слово" * (_TOC_SHORT_INDEX_ENTRY_MAX_WORDS - 2)
+    assert len((entry + padding).split()) == _TOC_SHORT_INDEX_ENTRY_MAX_WORDS
+    # One page reference is enough for a SHORT entry that ends on it...
+    assert _detect_block_kind("Термин" + padding + ", 14") == "toc_like"
+    # ...and not enough once the entry is longer than one index line.
+    assert _detect_block_kind("Термин" + padding + " слово, 14") == "paragraph"
+
+    # A longer run needs the minimum number of page references, whatever its length.
+    references = "; понятие, 55" * (_TOC_MIN_PAGE_REFERENCE_TOKENS - 1)
+    assert _detect_block_kind("Начало раздела и его продолжение" + references) == "paragraph"
+    assert _detect_block_kind("Начало раздела и его продолжение" + references + "; понятие, 55") == "toc_like"
 
 
 def test_toc_narrowing_frees_prose_for_operations_that_immunity_used_to_block() -> None:

@@ -12,37 +12,106 @@ from ._constants import (
     _FOOTNOTE_BODY_PATTERN,
     _ORPHAN_FOOTNOTE_PATTERN,
     _PAGE_NUMBER_PATTERN,
-    _TOC_LIKE_PATTERN,
+    _TOC_ENTRY_BOUNDARY_TRIM_CHARS,
+    _TOC_INDEX_ENTRY_TAIL_PATTERN,
+    _TOC_INDEX_PAGE_REFERENCE_PATTERN,
+    _TOC_LEADER_ENTRY_PATTERN,
+    _TOC_MIN_CONTENTS_ENTRY_BOUNDARY_RATIO,
+    _TOC_MIN_CONTENTS_ENTRY_TOKENS,
+    _TOC_MIN_CONTENTS_ENTRY_TOKENS_WITH_ROMAN,
     _TOC_MIN_PAGE_REFERENCE_TOKEN_RATIO,
     _TOC_MIN_PAGE_REFERENCE_TOKENS,
-    _TOC_PAGE_REFERENCE_TAIL_PATTERN,
+    _TOC_PAGE_RANGE_PATTERN,
+    _TOC_PAGE_REFERENCE_RUN_PATTERN,
     _TOC_PAGE_REFERENCE_TOKEN_PATTERN,
+    _TOC_ROMAN_PAGE_NUMBER_LOOKALIKE_WORDS,
+    _TOC_ROMAN_PAGE_NUMBER_PATTERN,
+    _TOC_SHORT_INDEX_ENTRY_MAX_WORDS,
 )
 from ._models import CleanupBlock, CleanupOperation
 
 
-def _is_toc_like_text(stripped: str) -> bool:
-    """Whether a block should be treated as contents/index material (spec 052 item 6).
+def _is_roman_page_number(word: str) -> bool:
+    """Whether a whitespace-delimited word is a lowercase roman front-matter page number."""
+    if len(word) < 2 or word in _TOC_ROMAN_PAGE_NUMBER_LOOKALIKE_WORDS:
+        return False
+    return bool(_TOC_ROMAN_PAGE_NUMBER_PATTERN.fullmatch(word))
 
-    Two shapes qualify. A single contents entry — a leader followed by a page number, or
-    one short line ending in a page number. Or a *run* of page references: it carries
-    contents punctuation AND enough numeric tokens, relative to its word count, that it
-    cannot be read as a sentence. Real tables of contents and subject indexes are long
-    (140-922 characters on the measured books), so length cannot be the only filter;
-    page-number density is what separates them from a paragraph of prose whose last word
-    happens to be a number or which contains an ellipsis.
+
+def _is_contents_entry_run(stripped: str) -> bool:
+    """A run of contents entries: bare page numbers, nearly all at an entry boundary.
+
+    A page number in a table of contents ends its entry, so the word after it opens the
+    next one — the next entry's number, a capitalised title, or nothing at all. In prose
+    the sentence simply carries on in lowercase, which is what tells "1 Крах денег:
+    конкурентное общество 11 2 Миф о деньгах ... 23" from "In 1990 value was 5 and in 2000
+    rose to 10" even though the second is the denser of the two.
     """
-    if _TOC_LIKE_PATTERN.search(stripped):
+    words = stripped.split()
+    number_positions = [
+        index
+        for index, word in enumerate(words)
+        if (word.isdigit() and len(word) <= 4) or _is_roman_page_number(word)
+    ]
+    if not number_positions:
+        return False
+    has_roman = any(not words[index].isdigit() for index in number_positions)
+    minimum_tokens = _TOC_MIN_CONTENTS_ENTRY_TOKENS_WITH_ROMAN if has_roman else _TOC_MIN_CONTENTS_ENTRY_TOKENS
+    if len(number_positions) < minimum_tokens:
+        return False
+    boundary_count = 0
+    for index in number_positions:
+        if index == len(words) - 1:
+            boundary_count += 1
+            continue
+        following = words[index + 1].strip(_TOC_ENTRY_BOUNDARY_TRIM_CHARS)
+        if following.isdigit() or (following.isalpha() and following[:1].isupper()):
+            boundary_count += 1
+    return boundary_count / len(number_positions) >= _TOC_MIN_CONTENTS_ENTRY_BOUNDARY_RATIO
+
+
+def _is_toc_like_text(stripped: str) -> bool:
+    """Whether a block should be treated as contents/index material.
+
+    ``toc_like`` grants immunity from every cleanup operation, so the question is not
+    "does this contain a number?" but "is this number in a position only a contents or
+    index line puts it in?". Four shapes answer yes: a dotted leader terminated by a page
+    number; a block that is nothing but page numbers and separators; an index run, whose
+    page references are introduced by a comma or semicolon (or written as ranges) and are
+    dense against the word count; and a contents run of bare page numbers sitting at entry
+    boundaries. See ``_constants`` for what each spelling is paying for.
+
+    A paragraph of prose that merely ends in a number matches none of them; that used to
+    be sufficient on its own, and it is the reason the pass did nothing on those blocks.
+    """
+    text = stripped.strip()
+    if not text:
+        return False
+    if _TOC_LEADER_ENTRY_PATTERN.search(text):
         return True
-    if not _TOC_PAGE_REFERENCE_TAIL_PATTERN.search(stripped):
-        return False
-    page_reference_count = len(_TOC_PAGE_REFERENCE_TOKEN_PATTERN.findall(stripped))
-    if page_reference_count < _TOC_MIN_PAGE_REFERENCE_TOKENS:
-        return False
-    word_count = len(stripped.split())
+    if (
+        _TOC_PAGE_REFERENCE_RUN_PATTERN.fullmatch(text)
+        and len(_TOC_PAGE_REFERENCE_TOKEN_PATTERN.findall(text)) >= 2
+    ):
+        return True
+    word_count = len(text.split())
     if word_count <= 0:
         return False
-    return page_reference_count / word_count >= _TOC_MIN_PAGE_REFERENCE_TOKEN_RATIO
+    page_reference_count = len(_TOC_INDEX_PAGE_REFERENCE_PATTERN.findall(text)) + len(
+        _TOC_PAGE_RANGE_PATTERN.findall(text)
+    )
+    if (
+        page_reference_count >= _TOC_MIN_PAGE_REFERENCE_TOKENS
+        and page_reference_count / word_count >= _TOC_MIN_PAGE_REFERENCE_TOKEN_RATIO
+    ):
+        return True
+    if (
+        page_reference_count >= 1
+        and word_count <= _TOC_SHORT_INDEX_ENTRY_MAX_WORDS
+        and _TOC_INDEX_ENTRY_TAIL_PATTERN.search(text)
+    ):
+        return True
+    return _is_contents_entry_run(text)
 
 
 def _is_docx_image_anchor_text(stripped: str) -> bool:

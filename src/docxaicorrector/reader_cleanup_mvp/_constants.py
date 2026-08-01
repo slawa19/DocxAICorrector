@@ -71,33 +71,61 @@ _PAGE_NUMBER_PATTERN = re.compile(r"^(?:\(?\d{1,4}\)?|[Pp]age\s+\d{1,4}|стр\.
 _BLANK_PAGE_PATTERN = re.compile(r"^(?:blank\s+page|this page intentionally left blank)$", re.IGNORECASE)
 _ORPHAN_FOOTNOTE_PATTERN = re.compile(r"^(?:\[?\d{1,3}\]?|\(\d{1,3}\))$")
 _FOOTNOTE_BODY_PATTERN = re.compile(r"^(?:\[\d{1,3}\]|\(\d{1,3}\))\s+\S")
-# Spec 052 item 6. The old pattern was ``(?:\.{3,}|…{2,}|\s\d{1,4}\s*$)`` and a TOC-like
-# block is immune to every operation, so both of its branches leaked prose:
+# A ``toc_like`` block is immune to EVERY cleanup operation, so every branch below has to
+# earn that immunity. Spec 052 item 6 narrowed the rule to "a page number is required",
+# but kept "one line of at most 100 characters ending in a number" as a SUFFICIENT signal,
+# and that still let ordinary prose in: "Он родился в 1990", "Стоимость выросла до 10",
+# "In 1990 value was 5 and in 2000 rose to 10" were all TOC-like, i.e. the pass silently
+# did nothing on them. Measured on the three recorded books, that branch alone accounted
+# for every one of creating_wealth's 15 "TOC" blocks (all of them prose or a notes-section
+# "Глава N" header), 15 of lietaer's 68 and all 4 of mazzucato's.
 #
-#   * ``\s\d{1,4}\s*$`` made ANY paragraph ending in a space and a number TOC-like —
-#     e.g. lietaer b_000871, 922 characters of prose ending "...миллениалов 2000".
-#   * ``\.{3,}`` fired on an ellipsis typed as three periods, so lietaer b_000006 — the
-#     3 481-character block of jacket endorsements containing "разрушительный рост..." —
-#     was TOC-like too. That is the block the spec cites.
+# Length was never the discriminator — lietaer's real contents lines run to 163 characters
+# and its subject index to 784. What separates contents/index material from prose is WHERE
+# the numbers sit, so a bare trailing number is no longer sufficient on its own. Four
+# shapes qualify, each requiring a page reference in a position prose does not produce:
 #
-# Both branches now require what actually distinguishes a contents line: a PAGE NUMBER.
-# A leader must be followed by one; a bare trailing number is accepted only on a single
-# line short enough to be one entry. Longer real contents/index runs do exist (lietaer's
-# table of contents is 140-163 chars, its subject index runs to 900), and they are
-# recovered by the page-reference density rule in ``_utils._is_toc_like_text`` — length
-# does not separate them from prose, page-number density does.
-_TOC_ENTRY_MAX_CHARS = 100
-_TOC_LIKE_PATTERN = re.compile(
-    r"(?:(?:\.{3,}|…{2,})\s*\d{1,4}|\A(?=.{1," + str(_TOC_ENTRY_MAX_CHARS) + r"}\Z).*\s\d{1,4}\s*\Z)"
-)
-# A contents/index run: it carries contents punctuation (a trailing page number or a
-# leader), AND page references are dense enough that it cannot be read as a sentence.
-# Prose that merely ends in a number, or merely contains an ellipsis, clears one bar but
-# never both.
-_TOC_PAGE_REFERENCE_TAIL_PATTERN = re.compile(r"(?:\s\d{1,4}\s*\Z|\.{3,}|…{2,})")
+#   1. a dotted leader terminated by a page number ("Введение ......... 12");
+#   2. a block that is nothing but page numbers, ranges and separators ("99, 102",
+#      "179– 180") — an index column continued across a page break;
+#   3. an index run: page references introduced by a comma or semicolon ("Куритиба, 142;
+#      устойчивое, 5–6, 55, 224") or written as page ranges, at least three of them and
+#      dense against the word count; plus the single short entry ("Апокалипсис, 14"),
+#      which needs the reference to TERMINATE the block;
+#   4. a contents run: several whitespace-delimited bare page numbers, nearly all of them
+#      at an entry boundary — followed by the capitalised start of the next title, by the
+#      next entry's number, or by the end of the block.
+#
+# The narrow spellings matter and each one is paid for by a measured false positive:
+# requiring a space after the comma in (3) keeps Russian decimal commas ("0,72 в 1990 г.")
+# out; capping the page reference at three digits keeps bibliography years ("Forbes,
+# 2017") out; requiring the contents-run tokens in (4) to be whitespace-delimited keeps
+# endnote superscripts glued to a full stop ("непроизводительными.54 Тем не менее") out;
+# and requiring the word after the boundary to be a plain capitalised word keeps currency
+# amounts ("зачисляется 10 L15, а со счета") out.
+_TOC_LEADER_ENTRY_PATTERN = re.compile(r"(?:\.{3,}|…{2,})\s*\d{1,4}\s*\Z")
+_TOC_PAGE_REFERENCE_RUN_PATTERN = re.compile(r"[\d\s.,;:–—−-]+")
 _TOC_PAGE_REFERENCE_TOKEN_PATTERN = re.compile(r"\d{1,4}")
+# "..., 142", "...; 5", "..., 226n13" — a page reference introduced by index punctuation.
+# The trailing ``(?!\w)`` is what tells "1d, 2a, 2b, 2c" (a figure-step list) from an index.
+_TOC_INDEX_PAGE_REFERENCE_PATTERN = re.compile(r"[,;]\s+\d{1,3}(?:[nн]\d{1,3})?(?!\w)")
+_TOC_PAGE_RANGE_PATTERN = re.compile(r"(?<!\w)\d{1,3}\s*[–—−]\s*\d{1,3}(?!\w)")
+_TOC_INDEX_ENTRY_TAIL_PATTERN = re.compile(r"[,;]\s+\d{1,3}(?:\s*[–—−]\s*\d{1,3})?\s*\Z")
 _TOC_MIN_PAGE_REFERENCE_TOKENS = 3
 _TOC_MIN_PAGE_REFERENCE_TOKEN_RATIO = 0.15
+_TOC_SHORT_INDEX_ENTRY_MAX_WORDS = 6
+# Front matter is paginated in lowercase roman numerals, and a contents line that carries
+# one ("Предисловие ix Введение: ... 1", lietaer b_000020) has only two page references —
+# too few for the bare-number count below, so a roman numeral lowers the bar to two. The
+# numeral grammar alone is not enough: "di", "mi", "vi", "ci", "li" and "mix" are all
+# well-formed roman numerals AND ordinary words, and "di" in an Italian book title was
+# enough to make a bibliography line look like a contents run.
+_TOC_ROMAN_PAGE_NUMBER_PATTERN = re.compile(r"m{0,3}(?:cm|cd|d?c{0,3})(?:xc|xl|l?x{0,3})(?:ix|iv|v?i{1,3})")
+_TOC_ROMAN_PAGE_NUMBER_LOOKALIKE_WORDS = frozenset({"ci", "di", "li", "mi", "mix", "vi"})
+_TOC_MIN_CONTENTS_ENTRY_TOKENS = 3
+_TOC_MIN_CONTENTS_ENTRY_TOKENS_WITH_ROMAN = 2
+_TOC_MIN_CONTENTS_ENTRY_BOUNDARY_RATIO = 0.8
+_TOC_ENTRY_BOUNDARY_TRIM_CHARS = "«»\"'“”„‟()[]{}.,;:!?—–-*_"
 _EXTRACTION_ARTIFACT_PATTERN = re.compile(
     r"^(?:\[\[DOCX_[A-Za-z0-9_]+\]\]|\[\[IMAGE_[A-Za-z0-9_]+\]\]|<\/?placeholder>|---+|===+)$",
     re.IGNORECASE,
