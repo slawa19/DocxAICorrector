@@ -16,7 +16,9 @@ consequential result was not on the original list: the forensic work traced the 
 image-anchor P0 (Lietaer losing 37 of 55 images "with zero logged operations") to its actual root
 cause and fixed it. Verified on the final tree: full suite **2356+ passed / 0 failed**, canonical
 pyright gate at baseline, canonical real-document quality gate green, and the three-book offline
-replay byte-identical apart from the changes each fix explains.
+replay stable against the previous state of the code apart from the changes each fix explains. It is
+**not** identical to the June recording, and must not be — see `### Why the baseline is not the
+recorded run` under `## Anti-regression`.
 
 **Still owed before the run itself:** agree the success criteria in `## Define success before
 spending the book`, and re-enable `DOCX_AI_READER_CLEANUP_ENABLED` (set to `false` on 2026-07-31 so
@@ -100,7 +102,7 @@ rounds found`.
 
 ## What it costs
 
-Chunking is by characters, 8 000 per chunk (`_DEFAULT_CLEANUP_CHUNK_SIZE`, `_constants.py:181`), with
+Chunking is by characters, 8 000 per chunk (`_DEFAULT_CLEANUP_CHUNK_SIZE`, `_constants.py:244`), with
 3 read-only blocks of context on each side. Measured on the real books, before the payload fixes
 below:
 
@@ -256,7 +258,7 @@ them needs the run to have happened.
 2. **Lower `max_failed_chunk_ratio` from 1.0 to ~0.1.** At 1.0, 106 of 107 chunks could fail and the
    run would still report `completed` / `changed: true` with no signal. The first run must be honest
    about partial execution, or its result cannot be interpreted.
-   *Landed:* `_DEFAULT_MAX_FAILED_CHUNK_RATIO = 0.1` (`_constants.py:187`), read at `_config.py:55-58`,
+   *Landed:* `_DEFAULT_MAX_FAILED_CHUNK_RATIO = 0.1` (`_constants.py:250`), read at `_config.py:55-58`,
    mirrored in `resources/config.toml:82` and `core/config.py:304`. Breaching it now emits
    `reader_cleanup_failed_chunk_ratio_exceeded`.
 3. **Move the target boilerplate into the system prompt.** Keep `category`, `id`, `text_hash` and the
@@ -269,8 +271,8 @@ them needs the run to have happened.
    `[[DOCX_IMAGE_*]]`, so every image anchor carried a `kind` on the allowed-deletion list while the
    prompt told the model not to touch them. The validator caught it, but this is the exact
    contradiction that once cost 20–37 images per book; it should not survive on one check.
-   *Landed:* the pattern is at `_constants.py:101-104` and anchors now carry their own
-   `_DOCX_IMAGE_ANCHOR_KIND = "docx_image_anchor"` (`_constants.py:111`), which is on no deletion list.
+   *Landed:* the pattern is at `_constants.py:164-167` and anchors now carry their own
+   `_DOCX_IMAGE_ANCHOR_KIND = "docx_image_anchor"` (`_constants.py:174`), which is on no deletion list.
    The validator's second line of defence remains (`_validate.py:358`).
 5. **Do not re-append lost image anchors at the end of the document.** The reconciliation step restored
    a dropped anchor by pasting it at the end — the count reconciled while a chapter-3 figure landed
@@ -280,9 +282,19 @@ them needs the run to have happened.
    `reader_cleanup_image_anchor_lost_cleanup_discarded`. Nothing is ever re-appended.
 6. **Narrow `_TOC_LIKE_PATTERN`.** `\s\d{1,4}\s*$` made any paragraph ending in a number "TOC-like"
    and immune to every operation: 0.5–4.1% of blocks, up to 60% of them real prose.
-   *Landed:* `_constants.py:90-92` — both branches require a page number, a bare trailing number counts
-   only when the whole line is within `_TOC_ENTRY_MAX_CHARS = 100` (`_constants.py:89`), plus a density
-   rule (`_constants.py:97-100`).
+   *Landed, then superseded.* The fix this spec shipped keyed on line LENGTH: a bare trailing number
+   counted only when the whole line was within `_TOC_ENTRY_MAX_CHARS = 100`. That rule is **gone** —
+   length turned out not to be the discriminator (lietaer's real contents lines run to 163 characters
+   and its subject index to 784), and the constant was deleted along with it, so citing it here was
+   citing a rule the code no longer has. What stands today is four positional shapes, all in
+   `reader_cleanup_mvp/_constants.py` and applied by `_is_toc_like_text` in `_utils.py`: a dotted
+   leader terminated by a page number (`_TOC_LEADER_ENTRY_PATTERN`); a block that is nothing but page
+   numbers and separators (`_TOC_PAGE_REFERENCE_RUN_PATTERN`); an index run dense against the word
+   count (`_TOC_INDEX_PAGE_REFERENCE_PATTERN`, `_TOC_PAGE_RANGE_PATTERN`,
+   `_TOC_MIN_PAGE_REFERENCE_TOKENS`, `_TOC_MIN_PAGE_REFERENCE_TOKEN_RATIO`); and a contents run of
+   bare page numbers at entry boundaries (`_TOC_MIN_CONTENTS_ENTRY_TOKENS`, and its roman-numeral
+   companions). Constants are named rather than cited by line here on purpose: this item's line
+   numbers had already gone stale twice.
 7. **Stop sending dead instructions.** The `anchor_repair` branch is unreachable in production yet
    occupied ~10 lines of every one of the 107 prompts, and the empty `global_plan` fields shipped on
    every request.
@@ -408,17 +420,64 @@ an operation without its required fields), all closed. That convergence is why t
 2. Image anchors are never labelled with a deletion-eligible `kind`, and a lost anchor rejects its
    operation rather than being re-appended elsewhere.
 3. A paragraph of prose ending in a number is not `toc_like`, while a genuine TOC line still is.
-4. Trimming the target boilerplate does not change which operations are accepted on the three replay
-   books — byte-identical accepted-operation sets.
-5. The pass advertises six operations, never seven; a response still naming `reclassify_role` is
-   ignored with a recorded reason rather than failing its chunk; and the three replay books produce
-   the same accepted-operation sets as before, minus the 1/2/0 reclassifications.
+4. **Replay stability is measured against the previous state of the CODE, not against the June
+   recording.** The baseline is the committed
+   `artifacts/reader_cleanup_replay/faithful_replay_summary.json`. The check is: re-run
+   `python scripts/run-reader-cleanup-faithful-replay.py --out /tmp/after.json` and diff it against
+   the committed file. A change that is not meant to affect the pass must leave
+   `cleaned_markdown_sha256`, `accepted_count` and `accepted_keys` byte-identical for all three
+   books; a change that IS meant to affect them must move them by exactly the amount its own spec
+   claims, and must update the committed summary in the same commit, so the next person diffs
+   against something true.
+5. The pass advertises six operations, never seven, and a response still naming `reclassify_role` is
+   ignored with a recorded reason rather than failing its chunk. Operation-set stability is
+   criterion 4's job, on criterion 4's baseline.
 6. A rejected deletion is rejected in the report as well as in the text: the rollback re-applies the
    surviving operation set from scratch, so "accepted" counts can never describe operations whose
    effect was thrown away.
 
+### Why the baseline is not the recorded run (corrected 2026-08-02)
+
+Criteria 4 and 5 originally demanded "byte-identical accepted sets" against the June recording and
+"the same accepted-operation sets as before, minus the 1/2/0 reclassifications". That is
+**unsatisfiable, and satisfying it would be a regression.** The versioned summary says so plainly:
+`reproduces_recorded_accepted` is `false` for all three books, and accepted counts are now
+
+| Book | Accepted today | Accepted in the recording |
+|---|---|---|
+| creating_wealth | 9 | 34 |
+| lietaer | 39 | 44 |
+| mazzucato | 6 | 12 |
+
+The gap is **legitimate and is the point of this spec**. Today's code refuses operations the
+recorded run accepted, for reasons items 4, 5, 6 and 9 above argue for at length: operations that
+destroyed image anchors are now rejected instead of applied and silently reconciled, and
+`reclassify_role` no longer exists, so every recorded operation naming it is ignored by
+construction. A criterion that demanded those numbers match again would be a standing instruction to
+restore the exact behaviour this spec was written to remove — the image-anchor P0 among it.
+
+The recording is therefore historical evidence, not a target. It is still valuable, and
+`scripts/run-reader-cleanup-faithful-replay.py` still reports the diff against it
+(`accepted_only_in_replay` / `accepted_only_in_recording`), because *which* operations diverged is
+how a surprise gets noticed. What must not drift silently is the comparison in criterion 4: the code
+against its own previous state.
+
 ## Changelog
 
+- **2026-08-02** — anti-regression criteria 4 and 5 corrected after an external review (Codex,
+  gpt-5.6-sol) found them demanding a result the repository's own versioned evidence contradicts:
+  "byte-identical accepted sets" against the June recording, while
+  `artifacts/reader_cleanup_replay/faithful_replay_summary.json` reports
+  `reproduces_recorded_accepted: false` on all three books (9/39/6 accepted against 34/44/12
+  recorded). Meeting the old criterion would have meant restoring operations that destroy image
+  anchors, so it was not merely unmeetable but actively harmful. The baseline is now the committed
+  replay summary — the previous state of the code — with the recording kept as diagnostic evidence;
+  `### Why the baseline is not the recorded run` records the reasoning and the numbers, and
+  `tests/test_replay_baseline_consistency.py` fails if the two ever disagree again. Item 6's
+  citation of `_TOC_ENTRY_MAX_CHARS` was fixed in the same pass: that constant and its length rule
+  were deleted when the TOC heuristic was rewritten around position rather than length, so the item
+  now names the constants that exist instead of line numbers that had already gone stale twice. The
+  other `_constants.py:NN` citations were re-derived against the current tree.
 - **2026-07-31** — written, implemented over three rounds of fixes and three adversarial reviews, and
   merged to `main`.
 - **2026-08-01** — brought into line with the code it describes, after an external review found the

@@ -88,8 +88,10 @@ This inventory is intentionally pragmatic:
 
 ## Static-Workflow
 
+- `tests/test_agent_contract_consistency.py`
 - `tests/test_dependency_consistency.py`
 - `tests/test_documentation_links.py`
+- `tests/test_replay_baseline_consistency.py`
 - `tests/test_layer_boundaries.py`
 - `tests/test_network_hardening_defaults.py`
 - `tests/test_script_contract_static.py`
