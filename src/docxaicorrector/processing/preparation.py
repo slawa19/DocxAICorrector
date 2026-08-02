@@ -141,14 +141,20 @@ def flatten_layout_cleanup_metrics(cleanup_report) -> dict[str, int]:
         return {}
     cleanup_mode = str(getattr(cleanup_report, "cleanup_mode", "remove") or "remove").strip().lower()
     if cleanup_mode == "flag":
+        # Page-cadence furniture is a targeted drop that fires in flag mode too, so the
+        # flag-mode totals must add the paragraphs that were really removed; otherwise the
+        # drop is invisible in every preparation metric.
+        page_furniture_removed = int(getattr(cleanup_report, "removed_page_furniture_count", 0) or 0)
         return {
             "layout_cleanup_removed_count": int(getattr(cleanup_report, "flagged_page_number_count", 0) or 0)
             + int(getattr(cleanup_report, "flagged_repeated_artifact_count", 0) or 0)
-            + int(getattr(cleanup_report, "flagged_empty_or_whitespace_count", 0) or 0),
+            + int(getattr(cleanup_report, "flagged_empty_or_whitespace_count", 0) or 0)
+            + page_furniture_removed,
             "layout_cleanup_page_number_count": int(getattr(cleanup_report, "flagged_page_number_count", 0) or 0),
             "layout_cleanup_repeated_artifact_count": int(
                 getattr(cleanup_report, "flagged_repeated_artifact_count", 0) or 0
-            ),
+            )
+            + page_furniture_removed,
             "layout_cleanup_empty_or_whitespace_count": int(
                 getattr(cleanup_report, "flagged_empty_or_whitespace_count", 0) or 0
             ),

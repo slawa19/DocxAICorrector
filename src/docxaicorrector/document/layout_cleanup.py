@@ -41,6 +41,25 @@ BOILERPLATE_TOKENS = {
     "все права защищены",
 }
 PROTECTED_ROLES = {"heading", "caption", "list", "table", "image"}
+# Page furniture — a scanner stamp, a classification marking, a running header — recurs
+# once per PAGE. Measured over a whole document that means it reappears every few
+# paragraphs. Section structure (a per-chapter "Footnotes" heading, a part divider)
+# recurs at chapter scale, an order of magnitude further apart. The three constants below
+# are that cadence boundary; they key on WHERE the block repeats and HOW OFTEN, never on
+# what it says (Constitution VII).
+PAGE_FURNITURE_MAX_MEAN_PARAGRAPH_GAP = 40
+PAGE_FURNITURE_MIN_DOCUMENT_SPAN_RATIO = 0.5
+PAGE_FURNITURE_MIN_REPEAT_COUNT = 6
+# Blast-radius bound. Furniture is a thin overlay on a document — the stamp measured on
+# the OCR corpus is 167 of 2069 paragraphs, 8%. A block that IS a fifth of
+# the document is far more likely to be content whose repetition is the point (a refrain,
+# a recurring speaker label in a play), and no cadence heuristic should silently delete
+# that much text. Above this share the block is kept, whatever its cadence.
+PAGE_FURNITURE_MAX_DOCUMENT_SHARE = 0.2
+# Structural containers, not text blocks: a table or image placeholder is never furniture.
+PAGE_FURNITURE_EXCLUDED_ROLES = {"table", "image"}
+# An image anchor must never be dropped as a side effect of a text rule.
+IMAGE_PLACEHOLDER_PATTERN = re.compile(r"\[\[(?:DOCX_)?IMAGE_[A-Za-z0-9_]+\]\]", re.IGNORECASE)
 PROTECTED_STRUCTURAL_ROLES = {"toc_header", "toc_entry", "epigraph", "attribution", "dedication"}
 TERMINAL_PUNCTUATION = (".", "!", "?", "\u2026")
 _EXTRACTION_ARTIFACT_PATTERN = re.compile(
@@ -116,8 +135,19 @@ def _clean_paragraph_layout_artifacts(
     title_fingerprints = _collect_title_fingerprints(paragraphs)
 
     for index, paragraph in enumerate(paragraphs):
-        normalized = normalize_layout_artifact_text(str(paragraph.text or ""))
-        normalized_by_index[index] = normalized
+        normalized_by_index[index] = normalize_layout_artifact_text(str(paragraph.text or ""))
+
+    page_furniture_fingerprints = _collect_page_cadence_furniture_fingerprints(
+        paragraphs,
+        normalized_by_index=normalized_by_index,
+        max_repeated_text_chars=max_repeated_text_chars,
+        # The operator's repeat threshold can only make this stricter, never looser: this
+        # rule deletes, so it must not be tunable below its own floor.
+        min_repeat_count=max(min_repeat_count, PAGE_FURNITURE_MIN_REPEAT_COUNT),
+    )
+
+    for index, paragraph in enumerate(paragraphs):
+        normalized = normalized_by_index[index]
         if _is_repeated_artifact_candidate(
             paragraph,
             normalized_text=normalized,
@@ -132,6 +162,7 @@ def _clean_paragraph_layout_artifacts(
     removed_page_numbers = 0
     removed_repeated = 0
     removed_empty = 0
+    removed_page_furniture = 0
     flagged_page_numbers = 0
     flagged_repeated = 0
     flagged_empty = 0
@@ -144,7 +175,18 @@ def _clean_paragraph_layout_artifacts(
         paragraph.is_likely_page_number = False
         paragraph.is_repeated_across_pages = False
 
-        if _is_protected(paragraph):
+        if normalized and normalized in page_furniture_fingerprints:
+            # Targeted drop: page-cadence furniture is removed in BOTH modes. Flag mode
+            # exists so that UNCERTAIN structure decisions stay visible to AI-first
+            # structure recovery; a block recurring at page cadence across the whole
+            # document is not a structure decision, and leaving it in means it is
+            # translated once per page.
+            action = "remove"
+            reason = "repeated_page_furniture"
+            paragraph.is_repeated_across_pages = True
+            removed_page_furniture += 1
+            removed_repeated += 1
+        elif _is_protected(paragraph):
             action = "keep"
             reason = "protected_role_keep"
         elif not str(paragraph.text or "").strip():
@@ -203,13 +245,13 @@ def _clean_paragraph_layout_artifacts(
                 repeat_count=repeat_count,
             )
         )
-        if signal_only or action == "keep":
+        if action == "keep" or (signal_only and action == "flag"):
             cleaned.append(paragraph)
 
     report = LayoutArtifactCleanupReport(
         original_paragraph_count=len(paragraphs),
         cleaned_paragraph_count=len(cleaned),
-        removed_paragraph_count=0 if signal_only else len(paragraphs) - len(cleaned),
+        removed_paragraph_count=len(paragraphs) - len(cleaned),
         removed_page_number_count=removed_page_numbers,
         removed_repeated_artifact_count=removed_repeated,
         removed_empty_or_whitespace_count=removed_empty,
@@ -219,6 +261,7 @@ def _clean_paragraph_layout_artifacts(
         flagged_page_number_count=flagged_page_numbers,
         flagged_repeated_artifact_count=flagged_repeated,
         flagged_empty_or_whitespace_count=flagged_empty,
+        removed_page_furniture_count=removed_page_furniture,
     )
     _log_cleanup_outcome(report)
     return cleaned, report
@@ -298,6 +341,82 @@ def _is_repeated_artifact_candidate(
     if len(WORD_PATTERN.findall(normalized_text)) > DEFAULT_MAX_REPEATED_WORD_COUNT:
         return False
     if terminal_sentence_like(str(paragraph.text or "")) and normalized_text not in (title_fingerprints or set()):
+        return False
+    return True
+
+
+def _collect_page_cadence_furniture_fingerprints(
+    paragraphs: list[ParagraphUnit],
+    *,
+    normalized_by_index: dict[int, str],
+    max_repeated_text_chars: int,
+    min_repeat_count: int,
+) -> set[str]:
+    """Normalized blocks that repeat at PAGE cadence across the whole document.
+
+    Page furniture is identified by WHERE and HOW OFTEN a block repeats, never by what it
+    says. A stamp, a classification marking or a running header sits in the same slot on
+    every page, so across the document it reappears every few paragraphs and its
+    occurrences span the document end to end. Section structure that legitimately repeats
+    — a per-chapter "Footnotes" heading, a part divider echoed in the table of contents —
+    repeats at chapter cadence, an order of magnitude further apart, and is therefore not
+    matched.
+
+    Deliberately blind to ``role`` and ``layout_origin``: an OCR stamp is imported
+    sometimes as a textbox, sometimes as a plain paragraph, and a short all-caps stamp is
+    routinely mis-promoted to ``role="heading"`` by the import heuristics. Which of those
+    accidents a given occurrence got is not evidence about the block.
+    """
+    if len(paragraphs) < min_repeat_count:
+        return set()
+
+    positions_by_fingerprint: dict[str, list[int]] = {}
+    for index, paragraph in enumerate(paragraphs):
+        normalized = normalized_by_index.get(index, "")
+        if not _is_page_cadence_candidate(
+            paragraph,
+            normalized_text=normalized,
+            max_repeated_text_chars=max_repeated_text_chars,
+        ):
+            continue
+        positions_by_fingerprint.setdefault(normalized, []).append(index)
+
+    document_span = max(1, len(paragraphs) - 1)
+    fingerprints: set[str] = set()
+    for normalized, positions in positions_by_fingerprint.items():
+        if len(positions) < min_repeat_count:
+            continue
+        if len(positions) / len(paragraphs) > PAGE_FURNITURE_MAX_DOCUMENT_SHARE:
+            continue
+        occupied_span = positions[-1] - positions[0]
+        if occupied_span / document_span < PAGE_FURNITURE_MIN_DOCUMENT_SPAN_RATIO:
+            continue
+        mean_gap = occupied_span / (len(positions) - 1)
+        if mean_gap > PAGE_FURNITURE_MAX_MEAN_PARAGRAPH_GAP:
+            continue
+        fingerprints.add(normalized)
+    return fingerprints
+
+
+def _is_page_cadence_candidate(
+    paragraph: ParagraphUnit,
+    *,
+    normalized_text: str,
+    max_repeated_text_chars: int,
+) -> bool:
+    if not normalized_text:
+        return False
+    if getattr(paragraph, "role", "body") in PAGE_FURNITURE_EXCLUDED_ROLES:
+        return False
+    if IMAGE_PLACEHOLDER_PATTERN.search(str(paragraph.text or "")):
+        return False
+    if _has_list_metadata(paragraph):
+        return False
+    if len(normalized_text) > max_repeated_text_chars:
+        return False
+    if len(WORD_PATTERN.findall(normalized_text)) > DEFAULT_MAX_REPEATED_WORD_COUNT:
+        return False
+    if terminal_sentence_like(str(paragraph.text or "")):
         return False
     return True
 
@@ -442,6 +561,7 @@ def write_layout_cleanup_report_artifact(
             "flagged_page_number_count": report.flagged_page_number_count,
             "flagged_repeated_artifact_count": report.flagged_repeated_artifact_count,
             "flagged_empty_or_whitespace_count": report.flagged_empty_or_whitespace_count,
+            "removed_page_furniture_count": report.removed_page_furniture_count,
             "cleanup_applied": report.cleanup_applied,
             "skipped_reason": report.skipped_reason,
             "error_code": report.error_code,
@@ -473,6 +593,7 @@ def _log_cleanup_outcome(report: LayoutArtifactCleanupReport, *, error_message: 
         layout_cleanup_flagged_page_number_count=report.flagged_page_number_count,
         layout_cleanup_flagged_repeated_artifact_count=report.flagged_repeated_artifact_count,
         layout_cleanup_flagged_empty_or_whitespace_count=report.flagged_empty_or_whitespace_count,
+        layout_cleanup_removed_page_furniture_count=report.removed_page_furniture_count,
         layout_cleanup_skipped_reason=report.skipped_reason,
         layout_cleanup_error_code=report.error_code,
         error_message=error_message,

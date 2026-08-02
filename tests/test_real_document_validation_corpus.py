@@ -209,6 +209,37 @@ def test_build_structural_metrics_uses_flagged_layout_cleanup_counts_for_signal_
     assert metrics["layout_cleanup_empty_or_whitespace_count"] == 0
 
 
+def test_build_structural_metrics_counts_page_furniture_dropped_in_signal_mode() -> None:
+    """Spec 017: the targeted page-furniture drop fires in flag mode and must be counted.
+
+    This is the canonical verdict path; flag mode otherwise reads only the flagged
+    counters, which would report the removal as zero.
+    """
+    metrics = real_document_validation_structural._build_structural_metrics(
+        paragraphs=[ParagraphUnit(text="Body", role="body", structural_role="body")],
+        image_assets=[],
+        cleanup_report=LayoutArtifactCleanupReport(
+            original_paragraph_count=100,
+            cleaned_paragraph_count=93,
+            removed_paragraph_count=7,
+            removed_page_number_count=0,
+            removed_repeated_artifact_count=7,
+            removed_empty_or_whitespace_count=0,
+            cleanup_applied=True,
+            cleanup_mode="flag",
+            flagged_page_number_count=2,
+            flagged_repeated_artifact_count=1,
+            flagged_empty_or_whitespace_count=0,
+            removed_page_furniture_count=7,
+        ),
+    )
+
+    assert metrics["layout_cleanup_removed_count"] == 10
+    assert metrics["layout_cleanup_page_number_count"] == 2
+    assert metrics["layout_cleanup_repeated_artifact_count"] == 8
+    assert metrics["layout_cleanup_empty_or_whitespace_count"] == 0
+
+
 def _skip_if_legacy_doc_conversion_unavailable(source_path: Path) -> None:
     if source_path.suffix.lower() != ".doc":
         return

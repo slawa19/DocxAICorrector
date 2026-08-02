@@ -197,6 +197,9 @@ class LayoutArtifactCleanupReport:
     flagged_page_number_count: int = 0
     flagged_repeated_artifact_count: int = 0
     flagged_empty_or_whitespace_count: int = 0
+    # Page-cadence furniture is a targeted drop: it is removed in BOTH cleanup modes,
+    # so this count can be non-zero while ``cleanup_mode == "flag"``.
+    removed_page_furniture_count: int = 0
     artifact_path: str | None = None
 
 
