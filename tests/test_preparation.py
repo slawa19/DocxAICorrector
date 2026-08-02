@@ -87,6 +87,37 @@ def test_flatten_layout_cleanup_metrics_includes_empty_paragraphs():
     }
 
 
+def test_flatten_layout_cleanup_metrics_counts_page_furniture_dropped_in_signal_mode():
+    """Spec 017: page-cadence furniture is a targeted drop that fires in flag mode too.
+
+    Flag mode otherwise reports only the flagged counters, so without this the removal
+    would be invisible in every preparation metric.
+    """
+    metrics = preparation.flatten_layout_cleanup_metrics(
+        LayoutArtifactCleanupReport(
+            original_paragraph_count=100,
+            cleaned_paragraph_count=93,
+            removed_paragraph_count=7,
+            removed_page_number_count=0,
+            removed_repeated_artifact_count=7,
+            removed_empty_or_whitespace_count=0,
+            cleanup_applied=True,
+            cleanup_mode="flag",
+            flagged_page_number_count=1,
+            flagged_repeated_artifact_count=1,
+            flagged_empty_or_whitespace_count=1,
+            removed_page_furniture_count=7,
+        )
+    )
+
+    assert metrics == {
+        "layout_cleanup_removed_count": 10,
+        "layout_cleanup_page_number_count": 1,
+        "layout_cleanup_repeated_artifact_count": 8,
+        "layout_cleanup_empty_or_whitespace_count": 1,
+    }
+
+
 def test_flatten_layout_cleanup_metrics_uses_flagged_counts_for_signal_mode():
     metrics = preparation.flatten_layout_cleanup_metrics(
         LayoutArtifactCleanupReport(
