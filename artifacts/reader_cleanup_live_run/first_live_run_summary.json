@@ -1,0 +1,184 @@
+{
+  "books": {
+    "creating_wealth": {
+      "accepted_by_operation": {
+        "normalize_heading_boundary": 12
+      },
+      "accepted_operations": 12,
+      "changed_regions": 12,
+      "chunks": 75,
+      "elapsed_seconds": 311.306,
+      "failed_chunks": 0,
+      "harm_count": 3,
+      "harm_verdicts": [
+        "harm_defect_class_increase:broken_sentence"
+      ],
+      "list_price_usd": 1.3,
+      "proposed_operations": 14,
+      "regions_improved": 9,
+      "regions_no_measured_change": 0,
+      "regions_worse": 3,
+      "tokens": {
+        "input": 1200249,
+        "model_calls": 75,
+        "output": 19775
+      },
+      "visible_defects_after": {
+        "broken_list_item": 83,
+        "broken_sentence": 4,
+        "caption_fused_with_image_anchor": 10,
+        "fused_heading": 22,
+        "glued_footnote_marker": 130,
+        "inline_page_furniture": 0,
+        "standalone_page_number_block": 0
+      },
+      "visible_defects_before": {
+        "broken_list_item": 83,
+        "broken_sentence": 1,
+        "caption_fused_with_image_anchor": 18,
+        "fused_heading": 23,
+        "glued_footnote_marker": 130,
+        "inline_page_furniture": 0,
+        "standalone_page_number_block": 0
+      },
+      "visible_defects_delta": {
+        "broken_list_item": 0,
+        "broken_sentence": 3,
+        "caption_fused_with_image_anchor": -8,
+        "fused_heading": -1,
+        "glued_footnote_marker": 0,
+        "inline_page_furniture": 0,
+        "standalone_page_number_block": 0
+      }
+    },
+    "lietaer": {
+      "accepted_by_operation": {
+        "join_fragmented_paragraph": 6,
+        "normalize_heading_boundary": 21,
+        "remove_inline_noise": 7
+      },
+      "accepted_operations": 34,
+      "changed_regions": 27,
+      "chunks": 70,
+      "elapsed_seconds": 342.008,
+      "failed_chunks": 0,
+      "harm_count": 8,
+      "harm_verdicts": [
+        "harm_boundary_strands_opening_quote",
+        "harm_leaves_stump",
+        "harm_suspected_content_number"
+      ],
+      "list_price_usd": 1.37,
+      "proposed_operations": 43,
+      "regions_improved": 13,
+      "regions_no_measured_change": 6,
+      "regions_worse": 8,
+      "tokens": {
+        "input": 1220829,
+        "model_calls": 70,
+        "output": 29408
+      },
+      "visible_defects_after": {
+        "broken_list_item": 69,
+        "broken_sentence": 6,
+        "caption_fused_with_image_anchor": 0,
+        "fused_heading": 8,
+        "glued_footnote_marker": 200,
+        "inline_page_furniture": 4,
+        "standalone_page_number_block": 5
+      },
+      "visible_defects_before": {
+        "broken_list_item": 67,
+        "broken_sentence": 6,
+        "caption_fused_with_image_anchor": 0,
+        "fused_heading": 22,
+        "glued_footnote_marker": 200,
+        "inline_page_furniture": 4,
+        "standalone_page_number_block": 5
+      },
+      "visible_defects_delta": {
+        "broken_list_item": 2,
+        "broken_sentence": 0,
+        "caption_fused_with_image_anchor": 0,
+        "fused_heading": -14,
+        "glued_footnote_marker": 0,
+        "inline_page_furniture": 0,
+        "standalone_page_number_block": 0
+      }
+    },
+    "mazzucato": {
+      "accepted_by_operation": {
+        "delete_block": 6,
+        "normalize_heading_boundary": 3,
+        "remove_inline_noise": 3
+      },
+      "accepted_operations": 12,
+      "changed_regions": 12,
+      "chunks": 107,
+      "elapsed_seconds": 462.731,
+      "failed_chunks": 0,
+      "harm_count": 5,
+      "harm_verdicts": [
+        "harm_prose_words",
+        "harm_suspected_content_number",
+        "harm_url_fragment"
+      ],
+      "list_price_usd": 1.83,
+      "proposed_operations": 15,
+      "regions_improved": 3,
+      "regions_no_measured_change": 5,
+      "regions_worse": 4,
+      "tokens": {
+        "input": 1691040,
+        "model_calls": 107,
+        "output": 28487
+      },
+      "visible_defects_after": {
+        "broken_list_item": 155,
+        "broken_sentence": 9,
+        "caption_fused_with_image_anchor": 14,
+        "fused_heading": 0,
+        "glued_footnote_marker": 242,
+        "inline_page_furniture": 0,
+        "standalone_page_number_block": 6
+      },
+      "visible_defects_before": {
+        "broken_list_item": 155,
+        "broken_sentence": 9,
+        "caption_fused_with_image_anchor": 14,
+        "fused_heading": 3,
+        "glued_footnote_marker": 242,
+        "inline_page_furniture": 0,
+        "standalone_page_number_block": 6
+      },
+      "visible_defects_delta": {
+        "broken_list_item": 0,
+        "broken_sentence": 0,
+        "caption_fused_with_image_anchor": 0,
+        "fused_heading": -3,
+        "glued_footnote_marker": 0,
+        "inline_page_furniture": 0,
+        "standalone_page_number_block": 0
+      }
+    }
+  },
+  "model": "openrouter:anthropic/claude-haiku-4.5",
+  "price_per_mtok_usd": {
+    "input": 1.0,
+    "output": 5.0,
+    "source": "Anthropic list price for Claude Haiku 4.5"
+  },
+  "run": "20260802T124648Z_first_live_run",
+  "totals": {
+    "changed_regions": 51,
+    "elapsed_seconds": 1116.0,
+    "harm_count": 16,
+    "input_tokens": 4112118,
+    "list_price_usd": 4.5,
+    "output_tokens": 77670,
+    "regions_improved": 25,
+    "regions_no_measured_change": 11,
+    "regions_worse": 15
+  },
+  "what": "First live (paid) reader-cleanup run on the three recorded books. Inputs are the post-translation Russian markdown from the June 2026 recording; no translation was re-run."
+}
