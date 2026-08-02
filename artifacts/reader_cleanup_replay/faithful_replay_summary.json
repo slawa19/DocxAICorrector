@@ -70,7 +70,8 @@
       "recorded_chunk_count": 75,
       "recorded_raw_block_count": 1672,
       "reproduces_recorded_accepted": false,
-      "toc_like_block_count": 0
+      "toc_like_block_count": 0,
+      "toc_like_blocks_sent_to_model": true
     },
     "lietaer": {
       "accepted_by_operation": {
@@ -155,7 +156,8 @@
       "recorded_chunk_count": 70,
       "recorded_raw_block_count": 1898,
       "reproduces_recorded_accepted": false,
-      "toc_like_block_count": 110
+      "toc_like_block_count": 110,
+      "toc_like_blocks_sent_to_model": true
     },
     "mazzucato": {
       "accepted_by_operation": {
@@ -203,7 +205,8 @@
       "recorded_chunk_count": 107,
       "recorded_raw_block_count": 2099,
       "reproduces_recorded_accepted": false,
-      "toc_like_block_count": 1
+      "toc_like_block_count": 1,
+      "toc_like_blocks_sent_to_model": true
     }
   },
   "recorded_run": "20260618T124238Z_faithful_reclassify_replay"

@@ -16,10 +16,19 @@ repository stay with their owner (the pyright baseline, for instance, is
 directions, so it cannot disagree with reality).
 
 This guard exists so the editorial decision survives the next editor. It checks
-only the two concrete shapes that actually went stale — a test-result count and a
-pinned ``main`` commit. It deliberately does NOT try to judge whether the prose is
-still true; no test can do that, and pretending otherwise would be the false green
-this repository has been burned by before.
+the two concrete shapes that actually went stale — a test-result count and a
+pinned ``main`` commit — plus enough structure to know that a document is still
+there to check. It deliberately does NOT try to judge whether the prose is still
+true; no test can do that, and pretending otherwise would be the false green this
+repository has been burned by before.
+
+The structural half was added on 2026-08-02 after an external review (Codex,
+gpt-5.6-sol) showed the anti-vacuum check passing vacuously: it asked only that
+the strings ``scripts/test.sh`` and ``git log`` appear *somewhere*, so a two-line
+file containing nothing but those two words satisfied every test in this module.
+The commands must now sit inside a fenced code block, and the file must still
+have the shape of navigation — sections, runnable blocks, and the one heading
+``tests/test_spec_status_consistency.py`` reads by name.
 
 Historical commit references ("the UI shipped in `58aaf2a` on 2026-07-13") are
 fine and are not flagged: the past does not go stale. Only a hash presented as
@@ -58,10 +67,33 @@ _PINNED_HEAD_PATTERN = re.compile(
 # Anti-vacuum anchors: the document must keep the verification commands that
 # replaced the numbers. Without them the two guards above would pass on a file
 # that simply says nothing.
-_REQUIRED_ANCHORS = (
+#
+# Substring presence alone was NOT enough, and an external review (Codex,
+# gpt-5.6-sol, 2026-08-02) demonstrated it: a two-line file reading
+# "scripts/test.sh / git log" satisfied every check in this module. The guard
+# built against emptiness passed vacuously on an empty document. So the anchors
+# must now sit inside a fenced code block — where a reader can copy and run
+# them — and the document must still have the shape of navigation.
+_REQUIRED_COMMAND_ANCHORS = (
     "scripts/test.sh",
     "git log",
 )
+
+# The one section another test reads by name: tests/test_spec_status_consistency.py
+# requires every open spec to be mentioned under it. If it disappears, that guard
+# starts passing for the wrong reason, so it is checked from this side too.
+_CROSS_CHECKED_SECTION = "## Что открыто"
+
+# Structural floors, set well below what the document actually carries (12 `##`
+# sections, 4 fenced blocks, ~200 lines) so ordinary editing never trips them.
+# They are counts and positions only. This module still refuses to judge whether
+# the PROSE is true — no test can, and a guard that pretended to would be exactly
+# the false green this repository keeps getting burned by. The floors answer one
+# narrower question: is there a document here at all, or only the keywords the
+# guards look for?
+_MIN_SECTIONS = 5
+_MIN_FENCED_BLOCKS = 2
+_MIN_NON_EMPTY_LINES = 40
 
 _FIX_HINT = (
     "\n\ndocs/WHERE_WE_ARE.md is navigation, and values that change on every merge "
@@ -85,6 +117,20 @@ def _offending_lines(pattern: re.Pattern[str]) -> list[str]:
     ]
 
 
+def _fenced_code_blocks(text: str) -> list[str]:
+    """The bodies of the ``` fenced blocks, in order."""
+    return re.findall(r"^```[^\n]*\n(.*?)^```", text, flags=re.DOTALL | re.MULTILINE)
+
+
+def _section_bodies(text: str) -> dict[str, str]:
+    """Each ``## `` heading mapped to the text under it, up to the next ``## ``."""
+    parts = re.split(r"^(## .+)$", text, flags=re.MULTILINE)
+    return {
+        parts[index].strip(): parts[index + 1]
+        for index in range(1, len(parts) - 1, 2)
+    }
+
+
 def test_navigation_document_exists_and_keeps_its_verification_commands() -> None:
     """Anti-vacuum: the guards below must not pass because the file went empty."""
     assert WHERE_WE_ARE_PATH.is_file(), (
@@ -92,13 +138,68 @@ def test_navigation_document_exists_and_keeps_its_verification_commands() -> Non
         "navigation document this guard and tests/test_spec_status_consistency.py "
         "both cross-check."
     )
-    text = _document_text()
-    missing = [anchor for anchor in _REQUIRED_ANCHORS if anchor not in text]
+    runnable = "\n".join(_fenced_code_blocks(_document_text()))
+    missing = [anchor for anchor in _REQUIRED_COMMAND_ANCHORS if anchor not in runnable]
     assert not missing, (
-        "docs/WHERE_WE_ARE.md no longer contains the verification commands it is "
-        f"built around (missing: {', '.join(missing)}). The whole point of the file "
-        "is that a reader can re-derive the project's state in a minute instead of "
-        "trusting a number someone typed in weeks ago."
+        "docs/WHERE_WE_ARE.md no longer carries its verification commands inside a "
+        f"fenced code block (missing there: {', '.join(missing)}). The whole point of "
+        "the file is that a reader can copy a command and re-derive the project's "
+        "state in a minute instead of trusting a number someone typed in weeks ago — "
+        "a command mentioned in passing in a sentence is not that."
+        + _FIX_HINT
+    )
+
+
+def test_navigation_document_still_has_the_shape_of_navigation() -> None:
+    """A file containing only the keywords the guards look for is not a document.
+
+    Counts and positions only — see the note next to the floors. This exists
+    because the previous anti-vacuum check passed on a two-line file.
+    """
+    text = _document_text()
+    sections = _section_bodies(text)
+    blocks = _fenced_code_blocks(text)
+    non_empty_lines = [line for line in text.splitlines() if line.strip()]
+
+    shortfalls = []
+    if len(sections) < _MIN_SECTIONS:
+        shortfalls.append(f"{len(sections)} `## ` sections (need at least {_MIN_SECTIONS})")
+    if len(blocks) < _MIN_FENCED_BLOCKS:
+        shortfalls.append(f"{len(blocks)} fenced code blocks (need at least {_MIN_FENCED_BLOCKS})")
+    if len(non_empty_lines) < _MIN_NON_EMPTY_LINES:
+        shortfalls.append(
+            f"{len(non_empty_lines)} non-empty lines (need at least {_MIN_NON_EMPTY_LINES})"
+        )
+
+    assert not shortfalls, (
+        "docs/WHERE_WE_ARE.md has been hollowed out: " + "; ".join(shortfalls) + ".\n\n"
+        "These floors sit far below what the document normally carries, so ordinary "
+        "editing does not trip them. They only answer 'is there a document here at "
+        "all' — the question the earlier version of this guard failed to ask, which "
+        "is how a two-line file could satisfy every check in this module."
+    )
+
+
+def test_navigation_document_keeps_the_open_work_section_other_tooling_reads() -> None:
+    """`## Что открыто` is a cross-file contract, not decoration.
+
+    ``tests/test_spec_status_consistency.py`` asserts that every spec whose status
+    means "still open" is mentioned under this heading. Delete the heading and that
+    guard has nothing to check; leave it empty and it has nothing to find. Both are
+    checked from this side so neither can go quietly green.
+    """
+    sections = _section_bodies(_document_text())
+    assert _CROSS_CHECKED_SECTION in sections, (
+        f"docs/WHERE_WE_ARE.md no longer has a `{_CROSS_CHECKED_SECTION}` section. "
+        "tests/test_spec_status_consistency.py reads it by name to check that open "
+        "specs are listed somewhere a reader will look; without it that guard passes "
+        "vacuously."
+    )
+    body = [line for line in sections[_CROSS_CHECKED_SECTION].splitlines() if line.strip()]
+    assert body, (
+        f"`{_CROSS_CHECKED_SECTION}` in docs/WHERE_WE_ARE.md is empty. If nothing is "
+        "genuinely open, say so in a sentence — an empty section reads as an omission, "
+        "and tests/test_spec_status_consistency.py cannot tell the two apart."
     )
 
 

@@ -10,8 +10,16 @@ report (``accepted_cleanup_operations + ignored_cleanup_operations`` IS the prop
 feeds them back through ``run_reader_cleanup`` with a canned provider, and reports what the
 current code makes of them — the sha256 of the delivered markdown, how many operations were
 accepted and of which kinds, and why the rest were rejected. ``reproduces_recorded_accepted``
-is the headline: True means today's code accepts exactly the operation set the recorded run
-accepted.
+says whether today's code accepts exactly the operation set the recorded run accepted.
+
+**It is a diagnostic, not a target, and it is currently False for all three books.** Today's
+code refuses operations that destroyed image anchors and no longer has ``reclassify_role`` at
+all, so the recorded set cannot be reproduced without reintroducing the defects spec 052 was
+written to remove. The baseline for "did my change move anything" is the committed summary at
+``artifacts/reader_cleanup_replay/faithful_replay_summary.json`` — the previous state of the
+CODE. ``accepted_only_in_replay`` / ``accepted_only_in_recording`` stay useful because *which*
+operations diverge is how a surprise gets noticed. See spec 052,
+``### Why the baseline is not the recorded run``.
 
 Usage (WSL, repo root):
 
@@ -158,9 +166,15 @@ def replay_book(book: str) -> dict[str, Any]:
         "cleaned_markdown_sha256": hashlib.sha256(result.cleaned_markdown.encode("utf-8")).hexdigest(),
         "raw_block_count": payload["stats"]["raw_block_count"],
         "recorded_raw_block_count": report["stats"]["raw_block_count"],
-        # A ``toc_like`` block is withheld from the model entirely, so this count is the
-        # size of the pass's blind spot on this book.
+        # What a ``toc_like`` block actually gets is IMMUNITY AT VALIDATION, not exclusion
+        # from the request. With ``keep_toc`` true — the default, and what these runs used —
+        # ``_select_cleanup_blocks`` returns every block, so these blocks are serialised into
+        # the payload and paid for in tokens; ``_build_protected_block_ids`` then refuses any
+        # operation targeting them. Only ``keep_toc=false`` withholds them from the model.
+        # This field used to be documented as blocks the model never sees, which named a
+        # token saving the pass does not make.
         "toc_like_block_count": sum(1 for block in build_cleanup_blocks(raw_markdown) if block.is_toc_like),
+        "toc_like_blocks_sent_to_model": bool(config.keep_toc),
         "chunk_count": payload["stats"]["cleanup_chunk_count"],
         "recorded_chunk_count": report["stats"]["cleanup_chunk_count"],
         "failed_chunk_count": payload["stats"]["failed_chunk_count"],
@@ -183,7 +197,8 @@ def _print_book(data: dict[str, Any]) -> None:
     print(f"    cleaned markdown sha256 : {data['cleaned_markdown_sha256']}")
     print(f"    blocks / chunks         : {data['raw_block_count']} (recorded {data['recorded_raw_block_count']})"
           f" / {data['chunk_count']} (recorded {data['recorded_chunk_count']}), failed {data['failed_chunk_count']}")
-    print(f"    toc_like blocks         : {data['toc_like_block_count']}")
+    sent = "sent to the model, immune only at validation" if data["toc_like_blocks_sent_to_model"] else "withheld from the model (keep_toc=false)"
+    print(f"    toc_like blocks         : {data['toc_like_block_count']} ({sent})")
     print(f"    proposed / accepted     : {data['proposed_count']} / {data['accepted_count']}"
           f" (recorded accepted {data['recorded_accepted_count']})")
     print(f"    accepted by operation   : {data['accepted_by_operation'] or '{}'}")

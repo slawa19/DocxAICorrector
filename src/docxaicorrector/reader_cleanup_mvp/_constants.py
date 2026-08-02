@@ -107,7 +107,25 @@ _FOOTNOTE_BODY_PATTERN = re.compile(r"^(?:\[\d{1,3}\]|\(\d{1,3}\))\s+\S")
 # whitespace-delimited keeps endnote superscripts glued to a full stop out
 # ("непроизводительными.54 Тем не менее"); and requiring the word after the boundary to be
 # a plain capitalised word keeps currency amounts out ("зачисляется 10 L15, а со счета").
-_TOC_LEADER_ENTRY_PATTERN = re.compile(r"(?:\.{3,}|…{2,})\s*\d{1,4}\s*\Z")
+#
+# The leader alternatives are written to run in LINEAR time, and the spelling is load-bearing.
+# ``(?:\.{3,}|…{2,})\s*\d{1,4}\s*\Z`` searched unanchored is quadratic: on a run of N dots the
+# engine restarts at every one of the N offsets and rescans the rest of the run from each, so an
+# OCR artefact of 100 000 dots — a single block in a single book — took 93 seconds to classify,
+# before one token was spent on the model. Two spellings make the cost linear without changing
+# which strings match:
+#
+#   * a leader may not start in the middle of its own run (``(?<!\.)`` / ``(?<!…)``), so all but
+#     the first offset of a run fail in O(1). The lookbehind is per-branch on purpose: a shared
+#     ``(?<![.…])`` would also reject "Раздел…...4", where a dot run legitimately begins right
+#     after an ellipsis character;
+#   * the run is consumed possessively (``{3,}+`` / ``{2,}+``). Giving dots back can never help —
+#     what follows a shorter run is another dot, and neither ``\s`` nor ``\d`` matches one — so
+#     the backtracking it removes was pure waste.
+#
+# Acceptance is therefore identical to the greedy unanchored form; only the match offset inside a
+# run differs, and the sole caller (``_is_toc_like_text``) reads the result as a boolean.
+_TOC_LEADER_ENTRY_PATTERN = re.compile(r"(?:(?<!\.)\.{3,}+|(?<!…)…{2,}+)\s*\d{1,4}\s*\Z")
 _TOC_PAGE_REFERENCE_RUN_PATTERN = re.compile(r"[\d\s.,;:–—−-]+")
 _TOC_PAGE_REFERENCE_TOKEN_PATTERN = re.compile(r"\d{1,4}")
 # "..., 142", "...; 5", "..., 226n13" — a page reference introduced by index punctuation.

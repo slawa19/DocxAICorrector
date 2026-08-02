@@ -24,7 +24,8 @@ fresher than the fix) apply to every change, Spec Kit or not.
 
 Two spec homes, not interchangeable:
 
-- `specs/<NNN>-<slug>/` — one unit of work (`spec.md`, `plan.md`, `tasks.md`).
+- `specs/<NNN>-<slug>/` — one unit of work. Always `spec.md`; `plan.md` and
+  `tasks.md` only on full-cycle tier work (see "Which tier" below).
   ALL new specs go here.
 - `docs/specs/` — long-lived and historical documents only, including
   `GLOBAL_PLAN_2026-06-16.md` (historical: a log of past decisions, NOT a roadmap —
@@ -57,6 +58,41 @@ Do not use Spec Kit for:
 - real-document failure analysis before the required fresh report checks in the
   Real-document failure analysis contract are complete.
 
+"Use Spec Kit" above means *at least* a `spec.md`. It does NOT mean the full
+Spec → Plan → Tasks → Implement cycle; which artifacts a piece of work owes is
+decided by the tier below, not by this list.
+
+### Which tier: spec only, or the full cycle
+
+Constitution Principle III defines two tiers and says **the smaller one is the
+normal case**. Read it before deciding; the summary here is a routing aid, not
+the rule.
+
+- **Spec only — the default.** Defect-driven remediation, review-round
+  follow-ups, measurements, negative results and decision records: work whose
+  scope is already bounded by the finding that prompted it and whose
+  verification is a test run. Write `spec.md`; do not write `plan.md` or
+  `tasks.md`. 48 of the repository's 53 specs are this tier.
+- **Spec → Plan → Tasks → Implement — the full cycle.** Required when the work
+  introduces a new module or a new contract, spans several modules whose order
+  of change matters, or has design alternatives worth arguing about before
+  anyone writes code. Specs 044-048 are the worked examples.
+
+When the tier is not obvious, **ask the owner**. Guessing "full cycle" is not
+the safe default — it spends review budget on paperwork the spec already covers.
+
+**Never write `plan.md` or `tasks.md` after the fact.** If finished work lacks
+them, the remedy is a Changelog entry in its `spec.md`, not a reconstructed plan.
+
+> Status: Principle III's two-tier wording is constitution 2.0.0, which is
+> **NOT YET RATIFIED by the owner** (see the Sync Impact Report at the top of
+> `.specify/memory/constitution.md`). It describes how this repository has
+> actually worked; until it is signed off, treat the description as accurate and
+> the rule as provisional, and ask the owner if a real decision turns on it.
+> This section previously demanded `plan.md` unconditionally, which contradicted
+> Principle III outright — an agent could satisfy one contract or the other, but
+> not both, and chose arbitrarily.
+
 Routing:
 
 1. If no spec exists for the requested feature, read
@@ -64,20 +100,23 @@ Routing:
    plus its requirements checklist.
 2. If the spec has unresolved material ambiguity, read
    `.agents/skills/speckit-clarify/SKILL.md` before planning.
-3. If a spec exists and implementation direction is requested, read
-   `.agents/skills/speckit-plan/SKILL.md` and create `plan.md`, `research.md`,
-   `data-model.md`, `contracts/` when applicable, and `quickstart.md`.
+3. If a spec exists, implementation direction is requested **and the work is
+   full-cycle tier**, read `.agents/skills/speckit-plan/SKILL.md` and create
+   `plan.md`, `research.md`, `data-model.md`, `contracts/` when applicable, and
+   `quickstart.md`. On spec-only tier work there is no `plan.md`: implement
+   against `spec.md` directly.
 4. If a plan exists and execution needs breakdown, read
    `.agents/skills/speckit-tasks/SKILL.md` and create `tasks.md` with small,
-   ordered, independently verifiable tasks.
+   ordered, independently verifiable tasks. No plan means no `tasks.md`.
 5. If tasks exist and implementation is requested, read
    `.agents/skills/speckit-implement/SKILL.md` and implement only the selected
    task or the next task batch explicitly requested by the user.
 
-Every Spec Kit plan and task list MUST preserve this file's WSL runtime,
-canonical verification, real-document evidence, logging/artifact, and
-line-ending contracts. Do not silently replace canonical commands with direct
-Python/pytest/debug paths.
+Whenever a Spec Kit plan or task list IS written, it MUST preserve this file's
+WSL runtime, canonical verification, real-document evidence, logging/artifact,
+and line-ending contracts. Spec-only work carries the same obligation in its
+`spec.md`'s `## Non-goals` and `## Anti-regression` sections. Do not silently
+replace canonical commands with direct Python/pytest/debug paths.
 
 ## Runtime Contract
 

@@ -1,4 +1,5 @@
 import json
+import time
 from pathlib import Path
 
 import pytest
@@ -7492,6 +7493,132 @@ def test_toc_like_still_captures_genuine_contents_and_index_lines(block_id: str,
     # is taken verbatim from lietaer's contents and subject index (the one exception is
     # labelled synthetic), and each one is measured ``toc_like``.
     assert _detect_block_kind(contents_line) == "toc_like", block_id
+
+
+@pytest.mark.parametrize(
+    ("leader", "line"),
+    [
+        # The four leader spellings the pattern has to keep, including the two the
+        # per-branch lookbehind exists for.
+        ("dots", "Введение: от дефицита к процветанию ......... 12"),
+        ("three dots, the minimum", "Глава 1 ... 7"),
+        ("ellipsis characters", "Введение …… 12"),
+        # A dot run beginning immediately after an ellipsis CHARACTER. A single shared
+        # `(?<![.…])` guard would reject this line; the per-branch lookbehind keeps it.
+        ("an ellipsis character then dots", "Раздел…...4"),
+        ("no space before the page number", "Итоги.......1234"),
+    ],
+)
+def test_toc_leader_is_recognised_in_every_spelling_that_used_to_be_recognised(
+    leader: str, line: str
+) -> None:
+    assert _detect_block_kind(line) == "toc_like", leader
+
+
+def test_toc_leader_pattern_stays_linear_on_a_pathological_run_of_dots() -> None:
+    """A dotted OCR artefact must not stall block building before a token is spent.
+
+    The leader alternation used to be an unanchored `(?:\\.{3,}|…{2,})`, which restarts at
+    every offset of a dot run and rescans the remainder from each: quadratic. Measured on
+    the pre-fix pattern, one block of dots cost 0.0092 s at 1 000, 0.96 s at 10 000, 8.3 s
+    at 30 000 and **92.9 s at 100 000** — and `build_cleanup_blocks` classifies every block
+    of the book, so a single artefact of this shape hangs the pass for minutes with no LLM
+    call in sight. The same sizes cost 0.0001 / 0.0005 / 0.0015 / 0.0052 s after the fix.
+
+    The sizes are graded smallest-first on purpose: a regression fails on the 10 000 case
+    within a second instead of making the suite sit through the 100 000 one.
+    """
+    budget_seconds = 0.5
+    for dot_count in (10_000, 30_000, 100_000):
+        artefact = "." * dot_count
+        started = time.perf_counter()
+        kind = _detect_block_kind(artefact)
+        elapsed = time.perf_counter() - started
+        assert elapsed < budget_seconds, (
+            f"classifying a block of {dot_count} dots took {elapsed:.3f} s, over the "
+            f"{budget_seconds} s budget. The leader pattern has gone superlinear again — "
+            "it must not be searched unanchored inside its own run."
+        )
+        # Behaviour, not just speed: a bare run of dots carries no page number, so it was
+        # never a contents entry and must not become one.
+        assert kind != "toc_like", dot_count
+
+
+def _run_with_delete_of_the_contents_line(
+    *, keep_toc: bool, contents_line: str
+) -> tuple[list[dict[str, Any]], Any]:
+    markdown = f"Обычный абзац, который ничем не примечателен.\n\n{contents_line}\n\nPage 1"
+    captured: list[dict[str, Any]] = []
+
+    def provider(payload: dict[str, Any], chunk_index: int, chunk_count: int) -> str:
+        captured.append(payload)
+        target = next(
+            (block for block in payload["blocks"] if block["text"] == contents_line), None
+        )
+        if target is None:
+            return json.dumps({"cleanup_operations": [], "warnings": []}, ensure_ascii=False)
+        return json.dumps(
+            {
+                "cleanup_operations": [
+                    _delete_block_operation(target, reason="page_number", confidence="high")
+                ],
+                "warnings": [],
+            },
+            ensure_ascii=False,
+        )
+
+    result = run_reader_cleanup(
+        markdown_text=markdown,
+        config=ReaderCleanupConfig(
+            enabled=True,
+            keep_toc=keep_toc,
+            max_delete_block_ratio=0.8,
+            max_delete_char_ratio=0.8,
+        ),
+        operation_provider=provider,
+    )
+    return captured, result
+
+
+def test_toc_like_blocks_are_sent_to_the_model_and_protected_only_at_validation() -> None:
+    """`keep_toc=True` buys immunity, NOT a smaller request — and the tools must say so.
+
+    `_select_cleanup_blocks` returns every block when `keep_toc` is true (the default),
+    so `toc_like` blocks are serialised into the payload and paid for in tokens;
+    `_build_protected_block_ids` then refuses any operation that targets them. The
+    replay tool used to comment its `toc_like_block_count` as "the size of the pass's
+    blind spot", naming a saving that is not made. This pins the real behaviour so the
+    wording cannot drift back.
+    """
+    contents_line = "Введение: от дефицита к процветанию ......... 12"
+    assert _detect_block_kind(contents_line) == "toc_like"
+
+    captured, result = _run_with_delete_of_the_contents_line(
+        keep_toc=True, contents_line=contents_line
+    )
+
+    assert captured, "the pass made no request at all"
+    assert any(block["text"] == contents_line for block in captured[0]["blocks"]), (
+        "a toc_like block was withheld from the payload under keep_toc=True. If that is "
+        "now intended, the replay tool's toc_like_blocks_sent_to_model field and spec 052 "
+        "both describe the opposite."
+    )
+    # Immunity, not exclusion: the model asked for the delete and the validator refused it.
+    assert contents_line in result.cleaned_markdown
+    assert result.report_payload["stats"]["accepted_delete_block_count"] == 0
+
+
+def test_keep_toc_false_is_what_actually_withholds_toc_blocks_from_the_model() -> None:
+    """The other half of the contract, so the test above cannot pass for a trivial reason."""
+    contents_line = "Введение: от дефицита к процветанию ......... 12"
+
+    captured, result = _run_with_delete_of_the_contents_line(
+        keep_toc=False, contents_line=contents_line
+    )
+
+    assert captured, "the pass made no request at all"
+    assert not any(block["text"] == contents_line for block in captured[0]["blocks"])
+    assert contents_line in result.cleaned_markdown
 
 
 @pytest.mark.parametrize(
