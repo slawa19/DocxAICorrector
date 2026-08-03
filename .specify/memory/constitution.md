@@ -54,10 +54,11 @@ Governance section classifies as redefining a principle, even though the princip
 core requirement — write the spec before the code — is untouched.
 Templates requiring updates: none. .specify/templates/spec-template.md governs spec.md
 only and is unaffected.
-Follow-up TODOs: OWNER RATIFICATION PENDING for 2.0.0. The tier boundary was written
-from observed practice, not from a decision the owner recorded. If the owner wants the
-full cycle mandatory more often, or not at all, the "Two tiers" list in Principle III is
-the paragraph to change. What is NOT open for reinterpretation: plan.md and tasks.md are
+Follow-up TODOs: none. 2.0.0 was RATIFIED by the owner on 2026-08-03. The tier boundary
+was written from observed practice and is now a recorded decision, not a description. If
+the owner ever wants the full cycle mandatory more often, or not at all, the "Two tiers"
+list in Principle III is the paragraph to change. What is NOT open for reinterpretation:
+plan.md and tasks.md are
 never written retroactively for work that is already implemented.
 -->
 
@@ -359,10 +360,9 @@ Versioning follows semantic versioning:
 - MINOR for adding principles or material governance sections;
 - PATCH for wording clarifications.
 
-**Version**: 2.0.0 (⚠ NOT YET RATIFIED BY THE OWNER — see the Sync Impact Report) | **Ratified**: 2026-07-09 | **Last Amended**: 2026-08-01
+**Version**: 2.0.0 | **Ratified**: 2026-07-09 | **Last Amended**: 2026-08-01 | **2.0.0 ratified**: 2026-08-03
 
-The 2.0.0 step narrows an obligation in Principle III (when the full Spec → Plan → Tasks cycle is
-required, versus a spec on its own). It was written to match how the repository has actually worked —
-48 of 53 specs carry only `spec.md` — but redefining a principle is the owner's call, not an agent's.
-Until the owner signs it off, treat the *description* of current practice as accurate and the *rule*
-as provisional: if the two conflict on a real decision, ask rather than cite this document.
+The 2.0.0 step narrows an obligation in Principle III: when the full Spec → Plan → Tasks cycle is
+required, versus a spec on its own. It was written to match how the repository has actually worked —
+48 of 53 specs carry only `spec.md` — and the owner ratified it on 2026-08-03. It is now binding in
+its own right, not merely a description of practice.
