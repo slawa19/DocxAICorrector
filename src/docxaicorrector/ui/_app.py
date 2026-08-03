@@ -116,7 +116,7 @@ _APP_READY_MARKER_WRITER = AppReadyMarkerWriter(
     time_fn=time.monotonic,
 )
 
-SidebarSettings: TypeAlias = tuple[str, int, int, str, bool, str, str, str, bool]
+SidebarSettings: TypeAlias = tuple[str, int, int, str, bool, str, str, str, bool, str]
 
 
 def _cached_load_app_config():
@@ -299,13 +299,17 @@ def _start_background_processing(
 
 
 def _resolve_sidebar_settings(sidebar_result: object) -> SidebarSettings:
-    if isinstance(sidebar_result, tuple) and len(sidebar_result) == 9:
+    # Legacy (shorter) contracts get an empty editorial_intensity, which the caller reads
+    # as "not chosen in the sidebar" and therefore leaves the loaded config default alone.
+    if isinstance(sidebar_result, tuple) and len(sidebar_result) == 10:
         return sidebar_result
+    if isinstance(sidebar_result, tuple) and len(sidebar_result) == 9:
+        return (*sidebar_result, "")
     if isinstance(sidebar_result, tuple) and len(sidebar_result) == 8:
-        return (*sidebar_result, False)
+        return (*sidebar_result, False, "")
     if isinstance(sidebar_result, tuple) and len(sidebar_result) == 5:
         model, chunk_size, max_retries, image_mode, keep_all_image_variants = sidebar_result
-        return model, chunk_size, max_retries, image_mode, keep_all_image_variants, "edit", "en", "ru", False
+        return model, chunk_size, max_retries, image_mode, keep_all_image_variants, "edit", "en", "ru", False, ""
     raise RuntimeError("Некорректный контракт render_sidebar().")
 
 
@@ -746,6 +750,7 @@ def main() -> None:
         source_language,
         target_language,
         audiobook_postprocess_enabled,
+        editorial_intensity,
     ) = _resolve_sidebar_settings(render_sidebar(app_config))
     app_config = dict(app_config)
     app_config["reader_cleanup_enabled"] = bool(app_config.get("reader_cleanup_default", False))
@@ -754,6 +759,8 @@ def main() -> None:
     app_config["source_language"] = source_language
     app_config["target_language"] = target_language
     app_config["audiobook_postprocess_enabled"] = audiobook_postprocess_enabled
+    if editorial_intensity:
+        app_config["editorial_intensity_default"] = editorial_intensity
 
     processing_active = _processing_worker_is_active()
     processing_outcome = get_processing_outcome()

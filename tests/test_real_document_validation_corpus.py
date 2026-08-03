@@ -26,6 +26,8 @@ from docxaicorrector.core.models import (
     RelationNormalizationReport,
 )
 from docxaicorrector.generation._generation import ensure_pandoc_available
+from docxaicorrector.pipeline import block_execution
+from docxaicorrector.pipeline.support import resolve_system_prompt
 
 REGISTRY = validation_profiles.load_validation_registry()
 STRUCTURAL_RUN_PROFILE = REGISTRY.get_run_profile("ui-parity-translate-benchmark-advisory")
@@ -86,6 +88,63 @@ def test_registry_documents_declare_required_core_fields_and_allowed_source_loca
         relative_source_path = Path(document_profile.source_path)
         assert relative_source_path.parts[:2] == ("tests", "sources")
         assert document_profile.resolved_source_path().is_relative_to(Path.cwd())
+
+
+def _placeholder_free_marker(prompt_path: Path) -> str:
+    """First line of a prompt fragment that survives .format() verbatim."""
+    for line in prompt_path.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if stripped and "{" not in stripped:
+            return stripped
+    raise AssertionError(f"no placeholder-free line in {prompt_path}")
+
+
+def test_run_profile_editorial_intensity_reaches_the_pipeline_prompt_selection(monkeypatch) -> None:
+    """A run-profile editorial_intensity must survive all the way to the prompt FILE choice.
+
+    Chain under test: corpus_registry run profile -> resolve_runtime_resolution ->
+    apply_runtime_resolution_to_app_config -> the app_config key the pipeline actually
+    reads in block_execution -> load_system_prompt -> editorial_intensity_*.txt.
+    """
+    monkeypatch.delenv("DOCX_AI_EDITORIAL_INTENSITY_DEFAULT", raising=False)
+    app_config = load_app_config()
+    assert app_config["editorial_intensity_default"] == "literary"
+
+    run_profile = REGISTRY.get_run_profile("ui-parity-edit-conservative-intensity")
+    assert run_profile.editorial_intensity == "conservative"
+
+    resolution = validation_profiles.resolve_runtime_resolution(app_config, run_profile)
+    runtime_app_config = validation_profiles.apply_runtime_resolution_to_app_config(app_config, resolution)
+
+    assert resolution.effective.editorial_intensity == "conservative"
+    assert resolution.ui_defaults.editorial_intensity == "literary"
+    assert resolution.overrides["editorial_intensity"] == "conservative"
+    assert runtime_app_config["editorial_intensity_default"] == "conservative"
+
+    captured: dict[str, Any] = {}
+
+    def _capturing_loader(**kwargs: Any) -> str:
+        captured.update(kwargs)
+        return core_config.load_system_prompt(**kwargs)
+
+    prompt = block_execution._get_cached_system_prompt(
+        context=SimpleNamespace(
+            processing_operation="edit",
+            source_language="ru",
+            target_language="ru",
+            translation_domain="general",
+            app_config=runtime_app_config,
+        ),
+        dependencies=SimpleNamespace(load_system_prompt=_capturing_loader),
+        state=SimpleNamespace(system_prompt=None, toc_system_prompt=None),
+        resolve_system_prompt_fn=resolve_system_prompt,
+        prompt_variant="default",
+    )
+
+    assert captured["editorial_intensity"] == "conservative"
+    prompts_dir = Path(core_config.PROMPTS_DIR)
+    assert _placeholder_free_marker(prompts_dir / "editorial_intensity_conservative.txt") in prompt
+    assert _placeholder_free_marker(prompts_dir / "editorial_intensity_literary.txt") not in prompt
 
 
 def test_maintenance_guide_no_longer_requires_removed_expected_acceptance_policy_field() -> None:

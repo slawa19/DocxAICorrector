@@ -240,6 +240,78 @@ def test_main_restarts_background_preparation_when_chunk_size_changes(monkeypatc
     assert start_calls[0]["uploaded_payload"].file_token == "report.docx:3:ba7816bf8f01cfea"
 
 
+def _run_main_capturing_preparation_start(monkeypatch, *, sidebar_result, app_config):
+    session_state = SessionState(
+        app_start_logged=True,
+        preparation_input_marker="report.docx:3:ba7816bf8f01cfea:6000",
+        preparation_failed_marker="",
+        prepared_run_context=object(),
+        processing_status={},
+        activity_feed=[],
+    )
+    uploaded_file = UploadedFileStub("report.docx", b"abc")
+    start_calls = []
+
+    class RerunRequested(Exception):
+        pass
+
+    monkeypatch.setattr(app.st, "session_state", session_state)
+    monkeypatch.setattr(app, "init_session_state", lambda: None)
+    monkeypatch.setattr(app, "_cached_load_app_config", lambda: dict(app_config))
+    monkeypatch.setattr(app, "render_sidebar", lambda config: sidebar_result)
+    monkeypatch.setattr(app, "_drain_processing_events", lambda: None)
+    monkeypatch.setattr(app, "_drain_preparation_events", lambda: None)
+    monkeypatch.setattr(app, "_processing_worker_is_active", lambda: False)
+    monkeypatch.setattr(app, "_preparation_worker_is_active", lambda: False)
+    monkeypatch.setattr(app, "get_current_result_bundle", lambda: None)
+    monkeypatch.setattr(app, "get_processing_session_snapshot", lambda: type("ProcessingSnapshot", (), {"latest_source_token": ""})())
+    monkeypatch.setattr(app, "get_latest_image_mode", lambda: "safe")
+    monkeypatch.setattr(app.st, "title", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "write", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "file_uploader", lambda *args, **kwargs: uploaded_file)
+    monkeypatch.setattr(app.st, "info", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "error", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "fragment", lambda **kw: (lambda fn: fn))
+    monkeypatch.setattr(app, "render_live_status", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app, "render_run_log", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app, "render_image_validation_summary", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app, "render_partial_result", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app, "_start_background_preparation", lambda **kwargs: start_calls.append(kwargs))
+    monkeypatch.setattr(app.st, "rerun", lambda: (_ for _ in ()).throw(RerunRequested()))
+
+    try:
+        app.main()
+    except RerunRequested:
+        pass
+    else:
+        raise AssertionError("Expected rerun after starting background preparation")
+
+    assert len(start_calls) == 1
+    return start_calls[0]
+
+
+def test_main_forwards_sidebar_editorial_intensity_into_app_config(monkeypatch):
+    start_call = _run_main_capturing_preparation_start(
+        monkeypatch,
+        sidebar_result=("gpt-5.4", 7000, 3, "safe", True, "edit", "en", "ru", False, "conservative"),
+        app_config={"editorial_intensity_default": "literary"},
+    )
+
+    assert start_call["app_config"]["editorial_intensity_default"] == "conservative"
+
+
+def test_main_keeps_configured_editorial_intensity_for_legacy_sidebar_contract(monkeypatch):
+    # A legacy render_sidebar() that predates the knob must not silently reset the
+    # configured default back to "literary".
+    start_call = _run_main_capturing_preparation_start(
+        monkeypatch,
+        sidebar_result=("gpt-5.4", 7000, 3, "safe", True, "edit", "en", "ru", False),
+        app_config={"editorial_intensity_default": "conservative"},
+    )
+
+    assert start_call["app_config"]["editorial_intensity_default"] == "conservative"
+
+
 def test_main_restarts_background_preparation_when_uploaded_file_changes(monkeypatch):
     session_state = SessionState(
         app_start_logged=True,

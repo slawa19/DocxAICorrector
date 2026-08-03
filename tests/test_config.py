@@ -210,6 +210,55 @@ def test_load_app_config_applies_editorial_intensity_env_override(monkeypatch):
     assert app_config["editorial_intensity_default"] == "conservative"
 
 
+def test_load_app_config_rejects_unsupported_editorial_intensity_default(monkeypatch, tmp_path):
+    # The knob must be rejected AT CONFIG LOAD, next to its neighbours, instead of
+    # surviving into the run and blowing up much later inside load_system_prompt().
+    cfg = tmp_path / "config.toml"
+    cfg.write_text('editorial_intensity_default = "aggressive"\n', encoding="utf-8")
+    monkeypatch.setattr(config, "CONFIG_PATH", cfg)
+
+    with pytest.raises(RuntimeError, match="editorial_intensity_default"):
+        config.load_app_config()
+
+
+def test_load_app_config_rejects_unsupported_editorial_intensity_env_override(monkeypatch):
+    monkeypatch.setattr(config, "CONFIG_PATH", config.CONFIG_PATH.parent / "__missing_config__.toml")
+    monkeypatch.setenv("DOCX_AI_EDITORIAL_INTENSITY_DEFAULT", "aggressive")
+
+    with pytest.raises(RuntimeError, match="DOCX_AI_EDITORIAL_INTENSITY_DEFAULT"):
+        config.load_app_config()
+
+
+def test_editorial_intensity_default_is_unchanged_and_still_selects_the_literary_prompt(monkeypatch):
+    # Anti-regression for the default run: making the knob reachable must not move it.
+    monkeypatch.setattr(config, "CONFIG_PATH", config.CONFIG_PATH.parent / "__missing_config__.toml")
+    monkeypatch.delenv("DOCX_AI_EDITORIAL_INTENSITY_DEFAULT", raising=False)
+
+    assert config.EDITORIAL_INTENSITY_VALUES == ("conservative", "literary")
+    assert config.load_app_config()["editorial_intensity_default"] == "literary"
+
+    config.load_system_prompt.cache_clear()
+    try:
+        default_prompt = config.load_system_prompt(operation="edit", source_language="ru", target_language="ru")
+        literary_prompt = config.load_system_prompt(
+            operation="edit",
+            source_language="ru",
+            target_language="ru",
+            editorial_intensity="literary",
+        )
+        conservative_prompt = config.load_system_prompt(
+            operation="edit",
+            source_language="ru",
+            target_language="ru",
+            editorial_intensity="conservative",
+        )
+    finally:
+        config.load_system_prompt.cache_clear()
+
+    assert default_prompt == literary_prompt
+    assert default_prompt != conservative_prompt
+
+
 def test_load_app_config_applies_translation_domain_env_override(monkeypatch):
     monkeypatch.setattr(config, "CONFIG_PATH", config.CONFIG_PATH.parent / "__missing_config__.toml")
     monkeypatch.setenv("DOCX_AI_TRANSLATION_DOMAIN_DEFAULT", "theology")

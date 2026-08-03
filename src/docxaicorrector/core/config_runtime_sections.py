@@ -494,6 +494,7 @@ def resolve_text_runtime_defaults(
     parse_optional_str_env_fn: Any,
     clamp_int_fn: Any,
     processing_operation_values: tuple[str, ...],
+    editorial_intensity_values: tuple[str, ...],
 ) -> dict[str, Any]:
     chunk_size = config_data.get("chunk_size", default_chunk_size)
     if not isinstance(chunk_size, int):
@@ -516,7 +517,14 @@ def resolve_text_runtime_defaults(
     )
     source_language_default = parse_config_str_fn(config_data, "source_language_default", "en").strip().lower()
     target_language_default = parse_config_str_fn(config_data, "target_language_default", "ru").strip().lower()
-    editorial_intensity_default = parse_config_str_fn(config_data, "editorial_intensity_default", "literary").strip().lower()
+    # Validated here, next to processing_operation_default, so a typo is rejected at
+    # config load instead of surfacing much later inside load_system_prompt().
+    editorial_intensity_default = parse_choice_str_fn(
+        config_data,
+        "editorial_intensity_default",
+        "literary",
+        set(editorial_intensity_values),
+    )
     translation_domain_default = parse_config_str_fn(config_data, "translation_domain_default", "general").strip().lower()
     audiobook_postprocess_default = parse_config_bool_fn(config_data, "audiobook_postprocess_default", False)
     audiobook_model = _resolve_audiobook_model_default(
@@ -547,9 +555,10 @@ def resolve_text_runtime_defaults(
         os.getenv("DOCX_AI_TARGET_LANGUAGE_DEFAULT", target_language_default).strip().lower()
         or target_language_default
     )
-    editorial_intensity_default = (
-        os.getenv("DOCX_AI_EDITORIAL_INTENSITY_DEFAULT", editorial_intensity_default).strip().lower()
-        or editorial_intensity_default
+    editorial_intensity_default = parse_choice_env_fn(
+        "DOCX_AI_EDITORIAL_INTENSITY_DEFAULT",
+        default=editorial_intensity_default,
+        allowed_values=set(editorial_intensity_values),
     )
     translation_domain_default = (
         os.getenv("DOCX_AI_TRANSLATION_DOMAIN_DEFAULT", translation_domain_default).strip().lower()
