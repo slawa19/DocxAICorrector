@@ -20,6 +20,7 @@ import docxaicorrector.pipeline.narration_postprocess as document_pipeline_narra
 import docxaicorrector.pipeline.quality_report_retention as document_pipeline_quality_report_retention
 import docxaicorrector.pipeline.output_validation as document_pipeline_output_validation
 import docxaicorrector.pipeline.reassembly as document_pipeline_reassembly
+import docxaicorrector.runtime.artifacts as runtime_artifacts
 from docx import Document
 
 from docxaicorrector.core.models import ParagraphUnit
@@ -7506,3 +7507,204 @@ def test_call_docx_restorer_legacy_target_called_once_without_kwarg():
 
     assert result == b"restored"
     assert calls["count"] == 1
+
+
+# --- Token / cost accounting reaches the run report --------------------------------
+#
+# The offline end-to-end proof: a run driven by a stub provider must publish what it
+# spent through the SAME channel the run report already mines (the event log) and into
+# the delivered artifacts, so "how much did this book cost" is answerable after the fact.
+
+
+def _stub_provider_client(*, usage: object | None):
+    """A provider that answers offline. ``usage=None`` models a provider that stays silent."""
+
+    def create(**_kwargs):
+        if usage is None:
+            return SimpleNamespace(output_text="Обработанный блок")
+        return SimpleNamespace(output_text="Обработанный блок", usage=usage)
+
+    return SimpleNamespace(responses=SimpleNamespace(create=create))
+
+
+def _real_generation_against(client):
+    def generate_markdown_block(**kwargs):
+        return generation.generate_markdown_block(
+            client=cast(Any, client),
+            model="gpt-5.4",
+            system_prompt="system",
+            target_text=str(kwargs["target_text"]),
+            context_before="",
+            context_after="",
+            max_retries=1,
+        )
+
+    return generate_markdown_block
+
+
+def test_run_reports_the_tokens_and_cost_a_stub_provider_reported(tmp_path):
+    runtime = _build_runtime_capture()
+    events, log_event = _capture_log_events()
+    artifact_calls: dict[str, object] = {}
+    client = _stub_provider_client(
+        usage=SimpleNamespace(prompt_tokens=1200, completion_tokens=300, total_tokens=1500, cost=0.0025)
+    )
+
+    result = _run_processing(
+        runtime,
+        log_event=log_event,
+        generate_markdown_block=_real_generation_against(client),
+        write_ui_result_artifacts=lambda **kwargs: (
+            artifact_calls.setdefault("kwargs", dict(kwargs)),
+            {
+                "markdown_path": str(tmp_path / "final.result.md"),
+                "docx_path": str(tmp_path / "final.result.docx"),
+            },
+        )[1],
+    )
+
+    assert result == "succeeded"
+
+    accounting_events = [event for event in events if event["event_id"] == "model_usage_accounted"]
+    assert len(accounting_events) == 1, "the run must account exactly once"
+    accounting = accounting_events[0]["context"]
+    assert accounting_events[0]["level"] == logging.INFO
+    assert accounting["model_call_count"] == 1
+    assert accounting["prompt_tokens"] == 1200
+    assert accounting["completion_tokens"] == 300
+    assert accounting["total_tokens"] == 1500
+    assert accounting["cost_usd_reported_by_provider"] == 0.0025
+    assert accounting["token_accounting_complete"] is True
+    assert accounting["cost_accounting_complete"] is True
+    text_stage = _as_mapping(_as_mapping(accounting["stages"])["text_generation"])
+    assert text_stage["total_tokens"] == 1500
+
+    # ...and the same numbers ride along with the delivered artifacts.
+    artifact_kwargs = _as_mapping(artifact_calls["kwargs"])
+    delivered_accounting = _as_mapping(artifact_kwargs["model_accounting"])
+    assert delivered_accounting["total_tokens"] == 1500
+    assert delivered_accounting["cost_usd_reported_by_provider"] == 0.0025
+
+
+def test_run_reports_unaccounted_calls_instead_of_inventing_a_price(tmp_path):
+    """A provider that reports no usage must produce a visibly incomplete account.
+
+    Zero tokens and zero dollars are published, but ``token_accounting_complete`` and
+    ``cost_accounting_complete`` are False and ``model_calls_without_usage`` is non-zero,
+    so nothing here can be misread as a free run.
+    """
+
+    runtime = _build_runtime_capture()
+    events, log_event = _capture_log_events()
+    client = _stub_provider_client(usage=None)
+
+    result = _run_processing(
+        runtime,
+        log_event=log_event,
+        generate_markdown_block=_real_generation_against(client),
+    )
+
+    assert result == "succeeded"
+    accounting = [event for event in events if event["event_id"] == "model_usage_accounted"][0]["context"]
+    assert accounting["model_call_count"] == 1
+    assert accounting["model_calls_without_usage"] == 1
+    assert accounting["model_calls_without_cost"] == 1
+    assert accounting["total_tokens"] == 0
+    assert accounting["cost_usd_reported_by_provider"] == 0.0
+    assert accounting["token_accounting_complete"] is False
+    assert accounting["cost_accounting_complete"] is False
+
+
+def test_run_accounting_is_reported_even_when_the_run_fails(tmp_path):
+    """Money is spent per call, not per successful outcome."""
+
+    runtime = _build_runtime_capture()
+    events, log_event = _capture_log_events()
+    client = _stub_provider_client(
+        usage=SimpleNamespace(prompt_tokens=90, completion_tokens=10, total_tokens=100, cost=0.001)
+    )
+    real_generation = _real_generation_against(client)
+    calls: list[int] = []
+
+    def generate_then_fail(**kwargs):
+        calls.append(1)
+        real_generation(**kwargs)
+        raise RuntimeError("боевой отказ после оплаченного вызова")
+
+    result = _run_processing(
+        runtime,
+        log_event=log_event,
+        generate_markdown_block=generate_then_fail,
+    )
+
+    assert result == "failed"
+    assert calls == [1]
+    accounting = [event for event in events if event["event_id"] == "model_usage_accounted"][0]["context"]
+    assert accounting["model_call_count"] == 1
+    assert accounting["total_tokens"] == 100
+    assert accounting["cost_usd_reported_by_provider"] == 0.001
+
+
+def test_run_report_shows_retries_and_discarded_answers(tmp_path):
+    """A retried block and a discarded answer both used to be invisible: the block logged
+    OK and the report said nothing. Both must now surface as run-level counters."""
+
+    runtime = _build_runtime_capture()
+    events, log_event = _capture_log_events()
+    attempts: list[int] = []
+
+    def create(**_kwargs):
+        attempts.append(1)
+        if len(attempts) == 1:
+            return SimpleNamespace(output_text="", usage=SimpleNamespace(prompt_tokens=10, completion_tokens=0))
+        return SimpleNamespace(
+            output_text="Обработанный блок",
+            usage=SimpleNamespace(prompt_tokens=10, completion_tokens=4),
+        )
+
+    client = SimpleNamespace(responses=SimpleNamespace(create=create))
+
+    def generate_markdown_block(**kwargs):
+        return generation.generate_markdown_block(
+            client=cast(Any, client),
+            model="gpt-5.4",
+            system_prompt="system",
+            target_text=str(kwargs["target_text"]),
+            context_before="",
+            context_after="",
+            max_retries=2,
+        )
+
+    result = _run_processing(
+        runtime,
+        log_event=log_event,
+        max_retries=2,
+        generate_markdown_block=generate_markdown_block,
+    )
+
+    assert result == "succeeded"
+    accounting = [event for event in events if event["event_id"] == "model_usage_accounted"][0]["context"]
+    assert accounting["retry_attempt_count"] == 1
+    assert accounting["retried_block_count"] == 1
+    assert accounting["model_call_count"] == 2
+
+
+def test_ui_result_meta_json_carries_the_run_accounting(tmp_path):
+    """The delivered artifact group is where a reader looks months later."""
+
+    artifact_paths = runtime_artifacts.write_ui_result_artifacts(
+        source_name="book.docx",
+        markdown_text="итог",
+        docx_bytes=b"docx",
+        model_accounting={
+            "model_call_count": 219,
+            "total_tokens": 801522,
+            "cost_usd_reported_by_provider": 0.431479,
+            "token_accounting_complete": True,
+        },
+        output_dir=tmp_path,
+    )
+
+    meta_payload = json.loads(Path(artifact_paths["metadata_path"]).read_text(encoding="utf-8"))
+    assert meta_payload["model_accounting"]["total_tokens"] == 801522
+    assert meta_payload["model_accounting"]["cost_usd_reported_by_provider"] == 0.431479

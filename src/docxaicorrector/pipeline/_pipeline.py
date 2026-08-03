@@ -4,6 +4,10 @@ from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import TypeAlias, cast
 
+from docxaicorrector.core.model_accounting import (
+    reset_run_model_accounting,
+    snapshot_run_model_accounting,
+)
 from docxaicorrector.generation.formatting_diagnostics_retention import (
     get_formatting_diagnostics_dir,
     write_formatting_diagnostics_artifact,
@@ -948,6 +952,133 @@ def _finalize_processing_success(
 
 
 def run_document_processing(
+    *,
+    uploaded_file: object,
+    source_token: str | None = None,
+    run_id: str | None = None,
+    prepared_source_key: str | None = None,
+    structure_fingerprint: str | None = None,
+    jobs: ProcessingJobs,
+    selected_segment_ids: Sequence[str] | None = None,
+    document_segments: Sequence[object] | None = None,
+    output_mode: str | None = None,
+    include_front_matter: bool = False,
+    include_toc: bool = False,
+    source_paragraphs: Sequence[ParagraphLike] | None = None,
+    image_assets: Sequence[ImageAssetLike],
+    image_mode: str,
+    app_config: Mapping[str, object],
+    model: str,
+    max_retries: int,
+    processing_operation: str = "edit",
+    source_language: str = "en",
+    target_language: str = "ru",
+    on_progress: ProgressCallback,
+    runtime: object,
+    resolve_uploaded_filename: FilenameResolver,
+    get_client: ClientFactory,
+    ensure_pandoc_available: Callable[[], None],
+    load_system_prompt: SystemPromptLoader,
+    log_event: EventLogger,
+    present_error: ErrorPresenter,
+    emit_state: StateEmitter,
+    emit_finalize: FinalizeEmitter,
+    emit_activity: ActivityEmitter,
+    emit_log: LogEmitter,
+    emit_status: StatusEmitter,
+    should_stop_processing: StopPredicate,
+    generate_markdown_block: MarkdownGenerator,
+    process_document_images: ImageProcessor,
+    inspect_placeholder_integrity: PlaceholderInspector,
+    convert_markdown_to_docx_bytes: MarkdownToDocxConverter,
+    preserve_source_paragraph_properties: ParagraphPropertiesPreserver,
+    reinsert_inline_images: ImageReinserter,
+    write_ui_result_artifacts: ResultArtifactWriter = write_ui_result_artifacts_impl,
+    get_provider_client: Callable[[str], object] | None = None,
+    get_client_for_model_selector: Callable[[str, str], object] | None = None,
+    resolve_model_selector: Callable[[str, str | None], object] | None = None,
+    document_context_prompt: str = "",
+) -> PipelineResult:
+    # Run boundary for token/cost accounting. Reset here, report in the ``finally`` below,
+    # so a run that FAILED still tells the user what it spent — money is spent per call,
+    # not per successful outcome.
+    reset_run_model_accounting()
+    try:
+        return _run_document_processing_accounted(
+            uploaded_file=uploaded_file,
+            source_token=source_token,
+            run_id=run_id,
+            prepared_source_key=prepared_source_key,
+            structure_fingerprint=structure_fingerprint,
+            jobs=jobs,
+            selected_segment_ids=selected_segment_ids,
+            document_segments=document_segments,
+            output_mode=output_mode,
+            include_front_matter=include_front_matter,
+            include_toc=include_toc,
+            source_paragraphs=source_paragraphs,
+            image_assets=image_assets,
+            image_mode=image_mode,
+            app_config=app_config,
+            model=model,
+            max_retries=max_retries,
+            processing_operation=processing_operation,
+            source_language=source_language,
+            target_language=target_language,
+            on_progress=on_progress,
+            runtime=runtime,
+            resolve_uploaded_filename=resolve_uploaded_filename,
+            get_client=get_client,
+            ensure_pandoc_available=ensure_pandoc_available,
+            load_system_prompt=load_system_prompt,
+            log_event=log_event,
+            present_error=present_error,
+            emit_state=emit_state,
+            emit_finalize=emit_finalize,
+            emit_activity=emit_activity,
+            emit_log=emit_log,
+            emit_status=emit_status,
+            should_stop_processing=should_stop_processing,
+            generate_markdown_block=generate_markdown_block,
+            process_document_images=process_document_images,
+            inspect_placeholder_integrity=inspect_placeholder_integrity,
+            convert_markdown_to_docx_bytes=convert_markdown_to_docx_bytes,
+            preserve_source_paragraph_properties=preserve_source_paragraph_properties,
+            reinsert_inline_images=reinsert_inline_images,
+            write_ui_result_artifacts=write_ui_result_artifacts,
+            get_provider_client=get_provider_client,
+            get_client_for_model_selector=get_client_for_model_selector,
+            resolve_model_selector=resolve_model_selector,
+            document_context_prompt=document_context_prompt,
+        )
+    finally:
+        emit_run_model_accounting_event(log_event=log_event, filename=str(uploaded_file))
+
+
+def emit_run_model_accounting_event(*, log_event: EventLogger, filename: str) -> dict[str, object]:
+    """Publish the run's token/cost/retry/discard totals as ONE structured event.
+
+    Registered in ``docs/LOGGING_AND_ARTIFACT_RETENTION.md`` §3.3 as
+    ``model_usage_accounted``. INFO because it is a run-level aggregate emitted once per
+    run (§2), and it is emitted even when the run failed. Logging must never take a run
+    down, so a broken logger is swallowed here.
+    """
+
+    accounting = snapshot_run_model_accounting()
+    try:
+        log_event(
+            logging.INFO,
+            "model_usage_accounted",
+            "Учтены токены, стоимость и повторные попытки прогона.",
+            filename=filename,
+            **accounting,
+        )
+    except Exception:
+        pass
+    return accounting
+
+
+def _run_document_processing_accounted(
     *,
     uploaded_file: object,
     source_token: str | None = None,

@@ -4,6 +4,7 @@ from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any, Literal, cast
 
+from docxaicorrector.core.model_accounting import snapshot_run_model_accounting
 from docxaicorrector.core.models import ImageMode
 from docxaicorrector.pipeline.output_validation import (
     assemble_final_markdown,
@@ -1261,6 +1262,9 @@ def finalize_processing_success(
                 source_paragraphs=cast(Sequence[object] | None, getattr(context, "source_paragraphs", None)),
             ),
         }
+        model_accounting = snapshot_run_model_accounting()
+        if model_accounting.get("model_call_count"):
+            artifact_writer_kwargs["model_accounting"] = model_accounting
         if reassembly_plan.selected_segment_count is not None:
             artifact_writer_kwargs["selected_segment_count"] = reassembly_plan.selected_segment_count
         if quality_warning is not None:

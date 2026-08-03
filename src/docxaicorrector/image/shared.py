@@ -1,6 +1,7 @@
 import json
 import time
 
+from docxaicorrector.core.model_accounting import STAGE_UNATTRIBUTED, record_model_call_usage
 from docxaicorrector.generation.openai_response_utils import collect_response_text_traversal, read_response_field
 
 
@@ -148,7 +149,16 @@ def call_responses_create_with_retry(
     max_backoff_seconds: float = 4.0,
     budget=None,
     retryable_optional_params: set[str] | None = None,
+    usage_stage: str = STAGE_UNATTRIBUTED,
 ):
+    """Single choke point for every ``responses.create`` the product makes.
+
+    Text generation, paragraph-boundary review, image analysis/validation/reconstruction
+    and the vision leg of image generation all land here, which is why token/cost
+    accounting is recorded here rather than in each caller: one recording point covers
+    every operation (translate, literary edit, proofreading, images) at once.
+    """
+
     def ensure_budget_available() -> None:
         if budget is None:
             return
@@ -187,5 +197,6 @@ def call_responses_create_with_retry(
                 break
             else:
                 consume_budget()
+                record_model_call_usage(stage=usage_stage, response=response)
                 return response
     raise RuntimeError("Responses retry loop exhausted unexpectedly.")
