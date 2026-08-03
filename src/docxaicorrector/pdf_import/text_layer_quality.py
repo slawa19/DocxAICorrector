@@ -34,6 +34,44 @@ _DECISION_THRESHOLDS = {
     "max_repeated_page_furniture_text_ratio": 0.25,
 }
 
+# --- Footnote reference markers set inside a line -------------------------------------
+#
+# ``_split_trailing_superscript_marker_chars`` below lifts a footnote digit off the END
+# of a line so the logical importer can re-bind it as a superscript. That covers only a
+# marker that happens to fall on the last position of a line, and only when the marker is
+# set at <= 0.62 of the line's text size. Measured over the four corpus books, those two
+# conditions leave most references untouched: they sit in the middle of a line, or the
+# book sets its references at 0.65-0.80 of the body size. The digit then survives welded
+# to the word ("expansion.3 After the summit"), which is what a reader sees as a defect.
+#
+# This is the same typographic fact, detected the same way, without the position and
+# with a size bound that matches what books actually do: a footnote reference is set
+# SMALLER than the text it annotates and RAISED above that text's baseline. Both signals
+# are required. The measured per-book distribution of (size ratio, raised) over every
+# digit run welded to a word is strictly two-clustered:
+#
+#     book                  raised & smaller        flat (baseline-aligned)
+#     creating_wealth       152 @ 0.75              44 @ 0.75, 106 @ 1.00
+#     lietaer               214 @ 0.65              187 @ 1.00
+#     mazzucato             354 @ 0.60, 27 @ 0.80   266 @ 1.00
+#     money_sustainability  234 @ 0.40, 13 @ 0.53   424 @ 1.00
+#
+# The "flat" column is what makes the conjunction safe: it is where "CO2", "H2O", "$16.58"
+# split across a line, "0.005" and "$2.5" land. A subscript is smaller but LOWERED; an
+# ordinary number is baseline-aligned and full size. Neither can satisfy both tests.
+# ``_SUPERSCRIPT_MARKER_MAX_SIZE_RATIO`` sits in the empty band between the two clusters
+# (the largest observed reference is 0.80, the smallest observed ordinary digit 1.00).
+#
+# A digit that is raised but NOT smaller (a book that sets references at full size) is
+# deliberately left alone: under-attaching costs a defect, mis-attaching corrupts text.
+_SUPERSCRIPT_MARKER_MAX_SIZE_RATIO = 0.85
+_SUPERSCRIPT_MARKER_MIN_BASELINE_RISE_RATIO = 0.35
+_SUPERSCRIPT_MARKER_MAX_DIGITS = 3
+_SUPERSCRIPT_DIGIT_TABLE = str.maketrans("0123456789", "⁰¹²³⁴⁵⁶⁷⁸⁹")
+# What a reference may be welded to: the end of a word, or the end of a sentence. Same
+# set as ``_can_end_with_superscript_marker`` uses for the end-of-line case.
+_SUPERSCRIPT_MARKER_ANCHOR_CLOSERS = ".!?:;)]}»”\"'"
+
 
 @dataclass(frozen=True)
 class PdfTextSpan:
@@ -257,11 +295,23 @@ def extract_pdf_text_spans_with_pdfminer(pdf_path: str | Path) -> list[PdfTextSp
                     page_height=page_height,
                 )
                 trailing_superscript_split = _split_trailing_superscript_marker_chars(chars)
+                # Footnote references set inside the line are rendered as Unicode
+                # superscript digits in place. The span keeps its geometry and its
+                # character count, so every boundary decision downstream (soft-wrap
+                # continuation, paragraph indent boundary, body merge) sees exactly the
+                # line it saw before: a raw digit and a superscript digit are both
+                # non-terminal, non-alphabetic characters.
+                #
+                # Read over the whole line rather than over ``chars``: pdfminer reports
+                # the spaces it infers between words as separate layout items with no
+                # font, and a rule that saw only the real characters would read the
+                # space-separated "paper 28" as welded.
+                inline_marker_overrides = _inline_superscript_marker_char_ids(list(line))
                 if trailing_superscript_split is None:
                     spans.append(
                         PdfTextSpan(
                             page_number=page_index,
-                            text=text,
+                            text=_line_text_with_char_overrides(line, inline_marker_overrides),
                             x0=float(line.x0),
                             top=top,
                             x1=float(line.x1),
@@ -271,19 +321,156 @@ def extract_pdf_text_spans_with_pdfminer(pdf_path: str | Path) -> list[PdfTextSp
                             font_size=float(font_size) if font_size else None,
                             is_bold=is_bold,
                             is_italic=is_italic,
-                            runs=_style_runs_from_line_items(line),
+                            runs=_style_runs_from_line_items(
+                                line, char_text_overrides=inline_marker_overrides
+                            ),
                         )
                     )
                     continue
-                for segment_chars in trailing_superscript_split:
+                # Only the leading segment is rewritten. The trailing marker keeps its
+                # raw digits so the logical importer still recognises it as a standalone
+                # ``\d{1,3}`` marker span and re-binds it through the existing path.
+                for segment_index, segment_chars in enumerate(trailing_superscript_split):
                     span = _pdf_text_span_from_chars(
                         segment_chars,
                         page_number=page_index,
                         page_height=page_height,
+                        char_text_overrides=inline_marker_overrides if segment_index == 0 else None,
                     )
                     if span is not None:
                         spans.append(span)
     return spans
+
+
+_ASCII_DIGITS = frozenset("0123456789")
+
+
+def _char_display_text(char: object) -> str:
+    return str(getattr(char, "get_text", lambda: "")() or "")
+
+
+def _char_font_size(char: object) -> float:
+    return float(getattr(char, "size", 0.0) or 0.0)
+
+
+def _char_baseline(char: object) -> float:
+    return float(getattr(char, "y0", 0.0) or 0.0)
+
+
+def _inline_superscript_marker_char_ids(chars: Sequence[object]) -> dict[int, str]:
+    """Map ``id(char) -> superscript glyph`` for the footnote references in one line.
+
+    ``chars`` must be the line's FULL item sequence, including the whitespace items the
+    extractor infers between words — the weld test below reads them.
+
+    A digit run qualifies when all four hold, and they are all properties of how the
+    book SET the digit — no vocabulary, no document-specific string, no counting:
+
+    * it is welded to the end of a word or of a sentence: the character immediately
+      before it, with no space between, is a letter or a closing mark (``.``, ``”``,
+      ``)``…). A digit that follows a space is a number in the prose, never a reference;
+    * it is at most three digits long — references are numbered, page-scale quantities
+      and years are not;
+    * it is set SMALLER than the text on its line;
+    * it is RAISED above that text's baseline.
+
+    The last two are the discriminating pair. An ordinary number welded to a word by a
+    line break ("$16.58", "0.005") is full size and baseline-aligned; a chemical
+    subscript ("CO2", "H2O") is smaller but LOWERED. Neither passes both.
+    """
+    non_space_indexes = [
+        index for index, char in enumerate(chars) if _char_display_text(char).strip()
+    ]
+    if len(non_space_indexes) < 2:
+        return {}
+    line_font_sizes = [
+        size
+        for size in (_char_font_size(chars[index]) for index in non_space_indexes)
+        if size > 0
+    ]
+    if not line_font_sizes:
+        return {}
+    line_text_font_size = float(median(line_font_sizes))
+    if line_text_font_size <= 0:
+        return {}
+
+    overrides: dict[int, str] = {}
+    position = 0
+    while position < len(non_space_indexes):
+        if _char_display_text(chars[non_space_indexes[position]]).strip() not in _ASCII_DIGITS:
+            position += 1
+            continue
+        run_start = position
+        while (
+            position < len(non_space_indexes)
+            and _char_display_text(chars[non_space_indexes[position]]).strip() in _ASCII_DIGITS
+        ):
+            position += 1
+        run_indexes = non_space_indexes[run_start:position]
+        if run_start == 0 or len(run_indexes) > _SUPERSCRIPT_MARKER_MAX_DIGITS:
+            continue
+        if not _digit_run_is_welded_to_preceding_text(
+            chars,
+            anchor_index=non_space_indexes[run_start - 1],
+            run_start_index=run_indexes[0],
+        ):
+            continue
+        run_font_sizes = [
+            size for size in (_char_font_size(chars[index]) for index in run_indexes) if size > 0
+        ]
+        marker_font_size = (
+            float(median(run_font_sizes)) if run_font_sizes else line_text_font_size
+        )
+        if marker_font_size > line_text_font_size * _SUPERSCRIPT_MARKER_MAX_SIZE_RATIO:
+            continue
+        text_baselines = [
+            _char_baseline(chars[index])
+            for index in non_space_indexes
+            if index < run_indexes[0]
+        ]
+        marker_baselines = [_char_baseline(chars[index]) for index in run_indexes]
+        if not text_baselines or not marker_baselines:
+            continue
+        required_baseline = (
+            float(median(text_baselines))
+            + marker_font_size * _SUPERSCRIPT_MARKER_MIN_BASELINE_RISE_RATIO
+        )
+        if float(median(marker_baselines)) < required_baseline:
+            continue
+        for index in run_indexes:
+            overrides[id(chars[index])] = (
+                _char_display_text(chars[index]).strip().translate(_SUPERSCRIPT_DIGIT_TABLE)
+            )
+    return overrides
+
+
+def _digit_run_is_welded_to_preceding_text(
+    chars: Sequence[object], *, anchor_index: int, run_start_index: int
+) -> bool:
+    """True when the digit run touches the previous word with nothing in between."""
+    anchor_text = _char_display_text(chars[anchor_index]).strip()
+    if not anchor_text:
+        return False
+    last_char = anchor_text[-1]
+    if not (last_char.isalpha() or last_char in _SUPERSCRIPT_MARKER_ANCHOR_CLOSERS):
+        return False
+    return not any(
+        _char_display_text(chars[index]) and not _char_display_text(chars[index]).strip()
+        for index in range(anchor_index + 1, run_start_index)
+    )
+
+
+def _line_text_with_char_overrides(
+    items: Iterable[object], char_text_overrides: Mapping[int, str] | None
+) -> str:
+    """The line's raw text, with the claimed digits replaced by superscript glyphs."""
+    pieces: list[str] = []
+    for item in items:
+        piece = _char_display_text(item)
+        if char_text_overrides and id(item) in char_text_overrides:
+            piece = char_text_overrides[id(item)]
+        pieces.append(piece)
+    return "".join(pieces).strip()
 
 
 def _split_trailing_superscript_marker_chars(chars: Sequence[object]) -> tuple[Sequence[object], Sequence[object]] | None:
@@ -355,7 +542,7 @@ def _can_end_with_superscript_marker(text: str) -> bool:
     if not stripped:
         return False
     last_char = stripped[-1]
-    return last_char.isalpha() or last_char in ".!?:;)]}»”\"'"
+    return last_char.isalpha() or last_char in _SUPERSCRIPT_MARKER_ANCHOR_CLOSERS
 
 
 def _pdf_text_span_from_chars(
@@ -363,8 +550,9 @@ def _pdf_text_span_from_chars(
     *,
     page_number: int,
     page_height: float | None,
+    char_text_overrides: Mapping[int, str] | None = None,
 ) -> PdfTextSpan | None:
-    text = "".join(str(getattr(char, "get_text", lambda: "")() or "") for char in chars).strip()
+    text = _line_text_with_char_overrides(chars, char_text_overrides)
     if not text:
         return None
     font_names = [str(getattr(char, "fontname", "") or "") for char in chars]
@@ -393,7 +581,7 @@ def _pdf_text_span_from_chars(
         font_size=font_size,
         is_bold=is_bold,
         is_italic=is_italic,
-        runs=_style_runs_from_line_items(chars),
+        runs=_style_runs_from_line_items(chars, char_text_overrides=char_text_overrides),
     )
 
 
@@ -607,7 +795,11 @@ def _font_style_flags(font_name: str) -> tuple[bool, bool]:
     return (is_bold, is_italic)
 
 
-def _style_runs_from_line_items(items: Iterable[object]) -> tuple[tuple[str, bool, bool], ...]:
+def _style_runs_from_line_items(
+    items: Iterable[object],
+    *,
+    char_text_overrides: Mapping[int, str] | None = None,
+) -> tuple[tuple[str, bool, bool], ...]:
     """Group a line's characters into consecutive same-style runs.
 
     ``items`` may mix real characters (carrying ``fontname``) with virtual layout
@@ -615,6 +807,11 @@ def _style_runs_from_line_items(items: Iterable[object]) -> tuple[tuple[str, boo
     latter inherit the current style so a space inside an italic word does not split
     the run. The returned runs are whitespace-normalized so their concatenation equals
     ``_normalize_text`` of the line text.
+
+    ``char_text_overrides`` maps ``id(item)`` to the text that item contributes, so a
+    footnote reference can be emitted as a superscript glyph without disturbing the
+    runs' structure. The same map must be used to build the span text, or the runs
+    would stop reconstructing it and be discarded downstream.
     """
     raw: list[tuple[str, bool, bool]] = []
     current_style: tuple[bool, bool] | None = None
@@ -624,6 +821,8 @@ def _style_runs_from_line_items(items: Iterable[object]) -> tuple[tuple[str, boo
         if not callable(get_text):
             continue
         piece = str(get_text() or "")
+        if char_text_overrides and id(item) in char_text_overrides:
+            piece = char_text_overrides[id(item)]
         if not piece:
             continue
         if hasattr(item, "fontname"):
