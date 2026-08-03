@@ -1073,6 +1073,72 @@ def test_run_document_processing_builds_standalone_audiobook_artifact_and_coerce
     assert saved_event["context"]["tts_text_path"] == "/tmp/report.result.tts.txt"
 
 
+def test_run_document_processing_keeps_a_mathematical_exponent_in_the_narration_artifact():
+    """Codex round 3, P2-4: a raised digit is not proof of a footnote marker.
+
+    The PDF importer rewrites every small raised digit welded to the text before it into a
+    Unicode superscript, and an exponent ("x²") is welded exactly like a reference
+    ("…Rome.⁵"). The narration gate treated ANY superscript digit as a forbidden marker, so
+    a model that correctly kept the exponent — the audiobook prompt only orders REFERENCE
+    markers out — failed the whole standalone audiobook run and shipped no artifact at all.
+
+    The effect under test is the delivered ``.tts.txt``: the run succeeds and the exponent
+    survives into it.
+    """
+    runtime = _build_runtime_capture()
+    narration_with_exponent = "[serious] Площадь участка — 120 м², а расход растёт как x²."
+
+    result = document_pipeline.run_document_processing(
+        uploaded_file="report.docx",
+        jobs=[{
+            "target_text": "Площадь участка 120 м2, расход растёт как x2.",
+            "context_before": "",
+            "context_after": "",
+            "target_chars": 44,
+            "context_chars": 0,
+            "narration_include": True,
+        }],
+        source_paragraphs=[],
+        image_assets=[],
+        image_mode="safe",
+        app_config={},
+        model="gpt-5.4",
+        max_retries=1,
+        processing_operation="audiobook",
+        source_language="auto",
+        target_language="ru",
+        on_progress=lambda **kwargs: None,
+        runtime=runtime,
+        resolve_uploaded_filename=lambda uploaded_file: str(uploaded_file),
+        get_client=lambda: object(),
+        ensure_pandoc_available=lambda: None,
+        load_system_prompt=lambda **_kw: "system",
+        log_event=lambda *args, **kwargs: None,
+        present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
+        emit_state=_emit_state,
+        emit_finalize=_emit_finalize,
+        emit_activity=_emit_activity,
+        emit_log=_emit_log,
+        emit_status=_emit_status,
+        should_stop_processing=lambda runtime: False,
+        generate_markdown_block=lambda **kwargs: narration_with_exponent,
+        process_document_images=lambda **kwargs: [],
+        inspect_placeholder_integrity=_inspect_placeholder_integrity,
+        convert_markdown_to_docx_bytes=_convert_markdown_to_docx_bytes,
+        preserve_source_paragraph_properties=lambda docx_bytes, paragraphs, generated_paragraph_registry=None: docx_bytes,
+        reinsert_inline_images=lambda docx_bytes, image_assets: b"final-docx",
+    )
+
+    assert result == "succeeded"
+    assert runtime["state"]["latest_narration_text"] == narration_with_exponent
+    # The gate still bites on the markers that really are non-narratable.
+    with pytest.raises(RuntimeError) as excinfo:
+        document_pipeline_narration_postprocess._validate_narration_artifact_text(
+            "[serious] См.: doi:10.5194/sapiens-2-1 и https://example.org."
+        )
+    assert "narration_artifact_validation_failed" in str(excinfo.value)
+
+
 def test_run_document_processing_runs_audiobook_postprocess_without_mutating_base_docx_branch():
     runtime = _build_runtime_capture()
     events, log_event = _capture_log_events()

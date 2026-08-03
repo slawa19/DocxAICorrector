@@ -28,7 +28,15 @@ _NARRATION_DISALLOWED_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("isbn", re.compile(r"\bisbn\b", re.IGNORECASE)),
     ("arxiv", re.compile(r"\barxiv\b", re.IGNORECASE)),
     ("inline_citation", re.compile(r"\((?:ibid\.|там же|[A-ZА-ЯЁ][^()]{0,80}?,\s*(?:19|20)\d{2})[^()]*\)", re.IGNORECASE)),
-    ("superscript_footnote", re.compile(r"[\u00B9\u00B2\u00B3\u2070-\u2079]")),
+    # NO superscript-digit rule. A raised digit is not evidence of a footnote marker: the
+    # PDF importer emits Unicode superscripts for every small raised digit welded to the
+    # text before it, and a mathematical exponent ("x\u00B2", "m\u00B2") is welded exactly like a
+    # reference ("\u2026Rome.\u2075", "as Smith notes\u00B9"). Telling them apart needs to understand the
+    # formula, which this pipeline deliberately does not do. Removing reference markers is
+    # the audiobook prompt's job (rule 1); a model that correctly KEEPS an exponent used to
+    # fail this gate, which drops the optional narration on edit/translate and fails a
+    # standalone audiobook run outright \u2014 losing the whole artifact over one glyph that TTS
+    # would simply read as a number.
     ("markdown_heading", re.compile(r"^\s{0,3}#", re.MULTILINE)),
 )
 

@@ -584,6 +584,47 @@ def test_table_and_image_roles_are_never_page_furniture():
         assert report.removed_page_furniture_count == 0, role
 
 
+def test_a_table_cell_survives_the_stamp_that_shares_its_text():
+    """Codex round 3, P2-3: the fingerprint is text, so it hit blocks it never came from.
+
+    ``_is_page_cadence_candidate`` refuses tables, images and list items when the
+    fingerprint is COLLECTED, but removal only asked whether the block's normalized text
+    matched an already-earned fingerprint. A meaningful table cell reading "DRAFT" was
+    therefore deleted together with the running headers that spell "DRAFT" — the
+    all-blocks-are-tables test could not see it, because there the fingerprint is never
+    earned in the first place.
+
+    The effect under test is the DELIVERED text: 40 running headers gone, the table cell,
+    the image caption and the list item still there.
+    """
+    paragraphs = _document_with_recurring_block(
+        block_text="DRAFT",
+        stride=10,
+        paragraph_count=400,
+        block_role="heading",
+        block_structural_role="heading",
+    )
+    protected_positions = {
+        7: _paragraph("DRAFT", role="table", structural_role="table", source_index=7),
+        13: _paragraph("DRAFT", role="image", structural_role="image", source_index=13),
+        27: _paragraph(
+            "DRAFT", role="list", structural_role="list", source_index=27, list_kind="ordered"
+        ),
+    }
+    for position, replacement in protected_positions.items():
+        assert paragraphs[position].text != "DRAFT"  # replacing body text, not a stamp
+        paragraphs[position] = replacement
+
+    cleaned, report = clean_paragraph_layout_artifacts(paragraphs, cleanup_mode="remove", is_scan_origin=True)
+
+    # The 40 running headers are still furniture and still removed.
+    assert report.removed_page_furniture_count == 40
+    surviving_roles = sorted(
+        paragraph.role for paragraph in cleaned if paragraph.text == "DRAFT"
+    )
+    assert surviving_roles == ["image", "list", "table"]
+
+
 def test_a_plays_speaker_label_survives_the_page_cadence_rule():
     """Codex round 3, P1-B: cadence alone condemns a play's dialogue.
 

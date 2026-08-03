@@ -185,7 +185,21 @@ def _clean_paragraph_layout_artifacts(
         paragraph.is_likely_page_number = False
         paragraph.is_repeated_across_pages = False
 
-        if normalized and normalized in page_furniture_fingerprints:
+        if (
+            normalized
+            and normalized in page_furniture_fingerprints
+            # The fingerprint is earned by the occurrences that LOOK like furniture; it is
+            # not a licence to delete every block that happens to say the same words. A
+            # table cell, an image placeholder or a list item carrying the stamp's text is
+            # excluded from earning the fingerprint, so it must be excluded from being
+            # deleted by it too — otherwise a meaningful "DRAFT" cell disappears with the
+            # ten running headers that spell "DRAFT".
+            and _is_page_cadence_candidate(
+                paragraph,
+                normalized_text=normalized,
+                max_repeated_text_chars=max_repeated_text_chars,
+            )
+        ):
             # Targeted drop: page-cadence furniture is removed in BOTH modes. Flag mode
             # exists so that UNCERTAIN structure decisions stay visible to AI-first
             # structure recovery; a block recurring at page cadence across the whole

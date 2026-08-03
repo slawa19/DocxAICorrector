@@ -1639,19 +1639,79 @@ def test_restore_collapsed_marker_paragraphs_replaces_invented_stub_with_source(
     assert restored == [_STUB_SOURCE_ABSORBED, _STUB_SOURCE_COLLAPSED]
 
 
-def test_restore_collapsed_marker_paragraphs_keeps_the_neighbour_that_did_not_absorb():
-    collapsed_source = _STUB_SOURCE_COLLAPSED
-    previous_source = "1. Там же, с. 131, со ссылкой на архивные материалы Бундесбанка."
-    previous_edited = "1. Там же, с. 131."
-    returned = [previous_edited, "—"]
+def test_restore_collapsed_marker_paragraphs_restores_the_pair_when_the_merge_went_forward():
+    """The model merges forward as readily as back, and then the pair must move together.
+
+    Looking for the absorber only at ``index - 1`` left the FIRST paragraph of a block
+    unpaired: its source was re-instated while the next chunk kept holding the same text,
+    so the reader got that paragraph twice.
+    """
+    returned = [
+        "(Пусто)",
+        f"{_STUB_SOURCE_COLLAPSED} {_STUB_SOURCE_ABSORBED}",
+    ]
 
     restored = generation.restore_collapsed_marker_paragraphs(
         returned,
-        [previous_source, collapsed_source],
+        [_STUB_SOURCE_COLLAPSED, _STUB_SOURCE_ABSORBED],
+        expected_paragraph_ids=["p1344", "p1345"],
+    )
+
+    assert "(Пусто)" not in restored
+    assert restored == [_STUB_SOURCE_COLLAPSED, _STUB_SOURCE_ABSORBED]
+    # The decisive assertion: the swallowed paragraph is delivered ONCE.
+    assert sum(_STUB_SOURCE_COLLAPSED in chunk for chunk in restored) == 1
+
+
+def test_restore_collapsed_marker_paragraphs_keeps_a_short_answer_nobody_absorbed():
+    """A shrunken paragraph is not evidence of a merge, and a revert costs a real edit.
+
+    Measured on the 2026-08-03 run: the single collapse with no absorbing neighbour
+    (p1533) was not a merge at all — the model had shifted a whole endnote region, and its
+    text was already shipping five markers earlier. Restoring the source there delivered
+    that 655-character quote TWICE.
+    """
+    wordy_source = (
+        "В связи с вышеизложенным следует констатировать, что осуществление данного "
+        "мероприятия в текущих обстоятельствах представляется в высшей степени "
+        "нецелесообразным и не может быть рекомендовано к исполнению."
+    )
+    tightened = "Делать этого не стоит."
+    neighbour_source = "1. Там же, с. 131, со ссылкой на архивные материалы Бундесбанка."
+    neighbour_edited = "1. Там же, с. 131."
+    returned = [neighbour_edited, tightened]
+
+    restored = generation.restore_collapsed_marker_paragraphs(
+        returned,
+        [neighbour_source, wordy_source],
         expected_paragraph_ids=["p1532", "p1533"],
     )
 
-    assert restored == [previous_edited, collapsed_source]
+    assert restored == [neighbour_edited, tightened]
+
+
+def test_restore_collapsed_marker_paragraphs_keeps_an_audiobook_reference_paragraph_drop():
+    """Audiobook prompt rule 1 ORDERS reference paragraphs out of the narration.
+
+    Marker mode is enabled by configuration, not by operation, so this function also runs
+    on ``processing_operation="audiobook"``. Restoring on shrinkage alone put the
+    bibliography the model was told to delete straight back into the text read aloud.
+    """
+    reference_source = (
+        "12. Bernard Lietaer, Robert Ulanowicz, Sally Goerner, «Options for Managing a "
+        "Systemic Bank Crisis», S.A.P.I.EN.S 2, no. 1 (2009): 1–15, doi:10.5194/sapiens-2-1."
+    )
+    body_source = "Устойчивость денежной системы держится не на эффективности, а на разнообразии."
+    body_narrated = "Устойчивость денежной системы держится на разнообразии, а не на эффективности."
+    returned = [body_narrated, "."]
+
+    restored = generation.restore_collapsed_marker_paragraphs(
+        returned,
+        [body_source, reference_source],
+        expected_paragraph_ids=["p0101", "p0102"],
+    )
+
+    assert restored == returned
 
 
 def test_restore_collapsed_marker_paragraphs_leaves_genuine_edits_untouched():
