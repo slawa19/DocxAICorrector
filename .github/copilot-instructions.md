@@ -28,7 +28,7 @@ Critical distinction:
 
 - `bash scripts/test.sh ...`, `bash scripts/run-real-document-validation.sh`, `bash scripts/run-real-document-quality-gate.sh`, and the matching VS Code tasks are **canonical contract paths**.
 - Direct `python -m pytest ...` without those shell entry points is only a **debug path**.
-- If the workspace factually has a working Windows `.venv\Scripts\python.exe`, agents may use it only for debugging ordinary pytest selectors that do not themselves depend on a shell-bound contract.
+- The Windows venv is `.venv-win\Scripts\python.exe` (`.venv/` is the WSL venv and has no `Scripts/` directory). Agents may use it only for debugging ordinary pytest selectors that do not themselves depend on a shell-bound contract.
 - For `real`, `spec`, `ui-parity`, `validation`, `quality-gate`, or any shell-driven scenario, a debug path does not count as executing the requested canonical verification path.
 - If the canonical shell path is unavailable, state that limitation explicitly instead of silently substituting an underlying Python runner and reporting it as equivalent verification.
 - For structural preparation snapshots from `real_document_validation_structural.py`, prefer the module's own CLI through `bash scripts/run-structural-preparation-diagnostic.sh ...` or the VS Code task `Run Structural Preparation Diagnostic` instead of building nested `python -c` commands.
