@@ -360,7 +360,7 @@ def test_page_cadence_stamp_is_removed_even_in_default_flag_mode():
         block_structural_role="heading",
     )
 
-    cleaned, report = clean_paragraph_layout_artifacts(paragraphs)
+    cleaned, report = clean_paragraph_layout_artifacts(paragraphs, is_scan_origin=True)
 
     assert report.cleanup_mode == "flag"
     assert "QX-4471" not in [paragraph.text for paragraph in cleaned]
@@ -398,7 +398,7 @@ def test_page_cadence_furniture_is_detected_regardless_of_role_and_layout_origin
             block_layout_origin=layout_origin,
         )
 
-        cleaned, report = clean_paragraph_layout_artifacts(paragraphs)
+        cleaned, report = clean_paragraph_layout_artifacts(paragraphs, is_scan_origin=True)
 
         assert report.removed_page_furniture_count == 25, (role, structural_role, layout_origin)
         assert "QX-4471" not in [paragraph.text for paragraph in cleaned], (role, layout_origin)
@@ -413,7 +413,7 @@ def test_page_cadence_furniture_is_removed_in_remove_mode_too():
         block_structural_role="heading",
     )
 
-    cleaned, report = clean_paragraph_layout_artifacts(paragraphs, cleanup_mode="remove")
+    cleaned, report = clean_paragraph_layout_artifacts(paragraphs, cleanup_mode="remove", is_scan_origin=True)
 
     assert report.cleanup_mode == "remove"
     assert report.removed_page_furniture_count == 40
@@ -434,7 +434,7 @@ def test_case_variants_of_the_same_stamp_collapse_into_one_furniture_block():
         if paragraph.text == "QX-4471" and index % 40 == 0:
             paragraph.text = "qx-4471"
 
-    cleaned, report = clean_paragraph_layout_artifacts(paragraphs)
+    cleaned, report = clean_paragraph_layout_artifacts(paragraphs, is_scan_origin=True)
 
     assert report.removed_page_furniture_count == 40
     assert not [paragraph for paragraph in cleaned if paragraph.text.lower() == "qx-4471"]
@@ -458,7 +458,7 @@ def test_chapter_cadence_repeated_heading_is_not_page_furniture():
         block_structural_role="heading",
     )
 
-    cleaned, report = clean_paragraph_layout_artifacts(paragraphs)
+    cleaned, report = clean_paragraph_layout_artifacts(paragraphs, is_scan_origin=True)
 
     assert [paragraph.text for paragraph in cleaned].count("Footnotes") == 10
     assert report.removed_page_furniture_count == 0
@@ -476,7 +476,7 @@ def test_clustered_repetition_is_not_page_furniture():
         last_position=60,
     )
 
-    cleaned, report = clean_paragraph_layout_artifacts(paragraphs)
+    cleaned, report = clean_paragraph_layout_artifacts(paragraphs, is_scan_origin=True)
 
     assert [paragraph.text for paragraph in cleaned].count("And so it goes") == 12
     assert report.removed_page_furniture_count == 0
@@ -492,7 +492,7 @@ def test_page_cadence_needs_more_repeats_than_the_generic_minimum():
         block_structural_role="heading",
     )
 
-    cleaned, report = clean_paragraph_layout_artifacts(paragraphs)
+    cleaned, report = clean_paragraph_layout_artifacts(paragraphs, is_scan_origin=True)
 
     assert [paragraph.text for paragraph in cleaned].count("Part Two") == 5
     assert report.removed_page_furniture_count == 0
@@ -508,10 +508,10 @@ def test_operator_repeat_threshold_can_only_tighten_the_page_cadence_rule():
         block_structural_role="heading",
     )
 
-    _cleaned, lowered = clean_paragraph_layout_artifacts(list(paragraphs), min_repeat_count=2)
+    _cleaned, lowered = clean_paragraph_layout_artifacts(list(paragraphs), min_repeat_count=2, is_scan_origin=True)
     assert lowered.removed_page_furniture_count == 40
 
-    _cleaned, raised = clean_paragraph_layout_artifacts(list(paragraphs), min_repeat_count=60)
+    _cleaned, raised = clean_paragraph_layout_artifacts(list(paragraphs), min_repeat_count=60, is_scan_origin=True)
     assert raised.removed_page_furniture_count == 0
 
 
@@ -530,7 +530,7 @@ def test_a_block_that_is_a_large_share_of_the_document_is_never_page_furniture()
         block_structural_role="heading",
     )
 
-    cleaned, report = clean_paragraph_layout_artifacts(paragraphs)
+    cleaned, report = clean_paragraph_layout_artifacts(paragraphs, is_scan_origin=True)
 
     assert [paragraph.text for paragraph in cleaned].count("HAMLET") == 200
     assert report.removed_page_furniture_count == 0
@@ -549,7 +549,7 @@ def test_page_cadence_still_fires_below_the_document_share_bound():
     share = [paragraph.text for paragraph in paragraphs].count("QX-4471") / len(paragraphs)
     assert 0.05 < share < document_layout_cleanup.PAGE_FURNITURE_MAX_DOCUMENT_SHARE
 
-    cleaned, report = clean_paragraph_layout_artifacts(paragraphs)
+    cleaned, report = clean_paragraph_layout_artifacts(paragraphs, is_scan_origin=True)
 
     assert report.removed_page_furniture_count == 47
     assert "QX-4471" not in [paragraph.text for paragraph in cleaned]
@@ -562,7 +562,7 @@ def test_page_cadence_never_drops_an_image_anchor():
         paragraph_count=400,
     )
 
-    cleaned, report = clean_paragraph_layout_artifacts(paragraphs)
+    cleaned, report = clean_paragraph_layout_artifacts(paragraphs, is_scan_origin=True)
 
     assert [paragraph.text for paragraph in cleaned].count("[[DOCX_IMAGE_img_007]]") == 40
     assert report.removed_page_furniture_count == 0
@@ -578,10 +578,100 @@ def test_table_and_image_roles_are_never_page_furniture():
             block_structural_role=role,
         )
 
-        cleaned, report = clean_paragraph_layout_artifacts(paragraphs)
+        cleaned, report = clean_paragraph_layout_artifacts(paragraphs, is_scan_origin=True)
 
         assert [paragraph.text for paragraph in cleaned].count("QX-4471") == 40, role
         assert report.removed_page_furniture_count == 0, role
+
+
+def test_a_plays_speaker_label_survives_the_page_cadence_rule():
+    """Codex round 3, P1-B: cadence alone condemns a play's dialogue.
+
+    A 1000-paragraph play with a speaker label every 6 paragraphs clears every cadence
+    threshold in the module with room to spare — ~166 repeats against a floor of 6, 16.6%
+    share against a 20% bound, full document span, mean gap 6 against a bound of 40. Under
+    the cadence-only rule every speaker label was deleted and the dialogue was delivered
+    with nobody speaking it.
+
+    The effect under test is the DELIVERED TEXT: every label still present, and the
+    alternation of label and line intact.
+    """
+    paragraphs = _document_with_recurring_block(
+        block_text="ГАМЛЕТ",
+        stride=6,
+        paragraph_count=1000,
+        block_role="heading",
+        block_structural_role="heading",
+    )
+    label_count = [paragraph.text for paragraph in paragraphs].count("ГАМЛЕТ")
+    # Pin that the scenario really does sit inside the cadence band, so this test cannot
+    # start passing because the document drifted out of the rule's reach.
+    assert label_count == 167
+    share = label_count / len(paragraphs)
+    assert share < document_layout_cleanup.PAGE_FURNITURE_MAX_DOCUMENT_SHARE
+    assert label_count > document_layout_cleanup.PAGE_FURNITURE_MIN_REPEAT_COUNT
+    assert 6 <= document_layout_cleanup.PAGE_FURNITURE_MAX_MEAN_PARAGRAPH_GAP
+
+    cleaned, report = clean_paragraph_layout_artifacts(paragraphs, cleanup_mode="remove")
+
+    assert [paragraph.text for paragraph in cleaned].count("ГАМЛЕТ") == 167
+    assert report.removed_page_furniture_count == 0
+    assert report.removed_paragraph_count == 0
+    assert not [decision for decision in report.decisions if decision.reason == "repeated_page_furniture"]
+    # The delivered document still alternates speaker and line.
+    delivered = [paragraph.text for paragraph in cleaned]
+    assert delivered[0] == "ГАМЛЕТ"
+    assert delivered[6] == "ГАМЛЕТ"
+    assert delivered[1].startswith("Unique body sentence")
+
+
+def test_a_poem_refrain_and_a_repeated_exercise_heading_survive_too():
+    """Same class as the play: legitimately repeating content at page cadence."""
+    for block_text, stride, count in (
+        ("И всё же он вертится", 8, 1200),
+        ("Упражнение", 11, 900),
+    ):
+        paragraphs = _document_with_recurring_block(
+            block_text=block_text,
+            stride=stride,
+            paragraph_count=count,
+            block_role="heading",
+            block_structural_role="heading",
+        )
+        expected = [paragraph.text for paragraph in paragraphs].count(block_text)
+        assert expected >= document_layout_cleanup.PAGE_FURNITURE_MIN_REPEAT_COUNT
+
+        cleaned, report = clean_paragraph_layout_artifacts(paragraphs, cleanup_mode="remove")
+
+        assert [paragraph.text for paragraph in cleaned].count(block_text) == expected, block_text
+        assert report.removed_page_furniture_count == 0, block_text
+
+
+def test_the_same_block_in_a_scanned_document_is_still_removed():
+    """The counter-proof: the narrowing must not disarm the rule where it belongs.
+
+    Identical cadence, identical text, identical roles — only the document's provenance
+    differs. The scan still loses its overlay.
+    """
+    def build() -> list[ParagraphUnit]:
+        return _document_with_recurring_block(
+            block_text="QX-4471",
+            stride=10,
+            paragraph_count=400,
+            block_role="heading",
+            block_structural_role="heading",
+        )
+
+    _authored_cleaned, authored = clean_paragraph_layout_artifacts(build(), cleanup_mode="remove")
+    scanned_cleaned, scanned = clean_paragraph_layout_artifacts(
+        build(),
+        cleanup_mode="remove",
+        is_scan_origin=True,
+    )
+
+    assert authored.removed_page_furniture_count == 0
+    assert scanned.removed_page_furniture_count == 40
+    assert "QX-4471" not in [paragraph.text for paragraph in scanned_cleaned]
 
 
 def test_furniture_detection_carries_no_classification_marker_vocabulary():

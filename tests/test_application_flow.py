@@ -8,6 +8,7 @@ from typing import Any, cast
 
 import pytest
 
+import docxaicorrector.core.model_accounting as model_accounting
 import docxaicorrector.processing.preparation as preparation
 import docxaicorrector.processing.processing_service as processing_service
 import docxaicorrector.processing.processing_runtime as processing_runtime
@@ -1324,6 +1325,110 @@ def test_prepare_run_context_for_background_uses_frozen_upload_payload(monkeypat
     assert result.uploaded_file_token == payload.file_token
     assert captured["prepare"]["app_config"] == {"translation_domain_default": "general", "reader_cleanup_default": True}
     assert captured["prepare"]["processing_operation"] == "audiobook"
+
+
+def test_preparation_model_calls_are_scoped_to_the_source_not_to_a_run(monkeypatch):
+    """Codex round 3, P1-A: preparation must not be charged to a run in flight.
+
+    Wiring test over ``_prepare_run_context_core``, the core EVERY preparation entry point
+    goes through (the synchronous UI path, the UI preparation worker, ProcessingService). A
+    model call made while preparing must land in that source's preparation ledger — and the
+    run that follows must report it beside its own totals, not inside them.
+    """
+
+    monkeypatch.setattr(flow_core, "validate_docx_source_bytes", lambda source_bytes: None)
+    prepared_document = SimpleNamespace(
+        source_text="text",
+        paragraphs=["p1"],
+        image_assets=[],
+        jobs=[{"target_text": "block", "target_chars": 5, "context_chars": 0}],
+        prepared_source_key="prepared-key",
+        cached=False,
+    )
+    payload = _freeze_uploaded_file("report.docx", b"abc")
+
+    def _prepare_with_a_model_call(**_kwargs):
+        # Stands in for the paragraph-boundary AI review, the real spender here.
+        model_accounting.record_model_call_usage(
+            stage=model_accounting.STAGE_BOUNDARY_REVIEW,
+            response=SimpleNamespace(usage=SimpleNamespace(prompt_tokens=310, completion_tokens=20, cost=0.004)),
+        )
+        return prepared_document
+
+    application_flow.prepare_run_context_for_background(
+        uploaded_payload=payload,
+        chunk_size=6000,
+        image_mode="safe",
+        keep_all_image_variants=True,
+        app_config={},
+        prepare_document_for_processing_fn=_prepare_with_a_model_call,
+    )
+
+    with model_accounting.run_model_accounting_scope(run_id="run-1", source_token=payload.file_token):
+        snapshot = model_accounting.snapshot_run_model_accounting()
+
+    assert snapshot["model_call_count"] == 0
+    assert snapshot["total_tokens"] == 0
+    preparation_accounting = cast(dict[str, Any], snapshot["preparation_accounting"])
+    assert preparation_accounting["source_token"] == payload.file_token
+    assert preparation_accounting["included_in_run_totals"] is False
+    assert preparation_accounting["total_tokens"] == 330
+    assert preparation_accounting["model_call_count"] == 1
+
+    # A concurrently running document does not absorb it.
+    with model_accounting.run_model_accounting_scope(run_id="run-2", source_token="other-source"):
+        unrelated = model_accounting.snapshot_run_model_accounting()
+    assert unrelated["model_call_count"] == 0
+    assert unrelated["preparation_accounting"] is None
+
+
+def test_synchronous_ui_preparation_is_scoped_to_the_source_too(monkeypatch):
+    """The other live entry point: ``ui.application_flow.prepare_run_context``.
+
+    Both preparation entry points route through ``_prepare_run_context_core``, so one scope
+    covers them; this pins that the synchronous path is genuinely covered rather than
+    assumed.
+    """
+
+    monkeypatch.setattr(flow_core, "validate_docx_source_bytes", lambda source_bytes: None)
+    session_state = SessionState()
+    uploaded_file = BytesIO(b"abc")
+    uploaded_file.name = "sync.docx"
+
+    def _prepare_with_a_model_call(**_kwargs):
+        model_accounting.record_model_call_usage(
+            stage=model_accounting.STAGE_BOUNDARY_REVIEW,
+            response=SimpleNamespace(usage=SimpleNamespace(prompt_tokens=17, completion_tokens=3, cost=0.0002)),
+        )
+        return SimpleNamespace(
+            source_text="text",
+            paragraphs=["p1"],
+            image_assets=[],
+            jobs=[{"target_text": "block", "target_chars": 5, "context_chars": 0}],
+            prepared_source_key="prepared-key",
+            cached=False,
+        )
+
+    prepared = application_flow.prepare_run_context(
+        uploaded_file=uploaded_file,
+        chunk_size=6000,
+        image_mode="safe",
+        keep_all_image_variants=True,
+        app_config={},
+        session_state=session_state,
+        reset_run_state_fn=lambda **_kwargs: None,
+        fail_critical_fn=None,
+        log_event_fn=lambda *_a, **_k: None,
+        prepare_document_for_processing_fn=_prepare_with_a_model_call,
+    )
+
+    with model_accounting.run_model_accounting_scope(run_id="run-s", source_token=prepared.uploaded_file_token):
+        snapshot = model_accounting.snapshot_run_model_accounting()
+
+    assert snapshot["model_call_count"] == 0
+    preparation_accounting = cast(dict[str, Any], snapshot["preparation_accounting"])
+    assert preparation_accounting["total_tokens"] == 20
+    assert preparation_accounting["included_in_run_totals"] is False
 
 
 def test_prepare_run_context_for_background_forwards_tenant_client_factory(monkeypatch):

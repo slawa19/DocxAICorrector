@@ -26,24 +26,56 @@ a provider reports the two components but not the total, and summation across ca
 
 Scope
 -----
-The ledger is a process-global singleton reset at the start of each processing run
-(``pipeline/_pipeline.run_document_processing``). It is process-global rather than
-injected because the recording points are leaf functions inside the provider-call
-helpers, which have no dependency-injection channel; threading a ledger through every
-one of them would be a far larger and riskier change than the observation it buys.
-Preparation-stage model calls (structure recognition, paragraph-boundary AI review) run
-in a separate worker BEFORE that reset and are therefore outside a processing run's
-snapshot; ``accounting_scope`` names that boundary instead of leaving it implied.
+Accounting is bound to the IDENTITY of the work being measured, not to a global reset.
+Each processing run opens ``run_model_accounting_scope(run_id=..., source_token=...)``,
+which creates a ledger of its own and binds it to the calling context; the snapshot taken
+at the end of that scope therefore reports what THAT run spent.
+
+This matters because two runs are admitted concurrently by default
+(``processing/processing_runtime._DEFAULT_PROCESSING_ADMISSION_LIMIT`` is 2). Under the
+previous process-global-singleton-plus-reset design, run B starting mid-flight wiped run
+A's totals and both runs then accumulated into the same counters — internally consistent
+numbers describing nobody's run. Isolation here comes from each scope owning a distinct
+ledger OBJECT, so it holds even when a caller passes a blank ``run_id``; the identity
+fields are recorded so a snapshot says whose spend it is, following the ownership pattern
+spec 048 established for formatting diagnostics.
+
+The binding is a ``ContextVar`` rather than an injected parameter because the recording
+points are leaf functions inside the provider-call helpers, which have no
+dependency-injection channel; threading a ledger through every one of them would be a far
+larger and riskier change than the observation it buys. A processing run executes on one
+worker thread (``processing_runtime`` starts it, and nothing under it forks further), so
+the context set at the top of the run is the context every recording point sees.
+
+Preparation
+-----------
+Preparation-stage model calls (paragraph-boundary AI review) run in a SEPARATE worker,
+before any run exists, and one preparation can serve several later runs of the same
+source. They are therefore recorded against the source, not against a run:
+``preparation_model_accounting_scope(source_token=...)`` keeps a per-source ledger, and a
+run's snapshot carries it under ``preparation_accounting`` with
+``included_in_run_totals: False``. So preparation spend is VISIBLE in the same payload
+that reports the run, and it is never silently summed into a run it did not belong to —
+nor charged to whichever unrelated run happened to be in flight, which is what the global
+ledger did before.
+
+Model calls recorded with no scope open at all land in a process-level unscoped ledger and
+are counted in ``unscoped_model_call_count`` on every run snapshot, so "spend that no
+scope claimed" is a number one can read rather than a silence.
 """
 
 from __future__ import annotations
 
+import contextvars
 import threading
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass
 
 
 ACCOUNTING_SCOPE = "processing_run"
+PREPARATION_ACCOUNTING_SCOPE = "source_preparation"
+UNSCOPED_ACCOUNTING_SCOPE = "unscoped"
 
 STAGE_TEXT_GENERATION = "text_generation"
 STAGE_BOUNDARY_REVIEW = "boundary_review"
@@ -179,13 +211,21 @@ class _StageTotals:
 
 
 class RunModelAccountingLedger:
-    """Thread-safe accumulator for one processing run.
+    """Thread-safe accumulator for ONE scope of work — a run, or one source preparation.
 
     Thread-safe because image processing and block generation can run off the main
     thread; the lock keeps the counters consistent without changing any call ordering.
+
+    ``run_id`` / ``source_token`` are the scope's identity. They are carried into the
+    snapshot so the payload states whose spend it reports; isolation itself comes from
+    this object being distinct per scope, so a blank identity cannot leak one scope's
+    calls into another's totals.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, scope: str = ACCOUNTING_SCOPE, run_id: str = "", source_token: str = "") -> None:
+        self.scope = scope
+        self.run_id = str(run_id or "")
+        self.source_token = str(source_token or "")
         self._lock = threading.Lock()
         self._totals = _StageTotals()
         self._stages: dict[str, _StageTotals] = {}
@@ -240,11 +280,25 @@ class RunModelAccountingLedger:
             self._discarded_block_count += max(0, block_count)
             self._discard_reason_counts[reason] = self._discard_reason_counts.get(reason, 0) + 1
 
+    def model_call_count(self) -> int:
+        with self._lock:
+            return self._totals.model_call_count
+
+    def totals_snapshot(self) -> dict[str, object]:
+        """Just this ledger's stage totals — used to embed one scope inside another."""
+        with self._lock:
+            return self._totals.to_dict()
+
     def snapshot(self) -> dict[str, object]:
         with self._lock:
             totals = self._totals
             payload: dict[str, object] = {
-                "accounting_scope": ACCOUNTING_SCOPE,
+                "accounting_scope": self.scope,
+                "run_id": self.run_id,
+                "source_token": self.source_token,
+                # Isolation does not depend on this being True (each scope owns its own
+                # ledger); it says whether the snapshot can NAME the run it describes.
+                "run_identity_complete": bool(self.run_id and self.source_token),
                 "model_call_count": totals.model_call_count,
                 "model_calls_with_usage": totals.model_calls_with_usage,
                 "model_calls_without_usage": totals.model_calls_without_usage,
@@ -270,19 +324,104 @@ class RunModelAccountingLedger:
             return payload
 
 
-_LEDGER = RunModelAccountingLedger()
+# Calls recorded while no scope is open. Not a run's spend and never reported as one —
+# only counted, so "nobody claimed this call" is readable in every run snapshot.
+_UNSCOPED_LEDGER = RunModelAccountingLedger(scope=UNSCOPED_ACCOUNTING_SCOPE)
+
+_ACTIVE_LEDGER: contextvars.ContextVar[RunModelAccountingLedger | None] = contextvars.ContextVar(
+    "docxaicorrector_active_model_accounting_ledger",
+    default=None,
+)
+
+# Preparation ledgers, keyed by source token, so a run can find the preparation that fed
+# it. Bounded: a long-lived process must not accumulate one ledger per upload forever.
+_MAX_RETAINED_PREPARATION_LEDGERS = 32
+_PREPARATION_LEDGERS: dict[str, RunModelAccountingLedger] = {}
+_PREPARATION_LEDGERS_LOCK = threading.Lock()
 
 
 def get_run_model_accounting_ledger() -> RunModelAccountingLedger:
-    return _LEDGER
+    """The ledger the current context records into."""
+    return _ACTIVE_LEDGER.get() or _UNSCOPED_LEDGER
+
+
+@contextmanager
+def run_model_accounting_scope(
+    *,
+    run_id: str | None = None,
+    source_token: str | None = None,
+) -> Iterator[RunModelAccountingLedger]:
+    """Bind a FRESH ledger to this run for the duration of the block.
+
+    The ledger is created here rather than fetched from a registry, so a second run
+    starting while this one is in flight cannot reset, read or add to it.
+    """
+
+    ledger = RunModelAccountingLedger(
+        scope=ACCOUNTING_SCOPE,
+        run_id=str(run_id or ""),
+        source_token=str(source_token or ""),
+    )
+    token = _ACTIVE_LEDGER.set(ledger)
+    try:
+        yield ledger
+    finally:
+        _ACTIVE_LEDGER.reset(token)
+
+
+@contextmanager
+def preparation_model_accounting_scope(
+    *,
+    source_token: str | None = None,
+) -> Iterator[RunModelAccountingLedger]:
+    """Bind a per-SOURCE ledger for the preparation worker.
+
+    Preparation happens before any run exists and can be reused by several runs of the
+    same source, so its spend belongs to the source. Re-preparing a source replaces that
+    source's preparation totals: the run that follows consumes the preparation that
+    actually ran for it, and stale attempts are not added on top.
+    """
+
+    normalized_token = str(source_token or "")
+    ledger = RunModelAccountingLedger(
+        scope=PREPARATION_ACCOUNTING_SCOPE,
+        source_token=normalized_token,
+    )
+    if normalized_token:
+        with _PREPARATION_LEDGERS_LOCK:
+            # Re-preparing a source makes it the most recent again, so it is not the one
+            # evicted while the run that needs it is still to come.
+            _PREPARATION_LEDGERS.pop(normalized_token, None)
+            _PREPARATION_LEDGERS[normalized_token] = ledger
+            while len(_PREPARATION_LEDGERS) > _MAX_RETAINED_PREPARATION_LEDGERS:
+                _PREPARATION_LEDGERS.pop(next(iter(_PREPARATION_LEDGERS)))
+    token = _ACTIVE_LEDGER.set(ledger)
+    try:
+        yield ledger
+    finally:
+        _ACTIVE_LEDGER.reset(token)
+
+
+def get_preparation_model_accounting_ledger(source_token: str | None) -> RunModelAccountingLedger | None:
+    normalized_token = str(source_token or "")
+    if not normalized_token:
+        return None
+    with _PREPARATION_LEDGERS_LOCK:
+        return _PREPARATION_LEDGERS.get(normalized_token)
 
 
 def reset_run_model_accounting() -> None:
-    _LEDGER.reset()
+    """Clear the ledger the current context records into.
+
+    Retained for callers that record outside any scope (offline tools, tests). It resets
+    only the ACTIVE ledger, so it can no longer erase a concurrent run's totals.
+    """
+
+    get_run_model_accounting_ledger().reset()
 
 
 def record_model_call_usage(*, stage: str, response: object) -> ModelCallUsage:
-    """Record one provider response against the active run. Never raises.
+    """Record one provider response against the active scope. Never raises.
 
     Accounting must not be able to break a run it only observes, so an exotic response
     object that blows up during field access is recorded as an unaccounted call rather
@@ -293,12 +432,12 @@ def record_model_call_usage(*, stage: str, response: object) -> ModelCallUsage:
         usage = extract_model_call_usage(response)
     except Exception:
         usage = UNREPORTED_MODEL_CALL_USAGE
-    _LEDGER.record_model_call(stage=stage, usage=usage)
+    get_run_model_accounting_ledger().record_model_call(stage=stage, usage=usage)
     return usage
 
 
 def record_retry_attempt(*, reason: str, paragraph_count: int = 0, first_retry_for_block: bool = False) -> None:
-    _LEDGER.record_retry_attempt(
+    get_run_model_accounting_ledger().record_retry_attempt(
         reason=reason,
         paragraph_count=paragraph_count,
         first_retry_for_block=first_retry_for_block,
@@ -306,7 +445,7 @@ def record_retry_attempt(*, reason: str, paragraph_count: int = 0, first_retry_f
 
 
 def record_model_output_discarded(*, reason: str, paragraph_count: int = 0, block_count: int = 0) -> None:
-    _LEDGER.record_model_output_discarded(
+    get_run_model_accounting_ledger().record_model_output_discarded(
         reason=reason,
         paragraph_count=paragraph_count,
         block_count=block_count,
@@ -314,4 +453,29 @@ def record_model_output_discarded(*, reason: str, paragraph_count: int = 0, bloc
 
 
 def snapshot_run_model_accounting() -> dict[str, object]:
-    return _LEDGER.snapshot()
+    """What the CURRENT scope spent, plus the preparation that fed it.
+
+    ``preparation_accounting`` is reported alongside the run totals, never inside them:
+    one preparation can serve several runs of the same source, so adding it to a run
+    would price the same work twice across those runs.
+    """
+
+    ledger = get_run_model_accounting_ledger()
+    payload = ledger.snapshot()
+    payload["unscoped_model_call_count"] = _UNSCOPED_LEDGER.model_call_count()
+    # A preparation snapshot already IS the preparation; only a run reports one beside it.
+    preparation_ledger = (
+        get_preparation_model_accounting_ledger(ledger.source_token)
+        if ledger.scope != PREPARATION_ACCOUNTING_SCOPE
+        else None
+    )
+    if preparation_ledger is None:
+        payload["preparation_accounting"] = None
+    else:
+        payload["preparation_accounting"] = {
+            "accounting_scope": PREPARATION_ACCOUNTING_SCOPE,
+            "source_token": preparation_ledger.source_token,
+            "included_in_run_totals": False,
+            **preparation_ledger.totals_snapshot(),
+        }
+    return payload

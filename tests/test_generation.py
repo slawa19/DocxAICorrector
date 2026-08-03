@@ -1,4 +1,5 @@
 import io
+import threading
 import zipfile
 from types import SimpleNamespace
 from typing import Any, cast
@@ -2567,3 +2568,187 @@ def test_call_responses_create_with_retry_records_usage_for_every_caller():
     assert snapshot["model_call_count"] == 1
     assert snapshot["total_tokens"] == 10
     assert cast(dict[str, Any], snapshot["stages"])["image_validation"]["model_call_count"] == 1
+
+
+# --- Concurrent runs (Codex round 3, P1-A) -----------------------------------------
+#
+# Two runs are admitted at once by default
+# (processing_runtime._DEFAULT_PROCESSING_ADMISSION_LIMIT == 2). The accounting these
+# tests defend exists to answer "what did THIS run cost"; an answer that silently belongs
+# to another document is worse than no answer, because it looks authoritative.
+
+
+def _record_run(*, run_id: str, source_token: str, tokens: int, cost: float, calls: int, barrier, out: dict) -> None:
+    with model_accounting.run_model_accounting_scope(run_id=run_id, source_token=source_token):
+        for _ in range(calls):
+            model_accounting.record_model_call_usage(
+                stage=model_accounting.STAGE_TEXT_GENERATION,
+                response=SimpleNamespace(
+                    usage=SimpleNamespace(prompt_tokens=tokens, completion_tokens=0, cost=cost)
+                ),
+            )
+            # Force the two runs to interleave: neither can finish its calls before the
+            # other has started recording, which is exactly the window the global ledger
+            # lost spend in.
+            barrier.wait(timeout=10)
+        out[run_id] = model_accounting.snapshot_run_model_accounting()
+
+
+def test_two_concurrent_runs_each_get_their_own_spend():
+    """Interleaved runs must not reset, share or absorb each other's counters."""
+
+    barrier = threading.Barrier(2)
+    out: dict[str, Any] = {}
+    threads = [
+        threading.Thread(
+            target=_record_run,
+            kwargs={
+                "run_id": "run-a",
+                "source_token": "token-a",
+                "tokens": 100,
+                "cost": 0.01,
+                "calls": 5,
+                "barrier": barrier,
+                "out": out,
+            },
+        ),
+        threading.Thread(
+            target=_record_run,
+            kwargs={
+                "run_id": "run-b",
+                "source_token": "token-b",
+                "tokens": 7,
+                "cost": 0.002,
+                "calls": 5,
+                "barrier": barrier,
+                "out": out,
+            },
+        ),
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=30)
+
+    assert set(out) == {"run-a", "run-b"}
+    run_a, run_b = out["run-a"], out["run-b"]
+
+    # Each run reports its OWN spend: not the other's, not the sum of both.
+    assert run_a["model_call_count"] == 5
+    assert run_a["total_tokens"] == 500
+    assert run_a["cost_usd_reported_by_provider"] == 0.05
+    assert run_b["model_call_count"] == 5
+    assert run_b["total_tokens"] == 35
+    assert run_b["cost_usd_reported_by_provider"] == 0.01
+
+    # And each snapshot NAMES the run it describes, so attribution is checkable in data.
+    assert run_a["run_id"] == "run-a"
+    assert run_a["source_token"] == "token-a"
+    assert run_a["run_identity_complete"] is True
+    assert run_b["run_id"] == "run-b"
+    assert run_b["source_token"] == "token-b"
+
+
+def test_a_second_run_starting_does_not_erase_the_first_runs_spend():
+    """The precise loss: run B's start used to reset the ledger run A was still filling."""
+
+    with model_accounting.run_model_accounting_scope(run_id="run-a", source_token="token-a") as ledger_a:
+        model_accounting.record_model_call_usage(
+            stage=model_accounting.STAGE_TEXT_GENERATION,
+            response=SimpleNamespace(usage=SimpleNamespace(prompt_tokens=1000, completion_tokens=0, cost=0.5)),
+        )
+
+        started: dict[str, Any] = {}
+
+        def _second_run() -> None:
+            with model_accounting.run_model_accounting_scope(run_id="run-b", source_token="token-b"):
+                model_accounting.record_model_call_usage(
+                    stage=model_accounting.STAGE_TEXT_GENERATION,
+                    response=SimpleNamespace(usage=SimpleNamespace(prompt_tokens=3, completion_tokens=0, cost=0.001)),
+                )
+                started["b"] = model_accounting.snapshot_run_model_accounting()
+
+        thread = threading.Thread(target=_second_run)
+        thread.start()
+        thread.join(timeout=30)
+
+        # Run A continues after B has come and gone.
+        model_accounting.record_model_call_usage(
+            stage=model_accounting.STAGE_TEXT_GENERATION,
+            response=SimpleNamespace(usage=SimpleNamespace(prompt_tokens=1000, completion_tokens=0, cost=0.5)),
+        )
+        snapshot_a = model_accounting.snapshot_run_model_accounting()
+
+    assert started["b"]["total_tokens"] == 3
+    assert started["b"]["model_call_count"] == 1
+    # Both of A's calls survived B's lifetime, and B's call did not join them.
+    assert snapshot_a["total_tokens"] == 2000
+    assert snapshot_a["model_call_count"] == 2
+    assert snapshot_a["cost_usd_reported_by_provider"] == 1.0
+    assert ledger_a.run_id == "run-a"
+
+
+def test_preparation_spend_is_attributed_to_its_source_and_reported_beside_the_run():
+    """Preparation runs in another worker before the run exists.
+
+    It is neither charged to whichever run happens to be in flight nor left implied: the
+    run's snapshot carries it, marked as NOT part of the run totals, because one
+    preparation can feed several runs of the same source.
+    """
+
+    with model_accounting.preparation_model_accounting_scope(source_token="token-prep"):
+        model_accounting.record_model_call_usage(
+            stage=model_accounting.STAGE_BOUNDARY_REVIEW,
+            response=SimpleNamespace(usage=SimpleNamespace(prompt_tokens=400, completion_tokens=40, cost=0.02)),
+        )
+
+    with model_accounting.run_model_accounting_scope(run_id="run-p", source_token="token-prep"):
+        model_accounting.record_model_call_usage(
+            stage=model_accounting.STAGE_TEXT_GENERATION,
+            response=SimpleNamespace(usage=SimpleNamespace(prompt_tokens=10, completion_tokens=0, cost=0.001)),
+        )
+        snapshot = model_accounting.snapshot_run_model_accounting()
+
+    # Preparation is NOT inside the run totals.
+    assert snapshot["total_tokens"] == 10
+    assert snapshot["model_call_count"] == 1
+    # But it is visible in the same payload, attributed to the source it prepared.
+    preparation = cast(dict[str, Any], snapshot["preparation_accounting"])
+    assert preparation["source_token"] == "token-prep"
+    assert preparation["included_in_run_totals"] is False
+    assert preparation["total_tokens"] == 440
+    assert preparation["model_call_count"] == 1
+
+    # A different source's run does not inherit that preparation.
+    with model_accounting.run_model_accounting_scope(run_id="run-q", source_token="token-other"):
+        other = model_accounting.snapshot_run_model_accounting()
+    assert other["preparation_accounting"] is None
+
+
+def test_preparation_calls_do_not_land_in_a_concurrent_unrelated_run():
+    """The mis-attribution half of P1-A: preparation for source B, run in flight for A."""
+
+    with model_accounting.run_model_accounting_scope(run_id="run-a", source_token="token-a"):
+        model_accounting.record_model_call_usage(
+            stage=model_accounting.STAGE_TEXT_GENERATION,
+            response=SimpleNamespace(usage=SimpleNamespace(prompt_tokens=50, completion_tokens=0, cost=0.005)),
+        )
+
+        def _prepare_other_source() -> None:
+            with model_accounting.preparation_model_accounting_scope(source_token="token-b"):
+                model_accounting.record_model_call_usage(
+                    stage=model_accounting.STAGE_BOUNDARY_REVIEW,
+                    response=SimpleNamespace(usage=SimpleNamespace(prompt_tokens=9999, completion_tokens=0, cost=1.0)),
+                )
+
+        thread = threading.Thread(target=_prepare_other_source)
+        thread.start()
+        thread.join(timeout=30)
+
+        snapshot = model_accounting.snapshot_run_model_accounting()
+
+    assert snapshot["total_tokens"] == 50
+    assert snapshot["cost_usd_reported_by_provider"] == 0.005
+    assert "boundary_review" not in cast(dict[str, Any], snapshot["stages"])
+    # Run A's source has no preparation of its own, and it does not pick up B's.
+    assert snapshot["preparation_accounting"] is None

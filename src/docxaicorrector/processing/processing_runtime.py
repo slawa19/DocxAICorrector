@@ -2243,6 +2243,9 @@ def start_background_preparation(
             runtime.emit(PreparationStoppedEvent(upload_marker=upload_marker))
             return
         try:
+            # Model-call accounting for this worker is scoped further in, around the
+            # preparation call in ``application_flow._prepare_run_context_core`` — the core
+            # every preparation entry point shares — so one scope covers them all.
             _run_preparation_stages()
         finally:
             _PROCESSING_ADMISSION_GATE.release()

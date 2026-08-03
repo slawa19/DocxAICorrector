@@ -83,6 +83,34 @@ stays under 20% of the document, would be removed. No such block exists in the f
 caps the damage, but this class has not been tested against a real document. If one shows up, the axis to add is a
 position-within-page signal, not a vocabulary.
 
+**RESOLVED (2026-08-03, Codex round-3 P1-B, branch `fix/codex-round3-p1`).** The risk above was real and understated:
+a 1000-paragraph play with a speaker label every 6 paragraphs clears every threshold with room to spare — ~167 repeats
+against a floor of 6, 16.7% share against the 20% bound, full span, mean gap 6 against a bound of 40. The 20% bound
+does not cap that damage; every speaker label is deleted and the dialogue is delivered with nobody speaking it.
+
+The intended fix was the position-within-page signal named above. It was investigated and **is not available**: the
+page number does not survive to this point for any source the rule serves. PDF import knows `span.page_number`, but the
+PDF path converts to DOCX and re-parses, and the DOCX extractor reads no page partition at all; the OCR corpus document
+was measured directly and no derivation from its XML (non-continuous `sectPr`, all `sectPr`, `lastRenderedPageBreak`,
+explicit page breaks — 167 to 412 derived pages) puts the stamp at one occurrence per page. It genuinely recurs up to
+6 times per derived page, because the marking is stamped at the top AND bottom of each scanned page and the OCR overlay
+duplicates it. So "at most once per page" is not merely unmeasurable here — it is false for the stamp itself.
+
+The axis used instead is **document provenance**, one level up and measurable: page furniture belongs to the page, not
+the text, and in an authored document it lives in the `w:hdr`/`w:ftr` parts, which extraction never reads. It can reach
+the body paragraph stream only when a page image was flattened into text — an OCR scan. `_document_admits_page_furniture`
+makes `classify_document_scan_origin` a precondition of the whole rule. This is a provenance question with a real
+answer, not a threshold refitted to two examples (Constitution VII): every cadence constant is unchanged.
+
+Measured, 5-book corpus: 167/167 stamp removals preserved on the scan-origin document (the only one so classified:
+129 multi-column sections of 376, ratio 0.34), zero removals on the other four (all classified authored, ratio ≤ 0.036)
+— identical to the numbers above. **Coverage given up:** a stamp burned into an authored document is no longer removed.
+Nothing in the corpus falls in that class, and it cannot be measured without such a document. **Residual risk that
+remains:** a play or poem delivered as an OCR scan is still exposed — provenance separates authored content from scan
+overlays, not content from overlays inside one scan. Deferring to the protected-role check instead was measured and
+rejected: 145 of the 167 stamp occurrences carry a protected role (125 `heading`, 10 `caption`), so it would disarm the
+rule on the document it exists for.
+
 **No word list was added** (Constitution VII): `BOILERPLATE_TOKENS` is unchanged, and
 `test_furniture_detection_carries_no_classification_marker_vocabulary` pins the absence of classification-marker
 literals in the module.
