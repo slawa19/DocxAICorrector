@@ -84,11 +84,8 @@ the safe default — it spends review budget on paperwork the spec already cover
 **Never write `plan.md` or `tasks.md` after the fact.** If finished work lacks
 them, the remedy is a Changelog entry in its `spec.md`, not a reconstructed plan.
 
-> Status: Principle III's two-tier wording is constitution 2.0.0, which is
-> **NOT YET RATIFIED by the owner** (see the Sync Impact Report at the top of
-> `.specify/memory/constitution.md`). It describes how this repository has
-> actually worked; until it is signed off, treat the description as accurate and
-> the rule as provisional, and ask the owner if a real decision turns on it.
+> Status: Principle III's two-tier wording is constitution 2.0.0, **ratified by
+> the owner on 2026-08-03**. It is binding.
 > This section previously demanded `plan.md` unconditionally, which contradicted
 > Principle III outright — an agent could satisfy one contract or the other, but
 > not both, and chose arbitrarily.
