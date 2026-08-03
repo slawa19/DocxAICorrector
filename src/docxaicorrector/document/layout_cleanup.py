@@ -47,6 +47,12 @@ PROTECTED_ROLES = {"heading", "caption", "list", "table", "image"}
 # recurs at chapter scale, an order of magnitude further apart. The three constants below
 # are that cadence boundary; they key on WHERE the block repeats and HOW OFTEN, never on
 # what it says (Constitution VII).
+#
+# Cadence ALONE is not enough to condemn a block, and no value of these constants would
+# make it enough. A play whose speaker label recurs every few paragraphs, a poem's
+# refrain, a textbook's repeated exercise heading all sit squarely inside this cadence
+# band by their nature, not by coincidence — see ``_document_admits_page_furniture`` for
+# the provenance precondition that separates them from a stamp.
 PAGE_FURNITURE_MAX_MEAN_PARAGRAPH_GAP = 40
 PAGE_FURNITURE_MIN_DOCUMENT_SPAN_RATIO = 0.5
 PAGE_FURNITURE_MIN_REPEAT_COUNT = 6
@@ -78,6 +84,7 @@ def clean_paragraph_layout_artifacts(
     cleanup_mode: str = "flag",
     structure_recovery_enabled: bool = False,
     structure_recovery_mode: str = "legacy",
+    is_scan_origin: bool = False,
 ) -> tuple[list[ParagraphUnit], LayoutArtifactCleanupReport]:
     resolved_mode = str(cleanup_mode or "flag").strip().lower() or "flag"
     if resolved_mode not in _SUPPORTED_CLEANUP_MODES:
@@ -99,6 +106,7 @@ def clean_paragraph_layout_artifacts(
             min_repeat_count=max(2, int(min_repeat_count or DEFAULT_MIN_REPEAT_COUNT)),
             max_repeated_text_chars=max(1, int(max_repeated_text_chars or DEFAULT_MAX_REPEATED_TEXT_CHARS)),
             signal_only=signal_only,
+            is_scan_origin=bool(is_scan_origin),
         )
     except (AttributeError, TypeError, ValueError) as exc:
         report = _empty_report(
@@ -128,6 +136,7 @@ def _clean_paragraph_layout_artifacts(
     min_repeat_count: int,
     max_repeated_text_chars: int,
     signal_only: bool,
+    is_scan_origin: bool = False,
 ) -> tuple[list[ParagraphUnit], LayoutArtifactCleanupReport]:
     normalized_by_index: dict[int, str] = {}
     frequency: dict[str, int] = {}
@@ -144,6 +153,7 @@ def _clean_paragraph_layout_artifacts(
         # The operator's repeat threshold can only make this stricter, never looser: this
         # rule deletes, so it must not be tunable below its own floor.
         min_repeat_count=max(min_repeat_count, PAGE_FURNITURE_MIN_REPEAT_COUNT),
+        is_scan_origin=is_scan_origin,
     )
 
     for index, paragraph in enumerate(paragraphs):
@@ -345,28 +355,63 @@ def _is_repeated_artifact_candidate(
     return True
 
 
+def _document_admits_page_furniture(*, is_scan_origin: bool) -> bool:
+    """Can page furniture reach the body paragraph stream of THIS document at all?
+
+    Page furniture belongs to the PAGE, not to the text: a scanner stamp, a
+    classification marking, a running header. In a document authored from structure, those
+    live in the ``w:hdr``/``w:ftr`` parts, which extraction never reads — so they cannot
+    appear among body paragraphs. They enter the body stream only when a page IMAGE was
+    flattened into text, i.e. when the source is an OCR scan. That is the provenance
+    ``classify_document_scan_origin`` establishes, from the document's own layout, before
+    a single paragraph is inspected.
+
+    This precondition exists because cadence cannot carry the decision on its own. A play
+    whose speaker label recurs every few paragraphs clears every cadence threshold in this
+    module with room to spare (a 1000-paragraph play with a label every 6 paragraphs:
+    ~167 repeats, 16.7% share, full span, mean gap 6) and would be silently deleted,
+    delivering dialogue with nobody speaking it. Raising the thresholds to exclude that
+    one example would be fitting numbers to a book, which Constitution VII forbids; asking
+    whether the document is even the KIND that can contain page furniture is a provenance
+    question with a real answer.
+
+    The cost is coverage, deliberately: a stamp burned into an authored document is no
+    longer removed. Not deleting a play's dialogue labels is worth more than removing a
+    stamp that this rule was never able to tell apart from them.
+    """
+
+    return bool(is_scan_origin)
+
+
 def _collect_page_cadence_furniture_fingerprints(
     paragraphs: list[ParagraphUnit],
     *,
     normalized_by_index: dict[int, str],
     max_repeated_text_chars: int,
     min_repeat_count: int,
+    is_scan_origin: bool = False,
 ) -> set[str]:
     """Normalized blocks that repeat at PAGE cadence across the whole document.
 
-    Page furniture is identified by WHERE and HOW OFTEN a block repeats, never by what it
-    says. A stamp, a classification marking or a running header sits in the same slot on
-    every page, so across the document it reappears every few paragraphs and its
-    occurrences span the document end to end. Section structure that legitimately repeats
-    — a per-chapter "Footnotes" heading, a part divider echoed in the table of contents —
-    repeats at chapter cadence, an order of magnitude further apart, and is therefore not
-    matched.
+    Applies only to documents whose provenance admits page furniture at all — see
+    ``_document_admits_page_furniture``. Within those, the block is identified by WHERE and
+    HOW OFTEN it repeats, never by what it says. A stamp, a classification marking or a
+    running header sits in the same slot on every page, so across the document it
+    reappears every few paragraphs and its occurrences span the document end to end.
+    Section structure that legitimately repeats — a per-chapter "Footnotes" heading, a part
+    divider echoed in the table of contents — repeats at chapter cadence, an order of
+    magnitude further apart, and is therefore not matched.
 
     Deliberately blind to ``role`` and ``layout_origin``: an OCR stamp is imported
     sometimes as a textbox, sometimes as a plain paragraph, and a short all-caps stamp is
     routinely mis-promoted to ``role="heading"`` by the import heuristics. Which of those
-    accidents a given occurrence got is not evidence about the block.
+    accidents a given occurrence got is not evidence about the block. (Measured on the OCR
+    corpus, the 167 stamp occurrences carry six different role/origin combinations and six
+    different font sizes — which is also why this rule cannot be replaced by deferring to
+    the protected-role check: 145 of those 167 occurrences hold a protected role.)
     """
+    if not _document_admits_page_furniture(is_scan_origin=is_scan_origin):
+        return set()
     if len(paragraphs) < min_repeat_count:
         return set()
 

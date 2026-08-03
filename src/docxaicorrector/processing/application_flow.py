@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 from io import BytesIO
 from typing import Any, TypedDict
 
+from docxaicorrector.core.model_accounting import preparation_model_accounting_scope
 from docxaicorrector.document.boundaries import summarize_boundary_normalization_metrics
 from docxaicorrector.document.extraction import validate_docx_source_bytes
 from docxaicorrector.document.segments import (
@@ -322,15 +323,25 @@ def _prepare_run_context_core(
     if client_factory is not None:
         client_factory_kwargs["get_client_fn"] = client_factory
         client_factory_kwargs["client_factory"] = client_factory
-    prepared_document = prepare_document_for_processing_fn(
-        uploaded_payload=resolved_upload.uploaded_payload,
-        chunk_size=chunk_size,
-        app_config=app_config,
-        processing_operation=processing_operation,
-        session_state=session_state,
-        progress_callback=progress_callback,
-        **client_factory_kwargs,
-    )
+    # Preparation's model calls (paragraph-boundary AI review) belong to the SOURCE, not to
+    # a run: this happens before any run exists — in a separate worker on the background
+    # path — and one preparation can feed several runs of the same source. Scoping the call
+    # here, in the core every preparation entry point goes through (the synchronous UI path,
+    # the UI preparation worker, and ProcessingService), keeps that spend out of whichever
+    # unrelated run is in flight and lets the run that follows report it as its own
+    # preparation. ``uploaded_file_token`` is the identity the run later passes as
+    # ``source_token`` (``preparation._build_document_context_profile`` derives it from the
+    # same payload field), which is what makes the lookup line up.
+    with preparation_model_accounting_scope(source_token=uploaded_file_token):
+        prepared_document = prepare_document_for_processing_fn(
+            uploaded_payload=resolved_upload.uploaded_payload,
+            chunk_size=chunk_size,
+            app_config=app_config,
+            processing_operation=processing_operation,
+            session_state=session_state,
+            progress_callback=progress_callback,
+            **client_factory_kwargs,
+        )
     elapsed_seconds = max(0.0, time.perf_counter() - started_at)
     return uploaded_filename, uploaded_file_bytes, uploaded_file_token, prepared_document, elapsed_seconds
 

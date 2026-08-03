@@ -256,6 +256,10 @@ def extract_document_content_with_normalization_reports(
         cleanup_mode=cleanup_mode,
         structure_recovery_enabled=structure_recovery_enabled,
         structure_recovery_mode=structure_recovery_mode,
+        # Page furniture can only reach the body paragraph stream when a page image was
+        # flattened into text. Classified above from the document's own layout, before any
+        # paragraph is inspected.
+        is_scan_origin=scan_origin.is_scan_origin,
     )
     paragraphs, structure_repair_report = repair_pdf_derived_structure(
         paragraphs,

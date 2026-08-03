@@ -1,6 +1,7 @@
 import base64
 import zipfile
 from io import BytesIO
+from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
@@ -294,8 +295,10 @@ def test_extraction_passes_legacy_structure_recovery_mode_to_helpers(tmp_path, m
         cleanup_mode="legacy",
         structure_recovery_enabled=False,
         structure_recovery_mode="legacy",
+        is_scan_origin=False,
     ):
         captured["cleanup"] = (structure_recovery_enabled, structure_recovery_mode)
+        captured["cleanup_is_scan_origin"] = is_scan_origin
         return paragraphs, document_extraction.LayoutArtifactCleanupReport(
             original_paragraph_count=len(paragraphs),
             cleaned_paragraph_count=len(paragraphs),
@@ -342,9 +345,55 @@ def test_extraction_passes_legacy_structure_recovery_mode_to_helpers(tmp_path, m
         "promote": (False, "legacy"),
         "normalize": (False, "legacy"),
         "cleanup": (False, "legacy"),
+        "cleanup_is_scan_origin": False,
         "repair": (False, "legacy"),
         "caption": (False, "legacy"),
     }
+
+
+def test_extraction_forwards_the_documents_scan_provenance_to_layout_cleanup(monkeypatch):
+    """The page-furniture rule only applies to scan-origin sources (Codex round 3, P1-B).
+
+    Wiring test: cleanup must receive the classification the extractor derived from THIS
+    document, not a constant. Without it the narrowing would be either always-on or
+    always-off, and the layout-cleanup unit tests could not tell.
+    """
+
+    seen: list[bool] = []
+    real_cleanup = document_extraction.clean_paragraph_layout_artifacts
+
+    def spy_cleanup(paragraphs, **kwargs):
+        seen.append(bool(kwargs.get("is_scan_origin")))
+        return real_cleanup(paragraphs, **kwargs)
+
+    monkeypatch.setattr(document_extraction, "clean_paragraph_layout_artifacts", spy_cleanup)
+
+    def _run(classification):
+        seen.clear()
+        monkeypatch.setattr(
+            document_extraction,
+            "classify_document_scan_origin",
+            lambda *_args, **_kwargs: classification,
+        )
+        source = _make_docx_with_emdash_bullet_numbering(["Первый пункт", "Второй пункт"])
+        extract_document_content_with_normalization_reports(source, app_config={})
+        return seen[0]
+
+    scanned = SimpleNamespace(
+        is_scan_origin=True,
+        multi_column_section_count=129,
+        total_section_count=376,
+        multi_column_ratio=0.3431,
+    )
+    authored = SimpleNamespace(
+        is_scan_origin=False,
+        multi_column_section_count=0,
+        total_section_count=23,
+        multi_column_ratio=0.0,
+    )
+
+    assert _run(scanned) is True
+    assert _run(authored) is False
 
 
 def _extract_source_rects(element) -> list[dict[str, str]]:
