@@ -240,6 +240,173 @@ def test_build_structural_metrics_counts_page_furniture_dropped_in_signal_mode()
     assert metrics["layout_cleanup_empty_or_whitespace_count"] == 0
 
 
+def _torn_list_item_profile(*, max_torn_list_items: int | None) -> Any:
+    return SimpleNamespace(
+        min_paragraphs=1,
+        min_merged_groups=0,
+        min_merged_raw_paragraphs=0,
+        has_headings=False,
+        has_numbered_lists=False,
+        has_images=False,
+        has_tables=False,
+        max_torn_list_items=max_torn_list_items,
+    )
+
+
+def test_build_structural_metrics_counts_list_items_the_importer_cut_mid_phrase() -> None:
+    """The class the 2026-08-02 live run measured 305 of and could not repair.
+
+    Both pairs below are verbatim from the corpus as the 2026-06-18 importer emitted
+    them: a bullet whose first line became its own unit, and a numbered endnote whose
+    URL was split at the line wrap. The whole population had this one shape, so the
+    metric is written for it and nothing else.
+    """
+    metrics = real_document_validation_structural._build_structural_metrics(
+        paragraphs=[
+            ParagraphUnit(
+                text="• In Oakland, California, the Alameda County Department of Public Health",
+                role="list",
+                structural_role="list",
+            ),
+            ParagraphUnit(
+                text="funded a TimeBank in a neighborhood beset by racial violence.",
+                role="body",
+                structural_role="body",
+            ),
+            ParagraphUnit(
+                text="3. http://www.forbes.com/sites/mikecollins/2015/07/14/the-big-bank-",
+                role="list",
+                structural_role="list",
+            ),
+            ParagraphUnit(text="bailout/#66d600ee3723", role="body", structural_role="body"),
+        ],
+        image_assets=[],
+        cleanup_report=_cleanup_report(),
+    )
+
+    assert metrics["torn_list_item_count"] == 2
+    samples = cast(list[dict[str, str]], metrics["torn_list_item_samples"])
+    assert [sample["continuation_head"] for sample in samples] == [
+        "funded a TimeBank in a neighborhood beset by racial violence.",
+        "bailout/#66d600ee3723",
+    ]
+
+
+def test_build_structural_metrics_does_not_count_intact_or_uppercase_bounded_list_items() -> None:
+    """The three shapes that are NOT the defect, each a real false positive risk.
+
+    A finished item followed by a paragraph, an item followed by a sibling item, and an
+    item followed by a genuinely new sentence. Counting any of these would make the
+    ceiling in ``corpus_registry.toml`` unreachable for a healthy book.
+    """
+    metrics = real_document_validation_structural._build_structural_metrics(
+        paragraphs=[
+            ParagraphUnit(
+                text="• Long-term care — the treatment of chronic conditions.",
+                role="list",
+                structural_role="list",
+            ),
+            ParagraphUnit(
+                text="beyond addressing these areas, the framework adds three more.",
+                role="body",
+                structural_role="body",
+            ),
+            ParagraphUnit(text="• Economic needs such as unemployment", role="list", structural_role="list"),
+            ParagraphUnit(text="• Commercial needs such as local shops", role="list", structural_role="list"),
+            ParagraphUnit(text="2. A Brief History of Value", role="list", structural_role="list"),
+            ParagraphUnit(
+                text="The Mercantilists: Trade and Treasure",
+                role="body",
+                structural_role="body",
+            ),
+        ],
+        image_assets=[],
+        cleanup_report=_cleanup_report(),
+    )
+
+    assert metrics["torn_list_item_count"] == 0
+    assert metrics["torn_list_item_samples"] == []
+
+
+def test_build_structural_metrics_leaves_numbered_headings_dialogue_and_verse_alone() -> None:
+    """The four shapes a marker-shaped rule would wreck.
+
+    A numbered section heading, an enumeration inside one sentence, a dash-led line of
+    dialogue and a stanza of verse all carry a leading marker or a mid-phrase ending, and
+    a rule keyed on the marker glyph would fire on every one of them. This one is keyed on
+    the structural role, so the only unit it can even look at is a list item.
+    """
+    metrics = real_document_validation_structural._build_structural_metrics(
+        paragraphs=[
+            ParagraphUnit(text="2.1 Стоимость и цена", role="heading", structural_role="heading"),
+            ParagraphUnit(
+                text="как это описано выше, обмен происходит в три шага.",
+                role="body",
+                structural_role="body",
+            ),
+            ParagraphUnit(
+                text="Система решает три задачи: 1. занятость, 2. торговлю, 3. доверие —",
+                role="body",
+                structural_role="body",
+            ),
+            ParagraphUnit(text="и делает это одновременно.", role="body", structural_role="body"),
+            ParagraphUnit(text="— А деньги?", role="body", structural_role="body"),
+            ParagraphUnit(text="спросил он, не оборачиваясь.", role="body", structural_role="body"),
+            ParagraphUnit(text="Ночь, улица, фонарь, аптека,", role="body", structural_role="body"),
+            ParagraphUnit(text="бессмысленный и тусклый свет.", role="body", structural_role="body"),
+        ],
+        image_assets=[],
+        cleanup_report=_cleanup_report(),
+    )
+
+    assert metrics["torn_list_item_count"] == 0
+
+
+def test_build_extraction_checks_fails_when_torn_list_items_exceed_the_profile_ceiling() -> None:
+    checks = real_document_validation_structural._build_extraction_checks(
+        _torn_list_item_profile(max_torn_list_items=0),
+        {"paragraph_count": 10, "torn_list_item_count": 1, "torn_list_item_samples": []},
+    )
+
+    check = next(entry for entry in checks if entry["name"] == "torn_list_item_threshold")
+    assert check["passed"] is False
+    assert check["actual"] == 1
+    assert check["allowed"] == 0
+    assert check["advisory_only"] is False
+
+
+def test_build_extraction_checks_passes_and_reports_when_torn_list_items_are_within_ceiling() -> None:
+    checks = real_document_validation_structural._build_extraction_checks(
+        _torn_list_item_profile(max_torn_list_items=0),
+        {"paragraph_count": 10, "torn_list_item_count": 0, "torn_list_item_samples": []},
+    )
+
+    check = next(entry for entry in checks if entry["name"] == "torn_list_item_threshold")
+    assert check["passed"] is True
+
+
+def test_build_extraction_checks_omits_torn_list_item_check_when_the_profile_leaves_it_unset() -> None:
+    checks = real_document_validation_structural._build_extraction_checks(
+        _torn_list_item_profile(max_torn_list_items=None),
+        {"paragraph_count": 10, "torn_list_item_count": 99, "torn_list_item_samples": []},
+    )
+
+    assert not [entry for entry in checks if entry["name"] == "torn_list_item_threshold"]
+
+
+def test_registry_pdf_document_profiles_declare_a_torn_list_item_ceiling() -> None:
+    """Without this the metric is computed and never gated, which is how the class
+    went six weeks unnoticed: it was measured on a stale artifact and never on a run."""
+    pdf_profiles = [
+        profile for profile in REGISTRY.documents if profile.source_path.lower().endswith(".pdf")
+    ]
+
+    assert pdf_profiles
+    for profile in pdf_profiles:
+        assert profile.max_torn_list_items is not None, profile.id
+        assert profile.max_torn_list_items == 0, profile.id
+
+
 def _skip_if_legacy_doc_conversion_unavailable(source_path: Path) -> None:
     if source_path.suffix.lower() != ".doc":
         return

@@ -177,9 +177,64 @@ def _apply_metric_snapshot_fields(snapshot: dict[str, object], metrics: Mapping[
         "h1_epigraph_attribution_pattern_count",
         "h1_epigraph_attribution_pattern_threshold",
         "h1_epigraph_attribution_pattern_samples",
+        "torn_list_item_count",
+        "torn_list_item_samples",
     ):
         if key in metrics:
             snapshot[key] = metrics[key]
+
+
+# A list item the importer cut mid-phrase: the item unit stops without closing a
+# sentence and the NEXT unit is not a list item and opens in lower case, so the
+# reader sees a bullet that trails off and an unmarked paragraph that finishes it.
+#
+# The character sets and the shape are copied deliberately from
+# ``scripts/measure-reader-cleanup-visible-defects.py`` (``find_broken_list_items``,
+# shape ``list_item_torn_across_blocks``) so this gate counts the SAME thing the
+# owner-facing measurement counts and the two numbers stay comparable.
+#
+# Role plus form only: the previous unit's structural role, the absence of terminal
+# punctuation, and the case of the first character of the next unit. No word list,
+# no per-book string, no signal tally — Constitution VII.
+#
+# It under-reports on purpose, the same way the measurement script does. A continuation
+# that opens on a digit or a bracket, or one separated from its item by an image unit,
+# is not counted. A ceiling this metric can be talked past by a stray shape is cheaper
+# than a gate that fails a healthy book.
+_TORN_LIST_ITEM_TERMINAL_CHARS = ".!?…:;»\"'”’)"
+_TORN_LIST_ITEM_SAMPLE_LIMIT = 5
+
+
+def _measure_torn_list_items(paragraphs: Sequence[object]) -> tuple[int, list[dict[str, str]]]:
+    """Return (how many list items are cut mid-phrase, a capped sample for the report)."""
+    units = list(paragraphs)
+    samples: list[dict[str, str]] = []
+    count = 0
+    for index in range(len(units) - 1):
+        current = units[index]
+        following = units[index + 1]
+        if str(getattr(current, "role", "") or "") != "list":
+            continue
+        if str(getattr(following, "role", "") or "") == "list":
+            continue
+        item_text = str(getattr(current, "text", "") or "").strip()
+        next_text = str(getattr(following, "text", "") or "").strip()
+        if not item_text or not next_text:
+            continue
+        if item_text[-1] in _TORN_LIST_ITEM_TERMINAL_CHARS:
+            continue
+        if not next_text[0].islower():
+            continue
+        count += 1
+        if len(samples) < _TORN_LIST_ITEM_SAMPLE_LIMIT:
+            samples.append(
+                {
+                    "unit_index": str(index),
+                    "item_tail": item_text[-90:],
+                    "continuation_head": next_text[:90],
+                }
+            )
+    return count, samples
 
 
 def _build_structural_metrics(
@@ -191,6 +246,7 @@ def _build_structural_metrics(
     cleanup_report=None,
 ) -> dict[str, object]:
     paragraph_units = list(paragraphs)
+    torn_list_item_count, torn_list_item_samples = _measure_torn_list_items(paragraph_units)
     cleanup_mode = "remove" if cleanup_report is None else str(getattr(cleanup_report, "cleanup_mode", "remove") or "remove").strip().lower()
     if cleanup_mode == "flag":
         # Page-cadence furniture is a targeted drop that fires in flag mode too; its
@@ -225,6 +281,8 @@ def _build_structural_metrics(
         ),
         "image_count": len(list(image_assets)),
         "table_count": sum(1 for paragraph in paragraph_units if getattr(paragraph, "role", None) == "table"),
+        "torn_list_item_count": torn_list_item_count,
+        "torn_list_item_samples": torn_list_item_samples,
         "raw_paragraph_count": 0 if normalization_report is None else normalization_report.total_raw_paragraphs,
         "logical_paragraph_count": 0 if normalization_report is None else normalization_report.total_logical_paragraphs,
         "merged_group_count": 0 if normalization_report is None else normalization_report.merged_group_count,
@@ -274,6 +332,18 @@ def _build_extraction_checks(document_profile: DocumentProfile, metrics: Mapping
         checks.append(_check_minimum("image_count_minimum", _as_int(metrics, "image_count"), document_profile.min_images))
     if document_profile.has_tables:
         checks.append(_check_minimum("table_count_minimum", _as_int(metrics, "table_count"), document_profile.min_tables))
+    torn_list_item_threshold = getattr(document_profile, "max_torn_list_items", None)
+    if torn_list_item_threshold is not None:
+        checks.append(
+            {
+                "name": "torn_list_item_threshold",
+                "passed": _as_int(metrics, "torn_list_item_count") <= torn_list_item_threshold,
+                "actual": metrics.get("torn_list_item_count"),
+                "allowed": torn_list_item_threshold,
+                "advisory_only": False,
+                "samples": metrics.get("torn_list_item_samples", []),
+            }
+        )
     return checks
 
 

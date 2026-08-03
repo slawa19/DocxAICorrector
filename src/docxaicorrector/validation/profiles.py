@@ -52,6 +52,10 @@ class DocumentProfile:
     max_adjacent_h1_without_body: int | None = None
     max_heading_body_concat_detected: int | None = None
     max_h1_epigraph_attribution_pattern: int | None = None
+    # Ceiling on list items the importer cut mid-phrase (``torn_list_item_count``).
+    # ``None`` leaves the corpus profile unguarded, which is the default for sources
+    # that carry no lists.
+    max_torn_list_items: int | None = None
     require_translation_domain: str | None = None
     structural_run_profile: str | None = None
     structural_expected_result: str = "pass"
@@ -379,6 +383,7 @@ def _build_document_profile(payload: Any) -> DocumentProfile:
         max_adjacent_h1_without_body=_optional_int(payload, "max_adjacent_h1_without_body"),
         max_heading_body_concat_detected=_optional_int(payload, "max_heading_body_concat_detected"),
         max_h1_epigraph_attribution_pattern=_optional_int(payload, "max_h1_epigraph_attribution_pattern"),
+        max_torn_list_items=_optional_int(payload, "max_torn_list_items"),
         require_translation_domain=_optional_str(payload, "require_translation_domain"),
         structural_run_profile=_optional_str(payload, "structural_run_profile"),
         structural_expected_result=structural_expected_result,
