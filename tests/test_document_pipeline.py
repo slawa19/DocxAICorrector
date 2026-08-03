@@ -1630,6 +1630,9 @@ def test_run_document_processing_applies_reader_cleanup_and_saves_raw_markdown_r
             "reader_cleanup_keep_toc": True,
             "reader_cleanup_max_delete_block_ratio": 0.8,
             "reader_cleanup_max_delete_char_ratio": 0.8,
+            # Empty = every operation, the set this test was written against; the shipped
+            # default is now the heading pair (spec 052 / first live run).
+            "reader_cleanup_allowed_operations": [],
         },
         model="gpt-5.4-translate",
         max_retries=1,
@@ -1734,6 +1737,9 @@ def test_run_document_processing_records_pre_cleanup_formatting_baseline_without
             "reader_cleanup_chunk_size": 50,
             "reader_cleanup_max_delete_block_ratio": 0.8,
             "reader_cleanup_max_delete_char_ratio": 0.8,
+            # Empty = every operation; the shipped default is now the heading pair
+            # (spec 052 / first live run) and this test deletes a running header.
+            "reader_cleanup_allowed_operations": [],
         },
         model="gpt-5.4-translate",
         max_retries=1,
@@ -1938,6 +1944,9 @@ def test_run_document_processing_reader_cleanup_uses_exact_raw_markdown_for_side
             "reader_cleanup_keep_toc": True,
             "reader_cleanup_max_delete_block_ratio": 0.8,
             "reader_cleanup_max_delete_char_ratio": 0.95,
+            # Empty = every operation, the set this test was written against; the shipped
+            # default is now the heading pair (spec 052 / first live run).
+            "reader_cleanup_allowed_operations": [],
         },
         model="gpt-5.4-translate",
         max_retries=1,
@@ -6485,6 +6494,10 @@ def test_reader_cleanup_postprocess_reports_an_image_anchor_discard_as_an_error_
                 "reader_cleanup_chunk_size": 5000,
                 "reader_cleanup_max_delete_block_ratio": 0.8,
                 "reader_cleanup_max_delete_char_ratio": 0.8,
+                # Empty = every operation, the set this test was written against. The
+                # shipped default is now the heading pair (spec 052 / first live run), and
+                # this test is about anchor bookkeeping, not the operation contract.
+                "reader_cleanup_allowed_operations": [],
             },
             model="anthropic:claude-sonnet-4-6",
             max_retries=1,
@@ -6624,6 +6637,8 @@ def test_reader_cleanup_postprocess_reports_an_anchor_repair_rollback_as_a_warni
                 "reader_cleanup_chunk_size": 5000,
                 "reader_cleanup_max_delete_block_ratio": 0.8,
                 "reader_cleanup_max_delete_char_ratio": 0.8,
+                # Empty = every operation; see the note in the anchor-discard test above.
+                "reader_cleanup_allowed_operations": [],
                 "reader_cleanup_anchor_repair_enabled": True,
                 "reader_cleanup_anchor_targets": [
                     {

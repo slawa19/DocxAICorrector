@@ -19,6 +19,12 @@ current code makes of them — the sha256 of the delivered markdown, how many op
 accepted and of which kinds, and why the rest were rejected. ``reproduces_recorded_accepted``
 says whether today's code accepts exactly the operation set the recorded run accepted.
 
+The replay runs under today's DEFAULT allowed-operation set, which the summary records per book
+as ``allowed_operations``. Since 2026-08-03 that is the two heading operations (spec 052), so
+recorded ``remove_inline_noise`` / ``delete_block`` / ``split_block`` answers come back as
+``operation_not_allowed_by_cleanup_contract`` — that is the current code's verdict, not a fault
+in the recording.
+
 **It is a diagnostic, not a target, and it is currently False for all three books.** Today's
 code refuses operations that destroyed image anchors and no longer has ``reclassify_role`` at
 all, so the recorded set cannot be reproduced without reintroducing the defects spec 052 was
@@ -96,8 +102,21 @@ ensure_src_first_import_order(ROOT_DIR, SRC_ROOT)
 from docxaicorrector.reader_cleanup_mvp import (  # noqa: E402
     ReaderCleanupConfig,
     build_cleanup_blocks,
+    resolve_reader_cleanup_config,
     run_reader_cleanup,
 )
+
+
+# The operation set a production run gets when no config or run profile narrows it further.
+# The recorded runs predate the narrowing (spec 052 / the first live run: the heading pair
+# removed 18 visible defects against 4 caused, the rest 0 against 12), and this stand asks
+# what TODAY'S code does with those recorded answers — so the set comes from today's default
+# rather than from the recording. An empty ``app_config`` is how the default is expressed
+# without reading ``config.toml`` or ``.env``, which the offline stand must not need;
+# ``tests/test_config.py`` pins the shipped ``config.toml`` list to the same value.
+DEFAULT_ALLOWED_OPERATIONS = resolve_reader_cleanup_config(
+    app_config={}, fallback_model=""
+).allowed_operations
 
 
 RECORDED_RUN_DIR = ROOT_DIR / ".run" / "reader_cleanup_faithful_replay" / "20260618T124238Z_faithful_reclassify_replay"
@@ -175,6 +194,7 @@ def replay_book(book: str) -> dict[str, Any]:
         overlap_blocks_after=settings["overlap_blocks_after"],
         global_plan_enabled=settings["global_plan_enabled"],
         policy=report["policy"],
+        allowed_operations=DEFAULT_ALLOWED_OPERATIONS,
     )
     by_chunk = _responses_by_chunk(report)
 
@@ -199,6 +219,7 @@ def replay_book(book: str) -> dict[str, Any]:
 
     return {
         "book": book,
+        "allowed_operations": sorted(config.allowed_operations),
         "cleaned_markdown_sha256": hashlib.sha256(result.cleaned_markdown.encode("utf-8")).hexdigest(),
         "raw_block_count": payload["stats"]["raw_block_count"],
         "recorded_raw_block_count": report["stats"]["raw_block_count"],
@@ -487,6 +508,7 @@ def _print_live_book(data: dict[str, Any]) -> None:
 
 def _print_book(data: dict[str, Any]) -> None:
     print(f"=== {data['book']}")
+    print(f"    allowed operations      : {', '.join(data['allowed_operations']) or 'all'}")
     print(f"    cleaned markdown sha256 : {data['cleaned_markdown_sha256']}")
     print(f"    blocks / chunks         : {data['raw_block_count']} (recorded {data['recorded_raw_block_count']})"
           f" / {data['chunk_count']} (recorded {data['recorded_chunk_count']}), failed {data['failed_chunk_count']}")

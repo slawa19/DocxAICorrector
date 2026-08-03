@@ -3,6 +3,40 @@ from collections.abc import Mapping
 from typing import Any
 
 
+# Kept identical to reader_cleanup_allowed_operations in resources/config.toml and to
+# _DEFAULT_ALLOWED_OPERATIONS in reader_cleanup_mvp/_constants.py: this module must not
+# import the cleanup package (config load is on the startup path), so the list is
+# duplicated and pinned by tests/test_config.py instead.
+_DEFAULT_READER_CLEANUP_ALLOWED_OPERATIONS: tuple[str, ...] = (
+    "normalize_heading_boundary",
+    "join_fragmented_paragraph",
+)
+
+
+def _parse_reader_cleanup_allowed_operations(
+    config_data: Mapping[str, object],
+    *,
+    config_path: Any,
+) -> tuple[str, ...]:
+    """The operation set the reader-cleanup post-pass may use.
+
+    Absent key -> the narrowed default (spec 052: the first live run measured
+    ``remove_inline_noise`` + ``delete_block`` at 0 visible defects removed against 12
+    caused). An explicit list wins, and an explicitly EMPTY list keeps the pass's old
+    "every operation" meaning, which is how a research run re-enables the rest.
+    """
+    if "reader_cleanup_allowed_operations" not in config_data:
+        return _DEFAULT_READER_CLEANUP_ALLOWED_OPERATIONS
+    raw_value = config_data["reader_cleanup_allowed_operations"]
+    if isinstance(raw_value, str):
+        parts = [part.strip() for part in raw_value.split(",")]
+    elif isinstance(raw_value, (list, tuple)):
+        parts = [str(part).strip() for part in raw_value]
+    else:
+        raise RuntimeError(f"Некорректное поле reader_cleanup_allowed_operations в {config_path}")
+    return tuple(part for part in parts if part)
+
+
 def resolve_semantic_validation_and_runtime_settings(
     *,
     config_data: dict[str, object],
@@ -119,6 +153,12 @@ def resolve_semantic_validation_and_runtime_settings(
         config_data,
         "reader_cleanup_max_failed_chunk_ratio",
         0.1,
+    )
+    # Config-only, like the ratio above: there is deliberately no DOCX_AI_* override, so a
+    # narrowed set cannot be widened by an environment variable nobody reviewed.
+    reader_cleanup_allowed_operations = _parse_reader_cleanup_allowed_operations(
+        config_data,
+        config_path=config_path,
     )
 
     image_mode_default = parse_image_mode_fn(
@@ -274,6 +314,7 @@ def resolve_semantic_validation_and_runtime_settings(
             minimum=0.0,
             maximum=1.0,
         ),
+        "reader_cleanup_allowed_operations": reader_cleanup_allowed_operations,
     }
 
 

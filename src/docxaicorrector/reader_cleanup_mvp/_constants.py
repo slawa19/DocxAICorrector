@@ -40,6 +40,20 @@ _ALLOWED_OPERATIONS = {
     "join_fragmented_paragraph",
     "normalize_heading_boundary",
 }
+# The operation set a run gets when nothing says otherwise. NOT the full vocabulary:
+# the first live run (2026-08-02, three books, spec 052) measured
+# normalize_heading_boundary + join_fragmented_paragraph at 18 visible defects removed
+# against 4 damaged, and remove_inline_noise + delete_block at 0 removed against 12
+# damaged — silent data loss inside URLs, author names, bibliography years. The owner
+# narrowed the default to the heading pair; the other operations stay in the code and
+# still work when a config or run profile names them explicitly. An EMPTY set keeps its
+# old meaning, "every operation" (`_allowed_operations_for_config`), which is how a
+# research run re-enables the rest.
+# Kept identical to reader_cleanup_allowed_operations in resources/config.toml.
+_DEFAULT_ALLOWED_OPERATIONS: tuple[str, ...] = (
+    "normalize_heading_boundary",
+    "join_fragmented_paragraph",
+)
 _ALLOWED_REANNOTATION_ROLES = {"heading", "body", "list_item", "caption", "footnote"}
 _TOP_LEVEL_RESPONSE_FIELDS = {"cleanup_operations", "delete_blocks", "warnings"}
 _BLOCK_RESPONSE_FIELDS = {"id", "text_hash", "reason", "confidence"}

@@ -302,6 +302,15 @@ class AppConfig(Mapping[str, Any]):
     reader_cleanup_global_plan_enabled: bool = False
     # Spec 052 item 2: at 1.0 the pass aborted only when EVERY chunk failed.
     reader_cleanup_max_failed_chunk_ratio: float = 0.1
+    # The operations the post-pass may use. Narrowed to the heading pair after the first
+    # live run measured the other operations at 0 visible defects removed against 12
+    # caused (spec 052; artifacts/reader_cleanup_live_run/first_live_run_summary.json).
+    # Empty means "every operation"; this list is the same one resources/config.toml ships
+    # as reader_cleanup_allowed_operations.
+    reader_cleanup_allowed_operations: tuple[str, ...] = (
+        "normalize_heading_boundary",
+        "join_fragmented_paragraph",
+    )
 
     def __getitem__(self, key: str) -> object:
         try:
