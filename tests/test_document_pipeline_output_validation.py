@@ -981,6 +981,36 @@ def test_normalize_list_fragment_regressions_markdown_preserves_emoji_marker_lin
     assert "2. В первой половине" in normalized
 
 
+def test_normalize_list_fragment_regressions_markdown_keeps_prose_ending_in_a_number_intact():
+    # 2026-08-03 literary-edit live run, p0106: a body paragraph that merely ENDS in a
+    # number was rewritten into list item "64. …" and its own last token "65." was moved
+    # into the NEXT paragraph, cutting a sentence in half mid-phrase.
+    markdown = (
+        "Бывший лаборант, он подрабатывает здесь уже 18 лет — с тех пор как вышел на пенсию в 65.\n\n"
+        "Он гордый человек и говорит, что устроился на эту работу по настоянию жены."
+    )
+
+    normalized = document_pipeline_output_validation.normalize_list_fragment_regressions_markdown(markdown)
+
+    assert normalized == markdown
+    assert "вышел на пенсию в 65." in normalized
+    assert "64. Бывший лаборант" not in normalized
+    assert "65. Он гордый человек" not in normalized
+
+
+def test_normalize_list_fragment_regressions_markdown_keeps_index_entry_ending_in_a_page_number():
+    # Same defect in the back-of-book index (p1715 region): the trailing page number is
+    # part of the entry, not the ordinal of the next one.
+    markdown = (
+        "Carebank, 84–85; НКО, 162; Кимгауэр (Chiemgauer), 74–75, 87–89, 88.\n\n"
+        "Conjunto Palmeira, 103–108; консьюмеризм, 20; сокращение (экономическое), 51–52."
+    )
+
+    normalized = document_pipeline_output_validation.normalize_list_fragment_regressions_markdown(markdown)
+
+    assert normalized == markdown
+
+
 def test_collect_mixed_script_samples_detects_cyrillic_latin_tokens():
     markdown = "Создавайте кoinonia-сообщества\n\nПрежде чем суперразумa догонит."
 

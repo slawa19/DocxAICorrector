@@ -44,6 +44,17 @@ _NARRATION_STRONG_PATTERN = re.compile(r"(\*\*|__)(?=\S)(.+?)(?<=\S)\1")
 _NARRATION_EMPHASIS_PATTERN = re.compile(r"(\*|_)(?=\S)(.+?)(?<=\S)\1")
 _NARRATION_RAW_URL_PATTERN = re.compile(r"(?:https?://\S+|www\.\S+)", re.IGNORECASE)
 _NARRATION_INTERNAL_WHITESPACE_PATTERN = re.compile(r"[\t ]+")
+# A returned marker chunk that keeps this little of its own source paragraph is a stub,
+# not an edit or a translation. Calibrated on the 1761 recorded pairs of the 2026-08-03
+# literary-edit run: the 7 "(Пусто)" stubs sit at 0.008–0.135, the next real edit above
+# them at 0.207, and every one of the 609 genuine edits stays far above the floor.
+_COLLAPSED_MARKER_CHUNK_RATIO = 0.15
+# Below this the source paragraph is itself a fragment ("г.", ".htm.") where a length
+# ratio carries no signal.
+_COLLAPSED_MARKER_CHUNK_MIN_SOURCE_CHARS = 40
+# The previous paragraph counts as the one that swallowed the collapsed paragraph when it
+# grew by at least this share of what the collapsed paragraph lost.
+_ABSORBING_NEIGHBOUR_RATIO = 0.5
 _INCOMPLETE_RESPONSE_RETRY_MIN_OUTPUT_TOKENS = 1024
 _INCOMPLETE_RESPONSE_RECOVERY_MIN_OUTPUT_TOKENS = 1536
 _CONTEXT_LEAKAGE_RETRY_WARNING = (
@@ -225,6 +236,10 @@ def _build_marker_preserving_user_prompt(*, target_text: str, context_before: st
         "Preserve every marker exactly, in the same quantity and order.\n"
         "Do not delete, duplicate, rename, or reorder markers.\n"
         "Do not merge paragraphs across markers and do not split one marker into multiple paragraphs.\n"
+        "Every marker must be followed by the processed text of ITS OWN paragraph. If you believe a "
+        "paragraph continues the previous one, still return that paragraph's own text under its own "
+        "marker, unchanged. Never answer with a placeholder, a stub, a dash, or a note about what you "
+        "did (for example \"(Пусто)\", \"(Empty)\", \"(see above)\").\n"
         "Process only the text after each marker according to the system instructions and return the whole block together with the markers.\n"
         "Use the surrounding context only for meaning and terminology.\n\n"
         f"[CONTEXT BEFORE]\n{context_before}\n\n"
@@ -270,6 +285,8 @@ def _build_marker_recovery_user_prompt(
         "Preserve every marker [[DOCX_PARA_...]] exactly as it appears and in the same order.\n"
         "Do not delete markers, add new ones, or reorder them.\n"
         "Each marker must correspond to exactly one paragraph of text after it.\n"
+        "A marker whose paragraph you would rather merge into its neighbour must still carry that "
+        "paragraph's own text, unchanged — never a placeholder, a stub, or a note.\n"
         "The response must begin with the first required marker and contain no explanation.\n\n"
         f"{required_marker_lines}"
         f"{previous_output_lines}"
@@ -328,12 +345,93 @@ def _split_marker_preserved_markdown(markdown: str, expected_paragraph_ids: Sequ
     return paragraph_chunks
 
 
-def _strip_and_validate_paragraph_markers(markdown: str, expected_paragraph_ids: Sequence[str] | None, *, marker_mode: bool) -> str:
+def _visible_marker_chunk_length(chunk: str) -> int:
+    return len(_strip_prompt_internal_tokens(chunk))
+
+
+def restore_collapsed_marker_paragraphs(
+    paragraph_chunks: list[str],
+    source_paragraph_chunks: Sequence[str],
+    *,
+    expected_paragraph_ids: Sequence[str] | None = None,
+) -> list[str]:
+    """Re-instate the SOURCE text of any paragraph whose returned chunk collapsed.
+
+    Contract: one marker — one paragraph, and a paragraph's content stays in its own
+    paragraph. When the model merges a paragraph into its neighbour it is forbidden to
+    delete the emptied marker, so it fills it with an invented stub ("(Пусто)") that ships
+    to the reader as literal garbage (7 occurrences on the 2026-08-03 literary-edit run).
+
+    A collapse is length-only and therefore operation-agnostic (``edit`` AND ``translate``):
+    no translation turns an 861-character paragraph into 7 characters. Both the collapsed
+    paragraph AND the neighbour that swallowed it are restored, because restoring only the
+    collapsed one would ship the swallowed text twice.
+    """
+
+    if not source_paragraph_chunks or len(source_paragraph_chunks) != len(paragraph_chunks):
+        return paragraph_chunks
+
+    restored = list(paragraph_chunks)
+    collapsed_indexes: list[int] = []
+    for index, chunk in enumerate(paragraph_chunks):
+        source_length = _visible_marker_chunk_length(source_paragraph_chunks[index])
+        if source_length < _COLLAPSED_MARKER_CHUNK_MIN_SOURCE_CHARS:
+            continue
+        if _visible_marker_chunk_length(chunk) > source_length * _COLLAPSED_MARKER_CHUNK_RATIO:
+            continue
+        collapsed_indexes.append(index)
+
+    if not collapsed_indexes:
+        return paragraph_chunks
+
+    restored_indexes: list[int] = []
+    for index in collapsed_indexes:
+        restored[index] = source_paragraph_chunks[index]
+        restored_indexes.append(index)
+        previous_index = index - 1
+        if previous_index < 0:
+            continue
+        previous_growth = _visible_marker_chunk_length(paragraph_chunks[previous_index]) - _visible_marker_chunk_length(
+            source_paragraph_chunks[previous_index]
+        )
+        if previous_growth < _visible_marker_chunk_length(source_paragraph_chunks[index]) * _ABSORBING_NEIGHBOUR_RATIO:
+            continue
+        restored[previous_index] = source_paragraph_chunks[previous_index]
+        restored_indexes.append(previous_index)
+
+    log_event(
+        logging.WARNING,
+        "marker_chunk_collapse_source_restored",
+        "Возвращённый абзац схлопнулся относительно исходного; восстановлен исходный текст абзаца.",
+        collapsed_paragraph_ids=[
+            (expected_paragraph_ids[index] if expected_paragraph_ids and index < len(expected_paragraph_ids) else str(index))
+            for index in collapsed_indexes
+        ],
+        restored_paragraph_count=len(set(restored_indexes)),
+        paragraph_count=len(paragraph_chunks),
+    )
+    return restored
+
+
+def _strip_and_validate_paragraph_markers(
+    markdown: str,
+    expected_paragraph_ids: Sequence[str] | None,
+    *,
+    marker_mode: bool,
+    source_paragraph_chunks: Sequence[str] | None = None,
+) -> str:
     if not marker_mode:
         return markdown
     if not expected_paragraph_ids:
         raise RuntimeError("paragraph_marker_validation_failed:missing_expected_ids")
-    return "\n\n".join(_split_marker_preserved_markdown(markdown, expected_paragraph_ids))
+    paragraph_chunks = _split_marker_preserved_markdown(markdown, expected_paragraph_ids)
+    if source_paragraph_chunks is not None:
+        paragraph_chunks = restore_collapsed_marker_paragraphs(
+            paragraph_chunks,
+            source_paragraph_chunks,
+            expected_paragraph_ids=expected_paragraph_ids,
+        )
+    return "\n\n".join(paragraph_chunks)
 
 
 def _normalize_leakage_comparison_text(text: str) -> str:
@@ -438,11 +536,13 @@ def _finalize_generated_markdown(
     expected_paragraph_ids: Sequence[str] | None,
     marker_mode: bool,
     allow_persistent_context_leakage: bool,
+    source_paragraph_chunks: Sequence[str] | None = None,
 ) -> str:
     cleaned_markdown = _strip_and_validate_paragraph_markers(
         markdown,
         expected_paragraph_ids,
         marker_mode=marker_mode,
+        source_paragraph_chunks=source_paragraph_chunks,
     )
     leaked_fragment = _detect_context_leakage(
         cleaned_markdown,
@@ -885,6 +985,11 @@ def _recover_from_persistent_empty_response(
         markdown,
         expected_paragraph_ids,
         marker_mode=marker_mode,
+        source_paragraph_chunks=(
+            _split_marker_preserved_markdown(target_text, expected_paragraph_ids)
+            if marker_mode and expected_paragraph_ids
+            else None
+        ),
     )
     if not cleaned_markdown.strip():
         raise RuntimeError("Модель вернула пустой ответ (empty_response).")
@@ -997,6 +1102,11 @@ def generate_markdown_block(
         expected_paragraph_ids,
         marker_mode=marker_mode,
     )
+    source_paragraph_chunks = (
+        _split_marker_preserved_markdown(target_text, expected_paragraph_ids)
+        if marker_mode and expected_paragraph_ids
+        else None
+    )
     last_exception: Exception | None = None
 
     for attempt in range(1, max_retries + 1):
@@ -1010,6 +1120,7 @@ def generate_markdown_block(
                 expected_paragraph_ids=expected_paragraph_ids,
                 marker_mode=marker_mode,
                 allow_persistent_context_leakage=attempt >= max_retries,
+                source_paragraph_chunks=source_paragraph_chunks,
             )
         except Exception as exc:
             last_exception = exc

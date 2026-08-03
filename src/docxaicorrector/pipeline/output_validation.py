@@ -1970,7 +1970,17 @@ def normalize_list_fragment_regressions_markdown(
             continue
 
         body_tokens = body.split()
-        if current_number_group is None and len(body_tokens) <= 2 and not re.search(r"[A-Za-zА-Яа-яЁё]", body):
+        if current_number_group is None:
+            # The line carries NO ordinal of its own, so it is only a list fragment when
+            # what precedes the trailing number is page furniture (a short, letter-free
+            # run such as "116" or an emoji marker). A prose paragraph that merely ENDS
+            # in a number ("…вышел на пенсию в 65.") is NOT a list item: rewriting it
+            # would fabricate an ordinal that was never in the document AND move the
+            # paragraph's own last token into the NEXT paragraph — the boundary shift
+            # observed on the 2026-08-03 literary-edit run (p0106/p1224 and the back-of-
+            # book index). One marker — one paragraph: content stays in its own paragraph.
+            if len(body_tokens) > 2 or re.search(r"[A-Za-zА-Яа-яЁё]", body):
+                continue
             lines[index] = body
         else:
             lines[index] = f"{current_number}. {body}"
