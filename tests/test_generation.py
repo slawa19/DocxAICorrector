@@ -1604,6 +1604,126 @@ def test_split_marker_preserved_markdown_raises_structured_marker_diagnostics():
     assert exc.raw_markdown_preview == "[[DOCX_PARA_p9999]]\nНеверный маркер"
 
 
+# --- one marker — one paragraph: stub answers never reach the document -------------
+# 2026-08-03 literary-edit first live run: the import tore endnotes in two, the model
+# merged the tail into the previous marker, and — forbidden to delete the emptied marker —
+# filled it with the invented word "(Пусто)", which shipped to the reader 7 times.
+
+_STUB_SOURCE_ABSORBED = (
+    "4. Подробнее см.: Bernard Lietaer, Robert Ulanowicz, and Sally Goerner, «White Paper»"
+)
+_STUB_SOURCE_COLLAPSED = (
+    "«О всех вариантах управления системным банковским кризисом»: доклад, в котором авторы "
+    "разбирают устойчивость денежных систем и показывают, почему монокультура валют делает "
+    "экономику хрупкой, а разнообразие — устойчивой."
+)
+
+
+def test_restore_collapsed_marker_paragraphs_replaces_invented_stub_with_source():
+    returned = [
+        f"{_STUB_SOURCE_ABSORBED} {_STUB_SOURCE_COLLAPSED}",
+        "(Пусто)",
+    ]
+
+    restored = generation.restore_collapsed_marker_paragraphs(
+        returned,
+        [_STUB_SOURCE_ABSORBED, _STUB_SOURCE_COLLAPSED],
+        expected_paragraph_ids=["p1344", "p1345"],
+    )
+
+    assert "(Пусто)" not in restored
+    # The neighbour that swallowed the paragraph is restored too, otherwise the swallowed
+    # text would ship twice.
+    assert restored == [_STUB_SOURCE_ABSORBED, _STUB_SOURCE_COLLAPSED]
+
+
+def test_restore_collapsed_marker_paragraphs_keeps_the_neighbour_that_did_not_absorb():
+    collapsed_source = _STUB_SOURCE_COLLAPSED
+    previous_source = "1. Там же, с. 131, со ссылкой на архивные материалы Бундесбанка."
+    previous_edited = "1. Там же, с. 131."
+    returned = [previous_edited, "—"]
+
+    restored = generation.restore_collapsed_marker_paragraphs(
+        returned,
+        [previous_source, collapsed_source],
+        expected_paragraph_ids=["p1532", "p1533"],
+    )
+
+    assert restored == [previous_edited, collapsed_source]
+
+
+def test_restore_collapsed_marker_paragraphs_leaves_genuine_edits_untouched():
+    source = [
+        "Он поместил свои руки в свои карманы и начал осуществлять прогулку вдоль набережной.",
+        "Она была освещена светом фонарей, которые горели вдоль всей её протяжённости.",
+    ]
+    returned = [
+        "Он сунул руки в карманы и побрёл вдоль набережной.",
+        "Её освещали фонари, горевшие по всей длине.",
+    ]
+
+    assert generation.restore_collapsed_marker_paragraphs(returned, source) == returned
+
+
+def test_restore_collapsed_marker_paragraphs_leaves_a_translation_untouched():
+    # The check is length-only, so it must stay quiet on `translate`, where the answer
+    # shares no characters with its source but keeps its size.
+    source = [
+        "Деньги для людей — то же, что вода для рыб: среда, которую замечают, только когда её нет.",
+        "Современные деньги были придуманы в совершенно иную эпоху, для совершенно иных задач.",
+    ]
+    returned = [
+        "Money is to people what water is to fish: a medium noticed only in its absence.",
+        "Modern money was invented in a wholly different era, for wholly different purposes.",
+    ]
+
+    assert generation.restore_collapsed_marker_paragraphs(returned, source) == returned
+
+
+def test_generate_markdown_block_marker_mode_replaces_stub_answer_with_source_paragraph(monkeypatch):
+    target_text = (
+        f"[[DOCX_PARA_p1344]]\n{_STUB_SOURCE_ABSORBED}\n\n[[DOCX_PARA_p1345]]\n{_STUB_SOURCE_COLLAPSED}"
+    )
+
+    def create_response(**kwargs):
+        return SimpleNamespace(
+            output_text=(
+                f"[[DOCX_PARA_p1344]]\n{_STUB_SOURCE_ABSORBED} {_STUB_SOURCE_COLLAPSED}\n\n"
+                "[[DOCX_PARA_p1345]]\n(Пусто)"
+            )
+        )
+
+    client = SimpleNamespace(responses=SimpleNamespace(create=create_response))
+
+    result = generation.generate_markdown_block(
+        client=_as_openai_client(client),
+        model="gpt-5.4",
+        system_prompt="system",
+        target_text=target_text,
+        context_before="before",
+        context_after="after",
+        max_retries=1,
+        expected_paragraph_ids=["p1344", "p1345"],
+        marker_mode=True,
+    )
+
+    assert "(Пусто)" not in result
+    assert result == f"{_STUB_SOURCE_ABSORBED}\n\n{_STUB_SOURCE_COLLAPSED}"
+    # The paragraph-per-marker count is the invariant that must not move.
+    assert len(result.split("\n\n")) == 2
+
+
+def test_marker_preserving_user_prompt_tells_the_model_what_to_do_instead_of_a_stub():
+    prompt = generation._build_marker_preserving_user_prompt(
+        target_text="[[DOCX_PARA_p0001]]\nАбзац",
+        context_before="before",
+        context_after="after",
+    )
+
+    assert "Never answer with a placeholder" in prompt
+    assert "(Пусто)" in prompt
+
+
 def test_detect_context_leakage_finds_verbatim_fragment_absent_from_target():
     leaked_fragment = generation._detect_context_leakage(
         response_text=(
