@@ -17,6 +17,11 @@ max_formatting_diagnostics = 5
 max_unmapped_source_paragraphs = 12
 max_unmapped_target_paragraphs = 6
 max_heading_level_drift = 1
+# torn_list_item_count measured through the same extraction this gate runs: 0 on
+# every profile at HEAD. The importer of 2026-06-18 — before the soft-wrap
+# continuation merge of 2026-06-22 — scored 67 / 74 / 133 on the three benchmark
+# books and 117 on the held-out one, so a zero ceiling is a real bar, not a vacuum.
+max_torn_list_items = 0
 min_text_similarity = 0.96
 require_numbered_lists_preserved = false
 require_nonempty_output = true
@@ -45,6 +50,11 @@ max_formatting_diagnostics = 12
 max_unmapped_source_paragraphs = 12
 max_unmapped_target_paragraphs = 6
 max_heading_level_drift = 2
+# torn_list_item_count measured through the same extraction this gate runs: 0 on
+# every profile at HEAD. The importer of 2026-06-18 — before the soft-wrap
+# continuation merge of 2026-06-22 — scored 67 / 74 / 133 on the three benchmark
+# books and 117 on the held-out one, so a zero ceiling is a real bar, not a vacuum.
+max_torn_list_items = 0
 min_text_similarity = 0.94
 require_numbered_lists_preserved = false
 require_nonempty_output = true
@@ -76,6 +86,11 @@ max_formatting_diagnostics = 12
 max_unmapped_source_paragraphs = 16
 max_unmapped_target_paragraphs = 16
 max_heading_level_drift = 2
+# torn_list_item_count measured through the same extraction this gate runs: 0 on
+# every profile at HEAD. The importer of 2026-06-18 — before the soft-wrap
+# continuation merge of 2026-06-22 — scored 67 / 74 / 133 on the three benchmark
+# books and 117 on the held-out one, so a zero ceiling is a real bar, not a vacuum.
+max_torn_list_items = 0
 min_text_similarity = 0.0
 require_numbered_lists_preserved = false
 require_nonempty_output = true
@@ -104,6 +119,11 @@ max_formatting_diagnostics = 12
 max_unmapped_source_paragraphs = 16
 max_unmapped_target_paragraphs = 16
 max_heading_level_drift = 2
+# torn_list_item_count measured through the same extraction this gate runs: 0 on
+# every profile at HEAD. The importer of 2026-06-18 — before the soft-wrap
+# continuation merge of 2026-06-22 — scored 67 / 74 / 133 on the three benchmark
+# books and 117 on the held-out one, so a zero ceiling is a real bar, not a vacuum.
+max_torn_list_items = 0
 min_text_similarity = 0.0
 require_numbered_lists_preserved = false
 require_nonempty_output = true
