@@ -224,7 +224,8 @@ production config model — `core/config.py:296-304` carries `reader_cleanup_def
 and no `_allowed_operations`. Only a validation run profile can set it (`validation/profiles.py:100`).
 So a production run cannot restrict the operation set at all, and honouring the decision by
 configuration would have meant **adding a config key whose only purpose is to keep a disabled feature
-alive**.
+alive**. *(State of 2026-07-31. The key was added on 2026-08-03 — see the changelog — for the
+opposite reason: to carry what the live run measured about operations that are still in use.)*
 
 Removal is cleaner on every axis: no new config surface; no flag someone flips in six months to
 resurrect behaviour the Constitution forbids; ~58 mentions across 10 files in
@@ -331,7 +332,11 @@ been new surface whose only purpose was to keep a disabled feature alive.
   wired up here.
 - **No new configuration surface.** Specifically no `reader_cleanup_allowed_operations` key in the
   production config model: a flag whose only purpose is to keep a removed feature switchable is worse
-  than the removal.
+  than the removal. **Superseded on 2026-08-03 by the live run itself** (see the changelog): the key
+  now exists, not to keep a removed operation alive, but to carry a measured decision about
+  operations that still exist and still run — the run showed `remove_inline_noise` and `delete_block`
+  causing 12 of the 16 damaged places and removing none, so the shipped default names the two
+  operations that earned their place. That is a different thing from a resurrect-it-later flag.
 - **No re-tuning of chunk size, overlap or prompt wording before the first run.** The three replay runs
   are the only baseline that exists; changing the inputs now would destroy the comparison the run is
   supposed to provide.
@@ -445,15 +450,18 @@ Criteria 4 and 5 originally demanded "byte-identical accepted sets" against the 
 
 | Book | Accepted today | Accepted in the recording |
 |---|---|---|
-| creating_wealth | 9 | 34 |
-| lietaer | 39 | 44 |
-| mazzucato | 6 | 12 |
+| creating_wealth | 5 | 34 |
+| lietaer | 33 | 44 |
+| mazzucato | 3 | 12 |
 
 The gap is **legitimate and is the point of this spec**. Today's code refuses operations the
 recorded run accepted, for reasons items 4, 5, 6 and 9 above argue for at length: operations that
 destroyed image anchors are now rejected instead of applied and silently reconciled, and
 `reclassify_role` no longer exists, so every recorded operation naming it is ignored by
-construction. A criterion that demanded those numbers match again would be a standing instruction to
+construction. Since 2026-08-03 a fourth reason is in the numbers: the default operation set is the
+heading pair, so the recorded `remove_inline_noise` and `split_block` acceptances are refused as
+`operation_not_allowed_by_cleanup_contract` — that narrowing is what moved the counts from 9/39/6 to
+5/33/3, and the accepted heading-operation sets did not move at all. A criterion that demanded those numbers match again would be a standing instruction to
 restore the exact behaviour this spec was written to remove — the image-anchor P0 among it.
 
 The recording is therefore historical evidence, not a target. It is still valuable, and
@@ -464,6 +472,27 @@ against its own previous state.
 
 ## Changelog
 
+- **2026-08-03** — **the default operation set was narrowed to `normalize_heading_boundary` +
+  `join_fragmented_paragraph`**, by the owner, on the numbers the first live run produced. The run
+  split cleanly by operation: those two were accepted 42 times, removed 18 visible defects and caused
+  4; `remove_inline_noise` + `delete_block` were accepted 16 times, removed **0** and caused **12** —
+  three quarters of all the damage, and silent damage at that (a file name cut out of a WHO URL,
+  author surnames out of an article title, years out of a bibliography, a house number out of a
+  publisher's address). `artifacts/reader_cleanup_live_run/first_live_run_summary.json` carries the
+  counts. The mechanism already existed (`reader_cleanup_allowed_operations`, read in
+  `reader_cleanup_mvp/_config.py`); what was missing was a way to set it outside a validation run
+  profile, so the key was threaded through the production config
+  (`resources/config.toml` → `core/config_runtime_sections.py` → `core/config_loader_layers.py` →
+  `AppConfig`) and defaulted to the pair. **Nothing was deleted**: the other four operations still
+  work when a config or run profile names them, and an explicitly empty list still means "every
+  operation", which is what an investigative run uses. The `## Non-goals` bullet that forbade this
+  key is annotated accordingly — it was written about a flag keeping a *removed* feature alive, which
+  this is not. Anti-regression criterion 4's table moved with it, as criterion 4 requires: the offline
+  replay now accepts 5/33/3 instead of 9/39/6, the difference being exactly the operations the
+  narrowed contract refuses (2 `remove_inline_noise` + 2 `split_block`, 6 `remove_inline_noise`,
+  3 `remove_inline_noise`), each recorded as `operation_not_allowed_by_cleanup_contract`. The
+  accepted `normalize_heading_boundary` and `join_fragmented_paragraph` sets are byte-identical to the
+  previous summary on all three books, and the committed summary was regenerated in the same change.
 - **2026-08-02** — anti-regression criteria 4 and 5 corrected after an external review (Codex,
   gpt-5.6-sol) found them demanding a result the repository's own versioned evidence contradicts:
   "byte-identical accepted sets" against the June recording, while

@@ -8,6 +8,7 @@ from ._constants import (
     CleanupPolicy,
     _ALLOWED_OPERATIONS,
     _ALLOWED_POLICIES,
+    _DEFAULT_ALLOWED_OPERATIONS,
     _DEFAULT_CLEANUP_CHUNK_SIZE,
     _DEFAULT_GLOBAL_PLAN_ENABLED,
     _DEFAULT_MAX_FAILED_CHUNK_RATIO,
@@ -67,7 +68,12 @@ def resolve_reader_cleanup_config(*, app_config: Mapping[str, object], fallback_
             minimum=1,
         ),
         policy=cast(CleanupPolicy, policy),
-        allowed_operations=_coerce_allowed_operations(app_config.get("reader_cleanup_allowed_operations")),
+        # Spec 052 / first live run: a config that says nothing gets the narrowed heading
+        # pair, not the whole vocabulary. A config that DOES carry the key wins, including
+        # an empty list, which still means "every operation" for research runs.
+        allowed_operations=_coerce_allowed_operations(
+            app_config.get("reader_cleanup_allowed_operations", _DEFAULT_ALLOWED_OPERATIONS)
+        ),
     )
 
 

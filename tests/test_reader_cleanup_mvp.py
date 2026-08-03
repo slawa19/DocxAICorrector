@@ -1013,6 +1013,163 @@ def test_global_safety_rollback_puts_the_rejected_text_back_in_the_delivered_mar
     assert result.changed is True
 
 
+# --------------------------------------------------------------------------------------
+# The narrowed default operation set (spec 052, first live run 2026-08-02)
+#
+# The live run split cleanly by operation: ``normalize_heading_boundary`` +
+# ``join_fragmented_paragraph`` removed 18 visible defects against 4 caused, while
+# ``remove_inline_noise`` + ``delete_block`` removed 0 against 12 caused — a file name cut
+# out of a WHO URL, author surnames cut out of an article title, years cut out of a
+# bibliography. The owner narrowed the DEFAULT set to the heading pair; the rest of the
+# operations stay in the code and must still work when a config names them explicitly.
+# --------------------------------------------------------------------------------------
+
+_NARROWED_HEADING_BLOCK = "TEAM PLAYBOOK Shared ownership keeps delivery predictable."
+_NARROWED_FRAGMENT_HEAD = "Первая часть фразы продолжается"
+_NARROWED_FRAGMENT_TAIL = "во втором блоке, разорванном при извлечении текста."
+_NARROWED_JOINED = f"{_NARROWED_FRAGMENT_HEAD} {_NARROWED_FRAGMENT_TAIL}"
+_NARROWED_MARKDOWN = (
+    "Вступительный абзац достаточной длины, чтобы его сохранить в выдаче.\n\n"
+    "стр. 42\n\n"
+    f"{_GLOBAL_SAFETY_NOISE_BLOCK}\n\n"
+    f"{_NARROWED_HEADING_BLOCK}\n\n"
+    f"{_NARROWED_FRAGMENT_HEAD}\n\n"
+    f"{_NARROWED_FRAGMENT_TAIL}\n\n"
+    "Заключительный абзац достаточной длины, чтобы его сохранить в выдаче."
+)
+
+
+def _narrowed_set_provider(payload: dict[str, Any], chunk_index: int, chunk_count: int) -> str:
+    """One response proposing one operation of each of the four measured kinds."""
+    by_text = {str(block["text"]): block for block in payload["blocks"]}
+    heading_block = by_text[_NARROWED_HEADING_BLOCK]
+    return json.dumps(
+        {
+            "cleanup_operations": [
+                _page_furniture_delete_operation(by_text["стр. 42"]),
+                _inline_noise_operation(by_text[_GLOBAL_SAFETY_NOISE_BLOCK]),
+                {
+                    "id": heading_block["id"],
+                    "text_hash": heading_block["text_hash"],
+                    "operation": "normalize_heading_boundary",
+                    "reason": "page_furniture_heading",
+                    "confidence": "high",
+                    "evidence_before": "The block fuses the section heading with the body sentence.",
+                    "expected_after_preview": "TEAM PLAYBOOK / Shared ownership keeps delivery predictable.",
+                    "safety_note": "Keep the exact heading prefix and the exact body remainder.",
+                    "heading_substring": "TEAM PLAYBOOK",
+                    "body_substring": "Shared ownership keeps delivery predictable.",
+                },
+                _join_operation(
+                    by_text[_NARROWED_FRAGMENT_HEAD],
+                    by_text[_NARROWED_FRAGMENT_TAIL],
+                    expected_after_preview=_NARROWED_JOINED,
+                ),
+            ],
+            "warnings": [],
+        },
+        ensure_ascii=False,
+    )
+
+
+def _narrowed_set_app_config(**overrides: object) -> dict[str, object]:
+    # Deliberately says nothing about the operation set: the point is what a config that
+    # does not mention it gets. The delete ratios are raised so a rejected delete can only
+    # be the operation contract, never the global delete-safety limit.
+    return {
+        "reader_cleanup_enabled": True,
+        "reader_cleanup_max_delete_block_ratio": 0.8,
+        "reader_cleanup_max_delete_char_ratio": 0.8,
+        **overrides,
+    }
+
+
+def test_default_config_narrows_the_cleanup_contract_to_the_two_heading_operations() -> None:
+    config = resolve_reader_cleanup_config(
+        app_config=_narrowed_set_app_config(),
+        fallback_model="fallback:model",
+    )
+
+    assert config.allowed_operations == ("normalize_heading_boundary", "join_fragmented_paragraph")
+
+
+def test_default_config_rejects_inline_noise_and_delete_block_and_keeps_their_text() -> None:
+    result = run_reader_cleanup(
+        markdown_text=_NARROWED_MARKDOWN,
+        config=resolve_reader_cleanup_config(
+            app_config=_narrowed_set_app_config(),
+            fallback_model="fallback:model",
+        ),
+        operation_provider=_narrowed_set_provider,
+    )
+    report = result.report_payload
+
+    reasons_by_operation = {
+        str(entry["operation"]): str(entry["ignored_reason"]) for entry in report["ignored_cleanup_operations"]
+    }
+    assert reasons_by_operation == {
+        "delete_block": "operation_not_allowed_by_cleanup_contract",
+        "remove_inline_noise": "operation_not_allowed_by_cleanup_contract",
+    }
+    # The two operations the live run measured as useful are accepted unchanged...
+    assert [entry["operation"] for entry in report["accepted_cleanup_operations"]] == [
+        "normalize_heading_boundary",
+        "join_fragmented_paragraph",
+    ]
+    assert "TEAM PLAYBOOK\n\nShared ownership keeps delivery predictable." in result.cleaned_markdown
+    assert _NARROWED_JOINED in result.cleaned_markdown
+    # ...and the text the other two would have removed is still in the delivered book.
+    assert "стр. 42" in result.cleaned_markdown
+    assert _GLOBAL_SAFETY_NOISE_SUBSTRING in result.cleaned_markdown
+    assert report["stats"]["accepted_delete_block_count"] == 0
+    # The narrowing is advertised to the model, not only enforced after the fact.
+    assert report["cleanup_settings"]["allowed_operations"] == [
+        "join_fragmented_paragraph",
+        "normalize_heading_boundary",
+    ]
+
+
+def test_explicit_allowed_operations_restore_the_full_set_for_research_runs() -> None:
+    """Non-vacuity for the test above, and the escape hatch investigative runs need.
+
+    The very same response is accepted in full once a config (or a validation run profile)
+    names the operations: the narrowing is a default, not a removal.
+    """
+    result = run_reader_cleanup(
+        markdown_text=_NARROWED_MARKDOWN,
+        config=resolve_reader_cleanup_config(
+            app_config=_narrowed_set_app_config(
+                reader_cleanup_allowed_operations=sorted(_ALLOWED_OPERATIONS),
+            ),
+            fallback_model="fallback:model",
+        ),
+        operation_provider=_narrowed_set_provider,
+    )
+    report = result.report_payload
+
+    assert sorted(str(entry["operation"]) for entry in report["accepted_cleanup_operations"]) == [
+        "delete_block",
+        "join_fragmented_paragraph",
+        "normalize_heading_boundary",
+        "remove_inline_noise",
+    ]
+    assert report["ignored_cleanup_operations"] == []
+    assert "стр. 42" not in result.cleaned_markdown
+    assert _GLOBAL_SAFETY_NOISE_SUBSTRING not in result.cleaned_markdown
+
+
+def test_empty_allowed_operations_still_means_every_operation() -> None:
+    # The pass's own convention (``_allowed_operations_for_config``) is unchanged: an empty
+    # set is "no contract", i.e. everything. Only the ABSENCE of the key now means the
+    # narrowed pair, so a run profile that clears the list still widens rather than mutes.
+    config = resolve_reader_cleanup_config(
+        app_config=_narrowed_set_app_config(reader_cleanup_allowed_operations=[]),
+        fallback_model="fallback:model",
+    )
+
+    assert config.allowed_operations == ()
+
+
 def test_global_safety_rollback_keeps_anchor_loss_blamed_on_the_operation_that_ran() -> None:
     # The rollback re-applies the remainder from scratch, so the write sets it returns are
     # keyed by position in the RETAINED list. ``service._reject_operations_losing_docx_image_anchors``

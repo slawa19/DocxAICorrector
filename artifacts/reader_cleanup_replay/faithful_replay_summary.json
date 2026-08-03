@@ -3,25 +3,18 @@
     "creating_wealth": {
       "accepted_by_operation": {
         "join_fragmented_paragraph": 1,
-        "normalize_heading_boundary": 4,
-        "remove_inline_noise": 2,
-        "split_block": 2
+        "normalize_heading_boundary": 4
       },
       "accepted_by_reason": {
         "fragmented_paragraph": 1,
-        "heading_fused_with_body": 6,
-        "page_number": 2
+        "heading_fused_with_body": 4
       },
-      "accepted_count": 9,
+      "accepted_count": 5,
       "accepted_keys": [
         "b_000001|normalize_heading_boundary|heading_fused_with_body|СОЗДАНИЕ БОГАТСТВА РАЗВИТИЕ МЕСТНОЙ ЭКОНОМИКИ С ПОМОЩЬЮ ЛОКАЛЬНЫХ ВАЛЮТ\n\nГвендолин Холлсмит и Бернар Лиетар|heading_boundary_normalized",
         "b_000050|normalize_heading_boundary|heading_fused_with_body|ДЕННИС МЕДОУЗ —\n\nсоавтор книг «Пределы роста» и «За пределами роста».|heading_boundary_normalized",
         "b_000061|normalize_heading_boundary|heading_fused_with_body|Л. ХАНТЕР ЛОВИНС —\n\nпрезидент компании Natural Capitalism Inc. (www.natcapinc.com). Г-жа Ловинс выступала с лекциями более чем в 15 странах, включая Всемирный экономический форум в Давосе, Международный симпозиум по устойчивому развитию в Шанхае, Глобальный экономический форум и Всемирный саммит по устойчивому развитию. Она консультировала предприятия и правительства по всему миру и является соавтором девяти книг, включая вышедшую в 1999 году книгу «Природный капитал».|heading_boundary_normalized",
         "b_001131|join_fragmented_paragraph|fragmented_paragraph|• Эффективность (способность системы обрабатывать объемы того, что проходит через сеть)|joined_with_next",
-        "b_001297|split_block|heading_fused_with_body|Деньги, выпускаемые посредством одновременного списания и зачисления средств между участниками сделки, формируют валюту взаимного кредита. Примерами таких систем являются LETS и «банки времени» (TimeBanks). Например, в системе TimeBanking, если Джулия оказывает Джеймсу услугу длительностью в один час, она получает кредит на один час, а у Джеймса возникает дебит на ту же сумму. Таким образом, они создают валюту, необходимую для совершения операции, просто договорившись о самой услуге.\n\nГлавное преимущество систем взаимного кредита заключается в их способности к саморегулированию, благодаря чему в них всегда достаточно доступных средств. Кредитование без обеспечения: валюта может выпускаться в форме кредита, но без какого-либо официального залога (за исключением, пожалуй, неформального обязательства предоставить товар или услугу в будущем). По сути, взаимный кредит можно рассматривать как форму заимствования между самими участниками без предоставления обеспечения. Существуют также системы, позволяющие брать беззалоговые кредиты в центральном офисе, который выполняет роль, схожую с банком дополнительных валют (например, Bia Kud Kum в Таиланде).|split",
-        "b_001300|split_block|heading_fused_with_body|Некоторые системы сочетают в себе черты различных подходов к эмиссии, описанных выше. Например, валюта WIR выпускается как через взаимный кредит, так и централизованно под юридическое обеспечение. Некоторые дополнительные валюты социального назначения также принимаются местными предприятиями в качестве частичной оплаты, выполняя роль бонусной валюты.\n\nПреимущества и недостатки процедур эмиссии. Здесь также можно выделить свои плюсы и минусы для каждой системы. Как правило, существует систематический компромисс между простотой создания валюты и усилиями, необходимыми для завоевания и поддержания доверия к ней. Поиск оптимального баланса между этими двумя целями — ключ к созданию устойчивой валютной системы. При прочих равных условиях, по мере продвижения вниз по списку способов эмиссии (от обеспеченных валют к централизованному распределению), участникам становится проще создавать валюту, но одновременно требуется больше дисциплины для поддержания её авторитета.|split",
-        "b_001560|remove_inline_noise|page_number|г.).|inline_noise_removed",
-        "b_001570|remove_inline_noise|page_number|г.|inline_noise_removed",
         "b_001658|normalize_heading_boundary|heading_fused_with_body|ГВЕНДОЛИН ХОЛЛСМИТ —\n\nдиректор по планированию и развитию сообществ города Монтпилиер, основатель и руководитель организации Global Community Initiatives. Она является автором книг «Ключ к устойчивым городам» (*The Key to Sustainable Cities*), «Действуй: руководство EarthCAT по развитию сообществ» (*Taking Action: the EarthCAT Guide to Community Development*) и «Местные действия для устойчивого экономического обновления» (*Local Action for Sustainable Economic Renewal*). Гвендолин обладает более чем 20-летним опытом работы с муниципальными, региональными и государственными органами власти в США и за рубежом. Она занимала должности сити-менеджера города Рэндольф (штат Вермонт), директора по региональному планированию округа Франклин (штат Массачусетс), старшего планировщика в Исполнительном управлении энергетических ресурсов штата Массачусетс, заместителя секретаря Агентства природных ресурсов штата Вермонт, а также более десяти лет работала международным специалистом по вопросам устойчивого развития сообществ.|heading_boundary_normalized"
       ],
       "accepted_only_in_recording": [
@@ -48,22 +41,29 @@
         "b_000980|delete_block|extraction_artifact||deleted",
         "b_001118|delete_block|extraction_artifact||deleted",
         "b_001120|reclassify_role|semantic_attribution|МАРГАРЕТ ТЭТЧЕР|role_reclassified_to_attribution",
+        "b_001297|split_block|heading_fused_with_body|Деньги, выпускаемые посредством одновременного списания и зачисления средств между участниками сделки, формируют валюту взаимного кредита. Примерами таких систем являются LETS и «банки времени» (TimeBanks). Например, в системе TimeBanking, если Джулия оказывает Джеймсу услугу длительностью в один час, она получает кредит на один час, а у Джеймса возникает дебит на ту же сумму. Таким образом, они создают валюту, необходимую для совершения операции, просто договорившись о самой услуге.\n\nГлавное преимущество систем взаимного кредита заключается в их способности к саморегулированию, благодаря чему в них всегда достаточно доступных средств. Кредитование без обеспечения: валюта может выпускаться в форме кредита, но без какого-либо официального залога (за исключением, пожалуй, неформального обязательства предоставить товар или услугу в будущем). По сути, взаимный кредит можно рассматривать как форму заимствования между самими участниками без предоставления обеспечения. Существуют также системы, позволяющие брать беззалоговые кредиты в центральном офисе, который выполняет роль, схожую с банком дополнительных валют (например, Bia Kud Kum в Таиланде).|split",
+        "b_001300|split_block|heading_fused_with_body|Некоторые системы сочетают в себе черты различных подходов к эмиссии, описанных выше. Например, валюта WIR выпускается как через взаимный кредит, так и централизованно под юридическое обеспечение. Некоторые дополнительные валюты социального назначения также принимаются местными предприятиями в качестве частичной оплаты, выполняя роль бонусной валюты.\n\nПреимущества и недостатки процедур эмиссии. Здесь также можно выделить свои плюсы и минусы для каждой системы. Как правило, существует систематический компромисс между простотой создания валюты и усилиями, необходимыми для завоевания и поддержания доверия к ней. Поиск оптимального баланса между этими двумя целями — ключ к созданию устойчивой валютной системы. При прочих равных условиях, по мере продвижения вниз по списку способов эмиссии (от обеспеченных валют к централизованному распределению), участникам становится проще создавать валюту, но одновременно требуется больше дисциплины для поддержания её авторитета.|split",
+        "b_001560|remove_inline_noise|page_number|г.).|inline_noise_removed",
+        "b_001570|remove_inline_noise|page_number|г.|inline_noise_removed",
         "b_001657|delete_block|extraction_artifact||deleted",
         "b_001660|delete_block|extraction_artifact||deleted"
       ],
       "accepted_only_in_replay": [],
+      "allowed_operations": [
+        "join_fragmented_paragraph",
+        "normalize_heading_boundary"
+      ],
       "book": "creating_wealth",
       "chunk_count": 75,
-      "cleaned_markdown_sha256": "485b45247cfe69afaa8e381b7261e0de087dd3a77af3e893ccca84eddd77adc1",
+      "cleaned_markdown_sha256": "15ca5f4c9f888659be3d3467662ee73866d5c8c76096d998b01c6fa26e93df89",
       "failed_chunk_count": 0,
       "ignored_by_reason": {
         "docx_image_anchor_lost_by_operation": 4,
-        "docx_image_anchor_protected": 22,
         "heading_boundary_substrings_not_found": 1,
-        "operation_not_supported": 2,
-        "remove_inline_noise_not_exact_noise_pattern": 1
+        "operation_not_allowed_by_cleanup_contract": 27,
+        "operation_not_supported": 2
       },
-      "ignored_count": 30,
+      "ignored_count": 34,
       "proposed_count": 39,
       "raw_block_count": 1672,
       "recorded_accepted_count": 34,
@@ -76,14 +76,12 @@
     "lietaer": {
       "accepted_by_operation": {
         "join_fragmented_paragraph": 10,
-        "normalize_heading_boundary": 23,
-        "remove_inline_noise": 6
+        "normalize_heading_boundary": 23
       },
       "accepted_by_reason": {
-        "heading_fused_with_body": 33,
-        "page_number": 6
+        "heading_fused_with_body": 33
       },
-      "accepted_count": 39,
+      "accepted_count": 33,
       "accepted_keys": [
         "b_000287|normalize_heading_boundary|heading_fused_with_body|НЕУМОЛИМАЯ КОНЦЕНТРАЦИЯ БОГАТСТВА\n\nМало кто понимает, что денежная система, основанная на процентах, является одним из ключевых механизмов концентрации богатства во все более узком кругу лиц, что подпитывает растущий разрыв между богатыми и бедными. Этот процесс концентрации ускоряется в большинстве стран, независимо от того, считается ли государство развитым или развивающимся.|heading_boundary_normalized",
         "b_000319|normalize_heading_boundary|heading_fused_with_body|ЛЕТУЧАЯ РЫБА\n\nНовый взгляд на деньги «Заявлять, что государство не может преследовать свои цели, потому что нет денег, — это всё равно что говорить, будто инженер не может строить дороги, потому что нет километров». Эзра Паунд, американский поэт и историк экономики|heading_boundary_normalized",
@@ -103,10 +101,6 @@
         "b_000601|normalize_heading_boundary|heading_fused_with_body|БРИСТОЛЬСКИЙ ФУНТ: НАШ ГОРОД, НАШИ ДЕНЬГИ, НАШЕ БУДУЩЕЕ.\n\nБристольский фунт (BP) — это одновременно бумажная и электронная валюта. Он становится интересным примером тройственного союза взаимной поддержки между валютой, местным банком и органами местного самоуправления. Платежи можно совершать наличными, через SMS с мобильного телефона или онлайн. Онлайн-счета и мобильные счета обслуживаются «Бристольским кредитным союзом» (Bristol Credit Union), который является партнером проекта. Городской совет Бристоля оказывает поддержку и предлагает сотрудникам, желающим получать часть зарплаты в Бристольских фунтах, такую возможность. Совет также принимает Бристольские фунты от предприятий в качестве оплаты налогов.|heading_boundary_normalized",
         "b_000698|join_fragmented_paragraph|heading_fused_with_body|### ПРЕДЛОЖЕНИЕ О СОЗДАНИИ ГЛОБАЛЬНОЙ ТОРГОВОЙ ВАЛЮТЫ ДЛЯ РАСЧЕТОВ.\n\nБыла разработана новая наднациональная валюта, призванная стать «подушкой безопасности» для традиционной денежной системы и стимулировать глобальные корпорации к переходу на принципы устойчивого развития. Подобные цели эффективнее всего достигаются не через регулирование, законодательные требования или моральные увещевания, а путем создания мощных финансовых стимулов в нужном направлении. Наднациональная кооперативная валюта могла бы стать таким стимулом.|joined_with_next",
         "b_000698|normalize_heading_boundary|heading_fused_with_body|### ПРЕДЛОЖЕНИЕ О СОЗДАНИИ ГЛОБАЛЬНОЙ ТОРГОВОЙ ВАЛЮТЫ ДЛЯ РАСЧЕТОВ.\n\nБыла разработана новая наднациональная валюта, призванная стать «подушкой безопасности» для традиционной денежной системы и стимулировать глобальные корпорации к переходу на принципы устойчивого развития. Подобные цели эффективнее всего достигаются не через регулирование, законодательные требования или моральные увещевания, а путем создания мощных финансовых стимулов в нужном направлении. Наднациональная кооперативная валюта могла бы стать таким стимулом.|heading_boundary_normalized",
-        "b_000721|remove_inline_noise|page_number|### 3 2a|inline_noise_removed",
-        "b_000737|remove_inline_noise|page_number|### Процесс создания Terra TRC|inline_noise_removed",
-        "b_000740|remove_inline_noise|page_number|### Обращение Терры|inline_noise_removed",
-        "b_000747|remove_inline_noise|page_number|### Обмен Терры на национальную валюту|inline_noise_removed",
         "b_000882|normalize_heading_boundary|heading_fused_with_body|СТРАТЕГИИ ДЛЯ НЕКОММЕРЧЕСКИХ ОРГАНИЗАЦИЙ\n\nДеньги не обязательно должны быть законным платежным средством. Они могут быть тем, что можно назвать «общепринятым средством платежа», то есть валютой, которую повсеместно принимают в счет погашения долга без принуждения со стороны закона.|heading_boundary_normalized",
         "b_000914|normalize_heading_boundary|heading_fused_with_body|ПЯТЬ МИЛЛИАРДОВ ЛЮДЕЙ НЕ ИМЕЮТ ДОСТУПА К ИНТЕРНЕТУ\n\nВдохновившись примером Куритибы, молодой американский предприниматель из Лос-Анджелеса Коста Грамматис разработал новую валюту, которая связывает общественную деятельность в развивающихся странах с пожертвованным временем в Интернете.|heading_boundary_normalized",
         "b_001007|normalize_heading_boundary|heading_fused_with_body|УПРАВЛЕНИЕ И МЫ ГРАЖДАНЕ\n\nДревнее будущее?|heading_boundary_normalized",
@@ -121,35 +115,39 @@
         "b_001365|normalize_heading_boundary|heading_fused_with_body|217. 20. Ричард Дункан, «Долларовый кризис: причины, последствия, пути решения»\n\n(Сингапур: John Wiley & Sons, 2003).|heading_boundary_normalized_across_adjacent_block",
         "b_001391|join_fragmented_paragraph|heading_fused_with_body|9. Впервые выпущенная Константином (306–337 гг. н. э.), монета официально называлась солид, но в народе была известна как безант. Она выпускалась с неизменным весом (4,55 грамма золота) и пробой (98 процентов чистого золота) на протяжении рекордных 700 лет. Монета широко использовалась по всей Европе и на Ближнем Востоке, далеко за пределами границ Византийской империи.|joined_with_next",
         "b_001393|join_fragmented_paragraph|heading_fused_with_body|10. См.: Carlo M. Cipolla, Il governo della moneta a Firenze e a Milano nei secoli XIV–XVI (Болонья, Италия: Società editrice il Mulino, 1990).|joined_with_next",
-        "b_001397|join_fragmented_paragraph|heading_fused_with_body|12. G. Einaudi, \"Teoria della moneta immaginaria nel tempo da Carlomagno alla Rivoluzione francese,\" Rivista di Storia Economica 1, no. 1 (Турин, 1936).|joined_with_next",
-        "b_001552|remove_inline_noise|page_number|г.|inline_noise_removed",
-        "b_001588|remove_inline_noise|page_number|г.|inline_noise_removed"
+        "b_001397|join_fragmented_paragraph|heading_fused_with_body|12. G. Einaudi, \"Teoria della moneta immaginaria nel tempo da Carlomagno alla Rivoluzione francese,\" Rivista di Storia Economica 1, no. 1 (Турин, 1936).|joined_with_next"
       ],
       "accepted_only_in_recording": [
         "b_000084|reclassify_role|semantic_heading|## КРАХ ДЕНЕГ|role_reclassified_to_heading",
+        "b_000721|remove_inline_noise|page_number|### 3 2a|inline_noise_removed",
+        "b_000737|remove_inline_noise|page_number|### Процесс создания Terra TRC|inline_noise_removed",
+        "b_000740|remove_inline_noise|page_number|### Обращение Терры|inline_noise_removed",
+        "b_000747|remove_inline_noise|page_number|### Обмен Терры на национальную валюту|inline_noise_removed",
         "b_001111|reclassify_role|semantic_heading|## НАШЕ ДОСТУПНОЕ БУДУЩЕЕ|role_reclassified_to_heading",
+        "b_001552|remove_inline_noise|page_number|г.|inline_noise_removed",
+        "b_001588|remove_inline_noise|page_number|г.|inline_noise_removed",
         "b_001763|normalize_heading_boundary|semantic_heading|Демократия: на Бали, 187–188, 190–191; гражданское общество\n\nи, 147–148; концентрация богатства и, 21–22, 52–53; в принципиальном обществе, 193–194; регио и, 191; социальный капитал и, 46. См. также конкретные темы: Отчет о кооперативной валюте, Кооператив учителей.|heading_boundary_normalized",
         "b_001807|split_block|heading_fused_with_body_candidate|Наставничество, 153–154, 171–172\n\nЗаймы: в Banco Palmas, 106–107; потребительские, 104–105, 106, 107; доход и, 108; в Ithaca HOURS, 163–164; в банке JAK, 109–110, 112; микрозаймы, 104–105, 107; производственные, 104–105, 107; револьверный фонд, 129–130. См. также Долг; Студенческий заем Купечество, 2 Микрозайм, 104–105, 107 Микроплатеж, 116 Средний класс, 2, 50, 75, 216 Mile High Business Alliance (MHBA), 104– 105, 107; Револьверный кредитный фонд,|split",
         "b_001828|split_block|heading_fused_with_body_candidate|Рационализм, 217; эпоха Просвещения, 15, 29–30; рынки как проявление, 4; сберегательно-кредитная система, 112; сберегательные баллы, 110\n\nРеализм, 30 Саваяка Фукуси, 166–167|split"
       ],
       "accepted_only_in_replay": [],
+      "allowed_operations": [
+        "join_fragmented_paragraph",
+        "normalize_heading_boundary"
+      ],
       "book": "lietaer",
       "chunk_count": 70,
-      "cleaned_markdown_sha256": "1cb57961793e741166083619c362f940d40fe283c6b510ab377979340c2f1aad",
+      "cleaned_markdown_sha256": "4617d18f0f1ff5536ffe9e9513f68d06cec7ab1bd2010bb2ffbe49b77d60fe05",
       "failed_chunk_count": 0,
       "ignored_by_reason": {
         "block_already_removed": 1,
-        "docx_image_anchor_protected": 38,
-        "duplicate_fragment_unique_continuation": 2,
         "heading_boundary_substrings_not_found": 3,
-        "low_confidence": 4,
+        "low_confidence": 1,
+        "operation_not_allowed_by_cleanup_contract": 64,
         "operation_not_supported": 7,
-        "reason_kind_incompatible": 9,
-        "remove_inline_noise_substring_ambiguous": 2,
-        "split_substrings_not_exact_block_cover": 1,
-        "toc_protected": 5
+        "toc_protected": 2
       },
-      "ignored_count": 72,
+      "ignored_count": 78,
       "proposed_count": 111,
       "raw_block_count": 1898,
       "recorded_accepted_count": 44,
@@ -161,44 +159,44 @@
     },
     "mazzucato": {
       "accepted_by_operation": {
-        "normalize_heading_boundary": 3,
-        "remove_inline_noise": 3
+        "normalize_heading_boundary": 3
       },
       "accepted_by_reason": {
-        "duplicate_fragment": 2,
-        "heading_fused_with_body": 3,
-        "page_number": 1
+        "heading_fused_with_body": 3
       },
-      "accepted_count": 6,
+      "accepted_count": 3,
       "accepted_keys": [
-        "b_000005|remove_inline_noise|page_number|г.|inline_noise_removed",
         "b_000087|normalize_heading_boundary|heading_fused_with_body|ЧТО ТАКОЕ СТОИМОСТЬ?\n\nСтоимость можно определить по-разному, но в ее основе лежит производство новых товаров и услуг. То, как эти результаты производятся (производство), как они распределяются в экономике (распределение) и что делается с доходами, полученными от их производства (реинвестирование), — ключевые вопросы для определения экономической стоимости. Также критически важно, является ли создаваемое полезным: увеличивают или уменьшают создаваемые продукты и услуги устойчивость производственной системы?|heading_boundary_normalized",
         "b_000418|normalize_heading_boundary|heading_fused_with_body|СТРАННОСТИ НАЦИОНАЛЬНЫХ СЧЕТОВ: GDP FACIT SALTUS!\n\nПомимо этого любопытного взгляда на государство, национальные счета обнаруживают и ряд других учетных странностей. Например, ВВП не проводит четкого различия между издержками и инвестициями в будущий потенциал, такими как НИОКР; ценные для экономики услуги, например «уход за близкими», могут оказываться без какой-либо оплаты, что делает их невидимыми для составителей ВВП; точно так же значительную часть экономики может составлять нелегальная деятельность на черном рынке. Ресурс, уничтоженный в результате загрязнения, может не учитываться как вычет из ВВП, но когда загрязнение устраняется с помощью рыночных услуг, ВВП растет. И, наконец, самая большая странность из всех: финансовый сектор.|heading_boundary_normalized",
-        "b_000791|normalize_heading_boundary|heading_fused_with_body|ОТКУДА БЕРУТСЯ ИННОВАЦИИ?\n\nПрежде чем рассматривать эти четыре области извлечения выгоды, я хочу обсудить три ключевые характеристики инновационных процессов. Инновации редко возникают изолированно. Скорее, по своей природе они глубоко кумулятивны: сегодняшние инновации часто являются результатом инвестиций, сделанных в прошлом. Более того, инновации носят коллективный характер и требуют длительного времени на подготовку: то, что сегодня может показаться радикальным открытием, на самом деле является плодом десятилетий упорного труда множества исследователей.|heading_boundary_normalized",
-        "b_001931|remove_inline_noise|duplicate_fragment|эффективности» (2000): http://www.who.int/whr/2000/en/ .pdf?ua=1|inline_noise_removed",
-        "b_002070|remove_inline_noise|duplicate_fragment|Райх, Р. Б., «Экономист Джон Мейнард Кейнс», журнал TIME, 29 марта 1999 г. Райх, У. П. и Хорц, К., «Распределение государственного продукта между промежуточным и конечным потреблением», Review of Income and Wealth, 28(3) (1982), с. 325–44. *Райнерт, Э. С., Как богатые страны стали богатыми, и почему бедные страны остаются* бедными (Лондон: Constable, 2008). Рейнхарт, К. М. и Рогофф, К. С., «Рост во времена долга», American Economic Review, 100(2) (2010), с. 573–8. Рейнхарт, К. М. и Рогофф, К. С., «Долг, рост и дебаты о жесткой экономии», New York Times, 25 апреля 2013 г.: http://www.nytimes.com/2013/04/26/opinion/debt-growth-and-the-austerity-debate.html?_r=0 Рейнхарт, К. М. и Рогофф, К. С., «: ответ нашим критикам», New York Times, 25 апреля 2013 г.: http://www.nytimes.com/2013/04/26/opinion/reinhart-and-rogoff-responding-to-our-critics.html *Рикардо, Д., Сочинения и переписка Дэвида Рикардо, под ред. Сраффы П. при участии Добба М. Х., том 1: Начала политической экономии и налогового обложения (Кембридж: University Press, 1951).*|inline_noise_removed"
+        "b_000791|normalize_heading_boundary|heading_fused_with_body|ОТКУДА БЕРУТСЯ ИННОВАЦИИ?\n\nПрежде чем рассматривать эти четыре области извлечения выгоды, я хочу обсудить три ключевые характеристики инновационных процессов. Инновации редко возникают изолированно. Скорее, по своей природе они глубоко кумулятивны: сегодняшние инновации часто являются результатом инвестиций, сделанных в прошлом. Более того, инновации носят коллективный характер и требуют длительного времени на подготовку: то, что сегодня может показаться радикальным открытием, на самом деле является плодом десятилетий упорного труда множества исследователей.|heading_boundary_normalized"
       ],
       "accepted_only_in_recording": [
         "b_000004|delete_block|extraction_artifact||deleted",
+        "b_000005|remove_inline_noise|page_number|г.|inline_noise_removed",
         "b_000144|delete_block|extraction_artifact||deleted",
         "b_000405|delete_block|extraction_artifact||deleted",
         "b_000563|normalize_heading_boundary|heading_fused_with_body|[[DOCX_IMAGE_\n\nimg_017]] Рисунок 11. Домашние хозяйства: долг и доходы в США и Великобритании, 1995–2005 гг.49|heading_boundary_normalized",
         "b_000575|delete_block|extraction_artifact||deleted",
-        "b_000667|delete_block|extraction_artifact||deleted"
+        "b_000667|delete_block|extraction_artifact||deleted",
+        "b_001931|remove_inline_noise|duplicate_fragment|эффективности» (2000): http://www.who.int/whr/2000/en/ .pdf?ua=1|inline_noise_removed",
+        "b_002070|remove_inline_noise|duplicate_fragment|Райх, Р. Б., «Экономист Джон Мейнард Кейнс», журнал TIME, 29 марта 1999 г. Райх, У. П. и Хорц, К., «Распределение государственного продукта между промежуточным и конечным потреблением», Review of Income and Wealth, 28(3) (1982), с. 325–44. *Райнерт, Э. С., Как богатые страны стали богатыми, и почему бедные страны остаются* бедными (Лондон: Constable, 2008). Рейнхарт, К. М. и Рогофф, К. С., «Рост во времена долга», American Economic Review, 100(2) (2010), с. 573–8. Рейнхарт, К. М. и Рогофф, К. С., «Долг, рост и дебаты о жесткой экономии», New York Times, 25 апреля 2013 г.: http://www.nytimes.com/2013/04/26/opinion/debt-growth-and-the-austerity-debate.html?_r=0 Рейнхарт, К. М. и Рогофф, К. С., «: ответ нашим критикам», New York Times, 25 апреля 2013 г.: http://www.nytimes.com/2013/04/26/opinion/reinhart-and-rogoff-responding-to-our-critics.html *Рикардо, Д., Сочинения и переписка Дэвида Рикардо, под ред. Сраффы П. при участии Добба М. Х., том 1: Начала политической экономии и налогового обложения (Кембридж: University Press, 1951).*|inline_noise_removed"
       ],
       "accepted_only_in_replay": [],
+      "allowed_operations": [
+        "join_fragmented_paragraph",
+        "normalize_heading_boundary"
+      ],
       "book": "mazzucato",
       "chunk_count": 107,
-      "cleaned_markdown_sha256": "1d2d4ea85f8dead7026fe80aa8e058a9c99ce13c326869c6db78d5c42793b3ee",
+      "cleaned_markdown_sha256": "9ed3b201f83f22078c1d4502e80dab5e782bed94fc4717dbbe790c3e25af56ee",
       "failed_chunk_count": 0,
       "ignored_by_reason": {
         "docx_image_anchor_lost_by_operation": 1,
-        "docx_image_anchor_protected": 6,
         "heading_boundary_heading_ambiguous": 1,
-        "heading_protected": 1,
+        "operation_not_allowed_by_cleanup_contract": 10,
         "operation_not_supported": 1
       },
-      "ignored_count": 10,
+      "ignored_count": 13,
       "proposed_count": 16,
       "raw_block_count": 2099,
       "recorded_accepted_count": 12,

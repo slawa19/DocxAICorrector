@@ -2007,3 +2007,65 @@ def test_reader_cleanup_max_failed_chunk_ratio_default_survives_a_missing_config
     app_config = config.load_app_config()
 
     assert app_config["reader_cleanup_max_failed_chunk_ratio"] == 0.1
+
+
+_NARROWED_CLEANUP_OPERATIONS = ("normalize_heading_boundary", "join_fragmented_paragraph")
+
+
+def test_shipped_config_narrows_the_reader_cleanup_operation_set_to_the_heading_pair(monkeypatch):
+    # Spec 052 / the first live run (2026-08-02, three books): the two heading operations
+    # removed 18 visible defects against 4 caused; remove_inline_noise + delete_block
+    # removed 0 against 12 caused, cutting a file name out of a WHO URL and years out of a
+    # bibliography. The narrowing has to reach a production run through the CONFIG, which
+    # is the layer that did not carry the key at all before.
+    monkeypatch.setattr(config, "CONFIG_PATH", config.CONFIG_PATH)
+    app_config = config.load_app_config()
+
+    assert app_config["reader_cleanup_allowed_operations"] == _NARROWED_CLEANUP_OPERATIONS
+    # The pass reads the same set out of that config, so the run is narrowed with no
+    # further operator action.
+    assert resolve_reader_cleanup_config(
+        app_config=dict(app_config), fallback_model="gpt-5.4"
+    ).allowed_operations == _NARROWED_CLEANUP_OPERATIONS
+
+
+def test_reader_cleanup_operation_set_default_survives_a_missing_config_file(monkeypatch):
+    # Three copies of the list exist — resources/config.toml, the AppConfig field default and
+    # the cleanup package's own default — because core config must not import the cleanup
+    # package on the startup path. This pins the two that answer when config.toml is gone.
+    monkeypatch.setattr(config, "CONFIG_PATH", config.CONFIG_PATH.parent / "__missing_config__.toml")
+
+    app_config = config.load_app_config()
+
+    assert app_config["reader_cleanup_allowed_operations"] == _NARROWED_CLEANUP_OPERATIONS
+    assert resolve_reader_cleanup_config(
+        app_config={}, fallback_model="gpt-5.4"
+    ).allowed_operations == _NARROWED_CLEANUP_OPERATIONS
+
+
+def test_config_can_still_widen_the_reader_cleanup_operation_set(monkeypatch, tmp_path):
+    # The narrowing is a default, not a removal: an investigative run must be able to put
+    # the other operations back, and an explicitly EMPTY list keeps the pass's own "no
+    # contract, every operation" meaning.
+    cfg = tmp_path / "config.toml"
+    cfg.write_text(
+        'reader_cleanup_allowed_operations = ["delete_block", "remove_inline_noise"]\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(config, "CONFIG_PATH", cfg)
+    config.reset_app_config_cache()
+
+    app_config = config.load_app_config()
+
+    assert app_config["reader_cleanup_allowed_operations"] == ("delete_block", "remove_inline_noise")
+    assert resolve_reader_cleanup_config(
+        app_config=dict(app_config), fallback_model="gpt-5.4"
+    ).allowed_operations == ("delete_block", "remove_inline_noise")
+
+    cfg.write_text("reader_cleanup_allowed_operations = []\n", encoding="utf-8")
+    config.reset_app_config_cache()
+
+    widened = config.load_app_config()
+
+    assert widened["reader_cleanup_allowed_operations"] == ()
+    assert resolve_reader_cleanup_config(app_config=dict(widened), fallback_model="gpt-5.4").allowed_operations == ()

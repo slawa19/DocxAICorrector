@@ -80,6 +80,12 @@ reader_cleanup_global_plan_enabled = false
 # Fail the pass when more than this share of chunks fail (spec 052 item 2).
 # 1.0 meant "only when EVERY chunk failed" — 106 of 107 could fail silently.
 reader_cleanup_max_failed_chunk_ratio = 0.1
+# Which operations the pass may use. Narrowed to the heading pair by the first live run
+# (2026-08-02, three books): these two removed 18 visible defects and caused 4, while
+# remove_inline_noise + delete_block removed 0 and caused 12 — spec 052 and
+# artifacts/reader_cleanup_live_run/first_live_run_summary.json. Naming other operations
+# here re-enables them; an empty list means all of them.
+reader_cleanup_allowed_operations = ["normalize_heading_boundary", "join_fragmented_paragraph"]
 
 [models.text]
 default = "openrouter:google/gemini-3.1-flash-lite-preview"
