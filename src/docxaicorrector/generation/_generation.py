@@ -58,8 +58,8 @@ _COLLAPSED_MARKER_CHUNK_RATIO = 0.15
 # Below this the source paragraph is itself a fragment ("г.", ".htm.") where a length
 # ratio carries no signal.
 _COLLAPSED_MARKER_CHUNK_MIN_SOURCE_CHARS = 40
-# The previous paragraph counts as the one that swallowed the collapsed paragraph when it
-# grew by at least this share of what the collapsed paragraph lost.
+# A neighbour — on EITHER side — counts as the one that swallowed the collapsed paragraph
+# when it grew by at least this share of what the collapsed paragraph lost.
 _ABSORBING_NEIGHBOUR_RATIO = 0.5
 _INCOMPLETE_RESPONSE_RETRY_MIN_OUTPUT_TOKENS = 1024
 _INCOMPLETE_RESPONSE_RECOVERY_MIN_OUTPUT_TOKENS = 1536
@@ -361,49 +361,88 @@ def restore_collapsed_marker_paragraphs(
     *,
     expected_paragraph_ids: Sequence[str] | None = None,
 ) -> list[str]:
-    """Re-instate the SOURCE text of any paragraph whose returned chunk collapsed.
+    """Re-instate the SOURCE text of a paragraph the model MERGED into a neighbour.
 
     Contract: one marker — one paragraph, and a paragraph's content stays in its own
     paragraph. When the model merges a paragraph into its neighbour it is forbidden to
     delete the emptied marker, so it fills it with an invented stub ("(Пусто)") that ships
     to the reader as literal garbage (7 occurrences on the 2026-08-03 literary-edit run).
 
+    A shrunken chunk on its own is NOT evidence of a merge, and restoring on shrinkage
+    alone silently reverts work the model was ASKED to do: a legitimately tightened
+    sentence, or — in audiobook mode, where the prompt orders reference and bibliography
+    paragraphs to be dropped — exactly the paragraphs that must not reach the narration.
+    So a restore requires the merge to be VISIBLE: a neighbour that grew by at least half
+    of what this paragraph holds, i.e. an identified place the text went to. No identified
+    absorber, no restore.
+
+    The absorber is searched on BOTH sides. The model merges forward as readily as back
+    (``[stub for A, "text A text B"]``), and looking only at ``index - 1`` restored A while
+    leaving A's text inside the next chunk — shipping A twice.
+
     A collapse is length-only and therefore operation-agnostic (``edit`` AND ``translate``):
-    no translation turns an 861-character paragraph into 7 characters. Both the collapsed
-    paragraph AND the neighbour that swallowed it are restored, because restoring only the
-    collapsed one would ship the swallowed text twice.
+    no translation turns an 861-character paragraph into 7 characters.
+
+    Replayed over the 1761 recorded pairs of that run: all 7 stubs have an absorbing
+    neighbour and are still repaired; the single collapse WITHOUT one (a 655-character
+    quote) turned out not to be a merge at all — the model had shifted a whole endnote
+    region, and that quote was already shipping five markers earlier, so re-instating it
+    delivered the quote twice.
     """
 
     if not source_paragraph_chunks or len(source_paragraph_chunks) != len(paragraph_chunks):
         return paragraph_chunks
 
-    restored = list(paragraph_chunks)
+    source_lengths = [_visible_marker_chunk_length(chunk) for chunk in source_paragraph_chunks]
+    returned_lengths = [_visible_marker_chunk_length(chunk) for chunk in paragraph_chunks]
+
     collapsed_indexes: list[int] = []
-    for index, chunk in enumerate(paragraph_chunks):
-        source_length = _visible_marker_chunk_length(source_paragraph_chunks[index])
+    for index in range(len(paragraph_chunks)):
+        source_length = source_lengths[index]
         if source_length < _COLLAPSED_MARKER_CHUNK_MIN_SOURCE_CHARS:
             continue
-        if _visible_marker_chunk_length(chunk) > source_length * _COLLAPSED_MARKER_CHUNK_RATIO:
+        if returned_lengths[index] > source_length * _COLLAPSED_MARKER_CHUNK_RATIO:
             continue
         collapsed_indexes.append(index)
 
     if not collapsed_indexes:
         return paragraph_chunks
 
+    restored = list(paragraph_chunks)
     restored_indexes: list[int] = []
+    merged_indexes: list[int] = []
+    kept_indexes: list[int] = []
     for index in collapsed_indexes:
-        restored[index] = source_paragraph_chunks[index]
-        restored_indexes.append(index)
-        previous_index = index - 1
-        if previous_index < 0:
+        required_growth = source_lengths[index] * _ABSORBING_NEIGHBOUR_RATIO
+        absorbing_indexes = [
+            neighbour_index
+            for neighbour_index in (index - 1, index + 1)
+            if 0 <= neighbour_index < len(paragraph_chunks)
+            and returned_lengths[neighbour_index] - source_lengths[neighbour_index] >= required_growth
+        ]
+        if not absorbing_indexes:
+            # No neighbour grew to hold this text: nothing shows a merge happened, so the
+            # answer is a short answer and the model's output stands.
+            kept_indexes.append(index)
             continue
-        previous_growth = _visible_marker_chunk_length(paragraph_chunks[previous_index]) - _visible_marker_chunk_length(
-            source_paragraph_chunks[previous_index]
+        merged_indexes.append(index)
+        for restore_index in (index, *absorbing_indexes):
+            restored[restore_index] = source_paragraph_chunks[restore_index]
+            restored_indexes.append(restore_index)
+
+    if kept_indexes:
+        log_event(
+            logging.INFO,
+            "marker_chunk_shrunk_without_absorber_kept",
+            "Возвращённый абзац сильно короче исходного, но поглотивший его сосед не найден; ответ модели сохранён.",
+            shrunken_paragraph_ids=[
+                _marker_paragraph_id(expected_paragraph_ids, index) for index in kept_indexes
+            ],
+            paragraph_count=len(paragraph_chunks),
         )
-        if previous_growth < _visible_marker_chunk_length(source_paragraph_chunks[index]) * _ABSORBING_NEIGHBOUR_RATIO:
-            continue
-        restored[previous_index] = source_paragraph_chunks[previous_index]
-        restored_indexes.append(previous_index)
+
+    if not merged_indexes:
+        return paragraph_chunks
 
     # The run report must show these paragraphs: the block still logs ``OK``, so without a
     # counter the reader believes a paragraph was edited when in fact its edit was thrown
@@ -415,15 +454,20 @@ def restore_collapsed_marker_paragraphs(
     log_event(
         logging.WARNING,
         "marker_chunk_collapse_source_restored",
-        "Возвращённый абзац схлопнулся относительно исходного; восстановлен исходный текст абзаца.",
+        "Возвращённый абзац схлопнулся в соседний; восстановлен исходный текст обоих абзацев.",
         collapsed_paragraph_ids=[
-            (expected_paragraph_ids[index] if expected_paragraph_ids and index < len(expected_paragraph_ids) else str(index))
-            for index in collapsed_indexes
+            _marker_paragraph_id(expected_paragraph_ids, index) for index in merged_indexes
         ],
         restored_paragraph_count=len(set(restored_indexes)),
         paragraph_count=len(paragraph_chunks),
     )
     return restored
+
+
+def _marker_paragraph_id(expected_paragraph_ids: Sequence[str] | None, index: int) -> str:
+    if expected_paragraph_ids and index < len(expected_paragraph_ids):
+        return expected_paragraph_ids[index]
+    return str(index)
 
 
 def _strip_and_validate_paragraph_markers(
