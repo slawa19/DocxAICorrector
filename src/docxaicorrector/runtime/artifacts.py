@@ -370,6 +370,7 @@ def write_ui_result_artifacts(
     assembly_mode: str | None = None,
     selected_segment_count: int | None = None,
     result_manifest: Mapping[str, object] | None = None,
+    model_accounting: Mapping[str, object] | None = None,
     output_dir: Path = UI_RESULT_ARTIFACTS_DIR,
     created_at: float | None = None,
     run_id: str | None = None,
@@ -390,6 +391,11 @@ def write_ui_result_artifacts(
         meta_payload["selected_segment_count"] = selected_segment_count
     if quality_warning:
         meta_payload["quality_warning"] = quality_warning
+    if model_accounting:
+        # What the run cost, next to the other per-run metrics the reader already finds
+        # here. Keeps the answer to "why was the bill this size" attached to the delivered
+        # result instead of only in the rolling app log.
+        meta_payload["model_accounting"] = _to_jsonable(model_accounting)
     write_meta = len(meta_payload) > 1
 
     # Stage the whole group to temp, then publish (spec 023): staging/publish

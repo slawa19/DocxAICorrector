@@ -4326,6 +4326,56 @@ def _extract_run_formatting_diagnostics_paths(event_log: Sequence[Mapping[str, o
     return []
 
 
+_MODEL_ACCOUNTING_SUMMARY_FIELDS = (
+    "model_call_count",
+    "model_calls_with_usage",
+    "model_calls_without_usage",
+    "model_calls_without_cost",
+    "prompt_tokens",
+    "completion_tokens",
+    "total_tokens",
+    "cost_usd_reported_by_provider",
+    "token_accounting_complete",
+    "cost_accounting_complete",
+    "retry_attempt_count",
+    "retried_block_count",
+    "retried_paragraph_count",
+    "model_output_discarded_paragraph_count",
+    "model_output_discarded_block_count",
+)
+
+
+def _extract_model_accounting(event_log: Sequence[Mapping[str, object]]) -> dict[str, object] | None:
+    """Pull the run's token/cost/retry totals out of the ``model_usage_accounted`` event.
+
+    The harness mines the event log for every other per-run number, so accounting follows
+    the same route rather than inventing a second channel. ``None`` means the event was
+    absent — which the summary reports as ``not_reported``, never as zero.
+    """
+
+    for event in reversed(event_log):
+        if str(event.get("event_id") or "") != "model_usage_accounted":
+            continue
+        context = event.get("context") or {}
+        if isinstance(context, Mapping):
+            return {str(key): value for key, value in context.items()}
+    return None
+
+
+def _build_model_accounting_summary_lines(model_accounting: Mapping[str, object] | None) -> list[str]:
+    if model_accounting is None:
+        return ["model_accounting=not_reported"]
+    lines = [
+        f"model_accounting_{field}={model_accounting.get(field)}"
+        for field in _MODEL_ACCOUNTING_SUMMARY_FIELDS
+    ]
+    for field in ("retry_reason_counts", "model_output_discarded_reason_counts", "stages"):
+        lines.append(
+            f"model_accounting_{field}={json.dumps(model_accounting.get(field) or {}, ensure_ascii=False, sort_keys=True)}"
+        )
+    return lines
+
+
 def _extract_quality_report_artifact_path(event_log: Sequence[Mapping[str, object]]) -> str | None:
     for event in reversed(event_log):
         if str(event.get("event_id") or "") != "quality_report_saved":
@@ -5546,6 +5596,7 @@ def main() -> None:
         "result": result,
         "runtime_config": build_validation_runtime_config(runtime_resolution),
         "preparation": preparation_payload,
+        "model_accounting": _extract_model_accounting(event_log),
         "preparation_diagnostic_snapshot": preparation_diagnostic_snapshot,
         "source_cleanup_evidence": _build_source_cleanup_evidence(getattr(prepared, "cleanup_report", None)),
         "runtime": runtime_snapshot,
@@ -5742,6 +5793,9 @@ def main() -> None:
         f"ai_heading_demotion_count={report['preparation']['ai_heading_demotion_count']}",
         f"ai_structural_role_change_count={report['preparation']['ai_structural_role_change_count']}",
         f"preparation_diagnostic_snapshot={json.dumps(report['preparation_diagnostic_snapshot'], ensure_ascii=False, sort_keys=True)}",
+        *_build_model_accounting_summary_lines(
+            cast("Mapping[str, object] | None", report.get("model_accounting"))
+        ),
         f"source_chars={report['preparation']['source_chars']}",
         f"final_markdown_chars={final_markdown_chars}",
         f"output_ratio_vs_source_text={report['signals']['output_ratio_vs_source_text']}",

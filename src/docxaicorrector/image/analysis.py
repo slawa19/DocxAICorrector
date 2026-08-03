@@ -15,6 +15,7 @@ from docxaicorrector.image.shared import (
     parse_json_object,
 )
 from docxaicorrector.core.logger import log_event
+from docxaicorrector.core.model_accounting import STAGE_IMAGE_ANALYSIS
 from docxaicorrector.core.models import ImageAnalysisResult
 
 
@@ -494,6 +495,7 @@ def _extract_vision_analysis(
         max_retries=VISION_ANALYSIS_MAX_RETRIES,
         retryable_error_predicate=is_retryable_error,
         budget=budget,
+        usage_stage=STAGE_IMAGE_ANALYSIS,
     )
     payload = parse_json_object(
         extract_response_text(

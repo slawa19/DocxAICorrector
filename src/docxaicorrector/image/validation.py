@@ -16,6 +16,7 @@ from docxaicorrector.image.shared import (
     parse_json_object,
 )
 from docxaicorrector.core.logger import log_event
+from docxaicorrector.core.model_accounting import STAGE_IMAGE_VALIDATION
 from docxaicorrector.core.models import ImageAnalysisResult, ImageValidationResult
 
 DEFAULT_VALIDATION_CONFIG: dict[str, Any] = {
@@ -424,6 +425,7 @@ def _build_vision_validation_assessment(
         max_retries=VISION_VALIDATION_MAX_RETRIES,
         retryable_error_predicate=is_retryable_error,
         budget=budget,
+        usage_stage=STAGE_IMAGE_VALIDATION,
     )
     return parse_json_object(
         extract_response_text(

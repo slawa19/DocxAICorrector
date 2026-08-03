@@ -16,6 +16,12 @@ from docx.oxml.ns import qn
 from docx.shared import Pt
 
 from docxaicorrector.core.logger import log_event
+from docxaicorrector.core.model_accounting import (
+    STAGE_TEXT_GENERATION,
+    record_model_call_usage,
+    record_model_output_discarded,
+    record_retry_attempt,
+)
 from docxaicorrector.image.shared import call_responses_create_with_retry, extract_unsupported_parameter_name, is_retryable_error
 from docxaicorrector.generation.openai_response_utils import collect_response_text_traversal, read_response_field
 
@@ -399,6 +405,13 @@ def restore_collapsed_marker_paragraphs(
         restored[previous_index] = source_paragraph_chunks[previous_index]
         restored_indexes.append(previous_index)
 
+    # The run report must show these paragraphs: the block still logs ``OK``, so without a
+    # counter the reader believes a paragraph was edited when in fact its edit was thrown
+    # away and the source was shipped instead.
+    record_model_output_discarded(
+        reason="marker_chunk_collapse",
+        paragraph_count=len(set(restored_indexes)),
+    )
     log_event(
         logging.WARNING,
         "marker_chunk_collapse_source_restored",
@@ -651,6 +664,7 @@ def _call_responses_create(client: "OpenAI", request_kwargs: dict[str, Any]) -> 
         max_retries=1,
         retryable_error_predicate=lambda exc: False,
         retryable_optional_params={"temperature", "max_output_tokens"},
+        usage_stage=STAGE_TEXT_GENERATION,
     )
 
 
@@ -756,7 +770,7 @@ def _call_chat_completions_create(client: "OpenAI", request_kwargs: dict[str, ob
     removable_optional_params = {"temperature", "max_tokens"}
     while True:
         try:
-            return create(**payload)
+            response = create(**payload)
         except TypeError as exc:
             unsupported_param = extract_unsupported_parameter_name(str(exc))
             if unsupported_param in removable_optional_params and unsupported_param in payload:
@@ -769,6 +783,9 @@ def _call_chat_completions_create(client: "OpenAI", request_kwargs: dict[str, ob
                 payload.pop(unsupported_param, None)
                 continue
             raise
+        else:
+            record_model_call_usage(stage=STAGE_TEXT_GENERATION, response=response)
+            return response
 
 
 def _extract_chat_completion_markdown(response: object) -> str:
@@ -847,7 +864,7 @@ def _call_anthropic_messages_create(client: object, request_kwargs: dict[str, ob
     removable_optional_params = {"temperature"}
     while True:
         try:
-            return create(**payload)
+            response = create(**payload)
         except TypeError as exc:
             unsupported_param = extract_unsupported_parameter_name(str(exc))
             if unsupported_param in removable_optional_params and unsupported_param in payload:
@@ -860,6 +877,11 @@ def _call_anthropic_messages_create(client: object, request_kwargs: dict[str, ob
                 payload.pop(unsupported_param, None)
                 continue
             raise
+        else:
+            # Anthropic reports ``usage.input_tokens``/``output_tokens`` but no cost, so
+            # this path deliberately leaves cost unknown instead of applying a price list.
+            record_model_call_usage(stage=STAGE_TEXT_GENERATION, response=response)
+            return response
 
 
 def _extract_anthropic_message_markdown(response: object) -> str:
@@ -1038,6 +1060,24 @@ def _is_retryable_context_leakage_error(exc: Exception) -> bool:
     return isinstance(exc, ContextLeakageError)
 
 
+def _classify_retry_reason(exc: Exception) -> str:
+    """Name WHY a block was retried, so the run report is diagnosable, not just a count."""
+
+    if _is_retryable_context_leakage_error(exc):
+        return "context_leakage"
+    if _is_retryable_marker_validation_error(exc):
+        return "marker_validation"
+    if _is_incomplete_response_error(exc):
+        return "incomplete_response"
+    if _is_non_completed_response_error(exc):
+        return "non_completed_response"
+    if _is_retryable_empty_generation_error(exc):
+        return "empty_generation"
+    if is_retryable_error(exc):
+        return "transient_api_error"
+    return "other"
+
+
 def generate_markdown_block(
     client: "OpenAI",
     model: str,
@@ -1108,6 +1148,11 @@ def generate_markdown_block(
         else None
     )
     last_exception: Exception | None = None
+    # A block that needed a second attempt is invisible today: every retry is silent and
+    # the block still reports ``OK``. Count the attempts, the blocks and — in marker mode,
+    # where the mapping is exact — the paragraphs those blocks carried.
+    block_paragraph_count = len(expected_paragraph_ids) if marker_mode and expected_paragraph_ids else 0
+    block_was_retried = False
 
     for attempt in range(1, max_retries + 1):
         try:
@@ -1133,6 +1178,12 @@ def generate_markdown_block(
             )
             if not should_retry:
                 break
+            record_retry_attempt(
+                reason=_classify_retry_reason(exc),
+                paragraph_count=block_paragraph_count,
+                first_retry_for_block=not block_was_retried,
+            )
+            block_was_retried = True
             if _is_incomplete_response_error(exc):
                 request_kwargs = _boost_request_output_budget(
                     request_kwargs,
@@ -1146,6 +1197,12 @@ def generate_markdown_block(
         _is_retryable_empty_generation_error(last_exception)
         or _is_retryable_marker_validation_error(last_exception)
     ):
+        record_retry_attempt(
+            reason="recovery_after_exhausted_retries",
+            paragraph_count=block_paragraph_count,
+            first_retry_for_block=not block_was_retried,
+        )
+        block_was_retried = True
         try:
             return _recover_from_persistent_empty_response(
                 client=client,
@@ -1163,6 +1220,7 @@ def generate_markdown_block(
             )
         except Exception as recovery_exc:
             if _is_incomplete_response_error(recovery_exc) and _can_fallback_to_source_text_after_incomplete_response(target_text):
+                record_model_output_discarded(reason="incomplete_response_source_fallback", block_count=1)
                 log_event(
                     logging.WARNING,
                     "markdown_incomplete_response_source_fallback",
@@ -1176,6 +1234,7 @@ def generate_markdown_block(
                 target_text_for_leakage,
                 marker_mode=marker_mode,
             ):
+                record_model_output_discarded(reason="marker_validation_source_fallback", block_count=1)
                 log_event(
                     logging.WARNING,
                     "markdown_marker_validation_source_fallback",
@@ -1189,6 +1248,7 @@ def generate_markdown_block(
             if _is_empty_response_error(recovery_exc) and _can_fallback_to_source_text_after_empty_response(
                 target_text
             ):
+                record_model_output_discarded(reason="empty_response_source_fallback", block_count=1)
                 log_event(
                     logging.WARNING,
                     "markdown_empty_response_source_fallback",
@@ -1208,6 +1268,7 @@ def generate_markdown_block(
         and _is_non_completed_response_error(last_exception)
         and _can_fallback_to_source_text_after_non_completed_response(target_text)
     ):
+        record_model_output_discarded(reason="non_completed_response_source_fallback", block_count=1)
         log_event(
             logging.WARNING,
             "markdown_non_completed_response_source_fallback",

@@ -24,6 +24,7 @@ from docxaicorrector.core.constants import PROMPTS_DIR
 from docxaicorrector.image.analysis import image_within_pixel_budget
 from docxaicorrector.image.shared import call_responses_create_with_retry, detect_image_mime_type, extract_response_text, is_retryable_error
 from docxaicorrector.core.logger import log_event
+from docxaicorrector.core.model_accounting import STAGE_IMAGE_RECONSTRUCTION
 
 SCENE_GRAPH_PROMPT_PATH = PROMPTS_DIR / "scene_graph_extraction.txt"
 DEFAULT_RECONSTRUCTION_MIN_CANVAS_SHORT_SIDE_PX = 900
@@ -164,6 +165,7 @@ def extract_scene_graph(
         max_retries=2,
         retryable_error_predicate=is_retryable_error,
         budget=budget,
+        usage_stage=STAGE_IMAGE_RECONSTRUCTION,
     )
 
     raw_text = extract_response_text(

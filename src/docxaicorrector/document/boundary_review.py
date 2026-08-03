@@ -11,6 +11,7 @@ from docxaicorrector.image.shared import (
     is_retryable_error,
     parse_json_object,
 )
+from docxaicorrector.core.model_accounting import STAGE_BOUNDARY_REVIEW
 from docxaicorrector.core.models import ParagraphBoundaryNormalizationReport, ParagraphUnit, RawBlock, RawParagraph, RelationNormalizationReport
 from docxaicorrector.runtime.artifact_retention import prune_artifact_dir
 
@@ -208,6 +209,7 @@ def request_ai_review_recommendations(
         ),
         max_retries=2,
         retryable_error_predicate=is_retryable_error,
+        usage_stage=STAGE_BOUNDARY_REVIEW,
     )
     raw_text = extract_response_text(
         response,

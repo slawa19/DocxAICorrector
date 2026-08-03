@@ -11,6 +11,7 @@ from docx.styles.style import ParagraphStyle, _TableStyle
 
 from PIL import Image
 
+import docxaicorrector.core.model_accounting as model_accounting
 import docxaicorrector.generation._generation as generation
 import docxaicorrector.image.shared as image_shared
 from docxaicorrector.image.generation import _normalize_generated_document_background
@@ -2275,3 +2276,294 @@ def test_convert_markdown_to_docx_bytes_no_font_args_leaves_theme_unchanged():
     assert "Aptos" not in theme_xml
     assert "Aptos" not in numbering_xml
     assert "Aptos" not in styles_xml
+
+
+# --- Token / cost accounting -------------------------------------------------------
+#
+# The product spent real money on every run while counting neither tokens nor dollars:
+# before this block there was not one reference to ``usage``/``prompt_tokens``/``cost``
+# in ``src/``. These tests pin the two halves of the contract that matter — the numbers
+# a provider DOES report must arrive intact, and the numbers it does NOT report must stay
+# visibly unknown rather than collapse into a free-looking zero.
+
+
+def _reset_accounting():
+    model_accounting.reset_run_model_accounting()
+
+
+def _usage_response(markdown: str, **usage_fields: object) -> SimpleNamespace:
+    return SimpleNamespace(output_text=markdown, usage=SimpleNamespace(**usage_fields))
+
+
+def test_generate_markdown_block_records_provider_reported_tokens_and_cost():
+    _reset_accounting()
+    client = SimpleNamespace(
+        responses=SimpleNamespace(
+            create=lambda **_: _usage_response(
+                "Исправленный текст",
+                prompt_tokens=2315,
+                completion_tokens=693,
+                total_tokens=3008,
+                cost=0.00161825,
+            )
+        )
+    )
+
+    generation.generate_markdown_block(
+        client=_as_openai_client(client),
+        model="gpt-5.4",
+        system_prompt="system",
+        target_text="target",
+        context_before="",
+        context_after="",
+        max_retries=1,
+    )
+
+    snapshot = model_accounting.snapshot_run_model_accounting()
+    assert snapshot["model_call_count"] == 1
+    assert snapshot["model_calls_with_usage"] == 1
+    assert snapshot["model_calls_without_usage"] == 0
+    assert snapshot["prompt_tokens"] == 2315
+    assert snapshot["completion_tokens"] == 693
+    assert snapshot["total_tokens"] == 3008
+    assert snapshot["cost_usd_reported_by_provider"] == 0.001618
+    assert snapshot["token_accounting_complete"] is True
+    assert snapshot["cost_accounting_complete"] is True
+    stages = cast(dict[str, Any], snapshot["stages"])
+    assert stages["text_generation"]["total_tokens"] == 3008
+
+
+def test_generate_markdown_block_without_usage_counts_the_call_as_unaccounted():
+    """A silent provider must never read as a free call.
+
+    Zero tokens plus ``token_accounting_complete=False`` is the honest shape; inferring a
+    token count from text length would be exactly the invented number the accounting
+    module refuses to produce.
+    """
+
+    _reset_accounting()
+    client = SimpleNamespace(
+        responses=SimpleNamespace(create=lambda **_: SimpleNamespace(output_text="Исправленный текст"))
+    )
+
+    generation.generate_markdown_block(
+        client=_as_openai_client(client),
+        model="gpt-5.4",
+        system_prompt="system",
+        target_text="target",
+        context_before="",
+        context_after="",
+        max_retries=1,
+    )
+
+    snapshot = model_accounting.snapshot_run_model_accounting()
+    assert snapshot["model_call_count"] == 1
+    assert snapshot["model_calls_without_usage"] == 1
+    assert snapshot["model_calls_with_usage"] == 0
+    assert snapshot["total_tokens"] == 0
+    assert snapshot["token_accounting_complete"] is False
+    assert snapshot["cost_usd_reported_by_provider"] == 0.0
+    assert snapshot["cost_accounting_complete"] is False
+    assert snapshot["model_calls_without_cost"] == 1
+
+
+def test_model_call_usage_without_cost_leaves_cost_unknown_but_keeps_tokens():
+    """Anthropic reports tokens and no cost. Tokens land; no price list fills the gap."""
+
+    usage = model_accounting.extract_model_call_usage(
+        SimpleNamespace(usage=SimpleNamespace(input_tokens=1200, output_tokens=340))
+    )
+
+    assert usage.usage_reported is True
+    assert usage.prompt_tokens == 1200
+    assert usage.completion_tokens == 340
+    assert usage.total_tokens == 1540  # derived from the two reported halves, not guessed
+    assert usage.cost_reported is False
+    assert usage.cost_usd == 0.0
+
+
+def test_model_call_usage_keeps_a_reported_zero_cost_distinct_from_unknown():
+    reported_zero = model_accounting.extract_model_call_usage(
+        SimpleNamespace(usage=SimpleNamespace(prompt_tokens=5, completion_tokens=5, cost=0.0))
+    )
+    unknown = model_accounting.extract_model_call_usage(
+        SimpleNamespace(usage=SimpleNamespace(prompt_tokens=5, completion_tokens=5))
+    )
+
+    assert (reported_zero.cost_reported, reported_zero.cost_usd) == (True, 0.0)
+    assert unknown.cost_reported is False
+
+
+def test_model_call_usage_ignores_a_usage_container_with_no_token_counts():
+    usage = model_accounting.extract_model_call_usage(SimpleNamespace(usage=SimpleNamespace(foo="bar")))
+
+    assert usage.usage_reported is False
+    assert usage.total_tokens == 0
+
+
+def test_generate_markdown_block_counts_retries_and_the_paragraphs_they_covered(monkeypatch):
+    """107 paragraphs went through retries on the 2026-08-03 run and the report said nothing."""
+
+    _reset_accounting()
+    attempts: list[int] = []
+
+    def create_response(**_kwargs):
+        attempts.append(1)
+        if len(attempts) == 1:
+            return SimpleNamespace(output_text="")
+        return SimpleNamespace(
+            output_text="[[DOCX_PARA_p1]]\nПервый абзац\n\n[[DOCX_PARA_p2]]\nВторой абзац"
+        )
+
+    client = SimpleNamespace(responses=SimpleNamespace(create=create_response))
+    monkeypatch.setattr(generation.time, "sleep", lambda _seconds: None)
+
+    generation.generate_markdown_block(
+        client=_as_openai_client(client),
+        model="gpt-5.4",
+        system_prompt="system",
+        target_text="[[DOCX_PARA_p1]]\nПервый абзац\n\n[[DOCX_PARA_p2]]\nВторой абзац",
+        context_before="",
+        context_after="",
+        max_retries=2,
+        expected_paragraph_ids=["p1", "p2"],
+        marker_mode=True,
+    )
+
+    snapshot = model_accounting.snapshot_run_model_accounting()
+    assert snapshot["retry_attempt_count"] == 1
+    assert snapshot["retried_block_count"] == 1
+    assert snapshot["retried_paragraph_count"] == 2
+    assert cast(dict[str, Any], snapshot["retry_reason_counts"])["empty_generation"] == 1
+    # Both attempts are still charged for: a retry is a second paid call.
+    assert snapshot["model_call_count"] == 2
+
+
+def test_generate_markdown_block_counts_paragraphs_whose_answer_was_discarded():
+    """2 paragraphs kept their source while the block still logged OK. Make it countable."""
+
+    _reset_accounting()
+    target_text = (
+        f"[[DOCX_PARA_p1344]]\n{_STUB_SOURCE_ABSORBED}\n\n[[DOCX_PARA_p1345]]\n{_STUB_SOURCE_COLLAPSED}"
+    )
+    client = SimpleNamespace(
+        responses=SimpleNamespace(
+            create=lambda **_: SimpleNamespace(
+                output_text=(
+                    f"[[DOCX_PARA_p1344]]\n{_STUB_SOURCE_ABSORBED} {_STUB_SOURCE_COLLAPSED}\n\n"
+                    "[[DOCX_PARA_p1345]]\n(Пусто)"
+                )
+            )
+        )
+    )
+
+    generation.generate_markdown_block(
+        client=_as_openai_client(client),
+        model="gpt-5.4",
+        system_prompt="system",
+        target_text=target_text,
+        context_before="before",
+        context_after="after",
+        max_retries=1,
+        expected_paragraph_ids=["p1344", "p1345"],
+        marker_mode=True,
+    )
+
+    snapshot = model_accounting.snapshot_run_model_accounting()
+    assert snapshot["model_output_discarded_paragraph_count"] == 2
+    assert cast(dict[str, Any], snapshot["model_output_discarded_reason_counts"]) == {
+        "marker_chunk_collapse": 1
+    }
+
+
+def test_chat_completions_fallback_path_is_accounted_too():
+    """The OpenRouter Chat Completions fallback is a separate SDK surface, and therefore a
+    separate place where accounting could silently go missing."""
+
+    _reset_accounting()
+    response = SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content="Исправленный текст"))],
+        usage=SimpleNamespace(prompt_tokens=101, completion_tokens=7, total_tokens=108, cost=0.0004),
+    )
+    client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=lambda **_: response)))
+
+    generation._call_chat_completions_create(
+        _as_openai_client(client),
+        {"model": "openrouter/model", "input": [{"role": "user", "content": "hi"}], "temperature": 0.4},
+    )
+
+    snapshot = model_accounting.snapshot_run_model_accounting()
+    assert snapshot["prompt_tokens"] == 101
+    assert snapshot["total_tokens"] == 108
+    assert snapshot["cost_usd_reported_by_provider"] == 0.0004
+
+
+def test_anthropic_messages_path_is_accounted_too():
+    _reset_accounting()
+    response = SimpleNamespace(
+        content=[SimpleNamespace(text="Исправленный текст")],
+        usage=SimpleNamespace(input_tokens=55, output_tokens=11),
+    )
+    client = SimpleNamespace(messages=SimpleNamespace(create=lambda **_: response))
+
+    generation._call_anthropic_messages_create(
+        client,
+        {
+            "model": "claude-sonnet-4.6",
+            "input": [{"role": "user", "content": "hi"}],
+            "max_output_tokens": 512,
+        },
+    )
+
+    snapshot = model_accounting.snapshot_run_model_accounting()
+    assert snapshot["total_tokens"] == 66
+    assert snapshot["model_calls_without_cost"] == 1
+    assert snapshot["cost_accounting_complete"] is False
+
+
+def test_image_and_text_calls_are_separated_by_stage():
+    """Stage breakdown comes free from the call site, so text-vs-images is answerable."""
+
+    _reset_accounting()
+    model_accounting.record_model_call_usage(
+        stage=model_accounting.STAGE_TEXT_GENERATION,
+        response=SimpleNamespace(usage=SimpleNamespace(prompt_tokens=100, completion_tokens=10, cost=0.01)),
+    )
+    model_accounting.record_model_call_usage(
+        stage=model_accounting.STAGE_IMAGE_ANALYSIS,
+        response=SimpleNamespace(usage=SimpleNamespace(prompt_tokens=900, completion_tokens=20, cost=0.05)),
+    )
+
+    stages = cast(dict[str, Any], model_accounting.snapshot_run_model_accounting()["stages"])
+    assert stages["text_generation"]["total_tokens"] == 110
+    assert stages["image_analysis"]["total_tokens"] == 920
+    assert stages["image_analysis"]["cost_usd_reported_by_provider"] == 0.05
+
+
+def test_call_responses_create_with_retry_records_usage_for_every_caller():
+    """One recording point covers translate, literary edit, proofreading and images."""
+
+    _reset_accounting()
+
+    class Responses:
+        def create(self, **_kwargs):
+            return SimpleNamespace(
+                output_text="ok",
+                usage=SimpleNamespace(input_tokens=7, output_tokens=3, total_tokens=10),
+            )
+
+    class Client:
+        responses = Responses()
+
+    image_shared.call_responses_create_with_retry(
+        Client(),
+        {"model": "m"},
+        max_retries=1,
+        retryable_error_predicate=lambda _exc: False,
+        usage_stage=model_accounting.STAGE_IMAGE_VALIDATION,
+    )
+
+    snapshot = model_accounting.snapshot_run_model_accounting()
+    assert snapshot["model_call_count"] == 1
+    assert snapshot["total_tokens"] == 10
+    assert cast(dict[str, Any], snapshot["stages"])["image_validation"]["model_call_count"] == 1

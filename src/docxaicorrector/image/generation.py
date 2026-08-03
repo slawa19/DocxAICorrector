@@ -28,6 +28,7 @@ from docxaicorrector.image.shared import (
 from docxaicorrector.image.prompts import get_image_prompt_profile, load_image_prompt_text
 from docxaicorrector.image.reconstruction import reconstruct_image
 from docxaicorrector.core.logger import log_event
+from docxaicorrector.core.model_accounting import STAGE_IMAGE_GENERATION, record_model_call_usage
 from docxaicorrector.core.models import ImageAnalysisResult, ImageMode, SEMANTIC_IMAGE_MODE_VALUES
 
 IMAGE_API_TIMEOUT_SECONDS = 90.0
@@ -733,6 +734,9 @@ def _call_images_edit(
             raise
         else:
             _consume_budget(budget, "images.edit")
+            # The Images API reports its own ``usage`` (gpt-image-1); models that do not
+            # are counted as unaccounted rather than as free.
+            record_model_call_usage(stage=STAGE_IMAGE_GENERATION, response=result)
             return result
 
 
@@ -829,6 +833,7 @@ def _call_images_generate(
             raise
         else:
             _consume_budget(budget, "images.generate")
+            record_model_call_usage(stage=STAGE_IMAGE_GENERATION, response=result)
             return result
 
 
@@ -880,6 +885,7 @@ def _call_responses_create(client, request_payload: dict[str, Any], *, budget: I
         max_backoff_seconds=IMAGE_API_MAX_BACKOFF_SECONDS,
         budget=budget,
         retryable_optional_params={"timeout", "temperature"},
+        usage_stage=STAGE_IMAGE_GENERATION,
     )
 
 

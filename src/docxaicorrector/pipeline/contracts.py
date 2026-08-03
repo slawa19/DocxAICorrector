@@ -156,6 +156,7 @@ class ResultArtifactWriter(Protocol):
         assembly_mode: str | None = None,
         selected_segment_count: int | None = None,
         result_manifest: Mapping[str, object] | None = None,
+        model_accounting: Mapping[str, object] | None = None,
     ) -> Mapping[str, str]: ...
 
 

@@ -1059,7 +1059,10 @@ def test_request_ai_review_uses_passed_client_factory_not_global(monkeypatch):
 
     captured: dict[str, object] = {}
 
-    def fake_call(client, payload, *, max_retries, retryable_error_predicate):
+    def fake_call(client, payload, *, max_retries, retryable_error_predicate, **kwargs):
+        # ``**kwargs`` absorbs usage_stage, added when model accounting started
+        # recording at this call site. These tests pin WHICH CLIENT is used, not the
+        # signature, so they must not break every time the call gains a keyword.
         captured["client"] = client
         return object()
 
@@ -1096,7 +1099,10 @@ def test_request_ai_review_default_resolves_provider_aware_not_global(monkeypatc
 
     captured: dict[str, object] = {}
 
-    def fake_call(client, payload, *, max_retries, retryable_error_predicate):
+    def fake_call(client, payload, *, max_retries, retryable_error_predicate, **kwargs):
+        # ``**kwargs`` absorbs usage_stage, added when model accounting started
+        # recording at this call site. These tests pin WHICH CLIENT is used, not the
+        # signature, so they must not break every time the call gains a keyword.
         captured["client"] = client
         return object()
 
