@@ -343,6 +343,18 @@ enable_paragraph_markers = true
 repeat_count = 1
 
 [[run_profiles]]
+# Comparative A/B partner for "ui-parity-default": same edit run, but with the
+# conservative editorial_intensity prompt instead of the literary default, so the
+# two intensities can be measured against each other without editing config.toml.
+id = "ui-parity-edit-conservative-intensity"
+tier = "full"
+mode = "regression"
+processing_operation = "edit"
+editorial_intensity = "conservative"
+enable_paragraph_markers = true
+repeat_count = 1
+
+[[run_profiles]]
 id = "ui-parity-translate-simple-reader-cleanup-wide-chunk"
 tier = "full"
 mode = "regression"

@@ -6,7 +6,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-from docxaicorrector.core.config import get_text_model_default
+from docxaicorrector.core.config import EDITORIAL_INTENSITY_VALUES, get_text_model_default
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_REGISTRY_PATH = PROJECT_ROOT / "corpus_registry.toml"
@@ -85,6 +85,7 @@ class RunProfile:
     source_language: str | None = None
     target_language: str | None = None
     translation_domain: str | None = None
+    editorial_intensity: str | None = None
     audiobook_postprocess_enabled: bool | None = None
     reader_cleanup_enabled: bool | None = None
     reader_verifier_enabled: bool | None = None
@@ -144,6 +145,7 @@ class ResolvedRuntimeConfig:
     source_language: str
     target_language: str
     translation_domain: str
+    editorial_intensity: str
     audiobook_postprocess_enabled: bool
     reader_cleanup_enabled: bool
     enable_paragraph_markers: bool
@@ -159,6 +161,7 @@ class ResolvedRuntimeConfig:
             "source_language": self.source_language,
             "target_language": self.target_language,
             "translation_domain": self.translation_domain,
+            "editorial_intensity": self.editorial_intensity,
             "audiobook_postprocess_enabled": self.audiobook_postprocess_enabled,
             "reader_cleanup_enabled": self.reader_cleanup_enabled,
             "enable_paragraph_markers": self.enable_paragraph_markers,
@@ -202,6 +205,7 @@ def resolve_runtime_resolution(app_config, run_profile: RunProfile) -> RuntimeRe
         source_language=str(getattr(app_config, "source_language_default", "en") or "en"),
         target_language=str(getattr(app_config, "target_language_default", "ru") or "ru"),
         translation_domain=str(getattr(app_config, "translation_domain_default", "general") or "general"),
+        editorial_intensity=str(getattr(app_config, "editorial_intensity_default", "literary") or "literary"),
         audiobook_postprocess_enabled=bool(getattr(app_config, "audiobook_postprocess_default", False)),
         reader_cleanup_enabled=bool(getattr(app_config, "reader_cleanup_default", False)),
         enable_paragraph_markers=bool(app_config.enable_paragraph_markers),
@@ -216,6 +220,7 @@ def resolve_runtime_resolution(app_config, run_profile: RunProfile) -> RuntimeRe
         source_language=str(_resolve_run_profile_field(run_profile.source_language, ui_defaults.source_language)),
         target_language=str(_resolve_run_profile_field(run_profile.target_language, ui_defaults.target_language)),
         translation_domain=str(_resolve_run_profile_field(run_profile.translation_domain, ui_defaults.translation_domain)),
+        editorial_intensity=str(_resolve_run_profile_field(run_profile.editorial_intensity, ui_defaults.editorial_intensity)),
         audiobook_postprocess_enabled=bool(
             _resolve_run_profile_field(
                 run_profile.audiobook_postprocess_enabled,
@@ -248,6 +253,7 @@ def resolve_runtime_resolution(app_config, run_profile: RunProfile) -> RuntimeRe
         "source_language": run_profile.source_language,
         "target_language": run_profile.target_language,
         "translation_domain": run_profile.translation_domain,
+        "editorial_intensity": run_profile.editorial_intensity,
         "audiobook_postprocess_enabled": run_profile.audiobook_postprocess_enabled,
         "reader_cleanup_enabled": run_profile.reader_cleanup_enabled,
         "reader_verifier_enabled": run_profile.reader_verifier_enabled,
@@ -328,6 +334,9 @@ def apply_runtime_resolution_to_app_config(app_config, resolution: RuntimeResolu
     app_config_dict = app_config.to_dict()
     app_config_dict.update(resolution.effective.to_dict())
     app_config_dict["translation_domain_default"] = resolution.effective.translation_domain
+    # The pipeline reads `editorial_intensity_default`, so the run-profile value has to
+    # land on that key (the plain `editorial_intensity` copy is only for reporting).
+    app_config_dict["editorial_intensity_default"] = resolution.effective.editorial_intensity
     app_config_dict["audiobook_postprocess_enabled"] = resolution.effective.audiobook_postprocess_enabled
     app_config_dict["reader_cleanup_enabled"] = resolution.effective.reader_cleanup_enabled
     app_config_dict["keep_all_image_variants"] = resolution.effective.keep_all_image_variants
@@ -448,6 +457,7 @@ def _build_run_profile(payload: Any) -> RunProfile:
         source_language=_optional_str(payload, "source_language"),
         target_language=_optional_str(payload, "target_language"),
         translation_domain=_optional_str(payload, "translation_domain"),
+        editorial_intensity=_optional_editorial_intensity(payload, "editorial_intensity"),
         audiobook_postprocess_enabled=_optional_bool(payload, "audiobook_postprocess_enabled"),
         reader_cleanup_enabled=_optional_bool(payload, "reader_cleanup_enabled"),
         reader_verifier_enabled=_optional_bool(payload, "reader_verifier_enabled"),
@@ -552,6 +562,15 @@ def _optional_processing_operation(payload: dict[str, Any], key: str) -> str | N
         return None
     if not isinstance(value, str) or value.strip() not in {"edit", "translate", "audiobook"}:
         raise RuntimeError(f"Registry field {key} must be one of: audiobook, edit, translate")
+    return value.strip()
+
+
+def _optional_editorial_intensity(payload: dict[str, Any], key: str) -> str | None:
+    value = payload.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, str) or value.strip() not in set(EDITORIAL_INTENSITY_VALUES):
+        raise RuntimeError(f"Registry field {key} must be one of: {', '.join(sorted(EDITORIAL_INTENSITY_VALUES))}")
     return value.strip()
 
 

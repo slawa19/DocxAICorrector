@@ -73,6 +73,9 @@ _CLIENTS_BY_PROVIDER: dict[str, object] = {}
 _CLIENT_LOCK = Lock()
 _IMAGE_OUTPUT_SIZE_VALUES = {"256x256", "512x512", "1024x1024", "1024x1536", "1536x1024", "1024x1792", "1792x1024"}
 PROCESSING_OPERATION_VALUES = ("edit", "translate", "audiobook")
+# The only knob that controls how hard the "edit" operation rewrites. Kept next to
+# PROCESSING_OPERATION_VALUES so config/env/run-profile/UI all validate against one list.
+EDITORIAL_INTENSITY_VALUES = ("conservative", "literary")
 _SUPPORTED_PROVIDER_IDS = ("openai", "openrouter", "anthropic")
 _PROVIDER_CAPABILITIES = {
     "openai": frozenset({"responses_text", "responses_vision", "images_generate", "images_edit"}),
@@ -201,8 +204,7 @@ _PROMPT_OPERATION_PATHS = {
 }
 
 _PROMPT_EDITORIAL_INTENSITY_PATHS = {
-    "conservative": PROMPTS_DIR / "editorial_intensity_conservative.txt",
-    "literary": PROMPTS_DIR / "editorial_intensity_literary.txt",
+    value: PROMPTS_DIR / f"editorial_intensity_{value}.txt" for value in EDITORIAL_INTENSITY_VALUES
 }
 
 _PROMPT_EXAMPLE_PATHS = {
@@ -1014,6 +1016,7 @@ def _resolve_text_runtime_defaults(
         parse_optional_str_env_fn=parse_optional_str_env,
         clamp_int_fn=_clamp_int,
         processing_operation_values=PROCESSING_OPERATION_VALUES,
+        editorial_intensity_values=EDITORIAL_INTENSITY_VALUES,
     )
 
 

@@ -55,6 +55,11 @@ TEXT_OPERATION_LABELS = {
     "audiobook": t("sidebar.operation_audiobook"),
 }
 TEXT_OPERATION_VALUES_BY_LABEL = {label: value for value, label in TEXT_OPERATION_LABELS.items()}
+EDITORIAL_INTENSITY_LABELS = {
+    "conservative": t("sidebar.editorial_intensity_conservative"),
+    "literary": t("sidebar.editorial_intensity_literary"),
+}
+EDITORIAL_INTENSITY_VALUES_BY_LABEL = {label: value for value, label in EDITORIAL_INTENSITY_LABELS.items()}
 TEXT_SETTING_WIDGET_KEYS = {
     "processing_operation": "sidebar_text_operation",
     "source_language": "sidebar_source_language",
@@ -564,7 +569,7 @@ def _asset_value(asset, field_name: str, default=None):
     return getattr(asset, field_name, default)
 
 
-def render_sidebar(config: Mapping[str, Any]) -> tuple[str, int, int, str, bool, str, str, str, bool]:
+def render_sidebar(config: Mapping[str, Any]) -> tuple[str, int, int, str, bool, str, str, str, bool, str]:
     st.sidebar.header(t("sidebar.settings_header"))
     operation_default = str(config.get("processing_operation_default", "edit"))
     operation_options = list(TEXT_OPERATION_LABELS.values())
@@ -578,6 +583,28 @@ def render_sidebar(config: Mapping[str, Any]) -> tuple[str, int, int, str, bool,
         key="sidebar_text_operation",
     )
     processing_operation = TEXT_OPERATION_VALUES_BY_LABEL.get(selected_operation_label, "edit")
+
+    # editorial_intensity only shapes the "edit" prompt, so the widget is drawn next to
+    # the operation selector and only in that mode. The value is seeded from the config
+    # default and overwritten ONLY while the widget is on screen — it is never read back
+    # out of st.session_state, so a stale key left over from a previous operation cannot
+    # leak in (the trap resolve_source_language_from_widget_state() falls into).
+    editorial_intensity = str(config.get("editorial_intensity_default", "literary"))
+    if processing_operation == "edit":
+        intensity_options = list(EDITORIAL_INTENSITY_LABELS.values())
+        intensity_default_label = EDITORIAL_INTENSITY_LABELS.get(
+            editorial_intensity,
+            EDITORIAL_INTENSITY_LABELS["literary"],
+        )
+        intensity_index = intensity_options.index(intensity_default_label) if intensity_default_label in intensity_options else 0
+        selected_intensity_label = render_sidebar_selectbox(
+            t("sidebar.editorial_intensity_label"),
+            intensity_options,
+            index=intensity_index,
+            help=t("sidebar.editorial_intensity_help"),
+            key="sidebar_editorial_intensity",
+        )
+        editorial_intensity = EDITORIAL_INTENSITY_VALUES_BY_LABEL.get(selected_intensity_label, editorial_intensity)
 
     language_labels, code_by_label, label_by_code = get_language_label_maps(config)
     default_target_code = str(config.get("target_language_default", "ru"))
@@ -690,6 +717,7 @@ def render_sidebar(config: Mapping[str, Any]) -> tuple[str, int, int, str, bool,
         source_language,
         target_language,
         audiobook_postprocess_enabled,
+        editorial_intensity,
     )
 
 

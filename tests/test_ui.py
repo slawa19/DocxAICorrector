@@ -2,6 +2,7 @@ from contextlib import nullcontext
 
 import pytest
 
+import docxaicorrector.core.config as config_module
 import docxaicorrector.ui._ui as ui
 from conftest import SessionState as SessionState  # noqa: F811
 
@@ -297,8 +298,8 @@ def test_render_sidebar_returns_image_settings(monkeypatch):
 
     result = ui.render_sidebar(config)
 
-    assert result == ("gpt-5-mini", 6000, 3, "semantic_redraw_direct", False, "edit", "en", "ru", False)
-    assert sidebar_calls[:3] == [
+    assert result == ("gpt-5-mini", 6000, 3, "semantic_redraw_direct", False, "edit", "en", "ru", False, "literary")
+    assert sidebar_calls[:4] == [
         ("header", "Настройки"),
         (
             "selectbox",
@@ -309,16 +310,23 @@ def test_render_sidebar_returns_image_settings(monkeypatch):
         ),
         (
             "selectbox",
+            "Глубина редактирования",
+            "Осторожно: правим только явные шероховатости и кальки, сохраняя формулировки и строй фраз автора. Литературно: свободно перестраиваем фразы и ритм, чтобы текст звучал как написанный на этом языке, сохраняя смысл.",
+            tuple(ui.EDITORIAL_INTENSITY_LABELS.values()),
+            None,
+        ),
+        (
+            "selectbox",
             "Целевой язык",
             None,
             ("Русский", "English"),
             None,
         ),
     ]
-    model_call = sidebar_calls[3]
+    model_call = sidebar_calls[4]
     assert model_call[:4] == ("selectbox", "Модель", None, ("gpt-5.4", "gpt-5-mini", "custom"))
     assert callable(model_call[4])
-    assert sidebar_calls[4:] == [
+    assert sidebar_calls[5:] == [
         (
             "selectbox",
             "Режим обработки изображений",
@@ -509,7 +517,7 @@ def test_render_sidebar_warns_when_translate_source_matches_target(monkeypatch):
 
     result = ui.render_sidebar(config)
 
-    assert result == ("gpt-5-mini", 6000, 3, "semantic_redraw_direct", False, "translate", "en", "en", False)
+    assert result == ("gpt-5-mini", 6000, 3, "semantic_redraw_direct", False, "translate", "en", "en", False, "literary")
     assert checkbox_calls == [
         (
             "Дополнительно: подготовить текст для ElevenLabs (не меняя основной результат)",
@@ -683,7 +691,7 @@ def test_render_sidebar_audiobook_forces_no_change_and_hides_pass_checkboxes(mon
 
     result = ui.render_sidebar(config)
 
-    assert result == ("gpt-5-mini", 6000, 3, "no_change", False, "audiobook", "auto", "ru", False)
+    assert result == ("gpt-5-mini", 6000, 3, "no_change", False, "audiobook", "auto", "ru", False, "literary")
     assert checkbox_calls == [
         (
             "Сохранять все варианты изображений",
@@ -702,6 +710,105 @@ def test_render_sidebar_audiobook_forces_no_change_and_hides_pass_checkboxes(mon
         "sidebar_image_mode",
         True,
     ) in selectbox_calls
+
+
+def _editorial_intensity_sidebar_config(processing_operation, editorial_intensity_default=None):
+    config = {
+        "models": type(
+            "Models",
+            (),
+            {
+                "text": type("TextModels", (), {"default": "gpt-5-mini", "options": ("gpt-5.4", "gpt-5-mini")})(),
+            },
+        )(),
+        "chunk_size": 6000,
+        "max_retries": 3,
+        "processing_operation_default": processing_operation,
+        "source_language_default": "auto" if processing_operation != "edit" else "en",
+        "target_language_default": "ru",
+        "supported_languages": [
+            type("Lang", (), {"code": "ru", "label": "Русский"})(),
+            type("Lang", (), {"code": "en", "label": "English"})(),
+        ],
+        "image_mode_default": "safe",
+        "keep_all_image_variants": False,
+    }
+    if editorial_intensity_default is not None:
+        config["editorial_intensity_default"] = editorial_intensity_default
+    return config
+
+
+def _patch_editorial_intensity_sidebar(monkeypatch, *, session_state=None, intensity_choice=None):
+    """Patch the sidebar widgets and record every selectbox render."""
+    selectbox_calls = []
+
+    def fake_selectbox(label, options, index=0, format_func=None, help=None, key=None, disabled=False):
+        selectbox_calls.append({"label": label, "options": tuple(options), "index": index, "key": key, "help": help})
+        if label == "Глубина редактирования" and intensity_choice is not None:
+            return ui.EDITORIAL_INTENSITY_LABELS[intensity_choice]
+        return options[index]
+
+    if session_state is not None:
+        monkeypatch.setattr(ui.st, "session_state", session_state)
+    monkeypatch.setattr(ui.st.sidebar, "header", lambda text: None)
+    monkeypatch.setattr(ui.st.sidebar, "caption", lambda text: None)
+    monkeypatch.setattr(ui.st.sidebar, "warning", lambda text: None)
+    monkeypatch.setattr(ui.st.sidebar, "selectbox", fake_selectbox)
+    monkeypatch.setattr(ui.st.sidebar, "text_input", lambda *args, **kwargs: "")
+    monkeypatch.setattr(ui.st.sidebar, "checkbox", lambda label, value, key=None, help=None: value)
+    _mirror_bare_sidebar(monkeypatch, selectbox=fake_selectbox)
+    return selectbox_calls
+
+
+def test_editorial_intensity_labels_cover_every_supported_config_value():
+    # The sidebar options must stay in lockstep with the values config/run profiles accept.
+    assert tuple(ui.EDITORIAL_INTENSITY_LABELS) == config_module.EDITORIAL_INTENSITY_VALUES
+
+
+def test_render_sidebar_exposes_editorial_intensity_selector_for_edit_mode(monkeypatch):
+    config = _editorial_intensity_sidebar_config("edit")
+    selectbox_calls = _patch_editorial_intensity_sidebar(monkeypatch, intensity_choice="conservative")
+
+    result = ui.render_sidebar(config)
+
+    intensity_calls = [call for call in selectbox_calls if call["key"] == "sidebar_editorial_intensity"]
+    assert len(intensity_calls) == 1
+    assert intensity_calls[0]["label"] == "Глубина редактирования"
+    assert intensity_calls[0]["options"] == tuple(ui.EDITORIAL_INTENSITY_LABELS.values())
+    # The knob sits next to the operation selector, not buried in the advanced expander.
+    assert selectbox_calls.index(intensity_calls[0]) == 1
+    assert result[9] == "conservative"
+
+
+def test_render_sidebar_editorial_intensity_defaults_to_the_configured_value(monkeypatch):
+    config = _editorial_intensity_sidebar_config("edit", editorial_intensity_default="conservative")
+    selectbox_calls = _patch_editorial_intensity_sidebar(monkeypatch)
+
+    result = ui.render_sidebar(config)
+
+    intensity_call = next(call for call in selectbox_calls if call["key"] == "sidebar_editorial_intensity")
+    assert intensity_call["index"] == list(ui.EDITORIAL_INTENSITY_LABELS).index("conservative")
+    assert result[9] == "conservative"
+
+
+@pytest.mark.parametrize("processing_operation", ["translate", "audiobook"])
+def test_render_sidebar_hides_editorial_intensity_outside_edit_and_ignores_stale_widget_state(
+    monkeypatch,
+    processing_operation,
+):
+    # The trap resolve_source_language_from_widget_state() falls into: a widget that is
+    # not drawn for this operation still has its key in session_state from a previous
+    # run. editorial_intensity must NOT be read back out of session_state, so translate /
+    # audiobook keep the configured default no matter what stale label is sitting there.
+    session_state = SessionState(sidebar_editorial_intensity=ui.EDITORIAL_INTENSITY_LABELS["conservative"])
+    config = _editorial_intensity_sidebar_config(processing_operation)
+    selectbox_calls = _patch_editorial_intensity_sidebar(monkeypatch, session_state=session_state)
+
+    result = ui.render_sidebar(config)
+
+    assert [call for call in selectbox_calls if call["key"] == "sidebar_editorial_intensity"] == []
+    assert result[5] == processing_operation
+    assert result[9] == "literary"
 
 
 def test_render_sidebar_does_not_add_recommendation_apply_button(monkeypatch):
