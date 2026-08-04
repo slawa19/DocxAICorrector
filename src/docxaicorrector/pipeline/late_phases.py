@@ -38,7 +38,8 @@ from docxaicorrector.pipeline.narration_postprocess import (  # noqa: F401
     _NARRATION_ANY_TAG_PATTERN,
     _NARRATION_DISALLOWED_PATTERNS,
     _build_narration_text,
-    _validate_narration_artifact_text,
+    _collect_narration_artifact_review_findings,
+    _summarize_narration_review_findings,
     _should_run_audiobook_postprocess,
     _collect_narration_chunks,
     _resolve_audiobook_postprocess_model,
@@ -1144,63 +1145,46 @@ def finalize_processing_success(
                 log_details=error_message,
             )
 
+    # spec 054 Finding 4 / Constitution VII: the narration artifact check is REVIEW DATA, not
+    # a verdict gate. It used to raise, and a single match anywhere in a whole book's
+    # narration took a standalone ``audiobook`` run down the failure branch —
+    # ``latest_docx_bytes=None`` and ``emit_failed_result``, i.e. the entire artifact lost
+    # AFTER the LLM run was paid for, with no retry and no way to drop just one piece.
+    # Four of the six patterns were measured firing on ordinary prose on 2026-08-04. The
+    # residual is now published, not enforced: identical on both entry points, so a
+    # translate/edit post-pass no longer silently drops the narration either.
+    narration_review_summary: dict[str, object] = {
+        "review_finding_count": 0,
+        "review_match_count": 0,
+        "review_rules": [],
+    }
     if narration_text is not None:
-        try:
-            _validate_narration_artifact_text(narration_text)
-        except Exception as exc:
-            error_message = dependencies.present_error(
-                "audiobook_artifact_validation_failed",
-                exc,
-                "Ошибка проверки текста для ElevenLabs",
+        narration_review_findings = _collect_narration_artifact_review_findings(narration_text)
+        narration_review_summary = _summarize_narration_review_findings(narration_review_findings)
+        if narration_review_findings:
+            narration_review_rules = cast(Sequence[str], narration_review_summary["review_rules"])
+            dependencies.log_event(
+                logging.WARNING,
+                "narration_artifact_review_data",
+                "Narration artifact carries passages worth a human review; the artifact is delivered.",
                 filename=context.uploaded_filename,
                 processing_operation=context.processing_operation,
+                narration_mode="standalone" if context.processing_operation == "audiobook" else "postprocess",
+                review_data=True,
+                advisory=True,
+                narration_chars=len(narration_text),
+                review_findings=narration_review_findings,
+                **narration_review_summary,
             )
-            if context.processing_operation in {"edit", "translate"}:
-                narration_text = None
-                narration_error_message = error_message
-                result_notices.append({
-                    "kind": "narration",
-                    "level": "warning",
-                    "message_key": "result.narration_failed",
-                })
-                emitters.emit_state(
-                    context.runtime,
-                    latest_docx_bytes=_resolve_docx_phase_bytes(docx_phase),
-                    latest_markdown=runtime_display_markdown,
-                    latest_narration_text=None,
-                    latest_result_notice=docx_phase["latest_result_notice"],
-                    latest_result_notices=result_notices,
-                    last_error=error_message,
-                )
-                dependencies.log_event(
-                    logging.WARNING,
-                    "audiobook_artifact_validation_failed_base_result_preserved",
-                    "Narration artifact validation failed; base DOCX/Markdown result is preserved.",
-                    filename=context.uploaded_filename,
-                    processing_operation=context.processing_operation,
-                    error_message=str(exc),
-                )
-            else:
-                emitters.emit_state(
-                    context.runtime,
-                    latest_markdown=runtime_display_markdown,
-                    latest_docx_bytes=None,
-                    latest_narration_text=None,
-                    last_error=error_message,
-                )
-                return emit_failed_result(
-                    emitters=emitters,
-                    runtime=context.runtime,
-                    finalize_stage="Ошибка проверки narration",
-                    detail=error_message,
-                    progress=1.0,
-                    activity_message="Текст для ElevenLabs не прошёл deterministic validation.",
-                    block_index=job_count,
-                    block_count=job_count,
-                    target_chars=len(runtime_display_markdown),
-                    context_chars=0,
-                    log_details=error_message,
-                )
+            result_notices.append({
+                "kind": "narration",
+                "level": "warning",
+                "message_key": "result.narration_review_data",
+                "params": {
+                    "count": narration_review_summary["review_match_count"],
+                    "rules": ", ".join(narration_review_rules),
+                },
+            })
     # Presentation-only: surface the SAME quality_warning the review artifact carries into
     # session state so the unified result screen can render the formatting-review block.
     quality_warning = _build_result_quality_warning(
@@ -1395,6 +1379,11 @@ def finalize_processing_success(
                     tag_count=len(_ELEVENLABS_TAG_PATTERN.findall(narration_text)),
                     excluded_blocks=int(getattr(state, "excluded_narration_block_count", 0) or 0),
                     mode="standalone" if context.processing_operation == "audiobook" else "postprocess",
+                    # spec 054 Finding 4: the review counters travel with the record of the
+                    # SAVED file, so the artifact on disk and the reason to inspect it are
+                    # findable from one log line. Zero here is a positive statement that the
+                    # text was reviewed and nothing matched — not an absent field.
+                    **narration_review_summary,
                 )
         except Exception as exc:
             _log_post_delivery_secondary_failure(

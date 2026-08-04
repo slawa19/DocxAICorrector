@@ -108,6 +108,7 @@
   "result.cleanup_anchor_repair_rolled_back": "The image-anchor repair pass was rolled back: it would have lost {missing_image_id_count} image anchor(s), so its {discarded_cleanup_operation_count} operation(s) were dropped. The rest of the cleanup was delivered with every image in place.",
   "result.narration_omitted": "Narration was omitted because the final cleaned text could not be mapped safely to narration boundaries.",
   "result.narration_failed": "Narration preparation failed; the document result remains available.",
+  "result.narration_review_data": "The narration text is ready. {count} passage(s) look like reference markers ({rules}) — worth checking before sending them to ElevenLabs.",
   "result.primary_artifacts_not_saved": "The result is available in this session, but its files could not be saved to disk.",
   "preview.markdown_label": "Markdown",
   "preview.markdown_help": "Only one Markdown block is shown on screen to keep the interface responsive for large documents.",
