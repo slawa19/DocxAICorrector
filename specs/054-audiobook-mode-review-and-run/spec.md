@@ -201,6 +201,45 @@ in a digit. So fixing Finding 2 in isolation will make the audiobook *worse* by 
 endnote text to the narration. Findings 2 and 3 must land together, or the region exclusion must land
 first.
 
+### Finding 4 — the artifact validator is all-or-nothing over the whole book, and it trips on prose
+
+Found during the step-1 code review, verified by running the live patterns on 2026-08-04.
+
+`_validate_narration_artifact_text` (`pipeline/narration_postprocess.py:121`) is applied **once, to the
+joined narration text of the entire book** (`late_phases.py:1149`). On a standalone audiobook run a
+single match anywhere takes the `else` branch at `late_phases.py:1183`: `latest_docx_bytes=None` and
+`emit_failed_result` — **the whole artifact is lost after the full LLM spend**, over one sentence.
+There is no per-chunk fallback, no retry, no "drop the offending chunk". On edit/translate the base
+result is preserved and the narration is simply omitted (`:1158`), which is the sane half.
+
+Four of the six patterns match ordinary prose. Run against the live patterns:
+
+| sentence | verdict |
+|---|---|
+| «В Веймарской республике (Германия, 1923) деньги обесценивались ежедневно.» | fails `inline_citation` |
+| «Это случилось в тот год (Берлин, 1923 год), когда цены удваивались.» | fails `inline_citation` |
+| «Издательство присвоило книге ISBN и отправило её в печать.» | fails `isbn` |
+| «Он опубликовал препринт на arXiv, и через неделю о нём говорили все.» | fails `arxiv` |
+
+`isbn` and `arxiv` are bare word matches (`\bisbn\b`), so *mentioning* either concept in narrated prose
+fails the run. `inline_citation` matches any parenthesis holding a capitalised word, a comma and a
+year — the normal way to write a place and a date in a book about monetary history, which is three of
+the four books in this corpus.
+
+Scale on real material (imported text of the four books, `.run/footnote_import_measure/*.raw.md`):
+**4 / 65 / 196 / 178 `inline_citation` matches per book**, plus 3 and 1 `isbn`. Most are bibliographic
+in shape (`(New York: Doubleday Currency, 1994)`) and sit in the very regions Finding 1 is about, but
+the sample also contains true inline citations in body text (`(Doran, 2009)`, `(Thomson Reuters,
+2011)`). So today the model must strip every one of ~200 constructions, one block at a time, with zero
+misses, or the run returns nothing.
+
+This is the same defect class as the Unicode-superscript rule removed on 2026-08-03 (PR #29), and the
+comment that replaced it states the principle already: *removing reference markers is the prompt's
+job, not a glyph gate's.* The region exclusion of Finding 1 removes most of the exposure by taking the
+material out before the model sees it; what is left is the question of whether a deterministic gate
+should be able to destroy a paid run at all, or should surface the violation as review data the way
+formatting coverage does. **That last part is an owner decision, recorded here, not taken.**
+
 ### What this changes about the plan
 
 The missing piece is not "add footnotes to the list". It is that the region-detection half of
@@ -264,3 +303,7 @@ an inference — recorded here so it is not lost.
   removing index and endnote material. Status moved READY → IN PROGRESS. Anti-regression items 5 and 6
   added. Measurement tools added to the repository:
   `scripts/measure-narration-exclusion.py`, `scripts/probe-bibliography-tail.py`.
+- **2026-08-04** — Finding 4 added from the step-1 code review: the artifact validator gates the whole
+  book on a single match, kills a standalone run outright, and four of its six patterns fire on
+  ordinary prose (verified by running the live patterns; ~200 matches per book in the corpus). Whether
+  a deterministic gate may destroy a paid run is raised as an owner decision, not decided.
