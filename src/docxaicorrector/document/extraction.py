@@ -725,7 +725,7 @@ def _normalize_inline_break_paragraphs(paragraphs: list[ParagraphUnit], *, signa
             continue
 
         if _should_expand_inline_break_paragraph(paragraph, lines):
-            normalized.extend(_expand_inline_break_paragraph(paragraph, lines, signal_only=signal_only))
+            normalized.extend(_expand_inline_break_paragraph(paragraph, lines))
             continue
 
         normalized.append(_copy_paragraph_unit(paragraph, text=_join_inline_break_lines(lines)))
@@ -983,17 +983,22 @@ def _is_toc_candidate_text(text: str) -> bool:
     return True
 
 
-def _expand_inline_break_paragraph(paragraph: ParagraphUnit, lines: list[str], *, signal_only: bool) -> list[ParagraphUnit]:
-    expanded: list[ParagraphUnit] = []
-    header_cluster = _is_toc_header_line(lines[0]) and len(lines) >= 3
-    for index, line in enumerate(lines):
-        clone = _copy_paragraph_unit(paragraph, text=line)
-        if header_cluster and index == 0:
-            _apply_or_hint_stage0_toc_role(clone, structural_role="toc_header", signal_only=signal_only)
-        elif header_cluster or _is_toc_candidate_text(line):
-            _apply_or_hint_stage0_toc_role(clone, structural_role="toc_entry", signal_only=signal_only)
-        expanded.append(clone)
-    return expanded
+def _expand_inline_break_paragraph(paragraph: ParagraphUnit, lines: list[str]) -> list[ParagraphUnit]:
+    """Split a paragraph on its inline breaks. Deliberately assigns no structural role.
+
+    Splitting is safe: the break is a line boundary the reader observed. Assigning a TOC role
+    here was not. The only evidence this path can consult is `_is_toc_candidate_text` — pure text
+    shape (<= 160 chars, 1-16 words, no terminal `.`/`;`), with no "Contents" header, no dot
+    leaders, no page number and no region behind it, which Constitution VII forbids ("no source
+    signal, no repair"; structure is never reconstructed from length or position).
+
+    Measured on the four-book corpus for spec 054 Finding 2: of 72 blocks excluded from the
+    narration by the TOC branch, 55 were tagged here, and they carried all 17 blocks of ordinary
+    mid-chapter prose and 11 of the 12 epigraphs, while 16 of the 19 genuine tables of contents
+    came from the region-anchored `_annotate_toc_region_candidates` below. The role is therefore
+    left to that pass, which requires a header plus >= 3 consecutive candidates.
+    """
+    return [_copy_paragraph_unit(paragraph, text=line) for line in lines]
 
 
 def _annotate_toc_region_candidates(paragraphs: list[ParagraphUnit], *, signal_only: bool) -> None:

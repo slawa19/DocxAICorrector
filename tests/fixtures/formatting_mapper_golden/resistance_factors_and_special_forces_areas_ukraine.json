@@ -1635,60 +1635,6 @@
         ],
         "relation_id": "rel_0001",
         "relation_kind": "image_caption"
-      },
-      {
-        "anchor_asset_id": null,
-        "confidence": "high",
-        "member_paragraph_ids": [
-          "p0000",
-          "p0001",
-          "p0002"
-        ],
-        "rationale": [
-          "contiguous_toc_entries"
-        ],
-        "relation_id": "rel_0002",
-        "relation_kind": "toc_region"
-      },
-      {
-        "anchor_asset_id": null,
-        "confidence": "high",
-        "member_paragraph_ids": [
-          "p0030",
-          "p0031",
-          "p0032"
-        ],
-        "rationale": [
-          "contiguous_toc_entries"
-        ],
-        "relation_id": "rel_0003",
-        "relation_kind": "toc_region"
-      },
-      {
-        "anchor_asset_id": null,
-        "confidence": "high",
-        "member_paragraph_ids": [
-          "p0048",
-          "p0049"
-        ],
-        "rationale": [
-          "contiguous_toc_entries"
-        ],
-        "relation_id": "rel_0004",
-        "relation_kind": "toc_region"
-      },
-      {
-        "anchor_asset_id": null,
-        "confidence": "high",
-        "member_paragraph_ids": [
-          "p0146",
-          "p0147"
-        ],
-        "rationale": [
-          "contiguous_toc_entries"
-        ],
-        "relation_id": "rel_0005",
-        "relation_kind": "toc_region"
       }
     ],
     "accepted_split_targets": [],
@@ -1707,17 +1653,16 @@
     },
     "high_confidence_merge_count": 60,
     "list_restoration_decisions": [],
-    "mapped_count": 469,
+    "mapped_count": 468,
     "mapping_strategy_counts": {
       "exact_text": 20,
       "image_anchor": 1,
-      "local_gap_toc_fallback": 1,
+      "local_gap_heading_fallback": 1,
       "paragraph_id_rebuild_key": 9,
       "paragraph_id_registry": 334,
       "paragraph_id_registry_aggregation_anchor": 8,
       "paragraph_id_registry_similarity": 75,
       "positional_exact": 14,
-      "positional_toc_fallback": 1,
       "projected_registry_fuzzy": 2,
       "similarity": 4
     },
@@ -1751,11 +1696,10 @@
       "suspicious_count": 0,
       "suspicious_counts": {}
     },
-    "rejected_relation_candidate_count": 60,
-    "relation_count": 5,
+    "rejected_relation_candidate_count": 59,
+    "relation_count": 1,
     "relation_counts": {
-      "image_caption": 1,
-      "toc_region": 4
+      "image_caption": 1
     },
     "relation_decisions": [
       {
@@ -2539,82 +2483,11 @@
         "relation_kind": "caption_attachment",
         "structure_phase": "post_ai_final",
         "structure_source": "post_ai_final_binding"
-      },
-      {
-        "anchor_asset_id": null,
-        "decision": "accept",
-        "member_paragraph_ids": [
-          "p0000",
-          "p0001",
-          "p0002"
-        ],
-        "reasons": [
-          "contiguous_toc_entries"
-        ],
-        "relation_kind": "toc_region",
-        "structure_phase": "post_ai_final",
-        "structure_source": "post_ai_final_binding"
-      },
-      {
-        "anchor_asset_id": null,
-        "decision": "accept",
-        "member_paragraph_ids": [
-          "p0030",
-          "p0031",
-          "p0032"
-        ],
-        "reasons": [
-          "contiguous_toc_entries"
-        ],
-        "relation_kind": "toc_region",
-        "structure_phase": "post_ai_final",
-        "structure_source": "post_ai_final_binding"
-      },
-      {
-        "anchor_asset_id": null,
-        "decision": "accept",
-        "member_paragraph_ids": [
-          "p0048",
-          "p0049"
-        ],
-        "reasons": [
-          "contiguous_toc_entries"
-        ],
-        "relation_kind": "toc_region",
-        "structure_phase": "post_ai_final",
-        "structure_source": "post_ai_final_binding"
-      },
-      {
-        "anchor_asset_id": null,
-        "decision": "accept",
-        "member_paragraph_ids": [
-          "p0146",
-          "p0147"
-        ],
-        "reasons": [
-          "contiguous_toc_entries"
-        ],
-        "relation_kind": "toc_region",
-        "structure_phase": "post_ai_final",
-        "structure_source": "post_ai_final_binding"
-      },
-      {
-        "anchor_asset_id": null,
-        "decision": "reject",
-        "member_paragraph_ids": [
-          "p0365"
-        ],
-        "reasons": [
-          "isolated_toc_entry"
-        ],
-        "relation_kind": "toc_region",
-        "structure_phase": "post_ai_final",
-        "structure_source": "post_ai_final_binding"
       }
     ],
     "relation_identity_population": {
-      "relation_id_missing_count": 488,
-      "relation_id_populated_count": 12,
+      "relation_id_missing_count": 498,
+      "relation_id_populated_count": 2,
       "source_count": 500
     },
     "source_count": 500,
@@ -2638,13 +2511,11 @@
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0000",
-        "relation_ids": [
-          "rel_0002"
-        ],
+        "relation_ids": [],
         "role": "heading",
         "role_confidence": "explicit",
         "source_index": 0,
-        "structural_role": "toc_entry",
+        "structural_role": "heading",
         "text_preview": "esistance factors"
       },
       {
@@ -2660,19 +2531,17 @@
         "list_num_id": null,
         "list_numbering_format": null,
         "mapped_target_index": 1,
-        "mapping_strategy": "local_gap_toc_fallback",
+        "mapping_strategy": "local_gap_heading_fallback",
         "origin_raw_indexes": [
           0
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0001",
-        "relation_ids": [
-          "rel_0002"
-        ],
+        "relation_ids": [],
         "role": "heading",
         "role_confidence": "explicit",
         "source_index": 0,
-        "structural_role": "toc_entry",
+        "structural_role": "heading",
         "text_preview": "and special forces areas"
       },
       {
@@ -2694,13 +2563,11 @@
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0002",
-        "relation_ids": [
-          "rel_0002"
-        ],
+        "relation_ids": [],
         "role": "heading",
         "role_confidence": "explicit",
         "source_index": 0,
-        "structural_role": "toc_entry",
+        "structural_role": "heading",
         "text_preview": "ukraine (u)"
       },
       {
@@ -3441,13 +3308,11 @@
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0030",
-        "relation_ids": [
-          "rel_0003"
-        ],
+        "relation_ids": [],
         "role": "body",
         "role_confidence": "heuristic",
         "source_index": 29,
-        "structural_role": "toc_entry",
+        "structural_role": "body",
         "text_preview": "general summary introduction"
       },
       {
@@ -3469,13 +3334,11 @@
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0031",
-        "relation_ids": [
-          "rel_0003"
-        ],
+        "relation_ids": [],
         "role": "body",
         "role_confidence": "heuristic",
         "source_index": 29,
-        "structural_role": "toc_entry",
+        "structural_role": "body",
         "text_preview": "» о"
       },
       {
@@ -3490,20 +3353,18 @@
         "list_level": 0,
         "list_num_id": null,
         "list_numbering_format": null,
-        "mapped_target_index": 32,
-        "mapping_strategy": "positional_toc_fallback",
+        "mapped_target_index": null,
+        "mapping_strategy": null,
         "origin_raw_indexes": [
           46
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0032",
-        "relation_ids": [
-          "rel_0003"
-        ],
+        "relation_ids": [],
         "role": "body",
         "role_confidence": "heuristic",
         "source_index": 29,
-        "structural_role": "toc_entry",
+        "structural_role": "body",
         "text_preview": "terrain features"
       },
       {
@@ -3904,7 +3765,7 @@
         "boundary_confidence": "high",
         "boundary_rationale": null,
         "boundary_source": "raw",
-        "heading_level": null,
+        "heading_level": 2,
         "list_abstract_num_id": null,
         "list_kind": null,
         "list_level": 0,
@@ -3917,13 +3778,11 @@
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0048",
-        "relation_ids": [
-          "rel_0004"
-        ],
-        "role": "body",
+        "relation_ids": [],
+        "role": "heading",
         "role_confidence": "heuristic",
         "source_index": 45,
-        "structural_role": "toc_entry",
+        "structural_role": "heading",
         "text_preview": "a0"
       },
       {
@@ -3932,7 +3791,7 @@
         "boundary_confidence": "high",
         "boundary_rationale": null,
         "boundary_source": "raw",
-        "heading_level": null,
+        "heading_level": 2,
         "list_abstract_num_id": null,
         "list_kind": null,
         "list_level": 0,
@@ -3945,13 +3804,11 @@
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0049",
-        "relation_ids": [
-          "rel_0004"
-        ],
-        "role": "body",
+        "relation_ids": [],
+        "role": "heading",
         "role_confidence": "heuristic",
         "source_index": 45,
-        "structural_role": "toc_entry",
+        "structural_role": "heading",
         "text_preview": "bo"
       },
       {
@@ -6534,7 +6391,7 @@
         "boundary_confidence": "high",
         "boundary_rationale": null,
         "boundary_source": "raw",
-        "heading_level": null,
+        "heading_level": 2,
         "list_abstract_num_id": null,
         "list_kind": null,
         "list_level": 0,
@@ -6547,13 +6404,11 @@
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0146",
-        "relation_ids": [
-          "rel_0005"
-        ],
-        "role": "body",
+        "relation_ids": [],
+        "role": "heading",
         "role_confidence": "heuristic",
         "source_index": 146,
-        "structural_role": "toc_entry",
+        "structural_role": "heading",
         "text_preview": "following"
       },
       {
@@ -6562,7 +6417,7 @@
         "boundary_confidence": "high",
         "boundary_rationale": null,
         "boundary_source": "raw",
-        "heading_level": null,
+        "heading_level": 2,
         "list_abstract_num_id": null,
         "list_kind": null,
         "list_level": 0,
@@ -6575,13 +6430,11 @@
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0147",
-        "relation_ids": [
-          "rel_0005"
-        ],
-        "role": "body",
+        "relation_ids": [],
+        "role": "heading",
         "role_confidence": "heuristic",
         "source_index": 146,
-        "structural_role": "toc_entry",
+        "structural_role": "heading",
         "text_preview": "page:"
       },
       {
@@ -12382,7 +12235,7 @@
         "role": "heading",
         "role_confidence": "explicit",
         "source_index": 384,
-        "structural_role": "toc_entry",
+        "structural_role": "heading",
         "text_preview": "25"
       },
       {
@@ -16192,7 +16045,7 @@
       },
       {
         "heading_level": null,
-        "mapped": true,
+        "mapped": false,
         "style_name": "Normal",
         "target_index": 32,
         "text_preview": "terrain features features"
@@ -16303,16 +16156,16 @@
         "text_preview": "cross-country movement land utilization o о о"
       },
       {
-        "heading_level": null,
+        "heading_level": 2,
         "mapped": true,
-        "style_name": "Normal",
+        "style_name": "Heading 2",
         "target_index": 48,
         "text_preview": "a0"
       },
       {
-        "heading_level": null,
+        "heading_level": 2,
         "mapped": true,
-        "style_name": "Normal",
+        "style_name": "Heading 2",
         "target_index": 49,
         "text_preview": "bo"
       },
@@ -16989,16 +16842,16 @@
         "text_preview": "153 155 155 158 160 163 165 169 173 175 175 181 183 195 195 198 199 207 207 210 211 215 215 217 218 223 223 226 227 233…"
       },
       {
-        "heading_level": null,
+        "heading_level": 2,
         "mapped": true,
-        "style_name": "Normal",
+        "style_name": "Heading 2",
         "target_index": 146,
         "text_preview": "following"
       },
       {
-        "heading_level": null,
+        "heading_level": 2,
         "mapped": true,
-        "style_name": "Normal",
+        "style_name": "Heading 2",
         "target_index": 147,
         "text_preview": "page:"
       },
@@ -19469,6 +19322,7 @@
     ],
     "unmapped_source_count_basis": "role_aware_formatting_coverage",
     "unmapped_source_ids": [
+      "p0032",
       "p0040",
       "p0052",
       "p0158",
@@ -19498,7 +19352,7 @@
     "unmapped_source_residual_diagnostics": {
       "category_counts": {
         "real_uncovered": 1,
-        "single_origin_lost_match": 20,
+        "single_origin_lost_match": 21,
         "true_aggregate_unmapped": 4
       },
       "effective_formatting_coverage_diagnostics": {
@@ -19507,7 +19361,7 @@
           "content_survived_but_format_role_lost": 1,
           "real_uncovered": 1,
           "true_aggregate_relation_gap": 4,
-          "unproven_or_marker_closable": 19
+          "unproven_or_marker_closable": 20
         },
         "evidence_basis": "registry_text_exact_or_fuzzy_overlap_in_already_mapped_neighbor_target",
         "format_neutral_creditable_count": 0,
@@ -19516,7 +19370,7 @@
         "source_neighbor_window": 3
       },
       "first_missing_identity_stage_counts": {
-        "rebuilt_docx_restore_match_missing": 24,
+        "rebuilt_docx_restore_match_missing": 25,
         "translation_marker_or_generated_registry_missing": 1
       },
       "residual_closability_diagnostics": {
@@ -19524,14 +19378,53 @@
         "counts": {
           "real_uncovered": 1,
           "target_absent_or_unproven": 17,
-          "target_exists_text_align_missed": 3,
+          "target_exists_text_align_missed": 4,
           "true_aggregate_relation_gap": 4
         },
         "embedded_marker_upper_bound_class": "target_exists_text_align_missed",
-        "embedded_marker_upper_bound_count": 3,
+        "embedded_marker_upper_bound_count": 4,
         "embedded_marker_upper_bound_note": "Counts only candidates on unmapped/free target paragraphs."
       },
       "residual_rows": [
+        {
+          "effective_formatting_coverage_class": "unproven_or_marker_closable",
+          "first_missing_identity_stage": "rebuilt_docx_restore_match_missing",
+          "free_target_candidate_indexes_containing_registry_text": [
+            32
+          ],
+          "generated_registry_entry_available": true,
+          "generated_registry_merged_ids": [],
+          "generated_text_preview": "Terrain Features",
+          "occupied_candidate_evidence": [
+            {
+              "evidence_type": "exact_contains",
+              "mapped_source_index": 432,
+              "score": 1.0,
+              "source_distance": 400,
+              "target_index": 432,
+              "token_overlap_ratio": 1.0
+            }
+          ],
+          "occupied_neighbor_candidate_evidence": [],
+          "origin_raw_indexes": [
+            46
+          ],
+          "origin_raw_text_count": 1,
+          "paragraph_id": "p0032",
+          "relation_ids": [],
+          "residual_category": "single_origin_lost_match",
+          "residual_closability_class": "target_exists_text_align_missed",
+          "role": "body",
+          "source_format_role": "body",
+          "source_index": 29,
+          "source_paragraph_id_available": true,
+          "structural_role": "body",
+          "target_candidate_indexes_containing_registry_text": [
+            32,
+            432
+          ],
+          "text_preview": "terrain features"
+        },
         {
           "effective_formatting_coverage_class": "unproven_or_marker_closable",
           "first_missing_identity_stage": "rebuilt_docx_restore_match_missing",
@@ -20337,6 +20230,45 @@
         {
           "effective_formatting_coverage_class": "unproven_or_marker_closable",
           "first_missing_identity_stage": "rebuilt_docx_restore_match_missing",
+          "free_target_candidate_indexes_containing_registry_text": [
+            32
+          ],
+          "generated_registry_entry_available": true,
+          "generated_registry_merged_ids": [],
+          "generated_text_preview": "Terrain Features",
+          "occupied_candidate_evidence": [
+            {
+              "evidence_type": "exact_contains",
+              "mapped_source_index": 432,
+              "score": 1.0,
+              "source_distance": 400,
+              "target_index": 432,
+              "token_overlap_ratio": 1.0
+            }
+          ],
+          "occupied_neighbor_candidate_evidence": [],
+          "origin_raw_indexes": [
+            46
+          ],
+          "origin_raw_text_count": 1,
+          "paragraph_id": "p0032",
+          "relation_ids": [],
+          "residual_category": "single_origin_lost_match",
+          "residual_closability_class": "target_exists_text_align_missed",
+          "role": "body",
+          "source_format_role": "body",
+          "source_index": 29,
+          "source_paragraph_id_available": true,
+          "structural_role": "body",
+          "target_candidate_indexes_containing_registry_text": [
+            32,
+            432
+          ],
+          "text_preview": "terrain features"
+        },
+        {
+          "effective_formatting_coverage_class": "unproven_or_marker_closable",
+          "first_missing_identity_stage": "rebuilt_docx_restore_match_missing",
           "free_target_candidate_indexes_containing_registry_text": [],
           "generated_registry_entry_available": true,
           "generated_registry_merged_ids": [],
@@ -21104,44 +21036,29 @@
             487
           ],
           "text_preview": "highland areas"
-        },
-        {
-          "effective_formatting_coverage_class": "true_aggregate_relation_gap",
-          "first_missing_identity_stage": "rebuilt_docx_restore_match_missing",
-          "free_target_candidate_indexes_containing_registry_text": [],
-          "generated_registry_entry_available": true,
-          "generated_registry_merged_ids": [],
-          "generated_text_preview": "The average January temperatures are 10°F. in for the south coast is 15.5 to 19.5 inches, with the largest part the mou…",
-          "occupied_candidate_evidence": [],
-          "occupied_neighbor_candidate_evidence": [],
-          "origin_raw_indexes": [
-            830,
-            831,
-            832,
-            833,
-            834
-          ],
-          "origin_raw_text_count": 5,
-          "paragraph_id": "p0494",
-          "relation_ids": [],
-          "residual_category": "true_aggregate_unmapped",
-          "residual_closability_class": "true_aggregate_relation_gap",
-          "role": "body",
-          "source_format_role": "body",
-          "source_index": 526,
-          "source_paragraph_id_available": true,
-          "structural_role": "body",
-          "target_candidate_indexes_containing_registry_text": [],
-          "text_preview": "the average january temperatures are 10°f. in for the south coast is 15.5 to 19.5 inches, with the largest part the mou…"
         }
       ]
     },
     "unmapped_source_role_counts": {
-      "body": 18,
+      "body": 19,
       "caption": 3,
       "list": 4
     },
     "unmapped_source_samples": [
+      {
+        "asset_id": null,
+        "heading_level": null,
+        "list_kind": null,
+        "origin_raw_indexes": [
+          46
+        ],
+        "origin_raw_text_count": 1,
+        "paragraph_id": "p0032",
+        "role": "body",
+        "source_index": 29,
+        "structural_role": "body",
+        "text_preview": "terrain features"
+      },
       {
         "asset_id": null,
         "heading_level": null,
@@ -21481,27 +21398,10 @@
         "source_index": 517,
         "structural_role": "list",
         "text_preview": "highland areas"
-      },
-      {
-        "asset_id": null,
-        "heading_level": null,
-        "list_kind": null,
-        "origin_raw_indexes": [
-          830,
-          831,
-          832,
-          833,
-          834
-        ],
-        "origin_raw_text_count": 5,
-        "paragraph_id": "p0494",
-        "role": "body",
-        "source_index": 526,
-        "structural_role": "body",
-        "text_preview": "the average january temperatures are 10°f. in for the south coast is 15.5 to 19.5 inches, with the largest part the mou…"
       }
     ],
     "unmapped_target_indexes": [
+      32,
       40,
       52,
       62,
@@ -21539,12 +21439,19 @@
       "controlled_fallback_accounting_rule": "Credit unmapped target paragraphs whose text is covered by a generated registry entry from a block explicitly retained through controlled fallback.",
       "controlled_fallback_creditable_count": 0,
       "counts": {
-        "short_note_or_marker": 11,
+        "short_note_or_marker": 12,
         "split_accounting": 5,
         "spurious_or_unproven": 15
       },
       "evidence_basis": "target_registry text contained/fuzzy-covered by generated source registry text",
       "residual_rows": [
+        {
+          "residual_class": "short_note_or_marker",
+          "target_format_role": "body",
+          "target_index": 32,
+          "target_text_preview": "Terrain Features Features",
+          "target_token_count": 3
+        },
         {
           "residual_class": "short_note_or_marker",
           "target_format_role": "body",
@@ -21972,6 +21879,13 @@
         {
           "residual_class": "short_note_or_marker",
           "target_format_role": "body",
+          "target_index": 32,
+          "target_text_preview": "Terrain Features Features",
+          "target_token_count": 3
+        },
+        {
+          "residual_class": "short_note_or_marker",
+          "target_format_role": "body",
           "target_index": 40,
           "target_text_preview": "The Forest-Steppe <u>Vegetation</u> .",
           "target_token_count": 4
@@ -22305,22 +22219,6 @@
           "text_evidence_score": 1.0,
           "text_evidence_token_overlap_ratio": 1.0,
           "text_evidence_type": "fuzzy_token_overlap"
-        },
-        {
-          "best_source_format_role": "body",
-          "best_source_index": 428,
-          "best_source_mapped_target_index": null,
-          "best_source_paragraph_id": "p0428",
-          "best_source_text_preview": "The Ukrainian SSR occupies 222,600 square miles in the southwesternmost corner of the USSR. It extends approximately 85…",
-          "residual_class": "spurious_or_unproven",
-          "split_anchor_targets": [],
-          "target_format_role": "body",
-          "target_index": 428,
-          "target_text_preview": "The Ukrainian SSR occupies 222,600 square miles in the southwesternmost corner of the USSR. It extends approximately 85…",
-          "target_token_count": 72,
-          "text_evidence_score": 1.0,
-          "text_evidence_token_overlap_ratio": 1.0,
-          "text_evidence_type": "exact_contains"
         }
       ],
       "split_accounting_creditable_count": 5,
@@ -22328,6 +22226,13 @@
       "split_accounting_rule": "Credit only unmapped target paragraphs whose text is covered by a source registry entry and that sit directly adjacent to that source's mapped or accepted aggregate target."
     },
     "unmapped_target_samples": [
+      {
+        "heading_level": null,
+        "mapped": false,
+        "style_name": "Normal",
+        "target_index": 32,
+        "text_preview": "terrain features features"
+      },
       {
         "heading_level": null,
         "mapped": false,
@@ -22495,13 +22400,6 @@
         "style_name": "Normal",
         "target_index": 409,
         "text_preview": "the third phase of resistance—1952 to 1956—saw the elimination of scale. their importance, however, should not be minim…"
-      },
-      {
-        "heading_level": null,
-        "mapped": false,
-        "style_name": "Normal",
-        "target_index": 428,
-        "text_preview": "the ukrainian ssr occupies 222,600 square miles in the southwesternmost corner of the ussr. it extends approximately 85…"
       }
     ]
   },
@@ -22633,10 +22531,6 @@
     [
       "p0031",
       31
-    ],
-    [
-      "p0032",
-      32
     ],
     [
       "p0033",

@@ -1188,25 +1188,6 @@
         "anchor_asset_id": null,
         "confidence": "high",
         "member_paragraph_ids": [
-          "p0000",
-          "p0001",
-          "p0002",
-          "p0003",
-          "p0004",
-          "p0005",
-          "p0006",
-          "p0007"
-        ],
-        "rationale": [
-          "contiguous_toc_entries"
-        ],
-        "relation_id": "rel_0001",
-        "relation_kind": "toc_region"
-      },
-      {
-        "anchor_asset_id": null,
-        "confidence": "high",
-        "member_paragraph_ids": [
           "p0012",
           "p0013",
           "p0014",
@@ -1280,33 +1261,7 @@
         "rationale": [
           "toc_header_with_entries"
         ],
-        "relation_id": "rel_0002",
-        "relation_kind": "toc_region"
-      },
-      {
-        "anchor_asset_id": null,
-        "confidence": "high",
-        "member_paragraph_ids": [
-          "p0282",
-          "p0283"
-        ],
-        "rationale": [
-          "contiguous_toc_entries"
-        ],
-        "relation_id": "rel_0003",
-        "relation_kind": "toc_region"
-      },
-      {
-        "anchor_asset_id": null,
-        "confidence": "high",
-        "member_paragraph_ids": [
-          "p0296",
-          "p0297"
-        ],
-        "rationale": [
-          "contiguous_toc_entries"
-        ],
-        "relation_id": "rel_0004",
+        "relation_id": "rel_0001",
         "relation_kind": "toc_region"
       }
     ],
@@ -1334,23 +1289,23 @@
       "local_gap_heading_fallback": 6,
       "local_gap_toc_fallback": 5,
       "paragraph_id_rebuild_key": 9,
-      "paragraph_id_registry": 353,
+      "paragraph_id_registry": 354,
       "paragraph_id_registry_aggregation_anchor": 11,
-      "paragraph_id_registry_similarity": 59,
+      "paragraph_id_registry_similarity": 58,
       "similarity": 6
     },
     "mapping_text_quality": {
       "bad_pair_count": 0,
       "bad_pair_rule": "bad when not exact/contained, token_jaccard < 0.50, source_token_overlap < 0.85, and target_token_overlap < 0.85",
       "bad_strategy_counts": {},
-      "checked_count": 61,
+      "checked_count": 60,
       "indexing_basis": "formatting_diagnostics.target_registry[mapped_target_index]",
       "samples": [],
       "source_text_basis": "runtime.state.final_generated_paragraph_registry when available; source paragraph text fallback",
       "strategy_counts": {
         "bounded_registry_fuzzy": 1,
         "bounded_registry_heading_containment": 1,
-        "paragraph_id_registry_similarity": 59
+        "paragraph_id_registry_similarity": 58
       },
       "strategy_filter": [
         "bounded_registry_fuzzy",
@@ -1371,31 +1326,11 @@
       "suspicious_counts": {}
     },
     "rejected_relation_candidate_count": 0,
-    "relation_count": 4,
+    "relation_count": 1,
     "relation_counts": {
-      "toc_region": 4
+      "toc_region": 1
     },
     "relation_decisions": [
-      {
-        "anchor_asset_id": null,
-        "decision": "accept",
-        "member_paragraph_ids": [
-          "p0000",
-          "p0001",
-          "p0002",
-          "p0003",
-          "p0004",
-          "p0005",
-          "p0006",
-          "p0007"
-        ],
-        "reasons": [
-          "contiguous_toc_entries"
-        ],
-        "relation_kind": "toc_region",
-        "structure_phase": "post_ai_final",
-        "structure_source": "post_ai_final_binding"
-      },
       {
         "anchor_asset_id": null,
         "decision": "accept",
@@ -1476,39 +1411,11 @@
         "relation_kind": "toc_region",
         "structure_phase": "post_ai_final",
         "structure_source": "post_ai_final_binding"
-      },
-      {
-        "anchor_asset_id": null,
-        "decision": "accept",
-        "member_paragraph_ids": [
-          "p0282",
-          "p0283"
-        ],
-        "reasons": [
-          "contiguous_toc_entries"
-        ],
-        "relation_kind": "toc_region",
-        "structure_phase": "post_ai_final",
-        "structure_source": "post_ai_final_binding"
-      },
-      {
-        "anchor_asset_id": null,
-        "decision": "accept",
-        "member_paragraph_ids": [
-          "p0296",
-          "p0297"
-        ],
-        "reasons": [
-          "contiguous_toc_entries"
-        ],
-        "relation_kind": "toc_region",
-        "structure_phase": "post_ai_final",
-        "structure_source": "post_ai_final_binding"
       }
     ],
     "relation_identity_population": {
-      "relation_id_missing_count": 419,
-      "relation_id_populated_count": 81,
+      "relation_id_missing_count": 431,
+      "relation_id_populated_count": 69,
       "source_count": 500
     },
     "source_count": 500,
@@ -1532,13 +1439,11 @@
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0000",
-        "relation_ids": [
-          "rel_0001"
-        ],
+        "relation_ids": [],
         "role": "body",
         "role_confidence": "heuristic",
         "source_index": 0,
-        "structural_role": "toc_entry",
+        "structural_role": "body",
         "text_preview": "mariana"
       },
       {
@@ -1560,13 +1465,11 @@
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0001",
-        "relation_ids": [
-          "rel_0001"
-        ],
+        "relation_ids": [],
         "role": "body",
         "role_confidence": "heuristic",
         "source_index": 0,
-        "structural_role": "toc_entry",
+        "structural_role": "body",
         "text_preview": "mazzucato"
       },
       {
@@ -1575,7 +1478,7 @@
         "boundary_confidence": "high",
         "boundary_rationale": null,
         "boundary_source": "raw",
-        "heading_level": null,
+        "heading_level": 1,
         "list_abstract_num_id": null,
         "list_kind": null,
         "list_level": 0,
@@ -1588,13 +1491,11 @@
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0002",
-        "relation_ids": [
-          "rel_0001"
-        ],
-        "role": "body",
+        "relation_ids": [],
+        "role": "heading",
         "role_confidence": "heuristic",
         "source_index": 0,
-        "structural_role": "toc_entry",
+        "structural_role": "heading",
         "text_preview": "the value of"
       },
       {
@@ -1616,13 +1517,11 @@
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0003",
-        "relation_ids": [
-          "rel_0001"
-        ],
+        "relation_ids": [],
         "role": "body",
         "role_confidence": "heuristic",
         "source_index": 0,
-        "structural_role": "toc_entry",
+        "structural_role": "body",
         "text_preview": "everything"
       },
       {
@@ -1644,13 +1543,11 @@
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0004",
-        "relation_ids": [
-          "rel_0001"
-        ],
+        "relation_ids": [],
         "role": "body",
         "role_confidence": "heuristic",
         "source_index": 1,
-        "structural_role": "toc_entry",
+        "structural_role": "body",
         "text_preview": "making and"
       },
       {
@@ -1672,13 +1569,11 @@
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0005",
-        "relation_ids": [
-          "rel_0001"
-        ],
+        "relation_ids": [],
         "role": "body",
         "role_confidence": "heuristic",
         "source_index": 1,
-        "structural_role": "toc_entry",
+        "structural_role": "body",
         "text_preview": "taking in"
       },
       {
@@ -1700,13 +1595,11 @@
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0006",
-        "relation_ids": [
-          "rel_0001"
-        ],
+        "relation_ids": [],
         "role": "body",
         "role_confidence": "heuristic",
         "source_index": 1,
-        "structural_role": "toc_entry",
+        "structural_role": "body",
         "text_preview": "the global"
       },
       {
@@ -1728,13 +1621,11 @@
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0007",
-        "relation_ids": [
-          "rel_0001"
-        ],
+        "relation_ids": [],
         "role": "body",
         "role_confidence": "heuristic",
         "source_index": 1,
-        "structural_role": "toc_entry",
+        "structural_role": "body",
         "text_preview": "economy"
       },
       {
@@ -1795,7 +1686,7 @@
         "boundary_confidence": "high",
         "boundary_rationale": null,
         "boundary_source": "raw",
-        "heading_level": 1,
+        "heading_level": null,
         "list_abstract_num_id": null,
         "list_kind": null,
         "list_level": 0,
@@ -1809,10 +1700,10 @@
         "origin_raw_text_count": 1,
         "paragraph_id": "p0010",
         "relation_ids": [],
-        "role": "heading",
+        "role": "body",
         "role_confidence": "heuristic",
         "source_index": 4,
-        "structural_role": "heading",
+        "structural_role": "body",
         "text_preview": "t h e va l u e o f e v e ry t h i ng"
       },
       {
@@ -1861,7 +1752,7 @@
         "origin_raw_text_count": 1,
         "paragraph_id": "p0012",
         "relation_ids": [
-          "rel_0002"
+          "rel_0001"
         ],
         "role": "body",
         "role_confidence": "heuristic",
@@ -1889,7 +1780,7 @@
         "origin_raw_text_count": 1,
         "paragraph_id": "p0013",
         "relation_ids": [
-          "rel_0002"
+          "rel_0001"
         ],
         "role": "body",
         "role_confidence": "heuristic",
@@ -1917,7 +1808,7 @@
         "origin_raw_text_count": 1,
         "paragraph_id": "p0014",
         "relation_ids": [
-          "rel_0002"
+          "rel_0001"
         ],
         "role": "body",
         "role_confidence": "heuristic",
@@ -1945,7 +1836,7 @@
         "origin_raw_text_count": 1,
         "paragraph_id": "p0015",
         "relation_ids": [
-          "rel_0002"
+          "rel_0001"
         ],
         "role": "body",
         "role_confidence": "heuristic",
@@ -1973,7 +1864,7 @@
         "origin_raw_text_count": 1,
         "paragraph_id": "p0016",
         "relation_ids": [
-          "rel_0002"
+          "rel_0001"
         ],
         "role": "body",
         "role_confidence": "heuristic",
@@ -2001,7 +1892,7 @@
         "origin_raw_text_count": 1,
         "paragraph_id": "p0017",
         "relation_ids": [
-          "rel_0002"
+          "rel_0001"
         ],
         "role": "body",
         "role_confidence": "heuristic",
@@ -2029,7 +1920,7 @@
         "origin_raw_text_count": 1,
         "paragraph_id": "p0018",
         "relation_ids": [
-          "rel_0002"
+          "rel_0001"
         ],
         "role": "body",
         "role_confidence": "heuristic",
@@ -2057,7 +1948,7 @@
         "origin_raw_text_count": 1,
         "paragraph_id": "p0019",
         "relation_ids": [
-          "rel_0002"
+          "rel_0001"
         ],
         "role": "body",
         "role_confidence": "heuristic",
@@ -2085,7 +1976,7 @@
         "origin_raw_text_count": 1,
         "paragraph_id": "p0020",
         "relation_ids": [
-          "rel_0002"
+          "rel_0001"
         ],
         "role": "body",
         "role_confidence": "heuristic",
@@ -2113,7 +2004,7 @@
         "origin_raw_text_count": 1,
         "paragraph_id": "p0021",
         "relation_ids": [
-          "rel_0002"
+          "rel_0001"
         ],
         "role": "body",
         "role_confidence": "heuristic",
@@ -2141,7 +2032,7 @@
         "origin_raw_text_count": 1,
         "paragraph_id": "p0022",
         "relation_ids": [
-          "rel_0002"
+          "rel_0001"
         ],
         "role": "body",
         "role_confidence": "heuristic",
@@ -2169,7 +2060,7 @@
         "origin_raw_text_count": 1,
         "paragraph_id": "p0023",
         "relation_ids": [
-          "rel_0002"
+          "rel_0001"
         ],
         "role": "body",
         "role_confidence": "heuristic",
@@ -2197,7 +2088,7 @@
         "origin_raw_text_count": 1,
         "paragraph_id": "p0024",
         "relation_ids": [
-          "rel_0002"
+          "rel_0001"
         ],
         "role": "body",
         "role_confidence": "heuristic",
@@ -2225,7 +2116,7 @@
         "origin_raw_text_count": 1,
         "paragraph_id": "p0025",
         "relation_ids": [
-          "rel_0002"
+          "rel_0001"
         ],
         "role": "body",
         "role_confidence": "heuristic",
@@ -2253,7 +2144,7 @@
         "origin_raw_text_count": 1,
         "paragraph_id": "p0026",
         "relation_ids": [
-          "rel_0002"
+          "rel_0001"
         ],
         "role": "body",
         "role_confidence": "heuristic",
@@ -2281,7 +2172,7 @@
         "origin_raw_text_count": 1,
         "paragraph_id": "p0027",
         "relation_ids": [
-          "rel_0002"
+          "rel_0001"
         ],
         "role": "body",
         "role_confidence": "heuristic",
@@ -2309,7 +2200,7 @@
         "origin_raw_text_count": 1,
         "paragraph_id": "p0028",
         "relation_ids": [
-          "rel_0002"
+          "rel_0001"
         ],
         "role": "body",
         "role_confidence": "heuristic",
@@ -2337,7 +2228,7 @@
         "origin_raw_text_count": 1,
         "paragraph_id": "p0029",
         "relation_ids": [
-          "rel_0002"
+          "rel_0001"
         ],
         "role": "body",
         "role_confidence": "heuristic",
@@ -2365,7 +2256,7 @@
         "origin_raw_text_count": 1,
         "paragraph_id": "p0030",
         "relation_ids": [
-          "rel_0002"
+          "rel_0001"
         ],
         "role": "body",
         "role_confidence": "heuristic",
@@ -2393,7 +2284,7 @@
         "origin_raw_text_count": 1,
         "paragraph_id": "p0031",
         "relation_ids": [
-          "rel_0002"
+          "rel_0001"
         ],
         "role": "body",
         "role_confidence": "heuristic",
@@ -2421,7 +2312,7 @@
         "origin_raw_text_count": 1,
         "paragraph_id": "p0032",
         "relation_ids": [
-          "rel_0002"
+          "rel_0001"
         ],
         "role": "body",
         "role_confidence": "heuristic",
@@ -2449,7 +2340,7 @@
         "origin_raw_text_count": 1,
         "paragraph_id": "p0033",
         "relation_ids": [
-          "rel_0002"
+          "rel_0001"
         ],
         "role": "body",
         "role_confidence": "heuristic",
@@ -2477,7 +2368,7 @@
         "origin_raw_text_count": 1,
         "paragraph_id": "p0034",
         "relation_ids": [
-          "rel_0002"
+          "rel_0001"
         ],
         "role": "body",
         "role_confidence": "heuristic",
@@ -2505,7 +2396,7 @@
         "origin_raw_text_count": 1,
         "paragraph_id": "p0035",
         "relation_ids": [
-          "rel_0002"
+          "rel_0001"
         ],
         "role": "body",
         "role_confidence": "heuristic",
@@ -2533,7 +2424,7 @@
         "origin_raw_text_count": 1,
         "paragraph_id": "p0036",
         "relation_ids": [
-          "rel_0002"
+          "rel_0001"
         ],
         "role": "body",
         "role_confidence": "heuristic",
@@ -2561,7 +2452,7 @@
         "origin_raw_text_count": 1,
         "paragraph_id": "p0037",
         "relation_ids": [
-          "rel_0002"
+          "rel_0001"
         ],
         "role": "body",
         "role_confidence": "heuristic",
@@ -2589,7 +2480,7 @@
         "origin_raw_text_count": 1,
         "paragraph_id": "p0038",
         "relation_ids": [
-          "rel_0002"
+          "rel_0001"
         ],
         "role": "body",
         "role_confidence": "heuristic",
@@ -2617,7 +2508,7 @@
         "origin_raw_text_count": 1,
         "paragraph_id": "p0039",
         "relation_ids": [
-          "rel_0002"
+          "rel_0001"
         ],
         "role": "body",
         "role_confidence": "heuristic",
@@ -2645,7 +2536,7 @@
         "origin_raw_text_count": 1,
         "paragraph_id": "p0040",
         "relation_ids": [
-          "rel_0002"
+          "rel_0001"
         ],
         "role": "body",
         "role_confidence": "heuristic",
@@ -2673,7 +2564,7 @@
         "origin_raw_text_count": 1,
         "paragraph_id": "p0041",
         "relation_ids": [
-          "rel_0002"
+          "rel_0001"
         ],
         "role": "body",
         "role_confidence": "heuristic",
@@ -2701,7 +2592,7 @@
         "origin_raw_text_count": 1,
         "paragraph_id": "p0042",
         "relation_ids": [
-          "rel_0002"
+          "rel_0001"
         ],
         "role": "body",
         "role_confidence": "heuristic",
@@ -2729,7 +2620,7 @@
         "origin_raw_text_count": 1,
         "paragraph_id": "p0043",
         "relation_ids": [
-          "rel_0002"
+          "rel_0001"
         ],
         "role": "body",
         "role_confidence": "heuristic",
@@ -2757,7 +2648,7 @@
         "origin_raw_text_count": 1,
         "paragraph_id": "p0044",
         "relation_ids": [
-          "rel_0002"
+          "rel_0001"
         ],
         "role": "body",
         "role_confidence": "heuristic",
@@ -2785,7 +2676,7 @@
         "origin_raw_text_count": 1,
         "paragraph_id": "p0045",
         "relation_ids": [
-          "rel_0002"
+          "rel_0001"
         ],
         "role": "body",
         "role_confidence": "heuristic",
@@ -2813,7 +2704,7 @@
         "origin_raw_text_count": 1,
         "paragraph_id": "p0046",
         "relation_ids": [
-          "rel_0002"
+          "rel_0001"
         ],
         "role": "body",
         "role_confidence": "heuristic",
@@ -2841,7 +2732,7 @@
         "origin_raw_text_count": 1,
         "paragraph_id": "p0047",
         "relation_ids": [
-          "rel_0002"
+          "rel_0001"
         ],
         "role": "body",
         "role_confidence": "heuristic",
@@ -2869,7 +2760,7 @@
         "origin_raw_text_count": 1,
         "paragraph_id": "p0048",
         "relation_ids": [
-          "rel_0002"
+          "rel_0001"
         ],
         "role": "body",
         "role_confidence": "heuristic",
@@ -2897,7 +2788,7 @@
         "origin_raw_text_count": 1,
         "paragraph_id": "p0049",
         "relation_ids": [
-          "rel_0002"
+          "rel_0001"
         ],
         "role": "body",
         "role_confidence": "heuristic",
@@ -2925,7 +2816,7 @@
         "origin_raw_text_count": 1,
         "paragraph_id": "p0050",
         "relation_ids": [
-          "rel_0002"
+          "rel_0001"
         ],
         "role": "body",
         "role_confidence": "heuristic",
@@ -2953,7 +2844,7 @@
         "origin_raw_text_count": 1,
         "paragraph_id": "p0051",
         "relation_ids": [
-          "rel_0002"
+          "rel_0001"
         ],
         "role": "body",
         "role_confidence": "heuristic",
@@ -2981,7 +2872,7 @@
         "origin_raw_text_count": 1,
         "paragraph_id": "p0052",
         "relation_ids": [
-          "rel_0002"
+          "rel_0001"
         ],
         "role": "body",
         "role_confidence": "heuristic",
@@ -3009,7 +2900,7 @@
         "origin_raw_text_count": 1,
         "paragraph_id": "p0053",
         "relation_ids": [
-          "rel_0002"
+          "rel_0001"
         ],
         "role": "body",
         "role_confidence": "heuristic",
@@ -3037,7 +2928,7 @@
         "origin_raw_text_count": 1,
         "paragraph_id": "p0054",
         "relation_ids": [
-          "rel_0002"
+          "rel_0001"
         ],
         "role": "body",
         "role_confidence": "heuristic",
@@ -3065,7 +2956,7 @@
         "origin_raw_text_count": 1,
         "paragraph_id": "p0055",
         "relation_ids": [
-          "rel_0002"
+          "rel_0001"
         ],
         "role": "body",
         "role_confidence": "heuristic",
@@ -3093,7 +2984,7 @@
         "origin_raw_text_count": 1,
         "paragraph_id": "p0056",
         "relation_ids": [
-          "rel_0002"
+          "rel_0001"
         ],
         "role": "body",
         "role_confidence": "heuristic",
@@ -3121,7 +3012,7 @@
         "origin_raw_text_count": 1,
         "paragraph_id": "p0057",
         "relation_ids": [
-          "rel_0002"
+          "rel_0001"
         ],
         "role": "body",
         "role_confidence": "heuristic",
@@ -3149,7 +3040,7 @@
         "origin_raw_text_count": 1,
         "paragraph_id": "p0058",
         "relation_ids": [
-          "rel_0002"
+          "rel_0001"
         ],
         "role": "body",
         "role_confidence": "heuristic",
@@ -3177,7 +3068,7 @@
         "origin_raw_text_count": 1,
         "paragraph_id": "p0059",
         "relation_ids": [
-          "rel_0002"
+          "rel_0001"
         ],
         "role": "body",
         "role_confidence": "heuristic",
@@ -3205,7 +3096,7 @@
         "origin_raw_text_count": 1,
         "paragraph_id": "p0060",
         "relation_ids": [
-          "rel_0002"
+          "rel_0001"
         ],
         "role": "body",
         "role_confidence": "heuristic",
@@ -3233,7 +3124,7 @@
         "origin_raw_text_count": 1,
         "paragraph_id": "p0061",
         "relation_ids": [
-          "rel_0002"
+          "rel_0001"
         ],
         "role": "body",
         "role_confidence": "heuristic",
@@ -3261,7 +3152,7 @@
         "origin_raw_text_count": 1,
         "paragraph_id": "p0062",
         "relation_ids": [
-          "rel_0002"
+          "rel_0001"
         ],
         "role": "body",
         "role_confidence": "heuristic",
@@ -3289,7 +3180,7 @@
         "origin_raw_text_count": 1,
         "paragraph_id": "p0063",
         "relation_ids": [
-          "rel_0002"
+          "rel_0001"
         ],
         "role": "body",
         "role_confidence": "heuristic",
@@ -3317,7 +3208,7 @@
         "origin_raw_text_count": 1,
         "paragraph_id": "p0064",
         "relation_ids": [
-          "rel_0002"
+          "rel_0001"
         ],
         "role": "body",
         "role_confidence": "heuristic",
@@ -3345,7 +3236,7 @@
         "origin_raw_text_count": 1,
         "paragraph_id": "p0065",
         "relation_ids": [
-          "rel_0002"
+          "rel_0001"
         ],
         "role": "body",
         "role_confidence": "heuristic",
@@ -3373,7 +3264,7 @@
         "origin_raw_text_count": 1,
         "paragraph_id": "p0066",
         "relation_ids": [
-          "rel_0002"
+          "rel_0001"
         ],
         "role": "body",
         "role_confidence": "heuristic",
@@ -3401,7 +3292,7 @@
         "origin_raw_text_count": 1,
         "paragraph_id": "p0067",
         "relation_ids": [
-          "rel_0002"
+          "rel_0001"
         ],
         "role": "body",
         "role_confidence": "heuristic",
@@ -3429,7 +3320,7 @@
         "origin_raw_text_count": 1,
         "paragraph_id": "p0068",
         "relation_ids": [
-          "rel_0002"
+          "rel_0001"
         ],
         "role": "body",
         "role_confidence": "heuristic",
@@ -3457,7 +3348,7 @@
         "origin_raw_text_count": 1,
         "paragraph_id": "p0069",
         "relation_ids": [
-          "rel_0002"
+          "rel_0001"
         ],
         "role": "body",
         "role_confidence": "heuristic",
@@ -3485,7 +3376,7 @@
         "origin_raw_text_count": 1,
         "paragraph_id": "p0070",
         "relation_ids": [
-          "rel_0002"
+          "rel_0001"
         ],
         "role": "body",
         "role_confidence": "heuristic",
@@ -3513,7 +3404,7 @@
         "origin_raw_text_count": 1,
         "paragraph_id": "p0071",
         "relation_ids": [
-          "rel_0002"
+          "rel_0001"
         ],
         "role": "body",
         "role_confidence": "heuristic",
@@ -3541,7 +3432,7 @@
         "origin_raw_text_count": 1,
         "paragraph_id": "p0072",
         "relation_ids": [
-          "rel_0002"
+          "rel_0001"
         ],
         "role": "body",
         "role_confidence": "heuristic",
@@ -3569,7 +3460,7 @@
         "origin_raw_text_count": 1,
         "paragraph_id": "p0073",
         "relation_ids": [
-          "rel_0002"
+          "rel_0001"
         ],
         "role": "body",
         "role_confidence": "heuristic",
@@ -3597,7 +3488,7 @@
         "origin_raw_text_count": 1,
         "paragraph_id": "p0074",
         "relation_ids": [
-          "rel_0002"
+          "rel_0001"
         ],
         "role": "body",
         "role_confidence": "heuristic",
@@ -3625,7 +3516,7 @@
         "origin_raw_text_count": 1,
         "paragraph_id": "p0075",
         "relation_ids": [
-          "rel_0002"
+          "rel_0001"
         ],
         "role": "body",
         "role_confidence": "heuristic",
@@ -3653,7 +3544,7 @@
         "origin_raw_text_count": 1,
         "paragraph_id": "p0076",
         "relation_ids": [
-          "rel_0002"
+          "rel_0001"
         ],
         "role": "body",
         "role_confidence": "heuristic",
@@ -3681,7 +3572,7 @@
         "origin_raw_text_count": 1,
         "paragraph_id": "p0077",
         "relation_ids": [
-          "rel_0002"
+          "rel_0001"
         ],
         "role": "body",
         "role_confidence": "heuristic",
@@ -3711,7 +3602,7 @@
         "origin_raw_text_count": 3,
         "paragraph_id": "p0078",
         "relation_ids": [
-          "rel_0002"
+          "rel_0001"
         ],
         "role": "body",
         "role_confidence": "heuristic",
@@ -3739,7 +3630,7 @@
         "origin_raw_text_count": 1,
         "paragraph_id": "p0079",
         "relation_ids": [
-          "rel_0002"
+          "rel_0001"
         ],
         "role": "body",
         "role_confidence": "heuristic",
@@ -3767,7 +3658,7 @@
         "origin_raw_text_count": 1,
         "paragraph_id": "p0080",
         "relation_ids": [
-          "rel_0002"
+          "rel_0001"
         ],
         "role": "body",
         "role_confidence": "explicit",
@@ -9057,7 +8948,7 @@
         "boundary_confidence": "high",
         "boundary_rationale": null,
         "boundary_source": "raw",
-        "heading_level": null,
+        "heading_level": 2,
         "list_abstract_num_id": null,
         "list_kind": null,
         "list_level": 0,
@@ -9070,13 +8961,11 @@
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0282",
-        "relation_ids": [
-          "rel_0003"
-        ],
-        "role": "body",
+        "relation_ids": [],
+        "role": "heading",
         "role_confidence": "heuristic",
         "source_index": 276,
-        "structural_role": "toc_entry",
+        "structural_role": "heading",
         "text_preview": "value in the eye of the beholder: the rise of the"
       },
       {
@@ -9085,26 +8974,24 @@
         "boundary_confidence": "high",
         "boundary_rationale": null,
         "boundary_source": "raw",
-        "heading_level": null,
+        "heading_level": 2,
         "list_abstract_num_id": null,
         "list_kind": null,
         "list_level": 0,
         "list_num_id": null,
         "list_numbering_format": null,
         "mapped_target_index": 283,
-        "mapping_strategy": "paragraph_id_registry_similarity",
+        "mapping_strategy": "paragraph_id_registry",
         "origin_raw_indexes": [
           328
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0283",
-        "relation_ids": [
-          "rel_0003"
-        ],
-        "role": "body",
+        "relation_ids": [],
+        "role": "heading",
         "role_confidence": "heuristic",
         "source_index": 276,
-        "structural_role": "toc_entry",
+        "structural_role": "heading",
         "text_preview": "marginalists"
       },
       {
@@ -9440,13 +9327,11 @@
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0296",
-        "relation_ids": [
-          "rel_0004"
-        ],
+        "relation_ids": [],
         "role": "heading",
         "role_confidence": "explicit",
         "source_index": 289,
-        "structural_role": "toc_entry",
+        "structural_role": "heading",
         "text_preview": "from objective to subjective: a new theory of value based on"
       },
       {
@@ -9468,13 +9353,11 @@
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0297",
-        "relation_ids": [
-          "rel_0004"
-        ],
+        "relation_ids": [],
         "role": "heading",
         "role_confidence": "explicit",
         "source_index": 289,
-        "structural_role": "toc_entry",
+        "structural_role": "heading",
         "text_preview": "preferences"
       },
       {
@@ -14791,9 +14674,9 @@
         "text_preview": "mazzucato"
       },
       {
-        "heading_level": null,
+        "heading_level": 1,
         "mapped": true,
-        "style_name": "Normal",
+        "style_name": "Heading 1",
         "target_index": 2,
         "text_preview": "the value of"
       },
@@ -14847,9 +14730,9 @@
         "text_preview": "mariana mazzucato"
       },
       {
-        "heading_level": 1,
+        "heading_level": null,
         "mapped": true,
-        "style_name": "Heading 1",
+        "style_name": "Normal",
         "target_index": 10,
         "text_preview": "t h e va l u e o f e v e ry t h i ng"
       },
@@ -16751,16 +16634,16 @@
         "text_preview": "2"
       },
       {
-        "heading_level": null,
+        "heading_level": 2,
         "mapped": true,
-        "style_name": "Normal",
+        "style_name": "Heading 2",
         "target_index": 282,
         "text_preview": "value in the eye of the beholder: the rise of the"
       },
       {
-        "heading_level": null,
+        "heading_level": 2,
         "mapped": true,
-        "style_name": "Normal",
+        "style_name": "Heading 2",
         "target_index": 283,
         "text_preview": "marginalists"
       },

@@ -482,33 +482,6 @@
         ],
         "relation_id": "rel_0005",
         "relation_kind": "toc_region"
-      },
-      {
-        "anchor_asset_id": null,
-        "confidence": "high",
-        "member_paragraph_ids": [
-          "p0043",
-          "p0044",
-          "p0045"
-        ],
-        "rationale": [
-          "contiguous_toc_entries"
-        ],
-        "relation_id": "rel_0006",
-        "relation_kind": "toc_region"
-      },
-      {
-        "anchor_asset_id": null,
-        "confidence": "high",
-        "member_paragraph_ids": [
-          "p0268",
-          "p0269"
-        ],
-        "rationale": [
-          "contiguous_toc_entries"
-        ],
-        "relation_id": "rel_0007",
-        "relation_kind": "toc_region"
       }
     ],
     "accepted_split_targets": [],
@@ -571,10 +544,10 @@
       "suspicious_counts": {}
     },
     "rejected_relation_candidate_count": 1,
-    "relation_count": 7,
+    "relation_count": 5,
     "relation_counts": {
       "table_caption": 3,
-      "toc_region": 4
+      "toc_region": 2
     },
     "relation_decisions": [
       {
@@ -677,40 +650,11 @@
         "relation_kind": "toc_region",
         "structure_phase": "post_ai_final",
         "structure_source": "post_ai_final_binding"
-      },
-      {
-        "anchor_asset_id": null,
-        "decision": "accept",
-        "member_paragraph_ids": [
-          "p0043",
-          "p0044",
-          "p0045"
-        ],
-        "reasons": [
-          "contiguous_toc_entries"
-        ],
-        "relation_kind": "toc_region",
-        "structure_phase": "post_ai_final",
-        "structure_source": "post_ai_final_binding"
-      },
-      {
-        "anchor_asset_id": null,
-        "decision": "accept",
-        "member_paragraph_ids": [
-          "p0268",
-          "p0269"
-        ],
-        "reasons": [
-          "contiguous_toc_entries"
-        ],
-        "relation_kind": "toc_region",
-        "structure_phase": "post_ai_final",
-        "structure_source": "post_ai_final_binding"
       }
     ],
     "relation_identity_population": {
-      "relation_id_missing_count": 467,
-      "relation_id_populated_count": 33,
+      "relation_id_missing_count": 472,
+      "relation_id_populated_count": 28,
       "source_count": 500
     },
     "source_count": 500,
@@ -1897,13 +1841,11 @@
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0043",
-        "relation_ids": [
-          "rel_0006"
-        ],
+        "relation_ids": [],
         "role": "body",
         "role_confidence": "heuristic",
         "source_index": 42,
-        "structural_role": "toc_entry",
+        "structural_role": "body",
         "text_preview": "mark du bru lle"
       },
       {
@@ -1925,13 +1867,11 @@
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0044",
-        "relation_ids": [
-          "rel_0006"
-        ],
+        "relation_ids": [],
         "role": "body",
         "role_confidence": "heuristic",
         "source_index": 42,
-        "structural_role": "toc_entry",
+        "structural_role": "body",
         "text_preview": "member of the club of rome"
       },
       {
@@ -1953,13 +1893,11 @@
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0045",
-        "relation_ids": [
-          "rel_0006"
-        ],
+        "relation_ids": [],
         "role": "body",
         "role_confidence": "heuristic",
         "source_index": 42,
-        "structural_role": "toc_entry",
+        "structural_role": "body",
         "text_preview": "president of the cor-eu chapte r"
       },
       {
@@ -7769,13 +7707,11 @@
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0268",
-        "relation_ids": [
-          "rel_0007"
-        ],
+        "relation_ids": [],
         "role": "body",
         "role_confidence": "heuristic",
         "source_index": 265,
-        "structural_role": "toc_entry",
+        "structural_role": "body",
         "text_preview": "former world bank economist herman daly"
       },
       {
@@ -7797,13 +7733,11 @@
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0269",
-        "relation_ids": [
-          "rel_0007"
-        ],
+        "relation_ids": [],
         "role": "body",
         "role_confidence": "heuristic",
         "source_index": 265,
-        "structural_role": "toc_entry",
+        "structural_role": "body",
         "text_preview": "proposes three conditions for a society to be physically sustainable:"
       },
       {

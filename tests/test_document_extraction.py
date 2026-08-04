@@ -711,6 +711,74 @@ def test_extract_document_content_with_normalization_reports_legacy_projects_toc
     ]
 
 
+def test_extract_document_content_from_docx_splits_inline_break_prose_without_inventing_toc_roles():
+    """Spec 054 Finding 2: the split stays, the invented `toc_entry` role goes.
+
+    Without a "Contents" header there is no region to key on, and the only test the expansion
+    path could apply was text shape (<= 160 chars, 1-16 words, no terminal `.`/`;`) — which
+    Constitution VII forbids. Measured on the four-book corpus, that path produced all 17
+    mis-classified prose blocks and 11 of the 12 mis-classified epigraphs, while the
+    region-anchored pass produced 16 of the 19 genuine tables of contents. The sentence below
+    is Rethinking Money block 28, quoted from the live corpus dump.
+    """
+    doc = Document()
+    doc.add_paragraph("Money is the most powerful secular force")
+    paragraph = doc.add_paragraph()
+    paragraph.add_run("Jungian psychologist Bernice Hill has categorized four levels of")
+    paragraph.add_run().add_break()
+    paragraph.add_run("what she calls “sacred wounds of money.”¹⁶")
+    buffer = BytesIO()
+    doc.save(buffer)
+    buffer.seek(0)
+
+    paragraphs, _ = extract_document_content_from_docx(buffer)
+
+    assert [paragraph.text for paragraph in paragraphs] == [
+        "Money is the most powerful secular force",
+        "Jungian psychologist Bernice Hill has categorized four levels of",
+        "what she calls “sacred wounds of money.”¹⁶",
+    ]
+    assert [paragraph.structural_role for paragraph in paragraphs] == ["body", "body", "body"]
+    assert [paragraph.heuristic_structural_role_hint for paragraph in paragraphs] == [None, None, None]
+
+
+def test_extract_document_content_from_docx_inline_break_split_keeps_the_headings_structural_role():
+    """The expansion path wrote a BINDING role, overwriting a real heading's `structural_role`.
+
+    An explicit heading survives as `role="heading"` either way — `_apply_or_hint_stage0_toc_role`
+    only demoted the role when `heading_source != "explicit"` — but its structural role was
+    overwritten with `toc_entry` regardless, which is Constitution VII rule 7 exactly: the text
+    survived, the structural role did not.
+
+    The role-level half of the same defect is measured on the corpus rather than here, because
+    it depends on font-size evidence a synthetic fixture does not carry (Constitution VIII): on
+    the DOCX corpus the change restores `role="heading"` on 23 paragraphs across three books —
+    Creating Wealth's "False Assumption #1: / The Economy is Beyond Our Control" and "The Building
+    Blocks of the Economy: / How Assumptions Create Reality", The Value of Everything's "Value in
+    the Eye of the Beholder: The Rise of the / Marginalists" — against one lost (a letter-spaced
+    cover-title variant that loses the front-matter display-title promotion to the real title).
+    """
+    doc = Document()
+    doc.add_paragraph("Body text that comes before the subheading.")
+    paragraph = doc.add_paragraph(style="Heading 2")
+    paragraph.add_run("False Assumption #1:")
+    paragraph.add_run().add_break()
+    paragraph.add_run("The Economy is Beyond Our Control")
+    buffer = BytesIO()
+    doc.save(buffer)
+    buffer.seek(0)
+
+    paragraphs, _ = extract_document_content_from_docx(buffer)
+
+    assert [paragraph.text for paragraph in paragraphs] == [
+        "Body text that comes before the subheading.",
+        "False Assumption #1:",
+        "The Economy is Beyond Our Control",
+    ]
+    assert [paragraph.role for paragraph in paragraphs] == ["body", "heading", "heading"]
+    assert [paragraph.structural_role for paragraph in paragraphs] == ["body", "heading", "heading"]
+
+
 def test_extract_document_content_from_docx_keeps_regular_body_run_clusters_as_one_paragraph():
     doc = Document()
     paragraph = doc.add_paragraph()

@@ -627,214 +627,6 @@
         ],
         "relation_id": "rel_0002",
         "relation_kind": "table_caption"
-      },
-      {
-        "anchor_asset_id": null,
-        "confidence": "high",
-        "member_paragraph_ids": [
-          "p0001",
-          "p0002"
-        ],
-        "rationale": [
-          "contiguous_toc_entries"
-        ],
-        "relation_id": "rel_0003",
-        "relation_kind": "toc_region"
-      },
-      {
-        "anchor_asset_id": null,
-        "confidence": "high",
-        "member_paragraph_ids": [
-          "p0016",
-          "p0017",
-          "p0018",
-          "p0019"
-        ],
-        "rationale": [
-          "contiguous_toc_entries"
-        ],
-        "relation_id": "rel_0004",
-        "relation_kind": "toc_region"
-      },
-      {
-        "anchor_asset_id": null,
-        "confidence": "high",
-        "member_paragraph_ids": [
-          "p0021",
-          "p0022"
-        ],
-        "rationale": [
-          "contiguous_toc_entries"
-        ],
-        "relation_id": "rel_0005",
-        "relation_kind": "toc_region"
-      },
-      {
-        "anchor_asset_id": null,
-        "confidence": "high",
-        "member_paragraph_ids": [
-          "p0100",
-          "p0101"
-        ],
-        "rationale": [
-          "contiguous_toc_entries"
-        ],
-        "relation_id": "rel_0006",
-        "relation_kind": "toc_region"
-      },
-      {
-        "anchor_asset_id": null,
-        "confidence": "high",
-        "member_paragraph_ids": [
-          "p0169",
-          "p0170"
-        ],
-        "rationale": [
-          "contiguous_toc_entries"
-        ],
-        "relation_id": "rel_0007",
-        "relation_kind": "toc_region"
-      },
-      {
-        "anchor_asset_id": null,
-        "confidence": "high",
-        "member_paragraph_ids": [
-          "p0189",
-          "p0190"
-        ],
-        "rationale": [
-          "contiguous_toc_entries"
-        ],
-        "relation_id": "rel_0008",
-        "relation_kind": "toc_region"
-      },
-      {
-        "anchor_asset_id": null,
-        "confidence": "high",
-        "member_paragraph_ids": [
-          "p0231",
-          "p0232",
-          "p0233"
-        ],
-        "rationale": [
-          "contiguous_toc_entries"
-        ],
-        "relation_id": "rel_0009",
-        "relation_kind": "toc_region"
-      },
-      {
-        "anchor_asset_id": null,
-        "confidence": "high",
-        "member_paragraph_ids": [
-          "p0235",
-          "p0236",
-          "p0237",
-          "p0238",
-          "p0239"
-        ],
-        "rationale": [
-          "contiguous_toc_entries"
-        ],
-        "relation_id": "rel_0010",
-        "relation_kind": "toc_region"
-      },
-      {
-        "anchor_asset_id": null,
-        "confidence": "high",
-        "member_paragraph_ids": [
-          "p0242",
-          "p0243"
-        ],
-        "rationale": [
-          "contiguous_toc_entries"
-        ],
-        "relation_id": "rel_0011",
-        "relation_kind": "toc_region"
-      },
-      {
-        "anchor_asset_id": null,
-        "confidence": "high",
-        "member_paragraph_ids": [
-          "p0245",
-          "p0246"
-        ],
-        "rationale": [
-          "contiguous_toc_entries"
-        ],
-        "relation_id": "rel_0012",
-        "relation_kind": "toc_region"
-      },
-      {
-        "anchor_asset_id": null,
-        "confidence": "high",
-        "member_paragraph_ids": [
-          "p0248",
-          "p0249"
-        ],
-        "rationale": [
-          "contiguous_toc_entries"
-        ],
-        "relation_id": "rel_0013",
-        "relation_kind": "toc_region"
-      },
-      {
-        "anchor_asset_id": null,
-        "confidence": "high",
-        "member_paragraph_ids": [
-          "p0260",
-          "p0261",
-          "p0262"
-        ],
-        "rationale": [
-          "contiguous_toc_entries"
-        ],
-        "relation_id": "rel_0014",
-        "relation_kind": "toc_region"
-      },
-      {
-        "anchor_asset_id": null,
-        "confidence": "high",
-        "member_paragraph_ids": [
-          "p0264",
-          "p0265",
-          "p0266",
-          "p0267",
-          "p0268",
-          "p0269",
-          "p0270"
-        ],
-        "rationale": [
-          "contiguous_toc_entries"
-        ],
-        "relation_id": "rel_0015",
-        "relation_kind": "toc_region"
-      },
-      {
-        "anchor_asset_id": null,
-        "confidence": "high",
-        "member_paragraph_ids": [
-          "p0380",
-          "p0381"
-        ],
-        "rationale": [
-          "contiguous_toc_entries"
-        ],
-        "relation_id": "rel_0016",
-        "relation_kind": "toc_region"
-      },
-      {
-        "anchor_asset_id": null,
-        "confidence": "high",
-        "member_paragraph_ids": [
-          "p0457",
-          "p0458",
-          "p0459"
-        ],
-        "rationale": [
-          "contiguous_toc_entries"
-        ],
-        "relation_id": "rel_0017",
-        "relation_kind": "toc_region"
       }
     ],
     "accepted_split_targets": [],
@@ -857,31 +649,30 @@
     "mapping_strategy_counts": {
       "adjacent_caption": 1,
       "bounded_registry_fuzzy": 3,
-      "bounded_registry_heading_containment": 3,
-      "exact_text": 22,
-      "local_gap_heading_fallback": 2,
-      "local_gap_toc_fallback": 1,
+      "bounded_registry_heading_containment": 4,
+      "exact_text": 23,
+      "local_gap_heading_fallback": 4,
       "paragraph_id_rebuild_key": 9,
       "paragraph_id_registry": 340,
       "paragraph_id_registry_aggregation_anchor": 9,
-      "paragraph_id_registry_similarity": 65,
+      "paragraph_id_registry_similarity": 54,
       "positional_exact": 12,
-      "projected_registry_fuzzy": 1,
+      "projected_registry_fuzzy": 9,
       "similarity": 3
     },
     "mapping_text_quality": {
       "bad_pair_count": 0,
       "bad_pair_rule": "bad when not exact/contained, token_jaccard < 0.50, source_token_overlap < 0.85, and target_token_overlap < 0.85",
       "bad_strategy_counts": {},
-      "checked_count": 72,
+      "checked_count": 70,
       "indexing_basis": "formatting_diagnostics.target_registry[mapped_target_index]",
       "samples": [],
       "source_text_basis": "runtime.state.final_generated_paragraph_registry when available; source paragraph text fallback",
       "strategy_counts": {
         "bounded_registry_fuzzy": 3,
-        "bounded_registry_heading_containment": 3,
-        "paragraph_id_registry_similarity": 65,
-        "projected_registry_fuzzy": 1
+        "bounded_registry_heading_containment": 4,
+        "paragraph_id_registry_similarity": 54,
+        "projected_registry_fuzzy": 9
       },
       "strategy_filter": [
         "bounded_registry_fuzzy",
@@ -902,10 +693,9 @@
       "suspicious_counts": {}
     },
     "rejected_relation_candidate_count": 0,
-    "relation_count": 17,
+    "relation_count": 2,
     "relation_counts": {
-      "table_caption": 2,
-      "toc_region": 15
+      "table_caption": 2
     },
     "relation_decisions": [
       {
@@ -935,234 +725,11 @@
         "relation_kind": "table_caption",
         "structure_phase": "post_ai_final",
         "structure_source": "post_ai_final_binding"
-      },
-      {
-        "anchor_asset_id": null,
-        "decision": "accept",
-        "member_paragraph_ids": [
-          "p0001",
-          "p0002"
-        ],
-        "reasons": [
-          "contiguous_toc_entries"
-        ],
-        "relation_kind": "toc_region",
-        "structure_phase": "post_ai_final",
-        "structure_source": "post_ai_final_binding"
-      },
-      {
-        "anchor_asset_id": null,
-        "decision": "accept",
-        "member_paragraph_ids": [
-          "p0016",
-          "p0017",
-          "p0018",
-          "p0019"
-        ],
-        "reasons": [
-          "contiguous_toc_entries"
-        ],
-        "relation_kind": "toc_region",
-        "structure_phase": "post_ai_final",
-        "structure_source": "post_ai_final_binding"
-      },
-      {
-        "anchor_asset_id": null,
-        "decision": "accept",
-        "member_paragraph_ids": [
-          "p0021",
-          "p0022"
-        ],
-        "reasons": [
-          "contiguous_toc_entries"
-        ],
-        "relation_kind": "toc_region",
-        "structure_phase": "post_ai_final",
-        "structure_source": "post_ai_final_binding"
-      },
-      {
-        "anchor_asset_id": null,
-        "decision": "accept",
-        "member_paragraph_ids": [
-          "p0100",
-          "p0101"
-        ],
-        "reasons": [
-          "contiguous_toc_entries"
-        ],
-        "relation_kind": "toc_region",
-        "structure_phase": "post_ai_final",
-        "structure_source": "post_ai_final_binding"
-      },
-      {
-        "anchor_asset_id": null,
-        "decision": "accept",
-        "member_paragraph_ids": [
-          "p0169",
-          "p0170"
-        ],
-        "reasons": [
-          "contiguous_toc_entries"
-        ],
-        "relation_kind": "toc_region",
-        "structure_phase": "post_ai_final",
-        "structure_source": "post_ai_final_binding"
-      },
-      {
-        "anchor_asset_id": null,
-        "decision": "accept",
-        "member_paragraph_ids": [
-          "p0189",
-          "p0190"
-        ],
-        "reasons": [
-          "contiguous_toc_entries"
-        ],
-        "relation_kind": "toc_region",
-        "structure_phase": "post_ai_final",
-        "structure_source": "post_ai_final_binding"
-      },
-      {
-        "anchor_asset_id": null,
-        "decision": "accept",
-        "member_paragraph_ids": [
-          "p0231",
-          "p0232",
-          "p0233"
-        ],
-        "reasons": [
-          "contiguous_toc_entries"
-        ],
-        "relation_kind": "toc_region",
-        "structure_phase": "post_ai_final",
-        "structure_source": "post_ai_final_binding"
-      },
-      {
-        "anchor_asset_id": null,
-        "decision": "accept",
-        "member_paragraph_ids": [
-          "p0235",
-          "p0236",
-          "p0237",
-          "p0238",
-          "p0239"
-        ],
-        "reasons": [
-          "contiguous_toc_entries"
-        ],
-        "relation_kind": "toc_region",
-        "structure_phase": "post_ai_final",
-        "structure_source": "post_ai_final_binding"
-      },
-      {
-        "anchor_asset_id": null,
-        "decision": "accept",
-        "member_paragraph_ids": [
-          "p0242",
-          "p0243"
-        ],
-        "reasons": [
-          "contiguous_toc_entries"
-        ],
-        "relation_kind": "toc_region",
-        "structure_phase": "post_ai_final",
-        "structure_source": "post_ai_final_binding"
-      },
-      {
-        "anchor_asset_id": null,
-        "decision": "accept",
-        "member_paragraph_ids": [
-          "p0245",
-          "p0246"
-        ],
-        "reasons": [
-          "contiguous_toc_entries"
-        ],
-        "relation_kind": "toc_region",
-        "structure_phase": "post_ai_final",
-        "structure_source": "post_ai_final_binding"
-      },
-      {
-        "anchor_asset_id": null,
-        "decision": "accept",
-        "member_paragraph_ids": [
-          "p0248",
-          "p0249"
-        ],
-        "reasons": [
-          "contiguous_toc_entries"
-        ],
-        "relation_kind": "toc_region",
-        "structure_phase": "post_ai_final",
-        "structure_source": "post_ai_final_binding"
-      },
-      {
-        "anchor_asset_id": null,
-        "decision": "accept",
-        "member_paragraph_ids": [
-          "p0260",
-          "p0261",
-          "p0262"
-        ],
-        "reasons": [
-          "contiguous_toc_entries"
-        ],
-        "relation_kind": "toc_region",
-        "structure_phase": "post_ai_final",
-        "structure_source": "post_ai_final_binding"
-      },
-      {
-        "anchor_asset_id": null,
-        "decision": "accept",
-        "member_paragraph_ids": [
-          "p0264",
-          "p0265",
-          "p0266",
-          "p0267",
-          "p0268",
-          "p0269",
-          "p0270"
-        ],
-        "reasons": [
-          "contiguous_toc_entries"
-        ],
-        "relation_kind": "toc_region",
-        "structure_phase": "post_ai_final",
-        "structure_source": "post_ai_final_binding"
-      },
-      {
-        "anchor_asset_id": null,
-        "decision": "accept",
-        "member_paragraph_ids": [
-          "p0380",
-          "p0381"
-        ],
-        "reasons": [
-          "contiguous_toc_entries"
-        ],
-        "relation_kind": "toc_region",
-        "structure_phase": "post_ai_final",
-        "structure_source": "post_ai_final_binding"
-      },
-      {
-        "anchor_asset_id": null,
-        "decision": "accept",
-        "member_paragraph_ids": [
-          "p0457",
-          "p0458",
-          "p0459"
-        ],
-        "reasons": [
-          "contiguous_toc_entries"
-        ],
-        "relation_kind": "toc_region",
-        "structure_phase": "post_ai_final",
-        "structure_source": "post_ai_final_binding"
       }
     ],
     "relation_identity_population": {
-      "relation_id_missing_count": 453,
-      "relation_id_populated_count": 47,
+      "relation_id_missing_count": 496,
+      "relation_id_populated_count": 4,
       "source_count": 500
     },
     "source_count": 500,
@@ -1199,26 +766,24 @@
         "boundary_confidence": "high",
         "boundary_rationale": null,
         "boundary_source": "raw",
-        "heading_level": null,
+        "heading_level": 1,
         "list_abstract_num_id": null,
         "list_kind": null,
         "list_level": 0,
         "list_num_id": null,
         "list_numbering_format": null,
         "mapped_target_index": 1,
-        "mapping_strategy": "paragraph_id_registry_similarity",
+        "mapping_strategy": "projected_registry_fuzzy",
         "origin_raw_indexes": [
           1
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0001",
-        "relation_ids": [
-          "rel_0003"
-        ],
-        "role": "body",
+        "relation_ids": [],
+        "role": "heading",
         "role_confidence": "heuristic",
         "source_index": 1,
-        "structural_role": "toc_entry",
+        "structural_role": "heading",
         "text_preview": "creating"
       },
       {
@@ -1227,26 +792,24 @@
         "boundary_confidence": "high",
         "boundary_rationale": null,
         "boundary_source": "raw",
-        "heading_level": null,
+        "heading_level": 2,
         "list_abstract_num_id": null,
         "list_kind": null,
         "list_level": 0,
         "list_num_id": null,
         "list_numbering_format": null,
         "mapped_target_index": 2,
-        "mapping_strategy": "paragraph_id_registry_similarity",
+        "mapping_strategy": "projected_registry_fuzzy",
         "origin_raw_indexes": [
           1
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0002",
-        "relation_ids": [
-          "rel_0003"
-        ],
-        "role": "body",
+        "relation_ids": [],
+        "role": "heading",
         "role_confidence": "heuristic",
         "source_index": 1,
-        "structural_role": "toc_entry",
+        "structural_role": "heading",
         "text_preview": "wealth"
       },
       {
@@ -1594,26 +1157,24 @@
         "boundary_confidence": "high",
         "boundary_rationale": null,
         "boundary_source": "raw",
-        "heading_level": null,
+        "heading_level": 2,
         "list_abstract_num_id": null,
         "list_kind": null,
         "list_level": 0,
         "list_num_id": null,
         "list_numbering_format": null,
         "mapped_target_index": 16,
-        "mapping_strategy": "paragraph_id_registry_similarity",
+        "mapping_strategy": "projected_registry_fuzzy",
         "origin_raw_indexes": [
           16
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0016",
-        "relation_ids": [
-          "rel_0004"
-        ],
-        "role": "body",
+        "relation_ids": [],
+        "role": "heading",
         "role_confidence": "heuristic",
         "source_index": 15,
-        "structural_role": "toc_entry",
+        "structural_role": "heading",
         "text_preview": "creating"
       },
       {
@@ -1622,26 +1183,24 @@
         "boundary_confidence": "high",
         "boundary_rationale": null,
         "boundary_source": "raw",
-        "heading_level": null,
+        "heading_level": 2,
         "list_abstract_num_id": null,
         "list_kind": null,
         "list_level": 0,
         "list_num_id": null,
         "list_numbering_format": null,
         "mapped_target_index": 17,
-        "mapping_strategy": "paragraph_id_registry_similarity",
+        "mapping_strategy": "projected_registry_fuzzy",
         "origin_raw_indexes": [
           16
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0017",
-        "relation_ids": [
-          "rel_0004"
-        ],
-        "role": "body",
+        "relation_ids": [],
+        "role": "heading",
         "role_confidence": "heuristic",
         "source_index": 15,
-        "structural_role": "toc_entry",
+        "structural_role": "heading",
         "text_preview": "wealth"
       },
       {
@@ -1663,13 +1222,11 @@
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0018",
-        "relation_ids": [
-          "rel_0004"
-        ],
+        "relation_ids": [],
         "role": "body",
         "role_confidence": "heuristic",
         "source_index": 16,
-        "structural_role": "toc_entry",
+        "structural_role": "body",
         "text_preview": "growing local economies"
       },
       {
@@ -1691,13 +1248,11 @@
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0019",
-        "relation_ids": [
-          "rel_0004"
-        ],
+        "relation_ids": [],
         "role": "body",
         "role_confidence": "heuristic",
         "source_index": 16,
-        "structural_role": "toc_entry",
+        "structural_role": "body",
         "text_preview": "with local currencies"
       },
       {
@@ -1745,13 +1300,11 @@
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0021",
-        "relation_ids": [
-          "rel_0005"
-        ],
+        "relation_ids": [],
         "role": "body",
         "role_confidence": "heuristic",
         "source_index": 18,
-        "structural_role": "toc_entry",
+        "structural_role": "body",
         "text_preview": "preface by dennis meadows"
       },
       {
@@ -1773,13 +1326,11 @@
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0022",
-        "relation_ids": [
-          "rel_0005"
-        ],
+        "relation_ids": [],
         "role": "body",
         "role_confidence": "heuristic",
         "source_index": 18,
-        "structural_role": "toc_entry",
+        "structural_role": "body",
         "text_preview": "foreword by hunter lovins"
       },
       {
@@ -3806,13 +3357,11 @@
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0100",
-        "relation_ids": [
-          "rel_0006"
-        ],
+        "relation_ids": [],
         "role": "body",
         "role_confidence": "heuristic",
         "source_index": 96,
-        "structural_role": "toc_entry",
+        "structural_role": "body",
         "text_preview": "wea lth consists not in having great possessions,"
       },
       {
@@ -3834,13 +3383,11 @@
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0101",
-        "relation_ids": [
-          "rel_0006"
-        ],
+        "relation_ids": [],
         "role": "body",
         "role_confidence": "heuristic",
         "source_index": 96,
-        "structural_role": "toc_entry",
+        "structural_role": "body",
         "text_preview": "but in having few wants."
       },
       {
@@ -5608,7 +5155,7 @@
         "boundary_confidence": "high",
         "boundary_rationale": null,
         "boundary_source": "raw",
-        "heading_level": null,
+        "heading_level": 2,
         "list_abstract_num_id": null,
         "list_kind": null,
         "list_level": 0,
@@ -5621,13 +5168,11 @@
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0169",
-        "relation_ids": [
-          "rel_0007"
-        ],
-        "role": "body",
+        "relation_ids": [],
+        "role": "heading",
         "role_confidence": "heuristic",
         "source_index": 164,
-        "structural_role": "toc_entry",
+        "structural_role": "heading",
         "text_preview": "false assumption #1:"
       },
       {
@@ -5636,7 +5181,7 @@
         "boundary_confidence": "high",
         "boundary_rationale": null,
         "boundary_source": "raw",
-        "heading_level": null,
+        "heading_level": 2,
         "list_abstract_num_id": null,
         "list_kind": null,
         "list_level": 0,
@@ -5649,13 +5194,11 @@
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0170",
-        "relation_ids": [
-          "rel_0007"
-        ],
-        "role": "body",
+        "relation_ids": [],
+        "role": "heading",
         "role_confidence": "heuristic",
         "source_index": 164,
-        "structural_role": "toc_entry",
+        "structural_role": "heading",
         "text_preview": "the economy is beyond our control"
       },
       {
@@ -6133,7 +5676,7 @@
         "boundary_confidence": "high",
         "boundary_rationale": null,
         "boundary_source": "raw",
-        "heading_level": null,
+        "heading_level": 2,
         "list_abstract_num_id": null,
         "list_kind": null,
         "list_level": 0,
@@ -6146,13 +5689,11 @@
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0189",
-        "relation_ids": [
-          "rel_0008"
-        ],
-        "role": "body",
+        "relation_ids": [],
+        "role": "heading",
         "role_confidence": "heuristic",
         "source_index": 183,
-        "structural_role": "toc_entry",
+        "structural_role": "heading",
         "text_preview": "the building blocks of the economy:"
       },
       {
@@ -6161,26 +5702,24 @@
         "boundary_confidence": "high",
         "boundary_rationale": null,
         "boundary_source": "raw",
-        "heading_level": null,
+        "heading_level": 2,
         "list_abstract_num_id": null,
         "list_kind": null,
         "list_level": 0,
         "list_num_id": null,
         "list_numbering_format": null,
         "mapped_target_index": 190,
-        "mapping_strategy": "paragraph_id_registry_similarity",
+        "mapping_strategy": "local_gap_heading_fallback",
         "origin_raw_indexes": [
           201
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0190",
-        "relation_ids": [
-          "rel_0008"
-        ],
-        "role": "body",
+        "relation_ids": [],
+        "role": "heading",
         "role_confidence": "heuristic",
         "source_index": 183,
-        "structural_role": "toc_entry",
+        "structural_role": "heading",
         "text_preview": "how assumptions cr eate reality"
       },
       {
@@ -7234,7 +6773,7 @@
         "boundary_confidence": "high",
         "boundary_rationale": null,
         "boundary_source": "raw",
-        "heading_level": null,
+        "heading_level": 2,
         "list_abstract_num_id": null,
         "list_kind": null,
         "list_level": 0,
@@ -7247,13 +6786,11 @@
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0231",
-        "relation_ids": [
-          "rel_0009"
-        ],
-        "role": "body",
+        "relation_ids": [],
+        "role": "heading",
         "role_confidence": "heuristic",
         "source_index": 224,
-        "structural_role": "toc_entry",
+        "structural_role": "heading",
         "text_preview": "demand for"
       },
       {
@@ -7262,26 +6799,24 @@
         "boundary_confidence": "high",
         "boundary_rationale": null,
         "boundary_source": "raw",
-        "heading_level": null,
+        "heading_level": 2,
         "list_abstract_num_id": null,
         "list_kind": null,
         "list_level": 0,
         "list_num_id": null,
         "list_numbering_format": null,
         "mapped_target_index": 232,
-        "mapping_strategy": "paragraph_id_registry_similarity",
+        "mapping_strategy": "projected_registry_fuzzy",
         "origin_raw_indexes": [
           247
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0232",
-        "relation_ids": [
-          "rel_0009"
-        ],
-        "role": "body",
+        "relation_ids": [],
+        "role": "heading",
         "role_confidence": "heuristic",
         "source_index": 224,
-        "structural_role": "toc_entry",
+        "structural_role": "heading",
         "text_preview": "profitable"
       },
       {
@@ -7290,26 +6825,24 @@
         "boundary_confidence": "high",
         "boundary_rationale": null,
         "boundary_source": "raw",
-        "heading_level": null,
+        "heading_level": 2,
         "list_abstract_num_id": null,
         "list_kind": null,
         "list_level": 0,
         "list_num_id": null,
         "list_numbering_format": null,
         "mapped_target_index": 233,
-        "mapping_strategy": "paragraph_id_registry_similarity",
+        "mapping_strategy": "projected_registry_fuzzy",
         "origin_raw_indexes": [
           247
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0233",
-        "relation_ids": [
-          "rel_0009"
-        ],
-        "role": "body",
+        "relation_ids": [],
+        "role": "heading",
         "role_confidence": "heuristic",
         "source_index": 224,
-        "structural_role": "toc_entry",
+        "structural_role": "heading",
         "text_preview": "investments"
       },
       {
@@ -7357,13 +6890,11 @@
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0235",
-        "relation_ids": [
-          "rel_0010"
-        ],
+        "relation_ids": [],
         "role": "body",
         "role_confidence": "heuristic",
         "source_index": 226,
-        "structural_role": "toc_entry",
+        "structural_role": "body",
         "text_preview": "bank loans,"
       },
       {
@@ -7385,13 +6916,11 @@
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0236",
-        "relation_ids": [
-          "rel_0010"
-        ],
+        "relation_ids": [],
         "role": "body",
         "role_confidence": "heuristic",
         "source_index": 226,
-        "structural_role": "toc_entry",
+        "structural_role": "body",
         "text_preview": "bonds, and"
       },
       {
@@ -7413,13 +6942,11 @@
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0237",
-        "relation_ids": [
-          "rel_0010"
-        ],
+        "relation_ids": [],
         "role": "body",
         "role_confidence": "heuristic",
         "source_index": 226,
-        "structural_role": "toc_entry",
+        "structural_role": "body",
         "text_preview": "government"
       },
       {
@@ -7435,19 +6962,17 @@
         "list_num_id": null,
         "list_numbering_format": null,
         "mapped_target_index": 238,
-        "mapping_strategy": "local_gap_toc_fallback",
+        "mapping_strategy": "exact_text",
         "origin_raw_indexes": [
           250
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0238",
-        "relation_ids": [
-          "rel_0010"
-        ],
+        "relation_ids": [],
         "role": "body",
         "role_confidence": "heuristic",
         "source_index": 227,
-        "structural_role": "toc_entry",
+        "structural_role": "body",
         "text_preview": "investment policies"
       },
       {
@@ -7469,13 +6994,11 @@
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0239",
-        "relation_ids": [
-          "rel_0010"
-        ],
+        "relation_ids": [],
         "role": "body",
         "role_confidence": "heuristic",
         "source_index": 227,
-        "structural_role": "toc_entry",
+        "structural_role": "body",
         "text_preview": "and practices"
       },
       {
@@ -7550,13 +7073,11 @@
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0242",
-        "relation_ids": [
-          "rel_0011"
-        ],
+        "relation_ids": [],
         "role": "body",
         "role_confidence": "heuristic",
         "source_index": 230,
-        "structural_role": "toc_entry",
+        "structural_role": "body",
         "text_preview": "o^ total value of"
       },
       {
@@ -7578,13 +7099,11 @@
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0243",
-        "relation_ids": [
-          "rel_0011"
-        ],
+        "relation_ids": [],
         "role": "body",
         "role_confidence": "heuristic",
         "source_index": 230,
-        "structural_role": "toc_entry",
+        "structural_role": "body",
         "text_preview": "assetsand roi"
       },
       {
@@ -7632,13 +7151,11 @@
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0245",
-        "relation_ids": [
-          "rel_0012"
-        ],
+        "relation_ids": [],
         "role": "body",
         "role_confidence": "heuristic",
         "source_index": 232,
-        "structural_role": "toc_entry",
+        "structural_role": "body",
         "text_preview": "human and"
       },
       {
@@ -7660,13 +7177,11 @@
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0246",
-        "relation_ids": [
-          "rel_0012"
-        ],
+        "relation_ids": [],
         "role": "body",
         "role_confidence": "heuristic",
         "source_index": 232,
-        "structural_role": "toc_entry",
+        "structural_role": "body",
         "text_preview": "natural capital"
       },
       {
@@ -7714,13 +7229,11 @@
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0248",
-        "relation_ids": [
-          "rel_0013"
-        ],
+        "relation_ids": [],
         "role": "body",
         "role_confidence": "heuristic",
         "source_index": 234,
-        "structural_role": "toc_entry",
+        "structural_role": "body",
         "text_preview": "human and"
       },
       {
@@ -7742,13 +7255,11 @@
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0249",
-        "relation_ids": [
-          "rel_0013"
-        ],
+        "relation_ids": [],
         "role": "body",
         "role_confidence": "heuristic",
         "source_index": 234,
-        "structural_role": "toc_entry",
+        "structural_role": "body",
         "text_preview": "natural capital"
       },
       {
@@ -8017,26 +7528,24 @@
         "boundary_confidence": "high",
         "boundary_rationale": null,
         "boundary_source": "raw",
-        "heading_level": null,
+        "heading_level": 2,
         "list_abstract_num_id": null,
         "list_kind": null,
         "list_level": 0,
         "list_num_id": null,
         "list_numbering_format": null,
         "mapped_target_index": 260,
-        "mapping_strategy": "paragraph_id_registry_similarity",
+        "mapping_strategy": "bounded_registry_heading_containment",
         "origin_raw_indexes": [
           269
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0260",
-        "relation_ids": [
-          "rel_0014"
-        ],
-        "role": "body",
+        "relation_ids": [],
+        "role": "heading",
         "role_confidence": "heuristic",
         "source_index": 245,
-        "structural_role": "toc_entry",
+        "structural_role": "heading",
         "text_preview": "demand for"
       },
       {
@@ -8045,26 +7554,24 @@
         "boundary_confidence": "high",
         "boundary_rationale": null,
         "boundary_source": "raw",
-        "heading_level": null,
+        "heading_level": 2,
         "list_abstract_num_id": null,
         "list_kind": null,
         "list_level": 0,
         "list_num_id": null,
         "list_numbering_format": null,
         "mapped_target_index": 261,
-        "mapping_strategy": "paragraph_id_registry_similarity",
+        "mapping_strategy": "projected_registry_fuzzy",
         "origin_raw_indexes": [
           269
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0261",
-        "relation_ids": [
-          "rel_0014"
-        ],
-        "role": "body",
+        "relation_ids": [],
+        "role": "heading",
         "role_confidence": "heuristic",
         "source_index": 245,
-        "structural_role": "toc_entry",
+        "structural_role": "heading",
         "text_preview": "profitable"
       },
       {
@@ -8073,26 +7580,24 @@
         "boundary_confidence": "high",
         "boundary_rationale": null,
         "boundary_source": "raw",
-        "heading_level": null,
+        "heading_level": 2,
         "list_abstract_num_id": null,
         "list_kind": null,
         "list_level": 0,
         "list_num_id": null,
         "list_numbering_format": null,
         "mapped_target_index": 262,
-        "mapping_strategy": "paragraph_id_registry_similarity",
+        "mapping_strategy": "projected_registry_fuzzy",
         "origin_raw_indexes": [
           269
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0262",
-        "relation_ids": [
-          "rel_0014"
-        ],
-        "role": "body",
+        "relation_ids": [],
+        "role": "heading",
         "role_confidence": "heuristic",
         "source_index": 245,
-        "structural_role": "toc_entry",
+        "structural_role": "heading",
         "text_preview": "investments"
       },
       {
@@ -8140,13 +7645,11 @@
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0264",
-        "relation_ids": [
-          "rel_0015"
-        ],
+        "relation_ids": [],
         "role": "body",
         "role_confidence": "heuristic",
         "source_index": 247,
-        "structural_role": "toc_entry",
+        "structural_role": "body",
         "text_preview": "investment policies"
       },
       {
@@ -8168,13 +7671,11 @@
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0265",
-        "relation_ids": [
-          "rel_0015"
-        ],
+        "relation_ids": [],
         "role": "body",
         "role_confidence": "heuristic",
         "source_index": 247,
-        "structural_role": "toc_entry",
+        "structural_role": "body",
         "text_preview": "and practices"
       },
       {
@@ -8196,13 +7697,11 @@
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0266",
-        "relation_ids": [
-          "rel_0015"
-        ],
+        "relation_ids": [],
         "role": "body",
         "role_confidence": "heuristic",
         "source_index": 248,
-        "structural_role": "toc_entry",
+        "structural_role": "body",
         "text_preview": "depletion of"
       },
       {
@@ -8224,13 +7723,11 @@
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0267",
-        "relation_ids": [
-          "rel_0015"
-        ],
+        "relation_ids": [],
         "role": "body",
         "role_confidence": "heuristic",
         "source_index": 248,
-        "structural_role": "toc_entry",
+        "structural_role": "body",
         "text_preview": "human and"
       },
       {
@@ -8252,13 +7749,11 @@
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0268",
-        "relation_ids": [
-          "rel_0015"
-        ],
+        "relation_ids": [],
         "role": "body",
         "role_confidence": "heuristic",
         "source_index": 248,
-        "structural_role": "toc_entry",
+        "structural_role": "body",
         "text_preview": "natural capital"
       },
       {
@@ -8267,26 +7762,24 @@
         "boundary_confidence": "high",
         "boundary_rationale": null,
         "boundary_source": "raw",
-        "heading_level": null,
+        "heading_level": 2,
         "list_abstract_num_id": null,
         "list_kind": null,
         "list_level": 0,
         "list_num_id": null,
         "list_numbering_format": null,
         "mapped_target_index": 269,
-        "mapping_strategy": "paragraph_id_registry",
+        "mapping_strategy": "local_gap_heading_fallback",
         "origin_raw_indexes": [
           273
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0269",
-        "relation_ids": [
-          "rel_0015"
-        ],
-        "role": "body",
+        "relation_ids": [],
+        "role": "heading",
         "role_confidence": "heuristic",
         "source_index": 249,
-        "structural_role": "toc_entry",
+        "structural_role": "heading",
         "text_preview": "inflation/"
       },
       {
@@ -8295,26 +7788,24 @@
         "boundary_confidence": "high",
         "boundary_rationale": null,
         "boundary_source": "raw",
-        "heading_level": null,
+        "heading_level": 2,
         "list_abstract_num_id": null,
         "list_kind": null,
         "list_level": 0,
         "list_num_id": null,
         "list_numbering_format": null,
         "mapped_target_index": 270,
-        "mapping_strategy": "paragraph_id_registry_similarity",
+        "mapping_strategy": "paragraph_id_registry",
         "origin_raw_indexes": [
           273
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0270",
-        "relation_ids": [
-          "rel_0015"
-        ],
-        "role": "body",
+        "relation_ids": [],
+        "role": "heading",
         "role_confidence": "heuristic",
         "source_index": 249,
-        "structural_role": "toc_entry",
+        "structural_role": "heading",
         "text_preview": "discounting"
       },
       {
@@ -11176,13 +10667,11 @@
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0380",
-        "relation_ids": [
-          "rel_0016"
-        ],
+        "relation_ids": [],
         "role": "heading",
         "role_confidence": "explicit",
         "source_index": 359,
-        "structural_role": "toc_entry",
+        "structural_role": "heading",
         "text_preview": "the possibility of"
       },
       {
@@ -11204,13 +10693,11 @@
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0381",
-        "relation_ids": [
-          "rel_0016"
-        ],
+        "relation_ids": [],
         "role": "heading",
         "role_confidence": "explicit",
         "source_index": 359,
-        "structural_role": "toc_entry",
+        "structural_role": "heading",
         "text_preview": "sufficiency and abundance"
       },
       {
@@ -13195,13 +12682,11 @@
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0457",
-        "relation_ids": [
-          "rel_0017"
-        ],
+        "relation_ids": [],
         "role": "heading",
         "role_confidence": "explicit",
         "source_index": 435,
-        "structural_role": "toc_entry",
+        "structural_role": "heading",
         "text_preview": "examples of"
       },
       {
@@ -13223,13 +12708,11 @@
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0458",
-        "relation_ids": [
-          "rel_0017"
-        ],
+        "relation_ids": [],
         "role": "heading",
         "role_confidence": "explicit",
         "source_index": 435,
-        "structural_role": "toc_entry",
+        "structural_role": "heading",
         "text_preview": "complementary"
       },
       {
@@ -13251,13 +12734,11 @@
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0459",
-        "relation_ids": [
-          "rel_0017"
-        ],
+        "relation_ids": [],
         "role": "heading",
         "role_confidence": "explicit",
         "source_index": 435,
-        "structural_role": "toc_entry",
+        "structural_role": "heading",
         "text_preview": "currencies"
       },
       {
@@ -14314,16 +13795,16 @@
         "text_preview": "advance praise for"
       },
       {
-        "heading_level": null,
+        "heading_level": 1,
         "mapped": true,
-        "style_name": "Normal",
+        "style_name": "Heading 1",
         "target_index": 1,
         "text_preview": "creating"
       },
       {
-        "heading_level": null,
+        "heading_level": 2,
         "mapped": true,
-        "style_name": "Normal",
+        "style_name": "Heading 2",
         "target_index": 2,
         "text_preview": "wealth"
       },
@@ -14419,16 +13900,16 @@
         "text_preview": "northcote, australia"
       },
       {
-        "heading_level": null,
+        "heading_level": 2,
         "mapped": true,
-        "style_name": "Normal",
+        "style_name": "Heading 2",
         "target_index": 16,
         "text_preview": "creating"
       },
       {
-        "heading_level": null,
+        "heading_level": 2,
         "mapped": true,
-        "style_name": "Normal",
+        "style_name": "Heading 2",
         "target_index": 17,
         "text_preview": "wealth"
       },
@@ -15490,16 +14971,16 @@
         "text_preview": "what are the assumptions, frameworks, social decisions and projections driving the economic juggernaut? if they are fau…"
       },
       {
-        "heading_level": null,
+        "heading_level": 2,
         "mapped": true,
-        "style_name": "Normal",
+        "style_name": "Heading 2",
         "target_index": 169,
         "text_preview": "false assumption #1:"
       },
       {
-        "heading_level": null,
+        "heading_level": 2,
         "mapped": true,
-        "style_name": "Normal",
+        "style_name": "Heading 2",
         "target_index": 170,
         "text_preview": "the economy is beyond our control"
       },
@@ -15630,16 +15111,16 @@
         "text_preview": "this story is a simplified description of how our money system pits every user against all its other users. it is simpl…"
       },
       {
-        "heading_level": null,
+        "heading_level": 2,
         "mapped": true,
-        "style_name": "Normal",
+        "style_name": "Heading 2",
         "target_index": 189,
         "text_preview": "the building blocks of the economy:"
       },
       {
-        "heading_level": null,
+        "heading_level": 2,
         "mapped": true,
-        "style_name": "Normal",
+        "style_name": "Heading 2",
         "target_index": 190,
         "text_preview": "how assumptions cr eate reality reality"
       },
@@ -15924,23 +15405,23 @@
         "text_preview": "money is the one systemic cost which influences both the pr o fit margin on a particular product and also how pr o fit…"
       },
       {
-        "heading_level": null,
+        "heading_level": 2,
         "mapped": true,
-        "style_name": "Normal",
+        "style_name": "Heading 2",
         "target_index": 231,
         "text_preview": "demand for"
       },
       {
-        "heading_level": null,
+        "heading_level": 2,
         "mapped": true,
-        "style_name": "Normal",
+        "style_name": "Heading 2",
         "target_index": 232,
         "text_preview": "profitable"
       },
       {
-        "heading_level": null,
+        "heading_level": 2,
         "mapped": true,
-        "style_name": "Normal",
+        "style_name": "Heading 2",
         "target_index": 233,
         "text_preview": "investments"
       },
@@ -16127,23 +15608,23 @@
         "text_preview": "bank-debt f money"
       },
       {
-        "heading_level": null,
+        "heading_level": 2,
         "mapped": true,
-        "style_name": "Normal",
+        "style_name": "Heading 2",
         "target_index": 260,
         "text_preview": "demand for for"
       },
       {
-        "heading_level": null,
+        "heading_level": 2,
         "mapped": true,
-        "style_name": "Normal",
+        "style_name": "Heading 2",
         "target_index": 261,
         "text_preview": "profitable"
       },
       {
-        "heading_level": null,
+        "heading_level": 2,
         "mapped": true,
-        "style_name": "Normal",
+        "style_name": "Heading 2",
         "target_index": 262,
         "text_preview": "investments"
       },
@@ -16190,16 +15671,16 @@
         "text_preview": "natural capital"
       },
       {
-        "heading_level": null,
+        "heading_level": 2,
         "mapped": true,
-        "style_name": "Normal",
+        "style_name": "Heading 2",
         "target_index": 269,
         "text_preview": "inflation/"
       },
       {
-        "heading_level": null,
+        "heading_level": 2,
         "mapped": true,
-        "style_name": "Normal",
+        "style_name": "Heading 2",
         "target_index": 270,
         "text_preview": "discounting"
       },
