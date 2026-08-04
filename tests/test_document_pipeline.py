@@ -1131,12 +1131,171 @@ def test_run_document_processing_keeps_a_mathematical_exponent_in_the_narration_
 
     assert result == "succeeded"
     assert runtime["state"]["latest_narration_text"] == narration_with_exponent
-    # The gate still bites on the markers that really are non-narratable.
-    with pytest.raises(RuntimeError) as excinfo:
-        document_pipeline_narration_postprocess._validate_narration_artifact_text(
-            "[serious] См.: doi:10.5194/sapiens-2-1 и https://example.org."
-        )
-    assert "narration_artifact_validation_failed" in str(excinfo.value)
+    # The markers that really are non-narratable are still RECOGNISED — as review data now,
+    # not as a verdict (spec 054 Finding 4 / Constitution VII).
+    findings = document_pipeline_narration_postprocess._collect_narration_artifact_review_findings(
+        "[serious] См.: doi:10.5194/sapiens-2-1 и https://example.org."
+    )
+    assert [str(finding["rule"]) for finding in findings] == ["raw_url", "doi"]
+
+
+# Spec 054 Finding 4, measured live on 2026-08-04: ordinary prose that the narration
+# artifact gate matched. Quoted verbatim from the spec. None of these is a reference
+# marker, and before this fix each one destroyed the whole artifact of a paid standalone
+# ``audiobook`` run.
+NARRATION_PROSE_MISREAD_AS_A_REFERENCE = (
+    "В Веймарской республике (Германия, 1923) деньги обесценивались ежедневно.",
+    "Это случилось в тот год (Берлин, 1923 год), когда цены удваивались.",
+    "Издательство присвоило книге ISBN и отправило её в печать.",
+    "Он опубликовал препринт на arXiv…",
+)
+
+
+def _run_standalone_audiobook(narration_text, *, runtime, log_event=None, write_ui_result_artifacts=None):
+    """Drive a whole standalone ``audiobook`` run whose model output is ``narration_text``."""
+
+    def _default_writer(**kwargs):
+        return {
+            "markdown_path": "/tmp/report.result.md",
+            "docx_path": "/tmp/report.result.docx",
+            "tts_text_path": "/tmp/report.result.tts.txt",
+        }
+
+    inner_writer = write_ui_result_artifacts or _default_writer
+
+    def _persisting_writer(**kwargs):
+        return _persist_primary_artifacts_on_disk(inner_writer(**kwargs))
+
+    return document_pipeline.run_document_processing(
+        uploaded_file="report.docx",
+        jobs=[{
+            "target_text": narration_text,
+            "context_before": "",
+            "context_after": "",
+            "target_chars": len(narration_text),
+            "context_chars": 0,
+            "narration_include": True,
+        }],
+        source_paragraphs=[],
+        image_assets=[],
+        image_mode="safe",
+        app_config={},
+        model="gpt-5.4",
+        max_retries=1,
+        processing_operation="audiobook",
+        source_language="auto",
+        target_language="ru",
+        on_progress=lambda **kwargs: None,
+        runtime=runtime,
+        resolve_uploaded_filename=lambda uploaded_file: str(uploaded_file),
+        get_client=lambda: object(),
+        ensure_pandoc_available=lambda: None,
+        load_system_prompt=lambda **_kw: "system",
+        log_event=log_event or (lambda *args, **kwargs: None),
+        present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
+        emit_state=_emit_state,
+        emit_finalize=_emit_finalize,
+        emit_activity=_emit_activity,
+        emit_log=_emit_log,
+        emit_status=_emit_status,
+        should_stop_processing=lambda runtime: False,
+        generate_markdown_block=lambda **kwargs: narration_text,
+        process_document_images=lambda **kwargs: [],
+        inspect_placeholder_integrity=_inspect_placeholder_integrity,
+        convert_markdown_to_docx_bytes=_convert_markdown_to_docx_bytes,
+        preserve_source_paragraph_properties=lambda docx_bytes, paragraphs, generated_paragraph_registry=None: docx_bytes,
+        reinsert_inline_images=lambda docx_bytes, image_assets: b"final-docx",
+        write_ui_result_artifacts=_persisting_writer,
+    )
+
+
+@pytest.mark.parametrize("prose", NARRATION_PROSE_MISREAD_AS_A_REFERENCE)
+def test_standalone_audiobook_delivers_prose_the_artifact_check_misreads_as_a_reference(prose):
+    """Spec 054 Finding 4: the artifact check must never destroy a paid run's artifact.
+
+    Four of the six disallowed patterns fire on ordinary prose — a parenthetical
+    "(City, 1923)", the WORD "ISBN", the WORD "arXiv". Making them precise is off the
+    table (Constitution VII forbids the name/city/publisher lists it would take), so the
+    check stops being a gate instead: the narration is delivered and the match is
+    published as review data.
+    """
+    runtime = _build_runtime_capture()
+
+    result = _run_standalone_audiobook(prose, runtime=runtime)
+
+    assert result == "succeeded"
+    assert runtime["state"]["latest_narration_text"] == prose
+    assert runtime["state"]["latest_docx_bytes"] == b"docx-bytes"
+
+
+def test_standalone_audiobook_publishes_narration_violations_as_review_data_and_still_delivers():
+    """The genuinely non-narratable markers stay OBSERVABLE without gating the run.
+
+    Three surfaces, per Constitution V: a WARNING ``narration_artifact_review_data`` log
+    event, the review counters on the ``ui_audiobook_artifact_saved`` record of the saved
+    ``.result.tts.txt``, and a user-visible result notice.
+    """
+    runtime = _build_runtime_capture()
+    events, log_event = _capture_log_events()
+    # A DOI the prompt should have removed, plus a parenthetical that only LOOKS like a
+    # citation — the review record has to carry both, because deciding between them is
+    # exactly what it hands to the human.
+    dirty_narration = "[serious] См.: doi:10.5194/sapiens-2-1 (Смит, 2019) и далее."
+
+    result = _run_standalone_audiobook(dirty_narration, runtime=runtime, log_event=log_event)
+
+    assert result == "succeeded"
+    assert runtime["state"]["latest_narration_text"] == dirty_narration
+    assert runtime["state"]["latest_docx_bytes"] == b"docx-bytes"
+    assert runtime["state"]["last_error"] == ""
+
+    review_event = next(
+        event for event in events if event["event_id"] == "narration_artifact_review_data"
+    )
+    assert review_event["level"] == logging.WARNING
+    assert review_event["context"]["review_data"] is True
+    assert review_event["context"]["review_rules"] == ["doi", "inline_citation"]
+    assert review_event["context"]["review_finding_count"] == 2
+    assert review_event["context"]["review_match_count"] == 2
+    assert review_event["context"]["processing_operation"] == "audiobook"
+    assert review_event["context"]["narration_mode"] == "standalone"
+    samples = _as_mapping_sequence(review_event["context"]["review_findings"])
+    assert {str(sample["rule"]) for sample in samples} == {"doi", "inline_citation"}
+    assert all(int(cast(int, sample["match_count"])) >= 1 for sample in samples)
+    assert any("(Смит, 2019)" in cast(Sequence[str], sample["samples"]) for sample in samples)
+
+    saved_event = next(
+        event for event in events if event["event_id"] == "ui_audiobook_artifact_saved"
+    )
+    assert saved_event["context"]["review_finding_count"] == 2
+    assert saved_event["context"]["review_rules"] == ["doi", "inline_citation"]
+
+    notices = _as_mapping_sequence(runtime["state"]["latest_result_notices"])
+    narration_notices = [notice for notice in notices if notice.get("kind") == "narration"]
+    assert [notice["message_key"] for notice in narration_notices] == ["result.narration_review_data"]
+    assert narration_notices[0]["level"] == "warning"
+    assert _as_mapping(narration_notices[0]["params"])["count"] == 2
+    assert _as_mapping(narration_notices[0]["params"])["rules"] == "doi, inline_citation"
+
+
+def test_standalone_audiobook_clean_narration_publishes_no_review_notice():
+    """Anti-vacuum companion: the review surfaces stay silent when there is nothing to review."""
+    runtime = _build_runtime_capture()
+    events, log_event = _capture_log_events()
+
+    result = _run_standalone_audiobook(
+        "[thoughtful] Обычный абзац без ссылочных маркеров.", runtime=runtime, log_event=log_event
+    )
+
+    assert result == "succeeded"
+    assert not [event for event in events if event["event_id"] == "narration_artifact_review_data"]
+    saved_event = next(
+        event for event in events if event["event_id"] == "ui_audiobook_artifact_saved"
+    )
+    assert saved_event["context"]["review_finding_count"] == 0
+    assert saved_event["context"]["review_rules"] == []
+    notices = _as_mapping_sequence(runtime["state"].get("latest_result_notices") or ())
+    assert not [notice for notice in notices if notice.get("kind") == "narration"]
 
 
 def test_run_document_processing_runs_audiobook_postprocess_without_mutating_base_docx_branch():
@@ -1266,6 +1425,96 @@ def test_run_document_processing_runs_audiobook_postprocess_without_mutating_bas
     assert all(event["context"]["pass"] == "postprocess" for event in postprocess_started)
     completed_event = next(event for event in info_events if event["event_id"] == "processing_completed")
     assert completed_event["context"]["audiobook_postprocess_enabled"] is True
+
+
+def test_edit_postprocess_narration_with_review_findings_is_delivered_not_dropped():
+    """The optional post-pass on ``edit``/``translate`` must not get WORSE than before.
+
+    It never lost the base result — but it did silently drop the narration the user asked
+    for, with a ``result.narration_failed`` notice that blamed a "failure" that was really
+    one regex match. Now the narration is delivered on this entry point too, with the same
+    review record the standalone run publishes, and ``result.narration_failed`` is left for
+    the case it actually describes: a post-pass that genuinely could not run.
+    """
+    runtime = _build_runtime_capture()
+    events, log_event = _capture_log_events()
+    artifact_calls = {}
+
+    def generate_markdown_block(**kwargs):
+        if kwargs["system_prompt"] == "system:audiobook":
+            return "[thoughtful] См.: doi:10.5194/sapiens-2-1 и далее."
+        return "EDITED::block"
+
+    def write_ui_result_artifacts(**kwargs):
+        artifact_calls["kwargs"] = dict(kwargs)
+        return _persist_primary_artifacts_on_disk({
+            "markdown_path": "/tmp/report.result.md",
+            "docx_path": "/tmp/report.result.docx",
+            "tts_text_path": "/tmp/report.result.tts.txt",
+        })
+
+    result = document_pipeline.run_document_processing(
+        uploaded_file="report.docx",
+        jobs=[{"target_text": "block", "context_before": "", "context_after": "", "target_chars": 5, "context_chars": 0, "narration_include": True}],
+        source_paragraphs=[],
+        image_assets=[],
+        image_mode="safe",
+        app_config={"audiobook_postprocess_enabled": True},
+        model="gpt-5.4",
+        max_retries=1,
+        processing_operation="edit",
+        source_language="ru",
+        target_language="ru",
+        on_progress=lambda **kwargs: None,
+        runtime=runtime,
+        resolve_uploaded_filename=lambda uploaded_file: str(uploaded_file),
+        get_client=lambda: object(),
+        ensure_pandoc_available=lambda: None,
+        load_system_prompt=lambda **kwargs: f"system:{kwargs['operation']}",
+        log_event=log_event,
+        present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
+        emit_state=_emit_state,
+        emit_finalize=_emit_finalize,
+        emit_activity=_emit_activity,
+        emit_log=_emit_log,
+        emit_status=_emit_status,
+        should_stop_processing=lambda runtime: False,
+        generate_markdown_block=generate_markdown_block,
+        process_document_images=lambda **kwargs: [],
+        inspect_placeholder_integrity=_inspect_placeholder_integrity,
+        convert_markdown_to_docx_bytes=lambda markdown_text: markdown_text.encode("utf-8"),
+        preserve_source_paragraph_properties=lambda docx_bytes, paragraphs, generated_paragraph_registry=None: docx_bytes,
+        reinsert_inline_images=lambda docx_bytes, image_assets: docx_bytes,
+        write_ui_result_artifacts=write_ui_result_artifacts,
+    )
+
+    assert result == "succeeded"
+    # The base result is untouched — the half that was already healthy stays healthy.
+    assert runtime["state"]["latest_markdown"] == "EDITED::block"
+    assert runtime["state"]["latest_docx_bytes"] == b"EDITED::block"
+    # …and the narration is now delivered instead of being dropped.
+    assert runtime["state"]["latest_narration_text"] == "[thoughtful] См.: doi:10.5194/sapiens-2-1 и далее."
+    assert artifact_calls["kwargs"]["narration_text"] == runtime["state"]["latest_narration_text"]
+    assert runtime["state"]["last_error"] == ""
+
+    review_event = next(
+        event for event in events if event["event_id"] == "narration_artifact_review_data"
+    )
+    assert review_event["context"]["narration_mode"] == "postprocess"
+    assert review_event["context"]["review_rules"] == ["doi"]
+
+    notices = _as_mapping_sequence(runtime["state"]["latest_result_notices"])
+    narration_notices = [notice for notice in notices if notice.get("kind") == "narration"]
+    assert [notice["message_key"] for notice in narration_notices] == ["result.narration_review_data"]
+    # The notice that used to fire here claimed a failure that did not happen.
+    assert not [
+        notice for notice in notices if notice.get("message_key") == "result.narration_failed"
+    ]
+    assert not [
+        event
+        for event in events
+        if event["event_id"] == "audiobook_artifact_validation_failed_base_result_preserved"
+    ]
 
 
 def test_run_document_processing_preserves_base_result_when_audiobook_postprocess_fails():
@@ -2540,8 +2789,18 @@ def test_run_document_processing_reader_cleanup_strict_failure_preserves_base_re
     assert report_payload["failure"]["kind"] == "chunk_failed"
 
 
-def test_run_document_processing_fails_standalone_audiobook_with_invalid_narration_artifact():
+def test_run_document_processing_delivers_standalone_audiobook_with_narration_review_findings():
+    """Rewritten from ``..._fails_standalone_audiobook_with_invalid_narration_artifact``.
+
+    That test asserted the old contract literally: ``result == "failed"``,
+    ``latest_docx_bytes is None``, ``latest_narration_text is None`` and the finalize stage
+    "Ошибка проверки narration" — one DOI anywhere in the narration destroyed the whole
+    artifact of a fully paid standalone run. Spec 054 Finding 4 revoked that: the same input
+    is now DELIVERED, and the same two matches (an unmodelled ``[angry]`` tag and the DOI)
+    are published as review data instead.
+    """
     runtime = _build_runtime_capture()
+    events, log_event = _capture_log_events()
 
     result = document_pipeline.run_document_processing(
         uploaded_file="report.docx",
@@ -2561,7 +2820,7 @@ def test_run_document_processing_fails_standalone_audiobook_with_invalid_narrati
         get_client=lambda: object(),
         ensure_pandoc_available=lambda: None,
         load_system_prompt=lambda **_kw: "system",
-        log_event=lambda *args, **kwargs: None,
+        log_event=log_event,
         present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
         emit_state=_emit_state,
         emit_finalize=_emit_finalize,
@@ -2577,10 +2836,16 @@ def test_run_document_processing_fails_standalone_audiobook_with_invalid_narrati
         reinsert_inline_images=lambda docx_bytes, image_assets: docx_bytes,
     )
 
-    assert result == "failed"
-    assert runtime["state"]["latest_docx_bytes"] is None
-    assert runtime["state"]["latest_narration_text"] is None
-    assert runtime["finalize"][-1][0] == "Ошибка проверки narration"
+    assert result == "succeeded"
+    assert runtime["state"]["latest_docx_bytes"] == b"[angry] text with DOI:10.1000/xyz"
+    assert runtime["state"]["latest_narration_text"] == "[angry] text with DOI:10.1000/xyz"
+    assert runtime["finalize"][-1][0] == "Обработка завершена"
+    review_event = next(
+        event for event in events if event["event_id"] == "narration_artifact_review_data"
+    )
+    assert review_event["level"] == logging.WARNING
+    assert review_event["context"]["review_rules"] == ["doi", "disallowed_tags"]
+    assert review_event["context"]["review_match_count"] == 2
 
 
 def test_run_document_processing_clears_stale_narration_on_docx_build_failure():
