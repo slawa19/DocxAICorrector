@@ -253,7 +253,7 @@ def test_build_editing_jobs_routes_toc_only_blocks_through_llm_in_translate_mode
     assert jobs[0]["narration_include"] is False
 
 
-def test_build_editing_jobs_marks_bibliography_tail_and_image_only_blocks_as_excluded_for_narration():
+def test_build_editing_jobs_marks_reference_region_and_image_only_blocks_as_excluded_for_narration():
     blocks = [
         DocumentBlock(
             paragraphs=[
@@ -280,7 +280,7 @@ def test_build_editing_jobs_marks_bibliography_tail_and_image_only_blocks_as_exc
     assert [job["job_kind"] for job in jobs] == ["llm", "passthrough", "passthrough"]
 
 
-def test_build_editing_jobs_keeps_mixed_final_narrative_block_out_of_bibliography_tail():
+def test_build_editing_jobs_keeps_mixed_final_narrative_block_out_of_reference_region():
     blocks = [
         DocumentBlock(
             paragraphs=[
@@ -302,7 +302,15 @@ def test_build_editing_jobs_keeps_mixed_final_narrative_block_out_of_bibliograph
     assert [job["narration_include"] for job in jobs] == [True, True]
 
 
-def test_build_editing_jobs_excludes_terminal_region_when_bibliography_ratio_is_met_across_suffix():
+def test_build_editing_jobs_keeps_bibliography_shaped_suffix_that_no_section_title_anchors():
+    """Counter-proof for the rule this replaced (spec 054, finding 1b).
+
+    Until 2026-08-04 the region was resolved by requiring >= 70% "bibliography-like" LINES in
+    the document suffix. That test never fired on a real book, and where it could fire it cut
+    body prose that happened to sit next to citation lines — the first block below is exactly
+    that shape. With no bare back-matter section title to anchor a region, nothing is cut:
+    an unidentifiable region is kept (Constitution VII, "no source signal, no repair").
+    """
     blocks = [
         DocumentBlock(
             paragraphs=[
@@ -326,7 +334,177 @@ def test_build_editing_jobs_excludes_terminal_region_when_bibliography_ratio_is_
 
     jobs = build_editing_jobs(blocks, max_chars=3000, processing_operation="audiobook")
 
-    assert [job["narration_include"] for job in jobs] == [True, False, False]
+    assert [job["narration_include"] for job in jobs] == [True, True, True]
+
+
+def _pdf_shaped_bibliography_entry_paragraphs(start: int) -> list[ParagraphUnit]:
+    """Bibliography entries in the shape PDF import actually produces: each entry wraps over
+    several lines and only ONE of them carries a year, publisher or URL. Measured on the
+    corpus (spec 054, finding 1b) this scores 9-21% "bibliography-like" lines — which is why
+    a line-ratio region test can never recognise it and the region must be found structurally.
+    """
+    lines = [
+        "Aghion, P., Van Reenen, J. and Zingales, L., ‘Innovation and",
+        "institutional ownership’, *American Economic Review*, 103(1)",
+        "(2013), pp. 277–304.",
+        "Clark, J. B., *The Distribution of Wealth: A Theory of Wages,*",
+        "*Interest and Profits* (New York: Macmillan, 1899).",
+        "Gaus, G. F., *Value and Justification: The Foundations of Liberal*",
+        "*Theory* (New York: Cambridge University Press, 1990).",
+        "Keynes, J. M., *The General Theory of Employment, Interest and*",
+        "*Money* (London: Macmillan, 1936).",
+    ]
+    return [
+        ParagraphUnit(text=line, role="body", paragraph_id=f"p{start + offset:04d}")
+        for offset, line in enumerate(lines)
+    ]
+
+
+def test_build_editing_jobs_excludes_pdf_shaped_bibliography_region_and_keeps_the_prose_around_it():
+    blocks = [
+        DocumentBlock(
+            paragraphs=[
+                ParagraphUnit(text="9. The Economics of Hope", role="heading", paragraph_id="p0000", heading_level=2),
+                ParagraphUnit(
+                    text=(
+                        "What if it stemmed purely from a set of deeply ingrained ideas? "
+                        "The point is not that value is subjective, but that the story we tell "
+                        "about where it comes from decides who gets paid."
+                    ),
+                    role="body",
+                    paragraph_id="p0001",
+                ),
+            ]
+        ),
+        DocumentBlock(paragraphs=[ParagraphUnit(text="Bibliography", role="heading", paragraph_id="p0002", heading_level=2)]),
+        DocumentBlock(paragraphs=_pdf_shaped_bibliography_entry_paragraphs(3)),
+        DocumentBlock(
+            paragraphs=[
+                ParagraphUnit(text="Acknowledgements", role="heading", paragraph_id="p0020", heading_level=2),
+                ParagraphUnit(
+                    text=(
+                        "In 2013 I wrote a book called The Entrepreneurial State. In it I debunked "
+                        "how myths about lone entrepreneurs have hidden the collective effort behind "
+                        "innovation, and many people helped me say so."
+                    ),
+                    role="body",
+                    paragraph_id="p0021",
+                ),
+            ]
+        ),
+    ]
+
+    jobs = build_editing_jobs(blocks, max_chars=3000, processing_operation="audiobook")
+
+    # Prose before the region and the author's Acknowledgements after it stay in the narration;
+    # only the bibliography heading and its wrapped entries are dropped.
+    assert [job["narration_include"] for job in jobs] == [True, False, False, True]
+
+
+def test_build_editing_jobs_keeps_notes_region_together_across_its_deeper_sub_headings():
+    """The notes section of a real book carries per-chapter sub-headings. They are DEEPER than
+    the "Notes" anchor, so the region runs through them and ends at the next heading of the
+    anchor's own depth — the outline, not the shape of the entries, decides."""
+    blocks = [
+        DocumentBlock(
+            paragraphs=[
+                ParagraphUnit(text="9. The Economics of Hope", role="heading", paragraph_id="p0000", heading_level=2),
+                ParagraphUnit(text="Closing narrative paragraph of the last chapter.", role="body", paragraph_id="p0001"),
+            ]
+        ),
+        DocumentBlock(paragraphs=[ParagraphUnit(text="Notes", role="heading", paragraph_id="p0002", heading_level=2)]),
+        DocumentBlock(
+            paragraphs=[
+                ParagraphUnit(text="PREFACE", role="heading", paragraph_id="p0003", heading_level=3),
+                ParagraphUnit(text="1. Goldman Sachs Annual Report, 2010.", role="list", paragraph_id="p0004"),
+            ]
+        ),
+        DocumentBlock(
+            paragraphs=[
+                ParagraphUnit(text="2. THE VALUE OF EVERYTHING", role="heading", paragraph_id="p0005", heading_level=3),
+                ParagraphUnit(text="4. Ibid., p. 115.", role="list", paragraph_id="p0006"),
+            ]
+        ),
+        DocumentBlock(
+            paragraphs=[
+                ParagraphUnit(text="Acknowledgements", role="heading", paragraph_id="p0007", heading_level=2),
+                ParagraphUnit(text="Many people helped me write this, and I want to name them.", role="body", paragraph_id="p0008"),
+            ]
+        ),
+    ]
+
+    jobs = build_editing_jobs(blocks, max_chars=3000, processing_operation="audiobook")
+
+    assert [job["narration_include"] for job in jobs] == [True, False, False, False, True]
+
+
+def test_build_editing_jobs_stops_the_reference_region_at_a_heading_with_no_level():
+    """A following heading whose level is unknown ends the region. Unknown depth is never
+    treated as "deeper", so an import that drops heading levels can only cut the region
+    SHORT — it can never widen it over the section that follows."""
+    blocks = [
+        DocumentBlock(paragraphs=[ParagraphUnit(text="Notes", role="heading", paragraph_id="p0000", heading_level=2)]),
+        DocumentBlock(paragraphs=[ParagraphUnit(text="1. Goldman Sachs Annual Report, 2010.", role="list", paragraph_id="p0001")]),
+        DocumentBlock(
+            paragraphs=[
+                ParagraphUnit(text="About the Authors", role="heading", paragraph_id="p0002"),
+                ParagraphUnit(text="Bernard Lietaer has been active in money systems for 35 years.", role="body", paragraph_id="p0003"),
+            ]
+        ),
+    ]
+
+    jobs = build_editing_jobs(blocks, max_chars=3000, processing_operation="audiobook")
+
+    assert [job["narration_include"] for job in jobs] == [False, False, True]
+
+
+def test_build_editing_jobs_keeps_the_index_in_the_narration():
+    """The owner scoped the audiobook cut to the table of contents, the notes and the sources.
+    An index is deliberately NOT a reference region here (spec 054, "Index is out of scope")."""
+    blocks = [
+        DocumentBlock(paragraphs=[ParagraphUnit(text="Index", role="heading", paragraph_id="p0000", heading_level=2)]),
+        DocumentBlock(
+            paragraphs=[
+                ParagraphUnit(text="Short- termism, 44– 46, 217", role="body", paragraph_id="p0001"),
+                ParagraphUnit(text="Trust, 19– 20, 46", role="body", paragraph_id="p0002"),
+            ]
+        ),
+    ]
+
+    jobs = build_editing_jobs(blocks, max_chars=3000, processing_operation="audiobook")
+
+    assert [job["narration_include"] for job in jobs] == [True, True]
+
+
+def test_build_editing_jobs_does_not_let_a_toc_row_anchor_a_reference_region():
+    """A front-matter contents row reading "Notes" must never open a region: the whole point of
+    matching the title EXACTLY, and of refusing a paragraph already tagged as a TOC row."""
+    blocks = [
+        DocumentBlock(
+            paragraphs=[
+                ParagraphUnit(text="Contents", role="heading", structural_role="toc_header", paragraph_id="p0000", heading_level=2),
+            ]
+        ),
+        DocumentBlock(
+            paragraphs=[
+                ParagraphUnit(text="Notes", role="heading", structural_role="toc_entry", paragraph_id="p0001", heading_level=3),
+            ]
+        ),
+        DocumentBlock(
+            paragraphs=[
+                ParagraphUnit(text="Introduction", role="heading", paragraph_id="p0002", heading_level=2),
+                ParagraphUnit(text="The opening narrative paragraph of the book.", role="body", paragraph_id="p0003"),
+            ]
+        ),
+    ]
+
+    jobs = build_editing_jobs(blocks, max_chars=3000, processing_operation="audiobook")
+
+    # Both contents rows are dropped as TOC, by role — but the chapter that follows them is
+    # narrated, which it would not be if the "Notes" row had opened a region.
+    assert [job["narration_include"] for job in jobs] == [False, False, True]
+
+
 def test_build_editing_jobs_marks_mixed_toc_majority_blocks_as_toc_dominant():
     paragraphs = [
         ParagraphUnit(text="Contents", role="body", structural_role="toc_header", paragraph_id="p0000"),
