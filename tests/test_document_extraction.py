@@ -780,21 +780,20 @@ def test_extract_document_content_from_docx_splits_inline_break_prose_without_in
     assert [paragraph.heuristic_structural_role_hint for paragraph in paragraphs] == [None, None, None]
 
 
-def test_extract_document_content_from_docx_inline_break_split_keeps_the_headings_structural_role():
-    """The expansion path wrote a BINDING role, overwriting a real heading's `structural_role`.
+def test_extract_document_content_from_docx_keeps_a_heading_with_a_real_inline_break_as_one_paragraph():
+    """Spec 054: a heading typeset over two lines is ONE heading, not two.
 
-    An explicit heading survives as `role="heading"` either way — `_apply_or_hint_stage0_toc_role`
-    only demoted the role when `heading_source != "explicit"` — but its structural role was
-    overwritten with `toc_entry` regardless, which is Constitution VII rule 7 exactly: the text
-    survived, the structural role did not.
+    The source carries a single `<w:p>` whose runs are separated by a real `<w:br/>` — the
+    typographic wrap of a long title. `_should_expand_inline_break_paragraph` used to admit
+    `role="heading"` and split it, and nothing downstream ever rejoined the halves, so one
+    heading arrived in the output as N. Constitution VII: an intra-paragraph break is not a
+    structural boundary, and whether a given break inside a heading was "really" structural is
+    not knowable from the source — so the reader delivers exactly what the source has.
 
-    The role-level half of the same defect is measured on the corpus rather than here, because
-    it depends on font-size evidence a synthetic fixture does not carry (Constitution VIII): on
-    the DOCX corpus the change restores `role="heading"` on 23 paragraphs across three books —
-    Creating Wealth's "False Assumption #1: / The Economy is Beyond Our Control" and "The Building
-    Blocks of the Economy: / How Assumptions Create Reality", The Value of Everything's "Value in
-    the Eye of the Beholder: The Rise of the / Marginalists" — against one lost (a letter-spaced
-    cover-title variant that loses the front-matter display-title promotion to the real title).
+    The fixture is Creating Wealth's real heading, verified in its `word/document.xml`
+    (paragraph 249 carries the break). On the DOCX corpus this removes 2/16/5/2/4 heading
+    splits (Money & Sustainability, Creating Wealth, Rethinking Money, The Value of Everything,
+    Ukraine) and no split of any other role.
     """
     doc = Document()
     doc.add_paragraph("Body text that comes before the subheading.")
@@ -810,11 +809,34 @@ def test_extract_document_content_from_docx_inline_break_split_keeps_the_heading
 
     assert [paragraph.text for paragraph in paragraphs] == [
         "Body text that comes before the subheading.",
-        "False Assumption #1:",
-        "The Economy is Beyond Our Control",
+        "False Assumption #1: The Economy is Beyond Our Control",
     ]
-    assert [paragraph.role for paragraph in paragraphs] == ["body", "heading", "heading"]
-    assert [paragraph.structural_role for paragraph in paragraphs] == ["body", "heading", "heading"]
+    assert [paragraph.role for paragraph in paragraphs] == ["body", "heading"]
+    assert [paragraph.structural_role for paragraph in paragraphs] == ["body", "heading"]
+    assert paragraphs[1].heading_level == 2
+
+
+def test_extract_document_content_from_docx_keeps_a_three_line_heading_as_one_paragraph():
+    """The same rule at three lines — Creating Wealth's "Demand for / Profitable / Investments".
+
+    Verified in `word/document.xml` (paragraphs 342 and 343 both carry two real breaks). Before
+    this change the golden fixture showed it as three consecutive `Heading 2` paragraphs.
+    """
+    doc = Document()
+    paragraph = doc.add_paragraph(style="Heading 2")
+    paragraph.add_run("Demand for")
+    paragraph.add_run().add_break()
+    paragraph.add_run("Profitable")
+    paragraph.add_run().add_break()
+    paragraph.add_run("Investments")
+    buffer = BytesIO()
+    doc.save(buffer)
+    buffer.seek(0)
+
+    paragraphs, _ = extract_document_content_from_docx(buffer)
+
+    assert [paragraph.text for paragraph in paragraphs] == ["Demand for Profitable Investments"]
+    assert paragraphs[0].role == "heading"
 
 
 def test_extract_document_content_from_docx_keeps_regular_body_run_clusters_as_one_paragraph():

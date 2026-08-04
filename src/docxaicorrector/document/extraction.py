@@ -885,7 +885,17 @@ def _extract_paragraph_properties_xml(paragraph) -> str | None:
 
 
 def _should_expand_inline_break_paragraph(paragraph: ParagraphUnit, lines: list[str]) -> bool:
-    if paragraph.role not in {"body", "heading", "list"}:
+    # `heading` is deliberately absent. A long heading typeset over two lines is ONE `<w:p>`
+    # carrying an internal `<w:br/>`: the break is intra-paragraph typography, not a structural
+    # boundary, and nothing downstream ever rejoins the halves — so splitting it turned one
+    # heading into N. Constitution VII: the source carries one paragraph, so the reader delivers
+    # one. Whether a particular break inside a heading was "really" structural is unknowable from
+    # the source, and guessing is what the principle forbids.
+    #
+    # `list` stays, unmeasured-but-harmless: it never fires. Over the whole corpus (4 PDF +
+    # 5 native DOCX, measured 2026-08-04) not one `role="list"` paragraph reaches this function,
+    # so removing it would be a change with no evidence behind it either way.
+    if paragraph.role not in {"body", "list"}:
         return False
     if len(lines) < 2:
         return False

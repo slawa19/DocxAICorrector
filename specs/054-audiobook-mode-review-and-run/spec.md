@@ -347,6 +347,58 @@ an inference — recorded here so it is not lost.
 
 ## Changelog
 
+- **2026-08-04** — **A heading is no longer cut at its own line wrap** (same branch
+  `fix/054-toc-role-unanchored`, third of three: this one is only visible once the `toc_entry` role
+  write and the synthesised `<br/>` are gone, and shipping it separately would leave the branch's
+  output half-fixed). `_should_expand_inline_break_paragraph` (`document/extraction.py:887`) admitted
+  `{body, heading, list}`; `heading` is removed. The previous entry closed by recording this defect
+  and declining to take the decision — the decision is taken now, and it is the same one Constitution
+  VII takes everywhere else. The source carries ONE `<w:p>` with an internal `<w:br/>`; that break is
+  intra-paragraph typography (a long title set over two lines), not a structural boundary, and nothing
+  downstream ever rejoined the halves. Whether a particular break inside a heading was "really"
+  structural is not knowable from the source, so it is not guessed: the reader delivers what the
+  document has. `body` is untouched; the joined text is the existing `_join_inline_break_lines` path.
+  **Measured offline on 4 PDF + 5 native DOCX before and after** (`.run/nohdr_expansions_*.json`,
+  `.run/nohdr_paragraphs_*.json`).
+  **PDF: provably no effect at all.** Not one paragraph of any of the four PDFs even reaches this
+  function — 0 inline-break decisions per book, before and after, because the PDF→DOCX bridge writes
+  no `<w:br/>` (measured in the previous entry). `scripts/measure-narration-exclusion.py` on the four
+  books is **byte-identical** to the baseline JSON: 296/384/304/288 blocks, 59/59/58/104 excluded,
+  `toc_structural_role` 6/7/3/1, `reference_region` 10/9/0/61, `excluded_char_share`
+  7.4%/5.7%/0.4%/16.0%.
+  **Native DOCX: heading splits 2/16/5/2/4 → 0/0/0/0/0** (Money & Sustainability, Creating Wealth,
+  Rethinking Money, The Value of Everything, Ukraine); body splits 9/16/1/2/6 unchanged. Paragraph
+  counts 1835→1833, 1657→1637, 1990→1985, 1762→1760, 1900→1896; block counts 192→190, 206→187,
+  198→193, 281→279, 242→238 (each fragment was its own block island —
+  `semantic_blocks.py:568` forces a boundary at every structural-kind crossing). Reunited headings
+  include "CREATING WEALTH", "False Assumption #1: The Economy is Beyond Our Control", "The Building
+  Blocks of the Economy: How Assumptions Cr eate Reality", "Demand for Profitable Investments",
+  "Honoring Our Elders, Caring for Children", "Value in the Eye of the Beholder: The Rise of the
+  Marginalists", "FROM OBJECTIVE TO SUBJECTIVE: A NEW THEORY OF VALUE BASED ON PREFERENCES",
+  "Window of Viability", "Terra Alliance", "Demurrage Charge".
+  **Anti-vacuum counter-proof, on the corpus and not only in a fixture:** the four prose blocks named
+  in Finding 2 are still `narration_include=True` (Money & Sustainability block 52, Rethinking Money
+  25 and 79, The Value of Everything 11 — located by text, not index), and all **17** genuinely
+  excluded tables of contents (6/7/3/1) are still excluded. Both facts are byte-identical to the
+  before-run.
+  **`list` measured, not decided.** It stays in the accepted set because there is nothing to decide
+  on: over the whole corpus **0 of 1 663 `role="list"` paragraphs** (165/303/460/413/322 per native
+  DOCX, 0 on every PDF) ever carries an inline break that reaches this function. The branch is dead
+  code on this corpus; removing it would be a change with no evidence behind it in either direction,
+  which is the same error as adding one.
+  **Golden fixtures (spec 029) regenerated once, at the end.** Two of five are byte-identical (Money
+  & Sustainability, Rethinking Money — their merges fall outside the 500-paragraph cap). The counters
+  are noise by construction and are reported as such: `_stable_perturb_key`
+  (`tests/test_formatting_mapper_golden.py:57`) keys each paragraph's synthetic perturbation on
+  `paragraph_id`, which is positional, so merging one paragraph re-rolls the synthetic problem for
+  every later one (`mapped_count` 471→466, 465→469, 469→469 — down, up and flat, on the same change).
+  The content-bearing diff is over `diagnostics.source_registry`, keyed on the paragraph's own text:
+  **of every source paragraph whose text is unchanged, ZERO changed `role`, `structural_role` or
+  `heading_level`.** Everything that moved is the merge itself — 14/8/4 fragment texts disappear,
+  replaced by the reunited heading — plus body paragraphs pulled into the 500-cap window because the
+  document is shorter. In Creating Wealth's `target_registry` the fragmented pairs and triples at
+  target indexes 1/2, 16/17, 169/170, 189/190, 231/232/233, 260/261/262 become single entries, and
+  `"Heading 2"` falls **36 → 27**, `"Heading 1"` 19 → 16.
 - **2026-08-04** — **The synthesised `<br/>` is gone** (same branch `fix/054-toc-role-unanchored`, on
   purpose: shipped alone, either half makes the output worse). `_build_compact_toc_run_cluster_text`
   re-rendered a `role="body"` paragraph's run clusters as `segment<br/>segment` when the source
