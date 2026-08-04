@@ -91,6 +91,21 @@ def _fallback_markdown_for_processed_block_rejection(*, payload: Any, processed_
     return processed_chunk
 
 
+def fallback_delivered_source_text(*, payload: Any, processed_chunk: str) -> bool:
+    """True when what the controlled fallback delivered IS the block's own source text.
+
+    No new entity and no list of rejection kinds to keep in sync — the answer is already in
+    the two values this call site holds. ``_fallback_markdown_for_processed_block_rejection``
+    has exactly two outcomes: ``payload.target_text`` (the ``empty*`` kinds) or the rejected
+    model output, and for ``source_text_fallback`` that output IS the source by the
+    classifier's own definition (``output_validation.is_source_text_fallback_output``
+    requires ``processed_chunk == target_text``). Comparing the delivered text against the
+    source recognises both without naming either, and stays correct if the policy table
+    grows another kind.
+    """
+    return processed_chunk.strip() == str(getattr(payload, "target_text", "") or "").strip()
+
+
 def _has_intact_controlled_fallback_substrate(
     *,
     payload: Any,
@@ -724,6 +739,7 @@ def append_controlled_fallback_registry_entries(
     processed_chunk: str,
     rejection_kind: str,
     append_marker_registry_entries_fn: Any,
+    narration_excluded: bool = False,
 ) -> None:
     if payload.job_kind != "llm" or not payload.paragraph_ids:
         return
@@ -741,6 +757,13 @@ def append_controlled_fallback_registry_entries(
     for entry in state.generated_paragraph_registry[before_count:]:
         entry["controlled_fallback"] = True
         entry["controlled_fallback_kind"] = rejection_kind
+        # Carried on the paragraph, not only in ``state.narration_chunks``, because the
+        # reader-cleanup projection (``narration_postprocess._project_final_cleanup_narration_chunks``)
+        # rebuilds the narration from the FINAL registry rather than from those chunks. Without
+        # this flag the optional ElevenLabs post-pass on a cleaned translate run would narrate
+        # the untranslated source the standalone operation drops — the two entry points must
+        # behave the same (spec 054 anti-regression 3).
+        entry["controlled_fallback_narration_excluded"] = narration_excluded
 
 
 def emit_block_completed(
@@ -845,10 +868,25 @@ def continue_controlled_processed_block_rejection(
         processed_chunk=processed_chunk,
     )
     state.processed_chunks.append(processed_chunk)
-    if payload.narration_include:
-        state.narration_chunks.append(processed_chunk)
-    else:
+    # The narration artifact carries only speakable text in the TARGET language, so a block
+    # whose model output was rejected and replaced by its own SOURCE text does not go into
+    # it. The asymmetry against the DOCX is deliberate: the document is editable and a human
+    # who meets an untranslated paragraph fixes it, while nothing sits between the audio and
+    # the listener — on the 2026-08-04 Money & Sustainability run six such blocks put 20 597
+    # characters of English into the middle of a Russian audiobook. Taking the model's
+    # rejected output instead was considered and refused: the rejection means the model may
+    # have LOST a paragraph, which would trade a visible defect for an unverifiable one.
+    # The decision belongs here, not in ``_resolve_narration_include``, because only here is
+    # the block's outcome known.
+    narration_excluded_by_source_fallback = False
+    if not payload.narration_include:
         state.excluded_narration_block_count += 1
+    elif fallback_delivered_source_text(payload=payload, processed_chunk=processed_chunk):
+        narration_excluded_by_source_fallback = True
+        state.narration_excluded_source_fallback_block_count += 1
+        state.narration_excluded_source_fallback_chars += len(processed_chunk)
+    else:
+        state.narration_chunks.append(processed_chunk)
     try:
         append_controlled_fallback_registry_entries(
             context=context,
@@ -860,6 +898,7 @@ def continue_controlled_processed_block_rejection(
             processed_chunk=processed_chunk,
             rejection_kind=rejection_kind,
             append_marker_registry_entries_fn=append_marker_registry_entries_fn,
+            narration_excluded=narration_excluded_by_source_fallback,
         )
     except Exception as exc:
         dependencies.log_event(
@@ -929,6 +968,7 @@ def continue_controlled_processed_block_rejection(
         context_chars=payload.context_chars,
         output_classification=rejection_kind,
         artifact_path=artifact_path,
+        narration_excluded_by_source_fallback=narration_excluded_by_source_fallback,
         input_preview=payload.target_text[:300],
         output_preview=processed_chunk[:300],
     )

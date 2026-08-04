@@ -2059,6 +2059,9 @@ def test_run_document_processing_continues_on_english_residual_output_controlled
             "text": "Суд Judgment #1 уже начался.",
             "controlled_fallback": True,
             "controlled_fallback_kind": "english_residual_output",
+            # Spec 054: the fallback kept the MODEL's own target-language output, so the
+            # block is still narratable and stays in the narration artifact.
+            "controlled_fallback_narration_excluded": False,
         }
     ]
     assert runtime["state"]["latest_docx_bytes"] == b"docx-bytes"
@@ -2077,8 +2080,14 @@ def test_run_document_processing_continues_on_english_residual_output_controlled
     assert any(args[1] == "block_controlled_fallback" for args, _kwargs in events)
 
 
+# ``expected_narration_excluded`` is the spec-054 invariant, one row per rejection class:
+# the narration artifact carries only speakable target-language text, so a block is dropped
+# from it exactly when the controlled fallback delivered the block's own SOURCE text —
+# ``empty_processed_block`` (which substitutes ``payload.target_text``) and
+# ``source_text_fallback`` (which the classifier defines as output == source). The classes
+# that keep the model's own output stay in the narration; that is the anti-vacuum half.
 @pytest.mark.parametrize(
-    ("job", "generated_markdown", "expected_kind", "expected_markdown"),
+    ("job", "generated_markdown", "expected_kind", "expected_markdown", "expected_narration_excluded"),
     [
         (
             {
@@ -2092,6 +2101,7 @@ def test_run_document_processing_continues_on_english_residual_output_controlled
             "   ",
             "empty_processed_block",
             "Исходный абзац сохранён как fallback.",
+            True,
         ),
         (
             {
@@ -2105,6 +2115,7 @@ def test_run_document_processing_continues_on_english_residual_output_controlled
             "Суд Judgment #1 уже начался.",
             "english_residual_output",
             "Суд Judgment #1 уже начался.",
+            False,
         ),
         (
             {
@@ -2133,6 +2144,7 @@ def test_run_document_processing_continues_on_english_residual_output_controlled
                 "byte after a translate operation must be visible to reviewers instead of being "
                 "reported as a normal successful translated block."
             ),
+            True,
         ),
         (
             {
@@ -2146,6 +2158,7 @@ def test_run_document_processing_continues_on_english_residual_output_controlled
             "# Heading only",
             "heading_only_output",
             "# Heading only",
+            False,
         ),
         (
             {
@@ -2159,6 +2172,7 @@ def test_run_document_processing_continues_on_english_residual_output_controlled
             "## ●",
             "bullet_heading_output",
             "## ●",
+            False,
         ),
         (
             {
@@ -2172,6 +2186,7 @@ def test_run_document_processing_continues_on_english_residual_output_controlled
             "Заключение ........ 29 Марка 13:13 Введение",
             "toc_body_concat",
             "Заключение ........ 29 Марка 13:13 Введение",
+            False,
         ),
     ],
 )
@@ -2182,6 +2197,7 @@ def test_run_document_processing_continues_on_controlled_fallback_classes(
     generated_markdown,
     expected_kind,
     expected_markdown,
+    expected_narration_excluded,
 ):
     monkeypatch.chdir(tmp_path)
     runtime = _build_runtime_capture()
@@ -2228,6 +2244,7 @@ def test_run_document_processing_continues_on_controlled_fallback_classes(
             "text": expected_markdown,
             "controlled_fallback": True,
             "controlled_fallback_kind": expected_kind,
+            "controlled_fallback_narration_excluded": expected_narration_excluded,
         }
     ]
     assert runtime["state"]["latest_docx_bytes"] == b"docx-bytes"

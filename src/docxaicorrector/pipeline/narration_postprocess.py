@@ -118,6 +118,15 @@ def _project_final_cleanup_narration_chunks(
         # narration projection.
         if not strip_markdown_for_narration(text):
             continue
+        # Spec 054: a paragraph whose block took the source-text controlled fallback is not
+        # narratable — the model's output was rejected and the block's own source text stands
+        # in its place. The standalone ``audiobook`` operation never puts it in
+        # ``state.narration_chunks``; this projection rebuilds the narration from the final
+        # registry instead, so it has to honour the same decision or the two entry points
+        # would diverge (anti-regression 3). The flag is written at the moment of the
+        # fallback, in ``block_execution.append_controlled_fallback_registry_entries``.
+        if bool(raw_entry.get("controlled_fallback_narration_excluded", False)):
+            continue
         if True in inclusion_flags:
             projected.append(text)
     return projected

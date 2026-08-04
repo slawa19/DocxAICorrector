@@ -66,6 +66,53 @@ def test_strip_markdown_for_narration_removes_heading_marker_after_audio_tag():
     assert stripped == "[serious] Introduction\n\nNext line"
 
 
+@pytest.mark.parametrize("glyph", ["•", "●", "◦", "‣"])
+def test_strip_markdown_for_narration_drops_the_bullet_glyph_and_keeps_the_item_text(glyph):
+    """Spec 054: a list-bullet glyph is not speech, and 116 of them reached the 2026-08-04
+    narration artifact of Money & Sustainability, where a TTS engine would read them aloud.
+
+    The glyph set is the repository's existing bullet lexicon
+    (``output_validation._BULLET_GLYPH_PATTERN``), which is what counted those 116; only
+    ``•`` actually occurs in that artifact, the other three ride along on form.
+    """
+    source = f"{glyph} Компании постоянно балансируют на этих качелях.\n{glyph} Второй пункт."
+
+    stripped = generation.strip_markdown_for_narration(source)
+
+    assert stripped == "Компании постоянно балансируют на этих качелях.\nВторой пункт."
+
+
+def test_strip_markdown_for_narration_drops_a_bullet_glyph_behind_an_audio_tag():
+    """3 of the 116 measured bullets sat behind an ElevenLabs tag ("[serious] • …").
+
+    The tag is a legitimate narration directive and stays; only the marker goes.
+    """
+    source = "[serious] • ЭКО: национальная система финансирования экологических проектов."
+
+    stripped = generation.strip_markdown_for_narration(source)
+
+    assert stripped == "[serious] ЭКО: национальная система финансирования экологических проектов."
+
+
+def test_strip_markdown_for_narration_leaves_a_bullet_glyph_welded_inside_a_token():
+    """Anti-vacuum: a glyph welded between word characters is data, not a list marker —
+    the same distinction ``_WELDED_BULLET_GLYPH_PATTERN`` draws in the quality gate. The
+    rule requires a separator after the glyph, so nothing here is touched."""
+    source = "Значение 4●5 осталось в тексте."
+
+    assert generation.strip_markdown_for_narration(source) == "Значение 4●5 осталось в тексте."
+
+
+def test_strip_markdown_for_narration_keeps_prose_that_merely_starts_with_a_dash_word():
+    """Anti-vacuum for the whole list rule: an em-dash opening a line of dialogue is not a
+    bullet, and the paragraph text is never shortened by the glyph rule."""
+    source = "— Декларация 1700 ведущих учёных из 70 стран.\n\nОбычный абзац без маркеров."
+
+    stripped = generation.strip_markdown_for_narration(source)
+
+    assert stripped == "— Декларация 1700 ведущих учёных из 70 стран.\n\nОбычный абзац без маркеров."
+
+
 def _rules(narration_text: str) -> list[str]:
     return [str(finding["rule"]) for finding in _collect_narration_artifact_review_findings(narration_text)]
 

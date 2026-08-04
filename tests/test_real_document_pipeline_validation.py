@@ -6538,3 +6538,50 @@ def test_write_json_atomic_uses_run_dir_temp_for_latest_alias_retry(tmp_path, mo
     assert replace_calls[0][1] == latest_progress_path
     assert json.loads(latest_progress_path.read_text(encoding="utf-8")) == {"status": "in_progress"}
     assert not list(artifact_root.glob("*.tmp"))
+
+
+def test_run_report_carries_the_narration_exclusion_counters_from_the_event_log() -> None:
+    """Spec 054: the excluded-block loss has to be visible in the RUN REPORT, not only in the log.
+
+    The harness mines the event log for every other per-run number, so the narration record
+    follows the same route as ``model_accounting`` rather than opening a second channel.
+    """
+    validation = _load_validation_module()
+
+    event_log = [
+        {"event_id": "block_completed", "context": {}},
+        {
+            "event_id": "ui_audiobook_artifact_saved",
+            "context": {
+                "char_count": 448157,
+                "tag_count": 331,
+                "excluded_blocks": 59,
+                "excluded_source_fallback_block_count": 6,
+                "excluded_source_fallback_chars": 20597,
+                "review_finding_count": 2,
+                "review_match_count": 195,
+                "review_rules": ["doi", "inline_citation"],
+                "mode": "standalone",
+            },
+        },
+    ]
+
+    record = validation._extract_narration_artifact_record(event_log)
+
+    assert record is not None
+    assert record["excluded_source_fallback_block_count"] == 6
+    assert record["excluded_source_fallback_chars"] == 20597
+
+    lines = validation._build_narration_summary_lines(record)
+
+    assert "narration_excluded_source_fallback_block_count=6" in lines
+    assert "narration_excluded_source_fallback_chars=20597" in lines
+    assert "narration_excluded_blocks=59" in lines
+
+
+def test_run_report_says_not_reported_when_no_narration_artifact_was_saved() -> None:
+    """A run without a narration artifact must not read as "nothing was excluded"."""
+    validation = _load_validation_module()
+
+    assert validation._extract_narration_artifact_record([{"event_id": "processing_completed"}]) is None
+    assert validation._build_narration_summary_lines(None) == ["narration_artifact=not_reported"]

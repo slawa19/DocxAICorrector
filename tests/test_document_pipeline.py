@@ -13,6 +13,7 @@ from typing import Any, cast
 
 import docxaicorrector.generation._generation as generation
 import docxaicorrector.pipeline._pipeline as document_pipeline
+import docxaicorrector.pipeline.block_execution as block_execution
 import docxaicorrector.pipeline.late_phases as document_pipeline_late_phases
 import docxaicorrector.pipeline.quality_gate as document_pipeline_quality_gate
 import docxaicorrector.pipeline.reader_cleanup_rebuild as document_pipeline_reader_cleanup_rebuild
@@ -1298,6 +1299,165 @@ def test_standalone_audiobook_clean_narration_publishes_no_review_notice():
     assert not [notice for notice in notices if notice.get("kind") == "narration"]
 
 
+# Spec 054: on the first live audiobook run (2026-08-04, Money & Sustainability, en→ru) six
+# blocks came back from the model rejected, the controlled fallback substituted the block's
+# own English source, and it went straight into the Russian narration — 25 paragraphs /
+# 20 837 characters, 4.47% of the artifact. Long enough and English enough to trip the real
+# ``source_text_fallback`` classifier (>=120 chars, no Cyrillic, >=12 English words), because
+# the point of this test is that the PRODUCTION classifier routes it, not a stub.
+_UNTRANSLATED_SOURCE_BLOCK = (
+    "Once upon a time, in a small village in the Outback, people used barter for all their "
+    "transactions, and on every market day they walked around with chickens, eggs and breads."
+)
+_NARRATED_RUSSIAN_BLOCK = "[thoughtful] Однажды в маленькой деревне люди обменивались товарами."
+
+
+def _run_standalone_audiobook_with_source_fallback_block(*, runtime, log_event):
+    """A two-block standalone ``audiobook`` run: one narrated block, one rejected block."""
+
+    def _writer(**_kwargs):
+        return _persist_primary_artifacts_on_disk(
+            {
+                "markdown_path": "/tmp/report.result.md",
+                "docx_path": "/tmp/report.result.docx",
+                "tts_text_path": "/tmp/report.result.tts.txt",
+            }
+        )
+
+    def _job(target_text, paragraph_id):
+        return {
+            "target_text": target_text,
+            "target_text_with_markers": target_text,
+            "paragraph_ids": [paragraph_id],
+            "context_before": "",
+            "context_after": "",
+            "target_chars": len(target_text),
+            "context_chars": 0,
+            "narration_include": True,
+        }
+
+    def generate_markdown_block(**kwargs):
+        # The rejected block is the one whose "output" is its own source text.
+        if kwargs["target_text"] == _UNTRANSLATED_SOURCE_BLOCK:
+            return _UNTRANSLATED_SOURCE_BLOCK
+        return _NARRATED_RUSSIAN_BLOCK
+
+    return document_pipeline.run_document_processing(
+        uploaded_file="report.docx",
+        jobs=[
+            _job("Однажды в маленькой деревне.", "p0001"),
+            _job(_UNTRANSLATED_SOURCE_BLOCK, "p0002"),
+        ],
+        source_paragraphs=[],
+        image_assets=[],
+        image_mode="safe",
+        app_config={},
+        model="gpt-5.4",
+        max_retries=1,
+        processing_operation="audiobook",
+        source_language="auto",
+        target_language="ru",
+        on_progress=lambda **kwargs: None,
+        runtime=runtime,
+        resolve_uploaded_filename=lambda uploaded_file: str(uploaded_file),
+        get_client=lambda: object(),
+        ensure_pandoc_available=lambda: None,
+        load_system_prompt=lambda **_kw: "system",
+        log_event=log_event,
+        present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
+        emit_state=_emit_state,
+        emit_finalize=_emit_finalize,
+        emit_activity=_emit_activity,
+        emit_log=_emit_log,
+        emit_status=_emit_status,
+        should_stop_processing=lambda runtime: False,
+        generate_markdown_block=generate_markdown_block,
+        process_document_images=lambda **kwargs: [],
+        inspect_placeholder_integrity=_inspect_placeholder_integrity,
+        convert_markdown_to_docx_bytes=_convert_markdown_to_docx_bytes,
+        preserve_source_paragraph_properties=lambda docx_bytes, paragraphs, generated_paragraph_registry=None: docx_bytes,
+        reinsert_inline_images=lambda docx_bytes, image_assets: b"final-docx",
+        write_ui_result_artifacts=_writer,
+    )
+
+
+def test_standalone_audiobook_excludes_a_source_fallback_block_and_reports_the_loss(monkeypatch):
+    """Spec 054: the artifact carries only speakable target-language text, and the loss is counted.
+
+    The DOCX keeps the untranslated source — a human reading a document sees it and fixes
+    it — but the narration must not read it aloud. The exclusion travels the same three
+    observable surfaces the narration review data already uses (Constitution V): a WARNING
+    event, counters on the ``ui_audiobook_artifact_saved`` record of the saved file, and a
+    user-visible result notice.
+    """
+    monkeypatch.setattr(
+        block_execution, "_write_controlled_block_fallback_artifact", lambda **_kwargs: None
+    )
+    runtime = _build_runtime_capture()
+    events, log_event = _capture_log_events()
+
+    result = _run_standalone_audiobook_with_source_fallback_block(runtime=runtime, log_event=log_event)
+
+    assert result == "succeeded"
+    narration_text = runtime["state"]["latest_narration_text"]
+    # The narrated block is there; not one word of the rejected block's English is.
+    assert "Однажды в маленькой деревне люди обменивались товарами." in narration_text
+    assert "Once upon a time" not in narration_text
+    # ...while the DOCX branch still carries it, verbatim.
+    assert _UNTRANSLATED_SOURCE_BLOCK in runtime["state"]["latest_markdown"]
+
+    excluded_event = next(
+        event for event in events if event["event_id"] == "narration_source_fallback_excluded"
+    )
+    assert excluded_event["level"] == logging.WARNING
+    assert excluded_event["context"]["excluded_source_fallback_block_count"] == 1
+    assert excluded_event["context"]["excluded_source_fallback_chars"] == len(_UNTRANSLATED_SOURCE_BLOCK)
+    assert excluded_event["context"]["narration_mode"] == "standalone"
+
+    saved_event = next(
+        event for event in events if event["event_id"] == "ui_audiobook_artifact_saved"
+    )
+    assert saved_event["context"]["excluded_source_fallback_block_count"] == 1
+    assert saved_event["context"]["excluded_source_fallback_chars"] == len(_UNTRANSLATED_SOURCE_BLOCK)
+
+    notices = _as_mapping_sequence(runtime["state"]["latest_result_notices"])
+    excluded_notices = [
+        notice
+        for notice in notices
+        if notice.get("message_key") == "result.narration_source_fallback_excluded"
+    ]
+    assert len(excluded_notices) == 1
+    assert excluded_notices[0]["level"] == "warning"
+    assert _as_mapping(excluded_notices[0]["params"])["count"] == 1
+    assert _as_mapping(excluded_notices[0]["params"])["chars"] == len(_UNTRANSLATED_SOURCE_BLOCK)
+
+
+def test_standalone_audiobook_without_a_source_fallback_block_reports_zero_and_no_notice():
+    """Anti-vacuum companion: no exclusion means no event and no notice, and zero on the record."""
+    runtime = _build_runtime_capture()
+    events, log_event = _capture_log_events()
+
+    result = _run_standalone_audiobook(
+        "[thoughtful] Обычный абзац без ссылочных маркеров.", runtime=runtime, log_event=log_event
+    )
+
+    assert result == "succeeded"
+    assert not [
+        event for event in events if event["event_id"] == "narration_source_fallback_excluded"
+    ]
+    saved_event = next(
+        event for event in events if event["event_id"] == "ui_audiobook_artifact_saved"
+    )
+    assert saved_event["context"]["excluded_source_fallback_block_count"] == 0
+    assert saved_event["context"]["excluded_source_fallback_chars"] == 0
+    notices = _as_mapping_sequence(runtime["state"].get("latest_result_notices") or ())
+    assert not [
+        notice
+        for notice in notices
+        if notice.get("message_key") == "result.narration_source_fallback_excluded"
+    ]
+
+
 def test_run_document_processing_runs_audiobook_postprocess_without_mutating_base_docx_branch():
     runtime = _build_runtime_capture()
     events, log_event = _capture_log_events()
@@ -1796,6 +1956,40 @@ def test_translation_narration_projection_accepts_cleanup_delete_split_and_join_
         context=context,
         final_generated_paragraph_registry=[],
     ) == []
+
+
+def test_translation_narration_projection_drops_a_source_text_fallback_paragraph():
+    """Spec 054 anti-regression 3: what the standalone operation drops, the post-pass drops.
+
+    The cleaned-translate projection rebuilds the narration from the FINAL registry instead
+    of ``state.narration_chunks``, so the exclusion has to travel on the paragraph. Without
+    it the optional ElevenLabs post-pass would narrate the untranslated source that the
+    ``audiobook`` operation keeps out.
+    """
+    context = SimpleNamespace(jobs=[{"narration_include": True}, {"narration_include": True}])
+
+    projected = document_pipeline_narration_postprocess._project_final_cleanup_narration_chunks(
+        context=context,
+        final_generated_paragraph_registry=[
+            {
+                "block_index": 1,
+                "text": "Once upon a time, in a small village in the Outback.",
+                "controlled_fallback": True,
+                "controlled_fallback_kind": "source_text_fallback",
+                "controlled_fallback_narration_excluded": True,
+            },
+            # Anti-vacuum: a controlled fallback that KEPT the model's own output is narratable.
+            {
+                "block_index": 2,
+                "text": "Однажды в маленькой деревне.",
+                "controlled_fallback": True,
+                "controlled_fallback_kind": "english_residual_output",
+                "controlled_fallback_narration_excluded": False,
+            },
+        ],
+    )
+
+    assert projected == ["Однажды в маленькой деревне."]
 
 
 def test_translation_narration_projection_rejects_join_across_inclusion_boundary():

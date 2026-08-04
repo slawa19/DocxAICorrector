@@ -109,6 +109,7 @@
   "result.narration_omitted": "Narration was omitted because the final cleaned text could not be mapped safely to narration boundaries.",
   "result.narration_failed": "Narration preparation failed; the document result remains available.",
   "result.narration_review_data": "The narration text is ready. {count} passage(s) look like reference markers ({rules}) — worth checking before sending them to ElevenLabs.",
+  "result.narration_source_fallback_excluded": "{count} block(s) ({chars} characters) were left out of the narration text: the model returned no accepted output for them, so the source text stands in the DOCX and would have been read aloud untranslated.",
   "result.primary_artifacts_not_saved": "The result is available in this session, but its files could not be saved to disk.",
   "preview.markdown_label": "Markdown",
   "preview.markdown_help": "Only one Markdown block is shown on screen to keep the interface responsive for large documents.",

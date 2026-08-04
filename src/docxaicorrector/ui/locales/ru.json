@@ -110,6 +110,7 @@
   "result.narration_omitted": "Narration не создана: итоговый очищенный текст нельзя безопасно сопоставить с границами narration.",
   "result.narration_failed": "Подготовка narration не удалась; результат документа остаётся доступен.",
   "result.narration_review_data": "Текст narration готов. {count} фрагмент(ов) похожи на ссылочные маркеры ({rules}) — стоит проверить перед отправкой в ElevenLabs.",
+  "result.narration_source_fallback_excluded": "{count} блок(ов) ({chars} символов) не вошли в текст narration: модель не дала для них принятого вывода, поэтому в DOCX остался исходный текст — вслух он прозвучал бы непереведённым.",
   "result.primary_artifacts_not_saved": "Результат доступен в этой сессии, но его файлы не удалось сохранить на диск.",
   "preview.markdown_label": "Markdown",
   "preview.markdown_help": "На экране показывается только один Markdown-блок, чтобы интерфейс не перегружался на больших документах.",

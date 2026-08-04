@@ -1158,6 +1158,43 @@ def finalize_processing_success(
         "review_match_count": 0,
         "review_rules": [],
     }
+    # A block whose model output was rejected and replaced by its own source text is kept out
+    # of the narration (``block_execution.fallback_delivered_source_text``). That loss is
+    # deliberate but it must not be silent: it travels the SAME route the narration review
+    # data already takes — a WARNING event, a user-facing notice, and counters on the record
+    # of the saved artifact — rather than a channel of its own (Constitution V,
+    # docs/LOGGING_AND_ARTIFACT_RETENTION.md §3.3/§5.5). Zero excluded blocks means no event
+    # and no notice, exactly like a clean review pass.
+    narration_source_fallback_summary: dict[str, object] = {
+        "excluded_source_fallback_block_count": int(
+            getattr(state, "narration_excluded_source_fallback_block_count", 0) or 0
+        ),
+        "excluded_source_fallback_chars": int(
+            getattr(state, "narration_excluded_source_fallback_chars", 0) or 0
+        ),
+    }
+    if narration_text is not None and narration_source_fallback_summary["excluded_source_fallback_block_count"]:
+        dependencies.log_event(
+            logging.WARNING,
+            "narration_source_fallback_excluded",
+            "Блоки, для которых модель не дала принятого вывода, исключены из narration; в DOCX исходный текст сохранён.",
+            filename=context.uploaded_filename,
+            processing_operation=context.processing_operation,
+            narration_mode="standalone" if context.processing_operation == "audiobook" else "postprocess",
+            review_data=True,
+            advisory=True,
+            narration_chars=len(narration_text),
+            **narration_source_fallback_summary,
+        )
+        result_notices.append({
+            "kind": "narration",
+            "level": "warning",
+            "message_key": "result.narration_source_fallback_excluded",
+            "params": {
+                "count": narration_source_fallback_summary["excluded_source_fallback_block_count"],
+                "chars": narration_source_fallback_summary["excluded_source_fallback_chars"],
+            },
+        })
     if narration_text is not None:
         narration_review_findings = _collect_narration_artifact_review_findings(narration_text)
         narration_review_summary = _summarize_narration_review_findings(narration_review_findings)
@@ -1379,6 +1416,9 @@ def finalize_processing_success(
                     tag_count=len(_ELEVENLABS_TAG_PATTERN.findall(narration_text)),
                     excluded_blocks=int(getattr(state, "excluded_narration_block_count", 0) or 0),
                     mode="standalone" if context.processing_operation == "audiobook" else "postprocess",
+                    # Same rule as the review counters below: zero is the positive statement
+                    # "no block was dropped for this reason", never an absent field.
+                    **narration_source_fallback_summary,
                     # spec 054 Finding 4: the review counters travel with the record of the
                     # SAVED file, so the artifact on disk and the reason to inspect it are
                     # findable from one log line. Zero here is a positive statement that the
