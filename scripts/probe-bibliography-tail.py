@@ -1,11 +1,19 @@
-"""Why does the bibliography-tail exclusion never fire? Probe the anchor, not the region.
+"""Where does the audiobook reference-region exclusion anchor, and how far does it reach?
 
-`_resolve_bibliography_tail_indexes` anchors on the LAST heading-like block in the document and
-only then looks for a bibliography-like suffix. This prints, per book: where that anchor lands,
-what follows it, and which of the trailing blocks would individually read as bibliography-like —
-enough to tell "the region is not identifiable" apart from "the anchor is in the wrong place".
+Spec 054. The rule this probes was rewritten on 2026-08-04. Before: it anchored on the LAST
+heading-like block of the document and then required >= 70% "bibliography-like" LINES in the
+suffix — which resolved to 0 blocks on 4 of 4 books, because the anchor lands on publisher
+back-matter standing BEHIND the bibliography and because a PDF-imported entry wraps over
+several lines of which only one carries a year/publisher/URL. After: the region is anchored on
+a bare back-matter section title ("Notes", "Bibliography", ...) carried by a heading paragraph,
+and bounded by the next block that has a heading paragraph of its own.
 
-Offline, no LLM. Same invocation as scripts/measure-narration-exclusion.py.
+This prints, per book: every anchor found, the region it opens, and the trailing blocks — enough
+to tell "the region is not identifiable" apart from "the region is identified but bounded short".
+
+Offline, no LLM. Same invocation as scripts/measure-narration-exclusion.py:
+    . .venv/bin/activate && export PYTHONPATH="$PWD/src:$PWD" \
+        && python scripts/probe-bibliography-tail.py tests/sources/book/*.pdf --tail 12
 """
 
 from __future__ import annotations
@@ -24,11 +32,12 @@ import docxaicorrector.processing.processing_runtime as processing_runtime
 from docxaicorrector.core.config import load_app_config
 from docxaicorrector.core.constants import DEFAULT_CHUNK_SIZE
 from docxaicorrector.document.semantic_blocks import (
-    _is_bibliography_like_block,
-    _is_bibliography_like_line,
-    _is_heading_like_block,
+    _block_has_heading_paragraph,
+    _block_leading_heading_level,
+    _block_reference_section_title,
     _iter_block_text_lines,
-    _resolve_bibliography_tail_indexes,
+    _resolve_reference_region_end,
+    _resolve_reference_region_indexes,
 )
 from docxaicorrector.processing.preparation import (
     _build_semantic_blocks_with_optional_boundaries,
@@ -75,34 +84,44 @@ def probe(source_path: Path, *, chunk_size: int, tail: int) -> None:
         structure_phase=PRODUCTION_STRUCTURE_PHASE,
     )
 
-    heading_like = [
-        index for index, block in enumerate(blocks) if _is_heading_like_block(block, structure_phase=PRODUCTION_STRUCTURE_PHASE)
+    anchors = [
+        (index, title)
+        for index, block in enumerate(blocks)
+        if (title := _block_reference_section_title(block, structure_phase=PRODUCTION_STRUCTURE_PHASE))
     ]
-    last_heading = heading_like[-1] if heading_like else -1
-    tail_indexes = _resolve_bibliography_tail_indexes(blocks, structure_phase=PRODUCTION_STRUCTURE_PHASE)
+    region_indexes = _resolve_reference_region_indexes(blocks, structure_phase=PRODUCTION_STRUCTURE_PHASE)
 
     print(f"\n=== {source_path.name}")
-    print(f"blocks={len(blocks)} heading_like_blocks={len(heading_like)} last_heading_like_index={last_heading}")
-    print(f"blocks after the anchor: {len(blocks) - 1 - last_heading if last_heading >= 0 else 'n/a'}")
-    print(f"resolved bibliography tail: {len(tail_indexes)} blocks")
+    print(f"blocks={len(blocks)} reference_region_blocks={len(region_indexes)}")
+    if not anchors:
+        print("no bare back-matter section title anchors the region — nothing excluded (accepted negative)")
+    for anchor_index, title in anchors:
+        end_index = _resolve_reference_region_end(blocks, anchor_index)
+        chars = sum(len(blocks[i].text) for i in range(anchor_index, end_index))
+        bound = (
+            f"heading block {end_index} (level {_block_leading_heading_level(blocks[end_index])})"
+            if end_index < len(blocks)
+            else "end of document"
+        )
+        print(
+            f"anchor [{anchor_index}] {title!r} (level {_block_leading_heading_level(blocks[anchor_index])})"
+            f" -> region [{anchor_index}..{end_index - 1}] = {end_index - anchor_index} blocks,"
+            f" {chars} chars (bounded by {bound})"
+        )
 
-    print(f"\nlast {tail} blocks — bib-like share per block:")
+    print(f"\nlast {tail} blocks:")
     for index in range(max(0, len(blocks) - tail), len(blocks)):
         block = blocks[index]
         lines = _iter_block_text_lines(block)
-        matches = sum(1 for line in lines if _is_bibliography_like_line(line))
-        share = matches / len(lines) if lines else 0.0
         flags = []
-        if index == last_heading:
+        if _block_reference_section_title(block, structure_phase=PRODUCTION_STRUCTURE_PHASE):
             flags.append("ANCHOR")
-        if index in heading_like:
-            flags.append("heading_like")
-        if _is_bibliography_like_block(block):
-            flags.append("BIB_BLOCK")
-        if index in tail_indexes:
-            flags.append("excluded")
+        if _block_has_heading_paragraph(block):
+            flags.append("has_heading")
+        if index in region_indexes:
+            flags.append("EXCLUDED")
         head = " ⏎ ".join(lines[:2])[:150]
-        print(f"  [{index:>4}] bib={share:>5.0%} ({matches}/{len(lines)}) {','.join(flags):<28} {head}")
+        print(f"  [{index:>4}] {','.join(flags):<28} {head}")
 
 
 def main(argv: list[str] | None = None) -> int:

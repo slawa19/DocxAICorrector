@@ -296,6 +296,25 @@ an inference — recorded here so it is not lost.
 
 ## Changelog
 
+- **2026-08-04** — **Finding 1 fixed** on `fix/054-narration-region-exclusion`. Both causes were
+  structural, so both mechanisms were removed rather than tuned:
+  `_resolve_bibliography_tail_indexes` (last-heading anchor + 70% bibliography-like-lines region
+  test) is replaced by `_resolve_reference_region_indexes`
+  (`document/semantic_blocks.py:540`), which anchors on a bare back-matter section title carried
+  by a heading paragraph — reusing the `_BACKMATTER_SECTION_TITLES` lexicon from
+  `validation/formatting_coverage.py` that Constitution VII blesses, minus the index titles —
+  and bounds the region by outline depth (the next heading at the anchor's level or shallower;
+  an unlevelled heading, or an outline that never closes, ends the region early). Measured on
+  all four books, before → after excluded characters: Money & Sustainability 0.46% → 7.5%,
+  Creating Wealth 0.46% → 5.8%, The Value of Everything 0.42% → 16.1%, **Rethinking Money
+  0.79% → 0.79% — an honest negative**: it carries no bare back-matter section title, so no
+  region is identified and nothing is cut. The prose blocks named in Finding 2 are unchanged
+  (still dropped by the `toc_structural_role` branch, not by the region branch), and the
+  `toc_structural_role` and `image_only` counts are identical before and after on all four books,
+  so anti-regression 6 holds. Known over-cut, recorded rather than patched: on Money &
+  Sustainability the region reaches two blocks of Triarchy Press advertising (blocks 300-301)
+  that PDF import placed one outline level below `Bibliography`. Known under-cut: Creating
+  Wealth's `Appendix` notes and the whole `Resources` list before its `Notes` heading stay in.
 - **2026-08-04** — step 0 executed and the findings written up. Three findings recorded: the
   bibliography-tail exclusion has never fired on any book (anchor overshoots the region, and the
   region test cannot pass on real wrapped text); real body prose is already dropped from the

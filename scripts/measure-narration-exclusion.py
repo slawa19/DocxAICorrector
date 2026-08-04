@@ -67,7 +67,10 @@ def _classify_exclusion_reason(job: dict[str, Any]) -> str:
         return "image_only"
     if not text.strip():
         return "no_text_lines"
-    return "bibliography_tail"
+    # Spec 054: the region branch was renamed `bibliography_tail` -> `reference_region` on
+    # 2026-08-04 when it stopped being a bibliography-ratio test over the document suffix and
+    # became a back-matter section region (notes / references / bibliography / sources).
+    return "reference_region"
 
 
 def measure(source_path: Path, *, chunk_size: int) -> dict[str, Any]:
@@ -102,16 +105,30 @@ def measure(source_path: Path, *, chunk_size: int) -> dict[str, Any]:
         "excluded_block_share": round(len(excluded) / len(jobs), 4) if jobs else 0.0,
         "excluded_char_share": round(excluded_chars / total_chars, 4) if total_chars else 0.0,
         "excluded_by_reason": dict(sorted(reasons.items())),
-        "excluded_samples": [
+        # Samples per reason, not per position: the region branch fires at the end of the
+        # document and would otherwise never appear behind the image/TOC blocks.
+        "excluded_samples": _samples_by_reason(jobs, excluded),
+    }
+
+
+def _samples_by_reason(jobs: list[dict[str, Any]], excluded: list[dict[str, Any]], *, per_reason: int = 8) -> list[dict[str, Any]]:
+    seen: Counter[str] = Counter()
+    samples: list[dict[str, Any]] = []
+    for job in excluded:
+        reason = _classify_exclusion_reason(job)
+        seen[reason] += 1
+        if seen[reason] > per_reason:
+            continue
+        samples.append(
             {
                 "block_index": jobs.index(job),
-                "reason": _classify_exclusion_reason(job),
+                "reason": reason,
                 "roles": list(job.get("structural_roles") or [])[:6],
-                "text_head": str(job.get("target_text") or "")[:200].replace("\n", " ⏎ "),
+                "chars": len(str(job.get("target_text") or "")),
+                "text_head": str(job.get("target_text") or "")[:300].replace("\n", " ⏎ "),
             }
-            for job in excluded[:8]
-        ],
-    }
+        )
+    return samples
 
 
 def main(argv: list[str] | None = None) -> int:
