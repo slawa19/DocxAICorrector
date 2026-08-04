@@ -560,10 +560,6 @@ def _build_raw_paragraph(
     if role == "list" and list_metadata.get("_is_typographic_emdash_bullet"):
         role = "body"
         list_metadata = _empty_list_metadata()
-    if role == "body":
-        compact_toc_text = _build_compact_toc_run_cluster_text(paragraph)
-        if compact_toc_text is not None:
-            text = compact_toc_text
     asset_id = _extract_paragraph_asset_id(text, role=role)
     role_confidence = infer_role_confidence(
         role=role,
@@ -888,69 +884,6 @@ def _extract_paragraph_properties_xml(paragraph) -> str | None:
     return paragraph_properties.xml
 
 
-def _build_compact_toc_run_cluster_text(paragraph) -> str | None:
-    segments = _extract_compact_run_clusters(paragraph)
-    if not _is_compact_toc_run_cluster(segments):
-        return None
-    return "<br/>".join(segments)
-
-
-def _extract_compact_run_clusters(paragraph) -> list[str]:
-    segments: list[str] = []
-    current_parts: list[str] = []
-
-    for child in paragraph._element:
-        if xml_local_name(child.tag) != "r":
-            continue
-        raw_text = _extract_run_text(child)
-        if not raw_text:
-            continue
-        if "<br/>" in raw_text or "\t" in raw_text:
-            return []
-        formatted_text = _apply_run_markdown(raw_text, child)
-        if not raw_text.strip():
-            if current_parts:
-                segment = "".join(current_parts).strip()
-                if segment:
-                    segments.append(segment)
-                current_parts = []
-            continue
-        current_parts.append(formatted_text)
-
-    if current_parts:
-        segment = "".join(current_parts).strip()
-        if segment:
-            segments.append(segment)
-
-    return segments
-
-
-def _is_compact_toc_run_cluster(segments: list[str]) -> bool:
-    if len(segments) < 2:
-        return False
-
-    normalized_segments = [segment.strip() for segment in segments if segment.strip()]
-    if len(normalized_segments) < 2:
-        return False
-    if not all(_is_toc_candidate_text(segment) for segment in normalized_segments):
-        return False
-
-    word_counts = [len(_TOC_CANDIDATE_WORD_PATTERN.findall(segment)) for segment in normalized_segments]
-    total_words = sum(word_counts)
-    if len(normalized_segments) == 2:
-        if total_words > 20:
-            return False
-        if min(word_counts) < 3:
-            return False
-        if not (any(count >= 4 for count in word_counts) or any(has_heading_text_signal(segment) for segment in normalized_segments)):
-            return False
-        return True
-
-    if total_words > 14:
-        return False
-    return all(count <= 5 for count in word_counts)
-
-
 def _should_expand_inline_break_paragraph(paragraph: ParagraphUnit, lines: list[str]) -> bool:
     if paragraph.role not in {"body", "heading", "list"}:
         return False
@@ -986,17 +919,24 @@ def _is_toc_candidate_text(text: str) -> bool:
 def _expand_inline_break_paragraph(paragraph: ParagraphUnit, lines: list[str]) -> list[ParagraphUnit]:
     """Split a paragraph on its inline breaks. Deliberately assigns no structural role.
 
-    Splitting is safe: the break is a line boundary the reader observed. Assigning a TOC role
-    here was not. The only evidence this path can consult is `_is_toc_candidate_text` — pure text
-    shape (<= 160 chars, 1-16 words, no terminal `.`/`;`), with no "Contents" header, no dot
-    leaders, no page number and no region behind it, which Constitution VII forbids ("no source
-    signal, no repair"; structure is never reconstructed from length or position).
+    Splitting is safe **because every break reaching here is a `<w:br/>` the source document
+    actually carries**. That was not true until spec 054: `_build_compact_toc_run_cluster_text`
+    used to re-render a body paragraph's run clusters as `segment<br/>segment` when the source had
+    no break at all, and this function then split on the invented one. The synthesis is gone, so
+    the sentence above is a fact about the source rather than a hope about the reader.
+
+    Assigning a TOC role here was never safe. The only evidence this path can consult is
+    `_is_toc_candidate_text` — pure text shape (<= 160 chars, 1-16 words, no terminal `.`/`;`),
+    with no "Contents" header, no dot leaders, no page number and no region behind it, which
+    Constitution VII forbids ("no source signal, no repair"; structure is never reconstructed
+    from length or position).
 
     Measured on the four-book corpus for spec 054 Finding 2: of 72 blocks excluded from the
     narration by the TOC branch, 55 were tagged here, and they carried all 17 blocks of ordinary
     mid-chapter prose and 11 of the 12 epigraphs, while 16 of the 19 genuine tables of contents
     came from the region-anchored `_annotate_toc_region_candidates` below. The role is therefore
-    left to that pass, which requires a header plus >= 3 consecutive candidates.
+    left to that pass, which requires a header paragraph plus >= 2 consecutive candidates after
+    it (`look_ahead - index >= 3` counts the header itself).
     """
     return [_copy_paragraph_unit(paragraph, text=line) for line in lines]
 
@@ -1013,6 +953,8 @@ def _annotate_toc_region_candidates(paragraphs: list[ParagraphUnit], *, signal_o
         while look_ahead < len(paragraphs) and _is_toc_candidate_paragraph(paragraphs[look_ahead]):
             look_ahead += 1
 
+        # `index` is the header itself, so this is "header + at least 2 candidate entries",
+        # not "at least 3 candidates" as this rule was described until spec 054.
         if look_ahead - index >= 3:
             _apply_or_hint_stage0_toc_role(paragraph, structural_role="toc_header", signal_only=signal_only)
             for toc_index in range(index + 1, look_ahead):

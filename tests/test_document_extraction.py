@@ -618,7 +618,18 @@ def test_extract_document_content_with_normalization_reports_populates_page_numb
     assert page_number_paragraph.position_fraction == 1.0
 
 
-def test_extract_document_content_from_docx_splits_compact_toc_run_clusters_without_explicit_breaks():
+def test_extract_document_content_from_docx_does_not_invent_a_break_between_run_clusters():
+    """Spec 054: a paragraph with NO `<w:br/>` stays one paragraph, whatever its runs look like.
+
+    This is the exact fixture the synthesis was built for, and the exact shape it fired on:
+    three runs — text / whitespace-only / text — and not a single break element in the source.
+    Until this change `_build_compact_toc_run_cluster_text` re-rendered those clusters as
+    `line1<br/>line2` and `_normalize_inline_break_paragraphs` split on the invention, so this
+    document produced THREE ParagraphUnits. It now produces two, because two is what the source
+    has. Constitution VII: no source signal, no repair — if the line boundary is not in the
+    document, the merged paragraph is an ACCEPTED defect, not something to reconstruct from the
+    shape of the text.
+    """
     doc = Document()
     doc.add_paragraph("Contents")
     paragraph = doc.add_paragraph()
@@ -636,22 +647,23 @@ def test_extract_document_content_from_docx_splits_compact_toc_run_clusters_with
 
     assert [paragraph.text for paragraph in paragraphs] == [
         "Contents",
-        "Banks and Financial Markets Become Allies",
-        "The Banking Problem",
+        "Banks and Financial Markets Become Allies The Banking Problem",
     ]
-    assert [paragraph.structural_role for paragraph in paragraphs] == [
-        "body",
-        "body",
-        "body",
-    ]
-    assert [paragraph.heuristic_structural_role_hint for paragraph in paragraphs] == [
-        "toc_header",
-        "toc_entry",
-        "toc_entry",
-    ]
+    assert [paragraph.structural_role for paragraph in paragraphs] == ["body", "body"]
+    # No region either: `_annotate_toc_region_candidates` needs the header plus >= 2 candidate
+    # paragraphs after it, and the source supplies exactly one.
+    assert [paragraph.heuristic_structural_role_hint for paragraph in paragraphs] == [None, None]
 
 
-def test_extract_document_content_from_docx_splits_long_two_entry_compact_toc_run_clusters():
+def test_extract_document_content_from_docx_does_not_invent_a_break_for_long_two_entry_clusters():
+    """The second threshold branch of the removed synthesis, with its own fixture.
+
+    `_is_compact_toc_run_cluster` had two rules — "exactly 2 segments, <= 20 words total, each
+    >= 3 words, one >= 4 or a heading signal" and "<= 14 words total, each <= 5" — and each
+    arrived in the repository attached to one observed example (`82c6225`, `36a4751`), never a
+    measurement or a format invariant. This is the 20-word branch's example. It, too, has no
+    `<w:br/>`, so it is one paragraph now.
+    """
     doc = Document()
     doc.add_paragraph("Contents")
     paragraph = doc.add_paragraph()
@@ -669,13 +681,39 @@ def test_extract_document_content_from_docx_splits_long_two_entry_compact_toc_ru
 
     assert [paragraph.text for paragraph in paragraphs] == [
         "Contents",
-        "Something Odd About the National Accounts: GDP Facit Saltus!",
-        "Patching Up the National Accounts isn't Enough",
+        "Something Odd About the National Accounts: GDP Facit Saltus! Patching Up the National Accounts isn't Enough",
     ]
-    assert [paragraph.structural_role for paragraph in paragraphs] == [
-        "body",
-        "body",
-        "body",
+    assert [paragraph.structural_role for paragraph in paragraphs] == ["body", "body"]
+    assert [paragraph.heuristic_structural_role_hint for paragraph in paragraphs] == [None, None]
+
+
+def test_extract_document_content_from_docx_still_splits_a_real_inline_break_into_toc_entries():
+    """Counter-proof for the removal: a REAL `<w:br/>` keeps its split and its region role.
+
+    Same document as the two tests above — a "Contents" header and two entries — except the
+    entries are separated by an actual break element instead of a whitespace-only run. This is
+    the boundary the change is drawn on: the reader honours the break the source carries and
+    invents none, so the region-anchored pass still sees header + 2 candidates and tags them.
+    """
+    doc = Document()
+    doc.add_paragraph("Contents")
+    paragraph = doc.add_paragraph()
+    paragraph.add_run("Banks and Financial Markets Become Allies")
+    paragraph.add_run().add_break()
+    paragraph.add_run("The Banking Problem")
+    buffer = BytesIO()
+    doc.save(buffer)
+    buffer.seek(0)
+
+    paragraphs, _, _, _, _, _, _ = document.extract_document_content_with_normalization_reports(
+        buffer,
+        app_config={"structure_recovery_enabled": True, "structure_recovery_mode": "ai_first"},
+    )
+
+    assert [paragraph.text for paragraph in paragraphs] == [
+        "Contents",
+        "Banks and Financial Markets Become Allies",
+        "The Banking Problem",
     ]
     assert [paragraph.heuristic_structural_role_hint for paragraph in paragraphs] == [
         "toc_header",

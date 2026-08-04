@@ -209,7 +209,9 @@ quotation mark. Three consequences make it worse than a mis-tag:
    190 paragraphs of the 72 blocks: every one carries the binding role, surviving into `post_ai_final`.
 3. **Origin separates almost cleanly from the correct path.** Of the 72 blocks, 55 are tagged by this
    unanchored path and 17 by the region-anchored `_annotate_toc_region_candidates` (`:999`, requires a
-   "Contents" header plus ≥3 consecutive candidates). **All 17 mis-classified prose blocks and 11 of
+   "Contents" header paragraph plus ≥2 consecutive candidates after it — the code's
+   `look_ahead - index >= 3` counts the header itself, and this line said "≥3 candidates" until it
+   was corrected on 2026-08-04). **All 17 mis-classified prose blocks and 11 of
    12 epigraphs come from the unanchored path; 16 of the 19 genuine tables of contents come from the
    anchored one.** Classification of all 72 (blocks/chars): real TOC 19/2 794, index 7/638,
    notes & sources 17/1 811, epigraph or attribution 12/1 110, ordinary prose 17/1 701.
@@ -345,6 +347,62 @@ an inference — recorded here so it is not lost.
 
 ## Changelog
 
+- **2026-08-04** — **The synthesised `<br/>` is gone** (same branch `fix/054-toc-role-unanchored`, on
+  purpose: shipped alone, either half makes the output worse). `_build_compact_toc_run_cluster_text`
+  re-rendered a `role="body"` paragraph's run clusters as `segment<br/>segment` when the source
+  carried no break at all, and `_normalize_inline_break_paragraphs` then split the paragraph on the
+  invention. It and its two only callees, `_extract_compact_run_clusters` and
+  `_is_compact_toc_run_cluster`, are deleted — 63 lines, no remaining consumers. Their thresholds
+  (≥2 segments; at exactly 2, ≤20 words total, min ≥3, one ≥4 or a heading signal; otherwise ≤14
+  total and each ≤5) were never measured: `897d485` brought `160/16` from a single Mazzucato run,
+  `82c6225` brought `2/14/3/4/5` with a fixture built from one observed example, `36a4751` raised 14
+  to 20 with a second. Constitution VII, literally: no signal in the source, no repair — a paragraph
+  the PDF importer delivered whole now stays whole, and the merged line is an ACCEPTED defect.
+  **Measured, offline, on all four books before and after.** The narration decision is unchanged to
+  the block: 296/384/304/288 blocks, 59/59/58/104 excluded, `toc_structural_role` 6/7/3/1,
+  `reference_region` 10/9/0/61, `excluded_char_share` 7.4%/5.7%/0.4%/16.0% — identical in both runs,
+  same block indexes, same texts, with a single 2-character difference (The Value of Everything's TOC
+  block 5, 250→248 chars, where two entry pairs merged inside a block that stays excluded). All 17
+  genuinely-excluded TOC blocks survive, and the four prose blocks named in Finding 2 are all
+  `narration_include=True`, each inside its own continuation (Rethinking Money's Bernice Hill
+  sentence arrives as ONE paragraph instead of two halves, inside a 4 831-character block).
+  **`<w:br/>` on the PDF path does not exist** — measured, not assumed: the bridge
+  `_append_pdf_text_paragraph_to_docx` (`processing/processing_runtime.py:1015`) writes only a style
+  name and bold/italic, and with the synthesis removed inline-break expansions on all four PDFs go
+  7/7/24/21 → **0/0/0/0**. So 100% of PDF splitting was invented. Paragraph counts fall
+  1435→1426, 1836→1829, 2290→2265, 2314→2293. On native DOCX, where real breaks exist, the effect is
+  small and the real breaks are untouched: expansions 18→11, 32→32, 11→10, 11→6, 5→4 (Money &
+  Sustainability, Creating Wealth, Ukraine, Rethinking Money, The Value of Everything) — Creating
+  Wealth does not move at all because all 32 of its splits are genuine `<w:br/>`.
+  **Golden fixtures (spec 029) regenerated once, at the end, and the leaf comparison is the point.**
+  Three of five are **byte-identical** (Creating Wealth, Rethinking Money, The Value of Everything).
+  Two changed: Money & Sustainability `mapped_count` 467→465 and Ukraine 468→465 of 500. Attribution,
+  leaf by leaf: **of 106 and 184 source paragraphs whose mapping outcome changed, ZERO have an
+  unchanged `paragraph_id`, and zero paragraphs changed `role`, `structural_role` or `heading_level`
+  at all.** The harness picks each paragraph's synthetic perturbation from `sha1(paragraph_id)`
+  (`tests/test_formatting_mapper_golden.py:57`) and `paragraph_id` is positional, so merging one
+  paragraph renumbers 227 / 444 later ones and hands the mapper a different synthetic problem for
+  each. The delta is the fixture harness re-rolling itself, not the mapper. The one real content
+  change per book is the merge: "Former World Bank economist Herman Daly" + "proposes three
+  conditions for a society to be physically sustainable:" become one sentence (an improvement), and
+  Ukraine's OCR'd "General Summary Introduction" / "» о" / "Terrain Features" become one line (the
+  accepted cost — `Terrain Features` was unmapped before and is inside a mapped paragraph now).
+  **Honest negative — the fragmented headings this change was expected to repair are NOT repaired.**
+  Creating Wealth's "CREATING / WEALTH", "False Assumption #1: / The Economy is Beyond Our Control"
+  and "Demand for / Profitable / Investments" are split by a **real `<w:br/>` in the source DOCX**
+  (verified in `word/document.xml`, paragraphs 2, 17, 249, 342, 343), not by the synthesis, so its
+  fixture is byte-identical and its `"Heading 2"` count stays 36. On `main` those paragraphs were
+  already split — they were merely styled `Normal`, because the role write demoted them. The
+  remaining defect is therefore a different one, recorded rather than patched: **splitting a
+  `role="heading"` paragraph on a genuine inline break yields N headings where the document has
+  one.** `_should_expand_inline_break_paragraph` (`document/extraction.py:887`) admits `heading`,
+  and nothing rejoins the halves afterwards. Fixing it means deciding what a break inside a heading
+  means, which is a separate decision and is not taken here.
+  Two documentation errors corrected in the same commit: `_annotate_toc_region_candidates` requires
+  `look_ahead - index >= 3` **counting the header itself**, i.e. a header plus **≥2** entries, not
+  "≥3 consecutive candidates" as this spec's Finding 2 and the `_expand_inline_break_paragraph`
+  docstring both claimed; and that docstring's "the break is a line boundary the reader observed"
+  was false for the synthesised path and is true only now.
 - **2026-08-04** — **Finding 4 fixed** on `fix/054-narration-validator-not-a-gate` (PR #33, branched
   from `main` because it touches disjoint files). `_validate_narration_artifact_text`, which raised,
   becomes `_collect_narration_artifact_review_findings`, which returns and never raises: the artifact
