@@ -345,6 +345,41 @@ an inference — recorded here so it is not lost.
 
 ## Changelog
 
+- **2026-08-04** — **Finding 2 fixed** on `fix/054-toc-role-unanchored`, branched from
+  `fix/054-narration-region-exclusion`. `_expand_inline_break_paragraph`
+  (`document/extraction.py:986`) no longer writes a structural role: it splits on the inline break
+  and returns, and the `signal_only` parameter is gone with the role write. The splitting, the
+  `<br/>` detection and `_annotate_toc_region_candidates` are untouched. Measured offline on all
+  four books (`scripts/measure-narration-exclusion.py` equivalent, plus a tagger-origin probe;
+  raw output `.run/narration_exclusion/unanchored_before.json` / `unanchored_after.json`):
+  `toc_structural_role` exclusions **13/14/25/20 -> 6/7/3/1**, i.e. 72 -> 17 over the corpus, and
+  the unanchored tagger now makes **zero** calls while the region-anchored tagger makes exactly
+  the same calls as before (28/24/21/8 entries, 1/1/2/1 headers). `excluded_char_share`
+  7.50%/5.79%/0.79%/16.05% -> 7.38%/5.67%/0.38%/16.02%; the drop is the 5 378 characters
+  Finding 3 predicted, explained rather than a pass. **Anti-vacuum counter-proof on the real
+  corpus:** of the 19 genuine table-of-contents blocks / 2 794 characters, **16 / 2 602 are still
+  excluded**; the three that are not are the small in-chapter contents lists the trace predicted
+  (Money & Sustainability "Doraland p.142 / Wellness Tokens p.144 / Natural Savings p.151" and
+  "C3 on a regional or national scale p.155 / TRC on a global scale p.158", The Value of Everything
+  "Stories about Value Creation / Where Does Innovation Come From?" — 192 characters in total),
+  none of which carries a Contents header or a region. All 17 prose blocks and 11 of the 12
+  epigraphs return, including the four named in Finding 2, and each is reunited with its own
+  continuation (Rethinking Money block 28's 108-character island is now inside a 4 832-character
+  block). Blast radius, measured per operation: on **edit / literary_polish** 55 blocks / 5 378
+  characters per corpus stop being `passthrough` and reach the model for the first time
+  (7/7/22/19 blocks per book, +666/+668/+2 205/+2 047 characters), while the number of model
+  calls *falls* (251->247, 340->334, 262->246, 268->245) because the blocks merge; on
+  **translate** `toc_dominant` drops 13/14/25/20 -> 6/7/3/1, so those blocks leave the
+  `toc_translate` prompt variant and the `TOC_PARAGRAPH_COUNT_TOLERANCE = 0` validator that can
+  fail a whole run. Two consequences recorded rather than patched: the formatting-mapper golden
+  fixtures (spec 029) were regenerated for four of five books — no source text changed, but the
+  spurious `toc_region` relations disappear (4->2, 15->0, 4->1, 4->0) and 23 real headings across
+  three books regain `role="heading"` (Creating Wealth's "False Assumption #1: / The Economy is
+  Beyond Our Control", The Value of Everything's "Value in the Eye of the Beholder: The Rise of the
+  / Marginalists") against one lost to a cover-title variant; and on the Ukraine document one
+  OCR'd body line (`p0032`, "Terrain Features") loses its formatting mapping because a spurious
+  TOC relation used to carry it (mapped 469 -> 468 of 500). `structure_repair.py:227` does **not**
+  start firing: its call counts are byte-identical before and after on all four books.
 - **2026-08-04** — Finding 2 corrected after the mechanism was traced, and Finding 3 quantified. The
   "short line ending in a digit" hypothesis is **refuted** (16 of 72; stripping the superscript
   changes 2 of 55): the real rule is `extraction.py:968` `_is_toc_candidate_text` — ≤160 chars, 1–16
