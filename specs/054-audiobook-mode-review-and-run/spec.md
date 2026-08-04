@@ -35,6 +35,44 @@ output at all.
 "Clearly identifiable" is the constraint that keeps this honest. If a region cannot be recognised
 without guessing, leave it in rather than cut prose by mistake.
 
+## Start here: the shared decision point already exists, and two of the three regions are already in it
+
+Checked on 2026-08-04, and it makes this task much smaller than it looks. **Do not extract a module
+and do not try to reconcile the two entry points** — the decision is already factored out above both
+of them.
+
+`document/semantic_blocks.py:520` `_resolve_narration_include` decides, once per block in the document
+layer, whether a block belongs in the narration at all. Both paths honour it by construction: the main
+generation loop skips excluded blocks when filling `state.narration_chunks`
+(`pipeline/block_execution.py:849`), and the optional post-pass reads the same flag off the job
+(`pipeline/narration_postprocess.py:77`). Assembly and validation are called once each, in the shared
+delivery path (`late_phases.py:1074`, `:1149`). There is nothing here that can drift.
+
+Two of the three regions the owner named are already excluded by that function:
+
+```python
+if all(_is_toc_structural_role(p, ...) for p in block.paragraphs):
+    return False          # table of contents, by structural role
+...
+if block_index in bibliography_tail_indexes:
+    return False          # the sources tail, by region
+```
+
+**Footnotes are not in the list.** That looks like the actual missing piece.
+
+**But verify effect before writing anything.** Twice on 2026-08-02…03 this project found a rule that
+existed and never fired: `promote_short_standalone_headings` was a complete no-op on PDF books because
+the signal it keys on is never written, and the footnote-marker rule fired on exactly one book of four
+because it only read the tail of a line. So the first question of the run is not "is there a rule" but
+**how many blocks does it actually exclude** — `excluded_narration_block_count` already counts them,
+per run.
+
+Real duplication does exist, but elsewhere and harmlessly: the post-pass has its own chunk grouping,
+model resolution and call loop. That is plumbing, not the decision, and a change to *what gets
+dropped* does not touch it. The two loops differ for a legitimate reason — one runs inside the main
+generation pass with markers, retries and paragraph restore; the other just regroups finished chunks.
+Leave them alone.
+
 ## The gap this points at
 
 `operation_audiobook.txt` rule 1 already tells the model to remove footnote markers, citations, DOI,
