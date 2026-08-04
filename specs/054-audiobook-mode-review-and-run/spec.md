@@ -4,9 +4,11 @@
 
 **Created**: 2026-08-04
 
-**Status**: **READY — approved by the owner on 2026-08-04, not started.** Deliberately scheduled as
-its own session so it gets a clean context. This spec is the brief: everything below is what the next
-session would otherwise have to rediscover.
+**Status**: **IN PROGRESS — step 0 (measure before writing) done on 2026-08-04**, findings recorded
+below in "Measured first, before any code". Approved by the owner on 2026-08-04 and deliberately
+scheduled as its own session so it gets a clean context. This spec is the brief: everything below is
+what the next session would otherwise have to rediscover. Per Constitution 2.0.0 this is the
+**spec-only tier** — defect-driven remediation inside existing modules, no new module or contract.
 
 **Date**: 2026-08-04
 
@@ -107,8 +109,205 @@ Context that is expensive to rediscover, all verified during the 2026-08-02…04
 - **Cost is now measured** (PR #26/#28): a run reports its real tokens and provider-reported cost. Use
   it — the reader-cleanup verdict turned on cost against benefit, and this one should too.
 
+## Measured first, before any code (2026-08-04)
+
+The spec's own instruction — *ask how many blocks the rule actually excludes before writing anything* —
+was carried out. Two offline, LLM-free measurements over the four-book corpus, reproducing the
+production decision exactly (same preparation, same structure phase `pre_ai_diagnostic`, same block
+indexes): `scripts/measure-narration-exclusion.py` and `scripts/probe-bibliography-tail.py`. Raw
+output: `.run/narration_exclusion/measure.json`, `measure_rest.json`, `toc_excluded.json`.
+
+| book | blocks | excluded | % of chars | by reason |
+|---|---|---|---|---|
+| Money & Sustainability | 307 | 56 | 0.46% | image 43, toc 13 |
+| Rethinking Money | 342 | 80 | 0.79% | image 55, toc 25 |
+| The Value of Everything | 330 | 62 | 0.42% | image 42, toc 20 |
+| Creating Wealth | 397 | 57 | 0.46% | image 43, toc 14 |
+
+**The exclusion removes less than 1% of the text on every book, and the only two branches that ever
+fire are `image_only` and `toc_structural_role`.** The owner's requirement is therefore unmet on two
+of the three regions, and met on the third by a rule that is firing for the wrong reason.
+
+### Finding 1 — the bibliography-tail exclusion has never fired, for two independent reasons
+
+`bibliography_tail` = **0 blocks on 4 of 4 books**. This is the third instance in three days of a rule
+that exists and never fires. Both causes are structural, not tuning:
+
+**1a. The anchor overshoots the region it is meant to precede.**
+`document/semantic_blocks.py:503` `_resolve_bibliography_tail_indexes` anchors on the **last**
+heading-like block in the document and only looks *after* it. On a real book the last heading-like
+block is always publisher back-matter that sits *behind* the bibliography, so nothing is left to
+exclude (measured 2026-08-04):
+
+| book | last heading-like block | blocks after it |
+|---|---|---|
+| Money & Sustainability | 304 — "Thought leaders in Design and Systems Thinking…" (Triarchy Press ad) | 2 |
+| Creating Wealth | 395 — "20 Pounds of HAPs, VOCs…" (New Society environmental statement) | 1 |
+| Rethinking Money | 341 — "Join the BK Community" | 0 |
+| The Value of Everything | 329 — "Acknowledgements" | 0 |
+
+The Value of Everything is the clearest case: block **319 is literally the heading `Bibliography`**,
+blocks 320–328 are its entries, and block 329 `Acknowledgements` is the anchor. The region is right
+there, correctly ordered, and the anchor steps straight over it.
+
+**1b. Even with a correct start index, the region test cannot pass.**
+`_is_bibliography_like_region` (`:487`) requires ≥ `TOC_DOMINANCE_THRESHOLD` = 0.7 of the region's
+**lines** to be bibliography-like, and `_is_bibliography_like_line` (`:454`) only matches a leading
+ordinal, a URL/DOI/ISBN token, or a references heading. A PDF-imported bibliography entry wraps over
+several lines and only one of them carries the year, publisher or URL. The genuine bibliography of
+The Value of Everything (blocks 320–328) measures **9–21% bib-like lines**, nowhere near 0.7. So even
+if 1a were fixed alone, the tail would still resolve to zero. Both must be addressed, or the fix will
+pass its unit test and change nothing on a book.
+
+Why the existing tests did not catch this: `tests/test_document_structure_blocks.py:256` and `:303`
+build the region out of one-line synthetic paragraphs (`"[1] Smith, 2009. DOI:10.1000/xyz"`) where
+every line is bibliography-like by construction. They prove the arithmetic, not the behaviour. Any fix
+here needs a fixture whose lines look like real imported text — this is Constitution VIII in its
+concrete form.
+
+### Finding 2 — real body prose is already being dropped from the narration, silently
+
+The `toc_structural_role` branch fires on 13–25 blocks per book, and the dump of all 72
+(`.run/narration_exclusion/toc_excluded.json`) shows the branch is doing three different jobs at once:
+genuine tables of contents, index and endnote entries — and **ordinary mid-chapter prose**. Verified
+samples, each carrying effective structural role `toc_entry` and therefore excluded from the artifact:
+
+- Rethinking Money block 28 — "Jungian psychologist Bernice Hill has categorized four levels of what
+  she calls "sacred wounds of money."¹⁶"
+- Rethinking Money block 90 — "This distinction should be understood. And it's not generally known or
+  appreciated by most people."²⁶"
+- Money & Sustainability block 56 — "This scenario has been repeated for every one of the large-scale
+  banking crises and monetary meltdowns of our times.²"
+- The Value of Everything block 13 — "What if it stemmed purely from a set of deeply ingrained ideas?
+  What new stories might we tell?"
+- Plus epigraphs and their attributions (Yeats, Coleridge, Einstein 1932) across three books.
+
+**This already violates anti-regression 1 of this spec, before a line of new code is written.**
+
+**The mechanism, traced on 2026-08-04 and verified independently by reading the code.** The first
+guess — "a short block whose last line ends in a digit, made worse by PR #20's superscripts" — is
+**refuted by measurement**: it accounts for 16 of the 72, and stripping the superscript marker changes
+the verdict on only 2 of the 55 blocks tagged by the offending path. The real rule is cruder.
+
+`document/extraction.py:968` `_is_toc_candidate_text` is the whole test:
+
+> a line is a table-of-contents entry if it is ≤160 characters, has 1–16 words, and **does not end in
+> `.` or `;`**.
+
+No "Contents" header, no dot leaders, no trailing page number, no region — pure shape, which is
+precisely what Constitution VII forbids. The Bernice Hill paragraph qualifies because it ends in a
+quotation mark. Three consequences make it worse than a mis-tag:
+
+1. **The line break it splits on is invented by the reader.** `extraction.py:891`
+   `_build_compact_toc_run_cluster_text` re-renders a paragraph's run clusters as `line1<br/>line2`
+   when the source DOCX has no break there; `_normalize_inline_break_paragraphs` (`:713`) then splits
+   on that synthetic break and `_expand_inline_break_paragraph` (`:986`) tags both halves. Measured:
+   18 of 24 expanded paragraphs in Rethinking Money and 21 of 21 in The Value of Everything come from
+   a break that does not exist in the source.
+2. **The role is binding, not advisory.** `_apply_or_hint_stage0_toc_role` (`:1030`) with
+   `signal_only=False` writes `structural_role` *and demotes a real heading to body*. Verified on all
+   190 paragraphs of the 72 blocks: every one carries the binding role, surviving into `post_ai_final`.
+3. **Origin separates almost cleanly from the correct path.** Of the 72 blocks, 55 are tagged by this
+   unanchored path and 17 by the region-anchored `_annotate_toc_region_candidates` (`:999`, requires a
+   "Contents" header plus ≥3 consecutive candidates). **All 17 mis-classified prose blocks and 11 of
+   12 epigraphs come from the unanchored path; 16 of the 19 genuine tables of contents come from the
+   anchored one.** Classification of all 72 (blocks/chars): real TOC 19/2 794, index 7/638,
+   notes & sources 17/1 811, epigraph or attribution 12/1 110, ordinary prose 17/1 701.
+
+**Blast radius — this is not an audiobook-only defect.** The block set is identical across operations:
+
+| operation | what happens to the mis-tagged prose |
+|---|---|
+| audiobook | **deleted** — absent from the narration artifact |
+| translate | sent to the model under the `toc_translate` prompt variant (`block_execution.py:196`) |
+| edit / literary_polish | **`passthrough` — copied verbatim, never sent to the model at all** |
+
+Two further consequences on every operation: the optional ElevenLabs post-pass drops the same blocks
+on a translate/edit run, because `narration_include` does not depend on the operation; and a
+TOC-routed block on translate is validated with `TOC_PARAGRAPH_COUNT_TOLERANCE = 0`
+(`pipeline/toc_block_validation.py:31`) — if the model merges the two lines of what is really one
+prose sentence, the block fails, and after `TOC_VALIDATION_RETRY_BUDGET = 2` the **whole run raises**
+(`block_execution.py:530`). Reachable by code, not observed live. Finally, `semantic_blocks.py:568`
+forces a block boundary at every structural-kind crossing, so Rethinking Money block 28 is a 108-char
+island between blocks of 1 395 and 3 325 characters, severed from its own continuation.
+
+**Fix direction (decided, not yet implemented):** stop `_expand_inline_break_paragraph` from writing
+the role on its own authority; keep the `<br/>` splitting. The region-anchored pass re-derives 16 of
+the 19 genuine TOC blocks, so almost nothing real is lost, and the anti-vacuum counter-proof is
+checkable on the corpus rather than only in a fixture. Do **not** tighten the punctuation test — it
+would fix 2 of 55 and would be the same shape heuristic in new clothes.
+
+### Finding 3 — what the wrong rule is accidentally getting right, and how little it is
+
+The same mis-tagging is currently the only thing removing any index or endnote material. **Quantified
+on 2026-08-04, and it is negligible:** of the 141 516 characters in those regions it removes 24 blocks
+/ 2 449 characters — **1.7%**. Rethinking Money's index 2.8%, The Value of Everything's endnotes 2.0%,
+its bibliography 0.3%.
+
+Fixing the role therefore returns 55 blocks / 5 378 characters to the narration: 2 737 characters of
+prose and epigraph (the win), 2 449 of reference material (the regression), 192 of genuine in-chapter
+contents lists. **This is not a reason to sequence the two fixes**, which is what anti-regression 6
+originally implied — the expected drop in `excluded_char_share` is simply explained rather than
+treated as a failure.
+
+### Finding 4 — the artifact validator is all-or-nothing over the whole book, and it trips on prose
+
+Found during the step-1 code review, verified by running the live patterns on 2026-08-04.
+
+`_validate_narration_artifact_text` (`pipeline/narration_postprocess.py:121`) is applied **once, to the
+joined narration text of the entire book** (`late_phases.py:1149`). On a standalone audiobook run a
+single match anywhere takes the `else` branch at `late_phases.py:1183`: `latest_docx_bytes=None` and
+`emit_failed_result` — **the whole artifact is lost after the full LLM spend**, over one sentence.
+There is no per-chunk fallback, no retry, no "drop the offending chunk". On edit/translate the base
+result is preserved and the narration is simply omitted (`:1158`), which is the sane half.
+
+Four of the six patterns match ordinary prose. Run against the live patterns:
+
+| sentence | verdict |
+|---|---|
+| «В Веймарской республике (Германия, 1923) деньги обесценивались ежедневно.» | fails `inline_citation` |
+| «Это случилось в тот год (Берлин, 1923 год), когда цены удваивались.» | fails `inline_citation` |
+| «Издательство присвоило книге ISBN и отправило её в печать.» | fails `isbn` |
+| «Он опубликовал препринт на arXiv, и через неделю о нём говорили все.» | fails `arxiv` |
+
+`isbn` and `arxiv` are bare word matches (`\bisbn\b`), so *mentioning* either concept in narrated prose
+fails the run. `inline_citation` matches any parenthesis holding a capitalised word, a comma and a
+year — the normal way to write a place and a date in a book about monetary history, which is three of
+the four books in this corpus.
+
+Scale on real material (imported text of the four books, `.run/footnote_import_measure/*.raw.md`):
+**4 / 65 / 196 / 178 `inline_citation` matches per book**, plus 3 and 1 `isbn`. Most are bibliographic
+in shape (`(New York: Doubleday Currency, 1994)`) and sit in the very regions Finding 1 is about, but
+the sample also contains true inline citations in body text (`(Doran, 2009)`, `(Thomson Reuters,
+2011)`). So today the model must strip every one of ~200 constructions, one block at a time, with zero
+misses, or the run returns nothing.
+
+This is the same defect class as the Unicode-superscript rule removed on 2026-08-03 (PR #29), and the
+comment that replaced it states the principle already: *removing reference markers is the prompt's
+job, not a glyph gate's.* The region exclusion of Finding 1 removes most of the exposure by taking the
+material out before the model sees it; what is left is the question of whether a deterministic gate
+should be able to destroy a paid run at all, or should surface the violation as review data the way
+formatting coverage does. **That last part is an owner decision, recorded here, not taken.**
+
+### What this changes about the plan
+
+The missing piece is not "add footnotes to the list". It is that the region-detection half of
+`_resolve_narration_include` does not work on real documents at all, while the role half is
+over-firing on prose. The nearest working precedent in this repository is the region family in
+`validation/formatting_coverage.py` (`_resolve_references_region_start`, `_resolve_bounded_toc_region`),
+which Constitution VII names explicitly and whose generic structural-anchor lexicon it blesses as an
+accepted, extensible residual rather than a per-book literal. Start there rather than tuning the
+thresholds in `semantic_blocks.py`.
+
+**Index is deliberately not in scope.** The owner named the table of contents, footnotes and sources.
+Rethinking Money's tail is an index and reads terribly aloud, but adding it is an owner decision, not
+an inference — recorded here so it is not lost.
+
 ## Plan
 
+0. **Measure before writing — DONE 2026-08-04**, see the section above. It changed the task: the work
+   is not adding footnotes to a working rule, it is a region rule that has never fired plus a role
+   rule that drops prose.
 1. **Code review of the mode**, the way spec 052 was reviewed: what the pass can and cannot do, where
    the two entry points diverge, what is dead, what is unreachable from the UI.
 2. **One run on a real book**, with the cost recorded.
@@ -130,8 +329,61 @@ Context that is expensive to rediscover, all verified during the 2026-08-02…04
 ## Anti-regression (mandatory, once implemented)
 
 1. A region that cannot be identified is kept, not cut — a prose paragraph never disappears because
-   it resembled a bibliography entry.
+   it resembled a bibliography entry. **Already violated by current code, see Finding 2**: the named
+   prose blocks must be present in the narration after the fix, asserted per book.
 2. A block the prompt legitimately empties does not come back as a placeholder in the artifact.
 3. Both entry points behave the same: what the standalone operation drops, the optional post-pass
    drops too.
 4. The measured manual-editing count on the corpus book does not increase.
+5. **No fix is credited by a unit test alone.** Every change to the exclusion is measured with
+   `scripts/measure-narration-exclusion.py` on all four books, before and after, and the numbers are
+   recorded. A synthetic fixture whose every line is bibliography-like proves the arithmetic and
+   nothing else — that is exactly how Finding 1 stayed invisible (Constitution VIII).
+6. Fixing the over-firing role rule (Finding 2) must not silently restore the index and endnote text
+   it is currently removing by accident (Finding 3): the net excluded-character share per book is
+   reported before and after, and a drop in it is a finding, not a pass.
+
+## Changelog
+
+- **2026-08-04** — Finding 2 corrected after the mechanism was traced, and Finding 3 quantified. The
+  "short line ending in a digit" hypothesis is **refuted** (16 of 72; stripping the superscript
+  changes 2 of 55): the real rule is `extraction.py:968` `_is_toc_candidate_text` — ≤160 chars, 1–16
+  words, does not end in `.` or `;`. Three aggravating facts recorded: the `<br/>` it splits on is
+  synthesised by the reader from run clusters, the role it writes is binding and demotes real
+  headings, and the defect reaches translate (TOC prompt variant plus a zero-tolerance validator that
+  can fail a whole run) and edit (blocks copied verbatim, never edited) — not only audiobook. Finding
+  3 measured at 1.7% of the reference regions, so anti-regression 6 no longer implies an ordering
+  between the two fixes. Fix direction chosen: remove the role write from the unanchored path, keep
+  the splitting; the region-anchored pass already re-derives 16 of the 19 genuine TOC blocks. Latent
+  issue recorded, not firing on this corpus: `structure_repair.py:227` tags look-ahead candidates
+  before testing the ≥3 region-length condition, so a rejected region leaves its tags behind.
+- **2026-08-04** — **Finding 1 fixed** on `fix/054-narration-region-exclusion`. Both causes were
+  structural, so both mechanisms were removed rather than tuned:
+  `_resolve_bibliography_tail_indexes` (last-heading anchor + 70% bibliography-like-lines region
+  test) is replaced by `_resolve_reference_region_indexes`
+  (`document/semantic_blocks.py:540`), which anchors on a bare back-matter section title carried
+  by a heading paragraph — reusing the `_BACKMATTER_SECTION_TITLES` lexicon from
+  `validation/formatting_coverage.py` that Constitution VII blesses, minus the index titles —
+  and bounds the region by outline depth (the next heading at the anchor's level or shallower;
+  an unlevelled heading, or an outline that never closes, ends the region early). Measured on
+  all four books, before → after excluded characters: Money & Sustainability 0.46% → 7.5%,
+  Creating Wealth 0.46% → 5.8%, The Value of Everything 0.42% → 16.1%, **Rethinking Money
+  0.79% → 0.79% — an honest negative**: it carries no bare back-matter section title, so no
+  region is identified and nothing is cut. The prose blocks named in Finding 2 are unchanged
+  (still dropped by the `toc_structural_role` branch, not by the region branch), and the
+  `toc_structural_role` and `image_only` counts are identical before and after on all four books,
+  so anti-regression 6 holds. Known over-cut, recorded rather than patched: on Money &
+  Sustainability the region reaches two blocks of Triarchy Press advertising (blocks 300-301)
+  that PDF import placed one outline level below `Bibliography`. Known under-cut: Creating
+  Wealth's `Appendix` notes and the whole `Resources` list before its `Notes` heading stay in.
+- **2026-08-04** — step 0 executed and the findings written up. Three findings recorded: the
+  bibliography-tail exclusion has never fired on any book (anchor overshoots the region, and the
+  region test cannot pass on real wrapped text); real body prose is already dropped from the
+  narration via an over-firing `toc_entry` role; and that same mis-tagging is the only thing currently
+  removing index and endnote material. Status moved READY → IN PROGRESS. Anti-regression items 5 and 6
+  added. Measurement tools added to the repository:
+  `scripts/measure-narration-exclusion.py`, `scripts/probe-bibliography-tail.py`.
+- **2026-08-04** — Finding 4 added from the step-1 code review: the artifact validator gates the whole
+  book on a single match, kills a standalone run outright, and four of its six patterns fire on
+  ordinary prose (verified by running the live patterns; ~200 matches per book in the corpus). Whether
+  a deterministic gate may destroy a paid run is raised as an owner decision, not decided.

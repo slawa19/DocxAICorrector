@@ -7,19 +7,30 @@ from docxaicorrector.document.structure_authority import (
 )
 from docxaicorrector.document.relations import build_paragraph_relations, resolve_effective_relation_kinds
 from docxaicorrector.core.models import DocumentBlock, ParagraphRelation, ParagraphUnit
+from docxaicorrector.validation.formatting_coverage import (
+    _BACKMATTER_SECTION_TITLES,
+    _normalize_structural_text,
+)
 
 
 # Spec TOC/minimal-formatting 2026-04-21: a block becomes TOC-dominant at 70%+
 # TOC structural-role composition unless all paragraphs are TOC lines.
 TOC_DOMINANCE_THRESHOLD = 0.7
 _INTERNAL_PLACEHOLDER_PATTERN = re.compile(r"\[\[DOCX_[A-Za-z0-9_]+\]\]")
-_BIBLIOGRAPHY_LEAD_PATTERN = re.compile(r"^\s*(?:\[\d+\]|\(\d+\)|\d+[.)]\s+)")
-_BIBLIOGRAPHY_TOKEN_PATTERN = re.compile(r"(?:https?://|www\.|\b(?:doi|isbn|issn|arxiv)\b)", re.IGNORECASE)
-_BIBLIOGRAPHY_HEADING_PATTERN = re.compile(
-    r"\b(?:references|bibliography|works cited|литература|список литературы|bibliographie)\b",
-    re.IGNORECASE,
-)
 _SEMANTIC_BLOCK_TOC_ENTRY_PATTERN = re.compile(r"^.{1,120}(?:\.{2,}|\s{2,})\s*\d+\s*$")
+
+# Spec 054 (2026-08-04): the audiobook narration drops the back-matter reference sections
+# outright — nobody listens to a bibliography. Constitution VII names the region family in
+# `validation/formatting_coverage.py` as the precedent for this kind of detection and blesses
+# its structural-anchor title lexicon as an accepted, extensible residual, so that lexicon is
+# REUSED here rather than restated: one list, one place, no drift.
+#
+# Minus the index titles. The owner scoped the cut to the table of contents, the notes and the
+# sources; an index is left in the narration deliberately (spec 054, "Index is out of scope").
+_INDEX_SECTION_TITLES = frozenset(
+    {"index", "указатель", "именной указатель", "предметный указатель"}
+)
+_NARRATION_REFERENCE_SECTION_TITLES = frozenset(_BACKMATTER_SECTION_TITLES) - _INDEX_SECTION_TITLES
 
 
 def build_marker_wrapped_block_text(paragraphs: list[ParagraphUnit], *, paragraph_ids: list[str] | None = None) -> str:
@@ -218,7 +229,7 @@ def build_editing_jobs(
     context_after_chars = max(300, min(800, int(max_chars * 0.12)))
     jobs: list[dict[str, object]] = []
     fallback_paragraph_index = 0
-    bibliography_tail_indexes = _resolve_bibliography_tail_indexes(blocks, structure_phase=structure_phase)
+    reference_region_indexes = _resolve_reference_region_indexes(blocks, structure_phase=structure_phase)
     structure_source = _semantic_block_structure_source(structure_phase)
 
     for index, block in enumerate(blocks):
@@ -237,7 +248,7 @@ def build_editing_jobs(
         narration_include = _resolve_narration_include(
             block,
             block_index=index,
-            bibliography_tail_indexes=bibliography_tail_indexes,
+            reference_region_indexes=reference_region_indexes,
             structure_phase=structure_phase,
         )
         job_kind = (
@@ -451,77 +462,115 @@ def _iter_block_text_lines(block: DocumentBlock) -> list[str]:
     return lines
 
 
-def _is_bibliography_like_line(line: str) -> bool:
-    normalized = line.strip()
-    if not normalized:
-        return False
-    return bool(
-        _BIBLIOGRAPHY_LEAD_PATTERN.match(normalized)
-        or _BIBLIOGRAPHY_TOKEN_PATTERN.search(normalized)
-        or _BIBLIOGRAPHY_HEADING_PATTERN.search(normalized)
-    )
-
-
-def _is_heading_like_block(block: DocumentBlock, *, structure_phase: str = "post_ai_final") -> bool:
-    if not block.paragraphs:
-        return False
-    if all(_is_toc_structural_role(paragraph, structure_phase=structure_phase) for paragraph in block.paragraphs):
-        return False
-    if not any(paragraph.role == "heading" for paragraph in block.paragraphs):
-        return False
-    lines = _iter_block_text_lines(block)
-    if not lines:
-        return False
-    matches = sum(1 for line in lines if _is_bibliography_like_line(line))
-    return (matches / len(lines)) < TOC_DOMINANCE_THRESHOLD
-
-
-def _is_bibliography_like_block(block: DocumentBlock) -> bool:
-    lines = _iter_block_text_lines(block)
-    if not lines:
-        return False
-    matches = sum(1 for line in lines if _is_bibliography_like_line(line))
-    return (matches / len(lines)) >= TOC_DOMINANCE_THRESHOLD
-
-
-def _is_bibliography_like_region(blocks: list[DocumentBlock]) -> bool:
-    region_lines: list[str] = []
-    for block in blocks:
-        region_lines.extend(_iter_block_text_lines(block))
-    if not region_lines:
-        return False
-    matches = sum(1 for line in region_lines if _is_bibliography_like_line(line))
-    return (matches / len(region_lines)) >= TOC_DOMINANCE_THRESHOLD
-
-
 def _semantic_block_structure_source(structure_phase: str) -> str:
     if str(structure_phase or "").strip().lower() == "ai_first_degraded_fallback":
         return "ai_first_degraded_fallback"
     return "pre_ai_diagnostic_hint" if phase_uses_advisory_hints(structure_phase) else "post_ai_final_binding"
 
 
-def _resolve_bibliography_tail_indexes(blocks: list[DocumentBlock], *, structure_phase: str = "post_ai_final") -> set[int]:
-    last_narrative_heading_index = -1
-    for index, block in enumerate(blocks):
-        if _is_heading_like_block(block, structure_phase=structure_phase):
-            last_narrative_heading_index = index
-    if last_narrative_heading_index < 0 or last_narrative_heading_index >= len(blocks) - 1:
-        return set()
+def _block_has_heading_paragraph(block: DocumentBlock) -> bool:
+    return any(paragraph.role == "heading" for paragraph in block.paragraphs)
 
-    for start_index in range(last_narrative_heading_index + 1, len(blocks)):
-        candidate_blocks = blocks[start_index:]
-        if not candidate_blocks:
+
+def _block_leading_heading_level(block: DocumentBlock) -> int | None:
+    """The outline depth of the block's first heading paragraph, or None when the block has
+    no heading or the heading carries no level. None means "depth unknown" and is always
+    treated as a section boundary, never as "deeper"."""
+    for paragraph in block.paragraphs:
+        if paragraph.role != "heading":
             continue
-        if _is_bibliography_like_region(candidate_blocks):
-            return set(range(start_index, len(blocks)))
-    return set()
+        level = getattr(paragraph, "heading_level", None)
+        return int(level) if isinstance(level, int) and level > 0 else None
+    return None
+
+
+def _block_reference_section_title(block: DocumentBlock, *, structure_phase: str) -> str:
+    """The bare back-matter section title this block OPENS with, or "".
+
+    The signal is structural, not lexical-in-the-forbidden-sense: the block's leading
+    paragraph must carry the `heading` role, and its whole text must be EXACTLY one of the
+    blessed section titles. Exact matching is what keeps a front-matter TOC row
+    ("Notes ......... 225") and a chapter heading that merely mentions sources from
+    anchoring a region — the same reason `_resolve_references_region_start` matches
+    exactly. A paragraph already tagged as a TOC row can never anchor.
+    """
+    if not block.paragraphs:
+        return ""
+    leading = block.paragraphs[0]
+    if leading.role != "heading":
+        return ""
+    if _is_toc_structural_role(leading, structure_phase=structure_phase):
+        return ""
+    title = _normalize_structural_text(_strip_internal_placeholders(leading.text)).lower()
+    return title if title in _NARRATION_REFERENCE_SECTION_TITLES else ""
+
+
+def _resolve_reference_region_end(blocks: list[DocumentBlock], start_index: int) -> int:
+    """Exclusive end of the reference section opened at `start_index`.
+
+    A section runs until the outline returns to its own depth or shallower — that is what a
+    heading level MEANS, so the bound is read off the structure rather than off the entries.
+    Two guards keep untrustworthy PDF-derived levels from widening the cut:
+
+    * a following heading with NO level closes the region (unknown depth is never "deeper");
+    * if the outline never returns to the anchor's depth before the end of the document, the
+      levels are not trusted at all and the region falls back to the nearest following
+      heading block.
+
+    Both guards fail towards leaving reference material in the narration, which is the
+    accepted outcome; cutting narrative prose is not.
+    """
+    nearest_heading_index = start_index + 1
+    while nearest_heading_index < len(blocks) and not _block_has_heading_paragraph(blocks[nearest_heading_index]):
+        nearest_heading_index += 1
+
+    anchor_level = _block_leading_heading_level(blocks[start_index])
+    if anchor_level is None:
+        return nearest_heading_index
+
+    for index in range(start_index + 1, len(blocks)):
+        if not _block_has_heading_paragraph(blocks[index]):
+            continue
+        level = _block_leading_heading_level(blocks[index])
+        if level is None or level <= anchor_level:
+            return index
+    return nearest_heading_index
+
+
+def _resolve_reference_region_indexes(blocks: list[DocumentBlock], *, structure_phase: str = "post_ai_final") -> set[int]:
+    """Block indexes that belong to a back-matter reference section (notes / endnotes /
+    references / bibliography / sources), for the audiobook narration to drop.
+
+    A region STARTS at a block whose leading paragraph is a bare back-matter section title
+    and ENDS where `_resolve_reference_region_end` puts the next section boundary. Nothing
+    here reads the shape of the entries.
+
+    This replaced a bibliography-ratio test over the document suffix, which measured 0
+    excluded blocks on 4 of 4 books on 2026-08-04 for two independent reasons: its anchor
+    was the LAST heading-like block, which on a real book is publisher back-matter standing
+    BEHIND the bibliography; and its region test required >= 70% "bibliography-like" lines,
+    while a PDF-imported entry wraps over several lines of which only one carries a year,
+    publisher or URL — the genuine bibliography of *The Value of Everything* scores 9-21%.
+    Neither was a threshold to tune, so both are gone (Constitution VII: region and
+    structural role, not the shape of the text).
+    """
+    excluded: set[int] = set()
+    index = 0
+    while index < len(blocks):
+        if not _block_reference_section_title(blocks[index], structure_phase=structure_phase):
+            index += 1
+            continue
+        end_index = _resolve_reference_region_end(blocks, index)
+        excluded.update(range(index, end_index))
+        index = max(end_index, index + 1)
+    return excluded
 
 
 def _resolve_narration_include(
     block: DocumentBlock,
     *,
     block_index: int,
-    bibliography_tail_indexes: set[int],
+    reference_region_indexes: set[int],
     structure_phase: str = "post_ai_final",
 ) -> bool:
     if not block.paragraphs:
@@ -532,7 +581,7 @@ def _resolve_narration_include(
         return False
     if not _iter_block_text_lines(block):
         return False
-    if block_index in bibliography_tail_indexes:
+    if block_index in reference_region_indexes:
         return False
     return True
 
