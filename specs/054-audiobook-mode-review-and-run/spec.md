@@ -345,6 +345,46 @@ an inference — recorded here so it is not lost.
 
 ## Changelog
 
+- **2026-08-04** — **Finding 4 fixed** on `fix/054-narration-validator-not-a-gate` (PR #33, branched
+  from `main` because it touches disjoint files). `_validate_narration_artifact_text`, which raised,
+  becomes `_collect_narration_artifact_review_findings`, which returns and never raises: the artifact
+  is delivered on both entry points and the residual is published as review data — a WARNING
+  `narration_artifact_review_data` event with per-rule counts and at most three truncated samples, the
+  review counters on `ui_audiobook_artifact_saved`, and a `result.narration_review_data` notice. This
+  is Constitution VII's formatting-coverage precedent applied to the same shape of check. `isbn` and
+  `arxiv` were bare word matches, so narrating a sentence *about* publishing failed the run; they are
+  now keyed on the identifier's form, mirroring the neighbouring `doi` rule, and measured over the
+  corpus the bare word and the new rule both hit 1/0/3/0 per book — no signal lost. Honest caveat:
+  `arxiv` never fired on this corpus in either form, so its tightening rests on form-symmetry, not
+  evidence. `inline_citation` is left imprecise **by decision** — making it exact would need a list of
+  names, cities or publishers, which Constitution VII forbids — and with ~191 hits on one book the
+  notice will fire on essentially every real run; if that is noise, the lever is the notice threshold,
+  not the rule. `narration_cleanup_projection_unsafe` is a different class and is untouched, including
+  its standalone failure branch. Old behaviour was proven before the change rather than assumed: the
+  new tests were written first and all four prose sentences returned `failed` on a standalone run.
+- **2026-08-04 — OPEN, needs the owner's sign-off: the formatting-mapper golden fixtures were
+  regenerated.** This is the one place in this iteration where the yardstick moved rather than the
+  code, so it is recorded as a decision rather than folded into the Finding 2 entry.
+  `UPDATE_FORMATTING_MAPPER_GOLDEN=1` is documented only in the test's own docstring
+  (`tests/test_formatting_mapper_golden.py:17-20`, "after an intentional, reviewed behavior change")
+  and **appears in no spec, no doc, and not in `AGENTS.md`** — so the gate authorises its own
+  regeneration and "reviewed" is the only guard, naming neither the reviewer nor the evidence
+  required. Spec 029 scopes byte-identity to its own optimisation levers (`spec.md:10`, `:41`, `:93`),
+  not to a permanent freeze, so the regeneration is formally allowed; whether it is *warranted* is the
+  owner's call. Evidence gathered for that call, after a leaf-by-leaf comparison of all five fixtures
+  (not counters — the first pass compared counters only, and said so): **exactly one degradation in
+  mapping outcome across every regenerated fixture** — the Ukraine OCR document's `p0032` "Terrain
+  Features" loses its mapping (`mapped_count` 469→468) because a spurious TOC relation used to carry
+  it through a fallback. `bad_pair_count` is 0 before and after on every book; Rethinking Money's
+  fixture is byte-identical. Everything else that moved is attribution, not outcome: spurious
+  `toc_region` relations disappear, strategies shift off the TOC fallbacks onto exact matching, and
+  `style_name` changes `Normal`→`Heading 2` on exactly the paragraphs whose heading role was restored.
+  One improvement missed by the first report: on The Value of Everything four fragmented `toc_region`
+  relations collapse into one whose members move from the **cover page** (`p0000–p0007`) to the
+  **actual table of contents** (`p0012–p0080`). **If the owner reads the 029 gate as a hard freeze
+  regardless of cause, the fixtures must be reverted and PR #34 left red until that is resolved.**
+  Worth closing regardless of the answer: the regeneration procedure should state what evidence a
+  regeneration must carry, in a place that is not the test that authorises it.
 - **2026-08-04** — **Finding 2 fixed** on `fix/054-toc-role-unanchored`, branched from
   `fix/054-narration-region-exclusion`. `_expand_inline_break_paragraph`
   (`document/extraction.py:986`) no longer writes a structural role: it splits on the inline break
