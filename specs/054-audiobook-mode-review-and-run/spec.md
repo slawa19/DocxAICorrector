@@ -182,24 +182,73 @@ samples, each carrying effective structural role `toc_entry` and therefore exclu
   What new stories might we tell?"
 - Plus epigraphs and their attributions (Yeats, Coleridge, Einstein 1932) across three books.
 
-Roughly 20 of the 72 are unambiguous body prose; the rest divide into real TOC, index and endnote
-entries. **This already violates anti-regression 1 of this spec, before a line of new code is
-written**, and it is the audiobook-side twin of the defect Codex found on 2026-08-01: a TOC heuristic
-that immunised any short line ending in a number. The pattern in the samples is visible — a short
-standalone block whose last line ends in a digit — and PR #20 made it worse by turning footnote
-markers into trailing Unicode superscripts. **Where the role is actually assigned is not yet
-established and must be traced in code before anything is changed** (`_is_toc_structural_role`,
-`semantic_blocks.py:397`, is only the consumer; the roles arrive from
-`get_effective_structural_role`).
+**This already violates anti-regression 1 of this spec, before a line of new code is written.**
 
-### Finding 3 — what the wrong rule is accidentally getting right
+**The mechanism, traced on 2026-08-04 and verified independently by reading the code.** The first
+guess — "a short block whose last line ends in a digit, made worse by PR #20's superscripts" — is
+**refuted by measurement**: it accounts for 16 of the 72, and stripping the superscript marker changes
+the verdict on only 2 of the 55 blocks tagged by the offending path. The real rule is cruder.
 
-The same mis-tagging is currently the *only* thing removing endnote and index material: The Value of
-Everything blocks 245–312 (endnotes, each ending in a URL) and Rethinking Money blocks 278–333 (index
-entries) are excluded as `toc_entry`, partially and by accident — only those blocks that happen to end
-in a digit. So fixing Finding 2 in isolation will make the audiobook *worse* by restoring index and
-endnote text to the narration. Findings 2 and 3 must land together, or the region exclusion must land
-first.
+`document/extraction.py:968` `_is_toc_candidate_text` is the whole test:
+
+> a line is a table-of-contents entry if it is ≤160 characters, has 1–16 words, and **does not end in
+> `.` or `;`**.
+
+No "Contents" header, no dot leaders, no trailing page number, no region — pure shape, which is
+precisely what Constitution VII forbids. The Bernice Hill paragraph qualifies because it ends in a
+quotation mark. Three consequences make it worse than a mis-tag:
+
+1. **The line break it splits on is invented by the reader.** `extraction.py:891`
+   `_build_compact_toc_run_cluster_text` re-renders a paragraph's run clusters as `line1<br/>line2`
+   when the source DOCX has no break there; `_normalize_inline_break_paragraphs` (`:713`) then splits
+   on that synthetic break and `_expand_inline_break_paragraph` (`:986`) tags both halves. Measured:
+   18 of 24 expanded paragraphs in Rethinking Money and 21 of 21 in The Value of Everything come from
+   a break that does not exist in the source.
+2. **The role is binding, not advisory.** `_apply_or_hint_stage0_toc_role` (`:1030`) with
+   `signal_only=False` writes `structural_role` *and demotes a real heading to body*. Verified on all
+   190 paragraphs of the 72 blocks: every one carries the binding role, surviving into `post_ai_final`.
+3. **Origin separates almost cleanly from the correct path.** Of the 72 blocks, 55 are tagged by this
+   unanchored path and 17 by the region-anchored `_annotate_toc_region_candidates` (`:999`, requires a
+   "Contents" header plus ≥3 consecutive candidates). **All 17 mis-classified prose blocks and 11 of
+   12 epigraphs come from the unanchored path; 16 of the 19 genuine tables of contents come from the
+   anchored one.** Classification of all 72 (blocks/chars): real TOC 19/2 794, index 7/638,
+   notes & sources 17/1 811, epigraph or attribution 12/1 110, ordinary prose 17/1 701.
+
+**Blast radius — this is not an audiobook-only defect.** The block set is identical across operations:
+
+| operation | what happens to the mis-tagged prose |
+|---|---|
+| audiobook | **deleted** — absent from the narration artifact |
+| translate | sent to the model under the `toc_translate` prompt variant (`block_execution.py:196`) |
+| edit / literary_polish | **`passthrough` — copied verbatim, never sent to the model at all** |
+
+Two further consequences on every operation: the optional ElevenLabs post-pass drops the same blocks
+on a translate/edit run, because `narration_include` does not depend on the operation; and a
+TOC-routed block on translate is validated with `TOC_PARAGRAPH_COUNT_TOLERANCE = 0`
+(`pipeline/toc_block_validation.py:31`) — if the model merges the two lines of what is really one
+prose sentence, the block fails, and after `TOC_VALIDATION_RETRY_BUDGET = 2` the **whole run raises**
+(`block_execution.py:530`). Reachable by code, not observed live. Finally, `semantic_blocks.py:568`
+forces a block boundary at every structural-kind crossing, so Rethinking Money block 28 is a 108-char
+island between blocks of 1 395 and 3 325 characters, severed from its own continuation.
+
+**Fix direction (decided, not yet implemented):** stop `_expand_inline_break_paragraph` from writing
+the role on its own authority; keep the `<br/>` splitting. The region-anchored pass re-derives 16 of
+the 19 genuine TOC blocks, so almost nothing real is lost, and the anti-vacuum counter-proof is
+checkable on the corpus rather than only in a fixture. Do **not** tighten the punctuation test — it
+would fix 2 of 55 and would be the same shape heuristic in new clothes.
+
+### Finding 3 — what the wrong rule is accidentally getting right, and how little it is
+
+The same mis-tagging is currently the only thing removing any index or endnote material. **Quantified
+on 2026-08-04, and it is negligible:** of the 141 516 characters in those regions it removes 24 blocks
+/ 2 449 characters — **1.7%**. Rethinking Money's index 2.8%, The Value of Everything's endnotes 2.0%,
+its bibliography 0.3%.
+
+Fixing the role therefore returns 55 blocks / 5 378 characters to the narration: 2 737 characters of
+prose and epigraph (the win), 2 449 of reference material (the regression), 192 of genuine in-chapter
+contents lists. **This is not a reason to sequence the two fixes**, which is what anti-regression 6
+originally implied — the expected drop in `excluded_char_share` is simply explained rather than
+treated as a failure.
 
 ### Finding 4 — the artifact validator is all-or-nothing over the whole book, and it trips on prose
 
@@ -296,6 +345,18 @@ an inference — recorded here so it is not lost.
 
 ## Changelog
 
+- **2026-08-04** — Finding 2 corrected after the mechanism was traced, and Finding 3 quantified. The
+  "short line ending in a digit" hypothesis is **refuted** (16 of 72; stripping the superscript
+  changes 2 of 55): the real rule is `extraction.py:968` `_is_toc_candidate_text` — ≤160 chars, 1–16
+  words, does not end in `.` or `;`. Three aggravating facts recorded: the `<br/>` it splits on is
+  synthesised by the reader from run clusters, the role it writes is binding and demotes real
+  headings, and the defect reaches translate (TOC prompt variant plus a zero-tolerance validator that
+  can fail a whole run) and edit (blocks copied verbatim, never edited) — not only audiobook. Finding
+  3 measured at 1.7% of the reference regions, so anti-regression 6 no longer implies an ordering
+  between the two fixes. Fix direction chosen: remove the role write from the unanchored path, keep
+  the splitting; the region-anchored pass already re-derives 16 of the 19 genuine TOC blocks. Latent
+  issue recorded, not firing on this corpus: `structure_repair.py:227` tags look-ahead candidates
+  before testing the ≥3 region-length condition, so a rejected region leaves its tags behind.
 - **2026-08-04** — **Finding 1 fixed** on `fix/054-narration-region-exclusion`. Both causes were
   structural, so both mechanisms were removed rather than tuned:
   `_resolve_bibliography_tail_indexes` (last-heading anchor + 70% bibliography-like-lines region
