@@ -472,7 +472,19 @@ an inference — recorded here so it is not lost.
   not the rule. `narration_cleanup_projection_unsafe` is a different class and is untouched, including
   its standalone failure branch. Old behaviour was proven before the change rather than assumed: the
   new tests were written first and all four prose sentences returned `failed` on a standalone run.
-- **2026-08-04 — OPEN, needs the owner's sign-off: the formatting-mapper golden fixtures were
+- **2026-08-04 — SIGNED OFF by the owner; PR #34 merged.** The regeneration stands. The evidence that
+  settled it was the second one: a diff keyed on each paragraph's own TEXT rather than on counters,
+  showing **zero paragraphs changed `role`, `structural_role`, `heading_level` or `style_name`** on
+  every regenerated fixture. The counters are noise here — `mapped_count` moved 471→466, 465→469 and
+  469→469 on the same change — because `_stable_perturb_key`
+  (`tests/test_formatting_mapper_golden.py:57`) derives each paragraph's synthetic perturbation from
+  its `paragraph_id`, which is POSITIONAL, so merging one paragraph renumbers every later one and
+  hands the mapper a different synthetic problem. Its docstring claims stability against unrelated
+  insertions; that claim does not hold. **Consequence to act on before any further work that merges or
+  splits paragraphs — which is exactly the import work queued next: this gate cannot measure that
+  class of change until the key is derived from the paragraph's text.** Recorded as the prerequisite,
+  not as an aside.
+- **2026-08-04 — the original OPEN entry, kept for the record: the formatting-mapper golden fixtures were
   regenerated.** This is the one place in this iteration where the yardstick moved rather than the
   code, so it is recorded as a decision rather than folded into the Finding 2 entry.
   `UPDATE_FORMATTING_MAPPER_GOLDEN=1` is documented only in the test's own docstring
