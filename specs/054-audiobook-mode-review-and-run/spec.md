@@ -209,7 +209,9 @@ quotation mark. Three consequences make it worse than a mis-tag:
    190 paragraphs of the 72 blocks: every one carries the binding role, surviving into `post_ai_final`.
 3. **Origin separates almost cleanly from the correct path.** Of the 72 blocks, 55 are tagged by this
    unanchored path and 17 by the region-anchored `_annotate_toc_region_candidates` (`:999`, requires a
-   "Contents" header plus ≥3 consecutive candidates). **All 17 mis-classified prose blocks and 11 of
+   "Contents" header paragraph plus ≥2 consecutive candidates after it — the code's
+   `look_ahead - index >= 3` counts the header itself, and this line said "≥3 candidates" until it
+   was corrected on 2026-08-04). **All 17 mis-classified prose blocks and 11 of
    12 epigraphs come from the unanchored path; 16 of the 19 genuine tables of contents come from the
    anchored one.** Classification of all 72 (blocks/chars): real TOC 19/2 794, index 7/638,
    notes & sources 17/1 811, epigraph or attribution 12/1 110, ordinary prose 17/1 701.
@@ -345,6 +347,189 @@ an inference — recorded here so it is not lost.
 
 ## Changelog
 
+- **2026-08-04** — **A heading is no longer cut at its own line wrap** (same branch
+  `fix/054-toc-role-unanchored`, third of three: this one is only visible once the `toc_entry` role
+  write and the synthesised `<br/>` are gone, and shipping it separately would leave the branch's
+  output half-fixed). `_should_expand_inline_break_paragraph` (`document/extraction.py:887`) admitted
+  `{body, heading, list}`; `heading` is removed. The previous entry closed by recording this defect
+  and declining to take the decision — the decision is taken now, and it is the same one Constitution
+  VII takes everywhere else. The source carries ONE `<w:p>` with an internal `<w:br/>`; that break is
+  intra-paragraph typography (a long title set over two lines), not a structural boundary, and nothing
+  downstream ever rejoined the halves. Whether a particular break inside a heading was "really"
+  structural is not knowable from the source, so it is not guessed: the reader delivers what the
+  document has. `body` is untouched; the joined text is the existing `_join_inline_break_lines` path.
+  **Measured offline on 4 PDF + 5 native DOCX before and after** (`.run/nohdr_expansions_*.json`,
+  `.run/nohdr_paragraphs_*.json`).
+  **PDF: provably no effect at all.** Not one paragraph of any of the four PDFs even reaches this
+  function — 0 inline-break decisions per book, before and after, because the PDF→DOCX bridge writes
+  no `<w:br/>` (measured in the previous entry). `scripts/measure-narration-exclusion.py` on the four
+  books is **byte-identical** to the baseline JSON: 296/384/304/288 blocks, 59/59/58/104 excluded,
+  `toc_structural_role` 6/7/3/1, `reference_region` 10/9/0/61, `excluded_char_share`
+  7.4%/5.7%/0.4%/16.0%.
+  **Native DOCX: heading splits 2/16/5/2/4 → 0/0/0/0/0** (Money & Sustainability, Creating Wealth,
+  Rethinking Money, The Value of Everything, Ukraine); body splits 9/16/1/2/6 unchanged. Paragraph
+  counts 1835→1833, 1657→1637, 1990→1985, 1762→1760, 1900→1896; block counts 192→190, 206→187,
+  198→193, 281→279, 242→238 (each fragment was its own block island —
+  `semantic_blocks.py:568` forces a boundary at every structural-kind crossing). Reunited headings
+  include "CREATING WEALTH", "False Assumption #1: The Economy is Beyond Our Control", "The Building
+  Blocks of the Economy: How Assumptions Cr eate Reality", "Demand for Profitable Investments",
+  "Honoring Our Elders, Caring for Children", "Value in the Eye of the Beholder: The Rise of the
+  Marginalists", "FROM OBJECTIVE TO SUBJECTIVE: A NEW THEORY OF VALUE BASED ON PREFERENCES",
+  "Window of Viability", "Terra Alliance", "Demurrage Charge".
+  **Anti-vacuum counter-proof, on the corpus and not only in a fixture:** the four prose blocks named
+  in Finding 2 are still `narration_include=True` (Money & Sustainability block 52, Rethinking Money
+  25 and 79, The Value of Everything 11 — located by text, not index), and all **17** genuinely
+  excluded tables of contents (6/7/3/1) are still excluded. Both facts are byte-identical to the
+  before-run.
+  **`list` measured, not decided.** It stays in the accepted set because there is nothing to decide
+  on: over the whole corpus **0 of 1 663 `role="list"` paragraphs** (165/303/460/413/322 per native
+  DOCX, 0 on every PDF) ever carries an inline break that reaches this function. The branch is dead
+  code on this corpus; removing it would be a change with no evidence behind it in either direction,
+  which is the same error as adding one.
+  **Golden fixtures (spec 029) regenerated once, at the end.** Two of five are byte-identical (Money
+  & Sustainability, Rethinking Money — their merges fall outside the 500-paragraph cap). The counters
+  are noise by construction and are reported as such: `_stable_perturb_key`
+  (`tests/test_formatting_mapper_golden.py:57`) keys each paragraph's synthetic perturbation on
+  `paragraph_id`, which is positional, so merging one paragraph re-rolls the synthetic problem for
+  every later one (`mapped_count` 471→466, 465→469, 469→469 — down, up and flat, on the same change).
+  The content-bearing diff is over `diagnostics.source_registry`, keyed on the paragraph's own text:
+  **of every source paragraph whose text is unchanged, ZERO changed `role`, `structural_role` or
+  `heading_level`.** Everything that moved is the merge itself — 14/8/4 fragment texts disappear,
+  replaced by the reunited heading — plus body paragraphs pulled into the 500-cap window because the
+  document is shorter. In Creating Wealth's `target_registry` the fragmented pairs and triples at
+  target indexes 1/2, 16/17, 169/170, 189/190, 231/232/233, 260/261/262 become single entries, and
+  `"Heading 2"` falls **36 → 27**, `"Heading 1"` 19 → 16.
+- **2026-08-04** — **The synthesised `<br/>` is gone** (same branch `fix/054-toc-role-unanchored`, on
+  purpose: shipped alone, either half makes the output worse). `_build_compact_toc_run_cluster_text`
+  re-rendered a `role="body"` paragraph's run clusters as `segment<br/>segment` when the source
+  carried no break at all, and `_normalize_inline_break_paragraphs` then split the paragraph on the
+  invention. It and its two only callees, `_extract_compact_run_clusters` and
+  `_is_compact_toc_run_cluster`, are deleted — 63 lines, no remaining consumers. Their thresholds
+  (≥2 segments; at exactly 2, ≤20 words total, min ≥3, one ≥4 or a heading signal; otherwise ≤14
+  total and each ≤5) were never measured: `897d485` brought `160/16` from a single Mazzucato run,
+  `82c6225` brought `2/14/3/4/5` with a fixture built from one observed example, `36a4751` raised 14
+  to 20 with a second. Constitution VII, literally: no signal in the source, no repair — a paragraph
+  the PDF importer delivered whole now stays whole, and the merged line is an ACCEPTED defect.
+  **Measured, offline, on all four books before and after.** The narration decision is unchanged to
+  the block: 296/384/304/288 blocks, 59/59/58/104 excluded, `toc_structural_role` 6/7/3/1,
+  `reference_region` 10/9/0/61, `excluded_char_share` 7.4%/5.7%/0.4%/16.0% — identical in both runs,
+  same block indexes, same texts, with a single 2-character difference (The Value of Everything's TOC
+  block 5, 250→248 chars, where two entry pairs merged inside a block that stays excluded). All 17
+  genuinely-excluded TOC blocks survive, and the four prose blocks named in Finding 2 are all
+  `narration_include=True`, each inside its own continuation (Rethinking Money's Bernice Hill
+  sentence arrives as ONE paragraph instead of two halves, inside a 4 831-character block).
+  **`<w:br/>` on the PDF path does not exist** — measured, not assumed: the bridge
+  `_append_pdf_text_paragraph_to_docx` (`processing/processing_runtime.py:1015`) writes only a style
+  name and bold/italic, and with the synthesis removed inline-break expansions on all four PDFs go
+  7/7/24/21 → **0/0/0/0**. So 100% of PDF splitting was invented. Paragraph counts fall
+  1435→1426, 1836→1829, 2290→2265, 2314→2293. On native DOCX, where real breaks exist, the effect is
+  small and the real breaks are untouched: expansions 18→11, 32→32, 11→10, 11→6, 5→4 (Money &
+  Sustainability, Creating Wealth, Ukraine, Rethinking Money, The Value of Everything) — Creating
+  Wealth does not move at all because all 32 of its splits are genuine `<w:br/>`.
+  **Golden fixtures (spec 029) regenerated once, at the end, and the leaf comparison is the point.**
+  Three of five are **byte-identical** (Creating Wealth, Rethinking Money, The Value of Everything).
+  Two changed: Money & Sustainability `mapped_count` 467→465 and Ukraine 468→465 of 500. Attribution,
+  leaf by leaf: **of 106 and 184 source paragraphs whose mapping outcome changed, ZERO have an
+  unchanged `paragraph_id`, and zero paragraphs changed `role`, `structural_role` or `heading_level`
+  at all.** The harness picks each paragraph's synthetic perturbation from `sha1(paragraph_id)`
+  (`tests/test_formatting_mapper_golden.py:57`) and `paragraph_id` is positional, so merging one
+  paragraph renumbers 227 / 444 later ones and hands the mapper a different synthetic problem for
+  each. The delta is the fixture harness re-rolling itself, not the mapper. The one real content
+  change per book is the merge: "Former World Bank economist Herman Daly" + "proposes three
+  conditions for a society to be physically sustainable:" become one sentence (an improvement), and
+  Ukraine's OCR'd "General Summary Introduction" / "» о" / "Terrain Features" become one line (the
+  accepted cost — `Terrain Features` was unmapped before and is inside a mapped paragraph now).
+  **Honest negative — the fragmented headings this change was expected to repair are NOT repaired.**
+  Creating Wealth's "CREATING / WEALTH", "False Assumption #1: / The Economy is Beyond Our Control"
+  and "Demand for / Profitable / Investments" are split by a **real `<w:br/>` in the source DOCX**
+  (verified in `word/document.xml`, paragraphs 2, 17, 249, 342, 343), not by the synthesis, so its
+  fixture is byte-identical and its `"Heading 2"` count stays 36. On `main` those paragraphs were
+  already split — they were merely styled `Normal`, because the role write demoted them. The
+  remaining defect is therefore a different one, recorded rather than patched: **splitting a
+  `role="heading"` paragraph on a genuine inline break yields N headings where the document has
+  one.** `_should_expand_inline_break_paragraph` (`document/extraction.py:887`) admits `heading`,
+  and nothing rejoins the halves afterwards. Fixing it means deciding what a break inside a heading
+  means, which is a separate decision and is not taken here.
+  Two documentation errors corrected in the same commit: `_annotate_toc_region_candidates` requires
+  `look_ahead - index >= 3` **counting the header itself**, i.e. a header plus **≥2** entries, not
+  "≥3 consecutive candidates" as this spec's Finding 2 and the `_expand_inline_break_paragraph`
+  docstring both claimed; and that docstring's "the break is a line boundary the reader observed"
+  was false for the synthesised path and is true only now.
+- **2026-08-04** — **Finding 4 fixed** on `fix/054-narration-validator-not-a-gate` (PR #33, branched
+  from `main` because it touches disjoint files). `_validate_narration_artifact_text`, which raised,
+  becomes `_collect_narration_artifact_review_findings`, which returns and never raises: the artifact
+  is delivered on both entry points and the residual is published as review data — a WARNING
+  `narration_artifact_review_data` event with per-rule counts and at most three truncated samples, the
+  review counters on `ui_audiobook_artifact_saved`, and a `result.narration_review_data` notice. This
+  is Constitution VII's formatting-coverage precedent applied to the same shape of check. `isbn` and
+  `arxiv` were bare word matches, so narrating a sentence *about* publishing failed the run; they are
+  now keyed on the identifier's form, mirroring the neighbouring `doi` rule, and measured over the
+  corpus the bare word and the new rule both hit 1/0/3/0 per book — no signal lost. Honest caveat:
+  `arxiv` never fired on this corpus in either form, so its tightening rests on form-symmetry, not
+  evidence. `inline_citation` is left imprecise **by decision** — making it exact would need a list of
+  names, cities or publishers, which Constitution VII forbids — and with ~191 hits on one book the
+  notice will fire on essentially every real run; if that is noise, the lever is the notice threshold,
+  not the rule. `narration_cleanup_projection_unsafe` is a different class and is untouched, including
+  its standalone failure branch. Old behaviour was proven before the change rather than assumed: the
+  new tests were written first and all four prose sentences returned `failed` on a standalone run.
+- **2026-08-04 — OPEN, needs the owner's sign-off: the formatting-mapper golden fixtures were
+  regenerated.** This is the one place in this iteration where the yardstick moved rather than the
+  code, so it is recorded as a decision rather than folded into the Finding 2 entry.
+  `UPDATE_FORMATTING_MAPPER_GOLDEN=1` is documented only in the test's own docstring
+  (`tests/test_formatting_mapper_golden.py:17-20`, "after an intentional, reviewed behavior change")
+  and **appears in no spec, no doc, and not in `AGENTS.md`** — so the gate authorises its own
+  regeneration and "reviewed" is the only guard, naming neither the reviewer nor the evidence
+  required. Spec 029 scopes byte-identity to its own optimisation levers (`spec.md:10`, `:41`, `:93`),
+  not to a permanent freeze, so the regeneration is formally allowed; whether it is *warranted* is the
+  owner's call. Evidence gathered for that call, after a leaf-by-leaf comparison of all five fixtures
+  (not counters — the first pass compared counters only, and said so): **exactly one degradation in
+  mapping outcome across every regenerated fixture** — the Ukraine OCR document's `p0032` "Terrain
+  Features" loses its mapping (`mapped_count` 469→468) because a spurious TOC relation used to carry
+  it through a fallback. `bad_pair_count` is 0 before and after on every book; Rethinking Money's
+  fixture is byte-identical. Everything else that moved is attribution, not outcome: spurious
+  `toc_region` relations disappear, strategies shift off the TOC fallbacks onto exact matching, and
+  `style_name` changes `Normal`→`Heading 2` on exactly the paragraphs whose heading role was restored.
+  One improvement missed by the first report: on The Value of Everything four fragmented `toc_region`
+  relations collapse into one whose members move from the **cover page** (`p0000–p0007`) to the
+  **actual table of contents** (`p0012–p0080`). **If the owner reads the 029 gate as a hard freeze
+  regardless of cause, the fixtures must be reverted and PR #34 left red until that is resolved.**
+  Worth closing regardless of the answer: the regeneration procedure should state what evidence a
+  regeneration must carry, in a place that is not the test that authorises it.
+- **2026-08-04** — **Finding 2 fixed** on `fix/054-toc-role-unanchored`, branched from
+  `fix/054-narration-region-exclusion`. `_expand_inline_break_paragraph`
+  (`document/extraction.py:986`) no longer writes a structural role: it splits on the inline break
+  and returns, and the `signal_only` parameter is gone with the role write. The splitting, the
+  `<br/>` detection and `_annotate_toc_region_candidates` are untouched. Measured offline on all
+  four books (`scripts/measure-narration-exclusion.py` equivalent, plus a tagger-origin probe;
+  raw output `.run/narration_exclusion/unanchored_before.json` / `unanchored_after.json`):
+  `toc_structural_role` exclusions **13/14/25/20 -> 6/7/3/1**, i.e. 72 -> 17 over the corpus, and
+  the unanchored tagger now makes **zero** calls while the region-anchored tagger makes exactly
+  the same calls as before (28/24/21/8 entries, 1/1/2/1 headers). `excluded_char_share`
+  7.50%/5.79%/0.79%/16.05% -> 7.38%/5.67%/0.38%/16.02%; the drop is the 5 378 characters
+  Finding 3 predicted, explained rather than a pass. **Anti-vacuum counter-proof on the real
+  corpus:** of the 19 genuine table-of-contents blocks / 2 794 characters, **16 / 2 602 are still
+  excluded**; the three that are not are the small in-chapter contents lists the trace predicted
+  (Money & Sustainability "Doraland p.142 / Wellness Tokens p.144 / Natural Savings p.151" and
+  "C3 on a regional or national scale p.155 / TRC on a global scale p.158", The Value of Everything
+  "Stories about Value Creation / Where Does Innovation Come From?" — 192 characters in total),
+  none of which carries a Contents header or a region. All 17 prose blocks and 11 of the 12
+  epigraphs return, including the four named in Finding 2, and each is reunited with its own
+  continuation (Rethinking Money block 28's 108-character island is now inside a 4 832-character
+  block). Blast radius, measured per operation: on **edit / literary_polish** 55 blocks / 5 378
+  characters per corpus stop being `passthrough` and reach the model for the first time
+  (7/7/22/19 blocks per book, +666/+668/+2 205/+2 047 characters), while the number of model
+  calls *falls* (251->247, 340->334, 262->246, 268->245) because the blocks merge; on
+  **translate** `toc_dominant` drops 13/14/25/20 -> 6/7/3/1, so those blocks leave the
+  `toc_translate` prompt variant and the `TOC_PARAGRAPH_COUNT_TOLERANCE = 0` validator that can
+  fail a whole run. Two consequences recorded rather than patched: the formatting-mapper golden
+  fixtures (spec 029) were regenerated for four of five books — no source text changed, but the
+  spurious `toc_region` relations disappear (4->2, 15->0, 4->1, 4->0) and 23 real headings across
+  three books regain `role="heading"` (Creating Wealth's "False Assumption #1: / The Economy is
+  Beyond Our Control", The Value of Everything's "Value in the Eye of the Beholder: The Rise of the
+  / Marginalists") against one lost to a cover-title variant; and on the Ukraine document one
+  OCR'd body line (`p0032`, "Terrain Features") loses its formatting mapping because a spurious
+  TOC relation used to carry it (mapped 469 -> 468 of 500). `structure_repair.py:227` does **not**
+  start firing: its call counts are byte-identical before and after on all four books.
 - **2026-08-04** — Finding 2 corrected after the mechanism was traced, and Finding 3 quantified. The
   "short line ending in a digit" hypothesis is **refuted** (16 of 72; stripping the superscript
   changes 2 of 55): the real rule is `extraction.py:968` `_is_toc_candidate_text` — ≤160 chars, 1–16
