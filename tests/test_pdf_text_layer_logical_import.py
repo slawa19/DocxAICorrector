@@ -1358,3 +1358,85 @@ def test_build_paragraph_units_keeps_real_bare_chapter_opener() -> None:
     chapter = next(p for p in result.paragraphs if p.text == "Chapter 6")
     assert chapter.role == "heading"
     assert chapter.heading_level == 1
+
+
+# --- Spec 055: the importer records the layout evidence it measured ---------
+#
+# `paragraph_alignment` and `vertical_gap_before_pt` were 0 of 8216 paragraphs across the
+# four corpus books before this (census, 2026-08-05). They can only be filled here: a PDF
+# carries no `w:jc` and no `w:spacing`, so in a PDF both signals ARE geometry, and the
+# geometry stops existing once the intermediate DOCX is written.
+
+
+def _wide_body_context_spans() -> list[PdfTextSpan]:
+    # A body column from x0=50 to x1=450 (400pt wide), so a tenth of the column is 40pt.
+    return [
+        _span(1, "A first running body line long enough to count as a body width sample.", top=40, bottom=54),
+        _span(1, "A second running body line long enough to count as a body width sample.", top=56, bottom=70),
+        _span(1, "A third running body line long enough to count as a body width sample.", top=72, bottom=86),
+        _span(1, "A fourth running body line long enough to count as a body width sample.", top=88, bottom=102),
+    ]
+
+
+def test_paragraph_units_record_measured_centring() -> None:
+    spans = _wide_body_context_spans() + [
+        _span(1, "A Centred Display Line", top=140, bottom=154, x0=200, x1=300),
+    ]
+
+    result = build_paragraph_units_from_text_spans(spans)
+
+    centred = next(p for p in result.paragraphs if p.text == "A Centred Display Line")
+    assert centred.paragraph_alignment == "center"
+
+
+def test_first_line_indent_of_running_prose_is_not_centring() -> None:
+    # ANTI-VACUUM. The rule this guards is the one the corpus broke twice: an indented
+    # first line of ordinary prose is inset on the left and, on a ragged right edge, falls
+    # short on the right, so its midpoint sits on the column midpoint. Measured on the real
+    # books the indent was one em (14.4pt / 15.0pt) against a half-leading tolerance of
+    # 8.3pt / 8.6pt, and a midpoint test classified running prose as centred — splitting
+    # "Then, in 1986, Big Bang financial reforms in the City of London did" away from the
+    # rest of its own sentence. Real body text must never be called centred.
+    spans = _wide_body_context_spans() + [
+        _span(1, "An indented first line of a perfectly ordinary body paragraph.", top=140, bottom=154, x0=62, x1=438),
+    ]
+
+    result = build_paragraph_units_from_text_spans(spans)
+
+    indented = next(
+        p for p in result.paragraphs if p.text.startswith("An indented first line")
+    )
+    assert indented.paragraph_alignment is None
+
+
+def test_full_width_body_lines_are_not_centred() -> None:
+    # ANTI-VACUUM: every line of the body context itself must stay unaligned, or the signal
+    # would be vacuous — "everything is centred" carries no more information than nothing is.
+    result = build_paragraph_units_from_text_spans(_wide_body_context_spans())
+
+    assert all(p.paragraph_alignment is None for p in result.paragraphs)
+
+
+def test_paragraph_units_record_measured_gap_before() -> None:
+    spans = _wide_body_context_spans() + [
+        _span(1, "A body line set well below the paragraph above it here.", top=142, bottom=156),
+    ]
+
+    result = build_paragraph_units_from_text_spans(spans)
+
+    below = next(p for p in result.paragraphs if p.text.startswith("A body line set well below"))
+    # 142 - 102 = 40pt of measured whitespace above the line.
+    assert below.vertical_gap_before_pt == 40.0
+
+
+def test_gap_before_is_not_guessed_across_a_page_break() -> None:
+    spans = _wide_body_context_spans() + [
+        _span(2, "The first body line on the following page of the document.", top=40, bottom=54),
+    ]
+
+    result = build_paragraph_units_from_text_spans(spans)
+
+    first_on_page_two = next(
+        p for p in result.paragraphs if p.text.startswith("The first body line on the following page")
+    )
+    assert first_on_page_two.vertical_gap_before_pt is None

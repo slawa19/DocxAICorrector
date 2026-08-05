@@ -2534,27 +2534,40 @@ def _spans_are_centered_in_body_column(
 ) -> bool:
     """True when every line of the paragraph sits centred inside the measured body column.
 
-    Two conditions per line, both required, so that a justified or ragged-right paragraph
-    can never qualify: the line must start measurably inside the body left edge (a
-    full-width or left-aligned line does not), and its midpoint must coincide with the
-    column midpoint. Half a line of leading is the tolerance for both — the smallest unit
-    of vertical rhythm the importer measures, used here horizontally so the threshold
-    scales with the document instead of being a literal.
+    Two scales, and the corpus forced both. Symmetry alone is not enough: the FIRST line of
+    an ordinary indented paragraph is inset on the left by exactly one em and, on a ragged
+    right edge, falls short on the right by a comparable amount, so its midpoint sits within
+    a few points of the column midpoint. Measured on this corpus, the indent (14.4pt / 15.0pt)
+    and the right-edge raggedness (0.1pt-19.1pt) are the same order of magnitude as any
+    tolerance that still admits a real centred line, so a midpoint test — with or without a
+    left-inset guard — silently classifies running prose as centred.
+
+    What separates the two is not symmetry but DEPTH of inset. A first-line indent is about
+    one em; a centred display line is inset by a substantial fraction of the column (the
+    measured cases run from a tenth to more than half of it). So a line qualifies only when
+    it is inset from BOTH edges by more than a tenth of the measured body column AND its
+    midpoint is on the column midpoint. Both thresholds are proportions of quantities this
+    importer measures on the document itself — the column it derived and the leading it
+    estimated — so neither is a literal and neither is tied to a book.
     """
 
     left = layout_profile.body_left_x0
     right = layout_profile.body_right_x1
     if left is None or right is None:
         return False
-    tolerance = float(layout_profile.body_leading or 0.0) * 0.5
-    if tolerance <= 0.0:
+    column_width = float(right) - float(left)
+    midpoint_tolerance = float(layout_profile.body_leading or 0.0) * 0.5
+    if column_width <= 0.0 or midpoint_tolerance <= 0.0:
         return False
 
+    minimum_inset = column_width * 0.1
     column_center = (float(left) + float(right)) / 2.0
     for span in spans:
-        if float(span.x0) - float(left) <= tolerance:
+        if float(span.x0) - float(left) <= minimum_inset:
             return False
-        if abs((float(span.x0) + float(span.x1)) / 2.0 - column_center) > tolerance:
+        if float(right) - float(span.x1) <= minimum_inset:
+            return False
+        if abs((float(span.x0) + float(span.x1)) / 2.0 - column_center) > midpoint_tolerance:
             return False
     return True
 
