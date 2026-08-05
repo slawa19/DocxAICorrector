@@ -318,6 +318,8 @@ def build_paragraph_units_from_text_spans(
         emitted, body_font_size=layout_profile.body_font_size
     )
 
+    _attach_pdf_layout_signals(emitted, ordered_spans, layout_profile=layout_profile)
+
     for logical_index, paragraph in enumerate(emitted):
         _assign_pdf_paragraph_identity(paragraph, logical_index)
 
@@ -2465,6 +2467,96 @@ def _infer_font_heading_level(span: PdfTextSpan, *, median_font_size: float | No
 
 def _has_leading_section_ordinal(span: PdfTextSpan) -> bool:
     return bool(_SECTION_ORDINAL_HEADING_PATTERN.match(_normalize_text(span.text)))
+
+
+def _attach_pdf_layout_signals(
+    paragraphs: list[ParagraphUnit],
+    ordered_spans: list[PdfTextSpan],
+    *,
+    layout_profile: _PdfHeadingLayoutProfile,
+) -> None:
+    """Record, on each unit, the two layout signals this importer already measured.
+
+    ``ParagraphUnit`` has carried ``paragraph_alignment`` and ``vertical_gap_before_pt``
+    since the DOCX path was written, and the PDF path never assigned either: 0 of 8216
+    paragraphs across the four corpus books (2026-08-05 census). Both are recoverable
+    here and nowhere downstream, because both ARE geometry in a PDF — there is no ``w:jc``
+    and no ``w:spacing`` to read, only coordinates, and the coordinates stop existing the
+    moment the intermediate DOCX is written.
+
+    Nothing in here looks at the text. Centring is decided against the body text column
+    this importer already derived (``body_left_x0`` / ``body_right_x1`` / ``body_leading``,
+    the same profile the role classifier keys on), and the gap is the measured whitespace
+    above the paragraph's first line. Both are conservative: a paragraph whose spans cannot
+    be located, or a page break, yields no signal rather than a guessed one.
+    """
+
+    if not paragraphs:
+        return
+
+    spans_by_origin: dict[int, list[PdfTextSpan]] = {}
+    for span in ordered_spans:
+        spans_by_origin.setdefault(_span_origin_index(span), []).append(span)
+
+    previous_page: int | None = None
+    previous_bottom: float | None = None
+    for paragraph in paragraphs:
+        paragraph_spans = [
+            span
+            for origin in (paragraph.origin_raw_indexes or [])
+            for span in spans_by_origin.get(int(origin), [])
+        ]
+        if not paragraph_spans:
+            previous_page = None
+            previous_bottom = None
+            continue
+
+        if _spans_are_centered_in_body_column(paragraph_spans, layout_profile=layout_profile):
+            paragraph.paragraph_alignment = "center"
+
+        first_span = paragraph_spans[0]
+        if previous_page == first_span.page_number and previous_bottom is not None:
+            paragraph.vertical_gap_before_pt = round(
+                max(0.0, float(first_span.top) - previous_bottom), 2
+            )
+
+        last_page = max(span.page_number for span in paragraph_spans)
+        previous_page = last_page
+        previous_bottom = max(
+            float(span.bottom) for span in paragraph_spans if span.page_number == last_page
+        )
+
+
+def _spans_are_centered_in_body_column(
+    spans: list[PdfTextSpan],
+    *,
+    layout_profile: _PdfHeadingLayoutProfile,
+) -> bool:
+    """True when every line of the paragraph sits centred inside the measured body column.
+
+    Two conditions per line, both required, so that a justified or ragged-right paragraph
+    can never qualify: the line must start measurably inside the body left edge (a
+    full-width or left-aligned line does not), and its midpoint must coincide with the
+    column midpoint. Half a line of leading is the tolerance for both — the smallest unit
+    of vertical rhythm the importer measures, used here horizontally so the threshold
+    scales with the document instead of being a literal.
+    """
+
+    left = layout_profile.body_left_x0
+    right = layout_profile.body_right_x1
+    if left is None or right is None:
+        return False
+    tolerance = float(layout_profile.body_leading or 0.0) * 0.5
+    if tolerance <= 0.0:
+        return False
+
+    column_center = (float(left) + float(right)) / 2.0
+    for span in spans:
+        if float(span.x0) - float(left) <= tolerance:
+            return False
+        if abs((float(span.x0) + float(span.x1)) / 2.0 - column_center) > tolerance:
+            return False
+    return True
 
 
 def _style_name_for_role(role: str) -> str:

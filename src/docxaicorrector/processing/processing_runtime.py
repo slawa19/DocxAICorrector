@@ -1015,6 +1015,7 @@ def _convert_pdf_text_layer_to_docx(*, filename: str, source_bytes: bytes) -> tu
 def _append_pdf_text_paragraph_to_docx(document, paragraph) -> None:
     style = _pdf_text_layer_docx_style(paragraph.role, paragraph.heading_level)
     docx_paragraph = document.add_paragraph(style=style)
+    _carry_pdf_paragraph_layout_signals(docx_paragraph, paragraph)
 
     # ``pdf_emphasis_runs`` carries the fully-built paragraph text (with de-hyphenation
     # and inline footnote markers already applied) split into character-level emphasis
@@ -1025,6 +1026,7 @@ def _append_pdf_text_paragraph_to_docx(document, paragraph) -> None:
         for run_text, is_bold, is_italic in (getattr(paragraph, "pdf_emphasis_runs", None) or [])
         if run_text
     ]
+    font_size = _pdf_paragraph_run_font_size(paragraph)
 
     if paragraph.role == "heading":
         # A heading already conveys weight via its style, so a *uniformly*
@@ -1039,8 +1041,9 @@ def _append_pdf_text_paragraph_to_docx(document, paragraph) -> None:
                     run.bold = True
                 if is_italic:
                     run.italic = True
+                _set_pdf_run_font_size(run, font_size)
             return
-        docx_paragraph.add_run(paragraph.text)
+        _set_pdf_run_font_size(docx_paragraph.add_run(paragraph.text), font_size)
         return
 
     if emphasis_runs:
@@ -1050,6 +1053,7 @@ def _append_pdf_text_paragraph_to_docx(document, paragraph) -> None:
                 run.bold = True
             if is_italic:
                 run.italic = True
+            _set_pdf_run_font_size(run, font_size)
         return
 
     run = docx_paragraph.add_run(paragraph.text)
@@ -1057,6 +1061,56 @@ def _append_pdf_text_paragraph_to_docx(document, paragraph) -> None:
         run.bold = True
     if bool(getattr(paragraph, "is_italic", False)):
         run.italic = True
+    _set_pdf_run_font_size(run, font_size)
+
+
+def _carry_pdf_paragraph_layout_signals(docx_paragraph, paragraph) -> None:
+    """Write the layout evidence `logical_import` measured into the intermediate DOCX.
+
+    Until spec 055 this bridge emitted a style name and bold/italic and discarded everything
+    else, so `document/extraction.py` re-derived structure from a document with alignment on
+    0 of 8418 paragraphs and space-before on 0 of 8418, against 8137/8137 and 8062/8137 on the
+    same books as native DOCX (census, 2026-08-05). These are the same three signals the
+    native path already carries; nothing new is invented here, and no role mapping changes.
+
+    Alignment is emitted only where the importer measured centring, which is the one value
+    `extraction.py` and its downstream predicates key on. Everything else stays unset, exactly
+    as an unstyled DOCX paragraph does, so `alignments_are_compatible` keeps treating those
+    paragraphs as mergeable.
+    """
+
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
+    from docx.shared import Pt
+
+    if str(getattr(paragraph, "paragraph_alignment", "") or "").strip().lower() == "center":
+        docx_paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+
+    gap_before_pt = getattr(paragraph, "vertical_gap_before_pt", None)
+    if isinstance(gap_before_pt, (int, float)) and float(gap_before_pt) >= 0.0:
+        # `w:spacing w:before` is stored in twips and `extraction.py` reads it back as
+        # points; cap at a page height so a corrupt coordinate cannot produce a document
+        # Word refuses to open.
+        docx_paragraph.paragraph_format.space_before = Pt(min(float(gap_before_pt), 720.0))
+
+
+def _pdf_paragraph_run_font_size(paragraph) -> float | None:
+    font_size = getattr(paragraph, "font_size_pt", None)
+    if not isinstance(font_size, (int, float)):
+        return None
+    value = float(font_size)
+    # OOXML stores the size in half-points and rejects a non-positive one; the upper bound
+    # is the format's own limit (1638pt).
+    if value <= 0.0 or value > 1638.0:
+        return None
+    return value
+
+
+def _set_pdf_run_font_size(run, font_size: float | None) -> None:
+    if font_size is None:
+        return
+    from docx.shared import Pt
+
+    run.font.size = Pt(font_size)
 
 
 def _append_pdf_image_to_docx(document, image_object) -> bool:
