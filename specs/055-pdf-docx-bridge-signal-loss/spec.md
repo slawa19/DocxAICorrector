@@ -6,8 +6,11 @@
 
 **Date**: 2026-08-05
 
-**Status**: **READY — measured, not started.** Everything below was measured on 2026-08-04 during the
-spec 054 iteration and independently re-verified by the orchestrator. No code has been written.
+**Status**: **RUN — the experiment was carried out on 2026-08-05; see the Changelog for the verdict
+per signal.** Two of the three signals are carried and kept; the third (alignment) was carried,
+measured, disproved on the corpus and removed. Everything in the body below was written before the
+run and is left as written, so that what was expected and what happened can be compared. The
+measurements it cites were re-taken on current code and held.
 
 **Owner surface**: `processing/processing_runtime.py` — `_append_pdf_text_paragraph_to_docx`,
 `_pdf_text_layer_docx_style`
@@ -127,6 +130,40 @@ permitted and expected outcome.
 
 ## Changelog
 
+- **2026-08-05 (experiment run, `feat/055-carry-import-signals`)** — the census was re-taken on
+  current code, the signals were carried, the three dead rules were re-measured, and one of the
+  three signals was disproved and removed. Result per signal, on all four PDF books:
+  - **Font size and space-before: carried and kept.** The census confirmed the spec's claim with
+    fresh numbers — `paragraph_alignment` and `vertical_gap_before_pt` populated on 0 of 8216
+    importer paragraphs, and the intermediate DOCX carrying a font size on 172 of 8418 whose 2
+    distinct values are the Heading 1 / Heading 2 sizes of python-docx's default template rather
+    than anything measured in the PDF. After the carry: font size on 8216, space-before on 7757.
+    Corpus effect: 7813 paragraphs before and after — no split, no merge — and exactly five
+    paragraphs change role, listed in the commit. **`promote_short_standalone_headings` and
+    `normalize_front_matter_display_title` are revived by font size alone, and both are correct
+    where they fire. Verdict: KEEP both.**
+  - **Alignment: carried, measured, disproved, removed.** Centring IS measurable from the
+    geometry (after two corrections — a midpoint test, with or without a left-inset guard,
+    classifies the indented first line of ordinary prose as centred, because a one-em indent and
+    a ragged right edge are the same order of magnitude as any workable tolerance). But carrying
+    it produced 33 heading promotions across the four books and **not one of the 33 was correct**;
+    24 were per-chapter labels inside notes back-matter. The cause is downstream:
+    `roles.is_probable_heading` treats centring as sufficient heading evidence, which holds for a
+    hand-made DOCX and not for a page-geometry document. Narrowing it would move the native path,
+    which this spec forbids. **Verdict: the alignment carry is DELETED. The center-alignment
+    branches stay dead on the PDF path, and that is now a decision rather than an accident.**
+  - **Four of the six center-dependent predicates never fired even with real alignment present**
+    (`_is_short_centered_epigraph_attribution_candidate`, `structure_repair._is_body_boundary_candidate`,
+    `structure.validation._is_centered_body`, `relations._is_epigraph_relation_candidate`).
+    Recorded, not repaired — per the "no new detector" non-goal.
+  - **Roles measured, not carried** (out of scope by the Non-goals, and confirmed as the right
+    call to defer): the importer assigns `caption` to 53 paragraphs, `toc_entry` to 608 and
+    `footnote` to 34; extraction recovers 19, 79 and 0 of them respectively, by text shape. The
+    `footnote` role covers 59 characters in total across two books — bare superscript markers,
+    not footnote bodies. python-docx raises `KeyError` on all four `PDF *` style names, so
+    carrying any of them requires defining the style first.
+  - Anti-regression: the native DOCX paragraph streams are byte-identical across all four books
+    (sha256 per book), and both golden gates pass without regeneration.
 - **2026-08-05** — spec created from measurements taken during spec 054 on 2026-08-04: the bridge
   census across four PDF books and their native DOCX twins, the three dead rules, and the role
   mapping that keeps two roles of the several `logical_import` assigns. Not started.
