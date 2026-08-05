@@ -2047,11 +2047,14 @@ def test_generated_block_carries_its_paragraph_dispositions(monkeypatch):
 
 def test_paragraph_dispositions_are_counted_for_the_run_report():
     model_accounting.reset_run_model_accounting()
-    generation.resolve_marker_paragraph_dispositions(
-        generation.split_marker_preserved_paragraph_dispositions(
-            "[[DOCX_PARA_p1]]\nПервый.\n\n[[DOCX_PARA_p2]]\n",
-            ["p1", "p2"],
-        ),
+    generation._finalize_generated_markdown(
+        "[[DOCX_PARA_p1]]\nПервый.\n\n[[DOCX_PARA_p2]]\n",
+        target_text="First.\n\n14",
+        context_before="",
+        context_after="",
+        expected_paragraph_ids=["p1", "p2"],
+        marker_mode=True,
+        allow_persistent_context_leakage=True,
         source_paragraph_chunks=["First.", "14"],
         allow_unresolved_paragraphs=True,
     )
@@ -3365,3 +3368,146 @@ def test_the_rejected_answer_capture_still_holds_the_model_text_for_an_empty_chu
     # One rejected attempt: the second one resolves per paragraph instead of failing.
     assert [(payload["attempt"], payload["error_code"]) for payload in payloads] == [(1, "empty_marker_chunk")]
     assert payloads[0]["raw_response"] == rejected_answer.strip()
+
+
+# --- rev41 P0-2: the transport must not degrade into a plain string in silence -------
+# The per-paragraph record rode on a ``str`` subclass, and ``_trim_boundary_context_leakage``
+# built its result with ``.strip()`` and slices. That returned a plain ``str`` INSIDE the
+# generator, before the value reached any caller, and the paragraph COUNT still matched
+# afterwards - so the registry rebuilt itself by re-splitting on a blank line, every status
+# was lost, and the source text standing in an ``omitted`` slot was read aloud with every
+# check green. Reproduced by execution in ``.run/rev41_attack6.py``.
+
+
+def test_context_leakage_trim_keeps_the_per_paragraph_record():
+    """`.run/rev41_attack6.py`, as a test. Before the fix the record was LOST here."""
+
+    leak = "alpha beta gamma delta epsilon zeta eta theta"
+    sources = ["First source paragraph of the book.", "Notes 7 Ibid page 214."]
+    answer = f"[[DOCX_PARA_p1]]\n{leak} Переведённый текст первого абзаца.\n[[DOCX_PARA_p2]]\n"
+
+    result = generation._finalize_generated_markdown(
+        answer,
+        target_text="\n\n".join(sources),
+        context_before=leak,
+        context_after="",
+        expected_paragraph_ids=["p1", "p2"],
+        marker_mode=True,
+        allow_persistent_context_leakage=True,
+        source_paragraph_chunks=sources,
+        allow_unresolved_paragraphs=True,
+    )
+
+    # The trim really fired - otherwise the test would pass for the wrong reason.
+    assert str(result).startswith("eta theta ")
+    dispositions = generation.marker_paragraph_dispositions(result)
+    assert dispositions is not None
+    assert [(item.paragraph_id, item.status) for item in dispositions] == [
+        ("p1", "accepted"),
+        ("p2", "omitted"),
+    ]
+    # ANTI-VACUUM: the trim removed only the leaked words, not the paragraph's own text.
+    assert dispositions[0].text == "eta theta Переведённый текст первого абзаца."
+    assert str(result) == "\n\n".join(item.text for item in dispositions)
+
+
+def test_a_marker_mode_answer_without_its_record_is_refused_loudly(monkeypatch):
+    """The class of defect, not the one instance of it.
+
+    Any future string operation inside the generator that drops the subclass must stop the
+    block with a named cause instead of shipping a block whose statuses silently vanished.
+    """
+
+    monkeypatch.setattr(
+        generation,
+        "_strip_and_validate_paragraph_markers",
+        lambda *args, **kwargs: "Первый.\n\nВторой.",
+    )
+
+    with pytest.raises(generation.MarkerParagraphRecordLost) as exc_info:
+        generation._finalize_generated_markdown(
+            "[[DOCX_PARA_p1]]\nПервый.\n[[DOCX_PARA_p2]]\nВторой.",
+            target_text="First.\n\nSecond.",
+            context_before="",
+            context_after="",
+            expected_paragraph_ids=["p1", "p2"],
+            marker_mode=True,
+            allow_persistent_context_leakage=True,
+            source_paragraph_chunks=["First.", "Second."],
+            allow_unresolved_paragraphs=True,
+        )
+
+    assert exc_info.value.stage == "finalize_clean"
+    # NOT a marker validation error: the model did nothing wrong, so this must not be
+    # retried as though a resend could put the record back.
+    assert not generation._is_retryable_marker_validation_error(exc_info.value)
+
+
+def test_a_block_level_source_fallback_still_carries_a_record(monkeypatch):
+    """The four block-level fallbacks used to return a bare string, which made "no record"
+    an ambiguous state downstream. Every marker-mode exit now says what happened."""
+
+    monkeypatch.setattr(generation.time, "sleep", lambda _seconds: None)
+    model_accounting.reset_run_model_accounting()
+
+    client = SimpleNamespace(
+        responses=SimpleNamespace(
+            create=lambda **_kwargs: SimpleNamespace(output_text="[[DOCX_PARA_p9999]]\nЧужой маркер")
+        )
+    )
+
+    result = generation.generate_markdown_block(
+        client=_as_openai_client(client),
+        model="gpt-5.4",
+        system_prompt="system",
+        target_text="[[DOCX_PARA_p0001]]\nFirst.\n\n[[DOCX_PARA_p0002]]\nSecond.",
+        context_before="",
+        context_after="",
+        max_retries=1,
+        expected_paragraph_ids=["p0001", "p0002"],
+        marker_mode=True,
+    )
+
+    assert result == "First.\n\nSecond."
+    dispositions = generation.marker_paragraph_dispositions(result)
+    assert dispositions is not None
+    assert [(item.paragraph_id, item.status) for item in dispositions] == [
+        ("p0001", "source_restored"),
+        ("p0002", "source_restored"),
+    ]
+
+
+# --- rev41 P1-1: the counters counted ATTEMPTS, not delivered paragraphs -------------
+
+
+def test_rejected_attempts_do_not_reach_the_paragraph_disposition_counters():
+    """A two-paragraph block that succeeded once after two rejected attempts reported
+    ``accepted: 6``, because the statuses were recorded where they are RESOLVED instead of
+    where the block is delivered."""
+
+    model_accounting.reset_run_model_accounting()
+    leak = "Это дословный кусок соседнего блока, который модель повторила целиком в ответе."
+    sources = ["First source paragraph, long enough to matter here.", "Second source paragraph."]
+    answer = (
+        f"[[DOCX_PARA_p1]]\nПервый переведён. {leak} Ещё немного текста.\n"
+        "[[DOCX_PARA_p2]]\nВторой переведён."
+    )
+
+    for attempt in (1, 2, 3):
+        try:
+            generation._finalize_generated_markdown(
+                answer,
+                target_text="\n\n".join(sources),
+                context_before=leak,
+                context_after="",
+                expected_paragraph_ids=["p1", "p2"],
+                marker_mode=True,
+                allow_persistent_context_leakage=attempt >= 3,
+                source_paragraph_chunks=sources,
+                allow_unresolved_paragraphs=attempt >= 3,
+            )
+        except generation.ContextLeakageError:
+            pass
+
+    counts = model_accounting.snapshot_run_model_accounting()["paragraph_disposition_counts"]
+    assert counts == {"accepted": 2, "omitted": 0, "retry_required": 0, "source_restored": 0}

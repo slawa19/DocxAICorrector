@@ -411,3 +411,32 @@ def test_process_single_block_narrates_the_block_without_its_omitted_paragraph(m
 
     assert state.processed_chunks == ["Переведённый абзац.\n\n14"]
     assert state.narration_chunks == ["Переведённый абзац."]
+
+
+def test_a_record_that_no_longer_describes_its_text_is_refused_loudly() -> None:
+    """rev41 P0-2, downstream half: a partial degradation must not pass as a whole one.
+
+    A string operation that KEPT the subclass but changed the characters would leave every
+    status attached to text it no longer belongs to, and the paragraph count would still
+    match — the same silence that put source-language text into the narration under a green
+    classification.
+    """
+    import pytest
+
+    from docxaicorrector.generation._generation import MarkerPreservedBlockText, ParagraphDisposition
+
+    desynchronised = MarkerPreservedBlockText(
+        "Переведённый абзац.\n\nПодменённый текст.",
+        [
+            ParagraphDisposition(paragraph_id="p0001", text="Переведённый абзац.", status="accepted"),
+            ParagraphDisposition(paragraph_id="p0002", text="14", status="omitted"),
+        ],
+    )
+
+    with pytest.raises(RuntimeError) as exc_info:
+        block_execution.build_processed_paragraph_registry_entries(
+            block_index=7,
+            paragraph_ids=["p0001", "p0002"],
+            processed_chunk=desynchronised,
+        )
+    assert "paragraph_marker_registry_record_desynchronised" in str(exc_info.value)

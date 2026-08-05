@@ -137,10 +137,17 @@ class MarkerPreservedBlockText(str):
     A ``str`` subclass rather than a new return type on purpose. ``generate_markdown_block``
     is reached through the ``MarkdownGenerator`` protocol and its result flows through
     assembly, narration, classification and the UI as plain text; changing the type would
-    touch every one of those and every test double that returns a string. Here the extra
-    information rides along, and any caller that does not know about it — or any string
-    operation that drops the subclass — degrades to exactly the previous behaviour, because
-    ``build_processed_paragraph_registry_entries`` still knows how to re-split on ``\\n\\n``.
+    touch every one of those and every test double that returns a string.
+
+    **The subclass is a transport, never a place to compute.** Any ``str`` operation on it
+    — ``.strip()``, a slice, an ``f``-string — returns a plain ``str`` and the record is
+    gone, and the loss is invisible because ``build_processed_paragraph_registry_entries``
+    re-splits on ``\\n\\n`` and finds the same paragraph COUNT. That is how a review found
+    English being read aloud with every check green (``_trim_boundary_context_leakage``
+    built its result with ``.strip()`` and a slice). So the block's text is derived from the
+    dispositions and never the other way round: ``_marker_preserved_block_text`` is the only
+    constructor used inside the generator, and every terminal return in marker mode goes
+    through ``_deliver_marker_preserved_block``, which RAISES if the record did not survive.
     """
 
     paragraph_dispositions: tuple[ParagraphDisposition, ...]
@@ -161,6 +168,21 @@ class MarkerPreservedBlockText(str):
         return (self.__class__, (str(self), self.paragraph_dispositions))
 
 
+class MarkerParagraphRecordLost(RuntimeError):
+    """The per-paragraph record was expected on this value and is not there.
+
+    Not a ``MarkerValidationError``: the model did nothing wrong, the code did. It is
+    therefore NOT retryable — resending the same request cannot put the record back — and
+    it must not be confused with a rejected answer in the retry accounting. Raised so that
+    a transport degradation is a stopped block with a named cause instead of source-language
+    text delivered quietly under a green classification.
+    """
+
+    def __init__(self, stage: str) -> None:
+        super().__init__(f"marker_paragraph_record_lost:{stage}")
+        self.stage = stage
+
+
 def marker_paragraph_dispositions(value: object) -> tuple[ParagraphDisposition, ...] | None:
     """The per-paragraph record carried by a processed block, or ``None`` if it has none."""
 
@@ -170,6 +192,44 @@ def marker_paragraph_dispositions(value: object) -> tuple[ParagraphDisposition, 
     if not all(isinstance(item, ParagraphDisposition) for item in dispositions):
         return None
     return dispositions
+
+
+def _marker_preserved_block_text(
+    dispositions: Sequence[ParagraphDisposition],
+) -> MarkerPreservedBlockText:
+    """The ONLY way the generator builds a marker-preserved block.
+
+    The text is derived from the record, so the two cannot disagree and no code path can
+    produce the text without the record.
+    """
+
+    return MarkerPreservedBlockText(
+        "\n\n".join(disposition.text for disposition in dispositions),
+        dispositions,
+    )
+
+
+def _deliver_marker_preserved_block(value: str, *, marker_mode: bool, stage: str) -> str:
+    """Every terminal return of a marker-mode ANSWER passes through here.
+
+    Two jobs, both of which have to happen exactly once per block and exactly at the end:
+
+    * the record must still be attached — a plain ``str`` arriving here means some string
+      operation upstream dropped it, and that is raised, not tolerated;
+    * the per-paragraph counters are recorded HERE rather than where the statuses are
+      resolved, because a status resolved on an attempt that is then rejected (context
+      leakage, an outer retry) never ships. Counting it made the run report count attempts:
+      a two-paragraph block that succeeded once after two rejected attempts reported
+      ``accepted: 6``.
+    """
+
+    if not marker_mode:
+        return value
+    dispositions = marker_paragraph_dispositions(value)
+    if dispositions is None:
+        raise MarkerParagraphRecordLost(stage)
+    _record_paragraph_dispositions(dispositions)
+    return value
 
 
 class MarkerValidationError(RuntimeError):
@@ -634,7 +694,6 @@ def resolve_marker_paragraph_dispositions(
             omitted_paragraph_count=len(unresolved_indexes),
             paragraph_count=len(resolved),
         )
-    _record_paragraph_dispositions(resolved)
     return resolved
 
 
@@ -828,10 +887,7 @@ def _strip_and_validate_paragraph_markers(
     # paragraph contributes its own source text — so everything downstream that counts
     # paragraphs keeps counting the same number. What rides along is WHY each one is
     # there, which is what the registry needs and could never recover from the join.
-    return MarkerPreservedBlockText(
-        "\n\n".join(disposition.text for disposition in dispositions),
-        dispositions,
-    )
+    return _marker_preserved_block_text(dispositions)
 
 
 def _normalize_leakage_comparison_text(text: str) -> str:
@@ -875,6 +931,9 @@ def _detect_context_leakage(
     return None
 
 
+_LEAKAGE_TRIM_STRIP_CHARS = " \t\r\n-–—,:;.!?"
+
+
 def _trim_boundary_context_leakage(response_text: str, leaked_fragment: str) -> tuple[str, bool]:
     trimmed_response = response_text.strip()
     if not trimmed_response or leaked_fragment not in trimmed_response:
@@ -889,15 +948,78 @@ def _trim_boundary_context_leakage(response_text: str, leaked_fragment: str) -> 
     updated_text = trimmed_response
     changed = False
     while updated_text.startswith(leaked_fragment):
-        updated_text = updated_text[len(leaked_fragment) :].lstrip(" \t\r\n-–—,:;.!?")
+        updated_text = updated_text[len(leaked_fragment) :].lstrip(_LEAKAGE_TRIM_STRIP_CHARS)
         changed = True
     while updated_text.endswith(leaked_fragment):
-        updated_text = updated_text[: -len(leaked_fragment)].rstrip(" \t\r\n-–—,:;.!?")
+        updated_text = updated_text[: -len(leaked_fragment)].rstrip(_LEAKAGE_TRIM_STRIP_CHARS)
         changed = True
 
     if not changed or not updated_text:
         return response_text, False
     return updated_text, True
+
+
+def _trim_marker_preserved_boundary_leakage(
+    value: str,
+    leaked_fragment: str,
+) -> tuple[str, bool]:
+    """The boundary trim, applied to the RECORD instead of to the joined string.
+
+    ``_trim_boundary_context_leakage`` builds its answer with ``.strip()`` and slices, which
+    return a plain ``str``. Running it on a ``MarkerPreservedBlockText`` therefore threw the
+    per-paragraph record away inside the generator, before the value ever reached a caller —
+    the one degradation ``__reduce__`` cannot protect against — and the paragraph COUNT still
+    matched afterwards, so nothing downstream noticed and an ``omitted`` paragraph's English
+    source went into the narration.
+
+    The leak is at a boundary of the whole answer by construction (the string-level function
+    refuses to trim anything else), so it belongs to the first paragraph that has text or to
+    the last one. Both are trimmed with the same rule, and the result is re-derived from the
+    record. If the two do not agree character for character the trim could not be attributed
+    to a paragraph — the answer is then rejected as a marker failure and retried, rather than
+    shipped with a record that no longer describes it.
+    """
+
+    dispositions = marker_paragraph_dispositions(value)
+    if dispositions is None:
+        return _trim_boundary_context_leakage(value, leaked_fragment)
+
+    trimmed_text, was_trimmed = _trim_boundary_context_leakage(str(value), leaked_fragment)
+    if not was_trimmed:
+        return value, False
+
+    texts = [disposition.text for disposition in dispositions]
+    populated_indexes = [index for index, text in enumerate(texts) if text]
+    if populated_indexes:
+        first_index = populated_indexes[0]
+        while texts[first_index].startswith(leaked_fragment):
+            texts[first_index] = texts[first_index][len(leaked_fragment) :].lstrip(
+                _LEAKAGE_TRIM_STRIP_CHARS
+            )
+        last_index = populated_indexes[-1]
+        while texts[last_index].endswith(leaked_fragment):
+            texts[last_index] = texts[last_index][: -len(leaked_fragment)].rstrip(
+                _LEAKAGE_TRIM_STRIP_CHARS
+            )
+
+    rebuilt = _marker_preserved_block_text(
+        [
+            ParagraphDisposition(
+                paragraph_id=disposition.paragraph_id,
+                text=text,
+                status=disposition.status,
+            )
+            for disposition, text in zip(dispositions, texts)
+        ]
+    )
+    if str(rebuilt) != trimmed_text:
+        raise MarkerValidationError(
+            "context_leakage_trim_unattributable",
+            raw_markdown=str(value),
+            expected_paragraph_ids=[disposition.paragraph_id for disposition in dispositions],
+            found_paragraph_ids=[disposition.paragraph_id for disposition in dispositions],
+        )
+    return rebuilt, True
 
 
 def _inject_context_leakage_retry_warning(request_kwargs: dict[str, object]) -> dict[str, object]:
@@ -953,11 +1075,17 @@ def _finalize_generated_markdown(
         context_after,
     )
     if leaked_fragment is None:
-        return cleaned_markdown
+        return _deliver_marker_preserved_block(
+            cleaned_markdown, marker_mode=marker_mode, stage="finalize_clean"
+        )
 
-    trimmed_markdown, was_trimmed = _trim_boundary_context_leakage(cleaned_markdown, leaked_fragment)
+    trimmed_markdown, was_trimmed = _trim_marker_preserved_boundary_leakage(
+        cleaned_markdown, leaked_fragment
+    )
     if was_trimmed:
-        return trimmed_markdown
+        return _deliver_marker_preserved_block(
+            trimmed_markdown, marker_mode=marker_mode, stage="finalize_leakage_trimmed"
+        )
 
     if allow_persistent_context_leakage:
         log_event(
@@ -968,7 +1096,9 @@ def _finalize_generated_markdown(
             target_chars=len(target_text),
             marker_mode=marker_mode,
         )
-        return cleaned_markdown
+        return _deliver_marker_preserved_block(
+            cleaned_markdown, marker_mode=marker_mode, stage="finalize_leakage_persisted"
+        )
 
     raise ContextLeakageError(f"context_leakage_detected:{leaked_fragment}")
 
@@ -1406,7 +1536,51 @@ def _recover_from_persistent_empty_response(
     )
     if not cleaned_markdown.strip():
         raise RuntimeError("Модель вернула пустой ответ (empty_response).")
-    return cleaned_markdown
+    return _deliver_marker_preserved_block(
+        cleaned_markdown, marker_mode=marker_mode, stage="recovery"
+    )
+
+
+def _block_source_fallback_result(
+    target_text_for_leakage: str,
+    *,
+    expected_paragraph_ids: Sequence[str] | None,
+    source_paragraph_chunks: Sequence[str] | None,
+    marker_mode: bool,
+) -> str:
+    """The block-level fallback — every paragraph reverted to its own source — WITH a record.
+
+    The four block-level fallbacks used to return a bare string, so a marker-mode block could
+    leave the generator with no per-paragraph record for a perfectly ordinary reason. That
+    made "no record" ambiguous downstream, and an ambiguous invariant cannot be enforced.
+    Now every marker-mode exit carries one, which is what lets ``generate_markdown_block``
+    refuse to hand back a block whose record went missing.
+
+    The TEXT is unchanged: ``_strip_paragraph_markers_from_source`` builds
+    ``target_text_for_leakage`` by joining exactly these chunks with a blank line.
+    ``source_restored`` is also the truthful status — the model's answer was discarded and
+    the source re-instated — and the counter for it was already being recorded by hand on
+    one of the four paths.
+    """
+
+    if not marker_mode or not expected_paragraph_ids or source_paragraph_chunks is None:
+        return target_text_for_leakage
+    if len(source_paragraph_chunks) != len(expected_paragraph_ids):
+        return target_text_for_leakage
+    return _deliver_marker_preserved_block(
+        _marker_preserved_block_text(
+            [
+                ParagraphDisposition(
+                    paragraph_id=paragraph_id,
+                    text=chunk,
+                    status=PARAGRAPH_STATUS_SOURCE_RESTORED,
+                )
+                for paragraph_id, chunk in zip(expected_paragraph_ids, source_paragraph_chunks)
+            ]
+        ),
+        marker_mode=marker_mode,
+        stage="block_source_fallback",
+    )
 
 
 def _is_incomplete_response_error(exc: Exception) -> bool:
@@ -1684,21 +1858,17 @@ def generate_markdown_block(
                     target_chars=len(target_text_for_leakage),
                     marker_mode=marker_mode,
                 )
-                return target_text_for_leakage
+                return _block_source_fallback_result(
+                    target_text_for_leakage,
+                    expected_paragraph_ids=expected_paragraph_ids,
+                    source_paragraph_chunks=source_paragraph_chunks,
+                    marker_mode=marker_mode,
+                )
             if _is_retryable_marker_validation_error(recovery_exc) and _can_fallback_to_source_text_after_marker_validation_failure(
                 target_text_for_leakage,
                 marker_mode=marker_mode,
             ):
                 record_model_output_discarded(reason="marker_validation_source_fallback", block_count=1)
-                # Spec 056 E: the block-level fallback restores the source of EVERY
-                # paragraph in it, and the per-paragraph counters have to say so — otherwise
-                # ``source_restored`` would read as zero on a run where a whole block went
-                # back to its own source text.
-                if block_paragraph_count:
-                    record_paragraph_disposition(
-                        status=PARAGRAPH_STATUS_SOURCE_RESTORED,
-                        count=block_paragraph_count,
-                    )
                 log_event(
                     logging.WARNING,
                     "markdown_marker_validation_source_fallback",
@@ -1708,7 +1878,12 @@ def generate_markdown_block(
                     marker_mode=marker_mode,
                     marker_error=str(recovery_exc),
                 )
-                return target_text_for_leakage
+                return _block_source_fallback_result(
+                    target_text_for_leakage,
+                    expected_paragraph_ids=expected_paragraph_ids,
+                    source_paragraph_chunks=source_paragraph_chunks,
+                    marker_mode=marker_mode,
+                )
             if _is_empty_response_error(recovery_exc) and _can_fallback_to_source_text_after_empty_response(
                 target_text
             ):
@@ -1722,7 +1897,12 @@ def generate_markdown_block(
                     marker_mode=marker_mode,
                     recovery_error=str(recovery_exc),
                 )
-                return target_text_for_leakage
+                return _block_source_fallback_result(
+                    target_text_for_leakage,
+                    expected_paragraph_ids=expected_paragraph_ids,
+                    source_paragraph_chunks=source_paragraph_chunks,
+                    marker_mode=marker_mode,
+                )
             if _is_retryable_empty_generation_error(recovery_exc) or _is_retryable_marker_validation_error(recovery_exc):
                 raise recovery_exc
             raise recovery_exc
@@ -1741,7 +1921,12 @@ def generate_markdown_block(
             target_chars=len(target_text_for_leakage),
             marker_mode=marker_mode,
         )
-        return target_text_for_leakage
+        return _block_source_fallback_result(
+            target_text_for_leakage,
+            expected_paragraph_ids=expected_paragraph_ids,
+            source_paragraph_chunks=source_paragraph_chunks,
+            marker_mode=marker_mode,
+        )
 
     if last_exception is not None:
         raise last_exception

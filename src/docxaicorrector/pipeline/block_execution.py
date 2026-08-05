@@ -585,6 +585,15 @@ def build_processed_paragraph_registry_entries(
             raise RuntimeError(
                 f"paragraph_marker_registry_mismatch:block={block_index}:expected={len(paragraph_ids)}:actual={len(found_ids)}"
             )
+        # The record describes THIS text or it describes nothing. A string operation that
+        # kept the subclass but changed the characters would otherwise leave every
+        # paragraph's status attached to text it no longer belongs to, and the paragraph
+        # count would still match — the same shape of silence that put source-language text
+        # into the narration under a green classification.
+        if "\n\n".join(disposition.text for disposition in dispositions) != str(processed_chunk):
+            raise RuntimeError(
+                f"paragraph_marker_registry_record_desynchronised:block={block_index}:paragraphs={len(found_ids)}"
+            )
         return [
             {
                 "block_index": block_index,
