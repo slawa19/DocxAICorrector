@@ -1993,13 +1993,48 @@ def test_empty_chunk_no_longer_discards_the_paragraphs_around_it():
     assert dispositions[0].text == "Перевод абзаца 0."
 
 
-def test_an_emptied_paragraph_a_neighbour_swallowed_is_still_restored_as_a_pair():
-    """An empty chunk is not automatically an omission: if a neighbour visibly GREW to hold
-    the text, that is a merge, and re-instating only this paragraph would ship it twice."""
+def test_an_empty_chunk_is_an_omission_and_never_a_merge():
+    """An EMPTY answer must not be read as evidence that a neighbour swallowed the text.
+
+    Until spec 056 E an empty chunk raised ``empty_marker_chunk`` before the restorer was
+    reached, so the restorer was calibrated on stubs and never saw one. Feeding empties to
+    it was measurably wrong: the merge evidence is "a neighbour grew by at least half of
+    what this paragraph holds", and a Russian translation of an English paragraph is
+    routinely 1.5x its source — so an ordinary neighbour looks like an absorber. The block
+    then reverted the emptied paragraph AND its good neighbour to the source, marked both
+    ``source_restored`` (a status the narration keeps) and read the source aloud.
+    """
 
     returned = ["", f"{_STUB_SOURCE_COLLAPSED} {_STUB_SOURCE_ABSORBED}"]
     dispositions = [
         generation.ParagraphDisposition(paragraph_id="p1344", text=returned[0], status="retry_required"),
+        generation.ParagraphDisposition(paragraph_id="p1345", text=returned[1], status="accepted"),
+    ]
+
+    resolved = generation.resolve_marker_paragraph_dispositions(
+        dispositions,
+        source_paragraph_chunks=[_STUB_SOURCE_COLLAPSED, _STUB_SOURCE_ABSORBED],
+        allow_unresolved_paragraphs=True,
+    )
+
+    assert [item.status for item in resolved] == ["omitted", "accepted"]
+    # The emptied paragraph keeps its source in the DOCUMENT, so the paragraph-per-marker
+    # mapping holds; the narration filter drops it by status.
+    assert resolved[0].text == _STUB_SOURCE_COLLAPSED
+    # ANTI-VACUUM: the neighbour's answer is NOT thrown away with it.
+    assert resolved[1].text == returned[1]
+
+
+def test_an_empty_chunk_does_not_stop_a_real_stub_from_being_restored_as_a_pair():
+    """ANTI-VACUUM for the rule above: the merge the restorer exists for still fires.
+
+    A merge leaves a STUB behind, not an empty chunk ("(Пусто)", 7 occurrences on the
+    2026-08-03 literary-edit run). Excluding empties must not blunt that.
+    """
+
+    returned = ["(Пусто)", f"{_STUB_SOURCE_COLLAPSED} {_STUB_SOURCE_ABSORBED}"]
+    dispositions = [
+        generation.ParagraphDisposition(paragraph_id="p1344", text=returned[0], status="accepted"),
         generation.ParagraphDisposition(paragraph_id="p1345", text=returned[1], status="accepted"),
     ]
 
@@ -3553,3 +3588,46 @@ def test_the_omission_warning_reports_the_characters_it_withholds(monkeypatch):
     assert logging.WARNING in {args[0] for args, _payload in logged_events}
     # ANTI-VACUUM: the prose paragraph next to it is still delivered.
     assert resolved[1].text == "Второй абзац переведён."
+
+
+# --- rev41 P1-4: the single-marker collapse must not weld a structural line ----------
+# Measured over every recorded model answer the repository holds (two books, 488 answers
+# carrying a readable marker block): the collapse rescues 6 answers and NONE of them holds
+# a heading, a list item or a code fence, so refusing those costs nothing that was being
+# gained. Refusing returns the block to ``paragraph_split_detected``, i.e. exactly the
+# behaviour before spec 056.
+
+
+@pytest.mark.parametrize(
+    "second_part",
+    [
+        "## Безопасность денежной системы",
+        "- первый пункт списка",
+        "1. первый пункт нумерованного списка",
+        "```python",
+    ],
+)
+def test_a_single_marker_break_around_a_structural_line_is_not_collapsed(second_part):
+    answer = f"[[DOCX_PARA_p1]]\nПервая часть абзаца.\n\n{second_part}"
+
+    with pytest.raises(generation.MarkerValidationError) as exc_info:
+        generation.split_marker_preserved_paragraph_dispositions(answer, ["p1"])
+
+    assert exc_info.value.error_code == "paragraph_split_detected"
+
+
+def test_a_single_marker_prose_break_is_still_collapsed():
+    """ANTI-VACUUM for the guard above: the 6 real rescues are prose and stay rescued."""
+
+    answer = (
+        "[[DOCX_PARA_p1]]\nДлинная цитата, которую импортёр сварил в один абзац.\n\n"
+        "Модель разбила её на две произносимые части."
+    )
+
+    dispositions = generation.split_marker_preserved_paragraph_dispositions(answer, ["p1"])
+
+    assert [item.status for item in dispositions] == ["accepted"]
+    assert dispositions[0].text == (
+        "Длинная цитата, которую импортёр сварил в один абзац. "
+        "Модель разбила её на две произносимые части."
+    )

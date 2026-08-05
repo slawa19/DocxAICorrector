@@ -538,7 +538,7 @@ def split_marker_preserved_paragraph_dispositions(
         content_end = matches[index + 1].start() if index + 1 < len(matches) else len(markdown)
         chunk = markdown[match.end() : content_end].strip()
         if "\n\n" in chunk:
-            if len(matches) != 1:
+            if len(matches) != 1 or _has_structural_output_line(chunk):
                 raise MarkerValidationError(
                     "paragraph_split_detected",
                     raw_markdown=markdown,
@@ -554,6 +554,39 @@ def split_marker_preserved_paragraph_dispositions(
             )
         )
     return dispositions
+
+
+_STRUCTURAL_OUTPUT_LINE_PATTERN = re.compile(
+    r"^\s{0,3}(?:#{1,6}(?:\s|$)|[-*+]\s|\d{1,9}[.)]\s|```|~~~)"
+)
+
+
+def _has_structural_output_line(chunk: str) -> bool:
+    """Does the MODEL'S OWN answer for this paragraph contain a structural line?
+
+    A markdown heading, a list item or a code fence. Joining the pieces of a broken chunk
+    with a space is only safe for prose: ``## Заголовок`` welded to the sentence after it
+    stops being a heading, and ``- пункт`` welded to the text before it stops being a list
+    item — the collapse would then repair a split by destroying a structural role, which is
+    Constitution VII rule 7 exactly (content survived, its role did not).
+
+    This inspects the shape of the model's OUTPUT, not the shape of the source document, so
+    it is not the structure-guessing VII forbids: nothing is inferred about what the
+    paragraph "really" is, only whether the answer is written in a form that a space would
+    destroy. And the fallback is today's behaviour — refusing to collapse leaves the break
+    ``paragraph_split_detected``, exactly as before spec 056 — so the guard is bounded above
+    by "no worse than the previous release".
+
+    Measured on the 504 recorded model answers of the 2026-08-04 audiobook run and the
+    2026-08-03 literary-edit run: every one of the single-marker breaks the collapse rescues
+    is prose, and none of them contains such a line, so the guard costs nothing that was
+    being gained.
+    """
+
+    return any(
+        _STRUCTURAL_OUTPUT_LINE_PATTERN.match(line) is not None
+        for line in chunk.splitlines()
+    )
 
 
 def _collapse_single_marker_paragraph_break(chunk: str, *, paragraph_id: str) -> str:
@@ -776,6 +809,19 @@ def restore_collapsed_marker_paragraphs(
     collapsed_indexes: list[int] = []
     for index in range(len(paragraph_chunks)):
         source_length = source_lengths[index]
+        if returned_lengths[index] == 0:
+            # An EMPTY answer is an omission, not a merge, and it has a status of its own
+            # (``omitted``). Until spec 056 E an empty chunk raised ``empty_marker_chunk``
+            # before this function was ever reached, so this is the input domain the
+            # restorer was calibrated on — nothing that legitimately restored before stops
+            # restoring. Letting empties in was measurably wrong: the merge evidence is "a
+            # neighbour grew by at least half of what this paragraph holds", and a Russian
+            # translation of an English paragraph is routinely 1.5x its source, so an
+            # ordinary neighbour looked like an absorber. The block then reverted the
+            # emptied paragraph AND its perfectly good neighbour to English, marked both
+            # ``source_restored`` — a status the narration filter keeps — and read 227
+            # characters of English aloud under a ``valid`` classification.
+            continue
         if source_length < _COLLAPSED_MARKER_CHUNK_MIN_SOURCE_CHARS:
             continue
         if returned_lengths[index] > source_length * _COLLAPSED_MARKER_CHUNK_RATIO:
