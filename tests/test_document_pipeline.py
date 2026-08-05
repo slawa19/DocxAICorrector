@@ -1992,6 +1992,28 @@ def test_translation_narration_projection_drops_a_source_text_fallback_paragraph
     assert projected == ["Однажды в маленькой деревне."]
 
 
+def test_translation_narration_projection_drops_an_omitted_paragraph():
+    """Spec 056 E, same rule one level down: an omitted paragraph is not narratable.
+
+    The standalone ``audiobook`` operation never puts it in ``state.narration_chunks``
+    (``block_execution.narration_text_for_processed_block``); this projection rebuilds the
+    narration from the final registry and has to honour the same decision, or the two entry
+    points diverge (spec 054 anti-regression 3).
+    """
+    context = SimpleNamespace(jobs=[{"narration_include": True}, {"narration_include": True}])
+
+    projected = document_pipeline_narration_postprocess._project_final_cleanup_narration_chunks(
+        context=context,
+        final_generated_paragraph_registry=[
+            {"block_index": 1, "text": "14", "paragraph_status": "omitted"},
+            # Anti-vacuum: an accepted paragraph in the same block is still narrated.
+            {"block_index": 2, "text": "Почему бы не задействовать фонд?", "paragraph_status": "accepted"},
+        ],
+    )
+
+    assert projected == ["Почему бы не задействовать фонд?"]
+
+
 def test_translation_narration_projection_rejects_join_across_inclusion_boundary():
     context = SimpleNamespace(
         jobs=[{"narration_include": True}, {"narration_include": False}]

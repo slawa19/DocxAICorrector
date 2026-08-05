@@ -280,3 +280,134 @@ def test_block_excluded_by_the_document_layer_is_counted_only_once(monkeypatch) 
     assert state.narration_chunks == []
     assert state.excluded_narration_block_count == 1
     assert state.narration_excluded_source_fallback_block_count == 0
+
+
+# --- spec 056 E: a typed disposition per paragraph, consumed by the registry --------
+
+
+def _disposition_block(*pairs: tuple[str, str, str]):
+    """Build the generator's return value for a block: (paragraph_id, text, status)."""
+    from docxaicorrector.generation._generation import MarkerPreservedBlockText, ParagraphDisposition
+
+    dispositions = [
+        ParagraphDisposition(paragraph_id=paragraph_id, text=text, status=status)
+        for paragraph_id, text, status in pairs
+    ]
+    return MarkerPreservedBlockText("\n\n".join(item.text for item in dispositions), dispositions)
+
+
+def test_registry_reads_the_paragraph_record_instead_of_re_splitting() -> None:
+    """Block 274, the worked example: nine translations kept, one paragraph typed.
+
+    Re-splitting the joined string can only recover the TEXT, never the reason it is there,
+    so a paragraph the model returned nothing for was indistinguishable from one it
+    translated — and the only way to express the difference was to discard the whole block.
+    """
+    processed_chunk = _disposition_block(
+        *[(f"p{1333 + index}", f"Перевод абзаца {index}.", "accepted") for index in range(3)],
+        ("p1336", "14", "omitted"),
+        *[(f"p{1333 + index}", f"Перевод абзаца {index}.", "accepted") for index in range(4, 10)],
+    )
+
+    entries = block_execution.build_processed_paragraph_registry_entries(
+        block_index=274,
+        paragraph_ids=[f"p{1333 + index}" for index in range(10)],
+        processed_chunk=processed_chunk,
+    )
+
+    assert len(entries) == 10
+    assert [entry["paragraph_status"] for entry in entries].count("accepted") == 9
+    assert entries[3] == {
+        "block_index": 274,
+        "paragraph_id": "p1336",
+        "text": "14",
+        "paragraph_status": "omitted",
+    }
+
+
+def test_registry_still_re_splits_a_plain_string_and_still_fails_on_a_count_mismatch() -> None:
+    entries = block_execution.build_processed_paragraph_registry_entries(
+        block_index=1,
+        paragraph_ids=["p0001", "p0002"],
+        processed_chunk="Первый.\n\nВторой.",
+    )
+    assert [entry["paragraph_id"] for entry in entries] == ["p0001", "p0002"]
+    assert "paragraph_status" not in entries[0]
+
+    import pytest
+
+    with pytest.raises(RuntimeError) as exc_info:
+        block_execution.build_processed_paragraph_registry_entries(
+            block_index=1,
+            paragraph_ids=["p0001", "p0002"],
+            processed_chunk="Только один абзац.",
+        )
+    assert "paragraph_marker_registry_mismatch" in str(exc_info.value)
+
+
+def test_registry_rejects_a_record_whose_ids_do_not_match_the_block() -> None:
+    import pytest
+
+    with pytest.raises(RuntimeError) as exc_info:
+        block_execution.build_processed_paragraph_registry_entries(
+            block_index=5,
+            paragraph_ids=["p0001", "p0002"],
+            processed_chunk=_disposition_block(("p0001", "Первый.", "accepted")),
+        )
+    assert "paragraph_marker_registry_mismatch" in str(exc_info.value)
+
+
+def test_an_omitted_paragraph_stays_in_the_docx_and_leaves_the_narration() -> None:
+    processed_chunk = _disposition_block(
+        ("p1335", "Как нам справиться с безработицей?", "accepted"),
+        ("p1336", "14", "omitted"),
+        ("p1337", "Почему бы не задействовать фонд?", "accepted"),
+    )
+
+    # The document keeps every paragraph — losing one would break the paragraph-per-marker
+    # mapping the formatting restorer depends on.
+    assert processed_chunk == "Как нам справиться с безработицей?\n\n14\n\nПочему бы не задействовать фонд?"
+    # The narration keeps only what the model actually spoke for.
+    assert block_execution.narration_text_for_processed_block(processed_chunk) == (
+        "Как нам справиться с безработицей?\n\nПочему бы не задействовать фонд?"
+    )
+
+
+def test_a_block_without_a_paragraph_record_is_narrated_unchanged() -> None:
+    assert block_execution.narration_text_for_processed_block("Обычный блок.") == "Обычный блок."
+
+
+def test_process_single_block_narrates_the_block_without_its_omitted_paragraph(monkeypatch) -> None:
+    monkeypatch.setattr(block_execution, "_write_controlled_block_fallback_artifact", lambda **_kwargs: None)
+    dependencies, emitters, _events = _recording_run_harness()
+    processed_chunk = _disposition_block(
+        ("p0001", "Переведённый абзац.", "accepted"),
+        ("p0002", "14", "omitted"),
+    )
+    payload = SimpleNamespace(
+        job_kind="llm",
+        toc_dominant=False,
+        target_text="Source paragraph.\n\n14",
+        target_text_with_markers="[[DOCX_PARA_p0001]]\nSource paragraph.\n\n[[DOCX_PARA_p0002]]\n14",
+        paragraph_ids=["p0001", "p0002"],
+        narration_include=True,
+        target_chars=20,
+        context_chars=0,
+    )
+
+    _outcome, state, _classifier_calls = _run_single_block(
+        payload=payload,
+        context=SimpleNamespace(
+            processing_operation="audiobook",
+            uploaded_filename="book.docx",
+            runtime=object(),
+            on_progress=lambda **_kwargs: None,
+        ),
+        processed_chunk=processed_chunk,
+        classification="valid",
+        dependencies=dependencies,
+        emitters=emitters,
+    )
+
+    assert state.processed_chunks == ["Переведённый абзац.\n\n14"]
+    assert state.narration_chunks == ["Переведённый абзац."]

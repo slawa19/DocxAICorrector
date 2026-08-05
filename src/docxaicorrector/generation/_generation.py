@@ -3,6 +3,7 @@ import re
 import tempfile
 import time
 from collections.abc import Iterable, Sequence, Sized
+from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
@@ -17,9 +18,11 @@ from docx.shared import Pt
 
 from docxaicorrector.core.logger import log_event
 from docxaicorrector.core.model_accounting import (
+    PARAGRAPH_DISPOSITION_STATUSES,
     STAGE_TEXT_GENERATION,
     record_model_call_usage,
     record_model_output_discarded,
+    record_paragraph_disposition,
     record_retry_attempt,
 )
 from docxaicorrector.image.shared import call_responses_create_with_retry, extract_unsupported_parameter_name, is_retryable_error
@@ -91,6 +94,82 @@ _CONTEXT_LEAKAGE_RETRY_WARNING = (
 
 class ContextLeakageError(RuntimeError):
     pass
+
+
+# --- spec 056 E: what happened to ONE paragraph, said out loud ----------------------
+# A block used to be all-or-nothing, so one paragraph the model could not answer for
+# discarded every good translation next to it. These four statuses are the whole
+# vocabulary; anything a paragraph can end up as is one of them, and the counts are
+# published per run (``model_accounting.paragraph_disposition_counts``).
+PARAGRAPH_STATUS_ACCEPTED = "accepted"
+"""The model's own text for this paragraph is what ships."""
+PARAGRAPH_STATUS_OMITTED = "omitted"
+"""The model returned nothing for it: the source stands in the DOCX, the narration skips it."""
+PARAGRAPH_STATUS_SOURCE_RESTORED = "source_restored"
+"""The model's text was discarded (a visible merge) and this paragraph's source re-instated."""
+PARAGRAPH_STATUS_RETRY_REQUIRED = "retry_required"
+"""Unresolved: there is retry budget left, so the block is asked again. Never ships."""
+# A status assigned here but absent from the report's vocabulary would be counted into a
+# bucket nobody documented, so the two lists are held together at import time rather than
+# by a comment. ``tests/test_generation.py`` asserts the same equality from the outside.
+assert sorted(
+    (
+        PARAGRAPH_STATUS_ACCEPTED,
+        PARAGRAPH_STATUS_OMITTED,
+        PARAGRAPH_STATUS_SOURCE_RESTORED,
+        PARAGRAPH_STATUS_RETRY_REQUIRED,
+    )
+) == sorted(PARAGRAPH_DISPOSITION_STATUSES)
+
+
+@dataclass(frozen=True)
+class ParagraphDisposition:
+    """One paragraph of a marker-preserved block, and what became of it."""
+
+    paragraph_id: str
+    text: str
+    status: str
+
+
+class MarkerPreservedBlockText(str):
+    """The block's markdown, which also remembers what happened to each paragraph.
+
+    A ``str`` subclass rather than a new return type on purpose. ``generate_markdown_block``
+    is reached through the ``MarkdownGenerator`` protocol and its result flows through
+    assembly, narration, classification and the UI as plain text; changing the type would
+    touch every one of those and every test double that returns a string. Here the extra
+    information rides along, and any caller that does not know about it — or any string
+    operation that drops the subclass — degrades to exactly the previous behaviour, because
+    ``build_processed_paragraph_registry_entries`` still knows how to re-split on ``\\n\\n``.
+    """
+
+    paragraph_dispositions: tuple[ParagraphDisposition, ...]
+
+    def __new__(
+        cls,
+        text: str,
+        dispositions: Sequence[ParagraphDisposition] = (),
+    ) -> "MarkerPreservedBlockText":
+        instance = super().__new__(cls, text)
+        instance.paragraph_dispositions = tuple(dispositions)
+        return instance
+
+    def __reduce__(self) -> tuple[object, ...]:
+        # Without this, ``copy.deepcopy`` and ``pickle`` reconstruct through
+        # ``cls.__new__(cls, text)`` and lose the record — silently, and only in whichever
+        # code path happens to copy a processed block.
+        return (self.__class__, (str(self), self.paragraph_dispositions))
+
+
+def marker_paragraph_dispositions(value: object) -> tuple[ParagraphDisposition, ...] | None:
+    """The per-paragraph record carried by a processed block, or ``None`` if it has none."""
+
+    dispositions = getattr(value, "paragraph_dispositions", None)
+    if not isinstance(dispositions, tuple):
+        return None
+    if not all(isinstance(item, ParagraphDisposition) for item in dispositions):
+        return None
+    return dispositions
 
 
 class MarkerValidationError(RuntimeError):
@@ -334,7 +413,38 @@ def _build_marker_recovery_user_prompt(
     )
 
 
-def _split_marker_preserved_markdown(markdown: str, expected_paragraph_ids: Sequence[str]) -> list[str]:
+def split_marker_preserved_paragraph_dispositions(
+    markdown: str,
+    expected_paragraph_ids: Sequence[str],
+) -> list[ParagraphDisposition]:
+    """Split a marker-preserved answer into ONE typed record per paragraph.
+
+    Spec 056 E. The predecessor returned a list of strings and raised on the first bad
+    paragraph, which made a block all-or-nothing: on the 2026-08-04 audiobook run block 274
+    held ten paragraphs and every one of them was discarded — replaced by the block's own
+    English source in a Russian narration — because paragraph ``p1336``, whose entire text
+    is ``14``, came back empty. Nine good translations were thrown away with it.
+
+    What stays block-fatal, unchanged, because these are the checks that detect REAL loss:
+
+    - ``markers_missing`` — no marker at all;
+    - ``marker_order_or_identity`` — a marker missing, duplicated or reordered. On the same
+      run this caught the model deleting a paragraph TOGETHER with its marker, losing the
+      heading ``## NGO Initiative s :`` outright;
+    - ``unexpected_prefix`` — text before the first marker, which has no owner.
+
+    What changes: an EMPTY chunk under an exact marker sequence is no longer a block
+    failure. It becomes ``retry_required`` — the caller decides whether there is budget
+    left to ask again (``resolve_marker_paragraph_dispositions``). Emptiness is what the
+    audiobook prompt ORDERS for a paragraph that is pure reference apparatus, while the
+    user prompt forbids a stub in its place, so the contract left the model no legal move
+    and the block paid for it.
+
+    ``paragraph_split_detected`` — a blank line INSIDE one chunk — is relaxed only where
+    the relaxation is provable, and that is the single-marker block; see
+    ``_collapse_single_marker_paragraph_break``.
+    """
+
     matches = list(_PARAGRAPH_MARKER_PATTERN.finditer(markdown))
     if not matches:
         raise MarkerValidationError(
@@ -363,26 +473,196 @@ def _split_marker_preserved_markdown(markdown: str, expected_paragraph_ids: Sequ
             leading_text=leading_text,
         )
 
-    paragraph_chunks: list[str] = []
+    dispositions: list[ParagraphDisposition] = []
     for index, match in enumerate(matches):
         content_end = matches[index + 1].start() if index + 1 < len(matches) else len(markdown)
         chunk = markdown[match.end() : content_end].strip()
-        if not chunk:
+        if "\n\n" in chunk:
+            if len(matches) != 1:
+                raise MarkerValidationError(
+                    "paragraph_split_detected",
+                    raw_markdown=markdown,
+                    expected_paragraph_ids=expected_paragraph_ids,
+                    found_paragraph_ids=found_ids,
+                )
+            chunk = _collapse_single_marker_paragraph_break(chunk, paragraph_id=found_ids[index])
+        dispositions.append(
+            ParagraphDisposition(
+                paragraph_id=found_ids[index],
+                text=chunk,
+                status=(PARAGRAPH_STATUS_ACCEPTED if chunk else PARAGRAPH_STATUS_RETRY_REQUIRED),
+            )
+        )
+    return dispositions
+
+
+def _collapse_single_marker_paragraph_break(chunk: str, *, paragraph_id: str) -> str:
+    """Join a paragraph the model broke in two — ONLY when the block holds one marker.
+
+    With a single marker there is no neighbour to steal from and no neighbour to steal for:
+    ``unexpected_prefix`` already forbids a fragment before the marker, and every character
+    after it belongs to this paragraph because the block contains no other. The collapse is
+    provable, not plausible.
+
+    With two or more markers it is NOT, and no rule was found that makes it so. The model
+    can place text BEFORE a marker:
+
+    .. code-block:: text
+
+        [[DOCX_PARA_p1]]
+        Перевод первого абзаца.
+
+        ## Безопасность
+        [[DOCX_PARA_p2]]
+        [short pause]
+
+    Marker identity and order are exact, both chunks are non-empty, and ``p2``'s source is
+    under ``_COLLAPSED_MARKER_CHUNK_MIN_SOURCE_CHARS`` so the collapse-restore is skipped.
+    Collapsing ``p1``'s chunk would hand ``p2``'s heading to ``p1`` with every remaining
+    check passing — trading a DETECTED failure for a silent corruption. Attributing the
+    trailing fragment would mean comparing it against a source in another language, or
+    keying on how it looks; both are the per-document heuristics Constitution VII forbids.
+    Restricting the collapse to the last chunk does not help either: the mirror case, where
+    an earlier paragraph's text was pushed down past its own marker, has exactly the same
+    shape. So for two or more markers the break stays block-fatal, and that is a recorded
+    accepted outcome rather than a rule that was not found yet.
+
+    Measured on the 2026-08-04 run: of the three ``paragraph_split_detected`` blocks, 118
+    is a single-marker block (one 4 095-character quotation the importer welded together)
+    and is rescued here; 164 and 185 hold two and three markers and stay fatal.
+
+    The pieces are joined with a space rather than kept apart, because the contract is one
+    marker — one paragraph, and the registry maps one paragraph id to one paragraph.
+    """
+
+    parts = [part.strip() for part in re.split(r"\n\s*\n", chunk) if part.strip()]
+    collapsed = " ".join(parts)
+    log_event(
+        logging.INFO,
+        "marker_chunk_paragraph_break_collapsed",
+        "Модель разбила единственный абзац блока на несколько; части склеены обратно в один абзац.",
+        paragraph_id=paragraph_id,
+        part_count=len(parts),
+        collapsed_chars=len(collapsed),
+    )
+    return collapsed
+
+
+def resolve_marker_paragraph_dispositions(
+    dispositions: Sequence[ParagraphDisposition],
+    *,
+    source_paragraph_chunks: Sequence[str] | None = None,
+    allow_unresolved_paragraphs: bool,
+    raw_markdown: str | None = None,
+) -> list[ParagraphDisposition]:
+    """Turn ``retry_required`` paragraphs into a final status, or ask for another attempt.
+
+    While there is retry budget left an unresolved paragraph still raises
+    ``empty_marker_chunk`` — the same error code, the same retry accounting and the same
+    resend as before. That is deliberate: of the seven bare-number paragraphs recorded on
+    the 2026-08-04 run, two WERE rescued by a resend, and giving that up to save a call
+    would trade real text for money.
+
+    On the last attempt the block is no longer thrown away. Each paragraph the model
+    emptied becomes ``omitted``: its own SOURCE text stands in the document, so nothing is
+    lost from the DOCX and the paragraph-per-marker mapping the restorer depends on still
+    holds, and it is excluded from the narration, where source-language text is exactly
+    what spec 054 says must not reach a listener. Every other paragraph keeps its
+    translation.
+
+    The collapse-restore runs FIRST, on the raw texts, so an emptied paragraph whose text
+    was visibly absorbed by a neighbour is still repaired as a pair (``source_restored``)
+    instead of being re-instated on its own and shipped twice.
+    """
+
+    texts = [disposition.text for disposition in dispositions]
+    statuses = list(disposition.status for disposition in dispositions)
+
+    if source_paragraph_chunks is not None:
+        restored_texts = list(
+            restore_collapsed_marker_paragraphs(
+                list(texts),
+                source_paragraph_chunks,
+                expected_paragraph_ids=[disposition.paragraph_id for disposition in dispositions],
+            )
+        )
+        if len(restored_texts) == len(texts):
+            for index, (before, after) in enumerate(zip(texts, restored_texts)):
+                if before != after:
+                    statuses[index] = PARAGRAPH_STATUS_SOURCE_RESTORED
+            texts = restored_texts
+
+    unresolved_indexes = [
+        index
+        for index, text in enumerate(texts)
+        if not text and statuses[index] != PARAGRAPH_STATUS_SOURCE_RESTORED
+    ]
+    if unresolved_indexes and not allow_unresolved_paragraphs:
+        raise MarkerValidationError(
+            "empty_marker_chunk",
+            # The model's ACTUAL answer when the caller has it (spec 056 D' captures this
+            # exception's ``raw_markdown`` verbatim, and a reconstruction would not replay).
+            raw_markdown=(
+                raw_markdown
+                if raw_markdown is not None
+                else "\n\n".join(
+                    f"[[DOCX_PARA_{disposition.paragraph_id}]]\n{disposition.text}"
+                    for disposition in dispositions
+                )
+            ),
+            expected_paragraph_ids=[disposition.paragraph_id for disposition in dispositions],
+            found_paragraph_ids=[disposition.paragraph_id for disposition in dispositions],
+        )
+
+    for index in unresolved_indexes:
+        statuses[index] = PARAGRAPH_STATUS_OMITTED
+        if source_paragraph_chunks is not None and index < len(source_paragraph_chunks):
+            texts[index] = source_paragraph_chunks[index]
+
+    resolved = [
+        ParagraphDisposition(paragraph_id=disposition.paragraph_id, text=text, status=status)
+        for disposition, text, status in zip(dispositions, texts, statuses)
+    ]
+    if unresolved_indexes:
+        # The run report must be able to say WHICH paragraphs the model produced nothing
+        # for. Without this the block reports OK and a listener simply never hears them.
+        log_event(
+            logging.WARNING,
+            "marker_paragraph_omitted",
+            "Модель не вернула текст для отдельных абзацев блока; в документе остаётся исходный текст, в озвучку они не попадают.",
+            omitted_paragraph_ids=[resolved[index].paragraph_id for index in unresolved_indexes],
+            omitted_paragraph_count=len(unresolved_indexes),
+            paragraph_count=len(resolved),
+        )
+    _record_paragraph_dispositions(resolved)
+    return resolved
+
+
+def _record_paragraph_dispositions(dispositions: Sequence[ParagraphDisposition]) -> None:
+    counts: dict[str, int] = {}
+    for disposition in dispositions:
+        counts[disposition.status] = counts.get(disposition.status, 0) + 1
+    for status, count in counts.items():
+        record_paragraph_disposition(status=status, count=count)
+
+
+def _split_marker_preserved_markdown(markdown: str, expected_paragraph_ids: Sequence[str]) -> list[str]:
+    """Strict split, used on the SOURCE text where every chunk is a real paragraph.
+
+    The source is built by the pipeline, not by the model, so an empty or broken chunk here
+    is a pipeline defect and not a contract the model could not satisfy. It keeps raising.
+    """
+
+    dispositions = split_marker_preserved_paragraph_dispositions(markdown, expected_paragraph_ids)
+    for disposition in dispositions:
+        if not disposition.text:
             raise MarkerValidationError(
                 "empty_marker_chunk",
                 raw_markdown=markdown,
                 expected_paragraph_ids=expected_paragraph_ids,
-                found_paragraph_ids=found_ids,
+                found_paragraph_ids=[item.paragraph_id for item in dispositions],
             )
-        if "\n\n" in chunk:
-            raise MarkerValidationError(
-                "paragraph_split_detected",
-                raw_markdown=markdown,
-                expected_paragraph_ids=expected_paragraph_ids,
-                found_paragraph_ids=found_ids,
-            )
-        paragraph_chunks.append(chunk)
-    return paragraph_chunks
+    return [disposition.text for disposition in dispositions]
 
 
 def _visible_marker_chunk_length(chunk: str) -> int:
@@ -504,25 +784,54 @@ def _marker_paragraph_id(expected_paragraph_ids: Sequence[str] | None, index: in
     return str(index)
 
 
+def _strip_paragraph_markers_from_source(
+    target_text: str,
+    expected_paragraph_ids: Sequence[str] | None,
+    *,
+    marker_mode: bool,
+) -> str:
+    """Drop the markers from the block's OWN source text.
+
+    Separate from the model-output path on purpose. The source is not an answer: it has no
+    disposition, it must not be counted in the run's per-paragraph statuses (counting it
+    would report every source paragraph as ``accepted``), and an empty chunk here is a
+    pipeline defect rather than a contract the model could not satisfy — so it keeps
+    raising, exactly as before.
+    """
+
+    if not marker_mode:
+        return target_text
+    if not expected_paragraph_ids:
+        raise RuntimeError("paragraph_marker_validation_failed:missing_expected_ids")
+    return "\n\n".join(_split_marker_preserved_markdown(target_text, expected_paragraph_ids))
+
+
 def _strip_and_validate_paragraph_markers(
     markdown: str,
     expected_paragraph_ids: Sequence[str] | None,
     *,
     marker_mode: bool,
     source_paragraph_chunks: Sequence[str] | None = None,
+    allow_unresolved_paragraphs: bool = False,
 ) -> str:
     if not marker_mode:
         return markdown
     if not expected_paragraph_ids:
         raise RuntimeError("paragraph_marker_validation_failed:missing_expected_ids")
-    paragraph_chunks = _split_marker_preserved_markdown(markdown, expected_paragraph_ids)
-    if source_paragraph_chunks is not None:
-        paragraph_chunks = restore_collapsed_marker_paragraphs(
-            paragraph_chunks,
-            source_paragraph_chunks,
-            expected_paragraph_ids=expected_paragraph_ids,
-        )
-    return "\n\n".join(paragraph_chunks)
+    dispositions = resolve_marker_paragraph_dispositions(
+        split_marker_preserved_paragraph_dispositions(markdown, expected_paragraph_ids),
+        source_paragraph_chunks=source_paragraph_chunks,
+        allow_unresolved_paragraphs=allow_unresolved_paragraphs,
+        raw_markdown=markdown,
+    )
+    # The joined string still carries exactly one paragraph per marker — an ``omitted``
+    # paragraph contributes its own source text — so everything downstream that counts
+    # paragraphs keeps counting the same number. What rides along is WHY each one is
+    # there, which is what the registry needs and could never recover from the join.
+    return MarkerPreservedBlockText(
+        "\n\n".join(disposition.text for disposition in dispositions),
+        dispositions,
+    )
 
 
 def _normalize_leakage_comparison_text(text: str) -> str:
@@ -628,12 +937,14 @@ def _finalize_generated_markdown(
     marker_mode: bool,
     allow_persistent_context_leakage: bool,
     source_paragraph_chunks: Sequence[str] | None = None,
+    allow_unresolved_paragraphs: bool = False,
 ) -> str:
     cleaned_markdown = _strip_and_validate_paragraph_markers(
         markdown,
         expected_paragraph_ids,
         marker_mode=marker_mode,
         source_paragraph_chunks=source_paragraph_chunks,
+        allow_unresolved_paragraphs=allow_unresolved_paragraphs,
     )
     leaked_fragment = _detect_context_leakage(
         cleaned_markdown,
@@ -1090,6 +1401,8 @@ def _recover_from_persistent_empty_response(
             if marker_mode and expected_paragraph_ids
             else None
         ),
+        # The recovery call is the last chance there is; there is nothing left to retry for.
+        allow_unresolved_paragraphs=True,
     )
     if not cleaned_markdown.strip():
         raise RuntimeError("Модель вернула пустой ответ (empty_response).")
@@ -1251,7 +1564,7 @@ def generate_markdown_block(
         ),
         target_text=target_text,
     )
-    target_text_for_leakage = _strip_and_validate_paragraph_markers(
+    target_text_for_leakage = _strip_paragraph_markers_from_source(
         target_text,
         expected_paragraph_ids,
         marker_mode=marker_mode,
@@ -1280,6 +1593,12 @@ def generate_markdown_block(
                 marker_mode=marker_mode,
                 allow_persistent_context_leakage=attempt >= max_retries,
                 source_paragraph_chunks=source_paragraph_chunks,
+                # Same shape as the leakage fail-open one line above: while budget remains
+                # an unanswered paragraph is worth asking about again (2 of 7 bare-number
+                # paragraphs were rescued that way on the 2026-08-04 run), and on the last
+                # attempt the answer stands with a per-paragraph status instead of the
+                # whole block being replaced by its own source.
+                allow_unresolved_paragraphs=attempt >= max_retries,
             )
         except Exception as exc:
             last_exception = exc
@@ -1371,6 +1690,15 @@ def generate_markdown_block(
                 marker_mode=marker_mode,
             ):
                 record_model_output_discarded(reason="marker_validation_source_fallback", block_count=1)
+                # Spec 056 E: the block-level fallback restores the source of EVERY
+                # paragraph in it, and the per-paragraph counters have to say so — otherwise
+                # ``source_restored`` would read as zero on a run where a whole block went
+                # back to its own source text.
+                if block_paragraph_count:
+                    record_paragraph_disposition(
+                        status=PARAGRAPH_STATUS_SOURCE_RESTORED,
+                        count=block_paragraph_count,
+                    )
                 log_event(
                     logging.WARNING,
                     "markdown_marker_validation_source_fallback",
