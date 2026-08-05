@@ -64,6 +64,27 @@ def isolate_formatting_diagnostics_dir(
     monkeypatch.setattr(pipeline, "FORMATTING_DIAGNOSTICS_DIR", diagnostics_dir)
 
 
+@pytest.fixture(autouse=True)
+def isolate_marker_attempt_diagnostics_dir(
+    tmp_path_factory: pytest.TempPathFactory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Same reason as the fixture above, for the rejected-marker-attempt family.
+
+    Retention there is family-wide too (7 days / 400 artifacts), and a full test run
+    produces well over a hundred rejected attempts — enough to evict the operator evidence
+    the directory exists to hold. Tests that assert on the artifact override this with
+    their own directory.
+    """
+    import docxaicorrector.generation.marker_attempt_capture as marker_attempt_capture
+
+    monkeypatch.setattr(
+        marker_attempt_capture,
+        "MARKER_ATTEMPT_DIAGNOSTICS_DIR",
+        tmp_path_factory.mktemp("marker_attempts"),
+    )
+
+
 @pytest.fixture
 def fake_png_bytes() -> bytes:
     return base64.b64decode(

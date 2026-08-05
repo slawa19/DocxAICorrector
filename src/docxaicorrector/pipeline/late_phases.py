@@ -1195,6 +1195,41 @@ def finalize_processing_success(
                 "chars": narration_source_fallback_summary["excluded_source_fallback_chars"],
             },
         })
+    # Spec 056 E's per-PARAGRAPH twin of the block-level exclusion above, published the same
+    # way. It was shipped reporting a paragraph count in one WARNING and nothing else: no
+    # characters, so it could not be read against spec 054's metric, and no notice, so the
+    # per-paragraph remedy was quieter than the block-level failure it replaced. A remedy
+    # that makes a loss smaller must not also make it less visible.
+    narration_omitted_paragraph_summary: dict[str, object] = {
+        "excluded_omitted_paragraph_count": int(
+            getattr(state, "narration_excluded_omitted_paragraph_count", 0) or 0
+        ),
+        "excluded_omitted_paragraph_chars": int(
+            getattr(state, "narration_excluded_omitted_chars", 0) or 0
+        ),
+    }
+    if narration_text is not None and narration_omitted_paragraph_summary["excluded_omitted_paragraph_count"]:
+        dependencies.log_event(
+            logging.WARNING,
+            "narration_omitted_paragraphs_excluded",
+            "Абзацы, для которых модель не вернула текст, исключены из narration; в DOCX исходный текст сохранён.",
+            filename=context.uploaded_filename,
+            processing_operation=context.processing_operation,
+            narration_mode="standalone" if context.processing_operation == "audiobook" else "postprocess",
+            review_data=True,
+            advisory=True,
+            narration_chars=len(narration_text),
+            **narration_omitted_paragraph_summary,
+        )
+        result_notices.append({
+            "kind": "narration",
+            "level": "warning",
+            "message_key": "result.narration_omitted_paragraphs_excluded",
+            "params": {
+                "count": narration_omitted_paragraph_summary["excluded_omitted_paragraph_count"],
+                "chars": narration_omitted_paragraph_summary["excluded_omitted_paragraph_chars"],
+            },
+        })
     if narration_text is not None:
         narration_review_findings = _collect_narration_artifact_review_findings(narration_text)
         narration_review_summary = _summarize_narration_review_findings(narration_review_findings)
@@ -1419,6 +1454,10 @@ def finalize_processing_success(
                     # Same rule as the review counters below: zero is the positive statement
                     # "no block was dropped for this reason", never an absent field.
                     **narration_source_fallback_summary,
+                    # Spec 056 E's per-paragraph twin of the two counters above, on the same
+                    # record and under the same rule: a zero states that no paragraph was
+                    # withheld, it is never an absent field.
+                    **narration_omitted_paragraph_summary,
                     # spec 054 Finding 4: the review counters travel with the record of the
                     # SAVED file, so the artifact on disk and the reason to inspect it are
                     # findable from one log line. Zero here is a positive statement that the

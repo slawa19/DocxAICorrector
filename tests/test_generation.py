@@ -1,4 +1,5 @@
 import io
+import logging
 import threading
 import zipfile
 from types import SimpleNamespace
@@ -1469,13 +1470,28 @@ def test_generate_markdown_block_marker_mode_retries_and_recovers_when_markers_a
 
 
 def test_generate_markdown_block_marker_mode_falls_back_to_source_after_persistent_marker_validation_failure(monkeypatch):
+    """A marker the model INVENTED is still block-fatal, and still ends at the source text.
+
+    Spec 056 E changed the example this test used to carry. It used to send an EMPTY chunk
+    (``[[DOCX_PARA_p0001]]\\n``) and assert three calls ending in
+    ``markdown_marker_validation_source_fallback``. That assertion was a description of the
+    defect, not of correct behaviour: emptiness is what the audiobook prompt ORDERS for a
+    paragraph of pure reference apparatus while the user prompt forbids a stub in its
+    place, so the block was billed for a retry and a recovery call it could never pass, and
+    then thrown away whole. Under E an empty chunk is a paragraph status, not a block
+    failure — see ``test_empty_chunk_no_longer_discards_the_paragraphs_around_it``.
+
+    A wrong marker id is a different matter and stays exactly as it was: it is one of the
+    three checks that detect real loss, so the retries, the recovery call and the
+    block-level source fallback all still happen.
+    """
     attempts = []
     sleep_calls = []
     logged_events = []
 
     def create_response(**kwargs):
         attempts.append(dict(kwargs))
-        return SimpleNamespace(output_text="[[DOCX_PARA_p0001]]\n")
+        return SimpleNamespace(output_text="[[DOCX_PARA_p9999]]\nЧужой маркер")
 
     client = SimpleNamespace(responses=SimpleNamespace(create=create_response))
     monkeypatch.setattr(generation.time, "sleep", sleep_calls.append)
@@ -1773,6 +1789,518 @@ def test_generate_markdown_block_marker_mode_replaces_stub_answer_with_source_pa
     assert result == f"{_STUB_SOURCE_ABSORBED}\n\n{_STUB_SOURCE_COLLAPSED}"
     # The paragraph-per-marker count is the invariant that must not move.
     assert len(result.split("\n\n")) == 2
+
+
+# --- spec 056 E: a typed disposition per paragraph ----------------------------------
+# A block used to be all-or-nothing. On the 2026-08-04 audiobook run block 274 held ten
+# paragraphs and all ten were discarded — replaced by the block's own English source in a
+# Russian narration — because paragraph p1336, whose entire text is "14", came back empty.
+
+
+def test_paragraph_disposition_status_names_match_the_reporting_vocabulary():
+    """One source of truth: the generator's names are the buckets the run report publishes."""
+
+    assert sorted(
+        [
+            generation.PARAGRAPH_STATUS_ACCEPTED,
+            generation.PARAGRAPH_STATUS_OMITTED,
+            generation.PARAGRAPH_STATUS_SOURCE_RESTORED,
+            generation.PARAGRAPH_STATUS_RETRY_REQUIRED,
+        ]
+    ) == sorted(model_accounting.PARAGRAPH_DISPOSITION_STATUSES)
+
+
+# --- the three checks that detect REAL loss stay block-fatal ------------------------
+
+
+def test_missing_markers_still_fail_the_block():
+    with pytest.raises(generation.MarkerValidationError) as exc_info:
+        generation.split_marker_preserved_paragraph_dispositions(
+            "Просто текст без единого маркера.",
+            ["p0001", "p0002"],
+        )
+    assert exc_info.value.error_code == "markers_missing"
+
+
+def test_a_dropped_marker_still_fails_the_block():
+    """Calls 199/200/201 of the 2026-08-04 run: the model deleted a paragraph WITH its marker.
+
+    The lost ``p0957`` is a heading (``## NGO Initiative s :``) and it is
+    ``absent_from_artifact`` — this is the one mechanism of the three where content is
+    genuinely lost rather than reverted to source, so it must never become a status.
+    """
+    with pytest.raises(generation.MarkerValidationError) as exc_info:
+        generation.split_marker_preserved_paragraph_dispositions(
+            "[[DOCX_PARA_p0958]]\nАльянс токенов здоровья.",
+            ["p0957", "p0958"],
+        )
+    assert exc_info.value.error_code == "marker_order_or_identity"
+    assert exc_info.value.expected_paragraph_ids == ("p0957", "p0958")
+    assert exc_info.value.found_paragraph_ids == ("p0958",)
+
+
+def test_a_duplicated_marker_still_fails_the_block():
+    with pytest.raises(generation.MarkerValidationError) as exc_info:
+        generation.split_marker_preserved_paragraph_dispositions(
+            "[[DOCX_PARA_p0001]]\nПервый.\n\n[[DOCX_PARA_p0001]]\nОн же снова.",
+            ["p0001", "p0002"],
+        )
+    assert exc_info.value.error_code == "marker_order_or_identity"
+
+
+def test_reordered_markers_still_fail_the_block():
+    with pytest.raises(generation.MarkerValidationError) as exc_info:
+        generation.split_marker_preserved_paragraph_dispositions(
+            "[[DOCX_PARA_p0002]]\nВторой.\n\n[[DOCX_PARA_p0001]]\nПервый.",
+            ["p0001", "p0002"],
+        )
+    assert exc_info.value.error_code == "marker_order_or_identity"
+
+
+def test_text_before_the_first_marker_still_fails_the_block():
+    with pytest.raises(generation.MarkerValidationError) as exc_info:
+        generation.split_marker_preserved_paragraph_dispositions(
+            "Вот обработанный блок:\n\n[[DOCX_PARA_p0001]]\nПервый абзац.",
+            ["p0001"],
+        )
+    assert exc_info.value.error_code == "unexpected_prefix"
+    assert exc_info.value.leading_text_preview == "Вот обработанный блок:"
+
+
+# --- the paragraph-break counterexample: p1 must not be able to take p2's heading ----
+
+
+_COUNTEREXAMPLE_ANSWER = (
+    "[[DOCX_PARA_p1]]\n"
+    "Перевод первого абзаца.\n"
+    "\n"
+    "## Безопасность\n"
+    "[[DOCX_PARA_p2]]\n"
+    "[short pause]"
+)
+
+
+def test_a_paragraph_break_in_a_multi_marker_block_is_still_rejected():
+    """The standing counterexample of spec 056 anti-regression 2.
+
+    Marker identity and order are exact, both chunks are non-empty, and ``p2``'s source is
+    below ``_COLLAPSED_MARKER_CHUNK_MIN_SOURCE_CHARS`` so the collapse-restore is skipped.
+    If the break were collapsed, ``p1`` would take ``p2``'s heading and every remaining
+    check would pass — a detected failure traded for a silent corruption. There is no
+    signal in this answer that distinguishes "the model split my paragraph" from "the model
+    placed the next paragraph's heading early", so the break stays block-fatal wherever a
+    neighbour exists. This must fail loudly; it must never pass silently.
+    """
+
+    with pytest.raises(generation.MarkerValidationError) as exc_info:
+        generation.split_marker_preserved_paragraph_dispositions(
+            _COUNTEREXAMPLE_ANSWER,
+            ["p1", "p2"],
+        )
+    assert exc_info.value.error_code == "paragraph_split_detected"
+
+
+def test_the_counterexample_never_reaches_the_document_through_the_generator(monkeypatch):
+    """End-to-end twin of the check above: the heading never migrates to ``p1``."""
+
+    monkeypatch.setattr(generation.time, "sleep", lambda _seconds: None)
+    source = "[[DOCX_PARA_p1]]\nFirst source paragraph.\n\n[[DOCX_PARA_p2]]\n## Safety"
+
+    client = SimpleNamespace(
+        responses=SimpleNamespace(create=lambda **_kwargs: SimpleNamespace(output_text=_COUNTEREXAMPLE_ANSWER))
+    )
+
+    result = generation.generate_markdown_block(
+        client=_as_openai_client(client),
+        model="gpt-5.4",
+        system_prompt="system",
+        target_text=source,
+        context_before="",
+        context_after="",
+        max_retries=2,
+        expected_paragraph_ids=["p1", "p2"],
+        marker_mode=True,
+    )
+
+    assert result == "First source paragraph.\n\n## Safety"
+    assert "Перевод первого абзаца. ## Безопасность" not in result
+
+
+def test_a_paragraph_break_in_a_single_marker_block_is_collapsed():
+    """Block 118 of the 2026-08-04 run: one 4 095-character welded quotation, seven
+    spoken paragraphs back, whole block discarded.
+
+    With one marker there is no neighbour to steal from, and ``unexpected_prefix`` already
+    forbids a fragment before it, so every character after the marker provably belongs to
+    that paragraph.
+    """
+
+    dispositions = generation.split_marker_preserved_paragraph_dispositions(
+        "[[DOCX_PARA_p0554]]\nПервое предложение.\n\nВторое предложение.\n\nТретье.",
+        ["p0554"],
+    )
+
+    assert [(item.paragraph_id, item.status) for item in dispositions] == [("p0554", "accepted")]
+    assert dispositions[0].text == "Первое предложение. Второе предложение. Третье."
+
+
+# --- an empty chunk is a paragraph status, not a block failure ----------------------
+
+
+def test_empty_chunk_asks_for_a_retry_while_there_is_budget():
+    """Two of the seven bare-number paragraphs on the 2026-08-04 run WERE rescued by a
+    resend, so the retry is kept exactly as it was — same error code, same accounting."""
+
+    dispositions = generation.split_marker_preserved_paragraph_dispositions(
+        "[[DOCX_PARA_p1336]]\n\n[[DOCX_PARA_p1337]]\nПеревод.",
+        ["p1336", "p1337"],
+    )
+    assert [item.status for item in dispositions] == ["retry_required", "accepted"]
+
+    with pytest.raises(generation.MarkerValidationError) as exc_info:
+        generation.resolve_marker_paragraph_dispositions(
+            dispositions,
+            source_paragraph_chunks=["14", "Why not mobilise the Fund?"],
+            allow_unresolved_paragraphs=False,
+        )
+    assert exc_info.value.error_code == "empty_marker_chunk"
+
+
+def test_empty_chunk_no_longer_discards_the_paragraphs_around_it():
+    """Block 274, replayed from its real recorded answer shape: 9 kept, 1 typed."""
+
+    source_chunks = [f"Source paragraph {index}." for index in range(10)]
+    source_chunks[3] = "14"
+    answer = "\n\n".join(
+        f"[[DOCX_PARA_p{1333 + index}]]\n" + ("" if index == 3 else f"Перевод абзаца {index}.")
+        for index in range(10)
+    )
+    paragraph_ids = [f"p{1333 + index}" for index in range(10)]
+
+    dispositions = generation.resolve_marker_paragraph_dispositions(
+        generation.split_marker_preserved_paragraph_dispositions(answer, paragraph_ids),
+        source_paragraph_chunks=source_chunks,
+        allow_unresolved_paragraphs=True,
+    )
+
+    statuses = [item.status for item in dispositions]
+    assert statuses.count("accepted") == 9
+    assert statuses.count("omitted") == 1
+    assert dispositions[3].paragraph_id == "p1336"
+    assert dispositions[3].status == "omitted"
+    # The source stands in the DOCUMENT so the paragraph-per-marker mapping survives.
+    assert dispositions[3].text == "14"
+    assert dispositions[0].text == "Перевод абзаца 0."
+
+
+def test_an_empty_chunk_is_an_omission_and_never_a_merge():
+    """An EMPTY answer must not be read as evidence that a neighbour swallowed the text.
+
+    Until spec 056 E an empty chunk raised ``empty_marker_chunk`` before the restorer was
+    reached, so the restorer was calibrated on stubs and never saw one. Feeding empties to
+    it was measurably wrong: the merge evidence is "a neighbour grew by at least half of
+    what this paragraph holds", and a Russian translation of an English paragraph is
+    routinely 1.5x its source — so an ordinary neighbour looks like an absorber. The block
+    then reverted the emptied paragraph AND its good neighbour to the source, marked both
+    ``source_restored`` (a status the narration keeps) and read the source aloud.
+    """
+
+    returned = ["", f"{_STUB_SOURCE_COLLAPSED} {_STUB_SOURCE_ABSORBED}"]
+    dispositions = [
+        generation.ParagraphDisposition(paragraph_id="p1344", text=returned[0], status="retry_required"),
+        generation.ParagraphDisposition(paragraph_id="p1345", text=returned[1], status="accepted"),
+    ]
+
+    resolved = generation.resolve_marker_paragraph_dispositions(
+        dispositions,
+        source_paragraph_chunks=[_STUB_SOURCE_COLLAPSED, _STUB_SOURCE_ABSORBED],
+        allow_unresolved_paragraphs=True,
+    )
+
+    assert [item.status for item in resolved] == ["omitted", "accepted"]
+    # The emptied paragraph keeps its source in the DOCUMENT, so the paragraph-per-marker
+    # mapping holds; the narration filter drops it by status.
+    assert resolved[0].text == _STUB_SOURCE_COLLAPSED
+    # ANTI-VACUUM: the neighbour's answer is NOT thrown away with it.
+    assert resolved[1].text == returned[1]
+
+
+def test_an_empty_chunk_does_not_stop_a_real_stub_from_being_restored_as_a_pair():
+    """ANTI-VACUUM for the rule above: the merge the restorer exists for still fires.
+
+    A merge leaves a STUB behind, not an empty chunk ("(Пусто)", 7 occurrences on the
+    2026-08-03 literary-edit run). Excluding empties must not blunt that.
+    """
+
+    returned = ["(Пусто)", f"{_STUB_SOURCE_COLLAPSED} {_STUB_SOURCE_ABSORBED}"]
+    dispositions = [
+        generation.ParagraphDisposition(paragraph_id="p1344", text=returned[0], status="accepted"),
+        generation.ParagraphDisposition(paragraph_id="p1345", text=returned[1], status="accepted"),
+    ]
+
+    resolved = generation.resolve_marker_paragraph_dispositions(
+        dispositions,
+        source_paragraph_chunks=[_STUB_SOURCE_COLLAPSED, _STUB_SOURCE_ABSORBED],
+        allow_unresolved_paragraphs=True,
+    )
+
+    assert [item.status for item in resolved] == ["source_restored", "source_restored"]
+    assert [item.text for item in resolved] == [_STUB_SOURCE_COLLAPSED, _STUB_SOURCE_ABSORBED]
+    # The swallowed paragraph is delivered ONCE.
+    assert sum(_STUB_SOURCE_COLLAPSED in item.text for item in resolved) == 1
+
+
+def test_generated_block_carries_its_paragraph_dispositions(monkeypatch):
+    monkeypatch.setattr(generation.time, "sleep", lambda _seconds: None)
+    source = "[[DOCX_PARA_p1336]]\n14\n\n[[DOCX_PARA_p1337]]\nWhy not mobilise the Fund?"
+    answer = "[[DOCX_PARA_p1336]]\n\n[[DOCX_PARA_p1337]]\nПочему бы не задействовать фонд?"
+
+    client = SimpleNamespace(responses=SimpleNamespace(create=lambda **_kwargs: SimpleNamespace(output_text=answer)))
+
+    result = generation.generate_markdown_block(
+        client=_as_openai_client(client),
+        model="gpt-5.4",
+        system_prompt="system",
+        target_text=source,
+        context_before="",
+        context_after="",
+        max_retries=2,
+        expected_paragraph_ids=["p1336", "p1337"],
+        marker_mode=True,
+        block_index=274,
+    )
+
+    dispositions = generation.marker_paragraph_dispositions(result)
+    assert dispositions is not None
+    assert [(item.paragraph_id, item.status) for item in dispositions] == [
+        ("p1336", "omitted"),
+        ("p1337", "accepted"),
+    ]
+    # Still one paragraph per marker in the joined text, so nothing downstream re-counts.
+    assert result == "14\n\nПочему бы не задействовать фонд?"
+    assert isinstance(result, str)
+
+
+def test_paragraph_dispositions_are_counted_for_the_run_report():
+    model_accounting.reset_run_model_accounting()
+    generation._finalize_generated_markdown(
+        "[[DOCX_PARA_p1]]\nПервый.\n\n[[DOCX_PARA_p2]]\n",
+        target_text="First.\n\n14",
+        context_before="",
+        context_after="",
+        expected_paragraph_ids=["p1", "p2"],
+        marker_mode=True,
+        allow_persistent_context_leakage=True,
+        source_paragraph_chunks=["First.", "14"],
+        allow_unresolved_paragraphs=True,
+    )
+
+    counts = model_accounting.snapshot_run_model_accounting()["paragraph_disposition_counts"]
+    # A zero is an assertion here, not a missing field.
+    assert counts == {"accepted": 1, "omitted": 1, "retry_required": 0, "source_restored": 0}
+
+
+def test_a_plain_string_carries_no_dispositions():
+    assert generation.marker_paragraph_dispositions("просто строка") is None
+
+
+# --- spec 056 D': the rejected answer is written down, inside the attempt loop ------
+# A $0.53 audiobook run left NO record of what the model answered for the six blocks it
+# dropped, because the only writer that keeps a raw response is reachable from the path
+# where a block RAISES — and a controlled fallback returns a plain string instead.
+
+
+def _capture_marker_attempts(monkeypatch, tmp_path):
+    """Point the attempt-capture family at ``tmp_path`` and return the calls it logged."""
+
+    from docxaicorrector.generation import marker_attempt_capture
+
+    monkeypatch.setattr(
+        marker_attempt_capture,
+        "MARKER_ATTEMPT_DIAGNOSTICS_DIR",
+        tmp_path / "marker_attempts",
+    )
+    logged: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
+    monkeypatch.setattr(
+        marker_attempt_capture,
+        "log_event",
+        lambda *args, **kwargs: logged.append((args, kwargs)),
+    )
+    return logged
+
+
+def _read_marker_attempt_artifacts(tmp_path) -> list[dict[str, Any]]:
+    import json
+
+    directory = tmp_path / "marker_attempts"
+    if not directory.exists():
+        return []
+    payloads = [json.loads(path.read_text(encoding="utf-8")) for path in sorted(directory.glob("*.json"))]
+    return sorted(payloads, key=lambda payload: (payload["attempt"], payload["stage"]))
+
+
+def test_controlled_source_fallback_still_writes_every_rejected_answer(monkeypatch, tmp_path):
+    """The path that leaves NO evidence today: the block falls back and returns normally.
+
+    ``generate_markdown_block`` swallows the recovery exception and hands back the block's
+    own source text, so the call site holds neither the answer nor the exception. Every
+    attempt must therefore have been captured before that happened.
+    """
+
+    logged = _capture_marker_attempts(monkeypatch, tmp_path)
+    monkeypatch.setattr(generation.time, "sleep", lambda _seconds: None)
+    target_text = "[[DOCX_PARA_p0957]]\n## NGO Initiatives:\n\n[[DOCX_PARA_p0958]]\nThe Wellness Token Alliance."
+    # Call 199/200/201 of the 2026-08-04 run: expected ['p0957','p0958'], got ['p0958'] —
+    # the model deleted a paragraph TOGETHER with its marker, and the heading was lost.
+    rejected_answer = "[[DOCX_PARA_p0958]]\nАльянс токенов здоровья."
+
+    def create_response(**kwargs):
+        return SimpleNamespace(output_text=rejected_answer)
+
+    client = SimpleNamespace(responses=SimpleNamespace(create=create_response))
+
+    result = generation.generate_markdown_block(
+        client=_as_openai_client(client),
+        model="gpt-5.4",
+        system_prompt="system",
+        target_text=target_text,
+        context_before="before",
+        context_after="after",
+        max_retries=2,
+        expected_paragraph_ids=["p0957", "p0958"],
+        marker_mode=True,
+        block_index=200,
+    )
+
+    # A dropped marker is real loss and stays block-fatal: the source stands.
+    assert result == "## NGO Initiatives:\n\nThe Wellness Token Alliance."
+
+    payloads = _read_marker_attempt_artifacts(tmp_path)
+    # 2 loop attempts + the informed recovery call.
+    assert [(payload["attempt"], payload["stage"]) for payload in payloads] == [
+        (1, "attempt"),
+        (2, "attempt"),
+        (3, "recovery"),
+    ]
+    for payload in payloads:
+        assert payload["schema_version"] == 1
+        assert payload["block_index"] == 200
+        assert payload["error_code"] == "marker_order_or_identity"
+        assert payload["expected_paragraph_ids"] == ["p0957", "p0958"]
+        assert payload["found_paragraph_ids"] == ["p0958"]
+        # The FULL answer, not a preview: the point is that it can be replayed offline.
+        assert payload["raw_response"] == rejected_answer
+        assert payload["raw_response_chars"] == len(rejected_answer)
+    assert [call[0][1] for call in logged] == ["marker_attempt_rejected"] * 3
+    # The model payload never reaches the log line (LOGGING_AND_ARTIFACT_RETENTION §1.5).
+    assert all("raw_response" not in call[1] for call in logged)
+    assert all(call[1]["raw_response_chars"] == len(rejected_answer) for call in logged)
+
+
+def test_rejected_answer_capture_keeps_the_full_response_past_the_preview_limit(monkeypatch, tmp_path):
+    """``MarkerValidationError`` truncates its preview at 1000 chars; the artifact must not."""
+
+    _capture_marker_attempts(monkeypatch, tmp_path)
+    long_paragraph = "Длинный переведённый абзац. " * 120
+    rejected_answer = f"[[DOCX_PARA_p0002]]\n{long_paragraph}"
+
+    def create_response(**kwargs):
+        return SimpleNamespace(output_text=rejected_answer)
+
+    client = SimpleNamespace(responses=SimpleNamespace(create=create_response))
+
+    result = generation.generate_markdown_block(
+        client=_as_openai_client(client),
+        model="gpt-5.4",
+        system_prompt="system",
+        target_text="[[DOCX_PARA_p0001]]\nSource paragraph.",
+        context_before="",
+        context_after="",
+        max_retries=1,
+        expected_paragraph_ids=["p0001"],
+        marker_mode=True,
+        block_index=7,
+    )
+
+    # Wrong marker id is block-fatal, so the source stands — and that is exactly the path
+    # that used to leave nothing behind.
+    assert result == "Source paragraph."
+    payloads = _read_marker_attempt_artifacts(tmp_path)
+    assert payloads
+    assert len(rejected_answer) > 1000
+    # The captured answer is the NORMALISED model output (fences stripped) — exactly what
+    # the validator judged, which is what a replay has to re-judge.
+    assert payloads[0]["raw_response"] == rejected_answer.strip()
+    assert payloads[0]["error_code"] == "marker_order_or_identity"
+    assert payloads[0]["found_paragraph_ids"] == ["p0002"]
+
+
+def test_rejected_answer_capture_is_silent_for_failures_that_carry_no_answer(monkeypatch, tmp_path):
+    """A transient API error has no model answer to keep — do not write an empty record."""
+
+    _capture_marker_attempts(monkeypatch, tmp_path)
+    monkeypatch.setattr(generation.time, "sleep", lambda _seconds: None)
+
+    def create_response(**kwargs):
+        return SimpleNamespace(output_text="")
+
+    client = SimpleNamespace(responses=SimpleNamespace(create=create_response))
+
+    generation.generate_markdown_block(
+        client=_as_openai_client(client),
+        model="gpt-5.4",
+        system_prompt="system",
+        target_text="Обычный блок без маркеров.",
+        context_before="",
+        context_after="",
+        max_retries=1,
+        expected_paragraph_ids=None,
+        marker_mode=False,
+        block_index=3,
+    )
+
+    assert _read_marker_attempt_artifacts(tmp_path) == []
+
+
+def test_rejected_answer_capture_failure_never_breaks_generation(monkeypatch, tmp_path):
+    """Losing a diagnostic must not take down the generation it only observes."""
+
+    from docxaicorrector.generation import marker_attempt_capture
+
+    _capture_marker_attempts(monkeypatch, tmp_path)
+
+    def explode(**_kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(marker_attempt_capture, "write_marker_attempt_artifact", explode)
+    monkeypatch.setattr(generation.time, "sleep", lambda _seconds: None)
+
+    answers = iter(
+        [
+            "[[DOCX_PARA_p0002]]\nWrong marker.",
+            "[[DOCX_PARA_p0001]]\nПравильный ответ.",
+        ]
+    )
+
+    def create_response(**kwargs):
+        return SimpleNamespace(output_text=next(answers))
+
+    client = SimpleNamespace(responses=SimpleNamespace(create=create_response))
+
+    result = generation.generate_markdown_block(
+        client=_as_openai_client(client),
+        model="gpt-5.4",
+        system_prompt="system",
+        target_text="[[DOCX_PARA_p0001]]\nSource paragraph.",
+        context_before="",
+        context_after="",
+        max_retries=2,
+        expected_paragraph_ids=["p0001"],
+        marker_mode=True,
+        block_index=11,
+    )
+
+    assert result == "Правильный ответ."
 
 
 def test_marker_preserving_user_prompt_tells_the_model_what_to_do_instead_of_a_stub():
@@ -2812,3 +3340,294 @@ def test_preparation_calls_do_not_land_in_a_concurrent_unrelated_run():
     assert "boundary_review" not in cast(dict[str, Any], snapshot["stages"])
     # Run A's source has no preparation of its own, and it does not pick up B's.
     assert snapshot["preparation_accounting"] is None
+
+
+def test_block_level_source_fallback_counts_its_paragraphs_as_source_restored(monkeypatch):
+    """A whole block reverting to its own source is ``source_restored`` for every paragraph.
+
+    Without this the run report would say ``source_restored: 0`` on exactly the run where a
+    block was thrown away and replaced by its untranslated source.
+    """
+    monkeypatch.setattr(generation.time, "sleep", lambda _seconds: None)
+    model_accounting.reset_run_model_accounting()
+
+    client = SimpleNamespace(
+        responses=SimpleNamespace(
+            create=lambda **_kwargs: SimpleNamespace(output_text="[[DOCX_PARA_p9999]]\nЧужой маркер")
+        )
+    )
+
+    result = generation.generate_markdown_block(
+        client=_as_openai_client(client),
+        model="gpt-5.4",
+        system_prompt="system",
+        target_text="[[DOCX_PARA_p0001]]\nFirst.\n\n[[DOCX_PARA_p0002]]\nSecond.",
+        context_before="",
+        context_after="",
+        max_retries=1,
+        expected_paragraph_ids=["p0001", "p0002"],
+        marker_mode=True,
+    )
+
+    assert result == "First.\n\nSecond."
+    counts = model_accounting.snapshot_run_model_accounting()["paragraph_disposition_counts"]
+    assert counts == {"accepted": 0, "omitted": 0, "retry_required": 0, "source_restored": 2}
+
+
+def test_the_rejected_answer_capture_still_holds_the_model_text_for_an_empty_chunk(monkeypatch, tmp_path):
+    """Spec 056 E must not degrade D': ``empty_marker_chunk`` now originates in the
+    resolver, so the exception has to keep carrying the model's ACTUAL answer, not a
+    reconstruction of it."""
+
+    _capture_marker_attempts(monkeypatch, tmp_path)
+    monkeypatch.setattr(generation.time, "sleep", lambda _seconds: None)
+    rejected_answer = "[[DOCX_PARA_p1336]]\n   \n[[DOCX_PARA_p1337]]\nПочему бы не задействовать фонд?"
+
+    client = SimpleNamespace(
+        responses=SimpleNamespace(create=lambda **_kwargs: SimpleNamespace(output_text=rejected_answer))
+    )
+
+    generation.generate_markdown_block(
+        client=_as_openai_client(client),
+        model="gpt-5.4",
+        system_prompt="system",
+        target_text="[[DOCX_PARA_p1336]]\n14\n\n[[DOCX_PARA_p1337]]\nWhy not mobilise the Fund?",
+        context_before="",
+        context_after="",
+        max_retries=2,
+        expected_paragraph_ids=["p1336", "p1337"],
+        marker_mode=True,
+        block_index=274,
+    )
+
+    payloads = _read_marker_attempt_artifacts(tmp_path)
+    # One rejected attempt: the second one resolves per paragraph instead of failing.
+    assert [(payload["attempt"], payload["error_code"]) for payload in payloads] == [(1, "empty_marker_chunk")]
+    assert payloads[0]["raw_response"] == rejected_answer.strip()
+
+
+# --- rev41 P0-2: the transport must not degrade into a plain string in silence -------
+# The per-paragraph record rode on a ``str`` subclass, and ``_trim_boundary_context_leakage``
+# built its result with ``.strip()`` and slices. That returned a plain ``str`` INSIDE the
+# generator, before the value reached any caller, and the paragraph COUNT still matched
+# afterwards - so the registry rebuilt itself by re-splitting on a blank line, every status
+# was lost, and the source text standing in an ``omitted`` slot was read aloud with every
+# check green. Reproduced by execution in ``.run/rev41_attack6.py``.
+
+
+def test_context_leakage_trim_keeps_the_per_paragraph_record():
+    """`.run/rev41_attack6.py`, as a test. Before the fix the record was LOST here."""
+
+    leak = "alpha beta gamma delta epsilon zeta eta theta"
+    sources = ["First source paragraph of the book.", "Notes 7 Ibid page 214."]
+    answer = f"[[DOCX_PARA_p1]]\n{leak} Переведённый текст первого абзаца.\n[[DOCX_PARA_p2]]\n"
+
+    result = generation._finalize_generated_markdown(
+        answer,
+        target_text="\n\n".join(sources),
+        context_before=leak,
+        context_after="",
+        expected_paragraph_ids=["p1", "p2"],
+        marker_mode=True,
+        allow_persistent_context_leakage=True,
+        source_paragraph_chunks=sources,
+        allow_unresolved_paragraphs=True,
+    )
+
+    # The trim really fired - otherwise the test would pass for the wrong reason.
+    assert str(result).startswith("eta theta ")
+    dispositions = generation.marker_paragraph_dispositions(result)
+    assert dispositions is not None
+    assert [(item.paragraph_id, item.status) for item in dispositions] == [
+        ("p1", "accepted"),
+        ("p2", "omitted"),
+    ]
+    # ANTI-VACUUM: the trim removed only the leaked words, not the paragraph's own text.
+    assert dispositions[0].text == "eta theta Переведённый текст первого абзаца."
+    assert str(result) == "\n\n".join(item.text for item in dispositions)
+
+
+def test_a_marker_mode_answer_without_its_record_is_refused_loudly(monkeypatch):
+    """The class of defect, not the one instance of it.
+
+    Any future string operation inside the generator that drops the subclass must stop the
+    block with a named cause instead of shipping a block whose statuses silently vanished.
+    """
+
+    monkeypatch.setattr(
+        generation,
+        "_strip_and_validate_paragraph_markers",
+        lambda *args, **kwargs: "Первый.\n\nВторой.",
+    )
+
+    with pytest.raises(generation.MarkerParagraphRecordLost) as exc_info:
+        generation._finalize_generated_markdown(
+            "[[DOCX_PARA_p1]]\nПервый.\n[[DOCX_PARA_p2]]\nВторой.",
+            target_text="First.\n\nSecond.",
+            context_before="",
+            context_after="",
+            expected_paragraph_ids=["p1", "p2"],
+            marker_mode=True,
+            allow_persistent_context_leakage=True,
+            source_paragraph_chunks=["First.", "Second."],
+            allow_unresolved_paragraphs=True,
+        )
+
+    assert exc_info.value.stage == "finalize_clean"
+    # NOT a marker validation error: the model did nothing wrong, so this must not be
+    # retried as though a resend could put the record back.
+    assert not generation._is_retryable_marker_validation_error(exc_info.value)
+
+
+def test_a_block_level_source_fallback_still_carries_a_record(monkeypatch):
+    """The four block-level fallbacks used to return a bare string, which made "no record"
+    an ambiguous state downstream. Every marker-mode exit now says what happened."""
+
+    monkeypatch.setattr(generation.time, "sleep", lambda _seconds: None)
+    model_accounting.reset_run_model_accounting()
+
+    client = SimpleNamespace(
+        responses=SimpleNamespace(
+            create=lambda **_kwargs: SimpleNamespace(output_text="[[DOCX_PARA_p9999]]\nЧужой маркер")
+        )
+    )
+
+    result = generation.generate_markdown_block(
+        client=_as_openai_client(client),
+        model="gpt-5.4",
+        system_prompt="system",
+        target_text="[[DOCX_PARA_p0001]]\nFirst.\n\n[[DOCX_PARA_p0002]]\nSecond.",
+        context_before="",
+        context_after="",
+        max_retries=1,
+        expected_paragraph_ids=["p0001", "p0002"],
+        marker_mode=True,
+    )
+
+    assert result == "First.\n\nSecond."
+    dispositions = generation.marker_paragraph_dispositions(result)
+    assert dispositions is not None
+    assert [(item.paragraph_id, item.status) for item in dispositions] == [
+        ("p0001", "source_restored"),
+        ("p0002", "source_restored"),
+    ]
+
+
+# --- rev41 P1-1: the counters counted ATTEMPTS, not delivered paragraphs -------------
+
+
+def test_rejected_attempts_do_not_reach_the_paragraph_disposition_counters():
+    """A two-paragraph block that succeeded once after two rejected attempts reported
+    ``accepted: 6``, because the statuses were recorded where they are RESOLVED instead of
+    where the block is delivered."""
+
+    model_accounting.reset_run_model_accounting()
+    leak = "Это дословный кусок соседнего блока, который модель повторила целиком в ответе."
+    sources = ["First source paragraph, long enough to matter here.", "Second source paragraph."]
+    answer = (
+        f"[[DOCX_PARA_p1]]\nПервый переведён. {leak} Ещё немного текста.\n"
+        "[[DOCX_PARA_p2]]\nВторой переведён."
+    )
+
+    for attempt in (1, 2, 3):
+        try:
+            generation._finalize_generated_markdown(
+                answer,
+                target_text="\n\n".join(sources),
+                context_before=leak,
+                context_after="",
+                expected_paragraph_ids=["p1", "p2"],
+                marker_mode=True,
+                allow_persistent_context_leakage=attempt >= 3,
+                source_paragraph_chunks=sources,
+                allow_unresolved_paragraphs=attempt >= 3,
+            )
+        except generation.ContextLeakageError:
+            pass
+
+    counts = model_accounting.snapshot_run_model_accounting()["paragraph_disposition_counts"]
+    assert counts == {"accepted": 2, "omitted": 0, "retry_required": 0, "source_restored": 0}
+
+
+# --- rev41 P1-3: the omission WARNING has to carry characters, not only a count -------
+
+
+def test_the_omission_warning_reports_the_characters_it_withholds(monkeypatch):
+    """A real paragraph of prose, not the bare footnote number the first test used.
+
+    Spec 054's metric is the share of source-language CHARACTERS in the artifact, so a
+    WARNING reading "1 paragraph" cannot be compared against it: here that one line stands
+    for three thousand characters of prose that stop being spoken.
+    """
+
+    prose = (
+        "The central bank acts as lender of last resort for commercial banks but never for "
+        "sovereign states, and the whole architecture of the euro crisis follows from that "
+        "single asymmetry, which no treaty ever debated in public. " * 14
+    ).strip()
+    assert len(prose) > 3000
+    answer = "[[DOCX_PARA_p1]]\n\n[[DOCX_PARA_p2]]\nВторой абзац переведён."
+    logged_events: list[tuple[tuple[object, ...], dict[str, object]]] = []
+    monkeypatch.setattr(
+        generation,
+        "log_event",
+        lambda *args, **kwargs: logged_events.append((args, kwargs)) or "evt",
+    )
+
+    resolved = generation.resolve_marker_paragraph_dispositions(
+        generation.split_marker_preserved_paragraph_dispositions(answer, ["p1", "p2"]),
+        source_paragraph_chunks=[prose, "Second paragraph."],
+        allow_unresolved_paragraphs=True,
+    )
+
+    assert [item.status for item in resolved] == ["omitted", "accepted"]
+    omissions = [payload for args, payload in logged_events if args[1] == "marker_paragraph_omitted"]
+    assert len(omissions) == 1
+    assert omissions[0]["omitted_paragraph_count"] == 1
+    assert omissions[0]["omitted_source_chars"] == len(prose)
+    assert logging.WARNING in {args[0] for args, _payload in logged_events}
+    # ANTI-VACUUM: the prose paragraph next to it is still delivered.
+    assert resolved[1].text == "Второй абзац переведён."
+
+
+# --- rev41 P1-4: the single-marker collapse must not weld a structural line ----------
+# Measured over every recorded model answer the repository holds (two books, 488 answers
+# carrying a readable marker block): the collapse rescues 6 answers and NONE of them holds
+# a heading, a list item or a code fence, so refusing those costs nothing that was being
+# gained. Refusing returns the block to ``paragraph_split_detected``, i.e. exactly the
+# behaviour before spec 056.
+
+
+@pytest.mark.parametrize(
+    "second_part",
+    [
+        "## Безопасность денежной системы",
+        "- первый пункт списка",
+        "1. первый пункт нумерованного списка",
+        "```python",
+    ],
+)
+def test_a_single_marker_break_around_a_structural_line_is_not_collapsed(second_part):
+    answer = f"[[DOCX_PARA_p1]]\nПервая часть абзаца.\n\n{second_part}"
+
+    with pytest.raises(generation.MarkerValidationError) as exc_info:
+        generation.split_marker_preserved_paragraph_dispositions(answer, ["p1"])
+
+    assert exc_info.value.error_code == "paragraph_split_detected"
+
+
+def test_a_single_marker_prose_break_is_still_collapsed():
+    """ANTI-VACUUM for the guard above: the 6 real rescues are prose and stay rescued."""
+
+    answer = (
+        "[[DOCX_PARA_p1]]\nДлинная цитата, которую импортёр сварил в один абзац.\n\n"
+        "Модель разбила её на две произносимые части."
+    )
+
+    dispositions = generation.split_marker_preserved_paragraph_dispositions(answer, ["p1"])
+
+    assert [item.status for item in dispositions] == ["accepted"]
+    assert dispositions[0].text == (
+        "Длинная цитата, которую импортёр сварил в один абзац. "
+        "Модель разбила её на две произносимые части."
+    )

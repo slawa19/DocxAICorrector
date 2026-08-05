@@ -26,6 +26,8 @@ def _make_state() -> SimpleNamespace:
         excluded_narration_block_count=0,
         narration_excluded_source_fallback_block_count=0,
         narration_excluded_source_fallback_chars=0,
+        narration_excluded_omitted_paragraph_count=0,
+        narration_excluded_omitted_chars=0,
         generated_paragraph_registry=[],
         started_at=0.0,
     )
@@ -280,3 +282,307 @@ def test_block_excluded_by_the_document_layer_is_counted_only_once(monkeypatch) 
     assert state.narration_chunks == []
     assert state.excluded_narration_block_count == 1
     assert state.narration_excluded_source_fallback_block_count == 0
+
+
+# --- spec 056 E: a typed disposition per paragraph, consumed by the registry --------
+
+
+def _disposition_block(*pairs: tuple[str, str, str]):
+    """Build the generator's return value for a block: (paragraph_id, text, status)."""
+    from docxaicorrector.generation._generation import MarkerPreservedBlockText, ParagraphDisposition
+
+    dispositions = [
+        ParagraphDisposition(paragraph_id=paragraph_id, text=text, status=status)
+        for paragraph_id, text, status in pairs
+    ]
+    return MarkerPreservedBlockText("\n\n".join(item.text for item in dispositions), dispositions)
+
+
+def test_registry_reads_the_paragraph_record_instead_of_re_splitting() -> None:
+    """Block 274, the worked example: nine translations kept, one paragraph typed.
+
+    Re-splitting the joined string can only recover the TEXT, never the reason it is there,
+    so a paragraph the model returned nothing for was indistinguishable from one it
+    translated — and the only way to express the difference was to discard the whole block.
+    """
+    processed_chunk = _disposition_block(
+        *[(f"p{1333 + index}", f"Перевод абзаца {index}.", "accepted") for index in range(3)],
+        ("p1336", "14", "omitted"),
+        *[(f"p{1333 + index}", f"Перевод абзаца {index}.", "accepted") for index in range(4, 10)],
+    )
+
+    entries = block_execution.build_processed_paragraph_registry_entries(
+        block_index=274,
+        paragraph_ids=[f"p{1333 + index}" for index in range(10)],
+        processed_chunk=processed_chunk,
+    )
+
+    assert len(entries) == 10
+    assert [entry["paragraph_status"] for entry in entries].count("accepted") == 9
+    assert entries[3] == {
+        "block_index": 274,
+        "paragraph_id": "p1336",
+        "text": "14",
+        "paragraph_status": "omitted",
+    }
+
+
+def test_registry_still_re_splits_a_plain_string_and_still_fails_on_a_count_mismatch() -> None:
+    entries = block_execution.build_processed_paragraph_registry_entries(
+        block_index=1,
+        paragraph_ids=["p0001", "p0002"],
+        processed_chunk="Первый.\n\nВторой.",
+    )
+    assert [entry["paragraph_id"] for entry in entries] == ["p0001", "p0002"]
+    assert "paragraph_status" not in entries[0]
+
+    import pytest
+
+    with pytest.raises(RuntimeError) as exc_info:
+        block_execution.build_processed_paragraph_registry_entries(
+            block_index=1,
+            paragraph_ids=["p0001", "p0002"],
+            processed_chunk="Только один абзац.",
+        )
+    assert "paragraph_marker_registry_mismatch" in str(exc_info.value)
+
+
+def test_registry_rejects_a_record_whose_ids_do_not_match_the_block() -> None:
+    import pytest
+
+    with pytest.raises(RuntimeError) as exc_info:
+        block_execution.build_processed_paragraph_registry_entries(
+            block_index=5,
+            paragraph_ids=["p0001", "p0002"],
+            processed_chunk=_disposition_block(("p0001", "Первый.", "accepted")),
+        )
+    assert "paragraph_marker_registry_mismatch" in str(exc_info.value)
+
+
+def test_an_omitted_paragraph_stays_in_the_docx_and_leaves_the_narration() -> None:
+    processed_chunk = _disposition_block(
+        ("p1335", "Как нам справиться с безработицей?", "accepted"),
+        ("p1336", "14", "omitted"),
+        ("p1337", "Почему бы не задействовать фонд?", "accepted"),
+    )
+
+    # The document keeps every paragraph — losing one would break the paragraph-per-marker
+    # mapping the formatting restorer depends on.
+    assert processed_chunk == "Как нам справиться с безработицей?\n\n14\n\nПочему бы не задействовать фонд?"
+    # The narration keeps only what the model actually spoke for.
+    assert block_execution.narration_text_for_processed_block(processed_chunk) == (
+        "Как нам справиться с безработицей?\n\nПочему бы не задействовать фонд?"
+    )
+
+
+def test_a_block_without_a_paragraph_record_is_narrated_unchanged() -> None:
+    assert block_execution.narration_text_for_processed_block("Обычный блок.") == "Обычный блок."
+
+
+def test_process_single_block_narrates_the_block_without_its_omitted_paragraph(monkeypatch) -> None:
+    monkeypatch.setattr(block_execution, "_write_controlled_block_fallback_artifact", lambda **_kwargs: None)
+    dependencies, emitters, _events = _recording_run_harness()
+    processed_chunk = _disposition_block(
+        ("p0001", "Переведённый абзац.", "accepted"),
+        ("p0002", "14", "omitted"),
+    )
+    payload = SimpleNamespace(
+        job_kind="llm",
+        toc_dominant=False,
+        target_text="Source paragraph.\n\n14",
+        target_text_with_markers="[[DOCX_PARA_p0001]]\nSource paragraph.\n\n[[DOCX_PARA_p0002]]\n14",
+        paragraph_ids=["p0001", "p0002"],
+        narration_include=True,
+        target_chars=20,
+        context_chars=0,
+    )
+
+    _outcome, state, _classifier_calls = _run_single_block(
+        payload=payload,
+        context=SimpleNamespace(
+            processing_operation="audiobook",
+            uploaded_filename="book.docx",
+            runtime=object(),
+            on_progress=lambda **_kwargs: None,
+        ),
+        processed_chunk=processed_chunk,
+        classification="valid",
+        dependencies=dependencies,
+        emitters=emitters,
+    )
+
+    assert state.processed_chunks == ["Переведённый абзац.\n\n14"]
+    assert state.narration_chunks == ["Переведённый абзац."]
+
+
+# --- rev41 P0-1: the controlled-fallback path bypassed the per-paragraph filter ------
+#
+# The filter was applied only on the happy path. A block holding an ``omitted`` paragraph
+# keeps that paragraph's SOURCE text, which makes the block likelier to be classified
+# ``english_residual_output`` — and the rejection then routed it down the controlled-fallback
+# path, which appended the RAW chunk and read the English aloud. The defect fed itself: the
+# substitution caused the classification that bypassed the filter that would have removed the
+# substitution. Reproduced by execution in ``.run/rev41_attack7.py``.
+
+_ENGLISH_OMITTED_PARAGRAPH = (
+    "This chapter discusses ordinary market institutions and the mobilisation of capital."
+)
+
+
+def test_controlled_fallback_does_not_narrate_an_omitted_paragraphs_source(monkeypatch) -> None:
+    """`.run/rev41_attack7.py`, as a test. Before the fix the English was read aloud."""
+    monkeypatch.setattr(block_execution, "_write_controlled_block_fallback_artifact", lambda **_kwargs: None)
+    dependencies, emitters, _events = _recording_run_harness()
+    russian = "Почему вообще следует мобилизовать капитал?"
+    processed_chunk = _disposition_block(
+        ("p0001", _ENGLISH_OMITTED_PARAGRAPH, "omitted"),
+        ("p0002", russian, "accepted"),
+    )
+    payload = SimpleNamespace(
+        job_kind="llm",
+        toc_dominant=False,
+        target_text=f"{_ENGLISH_OMITTED_PARAGRAPH}\n\nWhy should capital be mobilised at all?",
+        target_text_with_markers=(
+            f"[[DOCX_PARA_p0001]]\n{_ENGLISH_OMITTED_PARAGRAPH}\n\n"
+            "[[DOCX_PARA_p0002]]\nWhy should capital be mobilised at all?"
+        ),
+        paragraph_ids=["p0001", "p0002"],
+        narration_include=True,
+        target_chars=160,
+        context_chars=0,
+    )
+
+    outcome, state, _classifier_calls = _run_single_block(
+        payload=payload,
+        context=SimpleNamespace(
+            processing_operation="audiobook",
+            uploaded_filename="book.docx",
+            runtime=object(),
+            on_progress=lambda **_kwargs: None,
+        ),
+        processed_chunk=processed_chunk,
+        # The classification the substituted English source itself provokes.
+        classification="english_residual_output",
+        dependencies=dependencies,
+        emitters=emitters,
+    )
+
+    assert outcome is None
+    # The DOCX keeps every paragraph; the narration keeps only the spoken one.
+    assert state.processed_chunks == [f"{_ENGLISH_OMITTED_PARAGRAPH}\n\n{russian}"]
+    # ANTI-VACUUM: the accepted Russian neighbour is still narrated. A rule that subtracts
+    # must be shown not to subtract everything.
+    assert state.narration_chunks == [russian]
+    assert _ENGLISH_OMITTED_PARAGRAPH not in "\n".join(state.narration_chunks)
+    # The loss is counted in CHARACTERS, the unit spec 054's metric is expressed in.
+    assert state.narration_excluded_omitted_paragraph_count == 1
+    assert state.narration_excluded_omitted_chars == len(_ENGLISH_OMITTED_PARAGRAPH)
+    # This is not the block-level exclusion; the two answer different questions.
+    assert state.narration_excluded_source_fallback_block_count == 0
+
+
+def test_controlled_fallback_with_no_omitted_paragraph_narrates_the_whole_block(monkeypatch) -> None:
+    """ANTI-VACUUM for the filter on this path: nothing else stops being narrated."""
+    monkeypatch.setattr(block_execution, "_write_controlled_block_fallback_artifact", lambda **_kwargs: None)
+    dependencies, emitters, _events = _recording_run_harness()
+    processed_chunk = _disposition_block(
+        ("p0001", "Первый абзац переведён.", "accepted"),
+        ("p0002", "Второй абзац переведён.", "accepted"),
+    )
+    payload = SimpleNamespace(
+        job_kind="llm",
+        toc_dominant=False,
+        target_text="First paragraph.\n\nSecond paragraph.",
+        target_text_with_markers="[[DOCX_PARA_p0001]]\nFirst paragraph.\n\n[[DOCX_PARA_p0002]]\nSecond paragraph.",
+        paragraph_ids=["p0001", "p0002"],
+        narration_include=True,
+        target_chars=40,
+        context_chars=0,
+    )
+
+    _outcome, state, _classifier_calls = _run_single_block(
+        payload=payload,
+        context=SimpleNamespace(
+            processing_operation="audiobook",
+            uploaded_filename="book.docx",
+            runtime=object(),
+            on_progress=lambda **_kwargs: None,
+        ),
+        processed_chunk=processed_chunk,
+        classification="english_residual_output",
+        dependencies=dependencies,
+        emitters=emitters,
+    )
+
+    assert state.narration_chunks == ["Первый абзац переведён.\n\nВторой абзац переведён."]
+    assert state.narration_excluded_omitted_paragraph_count == 0
+    assert state.narration_excluded_omitted_chars == 0
+
+
+def test_the_happy_path_counts_the_characters_it_withholds(monkeypatch) -> None:
+    """The counters must be fed from BOTH narration call sites, not only the fallback one."""
+    monkeypatch.setattr(block_execution, "_write_controlled_block_fallback_artifact", lambda **_kwargs: None)
+    dependencies, emitters, _events = _recording_run_harness()
+    processed_chunk = _disposition_block(
+        ("p0001", "Переведённый абзац.", "accepted"),
+        ("p0002", _ENGLISH_OMITTED_PARAGRAPH, "omitted"),
+    )
+    payload = SimpleNamespace(
+        job_kind="llm",
+        toc_dominant=False,
+        target_text=f"Source paragraph.\n\n{_ENGLISH_OMITTED_PARAGRAPH}",
+        target_text_with_markers=(
+            f"[[DOCX_PARA_p0001]]\nSource paragraph.\n\n[[DOCX_PARA_p0002]]\n{_ENGLISH_OMITTED_PARAGRAPH}"
+        ),
+        paragraph_ids=["p0001", "p0002"],
+        narration_include=True,
+        target_chars=120,
+        context_chars=0,
+    )
+
+    _outcome, state, _classifier_calls = _run_single_block(
+        payload=payload,
+        context=SimpleNamespace(
+            processing_operation="audiobook",
+            uploaded_filename="book.docx",
+            runtime=object(),
+            on_progress=lambda **_kwargs: None,
+        ),
+        processed_chunk=processed_chunk,
+        classification="valid",
+        dependencies=dependencies,
+        emitters=emitters,
+    )
+
+    assert state.narration_chunks == ["Переведённый абзац."]
+    assert state.narration_excluded_omitted_paragraph_count == 1
+    assert state.narration_excluded_omitted_chars == len(_ENGLISH_OMITTED_PARAGRAPH)
+
+
+def test_a_record_that_no_longer_describes_its_text_is_refused_loudly() -> None:
+    """rev41 P0-2, downstream half: a partial degradation must not pass as a whole one.
+
+    A string operation that KEPT the subclass but changed the characters would leave every
+    status attached to text it no longer belongs to, and the paragraph count would still
+    match — the same silence that put source-language text into the narration under a green
+    classification.
+    """
+    import pytest
+
+    from docxaicorrector.generation._generation import MarkerPreservedBlockText, ParagraphDisposition
+
+    desynchronised = MarkerPreservedBlockText(
+        "Переведённый абзац.\n\nПодменённый текст.",
+        [
+            ParagraphDisposition(paragraph_id="p0001", text="Переведённый абзац.", status="accepted"),
+            ParagraphDisposition(paragraph_id="p0002", text="14", status="omitted"),
+        ],
+    )
+
+    with pytest.raises(RuntimeError) as exc_info:
+        block_execution.build_processed_paragraph_registry_entries(
+            block_index=7,
+            paragraph_ids=["p0001", "p0002"],
+            processed_chunk=desynchronised,
+        )
+    assert "paragraph_marker_registry_record_desynchronised" in str(exc_info.value)

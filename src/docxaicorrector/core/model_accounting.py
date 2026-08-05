@@ -210,6 +210,14 @@ class _StageTotals:
         }
 
 
+# The reporting vocabulary for spec 056 E's per-paragraph disposition. It lives here, in
+# the module that has to PUBLISH all of it with zeros, rather than in the generator that
+# assigns it: ``generation`` already imports this module, so a single tuple here keeps one
+# source of truth without inverting the layering. ``generation._generation`` names each
+# value and is checked against this tuple by test.
+PARAGRAPH_DISPOSITION_STATUSES = ("accepted", "omitted", "retry_required", "source_restored")
+
+
 class RunModelAccountingLedger:
     """Thread-safe accumulator for ONE scope of work — a run, or one source preparation.
 
@@ -236,6 +244,11 @@ class RunModelAccountingLedger:
         self._discarded_paragraph_count = 0
         self._discarded_block_count = 0
         self._discard_reason_counts: dict[str, int] = {}
+        # Spec 056 E. Every status is seeded to zero, because a zero here is an ASSERTION
+        # ("nothing was omitted this run"), not a missing field a reader has to guess at.
+        self._paragraph_disposition_counts: dict[str, int] = {
+            status: 0 for status in PARAGRAPH_DISPOSITION_STATUSES
+        }
 
     def reset(self) -> None:
         with self._lock:
@@ -248,6 +261,7 @@ class RunModelAccountingLedger:
             self._discarded_paragraph_count = 0
             self._discarded_block_count = 0
             self._discard_reason_counts = {}
+            self._paragraph_disposition_counts = {status: 0 for status in PARAGRAPH_DISPOSITION_STATUSES}
 
     def record_model_call(self, *, stage: str, usage: ModelCallUsage) -> None:
         with self._lock:
@@ -279,6 +293,17 @@ class RunModelAccountingLedger:
             self._discarded_paragraph_count += max(0, paragraph_count)
             self._discarded_block_count += max(0, block_count)
             self._discard_reason_counts[reason] = self._discard_reason_counts.get(reason, 0) + 1
+
+    def record_paragraph_disposition(self, *, status: str, count: int = 1) -> None:
+        """Count how ONE block's paragraphs came out (spec 056 E).
+
+        An unknown status is still counted under its own name rather than dropped: losing
+        the number would be worse than reporting one nobody has documented yet.
+        """
+        if count <= 0:
+            return
+        with self._lock:
+            self._paragraph_disposition_counts[status] = self._paragraph_disposition_counts.get(status, 0) + count
 
     def model_call_count(self) -> int:
         with self._lock:
@@ -319,6 +344,10 @@ class RunModelAccountingLedger:
                 "model_output_discarded_paragraph_count": self._discarded_paragraph_count,
                 "model_output_discarded_block_count": self._discarded_block_count,
                 "model_output_discarded_reason_counts": dict(sorted(self._discard_reason_counts.items())),
+                # Spec 056 E: what became of each paragraph of every marker-mode block —
+                # accepted / omitted / source_restored / retry_required. Always all four
+                # keys; a zero states that nothing landed in that bucket.
+                "paragraph_disposition_counts": dict(sorted(self._paragraph_disposition_counts.items())),
                 "stages": {stage: self._stages[stage].to_dict() for stage in sorted(self._stages)},
             }
             return payload
@@ -450,6 +479,10 @@ def record_model_output_discarded(*, reason: str, paragraph_count: int = 0, bloc
         paragraph_count=paragraph_count,
         block_count=block_count,
     )
+
+
+def record_paragraph_disposition(*, status: str, count: int = 1) -> None:
+    get_run_model_accounting_ledger().record_paragraph_disposition(status=status, count=count)
 
 
 def snapshot_run_model_accounting() -> dict[str, object]:

@@ -119,6 +119,24 @@ def test_narration_source_fallback_notice_renders_its_counts(
     assert "20597" in message
 
 
+@pytest.mark.parametrize("lang", ["ru", "en"])
+def test_narration_omitted_paragraph_notice_renders_its_counts(
+    monkeypatch: pytest.MonkeyPatch, lang: str
+) -> None:
+    """Spec 056 E, rev41: the per-PARAGRAPH loss is user-visible too, in both catalogs.
+
+    It shipped with neither characters nor a notice, which made the remedy quieter than the
+    block-level failure it replaced.
+    """
+    _force_language(monkeypatch, lang)
+
+    message = i18n.t("result.narration_omitted_paragraphs_excluded", count=5, chars=1378)
+
+    assert "{" not in message
+    assert "5" in message
+    assert "1378" in message
+
+
 def _ui_module_source() -> str:
     ui_path = Path(i18n.__file__).resolve().parent / "_ui.py"
     return ui_path.read_text(encoding="utf-8")

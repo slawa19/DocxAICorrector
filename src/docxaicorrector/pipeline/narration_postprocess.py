@@ -127,6 +127,14 @@ def _project_final_cleanup_narration_chunks(
         # fallback, in ``block_execution.append_controlled_fallback_registry_entries``.
         if bool(raw_entry.get("controlled_fallback_narration_excluded", False)):
             continue
+        # Spec 056 E, same reasoning one level down: a paragraph the model returned nothing
+        # for keeps its SOURCE text in the document but must not be read aloud. The
+        # standalone ``audiobook`` operation drops it in ``block_execution`` before the
+        # chunk is ever appended; this projection rebuilds the narration from the final
+        # registry, so it has to honour the same decision or the two entry points diverge
+        # (spec 054 anti-regression 3).
+        if str(raw_entry.get("paragraph_status", "") or "") == "omitted":
+            continue
         if True in inclusion_flags:
             projected.append(text)
     return projected

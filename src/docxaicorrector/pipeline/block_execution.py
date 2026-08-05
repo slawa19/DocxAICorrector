@@ -5,6 +5,10 @@ import uuid
 from pathlib import Path
 from typing import Any, Literal, TypeAlias
 
+from docxaicorrector.generation._generation import (
+    PARAGRAPH_STATUS_OMITTED,
+    marker_paragraph_dispositions,
+)
 from docxaicorrector.pipeline.job_results import persist_terminal_job_result
 from docxaicorrector.pipeline.output_validation import validate_translated_toc_block
 from docxaicorrector.runtime.artifact_retention import prune_artifact_dir
@@ -456,6 +460,10 @@ def _generate_block_chunk(
         max_retries=context.max_retries,
         expected_paragraph_ids=payload.paragraph_ids if marker_mode_enabled else None,
         marker_mode=marker_mode_enabled,
+        # Names the block in the rejected-attempt capture (spec 056 D'). The generator has
+        # no other way to say WHICH block an artifact under ``.run/marker_attempts/``
+        # belongs to, and without that the record cannot be matched to the run log.
+        block_index=index,
     )
 
 
@@ -557,6 +565,48 @@ def build_processed_paragraph_registry_entries(
     paragraph_ids: list[str] | tuple[str, ...],
     processed_chunk: str,
 ) -> list[dict[str, object]]:
+    """Map this block's paragraph ids onto the text that will ship for each of them.
+
+    Spec 056 E: when the generator hands back a block that REMEMBERS what happened to each
+    paragraph, use that instead of re-splitting the joined string. Re-splitting on ``\\n\\n``
+    can only recover the text — never the reason it is there — so a paragraph the model
+    returned nothing for was indistinguishable from one it translated, and the only way to
+    express the difference was to throw the whole block away.
+
+    The fallback path is unchanged and stays reachable: a plain string (passthrough blocks,
+    controlled fallbacks, every test double that returns text) is split exactly as before,
+    and the paragraph-count mismatch is still fatal.
+    """
+
+    dispositions = marker_paragraph_dispositions(processed_chunk)
+    if dispositions is not None:
+        found_ids = [disposition.paragraph_id for disposition in dispositions]
+        if found_ids != list(paragraph_ids):
+            raise RuntimeError(
+                f"paragraph_marker_registry_mismatch:block={block_index}:expected={len(paragraph_ids)}:actual={len(found_ids)}"
+            )
+        # The record describes THIS text or it describes nothing. A string operation that
+        # kept the subclass but changed the characters would otherwise leave every
+        # paragraph's status attached to text it no longer belongs to, and the paragraph
+        # count would still match — the same shape of silence that put source-language text
+        # into the narration under a green classification.
+        if "\n\n".join(disposition.text for disposition in dispositions) != str(processed_chunk):
+            raise RuntimeError(
+                f"paragraph_marker_registry_record_desynchronised:block={block_index}:paragraphs={len(found_ids)}"
+            )
+        return [
+            {
+                "block_index": block_index,
+                "paragraph_id": disposition.paragraph_id,
+                "text": disposition.text,
+                # Carried on the paragraph so the narration projection and the run report
+                # can both see it; ``accepted`` is written out too, so the field's absence
+                # means "this entry predates the disposition", not "everything was fine".
+                "paragraph_status": disposition.status,
+            }
+            for disposition in dispositions
+        ]
+
     paragraph_chunks = [chunk.strip() for chunk in processed_chunk.split("\n\n") if chunk.strip()]
     if len(paragraph_chunks) != len(paragraph_ids):
         raise RuntimeError(
@@ -570,6 +620,50 @@ def build_processed_paragraph_registry_entries(
         }
         for paragraph_id, paragraph_chunk in zip(paragraph_ids, paragraph_chunks)
     ]
+
+
+def narration_projection_for_processed_block(processed_chunk: str) -> tuple[str, int, int]:
+    """What of this block is READ ALOUD, and how much was left out doing it.
+
+    Spec 056 E: a paragraph the model returned nothing for keeps its own SOURCE text in the
+    document — losing it there would break the paragraph-per-marker mapping the formatting
+    restorer depends on, and a human editing a DOCX can see and fix an untranslated line.
+    Nothing sits between the audio and the listener, so the narration drops it instead.
+    That is spec 054's rule applied one level down: source-language text does not reach the
+    narration artifact, and the DOCX/narration asymmetry is deliberate.
+
+    Returns the narratable text together with the number of paragraphs and the number of
+    CHARACTERS that were withheld. The characters are the point: spec 054's own metric is a
+    share of source-language characters in the artifact, and the block-level twin of this
+    rule (``narration_source_fallback_excluded``) has always published them. A rule that
+    subtracts from the artifact and reports only "1 paragraph" cannot be compared against
+    the metric it serves — on block 174 of the 2026-08-04 run that one line stood for
+    1 378 characters.
+
+    A block with no per-paragraph record is returned untouched, so passthrough blocks and
+    controlled fallbacks whose substrate is a plain string behave exactly as before.
+    """
+
+    dispositions = marker_paragraph_dispositions(processed_chunk)
+    if dispositions is None:
+        return processed_chunk, 0, 0
+    spoken: list[str] = []
+    withheld_paragraphs = 0
+    withheld_chars = 0
+    for disposition in dispositions:
+        if disposition.status == PARAGRAPH_STATUS_OMITTED:
+            withheld_paragraphs += 1
+            withheld_chars += len(disposition.text)
+            continue
+        if disposition.text.strip():
+            spoken.append(disposition.text)
+    return "\n\n".join(spoken), withheld_paragraphs, withheld_chars
+
+
+def narration_text_for_processed_block(processed_chunk: str) -> str:
+    """The narratable text alone. See ``narration_projection_for_processed_block``."""
+
+    return narration_projection_for_processed_block(processed_chunk)[0]
 
 
 def emit_block_started(
@@ -886,7 +980,19 @@ def continue_controlled_processed_block_rejection(
         state.narration_excluded_source_fallback_block_count += 1
         state.narration_excluded_source_fallback_chars += len(processed_chunk)
     else:
-        state.narration_chunks.append(processed_chunk)
+        # The per-paragraph filter belongs HERE too, and its absence was a hole: a block
+        # holding an ``omitted`` paragraph keeps that paragraph's SOURCE text, which makes
+        # the block likelier to be classified ``english_residual_output`` — and the rejection
+        # then routed it down this path, which appended the raw chunk and read the English
+        # aloud. The defect fed itself: the substitution caused the classification that
+        # bypassed the filter that would have removed the substitution.
+        narratable_text, omitted_paragraphs, omitted_chars = narration_projection_for_processed_block(
+            processed_chunk
+        )
+        state.narration_excluded_omitted_paragraph_count += omitted_paragraphs
+        state.narration_excluded_omitted_chars += omitted_chars
+        if narratable_text.strip():
+            state.narration_chunks.append(narratable_text)
     try:
         append_controlled_fallback_registry_entries(
             context=context,
@@ -1089,7 +1195,16 @@ def process_single_block(
 
     state.processed_chunks.append(processed_chunk)
     if payload.narration_include:
-        state.narration_chunks.append(processed_chunk)
+        # Spec 056 E: the DOCX keeps every paragraph, the narration keeps only the ones the
+        # model actually spoke for. Identical to ``processed_chunk`` for every block that
+        # carries no per-paragraph record.
+        narratable_text, omitted_paragraphs, omitted_chars = narration_projection_for_processed_block(
+            processed_chunk
+        )
+        state.narration_excluded_omitted_paragraph_count += omitted_paragraphs
+        state.narration_excluded_omitted_chars += omitted_chars
+        if narratable_text.strip():
+            state.narration_chunks.append(narratable_text)
     else:
         state.excluded_narration_block_count += 1
     if payload.job_kind == "llm" and marker_mode_enabled and payload.paragraph_ids:

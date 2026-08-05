@@ -107,6 +107,7 @@ class MarkdownGenerator(Protocol):
         max_retries: int,
         expected_paragraph_ids: Sequence[str] | None = None,
         marker_mode: bool = False,
+        block_index: int | None = None,
     ) -> str: ...
 
 
@@ -270,6 +271,14 @@ class ProcessingState:
     # spec-054 exclusion measurements are keyed on the latter.
     narration_excluded_source_fallback_block_count: int = 0
     narration_excluded_source_fallback_chars: int = 0
+    # Spec 056 E, the same loss one level down: individual PARAGRAPHS the model returned
+    # nothing for. Their source stands in the DOCX and is kept out of the narration. The
+    # characters are counted, not only the paragraphs, because spec 054's metric is the
+    # share of source-language CHARACTERS in the artifact and a paragraph count cannot be
+    # compared against it — one omitted paragraph stood for 1 378 characters on the
+    # 2026-08-04 run.
+    narration_excluded_omitted_paragraph_count: int = 0
+    narration_excluded_omitted_chars: int = 0
     generated_paragraph_registry: list[dict[str, object]] = field(default_factory=list)
     segment_outputs: dict[str, list[str]] = field(default_factory=dict)
     completed_segment_ids: set[str] = field(default_factory=set)
