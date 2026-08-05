@@ -6,8 +6,8 @@
 
 **Date**: 2026-08-05
 
-**Status**: **RUN — the experiment was carried out on 2026-08-05; see the Changelog for the verdict
-per signal.** Two of the three signals are carried and kept; the third (alignment) was carried,
+**Status**: **MEASURED** — the experiment was carried out on 2026-08-05; see the Changelog for the
+verdict per signal. Two of the three signals are carried and kept; the third (alignment) was carried,
 measured, disproved on the corpus and removed. Everything in the body below was written before the
 run and is left as written, so that what was expected and what happened can be compared. The
 measurements it cites were re-taken on current code and held.
