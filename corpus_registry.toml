@@ -158,6 +158,28 @@ audiobook_postprocess_enabled = true
 enable_paragraph_markers = true
 repeat_count = 1
 
+# The STANDALONE audiobook operation, which the registry had no way to express: every
+# profile above runs translate or edit, and the neighbour directly above covers only the
+# optional ElevenLabs post-pass on a translate run. The first audiobook run in the project's
+# history (2026-08-04, Money & Sustainability, spec 054) therefore had to inject its profile
+# in memory — which means it was not reproducible, and a second run could not have been
+# compared against it.
+#
+# The values are the ones that run actually used, pinned rather than left to the config
+# defaults so the comparison survives a change to those defaults: en -> ru, markers on. The
+# markers matter to the measurement rather than to the artifact — narration is flat text —
+# but marker validation is what failed on six blocks there, so a profile that silently
+# turned them off would measure a different pipeline.
+[[run_profiles]]
+id = "ui-parity-standalone-audiobook"
+tier = "full"
+mode = "regression"
+processing_operation = "audiobook"
+source_language = "en"
+target_language = "ru"
+enable_paragraph_markers = true
+repeat_count = 1
+
 [[run_profiles]]
 id = "ui-parity-translate-baseline"
 tier = "full"
