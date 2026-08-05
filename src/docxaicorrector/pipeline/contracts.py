@@ -260,6 +260,16 @@ class ProcessingState:
     processed_chunks: list[str] = field(default_factory=list)
     narration_chunks: list[str] = field(default_factory=list)
     excluded_narration_block_count: int = 0
+    # Blocks kept OUT of the narration for a reason the document layer could not know:
+    # the model's output was rejected and the controlled fallback delivered the block's own
+    # SOURCE text instead (``pipeline/block_execution.py``). The DOCX keeps that source —
+    # a human reading a document sees an untranslated paragraph and fixes it — but nothing
+    # stands between the narration artifact and the listener, so it does not go to audio.
+    # Counted separately from ``excluded_narration_block_count`` (the document-layer
+    # ``narration_include`` decision) because the two answer different questions and the
+    # spec-054 exclusion measurements are keyed on the latter.
+    narration_excluded_source_fallback_block_count: int = 0
+    narration_excluded_source_fallback_chars: int = 0
     generated_paragraph_registry: list[dict[str, object]] = field(default_factory=list)
     segment_outputs: dict[str, list[str]] = field(default_factory=dict)
     completed_segment_ids: set[str] = field(default_factory=set)

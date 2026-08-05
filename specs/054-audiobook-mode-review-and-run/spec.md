@@ -347,6 +347,73 @@ an inference — recorded here so it is not lost.
 
 ## Changelog
 
+- **2026-08-04** — **The narration artifact now carries only speakable text in the target
+  language** (branch `fix/narration-only-speakable-target-language`, from the first live
+  audiobook run's own measured defects). Two changes, both in the assembly, neither touching
+  `operation_audiobook.txt`, `CONTROLLED_BLOCK_FAILURE_POLICY` or the DOCX branch.
+  **(a) A block whose model output was rejected and replaced by its own SOURCE text is not
+  in the narration.** `continue_controlled_processed_block_rejection`
+  (`pipeline/block_execution.py:849`) is where the block's outcome is already known, so the
+  decision lives there rather than in `_resolve_narration_include`, which runs before the
+  call. The test is `fallback_delivered_source_text` (`:94`) — the delivered markdown equals
+  the block's own `target_text` — not a list of rejection kinds: the fallback substitutes the
+  source in exactly two ways (`payload.target_text` for the `empty*` kinds, and the model
+  output for `source_text_fallback`, which the classifier *defines* as
+  `processed_chunk == target_text`), and one comparison recognises both and stays correct if
+  the policy table grows. **The asymmetry against the DOCX is deliberate**: the document is
+  editable and a human meets the untranslated paragraph and fixes it; nothing sits between
+  the audiobook and the listener. Taking the model's rejected output instead was considered
+  and REFUSED — a marker-validation failure means the model may have LOST a paragraph, which
+  would trade a visible defect for an unverifiable one. Both entry points behave the same:
+  the standalone operation never fills `state.narration_chunks`, and the cleaned-translate
+  projection (`narration_postprocess._project_final_cleanup_narration_chunks`), which rebuilds
+  from the FINAL registry instead of those chunks, honours a
+  `controlled_fallback_narration_excluded` flag written on the paragraph at the moment of the
+  fallback (anti-regression 3). The existing controlled-fallback characterization
+  (`tests/test_document_pipeline_output_validation.py:2086`) gains that flag as a per-class
+  expectation, so the table now states the rule row by row: `empty_processed_block` and
+  `source_text_fallback` are excluded; `english_residual_output`, `heading_only_output`,
+  `bullet_heading_output` and `toc_body_concat` keep the model's own output and stay in.
+  **(b) The list-bullet glyph is stripped at assembly.** `_NARRATION_LIST_PATTERN`
+  (`generation/_generation.py:61`) took markdown's `-*+` and `1.` but not the printed glyph,
+  and prompt rule 20 does not bind the model. The glyph set is the repository's EXISTING
+  bullet lexicon (`output_validation._BULLET_GLYPH_PATTERN`, `●•◦‣` — the same rule that
+  counted the 116 in the run summary), not a new one, and a separator after the glyph is
+  required so a welded `4●5` is left alone. A tagged twin handles `[serious] • …`.
+  **Observability (Constitution V).** The loss is counted, not silent: state carries
+  `narration_excluded_source_fallback_block_count` / `_chars`, a WARNING
+  `narration_source_fallback_excluded` event fires once per run when non-zero, the counters
+  ride on the `ui_audiobook_artifact_saved` record of the saved file (zero is the positive
+  statement, not an absent field), the user sees
+  `result.narration_source_fallback_excluded`, and the real-document run report gains a
+  `narration_artifact` section with `narration_*` summary lines. Same route as
+  `narration_artifact_review_data`, no new channel; documented in
+  `docs/LOGGING_AND_ARTIFACT_RETENTION.md` §3.3 / §5.5.
+  **Measured offline on the saved run, no LLM and no second paid run**
+  (`.run/spk_narration_offline_check.py`, which replays the new assembly over
+  `artifacts/audiobook_first_run/*.tts.txt`, `.run/abrun_audiobook_capture/blocks.json` and
+  the run's own `.run/block_fallbacks/*.json`; the stripper AS DELIVERED is taken from
+  `origin/main` via `git show`, not re-implemented). The run's six controlled fallbacks were
+  all `source_text_fallback` (blocks 119, 165, 175, 186, 215, 275) and each block's
+  contribution was LOCATED verbatim as a contiguous line run inside the delivered artifact
+  rather than assumed — 31 paragraphs / 20 535 characters. English, by the owner's own metric
+  (a paragraph with ≥40 letters of which <30% are Cyrillic): **25 paragraphs / 20 837
+  characters → 2 / 452**, i.e. 4.47% → 0.10% of the artifact. Bullet glyphs: `•` **116 → 0**;
+  `●`, `◦`, `‣` were **0 before and after** — only `•` occurs on this book, and it is reported
+  as such. **Anti-vacuum, measured: Cyrillic characters 369 223 → 369 223 → 369 223**, byte
+  for byte, and the paragraph count is identical before and after the glyph rule (1 287),
+  so the item text survives its marker. The 2 English paragraphs that remain are notes /
+  references material the model returned untranslated without being rejected — a different
+  defect, in the region Finding 1 is about, recorded not patched.
+  **One honest caveat about the replay method**, since it applies the stripper to text the
+  stripper already produced: the glyph rule takes 233 characters off that text, of which 224
+  are the 112 `"• "` prefixes and 9 are three lines of the form `[serious] 5. Заключение`.
+  Those three are tagged HEADINGS — each is followed by the blank line the heading branch
+  inserts — and in production `_NARRATION_TAGGED_HEADING_PATTERN` is tested before the list
+  branch, so they never reach it. The real effect of the rule is the 224 characters. No
+  tagged markdown list marker (`[tag] - …`, `[tag] 1. …`) occurs on this book at all; the
+  tagged variant carries the same marker alternation as the plain one because it is the same
+  rule, not because a second form was observed.
 - **2026-08-04** — **A heading is no longer cut at its own line wrap** (same branch
   `fix/054-toc-role-unanchored`, third of three: this one is only visible once the `toc_entry` role
   write and the synthesised `<br/>` are gone, and shipping it separately would leave the branch's

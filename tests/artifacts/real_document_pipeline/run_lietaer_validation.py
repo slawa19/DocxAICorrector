@@ -4376,6 +4376,48 @@ def _build_model_accounting_summary_lines(model_accounting: Mapping[str, object]
     return lines
 
 
+_NARRATION_SUMMARY_FIELDS = (
+    "char_count",
+    "tag_count",
+    "excluded_blocks",
+    "excluded_source_fallback_block_count",
+    "excluded_source_fallback_chars",
+    "review_finding_count",
+    "review_match_count",
+    "mode",
+)
+
+
+def _extract_narration_artifact_record(
+    event_log: Sequence[Mapping[str, object]],
+) -> dict[str, object] | None:
+    """Pull the narration artifact's own counters out of ``ui_audiobook_artifact_saved``.
+
+    Same route as ``_extract_model_accounting``: the run report mines the event log rather
+    than opening a second channel. ``None`` means no narration artifact was saved on this
+    run — reported as ``not_reported``, never as zero, so "nothing was excluded" and "there
+    was no narration" stay distinguishable in the summary.
+    """
+
+    for event in reversed(event_log):
+        if str(event.get("event_id") or "") != "ui_audiobook_artifact_saved":
+            continue
+        context = event.get("context") or {}
+        if isinstance(context, Mapping):
+            return {str(key): value for key, value in context.items()}
+    return None
+
+
+def _build_narration_summary_lines(narration: Mapping[str, object] | None) -> list[str]:
+    if narration is None:
+        return ["narration_artifact=not_reported"]
+    lines = [f"narration_{field}={narration.get(field)}" for field in _NARRATION_SUMMARY_FIELDS]
+    lines.append(
+        f"narration_review_rules={json.dumps(narration.get('review_rules') or [], ensure_ascii=False)}"
+    )
+    return lines
+
+
 def _extract_quality_report_artifact_path(event_log: Sequence[Mapping[str, object]]) -> str | None:
     for event in reversed(event_log):
         if str(event.get("event_id") or "") != "quality_report_saved":
@@ -5597,6 +5639,7 @@ def main() -> None:
         "runtime_config": build_validation_runtime_config(runtime_resolution),
         "preparation": preparation_payload,
         "model_accounting": _extract_model_accounting(event_log),
+        "narration_artifact": _extract_narration_artifact_record(event_log),
         "preparation_diagnostic_snapshot": preparation_diagnostic_snapshot,
         "source_cleanup_evidence": _build_source_cleanup_evidence(getattr(prepared, "cleanup_report", None)),
         "runtime": runtime_snapshot,
@@ -5795,6 +5838,9 @@ def main() -> None:
         f"preparation_diagnostic_snapshot={json.dumps(report['preparation_diagnostic_snapshot'], ensure_ascii=False, sort_keys=True)}",
         *_build_model_accounting_summary_lines(
             cast("Mapping[str, object] | None", report.get("model_accounting"))
+        ),
+        *_build_narration_summary_lines(
+            cast("Mapping[str, object] | None", report.get("narration_artifact"))
         ),
         f"source_chars={report['preparation']['source_chars']}",
         f"final_markdown_chars={final_markdown_chars}",

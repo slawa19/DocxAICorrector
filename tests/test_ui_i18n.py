@@ -101,6 +101,24 @@ def test_ru_is_superset_of_referenced_and_en_keys() -> None:
     assert set(ru) - set(en)
 
 
+@pytest.mark.parametrize("lang", ["ru", "en"])
+def test_narration_source_fallback_notice_renders_its_counts(
+    monkeypatch: pytest.MonkeyPatch, lang: str
+) -> None:
+    """Spec 054: the excluded-block loss is a USER-visible notice, in both catalogs.
+
+    The result screen renders notices through ``t(message_key, **params)``, so a template
+    whose placeholders do not match the emitted params would silently ship the raw braces.
+    """
+    _force_language(monkeypatch, lang)
+
+    message = i18n.t("result.narration_source_fallback_excluded", count=6, chars=20597)
+
+    assert "{" not in message
+    assert "6" in message
+    assert "20597" in message
+
+
 def _ui_module_source() -> str:
     ui_path = Path(i18n.__file__).resolve().parent / "_ui.py"
     return ui_path.read_text(encoding="utf-8")

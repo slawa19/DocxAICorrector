@@ -45,7 +45,26 @@ _NARRATION_MARKDOWN_LINK_PATTERN = re.compile(r"\[([^\]\n]+)\]\(([^)\n]+)\)")
 _NARRATION_HEADING_PATTERN = re.compile(r"^\s{0,3}#{1,6}\s*(.*)$")
 _NARRATION_TAGGED_HEADING_PATTERN = re.compile(r"^(\s*(?:\[[^\]\n]+\]\s*)+)#{1,6}\s*(.*)$")
 _NARRATION_BLOCKQUOTE_PATTERN = re.compile(r"^\s{0,3}>\s?(.*)$")
-_NARRATION_LIST_PATTERN = re.compile(r"^\s{0,3}(?:[-*+]\s+|\d+\.\s+)(.*)$")
+# A list marker is not speech. Markdown's own markers were already dropped; the printed
+# bullet GLYPH was not, and the audiobook prompt's rule against lists does not bind the
+# model — measured on the 2026-08-04 Money & Sustainability narration artifact, 116 of them
+# reached the text a TTS engine would read aloud, 113 at the start of their own line and 3
+# behind an ElevenLabs tag. The glyph set is the repository's existing bullet lexicon
+# (``output_validation._BULLET_GLYPH_PATTERN``, which produced that same count of 116), not
+# a new one: of its four glyphs only ``•`` occurs in the artifact, and the other three are
+# carried because they are the same form, not because a book showed them. This is not a
+# guess about structure — a bullet glyph is simply not speech, and the item's own text is
+# kept.
+# A separator after the glyph is required, so a glyph welded inside a token ("4●5") is left
+# alone, exactly as ``_WELDED_BULLET_GLYPH_PATTERN`` leaves it alone in the quality gate.
+_NARRATION_LIST_MARKER = r"(?:[-*+●•◦‣]\s+|\d+\.\s+)"
+_NARRATION_LIST_PATTERN = re.compile(r"^\s{0,3}" + _NARRATION_LIST_MARKER + r"(.*)$")
+# The same marker behind an ElevenLabs tag prefix, which the narration keeps: "[serious] • …"
+# is the tagged twin of "• …" and has to lose the glyph the same way, or the tagged lines
+# would be the only ones a listener hears a bullet in.
+_NARRATION_TAGGED_LIST_PATTERN = re.compile(
+    r"^(\s*(?:\[[^\]\n]+\]\s*)+)" + _NARRATION_LIST_MARKER + r"(.*)$"
+)
 _NARRATION_STRONG_PATTERN = re.compile(r"(\*\*|__)(?=\S)(.+?)(?<=\S)\1")
 _NARRATION_EMPHASIS_PATTERN = re.compile(r"(\*|_)(?=\S)(.+?)(?<=\S)\1")
 _NARRATION_RAW_URL_PATTERN = re.compile(r"(?:https?://\S+|www\.\S+)", re.IGNORECASE)
@@ -145,6 +164,14 @@ def strip_markdown_for_narration(text: str) -> str:
                     list_match = _NARRATION_LIST_PATTERN.match(line_source)
                     if list_match is not None:
                         line_source = list_match.group(1)
+                    else:
+                        tagged_list_match = _NARRATION_TAGGED_LIST_PATTERN.match(line_source)
+                        if tagged_list_match is not None:
+                            tag_prefix = _NARRATION_INTERNAL_WHITESPACE_PATTERN.sub(
+                                " ", tagged_list_match.group(1)
+                            ).strip()
+                            item_text = tagged_list_match.group(2).strip()
+                            line_source = f"{tag_prefix} {item_text}".strip()
 
         line = line_source.replace("`", "")
         line = _strip_narration_inline_emphasis(line)
