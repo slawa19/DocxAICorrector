@@ -1,4 +1,5 @@
 import io
+import logging
 import threading
 import zipfile
 from types import SimpleNamespace
@@ -3511,3 +3512,44 @@ def test_rejected_attempts_do_not_reach_the_paragraph_disposition_counters():
 
     counts = model_accounting.snapshot_run_model_accounting()["paragraph_disposition_counts"]
     assert counts == {"accepted": 2, "omitted": 0, "retry_required": 0, "source_restored": 0}
+
+
+# --- rev41 P1-3: the omission WARNING has to carry characters, not only a count -------
+
+
+def test_the_omission_warning_reports_the_characters_it_withholds(monkeypatch):
+    """A real paragraph of prose, not the bare footnote number the first test used.
+
+    Spec 054's metric is the share of source-language CHARACTERS in the artifact, so a
+    WARNING reading "1 paragraph" cannot be compared against it: here that one line stands
+    for three thousand characters of prose that stop being spoken.
+    """
+
+    prose = (
+        "The central bank acts as lender of last resort for commercial banks but never for "
+        "sovereign states, and the whole architecture of the euro crisis follows from that "
+        "single asymmetry, which no treaty ever debated in public. " * 14
+    ).strip()
+    assert len(prose) > 3000
+    answer = "[[DOCX_PARA_p1]]\n\n[[DOCX_PARA_p2]]\nВторой абзац переведён."
+    logged_events: list[tuple[tuple[object, ...], dict[str, object]]] = []
+    monkeypatch.setattr(
+        generation,
+        "log_event",
+        lambda *args, **kwargs: logged_events.append((args, kwargs)) or "evt",
+    )
+
+    resolved = generation.resolve_marker_paragraph_dispositions(
+        generation.split_marker_preserved_paragraph_dispositions(answer, ["p1", "p2"]),
+        source_paragraph_chunks=[prose, "Second paragraph."],
+        allow_unresolved_paragraphs=True,
+    )
+
+    assert [item.status for item in resolved] == ["omitted", "accepted"]
+    omissions = [payload for args, payload in logged_events if args[1] == "marker_paragraph_omitted"]
+    assert len(omissions) == 1
+    assert omissions[0]["omitted_paragraph_count"] == 1
+    assert omissions[0]["omitted_source_chars"] == len(prose)
+    assert logging.WARNING in {args[0] for args, _payload in logged_events}
+    # ANTI-VACUUM: the prose paragraph next to it is still delivered.
+    assert resolved[1].text == "Второй абзац переведён."

@@ -8255,3 +8255,162 @@ def test_ui_result_meta_json_carries_the_run_accounting(tmp_path):
     meta_payload = json.loads(Path(artifact_paths["metadata_path"]).read_text(encoding="utf-8"))
     assert meta_payload["model_accounting"]["total_tokens"] == 801522
     assert meta_payload["model_accounting"]["cost_usd_reported_by_provider"] == 0.431479
+
+
+# --- rev41 P1-2: the per-paragraph remedy must not be quieter than the failure it replaced
+#
+# ``narration_source_fallback_excluded`` publishes CHARACTERS and raises a user-facing
+# notice. Its per-paragraph twin shipped publishing a paragraph count in one WARNING and
+# nothing else — no characters, so it could not be read against spec 054's metric, and no
+# notice, so the remedy that makes the loss smaller also made it less visible.
+
+_OMITTED_ENGLISH_PARAGRAPH = (
+    "Footnotes 1 Quoted in Naomi Klein, No Logo, page 214, and see Reinhart et al. (2004), "
+    "Appendix A, for the full dataset behind this table."
+)
+
+
+def _run_standalone_audiobook_with_an_omitted_paragraph(*, runtime, log_event):
+    """A one-block standalone ``audiobook`` run whose second paragraph came back empty."""
+    from docxaicorrector.generation._generation import (
+        MarkerPreservedBlockText,
+        ParagraphDisposition,
+    )
+
+    spoken = "[thoughtful] Однажды в маленькой деревне люди обменивались товарами."
+
+    def _writer(**_kwargs):
+        return _persist_primary_artifacts_on_disk(
+            {
+                "markdown_path": "/tmp/report.result.md",
+                "docx_path": "/tmp/report.result.docx",
+                "tts_text_path": "/tmp/report.result.tts.txt",
+            }
+        )
+
+    target_text = f"Once upon a time in a small village.\n\n{_OMITTED_ENGLISH_PARAGRAPH}"
+
+    def generate_markdown_block(**_kwargs):
+        dispositions = [
+            ParagraphDisposition(paragraph_id="p0001", text=spoken, status="accepted"),
+            ParagraphDisposition(
+                paragraph_id="p0002", text=_OMITTED_ENGLISH_PARAGRAPH, status="omitted"
+            ),
+        ]
+        return MarkerPreservedBlockText(
+            "\n\n".join(item.text for item in dispositions), dispositions
+        )
+
+    return document_pipeline.run_document_processing(
+        uploaded_file="report.docx",
+        jobs=[
+            {
+                "target_text": target_text,
+                "target_text_with_markers": (
+                    "[[DOCX_PARA_p0001]]\nOnce upon a time in a small village.\n\n"
+                    f"[[DOCX_PARA_p0002]]\n{_OMITTED_ENGLISH_PARAGRAPH}"
+                ),
+                "paragraph_ids": ["p0001", "p0002"],
+                "context_before": "",
+                "context_after": "",
+                "target_chars": len(target_text),
+                "context_chars": 0,
+                "narration_include": True,
+            }
+        ],
+        source_paragraphs=[],
+        image_assets=[],
+        image_mode="safe",
+        app_config={},
+        model="gpt-5.4",
+        max_retries=1,
+        processing_operation="audiobook",
+        source_language="auto",
+        target_language="ru",
+        on_progress=lambda **kwargs: None,
+        runtime=runtime,
+        resolve_uploaded_filename=lambda uploaded_file: str(uploaded_file),
+        get_client=lambda: object(),
+        ensure_pandoc_available=lambda: None,
+        load_system_prompt=lambda **_kw: "system",
+        log_event=log_event,
+        present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
+        emit_state=_emit_state,
+        emit_finalize=_emit_finalize,
+        emit_activity=_emit_activity,
+        emit_log=_emit_log,
+        emit_status=_emit_status,
+        should_stop_processing=lambda runtime: False,
+        generate_markdown_block=generate_markdown_block,
+        process_document_images=lambda **kwargs: [],
+        inspect_placeholder_integrity=_inspect_placeholder_integrity,
+        convert_markdown_to_docx_bytes=_convert_markdown_to_docx_bytes,
+        preserve_source_paragraph_properties=lambda docx_bytes, paragraphs, generated_paragraph_registry=None: docx_bytes,
+        reinsert_inline_images=lambda docx_bytes, image_assets: b"final-docx",
+        write_ui_result_artifacts=_writer,
+    )
+
+
+def test_standalone_audiobook_reports_omitted_paragraph_characters_and_notifies():
+    runtime = _build_runtime_capture()
+    events, log_event = _capture_log_events()
+
+    result = _run_standalone_audiobook_with_an_omitted_paragraph(runtime=runtime, log_event=log_event)
+
+    assert result == "succeeded"
+    narration_text = runtime["state"]["latest_narration_text"]
+    # ANTI-VACUUM: the paragraph the model DID answer for is still narrated.
+    assert "Однажды в маленькой деревне" in narration_text
+    assert "Footnotes 1 Quoted in Naomi Klein" not in narration_text
+    # ...while the DOCX branch still carries the source of the omitted paragraph.
+    assert _OMITTED_ENGLISH_PARAGRAPH in runtime["state"]["latest_markdown"]
+
+    excluded_event = next(
+        event for event in events if event["event_id"] == "narration_omitted_paragraphs_excluded"
+    )
+    assert excluded_event["level"] == logging.WARNING
+    assert excluded_event["context"]["excluded_omitted_paragraph_count"] == 1
+    assert excluded_event["context"]["excluded_omitted_paragraph_chars"] == len(
+        _OMITTED_ENGLISH_PARAGRAPH
+    )
+    assert excluded_event["context"]["narration_mode"] == "standalone"
+
+    saved_event = next(
+        event for event in events if event["event_id"] == "ui_audiobook_artifact_saved"
+    )
+    assert saved_event["context"]["excluded_omitted_paragraph_count"] == 1
+    assert saved_event["context"]["excluded_omitted_paragraph_chars"] == len(
+        _OMITTED_ENGLISH_PARAGRAPH
+    )
+
+    notices = _as_mapping_sequence(runtime["state"]["latest_result_notices"])
+    excluded_notices = [
+        notice
+        for notice in notices
+        if notice.get("message_key") == "result.narration_omitted_paragraphs_excluded"
+    ]
+    assert len(excluded_notices) == 1
+    assert excluded_notices[0]["level"] == "warning"
+    assert _as_mapping(excluded_notices[0]["params"])["count"] == 1
+    assert _as_mapping(excluded_notices[0]["params"])["chars"] == len(_OMITTED_ENGLISH_PARAGRAPH)
+
+
+def test_standalone_audiobook_without_an_omitted_paragraph_stays_silent():
+    """Anti-vacuum companion: nothing omitted means no event and no notice."""
+    runtime = _build_runtime_capture()
+    events, log_event = _capture_log_events()
+
+    result = _run_standalone_audiobook(
+        "[thoughtful] Обычный абзац без ссылочных маркеров.", runtime=runtime, log_event=log_event
+    )
+
+    assert result == "succeeded"
+    assert not [
+        event for event in events if event["event_id"] == "narration_omitted_paragraphs_excluded"
+    ]
+    notices = _as_mapping_sequence(runtime["state"].get("latest_result_notices") or ())
+    assert not [
+        notice
+        for notice in notices
+        if notice.get("message_key") == "result.narration_omitted_paragraphs_excluded"
+    ]

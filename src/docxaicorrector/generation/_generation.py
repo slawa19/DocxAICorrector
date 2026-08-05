@@ -685,13 +685,17 @@ def resolve_marker_paragraph_dispositions(
     ]
     if unresolved_indexes:
         # The run report must be able to say WHICH paragraphs the model produced nothing
-        # for. Without this the block reports OK and a listener simply never hears them.
+        # for, and HOW MUCH text stops being spoken because of it. The owner's metric for
+        # spec 054 is a share of CHARACTERS, so a count of paragraphs alone cannot be
+        # compared against it: a WARNING reading "1 paragraph" hid 3 000 characters of
+        # prose on the measurement that prompted this.
         log_event(
             logging.WARNING,
             "marker_paragraph_omitted",
             "Модель не вернула текст для отдельных абзацев блока; в документе остаётся исходный текст, в озвучку они не попадают.",
             omitted_paragraph_ids=[resolved[index].paragraph_id for index in unresolved_indexes],
             omitted_paragraph_count=len(unresolved_indexes),
+            omitted_source_chars=sum(len(resolved[index].text) for index in unresolved_indexes),
             paragraph_count=len(resolved),
         )
     return resolved
