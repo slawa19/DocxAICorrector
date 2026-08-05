@@ -107,6 +107,7 @@ class MarkdownGenerator(Protocol):
         max_retries: int,
         expected_paragraph_ids: Sequence[str] | None = None,
         marker_mode: bool = False,
+        block_index: int | None = None,
     ) -> str: ...
 
 

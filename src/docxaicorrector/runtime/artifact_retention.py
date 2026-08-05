@@ -72,6 +72,13 @@ STRUCTURE_MANIFESTS_MAX_COUNT = 200
 READER_CLEANUP_LINEAGE_MAX_AGE_SECONDS = 7 * 24 * 60 * 60
 READER_CLEANUP_LINEAGE_MAX_COUNT = 50
 
+# Rejected paragraph-marker attempts (``generation/marker_attempt_capture.py``, spec 056 D').
+# One file per REJECTED model answer, so a book that fights the marker contract writes
+# several dozen in a run; the count cap is the larger of the diagnostic tier for that
+# reason. Same 7-day age as the controlled-block fallback family it sits next to.
+MARKER_ATTEMPT_ARTIFACTS_MAX_AGE_SECONDS = 7 * 24 * 60 * 60
+MARKER_ATTEMPT_ARTIFACTS_MAX_COUNT = 400
+
 _UI_RESULT_GROUP_SUFFIXES = (
     ".result.manifest.json",
     ".result.meta.json",

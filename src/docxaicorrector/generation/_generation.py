@@ -23,6 +23,7 @@ from docxaicorrector.core.model_accounting import (
     record_retry_attempt,
 )
 from docxaicorrector.image.shared import call_responses_create_with_retry, extract_unsupported_parameter_name, is_retryable_error
+from docxaicorrector.generation.marker_attempt_capture import capture_rejected_marker_attempt
 from docxaicorrector.generation.openai_response_utils import collect_response_text_traversal, read_response_field
 
 if TYPE_CHECKING:
@@ -104,9 +105,15 @@ class MarkerValidationError(RuntimeError):
     ) -> None:
         super().__init__(f"paragraph_marker_validation_failed:{error_code}")
         self.error_code = error_code
+        # The FULL answer, kept alongside the preview. The preview feeds prompts and log
+        # payloads, which must stay small; the full text feeds the attempt-capture artifact
+        # (spec 056 D'), whose only purpose is that a rejected answer can be replayed
+        # offline instead of being re-bought. One block's answer, one exception.
+        self.raw_markdown = raw_markdown
         self.raw_markdown_preview = raw_markdown[:1000]
         self.expected_paragraph_ids = tuple(expected_paragraph_ids)
         self.found_paragraph_ids = tuple(found_paragraph_ids or ())
+        self.leading_text = leading_text or ""
         self.leading_text_preview = (leading_text or "")[:400]
 
 
@@ -1149,6 +1156,41 @@ def _classify_retry_reason(exc: Exception) -> str:
     return "other"
 
 
+def _capture_marker_attempt_failure(
+    exc: Exception,
+    *,
+    block_index: int | None,
+    attempt: int,
+    max_attempts: int,
+    stage: str,
+    target_chars: int,
+) -> str | None:
+    """Persist a rejected marker answer, if this failure carries one. Never raises.
+
+    Only ``MarkerValidationError`` is captured: it is the only failure that HOLDS the
+    model's answer together with the expected/found marker ids. A transient API error has
+    no answer to keep, and an empty response has nothing to replay.
+    """
+
+    if not isinstance(exc, MarkerValidationError):
+        return None
+    try:
+        return capture_rejected_marker_attempt(
+            block_index=block_index,
+            attempt=attempt,
+            max_attempts=max_attempts,
+            stage=stage,
+            error_code=exc.error_code,
+            expected_paragraph_ids=exc.expected_paragraph_ids,
+            found_paragraph_ids=exc.found_paragraph_ids,
+            raw_response=exc.raw_markdown,
+            leading_text=exc.leading_text,
+            target_chars=target_chars,
+        )
+    except Exception:
+        return None
+
+
 def generate_markdown_block(
     client: "OpenAI",
     model: str,
@@ -1159,6 +1201,7 @@ def generate_markdown_block(
     max_retries: int,
     expected_paragraph_ids: Sequence[str] | None = None,
     marker_mode: bool = False,
+    block_index: int | None = None,
 ) -> str:
     if isinstance(max_retries, bool) or not isinstance(max_retries, int):
         raise TypeError("max_retries должен быть целым числом.")
@@ -1240,6 +1283,17 @@ def generate_markdown_block(
             )
         except Exception as exc:
             last_exception = exc
+            # Spec 056 D': write the rejected answer down HERE, before anything decides
+            # whether to retry or to fall back. Every other place is too late — a controlled
+            # fallback returns a plain string and the call site never sees this exception.
+            _capture_marker_attempt_failure(
+                exc,
+                block_index=block_index,
+                attempt=attempt,
+                max_attempts=max_retries,
+                stage="attempt",
+                target_chars=len(target_text),
+            )
             should_retry = attempt < max_retries and (
                 is_retryable_error(exc)
                 or _is_retryable_empty_generation_error(exc)
@@ -1290,6 +1344,17 @@ def generate_markdown_block(
                 last_exception=last_exception,
             )
         except Exception as recovery_exc:
+            # The recovery call is the LAST answer the model gives for this block, and the
+            # one whose rejection sends the block's own English source into the artifact.
+            # It is the single most valuable attempt to have on disk.
+            _capture_marker_attempt_failure(
+                recovery_exc,
+                block_index=block_index,
+                attempt=max_retries + 1,
+                max_attempts=max_retries + 1,
+                stage="recovery",
+                target_chars=len(target_text),
+            )
             if _is_incomplete_response_error(recovery_exc) and _can_fallback_to_source_text_after_incomplete_response(target_text):
                 record_model_output_discarded(reason="incomplete_response_source_fallback", block_count=1)
                 log_event(

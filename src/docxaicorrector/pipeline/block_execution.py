@@ -456,6 +456,10 @@ def _generate_block_chunk(
         max_retries=context.max_retries,
         expected_paragraph_ids=payload.paragraph_ids if marker_mode_enabled else None,
         marker_mode=marker_mode_enabled,
+        # Names the block in the rejected-attempt capture (spec 056 D'). The generator has
+        # no other way to say WHICH block an artifact under ``.run/marker_attempts/``
+        # belongs to, and without that the record cannot be matched to the run log.
+        block_index=index,
     )
 
 

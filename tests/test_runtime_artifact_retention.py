@@ -1,4 +1,5 @@
 import os
+import time
 from pathlib import Path
 
 from docxaicorrector.runtime.artifact_retention import prune_artifact_dir, prune_ui_result_artifact_groups
@@ -215,3 +216,72 @@ def test_prune_ui_result_artifact_groups_removes_whole_stem_group(tmp_path):
         "20260423_111111_new.result.docx",
         "20260423_111111_new.result.md",
     ]
+
+
+# --- spec 056 D': rejected marker attempts are a bounded family --------------------
+
+
+def test_marker_attempt_artifacts_are_pruned_by_age_and_count(tmp_path, monkeypatch):
+    from docxaicorrector.generation import marker_attempt_capture
+
+    target = tmp_path / "marker_attempts"
+    monkeypatch.setattr(marker_attempt_capture, "MARKER_ATTEMPT_DIAGNOSTICS_DIR", target)
+    monkeypatch.setattr(marker_attempt_capture, "MARKER_ATTEMPT_ARTIFACTS_MAX_COUNT", 2)
+
+    written = []
+    for attempt in range(1, 5):
+        path = marker_attempt_capture.write_marker_attempt_artifact(
+            block_index=274,
+            attempt=attempt,
+            max_attempts=4,
+            stage="attempt",
+            error_code="empty_marker_chunk",
+            expected_paragraph_ids=["p1336"],
+            found_paragraph_ids=["p1336"],
+            raw_response="[[DOCX_PARA_p1336]]\n",
+        )
+        assert path is not None
+        written.append(Path(path))
+
+    # Count cap holds: the newest two survive, the oldest two are gone. Ordering is
+    # deterministic either way — mtimes rise with write order, and the name tiebreaker
+    # (``_a01`` … ``_a04``) carries the same order when a coarse clock makes them equal.
+    assert sorted(p.name for p in target.glob("*.json")) == sorted(p.name for p in written[-2:])
+
+    # Age cap holds too: the family is pruned by the same age policy as its neighbours.
+    now = time.time()
+    os.utime(written[-2], (now - 100.0, now - 100.0))
+    pruned = prune_artifact_dir(
+        target_dir=target,
+        max_age_seconds=10,
+        max_count=None,
+        now_epoch_seconds=now,
+        emit_log=False,
+    )
+    assert [Path(p).name for p in pruned] == [written[-2].name]
+    assert [p.name for p in target.glob("*.json")] == [written[-1].name]
+
+
+def test_marker_attempt_artifact_write_failure_returns_none(tmp_path, monkeypatch):
+    """A diagnostic that cannot be written must not raise into the generation it observes."""
+
+    from docxaicorrector.generation import marker_attempt_capture
+
+    # A file where the directory is expected: mkdir raises, the writer swallows it.
+    blocker = tmp_path / "marker_attempts"
+    blocker.write_text("not a directory", encoding="utf-8")
+    monkeypatch.setattr(marker_attempt_capture, "MARKER_ATTEMPT_DIAGNOSTICS_DIR", blocker)
+
+    assert (
+        marker_attempt_capture.write_marker_attempt_artifact(
+            block_index=1,
+            attempt=1,
+            max_attempts=1,
+            stage="attempt",
+            error_code="markers_missing",
+            expected_paragraph_ids=["p0001"],
+            found_paragraph_ids=[],
+            raw_response="no markers here",
+        )
+        is None
+    )

@@ -138,6 +138,7 @@ bash -c "cd /mnt/d/www/projects/2025/DocxAICorrector && python3 scripts/_list_lo
 - `context_leakage_persisted`, `image_only_target_passthrough`.
 - `markdown_empty_response_recovery_started`, `markdown_incomplete_response_source_fallback`, `markdown_empty_response_source_fallback`.
 - `model_empty_response_shape`, `prompt_quality_warning`.
+- `marker_attempt_rejected` — `src/docxaicorrector/generation/marker_attempt_capture.py`, WARNING: ответ модели отклонён проверкой маркеров абзацев (спека 056, решение D′). Эмитится по КАЖДОЙ отклонённой попытке, включая последнюю и recovery-вызов, из цикла попыток `generate_markdown_block` — то есть и тогда, когда блок затем уходит в controlled fallback и наружу возвращается обычная строка. Context: `{block_index, attempt, max_attempts, stage, error_code, expected_paragraph_ids, found_paragraph_ids, raw_response_chars, target_chars, artifact_path}`. `stage` — `attempt` (внутри цикла) или `recovery` (последний, informed вызов). Сам ответ модели в лог НЕ попадает (§1.5): он лежит целиком, без усечения, в артефакте `.run/marker_attempts/*.json` (§5.1), схема `{schema_version, block_index, attempt, max_attempts, stage, error_code, expected_paragraph_ids, found_paragraph_ids, target_chars, raw_response_chars, raw_response, leading_text, note}`. Директорию не читает ни одна стадия пайплайна — это forensic-запись для человека, чтобы отклонённый ответ можно было переиграть офлайн, а не покупать новый прогон. `artifact_path: null` означает, что запись на диск не удалась; событие всё равно эмитится.
 
 ### 3.5 Image pipeline
 
@@ -272,6 +273,7 @@ context-ключей добавляется для события, когда е
 | `.run/structure_maps/*.json` | TTL 30 дней, max 200 файлов, pruning при каждой записи | `preparation._write_structure_map_debug_artifact()` → `prune_artifact_dir()` |
 | `.run/structure_validation/*.json` | TTL 30 дней, max 200 файлов, pruning при каждой записи | `structure_validation.write_structure_validation_debug_artifact()` → `prune_artifact_dir()` |
 | `.run/document_topology/*.json` | TTL 30 дней, max 200 файлов, pruning при каждой записи | `preparation._write_document_topology_debug_artifact()` → `prune_artifact_dir()` |
+| `.run/marker_attempts/*.json` | TTL 7 дней, max 400 файлов, pruning при каждой записи | `src/docxaicorrector/generation/marker_attempt_capture.py :: write_marker_attempt_artifact()` → `prune_artifact_dir()` |
 | `.run/ui_results/*` | TTL 7 дней, max 80 result stems, pruning grouped by stem при каждой записи | `runtime_artifacts.write_ui_result_artifacts()` → `prune_ui_result_artifact_groups()` |
 | `.run/restart_*`, `.run/completed_*` | TTL 12 часов, cleanup при старте приложения | `restart_store.cleanup_stale_persisted_sources`, вызов из `app._schedule_stale_persisted_sources_cleanup` |
 | `.run/project.log` | Size-rollover на PowerShell-стороне (`Invoke-ProjectLogRollover`), backupCount=5, порог `256 KiB` | `scripts/_shared.ps1` |

@@ -1775,6 +1775,203 @@ def test_generate_markdown_block_marker_mode_replaces_stub_answer_with_source_pa
     assert len(result.split("\n\n")) == 2
 
 
+# --- spec 056 D': the rejected answer is written down, inside the attempt loop ------
+# A $0.53 audiobook run left NO record of what the model answered for the six blocks it
+# dropped, because the only writer that keeps a raw response is reachable from the path
+# where a block RAISES — and a controlled fallback returns a plain string instead.
+
+
+def _capture_marker_attempts(monkeypatch, tmp_path):
+    """Point the attempt-capture family at ``tmp_path`` and return the calls it logged."""
+
+    from docxaicorrector.generation import marker_attempt_capture
+
+    monkeypatch.setattr(
+        marker_attempt_capture,
+        "MARKER_ATTEMPT_DIAGNOSTICS_DIR",
+        tmp_path / "marker_attempts",
+    )
+    logged: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
+    monkeypatch.setattr(
+        marker_attempt_capture,
+        "log_event",
+        lambda *args, **kwargs: logged.append((args, kwargs)),
+    )
+    return logged
+
+
+def _read_marker_attempt_artifacts(tmp_path) -> list[dict[str, Any]]:
+    import json
+
+    directory = tmp_path / "marker_attempts"
+    if not directory.exists():
+        return []
+    payloads = [json.loads(path.read_text(encoding="utf-8")) for path in sorted(directory.glob("*.json"))]
+    return sorted(payloads, key=lambda payload: (payload["attempt"], payload["stage"]))
+
+
+def test_controlled_source_fallback_still_writes_every_rejected_answer(monkeypatch, tmp_path):
+    """The path that leaves NO evidence today: the block falls back and returns normally.
+
+    ``generate_markdown_block`` swallows the recovery exception and hands back the block's
+    own source text, so the call site holds neither the answer nor the exception. Every
+    attempt must therefore have been captured before that happened.
+    """
+
+    logged = _capture_marker_attempts(monkeypatch, tmp_path)
+    monkeypatch.setattr(generation.time, "sleep", lambda _seconds: None)
+    target_text = "[[DOCX_PARA_p1336]]\n14\n\n[[DOCX_PARA_p1337]]\nWhy not mobilise the European Investment Fund?"
+    rejected_answer = "[[DOCX_PARA_p1336]]\n\n[[DOCX_PARA_p1337]]\nПочему бы не задействовать фонд?"
+
+    def create_response(**kwargs):
+        return SimpleNamespace(output_text=rejected_answer)
+
+    client = SimpleNamespace(responses=SimpleNamespace(create=create_response))
+
+    result = generation.generate_markdown_block(
+        client=_as_openai_client(client),
+        model="gpt-5.4",
+        system_prompt="system",
+        target_text=target_text,
+        context_before="before",
+        context_after="after",
+        max_retries=2,
+        expected_paragraph_ids=["p1336", "p1337"],
+        marker_mode=True,
+        block_index=274,
+    )
+
+    # Behaviour is unchanged: this is still the controlled source-text fallback.
+    assert result == "14\n\nWhy not mobilise the European Investment Fund?"
+
+    payloads = _read_marker_attempt_artifacts(tmp_path)
+    # 2 loop attempts + the informed recovery call.
+    assert [(payload["attempt"], payload["stage"]) for payload in payloads] == [
+        (1, "attempt"),
+        (2, "attempt"),
+        (3, "recovery"),
+    ]
+    for payload in payloads:
+        assert payload["schema_version"] == 1
+        assert payload["block_index"] == 274
+        assert payload["error_code"] == "empty_marker_chunk"
+        assert payload["expected_paragraph_ids"] == ["p1336", "p1337"]
+        assert payload["found_paragraph_ids"] == ["p1336", "p1337"]
+        # The FULL answer, not a preview: the point is that it can be replayed offline.
+        assert payload["raw_response"] == rejected_answer
+        assert payload["raw_response_chars"] == len(rejected_answer)
+    assert [call[0][1] for call in logged] == ["marker_attempt_rejected"] * 3
+    # The model payload never reaches the log line (LOGGING_AND_ARTIFACT_RETENTION §1.5).
+    assert all("raw_response" not in call[1] for call in logged)
+    assert all(call[1]["raw_response_chars"] == len(rejected_answer) for call in logged)
+
+
+def test_rejected_answer_capture_keeps_the_full_response_past_the_preview_limit(monkeypatch, tmp_path):
+    """``MarkerValidationError`` truncates its preview at 1000 chars; the artifact must not."""
+
+    _capture_marker_attempts(monkeypatch, tmp_path)
+    long_paragraph = "Длинный переведённый абзац. " * 120
+    rejected_answer = f"[[DOCX_PARA_p0002]]\n{long_paragraph}"
+
+    def create_response(**kwargs):
+        return SimpleNamespace(output_text=rejected_answer)
+
+    client = SimpleNamespace(responses=SimpleNamespace(create=create_response))
+
+    result = generation.generate_markdown_block(
+        client=_as_openai_client(client),
+        model="gpt-5.4",
+        system_prompt="system",
+        target_text="[[DOCX_PARA_p0001]]\nSource paragraph.",
+        context_before="",
+        context_after="",
+        max_retries=1,
+        expected_paragraph_ids=["p0001"],
+        marker_mode=True,
+        block_index=7,
+    )
+
+    # Wrong marker id is block-fatal, so the source stands — and that is exactly the path
+    # that used to leave nothing behind.
+    assert result == "Source paragraph."
+    payloads = _read_marker_attempt_artifacts(tmp_path)
+    assert payloads
+    assert len(rejected_answer) > 1000
+    # The captured answer is the NORMALISED model output (fences stripped) — exactly what
+    # the validator judged, which is what a replay has to re-judge.
+    assert payloads[0]["raw_response"] == rejected_answer.strip()
+    assert payloads[0]["error_code"] == "marker_order_or_identity"
+    assert payloads[0]["found_paragraph_ids"] == ["p0002"]
+
+
+def test_rejected_answer_capture_is_silent_for_failures_that_carry_no_answer(monkeypatch, tmp_path):
+    """A transient API error has no model answer to keep — do not write an empty record."""
+
+    _capture_marker_attempts(monkeypatch, tmp_path)
+    monkeypatch.setattr(generation.time, "sleep", lambda _seconds: None)
+
+    def create_response(**kwargs):
+        return SimpleNamespace(output_text="")
+
+    client = SimpleNamespace(responses=SimpleNamespace(create=create_response))
+
+    generation.generate_markdown_block(
+        client=_as_openai_client(client),
+        model="gpt-5.4",
+        system_prompt="system",
+        target_text="Обычный блок без маркеров.",
+        context_before="",
+        context_after="",
+        max_retries=1,
+        expected_paragraph_ids=None,
+        marker_mode=False,
+        block_index=3,
+    )
+
+    assert _read_marker_attempt_artifacts(tmp_path) == []
+
+
+def test_rejected_answer_capture_failure_never_breaks_generation(monkeypatch, tmp_path):
+    """Losing a diagnostic must not take down the generation it only observes."""
+
+    from docxaicorrector.generation import marker_attempt_capture
+
+    _capture_marker_attempts(monkeypatch, tmp_path)
+
+    def explode(**_kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(marker_attempt_capture, "write_marker_attempt_artifact", explode)
+    monkeypatch.setattr(generation.time, "sleep", lambda _seconds: None)
+
+    answers = iter(
+        [
+            "[[DOCX_PARA_p0002]]\nWrong marker.",
+            "[[DOCX_PARA_p0001]]\nПравильный ответ.",
+        ]
+    )
+
+    def create_response(**kwargs):
+        return SimpleNamespace(output_text=next(answers))
+
+    client = SimpleNamespace(responses=SimpleNamespace(create=create_response))
+
+    result = generation.generate_markdown_block(
+        client=_as_openai_client(client),
+        model="gpt-5.4",
+        system_prompt="system",
+        target_text="[[DOCX_PARA_p0001]]\nSource paragraph.",
+        context_before="",
+        context_after="",
+        max_retries=2,
+        expected_paragraph_ids=["p0001"],
+        marker_mode=True,
+        block_index=11,
+    )
+
+    assert result == "Правильный ответ."
+
+
 def test_marker_preserving_user_prompt_tells_the_model_what_to_do_instead_of_a_stub():
     prompt = generation._build_marker_preserving_user_prompt(
         target_text="[[DOCX_PARA_p0001]]\nАбзац",
