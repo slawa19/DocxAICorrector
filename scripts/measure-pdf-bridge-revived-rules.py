@@ -95,6 +95,8 @@ class _RuleProbe:
         original_promote = roles.promote_short_standalone_headings
         original_front_matter = roles.normalize_front_matter_display_title
         original_strong = roles._paragraph_unit_has_strong_heading_format
+        original_docx_strong = roles.paragraph_has_strong_heading_format
+        original_probable = roles.is_probable_heading
         original_epigraph = roles._is_short_centered_epigraph_attribution_candidate
         original_boundary = structure_repair._is_body_boundary_candidate
         original_typography = segments._has_typography_heading_signal
@@ -148,6 +150,20 @@ class _RuleProbe:
                 self._record_center("roles._paragraph_unit_has_strong_heading_format", paragraph.text)
             return result
 
+        def docx_strong_heading_format(paragraph):
+            # The raw-DOCX twin of the predicate above, and the one that actually decides a
+            # role: `extraction._build_raw_paragraph` reaches `is_probable_heading` through it.
+            result = original_docx_strong(paragraph)
+            if result and roles.resolve_paragraph_alignment(paragraph) == "center":
+                self._record_center("roles.paragraph_has_strong_heading_format", paragraph.text)
+            return result
+
+        def probable_heading(paragraph, text, normalized_style):
+            result = original_probable(paragraph, text, normalized_style)
+            if result and roles.resolve_paragraph_alignment(paragraph) == "center":
+                self._record_center("roles.is_probable_heading", text)
+            return result
+
         def epigraph_attribution(paragraph, **kwargs):
             result = original_epigraph(paragraph, **kwargs)
             if result:
@@ -188,6 +204,9 @@ class _RuleProbe:
         self._patch(roles, "normalize_front_matter_display_title", front_matter)
         self._patch(extraction, "normalize_front_matter_display_title", front_matter)
         self._patch(roles, "_paragraph_unit_has_strong_heading_format", strong_heading_format)
+        self._patch(roles, "paragraph_has_strong_heading_format", docx_strong_heading_format)
+        self._patch(roles, "is_probable_heading", probable_heading)
+        self._patch(extraction, "is_probable_heading", probable_heading)
         self._patch(roles, "_is_short_centered_epigraph_attribution_candidate", epigraph_attribution)
         self._patch(structure_repair, "_is_body_boundary_candidate", body_boundary)
         self._patch(segments, "_has_typography_heading_signal", typography_heading_signal)

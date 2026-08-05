@@ -1068,22 +1068,22 @@ def _carry_pdf_paragraph_layout_signals(docx_paragraph, paragraph) -> None:
     """Write the layout evidence `logical_import` measured into the intermediate DOCX.
 
     Until spec 055 this bridge emitted a style name and bold/italic and discarded everything
-    else, so `document/extraction.py` re-derived structure from a document with alignment on
-    0 of 8418 paragraphs and space-before on 0 of 8418, against 8137/8137 and 8062/8137 on the
-    same books as native DOCX (census, 2026-08-05). These are the same three signals the
+    else, so `document/extraction.py` re-derived structure from a document with space-before
+    on 0 of 8418 paragraphs and a real font size on none of them, against 8062/8137 and
+    8137/8137 on the same books as native DOCX (census, 2026-08-05). These are signals the
     native path already carries; nothing new is invented here, and no role mapping changes.
 
-    Alignment is emitted only where the importer measured centring, which is the one value
-    `extraction.py` and its downstream predicates key on. Everything else stays unset, exactly
-    as an unstyled DOCX paragraph does, so `alignments_are_compatible` keeps treating those
-    paragraphs as mergeable.
+    Alignment is NOT written, and that is a measured decision rather than an omission. The
+    importer can measure centring accurately, but carrying it turned 33 centred display
+    fragments into headings across the four corpus books — notes-back-matter chapter labels,
+    a copyright year, half of a wrapped chapter title, a formula — and none of the 33 was
+    correct. `roles.is_probable_heading` treats centring as sufficient heading evidence,
+    which holds for a hand-made DOCX and does not hold for a page-geometry document where
+    far more things are centred. Spec 055's verdict is to accept that, not to narrow a
+    predicate the native path depends on.
     """
 
-    from docx.enum.text import WD_ALIGN_PARAGRAPH
     from docx.shared import Pt
-
-    if str(getattr(paragraph, "paragraph_alignment", "") or "").strip().lower() == "center":
-        docx_paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
 
     gap_before_pt = getattr(paragraph, "vertical_gap_before_pt", None)
     if isinstance(gap_before_pt, (int, float)) and float(gap_before_pt) >= 0.0:

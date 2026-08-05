@@ -2475,20 +2475,24 @@ def _attach_pdf_layout_signals(
     *,
     layout_profile: _PdfHeadingLayoutProfile,
 ) -> None:
-    """Record, on each unit, the two layout signals this importer already measured.
+    """Record, on each unit, the vertical gap this importer measured above it.
 
-    ``ParagraphUnit`` has carried ``paragraph_alignment`` and ``vertical_gap_before_pt``
-    since the DOCX path was written, and the PDF path never assigned either: 0 of 8216
-    paragraphs across the four corpus books (2026-08-05 census). Both are recoverable
-    here and nowhere downstream, because both ARE geometry in a PDF — there is no ``w:jc``
-    and no ``w:spacing`` to read, only coordinates, and the coordinates stop existing the
-    moment the intermediate DOCX is written.
+    ``ParagraphUnit.vertical_gap_before_pt`` has existed since the DOCX path was written and
+    the PDF path never assigned it: 0 of 8216 paragraphs across the four corpus books
+    (census, 2026-08-05). It is recoverable here and nowhere downstream, because in a PDF it
+    IS geometry — there is no ``w:spacing`` to read, only coordinates, and the coordinates
+    stop existing the moment the intermediate DOCX is written.
 
-    Nothing in here looks at the text. Centring is decided against the body text column
-    this importer already derived (``body_left_x0`` / ``body_right_x1`` / ``body_leading``,
-    the same profile the role classifier keys on), and the gap is the measured whitespace
-    above the paragraph's first line. Both are conservative: a paragraph whose spans cannot
-    be located, or a page break, yields no signal rather than a guessed one.
+    Nothing in here looks at the text, and nothing is guessed: a paragraph whose spans cannot
+    be located, or one that opens a page, yields no signal at all.
+
+    Centring is deliberately NOT recorded, though this importer can measure it accurately
+    (`_spans_are_centered_in_body_column`, deleted in the spec 055 history — recover it from
+    git if the question is ever reopened). It was carried, the corpus was re-run, and it
+    produced 33 heading promotions across four books of which not one was correct: 24 were
+    per-chapter labels inside notes back-matter, which this module has a dedicated test for
+    demoting. The signal was true and the downstream inference from it is wrong for this
+    document class, which Constitution VII answers with ACCEPT, not with a cleverer rule.
     """
 
     if not paragraphs:
@@ -2511,9 +2515,6 @@ def _attach_pdf_layout_signals(
             previous_bottom = None
             continue
 
-        if _spans_are_centered_in_body_column(paragraph_spans, layout_profile=layout_profile):
-            paragraph.paragraph_alignment = "center"
-
         first_span = paragraph_spans[0]
         if previous_page == first_span.page_number and previous_bottom is not None:
             paragraph.vertical_gap_before_pt = round(
@@ -2525,51 +2526,6 @@ def _attach_pdf_layout_signals(
         previous_bottom = max(
             float(span.bottom) for span in paragraph_spans if span.page_number == last_page
         )
-
-
-def _spans_are_centered_in_body_column(
-    spans: list[PdfTextSpan],
-    *,
-    layout_profile: _PdfHeadingLayoutProfile,
-) -> bool:
-    """True when every line of the paragraph sits centred inside the measured body column.
-
-    Two scales, and the corpus forced both. Symmetry alone is not enough: the FIRST line of
-    an ordinary indented paragraph is inset on the left by exactly one em and, on a ragged
-    right edge, falls short on the right by a comparable amount, so its midpoint sits within
-    a few points of the column midpoint. Measured on this corpus, the indent (14.4pt / 15.0pt)
-    and the right-edge raggedness (0.1pt-19.1pt) are the same order of magnitude as any
-    tolerance that still admits a real centred line, so a midpoint test — with or without a
-    left-inset guard — silently classifies running prose as centred.
-
-    What separates the two is not symmetry but DEPTH of inset. A first-line indent is about
-    one em; a centred display line is inset by a substantial fraction of the column (the
-    measured cases run from a tenth to more than half of it). So a line qualifies only when
-    it is inset from BOTH edges by more than a tenth of the measured body column AND its
-    midpoint is on the column midpoint. Both thresholds are proportions of quantities this
-    importer measures on the document itself — the column it derived and the leading it
-    estimated — so neither is a literal and neither is tied to a book.
-    """
-
-    left = layout_profile.body_left_x0
-    right = layout_profile.body_right_x1
-    if left is None or right is None:
-        return False
-    column_width = float(right) - float(left)
-    midpoint_tolerance = float(layout_profile.body_leading or 0.0) * 0.5
-    if column_width <= 0.0 or midpoint_tolerance <= 0.0:
-        return False
-
-    minimum_inset = column_width * 0.1
-    column_center = (float(left) + float(right)) / 2.0
-    for span in spans:
-        if float(span.x0) - float(left) <= minimum_inset:
-            return False
-        if float(right) - float(span.x1) <= minimum_inset:
-            return False
-        if abs((float(span.x0) + float(span.x1)) / 2.0 - column_center) > midpoint_tolerance:
-            return False
-    return True
 
 
 def _style_name_for_role(role: str) -> str:

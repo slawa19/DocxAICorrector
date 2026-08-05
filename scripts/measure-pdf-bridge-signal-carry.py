@@ -81,16 +81,35 @@ def _populated(value: object) -> bool:
 
 
 def _span_is_centered(span: Any, profile: Any) -> bool:
+    """The centring predicate spec 055 built, measured, and then deleted from production.
+
+    It lives on here because the census question is "could the bridge write this", and for
+    centring the answer is yes — accurately. The reason it is not written is downstream, not
+    here: carrying it turned 33 centred display fragments into headings across the four
+    corpus books and not one of the 33 was correct. Keeping the probe means the count stays
+    visible, so the decision can be revisited on numbers rather than re-derived from memory.
+
+    A line qualifies only when it is inset from BOTH edges of the measured body column by
+    more than a tenth of that column and its midpoint is on the column midpoint. Both the
+    left inset alone and the midpoint alone were tried first and both admitted the indented
+    first line of ordinary prose; see the spec 055 history.
+    """
+
     left = profile.body_left_x0
     right = profile.body_right_x1
     if left is None or right is None:
         return False
-    leading = float(profile.body_leading or 0.0) or 12.0
+    column_width = float(right) - float(left)
+    midpoint_tolerance = float(profile.body_leading or 0.0) * 0.5
+    if column_width <= 0.0 or midpoint_tolerance <= 0.0:
+        return False
+    minimum_inset = column_width * 0.1
     column_center = (float(left) + float(right)) / 2.0
-    span_center = (float(span.x0) + float(span.x1)) / 2.0
-    indented = float(span.x0) - float(left) > leading * 0.5
-    balanced = abs(span_center - column_center) <= leading * 0.5
-    return indented and balanced
+    if float(span.x0) - float(left) <= minimum_inset:
+        return False
+    if float(right) - float(span.x1) <= minimum_inset:
+        return False
+    return abs((float(span.x0) + float(span.x1)) / 2.0 - column_center) <= midpoint_tolerance
 
 
 def _feasibility(spans: list[Any], paragraphs: list[Any]) -> dict[str, Any]:

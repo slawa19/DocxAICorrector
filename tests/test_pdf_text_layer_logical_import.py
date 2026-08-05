@@ -1362,59 +1362,23 @@ def test_build_paragraph_units_keeps_real_bare_chapter_opener() -> None:
 
 # --- Spec 055: the importer records the layout evidence it measured ---------
 #
-# `paragraph_alignment` and `vertical_gap_before_pt` were 0 of 8216 paragraphs across the
-# four corpus books before this (census, 2026-08-05). They can only be filled here: a PDF
-# carries no `w:jc` and no `w:spacing`, so in a PDF both signals ARE geometry, and the
-# geometry stops existing once the intermediate DOCX is written.
+# `vertical_gap_before_pt` was 0 of 8216 paragraphs across the four corpus books before this
+# (census, 2026-08-05). It can only be filled here: a PDF carries no `w:spacing`, so the gap
+# IS geometry, and the geometry stops existing once the intermediate DOCX is written.
+#
+# `paragraph_alignment` stays unset on purpose. Centring is measurable here and was carried
+# for one round of the spec 055 experiment; on the corpus it produced 33 heading promotions
+# across four books, not one of them correct, and it is not carried any more. The last test
+# in this block is the guard on that verdict.
 
 
 def _wide_body_context_spans() -> list[PdfTextSpan]:
-    # A body column from x0=50 to x1=450 (400pt wide), so a tenth of the column is 40pt.
     return [
         _span(1, "A first running body line long enough to count as a body width sample.", top=40, bottom=54),
         _span(1, "A second running body line long enough to count as a body width sample.", top=56, bottom=70),
         _span(1, "A third running body line long enough to count as a body width sample.", top=72, bottom=86),
         _span(1, "A fourth running body line long enough to count as a body width sample.", top=88, bottom=102),
     ]
-
-
-def test_paragraph_units_record_measured_centring() -> None:
-    spans = _wide_body_context_spans() + [
-        _span(1, "A Centred Display Line", top=140, bottom=154, x0=200, x1=300),
-    ]
-
-    result = build_paragraph_units_from_text_spans(spans)
-
-    centred = next(p for p in result.paragraphs if p.text == "A Centred Display Line")
-    assert centred.paragraph_alignment == "center"
-
-
-def test_first_line_indent_of_running_prose_is_not_centring() -> None:
-    # ANTI-VACUUM. The rule this guards is the one the corpus broke twice: an indented
-    # first line of ordinary prose is inset on the left and, on a ragged right edge, falls
-    # short on the right, so its midpoint sits on the column midpoint. Measured on the real
-    # books the indent was one em (14.4pt / 15.0pt) against a half-leading tolerance of
-    # 8.3pt / 8.6pt, and a midpoint test classified running prose as centred — splitting
-    # "Then, in 1986, Big Bang financial reforms in the City of London did" away from the
-    # rest of its own sentence. Real body text must never be called centred.
-    spans = _wide_body_context_spans() + [
-        _span(1, "An indented first line of a perfectly ordinary body paragraph.", top=140, bottom=154, x0=62, x1=438),
-    ]
-
-    result = build_paragraph_units_from_text_spans(spans)
-
-    indented = next(
-        p for p in result.paragraphs if p.text.startswith("An indented first line")
-    )
-    assert indented.paragraph_alignment is None
-
-
-def test_full_width_body_lines_are_not_centred() -> None:
-    # ANTI-VACUUM: every line of the body context itself must stay unaligned, or the signal
-    # would be vacuous — "everything is centred" carries no more information than nothing is.
-    result = build_paragraph_units_from_text_spans(_wide_body_context_spans())
-
-    assert all(p.paragraph_alignment is None for p in result.paragraphs)
 
 
 def test_paragraph_units_record_measured_gap_before() -> None:
@@ -1440,3 +1404,29 @@ def test_gap_before_is_not_guessed_across_a_page_break() -> None:
         p for p in result.paragraphs if p.text.startswith("The first body line on the following page")
     )
     assert first_on_page_two.vertical_gap_before_pt is None
+
+
+def test_gap_before_is_measured_for_every_reachable_paragraph() -> None:
+    # ANTI-VACUUM: a carry that silently reached almost nothing would look identical to the
+    # defect it fixes. Every paragraph after the first on a page must get a measured gap.
+    result = build_paragraph_units_from_text_spans(_wide_body_context_spans())
+
+    measured = [p for p in result.paragraphs if p.vertical_gap_before_pt is not None]
+    assert len(measured) == len(result.paragraphs) - 1
+
+
+def test_centring_is_measurable_but_deliberately_not_carried() -> None:
+    # A line inset far inside the body column on both sides is unambiguously centred, and the
+    # importer still records no alignment for it. Spec 055 measured the alternative: carrying
+    # it promoted 24 notes-back-matter chapter labels, a copyright year, a formula and half a
+    # wrapped chapter title to headings, and nothing correct. If this assertion is ever
+    # flipped, the corpus measurement has to be redone first — a unit test cannot settle it.
+    spans = _wide_body_context_spans() + [
+        _span(1, "A Centred Display Line", top=140, bottom=154, x0=200, x1=300),
+    ]
+
+    result = build_paragraph_units_from_text_spans(spans)
+
+    centred = next(p for p in result.paragraphs if p.text == "A Centred Display Line")
+    assert centred.paragraph_alignment is None
+    assert all(p.paragraph_alignment is None for p in result.paragraphs)

@@ -3455,27 +3455,23 @@ def test_extract_pdf_images_emits_summary_without_dropping_valid_image(monkeypat
 # --- Spec 055: the bridge carries the layout evidence the importer measured ----
 #
 # Before this, `_append_pdf_text_paragraph_to_docx` wrote a style name and bold/italic and
-# nothing else, so the intermediate DOCX reached `document/extraction.py` with alignment on
-# 0 of 8418 paragraphs, space-before on 0 of 8418, and a real font size on none of them
-# (census, 2026-08-05). These assert through the very resolvers extraction uses, so a
-# signal that is written but unreadable would still fail.
+# nothing else, so the intermediate DOCX reached `document/extraction.py` with space-before
+# on 0 of 8418 paragraphs and a real font size on none of them (census, 2026-08-05). These
+# assert through the very resolvers extraction uses, so a signal that is written but
+# unreadable would still fail.
 
 
-def test_append_pdf_text_paragraph_carries_font_size_alignment_and_gap() -> None:
+def test_append_pdf_text_paragraph_carries_font_size_and_gap() -> None:
     from docx import Document
 
     from docxaicorrector.core.models import ParagraphUnit
-    from docxaicorrector.document.roles import (
-        resolve_effective_paragraph_font_size,
-        resolve_paragraph_alignment,
-    )
+    from docxaicorrector.document.roles import resolve_effective_paragraph_font_size
 
     paragraph = ParagraphUnit(
-        text="A centred display line.",
+        text="A display line.",
         role="body",
         structural_role="body",
         font_size_pt=20.5,
-        paragraph_alignment="center",
         vertical_gap_before_pt=18.0,
     )
     document = Document()
@@ -3483,20 +3479,41 @@ def test_append_pdf_text_paragraph_carries_font_size_alignment_and_gap() -> None
     processing_runtime._append_pdf_text_paragraph_to_docx(document, paragraph)
 
     emitted = document.paragraphs[-1]
-    assert resolve_paragraph_alignment(emitted) == "center"
     assert resolve_effective_paragraph_font_size(emitted) == 20.5
-    assert emitted.paragraph_format.space_before is not None
-    assert emitted.paragraph_format.space_before.pt == 18.0
+    space_before = emitted.paragraph_format.space_before
+    assert space_before is not None
+    assert space_before.pt == 18.0
 
 
-def test_append_pdf_text_paragraph_leaves_unmeasured_signals_unset() -> None:
-    # ANTI-VACUUM. A bridge that stamped every paragraph would make the signal worthless:
-    # `alignments_are_compatible` treats an unset alignment as mergeable, and a paragraph
-    # the importer could not measure must stay in that state rather than acquire a guess.
+def test_append_pdf_text_paragraph_does_not_carry_alignment() -> None:
+    # Spec 055 verdict, guarded here so it cannot be undone by accident. Alignment is
+    # measurable in the importer and is not carried: on the corpus it turned 33 centred
+    # display fragments into headings, none of them correctly. Reopening this needs a
+    # corpus re-measurement, not an edit to this assertion.
     from docx import Document
 
     from docxaicorrector.core.models import ParagraphUnit
     from docxaicorrector.document.roles import resolve_paragraph_alignment
+
+    paragraph = ParagraphUnit(
+        text="A centred display line.",
+        role="body",
+        structural_role="body",
+        paragraph_alignment="center",
+    )
+    document = Document()
+
+    processing_runtime._append_pdf_text_paragraph_to_docx(document, paragraph)
+
+    assert resolve_paragraph_alignment(document.paragraphs[-1]) is None
+
+
+def test_append_pdf_text_paragraph_leaves_unmeasured_signals_unset() -> None:
+    # ANTI-VACUUM. A bridge that stamped every paragraph would make the signal worthless: a
+    # paragraph the importer could not measure must stay unset rather than acquire a guess.
+    from docx import Document
+
+    from docxaicorrector.core.models import ParagraphUnit
 
     paragraph = ParagraphUnit(text="Plain body line.", role="body", structural_role="body")
     document = Document()
@@ -3504,7 +3521,6 @@ def test_append_pdf_text_paragraph_leaves_unmeasured_signals_unset() -> None:
     processing_runtime._append_pdf_text_paragraph_to_docx(document, paragraph)
 
     emitted = document.paragraphs[-1]
-    assert resolve_paragraph_alignment(emitted) is None
     assert emitted.paragraph_format.space_before is None
     assert emitted.runs[0].font.size is None
 
@@ -3531,7 +3547,9 @@ def test_append_pdf_text_paragraph_carries_font_size_onto_every_emphasis_run() -
 
     emitted = document.paragraphs[-1]
     assert emitted.text == "Body with emphasised middle."
-    assert [run.font.size.pt for run in emitted.runs] == [11.0, 11.0, 11.0]
+    sizes = [run.font.size for run in emitted.runs]
+    assert all(size is not None for size in sizes)
+    assert [size.pt for size in sizes if size is not None] == [11.0, 11.0, 11.0]
 
 
 def test_append_pdf_heading_carries_font_size() -> None:
