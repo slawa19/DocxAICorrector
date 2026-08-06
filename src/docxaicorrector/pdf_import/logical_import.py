@@ -318,6 +318,8 @@ def build_paragraph_units_from_text_spans(
         emitted, body_font_size=layout_profile.body_font_size
     )
 
+    _attach_pdf_layout_signals(emitted, ordered_spans, layout_profile=layout_profile)
+
     for logical_index, paragraph in enumerate(emitted):
         _assign_pdf_paragraph_identity(paragraph, logical_index)
 
@@ -2465,6 +2467,65 @@ def _infer_font_heading_level(span: PdfTextSpan, *, median_font_size: float | No
 
 def _has_leading_section_ordinal(span: PdfTextSpan) -> bool:
     return bool(_SECTION_ORDINAL_HEADING_PATTERN.match(_normalize_text(span.text)))
+
+
+def _attach_pdf_layout_signals(
+    paragraphs: list[ParagraphUnit],
+    ordered_spans: list[PdfTextSpan],
+    *,
+    layout_profile: _PdfHeadingLayoutProfile,
+) -> None:
+    """Record, on each unit, the vertical gap this importer measured above it.
+
+    ``ParagraphUnit.vertical_gap_before_pt`` has existed since the DOCX path was written and
+    the PDF path never assigned it: 0 of 8216 paragraphs across the four corpus books
+    (census, 2026-08-05). It is recoverable here and nowhere downstream, because in a PDF it
+    IS geometry — there is no ``w:spacing`` to read, only coordinates, and the coordinates
+    stop existing the moment the intermediate DOCX is written.
+
+    Nothing in here looks at the text, and nothing is guessed: a paragraph whose spans cannot
+    be located, or one that opens a page, yields no signal at all.
+
+    Centring is deliberately NOT recorded, though this importer can measure it accurately
+    (`_spans_are_centered_in_body_column`, deleted in the spec 055 history — recover it from
+    git if the question is ever reopened). It was carried, the corpus was re-run, and it
+    produced 33 heading promotions across four books of which not one was correct: 24 were
+    per-chapter labels inside notes back-matter, which this module has a dedicated test for
+    demoting. The signal was true and the downstream inference from it is wrong for this
+    document class, which Constitution VII answers with ACCEPT, not with a cleverer rule.
+    """
+
+    if not paragraphs:
+        return
+
+    spans_by_origin: dict[int, list[PdfTextSpan]] = {}
+    for span in ordered_spans:
+        spans_by_origin.setdefault(_span_origin_index(span), []).append(span)
+
+    previous_page: int | None = None
+    previous_bottom: float | None = None
+    for paragraph in paragraphs:
+        paragraph_spans = [
+            span
+            for origin in (paragraph.origin_raw_indexes or [])
+            for span in spans_by_origin.get(int(origin), [])
+        ]
+        if not paragraph_spans:
+            previous_page = None
+            previous_bottom = None
+            continue
+
+        first_span = paragraph_spans[0]
+        if previous_page == first_span.page_number and previous_bottom is not None:
+            paragraph.vertical_gap_before_pt = round(
+                max(0.0, float(first_span.top) - previous_bottom), 2
+            )
+
+        last_page = max(span.page_number for span in paragraph_spans)
+        previous_page = last_page
+        previous_bottom = max(
+            float(span.bottom) for span in paragraph_spans if span.page_number == last_page
+        )
 
 
 def _style_name_for_role(role: str) -> str:
