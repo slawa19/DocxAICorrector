@@ -3562,6 +3562,7 @@ def test_append_pdf_heading_carries_font_size() -> None:
         text="A Chapter Opener",
         role="heading",
         structural_role="heading",
+        style_name="Heading 1",
         heading_level=1,
         font_size_pt=28.0,
     )
@@ -3587,3 +3588,127 @@ def test_append_pdf_text_paragraph_rejects_out_of_range_font_size() -> None:
             ParagraphUnit(text=f"Line {size}", role="body", structural_role="body", font_size_pt=size),
         )
         assert document.paragraphs[-1].runs[0].font.size is None
+
+
+# --- Spec 055 follow-up: the bridge READS the importer's style, it does not re-derive it ---
+#
+# There used to be two role->style mappers: `logical_import._style_name_for_role`, whose
+# verdict was stored on `ParagraphUnit.style_name` and never read by anyone, and
+# `_pdf_text_layer_docx_style` here, which knew `heading` and `list` and mapped everything
+# else to `None`. The second is deleted; `logical_import._ROLE_DOCX_STYLE` is the only
+# decision, and this function writes it verbatim.
+
+
+def test_append_pdf_text_paragraph_writes_the_importer_style_verbatim() -> None:
+    from docx import Document
+
+    from docxaicorrector.core.models import ParagraphUnit
+
+    document = Document()
+    for style_name in ("Heading 3", "List Bullet", "Caption"):
+        processing_runtime._append_pdf_text_paragraph_to_docx(
+            document,
+            ParagraphUnit(
+                text=f"Line for {style_name}",
+                role="body",
+                structural_role="body",
+                style_name=style_name,
+            ),
+        )
+        assert document.paragraphs[-1].style is not None
+        assert document.paragraphs[-1].style.name == style_name
+
+
+def test_append_pdf_text_paragraph_treats_an_empty_importer_style_as_normal() -> None:
+    from docx import Document
+
+    from docxaicorrector.core.models import ParagraphUnit
+
+    document = Document()
+    processing_runtime._append_pdf_text_paragraph_to_docx(
+        document,
+        ParagraphUnit(text="Body prose.", role="body", structural_role="body", style_name=""),
+    )
+
+    assert document.paragraphs[-1].style is not None
+    assert document.paragraphs[-1].style.name == "Normal"
+
+
+def test_append_pdf_text_paragraph_does_not_re_derive_a_style_from_the_role() -> None:
+    # The counter-proof that the duplicate mapper is really gone. This unit says
+    # `role="heading", heading_level=1` — exactly the input the deleted
+    # `_pdf_text_layer_docx_style` turned into "Heading 1" — but carries no importer style.
+    # If any second mapper survives here, this paragraph acquires a heading style.
+    from docx import Document
+
+    from docxaicorrector.core.models import ParagraphUnit
+
+    document = Document()
+    processing_runtime._append_pdf_text_paragraph_to_docx(
+        document,
+        ParagraphUnit(
+            text="A Chapter Opener",
+            role="heading",
+            structural_role="heading",
+            heading_level=1,
+        ),
+    )
+
+    assert document.paragraphs[-1].style is not None
+    assert document.paragraphs[-1].style.name == "Normal"
+
+
+def test_pdf_bridge_round_trip_carries_heading_list_and_caption_styles() -> None:
+    """Importer -> intermediate DOCX -> `extraction.py`, on the three carried roles.
+
+    `heading` and `list` must behave exactly as before; `caption` is the role spec 055's
+    follow-up adds. The caption text here carries no "Figure"/"Рис." prefix, so the role can
+    only come from the carried style — `CAPTION_PREFIX_PATTERN` cannot reach it.
+    """
+    from io import BytesIO
+
+    from docx import Document
+
+    from docxaicorrector.core.models import ParagraphUnit
+    from docxaicorrector.document.extraction import extract_document_content_from_docx
+
+    units = [
+        ParagraphUnit(
+            text="A Chapter Opener",
+            role="heading",
+            structural_role="heading",
+            style_name="Heading 1",
+            heading_level=1,
+        ),
+        ParagraphUnit(
+            text="A single bulleted item",
+            role="list",
+            structural_role="list",
+            style_name="List Bullet",
+            list_kind="bullet",
+        ),
+        ParagraphUnit(
+            text="The quiet street where the experiment began",
+            role="caption",
+            structural_role="caption",
+            style_name="Caption",
+        ),
+        ParagraphUnit(text="Ordinary prose follows.", role="body", structural_role="body"),
+    ]
+    document = Document()
+    for unit in units:
+        processing_runtime._append_pdf_text_paragraph_to_docx(document, unit)
+    buffer = BytesIO()
+    document.save(buffer)
+    buffer.seek(0)
+
+    paragraphs, _ = extract_document_content_from_docx(buffer)
+
+    assert [paragraph.role for paragraph in paragraphs] == [
+        "heading",
+        "list",
+        "caption",
+        "body",
+    ]
+    assert paragraphs[0].heading_level == 1
+    assert paragraphs[2].role_confidence == "explicit"

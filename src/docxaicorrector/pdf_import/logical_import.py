@@ -320,6 +320,10 @@ def build_paragraph_units_from_text_spans(
 
     _attach_pdf_layout_signals(emitted, ordered_spans, layout_profile=layout_profile)
 
+    # Every role is final by this point, so the style the bridge will write can be decided —
+    # once, from the single table in `_ROLE_DOCX_STYLE`.
+    _assign_docx_style_names(emitted)
+
     for logical_index, paragraph in enumerate(emitted):
         _assign_pdf_paragraph_identity(paragraph, logical_index)
 
@@ -430,7 +434,6 @@ def _merge_continuation_units(
         role="body",
         structural_role="body",
         role_confidence="heuristic",
-        style_name="PDF Body",
         is_bold=all(unit.is_bold for unit in units),
         is_italic=all(unit.is_italic for unit in units),
         font_size_pt=first.font_size_pt,
@@ -1466,7 +1469,6 @@ def _bare_chapter_number_token(text: str) -> str | None:
 def _promote_unit_to_heading(unit: ParagraphUnit, *, heading_level: int) -> None:
     unit.role = "heading"
     unit.structural_role = "heading"
-    unit.style_name = _style_name_for_role("heading")
     unit.heading_level = heading_level
     unit.heading_source = "pdf_text_layer"
     unit.list_kind = None
@@ -1477,7 +1479,6 @@ def _promote_unit_to_heading(unit: ParagraphUnit, *, heading_level: int) -> None
 def _demote_heading_to_body(unit: ParagraphUnit) -> None:
     unit.role = "body"
     unit.structural_role = "body"
-    unit.style_name = _style_name_for_role("body")
     unit.heading_level = None
     unit.heading_source = None
     unit.boundary_rationale = "demoted_spurious_chapter_heading"
@@ -2313,7 +2314,6 @@ def _paragraph_from_body_spans(
         role="body",
         structural_role="body",
         role_confidence="heuristic",
-        style_name="PDF Body",
         is_bold=all(span.is_bold for span in spans),
         is_italic=all(span.is_italic for span in spans),
         font_size_pt=_median_font_size(spans),
@@ -2345,7 +2345,6 @@ def _paragraph_from_heading_spans(
         role="heading",
         structural_role="heading",
         role_confidence="heuristic",
-        style_name=_style_name_for_role("heading"),
         heading_level=heading_level,
         heading_source="pdf_text_layer",
         list_level=0,
@@ -2377,7 +2376,6 @@ def _paragraph_from_list_spans(
         role="list",
         structural_role="list",
         role_confidence="heuristic",
-        style_name=_style_name_for_role("list"),
         heading_level=None,
         heading_source=None,
         list_kind="ordered" if _ORDERED_LIST_PATTERN.match(_normalize_text(first.text)) else "bullet",
@@ -2422,7 +2420,6 @@ def _paragraph_from_span(
         role=paragraph_role,
         structural_role=structural_role,
         role_confidence="heuristic",
-        style_name=_style_name_for_role(role),
         heading_level=heading_level,
         heading_source="pdf_text_layer" if heading_level is not None else None,
         list_kind=list_kind,
@@ -2528,18 +2525,80 @@ def _attach_pdf_layout_signals(
         )
 
 
-def _style_name_for_role(role: str) -> str:
-    if role == "heading":
-        return "PDF Heading"
-    if role == "list":
-        return "PDF List"
-    if role == "caption":
-        return "PDF Caption"
-    if role == "toc_entry":
-        return "PDF TOC Entry"
-    if role == "footnote":
-        return "PDF Footnote"
-    return "PDF Body"
+# ----------------------------------------------------------------------------------------
+# The one place where an importer role becomes an intermediate-DOCX paragraph style.
+#
+# Until spec 055 there were two. This module computed a style name from the role and stored
+# it on ``ParagraphUnit.style_name``; the PDF->DOCX bridge
+# (``processing/processing_runtime.py:_append_pdf_text_paragraph_to_docx``) ignored that field
+# and re-derived its own map, which knew ``heading`` and ``list`` and nothing else. So the
+# importer's decision was computed and dropped in the same breath: on Money & Sustainability
+# it produced ``PDF Footnote`` 21 times, ``PDF TOC Entry`` 16 and ``PDF Caption`` twice, and
+# not one of those strings existed anywhere downstream. The table below is now the only
+# role->style decision on the PDF path; ``_assign_docx_style_names`` stamps its verdict onto
+# every unit once every role is final, and the bridge writes that verdict verbatim.
+#
+# Every name here MUST exist in python-docx's default template: the bridge passes it straight
+# to ``Document.add_paragraph(style=...)``, which raises ``KeyError`` on an unknown style and
+# would fail the whole book. That is why the carried caption style is the built-in ``Caption``
+# and not ``PDF Caption`` -- the latter is what the discarded mapper used to return, and
+# python-docx rejects it. ``test_every_carried_docx_style_name_exists_in_the_default_template``
+# is the counter-proof, and it is the test to extend whenever a role is added here.
+#
+# The roles mapped to ``None`` are NOT carried on purpose. This is a recorded decision, not an
+# oversight; do not "complete" the table without the measurement that reverses it:
+#
+#   * ``toc_entry`` -- 608 paragraphs across the four-book corpus, and no built-in style
+#     expresses a TOC row as a paragraph role (Word's ``TOC 1`` is field-generated). Carrying
+#     it needs a style definition first, and the owner deferred that until the four-book run
+#     reports what a TOC role would do downstream (spec 055 changelog, 2026-08-05).
+#   * ``footnote`` -- 59 characters across the whole corpus, absent from two of the four books,
+#     and what it covers is a bare superscript marker, not a footnote body. Constitution VII
+#     puts footnotes outside the detection scope outright. Decided closed, not deferred.
+#   * ``body`` -- has no style by definition; ``None`` means the DOCX default (``Normal``).
+# ----------------------------------------------------------------------------------------
+
+# The heading style is the single level-dependent entry, so the table holds a template rather
+# than a name and ``docx_style_name_for_role`` fills the level in.
+_HEADING_DOCX_STYLE_TEMPLATE = "Heading {level}"
+_MAX_DOCX_HEADING_LEVEL = 6
+
+_ROLE_DOCX_STYLE: dict[str, str | None] = {
+    "heading": _HEADING_DOCX_STYLE_TEMPLATE,
+    "list": "List Bullet",
+    "caption": "Caption",
+    "toc_entry": None,
+    "footnote": None,
+    "body": None,
+}
+
+
+def docx_style_name_for_role(role: str, heading_level: int | None = None) -> str | None:
+    """The intermediate-DOCX paragraph style for an importer role, or ``None`` for ``Normal``.
+
+    An unknown role is treated as body, which is what the two previous mappers both did.
+    """
+    style = _ROLE_DOCX_STYLE.get(role)
+    if style == _HEADING_DOCX_STYLE_TEMPLATE:
+        level = min(max(int(heading_level or 2), 1), _MAX_DOCX_HEADING_LEVEL)
+        return _HEADING_DOCX_STYLE_TEMPLATE.format(level=level)
+    return style
+
+
+def _assign_docx_style_names(paragraphs: list[ParagraphUnit]) -> None:
+    """Stamp the style the bridge will write, once, after every role decision is final.
+
+    Doing it here rather than in the paragraph constructors is what keeps the field honest:
+    ``_promote_unit_to_heading`` / ``_demote_heading_to_body`` run after construction, so a
+    style computed at construction time would already be stale for the units they touch.
+
+    ``structural_role`` is the key because it is the only field that still says ``toc_entry``
+    -- those units carry ``role="body"`` (see ``_paragraph_from_span``) -- and for every other
+    role the two agree.
+    """
+    for paragraph in paragraphs:
+        role = paragraph.structural_role or paragraph.role
+        paragraph.style_name = docx_style_name_for_role(role, paragraph.heading_level) or ""
 
 
 def _looks_like_toc_entry(span: PdfTextSpan) -> bool:
