@@ -478,6 +478,15 @@ def _block_has_heading_paragraph(block: DocumentBlock) -> bool:
     return any(paragraph.role == "heading" for paragraph in block.paragraphs)
 
 
+def _paragraph_heading_level(paragraph: ParagraphUnit) -> int | None:
+    """The outline depth this PARAGRAPH carries, or None when it is not a heading or its level
+    is missing. None means "depth unknown", never "depth 0"."""
+    if paragraph.role != "heading":
+        return None
+    level = getattr(paragraph, "heading_level", None)
+    return int(level) if isinstance(level, int) and level > 0 else None
+
+
 def _block_leading_heading_level(block: DocumentBlock) -> int | None:
     """The outline depth of the block's first heading paragraph, or None when the block has
     no heading or the heading carries no level. None means "depth unknown" and is always
@@ -485,9 +494,36 @@ def _block_leading_heading_level(block: DocumentBlock) -> int | None:
     for paragraph in block.paragraphs:
         if paragraph.role != "heading":
             continue
-        level = getattr(paragraph, "heading_level", None)
-        return int(level) if isinstance(level, int) and level > 0 else None
+        return _paragraph_heading_level(paragraph)
     return None
+
+
+def _document_top_heading_level(blocks: list[DocumentBlock]) -> int | None:
+    """The shallowest outline depth that occurs anywhere in the document, or None when no
+    heading carries a level at all.
+
+    This is the depth at which this document's own top-level sections open — read off the
+    document's outline, not chosen. It is used for exactly one purpose (spec 054, 2026-08-06):
+    when a back-matter section title arrives carrying NO depth of its own, the region's end
+    cannot be expressed relative to the title, and the only outline fact still worth anything
+    is "a top-level section starts here". Rethinking Money is the case: `**NOTES**` and
+    `**BIBLIOGRAPHY**` arrive as `role=body`, while its `ACKNOWLEDGEMENTS` — the author prose
+    that must survive between the bibliography and the index — arrives as a level-1 heading,
+    one of that book's 23.
+
+    It is a property of the document, not a threshold and not a per-book literal, and every way
+    it can be wrong makes the region SHORTER: if import flattens the outline, the top depth is
+    the only depth and the first following heading closes the region; if the top depth never
+    recurs after the region, nothing closes it and the caller falls back to its conservative
+    bound. Leaving reference material in is the accepted outcome; cutting prose is not.
+    """
+    levels = [
+        level
+        for block in blocks
+        for paragraph in block.paragraphs
+        if (level := _paragraph_heading_level(paragraph)) is not None
+    ]
+    return min(levels) if levels else None
 
 
 def _unwrap_inline_emphasis(text: str) -> str:
@@ -591,36 +627,137 @@ def _block_reference_region_start(blocks: list[DocumentBlock], index: int, *, st
     return start_index if start_index < len(blocks) else None
 
 
-def _resolve_reference_region_end(blocks: list[DocumentBlock], start_index: int) -> int:
-    """Exclusive end of the reference section opened at `start_index`.
+def _nearest_following_heading_index(blocks: list[DocumentBlock], start_index: int) -> int:
+    """The first heading-bearing block after `start_index`, or `len(blocks)`. The most timid
+    bound available, used only when nothing else closes the region at all."""
+    index = start_index + 1
+    while index < len(blocks) and not _block_has_heading_paragraph(blocks[index]):
+        index += 1
+    return index
 
-    A section runs until the outline returns to its own depth or shallower — that is what a
-    heading level MEANS, so the bound is read off the structure rather than off the entries.
-    Two guards keep untrustworthy PDF-derived levels from widening the cut:
 
-    * a following heading with NO level closes the region (unknown depth is never "deeper");
-    * if the outline never returns to the anchor's depth before the end of the document, the
-      levels are not trusted at all and the region falls back to the nearest following
-      heading block.
+def _resolve_reference_region_outline_bound(
+    blocks: list[DocumentBlock],
+    start_index: int,
+    *,
+    title_level: int | None,
+    document_top_heading_level: int | None,
+) -> int | None:
+    """The block where the OUTLINE says this reference section ends, or None when the outline
+    says nothing usable. Two cases, because the section title's own depth is the thing PDF
+    import most often fails to deliver.
 
-    Both guards fail towards leaving reference material in the narration, which is the
-    accepted outcome; cutting narrative prose is not.
+    **The title carries a depth.** A section runs until the outline returns to that depth or
+    shallower — that is what a heading level MEANS. A following heading with NO level also
+    closes it, because unknown depth is never "deeper".
+
+    **The title carries no depth at all.** Then the region has no depth to be measured against,
+    and the pre-2026-08-06 rule's answer — stop at the nearest following heading — is wrong on
+    exactly the books this rule exists for: Rethinking Money's notes section is full of headings,
+    because import promoted its per-chapter labels (`Chapter 2`, `Chapter 3`) to level 3, and the
+    region died three blocks in. So the bound becomes the only outline fact left that is worth
+    anything: **the next block that opens a section at the document's own top depth**
+    (`_document_top_heading_level`). On Rethinking Money that is `# ACKNOWLEDGEMENTS`, level 1,
+    standing between the bibliography and the index — author prose, and the region stops there.
+    An unlevelled heading is deliberately NOT a bound in this case: when the title had no depth
+    either, a heading without one carries no information about where the section ends.
+
+    Returning None means "the outline does not close this region", which is a finding, not a
+    licence to run to the end of the document — see the caller.
     """
-    nearest_heading_index = start_index + 1
-    while nearest_heading_index < len(blocks) and not _block_has_heading_paragraph(blocks[nearest_heading_index]):
-        nearest_heading_index += 1
-
-    anchor_level = _block_leading_heading_level(blocks[start_index])
-    if anchor_level is None:
-        return nearest_heading_index
+    if title_level is None:
+        if document_top_heading_level is None:
+            return None
+        for index in range(start_index + 1, len(blocks)):
+            level = _block_leading_heading_level(blocks[index])
+            if level is not None and level <= document_top_heading_level:
+                return index
+        return None
 
     for index in range(start_index + 1, len(blocks)):
         if not _block_has_heading_paragraph(blocks[index]):
             continue
         level = _block_leading_heading_level(blocks[index])
-        if level is None or level <= anchor_level:
+        if level is None or level <= title_level:
             return index
-    return nearest_heading_index
+    return None
+
+
+def _resolve_reference_region_end(
+    blocks: list[DocumentBlock],
+    start_index: int,
+    *,
+    title_level: int | None,
+    document_top_heading_level: int | None,
+    next_region_start: int | None,
+) -> int:
+    """Exclusive end of the reference section opened at `start_index`.
+
+    Two independent bounds are taken, and the EARLIER wins:
+
+    * **the start of the next reference section** — the strongest signal available here and the
+      one that needs no heading level at all, because it is the same blessed back-matter title
+      lexicon, with the same guards, that opened this region. A bibliography ends where an index
+      begins. On Rethinking Money this is what carries the notes region over the 11 blocks of
+      chapter labels that import turned into level-3 headings;
+    * **the outline bound** (`_resolve_reference_region_outline_bound`), which is what stops a
+      region at an AUTHOR section rather than at the next reference one — Rethinking Money's
+      `ACKNOWLEDGEMENTS` sits between its bibliography and its index, and only the outline sees
+      it. There is no lexicon of author-section titles and Constitution VII forbids inventing
+      one, so the outline is the whole of that defence.
+
+    When NEITHER closes the region, the region is not extended to the end of the document. The
+    end of the document is a legitimate bound for a last reference section, but it is not
+    distinguishable here from "this book keeps its author biography and its publisher's
+    advertising behind the index" — which is exactly what Rethinking Money does — so the timid
+    `_nearest_following_heading_index` bound stands and the residual is accepted. Every failure
+    mode of this function leaves reference material in the narration; none of them cuts prose.
+    """
+    bounds = [bound for bound in (next_region_start, _resolve_reference_region_outline_bound(
+        blocks,
+        start_index,
+        title_level=title_level,
+        document_top_heading_level=document_top_heading_level,
+    )) if bound is not None and bound > start_index]
+    if bounds:
+        return min(bounds)
+    return _nearest_following_heading_index(blocks, start_index)
+
+
+def _resolve_reference_regions(blocks: list[DocumentBlock], *, structure_phase: str = "post_ai_final") -> list[tuple[int, int]]:
+    """Every back-matter reference section of the document, as `(start, end)` half-open block
+    ranges, in document order.
+
+    Resolved in two passes on purpose: all the anchors first, then the ends. The end rule needs
+    to know where the NEXT reference section starts, and a single forward pass cannot tell it
+    that without re-deriving the anchor it is about to walk into.
+    """
+    anchors: list[tuple[int, int | None]] = []
+    for index in range(len(blocks)):
+        start_index = _block_reference_region_start(blocks, index, structure_phase=structure_phase)
+        if start_index is None:
+            continue
+        hit = _block_reference_title_position(blocks[index], structure_phase=structure_phase)
+        title_level = _paragraph_heading_level(blocks[index].paragraphs[hit[0]]) if hit is not None else None
+        anchors.append((start_index, title_level))
+
+    document_top_heading_level = _document_top_heading_level(blocks)
+    regions: list[tuple[int, int]] = []
+    for order, (start_index, title_level) in enumerate(anchors):
+        next_region_start = next(
+            (start for start, _ in anchors[order + 1 :] if start > start_index),
+            None,
+        )
+        end_index = _resolve_reference_region_end(
+            blocks,
+            start_index,
+            title_level=title_level,
+            document_top_heading_level=document_top_heading_level,
+            next_region_start=next_region_start,
+        )
+        if end_index > start_index:
+            regions.append((start_index, end_index))
+    return regions
 
 
 def _resolve_reference_region_indexes(blocks: list[DocumentBlock], *, structure_phase: str = "post_ai_final") -> set[int]:
@@ -641,15 +778,8 @@ def _resolve_reference_region_indexes(blocks: list[DocumentBlock], *, structure_
     structural role, not the shape of the text).
     """
     excluded: set[int] = set()
-    index = 0
-    while index < len(blocks):
-        start_index = _block_reference_region_start(blocks, index, structure_phase=structure_phase)
-        if start_index is None:
-            index += 1
-            continue
-        end_index = _resolve_reference_region_end(blocks, start_index)
+    for start_index, end_index in _resolve_reference_regions(blocks, structure_phase=structure_phase):
         excluded.update(range(start_index, end_index))
-        index = max(end_index, index + 1)
     return excluded
 
 

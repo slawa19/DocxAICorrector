@@ -350,6 +350,88 @@ scope was drawn narrowly first and what evidence moved it.
 
 ## Changelog
 
+- **2026-08-06** — **The region's END stops believing heading depth, because on the PDF path there
+  is none to believe** (branch `fix/054-reference-region-end`, branched from
+  `fix/054-backmatter-anchor-without-heading-role` — that one fixes the anchor, this one the
+  boundary, and either alone leaves the result half-done). One function replaced in
+  `document/semantic_blocks.py`; the anchor (`_reference_section_title`,
+  `_block_reference_title_position`, `_block_reference_region_start`) and the lexicon are
+  untouched.
+  **The signal that was wrong.** `_resolve_reference_region_end` took the region's depth from
+  `_block_leading_heading_level(blocks[start_index])` — the first heading of the region's FIRST
+  BLOCK, which on Rethinking Money is not the section title at all but `### Chapter Opener
+  Currency Images`, an interior label of the notes that import promoted to level 3. The rule
+  then ended the section at the next level-3 heading, which is a line of the quoted exchange
+  inside note 4 of Chapter 2 (`### "In ample suffi ciency, Sir."`, block 233). The region died
+  three blocks in. **Two facts make depth unusable here, not merely mis-read:** the notes and
+  bibliography titles arrive as `role=body` and therefore carry **no depth at all**, and every
+  row of the index arrives as `heading_level=3, heading_source=explicit`. Import owns both
+  defects (spec 055); this rule is made robust to what import actually delivers.
+  **The signals it uses instead, and the earlier of the two wins.**
+  **1. The start of the NEXT reference section.** The strongest bound available and the only one
+  that needs no heading level to be believed, because it is the same blessed back-matter title
+  lexicon with the same three structural guards that opened the region — a bibliography ends
+  where an index begins. This is what carries Rethinking Money's notes region across the eleven
+  blocks of chapter labels and quotations that import turned into headings.
+  **2. The outline, keyed on the TITLE's own depth when it has one, and otherwise on the
+  DOCUMENT's top depth.** The first half is the old rule with its anchor corrected: the depth is
+  read off the title paragraph, not off whatever heading opens the region's first block. The
+  second half is the new part and it exists for one job — stopping a region at an AUTHOR section
+  rather than at the next reference one. Rethinking Money's `ACKNOWLEDGEMENTS` sits BETWEEN its
+  bibliography and its index, so bound 1 alone would swallow it. There is no lexicon of
+  author-section titles, Constitution VII forbids inventing one, and the outline is therefore the
+  whole of that defence: `# ACKNOWLEDGEMENTS` is level 1, one of that book's 23, and level 1 is
+  the depth at which that document's own top-level sections open. `_document_top_heading_level`
+  is a property read off the document, not a threshold and not a per-book literal, and every way
+  it can be wrong makes the region SHORTER.
+  **When neither bound closes the region it is NOT run to the end of the document**, and the
+  timid "nearest following heading" fallback stands. This is the honest half: the end of the
+  document is a legitimate bound for a last reference section, but it is not distinguishable
+  here from "this book keeps its author biography and its publisher's advertising behind the
+  index", which is exactly what Rethinking Money does.
+  **Measured, `scripts/measure-narration-exclusion.py`, all four books, before and after**
+  (`.run/rend_before.json`, `.run/rend_after.json`, diffed field by field by `.run/rend_diff.py`):
+  `reference_region` **10 / 16 / 9 / 476 → 10 / 16 / 20 / 476**; `excluded_char_share`
+  7.4% / 5.7% / 5.3% / 15.9% → 7.4% / 5.7% / **11.5%** / 15.9%. **The three control books are
+  IDENTICAL IN EVERY FIELD** — block counts, excluded counts, both shares, every reason bucket
+  and every sample — because on all three the section title arrives carrying a real heading level
+  and the corrected title-depth read returns exactly what the old block-depth read did (Money &
+  Sustainability `## Bibliography` level 2, Creating Wealth `### Notes` level 3, The Value of
+  Everything `## Notes` and `## Bibliography` level 2), and the new next-section bound coincides
+  with the depth bound where it applies at all (The Value of Everything's notes already ended at
+  block 666, which is where its bibliography starts).
+  **By section on Rethinking Money** (`.run/rend_sections.py`, sections delimited by the anchors
+  the run itself resolved): **notes 39 → 264 of 264 paragraphs cut, 0 still narrated**;
+  bibliography **177 / 177**, unchanged, and it still stops at `ACKNOWLEDGEMENTS`; index **10 of
+  432**, unchanged — 422 paragraphs / 22 906 characters remain, and the 32 paragraphs of
+  `About the Authors` and publisher advertising behind it remain too. Of the ~905 paragraphs the
+  owner asked to lose, **451 go** (226 before this branch).
+  **Anti-vacuum counter-proof, run over all four books' real blocks before AND after**
+  (`.run/anch_verify.py`, unchanged from the previous branch, output `.run/rend_verify_before.txt`
+  / `_after.txt`): the two files differ by **16 lines, all of them Rethinking Money's own summary
+  and its eleven newly cut blocks**. The author-prose section of every book is narrated, by name:
+  Rethinking Money `ACKNOWLEDGEMENTS` (249 — the sharpest test, since it stands between the
+  bibliography and the index) and `ABOUT THE AUTHORS` (297); Money & Sustainability
+  `Acknowledgements` (319) and `About the Authors` (320); Creating Wealth `Acknowledgments` (23),
+  `About the Authors` (433) and `CONCLUSION` (334); The Value of Everything `Acknowledgements`
+  (712). The four spec-054 prose probes survive unchanged: `Jungian psychologist Bernice Hill`
+  (RM 25), `not generally known` (RM 79), `large-scale banking crises` (M&S 51), `deeply ingrained
+  ideas` (VoE 20). The probe's deliberately over-broad title pattern reports the same **three**
+  hits before and after, and all three are chapter labels INSIDE a notes section that was already
+  excluded on the base branch — Creating Wealth 430 `Conclusion`, Rethinking Money 230
+  `Introduction`, The Value of Everything 237 `PREFACE`. Each book's real section of that name is
+  narrated (CW 334, RM 14, VoE 19).
+  **What is still narrated, and why it is accepted rather than patched.** Rethinking Money's index
+  keeps 422 paragraphs because nothing closes it: `**ABOUT THE AUTHORS**` arrives as a body
+  paragraph with no role and no level, swept onto the tail of the last index block (block 297,
+  paragraph 31 of 32) — the same shape as the `**NOTES**` anchor, but its words are not in the
+  blessed lexicon and adding them would be the word list Constitution VII forbids. A signal does
+  exist in that document and is recorded here rather than built: the book's own table of contents
+  lists `Acknowledgements 249` and `About the Authors 261` as tagged TOC rows, so a
+  document-derived list of its section titles is reachable — but matching a contents row carrying
+  a page number against a body paragraph is a new mechanism and a containment matcher, and it is
+  not in this branch's scope. Creating Wealth's `Appendix` notes and its `Resources` list before
+  the `Notes` heading are also still in, unchanged from the previous branch.
 - **2026-08-06** — **The reference region anchors without a heading role, and the index is now
   cut** (branch `fix/054-backmatter-anchor-without-heading-role`). Two changes in
   `document/semantic_blocks.py`, plus a third that the measurement forced and that nobody had

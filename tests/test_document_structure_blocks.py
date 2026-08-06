@@ -547,6 +547,150 @@ def test_build_editing_jobs_starts_the_region_after_a_title_that_closes_its_bloc
     assert [job["narration_include"] for job in jobs] == [True, False, True]
 
 
+def _rethinking_money_notes_entry_paragraphs(start: int) -> list[ParagraphUnit]:
+    """Endnote entries in the shape Rethinking Money's PDF import actually produces: the
+    per-chapter label and two lines of a quoted exchange inside note 4 arrive as
+    `role=heading, heading_level=3, heading_source=explicit` (measured 2026-08-06, blocks
+    232-234). Every synthetic fixture that gives the notes section flat body paragraphs proves
+    the arithmetic and nothing else — this is Constitution VIII in its concrete form, and it is
+    exactly how the region-end defect stayed invisible behind a green anchor test."""
+    return [
+        ParagraphUnit(text="Chapter 2", role="heading", paragraph_id=f"p{start:04d}", heading_level=3, heading_source="explicit"),
+        ParagraphUnit(text="1. Aristotle, *Nichomachean Ethics* (350 bc), 1133.", role="list", paragraph_id=f"p{start + 1:04d}"),
+        ParagraphUnit(
+            text="4. A governor of the Bank of En gland was being questioned by the Bank Commission.",
+            role="body",
+            paragraph_id=f"p{start + 2:04d}",
+        ),
+        ParagraphUnit(
+            text="“In ample suffi ciency, Sir.”",
+            role="heading",
+            paragraph_id=f"p{start + 3:04d}",
+            heading_level=3,
+            heading_source="explicit",
+        ),
+        ParagraphUnit(text="“Can you be more precise?”", role="body", paragraph_id=f"p{start + 4:04d}"),
+    ]
+
+
+def test_build_editing_jobs_carries_a_level_less_notes_region_to_the_next_reference_section():
+    """The anchor has no depth at all and the entries under it were mis-promoted to headings —
+    Rethinking Money, measured 2026-08-06. Until then the region ended at the "nearest following
+    heading", which is a line of a quoted exchange INSIDE note 4, so 225 of 264 note paragraphs
+    were still narrated. The bound that works is the start of the NEXT reference section: the
+    same blessed lexicon, the same guards, and it needs no heading level to be believed."""
+    blocks = [
+        DocumentBlock(
+            paragraphs=[
+                ParagraphUnit(text="Rethinking money, we can enjoy an era of sustainable abundance.", role="body", paragraph_id="p0000"),
+                ParagraphUnit(text="**NOTES**", role="body", paragraph_id="p0001"),
+            ]
+        ),
+        DocumentBlock(paragraphs=_rethinking_money_notes_entry_paragraphs(2)),
+        DocumentBlock(
+            paragraphs=[
+                ParagraphUnit(text="Chapter 3", role="heading", paragraph_id="p0007", heading_level=3, heading_source="explicit"),
+                ParagraphUnit(text="7. See M. Amato, *Complementary Currency Systems.* Milan: Bocconi, 2003.", role="list", paragraph_id="p0008"),
+            ]
+        ),
+        DocumentBlock(
+            paragraphs=[
+                ParagraphUnit(text="**BIBLIOGRAPHY**", role="body", paragraph_id="p0009"),
+                ParagraphUnit(text="Needleman, Jacob. *Money and the Meaning of Life.* New York: Doubleday, 1991.", role="body", paragraph_id="p0010"),
+            ]
+        ),
+        DocumentBlock(
+            paragraphs=[
+                ParagraphUnit(text="ACKNOWLEDGEMENTS", role="heading", paragraph_id="p0011", heading_level=1, heading_source="explicit"),
+                ParagraphUnit(text="Special thanks to Ed and Deb Shapiro, and to Frank Bailin.", role="body", paragraph_id="p0012"),
+            ]
+        ),
+    ]
+
+    jobs = build_editing_jobs(blocks, max_chars=3000, processing_operation="audiobook")
+
+    # The whole notes section goes, not just its first block; the acknowledgements survive.
+    assert [job["narration_include"] for job in jobs] == [True, False, False, False, True]
+
+
+def test_build_editing_jobs_stops_a_level_less_reference_region_at_an_author_section_before_the_next_one():
+    """Rethinking Money's `ACKNOWLEDGEMENTS` sits BETWEEN its bibliography and its index, so the
+    "next reference section" bound alone would swallow it. Nothing in this repository knows the
+    words "acknowledgements" or "about the authors" and Constitution VII forbids adding them, so
+    the outline is the whole of the defence: the region also ends at the next section opening at
+    the DOCUMENT's own top depth, which is what that heading is (level 1, one of the book's 23).
+    """
+    blocks = [
+        DocumentBlock(
+            paragraphs=[
+                ParagraphUnit(text="From Scarcity to Sustainable Abundance", role="heading", paragraph_id="p0000", heading_level=1),
+                ParagraphUnit(text="The closing narrative paragraph of the final chapter.", role="body", paragraph_id="p0001"),
+            ]
+        ),
+        DocumentBlock(
+            paragraphs=[
+                ParagraphUnit(text="**BIBLIOGRAPHY**", role="body", paragraph_id="p0002"),
+                ParagraphUnit(text="Amato, M. *Complementary Currency Systems.* Milan: Bocconi, 2003.", role="body", paragraph_id="p0003"),
+            ]
+        ),
+        DocumentBlock(
+            paragraphs=[
+                ParagraphUnit(text="ACKNOWLEDGEMENTS", role="heading", paragraph_id="p0004", heading_level=1, heading_source="explicit"),
+                ParagraphUnit(text="Special thanks to Ed and Deb Shapiro, and to Frank Bailin.", role="body", paragraph_id="p0005"),
+            ]
+        ),
+        DocumentBlock(
+            paragraphs=[
+                ParagraphUnit(text="**INDEX**", role="heading", paragraph_id="p0006", heading_level=2, heading_source="heuristic"),
+                ParagraphUnit(text="Bank of En gland, 25– 26, 228n4", role="body", paragraph_id="p0007"),
+            ]
+        ),
+    ]
+
+    jobs = build_editing_jobs(blocks, max_chars=3000, processing_operation="audiobook")
+
+    assert [job["narration_include"] for job in jobs] == [True, False, True, False]
+
+
+def test_build_editing_jobs_does_not_run_the_last_reference_region_to_the_end_of_the_document():
+    """The accepted residual, asserted so it cannot be widened by accident.
+
+    Rethinking Money's index is followed by `**ABOUT THE AUTHORS**` — a body paragraph with no
+    heading role and no level, swept onto the tail of the last index block — and then by the
+    publisher's advertising. The end of the document is a legitimate bound for a last reference
+    section, but this book shows it is not distinguishable from "the author's biography is behind
+    the index", so the region is NOT extended there. 422 of the 432 index paragraphs stay in the
+    narration; the biography stays too, and that is the trade this rule is required to make.
+    """
+    blocks = [
+        DocumentBlock(
+            paragraphs=[
+                ParagraphUnit(text="**INDEX**", role="heading", paragraph_id="p0000", heading_level=2, heading_source="heuristic"),
+                ParagraphUnit(text="Bank of En gland, 25– 26, 228n4", role="body", paragraph_id="p0001"),
+            ]
+        ),
+        DocumentBlock(
+            paragraphs=[
+                ParagraphUnit(text="Zumbara, 82 Voucher currency, 170", role="heading", paragraph_id="p0002", heading_level=3, heading_source="explicit"),
+                ParagraphUnit(text="**ABOUT THE AUTHORS**", role="body", paragraph_id="p0003"),
+            ]
+        ),
+        DocumentBlock(
+            paragraphs=[
+                ParagraphUnit(
+                    text="Bernard Lietaer is one of the most knowledgeable people in the world about money.",
+                    role="body",
+                    paragraph_id="p0004",
+                ),
+            ]
+        ),
+    ]
+
+    jobs = build_editing_jobs(blocks, max_chars=3000, processing_operation="audiobook")
+
+    assert [job["narration_include"] for job in jobs] == [False, True, True]
+
+
 def test_build_editing_jobs_does_not_let_an_untagged_contents_list_anchor_a_reference_region():
     """The Value of Everything's front matter lists `*Notes*`, `*Bibliography*` and
     `*Acknowledgements*` as three ordinary body paragraphs inside ONE block, and — unlike Money &

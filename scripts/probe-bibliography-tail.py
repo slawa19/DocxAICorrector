@@ -38,8 +38,8 @@ from docxaicorrector.document.semantic_blocks import (
     _block_leading_heading_level,
     _block_reference_section_title,
     _iter_block_text_lines,
-    _resolve_reference_region_end,
     _resolve_reference_region_indexes,
+    _resolve_reference_regions,
 )
 from docxaicorrector.processing.preparation import (
     _build_semantic_blocks_with_optional_boundaries,
@@ -86,28 +86,28 @@ def probe(source_path: Path, *, chunk_size: int, tail: int) -> None:
         structure_phase=PRODUCTION_STRUCTURE_PHASE,
     )
 
-    anchors = [
-        (index, title)
-        for index, block in enumerate(blocks)
-        if (title := _block_reference_section_title(block, structure_phase=PRODUCTION_STRUCTURE_PHASE))
-    ]
+    regions = _resolve_reference_regions(blocks, structure_phase=PRODUCTION_STRUCTURE_PHASE)
     region_indexes = _resolve_reference_region_indexes(blocks, structure_phase=PRODUCTION_STRUCTURE_PHASE)
 
     print(f"\n=== {source_path.name}")
     print(f"blocks={len(blocks)} reference_region_blocks={len(region_indexes)}")
-    if not anchors:
+    if not regions:
         print("no bare back-matter section title anchors the region — nothing excluded (accepted negative)")
-    for anchor_index, title in anchors:
-        end_index = _resolve_reference_region_end(blocks, anchor_index)
-        chars = sum(len(blocks[i].text) for i in range(anchor_index, end_index))
+    for start_index, end_index in regions:
+        title = _block_reference_section_title(blocks[start_index], structure_phase=PRODUCTION_STRUCTURE_PHASE) or (
+            _block_reference_section_title(blocks[start_index - 1], structure_phase=PRODUCTION_STRUCTURE_PHASE)
+            if start_index > 0
+            else ""
+        )
+        chars = sum(len(blocks[i].text) for i in range(start_index, end_index))
         bound = (
             f"heading block {end_index} (level {_block_leading_heading_level(blocks[end_index])})"
             if end_index < len(blocks)
             else "end of document"
         )
         print(
-            f"anchor [{anchor_index}] {title!r} (level {_block_leading_heading_level(blocks[anchor_index])})"
-            f" -> region [{anchor_index}..{end_index - 1}] = {end_index - anchor_index} blocks,"
+            f"anchor [{start_index}] {title!r} (level {_block_leading_heading_level(blocks[start_index])})"
+            f" -> region [{start_index}..{end_index - 1}] = {end_index - start_index} blocks,"
             f" {chars} chars (bounded by {bound})"
         )
 
