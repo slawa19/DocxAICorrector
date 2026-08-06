@@ -4382,6 +4382,7 @@ _NARRATION_SUMMARY_FIELDS = (
     "excluded_blocks",
     "excluded_source_fallback_block_count",
     "excluded_source_fallback_chars",
+    "joined_sentence_continuation_count",
     "review_finding_count",
     "review_match_count",
     "mode",

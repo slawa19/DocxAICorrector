@@ -1587,6 +1587,72 @@ def test_run_document_processing_runs_audiobook_postprocess_without_mutating_bas
     assert completed_event["context"]["audiobook_postprocess_enabled"] is True
 
 
+def test_edit_postprocess_joins_sentence_continuations_and_publishes_the_count():
+    """Anti-regression 3 of spec 054: what the standalone operation does, the optional
+    post-pass on ``edit``/``translate`` does too. There are two narration entry points and a
+    rule that lives on only one of them is a defect that surfaces on a translate run."""
+    runtime = _build_runtime_capture()
+    events, log_event = _capture_log_events()
+
+    def generate_markdown_block(**kwargs):
+        if kwargs["system_prompt"] == "system:audiobook":
+            return (
+                "[thoughtful] первым шагом стало формирование основной\n\n"
+                "команды, в неё вошли жители города."
+            )
+        return "EDITED::block"
+
+    result = document_pipeline.run_document_processing(
+        uploaded_file="report.docx",
+        jobs=[{"target_text": "block", "context_before": "", "context_after": "", "target_chars": 5, "context_chars": 0, "narration_include": True}],
+        source_paragraphs=[],
+        image_assets=[],
+        image_mode="safe",
+        app_config={"audiobook_postprocess_enabled": True},
+        model="gpt-5.4",
+        max_retries=1,
+        processing_operation="edit",
+        source_language="ru",
+        target_language="ru",
+        on_progress=lambda **kwargs: None,
+        runtime=runtime,
+        resolve_uploaded_filename=lambda uploaded_file: str(uploaded_file),
+        get_client=lambda: object(),
+        ensure_pandoc_available=lambda: None,
+        load_system_prompt=lambda **kwargs: f"system:{kwargs['operation']}",
+        log_event=log_event,
+        present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
+        emit_state=_emit_state,
+        emit_finalize=_emit_finalize,
+        emit_activity=_emit_activity,
+        emit_log=_emit_log,
+        emit_status=_emit_status,
+        should_stop_processing=lambda runtime: False,
+        generate_markdown_block=generate_markdown_block,
+        process_document_images=lambda **kwargs: [],
+        inspect_placeholder_integrity=_inspect_placeholder_integrity,
+        convert_markdown_to_docx_bytes=lambda markdown_text: markdown_text.encode("utf-8"),
+        preserve_source_paragraph_properties=lambda docx_bytes, paragraphs, generated_paragraph_registry=None: docx_bytes,
+        reinsert_inline_images=lambda docx_bytes, image_assets: docx_bytes,
+        write_ui_result_artifacts=lambda **kwargs: _persist_primary_artifacts_on_disk({
+            "markdown_path": "/tmp/report.result.md",
+            "docx_path": "/tmp/report.result.docx",
+            "tts_text_path": "/tmp/report.result.tts.txt",
+        }),
+    )
+
+    assert result == "succeeded"
+    assert runtime["state"]["latest_narration_text"] == (
+        "[thoughtful] первым шагом стало формирование основной команды, "
+        "в неё вошли жители города."
+    )
+    saved_event = next(
+        event for event in events if event["event_id"] == "ui_audiobook_artifact_saved"
+    )
+    assert saved_event["context"]["mode"] == "postprocess"
+    assert saved_event["context"]["joined_sentence_continuation_count"] == 1
+
+
 def test_edit_postprocess_narration_with_review_findings_is_delivered_not_dropped():
     """The optional post-pass on ``edit``/``translate`` must not get WORSE than before.
 
@@ -8393,6 +8459,52 @@ def test_standalone_audiobook_reports_omitted_paragraph_characters_and_notifies(
     assert excluded_notices[0]["level"] == "warning"
     assert _as_mapping(excluded_notices[0]["params"])["count"] == 1
     assert _as_mapping(excluded_notices[0]["params"])["chars"] == len(_OMITTED_ENGLISH_PARAGRAPH)
+
+
+def test_standalone_audiobook_publishes_how_many_sentence_continuations_were_joined():
+    """Spec 054, 2026-08-06 (Constitution V). The join is the one narration counter that
+    reports a REPAIR rather than a loss, and it rides the record of the SAVED file exactly
+    like the loss counters beside it, so one log line names the artifact and what was done
+    to it. Both halves below are the same sentence, split at a PDF line wrap on import."""
+    runtime = _build_runtime_capture()
+    events, log_event = _capture_log_events()
+
+    result = _run_standalone_audiobook(
+        "[thoughtful] Слово «кредит» звучит позитивно — вам доверились и сочли вас\n\n"
+        "платежеспособным. Слово «долг» несет негативный оттенок.",
+        runtime=runtime,
+        log_event=log_event,
+    )
+
+    assert result == "succeeded"
+    narration_text = runtime["state"]["latest_narration_text"]
+    assert "сочли вас платежеспособным" in narration_text
+    # Nothing is added and nothing is lost: only the separator changed.
+    assert "\n\n" not in narration_text
+
+    saved_event = next(
+        event for event in events if event["event_id"] == "ui_audiobook_artifact_saved"
+    )
+    assert saved_event["context"]["joined_sentence_continuation_count"] == 1
+
+
+def test_standalone_audiobook_states_zero_joined_continuations_rather_than_omitting_the_field():
+    """Anti-vacuum companion: a clean book must still SAY that nothing ran on — a zero here
+    is the positive statement, never an absent field."""
+    runtime = _build_runtime_capture()
+    events, log_event = _capture_log_events()
+
+    result = _run_standalone_audiobook(
+        "[thoughtful] Первый абзац закончен.\n\nВторой абзац тоже закончен.",
+        runtime=runtime,
+        log_event=log_event,
+    )
+
+    assert result == "succeeded"
+    saved_event = next(
+        event for event in events if event["event_id"] == "ui_audiobook_artifact_saved"
+    )
+    assert saved_event["context"]["joined_sentence_continuation_count"] == 0
 
 
 def test_standalone_audiobook_without_an_omitted_paragraph_stays_silent():

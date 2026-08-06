@@ -26,7 +26,10 @@ import re
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from docxaicorrector.generation._generation import strip_markdown_for_narration
+from docxaicorrector.generation._generation import (
+    strip_markdown_for_narration,
+    strip_markdown_for_narration_with_stats,
+)
 from docxaicorrector.pipeline.text_call_support import _require_group_int, _resolve_text_call_target
 from docxaicorrector.pipeline.contracts import LatePhaseStopped
 
@@ -164,7 +167,23 @@ def _build_narration_text(*, context: Any, dependencies: Any, emitters: Any, sta
     narration_source = "\n\n".join(_collect_narration_chunks(state=state))
     if not narration_source:
         return None
-    return strip_markdown_for_narration(narration_source)
+    return _assemble_narration_recording_joins(narration_source, state=state)
+
+
+def _assemble_narration_recording_joins(narration_source: str, *, state: Any) -> str:
+    """Assemble the narration and record how many sentence continuations were rejoined.
+
+    Both narration entry points come through here — the standalone ``audiobook`` operation
+    and the optional post-pass on translate/edit — so the counter means the same thing on
+    each, exactly as the exclusion counters beside it do (anti-regression 3 of spec 054).
+    """
+
+    narration_text, joined_count = strip_markdown_for_narration_with_stats(narration_source)
+    if state is not None:
+        state.narration_joined_sentence_continuation_count = int(
+            getattr(state, "narration_joined_sentence_continuation_count", 0) or 0
+        ) + joined_count
+    return narration_text
 
 
 def _collect_narration_artifact_review_findings(narration_text: str) -> list[dict[str, object]]:
@@ -409,4 +428,6 @@ def _run_audiobook_postprocess(*, context: Any, dependencies: Any, emitters: Any
         )
 
     emitters.emit_activity(context.runtime, "Подготовка narration text для ElevenLabs завершена.")
-    return strip_markdown_for_narration("\n\n".join(processed_groups))
+    return _assemble_narration_recording_joins(
+        "\n\n".join(processed_groups), state=state
+    )

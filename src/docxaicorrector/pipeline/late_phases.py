@@ -1463,6 +1463,14 @@ def finalize_processing_success(
                     # findable from one log line. Zero here is a positive statement that the
                     # text was reviewed and nothing matched — not an absent field.
                     **narration_review_summary,
+                    # spec 054, 2026-08-06: the only counter on this record that reports a
+                    # REPAIR — paragraph boundaries the assembly closed because the sentence
+                    # ran across them. Same rule as every counter above: zero states that
+                    # this book's narration had no sentence broken by a paragraph break, it
+                    # is never an absent field.
+                    joined_sentence_continuation_count=int(
+                        getattr(state, "narration_joined_sentence_continuation_count", 0) or 0
+                    ),
                 )
         except Exception as exc:
             _log_post_delivery_secondary_failure(

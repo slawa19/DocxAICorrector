@@ -350,6 +350,97 @@ scope was drawn narrowly first and what evidence moved it.
 
 ## Changelog
 
+- **2026-08-06** — **A sentence is no longer read aloud with a pause in the middle of it**
+  (branch `fix/054-narration-join-and-urls`, from `c41ae65`). One rule added to the
+  narration ASSEMBLY, deterministic, no model call, and the DOCX path is untouched: in a
+  document a paragraph break is structure and the gates check it survives, while in the
+  audio it is a pause.
+  **The defect.** The 2026-08-06 four-book run
+  (`artifacts/audiobook_four_book_run/truncation_review.txt`) found 80 paragraph boundaries
+  where the sentence ran on across the break; a human read all 80 and called 54 of them
+  audible cuts. Nothing is lost — both halves are translated and present — only the
+  separator is wrong. 81 of the 83 such boundaries come from IMPORT, where a PDF line wrap
+  became a paragraph break.
+  **Where the rule lives and why there.** `_narration_paragraphs` /
+  `_narration_paragraph_continues` / `_join_narration_sentence_continuations`
+  (`src/docxaicorrector/generation/_generation.py`), inside the one function both narration
+  entry points already call once over the WHOLE book (`narration_postprocess.py:167` for the
+  standalone operation, `:412` for the optional post-pass). It is the last place where a
+  heading is still a `#` and a list item still a bullet — one line later they are gone and a
+  heading is indistinguishable from a short sentence — so the structural kind is READ off
+  the markdown and carried out, never re-derived from the shape of the text.
+  **The test, and every guard measured rather than assumed.** Both paragraphs must be BODY
+  by that carried kind; the first must end on a character that is not sentence-terminal
+  (`.!?…:;`), not a closing quote or bracket, and not a DIGIT; the second must begin with a
+  LOWERCASE letter. No word list, no length threshold, no per-book string — the same class
+  of rule as the bullet-glyph strip of 2026-08-04. **The digit guard is load-bearing and was
+  measured, not guessed**: allow a digit ending and the only two boundaries that appear on
+  the whole corpus are rows of Rethinking Money's index (`Страх, 4` + `в Юте, 201; …`),
+  which end on a page number and are legitimately unpunctuated. The lowercase-start guard is
+  what keeps an epigraph attribution or an index row from being welded to whatever follows
+  it: those are followed by something that STARTS — a new epigraph opening on `«`, a proper
+  noun, an audio tag.
+  **Measured offline on the saved run, no LLM and no second paid run** (`.run/join_*.py`;
+  the "before" side of every number is `strip_markdown_for_narration` taken from
+  `origin/main` via `git show`, not re-implemented). The markdown handed to the assembly is
+  rebuilt from each book's `all_paragraph_pairs.jsonl` onto its delivered `.tts.txt`, and
+  the harness refuses to continue unless that rebuild reproduces the delivered artifact BYTE
+  FOR BYTE — it does, on all four books. **34 boundaries joined: 5 / 7 / 14 / 8** (Money &
+  Sustainability, Creating Wealth, Rethinking Money, The Value of Everything), all 34 quoted
+  in full with both halves in `.run/join_prove.txt` and every one visibly one sentence.
+  **No character is lost: whitespace-stripped text is IDENTICAL before and after on every
+  book** (394 040 / 441 829 / 440 746 / 561 158), and paragraph counts fall by exactly the
+  join count (1300→1295, 1499→1492, 2187→2173, 1247→1239).
+  **Anti-vacuum counter-proof, over all four books' real paragraphs:** joined halves that
+  were a **heading: 0**, a **list item: 0**, a **blockquote: 0**. A deliberately over-broad
+  classifier also flags **1 attribution** and **1 index row**, and both are quoted rather
+  than argued away: the "attribution" is Creating Wealth's `— Эдгар С. Кан, доктор
+  философии, доктор права, стипендиат фонда «Ашока»,` + `заслуженный профессор права,
+  основатель движения «Тайм-банкинг», Вашингтон, округ Колумбия.` — the two halves of ONE
+  attribution reunited, not an attribution glued to prose; the "index row" is a Money &
+  Sustainability ENDNOTES paragraph whose own title was cut, which the classifier catches on
+  its `(2008), … (2010).` page groups.
+  **Honest negative, and it is the important half: only 13 of the reviewer's 54 AUDIBLE
+  cuts are repaired** (`.run/join_residual.txt` names every one and which guard refused it).
+  The remaining 41 are refused by ONE guard, the lowercase start, and they break down as:
+  **23** continuations begin with a capital letter (a proper noun, or the next index row),
+  **7** with an opening `«` (a book title), **6** with a digit (a year or a quantity), **5**
+  with an audio tag. **14 of the 41 are rows of Rethinking Money's index**, which the owner
+  has already accepted as one contiguous block at the end of the file. Each refusal class
+  was checked to contain a case where joining would be WRONG — Rethinking Money's epigraph
+  attribution followed by the NEXT epigraph (`«Вместо того чтобы просто винить кого-то…`),
+  and index row followed by index row — so widening the rule in any of those directions
+  re-opens exactly the classes the owner ruled out. **The form of our own
+  output can resolve about a quarter of these boundaries and no more; the rest need a signal
+  the assembly does not have.** `state.narration_chunks` is a list of plain strings, so
+  paragraph roles and the spec-056 E statuses are not reachable there — threading them
+  through is the lever, and it is recorded, not built.
+  **Observability (Constitution V).** `joined_sentence_continuation_count` rides the
+  `ui_audiobook_artifact_saved` record of the saved file, identical on both entry points,
+  documented in `docs/LOGGING_AND_ARTIFACT_RETENTION.md` §5.5. Zero is the statement "this
+  book had no sentence broken by a paragraph break", never an absent field. No WARNING and
+  no user notice: this is the one narration counter that reports a REPAIR, there is nothing
+  for a human to review, and an event would be noise.
+  **NEGATIVE RESULT on the second half of the brief — bare domains are NOT given a rule,
+  and both conditions the owner set are the reason.** *(1) The number was recounted and it
+  did NOT collapse.* The 16 raw addresses were counted before the reference-region work; a
+  recount on the delivered artifacts finds **27 bare-domain hits (3 / 15 / 9 / 0)**, and
+  re-deciding each one against TODAY's `narration_include` (`.run/join_url_regions.py`,
+  offline, same preparation as `scripts/measure-narration-exclusion.py`) removes exactly
+  **one** — Rethinking Money's `imf.org`. The premise that most of them sat in notes and
+  bibliography is refuted: **15 of the 27 are Creating Wealth's `Resources` list**, which
+  this spec's 2026-08-06 entry already records as still narrated, and 3 are Money &
+  Sustainability body prose. So ~26 remain, about 6.5 per book, one per 100 000 characters.
+  *(2) There is no formal signal without a list of top-level domains, and the collateral was
+  measured, not asserted.* The widest TLD-free form — `label(.label)*.letters{2,}` — run
+  over the same four books' ENGLISH source matches **186 tokens**, and among them are
+  `p.xii`, `p.xiii`, `p.xiv`, `p.xvi`, `p.xxviii` (page references in Roman numerals) and
+  `Bd.II`, `Bd.III` (German volume references) — ordinary citation prose a listener needs,
+  deleted silently. Nothing distinguishes those from `lietaer.com` except a TLD list, which
+  is precisely the word list Constitution VII forbids and which this repository blesses in
+  exactly one place (the back-matter title lexicon) and not here. The owner's own judgement —
+  16 addresses read aloud in a large audiobook are not critical — stands at 26. **Not
+  built.**
 - **2026-08-06** — **The region's END stops believing heading depth, because on the PDF path there
   is none to believe** (branch `fix/054-reference-region-end`, branched from
   `fix/054-backmatter-anchor-without-heading-role` — that one fixes the anchor, this one the

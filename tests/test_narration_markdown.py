@@ -113,6 +113,148 @@ def test_strip_markdown_for_narration_keeps_prose_that_merely_starts_with_a_dash
     assert stripped == "— Декларация 1700 ведущих учёных из 70 стран.\n\nОбычный абзац без маркеров."
 
 
+def _letters(text: str) -> str:
+    return "".join(character for character in text if not character.isspace())
+
+
+def test_narration_joins_a_sentence_that_runs_across_a_paragraph_break():
+    """Spec 054, 2026-08-06. Measured on the four-book corpus: 34 such boundaries, and 81 of
+    the 83 arrive from IMPORT, where a PDF line wrap became a paragraph break. Both halves
+    are translated and nothing is missing — only the separator is wrong, and a TTS engine
+    reads a paragraph break as a pause in the middle of a sentence."""
+    source = (
+        "Слово «кредит» звучит позитивно — вам доверились и сочли вас\n\n"
+        "платежеспособным. Слово «долг» несет негативный оттенок."
+    )
+
+    stripped, joined = generation.strip_markdown_for_narration_with_stats(source)
+
+    assert joined == 1
+    assert stripped == (
+        "Слово «кредит» звучит позитивно — вам доверились и сочли вас "
+        "платежеспособным. Слово «долг» несет негативный оттенок."
+    )
+
+
+def test_narration_join_changes_only_the_separator():
+    """Nothing is added and nothing is lost: the letter sequence is identical before and
+    after, which is what makes the rule checkable rather than merely plausible."""
+    source = "первым шагом стало формирование основной\n\nкоманды, в неё вошли жители."
+
+    before = "".join(source.split("\n\n"))
+    stripped, joined = generation.strip_markdown_for_narration_with_stats(source)
+
+    assert joined == 1
+    assert _letters(stripped) == _letters(before)
+
+
+def test_narration_does_not_join_a_heading_to_the_prose_under_it():
+    """Anti-vacuum. A heading legitimately ends without punctuation, which is exactly the
+    shape the rule keys on — so the kind is read off the MARKDOWN, not off the text."""
+    source = "## Деньги как соглашение\n\nдоверие внутри сообщества делает их деньгами."
+
+    stripped, joined = generation.strip_markdown_for_narration_with_stats(source)
+
+    assert joined == 0
+    assert stripped == "Деньги как соглашение\n\nдоверие внутри сообщества делает их деньгами."
+
+
+def test_narration_does_not_join_a_heading_that_arrives_behind_an_audio_tag():
+    source = "[serious] ### Валюта Терра\n\nсоздаётся из излишков товарных запасов."
+
+    stripped, joined = generation.strip_markdown_for_narration_with_stats(source)
+
+    assert joined == 0
+    assert stripped == "[serious] Валюта Терра\n\nсоздаётся из излишков товарных запасов."
+
+
+@pytest.mark.parametrize(
+    "marker",
+    ["- ", "1. ", "• ", "[serious] - ", "[serious] • "],
+)
+def test_narration_does_not_join_a_list_item_to_its_neighbour(marker):
+    """Anti-vacuum. Items of a list end without punctuation by convention and the next item
+    may well start lowercase; welding them would turn a list into one run-on sentence."""
+    source = f"{marker}мера стоимости\n\n{marker}средство обращения"
+
+    _, joined = generation.strip_markdown_for_narration_with_stats(source)
+
+    assert joined == 0
+
+
+def test_narration_does_not_join_a_blockquote_to_the_paragraph_after_it():
+    source = "> цитата без точки\n\nпродолжение обычного абзаца."
+
+    _, joined = generation.strip_markdown_for_narration_with_stats(source)
+
+    assert joined == 0
+
+
+def test_narration_does_not_join_an_epigraph_attribution_to_what_follows_it():
+    """Anti-vacuum, and the case the owner named. An attribution legitimately ends without a
+    full stop; what stops the join is that whatever comes next STARTS something — a new
+    epigraph, a name, a tag — and therefore does not begin with a lowercase letter. Taken
+    verbatim from Rethinking Money's front matter."""
+    source = (
+        "— Эдгар Кан, создатель Time Dollars, основатель TimeBanks USA\n\n"
+        "«Вместо того чтобы просто винить кого-то, авторы предлагают решения»."
+    )
+
+    _, joined = generation.strip_markdown_for_narration_with_stats(source)
+
+    assert joined == 0
+
+
+def test_narration_does_not_join_index_rows():
+    """Anti-vacuum. Two independent guards refuse an index row and each was measured to be
+    load-bearing on Rethinking Money's 422-paragraph index: the row ends on a PAGE NUMBER,
+    and the next row starts on a capital. Allow digit endings and these two rows — the only
+    ones on the whole corpus — join."""
+    source = "Страх, 4\n\nв Юте, 201; в Веймарской республике, 136"
+
+    _, joined = generation.strip_markdown_for_narration_with_stats(source)
+
+    assert joined == 0
+
+
+@pytest.mark.parametrize("terminal", [".", "!", "?", "…", ":", ";", "»", "\"", ")"])
+def test_narration_does_not_join_after_a_finished_sentence(terminal):
+    source = f"Абзац закончился{terminal}\n\nследующий абзац начинается со строчной буквы."
+
+    _, joined = generation.strip_markdown_for_narration_with_stats(source)
+
+    assert joined == 0
+
+
+def test_narration_does_not_join_when_the_continuation_starts_a_new_speech_unit():
+    """An audio tag opens a new delivery unit, so a paragraph starting with one is never the
+    tail of the sentence before it."""
+    source = "эта программа использует\n\n[thoughtful] тайм-банкинг как основу."
+
+    _, joined = generation.strip_markdown_for_narration_with_stats(source)
+
+    assert joined == 0
+
+
+def test_narration_join_is_idempotent():
+    source = "Смотрите\n\nрисунок 8.4."
+
+    once, first = generation.strip_markdown_for_narration_with_stats(source)
+    twice, second = generation.strip_markdown_for_narration_with_stats(once)
+
+    assert (first, second) == (1, 0)
+    assert once == twice == "Смотрите рисунок 8.4."
+
+
+def test_narration_join_count_is_zero_when_nothing_runs_on():
+    """Zero is a statement, not an absent measurement (Constitution V)."""
+    _, joined = generation.strip_markdown_for_narration_with_stats(
+        "Первый абзац закончен.\n\nВторой абзац тоже закончен."
+    )
+
+    assert joined == 0
+
+
 def _rules(narration_text: str) -> list[str]:
     return [str(finding["rule"]) for finding in _collect_narration_artifact_review_findings(narration_text)]
 
