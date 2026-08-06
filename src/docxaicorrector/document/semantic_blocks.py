@@ -25,12 +25,18 @@ _SEMANTIC_BLOCK_TOC_ENTRY_PATTERN = re.compile(r"^.{1,120}(?:\.{2,}|\s{2,})\s*\d
 # its structural-anchor title lexicon as an accepted, extensible residual, so that lexicon is
 # REUSED here rather than restated: one list, one place, no drift.
 #
-# Minus the index titles. The owner scoped the cut to the table of contents, the notes and the
-# sources; an index is left in the narration deliberately (spec 054, "Index is out of scope").
-_INDEX_SECTION_TITLES = frozenset(
-    {"index", "указатель", "именной указатель", "предметный указатель"}
-)
-_NARRATION_REFERENCE_SECTION_TITLES = frozenset(_BACKMATTER_SECTION_TITLES) - _INDEX_SECTION_TITLES
+# The index used to be subtracted from that lexicon, because the owner's first framing named the
+# table of contents, the notes and the sources and did not name the index. **That decision was
+# reversed by the owner on 2026-08-06**, once the price was measured: on Rethinking Money the index
+# is 463 paragraphs / 38 470 characters of "Красота, 152, 201, 223" read aloud. The signal is also
+# the sound one of the three — unlike its NOTES and BIBLIOGRAPHY, that book's index title arrives
+# from import carrying a real heading role. So the whole lexicon is used, and the subtraction and
+# its constant are gone rather than commented out: the next reader should see the decision, not its
+# archaeology.
+_NARRATION_REFERENCE_SECTION_TITLES = frozenset(_BACKMATTER_SECTION_TITLES)
+
+# Markdown emphasis the PDF import path carries INSIDE `ParagraphUnit.text`.
+_INLINE_EMPHASIS_MARKERS = ("**", "__", "*", "_")
 
 
 def build_marker_wrapped_block_text(paragraphs: list[ParagraphUnit], *, paragraph_ids: list[str] | None = None) -> str:
@@ -484,25 +490,105 @@ def _block_leading_heading_level(block: DocumentBlock) -> int | None:
     return None
 
 
-def _block_reference_section_title(block: DocumentBlock, *, structure_phase: str) -> str:
-    """The bare back-matter section title this block OPENS with, or "".
+def _unwrap_inline_emphasis(text: str) -> str:
+    """Drop a matched inline-emphasis wrapper from the WHOLE of `text`.
 
-    The signal is structural, not lexical-in-the-forbidden-sense: the block's leading
-    paragraph must carry the `heading` role, and its whole text must be EXACTLY one of the
-    blessed section titles. Exact matching is what keeps a front-matter TOC row
-    ("Notes ......... 225") and a chapter heading that merely mentions sources from
-    anchoring a region — the same reason `_resolve_references_region_start` matches
-    exactly. A paragraph already tagged as a TOC row can never anchor.
+    The PDF import path carries emphasis inside `ParagraphUnit.text` as markdown, so a bolded
+    section title arrives as `**NOTES**` and an italic one as `*Notes*` (measured on all four
+    corpus books, 2026-08-06). Those markers are markup the importer synthesised, not part of
+    the title; comparing them literally would make an exact title match depend on whether the
+    typesetter emphasised the word. This is normalisation of our own markup, the same job
+    `_strip_internal_placeholders` does for `[[DOCX_*]]`, not a matcher on the shape of the
+    text: only a pair wrapping the entire string is removed, never anything from inside it, so
+    a sentence can never be turned into a title.
     """
-    if not block.paragraphs:
+    stripped = text.strip()
+    for _ in range(3):
+        for marker in _INLINE_EMPHASIS_MARKERS:
+            size = len(marker)
+            if len(stripped) > 2 * size and stripped.startswith(marker) and stripped.endswith(marker):
+                stripped = stripped[size:-size].strip()
+                break
+        else:
+            break
+    return stripped
+
+
+def _reference_section_title(paragraph: ParagraphUnit, *, structure_phase: str) -> str:
+    """The bare back-matter section title this PARAGRAPH is, or "".
+
+    Exact match after normalisation — never containment. That is what keeps a front-matter
+    contents row ("Notes ......... 225", which carries its page number) and a chapter heading
+    that merely mentions sources from anchoring a region, exactly as
+    `_resolve_references_region_start` does in the blessed precedent. A paragraph already
+    tagged with a TOC structural role can never anchor, whatever it says.
+
+    The `heading` role is deliberately NOT required. Requiring it made the rule fire zero times
+    on Rethinking Money (measured 2026-08-06), whose NOTES and BIBLIOGRAPHY arrive from import
+    as `role=body` while its INDEX arrives as a heading — the same three section titles, the
+    same book, two different import outcomes. Constitution VII's "no source signal, no repair"
+    is not in tension with this: nothing here is reconstructed from the shape of the text. The
+    signal is that a paragraph's whole text IS a blessed section title; the guards that replace
+    the role requirement are structural and live in `_block_reference_title_position`.
+    """
+    if _is_toc_structural_role(paragraph, structure_phase=structure_phase):
         return ""
-    leading = block.paragraphs[0]
-    if leading.role != "heading":
-        return ""
-    if _is_toc_structural_role(leading, structure_phase=structure_phase):
-        return ""
-    title = _normalize_structural_text(_strip_internal_placeholders(leading.text)).lower()
+    title = _normalize_structural_text(_unwrap_inline_emphasis(_strip_internal_placeholders(paragraph.text))).lower()
     return title if title in _NARRATION_REFERENCE_SECTION_TITLES else ""
+
+
+def _block_reference_title_position(block: DocumentBlock, *, structure_phase: str) -> tuple[int, str] | None:
+    """`(paragraph position, title)` of the one back-matter section title this block can be
+    anchored on, or None. Two structural guards stand in for the dropped `heading` role:
+
+    * **The block must carry exactly ONE such title.** A genuine section title is followed by
+      its entries, so it is alone in its block; a contents list packs several of them together.
+      Both corpus books whose front matter lists "Notes / Bibliography / Acknowledgements" as
+      plain paragraphs are refused here — The Value of Everything block 18 carries three and
+      Money & Sustainability block 14 carries two (measured 2026-08-06). This is the guard that
+      matters, because on The Value of Everything those rows are NOT tagged as TOC rows.
+    * **The title must sit at an edge of its block** — first or last. A section break is a
+      block boundary, so a title that really opens a section is either the paragraph that opens
+      the block or the one swept onto the tail of the preceding unit. A title with paragraphs
+      on BOTH sides inside a single block is a line in a list, not a section opening, and it is
+      refused rather than guessed at: there is no way to start a region there that neither cuts
+      the prose in front of it nor is a guess.
+    """
+    hits = [
+        (position, title)
+        for position, paragraph in enumerate(block.paragraphs)
+        if (title := _reference_section_title(paragraph, structure_phase=structure_phase))
+    ]
+    if len(hits) != 1:
+        return None
+    position, title = hits[0]
+    if position not in {0, len(block.paragraphs) - 1}:
+        return None
+    return position, title
+
+
+def _block_reference_section_title(block: DocumentBlock, *, structure_phase: str) -> str:
+    """The bare back-matter section title this block can be anchored on, or ""."""
+    hit = _block_reference_title_position(block, structure_phase=structure_phase)
+    return hit[1] if hit is not None else ""
+
+
+def _block_reference_region_start(blocks: list[DocumentBlock], index: int, *, structure_phase: str) -> int | None:
+    """First block index of the region the block at `index` anchors, or None.
+
+    When the title OPENS its block, the region starts at that block. When the title is the LAST
+    paragraph of its block — Rethinking Money's `**NOTES**` is paragraph 7 of 8, sitting behind
+    the closing paragraphs of the final chapter — the region starts at the NEXT block, so the
+    chapter text in front of the title stays in the narration. The title line itself is then
+    narrated, which is a spoken word or two; cutting seven paragraphs of prose to save them is
+    not a trade this rule is allowed to make.
+    """
+    hit = _block_reference_title_position(blocks[index], structure_phase=structure_phase)
+    if hit is None:
+        return None
+    position, _ = hit
+    start_index = index if position == 0 else index + 1
+    return start_index if start_index < len(blocks) else None
 
 
 def _resolve_reference_region_end(blocks: list[DocumentBlock], start_index: int) -> int:
@@ -539,11 +625,11 @@ def _resolve_reference_region_end(blocks: list[DocumentBlock], start_index: int)
 
 def _resolve_reference_region_indexes(blocks: list[DocumentBlock], *, structure_phase: str = "post_ai_final") -> set[int]:
     """Block indexes that belong to a back-matter reference section (notes / endnotes /
-    references / bibliography / sources), for the audiobook narration to drop.
+    references / bibliography / sources / index), for the audiobook narration to drop.
 
-    A region STARTS at a block whose leading paragraph is a bare back-matter section title
-    and ENDS where `_resolve_reference_region_end` puts the next section boundary. Nothing
-    here reads the shape of the entries.
+    A region STARTS where `_block_reference_region_start` anchors it on a bare back-matter
+    section title and ENDS where `_resolve_reference_region_end` puts the next section
+    boundary. Nothing here reads the shape of the entries.
 
     This replaced a bibliography-ratio test over the document suffix, which measured 0
     excluded blocks on 4 of 4 books on 2026-08-04 for two independent reasons: its anchor
@@ -557,11 +643,12 @@ def _resolve_reference_region_indexes(blocks: list[DocumentBlock], *, structure_
     excluded: set[int] = set()
     index = 0
     while index < len(blocks):
-        if not _block_reference_section_title(blocks[index], structure_phase=structure_phase):
+        start_index = _block_reference_region_start(blocks, index, structure_phase=structure_phase)
+        if start_index is None:
             index += 1
             continue
-        end_index = _resolve_reference_region_end(blocks, index)
-        excluded.update(range(index, end_index))
+        end_index = _resolve_reference_region_end(blocks, start_index)
+        excluded.update(range(start_index, end_index))
         index = max(end_index, index + 1)
     return excluded
 

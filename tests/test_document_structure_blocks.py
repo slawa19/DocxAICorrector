@@ -458,9 +458,11 @@ def test_build_editing_jobs_stops_the_reference_region_at_a_heading_with_no_leve
     assert [job["narration_include"] for job in jobs] == [False, False, True]
 
 
-def test_build_editing_jobs_keeps_the_index_in_the_narration():
-    """The owner scoped the audiobook cut to the table of contents, the notes and the sources.
-    An index is deliberately NOT a reference region here (spec 054, "Index is out of scope")."""
+def test_build_editing_jobs_drops_the_index_from_the_narration():
+    """The index used to be kept: the owner's first framing named the table of contents, the
+    notes and the sources, and said nothing about an index. **Reversed by the owner on
+    2026-08-06**, once the price was measured — on Rethinking Money the index is 463 paragraphs
+    of "Short- termism, 44– 46, 217" read out loud."""
     blocks = [
         DocumentBlock(paragraphs=[ParagraphUnit(text="Index", role="heading", paragraph_id="p0000", heading_level=2)]),
         DocumentBlock(
@@ -473,7 +475,155 @@ def test_build_editing_jobs_keeps_the_index_in_the_narration():
 
     jobs = build_editing_jobs(blocks, max_chars=3000, processing_operation="audiobook")
 
+    assert [job["narration_include"] for job in jobs] == [False, False]
+
+
+def test_build_editing_jobs_anchors_a_reference_region_on_a_title_that_lost_its_heading_role():
+    """Rethinking Money's NOTES and BIBLIOGRAPHY arrive from PDF import as `role=body` while its
+    INDEX arrives as a heading — same book, same three section titles, two different import
+    outcomes (measured 2026-08-06). Requiring the `heading` role therefore made the region fire
+    zero times on that book. The signal the rule keys on is that a paragraph's whole text IS a
+    blessed back-matter section title; the role is not part of it.
+
+    The emphasis wrapper is part of the case: the PDF path carries bold inside the text, so the
+    title arrives literally as `**BIBLIOGRAPHY**`."""
+    blocks = [
+        DocumentBlock(
+            paragraphs=[
+                ParagraphUnit(text="From Scarcity to Sustainable Abundance", role="heading", paragraph_id="p0000", heading_level=1),
+                ParagraphUnit(text="The closing narrative paragraph of the final chapter.", role="body", paragraph_id="p0001"),
+            ]
+        ),
+        DocumentBlock(
+            paragraphs=[
+                ParagraphUnit(text="**BIBLIOGRAPHY**", role="body", paragraph_id="p0002"),
+                ParagraphUnit(text="Amato, M. *Complementary Currency Systems.* Milan: Bocconi, 2003.", role="body", paragraph_id="p0003"),
+            ]
+        ),
+        DocumentBlock(
+            paragraphs=[
+                ParagraphUnit(text="ACKNOWLEDGEMENTS", role="heading", paragraph_id="p0004", heading_level=1),
+                ParagraphUnit(text="Special thanks to Ed and Deb Shapiro, and to Frank Bailin.", role="body", paragraph_id="p0005"),
+            ]
+        ),
+    ]
+
+    jobs = build_editing_jobs(blocks, max_chars=3000, processing_operation="audiobook")
+
+    # The chapter before it and the acknowledgements after it are narrated; only the
+    # bibliography goes. Losing the acknowledgements here would be the anti-vacuum failure.
+    assert [job["narration_include"] for job in jobs] == [True, False, True]
+
+
+def test_build_editing_jobs_starts_the_region_after_a_title_that_closes_its_block():
+    """Rethinking Money's `**NOTES**` is paragraph 7 of 8: segmentation swept it onto the tail of
+    the block that holds the closing paragraphs of the last chapter. The region therefore starts
+    at the NEXT block, so that chapter text stays in the narration. The title line itself is
+    then spoken — a word or two — which is the cheap side of the trade."""
+    blocks = [
+        DocumentBlock(
+            paragraphs=[
+                ParagraphUnit(text="She continues: “Take the fact that the Arab Spring became the story of 2011.”", role="body", paragraph_id="p0000"),
+                ParagraphUnit(text="Rethinking money, we can enjoy an era of genuine and sustainable abundance.", role="body", paragraph_id="p0001"),
+                ParagraphUnit(text="**NOTES**", role="body", paragraph_id="p0002"),
+            ]
+        ),
+        DocumentBlock(
+            paragraphs=[
+                ParagraphUnit(text="Introduction", role="body", paragraph_id="p0003"),
+                ParagraphUnit(text="1. Alan Wilson Watts, “From Time to Eternity.” Rutland, VT: C. E. Tuttle, 1999.", role="list", paragraph_id="p0004"),
+            ]
+        ),
+        DocumentBlock(
+            paragraphs=[
+                ParagraphUnit(text="ACKNOWLEDGEMENTS", role="heading", paragraph_id="p0005", heading_level=1),
+                ParagraphUnit(text="Special thanks to Ed and Deb Shapiro, and to Frank Bailin.", role="body", paragraph_id="p0006"),
+            ]
+        ),
+    ]
+
+    jobs = build_editing_jobs(blocks, max_chars=3000, processing_operation="audiobook")
+
+    assert [job["narration_include"] for job in jobs] == [True, False, True]
+
+
+def test_build_editing_jobs_does_not_let_an_untagged_contents_list_anchor_a_reference_region():
+    """The Value of Everything's front matter lists `*Notes*`, `*Bibliography*` and
+    `*Acknowledgements*` as three ordinary body paragraphs inside ONE block, and — unlike Money &
+    Sustainability's — they are NOT tagged with a TOC role (measured 2026-08-06). So the TOC guard
+    cannot save this case and a second, structural one has to: a block carrying MORE THAN ONE
+    back-matter section title is a list of titles, not a section opening. Without this guard the
+    region would start in the front matter and swallow the whole book.
+
+    `*Bibliography*` is deliberately placed LAST, at an edge of the block, so that the edge guard
+    alone would let it through. Only the one-title-per-block guard refuses this."""
+    blocks = [
+        DocumentBlock(
+            paragraphs=[
+                ParagraphUnit(text="Contents", role="body", paragraph_id="p0000"),
+                ParagraphUnit(text="Introduction: Making versus Taking", role="body", paragraph_id="p0001"),
+                ParagraphUnit(text="*Acknowledgements*", role="body", paragraph_id="p0002"),
+                ParagraphUnit(text="*Notes*", role="body", paragraph_id="p0003"),
+                ParagraphUnit(text="*Bibliography*", role="body", paragraph_id="p0004"),
+            ]
+        ),
+        DocumentBlock(
+            paragraphs=[
+                ParagraphUnit(text="Chapter 1", role="heading", paragraph_id="p0005", heading_level=2),
+                ParagraphUnit(text="The opening narrative paragraph of the book.", role="body", paragraph_id="p0006"),
+            ]
+        ),
+    ]
+
+    jobs = build_editing_jobs(blocks, max_chars=3000, processing_operation="audiobook")
+
     assert [job["narration_include"] for job in jobs] == [True, True]
+
+
+def test_build_editing_jobs_does_not_let_a_title_inside_a_block_anchor_a_reference_region():
+    """A back-matter title with paragraphs on BOTH sides of it inside one block is a line in a
+    list, not a section opening. There is no honest place to start a region there: including the
+    block cuts the prose in front of the title, and skipping to the next block is a guess. So it
+    is refused, and the material stays in the narration."""
+    blocks = [
+        DocumentBlock(
+            paragraphs=[
+                ParagraphUnit(text="A narrative paragraph that happens to precede the word.", role="body", paragraph_id="p0000"),
+                ParagraphUnit(text="Sources", role="body", paragraph_id="p0001"),
+                ParagraphUnit(text="A narrative paragraph that happens to follow it.", role="body", paragraph_id="p0002"),
+            ]
+        ),
+        DocumentBlock(paragraphs=[ParagraphUnit(text="More narrative prose, still in the chapter.", role="body", paragraph_id="p0003")]),
+    ]
+
+    jobs = build_editing_jobs(blocks, max_chars=3000, processing_operation="audiobook")
+
+    assert [job["narration_include"] for job in jobs] == [True, True]
+
+
+def test_build_editing_jobs_does_not_let_a_role_less_toc_row_anchor_a_reference_region():
+    """The companion of the heading-role TOC case below, for the relaxed anchor: a contents row
+    reading "Notes" that carries the `toc_entry` structural role but NOT the heading role must
+    still be refused. Dropping the heading requirement must not drop the TOC guard with it."""
+    blocks = [
+        DocumentBlock(
+            paragraphs=[
+                ParagraphUnit(text="Notes", role="body", structural_role="toc_entry", paragraph_id="p0000"),
+            ]
+        ),
+        DocumentBlock(
+            paragraphs=[
+                ParagraphUnit(text="Introduction", role="heading", paragraph_id="p0001", heading_level=2),
+                ParagraphUnit(text="The opening narrative paragraph of the book.", role="body", paragraph_id="p0002"),
+            ]
+        ),
+    ]
+
+    jobs = build_editing_jobs(blocks, max_chars=3000, processing_operation="audiobook")
+
+    # The row itself is dropped as TOC, by role — but the chapter that follows it is narrated,
+    # which it would not be if the row had opened a region.
+    assert [job["narration_include"] for job in jobs] == [False, True]
 
 
 def test_build_editing_jobs_does_not_let_a_toc_row_anchor_a_reference_region():

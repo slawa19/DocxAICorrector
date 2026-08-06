@@ -304,6 +304,9 @@ thresholds in `semantic_blocks.py`.
 **Index is deliberately not in scope.** The owner named the table of contents, footnotes and sources.
 Rethinking Money's tail is an index and reads terribly aloud, but adding it is an owner decision, not
 an inference — recorded here so it is not lost.
+**Superseded on 2026-08-06: the owner took that decision and the index IS now cut** — see the
+Changelog entry of that date. The paragraph above is left standing because it records why the
+scope was drawn narrowly first and what evidence moved it.
 
 ## Plan
 
@@ -347,6 +350,67 @@ an inference — recorded here so it is not lost.
 
 ## Changelog
 
+- **2026-08-06** — **The reference region anchors without a heading role, and the index is now
+  cut** (branch `fix/054-backmatter-anchor-without-heading-role`). Two changes in
+  `document/semantic_blocks.py`, plus a third that the measurement forced and that nobody had
+  predicted.
+  **1. The `heading` role is no longer required of the anchor.** `_block_reference_section_title`
+  (`:487` before this change) demanded it, and Rethinking Money's `NOTES` and `BIBLIOGRAPHY` arrive
+  from PDF import as `role=body` while its `INDEX` arrives as `role=heading` — the same book, the
+  same three section titles, two different import outcomes. That is why `reference_region` measured
+  **0 blocks** on that book while the rule worked on the other three. The import defect is spec 055's
+  and is NOT fixed here; the rule is made robust to what import actually delivers.
+  **2. The index titles are back in the lexicon.** The `_INDEX_SECTION_TITLES` subtraction and its
+  constant are deleted, not commented out. Owner decision of 2026-08-06, taken against the measured
+  price: 463 paragraphs / 38 470 characters of `Красота, 152, 201, 223` read aloud.
+  **3. The emphasis wrapper had to be normalised away, and this was the real blocker.** The PDF path
+  carries bold/italic INSIDE `ParagraphUnit.text`, so the titles arrive as `**NOTES**`,
+  `**BIBLIOGRAPHY**`, `**INDEX**`, `*Notes*`. An exact match against the lexicon could never have
+  succeeded on any of them, with or without the role. `_unwrap_inline_emphasis` removes only a pair
+  wrapping the WHOLE string — our own markup, the job `_strip_internal_placeholders` already does for
+  `[[DOCX_*]]` — never anything from inside the text. **Measured, and it corrects the diagnosis this
+  branch started from:** dropping the `heading` role WITHOUT the emphasis normalisation leaves
+  Rethinking Money at `reference_region` = **0 blocks**, exactly as before. The role requirement was
+  a real second lock, but it was not the one holding the door.
+  **Three structural guards replace the dropped role**, in `_block_reference_title_position` /
+  `_block_reference_region_start`: a block carrying MORE THAN ONE back-matter title is a contents
+  list and is refused (The Value of Everything block 18 carries three untagged ones — `*Notes*`,
+  `*Bibliography*`, `*Acknowledgements*` — and the TOC-role guard does NOT catch them); a title must
+  sit at an EDGE of its block, first or last, never with prose on both sides; and a title that CLOSES
+  its block starts the region at the NEXT block, so the prose in front of it survives (Rethinking
+  Money's `**NOTES**` is paragraph 7 of 8, behind the closing paragraphs of the final chapter).
+  **Each guard is independently load-bearing, shown by mutation** (`.run/anch_mutation.py`): switch
+  off the one-title guard and the untagged contents list anchors on its last row, which would start
+  a region in the front matter; switch off the edge guard and a bare `Sources` with prose on both
+  sides anchors; put the `heading` role requirement back and Rethinking Money's bibliography stops
+  anchoring again. None of the three is decoration.
+  **Measured, `scripts/measure-narration-exclusion.py`, all four books, three states**
+  (`.run/anchor_before.json`, `.run/anchor_after.json`): `reference_region` **10 / 16 / 0 / 476 →
+  10 / 16 / 8 / 476** (anchor relaxation alone) **→ 10 / 16 / 9 / 476** (index added). The three books
+  where the rule already worked are **unchanged in every field**, anchors included, and their
+  `excluded_char_share` is byte-identical (7.4% / 5.7% / 15.9%). Rethinking Money: 0.4% → 5.3%.
+  **Anti-vacuum counter-proof**, run over all four books' real blocks (`.run/anch_verify.py`,
+  `.run/anch_verify.txt`): not one author-prose section is excluded. Named and verified narrated —
+  Money & Sustainability `Acknowledgements` (319) and `About the Authors` (320); Creating Wealth
+  `About the Authors` (433), `CONCLUSION` (334), `Acknowledgments` (23); Rethinking Money
+  `ACKNOWLEDGEMENTS` (249, which sits BETWEEN the bibliography and the index and is the sharpest
+  test) and `ABOUT THE AUTHORS` (297); The Value of Everything `Acknowledgements` (712). The four
+  spec-054 prose probes all survive: `Jungian psychologist Bernice Hill` (RM 25), `not generally
+  known` (RM 79), `large-scale banking crises` (M&S 51), `deeply ingrained ideas` (VoE 20).
+  **NEGATIVE RESULT, and it is the finding that matters: the anchor was not the binding
+  constraint.** `_resolve_reference_region_end` — explicitly out of scope for this branch, and
+  believed to work — now truncates both new regions on Rethinking Money, because that book's PDF
+  import promoted the per-chapter labels inside the notes (`Chapter 2`, `Chapter 3`, …) and *every
+  row of the index* to `role=heading, heading_level=3, heading_source=explicit`. Its two guards then
+  fire: the notes anchor takes level 3 from the first such label and stops at the next level-3
+  heading, and the index anchor's level-2 depth never returns before the end of the document, so the
+  untrusted-levels fallback drops the region back to the nearest following heading. Measured on
+  Rethinking Money: bibliography **177 / 177 paragraphs cut** (complete); notes **39 of 264**
+  (225 still narrated, 32 231 chars); index **10 of 432** (422 still narrated, 22 906 chars). Nothing
+  after the index is cut — the 32 paragraphs of `About the Authors` and publisher advertising that a
+  full index region would have reached stay in the narration, so the owner's question about them does
+  not arise yet. The owner asked for ~905 paragraphs to go; **226 go**. The remaining work is in the
+  region BOUNDARY, not in the anchor.
 - **2026-08-04** — **The narration artifact now carries only speakable text in the target
   language** (branch `fix/narration-only-speakable-target-language`, from the first live
   audiobook run's own measured defects). Two changes, both in the assembly, neither touching

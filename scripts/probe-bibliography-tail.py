@@ -5,8 +5,10 @@ heading-like block of the document and then required >= 70% "bibliography-like" 
 suffix — which resolved to 0 blocks on 4 of 4 books, because the anchor lands on publisher
 back-matter standing BEHIND the bibliography and because a PDF-imported entry wraps over
 several lines of which only one carries a year/publisher/URL. After: the region is anchored on
-a bare back-matter section title ("Notes", "Bibliography", ...) carried by a heading paragraph,
-and bounded by the next block that has a heading paragraph of its own.
+a bare back-matter section title ("Notes", "Bibliography", "Index", ...) sitting at an edge of
+its block, and bounded by the next block that has a heading paragraph of its own. The anchor
+paragraph is NOT required to carry the heading role (changed 2026-08-06 — Rethinking Money's
+NOTES and BIBLIOGRAPHY arrive from import as body paragraphs).
 
 This prints, per book: every anchor found, the region it opens, and the trailing blocks — enough
 to tell "the region is not identifiable" apart from "the region is identified but bounded short".
