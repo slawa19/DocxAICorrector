@@ -279,6 +279,13 @@ class ProcessingState:
     # 2026-08-04 run.
     narration_excluded_omitted_paragraph_count: int = 0
     narration_excluded_omitted_chars: int = 0
+    # Spec 054, 2026-08-06: paragraph boundaries the assembly closed because the sentence
+    # ran ON across them — 81 of the 83 measured on the four-book corpus arrive that way
+    # from IMPORT, where a PDF line wrap became a paragraph break. Nothing is added or lost,
+    # only a ``\n\n`` becomes a space, so this is the one narration counter that reports a
+    # REPAIR rather than a loss. It is published all the same, and a zero is the statement
+    # "this run found no sentence running across a paragraph break".
+    narration_joined_sentence_continuation_count: int = 0
     generated_paragraph_registry: list[dict[str, object]] = field(default_factory=list)
     segment_outputs: dict[str, list[str]] = field(default_factory=dict)
     completed_segment_ids: set[str] = field(default_factory=set)
