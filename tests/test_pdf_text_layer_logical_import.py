@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import docxaicorrector.pdf_import.logical_import as logical_import
 from docxaicorrector.core.models import ParagraphUnit
 from docxaicorrector.pdf_import.logical_import import (
     build_paragraph_units_from_text_spans,
@@ -509,7 +510,10 @@ def test_build_paragraph_units_classifies_figure_line_as_caption_not_heading() -
 
     assert [paragraph.role for paragraph in result.paragraphs] == ["caption", "body"]
     assert result.paragraphs[0].structural_role == "caption"
-    assert result.paragraphs[0].style_name == "PDF Caption"
+    # The caption role is carried across the PDF->DOCX bridge as the built-in ``Caption``
+    # style (spec 055). Before that it was stamped ``PDF Caption``, a name python-docx has
+    # never had, and the bridge dropped it unread.
+    assert result.paragraphs[0].style_name == "Caption"
 
 
 def test_build_paragraph_units_keeps_location_signature_line_out_of_headings() -> None:
@@ -1211,7 +1215,6 @@ def _body_unit(
         text=text,
         role="body",
         structural_role="body",
-        style_name="PDF Body",
         is_bold=bold,
         font_size_pt=font_size_pt,
     )
@@ -1222,7 +1225,6 @@ def _heading_unit(text: str, *, level: int) -> ParagraphUnit:
         text=text,
         role="heading",
         structural_role="heading",
-        style_name="PDF Heading",
         heading_level=level,
         heading_source="pdf_text_layer",
     )
@@ -1430,3 +1432,99 @@ def test_centring_is_measurable_but_deliberately_not_carried() -> None:
     centred = next(p for p in result.paragraphs if p.text == "A Centred Display Line")
     assert centred.paragraph_alignment is None
     assert all(p.paragraph_alignment is None for p in result.paragraphs)
+
+
+# --- Spec 055 follow-up: one role->style decision, and it is this one ---------------
+#
+# `logical_import._ROLE_DOCX_STYLE` is the only place where an importer role becomes an
+# intermediate-DOCX paragraph style. The PDF->DOCX bridge used to keep a second, poorer
+# mapper of its own and ignore the field this module sets; it now reads `style_name`.
+
+
+def test_every_carried_docx_style_name_exists_in_the_default_template() -> None:
+    # The bridge passes this name straight to `Document.add_paragraph(style=...)`, which
+    # raises KeyError on a style the template does not define — and that would abort the
+    # import of a whole book. This is the guard for every future addition to the table:
+    # "PDF Caption", the name this module used to emit, fails it.
+    from docx import Document
+
+    document = Document()
+    for role in logical_import._ROLE_DOCX_STYLE:
+        for heading_level in (None, 1, 2, 6, 9):
+            style_name = logical_import.docx_style_name_for_role(role, heading_level)
+            if style_name is None:
+                continue
+            assert document.styles[style_name] is not None
+
+
+def test_roles_deliberately_not_carried_have_no_docx_style() -> None:
+    # A recorded decision, not an omission — see the comment above `_ROLE_DOCX_STYLE`.
+    # `toc_entry` is deferred pending the four-book run; `footnote` is closed (59 characters
+    # of bare superscript markers across the corpus, and Constitution VII puts footnotes out
+    # of scope); `body` is `Normal` by definition.
+    for role in ("toc_entry", "footnote", "body"):
+        assert role in logical_import._ROLE_DOCX_STYLE
+        assert logical_import.docx_style_name_for_role(role) is None
+    assert logical_import.docx_style_name_for_role("something_new_and_unmapped") is None
+
+
+def test_carried_roles_map_to_the_expected_styles() -> None:
+    assert logical_import.docx_style_name_for_role("heading", 1) == "Heading 1"
+    assert logical_import.docx_style_name_for_role("heading", 3) == "Heading 3"
+    # The clamp the deleted bridge mapper applied, kept verbatim: no level means 2, and the
+    # range is 1..6 because that is what the DOCX template defines.
+    assert logical_import.docx_style_name_for_role("heading", None) == "Heading 2"
+    assert logical_import.docx_style_name_for_role("heading", 0) == "Heading 2"
+    assert logical_import.docx_style_name_for_role("heading", 42) == "Heading 6"
+    assert logical_import.docx_style_name_for_role("heading", -3) == "Heading 1"
+    assert logical_import.docx_style_name_for_role("list") == "List Bullet"
+    assert logical_import.docx_style_name_for_role("caption") == "Caption"
+
+
+def test_style_name_is_stamped_from_the_final_role_not_the_constructed_one() -> None:
+    # Why the stamp is a pass at the end of the import rather than a constructor argument:
+    # `_promote_unit_to_heading` runs after the unit is built, so a style decided at
+    # construction time would be stale exactly where the role changed.
+    unit = ParagraphUnit(text="CONCLUSION", role="body", structural_role="body")
+    logical_import._promote_unit_to_heading(unit, heading_level=1)
+
+    logical_import._assign_docx_style_names([unit])
+
+    assert unit.style_name == "Heading 1"
+
+    logical_import._demote_heading_to_body(unit)
+    logical_import._assign_docx_style_names([unit])
+
+    assert unit.style_name == ""
+
+
+def test_toc_entry_units_are_keyed_on_structural_role_and_stay_unstyled() -> None:
+    # A TOC row carries `role="body"` and `structural_role="toc_entry"`, so the stamp keys on
+    # the structural role — otherwise the table entry that names the deferral would be
+    # unreachable and read as dead code.
+    unit = ParagraphUnit(text="Chapter One .......... 12", role="body", structural_role="toc_entry")
+
+    logical_import._assign_docx_style_names([unit])
+
+    assert unit.style_name == ""
+
+
+def test_every_imported_paragraph_carries_the_style_its_role_decides() -> None:
+    # ANTI-VACUUM: the bridge now trusts `style_name`, so a unit that escaped the stamp would
+    # silently lose its style. Every paragraph the importer returns must agree with the table.
+    spans = [
+        _span(1, "A Chapter Opener", top=60, bottom=84, x0=50, font_size=22, bold=True),
+        _span(1, "Ordinary prose opens the chapter and runs on for a while.", top=110, bottom=122),
+        _span(1, "• A bulleted item", top=140, bottom=152),
+        _span(1, "FIGURE 1.1. The Corporate Process", top=180, bottom=192, x0=160),
+        _span(1, "More prose after the figure caption line.", top=210, bottom=222),
+    ]
+
+    result = build_paragraph_units_from_text_spans(spans)
+
+    assert {p.structural_role for p in result.paragraphs} >= {"heading", "body", "caption"}
+    for paragraph in result.paragraphs:
+        expected = logical_import.docx_style_name_for_role(
+            paragraph.structural_role or paragraph.role, paragraph.heading_level
+        )
+        assert paragraph.style_name == (expected or "")

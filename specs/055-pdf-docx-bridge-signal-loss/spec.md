@@ -13,7 +13,8 @@ run and is left as written, so that what was expected and what happened can be c
 measurements it cites were re-taken on current code and held.
 
 **Owner surface**: `processing/processing_runtime.py` — `_append_pdf_text_paragraph_to_docx`,
-`_pdf_text_layer_docx_style`
+`_pdf_text_layer_docx_style` (deleted 2026-08-06; the role→style decision now lives only in
+`pdf_import/logical_import.py:_ROLE_DOCX_STYLE` — see the Changelog)
 
 **Companion**: `specs/054-audiobook-mode-review-and-run/spec.md` (the iteration that found this while
 looking for something else)
@@ -130,6 +131,50 @@ permitted and expected outcome.
 
 ## Changelog
 
+- **2026-08-06 (`feat/055-bridge-reads-import-style`)** — the bridge stopped re-deriving the style
+  and started reading the importer's. There were two role→style mappers:
+  `logical_import._style_name_for_role`, whose verdict was written to `ParagraphUnit.style_name`
+  and read by nobody (it emitted `PDF Footnote` 21 times, `PDF TOC Entry` 16 and `PDF Caption`
+  twice on Money & Sustainability — strings that existed nowhere downstream), and
+  `_pdf_text_layer_docx_style` in the bridge, which knew `heading` and `list` and mapped
+  everything else to `None`. The second is **deleted**. `logical_import._ROLE_DOCX_STYLE` is now
+  the only role→style decision on the PDF path, stamped onto every unit by
+  `_assign_docx_style_names` once the roles are final, and `_append_pdf_text_paragraph_to_docx`
+  writes `style_name` verbatim.
+  - **The `caption` role is now carried**, as the built-in `Caption` style. `PDF Caption` was
+    never a real style — python-docx raises `KeyError` on it — which is why the previous run
+    recorded carrying it as needing a style definition; it does not, the template already has one.
+    Corpus effect, all four PDF books, `role == "caption"` as `extraction.py` sees it: **19 → 53**,
+    which is exactly the 53 the importer assigns, so nothing is lost across the bridge any more.
+    51 of the 53 are unambiguous figure captions (`FIGURE 2.3. The Corporate Process`,
+    `**Figure 12.** Household debt as a percentage of disposable personal income⁵²`). The two that
+    are not — `Figure 1.1 illustrates the effects of this ‘dust-bowlification’…` and a bare
+    `Figure 8.4.`, both in Money & Sustainability — are the importer's own `_looks_like_caption`
+    misfiring; the carry makes them visible, it does not create them, and per the "no new
+    detector" non-goal they are recorded rather than patched.
+  - **Paragraph topology moved on exactly one book and for the better**: The Value of Everything
+    2293 → 2295, because two figure captions that used to be glued to the following body prose
+    (`**Figure 7.** The marginalist revolution As Lionel Robbins neatly put it, …`) are now split
+    by the caption style boundary. The other three books have byte-identical text streams; every
+    other change on the corpus is `body → caption` on the same text (1 + 2 + 3 + 26).
+  - **`toc_entry` and `footnote` are still not carried, and now say so in code.** `toc_entry` is
+    deferred by the owner pending the four-book run (no built-in style expresses a TOC row).
+    `footnote` is closed: 59 characters across the corpus, absent from two of four books, covering
+    a bare superscript marker rather than a footnote body, and Constitution VII puts footnotes out
+    of the detection scope. Both are named in `_ROLE_DOCX_STYLE` with their reason so the next
+    reader does not "fix" them.
+  - **Anti-regression**: the native DOCX paragraph streams are byte-identical across all five
+    corpus `.docx` files (sha256 per book, before vs after), every rule counter is unchanged, and
+    both golden gates pass **without regeneration**. The four spec 054 prose blocks are still
+    present and still `role=body`.
+  - **Measured, not changed** (`CAPTION_PREFIX_PATTERN`): with `is_likely_caption_text` forced to
+    `False` in every module that reaches it, the four PDF books lose **nothing** — 53 captions and
+    identical paragraph counts — so the text heuristic is fully redundant for the caption role on
+    the PDF path now that the role crosses the bridge. On the native DOCX path it is still
+    load-bearing, but barely: 241 → 240 captions across the five books, one caption in Creating
+    Wealth recovered by `reclassify_adjacent_captions` from an image-adjacent line. The proposal is
+    therefore **keep it** — it is one native caption and a merge guard whose absence is only proven
+    harmless on this corpus — and revisit only if the native path grows a caption signal of its own.
 - **2026-08-05 (experiment run, `feat/055-carry-import-signals`)** — the census was re-taken on
   current code, the signals were carried, the three dead rules were re-measured, and one of the
   three signals was disproved and removed. Result per signal, on all four PDF books:

@@ -1013,7 +1013,12 @@ def _convert_pdf_text_layer_to_docx(*, filename: str, source_bytes: bytes) -> tu
 
 
 def _append_pdf_text_paragraph_to_docx(document, paragraph) -> None:
-    style = _pdf_text_layer_docx_style(paragraph.role, paragraph.heading_level)
+    # The style is the importer's decision, read, not re-derived. `logical_import` stamps
+    # `style_name` from the single role->style table in `_ROLE_DOCX_STYLE` once every role is
+    # final; before spec 055 this function ran a second, poorer map of its own (heading and
+    # list only) and the importer's verdict was discarded unread. An empty `style_name` means
+    # "no style" — python-docx renders that as `Normal`.
+    style = str(getattr(paragraph, "style_name", "") or "").strip() or None
     docx_paragraph = document.add_paragraph(style=style)
     _carry_pdf_paragraph_layout_signals(docx_paragraph, paragraph)
 
@@ -1181,15 +1186,6 @@ def _coerce_image_bytes_for_docx(image_bytes: bytes) -> bytes | None:
             return output.getvalue()
     except Exception:
         return None
-
-
-def _pdf_text_layer_docx_style(role: str, heading_level: int | None) -> str | None:
-    if role == "heading":
-        level = min(max(int(heading_level or 2), 1), 6)
-        return f"Heading {level}"
-    if role == "list":
-        return "List Bullet"
-    return None
 
 
 def _convert_pdf_to_docx_with_optional_text_layer(*, filename: str, source_bytes: bytes) -> tuple[bytes, str]:

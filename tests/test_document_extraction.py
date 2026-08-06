@@ -1334,6 +1334,25 @@ def test_extract_document_content_from_docx_ai_first_hints_caption_after_image_w
     assert paragraphs[1].role_confidence == "heuristic"
 
 
+def test_extract_document_content_from_docx_reads_caption_style_without_a_caption_prefix():
+    # Spec 055 follow-up: the PDF bridge now carries the importer's `caption` role across as
+    # the built-in `Caption` style, so extraction can read a real signal instead of matching
+    # the shape of the text. The text here deliberately carries no "Figure"/"Рис." prefix, so
+    # `CAPTION_PREFIX_PATTERN` cannot reach it and the style is the only evidence.
+    doc = Document()
+    doc.add_paragraph("Ordinary prose sits above the illustration.")
+    doc.add_paragraph("The quiet street where the experiment began", style="Caption")
+    buffer = BytesIO()
+    doc.save(buffer)
+    buffer.seek(0)
+
+    paragraphs, _ = extract_document_content_from_docx(buffer)
+
+    assert [paragraph.role for paragraph in paragraphs] == ["body", "caption"]
+    assert paragraphs[1].role_confidence == "explicit"
+    assert paragraphs[1].heading_level is None
+
+
 def test_extract_document_content_from_docx_keeps_caption_style_after_image_even_when_format_looks_like_heading(tmp_path):
     image_path = tmp_path / "docx_caption_headingish_image.png"
     image_path.write_bytes(PNG_BYTES)
