@@ -100,6 +100,29 @@ _RUSSIAN_PRONOUN_CONTINUATION_START_PATTERN = re.compile(
 )
 _LOWERCASE_START_PATTERN = re.compile(r"^[a-zа-яё]")
 _SENTENCE_TERMINAL_PATTERN = re.compile(r"[.!?…:](?:[)\]»”’'\"])?$")
+# Spec 057: terminal punctuation of a SOURCE paragraph. Read off the input document,
+# never off the translation, and used only to REFUSE a boundary merge the source itself
+# does not authorise.
+#
+# ":" and ";" are deliberately EXCLUDED. `_left_entry_looks_incomplete` (below) treats a
+# trailing colon as evidence of INCOMPLETENESS; admitting ":" here would make the two
+# halves of the same decision contradict each other on the same character. Measured: the
+# one honest repair on Money & Sustainability (p1075+p1076) ends in ";" and survives
+# only because ";" is out.
+#
+# The tail must be UNWRAPPED before the last character is read, because the importer
+# bakes inline markup straight into `ParagraphUnit.text`: `document/extraction.py:1383-1387`
+# writes `***…***` / `**…**` / `*…*` and then `<u>…</u>` / `<sup>…</sup>` / `<sub>…</sub>`
+# around the run. Measured on the real book (1833 paragraphs of Money & Sustainability):
+# 342 paragraph texts END in one of those markers, and "*" is the second most common final
+# character after ".". Reading the raw last character therefore refuses 0 of the 80 merges;
+# unwrapping first refuses 25 — the figure the spec measured. This is not a heuristic: it
+# strips exactly the markup the importer itself added.
+_SOURCE_TERMINAL_PUNCTUATION = ".!?…"
+_SOURCE_TRAILING_CLOSERS = "»”’\"')]}"
+_SOURCE_TRAILING_EMPHASIS_MARKERS = "*_"
+_SOURCE_TRAILING_INLINE_TAGS = ("</u>", "</sup>", "</sub>")
+_SOURCE_TRAILING_TRIM_CHARS = _SOURCE_TRAILING_CLOSERS + _SOURCE_TRAILING_EMPHASIS_MARKERS + " \t\r\n\f\v"
 _TOC_BODY_CONCAT_MARKDOWN_PATTERN = re.compile(
     r"(?:\.{2,}|[\u2024\u2025\u2026\u2027\u2219\u22c5\u00b7]{2,}|\s{2,})\s*[0-9ivxlcdmIVXLCDM]+\s+[А-Яа-яЁёA-Za-z]"
 )
@@ -133,7 +156,7 @@ class QualityIssueSample:
 
 @dataclass(frozen=True)
 class FinalAssemblyDecision:
-    action: Literal["demote_heading", "merge"]
+    action: Literal["demote_heading", "merge", "deny_merge"]
     block_index: int
     paragraph_ids: tuple[str, ...] = ()
     reason: str | None = None
@@ -144,6 +167,7 @@ class FinalAssemblyDiagnostics:
     accepted_merges: int = 0
     denied_merges: int = 0
     protected_boundary_denials: int = 0
+    source_terminal_denials: int = 0
     demoted_false_headings: int = 0
     registry_covered_paragraphs: int = 0
     fallback_paragraphs: int = 0
@@ -170,6 +194,10 @@ class FinalAssemblyEntry:
     merged_paragraph_ids: tuple[str, ...] = ()
     controlled_fallback: bool = False
     controlled_fallback_kind: str | None = None
+    # Spec 057. True/False: the FULL text of the source paragraph this entry ENDS with
+    # does / does not end in terminal punctuation. None: the source paragraph is unknown
+    # (fallback entry, missing paragraph_id, or no source_paragraphs) -- no signal.
+    source_ends_sentence: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -760,6 +788,7 @@ def _normalize_final_entry_list_fragments(entries: Sequence[FinalAssemblyEntry])
             merged_paragraph_ids=entry.merged_paragraph_ids,
             controlled_fallback=entry.controlled_fallback,
             controlled_fallback_kind=entry.controlled_fallback_kind,
+            source_ends_sentence=entry.source_ends_sentence,
         )
 
     for index, entry in enumerate(list(normalized_entries)):
@@ -887,6 +916,7 @@ def _apply_final_entry_post_normalization(entries: Sequence[FinalAssemblyEntry])
                 merged_paragraph_ids=entry.merged_paragraph_ids,
                 controlled_fallback=entry.controlled_fallback,
                 controlled_fallback_kind=entry.controlled_fallback_kind,
+                source_ends_sentence=entry.source_ends_sentence,
             )
         )
     normalized_entries = list(_normalize_final_entry_list_fragments(tuple(normalized_entries)))
@@ -906,6 +936,33 @@ def _coerce_source_paragraph_int(paragraph: object, attribute: str) -> int | Non
 def _coerce_source_paragraph_str(paragraph: object, attribute: str) -> str | None:
     value = getattr(paragraph, attribute, None)
     return value if isinstance(value, str) and value else None
+
+
+def _source_text_ends_sentence(source_text: str | None) -> bool | None:
+    """Spec 057: does the SOURCE paragraph end in terminal punctuation?
+
+    The tail is unwrapped to a fixed point first -- whitespace, closing inline HTML tags,
+    emphasis markers and hanging closing quotes/brackets interleave (`.”*` needs the `*`
+    off before the `”`), so one pass in a fixed order is not enough.
+
+    ``None`` means the source is unknown, or is nothing but markup: a missing signal must
+    not quietly become a new rule (Constitution VII).
+    """
+    if source_text is None:
+        return None
+    trimmed = source_text
+    while True:
+        previous = trimmed
+        trimmed = trimmed.rstrip(_SOURCE_TRAILING_TRIM_CHARS)
+        for tag in _SOURCE_TRAILING_INLINE_TAGS:
+            if trimmed.endswith(tag):
+                trimmed = trimmed[: -len(tag)]
+                break
+        if trimmed == previous:
+            break
+    if not trimmed:
+        return None
+    return trimmed[-1] in _SOURCE_TERMINAL_PUNCTUATION
 
 
 def _build_source_paragraph_lookup(source_paragraphs: Sequence[object] | None) -> dict[str, object]:
@@ -1013,6 +1070,7 @@ def _build_recovery_entry(
         merged_paragraph_ids=_entry_paragraph_ids(entry),
         controlled_fallback=entry.controlled_fallback,
         controlled_fallback_kind=entry.controlled_fallback_kind,
+        source_ends_sentence=entry.source_ends_sentence,
     )
 
 
@@ -1273,14 +1331,19 @@ def _merge_entry_pair(left: FinalAssemblyEntry, right: FinalAssemblyEntry) -> Fi
         merged_paragraph_ids=_merge_paragraph_ids(left, right),
         controlled_fallback=left.controlled_fallback or right.controlled_fallback,
         controlled_fallback_kind=left.controlled_fallback_kind or right.controlled_fallback_kind,
+        # Spec 057: every other field is the LEFT entry's, but the merged entry now ENDS
+        # where the RIGHT one ended, so its source-terminal signal is the RIGHT one's.
+        # Taking the left's here would judge a three-paragraph chain by the source
+        # paragraph two links back.
+        source_ends_sentence=right.source_ends_sentence,
     )
 
 
 def _recover_adjacent_entries(
     entries: Sequence[FinalAssemblyEntry],
-) -> tuple[tuple[FinalAssemblyEntry, ...], int, int, int, int, tuple[FinalAssemblyDecision, ...]]:
+) -> tuple[tuple[FinalAssemblyEntry, ...], int, int, int, int, int, tuple[FinalAssemblyDecision, ...]]:
     if not entries:
-        return (), 0, 0, 0, 0, ()
+        return (), 0, 0, 0, 0, 0, ()
 
     normalized_entries: list[FinalAssemblyEntry] = []
     recovery_decisions: list[FinalAssemblyDecision] = []
@@ -1299,6 +1362,7 @@ def _recover_adjacent_entries(
     accepted_merges = 0
     denied_merges = 0
     protected_boundary_denials = 0
+    source_terminal_denials = 0
 
     for normalized_entry in normalized_entries:
         if not recovered:
@@ -1324,6 +1388,23 @@ def _recover_adjacent_entries(
             continue
 
         if _left_entry_looks_incomplete(previous) and _right_entry_looks_like_continuation(normalized_entry):
+            # Spec 057: both predicates above read the shape of the TRANSLATION. When the
+            # SOURCE paragraph the left entry ends with closes a sentence, the boundary is
+            # the input document's own, not an artefact of generation, and destroying it
+            # is a defect. A False or unknown (None) signal keeps today's behaviour.
+            if previous.source_ends_sentence is True:
+                source_terminal_denials += 1
+                recovery_decisions.append(
+                    FinalAssemblyDecision(
+                        action="deny_merge",
+                        block_index=normalized_entry.block_index,
+                        paragraph_ids=_entry_paragraph_ids(previous) + _entry_paragraph_ids(normalized_entry),
+                        reason="source_boundary_terminal_punctuation",
+                    )
+                )
+                recovered.append(normalized_entry)
+                continue
+
             recovered[-1] = _merge_entry_pair(previous, normalized_entry)
             accepted_merges += 1
             recovery_decisions.append(
@@ -1344,6 +1425,7 @@ def _recover_adjacent_entries(
         accepted_merges,
         denied_merges,
         protected_boundary_denials,
+        source_terminal_denials,
         demoted_false_headings,
         tuple(recovery_decisions),
     )
@@ -1411,6 +1493,9 @@ def assemble_final_markdown(
                         if isinstance(entry.get("controlled_fallback_kind"), str)
                         else None
                     ),
+                    source_ends_sentence=_source_text_ends_sentence(
+                        _coerce_source_paragraph_str(source_paragraph, "text") if source_paragraph is not None else None
+                    ),
                 )
             )
 
@@ -1420,6 +1505,7 @@ def assemble_final_markdown(
         accepted_merges,
         denied_merges,
         protected_boundary_denials,
+        source_terminal_denials,
         demoted_false_headings,
         merge_decisions,
     ) = _recover_adjacent_entries(entries)
@@ -1431,6 +1517,7 @@ def assemble_final_markdown(
         accepted_merges=accepted_merges,
         denied_merges=denied_merges,
         protected_boundary_denials=protected_boundary_denials,
+        source_terminal_denials=source_terminal_denials,
         demoted_false_headings=demoted_false_headings,
         registry_covered_paragraphs=registry_covered_paragraphs,
         fallback_paragraphs=fallback_paragraphs,

@@ -29,7 +29,8 @@
         "text": "## Terra"
       }
     ],
-    "registry_covered_paragraphs": 0
+    "registry_covered_paragraphs": 0,
+    "source_terminal_denials": 0
   },
   "bullet_heading_classification": "markdown_gate",
   "bullet_heading_count": 0,

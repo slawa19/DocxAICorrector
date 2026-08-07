@@ -12,7 +12,8 @@
     "paragraph_count_drift": 0,
     "protected_boundary_denials": 0,
     "recovered_heading_entries": [],
-    "registry_covered_paragraphs": 0
+    "registry_covered_paragraphs": 0,
+    "source_terminal_denials": 0
   },
   "bullet_heading_classification": "markdown_gate",
   "bullet_heading_count": 1,

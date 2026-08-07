@@ -1858,6 +1858,7 @@ def _build_translation_quality_report(
             "accepted_merges": getattr(getattr(assembly_result, "diagnostics", None), "accepted_merges", 0),
             "denied_merges": getattr(getattr(assembly_result, "diagnostics", None), "denied_merges", 0),
             "protected_boundary_denials": getattr(getattr(assembly_result, "diagnostics", None), "protected_boundary_denials", 0),
+            "source_terminal_denials": getattr(getattr(assembly_result, "diagnostics", None), "source_terminal_denials", 0),
             "demoted_false_headings": getattr(getattr(assembly_result, "diagnostics", None), "demoted_false_headings", 0),
             "registry_covered_paragraphs": getattr(getattr(assembly_result, "diagnostics", None), "registry_covered_paragraphs", 0),
             "fallback_paragraphs": getattr(getattr(assembly_result, "diagnostics", None), "fallback_paragraphs", 0),
