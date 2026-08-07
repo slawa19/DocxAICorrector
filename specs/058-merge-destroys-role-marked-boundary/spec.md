@@ -6,12 +6,12 @@
 
 **Date**: 2026-08-07
 
-**Status**: **READY — measured 2026-08-07 on four books, not started.** Every number below is an
-offline census of the four delivered runs of 2026-08-07, cross-read against each run's own
+**Status**: **IN PROGRESS — code landed 2026-08-07, live confirmation outstanding.** The refusal is implemented, reviewed and tested; what is NOT done is the paid four-book before/after that anti-regression 4 asks for (predicted `source_role_denials` = 39, spread 0/20/0/19). Measured 2026-08-07 on four books. Every number below is an offline census of the four delivered runs of 2026-08-07, cross-read against each run's own
 `translation_quality_report.boundary_recovery`.
 
-**Owner surface**: `pipeline/output_validation.py` — `_entry_is_protected_boundary`,
-`_entries_can_participate_in_merge`
+**Owner surface**: `pipeline/output_validation.py` — `_recover_adjacent_entries` (the merge
+acceptance branch), `_entry_has_source_unit_role`, `_SOURCE_UNIT_ROLES`. NOT
+`_entry_is_protected_boundary` — see Decision for why the obvious place is the wrong one.
 
 **Companion**: `specs/057-boundary-recovery-is-product-blind/spec.md` — the same mechanism, the other
 signal. Spec 057 refused merges where the source marks the boundary with **punctuation**; this one is
@@ -54,6 +54,9 @@ And what they were absorbed *into* separates the problem cleanly in two:
 | `image` | `body` | 2 |
 
 ## Half A — a figure caption welded onto the image placeholder. 35 cases, and it is not ambiguous
+
+(`role_confidence` is quoted below as evidence about the SOURCE DATA. It is not available to the
+code — `FinalAssemblyEntry` does not carry the field — and the rule must not grow a condition on it.)
 
 Quoted from the census, `value_of_everything`:
 
