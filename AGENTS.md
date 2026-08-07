@@ -72,7 +72,17 @@ the rule.
   follow-ups, measurements, negative results and decision records: work whose
   scope is already bounded by the finding that prompted it and whose
   verification is a test run. Write `spec.md`; do not write `plan.md` or
-  `tasks.md`. 48 of the repository's 53 specs are this tier.
+  `tasks.md`. The overwhelming majority of specs are this tier — do not quote a
+  number from memory, count it:
+
+  ```bash
+  ls -d specs/*/ | wc -l          # all specs
+  ls specs/*/plan.md | wc -l      # full-cycle tier (the only ones that owe plan.md)
+  ```
+
+  On 2026-08-07 that was 58 and 5, i.e. 53 spec-only. The constitution's "48 of 53"
+  (`.specify/memory/constitution.md:105-106`) is the count as it stood at
+  ratification on 2026-08-03, not a live figure.
 - **Spec → Plan → Tasks → Implement — the full cycle.** Required when the work
   introduces a new module or a new contract, spans several modules whose order
   of change matters, or has design alternatives worth arguing about before
@@ -216,6 +226,41 @@ source .venv/bin/activate && pytest tests/ -q
 - Проверено 2026-08-03: потеря вывода на границе WSL→MSYS **не воспроизводится** (800 строк и реальный pytest-прогон проходят целиком без маркеров). Поэтому echo-маркеры — реакция на реальный обрыв, а не обязательный ритуал в каждой команде.
 - Type-checkers (pyright) работают 40–120 секунд: используйте async-режим и ожидание, пустой вывод ≠ зависание. При синхронном запуске ставьте timeout ≥ 180000 мс.
 
+## Независимое ревью крупных пачек
+
+После крупной пачки работ — не после каждой задачи — диапазон коммитов отдаётся на независимое ревью
+в локально установленный Codex: он ходит другой моделью и видит то, чего не видит внутренний цикл.
+Практика применяется постоянно, но до 2026-08-07 в этом файле её не было.
+
+- **Оно окупается.** Замерено 2026-08-01: шесть настоящих замечаний в работе, уже прошедшей три
+  внутренних адверсариальных круга, включая функциональный дефект — эвристика оглавления защищала
+  короткую прозу, а анти-регрессионный тест на это проходил вакуумно. См.
+  `docs/WHERE_WE_ARE.md`, раздел «Независимое ревью крупных пачек».
+- **Оно ловит то, чего не ловит гард.** Статус спеки 055 двое суток утверждал «не начато» при уже
+  влитой и замеренной работе; нашло это независимое ревью, а не тест. Спека 056 повторила ту же
+  историю двумя днями позже.
+- **Каждую находку проверяйте сами перед исправлением.** Из тех шести одна оказалась слабее
+  заявленного, а первая попытка исправить главную завела в репозиторий словарь слов и нарушила
+  Конституцию VII; правку пришлось упрощать обратно.
+- **Внешнее ревью читает код, но мерить не может** — у него нет доступа к WSL и к прогонам. Все числа
+  даёт оператор. Рабочая форма ответа — таблица «поднято / вердикт / замерено на книге»; образец в
+  `specs/057-boundary-recovery-is-product-blind/spec.md`, раздел «Known limits of the rule».
+- **Находка обязана куда-то приземлиться**, и «просто починил» в этот список не входит:
+  - гард-тест, который не даст дефекту вернуться (`tests/test_agent_contract_consistency.py`,
+    `tests/test_where_we_are_freshness.py`, `tests/test_spec_status_consistency.py`);
+  - запись в `## Changelog` затронутой спеки;
+  - отдельная remediation-спека под `specs/<NNN>-<slug>/`, когда находок пачка — ревью-раунды 3–12
+    закрыты спеками 036–043 и 051;
+  - записанный ОТКАЗ с причиной: отклонённое предложение фиксируется в `## Non-goals` спеки, иначе оно
+    возвращается — tagged-PDF предлагался четыре раза, см. раздел `## Non-goals` в
+    `specs/055-pdf-docx-bridge-signal-loss/spec.md`.
+- Отчёт ревью не является каноническим source of truth репозитория — правило в `docs/reviews/README.md`.
+- Не путайте с ролью оркестратора: `docs/codex-orchestrator-rule.md` описывает Codex, управляющий
+  субагентами, со Strict Gate на изменения файлов. Это другая задача.
+
+Чего в репозитории НЕТ и что поэтому здесь не описано: команды запуска Codex, способа передать ему
+диапазон коммитов, порога «крупная пачка» и места, куда класть его отчёт. Если заведёте — впишите сюда.
+
 ## PowerShell: когда допустим
 
 Только для read-only Windows-side диагностики: посчитать метрики по файлам, быстро осмотреть workspace без запуска project runtime, обойти нестабильный capture. **Для тестов, runtime-импортов и любой финальной верификации WSL-first contract не отменяется.**
@@ -276,13 +321,19 @@ source .venv/bin/activate && pytest tests/ -q
 - Предлагать full-book прогон как очередной шаг отладки. Full-book — это milestone, а не tuning loop; правила в Workstream F continuation plan.
 - Связывать в один slice независимые failing checks с разными root-cause classes (например bullets + unmapped fragments + index region). Каждый класс — отдельный mini-plan.
 
-Если задача попадает на одну из этих ситуаций, агент должен сначала вернуться к discovery gate в разделе 5.0.1 continuation plan и собрать evidence, и только потом продолжать.
-
-Полный список false directions и условия их отклонения — в разделе `## 11. False Direction Guard` continuation plan.
+**Про «continuation plan», на который ссылается этот раздел.** Документ не назывался ни разу, и
+единственный, где есть все три якоря (`5.0.1`, `## 11. False Direction Guard`, Workstream F), — это
+`docs/archive/specs/STRUCTURE_RECOGNITION_COMPLETION_PLAN_2026-05-14.md`, про который раздел выше
+говорит: документ архивный, расхождение с ним ничего не значит. Требовать сверки с документом, который
+тут же объявлен незначащим, нельзя — эти три ссылки были самопротиворечием и с 2026-08-07 не являются
+обязательными. Они оставлены как **исторический указатель**: там записано, какие направления уже
+пробовали и почему отклонили, и это полезно прочитать — но источником правил служит свежий run report,
+а не архив.
 
 ## Streamlit Layout Contract
 
-- Для проблем с растянутой шириной, отступами и компоновкой сначала используйте нативные примитивы Streamlit: `st.set_page_config`, `st.columns`, `st.container`, `st.sidebar`, `use_container_width`.
+- Для проблем с растянутой шириной, отступами и компоновкой сначала используйте нативные примитивы Streamlit: `st.set_page_config`, `st.columns`, `st.container`, `st.sidebar`, `width=`.
+- **`use_container_width` в новом коде не писать.** В установленном Streamlit 1.57.0 параметр помечен deprecated и будет удалён (`.venv/lib/python3.12/site-packages/streamlit/elements/arrow.py:622-624`, предупреждение — `:910-911`). Замена ровно такая: `use_container_width=True` → `width="stretch"`, `use_container_width=False` → `width="content"`. До 2026-08-07 этот раздел рекомендовал обратное.
 - Если пользователь явно просит без кастомных стилей, не решайте задачу через CSS-селекторы по DOM Streamlit; сначала меняйте layout-композицию штатными средствами Streamlit.
 - Для UI/layout-проверки Streamlit используйте встроенный browser-editor/integrated browser как основной способ верификации результата.
 - Не прогоняйте полный pytest suite по умолчанию после CSS-only или layout-only правок; для таких изменений сначала достаточно браузерной проверки и точечных тестов только если затронута Python-логика.
