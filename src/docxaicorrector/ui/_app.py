@@ -101,7 +101,12 @@ from docxaicorrector.ui._ui import (
     render_run_log,
     render_sidebar,
 )
-from docxaicorrector.runtime.workflow_state import IdleViewState, ProcessingOutcome, has_restartable_outcome
+from docxaicorrector.runtime.workflow_state import (
+    IdleViewState,
+    ProcessingOutcome,
+    has_restartable_outcome,
+    preparation_start_discards_delivered_result,
+)
 
 PERSISTED_SOURCE_TTL_SECONDS = 12 * 60 * 60
 APP_READY_FRESHNESS_WINDOW_SECONDS = 15.0
@@ -703,6 +708,31 @@ def _render_completed_result_view(result: Mapping[str, object]) -> None:
     )
 
 
+def _render_preparation_discard_confirmation(*, result: Mapping[str, object]) -> bool:
+    """Ask before a preparation start throws the delivered result away; True == confirmed.
+
+    ``start_background_preparation`` begins with an unconditional
+    ``reset_run_state(keep_restart_source=False)``, so re-preparing the SAME source after a
+    finished run destroys a paid result the user may not have downloaded yet, with no undo.
+    The old result is NOT carried across the new run — that would present stale output as
+    current — so the remedy is the click, not preservation.
+
+    While the prompt is up the result stays rendered underneath it, so the download is still
+    reachable and the user can also simply restore the setting they changed.
+    """
+    st.warning(t("app.preparation_discards_result_warning"))
+    if st.button(
+        t("app.preparation_discards_result_confirm"),
+        use_container_width=True,
+        key="confirm_preparation_discards_result",
+    ):
+        return True
+    render_run_log()
+    render_image_validation_summary()
+    _render_completed_result_view(result)
+    return False
+
+
 def _select_current_result_for_source(
     current_result: Mapping[str, object] | None,
     *,
@@ -847,8 +877,14 @@ def main() -> None:
             source_language=source_language,
             target_language=target_language,
         )
-        prepared_run_context = get_prepared_run_context_for_marker(preparation_request_marker)
         if should_start_preparation_for_marker(preparation_request_marker):
+            if current_result is not None and preparation_start_discards_delivered_result(
+                current_result=current_result,
+                uploaded_file_token=str(getattr(uploaded_widget_payload, "file_token", "")),
+            ):
+                if not _render_preparation_discard_confirmation(result=current_result):
+                    _finalize_app_frame()
+                    return
             _start_background_preparation(
                 uploaded_payload=uploaded_widget_payload,
                 upload_marker=preparation_request_marker,
