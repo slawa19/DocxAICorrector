@@ -97,7 +97,6 @@ from docxaicorrector.ui._ui import (
     render_markdown_preview,
     render_partial_result,
     render_preparation_summary,
-    render_result,
     render_result_bundle,
     render_run_log,
     render_sidebar,

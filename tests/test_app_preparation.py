@@ -1113,7 +1113,6 @@ def test_main_ignores_stale_completed_result_for_different_uploaded_file(monkeyp
     monkeypatch.setattr(app, "render_image_validation_summary", lambda *args, **kwargs: None)
     monkeypatch.setattr(app, "_render_processing_controls", lambda **kwargs: None)
     monkeypatch.setattr(app, "render_markdown_preview", lambda *args, **kwargs: result_bundle_calls.append("markdown_preview"))
-    monkeypatch.setattr(app, "render_result", lambda *args, **kwargs: result_bundle_calls.append((args, kwargs)))
     monkeypatch.setattr(app, "render_result_bundle", lambda **kwargs: result_bundle_calls.append(kwargs))
     monkeypatch.setattr(application_flow, "resolve_effective_uploaded_file", lambda **kwargs: uploaded_file)
     monkeypatch.setattr(application_flow, "has_resettable_state", lambda **kwargs: False)
