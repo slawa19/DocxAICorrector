@@ -117,12 +117,20 @@ _SENTENCE_TERMINAL_PATTERN = re.compile(r"[.!?…:](?:[)\]»”’'\"])?$")
 # 342 paragraph texts END in one of those markers, and "*" is the second most common final
 # character after ".". Reading the raw last character therefore refuses 0 of the 80 merges;
 # unwrapping first refuses 25 — the figure the spec measured. This is not a heuristic: it
-# strips exactly the markup the importer itself added.
+# strips exactly the markup the importer itself added — and NOTHING ELSE, which is why "_"
+# is absent below: markdown's other emphasis delimiter, which no importer path emits.
+# Stripping it would be reconstructing markup from the shape of the text, and it earns
+# nothing: with "_" in or out, the same 25 pairs are refused on the measured book.
+#
+# Known limit, recorded rather than guessed at: the terminal alphabet is Latin/Cyrillic
+# punctuation. A source ending in a CJK "。" reads as False, so the merge proceeds as it
+# does today. That is the conservative direction — the rule under-fires on a corpus it has
+# never seen rather than refusing a boundary it cannot judge.
 _SOURCE_TERMINAL_PUNCTUATION = ".!?…"
 _SOURCE_TRAILING_CLOSERS = "»”’\"')]}"
-_SOURCE_TRAILING_EMPHASIS_MARKERS = "*_"
+_SOURCE_TRAILING_EMPHASIS_MARKERS = "*"
 _SOURCE_TRAILING_INLINE_TAGS = ("</u>", "</sup>", "</sub>")
-_SOURCE_TRAILING_TRIM_CHARS = _SOURCE_TRAILING_CLOSERS + _SOURCE_TRAILING_EMPHASIS_MARKERS + " \t\r\n\f\v"
+_SOURCE_TRAILING_TRIM_CHARS = _SOURCE_TRAILING_CLOSERS + _SOURCE_TRAILING_EMPHASIS_MARKERS
 _TOC_BODY_CONCAT_MARKDOWN_PATTERN = re.compile(
     r"(?:\.{2,}|[\u2024\u2025\u2026\u2027\u2219\u22c5\u00b7]{2,}|\s{2,})\s*[0-9ivxlcdmIVXLCDM]+\s+[А-Яа-яЁёA-Za-z]"
 )
@@ -945,6 +953,12 @@ def _source_text_ends_sentence(source_text: str | None) -> bool | None:
     emphasis markers and hanging closing quotes/brackets interleave (`.”*` needs the `*`
     off before the `”`), so one pass in a fixed order is not enough.
 
+    Whitespace is stripped with a bare ``rstrip()``, which is Unicode-aware. The importer
+    keeps a run's trailing whitespace OUTSIDE the emphasis markers it adds
+    (``document/extraction.py:1378-1379``), and that whitespace can be a NBSP, so an
+    ASCII-only trim would read ``**Complete.** `` as not ending a sentence and destroy
+    a real boundary.
+
     ``None`` means the source is unknown, or is nothing but markup: a missing signal must
     not quietly become a new rule (Constitution VII).
     """
@@ -953,7 +967,7 @@ def _source_text_ends_sentence(source_text: str | None) -> bool | None:
     trimmed = source_text
     while True:
         previous = trimmed
-        trimmed = trimmed.rstrip(_SOURCE_TRAILING_TRIM_CHARS)
+        trimmed = trimmed.rstrip().rstrip(_SOURCE_TRAILING_TRIM_CHARS).rstrip()
         for tag in _SOURCE_TRAILING_INLINE_TAGS:
             if trimmed.endswith(tag):
                 trimmed = trimmed[: -len(tag)]
