@@ -144,9 +144,20 @@ arrives `body` while `Ivo ŠLAU S`, the neighbouring line of the same signature 
 
 ## Anti-regression
 
-1. **The narration keeps its joins — by construction.** The audiobook join is a different function on
-   a different input, so no change here can reach it, and no paid re-run is owed to prove it. If a run
-   happens anyway, `joined_sentence_continuation_count` must be *unchanged*, not merely non-decreasing.
+1. **The narration keeps its joins — in every configuration this project runs, but NOT "by
+   construction".** That claim was made twice in this spec and an independent review disproved it.
+   Standalone `audiobook` is genuinely isolated: it joins `state.narration_chunks`. But `translate`
+   has a live bridge — `assemble_final_markdown` entries become the `formatting_registry` passed to
+   reader cleanup (`late_phases.py:790`), reader cleanup returns them as
+   `final_generated_paragraph_registry` (`:811`), that lands in `docx_phase` (`:817`), reaches
+   `_build_narration_text` (`:1080`), and with reader cleanup ON the narration is projected from it
+   (`narration_postprocess.py:150-165`). So under `processing_operation=translate` **and**
+   `reader_cleanup_enabled` **and** `reader_cleanup_policy != off` **and** audiobook post-process, a
+   refusal here changes the narration's INPUT.
+   The gate is closed today — reader cleanup is off by default and every run in this corpus used a
+   `no-cleanup` profile — and the downstream effect is most likely benign, because the narration then
+   applies its OWN join to the two chunks. But "cannot reach it" was wrong, and if reader cleanup is
+   ever switched on, `joined_sentence_continuation_count` must be checked, not assumed.
 2. **The rule is not disabled, only narrowed.** `denied_merges` (761) and
    `protected_boundary_denials` (575) must not collapse — the rule already refuses far more often than
    it accepts, and a change that makes it refuse everything is not a fix.
@@ -259,6 +270,28 @@ their own continuation («One popular definition of insanity comes to mind:» + 
 - **Side finding, opposite sign, not part of this work:** four table-of-contents rows («Глава VI»–«IX»,
   document paragraphs 28/30/32/34) carry `Heading 1`. Extraction demotes I–V to `toc_entry` and stops.
   Four touches, one book.
+
+## Known limits of the rule, found by independent review and measured
+
+An independent read of the merged code (Codex, read-only, no ability to measure) raised four points.
+All four were then measured by the orchestrator on the 1383 source paragraphs of the run.
+
+| raised | verdict | measured on the book |
+|---|---|---|
+| the narration IS reachable in `translate` + reader cleanup | **correct, spec was wrong** | see anti-regression 1 |
+| ASCII-only whitespace trim misses a trailing NBSP | **correct, latent** | 0 of 1383 paragraphs affected; fixed anyway |
+| stripping `_` is not justified by the importer's markup | **correct** | contributes 0 refusals; `_` removed |
+| the terminal alphabet has no CJK `。` | **correct, out of scope** | the rule under-fires, which is the safe direction |
+
+Two limits are deliberate and recorded rather than fixed:
+
+- **A trailing footnote marker is not unwrapped.** `unabated.<sup>28</sup>` peels to `unabated.<sup>28`
+  and reads as False. The `28` is *text*, not markup; removing it to manufacture a boundary signal is
+  exactly what Constitution VII forbids. Moot on this corpus: **0 of 1383** source paragraphs carry an
+  inline tag at all — the PDF bridge never sets the run properties that produce them.
+- **A literal asterisk is indistinguishable from an emphasis marker.** `Pattern: .*` would peel to
+  `Pattern: .` and refuse a merge that should have happened. On this book 5 paragraphs carry an odd
+  number of `*`, all of them `* * *` dividers or OCR noise, none a left half of any pair.
 
 ## Changelog
 

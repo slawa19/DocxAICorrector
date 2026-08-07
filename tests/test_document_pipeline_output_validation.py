@@ -1472,6 +1472,56 @@ def test_assemble_final_markdown_source_terminal_refusal_does_not_deny_every_mer
     )
 
 
+def test_assemble_final_markdown_refuses_merge_when_source_tail_is_a_closing_inline_tag():
+    # Spec 057, gap found by independent review: the importer also emits <u>/<sup>/<sub>
+    # (document/extraction.py:1388-1393) and NO test covered them -- deleting the inline-tag
+    # branch left all eight earlier tests green.
+    #
+    # The shape here is the one the branch can actually handle: the importer wraps a WHOLE
+    # run, so the closing tag sits directly behind the full stop. A trailing footnote marker
+    # (`unabated.<sup>28</sup>`) is deliberately NOT handled -- the `28` is text, not markup,
+    # and peeling it off would be removing content to manufacture a signal. On the measured
+    # book the question is moot: zero of 1383 source paragraphs carry an inline tag at all,
+    # because the PDF bridge does not set the run properties that produce them.
+    result = document_pipeline_output_validation.assemble_final_markdown(
+        processed_chunks=["<u>Ресурсы истощаются.</u>\n\nи это продолжается"],
+        generated_paragraph_registry=[
+            {"block_index": 1, "paragraph_id": "tag-left", "text": "<u>Ресурсы истощаются.</u>"},
+            {"block_index": 1, "paragraph_id": "tag-right", "text": "и это продолжается"},
+        ],
+        source_paragraphs=[
+            _make_paragraph_stub("tag-left", 0, text="<u>Resource depletion continues unabated.</u>"),
+            _make_paragraph_stub("tag-right", 1, text="and it goes on"),
+        ],
+    )
+
+    assert result.final_markdown == "<u>Ресурсы истощаются.</u>\n\nи это продолжается"
+    assert result.diagnostics.accepted_merges == 0
+    assert result.diagnostics.source_terminal_denials == 1
+
+
+def test_assemble_final_markdown_refuses_merge_when_source_tail_is_non_ascii_whitespace():
+    # Spec 057, gap found by independent review: the importer keeps a run's trailing
+    # whitespace OUTSIDE the emphasis markers (document/extraction.py:1378-1379), and that
+    # whitespace can be a NBSP. An ASCII-only trim reads this as "no terminal punctuation"
+    # and destroys a real boundary.
+    result = document_pipeline_output_validation.assemble_final_markdown(
+        processed_chunks=["**Завершено.** \n\nи далее по тексту"],
+        generated_paragraph_registry=[
+            {"block_index": 1, "paragraph_id": "nbsp-left", "text": "**Завершено.** "},
+            {"block_index": 1, "paragraph_id": "nbsp-right", "text": "и далее по тексту"},
+        ],
+        source_paragraphs=[
+            # The tail is U+00A0, built in code because a literal NBSP is invisible here.
+            _make_paragraph_stub("nbsp-left", 0, text="**Complete.**" + chr(0x00A0)),
+            _make_paragraph_stub("nbsp-right", 1, text="and onward"),
+        ],
+    )
+
+    assert result.diagnostics.accepted_merges == 0
+    assert result.diagnostics.source_terminal_denials == 1
+
+
 def test_assemble_final_markdown_preserves_index_page_reference_fragment_boundary():
     result = document_pipeline_output_validation.assemble_final_markdown(
         processed_chunks=["Local Capital Project, 128– 130\n\n179– 180"],
