@@ -69,3 +69,18 @@ benchmark_projects/translation_quality_benchmark/artifacts/**
 /search_result.txt
 /wsl_out.txt
 /.pyright_errors.txt
+
+# Run artifacts: keep only what a human reads.
+# The eyes-on material (comparison_paragraphs.md, manual_edit_classes.md, comparison.md,
+# final_package.md, excluded_blocks.md, validator_review_data.md, run summaries) is the
+# reason artifacts/ is tracked at all — it is what a verdict gets read from, and it is
+# small. The machine-readable dumps beside it are not: one paragraph-pair file is 2 MB,
+# and four books of them outweigh the entire repository. They stay on disk next to the
+# run that produced them.
+artifacts/**/all_paragraph_pairs.jsonl
+artifacts/**/source_blocks_with_narration_decision.json
+artifacts/**/mechanical_checks.json
+artifacts/**/*.tts.txt
+artifacts/**/*.docx
+artifacts/**/*_ru_literary_edit.md
+artifacts/**/validator_review_data.json
