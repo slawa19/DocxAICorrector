@@ -6,7 +6,6 @@ import inspect
 import docxaicorrector.ui._app as app
 import docxaicorrector.ui._ui as result_ui
 import docxaicorrector.ui.application_flow as application_flow
-import docxaicorrector.ui.compare_panel as compare_panel
 import docxaicorrector.processing.processing_runtime as processing_runtime
 from docxaicorrector.core.constants import MAX_DOCX_ARCHIVE_SIZE_BYTES
 from conftest import SessionState as SessionState
@@ -272,7 +271,6 @@ def test_main_hides_preparation_summary_for_restartable_outcome(monkeypatch, out
     monkeypatch.setattr(app, "render_image_validation_summary", lambda *args, **kwargs: None)
     monkeypatch.setattr(app, "_render_processing_controls", lambda **kwargs: None)
     monkeypatch.setattr(app, "set_processing_status", lambda **kwargs: status_calls.append(kwargs))
-    monkeypatch.setattr(compare_panel, "render_compare_all_apply_panel", lambda **kwargs: None)
     monkeypatch.setattr(application_flow, "resolve_effective_uploaded_file", lambda **kwargs: uploaded_file)
     monkeypatch.setattr(application_flow, "has_resettable_state", lambda **kwargs: False)
     monkeypatch.setattr(application_flow, "derive_app_idle_view_state", lambda **kwargs: "file_selected")

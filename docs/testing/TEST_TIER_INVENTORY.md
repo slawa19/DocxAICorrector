@@ -83,7 +83,6 @@ This inventory is intentionally pragmatic:
 
 ## Compat-Legacy
 
-- `tests/test_compare_panel.py`
 - `tests/test_root_shim_identity_aliases.py`
 
 ## Static-Workflow

@@ -15,7 +15,6 @@ st.set_page_config(
 
 from docxaicorrector.core.constants import APP_READY_PATH, MAX_DOCX_ARCHIVE_SIZE_BYTES
 import docxaicorrector.ui.application_flow as application_flow
-import docxaicorrector.ui.compare_panel as compare_panel
 from docxaicorrector.chapter_workflow.service import build_document_context_prompt as build_chapter_workflow_document_context_prompt
 from docxaicorrector.ui.recommended_text_settings import (
     ManualTextSettingsOverride,
@@ -56,7 +55,6 @@ from docxaicorrector.runtime.state import (
     clear_preparation_failure,
     get_latest_preparation_summary,
     get_manual_text_settings_override_for_token,
-    get_latest_image_mode,
     get_recommended_text_settings_applied_for_token,
     get_recommended_text_settings_applied_snapshot,
     get_recommended_text_settings_notice_details,
@@ -1044,11 +1042,6 @@ def main() -> None:
     render_run_log()
     render_image_validation_summary()
     render_partial_result()
-
-    compare_panel.render_compare_all_apply_panel(
-        latest_image_mode=get_latest_image_mode(),
-        image_assets=cast(list[object], st.session_state.get("image_assets", [])),
-    )
 
     if selected_result is not None:
         _render_completed_result_view(selected_result)

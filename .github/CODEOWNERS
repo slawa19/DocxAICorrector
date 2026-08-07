@@ -32,7 +32,6 @@
 /src/docxaicorrector/ui/_ui.py @slawa19
 /src/docxaicorrector/ui/app_runtime.py @slawa19
 /src/docxaicorrector/ui/application_flow.py @slawa19
-/src/docxaicorrector/ui/compare_panel.py @slawa19
 /.streamlit/config.toml @slawa19
 /docs/WORKFLOW_AND_IMAGE_MODES.md @slawa19
 /docs/STARTUP_PERFORMANCE_CONTRACT.md @slawa19
