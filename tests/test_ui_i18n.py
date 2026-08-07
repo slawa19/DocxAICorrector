@@ -30,10 +30,29 @@ def test_default_lookup_returns_ru_value() -> None:
     assert i18n.t("sidebar.settings_header") == "Настройки"
 
 
-def test_fallback_to_ru_when_key_missing_in_en(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_fallback_to_ru_when_key_missing_in_en(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The ru fallback is exercised on synthetic catalogs, not on the shipped ones.
+
+    Pinning this path to a key the delivered ``en.json`` happens to be missing made the
+    catalog a hostage: finishing the English translation would have turned the build
+    red. The lookup order is a property of :func:`i18n.t`, so it is proven here on
+    catalogs this test owns, and ``en.json`` is free to reach parity with ``ru``.
+    """
+    (tmp_path / "ru.json").write_text(
+        json.dumps({"synthetic.only_in_ru": "Только в ru", "synthetic.in_both": "РУ"}),
+        encoding="utf-8",
+    )
+    (tmp_path / "en.json").write_text(
+        json.dumps({"synthetic.in_both": "EN"}), encoding="utf-8"
+    )
+    monkeypatch.setattr(i18n, "_LOCALES_DIR", tmp_path)
+    i18n.clear_catalog_cache()
     _force_language(monkeypatch, "en")
-    # sidebar.model_label is intentionally absent from en.json.
-    assert i18n.t("sidebar.model_label") == "Модель"
+
+    assert i18n.t("synthetic.in_both") == "EN"
+    assert i18n.t("synthetic.only_in_ru") == "Только в ru"
 
 
 def test_english_value_used_when_present(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -96,9 +115,11 @@ def test_ru_is_superset_of_referenced_and_en_keys() -> None:
     }
     assert referenced <= set(ru)
     # ru is the complete default: it must contain every key that en defines.
+    # The other direction is deliberately left free. en may stay partial (t() falls
+    # back to ru) and en may also reach full parity; requiring it to stay partial
+    # forbade finishing the translation. The fallback path is covered by
+    # test_fallback_to_ru_when_key_missing_in_en on catalogs that test owns.
     assert set(en) <= set(ru)
-    # And en must be genuinely partial to exercise the fallback path.
-    assert set(ru) - set(en)
 
 
 @pytest.mark.parametrize("lang", ["ru", "en"])
