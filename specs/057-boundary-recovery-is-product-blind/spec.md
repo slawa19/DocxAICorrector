@@ -6,8 +6,10 @@
 
 **Date**: 2026-08-07
 
-**Status**: **READY — measured 2026-08-07, not started.** Everything below is measured on the
-`20260806T_fin2_money_translate` run and re-verified against the delivered DOCX by the orchestrator.
+**Status**: **IN PROGRESS — code landed 2026-08-07, live confirmation outstanding.** The refusal is
+implemented and tested; what is NOT done is the paid before/after run that anti-regression 3 asks for.
+Everything measured below is from the `20260806T_fin2_money_translate` run, re-verified against the
+delivered DOCX by the orchestrator.
 
 **Owner surface**: `pipeline/output_validation.py` — `_recover_adjacent_entries`,
 `_left_entry_looks_incomplete`, `_right_entry_looks_like_continuation`, `_entry_is_protected_boundary`
@@ -159,6 +161,45 @@ arrives `body` while `Ivo ŠLAU S`, the neighbouring line of the same signature 
 4. **No text is lost.** Real loss is zero today and must stay zero: the character sequence of the
    document, whitespace-stripped, does not change.
 
+## What implementation found that this spec did not foresee
+
+**The rule as this spec wrote it refuses NOTHING.** `document/extraction.py:1383-1387` bakes inline
+markup straight into `ParagraphUnit.text` — `***…***` / `**…**` / `*…*`, then `<u>`, `<sup>`, `<sub>`
+— so a source paragraph does not end in a full stop, it ends in an asterisk. Measured twice
+independently, on the 80 pairs of this run:
+
+| tail test on the source paragraph | refusals of 80 |
+|---|---|
+| last character in `.!?…` | **0** |
+| after stripping hanging closing quotes and brackets | **0** |
+| after also unwrapping trailing emphasis markers and inline tags | **25** |
+
+The spec's 25 is reachable only through the third row. The unwrap is not a heuristic — it removes
+exactly the markup the importer itself added — but it had to be found before the fix could do
+anything, and a test that fails without it is committed alongside
+(`refuses_merge_when_source_terminal_mark_is_wrapped_in_emphasis_markers`; verified by mutation to
+fail when the unwrap is removed, and only it).
+
+**Three of this spec's own figures were wrong.**
+
+- **63 / 143 is off by one.** The visible census is 62 targets absorbing 142 sources; adding the two
+  merges whose target itself failed to map (`p0964+p0965` → docx#914, `p1345+p1346` → docx#1270) gives
+  **64 / 146**, and 146 − 64 = **82** = `accepted_merges` with no residue. The derived 80 was right.
+- **"Nine of the 80 are headings" conflates two counts.** By source role, **six** of the 80 absorbed
+  paragraphs are `heading`. The nine are `demoted_false_headings`, a different set.
+- **There were two honest repairs, not one.** Besides `p1075+p1076`, `p0322+p0323` is a quotation
+  genuinely torn across two source paragraphs — the closing `”` lives in the right half. The rule
+  refuses it. That is a real, accepted cost, not a case the source failed to signal.
+
+**What the fix does not reach.** `docx#61` — the five-paragraph signature block this spec leads with —
+**stays merged**. Those lines carry no terminal punctuation at all, so the source says nothing about
+their boundaries. Of the two defects quoted at the top, the rule repairs `docx#205` (the subheading
+welded to its epigraph, both boundaries refused) and leaves `docx#61` untouched.
+
+**And `p1075+p1076` confirms the choice to exclude `:` and `;`.** The one repair the spec named ends
+in `;`. Admitting `;` would destroy it, along with five correct merges that are colon lead-ins to
+their own continuation («One popular definition of insanity comes to mind:» + the definition).
+
 ## What is not established
 
 - **Only one book has ever been run in document mode.** Whether 80 merges per book generalises is
@@ -175,6 +216,16 @@ arrives `body` while `Ivo ŠLAU S`, the neighbouring line of the same signature 
 
 ## Changelog
 
+- **2026-08-07 (implementation)** — the refusal landed in `_recover_adjacent_entries`, keyed on a new
+  `FinalAssemblyEntry.source_ends_sentence` filled from `ParagraphUnit.text` at the one construction
+  site where the source paragraph is already resolved. Counted separately as `source_terminal_denials`
+  so `denied_merges` stays comparable. A merged entry inherits the RIGHT half's signal — taking the
+  left's would judge a chain by the paragraph two links back. Eight tests, all through the public
+  `assemble_final_markdown`. Three mutations confirmed the tests have teeth: removing the emphasis
+  unwrap fails exactly the two markup tests; making the rule always refuse fails the anti-vacuum test;
+  inheriting the left's signal fails exactly the chain test. Status stays OPEN: the paid before/after
+  run of anti-regression 3 has not been done, and this pipeline has twice shipped a defect that
+  survived to a live run under a green test on flat paragraphs.
 - **2026-08-07 (same day, before merge)** — the spec's own headline claim retracted after the
   orchestrator read the two call graphs: it is **not** one function serving both products. The
   narration join is `_join_narration_sentence_continuations` in `generation/_generation.py`, PR #46
