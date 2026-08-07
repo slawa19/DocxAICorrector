@@ -97,17 +97,48 @@ the shape of the text — the exact move Constitution VII forbids and spec 057 w
 
 **Implement Half A only. Record Half B, do not build it here.**
 
-1. An entry whose **source role is `image`** is a protected boundary. Nothing merges into it and it
-   merges into nothing.
-2. An entry whose **source role is `caption`** is a protected boundary, for the same reason: the source
-   states it is a unit.
+Refuse the merge when either side's **source role** is `image` or `caption`. Both are properties of
+the input document, already carried on the entry (`FinalAssemblyEntry.role` / `structural_role`,
+filled from `ParagraphUnit`). No word list, no threshold, no per-book literal, nothing read off the
+translation.
 
-Both are properties of the input document, already carried on the entry (`FinalAssemblyEntry.role` /
-`structural_role`, filled from `ParagraphUnit`). No word list, no threshold, no per-book literal, and
-nothing read off the translation.
+**Where the refusal goes matters, and the obvious place is the wrong one.** The first draft of this
+spec said "add the roles to `_entry_is_protected_boundary`". An independent review disproved that, and
+the code confirms it on two counts:
 
-Half B is handed to a future spec against the **import** stage: the level-3 heading role is being given
-to table cells and signature lines, and that is where it must be fixed. This spec does not touch it.
+- **The protection is bypassable.** `_entries_match_allowed_protected_merge:1283` returns True
+  unconditionally when either side carries `generated_heading_kind == "false_fragment_heading"`. A
+  caption demoted a moment earlier walks straight through any protection added to
+  `_entry_is_protected_boundary`. This is the same demotion that strips protection from real headings
+  in Half B.
+- **The counter would measure the wrong thing.** `protected_boundary_denials` is incremented at the
+  eligibility gate (`:1394`), *before* `_left_entry_looks_incomplete` /
+  `_right_entry_looks_like_continuation` are ever consulted. A counter there counts every adjacency
+  involving a caption or an image — not the merges actually prevented — and could never be compared
+  with the 39 predicted below.
+
+So the refusal goes at the **same choke point spec 057 already proved**, immediately before
+`_merge_entry_pair`, after both shape predicates have fired. Nothing can bypass it, and the counter
+means "boundaries saved". The order inside that branch is fixed and the counters are mutually
+exclusive:
+
+```
+translation predicates satisfied
+  → source-terminal refusal (spec 057)   → source_terminal_denials
+  → source role is image or caption      → source_role_denials
+  → merge                                → accepted_merges
+```
+
+Terminal first, so spec 057's confirmed counter keeps its meaning and no pair lands in two counters.
+Measured: exactly one pair on the corpus (`p0242+p0243`) is caught by both.
+
+Half B is handed to a future spec. It is **two** defects, not one, and only the first is the
+importer's: the level-3 heading role is given to table cells and signature lines at import; and,
+separately, this assembler is allowed to override a genuine source heading on continuation context
+(`:663`), turn it into a `false_fragment_heading` (`:1156`), and merge it (`:1283`). The four real
+section headings among the 32 are destroyed by that second path, not by the importer. Cleaning the
+import signal first, then deciding whether a trustworthy source heading may be demoted at all, is the
+right order. This spec touches neither.
 
 ## Anti-vacuum, done BEFORE the rule was written
 
@@ -127,7 +158,12 @@ books was classified by the roles of BOTH halves:
 **40 pairs, not the ~35 first estimated.** Per book: Money & Sustainability 1, Creating Wealth 20,
 Rethinking Money **0**, The Value of Everything 19.
 
-**Not one of the 40 is a genuine repair.** All four shapes were read with both halves quoted:
+**One of the 40 is already refused by spec 057** (`p0242+p0243`, whose left half ends in a full stop),
+so the incremental effect is **39 new refusals: 0 / 20 / 0 / 19.** Money & Sustainability gains nothing
+here. That single overlap is why the two refusals must be ordered rather than both incremented.
+
+**Not one of the 40 is a genuine repair, and this is exhaustive, not a sample.** 35 are the identical
+image-placeholder-plus-`Figure N.` shape; the other 5 were read individually, all of them:
 
 > `p0261(body) + p0262(image)`: «…would be as follows:» + `[[DOCX_IMAGE_img_015]]` — prose introducing
 > a figure, with the figure's placeholder welded into it. And the very next pair,
@@ -148,9 +184,14 @@ is not helped by this rule at all. That is stated here rather than discovered la
 - **Do not protect `role=heading` here.** 28 of the 32 are import mis-roles; protecting them entrenches
   them. Named, measured, and deliberately left.
 - **Do not re-derive a caption or an image from the shape of the text.** The role either arrives from
-  the source or it does not exist. No `Figure \d+` pattern, no placeholder-looking regex as a
-  *substitute* for the role — matching the placeholder token is acceptable only as a second reading of
-  a role that is already there.
+  the source or it does not exist. No `Figure \d+` pattern and **no placeholder regex anywhere on the
+  decision path** — not as a substitute for the role and not as a second reading of it. An earlier
+  draft allowed the latter; a review pointed out that `role == "image" and PLACEHOLDER_RE.match(text)`
+  puts the shape of the text back into the decision, which is the whole thing being removed. The
+  production path needs no regex at all.
+- **Do not condition on `role_confidence`.** The census shows these roles arrive `explicit`, and that
+  is evidence about the source data — but `FinalAssemblyEntry` does not carry the field, and it must
+  not be added for this. The role is the signal.
 - **Do not touch spec 057's punctuation refusal.** It is confirmed and closed.
 - **Do not chase the 319 body→body absorptions.** Neither punctuation nor role says anything about
   them; on current signals that residue is not addressable, and saying so is the honest answer.
@@ -169,11 +210,14 @@ is not helped by this rule at all. That is stated here rather than discovered la
    `reason` that names the role, not an unlabelled increment of `protected_boundary_denials`, which
    already carries 575–913 per book and would hide the effect entirely.
 4. **Measured per book from the pipeline's own counters, before and after**, on all four books.
-   Expected: **40** boundaries recovered — 1 / 20 / 0 / 19. Zero on Rethinking Money is the predicted
-   result, not a failure; if the run instead shows refusals there, the rule is doing something this
-   census did not predict and must be re-read before merge.
-5. **No text lost.** `source_count` unchanged per book; delivered paragraph count rises by about the
-   number of refusals.
+   Expected: `source_role_denials` = **39** — 0 / 20 / 0 / 19 — and `source_terminal_denials` unchanged
+   from spec 057's confirmed run. Zero on Rethinking Money is the predicted result, not a failure; if
+   the run shows refusals there, the rule is doing something this census did not predict and must be
+   re-read before merge.
+5. **No text lost, by the exact invariant spec 057 used** — the whitespace-stripped character sequence
+   of the delivered document does not change. `source_count` unchanged and a rising paragraph count are
+   necessary but NOT sufficient, and a review was right to say so: both can hold while a character
+   moves.
 6. **The narration is checked, not assumed.** Spec 057 learned this the hard way: under `translate` +
    reader cleanup + audiobook post-process, assembly entries reach the narration input through
    `late_phases.py:790`. Reader cleanup is off by default, but the claim must not be made "by
@@ -191,6 +235,16 @@ is not helped by this rule at all. That is stated here rather than discovered la
 
 ## Changelog
 
+- **2026-08-07 (review)** — an independent read-only review returned BUILD WITH CORRECTIONS, and the
+  corrections were checked against the code before being accepted. The refusal moved out of
+  `_entry_is_protected_boundary` — which is bypassable through the `false_fragment_heading` branch at
+  `:1283`, and whose counter fires before the shape predicates and would have measured adjacencies
+  instead of saved boundaries — and onto the choke point spec 057 already proved, ordered after the
+  terminal refusal so the two counters stay mutually exclusive. The placeholder-regex loophole in
+  Non-goals was closed outright. Half B was split into two defects: the importer's polluted level-3
+  role, and this assembler's own override of genuine source headings, which is what destroys the four
+  real ones. The anti-vacuum was made exhaustive rather than a sample of ten, and the overlap with
+  spec 057 measured: 40 pairs, 1 already refused, **39 new**.
 - **2026-08-07** — spec created after spec 057 shipped and repaid 25 of 391 boundaries corpus-wide. The
   residue was measured by source role rather than guessed at: 72 of the 391 absorbed paragraphs carry a
   structural role in the source, on all four books. The census then split the target in two, and the

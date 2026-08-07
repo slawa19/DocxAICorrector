@@ -1500,6 +1500,167 @@ def test_assemble_final_markdown_refuses_merge_when_source_tail_is_a_closing_inl
     assert result.diagnostics.source_terminal_denials == 1
 
 
+def test_assemble_final_markdown_refuses_merge_when_source_role_is_image_placeholder():
+    # Spec 058: the flagship shape, 35 of the 40 measured pairs -- a figure caption welded
+    # onto the image placeholder. `[[DOCX_IMAGE_...]]` has no terminal punctuation, so the
+    # translation-shape predicate calls it unfinished; the SOURCE calls it an image.
+    result = document_pipeline_output_validation.assemble_final_markdown(
+        processed_chunks=["[[DOCX_IMAGE_img_036]]\n\nрисунок 28. прибыльность нефинансового сектора"],
+        generated_paragraph_registry=[
+            {"block_index": 1, "paragraph_id": "img-1", "text": "[[DOCX_IMAGE_img_036]]"},
+            {"block_index": 1, "paragraph_id": "cap-1", "text": "рисунок 28. прибыльность нефинансового сектора"},
+        ],
+        source_paragraphs=[
+            _make_paragraph_stub("img-1", 0, role="image", structural_role="image", text="[[DOCX_IMAGE_img_036]]"),
+            _make_paragraph_stub(
+                "cap-1",
+                1,
+                role="caption",
+                structural_role="caption",
+                text="**Figure 28.** Non-financial sector public company profitability",
+            ),
+        ],
+    )
+
+    assert result.final_markdown == (
+        "[[DOCX_IMAGE_img_036]]\n\nрисунок 28. прибыльность нефинансового сектора"
+    )
+    assert result.diagnostics.accepted_merges == 0
+    assert result.diagnostics.source_role_denials == 1
+    assert result.diagnostics.source_terminal_denials == 0
+    denials = [
+        decision
+        for decision in result.diagnostics.merge_decisions
+        if decision.reason == "source_boundary_unit_role"
+    ]
+    assert [decision.paragraph_ids for decision in denials] == [("img-1", "cap-1")]
+
+
+def test_assemble_final_markdown_refuses_merge_when_the_image_is_the_right_half():
+    # Spec 058: the other direction, measured twice -- prose introducing a figure with a
+    # colon, and the placeholder welded onto it. The colon means spec 057 does NOT catch
+    # this one, so it is the role and only the role that saves the boundary.
+    result = document_pipeline_output_validation.assemble_final_markdown(
+        processed_chunks=["схема этого взаимодействия выглядела бы так:\n\n[[DOCX_IMAGE_img_015]]"],
+        generated_paragraph_registry=[
+            {"block_index": 1, "paragraph_id": "body-1", "text": "схема этого взаимодействия выглядела бы так:"},
+            {"block_index": 1, "paragraph_id": "img-2", "text": "[[DOCX_IMAGE_img_015]]"},
+        ],
+        source_paragraphs=[
+            _make_paragraph_stub("body-1", 0, text="A system diagram of this interaction would be as follows:"),
+            _make_paragraph_stub("img-2", 1, role="image", structural_role="image", text="[[DOCX_IMAGE_img_015]]"),
+        ],
+    )
+
+    assert result.diagnostics.accepted_merges == 0
+    assert result.diagnostics.source_role_denials == 1
+    assert result.diagnostics.source_terminal_denials == 0
+
+
+def test_assemble_final_markdown_source_role_refusal_survives_false_fragment_heading_bypass():
+    # Spec 058, the reason the refusal is NOT in _entry_is_protected_boundary: that gate is
+    # bypassed unconditionally for a false_fragment_heading
+    # (_entries_match_allowed_protected_merge), so a demoted caption would walk straight
+    # through it. Here the caption arrives as a markdown heading, which is what triggers
+    # the demotion.
+    result = document_pipeline_output_validation.assemble_final_markdown(
+        processed_chunks=["[[DOCX_IMAGE_img_040]]\n\n### рисунок 31. совокупная доходность"],
+        generated_paragraph_registry=[
+            {"block_index": 1, "paragraph_id": "img-3", "text": "[[DOCX_IMAGE_img_040]]"},
+            {"block_index": 1, "paragraph_id": "cap-3", "text": "### рисунок 31. совокупная доходность"},
+        ],
+        source_paragraphs=[
+            _make_paragraph_stub("img-3", 0, role="image", structural_role="image", text="[[DOCX_IMAGE_img_040]]"),
+            _make_paragraph_stub(
+                "cap-3",
+                1,
+                role="caption",
+                structural_role="caption",
+                text="**Figure 31.** Cumulative returns for innovation",
+            ),
+        ],
+    )
+
+    assert result.diagnostics.accepted_merges == 0
+    assert result.diagnostics.source_role_denials == 1
+
+
+def test_assemble_final_markdown_source_role_refusal_does_not_deny_every_merge_in_one_run():
+    # ANTI-VACUUM: one assembly, a caption boundary refused AND an honest body repair kept.
+    # 351 of the 391 measured pairs are body+body and must not move.
+    result = document_pipeline_output_validation.assemble_final_markdown(
+        processed_chunks=[
+            "[[DOCX_IMAGE_img_050]]\n\nрисунок 9. схема\n\n"
+            "Для христиан жизненно важно помнить знамения, чтобы, если им будет даровано пережить\n\n"
+            "Великую скорбь"
+        ],
+        generated_paragraph_registry=[
+            {"block_index": 1, "paragraph_id": "img-9", "text": "[[DOCX_IMAGE_img_050]]"},
+            {"block_index": 1, "paragraph_id": "cap-9", "text": "рисунок 9. схема"},
+            {
+                "block_index": 1,
+                "paragraph_id": "torn-left",
+                "text": "Для христиан жизненно важно помнить знамения, чтобы, если им будет даровано пережить",
+            },
+            {"block_index": 1, "paragraph_id": "torn-right", "text": "Великую скорбь"},
+        ],
+        source_paragraphs=[
+            _make_paragraph_stub("img-9", 0, role="image", structural_role="image", text="[[DOCX_IMAGE_img_050]]"),
+            _make_paragraph_stub("cap-9", 1, role="caption", structural_role="caption", text="**Figure 9.** A diagram"),
+            _make_paragraph_stub(
+                "torn-left",
+                2,
+                text="It is vital for Christians to remember the signs, so that if they are granted to live through",
+            ),
+            _make_paragraph_stub("torn-right", 3, text="the Great Tribulation"),
+        ],
+    )
+
+    # TWO refusals, not one, and the second is the point: the caption is also stopped from
+    # swallowing the body paragraph that follows it. Verified by running it -- without the
+    # guard that pair merges, because "Для" matches the continuation-start pattern.
+    assert result.diagnostics.source_role_denials == 2
+    assert result.diagnostics.accepted_merges == 1
+    assert result.final_markdown == (
+        "[[DOCX_IMAGE_img_050]]\n\nрисунок 9. схема\n\n"
+        "Для христиан жизненно важно помнить знамения, чтобы, если им будет даровано пережить Великую скорбь"
+    )
+
+
+def test_assemble_final_markdown_source_role_refusal_reads_structural_role_alone():
+    # Spec 058: role and structural_role are filled from two different ParagraphUnit fields
+    # and either can carry the signal by itself.
+    result = document_pipeline_output_validation.assemble_final_markdown(
+        processed_chunks=["[[DOCX_IMAGE_img_060]]\n\nподпись к рисунку"],
+        generated_paragraph_registry=[
+            {"block_index": 1, "paragraph_id": "img-6", "text": "[[DOCX_IMAGE_img_060]]"},
+            {"block_index": 1, "paragraph_id": "cap-6", "text": "подпись к рисунку"},
+        ],
+        source_paragraphs=[
+            _make_paragraph_stub("img-6", 0, role="body", structural_role="image", text="[[DOCX_IMAGE_img_060]]"),
+            _make_paragraph_stub("cap-6", 1, text="a figure caption"),
+        ],
+    )
+
+    assert result.diagnostics.source_role_denials == 1
+
+
+def test_assemble_final_markdown_source_role_refusal_needs_the_role_not_the_placeholder_text():
+    # Spec 058 Non-goals: no placeholder regex on the decision path. The same text with NO
+    # source role must behave exactly as it does today -- the merge still happens.
+    result = document_pipeline_output_validation.assemble_final_markdown(
+        processed_chunks=["[[DOCX_IMAGE_img_070]]\n\nи продолжение фразы"],
+        generated_paragraph_registry=[
+            {"block_index": 1, "paragraph_id": "no-role-1", "text": "[[DOCX_IMAGE_img_070]]"},
+            {"block_index": 1, "paragraph_id": "no-role-2", "text": "и продолжение фразы"},
+        ],
+        source_paragraphs=None,
+    )
+
+    assert result.diagnostics.source_role_denials == 0
+    assert result.diagnostics.accepted_merges == 1
+
+
 def test_assemble_final_markdown_refuses_merge_when_source_tail_is_non_ascii_whitespace():
     # Spec 057, gap found by independent review: the importer keeps a run's trailing
     # whitespace OUTSIDE the emphasis markers (document/extraction.py:1378-1379), and that

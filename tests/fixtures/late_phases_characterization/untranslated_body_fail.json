@@ -13,6 +13,7 @@
     "protected_boundary_denials": 0,
     "recovered_heading_entries": [],
     "registry_covered_paragraphs": 0,
+    "source_role_denials": 0,
     "source_terminal_denials": 0
   },
   "bullet_heading_classification": "markdown_gate",

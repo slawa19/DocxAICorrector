@@ -210,6 +210,7 @@ def _log_boundary_recovery_diagnostics(*, dependencies: Any, context: Any, assem
         denied_merges=getattr(diagnostics, "denied_merges", 0),
         protected_boundary_denials=getattr(diagnostics, "protected_boundary_denials", 0),
         source_terminal_denials=getattr(diagnostics, "source_terminal_denials", 0),
+        source_role_denials=getattr(diagnostics, "source_role_denials", 0),
         demoted_false_headings=getattr(diagnostics, "demoted_false_headings", 0),
         registry_covered_paragraphs=getattr(diagnostics, "registry_covered_paragraphs", 0),
         fallback_paragraphs=getattr(diagnostics, "fallback_paragraphs", 0),
