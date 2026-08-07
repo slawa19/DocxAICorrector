@@ -6,10 +6,10 @@
 
 **Date**: 2026-08-07
 
-**Status**: **IN PROGRESS — code landed 2026-08-07, live confirmation outstanding.** The refusal is
-implemented and tested; what is NOT done is the paid before/after run that anti-regression 3 asks for.
-Everything measured below is from the `20260806T_fin2_money_translate` run, re-verified against the
-delivered DOCX by the orchestrator.
+**Status**: **IMPLEMENTED (2026-08-07) — confirmed by a paid before/after run on the same book.**
+`20260806T_fin2_money_translate` (before) against `20260807T_spec057_after` (after), same document
+profile, same run profile, same model. All four anti-regressions hold; the figures are in
+"Confirmed live" below.
 
 **Owner surface**: `pipeline/output_validation.py` — `_recover_adjacent_entries`,
 `_left_entry_looks_incomplete`, `_right_entry_looks_like_continuation`, `_entry_is_protected_boundary`
@@ -161,6 +161,52 @@ arrives `body` while `Ivo ŠLAU S`, the neighbouring line of the same signature 
 4. **No text is lost.** Real loss is zero today and must stay zero: the character sequence of the
    document, whitespace-stripped, does not change.
 
+## Confirmed live
+
+A paid run of the same book on the same profile and model, read from the pipeline's own
+`translation_quality_report.boundary_recovery` — not from a bespoke harness:
+
+| counter | before | after | delta |
+|---|---:|---:|---:|
+| `accepted_merges` | 82 | **55** | −27 |
+| `source_terminal_denials` | — | **24** | new |
+| `denied_merges` | 761 | 765 | +4 |
+| `protected_boundary_denials` | 575 | 575 | 0 |
+| `demoted_false_headings` | 9 | 9 | 0 |
+| `registry_covered_paragraphs` | 1383 | 1383 | 0 |
+| `fallback_paragraphs` | 43 | 43 | 0 |
+| `paragraph_count_drift` | −82 | −55 | +27 |
+
+The four anti-regressions:
+
+1. **Narration untouched** — a translate run produces no narration artifact, and the join lives in a
+   different function on a different input. Nothing to measure, by construction.
+2. **The rule was narrowed, not disabled** — `denied_merges` and `protected_boundary_denials` did not
+   collapse; the latter is identical to the unit.
+3. **`accepted_merges` fell by 27**, of which **24** are named directly by `source_terminal_denials`.
+   The spec predicted ~25. The residual 3 is run noise: the model's output differs between runs, so
+   three pairs no longer met the translation-shape predicates at all and never reached the refusal.
+4. **No text lost.** `source_count` is 1426 in both runs and the delivered document gained 27
+   paragraphs (1342 → 1369). The one paragraph that changed mapping status, `p0323`, is **present**
+   in the delivered document at target index 313 — «и совершенно справедливо». — it simply stands on
+   its own now instead of being welded to the quotation before it.
+
+An independent second route agrees: absorbed source paragraphs (those with no target index of their
+own) fall **80 → 53**, with 28 recovered and 1 newly absorbed.
+
+**All four named predictions held on the delivered document:**
+
+| case | predicted | observed |
+|---|---|---|
+| `docx#205` — subheading welded to its epigraph (`p0213`, `p0214`) | unwelded | unwelded |
+| `docx#61` — five-paragraph signature block (`p0063`…`p0066`) | still merged | still merged |
+| `p1075+p1076` — the honest repair ending in `;` | still merged | still merged |
+| `p0322+p0323` — quotation torn across two source paragraphs | split, accepted cost | split |
+
+**One side effect worth recording:** `p0323` is now the only newly *unmapped* source paragraph
+(8 → 9). Its text is delivered, but the formatting mapper no longer ties it to a source id, so it
+loses role-aware formatting coverage. One paragraph on one book; not chased.
+
 ## What implementation found that this spec did not foresee
 
 **The rule as this spec wrote it refuses NOTHING.** `document/extraction.py:1383-1387` bakes inline
@@ -216,6 +262,11 @@ their own continuation («One popular definition of insanity comes to mind:» + 
 
 ## Changelog
 
+- **2026-08-07 (confirmed)** — paid before/after run on the same book closed anti-regression 3.
+  `accepted_merges` 82 → 55, `source_terminal_denials` = 24 against ~25 predicted, `denied_merges` and
+  `protected_boundary_denials` intact, acceptance passed, no text lost. All four named predictions
+  held, including the two the spec expected to *fail*: the signature block stays merged and the second
+  honest repair is split. Figures in "Confirmed live".
 - **2026-08-07 (implementation)** — the refusal landed in `_recover_adjacent_entries`, keyed on a new
   `FinalAssemblyEntry.source_ends_sentence` filled from `ParagraphUnit.text` at the one construction
   site where the source paragraph is already resolved. Counted separately as `source_terminal_denials`
