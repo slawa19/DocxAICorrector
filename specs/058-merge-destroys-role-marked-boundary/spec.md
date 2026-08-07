@@ -6,7 +6,10 @@
 
 **Date**: 2026-08-07
 
-**Status**: **IN PROGRESS — code landed 2026-08-07, live confirmation outstanding.** The refusal is implemented, reviewed and tested; what is NOT done is the paid four-book before/after that anti-regression 4 asks for (predicted `source_role_denials` = 39, spread 0/20/0/19). Measured 2026-08-07 on four books. Every number below is an offline census of the four delivered runs of 2026-08-07, cross-read against each run's own
+**Status**: **IMPLEMENTED (2026-08-07) — confirmed by a paid before/after run on the two books where
+the rule applies.** Creating Wealth and The Value of Everything, same document and run profile, same
+model. The other two books were predicted to gain nothing and were not paid for. Measured on four
+books; every census number below is offline, cross-read against each run's own
 `translation_quality_report.boundary_recovery`.
 
 **Owner surface**: `pipeline/output_validation.py` — `_recover_adjacent_entries` (the merge
@@ -182,6 +185,58 @@ construction).
 is not helped by this rule at all. That is stated here rather than discovered later: this spec repays
 40 of 391 corpus-wide, and the 229 on one book remain open.
 
+## Confirmed live
+
+Two paid runs, the two books the census said the rule applies to. Read from the pipeline's own
+counters and, independently, from the delivered documents' source→target mapping.
+
+| | Creating Wealth | The Value of Everything |
+|---|---:|---:|
+| `source_role_denials` | **18** | **18** |
+| `accepted_merges` | 56 → 35 | 30 → 11 |
+| `source_terminal_denials` | 0 → 0 | 0 → 0 |
+| `denied_merges` | 904 → 906 | 1350 → 1352 |
+| `protected_boundary_denials` | 862 → 864 | 913 → 913 |
+| `demoted_false_headings` | 11 → 11 | 0 → 0 |
+| `registry_covered_paragraphs` | 1519 → 1519 | 1277 → 1277 |
+| `paragraph_count_drift` | −56 → −35 | −30 → −11 |
+
+**The class the rule targets is gone, completely.** The independent census of absorbed source
+paragraphs, by role:
+
+| | before | after |
+|---|---|---|
+| Creating Wealth | `caption` 19, `image` 1, `heading` 7, `body` 26 | `heading` 6, `body` 25 |
+| The Value of Everything | `caption` 18, `image` 1, `body` 10 | `body` 10 |
+
+**Zero captions and zero images absorbed** — 20 and 19, exactly the prediction. What remains absorbed
+is only `body` and `heading`, which is precisely what this spec said it does not address.
+
+**Why the counter reads 18 and not 20 or 19.** `source_role_denials` counts merges prevented at the
+acceptance point. Two pairs on Creating Wealth and one on The Value of Everything were not merge
+candidates in this run at all — the model's output differs between runs and the shape predicates read
+it — so nothing had to be refused for those boundaries to survive. The end state is the prediction;
+the counter is a floor on it.
+
+The other anti-regressions:
+
+- **Narrowed, not disabled.** `denied_merges` +2 / +2, `protected_boundary_denials` +2 / 0,
+  `demoted_false_headings` unchanged, `registry_covered_paragraphs` and `fallback_paragraphs`
+  identical. `accepted_merges` is still 35 and 11.
+- **No text lost.** `source_count` identical on both books (1829, 2295); delivered paragraphs +21 and
+  +19; delivered characters grew (539006 → 540398, 763960 → 767785); `mapped_count` rose on both. A
+  merge refusal can only split a paragraph — it has no path to delete text.
+- **Acceptance did not degrade.** Both books were already failing, and the failed-check lists are
+  *identical* before and after: `list_fragment_regressions_present, key_headings_preserved` and
+  `false_fragment_headings_present, key_headings_preserved`. Nothing new was introduced.
+- **The narration did not lose joins.** 5 → 6 and 7 → 9. Both went up. These are standalone audiobook
+  runs, which do not consume assembly output at all, so this is the model's variation, not an effect.
+
+**A limit this run exposed.** Among the newly unmapped paragraphs is `p1488`, whose text is
+`figure a.1. cycles of economic activity` — a figure caption the importer roled `heading`, not
+`caption`. Captions that arrive with the wrong role are outside this rule by construction, and that is
+the same import-signal problem Half B is about.
+
 ## Non-goals
 
 - **Do not protect `role=heading` here.** 28 of the 32 are import mis-roles; protecting them entrenches
@@ -237,6 +292,12 @@ is not helped by this rule at all. That is stated here rather than discovered la
 - **Generalisation beyond four books.** Two of the four have figures at all.
 
 ## Changelog
+
+- **2026-08-07 (confirmed)** — paid before/after on the two books the census pointed at. The targeted
+  class is eliminated: zero captions and zero images absorbed, against 20 and 19 before, exactly the
+  prediction. `source_role_denials` reads 18 and 18 because it counts merges prevented and three of
+  those boundaries were not merge candidates this run. No text lost, acceptance unchanged, narration
+  joins up not down. The two books predicted to gain nothing were not paid for.
 
 - **2026-08-07 (review)** — an independent read-only review returned BUILD WITH CORRECTIONS, and the
   corrections were checked against the code before being accepted. The refusal moved out of
