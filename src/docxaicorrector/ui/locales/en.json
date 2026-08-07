@@ -37,7 +37,6 @@
   "sidebar.settings_header": "Settings",
   "sidebar.text_operation_label": "Text processing mode",
   "sidebar.target_language_label": "Target language",
-  "common.download": "Download",
   "sidebar.text_operation_help": "Literary editing improves text that is already in the selected language. Use Translation for text that is not yet in the target language. If the text is already translated, literary editing is usually the better choice.",
   "sidebar.source_language_label": "Source language",
   "sidebar.source_language_help": "Use 'Auto' only as a best-effort mode. For already-translated text, literary editing is usually the better choice.",

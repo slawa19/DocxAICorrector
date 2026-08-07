@@ -120,27 +120,6 @@ def build_image_journal_entry(
     }
 
 
-def get_restartable_outcome_notice(outcome: str | None, uploaded_filename: str) -> tuple[str, str] | None:
-    if outcome == "stopped":
-        return (
-            "warning",
-            f"Обработка файла «{uploaded_filename}» была остановлена. Можно изменить настройки и запустить заново без повторной загрузки.",
-        )
-    if outcome == "failed":
-        return (
-            "error",
-            f"Обработка файла «{uploaded_filename}» завершилась ошибкой. Можно изменить настройки и запустить заново без повторной загрузки.",
-        )
-    return None
-
-
-def get_preparation_state_unavailable_message() -> str:
-    return (
-        "Сохраненное состояние подготовки файла потеряно или недоступно. Если документ не появился "
-        "в режиме готовности, загрузите файл повторно, чтобы заново запустить подготовку."
-    )
-
-
 def derive_live_status_title_and_severity(status: Mapping[str, object]) -> tuple[str, str]:
     """Return (title, severity) where severity is 'info' | 'warning' | 'error'."""
     phase = str(status.get("phase") or "processing")
