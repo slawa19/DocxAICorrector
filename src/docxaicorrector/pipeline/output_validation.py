@@ -126,6 +126,16 @@ _SENTENCE_TERMINAL_PATTERN = re.compile(r"[.!?…:](?:[)\]»”’'\"])?$")
 # punctuation. A source ending in a CJK "。" reads as False, so the merge proceeds as it
 # does today. That is the conservative direction — the rule under-fires on a corpus it has
 # never seen rather than refusing a boundary it cannot judge.
+# Spec 058: source roles that make a paragraph a UNIT of the document rather than a
+# sentence that could run on. An image placeholder is not prose and nothing can continue
+# it; a caption is a caption because the input document says so. Read off the source, like
+# the terminal punctuation above, and used only to REFUSE.
+#
+# Measured on four books, 391 merged pairs: 40 have one of these roles on a side, and not
+# one of them is a genuine repair -- 35 are a `Figure N.` caption welded onto
+# `[[DOCX_IMAGE_...]]`, the other 5 were read individually. No regex matches the
+# placeholder anywhere on this path: the role is the signal, the text is not.
+_SOURCE_UNIT_ROLES = frozenset({"image", "caption"})
 _SOURCE_TERMINAL_PUNCTUATION = ".!?…"
 _SOURCE_TRAILING_CLOSERS = "»”’\"')]}"
 _SOURCE_TRAILING_EMPHASIS_MARKERS = "*"
@@ -176,6 +186,7 @@ class FinalAssemblyDiagnostics:
     denied_merges: int = 0
     protected_boundary_denials: int = 0
     source_terminal_denials: int = 0
+    source_role_denials: int = 0
     demoted_false_headings: int = 0
     registry_covered_paragraphs: int = 0
     fallback_paragraphs: int = 0
@@ -979,6 +990,16 @@ def _source_text_ends_sentence(source_text: str | None) -> bool | None:
     return trimmed[-1] in _SOURCE_TERMINAL_PUNCTUATION
 
 
+
+def _entry_has_source_unit_role(entry: FinalAssemblyEntry) -> bool:
+    """Spec 058: does the SOURCE call this paragraph a unit of its own?
+
+    ``role`` and ``structural_role`` are checked separately because they are filled from two
+    different ``ParagraphUnit`` fields and either can carry the signal alone.
+    """
+    return entry.role in _SOURCE_UNIT_ROLES or entry.structural_role in _SOURCE_UNIT_ROLES
+
+
 def _build_source_paragraph_lookup(source_paragraphs: Sequence[object] | None) -> dict[str, object]:
     if not source_paragraphs:
         return {}
@@ -1355,9 +1376,9 @@ def _merge_entry_pair(left: FinalAssemblyEntry, right: FinalAssemblyEntry) -> Fi
 
 def _recover_adjacent_entries(
     entries: Sequence[FinalAssemblyEntry],
-) -> tuple[tuple[FinalAssemblyEntry, ...], int, int, int, int, int, tuple[FinalAssemblyDecision, ...]]:
+) -> tuple[tuple[FinalAssemblyEntry, ...], int, int, int, int, int, int, tuple[FinalAssemblyDecision, ...]]:
     if not entries:
-        return (), 0, 0, 0, 0, 0, ()
+        return (), 0, 0, 0, 0, 0, 0, ()
 
     normalized_entries: list[FinalAssemblyEntry] = []
     recovery_decisions: list[FinalAssemblyDecision] = []
@@ -1377,6 +1398,7 @@ def _recover_adjacent_entries(
     denied_merges = 0
     protected_boundary_denials = 0
     source_terminal_denials = 0
+    source_role_denials = 0
 
     for normalized_entry in normalized_entries:
         if not recovered:
@@ -1419,6 +1441,26 @@ def _recover_adjacent_entries(
                 recovered.append(normalized_entry)
                 continue
 
+            # Spec 058: the source calls one of these two paragraphs a unit of its own --
+            # an image placeholder or a caption. Deliberately here and not in
+            # ``_entry_is_protected_boundary``: that gate is bypassed unconditionally by
+            # ``_entries_match_allowed_protected_merge`` for a ``false_fragment_heading``,
+            # and its counter fires before the two predicates above, so it would count
+            # adjacencies rather than boundaries saved. Ordered after the terminal refusal
+            # so one pair never lands in two counters.
+            if _entry_has_source_unit_role(previous) or _entry_has_source_unit_role(normalized_entry):
+                source_role_denials += 1
+                recovery_decisions.append(
+                    FinalAssemblyDecision(
+                        action="deny_merge",
+                        block_index=normalized_entry.block_index,
+                        paragraph_ids=_entry_paragraph_ids(previous) + _entry_paragraph_ids(normalized_entry),
+                        reason="source_boundary_unit_role",
+                    )
+                )
+                recovered.append(normalized_entry)
+                continue
+
             recovered[-1] = _merge_entry_pair(previous, normalized_entry)
             accepted_merges += 1
             recovery_decisions.append(
@@ -1440,6 +1482,7 @@ def _recover_adjacent_entries(
         denied_merges,
         protected_boundary_denials,
         source_terminal_denials,
+        source_role_denials,
         demoted_false_headings,
         tuple(recovery_decisions),
     )
@@ -1520,6 +1563,7 @@ def assemble_final_markdown(
         denied_merges,
         protected_boundary_denials,
         source_terminal_denials,
+        source_role_denials,
         demoted_false_headings,
         merge_decisions,
     ) = _recover_adjacent_entries(entries)
@@ -1532,6 +1576,7 @@ def assemble_final_markdown(
         denied_merges=denied_merges,
         protected_boundary_denials=protected_boundary_denials,
         source_terminal_denials=source_terminal_denials,
+        source_role_denials=source_role_denials,
         demoted_false_headings=demoted_false_headings,
         registry_covered_paragraphs=registry_covered_paragraphs,
         fallback_paragraphs=fallback_paragraphs,

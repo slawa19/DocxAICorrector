@@ -20,6 +20,7 @@
       "paragraph_count_drift": -1,
       "protected_boundary_denials": 0,
       "registry_covered_paragraphs": 2,
+      "source_role_denials": 0,
       "source_terminal_denials": 0
     },
     "entries": [
@@ -61,6 +62,7 @@
       "paragraph_count_drift": 0,
       "protected_boundary_denials": 0,
       "registry_covered_paragraphs": 0,
+      "source_role_denials": 0,
       "source_terminal_denials": 0
     },
     "entries": [
@@ -116,6 +118,7 @@
       "paragraph_count_drift": 0,
       "protected_boundary_denials": 0,
       "registry_covered_paragraphs": 2,
+      "source_role_denials": 0,
       "source_terminal_denials": 0
     },
     "entries": [
@@ -213,6 +216,7 @@
       "paragraph_count_drift": 0,
       "protected_boundary_denials": 1,
       "registry_covered_paragraphs": 2,
+      "source_role_denials": 0,
       "source_terminal_denials": 0
     },
     "entries": [
