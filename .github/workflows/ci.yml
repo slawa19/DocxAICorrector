@@ -12,6 +12,10 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      # Deliberately left at the default shallow depth: this job only proves the
+      # editable install works and runs the pyright ratchet, and neither reads git
+      # history. The `tests` job below needs `fetch-depth: 0` and says why — if a
+      # history-reading test ever moves into this job, it has to move here too.
       - name: Checkout repository
         uses: actions/checkout@v4
 
@@ -48,8 +52,18 @@ jobs:
       DOCXAI_SKIP_WORKFLOW_SMOKE: "1"
 
     steps:
+      # `fetch-depth: 0` is load-bearing, not tidiness. The default is a one-commit
+      # shallow clone, and the static tier below carries a guard that checks
+      # documents claiming "not started" against the commits that reference the
+      # spec. With a shallow clone every history query comes back empty and that
+      # guard would pass having checked nothing — the false green it was itself
+      # written against. It fails loudly rather than skipping if this line is
+      # removed, so a CI failure named `test_git_history_is_reachable` means this
+      # setting, not a broken test.
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Clean working tree before tests
         run: git clean -fdx
