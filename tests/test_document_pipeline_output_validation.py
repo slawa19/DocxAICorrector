@@ -1087,6 +1087,7 @@ def _make_paragraph_stub(
     structural_role: str = "body",
     heading_level=None,
     list_kind=None,
+    text: str = "",
 ):
     class ParagraphStub:
         def __init__(self):
@@ -1098,6 +1099,9 @@ def _make_paragraph_stub(
             self.list_kind = list_kind
             self.boundary_source = "raw"
             self.boundary_confidence = "explicit"
+            # ParagraphUnit.text -- the FULL source paragraph. Empty means "source
+            # unknown" for spec 057, which is how the older tests below read.
+            self.text = text
 
     return ParagraphStub()
 
@@ -1203,6 +1207,269 @@ def test_assemble_final_markdown_merges_adjacent_registry_fragments_for_body_onl
     )
     assert result.diagnostics.accepted_merges == 1
     assert len(result.entries) == 1
+
+
+def test_assemble_final_markdown_refuses_merge_when_source_left_paragraph_ends_in_terminal_punctuation():
+    # Spec 057: the same translation pair the test above merges, but the SOURCE left
+    # paragraph closes a sentence -- the boundary belongs to the input document.
+    result = document_pipeline_output_validation.assemble_final_markdown(
+        processed_chunks=["Для христиан жизненно важно помнить знамения, чтобы, если им будет даровано пережить\n\nВеликую скорбь"],
+        generated_paragraph_registry=[
+            {
+                "block_index": 1,
+                "paragraph_id": "body-left",
+                "text": "Для христиан жизненно важно помнить знамения, чтобы, если им будет даровано пережить",
+            },
+            {"block_index": 1, "paragraph_id": "body-right", "text": "Великую скорбь"},
+        ],
+        source_paragraphs=[
+            _make_paragraph_stub(
+                "body-left",
+                0,
+                text="It is vital for Christians to remember the signs.",
+            ),
+            _make_paragraph_stub("body-right", 1, text="The Great Tribulation"),
+        ],
+    )
+
+    assert result.final_markdown == (
+        "Для христиан жизненно важно помнить знамения, чтобы, если им будет даровано пережить\n\nВеликую скорбь"
+    )
+    assert len(result.entries) == 2
+    assert result.diagnostics.accepted_merges == 0
+    assert result.diagnostics.source_terminal_denials == 1
+    # The refusal has its own counter and is NOT folded into denied_merges.
+    assert result.diagnostics.denied_merges == 0
+    assert result.entries[0].source_ends_sentence is True
+    denials = [
+        decision
+        for decision in result.diagnostics.merge_decisions
+        if decision.reason == "source_boundary_terminal_punctuation"
+    ]
+    assert [decision.paragraph_ids for decision in denials] == [("body-left", "body-right")]
+    assert denials[0].action == "deny_merge"
+
+
+def test_assemble_final_markdown_merges_when_source_left_paragraph_has_no_terminal_punctuation():
+    # Spec 057: the honest repair -- the source paragraph really was torn mid-sentence,
+    # so the pre-existing merge must survive the new refusal untouched.
+    result = document_pipeline_output_validation.assemble_final_markdown(
+        processed_chunks=["Для христиан жизненно важно помнить знамения, чтобы, если им будет даровано пережить\n\nВеликую скорбь"],
+        generated_paragraph_registry=[
+            {
+                "block_index": 1,
+                "paragraph_id": "body-left",
+                "text": "Для христиан жизненно важно помнить знамения, чтобы, если им будет даровано пережить",
+            },
+            {"block_index": 1, "paragraph_id": "body-right", "text": "Великую скорбь"},
+        ],
+        source_paragraphs=[
+            _make_paragraph_stub(
+                "body-left",
+                0,
+                text="It is vital for Christians to remember the signs, so that if they are granted to live through",
+            ),
+            _make_paragraph_stub("body-right", 1, text="the Great Tribulation"),
+        ],
+    )
+
+    assert result.final_markdown == (
+        "Для христиан жизненно важно помнить знамения, чтобы, если им будет даровано пережить Великую скорбь"
+    )
+    assert len(result.entries) == 1
+    assert result.diagnostics.accepted_merges == 1
+    assert result.diagnostics.source_terminal_denials == 0
+
+
+def test_assemble_final_markdown_keeps_merge_when_source_paragraph_is_unknown():
+    # Spec 057 / Constitution VII: a missing signal must not quietly become a new rule.
+    result = document_pipeline_output_validation.assemble_final_markdown(
+        processed_chunks=["Для христиан жизненно важно помнить знамения, чтобы, если им будет даровано пережить\n\nВеликую скорбь"],
+        generated_paragraph_registry=[
+            {
+                "block_index": 1,
+                "paragraph_id": "body-left",
+                "text": "Для христиан жизненно важно помнить знамения, чтобы, если им будет даровано пережить",
+            },
+            {"block_index": 1, "paragraph_id": "body-right", "text": "Великую скорбь"},
+        ],
+        source_paragraphs=None,
+    )
+
+    assert result.final_markdown == (
+        "Для христиан жизненно важно помнить знамения, чтобы, если им будет даровано пережить Великую скорбь"
+    )
+    assert result.diagnostics.accepted_merges == 1
+    assert result.diagnostics.source_terminal_denials == 0
+    assert result.entries[0].source_ends_sentence is None
+
+
+def test_assemble_final_markdown_refuses_second_link_of_chain_on_merged_right_source_signal():
+    # Spec 057: the merged entry now ENDS where the RIGHT one ended, so the chain's second
+    # link must be judged by the SECOND source paragraph, not by the first.
+    result = document_pipeline_output_validation.assemble_final_markdown(
+        processed_chunks=[
+            "Член Римского клуба, президент отделения Римского клуба в ЕС\n\nФеликс УНГЕР\n\nИво ШЛАУС"
+        ],
+        generated_paragraph_registry=[
+            {
+                "block_index": 1,
+                "paragraph_id": "sign-1",
+                "text": "Член Римского клуба, президент отделения Римского клуба в ЕС",
+            },
+            {"block_index": 1, "paragraph_id": "sign-2", "text": "Феликс УНГЕР"},
+            {"block_index": 1, "paragraph_id": "sign-3", "text": "Иво ШЛАУС"},
+        ],
+        source_paragraphs=[
+            _make_paragraph_stub(
+                "sign-1",
+                0,
+                text="Member of the Club of Rome, President of the EU Chapter of the Club of Rome",
+            ),
+            _make_paragraph_stub("sign-2", 1, text="Felix UNGER."),
+            _make_paragraph_stub("sign-3", 2, text="Ivo ŠLAUS"),
+        ],
+    )
+
+    assert result.final_markdown == (
+        "Член Римского клуба, президент отделения Римского клуба в ЕС Феликс УНГЕР\n\nИво ШЛАУС"
+    )
+    assert result.diagnostics.accepted_merges == 1
+    assert result.diagnostics.source_terminal_denials == 1
+    assert [entry.merged_paragraph_ids for entry in result.entries] == [("sign-1", "sign-2"), ("sign-3",)]
+    # The merged entry carries the RIGHT source's signal, which is what denied link two.
+    assert result.entries[0].source_ends_sentence is True
+
+
+def test_assemble_final_markdown_refuses_merge_when_source_terminal_mark_is_behind_a_closing_quote():
+    # Spec 057: hanging closing quotes/brackets are trimmed before the last character is
+    # read, so a sentence that ends inside a quotation still counts as terminal.
+    result = document_pipeline_output_validation.assemble_final_markdown(
+        processed_chunks=["Только ветер ответил ему, «совсем ничего»\n\nи больше никто"],
+        generated_paragraph_registry=[
+            {"block_index": 1, "paragraph_id": "quote-left", "text": "Только ветер ответил ему, «совсем ничего»"},
+            {"block_index": 1, "paragraph_id": "quote-right", "text": "и больше никто"},
+        ],
+        source_paragraphs=[
+            _make_paragraph_stub("quote-left", 0, text="Only the wind answered him, “nothing at all.” "),
+            _make_paragraph_stub("quote-right", 1, text="and nobody else"),
+        ],
+    )
+
+    assert result.final_markdown == "Только ветер ответил ему, «совсем ничего»\n\nи больше никто"
+    assert result.diagnostics.accepted_merges == 0
+    assert result.diagnostics.source_terminal_denials == 1
+
+
+def test_assemble_final_markdown_refuses_merge_when_source_terminal_mark_is_wrapped_in_emphasis_markers():
+    # ANTI-NO-OP (spec 057). The importer bakes emphasis into ParagraphUnit.text
+    # (document/extraction.py:1383-1387), so the real subheading arrives as
+    # "**Why this Report, Now?**" -- its LAST character is "*", not "?". Reading the raw
+    # last character refuses 0 of the 80 measured merges; this test fails on any
+    # implementation that does not unwrap the importer's own markup first.
+    # Real pair from the run: docx#205 = p0212+p0213, a chapter subheading welded to its
+    # epigraph.
+    result = document_pipeline_output_validation.assemble_final_markdown(
+        processed_chunks=[
+            "**Почему этот отчет выходит именно сейчас?**\n\n«Сердце болит обо всем, что мне не спасти.»"
+        ],
+        generated_paragraph_registry=[
+            {
+                "block_index": 1,
+                "paragraph_id": "p0212",
+                "text": "**Почему этот отчет выходит именно сейчас?**",
+            },
+            {"block_index": 1, "paragraph_id": "p0213", "text": "«Сердце болит обо всем, что мне не спасти.»"},
+        ],
+        source_paragraphs=[
+            _make_paragraph_stub("p0212", 0, text="**Why this Report, Now?**"),
+            _make_paragraph_stub("p0213", 1, text="“My heart aches for all that I cannot save.”"),
+        ],
+    )
+
+    assert result.final_markdown == (
+        "**Почему этот отчет выходит именно сейчас?**\n\n«Сердце болит обо всем, что мне не спасти.»"
+    )
+    assert result.diagnostics.accepted_merges == 0
+    assert result.diagnostics.source_terminal_denials == 1
+    assert result.entries[0].source_ends_sentence is True
+
+
+def test_assemble_final_markdown_refuses_merge_when_source_tail_is_quote_then_emphasis_marker():
+    # Spec 057: the ".”*" tail measured on the run -- the emphasis marker must come off
+    # before the closing quote, which is why the unwrap runs to a fixed point.
+    result = document_pipeline_output_validation.assemble_final_markdown(
+        processed_chunks=[
+            "*хорошее управление и хорошие долгосрочные прогнозы.”*\n\nи ничего сверх того"
+        ],
+        generated_paragraph_registry=[
+            {
+                "block_index": 1,
+                "paragraph_id": "emph-left",
+                "text": "*хорошее управление и хорошие долгосрочные прогнозы.”*",
+            },
+            {"block_index": 1, "paragraph_id": "emph-right", "text": "и ничего сверх того"},
+        ],
+        source_paragraphs=[
+            _make_paragraph_stub("emph-left", 0, text="*good management and good long-term prospects.”*"),
+            _make_paragraph_stub("emph-right", 1, text="and nothing beyond that"),
+        ],
+    )
+
+    assert result.final_markdown == (
+        "*хорошее управление и хорошие долгосрочные прогнозы.”*\n\nи ничего сверх того"
+    )
+    assert result.diagnostics.accepted_merges == 0
+    assert result.diagnostics.source_terminal_denials == 1
+
+
+def test_assemble_final_markdown_source_terminal_refusal_does_not_deny_every_merge_in_one_run():
+    # ANTI-VACUUM (Constitution VII): one assembly, both counters non-zero. A rule that
+    # refuses everything is not a fix.
+    result = document_pipeline_output_validation.assemble_final_markdown(
+        processed_chunks=[
+            "Для христиан жизненно важно помнить знамения, чтобы, если им будет даровано пережить\n\n"
+            "Великую скорбь.\n\n"
+            "Член Римского клуба, президент отделения Римского клуба в ЕС\n\n"
+            "Феликс УНГЕР"
+        ],
+        generated_paragraph_registry=[
+            {
+                "block_index": 1,
+                "paragraph_id": "torn-left",
+                "text": "Для христиан жизненно важно помнить знамения, чтобы, если им будет даровано пережить",
+            },
+            {"block_index": 1, "paragraph_id": "torn-right", "text": "Великую скорбь."},
+            {
+                "block_index": 1,
+                "paragraph_id": "sign-1",
+                "text": "Член Римского клуба, президент отделения Римского клуба в ЕС",
+            },
+            {"block_index": 1, "paragraph_id": "sign-2", "text": "Феликс УНГЕР"},
+        ],
+        source_paragraphs=[
+            _make_paragraph_stub(
+                "torn-left",
+                0,
+                text="It is vital for Christians to remember the signs, so that if they are granted to live through",
+            ),
+            _make_paragraph_stub("torn-right", 1, text="the Great Tribulation."),
+            _make_paragraph_stub(
+                "sign-1",
+                2,
+                text="Member of the Club of Rome, President of the EU Chapter of the Club of Rome.",
+            ),
+            _make_paragraph_stub("sign-2", 3, text="Felix UNGER"),
+        ],
+    )
+
+    assert result.diagnostics.accepted_merges == 1
+    assert result.diagnostics.source_terminal_denials == 1
+    assert result.final_markdown == (
+        "Для христиан жизненно важно помнить знамения, чтобы, если им будет даровано пережить Великую скорбь.\n\n"
+        "Член Римского клуба, президент отделения Римского клуба в ЕС\n\n"
+        "Феликс УНГЕР"
+    )
 
 
 def test_assemble_final_markdown_preserves_index_page_reference_fragment_boundary():
