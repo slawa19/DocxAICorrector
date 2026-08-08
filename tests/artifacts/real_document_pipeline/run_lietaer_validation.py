@@ -4344,6 +4344,15 @@ _MODEL_ACCOUNTING_SUMMARY_FIELDS = (
     # two is exactly the point — the generator numbers alone are a lower bound.
     "controlled_block_fallback_block_count",
     "controlled_block_fallback_chars",
+    # The remedy, beside the two measures of the loss it exists to remove: how many blocks
+    # the generator answered by DIVIDING, what that cost in calls, and how much prose it
+    # actually rescued. Without the pair of paragraph counts the ladder's effect is a claim.
+    "degradation_ladder_block_count",
+    "degradation_ladder_model_call_count",
+    "degradation_ladder_translated_paragraph_count",
+    "degradation_ladder_unrescued_paragraph_count",
+    "degradation_ladder_sentence_split_paragraph_count",
+    "degradation_ladder_oversized_sentence_count",
 )
 
 
@@ -4376,6 +4385,7 @@ def _build_model_accounting_summary_lines(model_accounting: Mapping[str, object]
         "model_output_discarded_reason_counts",
         "controlled_block_fallback_kind_counts",
         "controlled_block_fallback_kind_chars",
+        "degradation_ladder_trigger_counts",
         "stages",
     ):
         lines.append(

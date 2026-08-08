@@ -26,6 +26,32 @@ def _as_openai_client(client: object) -> Any:
     return cast(Any, client)
 
 
+def _batched_answer_only_client(marker_answer: str, *, requests: list[dict[str, Any]] | None = None) -> Any:
+    """A model that answers the BATCHED marker request — badly — and nothing else.
+
+    Needed by every test whose subject is the block-level source fallback. Since the
+    degradation ladder re-asks each paragraph on its own with ``marker_mode=False``, a stub
+    that returns the same string for every request makes the ladder SUCCEED, and the test
+    stops describing the fallback it exists for. Answering nothing to the per-paragraph
+    requests holds the ladder at its floor instead: it runs, it rescues nothing, and the
+    block ends exactly where it ended before the ladder existed — which is the invariant
+    those tests should be pinning, because the ladder is only allowed to ADD outcomes.
+
+    The two request shapes are told apart by the markers in the prompt, not by a call
+    counter: the ladder's units are marker-free by construction.
+    """
+
+    def create_response(**kwargs: Any) -> SimpleNamespace:
+        if requests is not None:
+            requests.append(dict(kwargs))
+        prompt = kwargs["input"][1]["content"][0]["text"]
+        if "[[DOCX_PARA_" in prompt:
+            return SimpleNamespace(output_text=marker_answer)
+        return SimpleNamespace(output_text="")
+
+    return _as_openai_client(SimpleNamespace(responses=SimpleNamespace(create=create_response)))
+
+
 def _as_paragraph_style(style: object) -> ParagraphStyle:
     return cast(ParagraphStyle, style)
 
@@ -700,8 +726,16 @@ def test_generate_markdown_block_falls_back_to_source_after_persistent_incomplet
     )
 
     assert result == target_text
-    assert len(attempts) == 3
+    # The block is one paragraph of 150 sentences, so ``incomplete_response`` now buys a
+    # sentence split before the source is substituted, and the calls are 3 + 3 + 3: the
+    # block itself, the paragraph re-asked whole, and the FIRST sentence group. The ladder
+    # abandons the paragraph as soon as one of its groups fails, which is why the second
+    # group is never bought — an upper bound that is arithmetic, not a hope.
+    assert len(attempts) == 9
     assert logged_events[-1][0][1] == "markdown_incomplete_response_source_fallback"
+    # The ladder rescued nothing, so the delivered text, the event and the counter are
+    # byte-for-byte what they were before it existed.
+    assert any(args[1] == "degradation_ladder_completed" for args, _ in logged_events)
 
 
 def test_generate_markdown_block_passthrough_for_image_only_target(monkeypatch):
@@ -1484,16 +1518,18 @@ def test_generate_markdown_block_marker_mode_falls_back_to_source_after_persiste
     A wrong marker id is a different matter and stays exactly as it was: it is one of the
     three checks that detect real loss, so the retries, the recovery call and the
     block-level source fallback all still happen.
+
+    What the degradation ladder adds is a step BETWEEN the recovery call and that fallback,
+    so the model here has to fail the per-paragraph re-ask too — otherwise the block would
+    (correctly) be translated and there would be no fallback left to describe. The subject
+    of the test is therefore now the ladder's FLOOR: when the divided calls fail as well,
+    the delivered text, the event and the record are exactly what they were before.
     """
     attempts = []
     sleep_calls = []
     logged_events = []
 
-    def create_response(**kwargs):
-        attempts.append(dict(kwargs))
-        return SimpleNamespace(output_text="[[DOCX_PARA_p9999]]\nЧужой маркер")
-
-    client = SimpleNamespace(responses=SimpleNamespace(create=create_response))
+    client = _batched_answer_only_client("[[DOCX_PARA_p9999]]\nЧужой маркер", requests=attempts)
     monkeypatch.setattr(generation.time, "sleep", sleep_calls.append)
     monkeypatch.setattr(
         generation,
@@ -1502,7 +1538,7 @@ def test_generate_markdown_block_marker_mode_falls_back_to_source_after_persiste
     )
 
     result = generation.generate_markdown_block(
-        client=_as_openai_client(client),
+        client=client,
         model="gpt-5.4",
         system_prompt="system",
         target_text="[[DOCX_PARA_p0001]]\nАбзац-источник",
@@ -1514,9 +1550,12 @@ def test_generate_markdown_block_marker_mode_falls_back_to_source_after_persiste
     )
 
     assert result == "Абзац-источник"
-    assert len(attempts) == 3
-    assert sleep_calls == [1]
+    # 3 for the block (2 attempts + the informed recovery) + 3 for the single paragraph
+    # re-asked without markers, which the stub answers with nothing.
+    assert len(attempts) == 6
+    assert sleep_calls == [1, 1]
     assert any(args[1] == "markdown_empty_response_recovery_started" for args, _ in logged_events)
+    assert any(args[1] == "degradation_ladder_started" for args, _ in logged_events)
     assert logged_events[-1][0][1] == "markdown_marker_validation_source_fallback"
 
 
@@ -2154,13 +2193,12 @@ def test_controlled_source_fallback_still_writes_every_rejected_answer(monkeypat
     # the model deleted a paragraph TOGETHER with its marker, and the heading was lost.
     rejected_answer = "[[DOCX_PARA_p0958]]\nАльянс токенов здоровья."
 
-    def create_response(**kwargs):
-        return SimpleNamespace(output_text=rejected_answer)
-
-    client = SimpleNamespace(responses=SimpleNamespace(create=create_response))
+    # The per-paragraph re-ask must fail too, or the block gets translated by the ladder and
+    # there is no controlled fallback left whose evidence this test can check.
+    client = _batched_answer_only_client(rejected_answer)
 
     result = generation.generate_markdown_block(
-        client=_as_openai_client(client),
+        client=client,
         model="gpt-5.4",
         system_prompt="system",
         target_text=target_text,
@@ -2204,13 +2242,10 @@ def test_rejected_answer_capture_keeps_the_full_response_past_the_preview_limit(
     long_paragraph = "Длинный переведённый абзац. " * 120
     rejected_answer = f"[[DOCX_PARA_p0002]]\n{long_paragraph}"
 
-    def create_response(**kwargs):
-        return SimpleNamespace(output_text=rejected_answer)
-
-    client = SimpleNamespace(responses=SimpleNamespace(create=create_response))
+    client = _batched_answer_only_client(rejected_answer)
 
     result = generation.generate_markdown_block(
-        client=_as_openai_client(client),
+        client=client,
         model="gpt-5.4",
         system_prompt="system",
         target_text="[[DOCX_PARA_p0001]]\nSource paragraph.",
@@ -3346,19 +3381,15 @@ def test_block_level_source_fallback_counts_its_paragraphs_as_source_restored(mo
     """A whole block reverting to its own source is ``source_restored`` for every paragraph.
 
     Without this the run report would say ``source_restored: 0`` on exactly the run where a
-    block was thrown away and replaced by its untranslated source.
+    block was thrown away and replaced by its untranslated source. The degradation ladder
+    has to fail on the per-paragraph re-ask for the block-level fallback to be reached at
+    all — see ``_batched_answer_only_client``.
     """
     monkeypatch.setattr(generation.time, "sleep", lambda _seconds: None)
     model_accounting.reset_run_model_accounting()
 
-    client = SimpleNamespace(
-        responses=SimpleNamespace(
-            create=lambda **_kwargs: SimpleNamespace(output_text="[[DOCX_PARA_p9999]]\nЧужой маркер")
-        )
-    )
-
     result = generation.generate_markdown_block(
-        client=_as_openai_client(client),
+        client=_batched_answer_only_client("[[DOCX_PARA_p9999]]\nЧужой маркер"),
         model="gpt-5.4",
         system_prompt="system",
         target_text="[[DOCX_PARA_p0001]]\nFirst.\n\n[[DOCX_PARA_p0002]]\nSecond.",
@@ -3486,14 +3517,8 @@ def test_a_block_level_source_fallback_still_carries_a_record(monkeypatch):
     monkeypatch.setattr(generation.time, "sleep", lambda _seconds: None)
     model_accounting.reset_run_model_accounting()
 
-    client = SimpleNamespace(
-        responses=SimpleNamespace(
-            create=lambda **_kwargs: SimpleNamespace(output_text="[[DOCX_PARA_p9999]]\nЧужой маркер")
-        )
-    )
-
     result = generation.generate_markdown_block(
-        client=_as_openai_client(client),
+        client=_batched_answer_only_client("[[DOCX_PARA_p9999]]\nЧужой маркер"),
         model="gpt-5.4",
         system_prompt="system",
         target_text="[[DOCX_PARA_p0001]]\nFirst.\n\n[[DOCX_PARA_p0002]]\nSecond.",
@@ -3631,3 +3656,583 @@ def test_a_single_marker_prose_break_is_still_collapsed():
         "Длинная цитата, которую импортёр сварил в один абзац. "
         "Модель разбила её на две произносимые части."
     )
+
+
+# --- The degradation ladder: divide instead of substituting the source ----------------
+#
+# Spec about prose being lost. Step 2 answers a marker-contract rejection by re-asking each
+# paragraph on its own without markers; step 3 answers ``incomplete_response`` by dividing.
+# Every test below fails on ``origin/main``, where the four controlled fallbacks are the
+# FIRST answer to a rejection rather than the last.
+
+
+def _ladder_client(
+    answers_by_target: dict[str, str],
+    *,
+    requests: list[dict[str, Any]] | None = None,
+    default_answer: str | None = None,
+) -> Any:
+    """A model keyed by what it was ASKED, so a per-paragraph re-ask can answer that paragraph.
+
+    Matching is by containment of the target text in the prompt: the ladder builds the
+    ordinary standard prompt around the unit, so the unit's own text is in there verbatim.
+    A target with no entry and no ``default_answer`` returns nothing, which is how a test
+    makes one paragraph fail while its neighbours succeed.
+    """
+
+    def create_response(**kwargs: Any) -> SimpleNamespace:
+        if requests is not None:
+            requests.append(dict(kwargs))
+        prompt = kwargs["input"][1]["content"][0]["text"]
+        target = prompt.split("[TARGET BLOCK", 1)[-1]
+        for source, answer in answers_by_target.items():
+            if source in target:
+                return SimpleNamespace(output_text=answer)
+        if default_answer is not None:
+            return SimpleNamespace(output_text=default_answer)
+        return SimpleNamespace(output_text="")
+
+    return _as_openai_client(SimpleNamespace(responses=SimpleNamespace(create=create_response)))
+
+
+def _incomplete_response() -> SimpleNamespace:
+    return SimpleNamespace(status="incomplete", output=[SimpleNamespace(type="reasoning", status="incomplete")])
+
+
+def test_step_two_translates_every_paragraph_instead_of_delivering_the_english_block(monkeypatch):
+    """The core of the change: a marker-contract rejection stops costing prose.
+
+    The batched answer violates marker identity, which is one of the three checks that
+    detect real loss and therefore stays block-fatal. Before the ladder that verdict was the
+    end of the block: its own English source was delivered and, in audiobook mode, the block
+    was dropped from the narration entirely. Now each paragraph is asked for on its own with
+    ``marker_mode=False``, where the error class is unreachable by construction, and the
+    block ships translated.
+    """
+
+    monkeypatch.setattr(generation.time, "sleep", lambda _seconds: None)
+    model_accounting.reset_run_model_accounting()
+    requests: list[dict[str, Any]] = []
+    client = _ladder_client(
+        {
+            "The current monetary system is taken for granted.": "Нынешняя денежная система воспринимается как данность.",
+            "Money is the last taboo.": "Деньги — последнее табу.",
+        },
+        requests=requests,
+    )
+
+    result = generation.generate_markdown_block(
+        client=client,
+        model="gpt-5.4",
+        system_prompt="system",
+        target_text=(
+            "[[DOCX_PARA_p0001]]\nThe current monetary system is taken for granted.\n\n"
+            "[[DOCX_PARA_p0002]]\nMoney is the last taboo."
+        ),
+        context_before="предыдущий блок",
+        context_after="следующий блок",
+        max_retries=2,
+        expected_paragraph_ids=["p0001", "p0002"],
+        marker_mode=True,
+    )
+
+    assert result == (
+        "Нынешняя денежная система воспринимается как данность.\n\nДеньги — последнее табу."
+    )
+    # The paragraph count is the invariant the whole ladder rests on: two markers in, two
+    # paragraphs out, each with its own translation and its own accepted status.
+    dispositions = generation.marker_paragraph_dispositions(result)
+    assert dispositions is not None
+    assert [(item.paragraph_id, item.status) for item in dispositions] == [
+        ("p0001", "accepted"),
+        ("p0002", "accepted"),
+    ]
+    # And the volume of delivered text did not drop: a rule that stops substituting without
+    # translating would be loss, not a repair.
+    assert len(result) >= len("The current monetary system is taken for granted.\n\nMoney is the last taboo.")
+
+    # The re-asks carry NO markers and NOT the marker prompt — that is what makes the error
+    # class unreachable rather than merely unlikely.
+    ladder_prompts = [
+        request["input"][1]["content"][0]["text"]
+        for request in requests
+        if "[[DOCX_PARA_" not in request["input"][1]["content"][0]["text"]
+    ]
+    assert len(ladder_prompts) == 2
+    assert all("[TARGET BLOCK WITH MARKERS" not in prompt for prompt in ladder_prompts)
+    # Neighbouring context is handed over, not thrown away.
+    assert "предыдущий блок" in ladder_prompts[0]
+    assert "Money is the last taboo." in ladder_prompts[0]
+    assert "The current monetary system is taken for granted." in ladder_prompts[1]
+    assert "следующий блок" in ladder_prompts[1]
+
+    snapshot = model_accounting.snapshot_run_model_accounting()
+    assert snapshot["degradation_ladder_block_count"] == 1
+    assert snapshot["degradation_ladder_trigger_counts"] == {"marker_contract": 1}
+    assert snapshot["degradation_ladder_translated_paragraph_count"] == 2
+    assert snapshot["degradation_ladder_unrescued_paragraph_count"] == 0
+    # 3 block calls (2 attempts + the informed recovery) preceded the ladder; the ladder
+    # itself bought exactly one call per paragraph.
+    assert snapshot["degradation_ladder_model_call_count"] == 2
+    assert snapshot["model_call_count"] == 5
+    assert snapshot["paragraph_disposition_counts"] == {
+        "accepted": 2,
+        "omitted": 0,
+        "retry_required": 0,
+        "source_restored": 0,
+    }
+
+
+def test_step_two_keeps_the_paragraph_it_could_not_translate_and_only_that_one(monkeypatch):
+    """Partial rescue is the point: one bad paragraph no longer costs its neighbours.
+
+    ``origin/main`` reverts the WHOLE block, so a five-paragraph block loses five
+    translations to one unanswerable paragraph. The unanswered one keeps its own source —
+    nothing is lost — and it is the only one that does.
+    """
+
+    monkeypatch.setattr(generation.time, "sleep", lambda _seconds: None)
+    model_accounting.reset_run_model_accounting()
+    client = _ladder_client(
+        {"First source paragraph.": "Первый абзац переведён."},
+        # "Second source paragraph." has no entry, so the model answers nothing for it.
+    )
+
+    result = generation.generate_markdown_block(
+        client=client,
+        model="gpt-5.4",
+        system_prompt="system",
+        target_text=(
+            "[[DOCX_PARA_p0001]]\nFirst source paragraph.\n\n"
+            "[[DOCX_PARA_p0002]]\nSecond source paragraph."
+        ),
+        context_before="",
+        context_after="",
+        max_retries=1,
+        expected_paragraph_ids=["p0001", "p0002"],
+        marker_mode=True,
+    )
+
+    assert result == "Первый абзац переведён.\n\nSecond source paragraph."
+    dispositions = generation.marker_paragraph_dispositions(result)
+    assert dispositions is not None
+    # ``omitted``, not ``source_restored``: the source stands in the DOCX (nothing lost) and
+    # the narration skips it. The block-level fallback this ladder replaces is dropped from
+    # the narration WHOLE, so a partial rescue must not become the one paragraph a listener
+    # hears in English.
+    assert [(item.paragraph_id, item.status) for item in dispositions] == [
+        ("p0001", "accepted"),
+        ("p0002", "omitted"),
+    ]
+    from docxaicorrector.pipeline.block_execution import narration_projection_for_processed_block
+
+    spoken, withheld_paragraphs, withheld_chars = narration_projection_for_processed_block(result)
+    assert spoken == "Первый абзац переведён."
+    assert (withheld_paragraphs, withheld_chars) == (1, len("Second source paragraph."))
+    snapshot = model_accounting.snapshot_run_model_accounting()
+    assert snapshot["degradation_ladder_translated_paragraph_count"] == 1
+    assert snapshot["degradation_ladder_unrescued_paragraph_count"] == 1
+    # The paragraph left in the source language is still counted as a discarded answer, so
+    # the run report cannot report a rescue it did not fully achieve.
+    assert snapshot["model_output_discarded_reason_counts"] == {
+        "degradation_ladder_paragraph_source_fallback": 1
+    }
+
+
+def test_step_two_refuses_an_answer_that_would_turn_one_paragraph_into_two(monkeypatch):
+    """A one-paragraph request answered with a heading plus prose is REFUSED, not shipped.
+
+    The ladder's whole safety argument is the paragraph count, and a two-paragraph answer
+    dropped into one paragraph's slot would deliver three paragraphs under two markers with
+    every remaining check green. The guard is the one
+    ``split_marker_preserved_paragraph_dispositions`` already uses for a one-marker block.
+    """
+
+    monkeypatch.setattr(generation.time, "sleep", lambda _seconds: None)
+    model_accounting.reset_run_model_accounting()
+    client = _ladder_client(
+        {"First source paragraph.": "Перевод абзаца.\n\n## Заголовок из соседнего абзаца"}
+    )
+
+    result = generation.generate_markdown_block(
+        client=client,
+        model="gpt-5.4",
+        system_prompt="system",
+        target_text="[[DOCX_PARA_p1]]\nFirst source paragraph.\n\n[[DOCX_PARA_p2]]\n## Safety",
+        context_before="",
+        context_after="",
+        max_retries=1,
+        expected_paragraph_ids=["p1", "p2"],
+        marker_mode=True,
+    )
+
+    assert result == "First source paragraph.\n\n## Safety"
+    assert result.count("\n\n") == 1
+    dispositions = generation.marker_paragraph_dispositions(result)
+    assert dispositions is not None
+    assert [item.status for item in dispositions] == ["source_restored", "source_restored"]
+    # That outcome is ``origin/main``'s outcome too, so without the next two lines the test
+    # would pass vacuously. The ladder DID run, refused both answers, and handed the block
+    # back to the block-level fallback instead of shipping three paragraphs under two
+    # markers — which is what it would have done had the answer been accepted.
+    snapshot = model_accounting.snapshot_run_model_accounting()
+    assert snapshot["degradation_ladder_block_count"] == 1
+    assert snapshot["degradation_ladder_translated_paragraph_count"] == 0
+
+
+def test_step_three_divides_an_incomplete_block_into_its_paragraphs(monkeypatch):
+    """``incomplete_response`` is a failure of SIZE, so the remedy is a smaller request.
+
+    ``_boost_request_output_budget`` doubles the budget but ``min``s it with the ceiling, so
+    the block is never answered whole however often it is retried. The model here answers
+    the block with ``incomplete`` and each paragraph normally.
+    """
+
+    monkeypatch.setattr(generation.time, "sleep", lambda _seconds: None)
+    model_accounting.reset_run_model_accounting()
+    first = "First source paragraph, long enough to matter."
+    second = "Second source paragraph, also long enough."
+
+    def create_response(**kwargs):
+        prompt = kwargs["input"][1]["content"][0]["text"]
+        target = prompt.split("[TARGET BLOCK", 1)[-1]
+        if "[[DOCX_PARA_" in target:
+            return _incomplete_response()
+        if first in target.split("[CONTEXT AFTER]")[0]:
+            return SimpleNamespace(output_text="Первый абзац.")
+        return SimpleNamespace(output_text="Второй абзац.")
+
+    client = _as_openai_client(SimpleNamespace(responses=SimpleNamespace(create=create_response)))
+
+    result = generation.generate_markdown_block(
+        client=client,
+        model="gpt-5.4",
+        system_prompt="system",
+        target_text=f"[[DOCX_PARA_p0001]]\n{first}\n\n[[DOCX_PARA_p0002]]\n{second}",
+        context_before="",
+        context_after="",
+        max_retries=2,
+        expected_paragraph_ids=["p0001", "p0002"],
+        marker_mode=True,
+    )
+
+    assert result == "Первый абзац.\n\nВторой абзац."
+    snapshot = model_accounting.snapshot_run_model_accounting()
+    assert snapshot["degradation_ladder_trigger_counts"] == {"incomplete_response": 1}
+    assert snapshot["degradation_ladder_translated_paragraph_count"] == 2
+    assert snapshot["degradation_ladder_sentence_split_paragraph_count"] == 0
+
+
+def test_step_three_divides_one_paragraph_by_sentences_and_joins_them_back_into_it(monkeypatch):
+    """Below one paragraph there is no marker, so the pieces come back into the SAME paragraph.
+
+    The model answers ``incomplete`` for anything as long as the whole paragraph and
+    normally for a half of it, which is exactly the shape the output ceiling produces.
+    """
+
+    monkeypatch.setattr(generation.time, "sleep", lambda _seconds: None)
+    model_accounting.reset_run_model_accounting()
+    sentences = [f"Sentence number {index} of the paragraph." for index in range(1, 9)]
+    paragraph = " ".join(sentences)
+
+    def create_response(**kwargs):
+        prompt = kwargs["input"][1]["content"][0]["text"]
+        target = prompt.split("[TARGET BLOCK", 1)[-1].split("[CONTEXT AFTER]")[0]
+        if len(target) >= len(paragraph):
+            return _incomplete_response()
+        return SimpleNamespace(output_text=f"Перевод {target.count('Sentence')} предложений.")
+
+    client = _as_openai_client(SimpleNamespace(responses=SimpleNamespace(create=create_response)))
+
+    result = generation.generate_markdown_block(
+        client=client,
+        model="gpt-5.4",
+        system_prompt="system",
+        target_text=f"[[DOCX_PARA_p0001]]\n{paragraph}",
+        context_before="",
+        context_after="",
+        max_retries=1,
+        expected_paragraph_ids=["p0001"],
+        marker_mode=True,
+    )
+
+    # ONE paragraph in, ONE paragraph out — the marker is neither created nor destroyed.
+    assert "\n\n" not in result
+    assert result == "Перевод 4 предложений. Перевод 4 предложений."
+    dispositions = generation.marker_paragraph_dispositions(result)
+    assert dispositions is not None
+    assert [(item.paragraph_id, item.status) for item in dispositions] == [("p0001", "accepted")]
+    snapshot = model_accounting.snapshot_run_model_accounting()
+    assert snapshot["degradation_ladder_sentence_split_paragraph_count"] == 1
+    assert snapshot["degradation_ladder_translated_paragraph_count"] == 1
+    assert snapshot["degradation_ladder_oversized_sentence_count"] == 0
+
+
+def test_a_sentence_over_the_output_ceiling_is_named_and_never_substituted_silently(monkeypatch):
+    """The honest edge of step 3, said out loud rather than swallowed.
+
+    One sentence longer than what the provider's output ceiling can budget for does not
+    divide further — there is nothing below a sentence that keeps the paragraph intact. The
+    outcome is still today's outcome (the paragraph's own source stands), but it is a WARNING
+    with the two numbers in it and a counter of its own, so a run report can say how often
+    the ladder met its own limit.
+    """
+
+    logged_events = []
+    monkeypatch.setattr(generation.time, "sleep", lambda *_: None)
+    monkeypatch.setattr(
+        generation,
+        "log_event",
+        lambda *args, **kwargs: logged_events.append((args, kwargs)) or "evt-ceiling",
+    )
+    model_accounting.reset_run_model_accounting()
+
+    # A single sentence: no terminal punctuation inside it at all.
+    oversized = "word " * (generation._LADDER_BUDGETABLE_SOURCE_CHARS // 4)
+    assert len(oversized) > generation._LADDER_BUDGETABLE_SOURCE_CHARS
+    client = _as_openai_client(
+        SimpleNamespace(responses=SimpleNamespace(create=lambda **_kwargs: _incomplete_response()))
+    )
+
+    result = generation.generate_markdown_block(
+        client=client,
+        model="gpt-5.4",
+        system_prompt="system",
+        target_text=f"[[DOCX_PARA_p0001]]\n{oversized.strip()}\n\n[[DOCX_PARA_p0002]]\nSecond.",
+        context_before="",
+        context_after="",
+        max_retries=1,
+        expected_paragraph_ids=["p0001", "p0002"],
+        marker_mode=True,
+    )
+
+    assert result == f"{oversized.strip()}\n\nSecond."
+    ceiling_events = [
+        kwargs
+        for args, kwargs in logged_events
+        if len(args) > 1 and args[1] == "degradation_ladder_sentence_exceeds_output_ceiling"
+    ]
+    assert ceiling_events
+    assert ceiling_events[0]["paragraph_chars"] == len(oversized.strip())
+    assert ceiling_events[0]["budgetable_chars"] == generation._LADDER_BUDGETABLE_SOURCE_CHARS
+    snapshot = model_accounting.snapshot_run_model_accounting()
+    assert snapshot["degradation_ladder_oversized_sentence_count"] == 1
+    assert snapshot["degradation_ladder_translated_paragraph_count"] == 0
+
+
+def test_the_ladder_never_runs_on_a_block_that_passes(monkeypatch):
+    """ANTI-VACUUM. A block the model answers on the first try costs exactly one call.
+
+    A remedy that fires on healthy work is not a remedy, it is a tax. Every ladder counter
+    stays at zero and the mapping stays empty, so "the ladder did not run" is a number a
+    reader can check rather than an absence he has to trust.
+    """
+
+    monkeypatch.setattr(generation.time, "sleep", lambda _seconds: None)
+    model_accounting.reset_run_model_accounting()
+    requests: list[dict[str, Any]] = []
+
+    def create_response(**kwargs):
+        requests.append(dict(kwargs))
+        return SimpleNamespace(output_text="[[DOCX_PARA_p0001]]\nПеревод абзаца.")
+
+    client = _as_openai_client(SimpleNamespace(responses=SimpleNamespace(create=create_response)))
+
+    result = generation.generate_markdown_block(
+        client=client,
+        model="gpt-5.4",
+        system_prompt="system",
+        target_text="[[DOCX_PARA_p0001]]\nThe source paragraph.",
+        context_before="",
+        context_after="",
+        max_retries=3,
+        expected_paragraph_ids=["p0001"],
+        marker_mode=True,
+    )
+
+    assert result == "Перевод абзаца."
+    assert len(requests) == 1
+    snapshot = model_accounting.snapshot_run_model_accounting()
+    assert snapshot["degradation_ladder_block_count"] == 0
+    assert snapshot["degradation_ladder_model_call_count"] == 0
+    assert snapshot["degradation_ladder_trigger_counts"] == {}
+    assert snapshot["degradation_ladder_translated_paragraph_count"] == 0
+
+
+def test_the_ladder_declines_a_block_it_cannot_divide(monkeypatch):
+    """ANTI-VACUUM, the second half: an indivisible block buys no extra call.
+
+    One paragraph, one sentence, no markers — dividing it would re-ask the identical text
+    and change nothing but the bill. The three calls are the two attempts and the recovery,
+    exactly as before, and no ladder counter moves.
+    """
+
+    monkeypatch.setattr(generation.time, "sleep", lambda *_: None)
+    model_accounting.reset_run_model_accounting()
+    requests: list[dict[str, Any]] = []
+
+    def create_response(**kwargs):
+        requests.append(dict(kwargs))
+        return _incomplete_response()
+
+    client = _as_openai_client(SimpleNamespace(responses=SimpleNamespace(create=create_response)))
+
+    target_text = "Единственное предложение блока без внутренних границ"
+    result = generation.generate_markdown_block(
+        client=client,
+        model="gpt-5.4",
+        system_prompt="system",
+        target_text=target_text,
+        context_before="before",
+        context_after="after",
+        max_retries=2,
+    )
+
+    assert result == target_text
+    assert len(requests) == 3
+    snapshot = model_accounting.snapshot_run_model_accounting()
+    assert snapshot["degradation_ladder_block_count"] == 0
+    assert snapshot["model_output_discarded_reason_counts"] == {"incomplete_response_source_fallback": 1}
+
+
+def test_the_ladder_terminates_and_is_bounded_on_a_client_that_always_fails(monkeypatch):
+    """The ladder cannot call itself, and one block's calls have an arithmetic ceiling.
+
+    A client that rejects everything is the adversarial case: if a divided call could open a
+    ladder of its own, this would not return. It does, ``degradation_ladder_started`` is
+    logged exactly ONCE for the block, and the calls stay inside
+    ``(paragraphs + 1) * (max_retries + 1)`` — 3 paragraphs and ``max_retries=2`` give
+    3 for the block plus 3 per paragraph, i.e. 12.
+    """
+
+    logged_events = []
+    requests: list[dict[str, Any]] = []
+    monkeypatch.setattr(generation.time, "sleep", lambda *_: None)
+    monkeypatch.setattr(
+        generation,
+        "log_event",
+        lambda *args, **kwargs: logged_events.append((args, kwargs)) or "evt-bounded",
+    )
+    model_accounting.reset_run_model_accounting()
+
+    client = _batched_answer_only_client(
+        "[[DOCX_PARA_p9999]]\nОтвет с чужим маркером", requests=requests
+    )
+
+    result = generation.generate_markdown_block(
+        client=client,
+        model="gpt-5.4",
+        system_prompt="system",
+        target_text="[[DOCX_PARA_p1]]\nOne.\n\n[[DOCX_PARA_p2]]\nTwo.\n\n[[DOCX_PARA_p3]]\nThree.",
+        context_before="",
+        context_after="",
+        max_retries=2,
+        expected_paragraph_ids=["p1", "p2", "p3"],
+        marker_mode=True,
+    )
+
+    # It returned at all — that is the first half of the assertion. Nothing was lost either:
+    # every paragraph kept its own source, exactly today's outcome.
+    assert result == "One.\n\nTwo.\n\nThree."
+    assert len(requests) == 12
+    started = [args for args, _ in logged_events if len(args) > 1 and args[1] == "degradation_ladder_started"]
+    assert len(started) == 1
+    snapshot = model_accounting.snapshot_run_model_accounting()
+    assert snapshot["degradation_ladder_block_count"] == 1
+
+
+def test_a_divided_call_never_substitutes_the_source_behind_the_ladders_back(monkeypatch):
+    """``allow_controlled_source_fallback=False`` is what keeps the ladder honest.
+
+    A nested call that answered a rejection with the source text would be indistinguishable
+    from a translation, and the ladder would report a rescue that shipped English. It raises
+    instead — and the same flag is what makes the ladder unable to re-enter itself.
+    """
+
+    monkeypatch.setattr(generation.time, "sleep", lambda *_: None)
+    client = _as_openai_client(
+        SimpleNamespace(responses=SimpleNamespace(create=lambda **_kwargs: _incomplete_response()))
+    )
+
+    with pytest.raises(RuntimeError) as exc_info:
+        generation.generate_markdown_block(
+            client=client,
+            model="gpt-5.4",
+            system_prompt="system",
+            target_text="Один абзац, который модель не осилила",
+            context_before="",
+            context_after="",
+            max_retries=1,
+            allow_controlled_source_fallback=False,
+        )
+
+    assert "incomplete_response" in str(exc_info.value)
+
+
+def test_the_run_report_prints_what_the_ladder_did_and_what_it_cost() -> None:
+    """The counters have to reach a human, and ``run_summary.txt`` is where he reads them.
+
+    Constitution VIII: without these lines "the ladder works" cannot be checked against a
+    run, only believed.
+    """
+
+    import importlib.util
+    from pathlib import Path
+
+    harness_path = (
+        Path(__file__).resolve().parent / "artifacts" / "real_document_pipeline" / "run_lietaer_validation.py"
+    )
+    spec = importlib.util.spec_from_file_location("run_lietaer_validation_ladder_probe", harness_path)
+    assert spec is not None and spec.loader is not None
+    harness = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(harness)
+
+    lines = harness._build_model_accounting_summary_lines(
+        {
+            "degradation_ladder_block_count": 2,
+            "degradation_ladder_model_call_count": 11,
+            "degradation_ladder_translated_paragraph_count": 11,
+            "degradation_ladder_unrescued_paragraph_count": 0,
+            "degradation_ladder_sentence_split_paragraph_count": 1,
+            "degradation_ladder_oversized_sentence_count": 0,
+            "degradation_ladder_trigger_counts": {"marker_contract": 2},
+        }
+    )
+
+    assert "model_accounting_degradation_ladder_block_count=2" in lines
+    assert "model_accounting_degradation_ladder_model_call_count=11" in lines
+    assert "model_accounting_degradation_ladder_translated_paragraph_count=11" in lines
+    assert "model_accounting_degradation_ladder_unrescued_paragraph_count=0" in lines
+    assert "model_accounting_degradation_ladder_sentence_split_paragraph_count=1" in lines
+    assert "model_accounting_degradation_ladder_oversized_sentence_count=0" in lines
+    assert 'model_accounting_degradation_ladder_trigger_counts={"marker_contract": 2}' in lines
+
+
+def test_every_ladder_counter_is_seeded_so_a_zero_is_an_assertion() -> None:
+    """A missing field is a guess; a zero is a statement. All seven are always published."""
+
+    model_accounting.reset_run_model_accounting()
+    snapshot = model_accounting.snapshot_run_model_accounting()
+
+    assert snapshot["degradation_ladder_block_count"] == 0
+    assert snapshot["degradation_ladder_model_call_count"] == 0
+    assert snapshot["degradation_ladder_translated_paragraph_count"] == 0
+    assert snapshot["degradation_ladder_unrescued_paragraph_count"] == 0
+    assert snapshot["degradation_ladder_sentence_split_paragraph_count"] == 0
+    assert snapshot["degradation_ladder_oversized_sentence_count"] == 0
+    assert snapshot["degradation_ladder_trigger_counts"] == {}
+
+
+def test_the_sentence_split_refuses_to_cut_a_structural_line():
+    """Constitution VII rule 7: repairing size must not destroy a role.
+
+    A heading welded onto the sentence after it stops being a heading, so a unit whose own
+    text carries a structural line is not divided at all — the same guard
+    ``split_marker_preserved_paragraph_dispositions`` uses, not a second one.
+    """
+
+    prose = "Первое предложение. Второе предложение. Третье предложение. Четвёртое."
+    assert len(generation._ladder_sentence_groups(prose)) >= 2
+    assert generation._ladder_sentence_groups(f"## Заголовок\n{prose}") == []
+    # A single sentence declines too: dividing it would re-ask the identical text.
+    assert generation._ladder_sentence_groups("Одно предложение без границ.") == []
