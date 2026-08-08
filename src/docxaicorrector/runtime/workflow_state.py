@@ -21,15 +21,21 @@ def has_restartable_outcome(outcome: str | None) -> bool:
     return outcome in {ProcessingOutcome.STOPPED.value, ProcessingOutcome.FAILED.value}
 
 
-def preparation_start_discards_delivered_result(*, current_result, uploaded_file_token: str) -> bool:
-    """True when starting preparation for ``uploaded_file_token`` destroys a delivered result.
+def start_discards_delivered_result(*, current_result, uploaded_file_token: str) -> bool:
+    """True when starting a run for ``uploaded_file_token`` destroys a delivered result.
 
-    ``start_background_preparation`` opens with an unconditional
-    ``reset_run_state(keep_restart_source=False)``, so every start wipes the ``latest_*``
-    delivery. That is a LOSS only when the delivered result was produced from the very
-    source that is about to be re-prepared: a different upload is the user replacing the
-    document (a legitimate reset), and a run that ended carrying nothing — never started,
-    failed, or stopped before it produced output — has nothing to lose.
+    Both entries into a run open with an unconditional reset, so both wipe the ``latest_*``
+    delivery: ``start_background_preparation`` calls ``reset_run_state(keep_restart_source=False)``
+    and ``start_background_processing`` calls ``reset_run_state(preserve_preparation=True)``.
+    What the two preserve differs (the parsed document survives the second one); what they
+    destroy does not — the DOCX, the narration and the markdown of the finished run go either
+    way. So "is there anything to lose here" is ONE question with one answer, and the rule is
+    shared rather than restated per call site.
+
+    That is a LOSS only when the delivered result was produced from the very source that is
+    about to be re-run: a different upload is the user replacing the document (a legitimate
+    reset), and a run that ended carrying nothing — never started, failed, or stopped before
+    it produced output — has nothing to lose.
 
     "Carrying something" is read off the renderer (``ui/_ui.py:render_result_bundle``), not
     guessed: it hands back exactly three payloads — the DOCX when ``docx_bytes`` is present,
@@ -41,7 +47,9 @@ def preparation_start_discards_delivered_result(*, current_result, uploaded_file
     same for both dispositions and needs no branch on ``blocked``: is any content left to lose.
 
     The rule is keyed on state (which source the delivery belongs to, what it carries), not on
-    which setting the user touched.
+    which setting the user touched or which button led here. What the two call sites do with
+    the answer is theirs to decide: an unintended trigger (a sidebar change) has to ask, while
+    a deliberate one (the start button) only has to tell, in time.
     """
     if not isinstance(current_result, Mapping):
         return False

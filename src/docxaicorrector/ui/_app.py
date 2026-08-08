@@ -104,7 +104,7 @@ from docxaicorrector.runtime.workflow_state import (
     IdleViewState,
     ProcessingOutcome,
     has_restartable_outcome,
-    preparation_start_discards_delivered_result,
+    start_discards_delivered_result,
 )
 
 PERSISTED_SOURCE_TTL_SECONDS = 12 * 60 * 60
@@ -732,6 +732,41 @@ def _render_preparation_discard_confirmation(*, result: Mapping[str, object]) ->
     return False
 
 
+def _warn_before_a_start_discards_the_delivered_result(
+    *,
+    current_result: Mapping[str, object] | None,
+    uploaded_file_token: str,
+) -> None:
+    """Say, BEFORE the click, that starting a run erases the result already delivered.
+
+    ``start_background_processing`` opens with an unconditional
+    ``reset_run_state(preserve_preparation=True)``, and the bottom start control keeps
+    ``can_start=True`` while a finished result is on screen. So a second start wiped
+    ``latest_docx_bytes`` / ``latest_narration_text`` / ``latest_markdown`` of a paid,
+    possibly-undownloaded run, with no notice and no undo — the same destruction the sidebar
+    path had, reached through the other door.
+
+    The remedy is deliberately NOT the confirmation used on the sidebar path, and the
+    difference is the trigger. A setting change is not an action aimed at the result at all,
+    so there the only honest moment to speak is a prompt. This click IS the action: the user
+    asked for another run, and the single fact they lack is that the previous output does not
+    survive it. A confirmation would re-ask a question already answered and charge a click on
+    every deliberate re-run; the notice answers the question that is actually open, costs
+    nothing, and is stronger where it matters — it stands next to the result it is about to
+    destroy, with that result's download buttons in reach, and it is on screen from the moment
+    the result appears rather than only at the destructive instant.
+
+    Whether there IS anything to lose is not decided here: that is
+    ``start_discards_delivered_result``, shared with the preparation path.
+    """
+    if not start_discards_delivered_result(
+        current_result=current_result,
+        uploaded_file_token=uploaded_file_token,
+    ):
+        return
+    st.warning(t("app.start_discards_result_warning"))
+
+
 def _select_current_result_for_source(
     current_result: Mapping[str, object] | None,
     *,
@@ -876,7 +911,7 @@ def main() -> None:
             target_language=target_language,
         )
         if should_start_preparation_for_marker(preparation_request_marker):
-            if current_result is not None and preparation_start_discards_delivered_result(
+            if current_result is not None and start_discards_delivered_result(
                 current_result=current_result,
                 uploaded_file_token=str(getattr(uploaded_widget_payload, "file_token", "")),
             ):
@@ -1075,6 +1110,11 @@ def main() -> None:
 
     if selected_result is not None:
         _render_completed_result_view(selected_result)
+
+    _warn_before_a_start_discards_the_delivered_result(
+        current_result=current_result,
+        uploaded_file_token=uploaded_file_token,
+    )
 
     _finalize_app_frame()
     action = _render_processing_controls(

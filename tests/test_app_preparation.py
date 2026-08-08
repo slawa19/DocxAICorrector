@@ -1678,3 +1678,209 @@ def test_blocked_delivery_that_carries_nothing_asks_nothing(monkeypatch):
     assert record["starts"][0]["upload_marker"] == _MARKER_AFTER_TARGET_LANGUAGE_CHANGE
     assert record["warnings"] == []
     assert record["buttons"] == []
+
+
+# --- The OTHER door to the same destruction: the bottom start control -----------------
+#
+# The setting-change path above is only one of two ways a finished run was thrown away.
+# ``start_background_processing`` opens with an unconditional
+# ``reset_run_state(preserve_preparation=True)``, and the bottom control is drawn with
+# ``can_start=True`` even while the delivered result is on screen, so pressing start a second
+# time wiped ``latest_docx_bytes`` / ``latest_narration_text`` / ``latest_markdown`` with no
+# notice and no undo.
+#
+# The remedy differs from the sidebar one on purpose. That trigger is not an action aimed at
+# the result, so it has to ASK. This one is: the user asked for another run and lacks exactly
+# one fact — that the previous output does not survive it. So the start still costs the one
+# click it always cost, and the fact is on screen before the click, next to the result and its
+# download buttons. These tests pin both halves: the notice appears, and it costs nothing.
+
+
+def _run_main_for_processing_start_guard(
+    monkeypatch,
+    *,
+    current_result: object = "from-session",
+    control_action: str | None = "start",
+    session_overrides=None,
+):
+    """Drive ``main()`` down to the bottom start control of an already-prepared document.
+
+    The stored preparation marker equals the one the sidebar rebuilds, so the preparation
+    path is NOT re-entered and this exercises the processing start on its own.
+    ``current_result="from-session"`` leaves ``get_current_result_bundle`` UNPATCHED, so the
+    real bundle is derived from the session state the test supplies.
+    """
+    prepared_run_context = _build_prepared_run_context(
+        uploaded_file_token=_PAID_SOURCE_TOKEN,
+        prepared_source_key=f"{_PAID_SOURCE_TOKEN}:6000",
+    )
+    uploaded_file = UploadedFileStub("report.docx", b"abc")
+    session_state = SessionState(
+        app_start_logged=True,
+        processing_status={},
+        activity_feed=["already-there"],
+        image_assets=[],
+        preparation_input_marker=_MARKER_AFTER_TARGET_LANGUAGE_CHANGE,
+        preparation_failed_marker="",
+        prepared_run_context=prepared_run_context,
+        latest_image_mode="safe",
+        last_error="",
+        last_log_hint="",
+        processing_outcome="succeeded",
+    )
+    for key, value in (session_overrides or {}).items():
+        session_state[key] = value
+    record = {"processing_starts": [], "warnings": [], "buttons": [], "rendered": [], "rerun": False}
+
+    class RerunRequested(Exception):
+        pass
+
+    monkeypatch.setattr(app.st, "session_state", session_state)
+    monkeypatch.setattr(app, "init_session_state", lambda: None)
+    monkeypatch.setattr(app, "_cached_load_app_config", lambda: {})
+    monkeypatch.setattr(
+        app,
+        "render_sidebar",
+        lambda config: ("gpt-5.4", 6000, 3, "safe", False, "translate", "en", "de", False),
+    )
+    monkeypatch.setattr(app, "_drain_processing_events", lambda: None)
+    monkeypatch.setattr(app, "_drain_preparation_events", lambda: None)
+    monkeypatch.setattr(app, "_processing_worker_is_active", lambda: False)
+    monkeypatch.setattr(app, "_preparation_worker_is_active", lambda: False)
+    if current_result != "from-session":
+        monkeypatch.setattr(app, "get_current_result_bundle", lambda: current_result)
+    monkeypatch.setattr(app.st, "title", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "write", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "caption", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "file_uploader", lambda *args, **kwargs: uploaded_file)
+    monkeypatch.setattr(app.st, "info", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "error", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "fragment", lambda **kw: (lambda fn: fn))
+    monkeypatch.setattr(app.st, "warning", lambda value, *args, **kwargs: record["warnings"].append(value))
+    monkeypatch.setattr(app.st, "button", lambda label, *args, **kwargs: record["buttons"].append(label) or False)
+    monkeypatch.setattr(app.st, "rerun", lambda: (_ for _ in ()).throw(RerunRequested()))
+    monkeypatch.setattr(app, "render_intro_layout_styles", lambda: None)
+    monkeypatch.setattr(app, "render_live_status", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app, "render_run_log", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app, "render_image_validation_summary", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app, "render_partial_result", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app, "render_preparation_summary", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app, "render_markdown_preview", lambda *args, **kwargs: record["rendered"].append("markdown_preview"))
+    monkeypatch.setattr(app, "render_result_bundle", lambda **kwargs: record["rendered"].append("result_bundle"))
+    monkeypatch.setattr(app, "_finalize_app_frame", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app, "_maybe_apply_file_recommendations", lambda **kwargs: None)
+    monkeypatch.setattr(app, "push_activity", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app, "set_processing_status", lambda **kwargs: None)
+    monkeypatch.setattr(app, "_render_processing_controls", lambda **kwargs: control_action)
+    monkeypatch.setattr(app, "_start_background_processing", lambda **kwargs: record["processing_starts"].append(kwargs))
+    monkeypatch.setattr(app, "_start_background_preparation", lambda **kwargs: (_ for _ in ()).throw(AssertionError("preparation must not restart here")))
+    monkeypatch.setattr(application_flow, "resolve_effective_uploaded_file", lambda **kwargs: uploaded_file)
+    monkeypatch.setattr(application_flow, "has_resettable_state", lambda **kwargs: False)
+    monkeypatch.setattr(application_flow, "derive_app_idle_view_state", lambda **kwargs: "file_selected")
+    monkeypatch.setattr(
+        application_flow,
+        "prepare_run_context",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("prepare_run_context should not be called")),
+    )
+
+    try:
+        app.main()
+    except RerunRequested:
+        record["rerun"] = True
+    return record
+
+
+def test_a_second_start_says_it_will_destroy_the_delivered_result(monkeypatch):
+    record = _run_main_for_processing_start_guard(monkeypatch, current_result=_delivered_result())
+
+    assert t("app.start_discards_result_warning") in record["warnings"]
+    # The paid result and its download buttons are on screen next to the notice.
+    assert record["rendered"] == ["markdown_preview", "result_bundle"]
+    # ...and the notice costs nothing: the start still goes through on the single click.
+    assert len(record["processing_starts"]) == 1
+    assert record["processing_starts"][0]["uploaded_token"] == _PAID_SOURCE_TOKEN
+    assert record["buttons"] == []
+    assert record["rerun"] is True
+
+
+def test_the_notice_is_on_screen_before_the_click_not_after_it(monkeypatch):
+    """The whole point is the ORDER: the user must be able to read it and download first.
+
+    Same state, but no click this frame — which is every frame between the run finishing and
+    the user deciding. The notice is already there, and nothing has been destroyed.
+    """
+    record = _run_main_for_processing_start_guard(
+        monkeypatch,
+        current_result=_delivered_result(),
+        control_action=None,
+    )
+
+    assert t("app.start_discards_result_warning") in record["warnings"]
+    assert record["processing_starts"] == []
+    assert record["rendered"] == ["markdown_preview", "result_bundle"]
+
+
+def test_the_first_start_of_a_file_says_nothing_about_a_destroyed_result(monkeypatch):
+    record = _run_main_for_processing_start_guard(monkeypatch, current_result=None)
+
+    assert t("app.start_discards_result_warning") not in record["warnings"]
+    assert len(record["processing_starts"]) == 1
+
+
+def test_a_start_after_a_run_that_delivered_nothing_says_nothing(monkeypatch):
+    """A run that failed before producing output leaves nothing to lose.
+
+    No bundle stub: the REAL ``get_current_result_bundle`` reads this session state and
+    returns None, which is exactly what a failed run looks like on screen.
+    """
+    record = _run_main_for_processing_start_guard(
+        monkeypatch,
+        session_overrides={
+            "processing_outcome": "failed",
+            "latest_docx_bytes": None,
+            "latest_narration_text": None,
+            "latest_markdown": "",
+            "latest_source_token": _PAID_SOURCE_TOKEN,
+            "last_error": "processing failed",
+        },
+    )
+
+    # Not vacuous: the guard really was evaluated, against a genuinely empty delivery.
+    assert app.get_current_result_bundle() is None
+    assert t("app.start_discards_result_warning") not in record["warnings"]
+    assert len(record["processing_starts"]) == 1
+
+
+def test_a_start_with_a_result_from_another_document_says_nothing(monkeypatch):
+    record = _run_main_for_processing_start_guard(
+        monkeypatch,
+        current_result=_delivered_result(source_token="other.docx:9:0f0f0f0f0f0f0f0f"),
+    )
+
+    # Not vacuous: a delivered bundle exists, it simply does not belong to this source.
+    assert app.get_current_result_bundle() is not None
+    assert t("app.start_discards_result_warning") not in record["warnings"]
+    assert len(record["processing_starts"]) == 1
+
+
+def test_a_start_after_a_refusal_that_carried_nothing_says_nothing(monkeypatch):
+    """Blocked before any output existed: the bundle is real, its payload is empty."""
+    record = _run_main_for_processing_start_guard(
+        monkeypatch,
+        session_overrides={
+            "latest_docx_bytes": None,
+            "latest_narration_text": None,
+            "latest_markdown": "",
+            "latest_source_name": "report.docx",
+            "latest_source_token": _PAID_SOURCE_TOKEN,
+            "latest_processing_operation": "translate",
+            "latest_delivery_disposition": {
+                "status": "blocked",
+                "explanation": "Quality gate refused delivery",
+            },
+        },
+    )
+
+    assert app.get_current_result_bundle() is not None
+    assert t("app.start_discards_result_warning") not in record["warnings"]
+    assert len(record["processing_starts"]) == 1
