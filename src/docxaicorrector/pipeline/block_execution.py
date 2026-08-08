@@ -5,6 +5,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Literal, TypeAlias
 
+from docxaicorrector.core.model_accounting import record_controlled_block_fallback
 from docxaicorrector.generation._generation import (
     PARAGRAPH_STATUS_OMITTED,
     marker_paragraph_dispositions,
@@ -953,6 +954,19 @@ def continue_controlled_processed_block_rejection(
     rejection_kind: str,
     append_marker_registry_entries_fn: Any,
 ) -> None:
+    # Run-level accounting for the pipeline half of the loss. Until this call the ONLY
+    # trace a ``fallback_continue`` left was a per-block diagnostic under ``.run/`` and a
+    # log line — nothing a run report could add up — so how often
+    # ``english_residual_output``, ``heading_only_output`` or ``toc_body_concat``
+    # substituted text was unknowable after the fact, and the run-level discard numbers
+    # (fed only by ``generation/_generation.py``) were a LOWER bound nobody labelled as one.
+    # This is the single choke point of the branch: ``process_single_block`` calls it only
+    # for decision ``fallback_continue``, so a structural ``fail`` can never land here.
+    # ``processed_chunk`` is what the block actually delivered (the caller passes
+    # ``rejection_decision["fallback_markdown"]``), which is the text whose length is the
+    # cost — the same quantity and the same unit as
+    # ``state.narration_excluded_source_fallback_chars`` below.
+    record_controlled_block_fallback(kind=rejection_kind, chars=len(processed_chunk))
     artifact_path = _write_controlled_block_fallback_artifact(
         context=context,
         initialization=initialization,
