@@ -71,6 +71,7 @@ from __future__ import annotations
 
 import re
 import subprocess
+import sys
 from collections.abc import Iterable, Sequence
 from functools import lru_cache
 from pathlib import Path
@@ -408,6 +409,12 @@ def _reachable_commits() -> tuple[tuple[str, str, tuple[str, ...]], ...]:
     return tuple(commits)
 
 
+def commit_subject(message: str) -> str:
+    """The first line of a commit message, or ``""``."""
+    stripped = message.strip()
+    return stripped.splitlines()[0] if stripped else ""
+
+
 @lru_cache(maxsize=1)
 def _work_commits_by_spec() -> dict[str, tuple[str, ...]]:
     """Spec number -> ``sha subject`` of every commit that DID work on it."""
@@ -418,9 +425,18 @@ def _work_commits_by_spec() -> dict[str, tuple[str, ...]]:
         for sha, message, paths in _reachable_commits():
             if not any(path.startswith(_WORK_PATH_PREFIXES) for path in paths):
                 continue
-            if not _commit_references_spec(spec_dir_name, message):
+            subject = commit_subject(message)
+            # The SUBJECT decides attribution, not the whole message. A body is prose
+            # and mentions other specs for context — including to deny a relation
+            # ("this work does not belong to spec 059"), which the matcher cannot read
+            # as a denial. That false credit is not hypothetical: it failed CI twice on
+            # 2026-08-08 and is why this narrowing exists.
+            # Measured over the whole history at that date: specs 054-058 have 47
+            # commits naming them in the subject and ZERO naming them only in the body,
+            # so nothing true is lost. Escape hatch (c) in the failure message points
+            # here on purpose.
+            if not _commit_references_spec(spec_dir_name, subject):
                 continue
-            subject = message.strip().splitlines()[0] if message.strip() else ""
             found.append(f"{sha} {subject}")
         index[spec_dir_name[:3]] = found
     return {number: tuple(found) for number, found in index.items()}
@@ -808,6 +824,62 @@ def test_a_not_started_claim_about_a_spec_with_no_work_is_allowed() -> None:
     """
     header = "**Status**: **PLANNED — not started.**"
     assert not_started_claims_about_merged_work(header, ["059"], {"054", "055", "056"}) == []
+
+
+def test_work_is_credited_by_the_commit_subject_not_the_body() -> None:
+    """A spec number in the BODY of a commit is not a claim of work on that spec.
+
+    A subject follows the convention (``feat(055):``, ``fix(056 P0-3):``,
+    ``docs(spec 058):``) and is where work announces itself. A body is prose, and
+    prose names other specs for context — including to DENY a relation. The matcher
+    cannot read a denial, so crediting the body produced a false positive that failed
+    CI twice on 2026-08-08: a commit whose body said "this work does not belong to
+    spec 059" was recorded as work on spec 059, against a spec whose status honestly
+    said "не начат".
+
+    Measured before narrowing: specs 054-058 carry 47 commits naming them in the
+    subject and ZERO naming them only in the body, so no true attribution is lost.
+    """
+    spec_dir = "059-verdict-never-reaches-the-screen"
+    body_only = (
+        "fix(ui): a setting change asks before it destroys the paid result\n"
+        "\n"
+        "Работа defect-driven; к спеке 059 она не относится.\n"
+    )
+    # The whole message DOES name it — which is exactly why the caller must not read it.
+    assert _commit_references_spec(spec_dir, body_only)
+    assert not _commit_references_spec(spec_dir, commit_subject(body_only))
+
+    # Anti-vacuum: narrowing must not disable attribution. A subject that names the
+    # spec is still credited, in every shape the repository actually uses.
+    for subject in (
+        "feat(059 E): one bad paragraph stops taking nine good ones with it",
+        "docs(spec 059): the ladder and the invariant",
+        "Merge pull request #59 from slawa19/docs/059-honesty-channel-spec",
+    ):
+        assert _commit_references_spec(spec_dir, commit_subject(subject + "\n\nbody\n"))
+
+
+def test_the_attribution_itself_reads_only_the_subject(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The caller, not just the matcher, must ignore the body.
+
+    The test above pins the formula; this one pins that ``_work_commits_by_spec``
+    actually applies it. Without this, reverting the caller to the whole message
+    would leave the suite green — the real history happens to contain no body-only
+    reference today, so a test over real data would pass vacuously.
+    """
+    synthetic = (
+        ("aaaaaaaa", "fix(ui): unrelated work\n\nк спеке 059 она не относится\n", ("src/a.py",)),
+        ("bbbbbbbb", "feat(059): the real work\n\nbody\n", ("src/b.py",)),
+    )
+    monkeypatch.setattr(sys.modules[__name__], "_reachable_commits", lambda: synthetic)
+    _work_commits_by_spec.cache_clear()
+    try:
+        credited = _work_commits_by_spec().get("059", ())
+    finally:
+        _work_commits_by_spec.cache_clear()
+
+    assert [entry.split(" ", 1)[0] for entry in credited] == ["bbbbbbbb"]
 
 
 @pytest.mark.parametrize(
