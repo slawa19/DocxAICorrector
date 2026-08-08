@@ -3,8 +3,10 @@
 Status: Active, canonical. End-to-end verified 2026-06-21; **partially re-verified 2026-08-07**, when
 two things were found stale: the `.env`/`export` precedence had been inverted by `12385ad` on
 2026-07-15 and this document still taught the old behaviour, and audiobook mode — shipped since — was
-absent entirely. Sections 2 and 4a carry the corrections. The rest still dates from 2026-06-21: if a
-command here disagrees with the code, the code is right, and fix this file in the same PR.
+absent entirely. Sections 2 and 4a carry the corrections. Section 4 gained a reading guide for the
+`model_accounting_*` lines on 2026-08-08, when two counter families started appearing in
+`..._summary.txt`. The rest still dates from 2026-06-21: if a command here disagrees with the code, the
+code is right, and fix this file in the same PR.
 
 Read this BEFORE running tests, config checks, or a full-book pipeline run. Do **not** re-derive
 ad-hoc paths/commands — every command below is tested and copy-paste ready. Most of this exists
@@ -117,6 +119,32 @@ Outputs in `runs/<RUN_ID>/`: `..._report.json`, `..._summary.txt`, and `<output_
 `<output_basename>.md` and, on audiobook runs, `<output_basename>.tts.txt`
 (`scripts/run_lietaer_validation.py:3489-3491`, `src/docxaicorrector/runtime/artifacts.py:382`). Five
 files, not three. On an audiobook run the `.tts.txt` **is** the product.
+
+### Reading `..._summary.txt`: the `model_accounting_*` lines (added 2026-08-08)
+
+The summary carries the run ledger as flat `model_accounting_<field>=<value>` lines
+(`_build_model_accounting_summary_lines`,
+`tests/artifacts/real_document_pipeline/run_lietaer_validation.py:4376`). Two families landed on
+2026-08-08 and are named here only so that whoever opens a fresh report knows what is in front of them.
+The **authoritative** field-by-field meaning lives in `docs/LOGGING_AND_ARTIFACT_RETENTION.md` (event
+`model_usage_accounted`) and is deliberately not repeated: one of the two documents has to own it, and
+that one does.
+
+- `model_accounting_controlled_block_fallback_*` — the PIPELINE half of prose loss: blocks
+  `process_single_block` judged unusable and **delivered anyway** (`fallback_continue`). Blocks and
+  characters, with a `_kind_counts` / `_kind_chars` breakdown. Deliberately NOT merged into
+  `model_accounting_model_output_discarded_*`, which is the GENERATOR's decision to throw an answer
+  away: the same block routinely collects both verdicts, so adding them double-counts it.
+- `model_accounting_degradation_ladder_*` — the remedy printed beside the loss it removes: how many
+  blocks the generator answered by DIVIDING instead of substituting source text,
+  `_model_call_count` (a measured delta, not an estimate — a paragraph that needed two attempts cost
+  two calls), and `_translated_paragraph_count` against `_unrescued_paragraph_count`. Those two sum to
+  the blocks' paragraph count, so the pair states the whole outcome and not the flattering half.
+
+Zeros here assert something rather than mark a missing field. All-zero `degradation_ladder_*` means the
+ladder never fired, which is the expected reading of a clean run — a block that passes first try must
+not cost one extra call. `controlled_block_fallback_*` above zero means untranslated text reached the
+delivered document, and that is the number worth acting on.
 
 ---
 

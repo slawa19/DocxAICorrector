@@ -20,7 +20,7 @@ DocxAICorrector — это Streamlit-приложение для литерат�
 - Retry для временных API-сбоев.
 - Отдельный режим `audiobook` для подготовки текста под ElevenLabs Audiobooks.
 - Опциональный post-pass `audiobook_postprocess` для `edit` и `translate`, который добавляет narration artifact без мутации основного DOCX/Markdown.
-- Живой статус обработки, журнал по блокам и activity feed в UI.
+- Живой статус обработки и журнал по блокам (`run_log`) в UI. Отдельной ленты активности больше нет: её не читал ни один экран, и весь канал за ней удалён 2026-08-08.
 - Сохранение промежуточного Markdown при частичном сбое.
 - Placeholder-based pipeline для inline-изображений в `.docx`.
 - Сохранение полезного inline-formatting: hyperlinks, tabs, bold, italic, underline, sup/sub.
