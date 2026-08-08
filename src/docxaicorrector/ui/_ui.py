@@ -21,7 +21,6 @@ from docxaicorrector.ui.i18n import t
 from docxaicorrector.ui.review_presentation import build_review_presentation
 from docxaicorrector.runtime.artifacts import _build_formatting_review_text
 from docxaicorrector.runtime.state import (
-    get_activity_feed,
     get_image_assets,
     get_image_processing_summary,
     get_latest_docx_bytes,
@@ -301,8 +300,7 @@ def resolve_source_language_from_widget_state(config: Mapping[str, Any]) -> str:
 
 def render_live_status(target=None) -> None:
     status = get_processing_status()
-    activity_feed = get_activity_feed()
-    if not status and not activity_feed:
+    if not status:
         return
 
     sink = _get_sink(target)
