@@ -8,6 +8,8 @@
   "app.config_load_error": "Configuration load error: {message}",
   "app.document_read_error": "Document read error: {message}",
   "app.preparation_state_unavailable": "The saved file preparation state was lost or is unavailable. If the document did not appear in ready mode, upload the file again to restart preparation.",
+  "app.preparation_discards_result_warning": "The new setting requires analyzing the document again, and the finished result of the previous run will be deleted with no way to restore it. Download the files below if you still need them, or restore the previous setting.",
+  "app.preparation_discards_result_confirm": "Delete the finished result and analyze the document again",
   "app.reset_results_button": "Reset results",
   "app.result_unavailable": "The processing result is unavailable in the current session.",
   "app.markdown_preview_title": "Markdown preview",
