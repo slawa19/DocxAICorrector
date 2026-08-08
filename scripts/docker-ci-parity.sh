@@ -39,4 +39,4 @@ bash scripts/test.sh tests/test_typecheck.py -q
 bash scripts/test.sh tests/ -q -m static_workflow
 
 # Marker-excluded suite, exactly as ci.yml.
-bash scripts/test.sh tests/ -q -m "not static_workflow and not typecheck and not system_deps and not manual_ai_heavy and not browser_ui"
+bash scripts/test.sh tests/ -q -m "not static_workflow and not typecheck and not system_deps and not manual_ai_heavy"

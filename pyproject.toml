@@ -52,7 +52,6 @@ markers = [
   "static_workflow: static workflow, task, script, and documentation contract checks",
   "typecheck: static typechecking gates and pyright-related checks",
   "system_deps: tests that require Pandoc, LibreOffice, antiword, or other system tools",
-  "browser_ui: browser-level UI smoke coverage",
   "manual_ai_heavy: opt-in tests that require real model/API/manual operator validation",
   "real_ai_api: opt-in tests that require live text-model API access",
   "live_image_api: opt-in tests that require live image API access",

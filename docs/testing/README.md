@@ -14,16 +14,16 @@
 
 | Tier | Что доказывает | Типичный запуск |
 |---|---|---|
-| `unit-contract` | fast unit and contract behavior without external binaries or secrets | `bash scripts/test.sh tests/ -q -m "not static_workflow and not typecheck and not system_deps and not manual_ai_heavy and not browser_ui"` for the current PR-safe pytest path |
+| `unit-contract` | fast unit and contract behavior without external binaries or secrets | `bash scripts/test.sh tests/ -q -m "not static_workflow and not typecheck and not system_deps and not manual_ai_heavy"` for the current PR-safe pytest path |
 | `compat-legacy` | legacy aliases, tuple-shape guards, rollback compatibility | targeted pytest selectors or `-m compat_legacy` |
 | `static-workflow` | CI/tasks/scripts/docs workflow contracts that should stay cheap and deterministic | targeted static workflow file selectors |
 | `typecheck` | pyright and typing gates | `bash scripts/test.sh tests/test_typecheck.py -q` |
 | `integration-local` | broader local integrations without mandatory external API secrets | targeted file selectors |
 | `system-deps` | real conversion paths that need Pandoc/LibreOffice/antiword but not API secrets | targeted corpus or generation selectors in prepared WSL runtime |
-| `browser-ui` | real browser-backed Streamlit smoke | explicitly deferred for now: the repo has no Playwright or `streamlit.testing` harness yet, so browser smoke remains a planned follow-up tier rather than an implied existing signal |
+| `browser-ui` | real browser-backed Streamlit smoke | **не существует.** Маркера `browser_ui` больше нет: он был объявлен, но его не нёс ни один тест, и строка `not browser_ui` в CI читалась как «покрытие есть, просто отключено». Маркер убран 2026-08-08. Если браузерное покрытие заведут, маркер вернётся вместе с тестами, а не раньше |
 | `manual-ai-heavy` | opt-in real API or operator-visible heavy validation | explicit env-gated selectors and dedicated tasks/scripts |
 
-Marker naming in pytest uses underscores (`unit_contract`, `compat_legacy`, `static_workflow`, `integration_local`, `system_deps`, `browser_ui`, `manual_ai_heavy`) even when docs refer to the tier labels with hyphens.
+Marker naming in pytest uses underscores (`unit_contract`, `compat_legacy`, `static_workflow`, `integration_local`, `system_deps`, `manual_ai_heavy`) even when docs refer to the tier labels with hyphens. The `browser-ui` row above has no marker at all — see the row itself.
 
 ## Current Phase 0 Scope
 
