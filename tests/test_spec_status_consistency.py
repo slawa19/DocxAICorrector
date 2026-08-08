@@ -343,6 +343,33 @@ class GitHistoryUnavailable(RuntimeError):
     """The reachable git history could not be read — never swallowed, always fatal."""
 
 
+class GitRepositoryUnopenable(RuntimeError):
+    """git cannot open this checkout AT ALL — an environment fault, not evidence.
+
+    Distinct from :class:`GitHistoryUnavailable`, and the distinction is the whole
+    point. A shallow clone is a working repository with a short history: git answers,
+    the answer is empty, and a guard that passed on it would be vacuously green — that
+    must stay fatal. This class is the other thing: git cannot even find the repository,
+    so it reports nothing at all, true or false.
+
+    The only way this has occurred here: a ``git worktree`` created by Windows git
+    leaves ``.git`` as a file holding ``gitdir: D:/www/...``. WSL git resolves that
+    Windows path relative to the cwd and fails with "not a git repository", so all six
+    history-reading tests in this module fail in every side worktree — 6 failed, 106
+    passed, measured 2026-08-08. Red tests that mean nothing train people to ignore red.
+
+    This can NOT hide a shallow clone in CI: ``actions/checkout`` produces a real
+    ``.git`` directory, so git opens the repository and any shortness of history is
+    reported by ``test_git_history_is_reachable`` as before.
+    """
+
+
+_REPOSITORY_UNOPENABLE_MARKERS = (
+    "not a git repository",
+    "no such file or directory",
+)
+
+
 def _git(*args: str) -> str:
     try:
         completed = subprocess.run(
@@ -356,11 +383,30 @@ def _git(*args: str) -> str:
     except OSError as error:  # git not installed at all
         raise GitHistoryUnavailable(f"could not run git: {error}") from error
     if completed.returncode != 0:
+        stderr = completed.stderr.strip()
+        lowered = stderr.lower()
+        if any(marker in lowered for marker in _REPOSITORY_UNOPENABLE_MARKERS):
+            raise GitRepositoryUnopenable(
+                f"`git {' '.join(args)}` cannot open this checkout:\n{stderr}\n\n"
+                "This is an environment fault, not a documentation drift. The usual "
+                "cause is a `git worktree` created by Windows git: its `.git` file "
+                "holds a Windows path that WSL git resolves relative to the cwd. Run "
+                "these checks from the main checkout, where git opens normally."
+            )
         raise GitHistoryUnavailable(
             f"`git {' '.join(args)}` failed with exit code {completed.returncode}:\n"
-            f"{completed.stderr.strip()}"
+            f"{stderr}"
         )
     return completed.stdout
+
+
+def _skip_if_git_cannot_open_the_repository(error: GitRepositoryUnopenable) -> None:
+    """Skip — and ONLY for a checkout git cannot open at all.
+
+    Deliberately not a broad ``except Exception``: everything else, including an
+    empty or shallow history, still fails. See :class:`GitRepositoryUnopenable`.
+    """
+    pytest.skip(str(error))
 
 
 def _commit_references_spec(spec_dir_name: str, message: str) -> bool:
@@ -392,9 +438,16 @@ def _reachable_commits() -> tuple[tuple[str, str, tuple[str, ...]], ...]:
     Merge commits are skipped — they carry no diff of their own and their content is
     already present in the commits they merge.
     """
-    raw = _git(
-        "log", "--no-merges", "--format=%x00%H%x01%B%x01", "--name-only", "HEAD"
-    )
+    try:
+        raw = _git(
+            "log", "--no-merges", "--format=%x00%H%x01%B%x01", "--name-only", "HEAD"
+        )
+    except GitRepositoryUnopenable as error:
+        # NARROW on purpose: only "git cannot open this checkout". A readable
+        # repository with a short history still raises GitHistoryUnavailable and
+        # still fails, which is what protects CI from a vacuous green.
+        _skip_if_git_cannot_open_the_repository(error)
+        raise  # unreachable; keeps the return type honest for a type checker
     commits: list[tuple[str, str, tuple[str, ...]]] = []
     for chunk in raw.split("\x00"):
         if not chunk.strip():
@@ -655,6 +708,11 @@ def test_git_history_is_reachable() -> None:
             number: _work_commits_by_spec().get(number, ())
             for number in _SPECS_WITH_MERGED_WORK_ANCHORS
         }
+    except GitRepositoryUnopenable as error:
+        # Not a shallow clone — a checkout git cannot open at all. See the class
+        # docstring: this is unreachable under `actions/checkout`, so the CI
+        # anti-vacuum below is untouched.
+        _skip_if_git_cannot_open_the_repository(error)
     except GitHistoryUnavailable as error:
         pytest.fail(
             f"the git history is not reachable from {REPO_ROOT}, so the "
