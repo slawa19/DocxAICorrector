@@ -3,7 +3,7 @@ from docxaicorrector.runtime.workflow_state import (
     ProcessingOutcome,
     derive_idle_view_state,
     has_restartable_outcome,
-    preparation_start_discards_delivered_result,
+    start_discards_delivered_result,
 )
 
 
@@ -25,20 +25,20 @@ def test_has_restartable_outcome_accepts_stopped_and_failed():
     assert has_restartable_outcome(ProcessingOutcome.SUCCEEDED.value) is False
 
 
-def test_preparation_start_discards_delivered_result_for_the_same_source():
-    assert preparation_start_discards_delivered_result(
+def test_a_start_discards_the_delivered_result_of_the_same_source():
+    assert start_discards_delivered_result(
         current_result=_delivered(),
         uploaded_file_token="report.docx:3:token",
     ) is True
     # An audiobook run delivers narration instead of a DOCX; it is a paid result too.
-    assert preparation_start_discards_delivered_result(
+    assert start_discards_delivered_result(
         current_result=_delivered(docx_bytes=None, narration_text="narration", markdown_text=""),
         uploaded_file_token="report.docx:3:token",
     ) is True
     # A REFUSED delivery whose only payload is the markdown: the renderer suppresses its
     # download buttons without a DOCX, but the markdown and the refusal explanation are
     # exactly what the user paid the run for, and they are on screen.
-    assert preparation_start_discards_delivered_result(
+    assert start_discards_delivered_result(
         current_result=_delivered(
             docx_bytes=None,
             markdown_text="# refused output",
@@ -48,26 +48,26 @@ def test_preparation_start_discards_delivered_result_for_the_same_source():
     ) is True
 
 
-def test_preparation_start_discards_nothing_without_a_delivered_result():
+def test_a_start_discards_nothing_without_a_delivered_result():
     # Nothing delivered yet: the first run of a freshly uploaded file.
-    assert preparation_start_discards_delivered_result(
+    assert start_discards_delivered_result(
         current_result=None,
         uploaded_file_token="report.docx:3:token",
     ) is False
     # A different document: replacing the upload is a legitimate reset, not a loss.
-    assert preparation_start_discards_delivered_result(
+    assert start_discards_delivered_result(
         current_result=_delivered(source_token="other.docx:9:othertoken"),
         uploaded_file_token="report.docx:3:token",
     ) is False
     # A run that ended carrying nothing at all: no DOCX, no narration, no markdown. The
     # screen holds no download button and no output text, so there is nothing to lose.
-    assert preparation_start_discards_delivered_result(
+    assert start_discards_delivered_result(
         current_result=_delivered(docx_bytes=None, markdown_text=""),
         uploaded_file_token="report.docx:3:token",
     ) is False
     # Same, for a refused delivery that was blocked before it produced any markdown: the
     # explanation renders, but no payload of the run survives to be destroyed.
-    assert preparation_start_discards_delivered_result(
+    assert start_discards_delivered_result(
         current_result=_delivered(
             docx_bytes=None,
             markdown_text="   ",
@@ -76,7 +76,7 @@ def test_preparation_start_discards_nothing_without_a_delivered_result():
         uploaded_file_token="report.docx:3:token",
     ) is False
     # No identity on either side is no evidence of a same-source loss.
-    assert preparation_start_discards_delivered_result(
+    assert start_discards_delivered_result(
         current_result=_delivered(source_token=""),
         uploaded_file_token="",
     ) is False
