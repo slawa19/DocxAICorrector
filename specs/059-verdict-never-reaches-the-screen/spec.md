@@ -183,8 +183,9 @@ block_execution.py:985-1005
 Безмаркерный вызов при этом рабочий и применяемый: на нём идёт весь narration post-pass
 (`pipeline/narration_postprocess.py`, `marker_mode=False`). И при `marker_mode=False` класс ошибки
 недостижим **по коду**: `_strip_and_validate_paragraph_markers` возвращает ответ нетронутым
-(`if not marker_mode: return markdown`), `_deliver_marker_preserved_block` не требует записи
-(`_generation.py:230-242`), а предикат самой ветки подстановки требует маркерного режима явно.
+(`_generation.py:1051-1052`, `if not marker_mode: return markdown`), `_deliver_marker_preserved_block`
+не требует записи (`:230`, короткое замыкание `:244-245`), а предикат самой ветки подстановки требует
+маркерного режима явно.
 `paragraph_marker_validation_failed` возбуждается только внутри маркерной ветки.
 
 **Контракт маркеров существует, чтобы сопоставить N абзацев за ОДИН вызов; если сопоставление не
