@@ -7,8 +7,6 @@ from docxaicorrector.generation.message_formatting import (
     build_image_journal_entry,
     derive_live_status_title,
     derive_live_status_title_and_severity,
-    get_preparation_state_unavailable_message,
-    get_restartable_outcome_notice,
     humanize_reason,
     humanize_variant,
 )
@@ -283,47 +281,3 @@ def test_derive_live_status_title_and_severity(status, expected_title, expected_
 def test_derive_live_status_title_backward_compatible():
     status = {"phase": "preparing", "is_running": True, "stage": ""}
     assert derive_live_status_title(status) == "Идет анализ файла"
-
-
-# ---------------------------------------------------------------------------
-# get_restartable_outcome_notice
-# ---------------------------------------------------------------------------
-
-def test_restartable_outcome_notice_stopped():
-    result = get_restartable_outcome_notice("stopped", "report.docx")
-    assert result is not None
-    level, message = result
-    assert level == "warning"
-    assert "остановлена" in message
-    assert "report.docx" in message
-
-
-def test_restartable_outcome_notice_failed():
-    result = get_restartable_outcome_notice("failed", "report.docx")
-    assert result is not None
-    level, message = result
-    assert level == "error"
-    assert "ошибкой" in message
-    assert "report.docx" in message
-
-
-@pytest.mark.parametrize("outcome", ["idle", "succeeded", "running", None])
-def test_restartable_outcome_notice_non_restartable(outcome):
-    assert get_restartable_outcome_notice(outcome, "report.docx") is None
-
-
-# ---------------------------------------------------------------------------
-# get_preparation_state_unavailable_message
-# ---------------------------------------------------------------------------
-
-def test_preparation_state_unavailable_message_not_empty():
-    msg = get_preparation_state_unavailable_message()
-    assert isinstance(msg, str)
-    assert len(msg) > 10
-
-
-def test_preparation_state_unavailable_message_explains_lost_state_semantics():
-    msg = get_preparation_state_unavailable_message().lower()
-    assert "подготов" in msg
-    assert ("потер" in msg) or ("недоступ" in msg)
-    assert "загруз" in msg

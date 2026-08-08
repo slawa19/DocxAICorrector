@@ -2,7 +2,6 @@ import pytest
 
 import docxaicorrector.ui._app as app
 import docxaicorrector.ui.application_flow as application_flow
-import docxaicorrector.ui.compare_panel as compare_panel
 from conftest import SessionState as SessionState
 
 
@@ -682,8 +681,6 @@ def test_main_renders_recommended_text_settings_notice_near_settings(monkeypatch
     monkeypatch.setattr(app, "render_image_validation_summary", lambda *args, **kwargs: None)
     monkeypatch.setattr(app, "_render_processing_controls", lambda **kwargs: None)
     monkeypatch.setattr(app, "get_processing_session_snapshot", lambda: type("ProcessingSnapshot", (), {"latest_source_token": ""})())
-    monkeypatch.setattr(app, "get_latest_image_mode", lambda: "safe")
-    monkeypatch.setattr(compare_panel, "render_compare_all_apply_panel", lambda **kwargs: None)
     monkeypatch.setattr(application_flow, "resolve_effective_uploaded_file", lambda **kwargs: uploaded_file)
     monkeypatch.setattr(application_flow, "has_resettable_state", lambda **kwargs: False)
     monkeypatch.setattr(application_flow, "derive_app_idle_view_state", lambda **kwargs: "file_selected")

@@ -49,34 +49,6 @@ def test_assess_text_transform_stores_assessment_in_session_state(monkeypatch):
     assert assessment["target_language_script_match"] is True
 
 
-def test_resolve_result_bundle_passes_mode_flags_for_completed_view(monkeypatch):
-    captured = {}
-    session_state = SessionState(
-        latest_processing_operation="translate",
-        latest_audiobook_postprocess_enabled=True,
-    )
-    monkeypatch.setattr(app.st, "session_state", session_state)
-    monkeypatch.setattr(state.st, "session_state", session_state)
-
-    monkeypatch.setattr(ui, "render_result_bundle", lambda **kwargs: captured.update(kwargs))
-
-    app.render_result(
-        docx_bytes=b"docx",
-        markdown_text="markdown",
-        original_filename="report.docx",
-        narration_text="[thoughtful] narration",
-        processing_operation="translate",
-        audiobook_postprocess_enabled=True,
-    )
-
-    assert captured["docx_bytes"] == b"docx"
-    assert captured["markdown_text"] == "markdown"
-    assert captured["original_filename"] == "report.docx"
-    assert captured["narration_text"] == "[thoughtful] narration"
-    assert captured["processing_operation"] == "translate"
-    assert captured["audiobook_postprocess_enabled"] is True
-
-
 def test_build_document_context_prompt_includes_outline_and_glossary_terms():
     prompt = app._build_document_context_prompt(
         prepared_run_context=SimpleNamespace(

@@ -496,7 +496,6 @@ def test_codeowners_protects_moved_production_implementation_paths() -> None:
     assert "/src/docxaicorrector/ui/_ui.py @slawa19" in codeowners_text
     assert "/src/docxaicorrector/ui/app_runtime.py @slawa19" in codeowners_text
     assert "/src/docxaicorrector/ui/application_flow.py @slawa19" in codeowners_text
-    assert "/src/docxaicorrector/ui/compare_panel.py @slawa19" in codeowners_text
 
 
 # Spec 036 F2/F6: shared production validation must stay book-agnostic. The detectors are

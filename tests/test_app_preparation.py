@@ -4,7 +4,6 @@ import docxaicorrector.chapter_workflow.service as chapter_workflow_service
 import docxaicorrector.processing.processing_runtime as processing_runtime
 import docxaicorrector.ui._app as app
 import docxaicorrector.ui.application_flow as application_flow
-import docxaicorrector.ui.compare_panel as compare_panel
 from docxaicorrector.core.models import StructureRepairReport
 from docxaicorrector.document.segments import DocumentContextProfile, DocumentSegment, GlossaryTerm, SegmentBoundaryEvidence, SegmentDetectionReport
 from docxaicorrector.structure.validation import StructureValidationReport
@@ -205,7 +204,6 @@ def test_main_restarts_background_preparation_when_chunk_size_changes(monkeypatc
     monkeypatch.setattr(app, "_preparation_worker_is_active", lambda: False)
     monkeypatch.setattr(app, "get_current_result_bundle", lambda: None)
     monkeypatch.setattr(app, "get_processing_session_snapshot", lambda: type("ProcessingSnapshot", (), {"latest_source_token": ""})())
-    monkeypatch.setattr(app, "get_latest_image_mode", lambda: "safe")
     monkeypatch.setattr(app.st, "title", lambda *args, **kwargs: None)
     monkeypatch.setattr(app.st, "write", lambda *args, **kwargs: None)
     monkeypatch.setattr(app.st, "file_uploader", lambda *args, **kwargs: uploaded_file)
@@ -265,7 +263,6 @@ def _run_main_capturing_preparation_start(monkeypatch, *, sidebar_result, app_co
     monkeypatch.setattr(app, "_preparation_worker_is_active", lambda: False)
     monkeypatch.setattr(app, "get_current_result_bundle", lambda: None)
     monkeypatch.setattr(app, "get_processing_session_snapshot", lambda: type("ProcessingSnapshot", (), {"latest_source_token": ""})())
-    monkeypatch.setattr(app, "get_latest_image_mode", lambda: "safe")
     monkeypatch.setattr(app.st, "title", lambda *args, **kwargs: None)
     monkeypatch.setattr(app.st, "write", lambda *args, **kwargs: None)
     monkeypatch.setattr(app.st, "file_uploader", lambda *args, **kwargs: uploaded_file)
@@ -337,7 +334,6 @@ def test_main_restarts_background_preparation_when_uploaded_file_changes(monkeyp
     monkeypatch.setattr(app, "_preparation_worker_is_active", lambda: False)
     monkeypatch.setattr(app, "get_current_result_bundle", lambda: None)
     monkeypatch.setattr(app, "get_processing_session_snapshot", lambda: type("ProcessingSnapshot", (), {"latest_source_token": ""})())
-    monkeypatch.setattr(app, "get_latest_image_mode", lambda: "safe")
     monkeypatch.setattr(app.st, "title", lambda *args, **kwargs: None)
     monkeypatch.setattr(app.st, "write", lambda *args, **kwargs: None)
     monkeypatch.setattr(app.st, "file_uploader", lambda *args, **kwargs: uploaded_file)
@@ -956,7 +952,6 @@ def test_main_renders_preparation_summary_for_prepared_file(monkeypatch):
     monkeypatch.setattr(app, "_preparation_worker_is_active", lambda: False)
     monkeypatch.setattr(app, "get_current_result_bundle", lambda: None)
     monkeypatch.setattr(app, "get_processing_session_snapshot", lambda: type("ProcessingSnapshot", (), {"latest_source_token": ""})())
-    monkeypatch.setattr(app, "get_latest_image_mode", lambda: "safe")
     monkeypatch.setattr(app.st, "title", lambda *args, **kwargs: None)
     monkeypatch.setattr(app.st, "write", lambda *args, **kwargs: None)
     monkeypatch.setattr(app.st, "file_uploader", lambda *args, **kwargs: uploaded_file)
@@ -968,7 +963,6 @@ def test_main_renders_preparation_summary_for_prepared_file(monkeypatch):
     monkeypatch.setattr(app, "render_run_log", lambda *args, **kwargs: None)
     monkeypatch.setattr(app, "render_image_validation_summary", lambda *args, **kwargs: None)
     monkeypatch.setattr(app, "_render_processing_controls", lambda **kwargs: None)
-    monkeypatch.setattr(compare_panel, "render_compare_all_apply_panel", lambda **kwargs: None)
     monkeypatch.setattr(application_flow, "resolve_effective_uploaded_file", lambda **kwargs: uploaded_file)
     monkeypatch.setattr(application_flow, "has_resettable_state", lambda **kwargs: False)
     monkeypatch.setattr(application_flow, "derive_app_idle_view_state", lambda **kwargs: "file_selected")
@@ -1041,7 +1035,6 @@ def test_main_marks_prepared_status_with_completed_terminal_kind(monkeypatch):
     monkeypatch.setattr(app, "render_image_validation_summary", lambda *args, **kwargs: None)
     monkeypatch.setattr(app, "_render_processing_controls", lambda **kwargs: None)
     monkeypatch.setattr(app, "set_processing_status", lambda **kwargs: status_calls.append(kwargs))
-    monkeypatch.setattr(compare_panel, "render_compare_all_apply_panel", lambda **kwargs: None)
     monkeypatch.setattr(application_flow, "resolve_effective_uploaded_file", lambda **kwargs: uploaded_file)
     monkeypatch.setattr(application_flow, "has_resettable_state", lambda **kwargs: False)
     monkeypatch.setattr(application_flow, "derive_app_idle_view_state", lambda **kwargs: "file_selected")
@@ -1107,7 +1100,6 @@ def test_main_ignores_stale_completed_result_for_different_uploaded_file(monkeyp
         },
     )
     monkeypatch.setattr(app, "get_processing_session_snapshot", lambda: type("ProcessingSnapshot", (), {"latest_source_token": "old.docx:3:old"})())
-    monkeypatch.setattr(app, "get_latest_image_mode", lambda: "safe")
     monkeypatch.setattr(app.st, "title", lambda *args, **kwargs: None)
     monkeypatch.setattr(app.st, "write", lambda *args, **kwargs: None)
     monkeypatch.setattr(app.st, "file_uploader", lambda *args, **kwargs: uploaded_file)
@@ -1121,9 +1113,7 @@ def test_main_ignores_stale_completed_result_for_different_uploaded_file(monkeyp
     monkeypatch.setattr(app, "render_image_validation_summary", lambda *args, **kwargs: None)
     monkeypatch.setattr(app, "_render_processing_controls", lambda **kwargs: None)
     monkeypatch.setattr(app, "render_markdown_preview", lambda *args, **kwargs: result_bundle_calls.append("markdown_preview"))
-    monkeypatch.setattr(app, "render_result", lambda *args, **kwargs: result_bundle_calls.append((args, kwargs)))
     monkeypatch.setattr(app, "render_result_bundle", lambda **kwargs: result_bundle_calls.append(kwargs))
-    monkeypatch.setattr(compare_panel, "render_compare_all_apply_panel", lambda **kwargs: None)
     monkeypatch.setattr(application_flow, "resolve_effective_uploaded_file", lambda **kwargs: uploaded_file)
     monkeypatch.setattr(application_flow, "has_resettable_state", lambda **kwargs: False)
     monkeypatch.setattr(app, "get_prepared_run_context_for_marker", lambda marker: prepared_run_context)
@@ -1271,7 +1261,6 @@ def test_main_starts_full_document_processing_from_bottom_control(monkeypatch):
     monkeypatch.setattr(app, "_preparation_worker_is_active", lambda: False)
     monkeypatch.setattr(app, "get_current_result_bundle", lambda: None)
     monkeypatch.setattr(app, "get_processing_session_snapshot", lambda: type("ProcessingSnapshot", (), {"latest_source_token": ""})())
-    monkeypatch.setattr(app, "get_latest_image_mode", lambda: "safe")
     monkeypatch.setattr(app.st, "title", lambda *args, **kwargs: None)
     monkeypatch.setattr(app.st, "write", lambda *args, **kwargs: None)
     monkeypatch.setattr(app.st, "file_uploader", lambda *args, **kwargs: uploaded_file)
@@ -1301,7 +1290,6 @@ def test_main_starts_full_document_processing_from_bottom_control(monkeypatch):
     monkeypatch.setattr(app, "render_run_log", lambda *args, **kwargs: None)
     monkeypatch.setattr(app, "render_image_validation_summary", lambda *args, **kwargs: None)
     monkeypatch.setattr(app, "_render_processing_controls", lambda **kwargs: "start")
-    monkeypatch.setattr(compare_panel, "render_compare_all_apply_panel", lambda **kwargs: None)
     monkeypatch.setattr(application_flow, "resolve_effective_uploaded_file", lambda **kwargs: uploaded_file)
     monkeypatch.setattr(application_flow, "has_resettable_state", lambda **kwargs: False)
     monkeypatch.setattr(application_flow, "derive_app_idle_view_state", lambda **kwargs: "file_selected")

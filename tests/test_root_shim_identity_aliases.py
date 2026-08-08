@@ -19,7 +19,6 @@ PACKAGE_MODULES = (
     "docxaicorrector.ui._ui",
     "docxaicorrector.ui.app_runtime",
     "docxaicorrector.ui.application_flow",
-    "docxaicorrector.ui.compare_panel",
     "docxaicorrector.core.config",
     "docxaicorrector.core.constants",
     "docxaicorrector.core.logger",

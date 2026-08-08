@@ -65,7 +65,6 @@ TEXT_SETTING_WIDGET_KEYS = {
     "source_language": "sidebar_source_language",
     "target_language": "sidebar_target_language",
 }
-_FEED_ID_SANITIZER = re.compile(r"[^a-zA-Z0-9_-]+")
 _DOCX_IMAGE_PLACEHOLDER_PATTERN = re.compile(r"\[\[DOCX_IMAGE_img_\d+\]\]")
 
 
@@ -153,12 +152,6 @@ def render_intro_layout_styles() -> None:
         </style>
         """
     )
-
-
-def _build_feed_id(prefix: str) -> str:
-    nonce = int(time.time() * 1000)
-    safe_prefix = _FEED_ID_SANITIZER.sub("-", prefix).strip("-") or "feed"
-    return f"{safe_prefix}-{nonce}"
 
 
 def _strip_docx_image_placeholders(markdown_text: str) -> str:
@@ -474,21 +467,6 @@ def _to_int(value: Any, *, default: int) -> int:
     return default
 
 
-def _to_float(value: Any, *, default: float) -> float:
-    if isinstance(value, bool):
-        return float(value)
-    if isinstance(value, (int, float)):
-        return float(value)
-    return default
-
-
-def _get_list_of_str(config: Mapping[str, Any], key: str) -> list[str]:
-    value = config[key]
-    if isinstance(value, list):
-        return [str(item) for item in value]
-    return []
-
-
 def render_run_log(target=None) -> None:
     run_log = get_run_log()
 
@@ -774,25 +752,6 @@ def render_markdown_preview(
             label_visibility="collapsed",
             key=textarea_key,
         )
-
-
-def render_result(
-    docx_bytes: bytes | None,
-    markdown_text: str,
-    original_filename: str,
-    narration_text: str | None = None,
-    processing_operation: str = "edit",
-    audiobook_postprocess_enabled: bool = False,
-) -> None:
-    render_result_bundle(
-        docx_bytes=docx_bytes,
-        markdown_text=markdown_text,
-        original_filename=original_filename,
-        narration_text=narration_text,
-        processing_operation=processing_operation,
-        audiobook_postprocess_enabled=audiobook_postprocess_enabled,
-        success_message=t("result.success_document_processed"),
-    )
 
 
 def _render_formatting_review_block(
