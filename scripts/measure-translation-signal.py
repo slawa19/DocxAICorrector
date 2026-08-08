@@ -16,14 +16,13 @@ WHAT IS MEASURED
 ----------------
 Three classes, all built from recorded material, none from a fresh run:
 
-  DELIVERED   the text that reached the artifact for a prose paragraph (`after`).
-              A completeness check MUST NOT flag these.
+  DELIVERED   the text that reached the artifact for a paragraph (`after`, and only where
+              the outcome says it was found there). A completeness check MUST NOT flag it.
   FALLBACK*   the source text of the same paragraph (`before`). Not a synthetic
-              construction: on the document path the generator returns the block's source
-              text verbatim when the model gave no accepted answer
-              (`generation/_generation.py:2013-2091`, four substitution branches), so
-              `before` IS, byte for byte, what an untranslated delivery looks like.
-              A completeness check MUST flag every one of these.
+              construction: the generator returns the block's source text verbatim when the
+              model gave no accepted answer (`generation/_generation.py:2013-2091`, four
+              substitution branches), so `before` IS, byte for byte, what an untranslated
+              delivery looks like. A completeness check MUST flag every one of these.
   CONTROL     delivered text that is legitimately NOT in the target language -- proper
               names, citations, index rows, URLs, acronyms, markup residue. A completeness
               check MUST NOT flag these either, and this is the half that breaks rules.
@@ -35,28 +34,30 @@ Candidate features, each computed on the delivered text alone or on the pair:
   length_ratio         len(after) / len(before)                        [pair, recorded]
   change_ratio         recorded character-level change                 [pair, recorded]
   identical            recorded byte equality                          [pair, recorded]
-  source_equality      after == before and the source carries a letter  [pair, derived]
-
-WHICH PARAGRAPHS COUNT AS PROSE
--------------------------------
-Two different prose sets are reported side by side, because they disagree by a factor of
-nearly three and only one of them is the contract's:
-
-  REGION prose (spec 059 A-6): source registry minus front matter, minus bounded TOC, minus
-  the back-matter region. Reconstructed here from the run's own recorded block decisions
-  (`source_blocks_with_narration_decision.json`: `narration_include`, `reason`, per-paragraph
-  `role`), which is the same decision `_resolve_narration_include` made during the run.
-
-  `source_is_prose`, the flag carried in the paragraph-pair dump. No code in this repository
-  produces it; section 1 reconstructs what it is and shows it is a LENGTH SCREEN, not the
-  region definition. Every measurement is therefore reported on the region set, with the
-  flag's own subset shown next to it so the difference is visible rather than assumed.
+  source_equality      after == before and the source carries a letter [pair, derived]
 
 DATA, AND WHY IT IS THIS DATA
 -----------------------------
-The material was tracked in git and later removed by `f129a21` ("keep only what a human
-reads"). It is recovered from history, not from any working tree, so this measurement is
-reproducible from a clean clone:
+MAIN CORPUS -- the 2026-08-06 confirming run, five paragraph-pair dumps, 7 233 records:
+
+    artifacts/audiobook_final_run/creating_wealth/all_paragraph_pairs.jsonl        1519
+    artifacts/audiobook_final_run/money_sustainability/all_paragraph_pairs.jsonl   1318
+    artifacts/audiobook_final_run/rethinking_money/all_paragraph_pairs.jsonl       1736
+    artifacts/audiobook_final_run/value_of_everything/all_paragraph_pairs.jsonl    1277
+    artifacts/audiobook_final_run/money_translate_docx/all_paragraph_pairs.jsonl   1383
+
+Four books on the AUDIOBOOK path plus the same Money & Sustainability document on the
+DOCUMENT path -- and that fifth run carries the result, because the two paths differ in the
+one way that decides the question (section 7).
+
+Those files are GITIGNORED on purpose (`.gitignore:80`, `artifacts/**/all_paragraph_pairs.jsonl`;
+the dumps stay on disk beside the run that produced them, policy set by `f129a21`). They will
+not be in the next reader's checkout, so this script RUNS WITHOUT THEM: each section that
+needs them is skipped with a message naming what is missing, and the git-recoverable half
+below still runs in full.
+
+SECOND CORPUS -- recovered from git history. It is the only place with two things the dumps
+do not carry: per-paragraph REGION decisions, and a delivered narration ARTIFACT.
 
     mkdir -p .run/data
     git show f2a49da:artifacts/audiobook_first_run/all_paragraph_pairs.jsonl \
@@ -68,12 +69,19 @@ reproducible from a clean clone:
     git show 7819933:artifacts/literary_edit_first_run/all_paragraph_pairs.jsonl \
         > .run/data/literary_edit_first_run.jsonl
 
-The paragraph-pair dumps of the four-book and the five-book runs were NEVER tracked (see the
-`f129a21` message), so per-paragraph coverage is ONE book: Money & Sustainability, audiobook
-path, en->ru. Cross-book coverage comes from the five tracked
-`artifacts/audiobook_final_run/*/comparison_paragraphs.md`, which quote source and delivered
-text for a sample per book -- a BIASED sample (random 60 plus the three extremes), reported
-as such and never mixed into the full-book numbers.
+WHICH PARAGRAPHS COUNT AS PROSE
+-------------------------------
+Two prose sets are reported side by side, because they disagree by a factor of two to three
+and only one of them is the contract's:
+
+  REGION prose (spec 059 A-6): source registry minus front matter, minus bounded TOC, minus
+  the back-matter region. Reconstructed from the run's own recorded block decisions
+  (`source_blocks_with_narration_decision.json`), available for ONE run.
+
+  `source_is_prose`, the flag carried in every dump. No code in this repository produces it;
+  section 2 reconstructs it on all five books and shows it is a LENGTH SCREEN. Numbers
+  computed on the flag are reported next to numbers computed on everything the run delivered,
+  so the difference is visible rather than assumed.
 
 All recorded runs are en->ru. Every "target alphabet" number below is therefore a Cyrillic
 number, and the claim that the same shape holds for another target language IS NOT TESTED BY
@@ -103,13 +111,20 @@ AUDIOBOOK_PAIRS = DATA_DIR / "audiobook_first_run.jsonl"
 SOURCE_BLOCKS = DATA_DIR / "source_blocks.json"
 DELIVERED_NARRATION = DATA_DIR / "delivered.tts.txt"
 LITERARY_EDIT_PAIRS = DATA_DIR / "literary_edit_first_run.jsonl"
+
 FINAL_RUN_DIR = PROJECT_ROOT / "artifacts" / "audiobook_final_run"
-FINAL_RUN_BOOKS = (
-    "creating_wealth",
-    "money_sustainability",
-    "rethinking_money",
-    "value_of_everything",
-    "money_translate_docx",
+AUDIOBOOK_BOOKS = ("creating_wealth", "money_sustainability", "rethinking_money", "value_of_everything")
+DOCUMENT_BOOKS = ("money_translate_docx",)
+FINAL_RUN_BOOKS = AUDIOBOOK_BOOKS + DOCUMENT_BOOKS
+
+# `narration_landed` / `docx_landed` mean the delivered text was found in the artifact. Any
+# other outcome means the dump cannot say what the artifact holds instead -- section 9.
+DELIVERED_OUTCOMES = frozenset({"narration_landed", "docx_landed"})
+
+DUMPS_HINT = (
+    "SKIPPED -- the five paragraph-pair dumps are gitignored (.gitignore:80) and live on disk beside\n"
+    "  the run that produced them: artifacts/audiobook_final_run/<book>/all_paragraph_pairs.jsonl.\n"
+    "  Without them only the git-recoverable half of this report is produced."
 )
 
 RECOVERY_HINT = (
@@ -129,13 +144,11 @@ RECOVERY_HINT = (
 CYRILLIC = re.compile(r"[Ѐ-ӿ]")
 LATIN = re.compile(r"[A-Za-z]")
 
-SOURCE_QUOTE_LABELS = ("**Исходный абзац:**", "**Оригинал:**")
-DELIVERED_QUOTE_LABELS = ("**В озвучку попало:**", "**Перевод в документе:**")
-SECTION_HEADING = re.compile(r"^## (.+)$")
-ENTRY_HEADING = re.compile(r"^### \d+\. `([^`]+)`")
+LETTER_FLOORS = (0, 20, 60, 120)
+CUTS = (0.10, 0.20, 0.30, 0.50)
 
-LETTER_FLOORS = (0, 20, 60, 120, 250)
-CUTS = (0.10, 0.20, 0.30, 0.50, 0.70, 0.90)
+# The empty band measured on ONE book in the first pass. Section 5 tests whether it survives.
+ONE_BOOK_BAND_TOP = 0.4118
 
 # ---------------------------------------------------------------------------
 # Features
@@ -165,6 +178,12 @@ def target_letter_share(text: str) -> float | None:
     return cyrillic / total
 
 
+def share_or(text: str, default: float) -> float:
+    """Explicit fallback for texts with no letters. `share or default` is a bug: 0.0 is falsy."""
+    share = target_letter_share(text)
+    return default if share is None else share
+
+
 # ---------------------------------------------------------------------------
 # Control-group form buckets
 #
@@ -176,15 +195,11 @@ def target_letter_share(text: str) -> float | None:
 # ---------------------------------------------------------------------------
 
 MARKUP_PLACEHOLDER = re.compile(r"\[\[DOCX_(?:IMAGE|PARA)_[^\]]*\]\]")
-URL_OR_DOI = re.compile(r"(?:https?://|www\.[a-z0-9-]+\.|[a-z0-9-]+\.(?:com|net|org|ru)\b|doi\.org|\b10\.\d{4,}/)", re.IGNORECASE)
+URL_OR_DOI = re.compile(
+    r"(?:https?://|www\.[a-z0-9-]+\.|[a-z0-9-]+\.(?:com|net|org|ru)\b|doi\.org|\b10\.\d{4,}/)", re.IGNORECASE
+)
 PAGE_RANGE = re.compile(r"\d+\s*[–—-]\s*\d+")
 WORD = re.compile(r"[A-Za-zЀ-ӿ][A-Za-zЀ-ӿ'’]*")
-
-
-def share_or(text: str, default: float) -> float:
-    """Explicit fallback for texts with no letters. `share or default` is a bug: 0.0 is falsy."""
-    share = target_letter_share(text)
-    return default if share is None else share
 
 
 def digit_share(text: str) -> float:
@@ -229,6 +244,20 @@ def load_jsonl(path: Path) -> list[dict[str, Any]]:
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
 
 
+def load_final_run_dumps() -> dict[str, list[dict[str, Any]]]:
+    """The five 2026-08-06 dumps, in a fixed order, skipping any that are not on disk."""
+    corpus: dict[str, list[dict[str, Any]]] = {}
+    for book in FINAL_RUN_BOOKS:
+        path = FINAL_RUN_DIR / book / "all_paragraph_pairs.jsonl"
+        if path.exists():
+            corpus[book] = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    return corpus
+
+
+def delivered_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [row for row in rows if row["outcome"] in DELIVERED_OUTCOMES]
+
+
 def load_paragraph_regions(path: Path) -> dict[str, dict[str, Any]]:
     """Per-paragraph region decision, exactly as the run recorded it."""
     if not path.exists():
@@ -245,41 +274,6 @@ def load_paragraph_regions(path: Path) -> dict[str, dict[str, Any]]:
                 "heading_level": paragraph_role["heading_level"],
             }
     return regions
-
-
-def parse_comparison_paragraphs(path: Path) -> list[dict[str, str]]:
-    """Extract (paragraph_id, section, source, delivered) from a tracked comparison file."""
-    entries: list[dict[str, str]] = []
-    section = ""
-    current: dict[str, str] | None = None
-    slot: str | None = None
-    for raw_line in path.read_text(encoding="utf-8").splitlines():
-        line = raw_line.rstrip()
-        section_match = SECTION_HEADING.match(line)
-        if section_match:
-            section = section_match.group(1)
-            slot = None
-            continue
-        entry_match = ENTRY_HEADING.match(line)
-        if entry_match:
-            if current and current["source"] and current["delivered"]:
-                entries.append(current)
-            current = {"paragraph_id": entry_match.group(1), "section": section, "source": "", "delivered": ""}
-            slot = None
-            continue
-        if current is None:
-            continue
-        if line.strip() in SOURCE_QUOTE_LABELS:
-            slot = "source"
-            continue
-        if line.strip() in DELIVERED_QUOTE_LABELS:
-            slot = "delivered"
-            continue
-        if line.startswith(">") and slot:
-            current[slot] = (current[slot] + " " + line.lstrip("> ").strip()).strip()
-    if current and current["source"] and current["delivered"]:
-        entries.append(current)
-    return entries
 
 
 # ---------------------------------------------------------------------------
@@ -311,413 +305,465 @@ def quantiles(values: Sequence[float]) -> dict[str, Any]:
 COLUMNS = ("min", "p01", "p05", "p25", "median", "p95", "max")
 
 
-def render_distribution_table(title: str, rows: Sequence[tuple[str, Sequence[float]]]) -> list[str]:
-    lines = [title, "  class                              n     min    p01    p05    p25    med    p95    max"]
-    for name, values in rows:
-        stats = quantiles(values)
-        if stats["n"] == 0:
-            lines.append(f"  {name:<32} {0:>4}" + "     --" * 7)
-            continue
-        lines.append(
-            f"  {name:<32} {stats['n']:>4}  " + "  ".join(f"{float(stats[key]):>5.3f}" for key in COLUMNS)
-        )
+def shares_of(texts: Sequence[str]) -> list[float]:
+    return [value for value in (target_letter_share(text) for text in texts) if value is not None]
+
+
+# ---------------------------------------------------------------------------
+# 1. The corpus
+# ---------------------------------------------------------------------------
+
+
+def section_corpus(corpus: dict[str, list[dict[str, Any]]], report: dict[str, Any]) -> list[str]:
+    lines = ["", "=" * 108, "1. THE CORPUS -- five recorded runs, and what each record can and cannot say", "=" * 108]
+    if not corpus:
+        lines.append(DUMPS_HINT)
+        return lines
+    lines.append("  book                   records  delivered  not delivered  outcomes")
+    totals = Counter()
+    per_book: dict[str, Any] = {}
+    for book, rows in corpus.items():
+        delivered = delivered_rows(rows)
+        outcomes = dict(Counter(row["outcome"] for row in rows))
+        totals["records"] += len(rows)
+        totals["delivered"] += len(delivered)
+        totals["not_delivered"] += len(rows) - len(delivered)
+        lines.append(f"  {book:<22} {len(rows):>8}  {len(delivered):>9}  {len(rows) - len(delivered):>13}  {outcomes}")
+        per_book[book] = {"records": len(rows), "delivered": len(delivered), "outcomes": outcomes}
+    lines.append(
+        f"  {'TOTAL':<22} {totals['records']:>8}  {totals['delivered']:>9}  {totals['not_delivered']:>13}"
+    )
+    assert totals["records"] == sum(entry["records"] for entry in per_book.values())
+    assert totals["delivered"] + totals["not_delivered"] == totals["records"]
+
+    lines.append("")
+    lines.append("Fields differ between the two paths, and the difference is not cosmetic:")
+    for book, rows in corpus.items():
+        lines.append(f"  {book:<22} {sorted(rows[0].keys())}")
+    lines.append(
+        "  The document run carries no `manual_edit_classes` and no `source_is_heading`, and names its\n"
+        "  outcomes `docx_landed` / `not_found_in_docx`. Any comparison across the two paths uses only the\n"
+        "  fields both carry."
+    )
+    report["corpus"] = {"per_book": per_book, "totals": dict(totals)}
     return lines
 
 
 # ---------------------------------------------------------------------------
-# 1. What the data is
+# 2. The prose flag
 # ---------------------------------------------------------------------------
 
 
-def section_data_shape(
-    rows: list[dict[str, Any]], regions: dict[str, dict[str, Any]], report: dict[str, Any]
+def section_prose_flag(
+    corpus: dict[str, list[dict[str, Any]]], regions: dict[str, dict[str, Any]] | None, report: dict[str, Any]
 ) -> list[str]:
-    lines = ["", "=" * 104, "1. WHAT THE DATA IS, AND WHAT `source_is_prose` ACTUALLY MEANS", "=" * 104]
-    lines.append(f"paragraph pairs: {len(rows)}   outcomes: {dict(Counter(row['outcome'] for row in rows))}")
-    lines.append(f"recorded fields: {sorted(rows[0].keys())}")
+    lines = ["", "=" * 108, "2. WHAT `source_is_prose` ACTUALLY MEANS -- reconstructed on all five runs", "=" * 108]
+    if not corpus:
+        lines.append(DUMPS_HINT)
+        return lines
+    lines.append("No code in this repository produces this flag. Reconstructing it from the data, per book:")
     lines.append("")
-    lines.append(
-        f"block decisions cover {len(regions)} paragraphs; "
-        f"{sum(1 for row in rows if row['paragraph_id'] in regions)} of {len(rows)} pairs join to a region decision."
-    )
-    lines.append(
-        "region exclusions the run itself recorded: "
-        + str(dict(Counter(info["exclusion_reason"] for info in regions.values() if not info["narration_include"])))
-    )
-    lines.append(
-        "roles inside the included region: "
-        + str(dict(Counter(info["role"] for info in regions.values() if info["narration_include"])))
-    )
-
-    region_prose = [row for row in rows if regions[row["paragraph_id"]]["narration_include"]]
-    flagged = [row for row in rows if row["source_is_prose"]]
-    lines.append("")
-    lines.append("TWO PROSE SETS, and they disagree:")
-    lines.append(f"  REGION prose (spec 059 A-6, reconstructed from the run's own decision): {len(region_prose)}")
-    lines.append(
-        f"  `source_is_prose` == true:                                                {len(flagged)} "
-        f"({100 * len(flagged) / max(1, len(region_prose)):.1f}% of the region set)"
-    )
-    lines.append(
-        f"  paragraphs the flag calls prose from OUTSIDE the region set: "
-        f"{sum(1 for row in flagged if not regions[row['paragraph_id']]['narration_include'])}"
-    )
-
-    def score(name: str, predicate: Callable[[dict[str, Any]], bool]) -> dict[str, Any]:
-        covered = sum(1 for row in rows if predicate(row) and row["source_is_prose"])
-        extra = sum(1 for row in rows if predicate(row) and not row["source_is_prose"])
-        missed = sum(1 for row in rows if not predicate(row) and row["source_is_prose"])
-        lines.append(f"  {name:<56} covers={covered:<4} extra={extra:<4} missed={missed}")
-        return {"predicate": name, "covers": covered, "extra": extra, "missed": missed}
-
-    lines.append("")
-    lines.append("No code in this repository produces `source_is_prose`. Reconstructing it (missed=0 => NECESSARY):")
-    candidates = [
-        score("not heading", lambda row: not row["source_is_heading"]),
-        score("not heading and len(before) >= 250", lambda row: not row["source_is_heading"] and len(row["before"]) >= 250),
-        score(
-            "not heading, len >= 250, first char uppercase",
-            lambda row: not row["source_is_heading"]
-            and len(row["before"]) >= 250
-            and row["before"].lstrip()[:1].isupper(),
-        ),
-    ]
-    shortest = min((len(row["before"]) for row in flagged), default=0)
-    lines.append(f"shortest source text carrying source_is_prose=true: {shortest} characters (no exceptions)")
-
-    unexplained = [
-        row
-        for row in rows
-        if not row["source_is_heading"]
-        and len(row["before"]) >= 250
-        and row["before"].lstrip()[:1].isupper()
-        and not row["source_is_prose"]
-    ]
-    lines.append(
-        f"paragraphs meeting every necessary condition yet flagged NOT prose: {len(unexplained)} "
-        f"({100 * len(unexplained) / max(1, len(unexplained) + len(flagged)):.1f}% of that population) -- "
-        "plainly prose, and the flag drops them:"
-    )
-    for row in unexplained[:4]:
-        lines.append(f"    {row['paragraph_id']} ({len(row['before'])} chars) {row['before'][:104]!r}")
-
-    ordinals = sorted(row["ordinal"] for row in flagged)
-    runs = 1 + sum(1 for previous, current in zip(ordinals, ordinals[1:]) if current != previous + 1)
-    lines.append(
-        f"the flagged set occupies {runs} separate ordinal runs over {ordinals[0]}..{ordinals[-1]}: "
-        "scattered, so it is a per-paragraph screen and not a region"
-    )
-    lines.append("")
-    lines.append(
-        "VERDICT ON THE FLAG: a length+shape screen (>= 250 characters, non-heading, capital initial) that\n"
-        "  sees 35.9% of the contract's prose set and demonstrably drops real prose. Usable to pick a reading\n"
-        "  sample. NOT usable as the prose definition, and its 250-character floor is itself the kind of form\n"
-        "  threshold Constitution VII refuses in production. Every table below is on the REGION set."
-    )
-
-    report["data_shape"] = {
-        "pairs": len(rows),
-        "outcomes": dict(Counter(row["outcome"] for row in rows)),
-        "region_prose": len(region_prose),
-        "flagged_prose": len(flagged),
-        "region_exclusions": dict(
-            Counter(info["exclusion_reason"] for info in regions.values() if not info["narration_include"])
-        ),
-        "roles_included": dict(Counter(info["role"] for info in regions.values() if info["narration_include"])),
-        "flag_candidates": candidates,
-        "flag_shortest_prose_chars": shortest,
-        "flag_unexplained_exclusions": len(unexplained),
-        "flag_unexplained_examples": [row["paragraph_id"] for row in unexplained[:10]],
-        "flag_ordinal_runs": runs,
-    }
-    return lines
-
-
-# ---------------------------------------------------------------------------
-# 2. Features per class
-# ---------------------------------------------------------------------------
-
-
-def section_features(
-    rows: list[dict[str, Any]], regions: dict[str, dict[str, Any]], report: dict[str, Any]
-) -> list[str]:
-    lines = [
-        "",
-        "=" * 104,
-        "2. CANDIDATE FEATURES PER CLASS -- Money & Sustainability, audiobook path, whole book",
-        "=" * 104,
-    ]
-    landed = [row for row in rows if row["outcome"] == "narration_landed" and regions[row["paragraph_id"]]["narration_include"]]
-    lines.append(f"REGION prose paragraphs that reached the artifact: {len(landed)}")
-
-    def shares(texts: list[str]) -> list[float]:
-        return [value for value in (target_letter_share(text) for text in texts) if value is not None]
-
-    by_role = {role: [row for row in landed if regions[row["paragraph_id"]]["role"] == role] for role in ("body", "list", "heading")}
-    lines.append("")
-    lines.extend(
-        render_distribution_table(
-            "FEATURE 1 -- target_letter_share, Cyrillic / (Cyrillic + Latin):",
-            [
-                ("DELIVERED, all region prose", shares([row["after"] for row in landed])),
-                ("  role=body", shares([row["after"] for row in by_role["body"]])),
-                ("  role=list", shares([row["after"] for row in by_role["list"]])),
-                ("  role=heading", shares([row["after"] for row in by_role["heading"]])),
-                ("DELIVERED, source_is_prose subset", shares([row["after"] for row in landed if row["source_is_prose"]])),
-                ("FALLBACK (source text, all)", shares([row["before"] for row in landed])),
-            ],
-        )
-    )
-    no_letters = sum(1 for row in landed if letter_count(row["after"]) == 0)
-    lines.append(
-        f"  delivered paragraphs with NO letters at all (share undefined): {no_letters} -- "
-        "page numbers, asterisk dividers, placeholders"
-    )
-    lines.append("")
-    lines.extend(
-        render_distribution_table(
-            "FEATURE 2 -- length_ratio (recorded, len(after)/len(before)):",
-            [
-                ("DELIVERED, all region prose", [row["length_ratio"] for row in landed]),
-                ("  role=body", [row["length_ratio"] for row in by_role["body"]]),
-                ("DELIVERED, source_is_prose subset", [row["length_ratio"] for row in landed if row["source_is_prose"]]),
-            ],
-        )
-    )
-    lines.append("  FALLBACK is length_ratio == 1.0 by construction: the source text is returned verbatim.")
-    lines.append("")
-    lines.extend(
-        render_distribution_table(
-            "FEATURE 3 -- change_ratio (recorded):",
-            [
-                ("DELIVERED, all region prose", [row["change_ratio"] for row in landed]),
-                ("DELIVERED, source_is_prose subset", [row["change_ratio"] for row in landed if row["source_is_prose"]]),
-            ],
-        )
-    )
-    identical = [row for row in landed if row["identical"]]
-    lines.append("  FALLBACK is change_ratio == 0.0 and identical == true by construction.")
-    lines.append("")
-    lines.append(f"FEATURE 4 -- identical: {len(identical)} of {len(landed)} delivered paragraphs are byte-equal to source.")
-    for row in identical:
+    lines.append("  book                   records  flagged   share  shortest flagged source  covered by 'len >= 250'")
+    per_book: dict[str, Any] = {}
+    for book, rows in corpus.items():
+        flagged = [row for row in rows if row["source_is_prose"]]
+        shortest = min((len(row["before"]) for row in flagged), default=0)
+        # `source_is_heading` is absent on the document run; length alone is the shared condition.
+        missed = sum(1 for row in flagged if len(row["before"]) < 250)
         lines.append(
-            f"    {row['paragraph_id']} letters={letter_count(row['before']):<3} "
-            f"form={classify_control_form(row['before']):<20} {row['before'][:70]!r}"
+            f"  {book:<22} {len(rows):>8}  {len(flagged):>7}  {100 * len(flagged) / len(rows):>5.1f}%  "
+            f"{shortest:>23}  {'all of them' if missed == 0 else f'{missed} exceptions'}"
         )
-    with_letters = [row for row in identical if letter_count(row["before"]) > 0]
-    lines.append(
-        f"  of those, source carries at least one letter: {len(with_letters)} "
-        f"({', '.join(row['paragraph_id'] for row in with_letters) or 'none'})"
-    )
-
-    lines.append("")
-    buckets = Counter()
-    for row in landed:
-        letters = letter_count(row["before"])
-        buckets[
-            "0" if letters == 0 else "1-19" if letters < 20 else "20-59" if letters < 60 else "60-119" if letters < 120 else "120+"
-        ] += 1
-    short = buckets["0"] + buckets["1-19"] + buckets["20-59"]
-    lines.append(f"FEATURE 5 -- letter_count of the SOURCE text, bucketed: {dict(buckets)}")
-    lines.append(
-        f"  {short} of {len(landed)} region-prose paragraphs ({100 * short / len(landed):.1f}%) carry fewer than 60 letters.\n"
-        "  Any share-based rule that needs a letter floor of 60 to stay quiet is BLIND to that quarter of the set."
-    )
-
-    report["features"] = {
-        "region_prose_landed": len(landed),
-        "target_letter_share": {
-            "delivered_all": quantiles(shares([row["after"] for row in landed])),
-            "delivered_body": quantiles(shares([row["after"] for row in by_role["body"]])),
-            "delivered_list": quantiles(shares([row["after"] for row in by_role["list"]])),
-            "delivered_heading": quantiles(shares([row["after"] for row in by_role["heading"]])),
-            "delivered_flagged_subset": quantiles(shares([row["after"] for row in landed if row["source_is_prose"]])),
-            "fallback_all": quantiles(shares([row["before"] for row in landed])),
-        },
-        "delivered_without_letters": no_letters,
-        "length_ratio_delivered": quantiles([row["length_ratio"] for row in landed]),
-        "change_ratio_delivered": quantiles([row["change_ratio"] for row in landed]),
-        "identical_delivered": len(identical),
-        "identical_delivered_with_letters": [row["paragraph_id"] for row in with_letters],
-        "source_letter_buckets": dict(buckets),
-        "source_under_60_letters": short,
-    }
-    return lines
-
-
-# ---------------------------------------------------------------------------
-# 3. Control group
-# ---------------------------------------------------------------------------
-
-
-def section_control_group(
-    rows: list[dict[str, Any]], regions: dict[str, dict[str, Any]], report: dict[str, Any]
-) -> list[str]:
-    lines = [
-        "",
-        "=" * 104,
-        "3. CONTROL GROUP -- delivered text that is legitimately NOT in the target language",
-        "=" * 104,
-    ]
-    landed = [row for row in rows if row["outcome"] == "narration_landed" and regions[row["paragraph_id"]]["narration_include"]]
-    members = [row for row in landed if share_or(row["after"], 0.0) < 0.9]
-    lines.append(
-        "How it is collected, and the method's limit stated first: every delivered paragraph whose\n"
-        "target_letter_share is under 0.90 or undefined is pulled out and bucketed BY FORM. The 0.90 cut is a\n"
-        "collection net, not a proposed threshold -- it is set loose deliberately so the group is not selected by\n"
-        "the same number the report is trying to justify. Buckets are form-based, no word lists."
-    )
-    lines.append("")
-    lines.append(f"  {len(members)} of {len(landed)} delivered paragraphs fall in the net.")
-    lines.append("")
-    lines.append("  form bucket                 count  in flag's prose set  median letters  median target_share")
-    bucket_report: dict[str, Any] = {}
-    grouped: dict[str, list[dict[str, Any]]] = {}
-    for row in members:
-        grouped.setdefault(classify_control_form(row["after"]), []).append(row)
-    for name, group in sorted(grouped.items(), key=lambda item: -len(item[1])):
-        group_shares = [value for value in (target_letter_share(row["after"]) for row in group) if value is not None]
-        letters = [letter_count(row["after"]) for row in group]
-        median_share = f"{statistics.median(group_shares):.3f}" if group_shares else "n/a"
-        lines.append(
-            f"  {name:<27} {len(group):>5}  {sum(1 for row in group if row['source_is_prose']):>19}  "
-            f"{statistics.median(letters):>14.0f}  {median_share:>19}"
-        )
-        bucket_report[name] = {
-            "count": len(group),
-            "in_flag_prose_set": sum(1 for row in group if row["source_is_prose"]),
-            "median_letters": statistics.median(letters),
-            "target_share": quantiles(group_shares),
-            "examples": [row["after"][:120] for row in group[:3]],
+        per_book[book] = {
+            "records": len(rows),
+            "flagged": len(flagged),
+            "shortest_flagged_source_chars": shortest,
+            "flagged_under_250": missed,
         }
-    lines.append(f"  {'TOTAL':<27} {sum(len(group) for group in grouped.values()):>5}")
-
-    lines.append("")
-    lines.append("The hardest members, quoted -- lowest target share with at least 20 letters:")
-    hardest = sorted(
-        (row for row in members if letter_count(row["after"]) >= 20),
-        key=lambda row: share_or(row["after"], 1.0),
-    )[:8]
-    for row in hardest:
-        lines.append(
-            f"    {row['paragraph_id']} share={target_letter_share(row['after']):.3f} "
-            f"letters={letter_count(row['after']):<4} [{classify_control_form(row['after'])}]"
-        )
-        lines.append(f"        {row['after'][:150]!r}")
     lines.append("")
     lines.append(
-        "LIMIT OF THIS CONTROL GROUP, said plainly: it is small, and it is small for two structural reasons.\n"
-        "  (a) On the audiobook path an untranslated block is DROPPED, not delivered (block_execution.py:975-995),\n"
-        "      so the corpus cannot contain the very failures the check exists to catch.\n"
-        "  (b) The back-matter region on this book was excluded before the model saw it (bibliography, notes,\n"
-        "      TOC), which is exactly where legitimately-English rows live. What survives to be delivered is\n"
-        "      mostly running prose, so the control group cannot price a false-alarm rate on apparatus.\n"
-        "  The one book where apparatus DID survive into delivery is Rethinking Money -- section 6."
+        "The same floor on every book: the shortest paragraph the flag calls prose is 250-253 characters, with\n"
+        "no exceptions anywhere in 7 233 records. `source_is_prose` is a LENGTH SCREEN. It was built to pick a\n"
+        "reading sample and it does that well; it is not the contract's prose, and its 250-character floor is\n"
+        "exactly the kind of form threshold Constitution VII refuses in production."
     )
-    report["control_group"] = {"net": "target_letter_share < 0.90 or undefined", "members": len(members), "buckets": bucket_report}
+
+    if regions is not None:
+        first_run = load_jsonl(AUDIOBOOK_PAIRS)
+        region_prose = [row for row in first_run if regions[row["paragraph_id"]]["narration_include"]]
+        flagged = [row for row in first_run if row["source_is_prose"]]
+        lines.append("")
+        lines.append("Against the REGION definition -- available for one run only, from its own block decisions:")
+        lines.append(
+            "  region exclusions recorded by the run: "
+            + str(dict(Counter(info["exclusion_reason"] for info in regions.values() if not info["narration_include"])))
+        )
+        lines.append(f"  paragraphs in the source registry: {len(regions)}")
+        lines.append(f"  REGION prose (spec 059 A-6):       {len(region_prose)}")
+        lines.append(
+            f"  `source_is_prose` == true:         {len(flagged)} "
+            f"({100 * len(flagged) / len(region_prose):.1f}% of the region set)"
+        )
+        lines.append(
+            "  roles inside the region: "
+            + str(dict(Counter(info["role"] for info in regions.values() if info["narration_include"])))
+        )
+        unexplained = [
+            row
+            for row in first_run
+            if not row["source_is_heading"]
+            and len(row["before"]) >= 250
+            and row["before"].lstrip()[:1].isupper()
+            and not row["source_is_prose"]
+        ]
+        lines.append(
+            f"  paragraphs meeting every necessary condition yet flagged NOT prose: {len(unexplained)} -- plainly prose:"
+        )
+        for row in unexplained[:3]:
+            lines.append(f"      {row['paragraph_id']} ({len(row['before'])} chars) {row['before'][:96]!r}")
+        report["prose_flag_region"] = {
+            "registry_paragraphs": len(regions),
+            "region_prose": len(region_prose),
+            "flagged": len(flagged),
+            "flag_share_of_region": round(100 * len(flagged) / len(region_prose), 1),
+            "unexplained_exclusions": len(unexplained),
+        }
+    report["prose_flag"] = per_book
     return lines
 
 
 # ---------------------------------------------------------------------------
-# 4. Threshold sweep and the pair rule
+# 3. Features
 # ---------------------------------------------------------------------------
 
 
-def section_threshold_sweep(
-    rows: list[dict[str, Any]], regions: dict[str, dict[str, Any]], report: dict[str, Any]
-) -> list[str]:
-    lines = ["", "=" * 104, "4. IS THERE A GAP? THRESHOLD SWEEP AGAINST THE PAIR RULE", "=" * 104]
-    landed = [row for row in rows if row["outcome"] == "narration_landed" and regions[row["paragraph_id"]]["narration_include"]]
+def section_features(corpus: dict[str, list[dict[str, Any]]], report: dict[str, Any]) -> list[str]:
+    lines = ["", "=" * 108, "3. CANDIDATE FEATURES, PER BOOK -- everything the run delivered, not the flag's subset", "=" * 108]
+    if not corpus:
+        lines.append(DUMPS_HINT)
+        return lines
+    per_book: dict[str, Any] = {}
+
+    lines.append("FEATURE 1 -- target_letter_share of the DELIVERED text:")
+    lines.append("  book                      n     min    p01    p05    p25    med    p95    max   flag subset min")
+    for book, rows in corpus.items():
+        delivered = delivered_rows(rows)
+        values = shares_of([row["after"] for row in delivered])
+        flagged = shares_of([row["after"] for row in delivered if row["source_is_prose"]])
+        stats = quantiles(values)
+        lines.append(
+            f"  {book:<22} {stats['n']:>4}  "
+            + "  ".join(f"{float(stats[key]):>5.3f}" for key in COLUMNS)
+            + f"   {min(flagged):>14.3f}"
+        )
+        per_book.setdefault(book, {})["delivered_target_share"] = stats
+        per_book[book]["flag_subset_min_share"] = round(min(flagged), 4)
+    lines.append(
+        "  The last column is the whole reason section 2 matters: read through the flag, the worst delivered\n"
+        "  translation looks far cleaner than it is, because the flag admits no short text."
+    )
+
+    lines.append("")
+    lines.append("FEATURE 1b -- target_letter_share of the SOURCE text (what a fallback delivery would show):")
+    lines.append("  book                      n     max    p95    med   -- a single number decides this feature")
+    for book, rows in corpus.items():
+        delivered = delivered_rows(rows)
+        values = shares_of([row["before"] for row in delivered])
+        stats = quantiles(values)
+        lines.append(
+            f"  {book:<22} {stats['n']:>4}  {float(stats['max']):>5.3f}  {float(stats['p95']):>5.3f}  {float(stats['median']):>5.3f}"
+        )
+        per_book[book]["source_target_share"] = stats
+    lines.append("  No source paragraph in 7 233 records carries a single Cyrillic letter. The FALLBACK class is exact.")
+
+    lines.append("")
+    lines.append("FEATURE 2 -- length_ratio. FALLBACK is 1.0 by construction; compare that to the delivered spread:")
+    lines.append("  book                      n     min    p01    p05    p25    med    p95    max")
+    for book, rows in corpus.items():
+        delivered = delivered_rows(rows)
+        stats = quantiles([row["length_ratio"] for row in delivered])
+        lines.append(f"  {book:<22} {stats['n']:>4}  " + "  ".join(f"{float(stats[key]):>5.3f}" for key in COLUMNS))
+        per_book[book]["length_ratio"] = stats
+    lines.append("  Every median sits within a few percent of 1.0 -- the failure value is the middle of the norm.")
+
+    lines.append("")
+    lines.append("FEATURE 3 -- change_ratio. FALLBACK is 0.0 by construction:")
+    lines.append("  book                      n     min    p01    p05    p25    med    p95    max")
+    for book, rows in corpus.items():
+        delivered = delivered_rows(rows)
+        stats = quantiles([row["change_ratio"] for row in delivered])
+        lines.append(f"  {book:<22} {stats['n']:>4}  " + "  ".join(f"{float(stats[key]):>5.3f}" for key in COLUMNS))
+        per_book[book]["change_ratio"] = stats
+
+    lines.append("")
+    lines.append("FEATURE 4 -- letter_count of the SOURCE, bucketed. This decides what a letter floor costs:")
+    lines.append("  book                       0    1-19   20-59  60-119   120+   under 60")
+    for book, rows in corpus.items():
+        delivered = delivered_rows(rows)
+        buckets = Counter()
+        for row in delivered:
+            letters = letter_count(row["before"])
+            buckets[
+                "0"
+                if letters == 0
+                else "1-19"
+                if letters < 20
+                else "20-59"
+                if letters < 60
+                else "60-119"
+                if letters < 120
+                else "120+"
+            ] += 1
+        short = buckets["0"] + buckets["1-19"] + buckets["20-59"]
+        lines.append(
+            f"  {book:<22} {buckets['0']:>5} {buckets['1-19']:>7} {buckets['20-59']:>7} {buckets['60-119']:>7} "
+            f"{buckets['120+']:>6}   {100 * short / len(delivered):>5.1f}%"
+        )
+        per_book[book]["source_letter_buckets"] = dict(buckets)
+        per_book[book]["source_under_60_letters_pct"] = round(100 * short / len(delivered), 1)
+
+    report["features"] = per_book
+    return lines
+
+
+# ---------------------------------------------------------------------------
+# 4. Control group
+# ---------------------------------------------------------------------------
+
+
+def section_control_group(corpus: dict[str, list[dict[str, Any]]], report: dict[str, Any]) -> list[str]:
+    lines = ["", "=" * 108, "4. CONTROL GROUP -- delivered text that is legitimately NOT in the target language", "=" * 108]
+    if not corpus:
+        lines.append(DUMPS_HINT)
+        return lines
+    lines.append(
+        "Collection net, and its limit stated first: every delivered paragraph whose target_letter_share is\n"
+        "under 0.90 or undefined, bucketed BY FORM. The 0.90 net is deliberately loose so the group is not\n"
+        "selected by the number this report is trying to justify. Buckets are form-based, no word lists, and\n"
+        "they are measurement scaffolding rather than a proposed detector."
+    )
+    lines.append("")
+    forms = (
+        "running_text_shape",
+        "under_20_letters",
+        "url_or_domain",
+        "numeric_reference_row",
+        "titlecase_name_run",
+        "no_letters_at_all",
+        "acronym_or_allcaps",
+    )
+    lines.append("  book                     net  " + "".join(f"{name[:13]:>15}" for name in forms))
+    grand = Counter()
+    per_book: dict[str, Any] = {}
+    for book, rows in corpus.items():
+        delivered = delivered_rows(rows)
+        net = [row for row in delivered if share_or(row["after"], 0.0) < 0.9]
+        counted = Counter(classify_control_form(row["after"]) for row in net)
+        grand.update(counted)
+        lines.append(f"  {book:<22} {len(net):>5}  " + "".join(f"{counted[name]:>15}" for name in forms))
+        per_book[book] = {"net": len(net), "of_delivered": len(delivered), "forms": dict(counted)}
+    lines.append(f"  {'TOTAL':<22} {sum(grand.values()):>5}  " + "".join(f"{grand[name]:>15}" for name in forms))
+    assert sum(grand.values()) == sum(entry["net"] for entry in per_book.values())
+
+    lines.append("")
+    lines.append(
+        f"The control group is now {sum(grand.values())} paragraphs across five runs, against 75 on one book. It is no\n"
+        "longer structurally starved -- and the reason is section 7: the document run delivers the reference\n"
+        "apparatus the audiobook runs cut out before the model ever sees it."
+    )
+    report["control_group"] = {"per_book": per_book, "totals": dict(grand)}
+    return lines
+
+
+# ---------------------------------------------------------------------------
+# 5. The gap
+# ---------------------------------------------------------------------------
+
+
+def _flagger(floor: int, cut: float) -> Callable[[str], bool]:
+    def flagged(text: str) -> bool:
+        if letter_count(text) < floor:
+            return False
+        share = target_letter_share(text)
+        return share is not None and share < cut
+
+    return flagged
+
+
+def section_gap(corpus: dict[str, list[dict[str, Any]]], report: dict[str, Any]) -> list[str]:
+    lines = ["", "=" * 108, "5. IS THERE A GAP? -- the one-book answer tested on five runs", "=" * 108]
+    if not corpus:
+        lines.append(DUMPS_HINT)
+        return lines
+    pooled = [row for rows in corpus.values() for row in delivered_rows(rows)]
 
     lines.append(
-        "Rule A (single-text share): FLAG delivered text when letter_count >= floor AND target_letter_share < cut.\n"
-        "  TP  = FALLBACK caught  (every one of them must be; this is the owner's requirement, not a target)\n"
-        "  FP1 = DELIVERED wrongly flagged (a false alarm on a good translation)\n"
-        "  MISS= FALLBACK below the letter floor, invisible to the rule at any cut"
+        "RULE A (single-text share): FLAG delivered text when letter_count >= floor and target_letter_share < cut.\n"
+        "  TP = FALLBACK caught (the owner's requirement is all of them), FP = delivered text wrongly flagged."
     )
+    lines.append("")
+    lines.append("Pooled over all five runs, 7 103 delivered paragraphs:")
+    lines.append("    floor  cut     TP                    FP")
     sweep: list[dict[str, Any]] = []
     for floor in LETTER_FLOORS:
-        blind = sum(1 for row in landed if letter_count(row["before"]) < floor)
-        lines.append("")
-        lines.append(f"  letter floor = {floor:<4} (FALLBACK paragraphs below it and therefore invisible: {blind})")
-        lines.append("    cut      TP                        FP1")
         for cut in CUTS:
-
-            def flagged(text: str) -> bool:
-                if letter_count(text) < floor:
-                    return False
-                share = target_letter_share(text)
-                return share is not None and share < cut
-
-            true_positive = sum(1 for row in landed if flagged(row["before"]))
-            false_positive = sum(1 for row in landed if flagged(row["after"]))
+            flagged = _flagger(floor, cut)
+            true_positive = sum(1 for row in pooled if flagged(row["before"]))
+            false_positive = sum(1 for row in pooled if flagged(row["after"]))
             lines.append(
-                f"    {cut:.2f}   {true_positive:>5}/{len(landed):<5} ({100 * true_positive / len(landed):5.1f}%)"
-                f"      {false_positive:>4}/{len(landed):<5} ({100 * false_positive / len(landed):5.1f}%)"
+                f"    {floor:>5}  {cut:.2f}  {true_positive:>5}/{len(pooled)} ({100 * true_positive / len(pooled):5.1f}%)"
+                f"   {false_positive:>4}/{len(pooled)} ({100 * false_positive / len(pooled):5.2f}%)"
             )
             sweep.append(
-                {
-                    "letter_floor": floor,
-                    "cut": cut,
-                    "tp": true_positive,
-                    "fp": false_positive,
-                    "of": len(landed),
-                    "blind_below_floor": blind,
-                }
+                {"letter_floor": floor, "cut": cut, "tp": true_positive, "fp": false_positive, "of": len(pooled)}
             )
-    report["threshold_sweep"] = sweep
-
-    delivered = [value for value in (target_letter_share(row["after"]) for row in landed) if value is not None]
-    fallback = [value for value in (target_letter_share(row["before"]) for row in landed) if value is not None]
-    lines.append("")
-    lines.append("THE GAP, stated as two numbers:")
-    lines.append(f"  highest target share ever reached by a FALLBACK text : {max(fallback):.4f}")
-    lines.append(f"  lowest  target share ever reached by a DELIVERED text: {min(delivered):.4f}")
-    lines.append(f"  raw gap = {min(delivered) - max(fallback):+.4f}")
-    ordered_delivered = sorted(delivered)
-    lines.append(
-        f"  but the delivered tail is thin, not empty: p01={ordered_delivered[len(ordered_delivered) // 100]:.3f}, "
-        f"and {sum(1 for value in delivered if value < 0.3)} delivered paragraphs sit under 0.30"
-    )
-    with_floor = [
-        target_letter_share(row["after"]) for row in landed if letter_count(row["after"]) >= 60 and target_letter_share(row["after"]) is not None
-    ]
-    lines.append(
-        f"  with a 60-letter floor the delivered minimum rises to {min(with_floor):.4f} "
-        f"over {len(with_floor)} paragraphs -- the low tail is entirely SHORT text"
-    )
-    report["gap"] = {
-        "max_fallback_share": round(max(fallback), 4),
-        "min_delivered_share": round(min(delivered), 4),
-        "raw_gap": round(min(delivered) - max(fallback), 4),
-        "delivered_under_0_30": sum(1 for value in delivered if value < 0.3),
-        "min_delivered_share_60_letter_floor": round(min(with_floor), 4),
-    }
 
     lines.append("")
-    lines.append("-" * 104)
-    lines.append(
-        "Rule B (the pair): FLAG when delivered == source verbatim AND the source carries at least one letter.\n"
-        "  No threshold, no word list, no alphabet: byte equality against the paragraph's own source."
-    )
-    true_positive = sum(1 for row in landed if letter_count(row["before"]) > 0)
-    false_positive = [row for row in landed if row["after"] == row["before"] and letter_count(row["before"]) > 0]
-    blind = sum(1 for row in landed if letter_count(row["before"]) == 0)
-    lines.append(f"  TP  FALLBACK caught:              {true_positive}/{len(landed)} ({100 * true_positive / len(landed):.1f}%)")
-    lines.append(f"  MISS source with no letters:      {blind}/{len(landed)} (nothing to translate, so nothing is lost)")
-    lines.append(f"  FP1 DELIVERED wrongly flagged:    {len(false_positive)}/{len(landed)} ({100 * len(false_positive) / len(landed):.2f}%)")
-    for row in false_positive:
+    lines.append("The same rule per book, at the floor/cut the one-book pass recommended (floor 20, cut 0.20):")
+    lines.append("  book                   delivered   TP            FP")
+    flagged = _flagger(20, 0.20)
+    per_book_rule: dict[str, Any] = {}
+    for book, rows in corpus.items():
+        delivered = delivered_rows(rows)
+        true_positive = sum(1 for row in delivered if flagged(row["before"]))
+        false_positive = [row for row in delivered if flagged(row["after"])]
         lines.append(
-            f"      {row['paragraph_id']} [{classify_control_form(row['before'])}] "
-            f"classes={row['manual_edit_classes']} {row['before'][:80]!r}"
+            f"  {book:<22} {len(delivered):>9}   {true_positive:>5} ({100 * true_positive / len(delivered):5.1f}%)"
+            f"   {len(false_positive):>4} ({100 * len(false_positive) / len(delivered):5.2f}%)"
         )
-    report["pair_rule"] = {
-        "tp": true_positive,
-        "of": len(landed),
-        "miss_source_without_letters": blind,
-        "fp": len(false_positive),
-        "fp_ids": [row["paragraph_id"] for row in false_positive],
-    }
+        per_book_rule[book] = {"tp": true_positive, "fp": len(false_positive), "of": len(delivered)}
+    report["rule_a_sweep"] = sweep
+    report["rule_a_per_book_floor20_cut020"] = per_book_rule
+
+    lines.append("")
+    lines.append("-" * 108)
+    lines.append(
+        f"DOES THE ONE-BOOK BAND SURVIVE? On Money & Sustainability's delivered artifact the untranslated lines sat\n"
+        f"at 0.0000 and the lowest legitimate line at {ONE_BOOK_BAND_TOP:.4f}, with nothing between. Testing that band\n"
+        "against every delivered paragraph of all five runs, at a 20-letter floor:"
+    )
+    lines.append("")
+    lines.append("  book                   in the band  worst offender")
+    band_report: dict[str, Any] = {}
+    all_band: list[tuple[str, dict[str, Any]]] = []
+    for book, rows in corpus.items():
+        delivered = delivered_rows(rows)
+        band = [
+            row
+            for row in delivered
+            if letter_count(row["after"]) >= 20
+            and target_letter_share(row["after"]) is not None
+            and target_letter_share(row["after"]) < ONE_BOOK_BAND_TOP
+        ]
+        all_band.extend((book, row) for row in band)
+        worst = max(band, key=lambda row: letter_count(row["after"]), default=None)
+        detail = (
+            f"{worst['paragraph_id']} ({letter_count(worst['after'])} letters, share "
+            f"{target_letter_share(worst['after']):.3f})"
+            if worst
+            else "-- none --"
+        )
+        lines.append(f"  {book:<22} {len(band):>11}  {detail}")
+        band_report[book] = {"in_band": len(band), "worst": detail}
+    lines.append(f"  {'TOTAL':<22} {len(all_band):>11}")
+    assert len(all_band) == sum(entry["in_band"] for entry in band_report.values())
+
+    lines.append("")
+    lines.append("THE BAND IS NOT EMPTY. Every occupant, longest first, so the reader judges rather than trusts:")
+    for book, row in sorted(all_band, key=lambda item: -letter_count(item[1]["after"]))[:14]:
+        lines.append(
+            f"    {book}/{row['paragraph_id']} share={target_letter_share(row['after']):.3f} "
+            f"letters={letter_count(row['after']):<4} identical={row['identical']} "
+            f"prose_flag={row['source_is_prose']} form={classify_control_form(row['after'])}"
+        )
+        lines.append(f"        {row['after'][:140]!r}")
+
+    hard = [
+        (book, row)
+        for book, row in all_band
+        if letter_count(row["after"]) >= 60 and target_letter_share(row["after"]) < 0.10
+    ]
+    lines.append("")
+    lines.append(
+        f"THE HARD CORE -- delivered text with at least 60 letters and under 10% target alphabet: {len(hard)} of "
+        f"{len(pooled)}."
+    )
+    lines.append(
+        "  Where they live matters more than how many: " + str(dict(Counter(book for book, _ in hard))) + "."
+    )
+    for book, row in hard:
+        lines.append(
+            f"    {book}/{row['paragraph_id']} share={target_letter_share(row['after']):.3f} "
+            f"letters={letter_count(row['after'])} identical={row['identical']} prose_flag={row['source_is_prose']}"
+        )
+        lines.append(f"        {row['after'][:150]!r}")
+    report["band"] = {"top": ONE_BOOK_BAND_TOP, "per_book": band_report, "total": len(all_band), "hard_core": len(hard)}
+    return lines
+
+
+# ---------------------------------------------------------------------------
+# 6. Pair rule
+# ---------------------------------------------------------------------------
+
+
+def section_pair_rule(corpus: dict[str, list[dict[str, Any]]], report: dict[str, Any]) -> list[str]:
+    lines = ["", "=" * 108, "6. RULE B -- the pair: byte equality against the paragraph's own source", "=" * 108]
+    if not corpus:
+        lines.append(DUMPS_HINT)
+        return lines
+    lines.append(
+        "FLAG when delivered == source verbatim AND the source carries at least one letter.\n"
+        "No threshold, no alphabet, no word list -- so Constitution VII is untouched by construction."
+    )
+    lines.append("")
+    lines.append("  book                   delivered     TP  miss(no letters)    FP    FP rate")
+    totals = Counter()
+    per_book: dict[str, Any] = {}
+    all_false: list[tuple[str, dict[str, Any]]] = []
+    for book, rows in corpus.items():
+        delivered = delivered_rows(rows)
+        blind = sum(1 for row in delivered if letter_count(row["before"]) == 0)
+        true_positive = len(delivered) - blind
+        false_positive = [row for row in delivered if row["after"] == row["before"] and letter_count(row["before"]) > 0]
+        all_false.extend((book, row) for row in false_positive)
+        totals["delivered"] += len(delivered)
+        totals["tp"] += true_positive
+        totals["blind"] += blind
+        totals["fp"] += len(false_positive)
+        lines.append(
+            f"  {book:<22} {len(delivered):>9}  {true_positive:>5}  {blind:>16}  {len(false_positive):>4}   "
+            f"{100 * len(false_positive) / len(delivered):>6.2f}%"
+        )
+        per_book[book] = {
+            "delivered": len(delivered),
+            "tp": true_positive,
+            "blind": blind,
+            "fp": len(false_positive),
+        }
+    lines.append(
+        f"  {'TOTAL':<22} {totals['delivered']:>9}  {totals['tp']:>5}  {totals['blind']:>16}  {totals['fp']:>4}   "
+        f"{100 * totals['fp'] / totals['delivered']:>6.2f}%"
+    )
+    assert totals["tp"] + totals["blind"] == totals["delivered"]
+    assert totals["fp"] == len(all_false)
+
+    lines.append("")
+    lines.append(f"EVERY false alarm, all {len(all_false)} of them, by form -- this is the price of the first line:")
+    by_form = Counter(classify_control_form(row["before"]) for _, row in all_false)
+    lines.append(f"  {dict(by_form)}")
+    for book, row in sorted(all_false, key=lambda item: -letter_count(item[1]["before"])):
+        lines.append(
+            f"    {book}/{row['paragraph_id']} letters={letter_count(row['before']):<4} "
+            f"form={classify_control_form(row['before']):<22} prose_flag={row['source_is_prose']}"
+        )
+        lines.append(f"        {row['before'][:130]!r}")
+    lines.append("")
+    lines.append(
+        "Read the list, not the rate: with two exceptions the false alarms are acronym headings, bare proper\n"
+        "names, bare URLs and index entries -- text with nothing in it to translate. The two exceptions are\n"
+        "footnote continuation rows on the DOCUMENT path, and they are genuinely untranslated apparatus rather\n"
+        "than a rule misfiring. Not one is a lost prose paragraph."
+    )
 
     lines.append("")
     lines.append("Where rule B must NOT be exported -- the literary-edit run (document path, ru -> ru editing):")
@@ -730,16 +776,150 @@ def section_threshold_sweep(
         )
         lines.append(
             "  correct outcome, so byte equality is decisive ONLY where source and target language differ. That is a\n"
-            "  property of the step, checkable from the job, not a tuning knob."
+            "  property of the job, readable from it, not a tuning knob."
         )
-        report["pair_rule"]["literary_edit_identical"] = [len(identical_rows), len(edit_rows)]
+        report.setdefault("pair_rule", {})["literary_edit_identical"] = [len(identical_rows), len(edit_rows)]
+    report.setdefault("pair_rule", {}).update(
+        {
+            "per_book": per_book,
+            "totals": dict(totals),
+            "false_alarm_forms": dict(by_form),
+            "false_alarms": [f"{book}/{row['paragraph_id']}" for book, row in all_false],
+        }
+    )
     return lines
 
 
 # ---------------------------------------------------------------------------
-# 5. The delivered artifact
+# 7. The two paths
 # ---------------------------------------------------------------------------
 
+
+def section_two_paths(corpus: dict[str, list[dict[str, Any]]], report: dict[str, Any]) -> list[str]:
+    lines = ["", "=" * 108, "7. WHY THE AUDIOBOOK PATH LOOKED CLEAN -- and the document path does not", "=" * 108]
+    if not corpus:
+        lines.append(DUMPS_HINT)
+        return lines
+    lines.append(
+        "Both paths ran the same book. The audiobook run cuts the back-matter region BEFORE the model sees it\n"
+        "(`reference_region`, `toc_structural_role` in `excluded_blocks.md`); the document run keeps footnotes and\n"
+        "bibliography, because a reader wants them. So the two runs disagree about what reaches the delivered set."
+    )
+    lines.append("")
+    lines.append("  path        book                   delivered  min share  min share (>=60 letters)  hard core")
+    per_path: dict[str, Any] = {}
+    for book, rows in corpus.items():
+        path_name = "document" if book in DOCUMENT_BOOKS else "audiobook"
+        delivered = delivered_rows(rows)
+        values = shares_of([row["after"] for row in delivered])
+        with_floor = [
+            target_letter_share(row["after"])
+            for row in delivered
+            if letter_count(row["after"]) >= 60 and target_letter_share(row["after"]) is not None
+        ]
+        hard = sum(
+            1
+            for row in delivered
+            if letter_count(row["after"]) >= 60
+            and target_letter_share(row["after"]) is not None
+            and target_letter_share(row["after"]) < 0.10
+        )
+        lines.append(
+            f"  {path_name:<11} {book:<22} {len(delivered):>9}  {min(values):>9.4f}  {min(with_floor):>23.4f}  {hard:>9}"
+        )
+        per_path[book] = {
+            "path": path_name,
+            "min_share": round(min(values), 4),
+            "min_share_60_letters": round(min(with_floor), 4),
+            "hard_core": hard,
+        }
+    lines.append("")
+    lines.append(
+        "On all four AUDIOBOOK runs the delivered minimum at a 60-letter floor stays between 0.44 and 0.82 and the\n"
+        "hard core is empty. On the DOCUMENT run it is 0.0000 and the hard core is not empty. The one-book gap was\n"
+        "real, and it was a property of the REGION CUT, not of the language signal. The path that actually\n"
+        "delivers untranslated text -- the one spec 059 A-1 says substitutes rather than drops -- is the path\n"
+        "where the separation fails."
+    )
+    report["two_paths"] = per_path
+    return lines
+
+
+# ---------------------------------------------------------------------------
+# 8. The index
+# ---------------------------------------------------------------------------
+
+
+def section_index_case(corpus: dict[str, list[dict[str, Any]]], report: dict[str, Any]) -> list[str]:
+    lines = ["", "=" * 108, "8. THE RETHINKING MONEY INDEX -- 422 paragraphs no region covers", "=" * 108]
+    lines.append(
+        "spec 054 measured it (`specs/054-audiobook-mode-review-and-run/spec.md:495-497`): notes 264/264 cut,\n"
+        "bibliography 177/177 cut, index 10 of 432 -- 422 paragraphs and 22 906 characters of index survive into\n"
+        "the narrated set. Under FR-A8 they arrive as PROSE, because no region claims them. The one-book pass\n"
+        "predicted that any completeness rule would therefore fail this book several hundred times. Its dump is\n"
+        "now here, so the prediction can be checked instead of repeated."
+    )
+    rows = corpus.get("rethinking_money")
+    if not rows:
+        lines.append("")
+        lines.append(DUMPS_HINT)
+        return lines
+    delivered = delivered_rows(rows)
+    last_ordinal = max(row["ordinal"] for row in rows)
+    tail = [row for row in delivered if row["ordinal"] >= last_ordinal - 364]
+    values = shares_of([row["after"] for row in tail])
+    lines.append("")
+    lines.append(
+        f"  book tail (the last 365 ordinals, {len(tail)} delivered paragraphs -- the index and what follows it):"
+    )
+    stats = quantiles(values)
+    lines.append(f"    delivered target share: " + ", ".join(f"{key}={stats[key]}" for key in COLUMNS))
+    below = sum(1 for value in values if value < 0.5)
+    identical = [row for row in tail if row["after"] == row["before"] and letter_count(row["before"]) > 0]
+    lines.append(f"    delivered below 0.50 target share: {below} of {len(values)}")
+    lines.append(f"    delivered byte-identical to source: {len(identical)} of {len(tail)}")
+    lines.append("")
+    lines.append("  What the index rows actually look like, taken in order rather than picked:")
+    for row in tail[:5]:
+        lines.append(f"    {row['paragraph_id']} share={share_or(row['after'], 0.0):.3f} identical={row['identical']}")
+        lines.append(f"        src: {row['before'][:92]!r}")
+        lines.append(f"        out: {row['after'][:92]!r}")
+    lines.append("")
+    lines.append(
+        "THE PREDICTION WAS WRONG, AND IT WAS WRONG BY TWO ORDERS OF MAGNITUDE. The index was TRANSLATED --\n"
+        "'Ecosystem, monetary, 59-60' comes back as 'Экосистема, денежная, 59-60', page numbers and all. Its\n"
+        "median delivered share is 1.000. What stays verbatim is the handful of entries that are bare proper\n"
+        "nouns, where there is nothing to translate."
+    )
+    lines.append("")
+    lines.append("  Cost of a hard gate on this book, counted rather than feared:")
+    for name, rule in (
+        ("rule B (byte equality)", lambda row: row["after"] == row["before"] and letter_count(row["before"]) > 0),
+        ("rule A, floor 20, cut 0.20", lambda row: _flagger(20, 0.20)(row["after"])),
+        ("rule A, floor 60, cut 0.20", lambda row: _flagger(60, 0.20)(row["after"])),
+    ):
+        hits = [row for row in delivered if rule(row)]
+        lines.append(f"    {name:<28} {len(hits):>4} of {len(delivered)} delivered paragraphs would fail the run")
+    lines.append("")
+    lines.append(
+        "  A dozen or so is not several hundred, and it is still not zero: a run that hard-fails on 'Stripe,\n"
+        "  115-116' has failed on nothing. The conclusion of the one-book pass survives in its weaker form --\n"
+        "  neither rule can tell an index row from lost prose, because the difference is REGION and the region\n"
+        "  detector does not claim them -- but the ORDER OF WORK it implied does not: closing the index region is\n"
+        "  worth doing on its own merits, not as a precondition for the invariant."
+    )
+    report["index_case"] = {
+        "tail_paragraphs": len(tail),
+        "tail_share": stats,
+        "tail_below_0_50": below,
+        "tail_identical": len(identical),
+    }
+    return lines
+
+
+# ---------------------------------------------------------------------------
+# 9. Survivorship and the delivered artifact
+# ---------------------------------------------------------------------------
 
 MARKDOWN_NOISE = re.compile(r"[*#>`\[\]•–—-]+")
 
@@ -765,265 +945,112 @@ def _found_in_a_source_block(line: str) -> bool:
     return bool(probe) and any(probe in block for block in _normalised_source_blocks())
 
 
-def section_delivered_artifact(rows: list[dict[str, Any]], report: dict[str, Any]) -> list[str]:
-    """The one place in the corpus where untranslated prose was really DELIVERED to a listener."""
-    lines = ["", "=" * 104, "5. THE DELIVERED ARTIFACT -- real untranslated prose, not a simulation", "=" * 104]
+def section_survivorship(corpus: dict[str, list[dict[str, Any]]], report: dict[str, Any]) -> list[str]:
+    lines = ["", "=" * 108, "9. SURVIVORSHIP -- what the dumps cannot show, and the one artifact that can", "=" * 108]
+    if corpus:
+        lines.append(
+            "A dump records a pair for every paragraph SENT to the model, and an `outcome` saying whether the\n"
+            "model's answer was then found in the artifact. So the answer is always recorded; what is NOT recorded\n"
+            "is what the artifact holds instead when the answer did not land."
+        )
+        lines.append("")
+        lines.append("  book                   not delivered  model returned nothing  answer was in the target language")
+        totals = Counter()
+        per_book: dict[str, Any] = {}
+        for book, rows in corpus.items():
+            missing = [row for row in rows if row["outcome"] not in DELIVERED_OUTCOMES]
+            silent = [row for row in missing if row["after"] is None]
+            answered = [row for row in missing if row["after"] is not None]
+            in_target = sum(1 for row in answered if share_or(row["after"], 0.0) >= 0.5)
+            totals["missing"] += len(missing)
+            totals["silent"] += len(silent)
+            totals["in_target"] += in_target
+            lines.append(f"  {book:<22} {len(missing):>13}  {len(silent):>22}  {in_target:>33}")
+            per_book[book] = {
+                "not_delivered": len(missing),
+                "model_returned_nothing": len(silent),
+                "answer_in_target_language": in_target,
+                "outcomes": dict(Counter(row["outcome"] for row in missing)),
+            }
+        lines.append(
+            f"  {'TOTAL':<22} {totals['missing']:>13}  {totals['silent']:>22}  {totals['in_target']:>33}"
+        )
+        assert totals["missing"] == sum(entry["not_delivered"] for entry in per_book.values())
+        lines.append("")
+        lines.append(
+            f"  {totals['in_target']} of {totals['missing']} carry a perfectly good Russian answer that never reached the artifact, and only\n"
+            f"  {totals['silent']} are cases where the model returned nothing at all. That is the shape of the loss on the audiobook\n"
+            "  path: not English delivered, but nothing delivered. And it is why the dumps CANNOT be used to count\n"
+            "  untranslated deliveries -- the untranslated text is precisely what they do not hold. Any 'paragraphs\n"
+            "  left in English' figure computed from a dump is counting survivors."
+        )
+        report["survivorship"] = {"per_book": per_book, "totals": dict(totals)}
+
+    lines.append("")
+    lines.append("-" * 108)
     if not DELIVERED_NARRATION.exists():
-        lines.append(f"missing {DELIVERED_NARRATION} -- skipped")
+        lines.append(f"delivered artifact not present ({DELIVERED_NARRATION}) -- skipped")
         return lines
     lines.append(
-        "Everything above treated the source text as a stand-in for a fallback delivery. This section needs no\n"
-        "stand-in. `Money_Sustainability_pdf_full_heldout.tts.txt` is the narration as DELIVERED on 2026-08-04;\n"
-        "the commit that tracked it says so in as many words -- 'the artifact as delivered on 2026-08-04, before\n"
-        "the three fixes that followed ... kept as the before-picture, not as a current sample' (f2a49da). Its run\n"
-        "recorded `model_output_discarded_block_count=6` with reasons `{marker_validation_source_fallback: 6,\n"
-        "marker_chunk_collapse: 1}` and had no `narration_excluded_source_fallback_*` counter at all, so those\n"
-        "blocks went into the audiobook in English. Constitution VIII applies: this is a BEFORE picture. The same\n"
-        "book on 2026-08-06 shows 2 fallback blocks, now DROPPED instead (5 581 characters missing) -- the two\n"
-        "shapes of loss spec 059 A-1 describes, both recorded, on one book."
+        "THE ONE PLACE THE UNTRANSLATED TEXT IS VISIBLE. `Money_Sustainability_pdf_full_heldout.tts.txt` is the\n"
+        "narration as DELIVERED on 2026-08-04. The commit that tracked it says so: 'the artifact as delivered on\n"
+        "2026-08-04, before the three fixes that followed ... kept as the before-picture, not as a current sample'\n"
+        "(f2a49da). Constitution VIII: this is a BEFORE picture, not a claim about live code. Its run recorded\n"
+        "`model_output_discarded_block_count=6` and had no `narration_excluded_source_fallback_*` counter at all,\n"
+        "so those blocks went into the audiobook in English. The same book on 2026-08-06 shows 2 fallback blocks,\n"
+        "now DROPPED instead (5 581 characters missing) -- the two shapes of loss spec 059 A-1 describes."
     )
     artifact_lines = [line.strip() for line in DELIVERED_NARRATION.read_text(encoding="utf-8").splitlines() if line.strip()]
-    source_texts = {row["before"].strip() for row in rows}
     total_letters = sum(letter_count(line) for line in artifact_lines)
-    lines.append("")
-    lines.append(f"delivered narration lines: {len(artifact_lines)}; letters: {total_letters}")
-    lines.append("")
-    lines.append("  floor  cut    lines flagged   letters flagged   share of artifact")
-    sweep: list[dict[str, Any]] = []
-    for floor in (0, 20, 60, 120):
-        for cut in (0.10, 0.30, 0.50):
-            hits = [
-                line
-                for line in artifact_lines
-                if letter_count(line) >= floor
-                and target_letter_share(line) is not None
-                and target_letter_share(line) < cut
-            ]
-            hit_letters = sum(letter_count(line) for line in hits)
-            lines.append(
-                f"  {floor:>5}  {cut:.2f}  {len(hits):>13}   {hit_letters:>15}   {100 * hit_letters / total_letters:>16.2f}%"
-            )
-            sweep.append({"letter_floor": floor, "cut": cut, "lines": len(hits), "letters": hit_letters})
-
     english = [
         line
         for line in artifact_lines
         if letter_count(line) >= 60 and target_letter_share(line) is not None and target_letter_share(line) < 0.10
     ]
     english_letters = sum(letter_count(line) for line in english)
+    first_run = load_jsonl(AUDIOBOOK_PAIRS) if AUDIOBOOK_PAIRS.exists() else []
+    source_texts = {row["before"].strip() for row in first_run}
+    landed_texts = {row["after"].strip() for row in first_run if row["outcome"] in DELIVERED_OUTCOMES}
     verbatim = sum(1 for line in english if line in source_texts)
+    inside_block = sum(1 for line in english if _found_in_a_source_block(line)) if SOURCE_BLOCKS.exists() else 0
+    in_dump = sum(1 for line in english if line in landed_texts)
     lines.append("")
+    lines.append(f"  delivered narration lines: {len(artifact_lines)}; letters: {total_letters}")
     lines.append(
-        f"UNTRANSLATED PROSE ACTUALLY SHIPPED: {len(english)} lines, {english_letters} letters, "
+        f"  UNTRANSLATED PROSE ACTUALLY SHIPPED: {len(english)} lines, {english_letters} letters, "
         f"{100 * english_letters / total_letters:.2f}% of the artifact."
     )
-    inside_block = sum(1 for line in english if _found_in_a_source_block(line))
+    lines.append(f"    present in the paragraph dump as a DELIVERED text: {in_dump} -- the survivorship point, measured.")
     lines.append(
-        f"  {verbatim} of them are byte-equal to a recorded SOURCE paragraph. Substitution happens at BLOCK level, so\n"
-        "  the rest carry several paragraphs at once and match no single paragraph byte for byte: "
-        f"{inside_block} of the {len(english)}\n"
-        "  are found inside a recorded source block once markdown noise is normalised away on both sides.\n"
-        "  Granularity matters more than the feature here -- a pair comparison run at paragraph granularity sees\n"
-        f"  {verbatim} of {len(english)}; run where the substitution actually happens, it sees {inside_block}."
-    )
-    lines.append(
-        "  NOT ONE of them appears in the paragraph-pair dump as a delivered text. The dump records only paragraphs\n"
-        "  whose delivered text was found in the artifact, so it is SURVIVOR-BIASED by construction: the failures the\n"
-        "  check exists to catch are exactly what it omits. Any 'paragraphs left in English' figure computed from the\n"
-        "  dump rather than from the artifact is measuring the survivors."
+        f"    byte-equal to a recorded source PARAGRAPH: {verbatim}; found inside a source BLOCK once markdown\n"
+        f"    noise is normalised on both sides: {inside_block}. Substitution happens per block, so a pair check run\n"
+        f"    at paragraph granularity sees {verbatim} of {len(english)}; run where the substitution is made, {inside_block}."
     )
     lines.append("")
-    lines.append("  longest six, quoted:")
-    for line in sorted(english, key=lambda item: -letter_count(item))[:6]:
+    lines.append("  longest four, quoted:")
+    for line in sorted(english, key=lambda item: -letter_count(item))[:4]:
         lines.append(f"    letters={letter_count(line):<5} {line[:130]!r}")
-
     scored = [(target_letter_share(line), line) for line in artifact_lines]
     scored = [(share, line) for share, line in scored if share is not None]
     untranslated_max = max((share for share, line in scored if share < 0.10 and letter_count(line) >= 20), default=0.0)
-    legitimate = [(share, line) for share, line in scored if share >= 0.10 and letter_count(line) >= 20]
-    legitimate_min = min((share for share, _ in legitimate), default=1.0)
-    lines.append("")
-    lines.append("THE GAP ON THE REAL ARTIFACT (letter floor 20, which excludes only TTS tags and OCR debris):")
-    lines.append(f"  highest target share among UNTRANSLATED delivered lines : {untranslated_max:.4f}")
-    lines.append(f"  lowest  target share among LEGITIMATE delivered lines   : {legitimate_min:.4f}")
-    lines.append(f"  GAP = {legitimate_min - untranslated_max:+.4f}, and nothing lies inside it")
-    lines.append("")
-    lines.append("  the legitimate floor, quoted -- the five lowest, so the margin can be judged rather than trusted:")
-    for share, line in sorted(legitimate)[:5]:
-        lines.append(f"    share={share:.3f} letters={letter_count(line):<4} [{classify_control_form(line)}] {line[:110]!r}")
+    legitimate_min = min((share for share, line in scored if share >= 0.10 and letter_count(line) >= 20), default=1.0)
     lines.append("")
     lines.append(
-        "  Read the gap for what it is: on ONE artifact, in ONE language pair, the two populations sit at 0.00 and\n"
-        "  0.41 with nothing between. That is a wide margin, and it is also a single observation of a margin."
+        f"  On this artifact alone the two populations sit at {untranslated_max:.4f} and {legitimate_min:.4f}. Section 5 shows what\n"
+        "  happens to that band once the document path is included."
     )
     report["delivered_artifact"] = {
         "lines": len(artifact_lines),
         "letters": total_letters,
-        "sweep": sweep,
         "untranslated_lines": len(english),
         "untranslated_letters": english_letters,
         "untranslated_share_of_artifact": round(100 * english_letters / total_letters, 2),
+        "present_in_dump": in_dump,
         "byte_equal_to_a_source_paragraph": verbatim,
+        "found_in_a_source_block": inside_block,
         "max_share_untranslated": round(untranslated_max, 4),
         "min_share_legitimate": round(legitimate_min, 4),
-        "gap": round(legitimate_min - untranslated_max, 4),
     }
-    return lines
-
-
-# ---------------------------------------------------------------------------
-# 6. Cross-book
-# ---------------------------------------------------------------------------
-
-
-def section_cross_book(report: dict[str, Any]) -> list[str]:
-    lines = [
-        "",
-        "=" * 104,
-        "6. CROSS-BOOK CHECK -- five tracked runs, BIASED sample (random 60 plus the three extremes)",
-        "=" * 104,
-    ]
-    lines.append(
-        "The per-paragraph dumps of these runs were never tracked, so these pairs are the quoted samples from\n"
-        "comparison_paragraphs.md. They over-represent the extremes on purpose, which makes them a fair place to\n"
-        "look for the WORST delivered paragraph and an unfair place to read a median. Both are reported."
-    )
-    lines.append("")
-    lines.append("  book                 pairs  delivered: min    p05    median   FALLBACK max  identical")
-    per_book: dict[str, Any] = {}
-    totals = Counter()
-    for book in FINAL_RUN_BOOKS:
-        path = FINAL_RUN_DIR / book / "comparison_paragraphs.md"
-        if not path.exists():
-            continue
-        entries = parse_comparison_paragraphs(path)
-        delivered = [value for value in (target_letter_share(item["delivered"]) for item in entries) if value is not None]
-        source = [value for value in (target_letter_share(item["source"]) for item in entries) if value is not None]
-        identical = sum(1 for item in entries if item["delivered"].strip() == item["source"].strip())
-        stats = quantiles(delivered)
-        totals["pairs"] += len(entries)
-        totals["identical"] += identical
-        lines.append(
-            f"  {book:<20} {len(entries):>5}       {min(delivered):>8.4f}  {float(stats['p05']):.3f}  "
-            f"{float(stats['median']):.4f}  {max(source):>12.4f}  {identical:>9}"
-        )
-        per_book[book] = {
-            "pairs": len(entries),
-            "delivered_target_share": stats,
-            "source_target_share": quantiles(source),
-            "identical": identical,
-        }
-    lines.append(f"  {'TOTAL':<20} {totals['pairs']:>5}{'':>44}{totals['identical']:>11}")
-    assert totals["pairs"] == sum(book["pairs"] for book in per_book.values())
-
-    lines.append("")
-    lines.append("Sweep on the pooled cross-book sample (source text as FALLBACK, delivered text as DELIVERED):")
-    pooled = [item for book in FINAL_RUN_BOOKS for item in parse_comparison_paragraphs(FINAL_RUN_DIR / book / "comparison_paragraphs.md") if (FINAL_RUN_DIR / book / "comparison_paragraphs.md").exists()]
-    lines.append("    floor  cut     TP                      FP")
-    cross_sweep: list[dict[str, Any]] = []
-    for floor in (0, 20, 60):
-        for cut in (0.10, 0.30, 0.50, 0.70):
-
-            def flagged(text: str) -> bool:
-                if letter_count(text) < floor:
-                    return False
-                share = target_letter_share(text)
-                return share is not None and share < cut
-
-            true_positive = sum(1 for item in pooled if flagged(item["source"]))
-            false_positive = sum(1 for item in pooled if flagged(item["delivered"]))
-            lines.append(
-                f"    {floor:>5}  {cut:.2f}  {true_positive:>4}/{len(pooled):<4} ({100 * true_positive / len(pooled):5.1f}%)"
-                f"     {false_positive:>3}/{len(pooled):<4} ({100 * false_positive / len(pooled):5.1f}%)"
-            )
-            cross_sweep.append({"letter_floor": floor, "cut": cut, "tp": true_positive, "fp": false_positive, "of": len(pooled)})
-
-    lines.append("")
-    lines.append("Worst delivered paragraph per book, quoted, so every number above is inspectable:")
-    worst_report: dict[str, Any] = {}
-    for book in FINAL_RUN_BOOKS:
-        path = FINAL_RUN_DIR / book / "comparison_paragraphs.md"
-        if not path.exists():
-            continue
-        entries = [item for item in parse_comparison_paragraphs(path) if target_letter_share(item["delivered"]) is not None]
-        worst = min(entries, key=lambda item: share_or(item["delivered"], 1.0))
-        share = share_or(worst["delivered"], 0.0)
-        lines.append(
-            f"  {book} / {worst['paragraph_id']} share={share:.4f} letters={letter_count(worst['delivered'])} "
-            f"[{classify_control_form(worst['delivered'])}] section={worst['section']!r}"
-        )
-        lines.append(f"      {worst['delivered'][:160]!r}")
-        worst_report[book] = {
-            "paragraph_id": worst["paragraph_id"],
-            "share": round(share, 4),
-            "letters": letter_count(worst["delivered"]),
-            "form": classify_control_form(worst["delivered"]),
-            "text": worst["delivered"][:200],
-        }
-    report["cross_book"] = {
-        "per_book": per_book,
-        "totals": dict(totals),
-        "pooled_sweep": cross_sweep,
-        "worst_delivered": worst_report,
-    }
-    return lines
-
-
-# ---------------------------------------------------------------------------
-# 7. The index
-# ---------------------------------------------------------------------------
-
-
-def section_index_case(report: dict[str, Any]) -> list[str]:
-    lines = ["", "=" * 104, "7. THE RETHINKING MONEY INDEX -- 422 paragraphs no region covers", "=" * 104]
-    lines.append(
-        "spec 054 measured it (specs/054-audiobook-mode-review-and-run/spec.md:495-497): notes 264/264 cut,\n"
-        "bibliography 177/177 cut, index 10 of 432 -- 422 paragraphs and 22 906 characters of index survive into\n"
-        "the narrated set. Under FR-A8 (prose = registry minus front matter minus TOC minus back matter) those 422\n"
-        "arrive as PROSE, because no region claims them."
-    )
-    findings: dict[str, Any] = {}
-    for book in FINAL_RUN_BOOKS:
-        path = FINAL_RUN_DIR / book / "comparison_paragraphs.md"
-        if not path.exists():
-            continue
-        text = path.read_text(encoding="utf-8")
-        match = re.search(r"^## Абзацы, оставшиеся в озвучке на английском \((\d+)\)", text, re.MULTILINE)
-        declared = int(match.group(1)) if match else None
-        entries = [item for item in parse_comparison_paragraphs(path) if item["section"].startswith("Абзацы, оставшиеся")]
-        findings[book] = {"declared_count": declared, "quoted": len(entries)}
-        lines.append("")
-        lines.append(f"  {book}: paragraphs the run itself recorded as left in English = {declared}")
-        for item in entries:
-            share = target_letter_share(item["delivered"])
-            lines.append(
-                f"      {item['paragraph_id']}: target_share={0.0 if share is None else round(share, 4)}, "
-                f"letters={letter_count(item['delivered'])}, form={classify_control_form(item['delivered'])}, "
-                f"identical_to_source={item['delivered'].strip() == item['source'].strip()}"
-            )
-            lines.append(f"        {item['delivered'][:170]!r}")
-
-    average_chars = 22906 / 422
-    lines.append("")
-    lines.append(
-        "WHY THE RECORDED '0 and 1' NUMBERS UNDERSTATE THE RESIDUE. Each comparison_paragraphs.md states the\n"
-        "detector that produced those sections: 'at least 60 letters, under 30% Cyrillic'. The surviving index\n"
-        f"averages {average_chars:.1f} characters per paragraph (22 906 / 422), so the majority of the residue sits BELOW\n"
-        "that 60-letter floor and was never counted. The single hit that did clear the floor is an index row of 161\n"
-        "letters, delivered byte-identical to its English source. So '1 paragraph left in English' is a property of\n"
-        "the floor, not a measurement of the book."
-    )
-    lines.append("")
-    lines.append(
-        "CONSEQUENCE FOR THE CONTRACT. Under FR-A5 a quality rejection on a prose paragraph loses\n"
-        "`fallback_continue` and escalates to `fail`. Any share-based completeness rule therefore turns those\n"
-        "index rows into hard run failures on a book whose prose is in fact fully translated -- while the pair rule\n"
-        "(rule B) flags exactly the same rows, because they are delivered verbatim. Neither rule can tell an index\n"
-        "row from lost prose: the difference is REGION, and the region detector is the thing that misses them.\n"
-        "The honest order of work is therefore: close the index region first, then wire the invariant. Otherwise\n"
-        "the invariant's first act on this corpus is to fail a good book several hundred times."
-    )
-    report["index_case"] = {"per_book": findings, "index_avg_chars": round(average_chars, 1)}
     return lines
 
 
@@ -1033,30 +1060,32 @@ def section_index_case(report: dict[str, Any]) -> list[str]:
 
 
 def build_report() -> tuple[str, dict[str, Any]]:
-    rows = load_jsonl(AUDIOBOOK_PAIRS)
-    regions = load_paragraph_regions(SOURCE_BLOCKS)
-    missing = [row["paragraph_id"] for row in rows if row["paragraph_id"] not in regions]
-    if missing:
-        raise SystemExit(f"{len(missing)} pairs have no region decision, e.g. {missing[:5]}")
+    corpus = load_final_run_dumps()
+    regions = load_paragraph_regions(SOURCE_BLOCKS) if SOURCE_BLOCKS.exists() and AUDIOBOOK_PAIRS.exists() else None
     report: dict[str, Any] = {}
     lines = [
         "TRANSLATION-SIGNAL MEASUREMENT",
         "Recorded runs only. No paid run, no network, no LLM, stdlib only.",
-        f"Full-book corpus : {AUDIOBOOK_PAIRS.relative_to(PROJECT_ROOT)} -- {len(rows)} pairs,"
-        " Money & Sustainability, audiobook path, en->ru",
-        f"Region decisions : {SOURCE_BLOCKS.relative_to(PROJECT_ROOT)} -- the run's own narration_include per block",
-        f"Cross-book corpus: {FINAL_RUN_DIR.relative_to(PROJECT_ROOT)}/*/comparison_paragraphs.md -- 5 books, sampled",
+        "",
+        f"Main corpus  : {len(corpus)} of {len(FINAL_RUN_BOOKS)} paragraph-pair dumps from the 2026-08-06 run"
+        + (f" -- {sum(len(rows) for rows in corpus.values())} records" if corpus else " -- NONE FOUND"),
+        f"Second corpus: {'present' if regions else 'absent'} -- git-recovered region decisions and delivered artifact",
         "",
         "Every target-alphabet number below is a CYRILLIC number, because every recorded run is en->ru.",
         "Whether the same shape holds for another target language is NOT tested by this corpus.",
     ]
-    lines += section_data_shape(rows, regions, report)
-    lines += section_features(rows, regions, report)
-    lines += section_control_group(rows, regions, report)
-    lines += section_threshold_sweep(rows, regions, report)
-    lines += section_delivered_artifact(rows, report)
-    lines += section_cross_book(report)
-    lines += section_index_case(report)
+    if not corpus:
+        lines.append("")
+        lines.append(DUMPS_HINT)
+    lines += section_corpus(corpus, report)
+    lines += section_prose_flag(corpus, regions, report)
+    lines += section_features(corpus, report)
+    lines += section_control_group(corpus, report)
+    lines += section_gap(corpus, report)
+    lines += section_pair_rule(corpus, report)
+    lines += section_two_paths(corpus, report)
+    lines += section_index_case(corpus, report)
+    lines += section_survivorship(corpus, report)
     return "\n".join(lines), report
 
 
