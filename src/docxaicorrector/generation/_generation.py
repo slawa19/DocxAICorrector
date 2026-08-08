@@ -20,6 +20,8 @@ from docxaicorrector.core.logger import log_event
 from docxaicorrector.core.model_accounting import (
     PARAGRAPH_DISPOSITION_STATUSES,
     STAGE_TEXT_GENERATION,
+    get_run_model_accounting_ledger,
+    record_degradation_ladder,
     record_model_call_usage,
     record_model_output_discarded,
     record_paragraph_disposition,
@@ -96,6 +98,12 @@ _COLLAPSED_MARKER_CHUNK_MIN_SOURCE_CHARS = 40
 _ABSORBING_NEIGHBOUR_RATIO = 0.5
 _INCOMPLETE_RESPONSE_RETRY_MIN_OUTPUT_TOKENS = 1024
 _INCOMPLETE_RESPONSE_RECOVERY_MIN_OUTPUT_TOKENS = 1536
+# The hard upper bound on ``max_output_tokens`` this generator will ever ask for. Named
+# rather than repeated as a literal in three places because the degradation ladder DERIVES
+# its division threshold from it: a block whose answer does not fit under this number is
+# not a block that needs another retry, it is a block that needs to be smaller, and
+# ``_boost_request_output_budget`` cannot make it fit no matter how many times it doubles.
+_MODEL_OUTPUT_TOKEN_CEILING = 16384
 _CONTEXT_LEAKAGE_RETRY_WARNING = (
     "IMPORTANT: Your previous answer included text from the surrounding context. "
     "Use ONLY the text that belongs to [TARGET BLOCK]."
@@ -702,7 +710,12 @@ def _has_structural_output_line(chunk: str) -> bool:
 
 
 def _collapse_single_marker_paragraph_break(chunk: str, *, paragraph_id: str) -> str:
-    """Join a paragraph the model broke in two — ONLY when the block holds one marker.
+    """Join a paragraph the model broke in two — ONLY where ONE paragraph was asked for.
+
+    Two callers, and both satisfy that condition by construction: a block whose marker
+    sequence holds exactly one id, and one unit of the degradation ladder, whose request
+    carried a single paragraph and no markers at all. The reasoning below is written for the
+    first and applies unchanged to the second.
 
     With a single marker there is no neighbour to steal from and no neighbour to steal for:
     ``unexpected_prefix`` already forbids a fragment before the marker, and every character
@@ -1582,7 +1595,7 @@ def _extract_anthropic_message_markdown(response: object) -> str:
 
 def _estimate_max_output_tokens(target_text: str) -> int:
     estimated_output_tokens = max((len(target_text) // 3) * 4, 512)
-    return min(estimated_output_tokens, 16384)
+    return min(estimated_output_tokens, _MODEL_OUTPUT_TOKEN_CEILING)
 
 
 def _build_request_kwargs(*, model: str, system_prompt: str, user_prompt: str, target_text: str) -> dict[str, object]:
@@ -1612,9 +1625,13 @@ def _boost_request_output_budget(
     boosted_request = dict(request_kwargs)
     current_value = boosted_request.get("max_output_tokens")
     if isinstance(current_value, int) and not isinstance(current_value, bool):
-        boosted_request["max_output_tokens"] = min(max(current_value * 2, minimum_tokens), 16384)
+        boosted_request["max_output_tokens"] = min(
+            max(current_value * 2, minimum_tokens), _MODEL_OUTPUT_TOKEN_CEILING
+        )
         return boosted_request
-    boosted_request["max_output_tokens"] = min(max(minimum_tokens, 512), 16384)
+    boosted_request["max_output_tokens"] = min(
+        max(minimum_tokens, 512), _MODEL_OUTPUT_TOKEN_CEILING
+    )
     return boosted_request
 
 
@@ -1840,6 +1857,489 @@ def _capture_marker_attempt_failure(
         return None
 
 
+# --- The degradation ladder: DIVIDE the block instead of substituting its source -------
+#
+# Step 1 of the ladder is the retry loop above and is unchanged. Steps 2 and 3 live here.
+# Both exist because the four controlled fallbacks below answer "the model did not give an
+# accepted answer for this BLOCK" by delivering the block's own source-language text — and
+# the owner's requirement is that prose be translated in full. Substituting the source is
+# not a translation, and dropping the substitution without replacing it would be worse
+# still: it would lose the text outright. So the answer is to ask for LESS at a time.
+#
+# **Step 2 — the marker contract was violated → ask each paragraph on its own, with no
+# markers.** The marker contract exists to map N paragraphs onto ONE call; when the mapping
+# fails, the thing to remove is the batching, not the translation. With ``marker_mode=False``
+# the whole error class is unreachable by construction, not by promise:
+# ``_strip_and_validate_paragraph_markers`` returns the answer untouched, and one input maps
+# to one output trivially.
+#
+# **Step 3 — ``incomplete_response`` → divide, because the failure is one of SIZE.**
+# ``_boost_request_output_budget`` doubles the budget but ``min``s it with
+# ``_MODEL_OUTPUT_TOKEN_CEILING``, so a block whose answer does not fit under the ceiling is
+# never answered whole however often it is retried. Division is the only remedy that changes
+# the quantity the failure is about. Above one paragraph, division IS step 2. Below one
+# paragraph there is no marker, so sentences are re-joined into the SAME paragraph and the
+# paragraph count is invariant by construction.
+#
+# **Termination, by construction rather than by inspection.** The ladder is reached only
+# under ``allow_controlled_source_fallback``, and every call it makes passes
+# ``allow_controlled_source_fallback=False`` — which disables both the ladder and the four
+# fallbacks, so a nested call either answers or raises. The sentence split is performed
+# HERE, iteratively, not by a second level of nesting. Depth is therefore exactly one, and
+# the calls one block can cost are bounded by
+# ``(paragraphs + sentence_groups) * (max_retries + 1)``.
+#
+# **Nothing is ever lost.** A unit the ladder could not translate keeps its own SOURCE text
+# — exactly today's outcome, but for that unit alone instead of the whole block — and the
+# unit count is preserved either way, so the paragraph-per-marker mapping the formatting
+# restorer depends on still holds. A rejected model answer is still never delivered: the
+# ladder ships only answers that passed the ordinary validation of their own call.
+
+_DEGRADATION_LADDER_TRIGGER_MARKER_CONTRACT = "marker_contract"
+_DEGRADATION_LADDER_TRIGGER_INCOMPLETE_RESPONSE = "incomplete_response"
+
+# Where a sentence ends, for the purpose of dividing one paragraph. A strict SUBSET of
+# ``_NARRATION_SENTENCE_TERMINALS``: a colon and a semicolon join clauses rather than close
+# a sentence, and cutting a translation unit at one of them would hand the model half a
+# thought. Punctuation classes only — Constitution VII forbids word lists, and no list of
+# abbreviations is consulted, so "т. д." can be split at the wrong place. That mis-split
+# costs coherence inside ONE paragraph on the last resort before shipping English, and it
+# cannot move text between paragraphs: the pieces are re-joined into the same paragraph.
+_LADDER_SENTENCE_TERMINALS = ".!?…"
+# Two fixed-width look-behinds rather than one with an optional class: Python's ``re``
+# rejects a variable-width look-behind outright.
+_LADDER_SENTENCE_BOUNDARY_PATTERN = re.compile(
+    r"(?:(?<=["
+    + re.escape(_LADDER_SENTENCE_TERMINALS)
+    + r"])|(?<=["
+    + re.escape(_LADDER_SENTENCE_TERMINALS)
+    + r"]["
+    + re.escape(_NARRATION_CLOSING_MARKS)
+    + r"]))\s+"
+)
+# The most SOURCE characters whose answer can still be BUDGETED under the provider ceiling.
+# Derived from the two functions that own the budget rather than chosen: with
+# ``_estimate_max_output_tokens`` asking for ``len // 3 * 4`` tokens, a unit longer than
+# this is clamped by ``_MODEL_OUTPUT_TOKEN_CEILING`` and no amount of doubling raises it.
+_LADDER_BUDGETABLE_SOURCE_CHARS = _MODEL_OUTPUT_TOKEN_CEILING * 3 // 4
+
+
+def _ladder_source_units(text: str) -> list[str]:
+    """The paragraphs of a block that carries no marker record.
+
+    Split on the literal blank line, and NOT on ``\\n\\s*\\n``, because the paragraph count
+    of a marker-free block is read back downstream by
+    ``block_execution.build_processed_paragraph_registry_entries``, which splits on exactly
+    ``"\\n\\n"``. A looser split here would let the ladder emit a paragraph count the
+    registry then rejects as a mismatch — same text, different arithmetic.
+    """
+
+    return [unit.strip() for unit in text.split("\n\n") if unit.strip()]
+
+
+def _ladder_sentences(text: str) -> list[str]:
+    return [part.strip() for part in _LADDER_SENTENCE_BOUNDARY_PATTERN.split(text) if part.strip()]
+
+
+def _ladder_sentence_groups(text: str) -> list[str]:
+    """Two or more sentence groups of *text*, or ``[]`` when it cannot be divided.
+
+    The group limit is ``min(budgetable, half the unit)``: the first half of the pair keeps
+    a group answerable under the ceiling, the second guarantees that a divisible unit is
+    ACTUALLY divided rather than re-asked whole, which would be a paid call that changes
+    nothing. Returning ``[]`` is how the ladder declines, and declining is what keeps a
+    single-sentence paragraph from costing a duplicate call.
+
+    A unit whose own text carries a structural line is not divided at all. The guard is
+    ``_has_structural_output_line``, the same one ``split_marker_preserved_paragraph_dispositions``
+    uses: a heading welded to the sentence after it stops being a heading, and repairing
+    size by destroying a structural role is Constitution VII rule 7 exactly.
+    """
+
+    if _has_structural_output_line(text):
+        return []
+    sentences = _ladder_sentences(text)
+    if len(sentences) < 2:
+        return []
+    group_limit = min(_LADDER_BUDGETABLE_SOURCE_CHARS, (len(text) + 1) // 2)
+    groups: list[str] = []
+    current = ""
+    for sentence in sentences:
+        candidate = f"{current} {sentence}" if current else sentence
+        if current and len(candidate) > group_limit:
+            groups.append(current)
+            current = sentence
+            continue
+        current = candidate
+    if current:
+        groups.append(current)
+    return groups if len(groups) >= 2 else []
+
+
+def _ladder_model_answer(
+    *,
+    client: "OpenAI",
+    model: str,
+    system_prompt: str,
+    target_text: str,
+    context_before: str,
+    context_after: str,
+    max_retries: int,
+    block_index: int | None,
+    unit_label: str,
+) -> str:
+    """One ladder call, for ONE paragraph, answered as one paragraph. Raises otherwise.
+
+    ``allow_controlled_source_fallback=False`` is what makes the call honest AND what makes
+    the ladder terminate: without it the nested call would answer a rejection by returning
+    the source text, which the ladder cannot distinguish from a translation, and it would
+    be free to open a ladder of its own.
+
+    Two things the ordinary non-marker validation does not check, because outside the ladder
+    nothing promised them, and inside it both are load-bearing:
+
+    * **Paragraph markers are stripped.** There are none to keep in this mode, so a marker
+      in the answer is the model echoing a token out of the block this unit was cut from,
+      and an internal identifier must never reach the reader.
+    * **The answer must be ONE paragraph.** The request carried one, and the block's
+      paragraph count is the invariant the whole ladder rests on — a two-paragraph answer
+      dropped into one paragraph's slot would ship three paragraphs under two markers. The
+      break is treated exactly as ``split_marker_preserved_paragraph_dispositions`` treats
+      it for a one-marker block: collapsed when the pieces are prose, and rejected when the
+      answer carries a structural line, because welding ``## Заголовок`` to the sentence
+      after it repairs a split by destroying a role (Constitution VII rule 7).
+    """
+
+    answer = generate_markdown_block(
+        client=client,
+        model=model,
+        system_prompt=system_prompt,
+        target_text=target_text,
+        context_before=context_before,
+        context_after=context_after,
+        max_retries=max_retries,
+        expected_paragraph_ids=None,
+        marker_mode=False,
+        block_index=block_index,
+        allow_controlled_source_fallback=False,
+    )
+    cleaned = _PARAGRAPH_MARKER_PATTERN.sub("", answer).strip()
+    if not cleaned:
+        raise RuntimeError("Модель вернула пустой ответ (empty_response).")
+    if re.search(r"\n\s*\n", cleaned):
+        if _has_structural_output_line(cleaned):
+            raise RuntimeError(f"ladder_answer_paragraph_split:{unit_label}")
+        cleaned = _collapse_single_marker_paragraph_break(cleaned, paragraph_id=unit_label)
+    return cleaned
+
+
+@dataclass
+class _LadderUnitOutcome:
+    """What became of one unit, and what dividing it below the paragraph cost."""
+
+    text: str | None = None
+    sentence_split: bool = False
+    oversized_sentences: int = 0
+
+
+def _ladder_translate_unit(
+    *,
+    client: "OpenAI",
+    model: str,
+    system_prompt: str,
+    unit_text: str,
+    unit_label: str,
+    context_before: str,
+    context_after: str,
+    max_retries: int,
+    block_index: int | None,
+) -> _LadderUnitOutcome:
+    """Translate ONE paragraph, dividing it by sentences if its size is what failed.
+
+    All-or-nothing per paragraph on purpose. A paragraph assembled from some translated
+    sentence groups and some source ones would ship a NEW defect shape — a paragraph in two
+    languages — in exchange for less English. Reverting the whole paragraph keeps the
+    outcome one a reader can recognise, and it is exactly what today's code already does for
+    the entire block.
+    """
+
+    outcome = _LadderUnitOutcome()
+    try:
+        outcome.text = _ladder_model_answer(
+            client=client,
+            model=model,
+            system_prompt=system_prompt,
+            target_text=unit_text,
+            context_before=context_before,
+            context_after=context_after,
+            max_retries=max_retries,
+            block_index=block_index,
+            unit_label=unit_label,
+        )
+        return outcome
+    except Exception as exc:
+        if not _is_incomplete_response_error(exc):
+            return outcome
+
+    groups = _ladder_sentence_groups(unit_text)
+    if not groups:
+        if len(unit_text) > _LADDER_BUDGETABLE_SOURCE_CHARS:
+            outcome.oversized_sentences = 1
+            log_event(
+                logging.WARNING,
+                "degradation_ladder_sentence_exceeds_output_ceiling",
+                "Абзац не помещается в потолок max_output_tokens и не делится ниже одного "
+                "предложения; в документе остаётся его исходный текст.",
+                paragraph_chars=len(unit_text),
+                budgetable_chars=_LADDER_BUDGETABLE_SOURCE_CHARS,
+            )
+        return outcome
+
+    outcome.sentence_split = True
+    log_event(
+        logging.INFO,
+        "degradation_ladder_sentence_split",
+        "Абзац снова вернулся incomplete_response; делю его по предложениям и склеиваю обратно в тот же абзац.",
+        paragraph_chars=len(unit_text),
+        group_count=len(groups),
+    )
+    translated_groups: list[str] = []
+    for index, group in enumerate(groups):
+        if len(group) > _LADDER_BUDGETABLE_SOURCE_CHARS:
+            outcome.oversized_sentences += 1
+            log_event(
+                logging.WARNING,
+                "degradation_ladder_sentence_exceeds_output_ceiling",
+                "Одно предложение само превышает потолок max_output_tokens; глубже деления нет, "
+                "спрашиваю его как есть.",
+                paragraph_chars=len(unit_text),
+                sentence_chars=len(group),
+                budgetable_chars=_LADDER_BUDGETABLE_SOURCE_CHARS,
+            )
+        try:
+            translated_groups.append(
+                _ladder_model_answer(
+                    client=client,
+                    model=model,
+                    system_prompt=system_prompt,
+                    target_text=group,
+                    context_before=groups[index - 1] if index > 0 else context_before,
+                    context_after=groups[index + 1] if index + 1 < len(groups) else context_after,
+                    max_retries=max_retries,
+                    block_index=block_index,
+                    unit_label=unit_label,
+                )
+            )
+        except Exception:
+            return outcome
+    # One paragraph in, one paragraph out: the groups are re-joined with a space, the same
+    # way ``_collapse_single_marker_paragraph_break`` re-joins a paragraph the model broke.
+    outcome.text = " ".join(translated_groups)
+    return outcome
+
+
+def _degradation_ladder_trigger(exc: Exception, *, marker_mode: bool) -> str | None:
+    if _is_incomplete_response_error(exc):
+        return _DEGRADATION_LADDER_TRIGGER_INCOMPLETE_RESPONSE
+    if marker_mode and _is_retryable_marker_validation_error(exc):
+        return _DEGRADATION_LADDER_TRIGGER_MARKER_CONTRACT
+    return None
+
+
+def _degradation_ladder_divides(units: Sequence[str], *, trigger: str) -> bool:
+    """Would the ladder actually ask for LESS than the call that just failed?
+
+    The anti-vacuum guard, and the reason a first-try block costs exactly one call and a
+    single-sentence block costs no extra one. For the marker contract the answer is always
+    yes: dropping the contract changes the request even for a one-paragraph block, and that
+    is the whole remedy. For ``incomplete_response`` the request only gets smaller if there
+    is more than one paragraph, or if the one paragraph divides by sentences.
+    """
+
+    if not units:
+        return False
+    if trigger == _DEGRADATION_LADDER_TRIGGER_MARKER_CONTRACT:
+        return True
+    if len(units) > 1:
+        return True
+    return bool(_ladder_sentence_groups(units[0]))
+
+
+def _degradation_ladder_block_result(
+    outcomes: Sequence[_LadderUnitOutcome],
+    *,
+    source_units: Sequence[str],
+    expected_paragraph_ids: Sequence[str] | None,
+    marker_mode: bool,
+) -> str:
+    """Assemble the ladder's answers into ONE block, with the per-paragraph record.
+
+    Built exactly the way ``_block_source_fallback_result`` builds the source fallback —
+    ``_marker_preserved_block_text`` from one ``ParagraphDisposition`` per expected id — so
+    the record cannot disagree with the text and ``_deliver_marker_preserved_block`` can
+    still refuse a block that lost it. What differs is the status.
+
+    ``accepted`` for a paragraph the ladder translated. **``omitted``, not
+    ``source_restored``, for one it could not** — and the choice is forced by what the two
+    statuses actually DO, which is the only thing they differ in downstream:
+    ``narration_projection_for_processed_block`` withholds ``omitted`` and speaks
+    ``source_restored``. The block-level fallback this ladder stands in front of is dropped
+    from the narration whole (``block_execution.fallback_delivered_source_text``), so
+    marking a leftover paragraph ``source_restored`` would make a PARTIAL rescue read more
+    source-language text aloud than no rescue at all — the one paragraph the ladder failed
+    on would become the only thing a listener hears in English. ``omitted`` is also the
+    truthful description of the outcome it names: the paragraph's own source stands in the
+    DOCX, so nothing is lost and the paragraph-per-marker mapping holds, and the narration
+    skips it, which is spec 054's rule. It is already wired end to end — counters, the
+    ``narration_omitted_paragraphs_excluded`` notice and its characters.
+    """
+
+    resolved = [
+        outcome.text if outcome.text is not None else source
+        for outcome, source in zip(outcomes, source_units)
+    ]
+    source_restored_count = sum(1 for outcome in outcomes if outcome.text is None)
+    if source_restored_count:
+        record_model_output_discarded(
+            reason="degradation_ladder_paragraph_source_fallback",
+            paragraph_count=source_restored_count,
+        )
+    if not marker_mode:
+        return "\n\n".join(resolved)
+    # ``_attempt_degradation_ladder`` refuses to run in marker mode without one source chunk
+    # per expected id, so this pairing is total. It is checked rather than assumed because
+    # the failure it guards against — a marker-mode block leaving with a bare string — is
+    # exactly the silent state ``MarkerParagraphRecordLost`` was introduced to make loud,
+    # and an ``assert`` disappears under ``-O``.
+    if expected_paragraph_ids is None or len(expected_paragraph_ids) != len(resolved):
+        raise MarkerParagraphRecordLost("degradation_ladder")
+    return _deliver_marker_preserved_block(
+        _marker_preserved_block_text(
+            [
+                ParagraphDisposition(
+                    paragraph_id=paragraph_id,
+                    text=text,
+                    status=(
+                        PARAGRAPH_STATUS_ACCEPTED
+                        if outcome.text is not None
+                        else PARAGRAPH_STATUS_OMITTED
+                    ),
+                )
+                for paragraph_id, text, outcome in zip(expected_paragraph_ids, resolved, outcomes)
+            ]
+        ),
+        marker_mode=marker_mode,
+        stage="degradation_ladder",
+    )
+
+
+def _attempt_degradation_ladder(
+    exc: Exception,
+    *,
+    client: "OpenAI",
+    model: str,
+    system_prompt: str,
+    max_retries: int,
+    block_index: int | None,
+    marker_mode: bool,
+    expected_paragraph_ids: Sequence[str] | None,
+    source_paragraph_chunks: Sequence[str] | None,
+    target_text_for_leakage: str,
+    context_before: str,
+    context_after: str,
+    allow_controlled_source_fallback: bool,
+) -> str | None:
+    """Steps 2 and 3, or ``None`` when the ladder declines or rescues nothing.
+
+    ``None`` hands the block back to the four controlled fallbacks below completely
+    unchanged — same text, same event, same counter. So the worst the ladder can do is cost
+    calls; it can never make the delivered block worse than it is today.
+    """
+
+    if not allow_controlled_source_fallback:
+        return None
+    trigger = _degradation_ladder_trigger(exc, marker_mode=marker_mode)
+    if trigger is None:
+        return None
+
+    if marker_mode:
+        # In marker mode the units MUST be the marker chunks, one per expected id. Splitting
+        # the joined text instead could yield a different count, and the assembly below would
+        # then return a bare string for a marker-mode block — the exact ambiguity
+        # ``_deliver_marker_preserved_block`` exists to make impossible. Declining is the
+        # safe answer: the block falls through to today's fallback with its record intact.
+        if (
+            not expected_paragraph_ids
+            or source_paragraph_chunks is None
+            or len(source_paragraph_chunks) != len(expected_paragraph_ids)
+        ):
+            return None
+        units = list(source_paragraph_chunks)
+    else:
+        units = _ladder_source_units(target_text_for_leakage)
+    if not _degradation_ladder_divides(units, trigger=trigger):
+        return None
+
+    ledger = get_run_model_accounting_ledger()
+    calls_before = ledger.model_call_count()
+    log_event(
+        logging.WARNING,
+        "degradation_ladder_started",
+        "Блок отвергнут после recovery; вместо подстановки исходника переспрашиваю его частями.",
+        trigger=trigger,
+        block_index=block_index,
+        unit_count=len(units),
+        marker_mode=marker_mode,
+    )
+    outcomes: list[_LadderUnitOutcome] = []
+    for index, unit_text in enumerate(units):
+        outcomes.append(
+            _ladder_translate_unit(
+                client=client,
+                model=model,
+                system_prompt=system_prompt,
+                unit_text=unit_text,
+                unit_label=_marker_paragraph_id(expected_paragraph_ids, index),
+                # The neighbouring paragraph is the context that was already there. Handing
+                # the model "[no context]" instead would make the divided call weaker than
+                # the batched one it replaces.
+                context_before=units[index - 1] if index > 0 else context_before,
+                context_after=units[index + 1] if index + 1 < len(units) else context_after,
+                max_retries=max_retries,
+                block_index=block_index,
+            )
+        )
+
+    translated_count = sum(1 for outcome in outcomes if outcome.text is not None)
+    record_degradation_ladder(
+        trigger=trigger,
+        model_call_count=ledger.model_call_count() - calls_before,
+        translated_paragraph_count=translated_count,
+        unrescued_paragraph_count=len(outcomes) - translated_count,
+        sentence_split_paragraph_count=sum(1 for outcome in outcomes if outcome.sentence_split),
+        oversized_sentence_count=sum(outcome.oversized_sentences for outcome in outcomes),
+    )
+    log_event(
+        logging.WARNING,
+        "degradation_ladder_completed",
+        "Переспрос блока частями завершён.",
+        trigger=trigger,
+        block_index=block_index,
+        unit_count=len(units),
+        translated_unit_count=translated_count,
+        unrescued_unit_count=len(outcomes) - translated_count,
+        model_call_count=ledger.model_call_count() - calls_before,
+    )
+    if not translated_count:
+        return None
+    return _degradation_ladder_block_result(
+        outcomes,
+        source_units=units,
+        expected_paragraph_ids=expected_paragraph_ids,
+        marker_mode=marker_mode,
+    )
+
+
 def generate_markdown_block(
     client: "OpenAI",
     model: str,
@@ -1851,7 +2351,18 @@ def generate_markdown_block(
     expected_paragraph_ids: Sequence[str] | None = None,
     marker_mode: bool = False,
     block_index: int | None = None,
+    *,
+    allow_controlled_source_fallback: bool = True,
 ) -> str:
+    """Process ONE block, retrying, then dividing, and only then substituting its source.
+
+    ``allow_controlled_source_fallback`` is internal to the degradation ladder and no
+    pipeline caller passes it. ``False`` means "answer or raise": both the ladder and the
+    four controlled source fallbacks are off, so the caller can tell a translation from a
+    silently substituted source — and, because the ladder only ever calls with ``False``,
+    the ladder cannot re-enter itself and the recursion depth is exactly one.
+    """
+
     if isinstance(max_retries, bool) or not isinstance(max_retries, int):
         raise TypeError("max_retries должен быть целым числом.")
     if max_retries < 1:
@@ -2010,6 +2521,28 @@ def generate_markdown_block(
                 stage="recovery",
                 target_chars=len(target_text),
             )
+            # Steps 2 and 3 of the ladder stand HERE, ahead of every controlled fallback:
+            # substituting the source is the last resort, not the first answer to a
+            # rejection. ``None`` leaves each branch below exactly as it was.
+            ladder_result = _attempt_degradation_ladder(
+                recovery_exc,
+                client=client,
+                model=model,
+                system_prompt=system_prompt,
+                max_retries=max_retries,
+                block_index=block_index,
+                marker_mode=marker_mode,
+                expected_paragraph_ids=expected_paragraph_ids,
+                source_paragraph_chunks=source_paragraph_chunks,
+                target_text_for_leakage=target_text_for_leakage,
+                context_before=context_before_text,
+                context_after=context_after_text,
+                allow_controlled_source_fallback=allow_controlled_source_fallback,
+            )
+            if ladder_result is not None:
+                return ladder_result
+            if not allow_controlled_source_fallback:
+                raise recovery_exc
             if _is_incomplete_response_error(recovery_exc) and _can_fallback_to_source_text_after_incomplete_response(target_text):
                 record_model_output_discarded(reason="incomplete_response_source_fallback", block_count=1)
                 log_event(
@@ -2071,6 +2604,7 @@ def generate_markdown_block(
 
     if (
         last_exception is not None
+        and allow_controlled_source_fallback
         and _is_non_completed_response_error(last_exception)
         and _can_fallback_to_source_text_after_non_completed_response(target_text)
     ):

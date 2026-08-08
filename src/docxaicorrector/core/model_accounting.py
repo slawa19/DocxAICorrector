@@ -253,6 +253,13 @@ class RunModelAccountingLedger:
         self._controlled_block_fallback_chars = 0
         self._controlled_block_fallback_kind_counts: dict[str, int] = {}
         self._controlled_block_fallback_kind_chars: dict[str, int] = {}
+        self._degradation_ladder_block_count = 0
+        self._degradation_ladder_model_call_count = 0
+        self._degradation_ladder_translated_paragraph_count = 0
+        self._degradation_ladder_unrescued_paragraph_count = 0
+        self._degradation_ladder_sentence_split_paragraph_count = 0
+        self._degradation_ladder_oversized_sentence_count = 0
+        self._degradation_ladder_trigger_counts: dict[str, int] = {}
 
     def reset(self) -> None:
         with self._lock:
@@ -270,6 +277,13 @@ class RunModelAccountingLedger:
             self._controlled_block_fallback_chars = 0
             self._controlled_block_fallback_kind_counts = {}
             self._controlled_block_fallback_kind_chars = {}
+            self._degradation_ladder_block_count = 0
+            self._degradation_ladder_model_call_count = 0
+            self._degradation_ladder_translated_paragraph_count = 0
+            self._degradation_ladder_unrescued_paragraph_count = 0
+            self._degradation_ladder_sentence_split_paragraph_count = 0
+            self._degradation_ladder_oversized_sentence_count = 0
+            self._degradation_ladder_trigger_counts = {}
 
     def record_model_call(self, *, stage: str, usage: ModelCallUsage) -> None:
         with self._lock:
@@ -344,6 +358,55 @@ class RunModelAccountingLedger:
                 self._controlled_block_fallback_kind_chars.get(kind, 0) + max(0, chars)
             )
 
+    def record_degradation_ladder(
+        self,
+        *,
+        trigger: str,
+        model_call_count: int = 0,
+        translated_paragraph_count: int = 0,
+        unrescued_paragraph_count: int = 0,
+        sentence_split_paragraph_count: int = 0,
+        oversized_sentence_count: int = 0,
+    ) -> None:
+        """Count ONE block on which the generator DIVIDED instead of substituting.
+
+        A fifth counter family beside retries, discards, dispositions and controlled
+        fallbacks, and it is a family of its own for the same reason those are: it answers
+        a question none of the others can. ``model_output_discarded_*`` says the generator
+        threw an answer away; ``controlled_block_fallback_*`` says the pipeline shipped a
+        bad block anyway. Neither can say **what the remedy cost and whether it worked** —
+        and a remedy that cannot be shown to work is a claim, not a measurement
+        (Constitution VIII).
+
+        ``model_call_count`` is a MEASURED delta of this ledger's own call counter taken
+        around the ladder, not a count of paragraphs asked: a unit that needed two attempts
+        cost two calls, and an estimate would understate exactly the case that matters.
+
+        ``translated_paragraph_count + unrescued_paragraph_count`` is the block's
+        paragraph count, so the pair states the whole outcome: how much prose the ladder
+        rescued and how much still keeps its own source text in the document. "Unrescued"
+        rather than "source restored" because the two are not the same fact — the paragraph
+        the ladder gave up on ships as ``omitted``, which the narration withholds, while
+        ``source_restored`` is the merge-repair status the narration speaks.
+        ``oversized_sentence_count`` is the named honest edge — a single sentence whose own
+        answer cannot fit under the provider's output ceiling, which nothing below the
+        sentence divides further.
+        """
+        with self._lock:
+            self._degradation_ladder_block_count += 1
+            self._degradation_ladder_trigger_counts[trigger] = (
+                self._degradation_ladder_trigger_counts.get(trigger, 0) + 1
+            )
+            self._degradation_ladder_model_call_count += max(0, model_call_count)
+            self._degradation_ladder_translated_paragraph_count += max(0, translated_paragraph_count)
+            self._degradation_ladder_unrescued_paragraph_count += max(
+                0, unrescued_paragraph_count
+            )
+            self._degradation_ladder_sentence_split_paragraph_count += max(
+                0, sentence_split_paragraph_count
+            )
+            self._degradation_ladder_oversized_sentence_count += max(0, oversized_sentence_count)
+
     def record_paragraph_disposition(self, *, status: str, count: int = 1) -> None:
         """Count how ONE block's paragraphs came out (spec 056 E).
 
@@ -409,6 +472,27 @@ class RunModelAccountingLedger:
                 ),
                 "controlled_block_fallback_kind_chars": dict(
                     sorted(self._controlled_block_fallback_kind_chars.items())
+                ),
+                # Blocks on which the generator answered a rejection by DIVIDING the block
+                # instead of substituting its source. The pair of paragraph counts states
+                # the outcome and the call count states the price, so "the ladder works"
+                # is a number a reader can check rather than a claim.
+                "degradation_ladder_block_count": self._degradation_ladder_block_count,
+                "degradation_ladder_model_call_count": self._degradation_ladder_model_call_count,
+                "degradation_ladder_translated_paragraph_count": (
+                    self._degradation_ladder_translated_paragraph_count
+                ),
+                "degradation_ladder_unrescued_paragraph_count": (
+                    self._degradation_ladder_unrescued_paragraph_count
+                ),
+                "degradation_ladder_sentence_split_paragraph_count": (
+                    self._degradation_ladder_sentence_split_paragraph_count
+                ),
+                "degradation_ladder_oversized_sentence_count": (
+                    self._degradation_ladder_oversized_sentence_count
+                ),
+                "degradation_ladder_trigger_counts": dict(
+                    sorted(self._degradation_ladder_trigger_counts.items())
                 ),
                 "stages": {stage: self._stages[stage].to_dict() for stage in sorted(self._stages)},
             }
@@ -545,6 +629,25 @@ def record_model_output_discarded(*, reason: str, paragraph_count: int = 0, bloc
 
 def record_controlled_block_fallback(*, kind: str, chars: int = 0) -> None:
     get_run_model_accounting_ledger().record_controlled_block_fallback(kind=kind, chars=chars)
+
+
+def record_degradation_ladder(
+    *,
+    trigger: str,
+    model_call_count: int = 0,
+    translated_paragraph_count: int = 0,
+    unrescued_paragraph_count: int = 0,
+    sentence_split_paragraph_count: int = 0,
+    oversized_sentence_count: int = 0,
+) -> None:
+    get_run_model_accounting_ledger().record_degradation_ladder(
+        trigger=trigger,
+        model_call_count=model_call_count,
+        translated_paragraph_count=translated_paragraph_count,
+        unrescued_paragraph_count=unrescued_paragraph_count,
+        sentence_split_paragraph_count=sentence_split_paragraph_count,
+        oversized_sentence_count=oversized_sentence_count,
+    )
 
 
 def record_paragraph_disposition(*, status: str, count: int = 1) -> None:
