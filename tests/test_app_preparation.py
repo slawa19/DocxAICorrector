@@ -1769,7 +1769,6 @@ def _run_main_for_processing_start_guard(
     monkeypatch.setattr(app, "render_result_bundle", lambda **kwargs: record["rendered"].append("result_bundle"))
     monkeypatch.setattr(app, "_finalize_app_frame", lambda *args, **kwargs: None)
     monkeypatch.setattr(app, "_maybe_apply_file_recommendations", lambda **kwargs: None)
-    monkeypatch.setattr(app, "push_activity", lambda *args, **kwargs: None)
     monkeypatch.setattr(app, "set_processing_status", lambda **kwargs: None)
     monkeypatch.setattr(app, "_render_processing_controls", lambda **kwargs: control_action)
     monkeypatch.setattr(app, "_start_background_processing", lambda **kwargs: record["processing_starts"].append(kwargs))
