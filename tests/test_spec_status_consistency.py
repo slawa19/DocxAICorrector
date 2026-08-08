@@ -799,21 +799,32 @@ def test_no_live_document_calls_merged_work_not_started() -> None:
     )
 
 
-@pytest.mark.parametrize("number", ["050", "054", "056"])
+@pytest.mark.parametrize("number", ["050", "056"])
 def test_open_specs_with_merged_work_are_legitimate_and_not_flagged(number: str) -> None:
-    """The rule must accept the three shapes that look guilty and are not.
+    """The rule must accept the shapes that look guilty and are not.
 
     Without these, a rule that simply refused every open spec with commits would
     look green and be useless:
 
-    * **054** — ``IN PROGRESS`` with 15 work commits. Open work that has visibly
-      started is the normal case, not a defect.
     * **050** — ``DEFERRED``, parked by owner decision, with a work commit behind
       it. Parked is not "not started".
-    * **056** — ``IN PROGRESS`` after the 2026-08-07 correction. Its header still
-      contains the words "not started", now inside quotation marks because it
-      records what the header used to say. That is the one case where the
-      assertion/quotation distinction carries the whole verdict.
+    * **056** — ``IN PROGRESS`` with merged work, after the 2026-08-07 correction.
+      Two shapes in one: open work that has visibly started is the normal case and
+      not a defect, and its header still contains the words "not started", now
+      inside quotation marks because it records what the header used to say. That
+      second half is the one case where the assertion/quotation distinction carries
+      the whole verdict.
+
+    **Spec 054 was the third fixture until 2026-08-08** and covered the first of
+    056's two shapes — ``IN PROGRESS`` with 15 work commits. It was closed that day
+    by an owner decision (status ``IMPLEMENTED``), so it no longer classifies as
+    open and cannot stand here. The docstring above asks for a replacement of the
+    same shape rather than a deletion; there is none to take. Measured on 2026-08-08
+    over the whole history: after 054 closes, the only specs that are BOTH open and
+    carry work commits are 050 and 056 — 059 and 060 have zero work commits
+    attributed by commit subject. So 056 carries the shape alone, deliberately, and
+    this note exists so the next reader does not think the case was dropped for
+    convenience.
     """
     spec_path = next(path for path in _spec_files() if path.parent.name.startswith(number))
     work_commits = _work_commits_by_spec()[number]

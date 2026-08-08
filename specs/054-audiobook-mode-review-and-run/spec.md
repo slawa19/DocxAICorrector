@@ -4,13 +4,18 @@
 
 **Created**: 2026-08-04
 
-**Status**: **IN PROGRESS — step 0 (measure before writing) done on 2026-08-04**, findings recorded
-below in "Measured first, before any code". Approved by the owner on 2026-08-04 and deliberately
-scheduled as its own session so it gets a clean context. This spec is the brief: everything below is
-what the next session would otherwise have to rediscover. Per Constitution 2.0.0 this is the
+**Status**: **IMPLEMENTED — closed by owner decision on 2026-08-08.** Every code item of this spec
+landed and merged: step 0 (measure before writing) was executed on 2026-08-04, the code review it fed
+produced four findings, and all four are fixed and in `main` (PR #32, #33, #34, #37), together with the
+two region tails of 2026-08-06 (`85fd8c5`, `19f8d1c`) and the narration join (`54aa10b`). Five paid
+runs were made. The one step of the Plan that was **not performed** is the owner's eyes-on verdict
+(Plan 3-4); on 2026-08-08 the owner took it off this spec and will read a future four-book run instead
+— see the Changelog entry of that date for why that no longer blocks anything.
+The value is `IMPLEMENTED` and deliberately not `DONE`: the code is complete and merged, the brief is
+not, and this header must not claim the verdict happened. Per Constitution 2.0.0 this is the
 **spec-only tier** — defect-driven remediation inside existing modules, no new module or contract.
 
-**Date**: 2026-08-04
+**Date**: 2026-08-04 (created), 2026-08-08 (closed)
 
 **Owner surface**: `processing_operation = "audiobook"`, the optional narration post-pass,
 `resources/prompts/operation_audiobook.txt`, `pipeline/narration_postprocess.py`
@@ -315,11 +320,19 @@ scope was drawn narrowly first and what evidence moved it.
    rule that drops prose.
 1. **Code review of the mode**, the way spec 052 was reviewed: what the pass can and cannot do, where
    the two entry points diverge, what is dead, what is unreachable from the UI.
+   **DONE 2026-08-04** — four findings, all four fixed and merged (PR #32/#33/#34/#37).
 2. **One run on a real book**, with the cost recorded.
+   **DONE — five runs, not one**: `artifacts/audiobook_first_run/` (Money & Sustainability, en→ru,
+   $0.53, 14 min), `artifacts/audiobook_four_book_run/`, `artifacts/audiobook_final_run/` (2026-08-06,
+   confirming). $2.55 and 6.1M tokens in total (`final_package.md:3-4`).
 3. **Eyes-on the result** — the owner reads it, and the material is prepared for that, not summarised
    away. `artifacts/literary_edit_first_run/comparison_paragraphs.md` is the format that worked:
    before and after, quoted, random sample with a fixed seed plus both extremes.
+   **NOT PERFORMED, and removed from this spec by the owner on 2026-08-08.** The material was prepared
+   (`f2a49da`) and is still on disk; the reading was not done, and the material has since been
+   overtaken — see the Changelog entry of 2026-08-08.
 4. **Count the manual post-editing** a person would still have to do, by class, and decide from that.
+   **NOT PERFORMED** — it is the same act as step 3 and moved with it.
 
 ## Non-goals
 
@@ -348,7 +361,59 @@ scope was drawn narrowly first and what evidence moved it.
    it is currently removing by accident (Finding 3): the net excluded-character share per book is
    reported before and after, and a drop in it is a finding, not a pass.
 
+**What was actually discharged, stated at closing (2026-08-08).** Items 1, 2, 3, 5 and 6 were each
+carried out and their numbers are in the Changelog entries below, book by book: item 1 by the
+anti-vacuum counter-proofs that name the four prose probes and every author-prose section by block
+index; items 5 and 6 by running `scripts/measure-narration-exclusion.py` on all four books before and
+after every change to the exclusion. **Item 4 — "the measured manual-editing count on the corpus book
+does not increase" — was never measured**, because measuring it *is* the eyes-on verdict of Plan 3-4,
+and that step was not performed. It is the one invariant of this spec closed on argument rather than
+on a number, and it is written down here rather than quietly counted as green.
+
 ## Changelog
+
+- **2026-08-08 — CLOSED by the owner; the eyes-on verdict is not coming, and no longer needs to.**
+  The decision: close this spec, and read fresh material inside a future four-book run rather than
+  hold the spec open for a reading of the first one.
+  **What was done.** Step 0 (measure before writing) on 2026-08-04, which changed the task from "add
+  footnotes to a working rule" to "a region rule that has never fired plus a role rule that drops
+  prose". The code review of step 1, which produced four findings — all four fixed and merged: Finding
+  1 the reference-region exclusion (PR #32), Finding 4 the all-or-nothing artifact validator (PR #33),
+  Finding 2 the unanchored `toc_entry` role (PR #34), and the speakable-target-language rule (PR #37).
+  Then two region tails on 2026-08-06 that this document had listed as open — the back-matter anchor
+  no longer demands a heading role (`85fd8c5`) and the region's END stops believing heading depth
+  (`19f8d1c`) — plus the narration sentence join (`54aa10b`). Step 2 was done five times, not once:
+  `artifacts/audiobook_first_run/`, `audiobook_four_book_run/`, `audiobook_final_run/`, $2.55 and 6.1M
+  tokens in total.
+  **What was NOT done, and why it stopped blocking.** Plan 3-4 — the owner reading the delivered
+  narration and counting the manual post-editing left. The material of the FIRST run is stale as
+  evidence, and Constitution VIII is the reason this matters rather than a formality: since it was
+  produced, five things have landed that change what the artifact looks like — the reference region
+  now actually fires (`reference_region` 10/16/**0**/476 → 10/16/**20**/476 across the corpus), the
+  index is cut by owner decision of 2026-08-06, 34 sentence boundaries are joined, the `toc_entry`
+  role stopped inventing itself from the shape of a line (72 → 17 excluded blocks), and spec 059's
+  degradation ladder took the source-text substitution out of the narration (5 581 characters back on
+  the 2026-08-08 run). A verdict read off the first run would be a verdict on a program that no longer
+  exists. The right material is a fresh run, and the owner has one scheduled.
+  **Nothing else was left open.** Checked at closing, item by item: the three "owner decision, not
+  taken" markers in the body are all superseded and each says so where it stands — the validator gate
+  (`:292`) was decided by PR #33, the index scope (`:305`) was reversed by the owner on 2026-08-06,
+  and "what a break inside a heading means" (`:756`) was decided the same week (`3da07e0`). The golden
+  regeneration of PR #34 was signed off by the owner on 2026-08-04, and the prerequisite that entry
+  recorded — the fixture harness keying its perturbation on a POSITIONAL `paragraph_id`, which made it
+  blind to exactly the paragraph merges queued next — is itself fixed: `_stable_perturb_key` is now a
+  pure function of the paragraph's own text (`b9167c6`, `tests/test_formatting_mapper_golden.py:72`).
+  The two negative results stand as decisions, not as debt: **bare domains get no rule** (~26 across
+  four books, and the widest TLD-free form matches `p.xii` and `Bd.II` — Constitution VII), and
+  **Rethinking Money's index keeps 422 paragraphs** because `**ABOUT THE AUTHORS**` arrives as a body
+  paragraph with no role and no level, and adding its words to the lexicon is the word list VII
+  forbids.
+  **Status moved IN PROGRESS → IMPLEMENTED**, not DONE: the code is complete, the brief is not.
+  Anti-regression item 4 is the one invariant closed on argument rather than on a number, and the
+  section above now says so. Consequence for the test that guards spec statuses: this spec was one of
+  three fixtures of `test_open_specs_with_merged_work_are_legitimate_and_not_flagged`
+  (`tests/test_spec_status_consistency.py:802`) precisely because it was an OPEN spec with merged work;
+  closing it retires that fixture, and spec 056 already carries the same shape.
 
 - **2026-08-06** — **A sentence is no longer read aloud with a pause in the middle of it**
   (branch `fix/054-narration-join-and-urls`, from `c41ae65`). One rule added to the
