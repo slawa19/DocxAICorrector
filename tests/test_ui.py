@@ -909,6 +909,78 @@ def test_render_image_validation_summary_shows_metrics(monkeypatch):
     ]
 
 
+def _capture_module_level_streamlit_output(monkeypatch):
+    """Make every ``st.*`` output call an error, so "renders nothing" means nothing."""
+    calls = []
+
+    def _record(name):
+        def _call(*args, **kwargs):
+            calls.append((name, args, kwargs))
+
+        return _call
+
+    for attribute in ("info", "warning", "error", "write", "caption", "progress", "markdown"):
+        monkeypatch.setattr(ui.st, attribute, _record(attribute))
+    monkeypatch.setattr(ui.st, "columns", lambda count: [FakeMetricTarget() for _ in range(count)])
+    return calls
+
+
+def test_render_live_status_renders_nothing_without_a_processing_status(monkeypatch):
+    """The live panel is gated on the processing status alone.
+
+    Pins the ONE case in which the panel draws nothing, so that a later change to the
+    guard has to show up here rather than silently blanking (or un-blanking) the screen.
+    """
+    session_state = SessionState(processing_status={})
+    target = FakeLiveStatusTarget()
+    module_calls = _capture_module_level_streamlit_output(monkeypatch)
+
+    monkeypatch.setattr(ui.st, "session_state", session_state)
+
+    ui.render_live_status(target)
+
+    assert module_calls == []
+    assert target.info_calls == []
+    assert target.warning_calls == []
+    assert target.error_calls == []
+    assert target.write_calls == []
+    assert target.caption_calls == []
+    assert target.progress_calls == []
+    assert target.columns_calls == []
+
+
+def test_render_live_status_renders_a_present_status_on_its_own(monkeypatch):
+    """The mirror of the guard test: a status is sufficient, nothing else is required.
+
+    The panel must draw from ``processing_status`` alone — no companion session key is
+    allowed to be a precondition for the live panel appearing.
+    """
+    session_state = SessionState(
+        processing_status={
+            "is_running": True,
+            "phase": "processing",
+            "stage": "Обработка блоков",
+            "detail": "Блок 1 из 2.",
+            "current_block": 1,
+            "block_count": 2,
+            "progress": 0.5,
+            "started_at": None,
+        },
+    )
+    target = FakeLiveStatusTarget()
+    module_calls = _capture_module_level_streamlit_output(monkeypatch)
+
+    monkeypatch.setattr(ui.st, "session_state", session_state)
+
+    ui.render_live_status(target)
+
+    assert module_calls == []
+    assert target.info_calls == ["Идет обработка"]
+    assert target.write_calls == ["Блок 1 из 2."]
+    assert target.progress_calls == [0.5]
+    assert target.columns_calls
+
+
 def test_render_live_status_shows_cache_source_for_preparation(monkeypatch):
     session_state = SessionState(
         processing_status={

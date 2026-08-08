@@ -184,6 +184,29 @@ def test_set_processing_status_updates_segment_runtime_metrics(monkeypatch):
     assert session_state.active_segment_title == "Chapter 1"
 
 
+def test_processing_status_is_never_empty_after_init_or_reset(monkeypatch):
+    """``processing_status`` is populated at init and re-populated at every run reset.
+
+    This is what makes the live-panel guard in ``render_live_status`` single-valued: an
+    initialised session can never present an empty status, so whatever else the panel
+    might have consulted alongside the status could never have been the deciding half.
+    Anything that later sets ``processing_status`` to ``{}`` breaks that reasoning and
+    must fail here.
+    """
+    session_state = SessionState()
+    monkeypatch.setattr(state.st, "session_state", session_state)
+    monkeypatch.setattr(state, "clear_restart_source", lambda restart_source: None)
+
+    state.init_session_state()
+    assert state.get_processing_status()
+
+    state.reset_run_state()
+    assert state.get_processing_status()
+
+    state.reset_run_state(preserve_preparation=True)
+    assert state.get_processing_status()
+
+
 def test_reset_run_state_can_clear_restart_source(monkeypatch):
     session_state = SessionState(
         restart_source={"filename": "report.docx", "storage_path": "restart.bin"},
