@@ -354,6 +354,28 @@ reach: **43/237, 98/325, 54/246, 13/184** — 18% to 30% per book. It did not bi
 
 ## Changelog
 
+- **2026-08-08 — C′ WILL NOT BE BUILT. Owner decision, recorded here so the question cannot come back
+  through this spec's side.** C′ (`:203-212`) proposed telling the model what it violated from the
+  FIRST retry. It was sound, and it is now unnecessary. The degradation ladder shipped instead
+  (`054e405`, PR #68, `generation/_generation.py:2236`): a block whose marker contract fails is asked
+  again PARAGRAPH BY PARAGRAPH with `marker_mode=False`, where the failure class is unreachable by
+  construction. On the paid run of 2026-08-08 (Money & Sustainability, audiobook, markers on) the
+  ladder fired on **one** block, cost **three** model calls against the run's 307
+  (`artifacts/audiobook_final_run/money_sustainability/run_summary.txt:31`) and left **zero**
+  unrescued paragraphs — source substitutions went 2 → 0 and the 5 581 characters dropped from the
+  narration went to 0 (`:45`, `:47`, `:52-53`; the after-numbers are recorded in
+  `docs/WHERE_WE_ARE.md:228-235`). C′ would reduce how OFTEN a block reaches the ladder — that is,
+  it would economise on a line item already measured at **0,98 % of the run's calls** — while adding
+  another layer of instructions to the retry loop, which is the exact place where this spec found
+  three live instructions that cannot all be satisfied (`:30-40`). Over-engineering. Its own evidence
+  was already deflated here: the 31.6% → 53.8% figure confounds informedness with context removal
+  (`:210-212`). **The status line above was NOT touched, and it is now arguably stale**: it reads
+  `IN PROGRESS … one decision is still unbuilt`, which is literally true (C′ is unbuilt) but implies
+  work is owed, and none is. Rewriting a status is the kind of change this repository has been burned
+  by in both directions, so it is left as an **owner decision** rather than made silently by the
+  agent who wrote this entry. Full reasoning and the run numbers:
+  `specs/059-verdict-never-reaches-the-screen/spec.md`, section A-8.
+
 - **2026-08-05 (second pass, after an independent chain review)** — three of the four decisions
   are withdrawn or reordered, and the reasoning that justified them is refuted in place rather than
   deleted. **A** would have traded a detected failure for a silent corruption: the registry really does
