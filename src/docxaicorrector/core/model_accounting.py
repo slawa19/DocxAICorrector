@@ -249,6 +249,10 @@ class RunModelAccountingLedger:
         self._paragraph_disposition_counts: dict[str, int] = {
             status: 0 for status in PARAGRAPH_DISPOSITION_STATUSES
         }
+        self._controlled_block_fallback_block_count = 0
+        self._controlled_block_fallback_chars = 0
+        self._controlled_block_fallback_kind_counts: dict[str, int] = {}
+        self._controlled_block_fallback_kind_chars: dict[str, int] = {}
 
     def reset(self) -> None:
         with self._lock:
@@ -262,6 +266,10 @@ class RunModelAccountingLedger:
             self._discarded_block_count = 0
             self._discard_reason_counts = {}
             self._paragraph_disposition_counts = {status: 0 for status in PARAGRAPH_DISPOSITION_STATUSES}
+            self._controlled_block_fallback_block_count = 0
+            self._controlled_block_fallback_chars = 0
+            self._controlled_block_fallback_kind_counts = {}
+            self._controlled_block_fallback_kind_chars = {}
 
     def record_model_call(self, *, stage: str, usage: ModelCallUsage) -> None:
         with self._lock:
@@ -293,6 +301,48 @@ class RunModelAccountingLedger:
             self._discarded_paragraph_count += max(0, paragraph_count)
             self._discarded_block_count += max(0, block_count)
             self._discard_reason_counts[reason] = self._discard_reason_counts.get(reason, 0) + 1
+
+    def record_controlled_block_fallback(self, *, kind: str, chars: int = 0) -> None:
+        """Count ONE block the PIPELINE judged bad and shipped anyway.
+
+        A family of its own rather than another ``reason`` on
+        ``record_model_output_discarded``, for two reasons that are about honesty of the
+        numbers, not about taste:
+
+        * **The two are different verdicts on possibly the SAME block.** The discard family
+          says "the generator threw the model's answer away"; this one says "the pipeline
+          classified the delivered block as bad and continued regardless"
+          (``pipeline/block_execution.CONTROLLED_BLOCK_FAILURE_POLICY``, decision
+          ``fallback_continue``). On the 2026-08-06 Money & Sustainability run the generator
+          recorded ``marker_validation_source_fallback: 2`` and the pipeline branch fired on
+          those very same two blocks (``narration_excluded_source_fallback_block_count=2``).
+          Folding the second verdict into the first would have moved a published number,
+          ``model_output_discarded_block_count``, from 2 to 4 for two blocks.
+        * **Characters have no home in the discard family.** Its five call sites count
+          paragraphs and blocks and supply no text length, so a ``chars`` field added there
+          would cover only the subset this path feeds while reading as if it covered all
+          discards — precisely the "0 or unknown?" ambiguity this module exists to prevent.
+
+        The MECHANISM is shared entirely: same ledger, same scope, same snapshot, same
+        ``model_usage_accounted`` event — a fourth counter family beside retries, discards
+        and dispositions, exactly as spec 056 E's family was added.
+
+        ``kind`` is the policy table's own ``fallback_kind``; nothing here enumerates or
+        validates the vocabulary, so the table can grow a kind without this module knowing.
+        Kinds are not seeded to zero (that would mean importing the pipeline's table into
+        ``core`` and inverting the layering) — an empty mapping beside a total of 0 already
+        says "no block took this path", the same shape ``model_output_discarded_reason_counts``
+        uses.
+        """
+        with self._lock:
+            self._controlled_block_fallback_block_count += 1
+            self._controlled_block_fallback_chars += max(0, chars)
+            self._controlled_block_fallback_kind_counts[kind] = (
+                self._controlled_block_fallback_kind_counts.get(kind, 0) + 1
+            )
+            self._controlled_block_fallback_kind_chars[kind] = (
+                self._controlled_block_fallback_kind_chars.get(kind, 0) + max(0, chars)
+            )
 
     def record_paragraph_disposition(self, *, status: str, count: int = 1) -> None:
         """Count how ONE block's paragraphs came out (spec 056 E).
@@ -348,6 +398,18 @@ class RunModelAccountingLedger:
                 # accepted / omitted / source_restored / retry_required. Always all four
                 # keys; a zero states that nothing landed in that bucket.
                 "paragraph_disposition_counts": dict(sorted(self._paragraph_disposition_counts.items())),
+                # Blocks the pipeline rejected and shipped anyway (decision
+                # ``fallback_continue``). Reported in characters as well as blocks because
+                # the volume of substituted text IS the price of the defect and blocks
+                # differ by an order of magnitude. The two mappings sum to the two totals.
+                "controlled_block_fallback_block_count": self._controlled_block_fallback_block_count,
+                "controlled_block_fallback_chars": self._controlled_block_fallback_chars,
+                "controlled_block_fallback_kind_counts": dict(
+                    sorted(self._controlled_block_fallback_kind_counts.items())
+                ),
+                "controlled_block_fallback_kind_chars": dict(
+                    sorted(self._controlled_block_fallback_kind_chars.items())
+                ),
                 "stages": {stage: self._stages[stage].to_dict() for stage in sorted(self._stages)},
             }
             return payload
@@ -479,6 +541,10 @@ def record_model_output_discarded(*, reason: str, paragraph_count: int = 0, bloc
         paragraph_count=paragraph_count,
         block_count=block_count,
     )
+
+
+def record_controlled_block_fallback(*, kind: str, chars: int = 0) -> None:
+    get_run_model_accounting_ledger().record_controlled_block_fallback(kind=kind, chars=chars)
 
 
 def record_paragraph_disposition(*, status: str, count: int = 1) -> None:

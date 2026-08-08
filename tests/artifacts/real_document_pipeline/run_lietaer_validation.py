@@ -4342,6 +4342,11 @@ _MODEL_ACCOUNTING_SUMMARY_FIELDS = (
     "retried_paragraph_count",
     "model_output_discarded_paragraph_count",
     "model_output_discarded_block_count",
+    # The pipeline half of the same loss: blocks the pipeline judged bad and shipped
+    # anyway. Printed beside the generator's discard totals because a reader comparing the
+    # two is exactly the point — the generator numbers alone are a lower bound.
+    "controlled_block_fallback_block_count",
+    "controlled_block_fallback_chars",
 )
 
 
@@ -4369,7 +4374,13 @@ def _build_model_accounting_summary_lines(model_accounting: Mapping[str, object]
         f"model_accounting_{field}={model_accounting.get(field)}"
         for field in _MODEL_ACCOUNTING_SUMMARY_FIELDS
     ]
-    for field in ("retry_reason_counts", "model_output_discarded_reason_counts", "stages"):
+    for field in (
+        "retry_reason_counts",
+        "model_output_discarded_reason_counts",
+        "controlled_block_fallback_kind_counts",
+        "controlled_block_fallback_kind_chars",
+        "stages",
+    ):
         lines.append(
             f"model_accounting_{field}={json.dumps(model_accounting.get(field) or {}, ensure_ascii=False, sort_keys=True)}"
         )

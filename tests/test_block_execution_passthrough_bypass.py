@@ -559,6 +559,174 @@ def test_the_happy_path_counts_the_characters_it_withholds(monkeypatch) -> None:
     assert state.narration_excluded_omitted_chars == len(_ENGLISH_OMITTED_PARAGRAPH)
 
 
+# --- run-level accounting for the pipeline half of the loss -------------------------
+#
+# ``CONTROLLED_BLOCK_FAILURE_POLICY`` splits block failures into two decisions, and until
+# these counters existed only one half was countable. ``fallback_continue`` wrote a
+# per-block diagnostic under ``.run/`` and a log line, neither of which a run report adds
+# up: the names ``english_residual_output``, ``heading_only_output`` and ``toc_body_concat``
+# appear nowhere in ``artifacts/``, not once, across five recorded runs. So the run-level
+# ``model_output_discarded_*`` numbers — fed only by the generator — were a lower bound that
+# nothing labelled as one.
+
+
+def _fallback_block(
+    *,
+    classification: str,
+    processed_chunk: str,
+    target_text: str = _ENGLISH_SOURCE_BLOCK,
+    monkeypatch,
+):
+    """Push ONE block through ``process_single_block`` with the given classifier verdict."""
+    monkeypatch.setattr(block_execution, "_write_controlled_block_fallback_artifact", lambda **_kwargs: None)
+    dependencies, emitters, _events = _recording_run_harness()
+    return _run_single_block(
+        payload=_llm_payload(target_text=target_text),
+        context=SimpleNamespace(
+            processing_operation="audiobook",
+            uploaded_filename="book.docx",
+            runtime=object(),
+            on_progress=lambda **_kwargs: None,
+        ),
+        processed_chunk=processed_chunk,
+        classification=classification,
+        dependencies=dependencies,
+        emitters=emitters,
+    )
+
+
+def test_controlled_fallbacks_are_counted_per_kind_and_in_characters(monkeypatch) -> None:
+    """One number would not answer the question: WHICH of the seven kinds, and how much text.
+
+    Two blocks of two different kinds, and the two kinds must stay apart — a single total
+    cannot tell a heading that replaced a page from a page that came back untranslated.
+    Characters follow the DELIVERED text because that volume is the price of the defect.
+    """
+    from docxaicorrector.core import model_accounting
+
+    heading_output = "## Глава третья"
+
+    with model_accounting.run_model_accounting_scope(run_id="run-1", source_token="token-1") as ledger:
+        _fallback_block(
+            classification="source_text_fallback",
+            processed_chunk=_ENGLISH_SOURCE_BLOCK,
+            monkeypatch=monkeypatch,
+        )
+        _fallback_block(
+            classification="heading_only_output",
+            processed_chunk=heading_output,
+            monkeypatch=monkeypatch,
+        )
+        snapshot = ledger.snapshot()
+
+    assert snapshot["controlled_block_fallback_kind_counts"] == {
+        "heading_only_output": 1,
+        "source_text_fallback": 1,
+    }
+    assert snapshot["controlled_block_fallback_kind_chars"] == {
+        "heading_only_output": len(heading_output),
+        "source_text_fallback": len(_ENGLISH_SOURCE_BLOCK),
+    }
+    # The totals are the sums of the breakdown, so a reader can check the report's arithmetic.
+    assert snapshot["controlled_block_fallback_block_count"] == 2
+    assert snapshot["controlled_block_fallback_chars"] == len(_ENGLISH_SOURCE_BLOCK) + len(heading_output)
+    # The generator's family is a DIFFERENT verdict on the same block and must not move:
+    # nothing here ran the generator, so folding the two would have shown phantom discards.
+    assert snapshot["model_output_discarded_block_count"] == 0
+    assert snapshot["model_output_discarded_reason_counts"] == {}
+
+
+def test_the_counted_kind_and_length_are_the_ones_actually_delivered(monkeypatch) -> None:
+    """``empty`` delivers the block's SOURCE text under the name ``empty_processed_block``.
+
+    Both halves matter: the kind recorded is the policy table's ``fallback_kind``, not the
+    classifier's verdict, and the characters are the substituted text's — counting the empty
+    model output would have reported this loss as zero, which is the vacuum this guards.
+    """
+    from docxaicorrector.core import model_accounting
+
+    with model_accounting.run_model_accounting_scope(run_id="run-2", source_token="token-2") as ledger:
+        _fallback_block(classification="empty", processed_chunk="", monkeypatch=monkeypatch)
+        snapshot = ledger.snapshot()
+
+    assert snapshot["controlled_block_fallback_kind_counts"] == {"empty_processed_block": 1}
+    assert snapshot["controlled_block_fallback_chars"] == len(_ENGLISH_SOURCE_BLOCK)
+
+
+def test_an_accepted_block_leaves_the_fallback_counters_alone(monkeypatch) -> None:
+    """ANTI-VACUUM. A counter that is never zero measures nothing either."""
+    from docxaicorrector.core import model_accounting
+
+    with model_accounting.run_model_accounting_scope(run_id="run-3", source_token="token-3") as ledger:
+        _fallback_block(
+            classification="valid",
+            processed_chunk="Нынешнюю денежную систему почти все воспринимают как данность.",
+            monkeypatch=monkeypatch,
+        )
+        snapshot = ledger.snapshot()
+
+    assert snapshot["controlled_block_fallback_block_count"] == 0
+    assert snapshot["controlled_block_fallback_chars"] == 0
+    # Empty mappings beside zero totals, not absent keys: "no block took this path" is an
+    # assertion the run report states, the same shape the discard family uses.
+    assert snapshot["controlled_block_fallback_kind_counts"] == {}
+    assert snapshot["controlled_block_fallback_kind_chars"] == {}
+
+
+def test_a_structural_failure_is_not_a_controlled_fallback(monkeypatch) -> None:
+    """ANTI-VACUUM, the other side: the table's OTHER decision must stay out.
+
+    ``corrupted_block`` is one of the ten structural failures whose decision is ``fail`` —
+    the run stops, no source is substituted, and nothing is delivered. Counting it here
+    would inflate a measure of DELIVERED untranslated text with runs that delivered nothing.
+    """
+    from docxaicorrector.core import model_accounting
+
+    with model_accounting.run_model_accounting_scope(run_id="run-4", source_token="token-4") as ledger:
+        _outcome, state, _classifier_calls = _fallback_block(
+            classification="corrupted_block",
+            processed_chunk="какой-то повреждённый вывод",
+            monkeypatch=monkeypatch,
+        )
+        snapshot = ledger.snapshot()
+
+    assert state.processed_chunks == []  # the fallback path was not taken
+    assert snapshot["controlled_block_fallback_block_count"] == 0
+    assert snapshot["controlled_block_fallback_kind_counts"] == {}
+
+
+def test_the_run_report_prints_the_pipeline_counters_beside_the_generator_ones() -> None:
+    """The counters have to reach a human, and ``run_summary.txt`` is where he reads them."""
+    import importlib.util
+    from pathlib import Path
+
+    harness_path = (
+        Path(__file__).resolve().parent / "artifacts" / "real_document_pipeline" / "run_lietaer_validation.py"
+    )
+    spec = importlib.util.spec_from_file_location("run_lietaer_validation_summary_probe", harness_path)
+    assert spec is not None and spec.loader is not None
+    harness = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(harness)
+
+    lines = harness._build_model_accounting_summary_lines(
+        {
+            "model_output_discarded_block_count": 2,
+            "model_output_discarded_reason_counts": {"marker_validation_source_fallback": 2},
+            "controlled_block_fallback_block_count": 2,
+            "controlled_block_fallback_chars": 5581,
+            "controlled_block_fallback_kind_counts": {"source_text_fallback": 2},
+            "controlled_block_fallback_kind_chars": {"source_text_fallback": 5581},
+        }
+    )
+
+    assert "model_accounting_controlled_block_fallback_block_count=2" in lines
+    assert "model_accounting_controlled_block_fallback_chars=5581" in lines
+    assert 'model_accounting_controlled_block_fallback_kind_counts={"source_text_fallback": 2}' in lines
+    assert 'model_accounting_controlled_block_fallback_kind_chars={"source_text_fallback": 5581}' in lines
+    # Beside, not instead of: the generator's half stays exactly where it was.
+    assert "model_accounting_model_output_discarded_block_count=2" in lines
+
+
 def test_a_record_that_no_longer_describes_its_text_is_refused_loudly() -> None:
     """rev41 P0-2, downstream half: a partial degradation must not pass as a whole one.
 
