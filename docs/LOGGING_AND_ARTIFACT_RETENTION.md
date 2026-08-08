@@ -51,7 +51,7 @@
 
 ### 1.5 Когда НЕ логировать
 
-- Не пишите `log_event` на каждую итерацию UI fragment'а (render-цикл Streamlit). Для UI-видимых активностей используйте `push_activity`/ append-log events в runtime state.
+- Не пишите `log_event` на каждую итерацию UI fragment'а (render-цикл Streamlit). Для UI-видимых активностей используйте append-log events в runtime state (`append_log` / `append_image_log`) — их читает журнал обработки.
 - Не логируйте полезную нагрузку модели целиком (prompts, model responses, markdown блоков полностью). Допустимы truncated preview (≤ 120 символов), counts и hash.
 - Не логируйте секреты: ключи, bearer-токены, полные URL с API-key, email-идентификаторы пользователей.
 
