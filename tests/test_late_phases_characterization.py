@@ -488,7 +488,6 @@ def test_run_docx_build_phase_observes_patched_collect_owned(tmp_path, monkeypat
     )
     emitters = SimpleNamespace(
         emit_status=lambda *args, **kwargs: None,
-        emit_activity=lambda *args, **kwargs: None,
         emit_state=lambda *args, **kwargs: None,
         emit_log=lambda *args, **kwargs: None,
     )

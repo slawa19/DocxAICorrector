@@ -21,7 +21,6 @@ from docxaicorrector.ui.i18n import t
 from docxaicorrector.ui.review_presentation import build_review_presentation
 from docxaicorrector.runtime.artifacts import _build_formatting_review_text
 from docxaicorrector.runtime.state import (
-    get_activity_feed,
     get_image_assets,
     get_image_processing_summary,
     get_latest_docx_bytes,
@@ -160,15 +159,6 @@ def _strip_docx_image_placeholders(markdown_text: str) -> str:
 
 def _meaningful_markdown_blocks(blocks: list[str]) -> list[str]:
     return [block for block in blocks if _strip_docx_image_placeholders(block)]
-
-
-def _render_activity_feed(*, title: str, lines: list[str], feed_id: str | None = None, auto_scroll: bool = False) -> None:
-    if not lines:
-        return
-
-    st.caption(title)
-    for line in reversed(lines):
-        st.caption(line)
 
 
 def _render_status_panel(*, sink, title: str, stage: str, detail: str, meta_lines: list[str], info_level: str = "info") -> None:
@@ -310,8 +300,7 @@ def resolve_source_language_from_widget_state(config: Mapping[str, Any]) -> str:
 
 def render_live_status(target=None) -> None:
     status = get_processing_status()
-    activity_feed = get_activity_feed()
-    if not status and not activity_feed:
+    if not status:
         return
 
     sink = _get_sink(target)

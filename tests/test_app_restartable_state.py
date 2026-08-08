@@ -231,7 +231,6 @@ def test_main_hides_preparation_summary_for_restartable_outcome(monkeypatch, out
     session_state = SessionState(
         app_start_logged=True,
         processing_status={"stage": "Остановлено пользователем", "detail": "Обработка остановлена пользователем.", "phase": "processing"},
-        activity_feed=[],
         image_assets=[],
         preparation_input_marker="report.docx:3:ba7816bf8f01cfea:6000",
         preparation_failed_marker="",
@@ -295,7 +294,6 @@ def test_restartable_idle_view_shows_typed_outcome_notice(monkeypatch, outcome):
     session_state = SessionState(
         app_start_logged=True,
         processing_status={"stage": "Ожидание", "detail": "", "phase": "processing"},
-        activity_feed=[],
         image_assets=[],
         latest_docx_bytes=None,
         latest_source_token="",
@@ -347,7 +345,6 @@ def test_restartable_idle_view_keeps_shared_layout(monkeypatch, outcome):
     session_state = SessionState(
         app_start_logged=True,
         processing_status={"stage": "Ожидание", "detail": "", "phase": "processing"},
-        activity_feed=[],
         image_assets=[],
         latest_docx_bytes=None,
         latest_source_token="",
@@ -392,7 +389,7 @@ def test_restartable_idle_view_keeps_shared_layout(monkeypatch, outcome):
 
 
 def test_main_rejects_oversized_upload_before_preparation(monkeypatch):
-    session_state = SessionState(app_start_logged=True, processing_status={}, activity_feed=[])
+    session_state = SessionState(app_start_logged=True, processing_status={})
     uploaded_file = UploadedFileStub("report.docx", b"abc")
     uploaded_file.size = MAX_DOCX_ARCHIVE_SIZE_BYTES + 1
     errors = []

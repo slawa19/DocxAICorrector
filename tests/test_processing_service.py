@@ -33,7 +33,6 @@ def _build_service(**overrides):
         "log_event_fn": lambda *args, **kwargs: None,
         "emit_state_fn": lambda runtime, **values: runtime.setdefault("state", {}).update(values) if isinstance(runtime, dict) else None,
         "emit_finalize_fn": lambda runtime, stage, detail, progress, terminal_kind=None: runtime.setdefault("finalize", []).append((stage, detail, progress, terminal_kind)) if isinstance(runtime, dict) else None,
-        "emit_activity_fn": lambda runtime, message: runtime.setdefault("activity", []).append(message) if isinstance(runtime, dict) else None,
         "emit_log_fn": lambda runtime, **payload: runtime.setdefault("log", []).append(payload) if isinstance(runtime, dict) else None,
         "emit_status_fn": lambda runtime, **payload: runtime.setdefault("status", []).append(payload) if isinstance(runtime, dict) else None,
         "emit_image_log_fn": lambda runtime, **payload: runtime.setdefault("image_log", []).append(payload) if isinstance(runtime, dict) else None,
@@ -93,7 +92,6 @@ def test_run_document_processing_fails_on_placeholder_integrity_mismatch():
     assert result == "failed"
     assert emitted_runtime["state"]["last_error"].startswith("Критическая ошибка подготовки изображений")
     assert emitted_runtime["finalize"][-1][0] == "Критическая ошибка"
-    assert emitted_runtime["activity"][-1] == "Сборка DOCX остановлена из-за потери или дублирования image placeholder."
     assert emitted_runtime["log"][-1]["status"] == "ERROR"
 
 
@@ -106,7 +104,7 @@ def test_process_document_images_stops_before_next_asset_after_stop_requested_du
 
     safe_png_bytes = _make_png_bytes((240, 240, 240))
     candidate_png_bytes = _make_png_bytes((40, 120, 220))
-    runtime = {"state": {}, "finalize": [], "activity": [], "status": []}
+    runtime = {"state": {}, "finalize": [], "status": []}
 
     service = _build_service(
         process_document_images_impl_fn=processing_service.process_document_images_impl,
@@ -178,7 +176,6 @@ def test_process_document_images_stops_before_next_asset_after_stop_requested_du
         0.5,
         "stopped",
     )
-    assert runtime["activity"][-1] == "Обработка изображений остановлена пользователем."
 
 
 def test_run_processing_worker_emits_worker_complete_after_unhandled_crash():
@@ -286,14 +283,12 @@ def test_build_processing_service_builds_runtime_emitters_from_processing_runtim
 
     emit_state = object()
     emit_finalize = object()
-    emit_activity = object()
     emit_log = object()
     emit_status = object()
     emit_image_log = object()
     emit_image_reset = object()
     captured = {}
 
-    push_activity_sentinel = object()
     append_log_sentinel = object()
     append_image_log_sentinel = object()
 
@@ -305,7 +300,6 @@ def test_build_processing_service_builds_runtime_emitters_from_processing_runtim
     # so patch the source modules rather than a module-level processing_service name.
     monkeypatch.setattr(runtime_state, "set_processing_status", object())
     monkeypatch.setattr(runtime_state, "finalize_processing_status", object())
-    monkeypatch.setattr(runtime_state, "push_activity", push_activity_sentinel)
     monkeypatch.setattr(runtime_state, "append_log", append_log_sentinel)
     monkeypatch.setattr(runtime_state, "append_image_log", append_image_log_sentinel)
     monkeypatch.setattr(
@@ -319,7 +313,6 @@ def test_build_processing_service_builds_runtime_emitters_from_processing_runtim
                 {
                     "emit_state": emit_state,
                     "emit_finalize": emit_finalize,
-                    "emit_activity": emit_activity,
                     "emit_log": emit_log,
                     "emit_status": emit_status,
                     "emit_image_log": emit_image_log,
@@ -332,13 +325,11 @@ def test_build_processing_service_builds_runtime_emitters_from_processing_runtim
 
     processing_service.build_processing_service()
 
-    assert captured["dependencies"].push_activity is push_activity_sentinel
     assert captured["dependencies"].append_log is append_log_sentinel
     assert captured["dependencies"].append_image_log is append_image_log_sentinel
     service_dependencies = captured["kwargs"]["dependencies"]
     assert service_dependencies.emit_state_fn is emit_state
     assert service_dependencies.emit_finalize_fn is emit_finalize
-    assert service_dependencies.emit_activity_fn is emit_activity
     assert service_dependencies.emit_log_fn is emit_log
     assert service_dependencies.emit_status_fn is emit_status
     assert service_dependencies.emit_image_log_fn is emit_image_log
@@ -789,7 +780,6 @@ def test_initialize_processing_run_builds_segment_runtime_metadata():
         {
             "emit_state": lambda *args, **kwargs: None,
             "emit_finalize": lambda *args, **kwargs: None,
-            "emit_activity": lambda *args, **kwargs: None,
             "emit_log": lambda *args, **kwargs: None,
             "emit_status": lambda *args, **kwargs: None,
         },
@@ -1241,13 +1231,10 @@ class _CrashHandlerSessionStateStub(dict):
 class _CrashHandlerRuntimeStub:
     def __init__(self, session_state):
         self._session_state = session_state
-        self.activity_messages: list[str] = []
 
     def emit(self, event):
         if isinstance(event, SetStateEvent):
             self._session_state.update(event.values)
-        elif isinstance(event, processing_service.PushActivityEvent):
-            self.activity_messages.append(event.message)
 
     def should_stop(self):
         return False
@@ -1309,7 +1296,6 @@ def test_run_processing_worker_crash_after_delivery_keeps_delivered_result(monke
     assert bundle is not None
     assert bundle["docx_bytes"] == b"delivered-docx"
     assert bundle["delivery_disposition"] == {"status": "accepted"}
-    assert any("после доставки результата" in message for message in runtime.activity_messages)
 
 
 def test_run_processing_worker_crash_before_delivery_still_clears_state(monkeypatch):
@@ -1335,7 +1321,6 @@ def test_run_processing_worker_crash_before_delivery_still_clears_state(monkeypa
     assert session_state["latest_delivery_disposition"] is None
     monkeypatch.setattr(processing_runtime.st, "session_state", session_state)
     assert processing_runtime.get_current_result_bundle() is None
-    assert any("принудительно очищается" in message for message in runtime.activity_messages)
 
 
 def test_run_processing_worker_crash_after_blocked_disposition_keeps_blocked_result(monkeypatch):

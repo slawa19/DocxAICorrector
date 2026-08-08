@@ -86,12 +86,11 @@ def _build_formatting_diagnostics_user_message(payload: Mapping[str, object], *,
     return message
 
 
-def build_formatting_diagnostics_user_feedback(artifact_paths: Sequence[str]) -> tuple[str, str, str]:
+def build_formatting_diagnostics_user_feedback(artifact_paths: Sequence[str]) -> tuple[str, str]:
     payloads = _load_formatting_diagnostics_payloads(artifact_paths)
     if not payloads:
         return (
             "INFO",
-            "Сборка DOCX завершена; сохранена служебная диагностика форматирования.",
             "DOCX собран; сохранена служебная диагностика форматирования.",
         )
 
@@ -99,12 +98,10 @@ def build_formatting_diagnostics_user_feedback(artifact_paths: Sequence[str]) ->
     if warning_payloads:
         return (
             "WARN",
-            "Сборка DOCX завершена; найдены места, где форматирование стоит проверить вручную.",
             _build_formatting_diagnostics_user_message(warning_payloads[0], warn_user=True),
         )
 
     return (
         "INFO",
-        "Сборка DOCX завершена; сохранена служебная диагностика форматирования.",
         _build_formatting_diagnostics_user_message(payloads[0], warn_user=False),
     )

@@ -73,7 +73,6 @@ def _build_context(resolved_test_model_registry, **overrides) -> ImageProcessing
         "emit_state": lambda *args, **kwargs: None,
         "emit_image_reset": lambda *args, **kwargs: None,
         "emit_finalize": lambda *args, **kwargs: None,
-        "emit_activity": lambda *args, **kwargs: None,
         "emit_status": lambda *args, **kwargs: None,
         "emit_image_log": lambda *args, **kwargs: None,
         "should_stop": lambda runtime: False,

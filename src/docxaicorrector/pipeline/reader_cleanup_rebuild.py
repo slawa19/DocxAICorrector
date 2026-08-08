@@ -161,7 +161,6 @@ def _build_empty_docx_failure_result(
         finalize_stage="Критическая ошибка",
         detail=critical_message,
         progress=1.0,
-        activity_message="DOCX собран без содержимого.",
         block_index=job_count,
         block_count=job_count,
         target_chars=len(runtime_display_markdown),

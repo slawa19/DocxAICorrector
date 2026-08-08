@@ -186,7 +186,6 @@ def test_main_restarts_background_preparation_when_chunk_size_changes(monkeypatc
         preparation_failed_marker="",
         prepared_run_context=object(),
         processing_status={},
-        activity_feed=[],
     )
     uploaded_file = UploadedFileStub("report.docx", b"abc")
     start_calls = []
@@ -245,7 +244,6 @@ def _run_main_capturing_preparation_start(monkeypatch, *, sidebar_result, app_co
         preparation_failed_marker="",
         prepared_run_context=object(),
         processing_status={},
-        activity_feed=[],
     )
     uploaded_file = UploadedFileStub("report.docx", b"abc")
     start_calls = []
@@ -316,7 +314,6 @@ def test_main_restarts_background_preparation_when_uploaded_file_changes(monkeyp
         preparation_failed_marker="",
         prepared_run_context=object(),
         processing_status={},
-        activity_feed=[],
     )
     uploaded_file = UploadedFileStub("new-report.docx", b"xyz")
     start_calls = []
@@ -397,7 +394,6 @@ def test_main_normalizes_legacy_doc_before_starting_background_preparation(monke
     session_state = SessionState(
         app_start_logged=True,
         processing_status={},
-        activity_feed=[],
     )
     uploaded_file = UploadedFileStub("legacy.doc", bytes.fromhex("D0CF11E0A1B11AE1") + b"legacy")
     start_calls = []
@@ -454,7 +450,6 @@ def test_main_supports_pdf_upload_and_updates_user_facing_copy(monkeypatch):
     session_state = SessionState(
         app_start_logged=True,
         processing_status={},
-        activity_feed=[],
     )
     uploader_calls = []
     title_calls = []
@@ -500,7 +495,6 @@ def test_main_shows_pdf_size_limit_error_copy(monkeypatch):
     session_state = SessionState(
         app_start_logged=True,
         processing_status={},
-        activity_feed=[],
     )
     uploaded_file = UploadedFileStub("source.pdf", b"%PDF-1.7\ncontent")
     uploaded_file.size = app.MAX_DOCX_ARCHIVE_SIZE_BYTES + 1
@@ -535,7 +529,6 @@ def test_main_reports_pdf_freeze_failure_without_uncaught_streamlit_error(monkey
     session_state = SessionState(
         app_start_logged=True,
         processing_status={},
-        activity_feed=[],
     )
     uploaded_file = UploadedFileStub("source.pdf", b"%PDF-1.7\ncontent")
     error_calls = []
@@ -581,7 +574,7 @@ def test_main_reports_pdf_freeze_failure_without_uncaught_streamlit_error(monkey
 
 
 def test_main_renders_live_status_during_active_preparation(monkeypatch):
-    session_state = SessionState(app_start_logged=True, processing_status={}, activity_feed=[])
+    session_state = SessionState(app_start_logged=True, processing_status={})
     calls = []
 
     monkeypatch.setattr(app.st, "session_state", session_state)
@@ -609,7 +602,6 @@ def test_main_keeps_processing_panel_visible_while_outcome_is_running(monkeypatc
     session_state = SessionState(
         app_start_logged=True,
         processing_status={},
-        activity_feed=[],
         processing_outcome="running",
         processing_stop_requested=False,
     )
@@ -644,7 +636,6 @@ def test_main_renders_current_preparation_failure_without_restarting(monkeypatch
     session_state = SessionState(
         app_start_logged=True,
         processing_status={"stage": "Ошибка подготовки", "detail": "bad archive", "phase": "preparing"},
-        activity_feed=[],
         preparation_input_marker="report.docx:3:ba7816bf8f01cfea:6000",
         preparation_failed_marker="report.docx:3:ba7816bf8f01cfea:6000",
         prepared_run_context=None,
@@ -697,7 +688,6 @@ def test_main_retry_button_clears_failure_and_reruns_in_failed_branch(monkeypatc
     session_state = SessionState(
         app_start_logged=True,
         processing_status={"stage": "Ошибка подготовки", "detail": "bad archive", "phase": "preparing"},
-        activity_feed=[],
         preparation_input_marker="report.docx:3:ba7816bf8f01cfea:6000",
         preparation_failed_marker="report.docx:3:ba7816bf8f01cfea:6000",
         prepared_run_context=None,
@@ -758,7 +748,6 @@ def test_main_warns_when_current_preparation_state_is_unavailable(monkeypatch):
     session_state = SessionState(
         app_start_logged=True,
         processing_status={"stage": "Подготовка", "detail": "ожидание state", "phase": "preparing"},
-        activity_feed=[],
         preparation_input_marker="report.docx:3:ba7816bf8f01cfea:6000",
         preparation_failed_marker="",
         prepared_run_context=None,
@@ -809,7 +798,6 @@ def test_main_keeps_completed_view_with_shared_layout(monkeypatch):
     session_state = SessionState(
         app_start_logged=True,
         processing_status={},
-        activity_feed=[],
         image_assets=[],
         latest_docx_bytes=b"docx-bytes",
         latest_source_token="report.docx:3:token",
@@ -860,7 +848,6 @@ def test_main_passes_completed_result_bundle_mode_metadata_to_renderer(monkeypat
     session_state = SessionState(
         app_start_logged=True,
         processing_status={},
-        activity_feed=[],
         image_assets=[],
         latest_docx_bytes=b"docx-bytes",
         latest_source_token="report.docx:3:token",
@@ -927,7 +914,6 @@ def test_main_renders_preparation_summary_for_prepared_file(monkeypatch):
     session_state = SessionState(
         app_start_logged=True,
         processing_status={},
-        activity_feed=[],
         image_assets=[],
         preparation_input_marker="report.docx:3:ba7816bf8f01cfea:6000",
         preparation_failed_marker="",
@@ -999,7 +985,6 @@ def test_main_marks_prepared_status_with_completed_terminal_kind(monkeypatch):
     session_state = SessionState(
         app_start_logged=True,
         processing_status={},
-        activity_feed=[],
         image_assets=[],
         preparation_input_marker="report.docx:3:ba7816bf8f01cfea:6000",
         preparation_failed_marker="",
@@ -1063,7 +1048,6 @@ def test_main_ignores_stale_completed_result_for_different_uploaded_file(monkeyp
     session_state = SessionState(
         app_start_logged=True,
         processing_status={},
-        activity_feed=[],
         image_assets=[],
         preparation_input_marker="new.docx:3:new:6000",
         preparation_failed_marker="",
@@ -1236,7 +1220,6 @@ def test_main_starts_full_document_processing_from_bottom_control(monkeypatch):
     session_state = SessionState(
         app_start_logged=True,
         processing_status={},
-        activity_feed=[],
         image_assets=[],
         preparation_input_marker="report.docx:3:ba7816bf8f01cfea:6000",
         preparation_failed_marker="",
@@ -1314,7 +1297,6 @@ def test_main_uses_lightweight_freeze_for_pdf_upload(monkeypatch):
     session_state = SessionState(
         app_start_logged=True,
         processing_status={},
-        activity_feed=[],
     )
     uploaded_file = UploadedFileStub("source.pdf", b"%PDF-1.7\nfake")
     start_calls = []
@@ -1427,7 +1409,6 @@ def _run_main_for_result_guard(
     session_state = SessionState(
         app_start_logged=True,
         processing_status={},
-        activity_feed=[],
         image_assets=[],
         preparation_input_marker=stored_marker,
         preparation_failed_marker="",
@@ -1567,7 +1548,6 @@ def test_a_setting_outside_the_marker_neither_restarts_preparation_nor_asks_anyt
     session_state = SessionState(
         app_start_logged=True,
         processing_status={},
-        activity_feed=["already-there"],
         image_assets=[],
         preparation_input_marker=_MARKER_AFTER_TARGET_LANGUAGE_CHANGE,
         preparation_failed_marker="",
@@ -1615,7 +1595,6 @@ def test_a_setting_outside_the_marker_neither_restarts_preparation_nor_asks_anyt
     monkeypatch.setattr(app, "_finalize_app_frame", lambda *args, **kwargs: None)
     monkeypatch.setattr(app, "_start_background_preparation", lambda **kwargs: record["starts"].append(kwargs))
     monkeypatch.setattr(app, "_maybe_apply_file_recommendations", lambda **kwargs: None)
-    monkeypatch.setattr(app, "push_activity", lambda *args, **kwargs: None)
     monkeypatch.setattr(app, "set_processing_status", lambda **kwargs: None)
     monkeypatch.setattr(app, "_render_processing_controls", lambda **kwargs: None)
     monkeypatch.setattr(application_flow, "resolve_effective_uploaded_file", lambda **kwargs: uploaded_file)

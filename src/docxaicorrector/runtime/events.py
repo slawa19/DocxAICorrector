@@ -28,12 +28,6 @@ class FinalizeProcessingStatusEvent:
 
 
 @dataclass(frozen=True)
-class PushActivityEvent:
-    message: str
-    source_token: str = ""
-
-
-@dataclass(frozen=True)
 class AppendLogEvent:
     payload: dict[str, object]
     source_token: str = ""
@@ -74,7 +68,6 @@ ProcessingEvent = (
     | ResetImageStateEvent
     | SetProcessingStatusEvent
     | FinalizeProcessingStatusEvent
-    | PushActivityEvent
     | AppendLogEvent
     | AppendImageLogEvent
     | WorkerCompleteEvent

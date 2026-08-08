@@ -10,7 +10,6 @@ from dataclasses import dataclass
 
 if TYPE_CHECKING:
     from docxaicorrector.processing.application_flow import PreparedRunContext
-from datetime import datetime
 
 import streamlit as st
 
@@ -109,11 +108,6 @@ def get_processing_status() -> dict[str, Any]:
 def get_run_log() -> list[dict[str, Any]]:
     run_log = st.session_state.get("run_log")
     return list(run_log) if isinstance(run_log, list) else []
-
-
-def get_activity_feed() -> list[dict[str, Any]]:
-    activity_feed = st.session_state.get("activity_feed")
-    return list(activity_feed) if isinstance(activity_feed, list) else []
 
 
 def get_image_assets() -> list[Any]:
@@ -366,7 +360,6 @@ def apply_preparation_stop(*, upload_marker: str) -> None:
 def apply_processing_completion(
     *,
     outcome: str,
-    push_activity,
     load_restart_source_bytes_fn,
     clear_restart_source_fn,
     store_completed_source_fn,
@@ -401,16 +394,10 @@ def apply_processing_completion(
                         source_token=str(restart_source.get("token", "")),
                         error_message=str(exc),
                     )
-                    push_activity(
-                        "Не удалось сохранить исходный DOCX для повторного запуска после завершения. Для нового запуска загрузите файл заново."
-                    )
             else:
                 if previous_completed_source:
                     clear_restart_source_fn(previous_completed_source)
                 clear_completed_source(clear_restart_source_fn=clear_restart_source_fn)
-                push_activity(
-                    "Исходный файл слишком большой для повторного запуска из памяти. Для нового запуска загрузите DOCX заново."
-                )
         clear_restart_source_fn(restart_source)
         set_restart_source(None)
     st.session_state.processing_outcome = outcome
@@ -590,10 +577,6 @@ def _current_unix_timestamp() -> float:
     return time.time()
 
 
-def _current_clock_label() -> str:
-    return datetime.now().strftime("%H:%M:%S")
-
-
 def _default_processing_status() -> dict[str, object]:
     return {
         "is_running": False,
@@ -628,7 +611,6 @@ def _default_processing_status() -> dict[str, object]:
 def init_session_state() -> None:
     st.session_state.setdefault("app_start_logged", False)
     st.session_state.setdefault("run_log", [])
-    st.session_state.setdefault("activity_feed", [])
     st.session_state.setdefault("latest_markdown", "")
     st.session_state.setdefault("processed_block_markdowns", [])
     st.session_state.setdefault("latest_docx_bytes", None)
@@ -754,7 +736,6 @@ def reset_run_state(*, keep_restart_source: bool = True, preserve_preparation: b
         recommended_text_settings_notice_details = None
         manual_text_settings_override_for_token = None
     st.session_state.run_log = []
-    st.session_state.activity_feed = []
     st.session_state.latest_markdown = ""
     st.session_state.processed_block_markdowns = []
     for _key in list(st.session_state.keys()):
@@ -809,12 +790,6 @@ def reset_run_state(*, keep_restart_source: bool = True, preserve_preparation: b
     if not keep_restart_source:
         clear_restart_source(restart_source)
         st.session_state.restart_source = None
-
-
-def push_activity(message: str) -> None:
-    timestamp = _current_clock_label()
-    st.session_state.activity_feed.append({"time": timestamp, "message": message})
-    st.session_state.activity_feed = st.session_state.activity_feed[-20:]
 
 
 def _append_run_log_entry(entry: dict[str, object]) -> None:

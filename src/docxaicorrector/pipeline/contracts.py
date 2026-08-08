@@ -78,10 +78,6 @@ class FinalizeEmitter(Protocol):
     def __call__(self, runtime: object, stage: str, detail: str, progress: float, terminal_kind: str | None = None) -> None: ...
 
 
-class ActivityEmitter(Protocol):
-    def __call__(self, runtime: object, message: str) -> None: ...
-
-
 class LogEmitter(Protocol):
     def __call__(self, runtime: object, **payload: object) -> None: ...
 
@@ -216,7 +212,6 @@ class ProcessingDependencies:
 class ProcessingEmitters:
     emit_state: StateEmitter
     emit_finalize: FinalizeEmitter
-    emit_activity: ActivityEmitter
     emit_log: LogEmitter
     emit_status: StatusEmitter
 

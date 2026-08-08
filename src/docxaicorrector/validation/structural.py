@@ -911,7 +911,6 @@ def _build_validation_processing_service(event_log: list[dict[str, object]]):
         log_event_fn=build_validation_event_logger(event_log),
         emit_state_fn=_emit_state,
         emit_finalize_fn=_emit_finalize,
-        emit_activity_fn=_emit_activity,
         emit_log_fn=_emit_log,
         emit_status_fn=_emit_status,
         emit_image_log_fn=lambda runtime, **payload: None,
@@ -1107,7 +1106,7 @@ def _build_output_artifacts(docx_bytes: bytes, markdown_text: str) -> dict[str, 
 
 
 def _build_runtime_capture() -> dict[str, object]:
-    return {"state": {}, "finalize": [], "activity": [], "log": [], "status": []}
+    return {"state": {}, "finalize": [], "log": [], "status": []}
 
 
 def _runtime_mapping(runtime: object) -> dict[str, object]:
@@ -1132,10 +1131,6 @@ def _emit_finalize(
     cast(list[object], _runtime_mapping(runtime).setdefault("finalize", [])).append(
         (stage, detail, progress, terminal_kind)
     )
-
-
-def _emit_activity(runtime: object, message: str) -> None:
-    cast(list[object], _runtime_mapping(runtime).setdefault("activity", [])).append(message)
 
 
 def _emit_log(runtime: object, **payload: object) -> None:

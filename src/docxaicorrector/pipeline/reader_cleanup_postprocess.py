@@ -270,7 +270,6 @@ def _run_reader_cleanup_postprocess(
         fallback_client=fallback_client,
     )
 
-    emitters.emit_activity(context.runtime, "Запущен reader cleanup post-pass для итогового Markdown.")
     cleanup_identity_metadata, cleanup_identity_diagnostics = _build_reader_cleanup_block_identity_metadata(
         raw_markdown=cleanup_input_markdown,
         generated_paragraph_registry=active_formatting_registry,

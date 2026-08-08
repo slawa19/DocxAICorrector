@@ -1,7 +1,7 @@
 """Terminal-result emitters (spec 031 Cluster G).
 
 Behaviour-preserving extraction from ``pipeline/late_phases.py``: the finalize-stage
-terminal emitters that push the closing finalize/activity/log events for the failed,
+terminal emitters that push the closing finalize/log events for the failed,
 stopped, and empty-processing-plan outcomes. ``late_phases`` re-exports these names so
 ``late_phases.<name>`` keeps resolving for the test namespace and the still-in-``late_phases``
 callers, and ``_pipeline.py`` keeps importing them through ``late_phases``. No module-level
@@ -24,7 +24,6 @@ def _emit_terminal_result(
     detail: str,
     progress: float,
     terminal_kind: str,
-    activity_message: str,
     log_status: str,
     block_index: int,
     block_count: int,
@@ -33,7 +32,6 @@ def _emit_terminal_result(
     log_details: str,
 ) -> None:
     emitters.emit_finalize(runtime, finalize_stage, detail, progress, terminal_kind)
-    emitters.emit_activity(runtime, activity_message)
     emitters.emit_log(
         runtime,
         status=log_status,
@@ -52,7 +50,6 @@ def emit_failed_result(
     finalize_stage: str,
     detail: str,
     progress: float,
-    activity_message: str,
     block_index: int,
     block_count: int,
     target_chars: int,
@@ -66,7 +63,6 @@ def emit_failed_result(
         detail=detail,
         progress=progress,
         terminal_kind="error",
-        activity_message=activity_message,
         log_status="ERROR",
         block_index=block_index,
         block_count=block_count,
@@ -93,7 +89,6 @@ def emit_stopped_result(
         detail=detail,
         progress=progress,
         terminal_kind="stopped",
-        activity_message=detail,
         log_status="STOP",
         block_index=block_index,
         block_count=block_count,
@@ -130,7 +125,6 @@ def fail_empty_processing_plan(
         finalize_stage="Ошибка подготовки обработки",
         detail=error_message,
         progress=0.0,
-        activity_message="Обработка документа остановлена: не найдено ни одного блока для обработки.",
         block_index=0,
         block_count=0,
         target_chars=0,

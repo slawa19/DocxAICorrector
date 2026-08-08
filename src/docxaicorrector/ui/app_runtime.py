@@ -5,7 +5,6 @@ from docxaicorrector.processing.processing_runtime import (
     build_preparation_request_marker,
     drain_preparation_events as drain_preparation_events_impl,
     drain_processing_events as drain_processing_events_impl,
-    emit_or_apply_activity as emit_or_apply_activity_impl,
     emit_or_apply_finalize as emit_or_apply_finalize_impl,
     emit_or_apply_image_log as emit_or_apply_image_log_impl,
     emit_or_apply_image_reset as emit_or_apply_image_reset_impl,
@@ -22,7 +21,6 @@ from docxaicorrector.runtime.state import (
     append_image_log,
     append_log,
     finalize_processing_status,
-    push_activity,
     reset_run_state,
     set_processing_status,
 )
@@ -34,7 +32,6 @@ __all__ = [
     "emit_image_reset",
     "emit_status",
     "emit_finalize",
-    "emit_activity",
     "emit_log",
     "emit_image_log",
     "drain_processing_events",
@@ -74,11 +71,6 @@ def emit_finalize(runtime: BackgroundRuntime | None, stage: str, detail: str, pr
     )
 
 
-def emit_activity(runtime: BackgroundRuntime | None, message: str) -> None:
-    """Bind activity events to the canonical state owner."""
-    emit_or_apply_activity_impl(runtime, push_activity=push_activity, message=message)
-
-
 def emit_log(runtime: BackgroundRuntime | None, **payload) -> None:
     """Bind block log events to the canonical state owner."""
     emit_or_apply_log_impl(runtime, append_log=append_log, **payload)
@@ -94,7 +86,6 @@ def drain_processing_events() -> None:
     drain_processing_events_impl(
         set_processing_status=set_processing_status,
         finalize_processing_status=finalize_processing_status,
-        push_activity=push_activity,
         append_log=append_log,
         append_image_log=append_image_log,
     )
@@ -106,7 +97,6 @@ def drain_preparation_events() -> None:
         reset_run_state=reset_run_state,
         set_processing_status=set_processing_status,
         finalize_processing_status=finalize_processing_status,
-        push_activity=push_activity,
     )
 
 
@@ -130,7 +120,6 @@ def start_background_preparation(*, worker_target, uploaded_payload, upload_mark
     start_background_preparation_impl(
         worker_target=worker_target,
         reset_run_state=reset_run_state,
-        push_activity=push_activity,
         set_processing_status=set_processing_status,
         uploaded_payload=uploaded_payload,
         upload_marker=upload_marker,
@@ -148,7 +137,6 @@ def start_background_processing(*, worker_target, uploaded_filename: str, upload
     start_background_processing_impl(
         worker_target=worker_target,
         reset_run_state=reset_run_state,
-        push_activity=push_activity,
         set_processing_status=set_processing_status,
         uploaded_filename=uploaded_filename,
         uploaded_token=uploaded_token,
