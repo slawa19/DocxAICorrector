@@ -96,11 +96,10 @@ def _prepare_state(monkeypatch):
     session_state = SessionState()
     monkeypatch.setattr(state.st, "session_state", session_state)
     state.init_session_state()
-    # set_processing_status / push_activity / append_image_log now live only in
+    # set_processing_status / append_image_log now live only in
     # runtime.state (processing_service lazy-imports them to stay Streamlit-free, round-4
     # finding 5), so patch the source module, not the service facade.
     monkeypatch.setattr(state, "set_processing_status", lambda **kwargs: None)
-    monkeypatch.setattr(state, "push_activity", lambda message: None)
     monkeypatch.setattr(state, "append_image_log", lambda **kwargs: None)
     monkeypatch.setattr(processing_service, "log_event", lambda *args, **kwargs: None)
     monkeypatch.setattr(processing_service, "analyze_image", lambda *args, **kwargs: build_analysis_result())

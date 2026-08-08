@@ -366,7 +366,6 @@ def _run_audiobook_postprocess(*, context: Any, dependencies: Any, emitters: Any
         progress=1.0,
         is_running=True,
     )
-    emitters.emit_activity(context.runtime, "Запущена отдельная подготовка narration text для ElevenLabs.")
 
     processed_groups: list[str] = []
     for group in groups:
@@ -427,7 +426,6 @@ def _run_audiobook_postprocess(*, context: Any, dependencies: Any, emitters: Any
             output_chars=len(processed_chunk),
         )
 
-    emitters.emit_activity(context.runtime, "Подготовка narration text для ElevenLabs завершена.")
     return _assemble_narration_recording_joins(
         "\n\n".join(processed_groups), state=state
     )

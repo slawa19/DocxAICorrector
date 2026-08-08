@@ -190,7 +190,6 @@ from docxaicorrector.pipeline.quality_gate import (  # noqa: F401
     _build_result_quality_warning,
     _russian_paragraph_word,
     _build_quality_warn_notice_message,
-    _build_quality_gate_activity_message,
 )
 
 
@@ -302,7 +301,6 @@ def run_image_processing_phase(
             finalize_stage="Ошибка обработки изображений",
             detail=error_message,
             progress=1.0,
-            activity_message="Ошибка на этапе обработки изображений документа.",
             block_index=initialization.job_count,
             block_count=initialization.job_count,
             target_chars=len(runtime_display_markdown),
@@ -382,7 +380,6 @@ def validate_placeholder_integrity_phase(
         finalize_stage="Критическая ошибка",
         detail=critical_message,
         progress=1.0,
-        activity_message="Сборка DOCX остановлена из-за потери или дублирования image placeholder.",
         block_index=job_count,
         block_count=job_count,
         target_chars=len(final_markdown),
@@ -443,7 +440,6 @@ def run_docx_build_phase(
         progress=1.0,
         is_running=True,
     )
-    emitters.emit_activity(context.runtime, "Все блоки готовы. Начата сборка итогового DOCX.")
     context.on_progress(preview_title="Текущий Markdown")
     processed_image_assets = image_phase["processed_image_assets"]
     docx_bytes_cache: bytes | None = None
@@ -500,7 +496,6 @@ def run_docx_build_phase(
             finalize_stage="Ошибка сборки DOCX",
             detail=error_message,
             progress=1.0,
-            activity_message="Ошибка на этапе сборки DOCX.",
             block_index=job_count,
             block_count=job_count,
             target_chars=len(runtime_display_markdown),
@@ -518,10 +513,9 @@ def run_docx_build_phase(
             diagnostics_dir=diagnostics_dir,
         )
     if formatting_diagnostics_artifacts:
-        severity, activity_message, user_summary = build_formatting_diagnostics_user_feedback(
+        severity, user_summary = build_formatting_diagnostics_user_feedback(
             formatting_diagnostics_artifacts
         )
-        emitters.emit_activity(context.runtime, activity_message)
         if severity == "INFO":
             latest_result_notice = {"level": "info", "message": user_summary}
         else:
@@ -758,7 +752,6 @@ def finalize_processing_success(
             finalize_stage="Критическая ошибка качества перевода",
             detail=error_message,
             progress=1.0,
-            activity_message=_build_quality_gate_activity_message(gate_reasons),
             block_index=job_count,
             block_count=job_count,
             target_chars=len(runtime_display_markdown),
@@ -863,10 +856,9 @@ def finalize_processing_success(
         formatting_diagnostics_artifacts
     )
     if base_build_was_deferred and diagnostics_set_changed and post_cleanup_formatting_diagnostics_artifacts:
-        severity, activity_message, user_summary = build_formatting_diagnostics_user_feedback(
+        severity, user_summary = build_formatting_diagnostics_user_feedback(
             post_cleanup_formatting_diagnostics_artifacts
         )
-        emitters.emit_activity(context.runtime, activity_message)
         post_cleanup_diagnostics_result_notice = {
             "level": "info" if severity == "INFO" else "warning",
             "message": user_summary,
@@ -1010,7 +1002,6 @@ def finalize_processing_success(
                 finalize_stage="Критическая ошибка качества перевода",
                 detail=error_message,
                 progress=1.0,
-                activity_message=_build_quality_gate_activity_message(post_cleanup_gate_reasons),
                 block_index=job_count,
                 block_count=job_count,
                 target_chars=len(runtime_display_markdown),
@@ -1139,7 +1130,6 @@ def finalize_processing_success(
                 finalize_stage="Ошибка подготовки narration",
                 detail=error_message,
                 progress=1.0,
-                activity_message="Ошибка на этапе подготовки текста для ElevenLabs.",
                 block_index=job_count,
                 block_count=job_count,
                 target_chars=len(runtime_display_markdown),
@@ -1525,7 +1515,6 @@ def finalize_processing_success(
         1.0,
         "completed",
     )
-    emitters.emit_activity(context.runtime, "Документ обработан полностью.")
     _completed_log_fields = dict(
         filename=context.uploaded_filename,
         block_count=job_count,

@@ -53,7 +53,6 @@ from docxaicorrector.runtime.events import (
     PreparationFailedEvent,
     PreparationStoppedEvent,
     ProcessingEvent,
-    PushActivityEvent,
     ResetImageStateEvent,
     SetProcessingStatusEvent,
     SetStateEvent,
@@ -214,7 +213,6 @@ __all__ = [
     "emit_or_apply_image_reset",
     "emit_or_apply_status",
     "emit_or_apply_finalize",
-    "emit_or_apply_activity",
     "emit_or_apply_log",
     "emit_or_apply_image_log",
     "build_runtime_event_emitters",
@@ -1828,13 +1826,6 @@ def emit_or_apply_finalize(runtime: BackgroundRuntime | None, *, finalize_proces
     runtime.emit(FinalizeProcessingStatusEvent(stage=stage, detail=detail, progress=progress, terminal_kind=terminal_kind))
 
 
-def emit_or_apply_activity(runtime: BackgroundRuntime | None, *, push_activity, message: str) -> None:
-    if runtime is None:
-        push_activity(message)
-        return
-    runtime.emit(PushActivityEvent(message=message))
-
-
 def emit_or_apply_log(runtime: BackgroundRuntime | None, *, append_log, **payload) -> None:
     if runtime is None:
         append_log(**payload)
@@ -1853,7 +1844,6 @@ def emit_or_apply_image_log(runtime: BackgroundRuntime | None, *, append_image_l
 class RuntimeEventEmitterDependencies:
     set_processing_status: Callable[..., None]
     finalize_processing_status: Callable[..., None]
-    push_activity: Callable[[str], None]
     append_log: Callable[..., None]
     append_image_log: Callable[..., None]
 
@@ -1864,7 +1854,6 @@ class RuntimeEventEmitters:
     emit_image_reset: Callable[..., None]
     emit_status: Callable[..., None]
     emit_finalize: Callable[..., None]
-    emit_activity: Callable[..., None]
     emit_log: Callable[..., None]
     emit_image_log: Callable[..., None]
 
@@ -1885,11 +1874,6 @@ def build_runtime_event_emitters(*, dependencies: RuntimeEventEmitterDependencie
             detail=detail,
             progress=progress,
             terminal_kind=terminal_kind,
-        ),
-        emit_activity=lambda runtime, message: emit_or_apply_activity(
-            runtime,
-            push_activity=dependencies.push_activity,
-            message=message,
         ),
         emit_log=lambda runtime, **payload: emit_or_apply_log(
             runtime,
@@ -1912,7 +1896,7 @@ def _is_stale_processing_event(event: ProcessingEvent) -> bool:
     return event_source_token != latest_source_token
 
 
-def drain_processing_events(*, set_processing_status, finalize_processing_status, push_activity, append_log, append_image_log) -> None:
+def drain_processing_events(*, set_processing_status, finalize_processing_status, append_log, append_image_log) -> None:
     event_queue = get_processing_event_queue()
     if event_queue is None:
         return
@@ -1935,8 +1919,6 @@ def drain_processing_events(*, set_processing_status, finalize_processing_status
             set_processing_status(**event.payload)
         elif isinstance(event, FinalizeProcessingStatusEvent):
             finalize_processing_status(event.stage, event.detail, event.progress, event.terminal_kind)
-        elif isinstance(event, PushActivityEvent):
-            push_activity(event.message)
         elif isinstance(event, AppendLogEvent):
             append_log(**event.payload)
         elif isinstance(event, AppendImageLogEvent):
@@ -1944,7 +1926,6 @@ def drain_processing_events(*, set_processing_status, finalize_processing_status
         elif isinstance(event, WorkerCompleteEvent):
             apply_processing_completion(
                 outcome=event.outcome,
-                push_activity=push_activity,
                 load_restart_source_bytes_fn=load_restart_source_bytes,
                 clear_restart_source_fn=clear_restart_source,
                 store_completed_source_fn=store_completed_source,
@@ -1953,7 +1934,7 @@ def drain_processing_events(*, set_processing_status, finalize_processing_status
             )
 
 
-def drain_preparation_events(*, reset_run_state, set_processing_status, finalize_processing_status, push_activity) -> None:
+def drain_preparation_events(*, reset_run_state, set_processing_status, finalize_processing_status) -> None:
     event_queue = get_preparation_event_queue()
     if event_queue is None:
         return
@@ -1971,8 +1952,6 @@ def drain_preparation_events(*, reset_run_state, set_processing_status, finalize
             set_processing_status(**event.payload)
         elif isinstance(event, FinalizeProcessingStatusEvent):
             finalize_processing_status(event.stage, event.detail, event.progress, event.terminal_kind)
-        elif isinstance(event, PushActivityEvent):
-            push_activity(event.message)
         elif isinstance(event, PreparationCompleteEvent):
             apply_preparation_complete(
                 prepared_run_context=event.prepared_run_context,
@@ -1997,7 +1976,6 @@ def drain_preparation_events(*, reset_run_state, set_processing_status, finalize
                 1.0,
                 "error",
             )
-            push_activity("Не удалось прочитать и проанализировать документ.")
         elif isinstance(event, PreparationStoppedEvent):
             apply_preparation_stop(upload_marker=event.upload_marker)
             finalize_processing_status(
@@ -2006,7 +1984,6 @@ def drain_preparation_events(*, reset_run_state, set_processing_status, finalize
                 1.0,
                 "stopped",
             )
-            push_activity("Подготовка документа остановлена.")
 
 
 def preparation_worker_is_active() -> bool:
@@ -2027,7 +2004,6 @@ def start_background_processing(
     *,
     worker_target,
     reset_run_state,
-    push_activity,
     set_processing_status,
     uploaded_filename: str,
     uploaded_token: str,
@@ -2075,14 +2051,12 @@ def start_background_processing(
             source_token=uploaded_token,
             error_message=str(exc),
         )
-        push_activity("Не удалось сохранить временный файл для restart. Повторный запуск без загрузки файла будет недоступен.")
 
     processing_events = queue.Queue()
     stop_event = threading.Event()
     runtime = BackgroundRuntime(processing_events, stop_event, source_token=uploaded_token)
     run_id = uuid4().hex
 
-    push_activity("Запуск обработки документа.")
     set_processing_status(
         stage="Инициализация",
         detail="Проверяю доступность OpenAI, Pandoc и системного промпта.",
@@ -2155,7 +2129,6 @@ def start_background_preparation(
     *,
     worker_target,
     reset_run_state,
-    push_activity,
     set_processing_status,
     uploaded_payload,
     upload_marker: str,
@@ -2173,7 +2146,6 @@ def start_background_preparation(
     preparation_stop_event = threading.Event()
     runtime = BackgroundRuntime(preparation_events, preparation_stop_event)
 
-    push_activity("Файл получен сервером. Запускаю анализ документа.")
     set_processing_status(
         stage="Файл получен",
         detail="Файл передан на сервер. Запускаю анализ документа.",
@@ -2184,9 +2156,6 @@ def start_background_preparation(
         conversion_backend=getattr(uploaded_payload, "conversion_backend", None),
         conversion_reused=False,
     )
-
-    last_reported_stage = {"value": ""}
-    last_activity = {"key": "", "at": 0.0}
 
     def report_progress(*, stage: str, detail: str, progress: float, metrics: dict[str, object]) -> None:
         runtime.emit(
@@ -2209,25 +2178,6 @@ def start_background_preparation(
                 }
             )
         )
-        # Activity feed: emit on stage change, and additionally throttle per-detail
-        # heartbeats so users see live progress instead of stage-only entries.
-        now = time.monotonic()
-        if stage and stage != last_reported_stage["value"]:
-            runtime.emit(PushActivityEvent(message=f"[Анализ] {stage}: {detail}"))
-            last_reported_stage["value"] = stage
-            last_activity["key"] = f"{stage}|{detail}"
-            last_activity["at"] = now
-            return
-        activity_key = f"{stage}|{detail}"
-        if (
-            stage
-            and detail
-            and activity_key != last_activity["key"]
-            and (now - float(last_activity["at"] or 0.0)) >= 3.0
-        ):
-            runtime.emit(PushActivityEvent(message=f"[Анализ] {detail}"))
-            last_activity["key"] = activity_key
-            last_activity["at"] = now
 
     def _run_preparation_stages() -> None:
         try:

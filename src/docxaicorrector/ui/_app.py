@@ -73,7 +73,6 @@ from docxaicorrector.runtime.state import (
     is_processing_stop_requested,
     mark_app_start_logged,
     mark_persisted_source_cleanup_done,
-    push_activity,
     reset_run_state,
     set_manual_text_settings_override_for_token,
     set_recommended_text_settings,
@@ -815,7 +814,6 @@ def main() -> None:
             still_running = get_processing_outcome() == ProcessingOutcome.RUNNING.value
             action = _render_processing_controls(can_start=False, is_processing=still_running)
             if action == "stop":
-                push_activity(t("app.activity_stopping"))
                 _request_processing_stop()
                 st.rerun()
 
@@ -1041,9 +1039,6 @@ def main() -> None:
             terminal_kind="completed",
             **normalization_metrics,
         )
-    if not st.session_state.get("activity_feed") and not restartable_outcome:
-        push_activity(t("app.activity_document_parsed", count=len(jobs)))
-
     if len(jobs) == 1:
         st.info(t("app.single_block_info"))
 

@@ -20,8 +20,6 @@
   "app.button_reprocess": "Обработать повторно",
   "app.button_stopping": "Останавливаю...",
   "app.button_stop": "Стоп",
-  "app.activity_stopping": "Остановлено. Завершение текущего шага...",
-  "app.activity_document_parsed": "Документ разобран на {count} блоков.",
   "app.restartable_stopped_notice": "Обработка файла «{filename}» была остановлена. Можно изменить настройки и запустить заново без повторной загрузки.",
   "app.restartable_failed_notice": "Обработка файла «{filename}» завершилась ошибкой. Можно изменить настройки и запустить заново без повторной загрузки.",
   "recommend.field_operation": "режим",

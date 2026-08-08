@@ -699,7 +699,6 @@ def emit_block_started(
         progress=(index - 1) / initialization.job_count,
         is_running=True,
     )
-    emitters.emit_activity(context.runtime, f"Начата обработка блока {index} из {initialization.job_count}.")
     dependencies.log_event(
         logging.DEBUG,
         "block_started",
@@ -742,7 +741,6 @@ def execute_processing_block(
             progress=(index - 1) / initialization.job_count,
             is_running=True,
         )
-        emitters.emit_activity(context.runtime, f"Блок {index} пропущен через passthrough без вызова модели.")
         context.on_progress(preview_title="Текущий Markdown")
         return payload.target_text, False
 
@@ -758,7 +756,6 @@ def execute_processing_block(
         progress=(index - 1) / initialization.job_count,
         is_running=True,
     )
-    emitters.emit_activity(context.runtime, f"Блок {index} отправлен в модель.")
     context.on_progress(preview_title="Текущий Markdown")
     if _should_route_toc_through_llm(context=context, payload=payload):
         processed_chunk = _validate_toc_chunk_with_retries(
@@ -919,7 +916,6 @@ def emit_block_completed(
         progress=index / initialization.job_count,
         is_running=True,
     )
-    emitters.emit_activity(context.runtime, f"Блок {index} обработан успешно.")
     output_chars = len(processed_chunk)
     output_ratio = round(output_chars / max(payload.target_chars, 1), 2)
     dependencies.log_event(
@@ -1053,7 +1049,6 @@ def continue_controlled_processed_block_rejection(
         progress=index / initialization.job_count,
         is_running=True,
     )
-    emitters.emit_activity(context.runtime, f"Блок {index}: сохранён с controlled fallback ({rejection_kind}).")
     emitters.emit_log(
         context.runtime,
         status="WARN",
@@ -1301,7 +1296,6 @@ def run_block_processing_phase(
             finalize_stage="Критическая ошибка",
             detail=critical_message,
             progress=len(state.processed_chunks) / max(initialization.job_count, 1),
-            activity_message="Обнаружено несоответствие количества обработанных блоков.",
             block_index=len(state.processed_chunks),
             block_count=initialization.job_count,
             target_chars=len(current_markdown_fn(state.processed_chunks)),

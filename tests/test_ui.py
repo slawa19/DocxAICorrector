@@ -983,7 +983,6 @@ def test_render_live_status_shows_cache_source_for_preparation(monkeypatch):
             "progress": 0.9,
             "started_at": None,
         },
-        activity_feed=[{"time": "10:00:00", "message": "[Анализ] Разбор DOCX: Ищу абзацы."}],
     )
     info_calls = []
     writes = []
@@ -1025,7 +1024,6 @@ def test_render_live_status_shows_conversion_reuse_for_preparation(monkeypatch):
             "progress": 0.18,
             "started_at": None,
         },
-        activity_feed=[{"time": "10:00:00", "message": "[Анализ] DOCX готов: Использую уже сконвертированную копию DOCX."}],
     )
     info_calls = []
     writes = []
@@ -1152,7 +1150,6 @@ def test_render_live_status_shows_preparation_failure_title(monkeypatch):
             "progress": 1.0,
             "started_at": None,
         },
-        activity_feed=[],
     )
     error_calls = []
     writes = []
@@ -1184,7 +1181,6 @@ def test_render_live_status_uses_target_columns_progress_and_clamps_processing_p
             "progress": 1.7,
             "started_at": None,
         },
-        activity_feed=[],
     )
     target = FakeLiveStatusTarget()
 
@@ -1215,7 +1211,6 @@ def test_render_live_status_shows_active_segment_caption(monkeypatch):
             "active_segment_title": "Chapter 1",
             "started_at": None,
         },
-        activity_feed=[],
     )
     target = FakeLiveStatusTarget()
 
@@ -1246,7 +1241,6 @@ def test_render_live_status_shows_segment_status_summary(monkeypatch):
             },
             "started_at": None,
         },
-        activity_feed=[],
     )
     target = FakeLiveStatusTarget()
 
@@ -1271,7 +1265,6 @@ def test_render_live_status_uses_target_warning_for_stopped_processing(monkeypat
             "terminal_kind": "stopped",
             "started_at": None,
         },
-        activity_feed=[],
     )
     target = FakeLiveStatusTarget()
 
@@ -1294,7 +1287,6 @@ def test_render_live_status_uses_target_error_for_failed_processing(monkeypatch)
             "terminal_kind": "error",
             "started_at": None,
         },
-        activity_feed=[],
     )
     target = FakeLiveStatusTarget()
 
@@ -1421,7 +1413,6 @@ def test_render_run_log_shows_entries_in_chronological_order(monkeypatch):
             {"kind": "block", "status": "OK", "block_index": 1, "block_count": 3, "target_chars": 10, "context_chars": 2, "details": "first", "message": "[OK] Блок 1/3 | цель: 10 симв. | контекст: 2 симв. | first"},
             {"kind": "block", "status": "OK", "block_index": 2, "block_count": 3, "target_chars": 12, "context_chars": 3, "details": "second", "message": "[OK] Блок 2/3 | цель: 12 симв. | контекст: 3 симв. | second"},
         ],
-        activity_feed=[{"time": "10:00:00", "message": "Блок 2 отправлен в OpenAI."}],
         processing_status={"stage": "Блок обработан", "detail": "Последний блок готов.", "progress": 0.1, "phase": "processing"},
         last_log_hint="hint",
     )
@@ -1445,7 +1436,6 @@ def test_render_run_log_shows_image_entries(monkeypatch):
         run_log=[
             {"kind": "image", "status": "IMG WARN", "message": "[IMG WARN] Изображение img-2 | оставлен оригинал | ошибка валидации"},
         ],
-        activity_feed=[],
         processing_status={"phase": "processing"},
     )
     writes = []
@@ -1460,10 +1450,9 @@ def test_render_run_log_shows_image_entries(monkeypatch):
     assert writes == ["[IMG WARN] Изображение img-2 | оставлен оригинал | ошибка валидации"]
 
 
-def test_render_run_log_ignores_processing_activity_without_block_entries(monkeypatch):
+def test_render_run_log_writes_nothing_without_block_entries(monkeypatch):
     session_state = SessionState(
         run_log=[],
-        activity_feed=[{"time": "10:00:00", "message": "Запуск обработки документа."}],
         processing_status={"stage": "Инициализация", "detail": "Проверяю окружение.", "progress": 0.0, "phase": "processing"},
         last_log_hint="hint",
     )
@@ -1479,10 +1468,9 @@ def test_render_run_log_ignores_processing_activity_without_block_entries(monkey
     assert writes == []
 
 
-def test_render_run_log_skips_activity_feed_when_run_log_empty(monkeypatch):
+def test_render_run_log_builds_no_fragment_when_run_log_empty(monkeypatch):
     session_state = SessionState(
         run_log=[],
-        activity_feed=[{"time": "10:00:00", "message": "[Анализ] Разбор DOCX: Ищу абзацы."}],
         processing_status={"stage": "Подготовка документа", "detail": "Идет анализ файла.", "progress": 0.9, "phase": "preparing"},
         last_log_hint="hint",
     )
@@ -1967,7 +1955,6 @@ def test_render_markdown_preview_renders_native_widgets(monkeypatch):
 def test_render_run_log_renders_inside_fragment(monkeypatch):
     session_state = SessionState(
         run_log=[{"status": "OK", "block_index": 1, "block_count": 1, "target_chars": 10, "context_chars": 2, "details": "done"}],
-        activity_feed=[],
         processing_status={"phase": "processing"},
     )
     fragment_calls = []

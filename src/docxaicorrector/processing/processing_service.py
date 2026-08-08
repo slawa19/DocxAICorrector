@@ -16,7 +16,6 @@ from docxaicorrector.document.extraction import inspect_placeholder_integrity
 from docxaicorrector.generation.formatting_transfer import preserve_source_paragraph_properties
 from docxaicorrector.image.reinsertion import reinsert_inline_images
 from docxaicorrector.pipeline._pipeline import (
-    ActivityEmitter,
     ClientFactory,
     ErrorPresenter,
     EventLogger,
@@ -53,7 +52,7 @@ from docxaicorrector.processing.application_flow import (
 from docxaicorrector.processing.preparation import prepare_document_for_processing
 from docxaicorrector.processing.service_ports import normalize_background_error, should_stop_processing
 from docxaicorrector.processing.upload_ports import resolve_uploaded_filename
-from docxaicorrector.runtime.events import AppendLogEvent, FinalizeProcessingStatusEvent, PushActivityEvent, SetStateEvent, WorkerCompleteEvent
+from docxaicorrector.runtime.events import AppendLogEvent, FinalizeProcessingStatusEvent, SetStateEvent, WorkerCompleteEvent
 
 
 class _DeliveryObservingRuntime:
@@ -123,7 +122,6 @@ class ProcessingServiceDependencies:
     log_event_fn: EventLogger
     emit_state_fn: StateEmitter
     emit_finalize_fn: FinalizeEmitter
-    emit_activity_fn: ActivityEmitter
     emit_log_fn: LogEmitter
     emit_status_fn: StatusEmitter
     emit_image_log_fn: Callable[..., object]
@@ -165,7 +163,6 @@ class ProcessingService:
             emit_state=deps.emit_state_fn,
             emit_image_reset=deps.emit_image_reset_fn,
             emit_finalize=deps.emit_finalize_fn,
-            emit_activity=deps.emit_activity_fn,
             emit_status=deps.emit_status_fn,
             emit_image_log=deps.emit_image_log_fn,
             should_stop=deps.should_stop_processing_fn,
@@ -276,7 +273,6 @@ class ProcessingService:
             present_error=deps.present_error_fn,
             emit_state=deps.emit_state_fn,
             emit_finalize=deps.emit_finalize_fn,
-            emit_activity=deps.emit_activity_fn,
             emit_log=deps.emit_log_fn,
             emit_status=deps.emit_status_fn,
             should_stop_processing=deps.should_stop_processing_fn,
@@ -382,16 +378,6 @@ class ProcessingService:
                 )
             runtime.emit(SetStateEvent(values=crash_state_values))
             runtime.emit(FinalizeProcessingStatusEvent(stage="Критическая ошибка", detail=error_message, progress=1.0, terminal_kind="error"))
-            runtime.emit(
-                PushActivityEvent(
-                    message=(
-                        "Фоновый worker аварийно завершился уже после доставки результата; "
-                        "готовый результат сохранён."
-                        if observed_runtime.result_was_delivered
-                        else "Фоновый worker аварийно завершился; runtime-state принудительно очищается."
-                    )
-                )
-            )
             runtime.emit(
                 AppendLogEvent(
                     payload={
@@ -521,7 +507,6 @@ def _emit_prepared_background_preparation_failure(*, runtime, error_message: str
     )
     runtime.emit(SetStateEvent(values={"last_error": error_message, "last_background_error": background_error}))
     runtime.emit(FinalizeProcessingStatusEvent(stage="Ошибка подготовки", detail=error_message, progress=1.0, terminal_kind="error"))
-    runtime.emit(PushActivityEvent(message="Подготовка документа остановлена quality gate или завершилась ошибкой."))
     runtime.emit(
         AppendLogEvent(
             payload={
@@ -568,7 +553,6 @@ def build_default_processing_service_dependencies() -> ProcessingServiceDependen
         append_image_log,
         append_log,
         finalize_processing_status,
-        push_activity,
         set_processing_status,
     )
 
@@ -621,7 +605,6 @@ def build_default_processing_service_dependencies() -> ProcessingServiceDependen
         dependencies=RuntimeEventEmitterDependencies(
             set_processing_status=set_processing_status,
             finalize_processing_status=finalize_processing_status,
-            push_activity=push_activity,
             append_log=append_log,
             append_image_log=append_image_log,
         )
@@ -649,7 +632,6 @@ def build_default_processing_service_dependencies() -> ProcessingServiceDependen
         log_event_fn=_log_event,
         emit_state_fn=runtime_emitters.emit_state,
         emit_finalize_fn=runtime_emitters.emit_finalize,
-        emit_activity_fn=runtime_emitters.emit_activity,
         emit_log_fn=runtime_emitters.emit_log,
         emit_status_fn=runtime_emitters.emit_status,
         emit_image_log_fn=runtime_emitters.emit_image_log,

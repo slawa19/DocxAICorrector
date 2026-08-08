@@ -2040,11 +2040,3 @@ def _build_quality_warn_notice_message(quality_report: Mapping[str, object]) -> 
     return f"{prefix}. {suffix}"
 
 
-def _build_quality_gate_activity_message(gate_reasons: Sequence[str]) -> str:
-    if not gate_reasons:
-        return "Итоговый перевод отклонён document-level quality gate."
-    joined_reasons = ", ".join(str(reason) for reason in gate_reasons if str(reason))
-    if not joined_reasons:
-        return "Итоговый перевод отклонён document-level quality gate."
-    return f"Итоговый перевод отклонён quality gate: {joined_reasons}."
-

@@ -155,7 +155,6 @@ def _recording_run_harness():
     emitters = SimpleNamespace(
         emit_state=lambda _runtime, **_kwargs: None,
         emit_status=lambda _runtime, **_kwargs: None,
-        emit_activity=lambda _runtime, _message: None,
         emit_log=lambda _runtime, **_kwargs: None,
     )
     return dependencies, emitters, events

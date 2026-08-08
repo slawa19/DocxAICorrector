@@ -43,7 +43,6 @@ class _RecordingEmitters:
     def __init__(self) -> None:
         self.state_calls: list[dict[str, object]] = []
         self.finalize_calls: list[dict[str, object]] = []
-        self.activity_calls: list[str] = []
         self.log_calls: list[dict[str, object]] = []
 
     def emit_state(self, runtime, **values):
@@ -53,9 +52,6 @@ class _RecordingEmitters:
         self.finalize_calls.append(
             {"stage": stage, "detail": detail, "progress": progress, "terminal_kind": terminal_kind}
         )
-
-    def emit_activity(self, runtime, message):
-        self.activity_calls.append(message)
 
     def emit_log(self, runtime, **payload):
         self.log_calls.append(payload)
@@ -1175,7 +1171,6 @@ def test_finalize_reader_cleanup_without_caption_conflict_publishes(monkeypatch,
     detected_events = [event for event in deps.events if event[1] == "formatting_diagnostics_artifacts_detected"]
     assert len(detected_events) == 1
     assert detected_events[0][3]["artifact_paths"] == [str(owned_path)]
-    assert emitters.activity_calls
     assert any(
         _state_mapping_value(call, "latest_result_notice", "level") == "info"
         for call in emitters.state_calls

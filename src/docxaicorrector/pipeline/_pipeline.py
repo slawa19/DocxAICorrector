@@ -96,7 +96,6 @@ from docxaicorrector.pipeline.contracts import (
     StatusEmitter,
     StopPredicate,
     SystemPromptLoader,
-    ActivityEmitter,
     ImageReinserter,
     build_processing_dependencies as _build_processing_dependencies_impl,
     ModelSelectorClientFactory,
@@ -163,7 +162,7 @@ def _classify_processed_block(target_text: str, processed_chunk: str) -> Process
     return _classify_processed_block_impl(target_text, processed_chunk)
 
 
-def _build_formatting_diagnostics_user_feedback(artifact_paths: Sequence[str]) -> tuple[str, str, str]:
+def _build_formatting_diagnostics_user_feedback(artifact_paths: Sequence[str]) -> tuple[str, str]:
     return _build_formatting_diagnostics_user_feedback_impl(artifact_paths)
 
 
@@ -289,14 +288,12 @@ def _build_processing_emitters(
     *,
     emit_state: StateEmitter,
     emit_finalize: FinalizeEmitter,
-    emit_activity: ActivityEmitter,
     emit_log: LogEmitter,
     emit_status: StatusEmitter,
 ) -> ProcessingEmitters:
     return _build_processing_emitters_impl(
         emit_state=emit_state,
         emit_finalize=emit_finalize,
-        emit_activity=emit_activity,
         emit_log=emit_log,
         emit_status=emit_status,
         emitters_factory_fn=ProcessingEmitters,
@@ -391,7 +388,6 @@ def _build_processing_run_components(
     present_error: ErrorPresenter,
     emit_state: StateEmitter,
     emit_finalize: FinalizeEmitter,
-    emit_activity: ActivityEmitter,
     emit_log: LogEmitter,
     emit_status: StatusEmitter,
     should_stop_processing: StopPredicate,
@@ -448,7 +444,6 @@ def _build_processing_run_components(
         present_error=present_error,
         emit_state=emit_state,
         emit_finalize=emit_finalize,
-        emit_activity=emit_activity,
         emit_log=emit_log,
         emit_status=emit_status,
         should_stop_processing=should_stop_processing,
@@ -630,7 +625,6 @@ def _emit_failed_result(
     finalize_stage: str,
     detail: str,
     progress: float,
-    activity_message: str,
     block_index: int,
     block_count: int,
     target_chars: int,
@@ -643,7 +637,6 @@ def _emit_failed_result(
         finalize_stage=finalize_stage,
         detail=detail,
         progress=progress,
-        activity_message=activity_message,
         block_index=block_index,
         block_count=block_count,
         target_chars=target_chars,
@@ -983,7 +976,6 @@ def run_document_processing(
     present_error: ErrorPresenter,
     emit_state: StateEmitter,
     emit_finalize: FinalizeEmitter,
-    emit_activity: ActivityEmitter,
     emit_log: LogEmitter,
     emit_status: StatusEmitter,
     should_stop_processing: StopPredicate,
@@ -1036,7 +1028,6 @@ def run_document_processing(
             present_error=present_error,
             emit_state=emit_state,
             emit_finalize=emit_finalize,
-            emit_activity=emit_activity,
             emit_log=emit_log,
             emit_status=emit_status,
             should_stop_processing=should_stop_processing,
@@ -1086,7 +1077,6 @@ def _run_document_processing_in_scope(
     present_error: ErrorPresenter,
     emit_state: StateEmitter,
     emit_finalize: FinalizeEmitter,
-    emit_activity: ActivityEmitter,
     emit_log: LogEmitter,
     emit_status: StatusEmitter,
     should_stop_processing: StopPredicate,
@@ -1137,7 +1127,6 @@ def _run_document_processing_in_scope(
             present_error=present_error,
             emit_state=emit_state,
             emit_finalize=emit_finalize,
-            emit_activity=emit_activity,
             emit_log=emit_log,
             emit_status=emit_status,
             should_stop_processing=should_stop_processing,
@@ -1212,7 +1201,6 @@ def _run_document_processing_accounted(
     present_error: ErrorPresenter,
     emit_state: StateEmitter,
     emit_finalize: FinalizeEmitter,
-    emit_activity: ActivityEmitter,
     emit_log: LogEmitter,
     emit_status: StatusEmitter,
     should_stop_processing: StopPredicate,
@@ -1263,7 +1251,6 @@ def _run_document_processing_accounted(
         present_error=present_error,
         emit_state=emit_state,
         emit_finalize=emit_finalize,
-        emit_activity=emit_activity,
         emit_log=emit_log,
         emit_status=emit_status,
         should_stop_processing=should_stop_processing,

@@ -20,8 +20,6 @@
   "app.button_reprocess": "Process again",
   "app.button_stopping": "Stopping...",
   "app.button_stop": "Stop",
-  "app.activity_stopping": "Stopped. Finishing the current step...",
-  "app.activity_document_parsed": "The document was parsed into {count} blocks.",
   "app.restartable_stopped_notice": "Processing of the file «{filename}» was stopped. You can change the settings and start again without re-uploading.",
   "app.restartable_failed_notice": "Processing of the file «{filename}» failed. You can change the settings and start again without re-uploading.",
   "recommend.field_operation": "mode",

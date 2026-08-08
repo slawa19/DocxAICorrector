@@ -69,7 +69,6 @@ class ImageProcessingContext:
     emit_state: _Callback
     emit_image_reset: _Callback
     emit_finalize: _Callback
-    emit_activity: _Callback
     emit_status: _Callback
     emit_image_log: _Callback
     should_stop: Callable[[object | None], bool]
@@ -1033,7 +1032,6 @@ def process_document_images(
                 (index - 1) / max(total_images, 1),
                 "stopped",
             )
-            context.emit_activity(context.runtime, "Обработка изображений остановлена пользователем.")
             return processed_assets
 
         if document_budget_exhausted:
@@ -1061,7 +1059,6 @@ def process_document_images(
             progress=index / max(total_images, 1),
             is_running=True,
         )
-        context.emit_activity(context.runtime, f"Начата обработка изображения {index} из {total_images}.")
         context.on_progress(preview_title="Текущий Markdown")
         analysis = None
         try:

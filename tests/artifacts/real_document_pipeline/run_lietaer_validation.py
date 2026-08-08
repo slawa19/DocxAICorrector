@@ -96,7 +96,6 @@ from docxaicorrector.runtime.events import (
     AppendImageLogEvent,
     AppendLogEvent,
     FinalizeProcessingStatusEvent,
-    PushActivityEvent,
     ResetImageStateEvent,
     SetProcessingStatusEvent,
     SetStateEvent,
@@ -3779,8 +3778,6 @@ def _apply_runtime_event(event: object, runtime_snapshot: dict) -> None:
                 "progress": event.progress,
             }
         )
-    elif isinstance(event, PushActivityEvent):
-        runtime_snapshot.setdefault("activity", []).append(event.message)
     elif isinstance(event, AppendLogEvent):
         runtime_snapshot.setdefault("log", []).append(event.payload)
     elif isinstance(event, AppendImageLogEvent):
@@ -5292,7 +5289,6 @@ def main() -> None:
     runtime_snapshot = {
         "state": {},
         "finalize": [],
-        "activity": [],
         "log": [],
         "status": [],
         "image_log": [],

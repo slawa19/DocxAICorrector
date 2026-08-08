@@ -138,7 +138,6 @@ def build_processing_emitters(
     *,
     emit_state: Any,
     emit_finalize: Any,
-    emit_activity: Any,
     emit_log: Any,
     emit_status: Any,
     emitters_factory_fn: Callable[..., Any],
@@ -146,7 +145,6 @@ def build_processing_emitters(
     return emitters_factory_fn(
         emit_state=emit_state,
         emit_finalize=emit_finalize,
-        emit_activity=emit_activity,
         emit_log=emit_log,
         emit_status=emit_status,
     )
@@ -276,7 +274,6 @@ def build_processing_run_components(
     present_error: Any,
     emit_state: Any,
     emit_finalize: Any,
-    emit_activity: Any,
     emit_log: Any,
     emit_status: Any,
     should_stop_processing: Any,
@@ -318,7 +315,6 @@ def build_processing_run_components(
     emitters = emitters_builder_fn(
         emit_state=emit_state,
         emit_finalize=emit_finalize,
-        emit_activity=emit_activity,
         emit_log=emit_log,
         emit_status=emit_status,
     )
@@ -480,7 +476,6 @@ def initialize_processing_run(
             finalize_stage="Ошибка подготовки обработки",
             detail=error_message,
             progress=0.0,
-            activity_message="Обработка документа остановлена: план обработки некорректен.",
             block_index=0,
             block_count=0,
             target_chars=0,
@@ -550,10 +545,6 @@ def initialize_processing_run(
             filename=context.uploaded_filename,
             blocks=block_plan_summary["blocks"],
         )
-        emitters.emit_activity(
-            context.runtime,
-            f"Инициализация завершена. Модель: {context.canonical_model_selector or context.model}.",
-        )
     except Exception as exc:
         error_message = dependencies.present_error(
             "processing_init_failed",
@@ -577,7 +568,6 @@ def initialize_processing_run(
             finalize_stage="Ошибка инициализации",
             detail=error_message,
             progress=0.0,
-            activity_message="Обработка документа остановлена: ошибка инициализации.",
             block_index=0,
             block_count=0,
             target_chars=0,

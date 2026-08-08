@@ -20,7 +20,7 @@ import docxaicorrector.processing.application_flow as flow_core
 from conftest import SessionState as SessionState  # noqa: F811
 from docx import Document
 from docxaicorrector.document.segments import DocumentContextProfile, DocumentSegment, SegmentBoundaryEvidence, SegmentDetectionReport, SegmentOutlineEntry
-from docxaicorrector.runtime.events import FinalizeProcessingStatusEvent, PreparationCompleteEvent, PushActivityEvent, SetProcessingStatusEvent, SetStateEvent
+from docxaicorrector.runtime.events import FinalizeProcessingStatusEvent, PreparationCompleteEvent, SetProcessingStatusEvent, SetStateEvent
 
 
 @pytest.fixture(autouse=True)
@@ -759,7 +759,6 @@ def test_restart_flow_restores_uploaded_file_from_run_store_and_cleans_up(tmp_pa
     processing_runtime.start_background_processing(
         worker_target=lambda **kwargs: None,
         reset_run_state=state.reset_run_state,
-        push_activity=state.push_activity,
         set_processing_status=state.set_processing_status,
         uploaded_filename="report.docx",
         uploaded_token="report.docx:3:abc",
@@ -804,7 +803,6 @@ def test_sync_selected_file_context_resets_run_state_for_new_file(monkeypatch):
         latest_source_token="old.docx:10",
         latest_markdown="markdown",
         run_log=[{"status": "STOP"}],
-        activity_feed=[{"time": "10:00:00", "message": "stale"}],
         processed_block_markdowns=["partial"],
         last_error="",
         image_assets=[],
@@ -824,7 +822,7 @@ def test_sync_selected_file_context_resets_run_state_for_new_file(monkeypatch):
 
     application_flow.sync_selected_file_context(
         session_state=session_state,
-        reset_run_state_fn=lambda **kwargs: (reset_calls.append(kwargs), session_state.update(run_log=[], activity_feed=[], restart_source=None)),
+        reset_run_state_fn=lambda **kwargs: (reset_calls.append(kwargs), session_state.update(run_log=[], restart_source=None)),
         uploaded_file_token="new.docx:20",
     )
 
@@ -832,7 +830,6 @@ def test_sync_selected_file_context_resets_run_state_for_new_file(monkeypatch):
     assert session_state.selected_source_token == "new.docx:20"
     assert session_state.restart_source is None
     assert session_state.run_log == []
-    assert session_state.activity_feed == []
     assert "sidebar_text_operation" not in session_state
     assert "sidebar_source_language" not in session_state
     assert "sidebar_target_language" not in session_state
@@ -1655,7 +1652,6 @@ def test_background_handoff_persists_result_bundle_and_ui_artifacts(tmp_path, mo
         finalize_processing_status=lambda stage, detail, progress, terminal_kind=None: preparation_finalizations.append(
             (stage, detail, progress, terminal_kind)
         ),
-        push_activity=state.push_activity,
     )
 
     assert session_state.prepared_run_context is prepared
@@ -1696,7 +1692,6 @@ def test_background_handoff_persists_result_bundle_and_ui_artifacts(tmp_path, mo
             )
         )
         emitted_runtime.emit(SetStateEvent(values={"latest_markdown": markdown_text, "latest_docx_bytes": docx_bytes}))
-        emitted_runtime.emit(PushActivityEvent(message="Финальные UI-артефакты сохранены."))
         emitted_runtime.emit(
             FinalizeProcessingStatusEvent(stage="Готово", detail="", progress=1.0, terminal_kind="completed")
         )
@@ -1735,7 +1730,6 @@ def test_background_handoff_persists_result_bundle_and_ui_artifacts(tmp_path, mo
         finalize_processing_status=lambda stage, detail, progress, terminal_kind=None: processing_finalizations.append(
             (stage, detail, progress, terminal_kind)
         ),
-        push_activity=state.push_activity,
         append_log=state.append_log,
         append_image_log=state.append_image_log,
     )
@@ -1754,7 +1748,6 @@ def test_background_handoff_persists_result_bundle_and_ui_artifacts(tmp_path, mo
     assert session_state.processing_event_queue is None
     assert session_state.latest_markdown == markdown_text
     assert session_state.latest_docx_bytes == docx_bytes
-    assert session_state.activity_feed[-1]["message"] == "Финальные UI-артефакты сохранены."
     assert processing_finalizations[-1] == ("Готово", "", 1.0, "completed")
     assert markdown_path.exists()
     assert markdown_path.read_text(encoding="utf-8") == markdown_text

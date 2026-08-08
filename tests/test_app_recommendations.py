@@ -634,7 +634,6 @@ def test_main_renders_recommended_text_settings_notice_near_settings(monkeypatch
     session_state = SessionState(
         app_start_logged=True,
         processing_status={},
-        activity_feed=[],
         image_assets=[],
         preparation_input_marker="report.docx:3:ba7816bf8f01cfea:6000",
         preparation_failed_marker="",

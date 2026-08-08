@@ -29,7 +29,7 @@ class ParagraphStub:
 
 
 def _build_runtime_capture():
-    return {"state": {}, "finalize": [], "activity": [], "log": [], "status": []}
+    return {"state": {}, "finalize": [], "log": [], "status": []}
 
 
 def _emit_state(runtime, **values):
@@ -38,10 +38,6 @@ def _emit_state(runtime, **values):
 
 def _emit_finalize(runtime, stage, detail, progress, terminal_kind=None):
     runtime.setdefault("finalize", []).append((stage, detail, progress, terminal_kind))
-
-
-def _emit_activity(runtime, message):
-    runtime.setdefault("activity", []).append(message)
 
 
 def _emit_log(runtime, **payload):
@@ -84,7 +80,6 @@ def _run_processing(runtime, **overrides):
         "present_error": lambda code, exc, title, **kwargs: f"{title}: {exc}",
         "emit_state": _emit_state,
         "emit_finalize": _emit_finalize,
-        "emit_activity": _emit_activity,
         "emit_log": _emit_log,
         "emit_status": _emit_status,
         "should_stop_processing": lambda runtime: False,
@@ -124,7 +119,6 @@ def test_run_document_processing_fails_on_empty_processing_plan():
         present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
         emit_state=_emit_state,
         emit_finalize=_emit_finalize,
-        emit_activity=_emit_activity,
         emit_log=_emit_log,
         emit_status=_emit_status,
         should_stop_processing=lambda runtime: False,
@@ -148,7 +142,6 @@ def test_run_document_processing_fails_on_empty_processing_plan():
         0.0,
         "error",
     )
-    assert runtime["activity"][-1] == "Обработка документа остановлена: не найдено ни одного блока для обработки."
     assert runtime["log"][-1]["status"] == "ERROR"
     assert runtime["log"][-1]["block_count"] == 0
 
@@ -183,7 +176,6 @@ def test_run_document_processing_fails_on_initialization_and_clears_stale_runtim
         present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
         emit_state=_emit_state,
         emit_finalize=_emit_finalize,
-        emit_activity=_emit_activity,
         emit_log=_emit_log,
         emit_status=_emit_status,
         should_stop_processing=lambda runtime: False,
@@ -232,7 +224,6 @@ def test_run_document_processing_fails_when_process_document_images_raises():
         present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
         emit_state=_emit_state,
         emit_finalize=_emit_finalize,
-        emit_activity=_emit_activity,
         emit_log=_emit_log,
         emit_status=_emit_status,
         should_stop_processing=lambda runtime: False,
@@ -254,7 +245,6 @@ def test_run_document_processing_fails_when_process_document_images_raises():
         1.0,
         "error",
     )
-    assert runtime["activity"][-1] == "Ошибка на этапе обработки изображений документа."
     assert runtime["log"][-1]["status"] == "ERROR"
     assert runtime["log"][-1]["block_index"] == 1
 
@@ -281,7 +271,6 @@ def test_run_document_processing_fails_when_process_document_images_returns_none
         present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
         emit_state=_emit_state,
         emit_finalize=_emit_finalize,
-        emit_activity=_emit_activity,
         emit_log=_emit_log,
         emit_status=_emit_status,
         should_stop_processing=lambda runtime: False,
@@ -323,7 +312,6 @@ def test_run_document_processing_fails_when_placeholder_integrity_check_raises()
         present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
         emit_state=_emit_state,
         emit_finalize=_emit_finalize,
-        emit_activity=_emit_activity,
         emit_log=_emit_log,
         emit_status=_emit_status,
         should_stop_processing=lambda runtime: False,
@@ -365,7 +353,6 @@ def test_run_document_processing_fails_on_invalid_job_shape():
         present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
         emit_state=_emit_state,
         emit_finalize=_emit_finalize,
-        emit_activity=_emit_activity,
         emit_log=_emit_log,
         emit_status=_emit_status,
         should_stop_processing=lambda runtime: False,
@@ -387,7 +374,6 @@ def test_run_document_processing_fails_on_invalid_job_shape():
         0.0,
         "error",
     )
-    assert runtime["activity"][-1] == "Блок 1: некорректный план обработки."
     assert runtime["log"][-1]["status"] == "ERROR"
 
 
@@ -413,7 +399,6 @@ def test_run_document_processing_fails_on_none_target_text_without_stringifying_
         present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
         emit_state=_emit_state,
         emit_finalize=_emit_finalize,
-        emit_activity=_emit_activity,
         emit_log=_emit_log,
         emit_status=_emit_status,
         should_stop_processing=lambda runtime: False,
@@ -452,7 +437,6 @@ def test_run_document_processing_fails_on_missing_placeholder_status_entries():
         present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
         emit_state=_emit_state,
         emit_finalize=_emit_finalize,
-        emit_activity=_emit_activity,
         emit_log=_emit_log,
         emit_status=_emit_status,
         should_stop_processing=lambda runtime: False,
@@ -497,7 +481,6 @@ def test_run_document_processing_preserves_passthrough_image_block_without_opena
         present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
         emit_state=_emit_state,
         emit_finalize=_emit_finalize,
-        emit_activity=_emit_activity,
         emit_log=_emit_log,
         emit_status=_emit_status,
         should_stop_processing=lambda runtime: False,
@@ -541,7 +524,6 @@ def test_run_document_processing_passthrough_only_does_not_require_system_prompt
         present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
         emit_state=_emit_state,
         emit_finalize=_emit_finalize,
-        emit_activity=_emit_activity,
         emit_log=_emit_log,
         emit_status=_emit_status,
         should_stop_processing=lambda runtime: False,
@@ -585,7 +567,6 @@ def test_run_document_processing_detects_processed_block_count_mismatch():
         present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
         emit_state=_emit_state,
         emit_finalize=_emit_finalize,
-        emit_activity=_emit_activity,
         emit_log=_emit_log,
         emit_status=_emit_status,
         should_stop_processing=lambda runtime: False,
@@ -600,7 +581,6 @@ def test_run_document_processing_detects_processed_block_count_mismatch():
     assert result == "failed"
     assert runtime["state"]["latest_narration_text"] is None
     assert runtime["finalize"][-1][0] == "Критическая ошибка"
-    assert runtime["activity"][-1] == "Обнаружено несоответствие количества обработанных блоков."
 
 
 def test_run_document_processing_fails_when_convert_markdown_to_docx_bytes_raises():
@@ -616,7 +596,6 @@ def test_run_document_processing_fails_when_convert_markdown_to_docx_bytes_raise
     assert runtime["state"]["latest_docx_bytes"] is None
     assert runtime["state"]["last_error"] == "Ошибка сборки DOCX: convert exploded"
     assert runtime["finalize"][-1] == ("Ошибка сборки DOCX", "Ошибка сборки DOCX: convert exploded", 1.0, "error")
-    assert runtime["activity"][-1] == "Ошибка на этапе сборки DOCX."
     assert runtime["log"][-1]["status"] == "ERROR"
 
 
@@ -634,7 +613,6 @@ def test_run_document_processing_fails_when_preserve_source_paragraph_properties
     assert runtime["state"]["latest_docx_bytes"] is None
     assert runtime["state"]["last_error"] == "Ошибка сборки DOCX: preserve exploded"
     assert runtime["finalize"][-1][0] == "Ошибка сборки DOCX"
-    assert runtime["activity"][-1] == "Ошибка на этапе сборки DOCX."
     assert runtime["log"][-1]["status"] == "ERROR"
 
 
@@ -654,5 +632,4 @@ def test_run_document_processing_fails_when_reinsert_inline_images_raises():
     assert runtime["state"]["latest_docx_bytes"] is None
     assert runtime["state"]["last_error"] == "Ошибка сборки DOCX: reinsert exploded"
     assert runtime["finalize"][-1][0] == "Ошибка сборки DOCX"
-    assert runtime["activity"][-1] == "Ошибка на этапе сборки DOCX."
     assert runtime["log"][-1]["status"] == "ERROR"

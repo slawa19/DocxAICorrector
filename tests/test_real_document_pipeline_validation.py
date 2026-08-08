@@ -970,16 +970,13 @@ def test_prod_pipeline_quality_report_matches_validation_harness_replay_basis(tm
     monkeypatch.setattr(document_pipeline, "FORMATTING_DIAGNOSTICS_DIR", diagnostics_dir)
     monkeypatch.setattr(document_pipeline_quality_report_retention, "QUALITY_REPORTS_DIR", quality_dir)
 
-    runtime = {"state": {}, "finalize": [], "activity": [], "log": [], "status": []}
+    runtime = {"state": {}, "finalize": [], "log": [], "status": []}
 
     def _emit_state(runtime, **values):
         runtime.setdefault("state", {}).update(values)
 
     def _emit_finalize(runtime, stage, detail, progress, terminal_kind=None):
         runtime.setdefault("finalize", []).append((stage, detail, progress, terminal_kind))
-
-    def _emit_activity(runtime, message):
-        runtime.setdefault("activity", []).append(message)
 
     def _emit_log(runtime, **payload):
         runtime.setdefault("log", []).append(payload)
@@ -1070,7 +1067,6 @@ def test_prod_pipeline_quality_report_matches_validation_harness_replay_basis(tm
         present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
         emit_state=_emit_state,
         emit_finalize=_emit_finalize,
-        emit_activity=_emit_activity,
         emit_log=_emit_log,
         emit_status=_emit_status,
         should_stop_processing=lambda runtime: False,

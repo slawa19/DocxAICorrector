@@ -21,7 +21,7 @@ class AssetStub:
 
 
 def _build_runtime_capture():
-    return {"state": {}, "finalize": [], "activity": [], "log": [], "status": []}
+    return {"state": {}, "finalize": [], "log": [], "status": []}
 
 
 def _emit_state(runtime, **values):
@@ -30,10 +30,6 @@ def _emit_state(runtime, **values):
 
 def _emit_finalize(runtime, stage, detail, progress, terminal_kind=None):
     runtime.setdefault("finalize", []).append((stage, detail, progress, terminal_kind))
-
-
-def _emit_activity(runtime, message):
-    runtime.setdefault("activity", []).append(message)
 
 
 def _emit_log(runtime, **payload):
@@ -78,7 +74,6 @@ def test_run_document_processing_fails_on_empty_processed_block():
         present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
         emit_state=_emit_state,
         emit_finalize=_emit_finalize,
-        emit_activity=_emit_activity,
         emit_log=_emit_log,
         emit_status=_emit_status,
         should_stop_processing=lambda runtime: False,
@@ -125,7 +120,6 @@ def test_run_document_processing_rejects_heading_only_output_for_body_heavy_inpu
         present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
         emit_state=_emit_state,
         emit_finalize=_emit_finalize,
-        emit_activity=_emit_activity,
         emit_log=_emit_log,
         emit_status=_emit_status,
         should_stop_processing=lambda runtime: False,
@@ -142,7 +136,6 @@ def test_run_document_processing_rejects_heading_only_output_for_body_heavy_inpu
     assert runtime["state"].get("latest_docx_bytes") is None
     assert runtime["finalize"][-1][0] == "Критическая ошибка"
     assert runtime["finalize"][-1][3] == "error"
-    assert runtime["activity"][-1] == "Блок 1: отклонён структурно недостаточный Markdown."
     assert runtime["log"][-1]["status"] == "ERROR"
 
 
@@ -168,7 +161,6 @@ def test_run_document_processing_accepts_heading_only_output_for_legitimate_head
         present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
         emit_state=_emit_state,
         emit_finalize=_emit_finalize,
-        emit_activity=_emit_activity,
         emit_log=_emit_log,
         emit_status=_emit_status,
         should_stop_processing=lambda runtime: False,
@@ -215,7 +207,6 @@ def test_run_document_processing_accepts_heading_only_output_for_uppercase_title
         present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
         emit_state=_emit_state,
         emit_finalize=_emit_finalize,
-        emit_activity=_emit_activity,
         emit_log=_emit_log,
         emit_status=_emit_status,
         should_stop_processing=lambda runtime: False,
@@ -262,7 +253,6 @@ def test_run_document_processing_accepts_heading_only_output_for_table_of_conten
         present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
         emit_state=_emit_state,
         emit_finalize=_emit_finalize,
-        emit_activity=_emit_activity,
         emit_log=_emit_log,
         emit_status=_emit_status,
         should_stop_processing=lambda runtime: False,
@@ -309,7 +299,6 @@ def test_run_document_processing_accepts_heading_only_output_for_colon_section_t
         present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
         emit_state=_emit_state,
         emit_finalize=_emit_finalize,
-        emit_activity=_emit_activity,
         emit_log=_emit_log,
         emit_status=_emit_status,
         should_stop_processing=lambda runtime: False,
@@ -2375,7 +2364,6 @@ def test_run_document_processing_accepts_heading_only_output_for_plaintext_banne
         present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
         emit_state=_emit_state,
         emit_finalize=_emit_finalize,
-        emit_activity=_emit_activity,
         emit_log=_emit_log,
         emit_status=_emit_status,
         should_stop_processing=lambda runtime: False,
@@ -2422,7 +2410,6 @@ def test_run_document_processing_rejects_bullet_heading_output():
         present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
         emit_state=_emit_state,
         emit_finalize=_emit_finalize,
-        emit_activity=_emit_activity,
         emit_log=_emit_log,
         emit_status=_emit_status,
         should_stop_processing=lambda runtime: False,
@@ -2436,7 +2423,6 @@ def test_run_document_processing_rejects_bullet_heading_output():
 
     assert result == "failed"
     assert "bullet_heading_output" in runtime["state"]["last_error"]
-    assert runtime["activity"][-1] == "Блок 1: отклонён из-за bullet heading в результате."
 
 
 def test_run_document_processing_rejects_toc_body_concat_output():
@@ -2467,7 +2453,6 @@ def test_run_document_processing_rejects_toc_body_concat_output():
         present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
         emit_state=_emit_state,
         emit_finalize=_emit_finalize,
-        emit_activity=_emit_activity,
         emit_log=_emit_log,
         emit_status=_emit_status,
         should_stop_processing=lambda runtime: False,
@@ -2481,7 +2466,6 @@ def test_run_document_processing_rejects_toc_body_concat_output():
 
     assert result == "failed"
     assert "toc_body_concat" in runtime["state"]["last_error"]
-    assert runtime["activity"][-1] == "Блок 1: отклонён из-за склейки TOC и body."
 
 
 def test_run_document_processing_continues_on_english_residual_output_controlled_fallback(tmp_path, monkeypatch):
@@ -2515,7 +2499,6 @@ def test_run_document_processing_continues_on_english_residual_output_controlled
         present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
         emit_state=_emit_state,
         emit_finalize=_emit_finalize,
-        emit_activity=_emit_activity,
         emit_log=_emit_log,
         emit_status=_emit_status,
         should_stop_processing=lambda runtime: False,
@@ -2543,7 +2526,6 @@ def test_run_document_processing_continues_on_english_residual_output_controlled
         }
     ]
     assert runtime["state"]["latest_docx_bytes"] == b"docx-bytes"
-    assert "Блок 1: сохранён с controlled fallback (english_residual_output)." in runtime["activity"]
     assert {
         "status": "WARN",
         "details": "controlled_fallback:english_residual_output",
@@ -2700,7 +2682,6 @@ def test_run_document_processing_continues_on_controlled_fallback_classes(
         present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
         emit_state=_emit_state,
         emit_finalize=_emit_finalize,
-        emit_activity=_emit_activity,
         emit_log=_emit_log,
         emit_status=_emit_status,
         should_stop_processing=lambda runtime: False,
@@ -2726,7 +2707,6 @@ def test_run_document_processing_continues_on_controlled_fallback_classes(
         }
     ]
     assert runtime["state"]["latest_docx_bytes"] == b"docx-bytes"
-    assert f"Блок 1: сохранён с controlled fallback ({expected_kind})." in runtime["activity"]
     assert {
         "status": "WARN",
         "details": f"controlled_fallback:{expected_kind}",
@@ -2772,7 +2752,6 @@ def test_run_document_processing_fails_controlled_fallback_when_paragraph_substr
         present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
         emit_state=_emit_state,
         emit_finalize=_emit_finalize,
-        emit_activity=_emit_activity,
         emit_log=_emit_log,
         emit_status=_emit_status,
         should_stop_processing=lambda runtime: False,
@@ -2862,7 +2841,6 @@ def test_run_document_processing_continues_when_multiple_controlled_fallback_blo
         present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
         emit_state=_emit_state,
         emit_finalize=_emit_finalize,
-        emit_activity=_emit_activity,
         emit_log=_emit_log,
         emit_status=_emit_status,
         should_stop_processing=lambda runtime: False,

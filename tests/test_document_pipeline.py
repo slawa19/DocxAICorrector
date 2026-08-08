@@ -69,7 +69,7 @@ class ParagraphStub:
 
 
 def _build_runtime_capture():
-    return {"state": {}, "finalize": [], "activity": [], "log": [], "status": []}
+    return {"state": {}, "finalize": [], "log": [], "status": []}
 
 
 def _emit_state(runtime, **values):
@@ -78,10 +78,6 @@ def _emit_state(runtime, **values):
 
 def _emit_finalize(runtime, stage, detail, progress, terminal_kind=None):
     runtime.setdefault("finalize", []).append((stage, detail, progress, terminal_kind))
-
-
-def _emit_activity(runtime, message):
-    runtime.setdefault("activity", []).append(message)
 
 
 def _emit_log(runtime, **payload):
@@ -144,7 +140,6 @@ def _run_processing(runtime, **overrides):
         "present_error": lambda code, exc, title, **kwargs: f"{title}: {exc}",
         "emit_state": _emit_state,
         "emit_finalize": _emit_finalize,
-        "emit_activity": _emit_activity,
         "emit_log": _emit_log,
         "emit_status": _emit_status,
         "should_stop_processing": lambda runtime: False,
@@ -213,7 +208,6 @@ def test_run_document_processing_happy_path_updates_runtime_state():
         present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
         emit_state=_emit_state,
         emit_finalize=_emit_finalize,
-        emit_activity=_emit_activity,
         emit_log=_emit_log,
         emit_status=_emit_status,
         should_stop_processing=lambda runtime: False,
@@ -305,7 +299,6 @@ def test_run_document_processing_passes_text_transform_context_to_system_prompt_
         present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
         emit_state=_emit_state,
         emit_finalize=_emit_finalize,
-        emit_activity=_emit_activity,
         emit_log=_emit_log,
         emit_status=_emit_status,
         should_stop_processing=lambda runtime: False,
@@ -373,7 +366,6 @@ def test_run_document_processing_routes_provider_aware_text_and_image_clients():
         present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
         emit_state=_emit_state,
         emit_finalize=_emit_finalize,
-        emit_activity=_emit_activity,
         emit_log=_emit_log,
         emit_status=_emit_status,
         should_stop_processing=lambda runtime: False,
@@ -423,7 +415,6 @@ def test_run_document_processing_does_not_fallback_to_text_client_for_openai_ima
         present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
         emit_state=_emit_state,
         emit_finalize=_emit_finalize,
-        emit_activity=_emit_activity,
         emit_log=_emit_log,
         emit_status=_emit_status,
         should_stop_processing=lambda runtime: False,
@@ -749,7 +740,6 @@ def test_run_document_processing_passes_machine_readable_quality_warning_to_arti
         present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
         emit_state=_emit_state,
         emit_finalize=_emit_finalize,
-        emit_activity=_emit_activity,
         emit_log=_emit_log,
         emit_status=_emit_status,
         should_stop_processing=lambda runtime: False,
@@ -882,7 +872,6 @@ def test_run_document_processing_warns_and_delivers_large_role_loss_with_formatt
         present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
         emit_state=_emit_state,
         emit_finalize=_emit_finalize,
-        emit_activity=_emit_activity,
         emit_log=_emit_log,
         emit_status=_emit_status,
         should_stop_processing=lambda runtime: False,
@@ -1045,7 +1034,6 @@ def test_run_document_processing_builds_standalone_audiobook_artifact_and_coerce
         present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
         emit_state=_emit_state,
         emit_finalize=_emit_finalize,
-        emit_activity=_emit_activity,
         emit_log=_emit_log,
         emit_status=_emit_status,
         should_stop_processing=lambda runtime: False,
@@ -1118,7 +1106,6 @@ def test_run_document_processing_keeps_a_mathematical_exponent_in_the_narration_
         present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
         emit_state=_emit_state,
         emit_finalize=_emit_finalize,
-        emit_activity=_emit_activity,
         emit_log=_emit_log,
         emit_status=_emit_status,
         should_stop_processing=lambda runtime: False,
@@ -1196,7 +1183,6 @@ def _run_standalone_audiobook(narration_text, *, runtime, log_event=None, write_
         present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
         emit_state=_emit_state,
         emit_finalize=_emit_finalize,
-        emit_activity=_emit_activity,
         emit_log=_emit_log,
         emit_status=_emit_status,
         should_stop_processing=lambda runtime: False,
@@ -1367,7 +1353,6 @@ def _run_standalone_audiobook_with_source_fallback_block(*, runtime, log_event):
         present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
         emit_state=_emit_state,
         emit_finalize=_emit_finalize,
-        emit_activity=_emit_activity,
         emit_log=_emit_log,
         emit_status=_emit_status,
         should_stop_processing=lambda runtime: False,
@@ -1530,7 +1515,6 @@ def test_run_document_processing_runs_audiobook_postprocess_without_mutating_bas
         present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
         emit_state=_emit_state,
         emit_finalize=_emit_finalize,
-        emit_activity=_emit_activity,
         emit_log=_emit_log,
         emit_status=_emit_status,
         should_stop_processing=lambda runtime: False,
@@ -1624,7 +1608,6 @@ def test_edit_postprocess_joins_sentence_continuations_and_publishes_the_count()
         present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
         emit_state=_emit_state,
         emit_finalize=_emit_finalize,
-        emit_activity=_emit_activity,
         emit_log=_emit_log,
         emit_status=_emit_status,
         should_stop_processing=lambda runtime: False,
@@ -1701,7 +1684,6 @@ def test_edit_postprocess_narration_with_review_findings_is_delivered_not_droppe
         present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
         emit_state=_emit_state,
         emit_finalize=_emit_finalize,
-        emit_activity=_emit_activity,
         emit_log=_emit_log,
         emit_status=_emit_status,
         should_stop_processing=lambda runtime: False,
@@ -1775,7 +1757,6 @@ def test_run_document_processing_preserves_base_result_when_audiobook_postproces
         present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
         emit_state=_emit_state,
         emit_finalize=_emit_finalize,
-        emit_activity=_emit_activity,
         emit_log=_emit_log,
         emit_status=_emit_status,
         should_stop_processing=lambda runtime: False,
@@ -2142,7 +2123,6 @@ def test_narration_stop_after_inflight_group_prevents_later_provider_calls():
     )
     emitters = SimpleNamespace(
         emit_status=lambda *args, **kwargs: None,
-        emit_activity=lambda *args, **kwargs: None,
     )
     context = SimpleNamespace(
         processing_operation="translate",
@@ -2247,7 +2227,6 @@ def test_run_document_processing_applies_reader_cleanup_and_saves_raw_markdown_r
         present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
         emit_state=_emit_state,
         emit_finalize=_emit_finalize,
-        emit_activity=_emit_activity,
         emit_log=_emit_log,
         emit_status=_emit_status,
         should_stop_processing=lambda runtime: False,
@@ -2354,7 +2333,6 @@ def test_run_document_processing_records_pre_cleanup_formatting_baseline_without
         present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
         emit_state=_emit_state,
         emit_finalize=_emit_finalize,
-        emit_activity=_emit_activity,
         emit_log=_emit_log,
         emit_status=_emit_status,
         should_stop_processing=lambda runtime: False,
@@ -2417,7 +2395,6 @@ def test_run_document_processing_fails_on_empty_lazy_docx_after_reader_cleanup_n
         present_error=lambda code, exc, title, **kwargs: f"{code}:{title}: {exc}",
         emit_state=_emit_state,
         emit_finalize=_emit_finalize,
-        emit_activity=_emit_activity,
         emit_log=_emit_log,
         emit_status=_emit_status,
         should_stop_processing=lambda runtime: False,
@@ -2465,7 +2442,6 @@ def test_run_document_processing_fails_on_empty_lazy_docx_before_cleanup_quality
         present_error=lambda code, exc, title, **kwargs: f"{code}:{title}: {exc}",
         emit_state=_emit_state,
         emit_finalize=_emit_finalize,
-        emit_activity=_emit_activity,
         emit_log=_emit_log,
         emit_status=_emit_status,
         should_stop_processing=lambda runtime: False,
@@ -2561,7 +2537,6 @@ def test_run_document_processing_reader_cleanup_uses_exact_raw_markdown_for_side
         present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
         emit_state=_emit_state,
         emit_finalize=_emit_finalize,
-        emit_activity=_emit_activity,
         emit_log=_emit_log,
         emit_status=_emit_status,
         should_stop_processing=lambda runtime: False,
@@ -2682,7 +2657,6 @@ def test_run_document_processing_reader_cleanup_applies_runtime_anchor_repair(tm
         present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
         emit_state=_emit_state,
         emit_finalize=_emit_finalize,
-        emit_activity=_emit_activity,
         emit_log=_emit_log,
         emit_status=_emit_status,
         should_stop_processing=lambda runtime: False,
@@ -2769,7 +2743,6 @@ def test_run_document_processing_preserves_base_result_when_reader_cleanup_fails
         present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
         emit_state=_emit_state,
         emit_finalize=_emit_finalize,
-        emit_activity=_emit_activity,
         emit_log=_emit_log,
         emit_status=_emit_status,
         should_stop_processing=lambda runtime: False,
@@ -2974,7 +2947,6 @@ def test_run_document_processing_reader_cleanup_preserves_docx_image_anchor_when
         present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
         emit_state=_emit_state,
         emit_finalize=_emit_finalize,
-        emit_activity=_emit_activity,
         emit_log=_emit_log,
         emit_status=_emit_status,
         should_stop_processing=lambda runtime: False,
@@ -3033,7 +3005,6 @@ def test_run_document_processing_reader_cleanup_strict_failure_preserves_base_re
         present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
         emit_state=_emit_state,
         emit_finalize=_emit_finalize,
-        emit_activity=_emit_activity,
         emit_log=_emit_log,
         emit_status=_emit_status,
         should_stop_processing=lambda runtime: False,
@@ -3106,7 +3077,6 @@ def test_run_document_processing_delivers_standalone_audiobook_with_narration_re
         present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
         emit_state=_emit_state,
         emit_finalize=_emit_finalize,
-        emit_activity=_emit_activity,
         emit_log=_emit_log,
         emit_status=_emit_status,
         should_stop_processing=lambda runtime: False,
@@ -3156,7 +3126,6 @@ def test_run_document_processing_clears_stale_narration_on_docx_build_failure():
         present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
         emit_state=_emit_state,
         emit_finalize=_emit_finalize,
-        emit_activity=_emit_activity,
         emit_log=_emit_log,
         emit_status=_emit_status,
         should_stop_processing=lambda runtime: False,
@@ -3209,7 +3178,6 @@ def test_run_document_processing_uses_base_model_for_audiobook_postprocess_when_
         present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
         emit_state=_emit_state,
         emit_finalize=_emit_finalize,
-        emit_activity=_emit_activity,
         emit_log=_emit_log,
         emit_status=_emit_status,
         should_stop_processing=lambda runtime: False,
@@ -3331,7 +3299,6 @@ def test_run_document_processing_merges_document_context_prompt_into_system_prom
         present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
         emit_state=_emit_state,
         emit_finalize=_emit_finalize,
-        emit_activity=_emit_activity,
         emit_log=_emit_log,
         emit_status=_emit_status,
         should_stop_processing=lambda runtime: False,
@@ -3389,7 +3356,6 @@ def test_run_document_processing_appends_block_segment_focus_to_generation_promp
         present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
         emit_state=_emit_state,
         emit_finalize=_emit_finalize,
-        emit_activity=_emit_activity,
         emit_log=_emit_log,
         emit_status=_emit_status,
         should_stop_processing=lambda runtime: False,
@@ -3461,7 +3427,6 @@ def test_run_document_processing_appends_previous_completed_segment_summary_to_n
         present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
         emit_state=_emit_state,
         emit_finalize=_emit_finalize,
-        emit_activity=_emit_activity,
         emit_log=_emit_log,
         emit_status=_emit_status,
         should_stop_processing=lambda runtime: False,
@@ -3527,7 +3492,6 @@ def test_run_document_processing_routes_toc_dominant_translate_block_through_toc
         present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
         emit_state=_emit_state,
         emit_finalize=_emit_finalize,
-        emit_activity=_emit_activity,
         emit_log=_emit_log,
         emit_status=_emit_status,
         should_stop_processing=lambda runtime: False,
@@ -3595,7 +3559,6 @@ def test_run_document_processing_uses_hardened_toc_retry_prompt_on_final_attempt
         present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
         emit_state=_emit_state,
         emit_finalize=_emit_finalize,
-        emit_activity=_emit_activity,
         emit_log=_emit_log,
         emit_status=_emit_status,
         should_stop_processing=lambda runtime: False,
@@ -3651,7 +3614,6 @@ def test_run_document_processing_routes_mixed_toc_dominant_translate_block_throu
         present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
         emit_state=_emit_state,
         emit_finalize=_emit_finalize,
-        emit_activity=_emit_activity,
         emit_log=_emit_log,
         emit_status=_emit_status,
         should_stop_processing=lambda runtime: False,
@@ -3707,7 +3669,6 @@ def test_run_document_processing_fails_with_dedicated_toc_error_after_retry_budg
         present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
         emit_state=_emit_state,
         emit_finalize=_emit_finalize,
-        emit_activity=_emit_activity,
         emit_log=_emit_log,
         emit_status=_emit_status,
         should_stop_processing=lambda runtime: False,
@@ -3721,7 +3682,6 @@ def test_run_document_processing_fails_with_dedicated_toc_error_after_retry_budg
 
     assert result == "failed"
     assert "Ошибка обработки блока оглавления" in runtime["state"]["last_error"]
-    assert runtime["activity"][-1] == "Блок 1: отклонён TOC validation после исчерпания retry budget."
     warning_events = [event for event in events if event["level"] == logging.WARNING]
     terminal_event = next(event for event in warning_events if event["event_id"] == "toc_validation_failed_terminal")
     assert terminal_event["context"]["retry_attempt"] == 2
@@ -3754,7 +3714,6 @@ def test_run_document_processing_applies_semantic_output_normalization_before_im
         present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
         emit_state=_emit_state,
         emit_finalize=_emit_finalize,
-        emit_activity=_emit_activity,
         emit_log=_emit_log,
         emit_status=_emit_status,
         should_stop_processing=lambda runtime: False,
@@ -3826,7 +3785,6 @@ def test_run_document_processing_surfaces_formatting_diagnostics_artifacts(tmp_p
         present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
         emit_state=_emit_state,
         emit_finalize=_emit_finalize,
-        emit_activity=_emit_activity,
         emit_log=_emit_log,
         emit_status=_emit_status,
         should_stop_processing=lambda runtime: False,
@@ -3839,7 +3797,6 @@ def test_run_document_processing_surfaces_formatting_diagnostics_artifacts(tmp_p
     )
 
     assert result == "succeeded"
-    assert runtime["activity"][-2] == "Сборка DOCX завершена; сохранена служебная диагностика форматирования."
     assert runtime["state"]["latest_result_notice"] == {
         "level": "info",
         "message": (
@@ -3911,7 +3868,6 @@ def test_run_document_processing_blocks_delivery_on_caption_heading_conflict(tmp
         present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
         emit_state=_emit_state,
         emit_finalize=_emit_finalize,
-        emit_activity=_emit_activity,
         emit_log=_emit_log,
         emit_status=_emit_status,
         should_stop_processing=lambda runtime: False,
@@ -4021,7 +3977,6 @@ def test_run_document_processing_blocks_delivery_on_caption_conflict_in_final_do
         present_error=lambda code, exc, title, **kwargs: f"{code}:{title}: {exc}",
         emit_state=_emit_state,
         emit_finalize=_emit_finalize,
-        emit_activity=_emit_activity,
         emit_log=_emit_log,
         emit_status=_emit_status,
         should_stop_processing=lambda runtime: False,
@@ -4130,7 +4085,6 @@ def test_run_document_processing_warns_and_delivers_on_strict_unmapped_source_qu
         present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
         emit_state=_emit_state,
         emit_finalize=_emit_finalize,
-        emit_activity=_emit_activity,
         emit_log=_emit_log,
         emit_status=_emit_status,
         should_stop_processing=lambda runtime: False,
@@ -4205,7 +4159,6 @@ def test_run_document_processing_surfaces_advisory_quality_notice_on_mapping_dri
         present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
         emit_state=_emit_state,
         emit_finalize=_emit_finalize,
-        emit_activity=_emit_activity,
         emit_log=_emit_log,
         emit_status=_emit_status,
         should_stop_processing=lambda runtime: False,
@@ -6418,7 +6371,6 @@ def test_run_document_processing_passes_marker_wrapped_text_only_when_marker_mod
         present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
         emit_state=_emit_state,
         emit_finalize=_emit_finalize,
-        emit_activity=_emit_activity,
         emit_log=_emit_log,
         emit_status=_emit_status,
         should_stop_processing=lambda runtime: False,
@@ -6471,7 +6423,6 @@ def test_run_document_processing_passes_generated_paragraph_registry_into_docx_r
         present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
         emit_state=_emit_state,
         emit_finalize=_emit_finalize,
-        emit_activity=_emit_activity,
         emit_log=_emit_log,
         emit_status=_emit_status,
         should_stop_processing=lambda runtime: False,
@@ -6528,7 +6479,6 @@ def test_run_document_processing_registry_uses_logical_marker_for_merged_source_
         present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
         emit_state=_emit_state,
         emit_finalize=_emit_finalize,
-        emit_activity=_emit_activity,
         emit_log=_emit_log,
         emit_status=_emit_status,
         should_stop_processing=lambda runtime: False,
@@ -6582,7 +6532,6 @@ def test_run_document_processing_passes_assembly_aware_registry_into_docx_restor
         present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
         emit_state=_emit_state,
         emit_finalize=_emit_finalize,
-        emit_activity=_emit_activity,
         emit_log=_emit_log,
         emit_status=_emit_status,
         should_stop_processing=lambda runtime: False,
@@ -6953,7 +6902,6 @@ def test_reader_cleanup_postprocess_prefers_assembly_formatting_registry_over_st
             present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
         ),
         emitters=SimpleNamespace(
-            emit_activity=lambda *args, **kwargs: None,
             emit_state=lambda *args, **kwargs: None,
         ),
         state=SimpleNamespace(generated_paragraph_registry=stale_state_registry),
@@ -7021,7 +6969,6 @@ def test_reader_cleanup_noop_restores_image_heading_concats_from_registry():
             present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
         ),
         emitters=SimpleNamespace(
-            emit_activity=lambda *args, **kwargs: None,
             emit_state=lambda *args, **kwargs: None,
         ),
         state=SimpleNamespace(generated_paragraph_registry=[]),
@@ -7131,7 +7078,6 @@ def test_reader_cleanup_postprocess_reports_an_image_anchor_discard_as_an_error_
             present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
         ),
         emitters=SimpleNamespace(
-            emit_activity=lambda *args, **kwargs: None,
             emit_state=lambda *args, **kwargs: None,
         ),
         state=SimpleNamespace(generated_paragraph_registry=[]),
@@ -7281,7 +7227,6 @@ def test_reader_cleanup_postprocess_reports_an_anchor_repair_rollback_as_a_warni
             present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
         ),
         emitters=SimpleNamespace(
-            emit_activity=lambda *args, **kwargs: None,
             emit_state=lambda *args, **kwargs: None,
         ),
         state=SimpleNamespace(generated_paragraph_registry=[]),
@@ -7392,7 +7337,6 @@ def test_reader_cleanup_postprocess_persists_final_generated_registry_in_runtime
             present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
         ),
         emitters=SimpleNamespace(
-            emit_activity=lambda *args, **kwargs: None,
             emit_state=_emit_state,
         ),
         state=SimpleNamespace(generated_paragraph_registry=None),
@@ -7549,7 +7493,6 @@ def test_run_document_processing_writes_marker_generation_diagnostics_artifact_o
         present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
         emit_state=_emit_state,
         emit_finalize=_emit_finalize,
-        emit_activity=_emit_activity,
         emit_log=_emit_log,
         emit_status=_emit_status,
         should_stop_processing=lambda runtime: False,
@@ -7610,7 +7553,6 @@ def test_run_document_processing_marker_generation_artifact_includes_found_ids_a
         present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
         emit_state=_emit_state,
         emit_finalize=_emit_finalize,
-        emit_activity=_emit_activity,
         emit_log=_emit_log,
         emit_status=_emit_status,
         should_stop_processing=lambda runtime: False,
@@ -7672,7 +7614,6 @@ def test_run_document_processing_writes_marker_registry_diagnostics_artifact_on_
         present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
         emit_state=_emit_state,
         emit_finalize=_emit_finalize,
-        emit_activity=_emit_activity,
         emit_log=_emit_log,
         emit_status=_emit_status,
         should_stop_processing=lambda runtime: False,
@@ -7724,7 +7665,6 @@ def test_run_document_processing_stops_before_second_block():
         present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
         emit_state=_emit_state,
         emit_finalize=_emit_finalize,
-        emit_activity=_emit_activity,
         emit_log=_emit_log,
         emit_status=_emit_status,
         should_stop_processing=should_stop,
@@ -7789,7 +7729,6 @@ def test_run_document_processing_emits_segment_statuses_during_segmented_run_bef
         present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
         emit_state=_emit_state,
         emit_finalize=_emit_finalize,
-        emit_activity=_emit_activity,
         emit_log=_emit_log,
         emit_status=_emit_status,
         should_stop_processing=should_stop,
@@ -7850,7 +7789,6 @@ def test_run_document_processing_stops_after_image_phase_before_placeholder_vali
         present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
         emit_state=_emit_state,
         emit_finalize=_emit_finalize,
-        emit_activity=_emit_activity,
         emit_log=_emit_log,
         emit_status=_emit_status,
         should_stop_processing=should_stop,
@@ -7907,7 +7845,6 @@ def test_run_document_processing_emits_active_segment_before_failed_terminal_res
         present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
         emit_state=_emit_state,
         emit_finalize=_emit_finalize,
-        emit_activity=_emit_activity,
         emit_log=_emit_log,
         emit_status=_emit_status,
         should_stop_processing=lambda runtime: False,
@@ -8403,7 +8340,6 @@ def _run_standalone_audiobook_with_an_omitted_paragraph(*, runtime, log_event):
         present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
         emit_state=_emit_state,
         emit_finalize=_emit_finalize,
-        emit_activity=_emit_activity,
         emit_log=_emit_log,
         emit_status=_emit_status,
         should_stop_processing=lambda runtime: False,

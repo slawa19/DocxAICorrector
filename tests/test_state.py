@@ -273,7 +273,6 @@ def test_reset_run_state_can_preserve_preparation_state(monkeypatch):
         latest_markdown="stale",
         latest_narration_text="stale narration",
         run_log=[{"message": "stale"}],
-        activity_feed=[{"message": "stale"}],
     )
     monkeypatch.setattr(state.st, "session_state", session_state)
     monkeypatch.setattr(state, "clear_restart_source", lambda restart_source: None)
@@ -299,7 +298,6 @@ def test_reset_run_state_can_preserve_preparation_state(monkeypatch):
     assert session_state.active_segment_title == ""
     assert session_state.latest_markdown == ""
     assert session_state.run_log == []
-    assert session_state.activity_feed == []
 
 
 def test_reset_run_state_drops_recommendation_state_for_different_preserved_file(monkeypatch):
@@ -597,7 +595,6 @@ def test_state_read_helpers_expose_processing_and_persisted_source_state(monkeyp
         processing_outcome="stopped",
         processing_status={"stage": "run"},
         run_log=[{"message": "entry"}],
-        activity_feed=[{"message": "activity"}],
         restart_source={"filename": "restart.docx", "storage_path": "restart.bin"},
         completed_source={"filename": "completed.docx", "storage_path": "completed.bin"},
         image_assets=["img-1"],
@@ -611,7 +608,6 @@ def test_state_read_helpers_expose_processing_and_persisted_source_state(monkeyp
     assert state.get_processing_outcome() == "stopped"
     assert state.get_processing_status() == {"stage": "run"}
     assert state.get_run_log() == [{"message": "entry"}]
-    assert state.get_activity_feed() == [{"message": "activity"}]
     assert state.get_restart_source() == {"filename": "restart.docx", "storage_path": "restart.bin"}
     assert state.get_completed_source() == {"filename": "completed.docx", "storage_path": "completed.bin"}
     assert state.get_image_assets() == ["img-1"]
@@ -737,7 +733,6 @@ def test_apply_processing_completion_moves_restart_source_to_completed_cache(mon
 
     state.apply_processing_completion(
         outcome="succeeded",
-        push_activity=lambda message: None,
         load_restart_source_bytes_fn=lambda restart_source: b"abc",
         clear_restart_source_fn=lambda restart_source: cleared.append(restart_source),
         store_completed_source_fn=lambda **kwargs: {
@@ -960,12 +955,10 @@ def test_apply_processing_completion_reports_large_restart_source_without_comple
         processing_stop_requested=True,
     )
     monkeypatch.setattr(state.st, "session_state", session_state)
-    activities = []
     cleared = []
 
     state.apply_processing_completion(
         outcome="succeeded",
-        push_activity=lambda message: activities.append(message),
         load_restart_source_bytes_fn=lambda restart_source: b"abcdef",
         clear_restart_source_fn=lambda restart_source: cleared.append(restart_source),
         store_completed_source_fn=lambda **kwargs: (_ for _ in ()).throw(AssertionError("completed cache should not be written")),
@@ -975,8 +968,6 @@ def test_apply_processing_completion_reports_large_restart_source_without_comple
 
     assert session_state.completed_source is None
     assert session_state.restart_source is None
-    assert len(activities) == 1
-    assert "слишком большой" in activities[0].lower()
     assert cleared == [{"filename": "report.docx", "token": "report.docx:12:abc", "storage_path": "restart.bin", "session_id": "session-a"}]
 
 
@@ -1013,8 +1004,6 @@ def test_append_image_log_updates_summary_and_run_log(monkeypatch):
     assert session_state.run_log[0]["message"] == "[IMG OK] Изображение img-1 | обработка завершена | confidence: 0.92"
     assert session_state.run_log[1]["kind"] == "image"
     assert session_state.run_log[1]["message"] == "[IMG ERR] Изображение img-2 | ошибка обработки | ошибка валидации: RuntimeError"
-    # append_image_log no longer writes to activity_feed — image results go only to run_log
-    assert session_state.activity_feed == []
 
 
 def test_append_image_log_counts_soft_accept_as_success(monkeypatch):

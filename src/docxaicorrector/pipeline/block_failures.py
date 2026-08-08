@@ -70,7 +70,6 @@ def handle_invalid_processing_job(
         finalize_stage="Ошибка подготовки блока",
         detail=formatted_error,
         progress=(index - 1) / initialization.job_count,
-        activity_message=f"Блок {index}: некорректный план обработки.",
         block_index=index,
         block_count=initialization.job_count,
         target_chars=0,
@@ -154,11 +153,6 @@ def handle_block_generation_failure(
         finalize_stage="Ошибка обработки блока оглавления" if toc_validation_reason is not None else "Ошибка обработки",
         detail=formatted_error,
         progress=(index - 1) / initialization.job_count,
-        activity_message=(
-            f"Блок {index}: отклонён TOC validation после исчерпания retry budget."
-            if toc_validation_reason is not None
-            else f"Блок {index}: ошибка обработки."
-        ),
         block_index=index,
         block_count=initialization.job_count,
         target_chars=payload.target_chars,
@@ -220,7 +214,6 @@ def handle_processed_block_rejection(
             "exception": RuntimeError(
                 "Модель вернула только заголовок при наличии основного текста во входном блоке (heading_only_output)."
             ),
-            "activity": f"Блок {index}: отклонён структурно недостаточный Markdown.",
         },
         "bullet_heading_output": {
             "code": "structurally_insufficient_processed_block",
@@ -228,7 +221,6 @@ def handle_processed_block_rejection(
             "exception": RuntimeError(
                 "Модель вернула заголовок, состоящий только из bullet marker (bullet_heading_output)."
             ),
-            "activity": f"Блок {index}: отклонён из-за bullet heading в результате.",
         },
         "toc_body_concat": {
             "code": "structurally_insufficient_processed_block",
@@ -236,7 +228,6 @@ def handle_processed_block_rejection(
             "exception": RuntimeError(
                 "Модель склеила TOC entry с body/prose абзацем (toc_body_concat)."
             ),
-            "activity": f"Блок {index}: отклонён из-за склейки TOC и body.",
         },
         "english_residual_output": {
             "code": "structurally_insufficient_processed_block",
@@ -244,7 +235,6 @@ def handle_processed_block_rejection(
             "exception": RuntimeError(
                 "Модель оставила необъяснённые английские фрагменты в целевом блоке (english_residual_output)."
             ),
-            "activity": f"Блок {index}: отклонён из-за английских остатков в результате.",
         },
     }
     if rejection_kind == "empty":
@@ -272,7 +262,6 @@ def handle_processed_block_rejection(
             finalize_stage="Критическая ошибка",
             detail=formatted_error,
             progress=(index - 1) / initialization.job_count,
-            activity_message=f"Блок {index}: модель вернула пустой Markdown.",
             block_index=index,
             block_count=initialization.job_count,
             target_chars=target_chars,
@@ -305,7 +294,6 @@ def handle_processed_block_rejection(
         finalize_stage="Критическая ошибка",
         detail=formatted_error,
         progress=(index - 1) / initialization.job_count,
-        activity_message=str(rejection_details["activity"]),
         block_index=index,
         block_count=initialization.job_count,
         target_chars=target_chars,
@@ -393,7 +381,6 @@ def handle_marker_registry_failure(
         finalize_stage="Ошибка marker-реестра",
         detail=formatted_error,
         progress=index / initialization.job_count,
-        activity_message=f"Блок {index}: не удалось собрать marker-aware paragraph registry.",
         block_index=index,
         block_count=initialization.job_count,
         target_chars=payload.target_chars,
