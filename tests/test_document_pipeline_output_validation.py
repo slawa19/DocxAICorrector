@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import docxaicorrector.core.model_accounting as model_accounting
 import docxaicorrector.pipeline._pipeline as document_pipeline
 import docxaicorrector.pipeline.block_execution as block_execution
 import docxaicorrector.pipeline.late_phases as late_phases
@@ -2304,6 +2305,119 @@ def test_assemble_final_markdown_dedupes_repeated_short_heading_inside_title_clu
         )
         == []
     )
+
+
+# --- final assembly deletes text: it must leave a number behind ----------------------
+# Both points below used to remove text and record NOTHING - no log line, no counter, no
+# entry in the assembly diagnostics (which count merges and demotions, not deletions). A
+# run could therefore drop a heading and its own summary would not say so. Behaviour is
+# unchanged here; only the trace is new, and each counter is proved to MOVE, because a
+# counter that is always zero measures nothing.
+
+
+def _repeated_heading_phrase_assembly():
+    return document_pipeline_output_validation.assemble_final_markdown(
+        processed_chunks=["## ПЕРЕОСМЫСЛИВАЯ ДЕНЬГИ ПЕРЕОСМЫСЛИВАЯ ДЕНЬГИ"],
+        generated_paragraph_registry=[
+            {
+                "block_index": 1,
+                "paragraph_id": "title",
+                "text": "## ПЕРЕОСМЫСЛИВАЯ ДЕНЬГИ ПЕРЕОСМЫСЛИВАЯ ДЕНЬГИ",
+            },
+        ],
+        source_paragraphs=[
+            _make_paragraph_stub("title", 0, role="heading", structural_role="heading", heading_level=1),
+        ],
+    )
+
+
+def test_halving_a_repeated_heading_phrase_is_counted_in_characters():
+    original = "## ПЕРЕОСМЫСЛИВАЯ ДЕНЬГИ ПЕРЕОСМЫСЛИВАЯ ДЕНЬГИ"
+
+    with model_accounting.run_model_accounting_scope(
+        run_id="run-heading-phrase", source_token="token-heading-phrase"
+    ) as ledger:
+        assembly_result = _repeated_heading_phrase_assembly()
+        snapshot = ledger.snapshot()
+
+    # Behaviour unchanged: the same half is still removed.
+    assert assembly_result.final_markdown == "## ПЕРЕОСМЫСЛИВАЯ ДЕНЬГИ"
+
+    removed_chars = len(original) - len(assembly_result.final_markdown)
+    assert removed_chars > 0
+    assert snapshot["text_removal_event_count"] == 1
+    assert snapshot["text_removal_chars"] == removed_chars
+    # A shortened heading is not an emptied unit - the entry still carries text.
+    assert snapshot["text_removal_emptied_unit_count"] == 0
+    assert snapshot["text_removal_site_counts"] == {"repeated_heading_phrase_halved": 1}
+    assert snapshot["text_removal_site_chars"] == {"repeated_heading_phrase_halved": removed_chars}
+
+
+def test_dropping_a_repeated_short_heading_from_a_cluster_is_counted_in_characters():
+    dropped_heading = "# ДЕНЬГИ"
+
+    with model_accounting.run_model_accounting_scope(
+        run_id="run-heading-cluster", source_token="token-heading-cluster"
+    ) as ledger:
+        assembly_result = document_pipeline_output_validation.assemble_final_markdown(
+            processed_chunks=[
+                "## ПЕРЕОСМЫСЛИВАЯ",
+                "# ДЕНЬГИ",
+                "# ПЕРЕОСМЫСЛЕНИЕ",
+                "# ДЕНЬГИ",
+            ],
+            generated_paragraph_registry=[
+                {"block_index": 1, "paragraph_id": "title-1", "text": "## ПЕРЕОСМЫСЛИВАЯ"},
+                {"block_index": 2, "paragraph_id": "title-2", "text": "# ДЕНЬГИ"},
+                {"block_index": 3, "paragraph_id": "title-3", "text": "# ПЕРЕОСМЫСЛЕНИЕ"},
+                {"block_index": 4, "paragraph_id": "title-4", "text": "# ДЕНЬГИ"},
+            ],
+            source_paragraphs=[
+                _make_paragraph_stub("title-1", 0, role="heading", structural_role="heading", heading_level=2),
+                _make_paragraph_stub("title-2", 1, role="heading", structural_role="heading", heading_level=1),
+                _make_paragraph_stub("title-3", 2, role="heading", structural_role="heading", heading_level=1),
+                _make_paragraph_stub("title-4", 3, role="heading", structural_role="heading", heading_level=1),
+            ],
+        )
+        snapshot = ledger.snapshot()
+
+    # Behaviour unchanged: the fourth entry is still the one that goes.
+    assert [entry.paragraph_id for entry in assembly_result.entries] == ["title-1", "title-2", "title-3"]
+
+    assert snapshot["text_removal_event_count"] == 1
+    assert snapshot["text_removal_chars"] == len(dropped_heading)
+    # A whole entry left the document, so it is an emptied unit as well as characters.
+    assert snapshot["text_removal_emptied_unit_count"] == 1
+    assert snapshot["text_removal_site_counts"] == {"repeated_heading_cluster_dedupe": 1}
+    assert snapshot["text_removal_site_chars"] == {"repeated_heading_cluster_dedupe": len(dropped_heading)}
+
+
+def test_an_assembly_that_deletes_nothing_leaves_the_removal_counters_at_zero():
+    """The other half of the anti-vacuum pair: the counters must not drift upward on
+    ordinary input, or a non-zero total would stop meaning anything."""
+
+    with model_accounting.run_model_accounting_scope(
+        run_id="run-no-removal", source_token="token-no-removal"
+    ) as ledger:
+        assembly_result = document_pipeline_output_validation.assemble_final_markdown(
+            processed_chunks=["# ПЕРЕОСМЫСЛИВАЯ ДЕНЬГИ", "Обычный абзац книги."],
+            generated_paragraph_registry=[
+                {"block_index": 1, "paragraph_id": "title", "text": "# ПЕРЕОСМЫСЛИВАЯ ДЕНЬГИ"},
+                {"block_index": 2, "paragraph_id": "p1", "text": "Обычный абзац книги."},
+            ],
+            source_paragraphs=[
+                _make_paragraph_stub("title", 0, role="heading", structural_role="heading", heading_level=1),
+                _make_paragraph_stub("p1", 1),
+            ],
+        )
+        snapshot = ledger.snapshot()
+
+    assert assembly_result.final_markdown == "# ПЕРЕОСМЫСЛИВАЯ ДЕНЬГИ\n\nОбычный абзац книги."
+    assert snapshot["text_removal_event_count"] == 0
+    assert snapshot["text_removal_chars"] == 0
+    assert snapshot["text_removal_emptied_unit_count"] == 0
+    assert snapshot["text_removal_site_counts"] == {}
+    assert snapshot["text_removal_site_chars"] == {}
 
 
 def test_assemble_final_markdown_preserves_controlled_fallback_registry_metadata():
