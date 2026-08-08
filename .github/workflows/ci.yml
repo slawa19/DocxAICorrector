@@ -89,4 +89,4 @@ jobs:
         run: bash scripts/test.sh tests/ -q -m static_workflow
 
       - name: Run full test suite
-        run: bash scripts/test.sh tests/ -q -m "not static_workflow and not typecheck and not system_deps and not manual_ai_heavy and not browser_ui"
+        run: bash scripts/test.sh tests/ -q -m "not static_workflow and not typecheck and not system_deps and not manual_ai_heavy"

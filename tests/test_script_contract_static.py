@@ -128,7 +128,7 @@ def test_vscode_test_tasks_normalize_windows_relative_paths() -> None:
     assert "bash scripts/test.sh tests/ -q -m static_workflow" in parity_script
     assert "bash scripts/test.sh tests/ -q -m" in parity_script
     assert (
-        "not static_workflow and not typecheck and not system_deps and not manual_ai_heavy and not browser_ui"
+        "not static_workflow and not typecheck and not system_deps and not manual_ai_heavy"
         in parity_script
     )
     assert "pip install -r requirements.txt" not in parity_script
@@ -321,7 +321,7 @@ def test_ci_uses_canonical_bash_test_contract() -> None:
     assert ". .venv/bin/activate" in ci_text
     assert "bash scripts/test.sh tests/ -q -m static_workflow" in ci_text
     assert (
-        'bash scripts/test.sh tests/ -q -m "not static_workflow and not typecheck and not system_deps and not manual_ai_heavy and not browser_ui"'
+        'bash scripts/test.sh tests/ -q -m "not static_workflow and not typecheck and not system_deps and not manual_ai_heavy"'
         in ci_text
     )
 

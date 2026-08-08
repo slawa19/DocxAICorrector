@@ -4353,6 +4353,13 @@ _MODEL_ACCOUNTING_SUMMARY_FIELDS = (
     "degradation_ladder_unrescued_paragraph_count",
     "degradation_ladder_sentence_split_paragraph_count",
     "degradation_ladder_oversized_sentence_count",
+    # Text deleted by deterministic post-model cleanups. Printed here because until these
+    # lines existed a run could delete a heading, or empty an ``accepted`` paragraph, and
+    # the summary of that run said nothing whatsoever — which is exactly how the loss this
+    # session chased stayed invisible across five recorded runs.
+    "text_removal_event_count",
+    "text_removal_chars",
+    "text_removal_emptied_unit_count",
 )
 
 
@@ -4386,6 +4393,8 @@ def _build_model_accounting_summary_lines(model_accounting: Mapping[str, object]
         "controlled_block_fallback_kind_counts",
         "controlled_block_fallback_kind_chars",
         "degradation_ladder_trigger_counts",
+        "text_removal_site_counts",
+        "text_removal_site_chars",
         "stages",
     ):
         lines.append(

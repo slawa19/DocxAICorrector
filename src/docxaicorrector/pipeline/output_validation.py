@@ -4,6 +4,8 @@ from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Literal, TypeAlias
 
+from docxaicorrector.core.model_accounting import record_text_removal
+
 # spec 035 Step 1: the paragraph-break detection satellite now lives in
 # ``pipeline.paragraph_break_detection``. Re-export its public + private names so
 # ``output_validation.<name>`` (and ``from ...output_validation import <name>``) keep
@@ -53,6 +55,12 @@ ProcessedBlockStatus: TypeAlias = Literal[
     "english_residual_output",
 ]
 GeneratedHeadingKind: TypeAlias = Literal["real_heading", "false_fragment_heading", "unknown"]
+
+# Names for the two final-assembly points that DELETE text. They are passed to
+# ``record_text_removal`` as ``site``; ``core`` neither enumerates nor validates them, so
+# the vocabulary stays owned by the code that does the removing.
+TEXT_REMOVAL_SITE_REPEATED_HEADING_PHRASE_HALVED = "repeated_heading_phrase_halved"
+TEXT_REMOVAL_SITE_REPEATED_HEADING_CLUSTER_DEDUPE = "repeated_heading_cluster_dedupe"
 
 DISALLOWED_GENERIC_TOC_LABELS = {"CONTENTS"}
 _BULLET_HEADING_PATTERN = re.compile(r"^#{1,6}\s*[●•\-*]\s*$")
@@ -447,7 +455,15 @@ def _normalize_repeated_heading_phrase(text: str) -> str:
     if not left_normalized or left_normalized != right_normalized:
         return stripped
 
-    return f"{marker} {' '.join(left_words)}"
+    normalized = f"{marker} {' '.join(left_words)}"
+    # Half of the heading is being deleted. Whether that half was a duplication artefact
+    # or real text, the run must be able to say how much of it went — this used to return
+    # a shorter string and leave nothing behind at all.
+    record_text_removal(
+        site=TEXT_REMOVAL_SITE_REPEATED_HEADING_PHRASE_HALVED,
+        chars=max(0, len(stripped) - len(normalized)),
+    )
+    return normalized
 
 
 def _is_continuation_like_previous_line(line: str) -> bool:
@@ -895,6 +911,14 @@ def _dedupe_repeated_real_heading_cluster_tokens(entries: Sequence[FinalAssembly
                 and normalized_heading in heading_cluster_seen
             ):
                 heading_cluster_length += 1
+                # The whole entry is dropped from the document here. Nothing else records
+                # it: the entry simply does not reach ``final_markdown``, and the assembly
+                # diagnostics count merges and demotions, not deletions.
+                record_text_removal(
+                    site=TEXT_REMOVAL_SITE_REPEATED_HEADING_CLUSTER_DEDUPE,
+                    chars=len(entry.text),
+                    emptied_units=1,
+                )
                 continue
             deduped.append(entry)
             if normalized_heading:

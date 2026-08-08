@@ -26,6 +26,7 @@ from docxaicorrector.core.model_accounting import (
     record_model_output_discarded,
     record_paragraph_disposition,
     record_retry_attempt,
+    record_text_removal,
 )
 from docxaicorrector.image.shared import call_responses_create_with_retry, extract_unsupported_parameter_name, is_retryable_error
 from docxaicorrector.generation.marker_attempt_capture import capture_rejected_marker_attempt
@@ -35,6 +36,9 @@ if TYPE_CHECKING:
     from docx.document import Document as DocxDocument
     from openai import OpenAI
 
+
+# The generator's one text-DELETING point, named for ``record_text_removal``'s ``site``.
+TEXT_REMOVAL_SITE_CONTEXT_LEAKAGE_BOUNDARY_TRIM = "context_leakage_boundary_trim"
 
 _PARAGRAPH_MARKER_PATTERN = re.compile(r"\[\[DOCX_PARA_([A-Za-z0-9_]+)\]\]")
 _IMAGE_ONLY_TARGET_PATTERN = re.compile(r"^(?:\s*\[\[DOCX_IMAGE_img_\d+\]\]\s*)+$")
@@ -1157,7 +1161,13 @@ def _trim_marker_preserved_boundary_leakage(
 
     dispositions = marker_paragraph_dispositions(value)
     if dispositions is None:
-        return _trim_boundary_context_leakage(value, leaked_fragment)
+        plain_trimmed, plain_was_trimmed = _trim_boundary_context_leakage(value, leaked_fragment)
+        if plain_was_trimmed:
+            record_text_removal(
+                site=TEXT_REMOVAL_SITE_CONTEXT_LEAKAGE_BOUNDARY_TRIM,
+                chars=max(0, len(value) - len(plain_trimmed)),
+            )
+        return plain_trimmed, plain_was_trimmed
 
     trimmed_text, was_trimmed = _trim_boundary_context_leakage(str(value), leaked_fragment)
     if not was_trimmed:
@@ -1194,6 +1204,29 @@ def _trim_marker_preserved_boundary_leakage(
             expected_paragraph_ids=[disposition.paragraph_id for disposition in dispositions],
             found_paragraph_ids=[disposition.paragraph_id for disposition in dispositions],
         )
+    # Recorded only past the attribution check, because before it nothing has shipped: an
+    # unattributable trim raises and the block is retried, so counting there would count a
+    # removal that never reached the document.
+    #
+    # The review named this site as the one that could ship an EMPTY paragraph still
+    # recorded ``accepted``. Measured, that shape does not get out: the string-level trim
+    # strips the boundary whitespace it removed with the leak, so a record whose first or
+    # last paragraph went empty no longer rebuilds to the same characters and the check
+    # above raises instead of delivering. ``emptied_units`` is computed anyway and is the
+    # tripwire for that guard — it can only ever be non-zero here if the guard stops
+    # holding, and it is zero on every trim that ships today.
+    record_text_removal(
+        site=TEXT_REMOVAL_SITE_CONTEXT_LEAKAGE_BOUNDARY_TRIM,
+        chars=sum(
+            max(0, len(disposition.text) - len(text))
+            for disposition, text in zip(dispositions, texts)
+        ),
+        emptied_units=sum(
+            1
+            for disposition, text in zip(dispositions, texts)
+            if disposition.text and not text
+        ),
+    )
     return rebuilt, True
 
 

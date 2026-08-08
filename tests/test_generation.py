@@ -3478,6 +3478,104 @@ def test_context_leakage_trim_keeps_the_per_paragraph_record():
     assert str(result) == "\n\n".join(item.text for item in dispositions)
 
 
+# --- the boundary trim deletes text: it must leave a number behind -------------------
+# The trim ran on the per-paragraph record, deleted characters and recorded nothing at all
+# - no log line, no counter - while the delivered block still had the paragraph count the
+# checks downstream compare. Behaviour is untouched below; only the counters are new, and
+# each is proved to move. The shape the review feared (an EMPTY paragraph still recorded
+# ``accepted``) is measured here too, and it turns out the attribution check already stops
+# it - so that is asserted as a guard rather than assumed.
+
+
+def _leak_trim_record(*texts: str):
+    return generation._marker_preserved_block_text(
+        [
+            generation.ParagraphDisposition(paragraph_id=f"p{index + 1}", text=text, status="accepted")
+            for index, text in enumerate(texts)
+        ]
+    )
+
+
+def test_the_boundary_leakage_trim_counts_the_characters_it_removed():
+    leak = "Дословный кусок соседнего блока."
+    value = _leak_trim_record(f"{leak} Собственный текст абзаца.", "Второй абзац.")
+
+    with model_accounting.run_model_accounting_scope(
+        run_id="run-leak-trim", source_token="token-leak-trim"
+    ) as ledger:
+        trimmed, was_trimmed = generation._trim_marker_preserved_boundary_leakage(value, leak)
+        snapshot = ledger.snapshot()
+
+    # Behaviour unchanged: the same characters still go.
+    assert was_trimmed
+    dispositions = generation.marker_paragraph_dispositions(trimmed)
+    assert dispositions is not None
+    assert dispositions[0].text == "Собственный текст абзаца."
+    assert dispositions[1].text == "Второй абзац."
+
+    removed_chars = len(f"{leak} Собственный текст абзаца.") - len("Собственный текст абзаца.")
+    assert snapshot["text_removal_event_count"] == 1
+    assert snapshot["text_removal_chars"] == removed_chars
+    assert snapshot["text_removal_emptied_unit_count"] == 0
+    assert snapshot["text_removal_site_counts"] == {"context_leakage_boundary_trim": 1}
+    assert snapshot["text_removal_site_chars"] == {"context_leakage_boundary_trim": removed_chars}
+
+
+@pytest.mark.parametrize(
+    ("first_text", "second_text"),
+    [
+        ("Дословный кусок соседнего блока.", "Второй абзац."),
+        ("Первый абзац.", "Дословный кусок соседнего блока."),
+    ],
+)
+def test_a_trim_that_would_empty_a_paragraph_is_refused_instead_of_shipped(first_text, second_text):
+    """The shape the review called the worst of the three does not get out.
+
+    A paragraph emptied by the trim would keep its ``accepted`` status while holding no
+    text, and the paragraph COUNT would still match, so nothing downstream would fire. It
+    cannot ship: the string-level trim also strips the boundary whitespace it removed with
+    the leak, so the rebuilt record no longer matches character for character and the
+    attribution check raises - the block is retried instead of delivered. Nothing left the
+    document, so nothing is counted either.
+    """
+
+    leak = "Дословный кусок соседнего блока."
+    value = _leak_trim_record(first_text, second_text)
+
+    with model_accounting.run_model_accounting_scope(
+        run_id="run-leak-empty", source_token="token-leak-empty"
+    ) as ledger:
+        with pytest.raises(generation.MarkerValidationError) as exc_info:
+            generation._trim_marker_preserved_boundary_leakage(value, leak)
+        snapshot = ledger.snapshot()
+
+    assert "context_leakage_trim_unattributable" in str(exc_info.value)
+    assert snapshot["text_removal_event_count"] == 0
+    assert snapshot["text_removal_emptied_unit_count"] == 0
+
+
+def test_an_answer_with_no_boundary_leak_leaves_the_removal_counters_at_zero():
+    """Anti-vacuum: the counter must stay at zero when nothing is trimmed, or a non-zero
+    total would say nothing."""
+
+    value = _leak_trim_record("Первый абзац книги.", "Второй абзац книги.")
+
+    with model_accounting.run_model_accounting_scope(
+        run_id="run-leak-none", source_token="token-leak-none"
+    ) as ledger:
+        trimmed, was_trimmed = generation._trim_marker_preserved_boundary_leakage(
+            value, "Фрагмент, которого в ответе нет."
+        )
+        snapshot = ledger.snapshot()
+
+    assert not was_trimmed
+    assert str(trimmed) == str(value)
+    assert snapshot["text_removal_event_count"] == 0
+    assert snapshot["text_removal_chars"] == 0
+    assert snapshot["text_removal_emptied_unit_count"] == 0
+    assert snapshot["text_removal_site_counts"] == {}
+
+
 def test_a_marker_mode_answer_without_its_record_is_refused_loudly(monkeypatch):
     """The class of defect, not the one instance of it.
 

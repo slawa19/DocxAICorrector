@@ -260,6 +260,11 @@ class RunModelAccountingLedger:
         self._degradation_ladder_sentence_split_paragraph_count = 0
         self._degradation_ladder_oversized_sentence_count = 0
         self._degradation_ladder_trigger_counts: dict[str, int] = {}
+        self._text_removal_event_count = 0
+        self._text_removal_chars = 0
+        self._text_removal_emptied_unit_count = 0
+        self._text_removal_site_counts: dict[str, int] = {}
+        self._text_removal_site_chars: dict[str, int] = {}
 
     def reset(self) -> None:
         with self._lock:
@@ -284,6 +289,11 @@ class RunModelAccountingLedger:
             self._degradation_ladder_sentence_split_paragraph_count = 0
             self._degradation_ladder_oversized_sentence_count = 0
             self._degradation_ladder_trigger_counts = {}
+            self._text_removal_event_count = 0
+            self._text_removal_chars = 0
+            self._text_removal_emptied_unit_count = 0
+            self._text_removal_site_counts = {}
+            self._text_removal_site_chars = {}
 
     def record_model_call(self, *, stage: str, usage: ModelCallUsage) -> None:
         with self._lock:
@@ -407,6 +417,41 @@ class RunModelAccountingLedger:
             )
             self._degradation_ladder_oversized_sentence_count += max(0, oversized_sentence_count)
 
+    def record_text_removal(self, *, site: str, chars: int = 0, emptied_units: int = 0) -> None:
+        """Count text a DETERMINISTIC transform deleted, at a site that recorded nothing else.
+
+        A sixth counter family, and a family of its own for one reason: the other five all
+        describe a verdict on a MODEL's answer — it was retried, discarded, dispositioned,
+        substituted, or divided. These removals are not verdicts on anything. They are
+        deterministic string cleanups (repeated-heading dedupe, boundary-leakage trims) that
+        run after the model is done and delete text that the model DID return, on paths
+        where the paragraph count still matches afterwards, so nothing downstream notices.
+        Filing them as a ``reason`` on ``record_model_output_discarded`` would move a
+        published number (``model_output_discarded_paragraph_count``) for removals that
+        discarded no model output, and that family carries no ``chars`` at any of its call
+        sites — the very "0 or unknown?" ambiguity this module exists to prevent.
+
+        Characters are the point. The whole reason these sites needed a counter is that a
+        deletion left no trace of its SIZE, and the size of vanished text is its price
+        (same argument as ``controlled_block_fallback_chars``).
+
+        ``emptied_units`` counts the strictly worse case: a unit — a paragraph, an entry —
+        that held text before the transform and holds none after, so nothing of it is left
+        in the document. Shortening a heading and deleting one outright are not the same
+        event, and the difference disappears inside a character total, so it gets a number
+        of its own.
+
+        ``site`` is the caller's own name for the removal point. Nothing here enumerates the
+        vocabulary — a new site can be added without ``core`` knowing about it — and sites
+        are not seeded to zero, the same shape ``model_output_discarded_reason_counts`` uses.
+        """
+        with self._lock:
+            self._text_removal_event_count += 1
+            self._text_removal_chars += max(0, chars)
+            self._text_removal_emptied_unit_count += max(0, emptied_units)
+            self._text_removal_site_counts[site] = self._text_removal_site_counts.get(site, 0) + 1
+            self._text_removal_site_chars[site] = self._text_removal_site_chars.get(site, 0) + max(0, chars)
+
     def record_paragraph_disposition(self, *, status: str, count: int = 1) -> None:
         """Count how ONE block's paragraphs came out (spec 056 E).
 
@@ -494,6 +539,17 @@ class RunModelAccountingLedger:
                 "degradation_ladder_trigger_counts": dict(
                     sorted(self._degradation_ladder_trigger_counts.items())
                 ),
+                # Text deleted by deterministic post-model cleanups that used to leave no
+                # trace at all. Reported in characters because the volume of vanished text
+                # IS the loss, and separately in units left with nothing — a unit deleted
+                # outright is a different, worse event than a shortened one. The two
+                # mappings sum to the two totals; empty mappings beside zeros mean no
+                # removal took this path.
+                "text_removal_event_count": self._text_removal_event_count,
+                "text_removal_chars": self._text_removal_chars,
+                "text_removal_emptied_unit_count": self._text_removal_emptied_unit_count,
+                "text_removal_site_counts": dict(sorted(self._text_removal_site_counts.items())),
+                "text_removal_site_chars": dict(sorted(self._text_removal_site_chars.items())),
                 "stages": {stage: self._stages[stage].to_dict() for stage in sorted(self._stages)},
             }
             return payload
@@ -647,6 +703,14 @@ def record_degradation_ladder(
         unrescued_paragraph_count=unrescued_paragraph_count,
         sentence_split_paragraph_count=sentence_split_paragraph_count,
         oversized_sentence_count=oversized_sentence_count,
+    )
+
+
+def record_text_removal(*, site: str, chars: int = 0, emptied_units: int = 0) -> None:
+    get_run_model_accounting_ledger().record_text_removal(
+        site=site,
+        chars=chars,
+        emptied_units=emptied_units,
     )
 
 
