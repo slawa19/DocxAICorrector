@@ -1618,7 +1618,6 @@ def test_a_setting_outside_the_marker_neither_restarts_preparation_nor_asks_anyt
     monkeypatch.setattr(app, "push_activity", lambda *args, **kwargs: None)
     monkeypatch.setattr(app, "set_processing_status", lambda **kwargs: None)
     monkeypatch.setattr(app, "_render_processing_controls", lambda **kwargs: None)
-    monkeypatch.setattr(compare_panel, "render_compare_all_apply_panel", lambda **kwargs: None)
     monkeypatch.setattr(application_flow, "resolve_effective_uploaded_file", lambda **kwargs: uploaded_file)
     monkeypatch.setattr(application_flow, "has_resettable_state", lambda **kwargs: False)
     monkeypatch.setattr(application_flow, "derive_app_idle_view_state", lambda **kwargs: "file_selected")
