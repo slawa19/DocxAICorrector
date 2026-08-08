@@ -1636,3 +1636,67 @@ def test_a_setting_outside_the_marker_neither_restarts_preparation_nor_asks_anyt
     assert t("app.preparation_discards_result_warning") not in record["warnings"]
     assert t("app.preparation_discards_result_confirm") not in record["buttons"]
     assert record["rendered"] == ["markdown_preview", "result_bundle"]
+
+
+def test_blocked_delivery_with_only_markdown_still_asks_before_it_is_destroyed(monkeypatch):
+    """A refused delivery is the case where the output matters most: it carries the reason.
+
+    ``render_result_bundle`` suppresses the download buttons for a blocked delivery without a
+    DOCX (``if blocked and not docx_bytes: return``), but the markdown IS the run's paid
+    output and it stays on screen in the preview block next to the explanation. The bundle
+    here is not hand-built: the REAL ``get_current_result_bundle`` derives it from this
+    session state, which is how a refused run without a DOCX actually reaches the screen.
+    """
+    record = _run_main_for_result_guard(
+        monkeypatch,
+        session_overrides={
+            "processing_outcome": "succeeded",
+            "latest_docx_bytes": None,
+            "latest_narration_text": None,
+            "latest_markdown": "# refused output",
+            "latest_source_name": "report.docx",
+            "latest_source_token": _PAID_SOURCE_TOKEN,
+            "latest_processing_operation": "translate",
+            "latest_delivery_disposition": {
+                "status": "blocked",
+                "explanation": "Quality gate refused delivery",
+            },
+        },
+    )
+
+    assert record["starts"] == []
+    assert record["warnings"] == [t("app.preparation_discards_result_warning")]
+    assert record["buttons"] == [t("app.preparation_discards_result_confirm")]
+    assert record["rendered"] == ["markdown_preview", "result_bundle"]
+
+
+def test_blocked_delivery_that_carries_nothing_asks_nothing(monkeypatch):
+    """Same refusal, but blocked before any output existed: no DOCX, no narration, no markdown.
+
+    The bundle still exists (a blocked disposition alone is enough for
+    ``get_current_result_bundle``), so this is a reachable state and not a hypothetical — and
+    there is nothing left to destroy, so it must cost no click.
+    """
+    record = _run_main_for_result_guard(
+        monkeypatch,
+        session_overrides={
+            "processing_outcome": "succeeded",
+            "latest_docx_bytes": None,
+            "latest_narration_text": None,
+            "latest_markdown": "",
+            "latest_source_name": "report.docx",
+            "latest_source_token": _PAID_SOURCE_TOKEN,
+            "latest_processing_operation": "translate",
+            "latest_delivery_disposition": {
+                "status": "blocked",
+                "explanation": "Quality gate refused delivery",
+            },
+        },
+    )
+
+    # Not vacuous: the guard really was evaluated against a real, non-None result bundle.
+    assert app.get_current_result_bundle() is not None
+    assert len(record["starts"]) == 1
+    assert record["starts"][0]["upload_marker"] == _MARKER_AFTER_TARGET_LANGUAGE_CHANGE
+    assert record["warnings"] == []
+    assert record["buttons"] == []
