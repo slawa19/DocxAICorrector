@@ -6,9 +6,19 @@
 
 **Date**: 2026-08-05
 
-**Status**: **READY — diagnosed and measured 2026-08-04/05, not started.** All numbers below come from
-the first audiobook run (`20260804T_money_audiobook_first_run`) and were re-verified against live code
-by the orchestrator.
+**Status**: **IN PROGRESS (2026-08-05) — the change landed in `main` via PR #41 (`5393db2`), one
+decision is still unbuilt.** This line said "not started" until 2026-08-07, two days after the work
+landed; the same drift that spec 055 had just been corrected for. Not `PARTIALLY IMPLEMENTED`: that
+status means the remainder was carried into a *later* spec, and here it was not — C′ is still owed by
+this one. What is in `main`: **E**, the typed per-paragraph disposition (`1faeb06`), and
+**D′**, capturing the rejected answer inside the attempt loop (`816a0eb`), plus three P0 fixes from the
+review of that work (`cbe0084`, `c4dfce8`, `730cf0f`). What is NOT in `main`: **C′** — no commit
+references it, and `_build_marker_recovery_user_prompt` was last changed by `6bc8ff9`, which predates
+PR #41. **A** stays withdrawn and **B** stays deferred behind E, as the second pass decided.
+
+All numbers below come from the first audiobook run (`20260804T_money_audiobook_first_run`) and were
+re-verified against live code by the orchestrator. They describe the state **before** E landed; the
+Changelog records what the review corrected.
 
 **Owner surface**: `generation/_generation.py` — `_split_marker_preserved_markdown`,
 `_build_marker_preserving_user_prompt`, the retry loop; `pipeline/support.py` —

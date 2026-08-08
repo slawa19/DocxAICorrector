@@ -1,6 +1,10 @@
 # Running the Pipeline — Runbook
 
-Date: 2026-06-21. Status: Active, canonical. Verified end-to-end on this date.
+Status: Active, canonical. End-to-end verified 2026-06-21; **partially re-verified 2026-08-07**, when
+two things were found stale: the `.env`/`export` precedence had been inverted by `12385ad` on
+2026-07-15 and this document still taught the old behaviour, and audiobook mode — shipped since — was
+absent entirely. Sections 2 and 4a carry the corrections. The rest still dates from 2026-06-21: if a
+command here disagrees with the code, the code is right, and fix this file in the same PR.
 
 Read this BEFORE running tests, config checks, or a full-book pipeline run. Do **not** re-derive
 ad-hoc paths/commands — every command below is tested and copy-paste ready. Most of this exists
@@ -38,12 +42,21 @@ Config module is **`docxaicorrector.core.config`** (NOT `docxaicorrector.config`
   DOCX_AI_MODELS_TEXT_DEFAULT=openrouter:google/gemini-3.1-flash-lite-preview
   ```
   Do **NOT** use `gpt-5-mini` (that is OpenAI; it rate-limits and is NOT the translation baseline).
-- `load_project_dotenv(override=True)` reloads `.env` and **overrides** any `export` of these vars.
-  So to change a model you must **edit `.env`** — an `export DOCX_AI_MODELS_TEXT_DEFAULT=...` is
-  ignored.
+- **Precedence is `environment > .env > config defaults`, and it is the opposite of what this runbook
+  said until 2026-08-07.** `load_project_dotenv` has no `override` parameter at all
+  (`src/docxaicorrector/core/config.py:340`); it fills a key from `.env` **only when the process
+  environment has not already set it** to a non-empty value. So `export DOCX_AI_MODELS_TEXT_DEFAULT=...`
+  **wins**, and editing `.env` will not override an exported value. An absent or whitespace-only env
+  var counts as unset, so local dev still gets populated from `.env`.
+  The old advice ("edit `.env`, an `export` is ignored") was written 2026-06-22 and invalidated by
+  `12385ad` on 2026-07-15, which made hosted/CI secrets beat a stray checked-in `.env`. Guards on the
+  current behaviour: `tests/test_config.py:1542,1554`.
 - `.env` is **not** safe to `source` in shell. Read values via the project config, not `source .env`.
-- Required key: **`OPENROUTER_API_KEY`** (primary, for all `openrouter:*` selectors incl. Gemini and
-  the reader-cleanup Claude model).
+- Keys are **per role, not one key for everything**. `OPENROUTER_API_KEY` covers all `openrouter:*`
+  selectors (Gemini translation and the reader-cleanup Claude model), but the defaults also reach other
+  providers: `reader_verifier_model` (`src/docxaicorrector/resources/config.toml:75`) wants
+  `ANTHROPIC_API_KEY`, and the image roles (`:113-127`) want `OPENAI_API_KEY`. Which ones you actually
+  need depends on the profile and the operation you run.
 
 ### Verify model + key + a live call (cheap; do this BEFORE an expensive run)
 ```
@@ -100,7 +113,38 @@ process alive and notifies on completion).
 ```
 wsl.exe -d Debian -- bash -lc 'cd /mnt/d/www/Projects/2025/DocxAICorrector && . .venv/bin/activate && python -c "import json;d=json.load(open(\"tests/artifacts/real_document_pipeline/runs/<RUN_ID>/money_sustainability_pdf_full_heldout_progress.json\"));print({k:d.get(k) for k in [\"status\",\"stage\",\"progress\",\"detail\"]})"'
 ```
-Outputs in `runs/<RUN_ID>/`: `..._report.json`, `..._summary.txt`, and `<output_basename>.docx`.
+Outputs in `runs/<RUN_ID>/`: `..._report.json`, `..._summary.txt`, and `<output_basename>.docx` — plus
+`<output_basename>.md` and, on audiobook runs, `<output_basename>.tts.txt`
+(`scripts/run_lietaer_validation.py:3489-3491`, `src/docxaicorrector/runtime/artifacts.py:382`). Five
+files, not three. On an audiobook run the `.tts.txt` **is** the product.
+
+---
+
+## 4a. Audiobook mode (added 2026-08-07; this runbook had no mention of it at all)
+
+The pipeline has a third operation beyond `edit` and `translate`:
+`PROCESSING_OPERATION_VALUES = ("edit", "translate", "audiobook")`
+(`src/docxaicorrector/core/config.py:75` — one list, against which config, env, run profiles and the UI
+all validate).
+
+Two different things are easy to confuse:
+
+- **Standalone audiobook** — `processing_operation = "audiobook"`. The whole run produces narration.
+  Run profile: `ui-parity-standalone-audiobook` (`corpus_registry.toml:174`). The registry originally
+  had no way to express this operation, and the profile exists so the first audiobook run is
+  reproducible — read the comment at `corpus_registry.toml:161-163` before using it.
+- **Narration as a post-pass on a translate run** — `audiobook_postprocess_enabled = true`, main
+  DOCX/Markdown result unchanged, narration written alongside. Run profile:
+  `ui-parity-translate-audiobook-postprocess` (`corpus_registry.toml:151`). Default is `false`; the
+  default is overridable via `DOCX_AI_AUDIOBOOK_POSTPROCESS_DEFAULT`
+  (`src/docxaicorrector/core/config_runtime_sections.py:568`).
+
+Model selection: there is **no active `[models.audiobook]` section**. `src/docxaicorrector/resources/config.toml:103-104`
+carries one only as a commented-out example, so the role inherits `[models.text]` unless you uncomment
+and set it. Do not assume a separate audiobook model is in force.
+
+Entry points if you need to trace behaviour: `src/docxaicorrector/pipeline/narration_postprocess.py`,
+`src/docxaicorrector/pipeline/late_phases.py`.
 
 ---
 
@@ -109,7 +153,7 @@ Outputs in `runs/<RUN_ID>/`: `..._report.json`, `..._summary.txt`, and `<output_
 | Symptom | Cause | Fix |
 |---|---|---|
 | Run fails ~80s, OpenAI rate-limit, no DOCX | translation used `gpt-5-mini` (OpenAI), not Gemini | set `.env` `DOCX_AI_MODELS_TEXT_DEFAULT=openrouter:google/gemini-3.1-flash-lite-preview` |
-| `export MODEL=...` has no effect | `load_project_dotenv(override=True)` overrides env from `.env` | edit `.env`, not `export` |
+| `.env` edit has no effect | the variable is already exported in the environment, and **environment wins** (`core/config.py:340`) | `unset` it, or change the exported value |
 | `bash: .../run_lietaer_validation.py\r` | launcher `.sh` written by PowerShell → CRLF | run one `wsl.exe -- bash -lc '...'`; don't generate `.sh` from PowerShell |
 | Background run dies / no log | `&` inside `bash -lc` doesn't survive `wsl.exe` exit | foreground python + background at the TOOL level |
 | `ModuleNotFoundError` on config | wrong module name | use `docxaicorrector.core.config` |
