@@ -67,25 +67,6 @@ class FakeProgressBar:
         self.values.append(value)
 
 
-def test_render_activity_feed_reverses_dom_order_for_css_autoscroll(monkeypatch):
-    captions = []
-
-    monkeypatch.setattr(ui.st, "caption", lambda text: captions.append(text))
-
-    ui._render_activity_feed(
-        title="События",
-        lines=["10:00:00  Первое сообщение.", "10:00:02  Последнее сообщение."],
-        feed_id="processing-journal-feed",
-        auto_scroll=True,
-    )
-
-    assert captions == [
-        "События",
-        "10:00:02  Последнее сообщение.",
-        "10:00:00  Первое сообщение.",
-    ]
-
-
 def _patch_markdown_preview_widgets(monkeypatch, session_state):
     """Patch Streamlit widgets used by render_markdown_preview; return captured calls."""
     selectbox_calls = []

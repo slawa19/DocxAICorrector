@@ -162,15 +162,6 @@ def _meaningful_markdown_blocks(blocks: list[str]) -> list[str]:
     return [block for block in blocks if _strip_docx_image_placeholders(block)]
 
 
-def _render_activity_feed(*, title: str, lines: list[str], feed_id: str | None = None, auto_scroll: bool = False) -> None:
-    if not lines:
-        return
-
-    st.caption(title)
-    for line in reversed(lines):
-        st.caption(line)
-
-
 def _render_status_panel(*, sink, title: str, stage: str, detail: str, meta_lines: list[str], info_level: str = "info") -> None:
     render_api = sink if hasattr(sink, info_level) and hasattr(sink, "caption") and hasattr(sink, "write") else st
     panel = getattr(render_api, info_level)
