@@ -281,6 +281,14 @@ class ProcessingState:
     # REPAIR rather than a loss. It is published all the same, and a zero is the statement
     # "this run found no sentence running across a paragraph break".
     narration_joined_sentence_continuation_count: int = 0
+    # Spec 059 FR-A8, revised 2026-08-09: one entry per DELIVERED block that shipped prose in
+    # the source language, each entry a list of ``{paragraph_id, text}`` for the block's prose
+    # paragraphs. It exists because the alarm channel cannot see this class any other way:
+    # ``quality_gate.build_source_text_delivery_facts`` reads the delivered block's
+    # per-paragraph record, and on such a block every paragraph is ``accepted`` — the model
+    # answered, its answer simply WAS its input. Written by
+    # ``block_execution._announce_untranslated_prose_delivery``, read once at finalization.
+    untranslated_prose_delivered_paragraphs: list[list[dict[str, str]]] = field(default_factory=list)
     generated_paragraph_registry: list[dict[str, object]] = field(default_factory=list)
     segment_outputs: dict[str, list[str]] = field(default_factory=dict)
     completed_segment_ids: set[str] = field(default_factory=set)

@@ -7,7 +7,7 @@ from typing import Any, Literal, TypeAlias
 
 from docxaicorrector.core.model_accounting import (
     record_controlled_block_fallback,
-    record_untranslated_prose_block_rejection,
+    record_untranslated_prose_block_delivery,
 )
 from docxaicorrector.core.models import LANGUAGE_CHANGING_OPERATIONS, PARAGRAPH_REGION_PROSE
 from docxaicorrector.generation._generation import (
@@ -44,10 +44,29 @@ CONTROLLED_BLOCK_FAILURE_POLICY: dict[str, dict[str, str]] = {
     "corrupted_block": {"decision": "fail"},
     "source_extraction_failure": {"decision": "fail"},
 }
-# Spec 059 FR-A8: the one reason this work adds to the ``fail`` side of the table. Named
-# rather than inlined because it travels — into the decision dict, into the log event and
-# into the run-level counter — and three spellings of one reason is how a vocabulary drifts.
-UNTRANSLATED_PROSE_FAIL_REASON = "untranslated_prose"
+# Spec 059 FR-A8, revised 2026-08-09: the reason a delivered block is announced LOUDLY.
+# Named rather than inlined because it travels — into the decision dict, into the log event,
+# into the run-level counter and into the acceptance verdict — and three spellings of one
+# reason is how a vocabulary drifts.
+#
+# It used to be a ``fail`` reason. It is not one any more, and the word "warning" in the name
+# is the whole change: FR-A8 asked that delivering untranslated prose be an INEXPRESSIBLE
+# outcome, and when it was written the only way to make the loss visible was to stop the run,
+# because the screen said "Документ обработан." whatever happened. Part B removed that
+# premise — the verdict now reaches the screen and every affected paragraph gets an anchor to
+# search for — so "never silently" no longer needs a gate. What decided it is the price of a
+# DETECTOR defect: a hard stop on a deterministic misfire makes the book unreachable, because
+# the next run stops in the same place and no action of the user's gets past it. The measured
+# case is on record: run 20260809T_059_doc_rethinking died at 45% on block 140 of 305, whose
+# whole text is ``2b`` — a step label on the Terra currency diagram, next to
+# ``[[DOCX_IMAGE_img_031]]`` — which the model correctly returned unchanged. That run lost
+# $0.21 and a whole book while its own accounting recorded ``omitted=0`` and
+# ``source_restored=0``: no text was lost anywhere in it.
+UNTRANSLATED_PROSE_WARNING_REASON = "untranslated_prose"
+# The key the failure-decision table uses to carry that warning to the delivery site. A
+# separate key from ``fail_reason`` on purpose: the two are not the same kind of fact any
+# more, and reusing the old name would let a reader (or a call site) believe the run stops.
+UNTRANSLATED_PROSE_WARNING_KEY = "warning_reason"
 CONTROLLED_BLOCK_FALLBACK_DIR = Path(".run") / "block_fallbacks"
 # Retention budget for controlled-block fallback diagnostics (F26). Each rejected
 # block writes a uuid-suffixed artifact that never overwrites, so this flat family
@@ -193,28 +212,83 @@ def job_changes_language(
     return source != target
 
 
+# Structural roles a paragraph can carry that are NOT prose however the region reads. Both
+# are set by the document layer (``document/roles.py``, ``document/relations.py``) and both
+# are already load-bearing elsewhere (spec 058 reads them; ``layout_cleanup.PROTECTED_ROLES``
+# protects them), so this adds no detector and no vocabulary — it reads a label the pipeline
+# already computes. An image placeholder and the caption under it sit INSIDE the prose region
+# by construction: the region is the span of the book's body, and figures live in the body.
+#
+# This is a structural narrowing, and it is deliberately NOT a length floor (FR-A3 forbids
+# one, and the measurement refutes it: between 14.7% and 38.1% of prose is shorter than 60
+# letters) and NOT a word list (Constitution VII).
+NON_PROSE_STRUCTURAL_ROLES = frozenset({"image", "caption"})
+
+
+def prose_paragraph_indexes(payload: Any) -> tuple[int, ...]:
+    """Which paragraphs of this block are PROSE — by region AND by structural role.
+
+    The addressable form of the question ``payload_contains_prose`` answers with a bool, and
+    the two must not disagree: the alarm channel needs to name the paragraphs, not just the
+    block, or the warning has no address and the reader hunts through a book for it.
+
+    ``None``/empty regions mean the producer resolved none at all. ``build_editing_jobs`` is
+    the only producer and always labels, so absence means a caller outside document
+    preparation; there the safe direction is to protect the text, and every paragraph counts.
+
+    WHAT THIS DOES NOT CLOSE, said out loud rather than patched (Constitution VII, "no source
+    signal, no repair"). A paragraph carries a structural role only where the document layer
+    had a signal to give it one. These classes have none, and they stay inside prose:
+
+    * a bare proper name standing alone as a paragraph (``Barter Systems Inc.``);
+    * a web address or a bare domain (``complementarycurrency.org.``);
+    * an index or bibliography row that fell OUTSIDE the back-matter region the importer
+      resolved;
+    * — measured, and the reason the run must not die on this — a DIAGRAM step label such as
+      ``2b`` or ``4 3``, which the importer emits with role ``body`` because a PDF text layer
+      gives it nothing else. That is exactly what killed run 20260809T_059_doc_rethinking, and
+      narrowing by role does NOT catch it. The residual is accepted; the answer to it is that
+      the outcome is now a warning, not a dead run.
+    """
+    regions = getattr(payload, "paragraph_regions", None)
+    if not isinstance(regions, list) or not regions:
+        paragraph_ids = getattr(payload, "paragraph_ids", None)
+        return tuple(range(len(paragraph_ids))) if isinstance(paragraph_ids, list) else ()
+    roles = getattr(payload, "structural_roles", None)
+    role_list = roles if isinstance(roles, list) else []
+    return tuple(
+        index
+        for index, region in enumerate(regions)
+        if region == PARAGRAPH_REGION_PROSE
+        and str(role_list[index] if index < len(role_list) else "").strip().casefold()
+        not in NON_PROSE_STRUCTURAL_ROLES
+    )
+
+
 def payload_contains_prose(payload: Any) -> bool:
     """Does this block carry at least one paragraph of PROSE? (spec 059 A-II / A-6.)
 
     The question the invariant asks, and the reason A-II had to be built before A-4. A block
     is substituted as a WHOLE, so the moment one of its paragraphs is prose, substituting the
     block delivers untranslated prose — while a block that is entirely apparatus (front
-    matter, the table of contents, the back-matter reference region) may legitimately keep
-    the controlled fallback, which is the anti-vacuum half of the rule.
+    matter, the table of contents, the back-matter reference region, an image and its
+    caption) may legitimately keep the controlled fallback, which is the anti-vacuum half of
+    the rule.
 
-    Region only. Not the structural role, not the length, not the shape of the text: the
-    measurement re-counted at block granularity found ONE firing block in 1 394 across five
-    recorded runs, and it is the ``# %`` / ``( i)`` title page — a REGION, not a form
-    (``scripts/measure-block-pair-rule.py``).
+    REGION and structural ROLE, and nothing else: not the length, not the shape of the text.
+    The measurement re-counted at block granularity found ONE firing block in 1 394 across
+    five recorded runs, and it is the ``# %`` / ``( i)`` title page — a REGION, not a form
+    (``scripts/measure-block-pair-rule.py``). The role half was added on 2026-08-09 for the
+    figure apparatus, which sits inside the prose region by construction; see
+    ``prose_paragraph_indexes`` for what it still does not close.
 
-    A missing list means the producer resolved no regions at all. ``build_editing_jobs`` is
-    the only producer and always labels, so absence means a caller outside document
-    preparation; there the safe direction is to protect the text.
+    A missing list means the producer resolved no regions at all, and there the safe
+    direction is to protect the text.
     """
     regions = getattr(payload, "paragraph_regions", None)
     if not isinstance(regions, list) or not regions:
         return True
-    return any(region == PARAGRAPH_REGION_PROSE for region in regions)
+    return bool(prose_paragraph_indexes(payload))
 
 
 def _has_intact_controlled_fallback_substrate(
@@ -251,20 +325,24 @@ def untranslated_prose_would_be_delivered(
     fallback_markdown: str,
     languages_differ: bool,
 ) -> bool:
-    """The spec 059 FR-A8 invariant, in the three facts it stands on.
+    """The spec 059 FR-A8 rule, in the three facts it stands on.
 
     * the job CHANGES LANGUAGE (FR-A5) — otherwise a delivery identical to its source is the
       right outcome and says nothing about completeness;
     * the text about to ship IS the block's own source (A-I, the measured pair rule);
-    * the block carries at least one paragraph of PROSE (A-II, by region).
+    * the block carries at least one paragraph of PROSE (A-II, by region and role).
 
-    All three, or the fallback stands. That is why the order A-I -> A-II -> A-4 is fixed in
-    the spec: written before either of the first two, this function would be a rule that
-    never fires, and a declared invariant is worse than none.
+    All three, or there is nothing to announce. That is why the order A-I -> A-II -> A-4 is
+    fixed in the spec: written before either of the first two, this function would be a rule
+    that never fires, and a declared rule that cannot fire is worse than none.
 
     What it deliberately does NOT look at: the rejection kind. The seven quality kinds differ
     in why the block was rejected, not in what gets delivered, and only the second decides
     whether prose is lost.
+
+    Revised 2026-08-09: the block is DELIVERED either way now. What this answers is whether
+    the delivery has to be announced — counted, logged, given an anchor and turned into a red
+    acceptance check — not whether it happens. See ``UNTRANSLATED_PROSE_WARNING_REASON``.
     """
     if not languages_differ:
         return False
@@ -291,31 +369,32 @@ def classify_processed_block_failure_decision(
         processed_chunk=processed_chunk,
         rejection_kind=fallback_kind,
     )
-    # Spec 059 FR-A8. Checked BEFORE the substrate test so the recorded reason is the true
-    # one: both answers are ``fail``, and a run report that says "the substrate was broken"
-    # when the real answer is "this block would have shipped untranslated prose" sends the
-    # next reader to the wrong place.
-    if untranslated_prose_would_be_delivered(
-        payload=payload,
-        fallback_markdown=fallback_markdown,
-        languages_differ=languages_differ,
-    ):
-        return {
-            "decision": "fail",
-            "fallback_kind": fallback_kind,
-            "fail_reason": UNTRANSLATED_PROSE_FAIL_REASON,
-        }
+    # The substrate test now runs FIRST, and that is a consequence of the invariant losing its
+    # ``fail``: a broken marker substrate is the only reason left that can stop the run here,
+    # so there is no longer a competition between two reasons for one report to get wrong.
     if not _has_intact_controlled_fallback_substrate(
         payload=payload,
         fallback_markdown=fallback_markdown,
         build_processed_paragraph_registry_entries_fn=build_processed_paragraph_registry_entries_fn,
     ):
         return {"decision": "fail", "fallback_kind": fallback_kind}
-    return {
+    decided: dict[str, str] = {
         "decision": "fallback_continue",
         "fallback_kind": fallback_kind,
         "fallback_markdown": fallback_markdown,
     }
+    # Spec 059 FR-A8, revised 2026-08-09. This used to return ``fail`` here and it no longer
+    # does; the block ships and the answer travels as a WARNING instead. The rule is still
+    # evaluated in exactly one place — this table — so the log event, the run counter, the
+    # alarm channel and the acceptance check all read the same decision rather than each
+    # re-deriving it and drifting.
+    if untranslated_prose_would_be_delivered(
+        payload=payload,
+        fallback_markdown=fallback_markdown,
+        languages_differ=languages_differ,
+    ):
+        decided[UNTRANSLATED_PROSE_WARNING_KEY] = UNTRANSLATED_PROSE_WARNING_REASON
+    return decided
 
 
 def _resolve_segment_status_payload(*, initialization: Any, index: int, status: str) -> tuple[dict[str, str], dict[str, float], str, str]:
@@ -1086,6 +1165,101 @@ def emit_block_completed(
     context.on_progress(preview_title="Текущий Markdown")
 
 
+def _delivered_prose_paragraph_records(
+    *, payload: Any, processed_chunk: str
+) -> list[dict[str, str]]:
+    """One record per PROSE paragraph of a block delivered in the source language.
+
+    The address half of the warning. ``quality_gate.build_source_text_delivery_facts`` sees
+    paragraphs through the delivered block's per-paragraph record
+    (``generation.marker_paragraph_dispositions``), and on THIS class of delivery that record
+    says ``accepted`` for every paragraph — the model did answer, its answer was simply its
+    own input — so the alarm channel saw nothing at all. That is the same silence part B was
+    built to end, one level down: the recorded run 20260809T_059_doc_value delivered 48 blocks
+    and 8 828 characters of source text while the channel reported one paragraph, and
+    20260809T_059_doc_money delivered 9 characters and the channel said nothing whatsoever.
+
+    The record is built HERE rather than re-derived at finalization because only here are the
+    block's payload (which paragraph is prose) and its delivered text in the same scope.
+
+    ``text`` is the paragraph's own delivered text when the block carries a per-paragraph
+    record, and EMPTY when it does not (a non-marker block, or a fallback that shipped
+    ``payload.target_text`` as one string). Empty is not a gap in the count: the paragraph is
+    still counted, it is simply reported without a searchable fragment, because an address
+    that was guessed is worse than none (anti-regression #14).
+    """
+    indexes = prose_paragraph_indexes(payload)
+    if not indexes:
+        return []
+    paragraph_ids = getattr(payload, "paragraph_ids", None)
+    id_list = paragraph_ids if isinstance(paragraph_ids, list) else []
+    dispositions = marker_paragraph_dispositions(processed_chunk)
+    text_by_paragraph_id = (
+        {}
+        if dispositions is None
+        else {str(disposition.paragraph_id): disposition.text for disposition in dispositions}
+    )
+    records: list[dict[str, str]] = []
+    for position, index in enumerate(indexes):
+        paragraph_id = str(id_list[index]) if index < len(id_list) else f"#{position}"
+        records.append(
+            {
+                "paragraph_id": paragraph_id,
+                "text": str(text_by_paragraph_id.get(paragraph_id, "")),
+            }
+        )
+    return records
+
+
+def _announce_untranslated_prose_delivery(
+    *,
+    context: Any,
+    dependencies: Any,
+    state: Any,
+    initialization: Any,
+    index: int,
+    payload: Any,
+    processed_chunk: str,
+    rejection_kind: str,
+) -> None:
+    """Everything the block's delivery owes the reader, in one place (spec 059 FR-A8).
+
+    Three consumers, one decision (``classify_processed_block_failure_decision``): the run
+    counter, the log line, and the per-paragraph record the alarm channel turns into anchors.
+    The acceptance verdict reads the counter, so the screen goes red without this module
+    knowing anything about the screen.
+
+    WARNING, not ERROR. The level used to be ERROR and the justification written beside it
+    was "the decision is ``fail``: there will be no run, and that is a visible distinguishable
+    state". That justification expired with the decision. The run now completes and delivers,
+    which is the same level of severity the block's twin event ``block_controlled_fallback``
+    carries — and a log whose level says "the run died" beside a run that succeeded teaches
+    the next reader to distrust the levels.
+    """
+    records = _delivered_prose_paragraph_records(payload=payload, processed_chunk=processed_chunk)
+    existing = getattr(state, "untranslated_prose_delivered_paragraphs", None)
+    if isinstance(existing, list):
+        existing.append(records)
+    record_untranslated_prose_block_delivery(kind=rejection_kind, chars=len(processed_chunk))
+    paragraph_regions = list(getattr(payload, "paragraph_regions", None) or ())
+    dependencies.log_event(
+        logging.WARNING,
+        "block_untranslated_prose_delivered",
+        "Блок доставлен с прозой на языке источника; см. приёмочный вердикт и якоря для поиска.",
+        filename=context.uploaded_filename,
+        block_index=index,
+        block_count=initialization.job_count,
+        rejection_kind=rejection_kind,
+        delivered_chars=len(processed_chunk),
+        paragraph_count=len(paragraph_regions),
+        prose_paragraph_count=len(records),
+        anchored_paragraph_count=sum(1 for record in records if record["text"].strip()),
+        source_language=str(getattr(context, "source_language", "") or ""),
+        target_language=str(getattr(context, "target_language", "") or ""),
+        input_preview=payload.target_text[:300],
+    )
+
+
 def continue_controlled_processed_block_rejection(
     *,
     context: Any,
@@ -1099,6 +1273,7 @@ def continue_controlled_processed_block_rejection(
     rejection_kind: str,
     append_marker_registry_entries_fn: Any,
     languages_differ: bool = True,
+    untranslated_prose_delivered: bool = False,
 ) -> None:
     # Run-level accounting for the pipeline half of the loss. Until this call the ONLY
     # trace a ``fallback_continue`` left was a per-block diagnostic under ``.run/`` and a
@@ -1113,6 +1288,17 @@ def continue_controlled_processed_block_rejection(
     # cost — the same quantity and the same unit as
     # ``state.narration_excluded_source_fallback_chars`` below.
     record_controlled_block_fallback(kind=rejection_kind, chars=len(processed_chunk))
+    if untranslated_prose_delivered:
+        _announce_untranslated_prose_delivery(
+            context=context,
+            dependencies=dependencies,
+            state=state,
+            initialization=initialization,
+            index=index,
+            payload=payload,
+            processed_chunk=processed_chunk,
+            rejection_kind=rejection_kind,
+        )
     artifact_path = _write_controlled_block_fallback_artifact(
         context=context,
         initialization=initialization,
@@ -1354,29 +1540,6 @@ def process_single_block(
             build_processed_paragraph_registry_entries_fn=build_processed_paragraph_registry_entries,
             languages_differ=languages_differ,
         )
-        if rejection_decision.get("fail_reason") == UNTRANSLATED_PROSE_FAIL_REASON:
-            # Constitution V: the invariant refuses a delivery, so the run has to be able to
-            # say which block and on what grounds. The counter is the run-level twin — the
-            # controlled-fallback family counts what WAS shipped, and without this one the
-            # blocks the invariant stopped would be countable only by reading the log.
-            paragraph_regions = list(getattr(payload, "paragraph_regions", None) or ())
-            record_untranslated_prose_block_rejection(kind=rejection_decision["fallback_kind"])
-            dependencies.log_event(
-                logging.ERROR,
-                "block_untranslated_prose_rejected",
-                "Блок доставил бы прозу на языке источника; controlled fallback запрещён.",
-                filename=context.uploaded_filename,
-                block_index=index,
-                block_count=initialization.job_count,
-                rejection_kind=rejection_decision["fallback_kind"],
-                paragraph_count=len(paragraph_regions),
-                prose_paragraph_count=sum(
-                    1 for region in paragraph_regions if region == PARAGRAPH_REGION_PROSE
-                ),
-                source_language=str(getattr(context, "source_language", "") or ""),
-                target_language=str(getattr(context, "target_language", "") or ""),
-                input_preview=payload.target_text[:300],
-            )
         if rejection_decision["decision"] == "fallback_continue":
             continue_controlled_processed_block_rejection(
                 context=context,
@@ -1390,6 +1553,13 @@ def process_single_block(
                 rejection_kind=rejection_decision["fallback_kind"],
                 append_marker_registry_entries_fn=append_marker_registry_entries_fn,
                 languages_differ=languages_differ,
+                # Spec 059 FR-A8, revised 2026-08-09: the block ships either way; this says
+                # whether its delivery has to be announced. Read off the decision rather than
+                # re-derived, so one evaluation of the rule feeds every consumer.
+                untranslated_prose_delivered=(
+                    rejection_decision.get(UNTRANSLATED_PROSE_WARNING_KEY)
+                    == UNTRANSLATED_PROSE_WARNING_REASON
+                ),
             )
             return None
         return handle_processed_block_rejection_fn(
@@ -1402,12 +1572,7 @@ def process_single_block(
             context_chars=payload.context_chars,
             target_text=payload.target_text,
             processed_chunk=processed_chunk,
-            # Spec 059, Constitution V: the reason the run STOPPED, not the classifier's
-            # status. For the invariant those differ — the classifier says
-            # ``source_text_fallback`` while the run stopped because that fallback would have
-            # delivered prose — and telling the handler the stale one made the failure
-            # explain itself with the wrong sentence.
-            rejection_kind=str(rejection_decision.get("fail_reason") or processed_block_status),
+            rejection_kind=processed_block_status,
         )
 
     state.processed_chunks.append(processed_chunk)

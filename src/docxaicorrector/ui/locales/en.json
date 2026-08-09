@@ -139,6 +139,7 @@
   "result.acceptance_check.emphasis_coverage_advisory": "emphasis transfer (advisory)",
   "result.acceptance_check.paragraph_break_advisory": "mid-sentence paragraph breaks (advisory)",
   "result.acceptance_check.no_toc_body_concat_required": "the table of contents merged into the body text",
+  "result.acceptance_check.untranslated_prose_not_delivered": "untranslated prose reached the document",
   "preview.markdown_label": "Markdown",
   "preview.markdown_help": "Only one Markdown block is shown on screen to keep the interface responsive for large documents.",
   "preview.normalization": "Paragraph normalization: raw {raw} -> logical {logical} | merges: {groups} groups, {merged} paragraphs",

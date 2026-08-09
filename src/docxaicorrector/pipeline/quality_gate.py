@@ -36,6 +36,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal, cast
 
+from docxaicorrector.core.model_accounting import get_run_model_accounting_ledger
 from docxaicorrector.core.models import LANGUAGE_CHANGING_OPERATIONS
 from docxaicorrector.generation._generation import (
     PARAGRAPH_STATUS_OMITTED,
@@ -1204,6 +1205,12 @@ def _build_report_context_for_acceptance(
         "runtime": {},
         "reader_cleanup_evidence": {},
         "preparation_diagnostic_snapshot": {},
+        # spec 059 FR-A8, revised 2026-08-09: the run's own accounting, under the same key the
+        # harness report uses, so ``untranslated_prose_not_delivered`` is judged from the same
+        # number in both paths. Read from the ledger rather than threaded through the call
+        # chain because the ledger IS the run-level record and the report that goes to disk
+        # reads it the same way (``_pipeline.emit_run_model_accounting_event``).
+        "model_accounting": get_run_model_accounting_ledger().snapshot(),
     }
 
 
@@ -2068,6 +2075,14 @@ _SOURCE_TEXT_DELIVERED_PARAGRAPH_STATUSES: tuple[str, ...] = (
     PARAGRAPH_STATUS_OMITTED,
     PARAGRAPH_STATUS_SOURCE_RESTORED,
 )
+# The THIRD way a paragraph's own source text ends up in the delivered DOCX, and the one no
+# paragraph status can express: the whole BLOCK was rejected and re-delivered as its own
+# source (``block_execution``), so each of its paragraphs is recorded ``accepted`` — the model
+# answered, and its answer was its input. It is not a ``ParagraphDisposition`` status and must
+# not be written as one (that would corrupt ``paragraph_disposition_counts``, which counts
+# what the GENERATOR decided); it is a status of this channel's own vocabulary, seeded to zero
+# beside the other two so a reader sees three named buckets rather than a missing key.
+_UNTRANSLATED_PROSE_DELIVERED_STATUS = "untranslated_prose_delivered"
 
 
 def build_acceptance_verdict_notice(
@@ -2110,6 +2125,7 @@ def build_source_text_delivery_facts(
     *,
     anchor_limit: int = 8,
     delivered_markdown: str | None = None,
+    untranslated_prose_blocks: Sequence[Sequence[Mapping[str, str]]] = (),
 ) -> dict[str, object]:
     """Which DELIVERED paragraphs still carry their own source text — and where they are.
 
@@ -2141,6 +2157,15 @@ def build_source_text_delivery_facts(
     still counted — the substitution really happened — only its address is withheld. Both
     sides are compared as VISIBLE text, because the delivered markdown still carries the
     markup the anchor no longer does.
+
+    ``untranslated_prose_blocks`` is the THIRD source of the same document fact and the one
+    the per-paragraph record cannot express (spec 059 FR-A8, revised 2026-08-09): a whole
+    block rejected and re-delivered as its own source, whose paragraphs are all ``accepted``
+    because the model did answer. It arrives already resolved to the block's PROSE paragraphs
+    (``block_execution._delivered_prose_paragraph_records``), because the region and role that
+    decide "prose" live on the payload and never reach finalization. Without it the channel
+    was measurably blind: the recorded 20260809T_059_doc_money run delivered 9 characters of
+    source text this way and the channel published nothing at all.
     """
     block_count = 0
     paragraph_count = 0
@@ -2149,34 +2174,61 @@ def build_source_text_delivery_facts(
     dropped_not_in_delivered = 0
     anchors: list[str] = []
     status_counts = {status: 0 for status in _SOURCE_TEXT_DELIVERED_PARAGRAPH_STATUSES}
+    status_counts[_UNTRANSLATED_PROSE_DELIVERED_STATUS] = 0
     delivered_visible = (
         None
         if delivered_markdown is None
         else _review_anchor_visible_text(" ".join(str(delivered_markdown).split()))
     )
+
+    def _count_paragraph(text: str, status: str) -> None:
+        nonlocal paragraph_count, chars, unanchored, dropped_not_in_delivered
+        paragraph_count += 1
+        chars += len(text)
+        status_counts[status] += 1
+        anchor = _sanitize_review_anchor_text(text)
+        if _review_anchor_visible_char_count(anchor) < 3:
+            unanchored += 1
+            return
+        if delivered_visible is not None and anchor not in delivered_visible:
+            unanchored += 1
+            dropped_not_in_delivered += 1
+            return
+        if len(anchors) < anchor_limit:
+            anchors.append(anchor)
+
+    counted_paragraph_ids: set[str] = set()
     for chunk in processed_chunks:
         dispositions = marker_paragraph_dispositions(chunk)
         if dispositions is None:
             continue
         block_has_source_text = False
         for disposition in dispositions:
-            if disposition.status not in status_counts:
+            if disposition.status not in _SOURCE_TEXT_DELIVERED_PARAGRAPH_STATUSES:
                 continue
             block_has_source_text = True
-            paragraph_count += 1
-            chars += len(disposition.text)
-            status_counts[disposition.status] += 1
-            anchor = _sanitize_review_anchor_text(disposition.text)
-            if _review_anchor_visible_char_count(anchor) < 3:
-                unanchored += 1
-                continue
-            if delivered_visible is not None and anchor not in delivered_visible:
-                unanchored += 1
-                dropped_not_in_delivered += 1
-                continue
-            if len(anchors) < anchor_limit:
-                anchors.append(anchor)
+            counted_paragraph_ids.add(str(disposition.paragraph_id))
+            _count_paragraph(disposition.text, disposition.status)
         if block_has_source_text:
+            block_count += 1
+    # The two sources OVERLAP, and the paragraph id is what keeps a paragraph from being
+    # reported twice. A block can be both: its model answer collapsed one paragraph into
+    # another (each paragraph stamped ``source_restored``) AND the restored text turned out to
+    # be the block's own source, which routes the same block down the controlled fallback. One
+    # paragraph, two true records, one line for the reader.
+    for prose_paragraphs in untranslated_prose_blocks:
+        counted_here = False
+        for record in prose_paragraphs:
+            paragraph_id = str(record.get("paragraph_id") or "")
+            if paragraph_id and paragraph_id in counted_paragraph_ids:
+                continue
+            counted_here = True
+            if paragraph_id:
+                counted_paragraph_ids.add(paragraph_id)
+            _count_paragraph(
+                str(record.get("text") or ""), _UNTRANSLATED_PROSE_DELIVERED_STATUS
+            )
+        if counted_here:
             block_count += 1
     return {
         "block_count": block_count,

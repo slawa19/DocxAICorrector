@@ -57,6 +57,7 @@ PRODUCTION_ACCEPTANCE_CHECK_NAMES: Final[tuple[str, ...]] = (
     "emphasis_coverage_advisory",
     "paragraph_break_advisory",
     "no_toc_body_concat_required",
+    "untranslated_prose_not_delivered",
     "structural_comparison_available",
 )
 _PRODUCTION_ACCEPTANCE_CHECK_NAME_SET: Final[frozenset[str]] = frozenset(
@@ -927,6 +928,42 @@ def build_acceptance_verdict(
                 "document_map_compound_toc_split_hint_count"
             ),
         )
+
+    # spec 059 FR-A8, revised 2026-08-09. The invariant stopped being a gate on the run, so
+    # the verdict has to carry it instead — otherwise the change would restore precisely the
+    # silence part B was built to end, with the loss delivered and nothing on the screen. The
+    # signal is the run's own counter (``core/model_accounting``): blocks whose delivered text
+    # was their own source AND which carried a paragraph of prose. Zero is an ASSERTION, so
+    # the check is applicable whenever the accounting reached this verdict at all; a report
+    # with no accounting section (an offline re-measure of an old artifact) is NOT-APPLICABLE
+    # rather than a guessed pass (Constitution VII).
+    model_accounting = report.get("model_accounting")
+    untranslated_prose_accounting = (
+        model_accounting if isinstance(model_accounting, Mapping) else {}
+    )
+    untranslated_prose_block_count = _coerce_int(
+        untranslated_prose_accounting.get("untranslated_prose_block_delivery_count")
+    )
+    add_check(
+        "untranslated_prose_not_delivered",
+        untranslated_prose_block_count == 0,
+        applicable="untranslated_prose_block_delivery_count" in untranslated_prose_accounting,
+        untranslated_prose_block_delivery_count=untranslated_prose_block_count,
+        untranslated_prose_block_delivery_chars=_coerce_int(
+            untranslated_prose_accounting.get("untranslated_prose_block_delivery_chars")
+        ),
+        untranslated_prose_block_delivery_kind_counts=untranslated_prose_accounting.get(
+            "untranslated_prose_block_delivery_kind_counts"
+        ),
+        controlled_block_fallback_block_count=_coerce_int(
+            untranslated_prose_accounting.get("controlled_block_fallback_block_count")
+        ),
+        **(
+            {}
+            if "untranslated_prose_block_delivery_count" in untranslated_prose_accounting
+            else {"reason": "model_accounting_not_available"}
+        ),
+    )
 
     if structural_checks_builder is not None:
         for structural_check in structural_checks_builder(processing_operation):

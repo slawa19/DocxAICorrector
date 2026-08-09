@@ -20,6 +20,7 @@ import logging
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from types import SimpleNamespace
+from typing import cast
 
 import pytest
 
@@ -342,13 +343,21 @@ def test_source_text_delivery_counts_blocks_paragraphs_and_chars_with_anchors() 
 def test_source_text_delivery_covers_omitted_paragraphs_too() -> None:
     """``omitted`` leaves the paragraph's own SOURCE text in the DOCX exactly like
     ``source_restored`` does (``_generation.PARAGRAPH_STATUS_OMITTED`` docstring) — the DOCX
-    fact is the union, not one of the two."""
+    fact is the union, not one of the two.
+
+    Three buckets since 2026-08-09, not two: a whole BLOCK re-delivered as its own source is
+    the third way the same thing happens, and it has no paragraph status of its own. Every
+    bucket is present on every run, so a zero here is the statement "nothing landed there"."""
     facts = quality_gate.build_source_text_delivery_facts(
         [_block(_omitted("p1", "The monetary system remains unchanged."))]
     )
 
     assert facts["paragraph_count"] == 1
-    assert facts["status_counts"] == {"omitted": 1, "source_restored": 0}
+    assert facts["status_counts"] == {
+        "omitted": 1,
+        "source_restored": 0,
+        "untranslated_prose_delivered": 0,
+    }
 
 
 def test_source_text_delivery_never_invents_an_anchor() -> None:
@@ -1015,7 +1024,16 @@ def _emit_state(runtime, **values):
     runtime.setdefault("state", {}).update(values)
 
 
-def _run_pipeline(*, runtime, log_event, generate, processing_operation: str):
+def _run_pipeline(
+    *,
+    runtime,
+    log_event,
+    generate,
+    processing_operation: str,
+    paragraph_regions: list[str] | None = None,
+    structural_roles: list[str] | None = None,
+    app_config: dict[str, object] | None = None,
+):
     return document_pipeline.run_document_processing(
         uploaded_file="report.docx",
         jobs=[
@@ -1028,12 +1046,14 @@ def _run_pipeline(*, runtime, log_event, generate, processing_operation: str):
                 "target_chars": 36,
                 "context_chars": 0,
                 "narration_include": True,
+                **({"paragraph_regions": paragraph_regions} if paragraph_regions else {}),
+                **({"structural_roles": structural_roles} if structural_roles else {}),
             }
         ],
         source_paragraphs=[],
         image_assets=[],
         image_mode="safe",
-        app_config={},
+        app_config=app_config or {},
         model="gpt-5.4",
         max_retries=1,
         processing_operation=processing_operation,
@@ -1276,3 +1296,330 @@ def test_green_verdict_publishes_no_acceptance_notice(monkeypatch) -> None:
     assert not [
         event for event in events if event["event_id"] == "acceptance_verdict_not_passed"
     ]
+
+
+# --------------------------------------------------------------------------------------
+# FR-A8 as revised 2026-08-09 — the invariant WARNS instead of killing the run, and the
+# warning has to arrive on all three channels or the demotion restores part B's silence
+# --------------------------------------------------------------------------------------
+#
+# Recorded material: ``artifacts/doc_path_run_2026-08-09/`` — the four books on the DOCUMENT
+# path, the first corpus run after both halves of spec 059 landed, and the run on which the
+# invariant fired for real (and killed a book at 45%).
+
+DOC_PATH_RUN_DIR = ARTIFACTS / "doc_path_run_2026-08-09"
+
+
+def _prose_records(*pairs: tuple[str, str]) -> list[dict[str, str]]:
+    return [{"paragraph_id": paragraph_id, "text": text} for paragraph_id, text in pairs]
+
+
+def test_a_source_delivered_prose_block_reaches_the_alarm_with_an_anchor() -> None:
+    """The hole the demotion had to close first.
+
+    A block re-delivered as its own source stamps every paragraph ``accepted`` — the model
+    answered, its answer WAS its input — so the per-paragraph channel saw nothing at all. On
+    the recorded 20260809T_059_doc_value run that is 48 blocks and 8 828 characters against a
+    published "1 paragraph", and on 20260809T_059_doc_money it is 9 characters against
+    complete silence. Without an address the warning is useless, so the anchor is asserted,
+    not just the count.
+    """
+    facts = quality_gate.build_source_text_delivery_facts(
+        [_block(_accepted("p1", "The monetary system is unchanged."))],
+        untranslated_prose_blocks=[
+            _prose_records(("p1", "The monetary system is unchanged."))
+        ],
+    )
+
+    assert facts["block_count"] == 1
+    assert facts["paragraph_count"] == 1
+    assert facts["chars"] == len("The monetary system is unchanged.")
+    assert facts["anchors"] == ["The monetary system is unchanged."]
+    assert dict(facts["status_counts"])["untranslated_prose_delivered"] == 1  # type: ignore[arg-type]
+    assert (
+        quality_gate.build_source_text_delivery_notice(facts, processing_operation="translate")
+        is not None
+    )
+
+
+def test_the_same_paragraph_is_never_reported_twice_through_two_channels() -> None:
+    """Anti-regression for the join: one paragraph can be BOTH ``source_restored`` (its
+    neighbour swallowed it) and part of a block re-delivered as its own source. Two true
+    records, one reader, one line."""
+    restored_block = _block(
+        _restored("p1", "Once upon a time, in a small village in the Outback."),
+        _restored("p2", "People used barter for all their transactions."),
+    )
+
+    facts = quality_gate.build_source_text_delivery_facts(
+        [restored_block],
+        untranslated_prose_blocks=[
+            _prose_records(
+                ("p1", "Once upon a time, in a small village in the Outback."),
+                ("p2", "People used barter for all their transactions."),
+            )
+        ],
+    )
+
+    assert facts["paragraph_count"] == 2
+    assert facts["block_count"] == 1
+    assert dict(facts["status_counts"])["untranslated_prose_delivered"] == 0  # type: ignore[arg-type]
+
+
+def test_the_alarm_counts_a_paragraph_it_cannot_address() -> None:
+    """A block with no per-paragraph record (the ``empty`` fallback kinds ship
+    ``payload.target_text`` as one plain string) still delivered source text. The paragraph is
+    COUNTED and left without an anchor — no address is invented (#14)."""
+    facts = quality_gate.build_source_text_delivery_facts(
+        [], untranslated_prose_blocks=[_prose_records(("p1", ""))]
+    )
+
+    assert facts["paragraph_count"] == 1
+    assert facts["unanchored_paragraph_count"] == 1
+    assert facts["anchors"] == []
+    assert (
+        quality_gate.build_source_text_delivery_notice(facts, processing_operation="translate")
+        is not None
+    )
+
+
+def test_the_alarm_stays_silent_when_no_block_delivered_prose() -> None:
+    """Anti-vacuum: a channel that speaks on every run is noise. Nothing handed over, nothing
+    said — which is what the two clean books of the recorded corpus must produce."""
+    facts = quality_gate.build_source_text_delivery_facts(
+        [_block(_accepted("p1", "Переведённый абзац."))], untranslated_prose_blocks=[]
+    )
+
+    assert facts["paragraph_count"] == 0
+    assert (
+        quality_gate.build_source_text_delivery_notice(facts, processing_operation="translate")
+        is None
+    )
+
+
+def _verdict_with_accounting(**accounting: object) -> dict[str, object]:
+    report = {
+        "result": "succeeded",
+        "runtime_config": {"effective": {"processing_operation": "translate"}},
+        "translation_quality_report": {"quality_status": "pass", "gate_reasons": []},
+        "formatting_diagnostics": [{"unmapped_source_ids": [], "caption_heading_conflicts": []}],
+        "output_artifacts": {"output_docx_openable": True},
+        "runtime": {},
+        "reader_cleanup_evidence": {},
+        "preparation_diagnostic_snapshot": {},
+        "model_accounting": accounting,
+    }
+    return build_acceptance_verdict(report, structural_checks_builder=None)
+
+
+def test_the_verdict_goes_red_when_a_block_delivered_untranslated_prose() -> None:
+    """The invariant stopped being a gate on the RUN, so it has to be a gate on the VERDICT —
+    otherwise the demotion restores exactly the silence part B was built to end: the loss
+    delivered, and "Документ обработан." on the screen."""
+    verdict = _verdict_with_accounting(
+        untranslated_prose_block_delivery_count=1,
+        untranslated_prose_block_delivery_chars=33,
+        untranslated_prose_block_delivery_kind_counts={"source_text_fallback": 1},
+        controlled_block_fallback_block_count=1,
+    )
+
+    assert verdict["passed"] is False
+    assert "untranslated_prose_not_delivered" in list(verdict["failed_checks"])  # type: ignore[arg-type]
+    assert production_reportable_failed_checks(verdict) == ["untranslated_prose_not_delivered"]
+
+
+def test_the_verdict_stays_green_when_only_apparatus_was_substituted() -> None:
+    """Anti-vacuum, and it is the recorded ``value_of_everything`` shape exactly: 48 blocks
+    and 8 828 characters of bibliography delivered as their own source, and NOT ONE of them
+    prose. A check that reddens on that number would cry on every book with a bibliography."""
+    verdict = _verdict_with_accounting(
+        untranslated_prose_block_delivery_count=0,
+        untranslated_prose_block_delivery_chars=0,
+        untranslated_prose_block_delivery_kind_counts={},
+        controlled_block_fallback_block_count=48,
+    )
+
+    assert verdict["passed"] is True
+    assert "untranslated_prose_not_delivered" not in list(verdict["failed_checks"])  # type: ignore[arg-type]
+
+
+def test_a_report_without_accounting_is_not_applicable_rather_than_a_guessed_pass() -> None:
+    """Constitution VII. An offline re-measure over an archived report has no accounting
+    section; the check must say "I could not evaluate this", not "it passed"."""
+    verdict = _verdict_with_accounting()
+    check = next(
+        check
+        for check in cast(Sequence[Mapping[str, object]], verdict["checks"])
+        if check["name"] == "untranslated_prose_not_delivered"
+    )
+
+    assert check["applicable"] is False
+    assert check["reason"] == "model_accounting_not_available"
+    assert "untranslated_prose_not_delivered" not in list(verdict["failed_checks"])  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("book", ("creating_wealth", "money_sustainability"))
+def test_recorded_books_with_no_prose_substitution_leave_the_channel_silent(book: str) -> None:
+    """Anti-vacuum, direction 1, on the material the change was written from.
+
+    ``creating_wealth`` substituted nothing at all. ``money_sustainability`` substituted ONE
+    block of 9 characters — ``# %`` / ``( i)``, the title page, both paragraphs in the
+    ``front_matter`` region — so the channel is right to stay silent about it even after the
+    mechanism that hid it is repaired. Neither book has an ``omitted`` or ``source_restored``
+    paragraph either, which is the OTHER reason the alarm said nothing.
+    """
+    summary = _run_summary(DOC_PATH_RUN_DIR / book / "run_summary.txt")
+    dispositions = json.loads(summary["model_accounting_paragraph_disposition_counts"])
+    assert dispositions["omitted"] == 0
+    assert dispositions["source_restored"] == 0
+    assert summary["source_text_delivered_paragraph_count"] == "not_reported"
+
+    facts = quality_gate.build_source_text_delivery_facts(
+        [_block(_accepted("p1", "Переведённый абзац."))], untranslated_prose_blocks=[]
+    )
+    assert (
+        quality_gate.build_source_text_delivery_notice(facts, processing_operation="translate")
+        is None
+    )
+
+
+def test_recorded_value_of_everything_speaks_and_says_the_smaller_true_number() -> None:
+    """Anti-vacuum, direction 2, and the reconciliation of the two numbers: the run counter
+    and the screen disagreed on the recorded run — 48 blocks / 8 828 characters against 1
+    paragraph / 63 characters — and BOTH were right. Cross-referencing the run's per-block
+    diagnostics against the prepared jobs puts all 48 blocks wholly inside ``back_matter``:
+    0 prose. What the reader was told about is the run's single ``omitted`` paragraph, which
+    is not one of the 48.
+    """
+    summary = _run_summary(DOC_PATH_RUN_DIR / "value_of_everything" / "run_summary.txt")
+    assert summary["model_accounting_controlled_block_fallback_block_count"] == "48"
+    assert summary["model_accounting_controlled_block_fallback_chars"] == "8828"
+    assert json.loads(summary["model_accounting_paragraph_disposition_counts"])["omitted"] == 1
+    assert summary["source_text_delivered_paragraph_count"] == "1"
+    assert summary["source_text_delivered_chars"] == "63"
+    # The counter that reconciles them: the PROSE subset of the 48, which the run recorded as
+    # zero under its own (pre-rename) name.
+    assert summary["model_accounting_untranslated_prose_block_rejection_count"] == "0"
+
+    verdict = _verdict_with_accounting(
+        untranslated_prose_block_delivery_count=0,
+        controlled_block_fallback_block_count=48,
+    )
+    assert "untranslated_prose_not_delivered" not in list(verdict["failed_checks"])  # type: ignore[arg-type]
+
+
+def test_recorded_rethinking_money_died_where_the_change_now_delivers() -> None:
+    """The measured cost of the gate, kept as a number rather than a memory: the run FAILED
+    with the invariant firing once, and its own paragraph accounting shows the book lost
+    nothing — 782 accepted, 0 omitted, 0 restored. That is a whole book made unreachable by a
+    detector that would stop in the same place on every retry."""
+    summary = _run_summary(DOC_PATH_RUN_DIR / "rethinking_money" / "run_summary.txt")
+    assert summary["result"] == "failed"
+    assert summary["model_accounting_untranslated_prose_block_rejection_count"] == "1"
+    dispositions = json.loads(summary["model_accounting_paragraph_disposition_counts"])
+    assert dispositions["omitted"] == 0
+    assert dispositions["source_restored"] == 0
+
+
+def test_a_translate_run_delivering_untranslated_prose_completes_and_publishes_everything() -> None:
+    """End to end through ``run_document_processing``, on the shape that used to kill the run.
+
+    Two ENGLISH paragraphs in the ``prose`` region on a ``translate`` job: the model answer
+    collapses one into the other, the restored text equals the source, and the block takes the
+    controlled fallback. Before 2026-08-09 this returned ``failed`` and delivered nothing.
+    """
+    runtime = {"state": {}}
+    events, log_event = _capture_log_events()
+
+    result = _run_two_paragraph_pipeline(
+        runtime=runtime,
+        log_event=log_event,
+        source_a=_COLLAPSE_SOURCE_EN_A,
+        source_b=_COLLAPSE_SOURCE_EN_B,
+        processing_operation="translate",
+        paragraph_regions=["prose", "prose"],
+    )
+
+    assert result == "succeeded"
+    # Rule 4: the text is DELIVERED, and the delivered markdown carries it.
+    assert _COLLAPSE_SOURCE_EN_B in str(runtime["state"]["latest_markdown"])
+    announced = [
+        event for event in events if event["event_id"] == "block_untranslated_prose_delivered"
+    ]
+    assert len(announced) == 1
+    assert announced[0]["level"] == logging.WARNING
+    # The alarm channel speaks, with an anchor.
+    delivered = [n for n in _notices(runtime) if n.get("kind") == "translation"]
+    assert len(delivered) == 1
+    assert list(delivered[0]["anchors"])  # type: ignore[arg-type]
+    assert [
+        event for event in events if event["event_id"] == "source_text_delivered_to_document"
+    ]
+
+
+def test_an_all_accepted_block_delivered_as_its_source_still_reaches_the_screen() -> None:
+    """The exact shape the recorded runs produced, end to end, and the ONLY one that proves the
+    new record path: EVERY paragraph of the block is ``accepted``.
+
+    The model answered — its answer was its own input — so the per-paragraph channel has
+    nothing to report and the block is invisible to it by construction. This is the whole of
+    the ``money_sustainability`` 9 characters and of the ``value_of_everything`` 48 blocks. The
+    sibling end-to-end test above uses a COLLAPSED answer, whose paragraphs are stamped
+    ``source_restored``, so it would stay green even with the new record thrown away — a
+    mutation confirmed exactly that, which is why this test exists.
+    """
+    runtime = {"state": {}}
+    events, log_event = _capture_log_events()
+
+    result = _run_pipeline(
+        runtime=runtime,
+        log_event=log_event,
+        generate=lambda **kwargs: _block(_accepted("p0001", "Once upon a time in a small village.")),
+        processing_operation="translate",
+        paragraph_regions=["prose"],
+        structural_roles=["body"],
+        app_config={"enable_paragraph_markers": True},
+    )
+
+    assert result == "succeeded"
+    assert "Once upon a time in a small village." in str(runtime["state"]["latest_markdown"])
+    assert [
+        event for event in events if event["event_id"] == "block_untranslated_prose_delivered"
+    ]
+    delivered = [n for n in _notices(runtime) if n.get("kind") == "translation"]
+    assert len(delivered) == 1
+    assert list(delivered[0]["anchors"]) == ["Once upon a time in a small village."]  # type: ignore[arg-type]
+    published = [
+        event for event in events if event["event_id"] == "source_text_delivered_to_document"
+    ]
+    assert len(published) == 1
+    assert _context(published[0])["source_text_delivered_status_counts"] == {
+        "omitted": 0,
+        "source_restored": 0,
+        "untranslated_prose_delivered": 1,
+    }
+
+
+def test_the_same_block_on_an_apparatus_region_reaches_nobody() -> None:
+    """The anti-vacuum twin of the test above, through the same call path, differing only in the
+    region — the ``money_sustainability`` title page (``# %`` / ``( i)``, front matter) is this
+    shape, and the screen must stay silent about it."""
+    runtime = {"state": {}}
+    events, log_event = _capture_log_events()
+
+    result = _run_pipeline(
+        runtime=runtime,
+        log_event=log_event,
+        generate=lambda **kwargs: _block(_accepted("p0001", "Once upon a time in a small village.")),
+        processing_operation="translate",
+        paragraph_regions=["front_matter"],
+        structural_roles=["body"],
+        app_config={"enable_paragraph_markers": True},
+    )
+
+    assert result == "succeeded"
+    assert "Once upon a time in a small village." in str(runtime["state"]["latest_markdown"])
+    assert not [
+        event for event in events if event["event_id"] == "block_untranslated_prose_delivered"
+    ]
+    assert not [n for n in _notices(runtime) if n.get("kind") == "translation"]

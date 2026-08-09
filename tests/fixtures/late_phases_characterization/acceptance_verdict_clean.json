@@ -224,6 +224,16 @@
     },
     {
       "applicable": false,
+      "controlled_block_fallback_block_count": 0,
+      "name": "untranslated_prose_not_delivered",
+      "passed": true,
+      "reason": "model_accounting_not_available",
+      "untranslated_prose_block_delivery_chars": 0,
+      "untranslated_prose_block_delivery_count": 0,
+      "untranslated_prose_block_delivery_kind_counts": null
+    },
+    {
+      "applicable": false,
       "name": "structural_comparison_available",
       "passed": false,
       "reason": "source_or_output_docx_missing"

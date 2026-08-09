@@ -4344,12 +4344,13 @@ _MODEL_ACCOUNTING_SUMMARY_FIELDS = (
     # two is exactly the point — the generator numbers alone are a lower bound.
     "controlled_block_fallback_block_count",
     "controlled_block_fallback_chars",
-    # Spec 059 FR-A8: the OPPOSITE outcome of the same decision — blocks the pipeline refused
-    # to ship because they would have delivered prose in the source language. Printed beside
-    # the two lines above on purpose: together they say what the run substituted and what it
-    # refused to substitute. A run that stops for this reason must say so in its summary and
-    # not only in the log.
-    "untranslated_prose_block_rejection_count",
+    # Spec 059 FR-A8: the PROSE subset of the two lines above — of everything this run
+    # substituted, how much a reader actually loses. Printed beside them on purpose: the
+    # difference between the two pairs is the apparatus (bibliography rows, notes, URLs), for
+    # which delivering the source is the right outcome, and a summary that cannot tell the
+    # two apart leaves the reader to guess which kind of 48 blocks it just saw.
+    "untranslated_prose_block_delivery_count",
+    "untranslated_prose_block_delivery_chars",
     # The remedy, beside the two measures of the loss it exists to remove: how many blocks
     # the generator answered by DIVIDING, what that cost in calls, and how much prose it
     # actually rescued. Without the pair of paragraph counts the ladder's effect is a claim.

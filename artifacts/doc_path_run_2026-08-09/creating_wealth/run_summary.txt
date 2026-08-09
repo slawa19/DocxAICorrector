@@ -1,0 +1,17 @@
+run_profile=ui-parity-translate-benchmark-advisory-image-safe-no-cleanup
+document_profile=creatingwealth-pdf-full-benchmark
+result=succeeded
+processing_operation=translate
+source_language=auto
+target_language=ru
+job_count=443
+model_accounting_controlled_block_fallback_block_count=0
+model_accounting_controlled_block_fallback_chars=0
+model_accounting_controlled_block_fallback_kind_counts={}
+model_accounting_untranslated_prose_block_rejection_count=0
+model_accounting_paragraph_disposition_counts={"accepted": 1786, "omitted": 0, "retry_required": 0, "source_restored": 0}
+model_accounting_model_output_discarded_reason_counts={}
+source_text_delivered_paragraph_count=not_reported
+source_text_delivered_block_count=not_reported
+source_text_delivered_chars=not_reported
+source_text_delivered_status_counts=not_reported
