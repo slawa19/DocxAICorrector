@@ -1,0 +1,17 @@
+run_profile=ui-parity-translate-benchmark-advisory-image-safe-no-cleanup
+document_profile=mazzucato-pdf-full-benchmark
+result=succeeded
+processing_operation=translate
+source_language=auto
+target_language=ru
+job_count=706
+model_accounting_controlled_block_fallback_block_count=48
+model_accounting_controlled_block_fallback_chars=8828
+model_accounting_controlled_block_fallback_kind_counts={"source_text_fallback": 48}
+model_accounting_untranslated_prose_block_rejection_count=0
+model_accounting_paragraph_disposition_counts={"accepted": 2280, "omitted": 1, "retry_required": 0, "source_restored": 0}
+model_accounting_model_output_discarded_reason_counts={}
+source_text_delivered_paragraph_count=1
+source_text_delivered_block_count=1
+source_text_delivered_chars=63
+source_text_delivered_status_counts={"omitted": 1, "source_restored": 0}

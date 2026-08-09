@@ -11,12 +11,17 @@ PipelineResult: TypeAlias = Literal["succeeded", "failed", "stopped"]
 # named here. The lookup below still has a default — a run must stop even for a kind nobody
 # wrote down — but the default is no longer silent.
 #
-# Spec 059: two keys were missing, and the omission was not cosmetic. ``source_text_fallback``
-# has always been reachable (a quality rejection whose fallback substrate is broken), and
-# ``untranslated_prose`` is the invariant's own reason; neither was a key, so
-# ``.get(kind, ...["heading_only_output"])`` served the wrong sentence, and a run that stopped
-# because a paragraph of prose would have shipped untranslated told the user that the model
-# had returned only a heading. Constitution V: a run that stops must explain itself truthfully.
+# Spec 059: ``source_text_fallback`` was missing, and the omission was not cosmetic. It has
+# always been reachable (a quality rejection whose fallback substrate is broken) and was not a
+# key, so ``.get(kind, ...["heading_only_output"])`` served the wrong sentence and told the
+# user the model had returned only a heading. Constitution V: a run that stops must explain
+# itself truthfully.
+#
+# Revised 2026-08-09: the companion key ``untranslated_prose`` was removed with the ``fail``
+# it explained. No path reaches this handler with that reason any more — the block ships and
+# the outcome travels as a warning (``block_execution.UNTRANSLATED_PROSE_WARNING_REASON``) —
+# and a catalogue entry for an outcome that cannot happen is a sentence nobody will ever read,
+# kept alive to be believed by the next reader.
 PROCESSED_BLOCK_REJECTION_MAP: dict[str, dict[str, Any]] = {
     "heading_only_output": {
         "code": "structurally_insufficient_processed_block",
@@ -51,14 +56,6 @@ PROCESSED_BLOCK_REJECTION_MAP: dict[str, dict[str, Any]] = {
         "classification": "source_text_fallback",
         "exception": RuntimeError(
             "Модель вернула исходный текст блока без перевода (source_text_fallback)."
-        ),
-    },
-    "untranslated_prose": {
-        "code": "untranslated_prose_block",
-        "classification": "untranslated_prose",
-        "exception": RuntimeError(
-            "Блок доставил бы абзац прозы на языке источника; подстановка исходника запрещена "
-            "(untranslated_prose). Прогон остановлен, чтобы потеря не выдала себя за успех."
         ),
     },
 }

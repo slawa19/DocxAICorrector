@@ -140,6 +140,7 @@
   "result.acceptance_check.emphasis_coverage_advisory": "перенос выделений (рекомендательно)",
   "result.acceptance_check.paragraph_break_advisory": "разрывы абзацев в середине предложения (рекомендательно)",
   "result.acceptance_check.no_toc_body_concat_required": "оглавление слиплось с основным текстом",
+  "result.acceptance_check.untranslated_prose_not_delivered": "в документ попала непереведённая проза",
   "preview.markdown_label": "Markdown",
   "preview.markdown_help": "На экране показывается только один Markdown-блок, чтобы интерфейс не перегружался на больших документах.",
   "preview.normalization": "Нормализация абзацев: сырьевых {raw} -> логических {logical} | слияний: {groups} групп, {merged} абзацев",

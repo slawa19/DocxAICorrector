@@ -253,8 +253,9 @@ class RunModelAccountingLedger:
         self._controlled_block_fallback_chars = 0
         self._controlled_block_fallback_kind_counts: dict[str, int] = {}
         self._controlled_block_fallback_kind_chars: dict[str, int] = {}
-        self._untranslated_prose_block_rejection_count = 0
-        self._untranslated_prose_block_rejection_kind_counts: dict[str, int] = {}
+        self._untranslated_prose_block_delivery_count = 0
+        self._untranslated_prose_block_delivery_chars = 0
+        self._untranslated_prose_block_delivery_kind_counts: dict[str, int] = {}
         self._degradation_ladder_block_count = 0
         self._degradation_ladder_model_call_count = 0
         self._degradation_ladder_translated_paragraph_count = 0
@@ -284,8 +285,9 @@ class RunModelAccountingLedger:
             self._controlled_block_fallback_chars = 0
             self._controlled_block_fallback_kind_counts = {}
             self._controlled_block_fallback_kind_chars = {}
-            self._untranslated_prose_block_rejection_count = 0
-            self._untranslated_prose_block_rejection_kind_counts = {}
+            self._untranslated_prose_block_delivery_count = 0
+            self._untranslated_prose_block_delivery_chars = 0
+            self._untranslated_prose_block_delivery_kind_counts = {}
             self._degradation_ladder_block_count = 0
             self._degradation_ladder_model_call_count = 0
             self._degradation_ladder_translated_paragraph_count = 0
@@ -372,30 +374,35 @@ class RunModelAccountingLedger:
                 self._controlled_block_fallback_kind_chars.get(kind, 0) + max(0, chars)
             )
 
-    def record_untranslated_prose_block_rejection(self, *, kind: str) -> None:
-        """Count ONE block the pipeline REFUSED to ship because it would have delivered prose
-        in the source language (spec 059 FR-A8).
+    def record_untranslated_prose_block_delivery(self, *, kind: str, chars: int = 0) -> None:
+        """Count ONE block DELIVERED carrying prose in the source language (spec 059 FR-A8).
 
-        The mirror image of ``record_controlled_block_fallback`` above, and it has to be a
-        separate number for the same reason that family is separate from the discard family:
-        the two record OPPOSITE outcomes of the same decision. ``controlled_block_fallback_*``
-        counts blocks that were judged bad and shipped; this counts blocks that were judged
-        bad and refused. Folding them together would make "how much substituted text did this
-        run deliver" unanswerable, which is the question the whole family exists for.
+        A strict SUBSET of ``record_controlled_block_fallback`` above, not a family beside it,
+        and every block counted here is counted there as well. That is the whole point of the
+        pair: ``controlled_block_fallback_*`` answers "how much substituted text did this run
+        deliver" over every fallback kind, and this answers "and how much of it was PROSE" —
+        the part a reader loses, as opposed to a bibliography row or a URL, which is the right
+        outcome for a fallback and needs no alarm. On the recorded 20260809T_059_doc_value run
+        the two read 48 blocks / 8 828 characters and 0 blocks / 0 characters: every one of
+        those 48 was apparatus, and a report that could not say so left the reader to guess.
 
-        No character count here, deliberately. The text was NOT delivered, so there is no
-        volume to price — a ``chars`` field would read as "this much was substituted" when
-        the truth is "nothing was". The blocks are countable; the loss is not, because it did
-        not happen.
-
-        A run that reports a non-zero count here did not finish: the decision is ``fail`` and
-        ``pipeline/block_failures.py`` takes the run down. The number therefore answers "why
-        did this run stop", and 0 is an assertion that no block was refused for this reason.
+        Renamed on 2026-08-09, and the rename is the fact. It was
+        ``record_untranslated_prose_block_rejection`` and it counted the OPPOSITE outcome:
+        blocks the pipeline refused to ship, after which the run stopped. Characters were
+        deliberately absent then, because nothing had been delivered and a volume would have
+        been a lie. Both halves inverted together — the block ships now, so the volume exists
+        and is counted, and a non-zero value no longer means the run stopped. Reading an
+        archived run: a report carrying ``untranslated_prose_block_rejection_count`` predates
+        the change and its non-zero value means "the run died here"; a report carrying
+        ``untranslated_prose_block_delivery_count`` means "the run delivered this and said so".
+        The two names never coexist in one report, which is what makes an old artifact
+        readable rather than ambiguous (``docs/LOGGING_AND_ARTIFACT_RETENTION.md`` §4).
         """
         with self._lock:
-            self._untranslated_prose_block_rejection_count += 1
-            self._untranslated_prose_block_rejection_kind_counts[kind] = (
-                self._untranslated_prose_block_rejection_kind_counts.get(kind, 0) + 1
+            self._untranslated_prose_block_delivery_count += 1
+            self._untranslated_prose_block_delivery_chars += max(0, chars)
+            self._untranslated_prose_block_delivery_kind_counts[kind] = (
+                self._untranslated_prose_block_delivery_kind_counts.get(kind, 0) + 1
             )
 
     def record_degradation_ladder(
@@ -548,15 +555,21 @@ class RunModelAccountingLedger:
                 "controlled_block_fallback_kind_chars": dict(
                     sorted(self._controlled_block_fallback_kind_chars.items())
                 ),
-                # Spec 059 FR-A8: the opposite outcome of the same decision — blocks the
-                # pipeline REFUSED to ship because they would have delivered prose in the
-                # source language. No character count: nothing was delivered, so there is no
-                # volume to price. A non-zero value means the run stopped.
-                "untranslated_prose_block_rejection_count": (
-                    self._untranslated_prose_block_rejection_count
+                # Spec 059 FR-A8: the PROSE subset of the family above — fallback blocks whose
+                # delivered text was the block's own source AND which carried at least one
+                # paragraph of prose. Always <= the controlled-fallback totals; the difference
+                # is the apparatus (bibliography, notes, front matter), for which delivering
+                # the source is the right outcome. Renamed from
+                # ``untranslated_prose_block_rejection_*`` on 2026-08-09, when the outcome
+                # stopped being a refusal; see ``record_untranslated_prose_block_delivery``.
+                "untranslated_prose_block_delivery_count": (
+                    self._untranslated_prose_block_delivery_count
                 ),
-                "untranslated_prose_block_rejection_kind_counts": dict(
-                    sorted(self._untranslated_prose_block_rejection_kind_counts.items())
+                "untranslated_prose_block_delivery_chars": (
+                    self._untranslated_prose_block_delivery_chars
+                ),
+                "untranslated_prose_block_delivery_kind_counts": dict(
+                    sorted(self._untranslated_prose_block_delivery_kind_counts.items())
                 ),
                 # Blocks on which the generator answered a rejection by DIVIDING the block
                 # instead of substituting its source. The pair of paragraph counts states
@@ -727,8 +740,10 @@ def record_controlled_block_fallback(*, kind: str, chars: int = 0) -> None:
     get_run_model_accounting_ledger().record_controlled_block_fallback(kind=kind, chars=chars)
 
 
-def record_untranslated_prose_block_rejection(*, kind: str) -> None:
-    get_run_model_accounting_ledger().record_untranslated_prose_block_rejection(kind=kind)
+def record_untranslated_prose_block_delivery(*, kind: str, chars: int = 0) -> None:
+    get_run_model_accounting_ledger().record_untranslated_prose_block_delivery(
+        kind=kind, chars=chars
+    )
 
 
 def record_degradation_ladder(

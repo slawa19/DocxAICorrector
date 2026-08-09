@@ -1264,9 +1264,16 @@ def finalize_processing_success(
     # Handing it over lets an anchor be checked against what the reader will actually open,
     # so a paragraph cleanup deleted or rewrote is counted without being given an address
     # that no longer exists (anti-regression #14).
+    # The third source of the same document fact rides along: a block re-delivered as its own
+    # source carries no per-paragraph trace of it (spec 059 FR-A8, revised 2026-08-09), so the
+    # pipeline hands over the prose paragraphs it already resolved rather than asking
+    # finalization to re-derive a region and a role it does not have.
     source_text_delivery_facts = build_source_text_delivery_facts(
         state.processed_chunks,
         delivered_markdown=runtime_display_markdown,
+        untranslated_prose_blocks=tuple(
+            getattr(state, "untranslated_prose_delivered_paragraphs", None) or ()
+        ),
     )
     source_text_delivery_notice = build_source_text_delivery_notice(
         source_text_delivery_facts,

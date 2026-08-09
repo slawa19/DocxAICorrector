@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import ast
 import inspect
+import logging
 from types import SimpleNamespace
 
 import pytest
@@ -239,16 +240,32 @@ class _Payload:
     """The two attributes the pair rule reads. Deliberately not a ``BlockExecutionPayload``:
     the predicate is documented as reading a payload by attribute, and a stub proves it."""
 
-    def __init__(self, *, target_text: str, paragraph_regions: list[str] | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        target_text: str,
+        paragraph_regions: list[str] | None = None,
+        structural_roles: list[str] | None = None,
+    ) -> None:
         self.target_text = target_text
         self.paragraph_regions = paragraph_regions
+        self.structural_roles = structural_roles
         self.job_kind = "llm"
         self.paragraph_ids = ["p1"]
         self.target_text_with_markers = target_text
 
 
-def _payload(*, target_text: str, paragraph_regions: list[str] | None = None) -> _Payload:
-    return _Payload(target_text=target_text, paragraph_regions=paragraph_regions)
+def _payload(
+    *,
+    target_text: str,
+    paragraph_regions: list[str] | None = None,
+    structural_roles: list[str] | None = None,
+) -> _Payload:
+    return _Payload(
+        target_text=target_text,
+        paragraph_regions=paragraph_regions,
+        structural_roles=structural_roles,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -399,6 +416,88 @@ def test_payload_contains_prose_reads_the_region_and_nothing_else() -> None:
 
 
 # ---------------------------------------------------------------------------
+# A-II, second narrowing (2026-08-09) -- the FIGURE apparatus is not prose
+# ---------------------------------------------------------------------------
+#
+# The region is the span of the book's BODY, and figures live in the body, so an image
+# placeholder and the caption under it are labelled ``prose`` by region and were read as prose
+# by the invariant. The signal that tells them apart already exists and predates this spec:
+# ``BlockExecutionPayload.structural_roles``, one label per paragraph, produced by
+# ``build_editing_jobs`` from the document layer's own roles.
+#
+# Measured on the four recorded books by re-running document preparation with no model call
+# (``jobs`` from ``_prepare_document_for_processing``): blocks holding at least one
+# prose-region paragraph, and of those, the blocks whose every prose-region paragraph is
+# image/caption --
+#
+#     Rethinking Money        281 blocks with prose region, 54 flip to apparatus
+#     The Value of Everything 211                            40
+#     Money & Sustainability  293                            39
+#     Creating Wealth         415                            61
+#
+# and the prose-region role census finds 28 ``caption`` paragraphs in The Value of Everything,
+# 22 in Creating Wealth. So this is not a rule written for nobody.
+
+
+def test_an_image_and_its_caption_are_not_prose_although_the_region_says_so() -> None:
+    """The narrowing, on the shape the measurement actually found: a figure block is one
+    ``[[DOCX_IMAGE_…]]`` paragraph followed by its caption, both inside the prose region."""
+    figure_block = _payload(
+        target_text="x",
+        paragraph_regions=["prose", "prose"],
+        structural_roles=["image", "caption"],
+    )
+    assert block_execution.payload_contains_prose(figure_block) is False
+    assert block_execution.prose_paragraph_indexes(figure_block) == ()
+
+
+def test_one_body_paragraph_beside_the_figure_is_still_prose_and_is_the_one_named() -> None:
+    """Anti-vacuum: the narrowing must not swallow the block. A caption next to a paragraph of
+    body text leaves the body text prose — and ``prose_paragraph_indexes`` names WHICH, because
+    the warning has to carry an address."""
+    mixed = _payload(
+        target_text="x",
+        paragraph_regions=["prose", "prose", "prose"],
+        structural_roles=["image", "caption", "body"],
+    )
+    assert block_execution.payload_contains_prose(mixed) is True
+    assert block_execution.prose_paragraph_indexes(mixed) == (2,)
+
+
+def test_the_roles_that_carry_a_books_text_stay_prose() -> None:
+    """The other half of the same anti-vacuum. Headings and list items are text a reader reads
+    and a translator must translate; only the figure apparatus is excused."""
+    for role in ("body", "heading", "list", "list_item", "epigraph", "attribution", ""):
+        assert (
+            block_execution.payload_contains_prose(
+                _payload(target_text="x", paragraph_regions=["prose"], structural_roles=[role])
+            )
+            is True
+        ), role
+
+
+def test_the_diagram_label_that_killed_the_recorded_run_is_NOT_closed_by_the_roles() -> None:
+    """HONEST CHARACTERIZATION, and the load-bearing one for this whole change.
+
+    Block 140 of 305 on run ``20260809T_059_doc_rethinking`` is paragraph ``p0812``, whose
+    entire text is ``2b`` — a step label on the Terra currency diagram, sitting next to
+    ``[[DOCX_IMAGE_img_031]]``. Re-running document preparation over the same PDF with no model
+    call reproduces the run exactly (2 265 paragraphs, 305 jobs) and gives that paragraph
+    ``structural_role="body"``, ``region="prose"``: the PDF text layer offers nothing else, so
+    the document layer has no signal to give it a figure role.
+
+    The narrowing above therefore does NOT catch it, and Constitution VII says such a residual
+    is ACCEPTED rather than patched with a length floor or a word list. That is exactly why the
+    outcome had to stop being a fail: a detector this rule cannot fix must not be able to make
+    a book unreachable.
+    """
+    diagram_label = _payload(
+        target_text="2b", paragraph_regions=["prose"], structural_roles=["body"]
+    )
+    assert block_execution.payload_contains_prose(diagram_label) is True
+
+
+# ---------------------------------------------------------------------------
 # A-4 / FR-A8 -- delivering untranslated prose becomes an inexpressible outcome
 # ---------------------------------------------------------------------------
 #
@@ -424,8 +523,20 @@ def _registry_entries(**_kwargs):
     return [{"paragraph_id": "p1", "text": "x"}]
 
 
-def _decide(*, rejection_kind, target_text, processed_chunk, paragraph_regions, languages_differ=True):
-    payload = _payload(target_text=target_text, paragraph_regions=paragraph_regions)
+def _decide(
+    *,
+    rejection_kind,
+    target_text,
+    processed_chunk,
+    paragraph_regions,
+    languages_differ=True,
+    structural_roles=None,
+):
+    payload = _payload(
+        target_text=target_text,
+        paragraph_regions=paragraph_regions,
+        structural_roles=structural_roles,
+    )
     return block_execution.classify_processed_block_failure_decision(
         rejection_kind=rejection_kind,
         payload=payload,
@@ -436,9 +547,18 @@ def _decide(*, rejection_kind, target_text, processed_chunk, paragraph_regions, 
 
 
 @pytest.mark.parametrize("rejection_kind", _QUALITY_REJECTION_KINDS)
-def test_no_quality_failure_on_a_prose_block_keeps_fallback_continue(rejection_kind: str) -> None:
-    """Anti-regression 7. Every one of the seven quality kinds, on a block of prose whose
-    delivered text is its own source: the run fails rather than shipping the source language.
+def test_a_prose_block_delivered_as_its_source_ships_with_a_warning_not_a_fail(
+    rejection_kind: str,
+) -> None:
+    """FR-A8 as revised on 2026-08-09. Every one of the seven quality kinds, on a block of
+    prose whose delivered text is its own source: the block SHIPS, and the decision carries
+    the warning that makes the delivery loud.
+
+    This assertion was the exact opposite until the recorded run
+    ``20260809T_059_doc_rethinking`` died at 45% on block 140 of 305 — whose whole text is
+    ``2b``, a step label on a currency diagram the model rightly returned unchanged. A hard
+    stop on a DETERMINISTIC detector defect makes the book unreachable: the next run stops in
+    the same place, and no action of the user's gets past it.
     """
     decision = _decide(
         rejection_kind=rejection_kind,
@@ -446,16 +566,21 @@ def test_no_quality_failure_on_a_prose_block_keeps_fallback_continue(rejection_k
         processed_chunk=_SHORT_UNTRANSLATED_BLOCK,
         paragraph_regions=["prose"],
     )
-    assert decision["decision"] == "fail"
-    assert decision["fail_reason"] == "untranslated_prose"
+    assert decision["decision"] == "fallback_continue"
+    assert decision[block_execution.UNTRANSLATED_PROSE_WARNING_KEY] == "untranslated_prose"
+    # Anti-regression 3: the text is delivered, not withheld. A warning that also drops the
+    # block would be the old failure wearing a quieter name.
+    assert decision["fallback_markdown"] == _SHORT_UNTRANSLATED_BLOCK
 
 
 @pytest.mark.parametrize("rejection_kind", _QUALITY_REJECTION_KINDS)
 @pytest.mark.parametrize("region", _APPARATUS_REGIONS)
-def test_the_same_failure_on_apparatus_keeps_fallback_continue(rejection_kind: str, region: str) -> None:
-    """Anti-regression 8, the anti-vacuum half. A rule that refuses everyone is broken in
-    exactly the same way as a rule that permits everyone. Footnotes, the table of contents
-    and front matter may still keep their controlled fallback.
+def test_the_same_failure_on_apparatus_ships_with_no_warning_at_all(rejection_kind: str, region: str) -> None:
+    """Anti-regression 8, the anti-vacuum half, and it matters MORE now than when the outcome
+    was a fail: a warning printed on every substituted block is noise, and the apparatus is
+    where substitution is the RIGHT outcome. Footnotes, the table of contents and front matter
+    ship silently — on the recorded ``20260809T_059_doc_value`` run that is 48 blocks and
+    8 828 characters of bibliography and URLs, every one of them correct.
     """
     decision = _decide(
         rejection_kind=rejection_kind,
@@ -464,7 +589,7 @@ def test_the_same_failure_on_apparatus_keeps_fallback_continue(rejection_kind: s
         paragraph_regions=[region, region],
     )
     assert decision["decision"] == "fallback_continue"
-    assert "fail_reason" not in decision
+    assert block_execution.UNTRANSLATED_PROSE_WARNING_KEY not in decision
 
 
 def test_a_mixed_block_is_decided_by_the_prose_paragraph_it_carries() -> None:
@@ -485,8 +610,9 @@ def test_a_mixed_block_is_decided_by_the_prose_paragraph_it_carries() -> None:
         processed_chunk=_SHORT_UNTRANSLATED_BLOCK,
         paragraph_regions=["back_matter", "back_matter"],
     )
-    assert mixed["decision"] == "fail"
-    assert apparatus_only["decision"] == "fallback_continue"
+    assert block_execution.UNTRANSLATED_PROSE_WARNING_KEY in mixed
+    assert block_execution.UNTRANSLATED_PROSE_WARNING_KEY not in apparatus_only
+    assert mixed["decision"] == apparatus_only["decision"] == "fallback_continue"
 
 
 # The measured control group, named one by one rather than invented. These are the pair
@@ -511,7 +637,7 @@ _MEASURED_FALSE_ALARMS = (
 def test_the_measured_false_alarms_do_not_fail_a_run_from_their_own_region(text: str) -> None:
     """Anti-regression 7b, first direction: in the region they actually live in -- index and
     bibliography rows are back matter, and acronym headings inside it are too -- the
-    invariant leaves them alone.
+    invariant leaves them alone, and says nothing about them either.
     """
     decision = _decide(
         rejection_kind="source_text_fallback",
@@ -520,6 +646,7 @@ def test_the_measured_false_alarms_do_not_fail_a_run_from_their_own_region(text:
         paragraph_regions=["back_matter"],
     )
     assert decision["decision"] == "fallback_continue"
+    assert block_execution.UNTRANSLATED_PROSE_WARNING_KEY not in decision
 
 
 @pytest.mark.parametrize("text", _MEASURED_FALSE_ALARMS)
@@ -544,6 +671,7 @@ def test_the_measured_false_alarms_do_not_fire_the_rule_inside_a_translated_bloc
         paragraph_regions=["prose", "prose"],
     )
     assert decision["decision"] == "fallback_continue"
+    assert block_execution.UNTRANSLATED_PROSE_WARNING_KEY not in decision
 
 
 def test_the_invariant_is_off_when_the_job_does_not_change_language() -> None:
@@ -556,6 +684,7 @@ def test_the_invariant_is_off_when_the_job_does_not_change_language() -> None:
         languages_differ=False,
     )
     assert decision["decision"] == "fallback_continue"
+    assert block_execution.UNTRANSLATED_PROSE_WARNING_KEY not in decision
 
 
 def test_a_prose_block_that_ships_the_models_own_answer_keeps_fallback_continue() -> None:
@@ -608,6 +737,9 @@ def test_the_invariant_stops_working_without_either_half_it_stands_on() -> None:
     take A-I's pair away -- deliver something that is NOT the source -- and the rule cannot
     fire at all, whatever the region says. Take A-II's region away and the block is read as
     prose, which is the safe direction and the one the contract documents.
+
+    Since 2026-08-09 both blocks SHIP, so what this reads is the warning key rather than the
+    decision: the rule that "fires" now announces instead of stopping.
     """
     without_the_pair = _decide(
         rejection_kind="source_text_fallback",
@@ -616,6 +748,7 @@ def test_the_invariant_stops_working_without_either_half_it_stands_on() -> None:
         paragraph_regions=["prose"],
     )
     assert without_the_pair["decision"] == "fallback_continue"
+    assert block_execution.UNTRANSLATED_PROSE_WARNING_KEY not in without_the_pair
 
     without_the_region = _decide(
         rejection_kind="source_text_fallback",
@@ -623,7 +756,8 @@ def test_the_invariant_stops_working_without_either_half_it_stands_on() -> None:
         processed_chunk=_SHORT_UNTRANSLATED_BLOCK,
         paragraph_regions=None,
     )
-    assert without_the_region["decision"] == "fail"
+    assert without_the_region["decision"] == "fallback_continue"
+    assert block_execution.UNTRANSLATED_PROSE_WARNING_KEY in without_the_region
 
 
 # ---------------------------------------------------------------------------
@@ -801,6 +935,7 @@ def _run_block_through_the_loop(*, payload, classification, processed_chunk, con
         narration_excluded_omitted_paragraph_count=0,
         narration_excluded_omitted_chars=0,
         generated_paragraph_registry=[],
+        untranslated_prose_delivered_paragraphs=[],
         started_at=0.0,
     )
     events: list[tuple[int, str, dict]] = []
@@ -834,16 +969,22 @@ def _run_block_through_the_loop(*, payload, classification, processed_chunk, con
     return outcome, state, events, rejections
 
 
-def test_a_prose_block_delivered_as_its_source_takes_the_run_down_and_says_why(monkeypatch) -> None:
-    """FR-A8 end to end through ``process_single_block``: reachable, loud, and counted.
+def test_a_prose_block_delivered_as_its_source_ships_and_is_announced(monkeypatch) -> None:
+    """FR-A8 end to end through ``process_single_block``: delivered, loud, and counted.
 
-    Anti-regression 1 in the direction that matters — the check has to be ABLE to fail. On
-    the recorded 2026-08-06 Money & Sustainability run this is the shape of the two blocks
-    that shipped English (5 581 characters also missing from the audiobook); a check that
-    stays green on that shape is broken.
+    Anti-regression 1 in the direction that matters — the rule has to be ABLE to fire. On the
+    recorded 2026-08-06 Money & Sustainability run this is the shape of the two blocks that
+    shipped English (5 581 characters also missing from the audiobook); a rule that stays
+    quiet on that shape is broken.
+
+    What changed on 2026-08-09 is the OUTCOME, not the detection: ``outcome is None`` (the run
+    continues) and ``state.processed_chunks`` carries the block, where both used to say the
+    opposite. Rule 4 of this change: the volume of delivered text may only grow.
     """
     from docxaicorrector.core import model_accounting
 
+    monkeypatch.setattr(block_execution, "_write_controlled_block_fallback_artifact", lambda **_kwargs: None)
+    monkeypatch.setattr(block_execution, "persist_terminal_job_result", lambda **_kwargs: None)
     model_accounting.get_run_model_accounting_ledger().reset()
     payload = SimpleNamespace(
         job_kind="llm",
@@ -852,6 +993,7 @@ def test_a_prose_block_delivered_as_its_source_takes_the_run_down_and_says_why(m
         target_text_with_markers=_SHORT_UNTRANSLATED_BLOCK,
         paragraph_ids=["p0001"],
         paragraph_regions=["prose"],
+        structural_roles=["body"],
         narration_include=True,
         target_chars=len(_SHORT_UNTRANSLATED_BLOCK),
         context_chars=0,
@@ -870,23 +1012,37 @@ def test_a_prose_block_delivered_as_its_source_takes_the_run_down_and_says_why(m
         ),
     )
 
-    assert outcome == "failed"
-    assert len(rejections) == 1
-    # Nothing was shipped: the DOCX branch never appended, so no untranslated text was
-    # delivered under a green classification.
-    assert state.processed_chunks == []
+    assert outcome is None
+    assert rejections == []
+    assert state.processed_chunks == [_SHORT_UNTRANSLATED_BLOCK]
 
-    rejected = [context for _level, event, context in events if event == "block_untranslated_prose_rejected"]
-    assert len(rejected) == 1
-    assert rejected[0]["prose_paragraph_count"] == 1
-    assert rejected[0]["rejection_kind"] == "source_text_fallback"
-    assert rejected[0]["source_language"] == "en"
+    announced = [
+        (level, context)
+        for level, event, context in events
+        if event == "block_untranslated_prose_delivered"
+    ]
+    assert len(announced) == 1
+    level, context = announced[0]
+    # Constitution V: the level has to mean what it says. The run completed and delivered.
+    assert level == logging.WARNING
+    assert context["prose_paragraph_count"] == 1
+    assert context["rejection_kind"] == "source_text_fallback"
+    assert context["source_language"] == "en"
+    assert context["delivered_chars"] == len(_SHORT_UNTRANSLATED_BLOCK)
+
+    # The alarm channel gets an addressable record, one entry per delivered block.
+    assert [
+        [record["paragraph_id"] for record in block]
+        for block in state.untranslated_prose_delivered_paragraphs
+    ] == [["p0001"]]
 
     snapshot = model_accounting.get_run_model_accounting_ledger().snapshot()
-    assert snapshot["untranslated_prose_block_rejection_count"] == 1
-    assert snapshot["untranslated_prose_block_rejection_kind_counts"] == {"source_text_fallback": 1}
-    # The counter families stay separate: this block was REFUSED, not shipped.
-    assert snapshot["controlled_block_fallback_block_count"] == 0
+    assert snapshot["untranslated_prose_block_delivery_count"] == 1
+    assert snapshot["untranslated_prose_block_delivery_chars"] == len(_SHORT_UNTRANSLATED_BLOCK)
+    assert snapshot["untranslated_prose_block_delivery_kind_counts"] == {"source_text_fallback": 1}
+    # SUBSET, not a separate family: the block was shipped, so the fallback family counts it
+    # too, and the difference between the two is the apparatus.
+    assert snapshot["controlled_block_fallback_block_count"] == 1
     model_accounting.get_run_model_accounting_ledger().reset()
 
 
@@ -926,10 +1082,11 @@ def test_an_apparatus_block_in_the_same_loop_still_ships_and_is_counted_as_a_fal
     assert outcome is None
     assert rejections == []
     assert state.processed_chunks == [_SHORT_UNTRANSLATED_BLOCK]
-    assert not [event for _level, event, _ctx in events if event == "block_untranslated_prose_rejected"]
+    assert not [event for _level, event, _ctx in events if event == "block_untranslated_prose_delivered"]
+    assert state.untranslated_prose_delivered_paragraphs == []
 
     snapshot = model_accounting.get_run_model_accounting_ledger().snapshot()
-    assert snapshot["untranslated_prose_block_rejection_count"] == 0
+    assert snapshot["untranslated_prose_block_delivery_count"] == 0
     assert snapshot["controlled_block_fallback_block_count"] == 1
     model_accounting.get_run_model_accounting_ledger().reset()
 
@@ -1083,21 +1240,24 @@ def test_the_default_edit_run_keeps_an_unchanged_prose_block_instead_of_dying(mo
     assert rejections == []
     assert state.processed_chunks == [unchanged]
     assert state.narration_chunks == [unchanged]
-    assert not [event for _level, event, _ctx in events if event == "block_untranslated_prose_rejected"]
+    assert not [event for _level, event, _ctx in events if event == "block_untranslated_prose_delivered"]
     assert (
         model_accounting.get_run_model_accounting_ledger().snapshot()[
-            "untranslated_prose_block_rejection_count"
+            "untranslated_prose_block_delivery_count"
         ]
         == 0
     )
     model_accounting.get_run_model_accounting_ledger().reset()
 
 
-def test_the_same_block_on_a_translate_run_still_fails(monkeypatch) -> None:
-    """Anti-vacuum for the operation gate: the fix must not switch the invariant off for
-    everyone. Same block, same text, same region -- only the operation differs."""
+def test_the_same_block_on_a_translate_run_is_still_announced(monkeypatch) -> None:
+    """Anti-vacuum for the operation gate: the fix must not switch the rule off for everyone.
+    Same block, same text, same region -- only the operation differs, and only the operation
+    that asked for another language gets the warning."""
     from docxaicorrector.core import model_accounting
 
+    monkeypatch.setattr(block_execution, "_write_controlled_block_fallback_artifact", lambda **_kwargs: None)
+    monkeypatch.setattr(block_execution, "persist_terminal_job_result", lambda **_kwargs: None)
     model_accounting.get_run_model_accounting_ledger().reset()
     english = "The monetary system is unchanged."
     payload = SimpleNamespace(
@@ -1107,11 +1267,12 @@ def test_the_same_block_on_a_translate_run_still_fails(monkeypatch) -> None:
         target_text_with_markers=english,
         paragraph_ids=["p0001"],
         paragraph_regions=["prose"],
+        structural_roles=["body"],
         narration_include=True,
         target_chars=len(english),
         context_chars=0,
     )
-    outcome, _state, events, rejections = _run_block_through_the_loop(
+    outcome, state, events, rejections = _run_block_through_the_loop(
         payload=payload,
         classification="source_text_fallback",
         processed_chunk=english,
@@ -1125,9 +1286,10 @@ def test_the_same_block_on_a_translate_run_still_fails(monkeypatch) -> None:
         ),
     )
 
-    assert outcome == "failed"
-    assert len(rejections) == 1
-    assert [event for _level, event, _ctx in events if event == "block_untranslated_prose_rejected"]
+    assert outcome is None
+    assert rejections == []
+    assert state.processed_chunks == [english]
+    assert [event for _level, event, _ctx in events if event == "block_untranslated_prose_delivered"]
     model_accounting.get_run_model_accounting_ledger().reset()
 
 
@@ -1137,12 +1299,18 @@ def test_the_same_block_on_a_translate_run_still_fails(monkeypatch) -> None:
 
 
 def test_the_rejection_handler_is_told_the_real_reason_not_the_stale_status() -> None:
-    """Constitution V. The decision carries ``fail_reason="untranslated_prose"``, but the
-    handler used to be given the CLASSIFIER's status. For the main case that is
-    ``source_text_fallback``, which is not a key of ``block_failures.rejection_map``, so the
-    lookup silently fell through to the ``heading_only_output`` entry: the run stopped
-    because a paragraph of prose would have shipped untranslated, and told the user the model
-    had returned only a heading."""
+    """Constitution V, on the ONE reason that can still stop the run at this call site.
+
+    With the invariant demoted to a warning, a quality rejection reaches the handler only when
+    the marker substrate is broken, and the reason it must be given is the classifier's own
+    ``source_text_fallback``. That was not a key of ``block_failures`` before spec 059, so the
+    lookup silently fell through to the ``heading_only_output`` entry and told the user the
+    model had returned only a heading.
+
+    The companion assertion — that ``untranslated_prose`` is a key — is deliberately INVERTED
+    here: no path reaches this handler with that reason any more, and a catalogue entry for an
+    outcome that cannot happen is a sentence kept alive to be believed.
+    """
     from docxaicorrector.pipeline import block_failures
 
     payload = SimpleNamespace(
@@ -1150,13 +1318,16 @@ def test_the_rejection_handler_is_told_the_real_reason_not_the_stale_status() ->
         toc_dominant=False,
         target_text=_SHORT_UNTRANSLATED_BLOCK,
         target_text_with_markers=_SHORT_UNTRANSLATED_BLOCK,
-        paragraph_ids=["p0001"],
+        # No paragraph ids: the controlled-fallback substrate cannot be built, which is the
+        # only remaining ``fail`` on this branch.
+        paragraph_ids=[],
         paragraph_regions=["prose"],
+        structural_roles=["body"],
         narration_include=True,
         target_chars=len(_SHORT_UNTRANSLATED_BLOCK),
         context_chars=0,
     )
-    _outcome, _state, _events, rejections = _run_block_through_the_loop(
+    outcome, _state, _events, rejections = _run_block_through_the_loop(
         payload=payload,
         classification="source_text_fallback",
         processed_chunk=_SHORT_UNTRANSLATED_BLOCK,
@@ -1169,8 +1340,10 @@ def test_the_rejection_handler_is_told_the_real_reason_not_the_stale_status() ->
             on_progress=lambda **_kwargs: None,
         ),
     )
-    assert rejections[0]["rejection_kind"] == "untranslated_prose"
-    assert "untranslated_prose" in block_failures.PROCESSED_BLOCK_REJECTION_MAP
+    assert outcome == "failed"
+    assert rejections[0]["rejection_kind"] == "source_text_fallback"
+    assert "source_text_fallback" in block_failures.PROCESSED_BLOCK_REJECTION_MAP
+    assert "untranslated_prose" not in block_failures.PROCESSED_BLOCK_REJECTION_MAP
 
 
 def test_every_status_the_classifier_can_produce_has_its_own_rejection_entry() -> None:
@@ -1186,7 +1359,6 @@ def test_every_status_the_classifier_can_produce_has_its_own_rejection_entry() -
         "heading_only_output",
         "bullet_heading_output",
         "toc_body_concat",
-        "untranslated_prose",
     }
     named = set(block_failures.PROCESSED_BLOCK_REJECTION_MAP) | {"empty"}
     assert reachable <= named, f"unnamed rejection kinds fall through to a wrong message: {reachable - named}"
