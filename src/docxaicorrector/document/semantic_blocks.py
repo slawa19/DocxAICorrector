@@ -6,10 +6,19 @@ from docxaicorrector.document.structure_authority import (
     phase_uses_advisory_hints,
 )
 from docxaicorrector.document.relations import build_paragraph_relations, resolve_effective_relation_kinds
-from docxaicorrector.core.models import DocumentBlock, ParagraphRelation, ParagraphUnit
+from docxaicorrector.core.models import (
+    PARAGRAPH_REGION_BACK_MATTER,
+    PARAGRAPH_REGION_FRONT_MATTER,
+    PARAGRAPH_REGION_PROSE,
+    PARAGRAPH_REGION_TOC,
+    DocumentBlock,
+    ParagraphRelation,
+    ParagraphUnit,
+)
 from docxaicorrector.validation.formatting_coverage import (
     _BACKMATTER_SECTION_TITLES,
     _normalize_structural_text,
+    _resolve_source_front_matter_boundary,
 )
 
 
@@ -236,6 +245,13 @@ def build_editing_jobs(
     jobs: list[dict[str, object]] = []
     fallback_paragraph_index = 0
     reference_region_indexes = _resolve_reference_region_indexes(blocks, structure_phase=structure_phase)
+    # Spec 059 A-II: resolved once for the whole document, because the front-matter boundary
+    # is a property of the document and not of any one block.
+    paragraph_regions_by_block = _resolve_paragraph_regions(
+        blocks,
+        reference_region_indexes=reference_region_indexes,
+        structure_phase=structure_phase,
+    )
     structure_source = _semantic_block_structure_source(structure_phase)
 
     for index, block in enumerate(blocks):
@@ -281,6 +297,8 @@ def build_editing_jobs(
                 "target_text_with_markers": build_marker_wrapped_block_text(block.paragraphs, paragraph_ids=paragraph_ids),
                 "paragraph_ids": paragraph_ids,
                 "structural_roles": structural_roles,
+                # Spec 059 A-II: parallel to ``paragraph_ids``, one label per paragraph.
+                "paragraph_regions": paragraph_regions_by_block[index],
                 "narration_include": narration_include,
                 "toc_dominant": toc_dominant,
                 "toc_paragraph_count": toc_only_paragraph_count,
@@ -781,6 +799,76 @@ def _resolve_reference_region_indexes(blocks: list[DocumentBlock], *, structure_
     for start_index, end_index in _resolve_reference_regions(blocks, structure_phase=structure_phase):
         excluded.update(range(start_index, end_index))
     return excluded
+
+
+def _resolve_paragraph_regions(
+    blocks: list[DocumentBlock],
+    *,
+    reference_region_indexes: set[int],
+    structure_phase: str = "post_ai_final",
+) -> list[list[str]]:
+    """Spec 059 A-II: one REGION label per paragraph, in document order, grouped by block.
+
+    The regions existed already; what did not exist was a way for the BLOCK EXECUTION stage
+    to read them per paragraph. Back matter was known only as a set of BLOCK indexes (for the
+    narration to drop), and the front-matter / TOC boundaries were resolved only downstream in
+    ``validation/formatting_coverage.py``, over the source registry, AFTER generation. On a
+    mixed "apparatus + prose" block there was therefore nothing to tell the two apart at the
+    moment a rejected block is either substituted or failed.
+
+    Nothing here is new detection. The back-matter region is the same
+    ``_resolve_reference_region_indexes`` the audiobook narration uses; the TOC is the
+    paragraph's own structural role; the front-matter boundary is
+    ``_resolve_source_front_matter_boundary``, reused rather than restated -- this module
+    already imports that family, and Constitution VII names it as the precedent for
+    region-based detection.
+
+    Two deliberate choices:
+
+    * the registry is indexed by POSITION in this block list, not by ``ParagraphUnit
+      .source_index``. The boundary is only ever compared against the same positions, and
+      ``source_index`` is ``-1`` for paragraphs that never came from an extracted document.
+    * TOC wins over front matter where both apply. A table of contents sits inside the front
+      matter, so either label would be "apparatus"; the more specific one is more useful to
+      the reader of a run report.
+
+    ``_resolve_bounded_toc_region`` is NOT reused: it needs a preparation diagnostic snapshot
+    that does not exist at this stage, and the paragraph's own ``toc_header``/``toc_entry``
+    structural role is a stronger signal than a region bound anyway.
+    """
+    registry = [
+        {
+            "source_index": position,
+            "role": paragraph.role,
+            "structural_role": paragraph.structural_role,
+            "text_preview": paragraph.text,
+        }
+        for position, paragraph in enumerate(
+            paragraph for block in blocks for paragraph in block.paragraphs
+        )
+    ]
+    # ``None`` from the resolver means "this document does not open with front matter", and
+    # the conservative reading of that is that nothing is front matter -- an unresolved
+    # boundary must not quietly demote the opening of a book to apparatus.
+    front_matter_boundary = _resolve_source_front_matter_boundary(registry, None)
+
+    regions: list[list[str]] = []
+    position = 0
+    for block_index, block in enumerate(blocks):
+        block_regions: list[str] = []
+        for paragraph in block.paragraphs:
+            if block_index in reference_region_indexes:
+                region = PARAGRAPH_REGION_BACK_MATTER
+            elif _is_toc_structural_role(paragraph, structure_phase=structure_phase):
+                region = PARAGRAPH_REGION_TOC
+            elif front_matter_boundary is not None and position < front_matter_boundary:
+                region = PARAGRAPH_REGION_FRONT_MATTER
+            else:
+                region = PARAGRAPH_REGION_PROSE
+            block_regions.append(region)
+            position += 1
+        regions.append(block_regions)
+    return regions
 
 
 def _resolve_narration_include(

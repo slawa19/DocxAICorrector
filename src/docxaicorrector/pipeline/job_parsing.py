@@ -1,5 +1,7 @@
 from typing import Any
 
+from docxaicorrector.core.models import PARAGRAPH_REGION_VALUES
+
 
 def coerce_required_text_field(job: Any, field_name: str, *, allow_blank: bool = True) -> str:
     value = job[field_name]
@@ -18,6 +20,24 @@ def coerce_optional_string_list(job: Any, field_name: str) -> list[str] | None:
     if not isinstance(value, list) or not all(isinstance(item, str) and item for item in value):
         raise TypeError(f"{field_name} must be a non-empty string list")
     return list(value)
+
+
+def coerce_paragraph_regions(job: Any) -> list[str] | None:
+    """Spec 059 A-II: the per-paragraph region list, validated against a CLOSED vocabulary.
+
+    An unknown name raises rather than being folded into either answer. A region the pipeline
+    does not define carries no meaning, and silently reading it as prose (or as apparatus)
+    would let the vocabulary drift on one side of the contract while the other side kept
+    deciding on it — which is the exact failure the shared constants in ``core.models`` exist
+    to prevent.
+    """
+    regions = coerce_optional_string_list(job, "paragraph_regions")
+    if regions is None:
+        return None
+    unknown = sorted({region for region in regions if region not in PARAGRAPH_REGION_VALUES})
+    if unknown:
+        raise ValueError(f"paragraph_regions carries unknown region names: {unknown}")
+    return regions
 
 
 def coerce_optional_bool(job: Any, field_name: str) -> bool | None:
@@ -69,6 +89,7 @@ def parse_processing_job(*, job: Any, payload_factory: Any) -> Any:
     target_text_with_markers = coerce_optional_text_field(job, "target_text_with_markers") or target_text
     paragraph_ids = coerce_optional_string_list(job, "paragraph_ids")
     structural_roles = coerce_optional_string_list(job, "structural_roles")
+    paragraph_regions = coerce_paragraph_regions(job)
     context_before = coerce_required_text_field(job, "context_before")
     context_after = coerce_required_text_field(job, "context_after")
     narration_include = coerce_optional_bool(job, "narration_include")
@@ -85,6 +106,7 @@ def parse_processing_job(*, job: Any, payload_factory: Any) -> Any:
         context_before=context_before,
         context_after=context_after,
         structural_roles=structural_roles,
+        paragraph_regions=paragraph_regions,
         narration_include=True if narration_include is None else narration_include,
         toc_dominant=bool(toc_dominant),
         toc_paragraph_count=toc_paragraph_count,

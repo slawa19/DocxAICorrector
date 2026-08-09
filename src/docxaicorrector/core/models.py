@@ -13,6 +13,31 @@ _UNSET = object()
 EXPLICIT_LIST_MARKER_PATTERN = re.compile(r"^(?:\s*[-*•]\s+|\s*\d+[\.)]\s+)")
 EXPLICIT_HEADING_PATTERN = re.compile(r"^#{1,6}\s+")
 
+# Spec 059 A-II / A-6: which REGION of the document a paragraph belongs to. The vocabulary
+# lives here, at the bottom layer, because ``document`` resolves it and ``pipeline`` decides
+# on it, and a vocabulary restated on both sides of a contract drifts.
+#
+# PROSE is defined by SUBTRACTION -- the source registry minus front matter, minus the TOC,
+# minus the back-matter reference region -- which is the owner's rule written down: the book
+# must be translated in full; footnotes and the table of contents do not count. The three
+# apparatus regions are detected by document region and structural role, NEVER by the shape
+# of the text (Constitution VII); the detectors are
+# ``validation/formatting_coverage._resolve_source_front_matter_boundary`` and
+# ``document/semantic_blocks._resolve_reference_region_indexes``, both of which the
+# constitution names as the precedent for this kind of detection.
+PARAGRAPH_REGION_PROSE = "prose"
+PARAGRAPH_REGION_FRONT_MATTER = "front_matter"
+PARAGRAPH_REGION_TOC = "toc"
+PARAGRAPH_REGION_BACK_MATTER = "back_matter"
+PARAGRAPH_REGION_VALUES = frozenset(
+    {
+        PARAGRAPH_REGION_PROSE,
+        PARAGRAPH_REGION_FRONT_MATTER,
+        PARAGRAPH_REGION_TOC,
+        PARAGRAPH_REGION_BACK_MATTER,
+    }
+)
+
 
 class ImageMode(StrEnum):
     NO_CHANGE = "no_change"

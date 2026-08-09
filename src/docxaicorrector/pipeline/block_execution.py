@@ -5,7 +5,11 @@ import uuid
 from pathlib import Path
 from typing import Any, Literal, TypeAlias
 
-from docxaicorrector.core.model_accounting import record_controlled_block_fallback
+from docxaicorrector.core.model_accounting import (
+    record_controlled_block_fallback,
+    record_untranslated_prose_block_rejection,
+)
+from docxaicorrector.core.models import PARAGRAPH_REGION_PROSE
 from docxaicorrector.generation._generation import (
     PARAGRAPH_STATUS_OMITTED,
     marker_paragraph_dispositions,
@@ -40,6 +44,10 @@ CONTROLLED_BLOCK_FAILURE_POLICY: dict[str, dict[str, str]] = {
     "corrupted_block": {"decision": "fail"},
     "source_extraction_failure": {"decision": "fail"},
 }
+# Spec 059 FR-A8: the one reason this work adds to the ``fail`` side of the table. Named
+# rather than inlined because it travels — into the decision dict, into the log event and
+# into the run-level counter — and three spellings of one reason is how a vocabulary drifts.
+UNTRANSLATED_PROSE_FAIL_REASON = "untranslated_prose"
 CONTROLLED_BLOCK_FALLBACK_DIR = Path(".run") / "block_fallbacks"
 # Retention budget for controlled-block fallback diagnostics (F26). Each rejected
 # block writes a uuid-suffixed artifact that never overwrites, so this flat family
@@ -145,6 +153,30 @@ def job_changes_language(*, source_language: Any, target_language: Any) -> bool:
     return source != target
 
 
+def payload_contains_prose(payload: Any) -> bool:
+    """Does this block carry at least one paragraph of PROSE? (spec 059 A-II / A-6.)
+
+    The question the invariant asks, and the reason A-II had to be built before A-4. A block
+    is substituted as a WHOLE, so the moment one of its paragraphs is prose, substituting the
+    block delivers untranslated prose — while a block that is entirely apparatus (front
+    matter, the table of contents, the back-matter reference region) may legitimately keep
+    the controlled fallback, which is the anti-vacuum half of the rule.
+
+    Region only. Not the structural role, not the length, not the shape of the text: the
+    measurement re-counted at block granularity found ONE firing block in 1 394 across five
+    recorded runs, and it is the ``# %`` / ``( i)`` title page — a REGION, not a form
+    (``scripts/measure-block-pair-rule.py``).
+
+    A missing list means the producer resolved no regions at all. ``build_editing_jobs`` is
+    the only producer and always labels, so absence means a caller outside document
+    preparation; there the safe direction is to protect the text.
+    """
+    regions = getattr(payload, "paragraph_regions", None)
+    if not isinstance(regions, list) or not regions:
+        return True
+    return any(region == PARAGRAPH_REGION_PROSE for region in regions)
+
+
 def _has_intact_controlled_fallback_substrate(
     *,
     payload: Any,
@@ -173,12 +205,41 @@ def _has_intact_controlled_fallback_substrate(
     return True
 
 
+def untranslated_prose_would_be_delivered(
+    *,
+    payload: Any,
+    fallback_markdown: str,
+    languages_differ: bool,
+) -> bool:
+    """The spec 059 FR-A8 invariant, in the three facts it stands on.
+
+    * the job CHANGES LANGUAGE (FR-A5) — otherwise a delivery identical to its source is the
+      right outcome and says nothing about completeness;
+    * the text about to ship IS the block's own source (A-I, the measured pair rule);
+    * the block carries at least one paragraph of PROSE (A-II, by region).
+
+    All three, or the fallback stands. That is why the order A-I -> A-II -> A-4 is fixed in
+    the spec: written before either of the first two, this function would be a rule that
+    never fires, and a declared invariant is worse than none.
+
+    What it deliberately does NOT look at: the rejection kind. The seven quality kinds differ
+    in why the block was rejected, not in what gets delivered, and only the second decides
+    whether prose is lost.
+    """
+    if not languages_differ:
+        return False
+    if not fallback_delivered_source_text(payload=payload, processed_chunk=fallback_markdown):
+        return False
+    return payload_contains_prose(payload)
+
+
 def classify_processed_block_failure_decision(
     *,
     rejection_kind: str,
     payload: Any,
     processed_chunk: str,
     build_processed_paragraph_registry_entries_fn: Any,
+    languages_differ: bool = True,
 ) -> dict[str, str]:
     policy = CONTROLLED_BLOCK_FAILURE_POLICY.get(rejection_kind, {"decision": "fail"})
     decision = str(policy.get("decision") or "fail")
@@ -190,6 +251,20 @@ def classify_processed_block_failure_decision(
         processed_chunk=processed_chunk,
         rejection_kind=fallback_kind,
     )
+    # Spec 059 FR-A8. Checked BEFORE the substrate test so the recorded reason is the true
+    # one: both answers are ``fail``, and a run report that says "the substrate was broken"
+    # when the real answer is "this block would have shipped untranslated prose" sends the
+    # next reader to the wrong place.
+    if untranslated_prose_would_be_delivered(
+        payload=payload,
+        fallback_markdown=fallback_markdown,
+        languages_differ=languages_differ,
+    ):
+        return {
+            "decision": "fail",
+            "fallback_kind": fallback_kind,
+            "fail_reason": UNTRANSLATED_PROSE_FAIL_REASON,
+        }
     if not _has_intact_controlled_fallback_substrate(
         payload=payload,
         fallback_markdown=fallback_markdown,
@@ -983,6 +1058,7 @@ def continue_controlled_processed_block_rejection(
     processed_chunk: str,
     rejection_kind: str,
     append_marker_registry_entries_fn: Any,
+    languages_differ: bool = True,
 ) -> None:
     # Run-level accounting for the pipeline half of the loss. Until this call the ONLY
     # trace a ``fallback_continue`` left was a per-block diagnostic under ``.run/`` and a
@@ -1016,10 +1092,27 @@ def continue_controlled_processed_block_rejection(
     # have LOST a paragraph, which would trade a visible defect for an unverifiable one.
     # The decision belongs here, not in ``_resolve_narration_include``, because only here is
     # the block's outcome known.
+    #
+    # Spec 059 FR-A9. The branch below appends NOTHING: the text is discarded, not skipped —
+    # 5 581 characters of the 2026-08-06 Money & Sustainability run left the audiobook this
+    # way. Two things changed, and neither of them is "narrate the source anyway":
+    #
+    # * ``languages_differ`` now guards it (FR-A5). "The delivery equals its source" only
+    #   means "untranslated" where the job asked for another language. On the recorded ru->ru
+    #   literary edit 1 144 of 1 761 deliveries are byte-identical to their source and every
+    #   one is correct, so without this guard the branch would have thrown two thirds of that
+    #   book out of the narration.
+    # * PROSE can no longer reach the branch at all, because the invariant in
+    #   ``untranslated_prose_would_be_delivered`` turns exactly this situation into ``fail``
+    #   before the block gets here. What still reaches it is a block that is entirely
+    #   APPARATUS and was delivered in the source language, and keeping that out of the
+    #   audiobook is spec 054's decision, not a hole.
     narration_excluded_by_source_fallback = False
     if not payload.narration_include:
         state.excluded_narration_block_count += 1
-    elif fallback_delivered_source_text(payload=payload, processed_chunk=processed_chunk):
+    elif languages_differ and fallback_delivered_source_text(
+        payload=payload, processed_chunk=processed_chunk
+    ):
         narration_excluded_by_source_fallback = True
         state.narration_excluded_source_fallback_block_count += 1
         state.narration_excluded_source_fallback_chars += len(processed_chunk)
@@ -1218,7 +1311,31 @@ def process_single_block(
             payload=payload,
             processed_chunk=processed_chunk,
             build_processed_paragraph_registry_entries_fn=build_processed_paragraph_registry_entries,
+            languages_differ=languages_differ,
         )
+        if rejection_decision.get("fail_reason") == UNTRANSLATED_PROSE_FAIL_REASON:
+            # Constitution V: the invariant refuses a delivery, so the run has to be able to
+            # say which block and on what grounds. The counter is the run-level twin — the
+            # controlled-fallback family counts what WAS shipped, and without this one the
+            # blocks the invariant stopped would be countable only by reading the log.
+            paragraph_regions = list(getattr(payload, "paragraph_regions", None) or ())
+            record_untranslated_prose_block_rejection(kind=rejection_decision["fallback_kind"])
+            dependencies.log_event(
+                logging.ERROR,
+                "block_untranslated_prose_rejected",
+                "Блок доставил бы прозу на языке источника; controlled fallback запрещён.",
+                filename=context.uploaded_filename,
+                block_index=index,
+                block_count=initialization.job_count,
+                rejection_kind=rejection_decision["fallback_kind"],
+                paragraph_count=len(paragraph_regions),
+                prose_paragraph_count=sum(
+                    1 for region in paragraph_regions if region == PARAGRAPH_REGION_PROSE
+                ),
+                source_language=str(getattr(context, "source_language", "") or ""),
+                target_language=str(getattr(context, "target_language", "") or ""),
+                input_preview=payload.target_text[:300],
+            )
         if rejection_decision["decision"] == "fallback_continue":
             continue_controlled_processed_block_rejection(
                 context=context,
@@ -1231,6 +1348,7 @@ def process_single_block(
                 processed_chunk=rejection_decision["fallback_markdown"],
                 rejection_kind=rejection_decision["fallback_kind"],
                 append_marker_registry_entries_fn=append_marker_registry_entries_fn,
+                languages_differ=languages_differ,
             )
             return None
         return handle_processed_block_rejection_fn(

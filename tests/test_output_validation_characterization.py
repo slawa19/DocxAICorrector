@@ -294,7 +294,12 @@ def test_classify_processed_block_golden() -> None:
         "english_residual_output": dict(target_text="нечто", processed_chunk="Русский текст chapter здесь."),
         "valid": dict(target_text="нечто", processed_chunk="Просто нормальный русский текст без проблем."),
     }
-    result = {name: ov.classify_processed_block(**kwargs) for name, kwargs in cases.items()}
+    # Positional, not ``**kwargs``: since spec 059 the classifier also takes a keyword-only
+    # ``languages_differ: bool``, and splatting a ``dict[str, str]`` into it is a type error.
+    result = {
+        name: ov.classify_processed_block(kwargs["target_text"], kwargs["processed_chunk"])
+        for name, kwargs in cases.items()
+    }
     _assert_golden("classify_processed_block", result)
 
 

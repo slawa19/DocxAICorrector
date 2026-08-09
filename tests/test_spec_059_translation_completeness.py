@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import ast
 import inspect
+from types import SimpleNamespace
 
 import pytest
 
@@ -62,6 +63,23 @@ def test_pair_rule_ignores_a_source_with_nothing_to_translate() -> None:
     defect. Measured: 46 of the 7 103 delivered records are exactly this (measurement §5)."""
     source = "1. 2. 3. — 4."
     assert output_validation.classify_processed_block(source, source) == "valid"
+
+
+def test_the_pipelines_own_placeholder_markup_is_not_something_to_translate() -> None:
+    """A-I, second condition, on the case that made it necessary.
+
+    ``[[DOCX_IMAGE_...]]`` and ``[[DOCX_PARA_...]]`` are the pipeline's own markup and every
+    stage is required to carry them through verbatim, so a block that is nothing but
+    placeholders is delivered unchanged BY DESIGN and has nothing in it to translate. Their
+    Latin letters belong to the machinery, not to the book. Same reasoning as spec 057's
+    unwrapping of importer-added emphasis: strip exactly the markup the pipeline itself
+    added, and nothing else -- which is why the second case below still fires.
+    """
+    placeholder_only = "[[DOCX_IMAGE_img_001]]"
+    assert output_validation.classify_processed_block(placeholder_only, placeholder_only) == "valid"
+
+    with_prose = "[[DOCX_IMAGE_img_001]]\n\nFigure 1. The circulation of money."
+    assert output_validation.classify_processed_block(with_prose, with_prose) == "source_text_fallback"
 
 
 def test_pair_rule_does_not_fire_when_the_job_keeps_the_language() -> None:
@@ -123,8 +141,15 @@ def test_pair_rule_is_visible_to_classification_and_to_the_decision_table() -> N
     Before this work ``fallback_delivered_source_text`` was called from
     ``block_execution.py:988`` and nowhere else, so the classifier and the policy table
     could not see it. This asserts both new readers by source, not by mock."""
-    module_source = inspect.getsource(block_execution)
-    assert module_source.count("fallback_delivered_source_text(payload=") >= 2, (
+    tree = ast.parse(inspect.getsource(block_execution))
+    call_sites = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "fallback_delivered_source_text"
+    ]
+    assert len(call_sites) >= 2, (
         "the pair rule must be read by the decision table as well as by the narration branch"
     )
     classifier_source = inspect.getsource(output_validation.classify_processed_block)
@@ -228,3 +253,686 @@ class _Payload:
 
 def _payload(*, target_text: str, paragraph_regions: list[str] | None = None) -> _Payload:
     return _Payload(target_text=target_text, paragraph_regions=paragraph_regions)
+
+
+# ---------------------------------------------------------------------------
+# A-II / FR-A6 -- the per-paragraph REGION reaches the payload
+# ---------------------------------------------------------------------------
+#
+# The region existed, but on another stage and at another granularity: block-level for the
+# narration (``semantic_blocks._resolve_reference_region_indexes``) and per-source_index but
+# only AFTER generation (``validation/formatting_coverage.py``). Nothing reached
+# ``BlockExecutionPayload``, so on a mixed "apparatus + prose" block there was nothing to
+# tell the two apart -- which is why the invariant in A-4 could not be written before this.
+#
+# PROSE = the source registry minus front matter, minus the TOC, minus the back-matter
+# reference region (spec 059 A-6). Region and structural role only; never the shape of the
+# text (Constitution VII).
+
+_LONG_BODY = (
+    "Money is not a thing but an agreement within a community to use something standardised "
+    "as a means of payment, and that agreement is what this chapter is about."
+)
+
+
+def _front_matter_to_back_matter_document():
+    from docxaicorrector.core.models import DocumentBlock, ParagraphUnit
+
+    return [
+        DocumentBlock(
+            paragraphs=[
+                ParagraphUnit(text="Rethinking Money", role="heading", paragraph_id="p0000", heading_level=1),
+                ParagraphUnit(text="A Berrett-Koehler book", role="body", paragraph_id="p0001"),
+            ]
+        ),
+        DocumentBlock(
+            paragraphs=[
+                ParagraphUnit(text="Contents", role="heading", structural_role="toc_header", paragraph_id="p0002"),
+                ParagraphUnit(text="Chapter 1 ...... 7", role="body", structural_role="toc_entry", paragraph_id="p0003"),
+            ]
+        ),
+        DocumentBlock(
+            paragraphs=[
+                ParagraphUnit(text="Chapter 1 — Beginnings", role="heading", paragraph_id="p0004", heading_level=1),
+                ParagraphUnit(text=_LONG_BODY, role="body", paragraph_id="p0005"),
+                ParagraphUnit(text=_LONG_BODY, role="body", paragraph_id="p0006"),
+                ParagraphUnit(text=_LONG_BODY, role="body", paragraph_id="p0007"),
+            ]
+        ),
+        DocumentBlock(
+            paragraphs=[
+                ParagraphUnit(text="References", role="heading", paragraph_id="p0008", heading_level=1),
+                ParagraphUnit(text="[1] Smith, 2009. DOI:10.1000/xyz", role="body", paragraph_id="p0009"),
+            ]
+        ),
+    ]
+
+
+def test_editing_jobs_carry_a_region_for_every_paragraph() -> None:
+    """A-II. Four regions, resolved from the document, one label per paragraph."""
+    from docxaicorrector.document.semantic_blocks import build_editing_jobs
+
+    jobs = build_editing_jobs(_front_matter_to_back_matter_document(), max_chars=3000)
+
+    assert [job["paragraph_regions"] for job in jobs] == [
+        ["front_matter", "front_matter"],
+        ["toc", "toc"],
+        ["prose", "prose", "prose", "prose"],
+        ["back_matter", "back_matter"],
+    ]
+
+
+def test_every_editing_job_labels_exactly_as_many_paragraphs_as_it_carries() -> None:
+    """The contract is "parallel to ``paragraph_ids``", and a guard is cheaper than a bug:
+    a producer that forgets the field reopens the hole in A-4 silently, because an absent
+    region is read as "unknown"."""
+    from docxaicorrector.document.semantic_blocks import build_editing_jobs
+
+    jobs = build_editing_jobs(_front_matter_to_back_matter_document(), max_chars=3000)
+
+    for job in jobs:
+        regions = job["paragraph_regions"]
+        paragraph_ids = job["paragraph_ids"]
+        assert isinstance(regions, list) and isinstance(paragraph_ids, list)
+        assert len(regions) == len(paragraph_ids)
+
+
+def test_payload_carries_the_regions_through_job_parsing() -> None:
+    """A-II is a CONTRACT change: the field has to survive the job -> payload boundary."""
+    from docxaicorrector.pipeline.contracts import BlockExecutionPayload
+    from docxaicorrector.pipeline.job_parsing import parse_processing_job
+
+    payload = parse_processing_job(
+        job={
+            "target_text": "Body.",
+            "context_before": "",
+            "context_after": "",
+            "target_chars": 5,
+            "context_chars": 0,
+            "paragraph_ids": ["p1", "p2"],
+            "paragraph_regions": ["prose", "back_matter"],
+        },
+        payload_factory=BlockExecutionPayload,
+    )
+
+    assert payload.paragraph_regions == ["prose", "back_matter"]
+
+
+def test_an_unknown_region_name_is_refused_rather_than_read_as_prose() -> None:
+    """Constitution VII: a vocabulary nobody validates is a vocabulary that drifts. A region
+    the pipeline does not define must not be silently folded into either answer."""
+    from docxaicorrector.pipeline.contracts import BlockExecutionPayload
+    from docxaicorrector.pipeline.job_parsing import parse_processing_job
+
+    with pytest.raises((TypeError, ValueError)):
+        parse_processing_job(
+            job={
+                "target_text": "Body.",
+                "context_before": "",
+                "context_after": "",
+                "target_chars": 5,
+                "context_chars": 0,
+                "paragraph_ids": ["p1"],
+                "paragraph_regions": ["footnotes"],
+            },
+            payload_factory=BlockExecutionPayload,
+        )
+
+
+def test_payload_contains_prose_reads_the_region_and_nothing_else() -> None:
+    """The consumer side of A-II, and the one the invariant asks.
+
+    A block of apparatus alone answers False -- that is the anti-vacuum half of
+    anti-regression 8. A MIXED block answers True, because a block that carries one paragraph
+    of prose cannot be substituted wholesale without losing that prose.
+
+    ``None`` means the producer resolved no regions at all. That is treated as prose: the
+    only production producer is ``build_editing_jobs``, which always labels, so absence means
+    a caller outside document preparation, and the safe direction there is to protect the
+    text rather than to assume it is apparatus.
+    """
+    assert block_execution.payload_contains_prose(_payload(target_text="x", paragraph_regions=["prose"])) is True
+    assert block_execution.payload_contains_prose(
+        _payload(target_text="x", paragraph_regions=["back_matter", "toc", "front_matter"])
+    ) is False
+    assert block_execution.payload_contains_prose(
+        _payload(target_text="x", paragraph_regions=["back_matter", "prose"])
+    ) is True
+    assert block_execution.payload_contains_prose(_payload(target_text="x", paragraph_regions=None)) is True
+    assert block_execution.payload_contains_prose(_payload(target_text="x", paragraph_regions=[])) is True
+
+
+# ---------------------------------------------------------------------------
+# A-4 / FR-A8 -- delivering untranslated prose becomes an inexpressible outcome
+# ---------------------------------------------------------------------------
+#
+# ``CONTROLLED_BLOCK_FAILURE_POLICY`` splits block failures into seven QUALITY kinds that
+# ship the block anyway (``fallback_continue``) and ten STRUCTURAL kinds that fail the run.
+# The invariant sits on the first group only, and only where all three of A-I's and A-II's
+# facts hold at once: the job changes language, the text about to ship IS the block's own
+# source, and the block carries at least one paragraph of prose.
+
+_QUALITY_REJECTION_KINDS = (
+    "empty",
+    "empty_processed_block",
+    "source_text_fallback",
+    "english_residual_output",
+    "heading_only_output",
+    "bullet_heading_output",
+    "toc_body_concat",
+)
+_APPARATUS_REGIONS = ("front_matter", "toc", "back_matter")
+
+
+def _registry_entries(**_kwargs):
+    return [{"paragraph_id": "p1", "text": "x"}]
+
+
+def _decide(*, rejection_kind, target_text, processed_chunk, paragraph_regions, languages_differ=True):
+    payload = _payload(target_text=target_text, paragraph_regions=paragraph_regions)
+    return block_execution.classify_processed_block_failure_decision(
+        rejection_kind=rejection_kind,
+        payload=payload,
+        processed_chunk=processed_chunk,
+        build_processed_paragraph_registry_entries_fn=_registry_entries,
+        languages_differ=languages_differ,
+    )
+
+
+@pytest.mark.parametrize("rejection_kind", _QUALITY_REJECTION_KINDS)
+def test_no_quality_failure_on_a_prose_block_keeps_fallback_continue(rejection_kind: str) -> None:
+    """Anti-regression 7. Every one of the seven quality kinds, on a block of prose whose
+    delivered text is its own source: the run fails rather than shipping the source language.
+    """
+    decision = _decide(
+        rejection_kind=rejection_kind,
+        target_text=_SHORT_UNTRANSLATED_BLOCK,
+        processed_chunk=_SHORT_UNTRANSLATED_BLOCK,
+        paragraph_regions=["prose"],
+    )
+    assert decision["decision"] == "fail"
+    assert decision["fail_reason"] == "untranslated_prose"
+
+
+@pytest.mark.parametrize("rejection_kind", _QUALITY_REJECTION_KINDS)
+@pytest.mark.parametrize("region", _APPARATUS_REGIONS)
+def test_the_same_failure_on_apparatus_keeps_fallback_continue(rejection_kind: str, region: str) -> None:
+    """Anti-regression 8, the anti-vacuum half. A rule that refuses everyone is broken in
+    exactly the same way as a rule that permits everyone. Footnotes, the table of contents
+    and front matter may still keep their controlled fallback.
+    """
+    decision = _decide(
+        rejection_kind=rejection_kind,
+        target_text=_SHORT_UNTRANSLATED_BLOCK,
+        processed_chunk=_SHORT_UNTRANSLATED_BLOCK,
+        paragraph_regions=[region, region],
+    )
+    assert decision["decision"] == "fallback_continue"
+    assert "fail_reason" not in decision
+
+
+def test_a_mixed_block_is_decided_by_the_prose_paragraph_it_carries() -> None:
+    """Anti-regression 7c. Substitution happens on the BLOCK, so one paragraph of prose is
+    enough to make substituting the whole block a loss of prose. Remove that paragraph and
+    the same block, the same text and the same rejection kind decide the other way -- which
+    is the per-paragraph discrimination A-II was built for.
+    """
+    mixed = _decide(
+        rejection_kind="source_text_fallback",
+        target_text=_SHORT_UNTRANSLATED_BLOCK,
+        processed_chunk=_SHORT_UNTRANSLATED_BLOCK,
+        paragraph_regions=["back_matter", "prose"],
+    )
+    apparatus_only = _decide(
+        rejection_kind="source_text_fallback",
+        target_text=_SHORT_UNTRANSLATED_BLOCK,
+        processed_chunk=_SHORT_UNTRANSLATED_BLOCK,
+        paragraph_regions=["back_matter", "back_matter"],
+    )
+    assert mixed["decision"] == "fail"
+    assert apparatus_only["decision"] == "fallback_continue"
+
+
+# The measured control group, named one by one rather than invented. These are the pair
+# rule's false alarms from ``measurement-translation-signal.md`` section 5: 26 of 7 103
+# delivered records, 21 of them shorter than 20 letters, 2 URLs, 1 title-case name. A rule
+# that fails a run on "### B2B" or on a bare domain is broken (anti-regression 7b) -- and
+# what tells them from lost prose is the REGION, never the feature.
+_MEASURED_FALSE_ALARMS = (
+    "### B2B",
+    "### WISPOS",
+    "MediCash, 165",
+    "Lehman Brothers, 70",
+    "Stripe, 115- 116",
+    "Barter Systems Inc.",
+    "**www.triarchypress.com/peoplemoney**",
+    "complementarycurrency.org.",
+    "*Finanzmaerkte* (2005).",
+)
+
+
+@pytest.mark.parametrize("text", _MEASURED_FALSE_ALARMS)
+def test_the_measured_false_alarms_do_not_fail_a_run_from_their_own_region(text: str) -> None:
+    """Anti-regression 7b, first direction: in the region they actually live in -- index and
+    bibliography rows are back matter, and acronym headings inside it are too -- the
+    invariant leaves them alone.
+    """
+    decision = _decide(
+        rejection_kind="source_text_fallback",
+        target_text=text,
+        processed_chunk=text,
+        paragraph_regions=["back_matter"],
+    )
+    assert decision["decision"] == "fallback_continue"
+
+
+@pytest.mark.parametrize("text", _MEASURED_FALSE_ALARMS)
+def test_the_measured_false_alarms_do_not_fire_the_rule_inside_a_translated_block(text: str) -> None:
+    """Anti-regression 7b, second and stronger direction, and the reason the measurement was
+    re-run at block granularity before any code was written.
+
+    Every one of those 26 records is a PARAGRAPH. Substitution and classification both happen
+    on a BLOCK, and a block is 3 to 6 paragraphs on the recorded runs. Put an untranslated
+    acronym heading next to one translated neighbour and the block is no longer byte-identical
+    to its source, so the rule does not fire at all -- region or no region. Measured
+    consequence: 1 firing block in 1 394 across five runs
+    (``scripts/measure-block-pair-rule.py``), and that one is the title page.
+    """
+    source_block = text + "\n\nThe monetary system is unchanged."
+    delivered_block = text + "\n\nДенежная система не изменилась."
+    assert output_validation.classify_processed_block(source_block, delivered_block) == "valid"
+    decision = _decide(
+        rejection_kind="source_text_fallback",
+        target_text=source_block,
+        processed_chunk=delivered_block,
+        paragraph_regions=["prose", "prose"],
+    )
+    assert decision["decision"] == "fallback_continue"
+
+
+def test_the_invariant_is_off_when_the_job_does_not_change_language() -> None:
+    """FR-A5 at the decision point, not only at the classifier."""
+    decision = _decide(
+        rejection_kind="source_text_fallback",
+        target_text="Это уже хороший абзац.",
+        processed_chunk="Это уже хороший абзац.",
+        paragraph_regions=["prose"],
+        languages_differ=False,
+    )
+    assert decision["decision"] == "fallback_continue"
+
+
+def test_a_prose_block_that_ships_the_models_own_answer_keeps_fallback_continue() -> None:
+    """Anti-regression 3, on the unit level: the invariant must not become "stop substituting".
+
+    A quality rejection whose fallback ships the MODEL's answer -- text that is not the
+    source -- still ships. The rule keys on what is about to be DELIVERED, not on the fact
+    that something was rejected, so no path removes text that used to be delivered.
+    """
+    decision = _decide(
+        rejection_kind="heading_only_output",
+        target_text="# Заголовок\n\nЭто полноценный абзац.",
+        processed_chunk="# Heading",
+        paragraph_regions=["prose", "prose"],
+    )
+    assert decision["decision"] == "fallback_continue"
+    assert decision["fallback_markdown"] == "# Heading"
+
+
+def test_the_ten_structural_kinds_are_untouched_by_the_invariant() -> None:
+    """Anti-regression 8, second sentence: the ten structural kinds stay ``fail``, and they
+    stay ``fail`` for their own reason, not for this one.
+    """
+    for rejection_kind in (
+        "missing_provider_client",
+        "missing_provider_configuration",
+        "missing_source_segment",
+        "missing_translated_segment",
+        "final_translated_book_incomplete",
+        "marker_registry_failure",
+        "marker_anchor_failure",
+        "invalid_processing_job",
+        "corrupted_block",
+        "source_extraction_failure",
+    ):
+        decision = _decide(
+            rejection_kind=rejection_kind,
+            target_text=_SHORT_UNTRANSLATED_BLOCK,
+            processed_chunk=_SHORT_UNTRANSLATED_BLOCK,
+            paragraph_regions=["prose"],
+        )
+        assert decision == {"decision": "fail", "fallback_kind": rejection_kind}
+
+
+def test_the_invariant_stops_working_without_either_half_it_stands_on() -> None:
+    """Anti-regression 10, and the reason the spec fixes the order A-I -> A-II -> A-4.
+
+    A table changed before the per-paragraph classification gives an invariant that is
+    declared and does not fire. This drives that failure directly instead of asserting it:
+    take A-I's pair away -- deliver something that is NOT the source -- and the rule cannot
+    fire at all, whatever the region says. Take A-II's region away and the block is read as
+    prose, which is the safe direction and the one the contract documents.
+    """
+    without_the_pair = _decide(
+        rejection_kind="source_text_fallback",
+        target_text=_SHORT_UNTRANSLATED_BLOCK,
+        processed_chunk="Денежная система не изменилась.",
+        paragraph_regions=["prose"],
+    )
+    assert without_the_pair["decision"] == "fallback_continue"
+
+    without_the_region = _decide(
+        rejection_kind="source_text_fallback",
+        target_text=_SHORT_UNTRANSLATED_BLOCK,
+        processed_chunk=_SHORT_UNTRANSLATED_BLOCK,
+        paragraph_regions=None,
+    )
+    assert without_the_region["decision"] == "fail"
+
+
+# ---------------------------------------------------------------------------
+# FR-A9 -- the narration branch that throws text away
+# ---------------------------------------------------------------------------
+#
+# ``continue_controlled_processed_block_rejection`` has one ``narration_chunks.append``, and
+# it sits in the ``else``. The branch above it -- "the fallback delivered the block's own
+# source" -- appends nothing at all: the text is DISCARDED, not merely skipped. On the
+# 2026-08-06 Money & Sustainability run that branch removed 5 581 characters from the
+# audiobook.
+#
+# Spec 054 decided that source-language text must not reach the narration, and that stands.
+# What did not stand is that the branch asked the pair rule WITHOUT asking whether the job
+# changes language at all: on a ru->ru literary edit, 65.0% of deliveries are byte-identical
+# to their source and every one of them is correct (measurement section 5), so the branch
+# would have discarded two thirds of the book from the narration.
+
+
+def _marker_block(*pairs):
+    """The generator's return value for a block: (paragraph_id, text, status)."""
+    from docxaicorrector.generation._generation import MarkerPreservedBlockText, ParagraphDisposition
+
+    dispositions = [
+        ParagraphDisposition(paragraph_id=paragraph_id, text=text, status=status)
+        for paragraph_id, text, status in pairs
+    ]
+    joined = "\n\n".join(item.text for item in dispositions)
+    return MarkerPreservedBlockText(joined, dispositions)
+
+
+def _narration_harness():
+    state = SimpleNamespace(
+        processed_chunks=[],
+        narration_chunks=[],
+        excluded_narration_block_count=0,
+        narration_excluded_source_fallback_block_count=0,
+        narration_excluded_source_fallback_chars=0,
+        narration_excluded_omitted_paragraph_count=0,
+        narration_excluded_omitted_chars=0,
+        generated_paragraph_registry=[],
+    )
+    context = SimpleNamespace(
+        uploaded_filename="book.docx",
+        runtime=object(),
+        on_progress=lambda **_kwargs: None,
+        source_language="en",
+        target_language="ru",
+    )
+    dependencies = SimpleNamespace(log_event=lambda *_args, **_kwargs: None)
+    emitters = SimpleNamespace(
+        emit_state=lambda *_args, **_kwargs: None,
+        emit_status=lambda *_args, **_kwargs: None,
+        emit_log=lambda *_args, **_kwargs: None,
+    )
+    return state, context, dependencies, emitters
+
+
+def _continue_fallback(*, target_text, processed_chunk, languages_differ, monkeypatch, narration_include=True):
+    monkeypatch.setattr(block_execution, "_write_controlled_block_fallback_artifact", lambda **_kwargs: None)
+    monkeypatch.setattr(block_execution, "persist_terminal_job_result", lambda **_kwargs: None)
+    state, context, dependencies, emitters = _narration_harness()
+    payload = SimpleNamespace(
+        job_kind="llm",
+        target_text=target_text,
+        target_text_with_markers=target_text,
+        paragraph_ids=["p1"],
+        paragraph_regions=["prose"],
+        narration_include=narration_include,
+        target_chars=len(target_text),
+        context_chars=0,
+    )
+    block_execution.continue_controlled_processed_block_rejection(
+        context=context,
+        dependencies=dependencies,
+        emitters=emitters,
+        state=state,
+        initialization=SimpleNamespace(job_count=1),
+        index=1,
+        payload=payload,
+        processed_chunk=processed_chunk,
+        rejection_kind="source_text_fallback",
+        append_marker_registry_entries_fn=lambda **_kwargs: None,
+        languages_differ=languages_differ,
+    )
+    return state
+
+
+def test_a_same_language_job_no_longer_loses_an_unchanged_block_from_the_narration(monkeypatch) -> None:
+    """FR-A9 + FR-A5. The measured case: a literary edit that legitimately left a paragraph
+    alone. Before this, the branch read "delivered == source" as "untranslated" and dropped
+    the paragraph out of the audiobook without anyone asking what the job was."""
+    unchanged = "Это уже хороший абзац, и правка его не улучшит."
+    state = _continue_fallback(
+        target_text=unchanged,
+        processed_chunk=unchanged,
+        languages_differ=False,
+        monkeypatch=monkeypatch,
+    )
+    assert state.narration_chunks == [unchanged]
+    assert state.narration_excluded_source_fallback_block_count == 0
+    assert state.narration_excluded_source_fallback_chars == 0
+
+
+def test_apparatus_delivered_in_the_source_language_is_still_kept_out_of_the_narration(monkeypatch) -> None:
+    """The anti-vacuum half, and spec 054's rule intact: where the job DOES change language,
+    a block delivered in the source language still does not reach the audiobook, and the
+    characters are still counted. Nothing sits between the audio and the listener."""
+    english = "Notes and references for chapter four."
+    state = _continue_fallback(
+        target_text=english,
+        processed_chunk=english,
+        languages_differ=True,
+        monkeypatch=monkeypatch,
+    )
+    assert state.narration_chunks == []
+    assert state.narration_excluded_source_fallback_block_count == 1
+    assert state.narration_excluded_source_fallback_chars == len(english)
+
+
+def test_a_block_the_region_excludes_is_counted_as_a_region_exclusion(monkeypatch) -> None:
+    """The first branch is untouched: a block the document region keeps out of the narration
+    is counted there, not as a source-fallback exclusion. The two answer different questions
+    and a run report that mixes them cannot be read."""
+    english = "Notes and references for chapter four."
+    state = _continue_fallback(
+        target_text=english,
+        processed_chunk=english,
+        languages_differ=True,
+        monkeypatch=monkeypatch,
+        narration_include=False,
+    )
+    assert state.narration_chunks == []
+    assert state.excluded_narration_block_count == 1
+    assert state.narration_excluded_source_fallback_block_count == 0
+
+
+def test_an_unrescued_paragraph_is_held_not_spoken(monkeypatch) -> None:
+    """Anti-regression 11, and it is a test on the STATUS rather than on the text.
+
+    ``narration_projection_for_processed_block`` HOLDS an ``omitted`` paragraph and SPEAKS a
+    ``source_restored`` one. A paragraph the degradation ladder could not rescue therefore has
+    to keep ``omitted``: relabelling it ``source_restored`` would read MORE source-language
+    text aloud than having no ladder at all.
+    """
+    from docxaicorrector.generation._generation import (
+        PARAGRAPH_STATUS_OMITTED,
+        PARAGRAPH_STATUS_SOURCE_RESTORED,
+    )
+
+    held = block_execution.narration_projection_for_processed_block(
+        _marker_block(("p1", "English that was never rescued.", PARAGRAPH_STATUS_OMITTED))
+    )
+    spoken = block_execution.narration_projection_for_processed_block(
+        _marker_block(("p1", "English that was never rescued.", PARAGRAPH_STATUS_SOURCE_RESTORED))
+    )
+    assert held == ("", 1, len("English that was never rescued."))
+    assert spoken == ("English that was never rescued.", 0, 0)
+
+
+# ---------------------------------------------------------------------------
+# The wiring: the invariant has to be reachable from the block loop, not only callable
+# ---------------------------------------------------------------------------
+
+
+def _run_block_through_the_loop(*, payload, classification, processed_chunk, context):
+    from docxaicorrector.pipeline.block_execution import process_single_block
+
+    state = SimpleNamespace(
+        processed_chunks=[],
+        narration_chunks=[],
+        excluded_narration_block_count=0,
+        narration_excluded_source_fallback_block_count=0,
+        narration_excluded_source_fallback_chars=0,
+        narration_excluded_omitted_paragraph_count=0,
+        narration_excluded_omitted_chars=0,
+        generated_paragraph_registry=[],
+        started_at=0.0,
+    )
+    events: list[tuple[int, str, dict]] = []
+    rejections: list[dict] = []
+    outcome = process_single_block(
+        context=context,
+        dependencies=SimpleNamespace(
+            log_event=lambda level, event, _message, **ctx: events.append((level, event, ctx))
+        ),
+        emitters=SimpleNamespace(
+            emit_state=lambda *_a, **_k: None,
+            emit_status=lambda *_a, **_k: None,
+            emit_log=lambda *_a, **_k: None,
+        ),
+        state=state,
+        initialization=SimpleNamespace(job_count=1),
+        index=1,
+        job=object(),
+        parse_processing_job_fn=lambda **_kwargs: payload,
+        handle_invalid_processing_job_fn=lambda **_kwargs: None,
+        emit_block_started_fn=lambda **_kwargs: None,
+        is_marker_mode_enabled_fn=lambda _context, _payload: False,
+        execute_processing_block_fn=lambda **_kwargs: (processed_chunk, False),
+        handle_block_generation_failure_fn=lambda **_kwargs: None,
+        classify_processed_block_fn=lambda *_args, **_kwargs: classification,
+        handle_processed_block_rejection_fn=lambda **kwargs: rejections.append(kwargs) or "failed",
+        append_marker_registry_entries_fn=lambda **_kwargs: None,
+        handle_marker_registry_failure_fn=lambda **_kwargs: None,
+        emit_block_completed_fn=lambda **_kwargs: None,
+    )
+    return outcome, state, events, rejections
+
+
+def test_a_prose_block_delivered_as_its_source_takes_the_run_down_and_says_why(monkeypatch) -> None:
+    """FR-A8 end to end through ``process_single_block``: reachable, loud, and counted.
+
+    Anti-regression 1 in the direction that matters — the check has to be ABLE to fail. On
+    the recorded 2026-08-06 Money & Sustainability run this is the shape of the two blocks
+    that shipped English (5 581 characters also missing from the audiobook); a check that
+    stays green on that shape is broken.
+    """
+    from docxaicorrector.core import model_accounting
+
+    model_accounting.get_run_model_accounting_ledger().reset()
+    payload = SimpleNamespace(
+        job_kind="llm",
+        toc_dominant=False,
+        target_text=_SHORT_UNTRANSLATED_BLOCK,
+        target_text_with_markers=_SHORT_UNTRANSLATED_BLOCK,
+        paragraph_ids=["p0001"],
+        paragraph_regions=["prose"],
+        narration_include=True,
+        target_chars=len(_SHORT_UNTRANSLATED_BLOCK),
+        context_chars=0,
+    )
+    outcome, state, events, rejections = _run_block_through_the_loop(
+        payload=payload,
+        classification="source_text_fallback",
+        processed_chunk=_SHORT_UNTRANSLATED_BLOCK,
+        context=SimpleNamespace(
+            processing_operation="translate",
+            uploaded_filename="book.docx",
+            runtime=object(),
+            on_progress=lambda **_kwargs: None,
+            source_language="en",
+            target_language="ru",
+        ),
+    )
+
+    assert outcome == "failed"
+    assert len(rejections) == 1
+    # Nothing was shipped: the DOCX branch never appended, so no untranslated text was
+    # delivered under a green classification.
+    assert state.processed_chunks == []
+
+    rejected = [context for _level, event, context in events if event == "block_untranslated_prose_rejected"]
+    assert len(rejected) == 1
+    assert rejected[0]["prose_paragraph_count"] == 1
+    assert rejected[0]["rejection_kind"] == "source_text_fallback"
+    assert rejected[0]["source_language"] == "en"
+
+    snapshot = model_accounting.get_run_model_accounting_ledger().snapshot()
+    assert snapshot["untranslated_prose_block_rejection_count"] == 1
+    assert snapshot["untranslated_prose_block_rejection_kind_counts"] == {"source_text_fallback": 1}
+    # The counter families stay separate: this block was REFUSED, not shipped.
+    assert snapshot["controlled_block_fallback_block_count"] == 0
+    model_accounting.get_run_model_accounting_ledger().reset()
+
+
+def test_an_apparatus_block_in_the_same_loop_still_ships_and_is_counted_as_a_fallback(monkeypatch) -> None:
+    """The anti-vacuum twin of the test above, driven through the same call path so the
+    difference is the REGION and nothing else."""
+    from docxaicorrector.core import model_accounting
+
+    monkeypatch.setattr(block_execution, "_write_controlled_block_fallback_artifact", lambda **_kwargs: None)
+    monkeypatch.setattr(block_execution, "persist_terminal_job_result", lambda **_kwargs: None)
+    model_accounting.get_run_model_accounting_ledger().reset()
+    payload = SimpleNamespace(
+        job_kind="llm",
+        toc_dominant=False,
+        target_text=_SHORT_UNTRANSLATED_BLOCK,
+        target_text_with_markers=_SHORT_UNTRANSLATED_BLOCK,
+        paragraph_ids=["p0001"],
+        paragraph_regions=["back_matter"],
+        narration_include=True,
+        target_chars=len(_SHORT_UNTRANSLATED_BLOCK),
+        context_chars=0,
+    )
+    outcome, state, events, rejections = _run_block_through_the_loop(
+        payload=payload,
+        classification="source_text_fallback",
+        processed_chunk=_SHORT_UNTRANSLATED_BLOCK,
+        context=SimpleNamespace(
+            processing_operation="translate",
+            uploaded_filename="book.docx",
+            runtime=object(),
+            on_progress=lambda **_kwargs: None,
+            source_language="en",
+            target_language="ru",
+        ),
+    )
+
+    assert outcome is None
+    assert rejections == []
+    assert state.processed_chunks == [_SHORT_UNTRANSLATED_BLOCK]
+    assert not [event for _level, event, _ctx in events if event == "block_untranslated_prose_rejected"]
+
+    snapshot = model_accounting.get_run_model_accounting_ledger().snapshot()
+    assert snapshot["untranslated_prose_block_rejection_count"] == 0
+    assert snapshot["controlled_block_fallback_block_count"] == 1
+    model_accounting.get_run_model_accounting_ledger().reset()

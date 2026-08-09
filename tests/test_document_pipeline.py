@@ -1325,6 +1325,11 @@ def _run_standalone_audiobook_with_source_fallback_block(*, runtime, log_event):
             "target_text": target_text,
             "target_text_with_markers": target_text,
             "paragraph_ids": [paragraph_id],
+            # Spec 059 A-II / FR-A8: the rejected block here is APPARATUS. The subject of this
+            # fixture is spec 054's narration exclusion, and after FR-A8 a block of PROSE
+            # delivered as its own source no longer reaches that branch at all — it fails the
+            # run instead, which ``tests/test_spec_059_translation_completeness.py`` pins.
+            "paragraph_regions": ["back_matter"],
             "context_before": "",
             "context_after": "",
             "target_chars": len(target_text),

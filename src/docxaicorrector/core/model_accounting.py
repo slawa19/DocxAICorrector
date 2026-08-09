@@ -253,6 +253,8 @@ class RunModelAccountingLedger:
         self._controlled_block_fallback_chars = 0
         self._controlled_block_fallback_kind_counts: dict[str, int] = {}
         self._controlled_block_fallback_kind_chars: dict[str, int] = {}
+        self._untranslated_prose_block_rejection_count = 0
+        self._untranslated_prose_block_rejection_kind_counts: dict[str, int] = {}
         self._degradation_ladder_block_count = 0
         self._degradation_ladder_model_call_count = 0
         self._degradation_ladder_translated_paragraph_count = 0
@@ -282,6 +284,8 @@ class RunModelAccountingLedger:
             self._controlled_block_fallback_chars = 0
             self._controlled_block_fallback_kind_counts = {}
             self._controlled_block_fallback_kind_chars = {}
+            self._untranslated_prose_block_rejection_count = 0
+            self._untranslated_prose_block_rejection_kind_counts = {}
             self._degradation_ladder_block_count = 0
             self._degradation_ladder_model_call_count = 0
             self._degradation_ladder_translated_paragraph_count = 0
@@ -366,6 +370,32 @@ class RunModelAccountingLedger:
             )
             self._controlled_block_fallback_kind_chars[kind] = (
                 self._controlled_block_fallback_kind_chars.get(kind, 0) + max(0, chars)
+            )
+
+    def record_untranslated_prose_block_rejection(self, *, kind: str) -> None:
+        """Count ONE block the pipeline REFUSED to ship because it would have delivered prose
+        in the source language (spec 059 FR-A8).
+
+        The mirror image of ``record_controlled_block_fallback`` above, and it has to be a
+        separate number for the same reason that family is separate from the discard family:
+        the two record OPPOSITE outcomes of the same decision. ``controlled_block_fallback_*``
+        counts blocks that were judged bad and shipped; this counts blocks that were judged
+        bad and refused. Folding them together would make "how much substituted text did this
+        run deliver" unanswerable, which is the question the whole family exists for.
+
+        No character count here, deliberately. The text was NOT delivered, so there is no
+        volume to price — a ``chars`` field would read as "this much was substituted" when
+        the truth is "nothing was". The blocks are countable; the loss is not, because it did
+        not happen.
+
+        A run that reports a non-zero count here did not finish: the decision is ``fail`` and
+        ``pipeline/block_failures.py`` takes the run down. The number therefore answers "why
+        did this run stop", and 0 is an assertion that no block was refused for this reason.
+        """
+        with self._lock:
+            self._untranslated_prose_block_rejection_count += 1
+            self._untranslated_prose_block_rejection_kind_counts[kind] = (
+                self._untranslated_prose_block_rejection_kind_counts.get(kind, 0) + 1
             )
 
     def record_degradation_ladder(
@@ -517,6 +547,16 @@ class RunModelAccountingLedger:
                 ),
                 "controlled_block_fallback_kind_chars": dict(
                     sorted(self._controlled_block_fallback_kind_chars.items())
+                ),
+                # Spec 059 FR-A8: the opposite outcome of the same decision — blocks the
+                # pipeline REFUSED to ship because they would have delivered prose in the
+                # source language. No character count: nothing was delivered, so there is no
+                # volume to price. A non-zero value means the run stopped.
+                "untranslated_prose_block_rejection_count": (
+                    self._untranslated_prose_block_rejection_count
+                ),
+                "untranslated_prose_block_rejection_kind_counts": dict(
+                    sorted(self._untranslated_prose_block_rejection_kind_counts.items())
                 ),
                 # Blocks on which the generator answered a rejection by DIVIDING the block
                 # instead of substituting its source. The pair of paragraph counts states
@@ -685,6 +725,10 @@ def record_model_output_discarded(*, reason: str, paragraph_count: int = 0, bloc
 
 def record_controlled_block_fallback(*, kind: str, chars: int = 0) -> None:
     get_run_model_accounting_ledger().record_controlled_block_fallback(kind=kind, chars=chars)
+
+
+def record_untranslated_prose_block_rejection(*, kind: str) -> None:
+    get_run_model_accounting_ledger().record_untranslated_prose_block_rejection(kind=kind)
 
 
 def record_degradation_ladder(

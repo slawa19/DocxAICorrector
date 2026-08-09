@@ -161,13 +161,23 @@ def _recording_run_harness():
     return dependencies, emitters, events
 
 
-def _llm_payload(*, target_text: str, narration_include: bool = True) -> SimpleNamespace:
+def _llm_payload(
+    *,
+    target_text: str,
+    narration_include: bool = True,
+    paragraph_regions: list[str] | None = None,
+) -> SimpleNamespace:
     return SimpleNamespace(
         job_kind="llm",
         toc_dominant=False,
         target_text=target_text,
         target_text_with_markers=f"[[DOCX_PARA_p0001]]{target_text}",
         paragraph_ids=["p0001"],
+        # Spec 059 A-II. Defaults to APPARATUS, because every fixture in this module is about
+        # the controlled-fallback mechanics themselves, and after FR-A8 a block of PROSE
+        # delivered as its own source no longer takes that path at all — it fails the run.
+        # Where a fixture wants the prose behaviour it says so.
+        paragraph_regions=paragraph_regions if paragraph_regions is not None else ["back_matter"],
         narration_include=narration_include,
         target_chars=len(target_text),
         context_chars=0,
@@ -182,6 +192,10 @@ def test_source_text_fallback_block_is_absent_from_narration_but_present_in_the_
         payload=_llm_payload(target_text=_ENGLISH_SOURCE_BLOCK),
         context=SimpleNamespace(
             processing_operation="audiobook",
+            # Spec 059 FR-A5: the pair rule only means "untranslated" where the JOB
+            # changes language, so every fixture that exercises it has to say so.
+            source_language="en",
+            target_language="ru",
             uploaded_filename="book.docx",
             runtime=object(),
             on_progress=lambda **_kwargs: None,
@@ -220,6 +234,10 @@ def test_controlled_fallback_that_keeps_model_output_still_reaches_the_narration
         payload=_llm_payload(target_text=_ENGLISH_SOURCE_BLOCK),
         context=SimpleNamespace(
             processing_operation="audiobook",
+            # Spec 059 FR-A5: the pair rule only means "untranslated" where the JOB
+            # changes language, so every fixture that exercises it has to say so.
+            source_language="en",
+            target_language="ru",
             uploaded_filename="book.docx",
             runtime=object(),
             on_progress=lambda **_kwargs: None,
@@ -245,7 +263,7 @@ def test_a_normal_block_still_reaches_the_narration() -> None:
 
     outcome, state, _classifier_calls = _run_single_block(
         payload=_llm_payload(target_text=_ENGLISH_SOURCE_BLOCK),
-        context=SimpleNamespace(processing_operation="audiobook"),
+        context=SimpleNamespace(processing_operation="audiobook", source_language="en", target_language="ru"),
         processed_chunk=russian,
     )
 
@@ -269,6 +287,10 @@ def test_block_excluded_by_the_document_layer_is_counted_only_once(monkeypatch) 
         payload=_llm_payload(target_text=_ENGLISH_SOURCE_BLOCK, narration_include=False),
         context=SimpleNamespace(
             processing_operation="audiobook",
+            # Spec 059 FR-A5: the pair rule only means "untranslated" where the JOB
+            # changes language, so every fixture that exercises it has to say so.
+            source_language="en",
+            target_language="ru",
             uploaded_filename="book.docx",
             runtime=object(),
             on_progress=lambda **_kwargs: None,
@@ -401,6 +423,10 @@ def test_process_single_block_narrates_the_block_without_its_omitted_paragraph(m
         payload=payload,
         context=SimpleNamespace(
             processing_operation="audiobook",
+            # Spec 059 FR-A5: the pair rule only means "untranslated" where the JOB
+            # changes language, so every fixture that exercises it has to say so.
+            source_language="en",
+            target_language="ru",
             uploaded_filename="book.docx",
             runtime=object(),
             on_progress=lambda **_kwargs: None,
@@ -456,6 +482,10 @@ def test_controlled_fallback_does_not_narrate_an_omitted_paragraphs_source(monke
         payload=payload,
         context=SimpleNamespace(
             processing_operation="audiobook",
+            # Spec 059 FR-A5: the pair rule only means "untranslated" where the JOB
+            # changes language, so every fixture that exercises it has to say so.
+            source_language="en",
+            target_language="ru",
             uploaded_filename="book.docx",
             runtime=object(),
             on_progress=lambda **_kwargs: None,
@@ -504,6 +534,10 @@ def test_controlled_fallback_with_no_omitted_paragraph_narrates_the_whole_block(
         payload=payload,
         context=SimpleNamespace(
             processing_operation="audiobook",
+            # Spec 059 FR-A5: the pair rule only means "untranslated" where the JOB
+            # changes language, so every fixture that exercises it has to say so.
+            source_language="en",
+            target_language="ru",
             uploaded_filename="book.docx",
             runtime=object(),
             on_progress=lambda **_kwargs: None,
@@ -544,6 +578,10 @@ def test_the_happy_path_counts_the_characters_it_withholds(monkeypatch) -> None:
         payload=payload,
         context=SimpleNamespace(
             processing_operation="audiobook",
+            # Spec 059 FR-A5: the pair rule only means "untranslated" where the JOB
+            # changes language, so every fixture that exercises it has to say so.
+            source_language="en",
+            target_language="ru",
             uploaded_filename="book.docx",
             runtime=object(),
             on_progress=lambda **_kwargs: None,
@@ -584,6 +622,10 @@ def _fallback_block(
         payload=_llm_payload(target_text=target_text),
         context=SimpleNamespace(
             processing_operation="audiobook",
+            # Spec 059 FR-A5: the pair rule only means "untranslated" where the JOB
+            # changes language, so every fixture that exercises it has to say so.
+            source_language="en",
+            target_language="ru",
             uploaded_filename="book.docx",
             runtime=object(),
             on_progress=lambda **_kwargs: None,

@@ -2671,6 +2671,12 @@ def test_english_residue_inside_a_translated_block_is_no_longer_a_controlled_fal
                 "target_chars": 37,
                 "context_chars": 0,
                 "paragraph_ids": ["p1"],
+                # Spec 059 A-II / FR-A8: this row and the ``source_text_fallback`` one below
+                # both DELIVER the block's own source, so on a prose block they now fail the
+                # run instead of shipping. The subject here is spec 054's narration rule, so
+                # the block is apparatus; the prose behaviour is pinned in
+                # ``tests/test_spec_059_translation_completeness.py``.
+                "paragraph_regions": ["back_matter"],
             },
             "   ",
             "empty_processed_block",
@@ -2694,6 +2700,7 @@ def test_english_residue_inside_a_translated_block_is_no_longer_a_controlled_fal
                 "target_chars": 268,
                 "context_chars": 0,
                 "paragraph_ids": ["p1"],
+                "paragraph_regions": ["back_matter"],
             },
             (
                 "This source paragraph is long enough to represent a real untranslated fallback. "
@@ -2897,6 +2904,10 @@ def test_run_document_processing_continues_when_multiple_controlled_fallback_blo
                 "target_chars": 37,
                 "context_chars": 0,
                 "paragraph_ids": ["p1"],
+                # Spec 059 A-II / FR-A8: an empty answer substitutes the source, so a prose
+                # block here would fail the run. This fixture is about the four fallback
+                # classes travelling together, not about completeness.
+                "paragraph_regions": ["back_matter"],
             },
             {
                 "target_text": "# Заголовок\n\nЭто полноценный абзац с несколькими словами и знаками препинания.",
