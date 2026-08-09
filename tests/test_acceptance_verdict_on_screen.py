@@ -622,6 +622,7 @@ def test_collapse_record_survives_the_controlled_fallback_path_into_the_alarm() 
         source_a=_COLLAPSE_SOURCE_EN_A,
         source_b=_COLLAPSE_SOURCE_EN_B,
         processing_operation="translate",
+        paragraph_regions=["back_matter", "back_matter"],
     )
 
     assert result == "succeeded"
@@ -1062,11 +1063,25 @@ def _run_pipeline(*, runtime, log_event, generate, processing_operation: str):
 
 
 def _run_two_paragraph_pipeline(
-    *, runtime, log_event, source_a: str, source_b: str, processing_operation: str
+    *,
+    runtime,
+    log_event,
+    source_a: str,
+    source_b: str,
+    processing_operation: str,
+    paragraph_regions: list[str] | None = None,
 ):
     """One marker block of TWO paragraphs whose model answer collapsed the first into the
     second. The generator stub runs the real marker path, so what enters the pipeline is
-    what production would have produced."""
+    what production would have produced.
+
+    ``paragraph_regions`` is spec 059 part A's per-paragraph REGION (A-II), and it matters
+    here because part A's invariant (FR-A8) refuses to SHIP a block that would deliver its
+    own source text when the block carries PROSE and the job changes language. So on a
+    translating run this fixture reaches the controlled-fallback path only with an
+    APPARATUS block — which is a fact about the product, not a workaround: after part A
+    that path carries apparatus and nothing else, and describing it is this channel's job.
+    """
     target_text = f"{source_a}\n\n{source_b}"
     return document_pipeline.run_document_processing(
         uploaded_file="report.docx",
@@ -1082,6 +1097,7 @@ def _run_two_paragraph_pipeline(
                 "target_chars": len(target_text),
                 "context_chars": 0,
                 "narration_include": True,
+                **({"paragraph_regions": paragraph_regions} if paragraph_regions else {}),
             }
         ],
         source_paragraphs=[],

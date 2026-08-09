@@ -26,6 +26,14 @@ EXPLICIT_HEADING_PATTERN = re.compile(r"^#{1,6}\s+")
 # An operation this project does not know about is NOT assumed to translate: the same
 # missing-signal rule as an unnamed language, and the same failure direction — a rule that
 # does not fire can hide a loss, a rule that fires wrongly destroys a paid run.
+#
+# TWO consumers, deliberately sharing one definition: the pipeline's completeness invariant
+# (``pipeline/block_execution.job_changes_language``) and the result screen's wording
+# (``pipeline/quality_gate.build_source_text_delivery_notice``, which says "source text
+# delivered" for these operations and "unedited text delivered" otherwise — the same fact,
+# two different true sentences about it). Parts A and B of spec 059 arrived at this set
+# independently and from opposite ends of the pipeline, which is the strongest argument
+# there is for there being exactly one of it.
 LANGUAGE_CHANGING_OPERATIONS = frozenset({"translate", "audiobook"})
 
 # Spec 059 A-II / A-6: which REGION of the document a paragraph belongs to. The vocabulary
