@@ -190,6 +190,9 @@ from docxaicorrector.pipeline.quality_gate import (  # noqa: F401
     _build_result_quality_warning,
     _russian_paragraph_word,
     _build_quality_warn_notice_message,
+    build_acceptance_verdict_notice,
+    build_source_text_delivery_facts,
+    build_source_text_delivery_notice,
 )
 
 
@@ -1249,6 +1252,52 @@ def finalize_processing_success(
                     "rules": ", ".join(narration_review_rules),
                 },
             })
+    # spec 059 FR-B4/FR-B5: what the DOCX carries is a fact about the DOCUMENT, so it is
+    # published in every mode. It used to ride on ``narration_text is not None`` (the two
+    # blocks above), which meant the default ``edit`` path and every ``translate`` run showed
+    # nothing at all — and ``translate`` is exactly the path that DELIVERS untranslated text.
+    # The counters above keep their ``narration_excluded_*`` names because they now report
+    # only what they are named after: what the NARRATION lost. Read off the delivered blocks'
+    # own per-paragraph record, so it counts paragraphs, never events.
+    source_text_delivery_facts = build_source_text_delivery_facts(state.processed_chunks)
+    source_text_delivery_notice = build_source_text_delivery_notice(source_text_delivery_facts)
+    if source_text_delivery_notice is not None:
+        dependencies.log_event(
+            logging.WARNING,
+            "source_text_delivered_to_document",
+            "В доставленном DOCX остались абзацы с исходным (непереведённым) текстом.",
+            filename=context.uploaded_filename,
+            processing_operation=context.processing_operation,
+            review_data=True,
+            advisory=True,
+            source_text_delivered_block_count=source_text_delivery_facts["block_count"],
+            source_text_delivered_paragraph_count=source_text_delivery_facts["paragraph_count"],
+            source_text_delivered_chars=source_text_delivery_facts["chars"],
+            source_text_delivered_status_counts=source_text_delivery_facts["status_counts"],
+            source_text_delivered_unanchored_paragraph_count=source_text_delivery_facts[
+                "unanchored_paragraph_count"
+            ],
+        )
+        result_notices.append(source_text_delivery_notice)
+    # spec 059 FR-B1/FR-B2: the production acceptance verdict crosses the boundary as DATA.
+    # It is REVIEW data, not a gate: ``delivery_disposition`` below is untouched and the only
+    # thing that still blocks delivery is ``caption_heading_conflict`` (FR-B8, spec 010).
+    acceptance_verdict_notice = build_acceptance_verdict_notice(quality_report)
+    if acceptance_verdict_notice is not None:
+        dependencies.log_event(
+            logging.WARNING,
+            "acceptance_verdict_not_passed",
+            "Приёмочный вердикт production не пройден; результат доставляется как ревью-данные.",
+            filename=context.uploaded_filename,
+            processing_operation=context.processing_operation,
+            review_data=True,
+            advisory=True,
+            quality_status=quality_report.get("quality_status"),
+            acceptance_failed_checks=list(
+                cast(Sequence[str], acceptance_verdict_notice["failed_checks"])
+            ),
+        )
+        result_notices.append(acceptance_verdict_notice)
     # Presentation-only: surface the SAME quality_warning the review artifact carries into
     # session state so the unified result screen can render the formatting-review block.
     quality_warning = _build_result_quality_warning(
