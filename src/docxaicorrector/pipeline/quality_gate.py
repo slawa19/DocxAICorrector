@@ -32,7 +32,7 @@ documented private-access seam until that module exposes a public entry point.
 """
 
 import re
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal, cast
 
@@ -41,6 +41,7 @@ from docxaicorrector.core.models import LANGUAGE_CHANGING_OPERATIONS
 from docxaicorrector.generation._generation import (
     PARAGRAPH_STATUS_OMITTED,
     PARAGRAPH_STATUS_SOURCE_RESTORED,
+    _ladder_sentences,
     _strip_narration_inline_emphasis,
     marker_paragraph_dispositions,
 )
@@ -2120,12 +2121,226 @@ def build_acceptance_verdict_notice(
     }
 
 
+# Every user-facing key the two source-text channels can emit, as FAMILY × SUFFIX. Written
+# out here rather than only spelled at the call sites because the i18n guard collects keys
+# with a regex over ``t("literal")`` and cannot see a key the pipeline assembles from a
+# family and a suffix: it would stay green while the screen printed
+# ``result.narration_omitted_paragraphs_excluded_with_unanchored`` verbatim. Same shape as
+# ``ACCEPTANCE_CHECK_KEY_PREFIX`` (FR-B3) — the enumeration lives with the code that emits
+# it, and the guard reads it from there.
+SOURCE_TEXT_DELIVERY_MESSAGE_KEY_FAMILIES: tuple[str, ...] = (
+    "result.source_text_delivered",
+    "result.unedited_text_delivered",
+)
+SOURCE_TEXT_DELIVERY_MESSAGE_KEY_SUFFIXES: tuple[str, ...] = (
+    "",
+    "_with_unanchored",
+    "_without_anchors",
+    "_with_addresses_in_narration",
+    "_with_unanchored_and_addresses_in_narration",
+    "_without_anchors_and_addresses_in_narration",
+    "_all_addresses_in_narration",
+)
+NARRATION_EXCLUSION_MESSAGE_KEY_FAMILIES: tuple[str, ...] = (
+    "result.narration_omitted_paragraphs_excluded",
+    "result.narration_source_fallback_excluded",
+)
+NARRATION_EXCLUSION_MESSAGE_KEY_SUFFIXES: tuple[str, ...] = (
+    "",
+    "_with_unanchored",
+    "_without_anchors",
+)
+
+
+def result_notice_message_keys() -> tuple[str, ...]:
+    """Every message key ``build_source_text_delivery_notice`` and
+    ``build_narration_exclusion_notice`` can put on the screen."""
+    return tuple(
+        f"{family}{suffix}"
+        for families, suffixes in (
+            (SOURCE_TEXT_DELIVERY_MESSAGE_KEY_FAMILIES, SOURCE_TEXT_DELIVERY_MESSAGE_KEY_SUFFIXES),
+            (NARRATION_EXCLUSION_MESSAGE_KEY_FAMILIES, NARRATION_EXCLUSION_MESSAGE_KEY_SUFFIXES),
+        )
+        for family in families
+        for suffix in suffixes
+    )
+
+
+def _collect_paragraph_anchor_facts(
+    records: Iterable[tuple[str, str]],
+    *,
+    anchor_limit: int,
+    delivered_markdown: str | None,
+    paragraph_ids_reported_in_narration: Collection[str] = (),
+) -> dict[str, object]:
+    """Turn ``(paragraph_id, text)`` records into countable, SEARCHABLE addresses.
+
+    The one place in the repository where a delivered paragraph becomes an address. Both
+    channels go through it — the document warning (``build_source_text_delivery_facts``) and
+    the audiobook warning (``build_narration_exclusion_facts``) — so there is exactly one
+    sanitiser, one usability floor, one "is it still in the delivered text" check and one
+    limit on how many fragments a message may print. Two of any of those would drift, and
+    the drift would be invisible: both messages would still look right on their own.
+
+    Three things can happen to a record's address, and each is COUNTED rather than faked
+    (Constitution VII, anti-regression #14):
+
+    * fewer than 3 visible characters after sanitising — the reader cannot search for it
+      (the recorded ``20260809T_059_audio_money`` run has four such paragraphs: page numbers
+      two characters long);
+    * not present in the delivered text — reader cleanup deleted or rewrote it, so the
+      address would send the reader somewhere that no longer exists, which is worse than no
+      address because the trip is wasted;
+    * already named by the OTHER message (``paragraph_ids_reported_in_narration``) — see
+      ``build_source_text_delivery_notice`` for whose the address is and why.
+
+    The paragraph is counted in ``paragraph_count``/``chars`` in every one of those cases:
+    what happened to it is a fact about the run, not about the anchor.
+    """
+    reported_elsewhere = {str(value) for value in paragraph_ids_reported_in_narration}
+    paragraph_count = 0
+    chars = 0
+    unanchored = 0
+    dropped_not_in_delivered = 0
+    reported_elsewhere_count = 0
+    anchors: list[str] = []
+    paragraph_ids: list[str] = []
+    delivered_visible = (
+        None
+        if delivered_markdown is None
+        else _review_anchor_visible_text(" ".join(str(delivered_markdown).split()))
+    )
+    for paragraph_id, text in records:
+        paragraph_count += 1
+        chars += len(text)
+        paragraph_ids.append(paragraph_id)
+        if paragraph_id and paragraph_id in reported_elsewhere:
+            reported_elsewhere_count += 1
+            continue
+        # The address is the paragraph's FIRST SENTENCE, not the paragraph. On the recorded
+        # run the longest excluded paragraph is 2 686 characters and its first sentence is 75:
+        # a whole paragraph printed as "search for this" is a second hunt, and a warning that
+        # long is a warning nobody finishes reading — the invisibility this channel exists to
+        # end, re-created by another route. The cut is a SENTENCE boundary (a structural fact,
+        # Constitution VII) and the splitter is the one the degradation ladder already owns,
+        # reached by import: a third way of dividing text in this repository would be the same
+        # defect one level down. NOTHING is cut inside a sentence, however long the sentence
+        # is: every mid-sentence cut needs a length, and every length here would be a number
+        # picked by eye. (The ladder's own budget constant was considered and refused — it
+        # measures what a MODEL can be asked to answer, not what a human can search for.)
+        sanitized = _sanitize_review_anchor_text(text)
+        sentences = _ladder_sentences(sanitized)
+        anchor = sentences[0] if sentences else sanitized
+        # Both remaining checks run on the SHORTENED form, in this order and deliberately:
+        # the floor asks "can the reader search for what we are about to print" and the
+        # delivered check asks "will that search succeed", and both questions are about the
+        # printed address, not about the paragraph behind it.
+        if _review_anchor_visible_char_count(anchor) < 3:
+            unanchored += 1
+            continue
+        if delivered_visible is not None and anchor not in delivered_visible:
+            unanchored += 1
+            dropped_not_in_delivered += 1
+            continue
+        if len(anchors) < anchor_limit:
+            anchors.append(anchor)
+    return {
+        "paragraph_count": paragraph_count,
+        "chars": chars,
+        "anchors": anchors,
+        "unanchored_paragraph_count": unanchored,
+        "anchors_dropped_not_in_delivered": dropped_not_in_delivered,
+        "reported_in_narration_paragraph_count": reported_elsewhere_count,
+        "paragraph_ids": paragraph_ids,
+    }
+
+
+def build_narration_exclusion_facts(
+    paragraph_records: Sequence[Mapping[str, str]],
+    *,
+    anchor_limit: int = 8,
+    delivered_markdown: str | None = None,
+) -> dict[str, object]:
+    """Where the paragraphs that never reached the AUDIOBOOK stand in the document.
+
+    The audio warnings used to publish a quantity and nothing else: the recorded
+    ``20260809T_059_audio_money`` run said "8 paragraphs, 4 455 characters" and left the
+    reader to hunt through 512 458 characters of book for them. The addresses existed the
+    whole time — the message next to it, about the DOCX, carried six of them, because the
+    same paragraphs are the same paragraphs.
+
+    The records are collected where the exclusion is DECIDED
+    (``block_execution.narration_projection_for_processed_block`` and the controlled-fallback
+    branch beside it), not re-derived here, for the same reason
+    ``_delivered_prose_paragraph_records`` is built there: only that scope knows whether the
+    block was going to the narration at all. Re-deriving the set at finalization would sweep
+    in the 59 blocks the DOCUMENT layer had already excluded on the recorded run and report
+    them as an audio loss.
+
+    ``delivered_markdown`` is the DOCX text, not the narration text, and that is not a slip:
+    the reader is being sent to the document to find what the audio is missing, so the
+    address has to exist THERE.
+    """
+    return _collect_paragraph_anchor_facts(
+        (
+            (str(record.get("paragraph_id") or ""), str(record.get("text") or ""))
+            for record in paragraph_records
+        ),
+        anchor_limit=anchor_limit,
+        delivered_markdown=delivered_markdown,
+    )
+
+
+def build_narration_exclusion_notice(
+    facts: Mapping[str, object],
+    *,
+    message_key_family: str,
+    count: int,
+    chars: int,
+) -> dict[str, object] | None:
+    """The audiobook loss as a result notice, or ``None`` when nothing left the audiobook.
+
+    ``count`` and ``chars`` are passed in rather than read off ``facts`` because the two
+    families count different UNITS: ``narration_source_fallback_excluded`` counts BLOCKS
+    (a whole block was replaced by its own source and kept out) while its per-paragraph twin
+    counts paragraphs. The anchors are per paragraph in both, which is what the reader
+    searches for; the quantity stays the quantity the run's own counter published, so the
+    number on the screen and the number in ``narration_artifact`` cannot drift apart.
+
+    Anti-vacuum, both ways: nothing excluded means NO notice (not a notice reading zero), and
+    a paragraph with no usable fragment is counted in ``{unanchored}`` instead of printed as
+    an empty «» — the three templates exist so that neither a zero nor an empty quote is ever
+    rendered, exactly as in the document family.
+    """
+    if int(count) <= 0:
+        return None
+    anchors = [str(anchor) for anchor in cast(Sequence[object], facts.get("anchors") or ())]
+    unanchored = int(cast(int, facts.get("unanchored_paragraph_count") or 0))
+    params: dict[str, object] = {"count": int(count), "chars": int(chars)}
+    if not anchors:
+        params["unanchored"] = unanchored
+        message_key = f"{message_key_family}_without_anchors"
+    elif unanchored > 0:
+        params["unanchored"] = unanchored
+        message_key = f"{message_key_family}_with_unanchored"
+    else:
+        message_key = message_key_family
+    return {
+        "kind": "narration",
+        "level": "warning",
+        "message_key": message_key,
+        "params": params,
+        "anchors": anchors,
+    }
+
+
 def build_source_text_delivery_facts(
     processed_chunks: Sequence[object],
     *,
     anchor_limit: int = 8,
     delivered_markdown: str | None = None,
     untranslated_prose_blocks: Sequence[Sequence[Mapping[str, str]]] = (),
+    paragraph_ids_reported_in_narration: Collection[str] = (),
 ) -> dict[str, object]:
     """Which DELIVERED paragraphs still carry their own source text — and where they are.
 
@@ -2166,37 +2381,19 @@ def build_source_text_delivery_facts(
     decide "prose" live on the payload and never reach finalization. Without it the channel
     was measurably blind: the recorded 20260809T_059_doc_money run delivered 9 characters of
     source text this way and the channel published nothing at all.
+
+    ``paragraph_ids_reported_in_narration`` is the ANTI-DUPLICATION half (2026-08-09). Every
+    paragraph the audiobook lost is also a paragraph this channel counts, so on a narration
+    run the two messages would otherwise print the same fragments one under the other, which
+    reads as an interface bug rather than as two facts. The ids named by the audio message
+    are still COUNTED here — 10 paragraphs is the truth about the DOCX whoever prints the
+    address — and only their fragments move; the notice then says how many went where. See
+    ``build_source_text_delivery_notice`` for why the address goes to the audio message.
     """
     block_count = 0
-    paragraph_count = 0
-    chars = 0
-    unanchored = 0
-    dropped_not_in_delivered = 0
-    anchors: list[str] = []
     status_counts = {status: 0 for status in _SOURCE_TEXT_DELIVERED_PARAGRAPH_STATUSES}
     status_counts[_UNTRANSLATED_PROSE_DELIVERED_STATUS] = 0
-    delivered_visible = (
-        None
-        if delivered_markdown is None
-        else _review_anchor_visible_text(" ".join(str(delivered_markdown).split()))
-    )
-
-    def _count_paragraph(text: str, status: str) -> None:
-        nonlocal paragraph_count, chars, unanchored, dropped_not_in_delivered
-        paragraph_count += 1
-        chars += len(text)
-        status_counts[status] += 1
-        anchor = _sanitize_review_anchor_text(text)
-        if _review_anchor_visible_char_count(anchor) < 3:
-            unanchored += 1
-            return
-        if delivered_visible is not None and anchor not in delivered_visible:
-            unanchored += 1
-            dropped_not_in_delivered += 1
-            return
-        if len(anchors) < anchor_limit:
-            anchors.append(anchor)
-
+    records: list[tuple[str, str]] = []
     counted_paragraph_ids: set[str] = set()
     for chunk in processed_chunks:
         dispositions = marker_paragraph_dispositions(chunk)
@@ -2208,7 +2405,8 @@ def build_source_text_delivery_facts(
                 continue
             block_has_source_text = True
             counted_paragraph_ids.add(str(disposition.paragraph_id))
-            _count_paragraph(disposition.text, disposition.status)
+            status_counts[disposition.status] += 1
+            records.append((str(disposition.paragraph_id), disposition.text))
         if block_has_source_text:
             block_count += 1
     # The two sources OVERLAP, and the paragraph id is what keeps a paragraph from being
@@ -2225,20 +2423,19 @@ def build_source_text_delivery_facts(
             counted_here = True
             if paragraph_id:
                 counted_paragraph_ids.add(paragraph_id)
-            _count_paragraph(
-                str(record.get("text") or ""), _UNTRANSLATED_PROSE_DELIVERED_STATUS
-            )
+            status_counts[_UNTRANSLATED_PROSE_DELIVERED_STATUS] += 1
+            records.append((paragraph_id, str(record.get("text") or "")))
         if counted_here:
             block_count += 1
-    return {
-        "block_count": block_count,
-        "paragraph_count": paragraph_count,
-        "chars": chars,
-        "anchors": anchors,
-        "unanchored_paragraph_count": unanchored,
-        "anchors_dropped_not_in_delivered": dropped_not_in_delivered,
-        "status_counts": status_counts,
-    }
+    facts = _collect_paragraph_anchor_facts(
+        records,
+        anchor_limit=anchor_limit,
+        delivered_markdown=delivered_markdown,
+        paragraph_ids_reported_in_narration=paragraph_ids_reported_in_narration,
+    )
+    facts["block_count"] = block_count
+    facts["status_counts"] = status_counts
+    return facts
 
 
 def build_source_text_delivery_notice(
@@ -2256,12 +2453,29 @@ def build_source_text_delivery_notice(
     ``processing_operation`` is required rather than defaulted: the wording is only true for
     the operation the run actually ran, and a default would quietly make it false for the
     other one.
+
+    **Who prints the address (2026-08-09).** On a narration run the audio message and this
+    one are about the same paragraphs, and two adjacent messages quoting the same fragments
+    read as an interface bug. The address is printed exactly once, by the message whose loss
+    is the harder one to undo — the audiobook's. That is not a new judgement invented here:
+    it is the reason the exclusion exists at all (``block_execution``, the controlled-fallback
+    branch — "the document is editable and a human who meets an untranslated paragraph fixes
+    it, while nothing sits between the audio and the listener"). This message keeps the
+    paragraphs no other message named, its count/chars/blocks stay whole, and it says how many
+    addresses are in the audio message so the reader of either one is one hop from all of
+    them. Referring the other way round was considered and refused: this channel counts
+    ``omitted`` AND ``source_restored``, and only the first leaves the audiobook, so "see the
+    list above" would have handed the reader six fragments of which four are the answer with
+    nothing to tell them apart.
     """
     paragraph_count = int(cast(int, facts.get("paragraph_count") or 0))
     if paragraph_count <= 0:
         return None
     anchors = [str(anchor) for anchor in cast(Sequence[object], facts.get("anchors") or ())]
     unanchored = int(cast(int, facts.get("unanchored_paragraph_count") or 0))
+    reported_in_narration = int(
+        cast(int, facts.get("reported_in_narration_paragraph_count") or 0)
+    )
     params: dict[str, object] = {
         "count": paragraph_count,
         "blocks": int(cast(int, facts.get("block_count") or 0)),
@@ -2276,21 +2490,36 @@ def build_source_text_delivery_notice(
     # someone adds a third operation. That disagreement has a measured price — the invariant
     # keyed on codes alone would have failed 65% of a literary-edit run.
     key_family = (
-        "result.source_text_delivered"
+        SOURCE_TEXT_DELIVERY_MESSAGE_KEY_FAMILIES[0]
         if operation in LANGUAGE_CHANGING_OPERATIONS
-        else "result.unedited_text_delivered"
+        else SOURCE_TEXT_DELIVERY_MESSAGE_KEY_FAMILIES[1]
     )
-    # Three templates per family rather than one carrying a "{unanchored}" that reads "0" on
-    # the common case, or an "{anchors}" with nothing behind it: a number printed always is a
-    # number nobody reads, and an empty «» row is the invented address #14 forbids.
-    if not anchors:
+    # A template per reachable shape rather than one carrying a "{unanchored}" that reads "0"
+    # on the common case, or an "{anchors}" with nothing behind it: a number printed always is
+    # a number nobody reads, and an empty «» row is the invented address #14 forbids. The
+    # four ``…_in_narration`` shapes exist only on a run that HAS an audio message; every
+    # ``translate``/``edit`` run keeps the original three and renders byte-identically.
+    if reported_in_narration > 0:
+        params["elsewhere"] = reported_in_narration
+        if anchors and unanchored > 0:
+            params["unanchored"] = unanchored
+            suffix = "_with_unanchored_and_addresses_in_narration"
+        elif anchors:
+            suffix = "_with_addresses_in_narration"
+        elif unanchored > 0:
+            params["unanchored"] = unanchored
+            suffix = "_without_anchors_and_addresses_in_narration"
+        else:
+            suffix = "_all_addresses_in_narration"
+    elif not anchors:
         params["unanchored"] = unanchored
-        message_key = f"{key_family}_without_anchors"
+        suffix = "_without_anchors"
     elif unanchored > 0:
         params["unanchored"] = unanchored
-        message_key = f"{key_family}_with_unanchored"
+        suffix = "_with_unanchored"
     else:
-        message_key = key_family
+        suffix = ""
+    message_key = f"{key_family}{suffix}"
     return {
         "kind": "translation",
         "level": "warning",

@@ -191,6 +191,8 @@ from docxaicorrector.pipeline.quality_gate import (  # noqa: F401
     _russian_paragraph_word,
     _build_quality_warn_notice_message,
     build_acceptance_verdict_notice,
+    build_narration_exclusion_facts,
+    build_narration_exclusion_notice,
     build_source_text_delivery_facts,
     build_source_text_delivery_notice,
 )
@@ -1160,6 +1162,65 @@ def finalize_processing_success(
     # of the saved artifact — rather than a channel of its own (Constitution V,
     # docs/LOGGING_AND_ARTIFACT_RETENTION.md §3.3/§5.5). Zero excluded blocks means no event
     # and no notice, exactly like a clean review pass.
+    #
+    # Since 2026-08-09 both families also carry ADDRESSES, through the machinery the document
+    # warning already had (``quality_gate.build_narration_exclusion_facts`` → the one
+    # collector, one sanitiser, one usability floor, one delivered-text check). The measured
+    # reason: on the recorded 20260809T_059_audio_money run this channel published
+    # "8 абзацев, 4 455 символов" and not one place, while the message beside it named six
+    # fragments for the same paragraphs. ``paragraph_ids_named_in_narration`` collects whom
+    # the audio messages named, so the document message below does not print the same
+    # fragments a second line later.
+    paragraph_ids_named_in_narration: set[str] = set()
+
+    def _publish_narration_exclusion(
+        *,
+        event_id: str,
+        event_message: str,
+        message_key_family: str,
+        summary: Mapping[str, object],
+        count: int,
+        chars: int,
+        paragraph_records: Sequence[Mapping[str, str]],
+    ) -> None:
+        """One route for both audio-exclusion families (Constitution V, §3.3/§5.5).
+
+        WARNING event + user-facing notice + the counters already on the saved-artifact
+        record. Nothing excluded means NO event and NO notice — a message that is always on
+        the screen is noise, and a notice reading zero is the same defect written down.
+        """
+        if narration_text is None or count <= 0:
+            return
+        facts = build_narration_exclusion_facts(
+            paragraph_records, delivered_markdown=runtime_display_markdown
+        )
+        notice = build_narration_exclusion_notice(
+            facts, message_key_family=message_key_family, count=count, chars=chars
+        )
+        if notice is None:
+            return
+        paragraph_ids_named_in_narration.update(
+            str(paragraph_id)
+            for paragraph_id in cast(Sequence[object], facts.get("paragraph_ids") or ())
+            if str(paragraph_id)
+        )
+        dependencies.log_event(
+            logging.WARNING,
+            event_id,
+            event_message,
+            filename=context.uploaded_filename,
+            processing_operation=context.processing_operation,
+            narration_mode="standalone" if context.processing_operation == "audiobook" else "postprocess",
+            review_data=True,
+            advisory=True,
+            narration_chars=len(narration_text),
+            excluded_anchor_count=len(cast(Sequence[object], facts.get("anchors") or ())),
+            excluded_unanchored_paragraph_count=facts["unanchored_paragraph_count"],
+            excluded_anchors_dropped_not_in_delivered=facts["anchors_dropped_not_in_delivered"],
+            **summary,
+        )
+        result_notices.append(notice)
+
     narration_source_fallback_summary: dict[str, object] = {
         "excluded_source_fallback_block_count": int(
             getattr(state, "narration_excluded_source_fallback_block_count", 0) or 0
@@ -1168,28 +1229,17 @@ def finalize_processing_success(
             getattr(state, "narration_excluded_source_fallback_chars", 0) or 0
         ),
     }
-    if narration_text is not None and narration_source_fallback_summary["excluded_source_fallback_block_count"]:
-        dependencies.log_event(
-            logging.WARNING,
-            "narration_source_fallback_excluded",
-            "Блоки, для которых модель не дала принятого вывода, исключены из narration; в DOCX исходный текст сохранён.",
-            filename=context.uploaded_filename,
-            processing_operation=context.processing_operation,
-            narration_mode="standalone" if context.processing_operation == "audiobook" else "postprocess",
-            review_data=True,
-            advisory=True,
-            narration_chars=len(narration_text),
-            **narration_source_fallback_summary,
-        )
-        result_notices.append({
-            "kind": "narration",
-            "level": "warning",
-            "message_key": "result.narration_source_fallback_excluded",
-            "params": {
-                "count": narration_source_fallback_summary["excluded_source_fallback_block_count"],
-                "chars": narration_source_fallback_summary["excluded_source_fallback_chars"],
-            },
-        })
+    _publish_narration_exclusion(
+        event_id="narration_source_fallback_excluded",
+        event_message="Блоки, для которых модель не дала принятого вывода, исключены из narration; в DOCX исходный текст сохранён.",
+        message_key_family="result.narration_source_fallback_excluded",
+        summary=narration_source_fallback_summary,
+        count=int(cast(int, narration_source_fallback_summary["excluded_source_fallback_block_count"])),
+        chars=int(cast(int, narration_source_fallback_summary["excluded_source_fallback_chars"])),
+        paragraph_records=tuple(
+            getattr(state, "narration_excluded_source_fallback_paragraphs", None) or ()
+        ),
+    )
     # Spec 056 E's per-PARAGRAPH twin of the block-level exclusion above, published the same
     # way. It was shipped reporting a paragraph count in one WARNING and nothing else: no
     # characters, so it could not be read against spec 054's metric, and no notice, so the
@@ -1203,28 +1253,17 @@ def finalize_processing_success(
             getattr(state, "narration_excluded_omitted_chars", 0) or 0
         ),
     }
-    if narration_text is not None and narration_omitted_paragraph_summary["excluded_omitted_paragraph_count"]:
-        dependencies.log_event(
-            logging.WARNING,
-            "narration_omitted_paragraphs_excluded",
-            "Абзацы, для которых модель не вернула текст, исключены из narration; в DOCX исходный текст сохранён.",
-            filename=context.uploaded_filename,
-            processing_operation=context.processing_operation,
-            narration_mode="standalone" if context.processing_operation == "audiobook" else "postprocess",
-            review_data=True,
-            advisory=True,
-            narration_chars=len(narration_text),
-            **narration_omitted_paragraph_summary,
-        )
-        result_notices.append({
-            "kind": "narration",
-            "level": "warning",
-            "message_key": "result.narration_omitted_paragraphs_excluded",
-            "params": {
-                "count": narration_omitted_paragraph_summary["excluded_omitted_paragraph_count"],
-                "chars": narration_omitted_paragraph_summary["excluded_omitted_paragraph_chars"],
-            },
-        })
+    _publish_narration_exclusion(
+        event_id="narration_omitted_paragraphs_excluded",
+        event_message="Абзацы, для которых модель не вернула текст, исключены из narration; в DOCX исходный текст сохранён.",
+        message_key_family="result.narration_omitted_paragraphs_excluded",
+        summary=narration_omitted_paragraph_summary,
+        count=int(cast(int, narration_omitted_paragraph_summary["excluded_omitted_paragraph_count"])),
+        chars=int(cast(int, narration_omitted_paragraph_summary["excluded_omitted_paragraph_chars"])),
+        paragraph_records=tuple(
+            getattr(state, "narration_excluded_omitted_paragraphs", None) or ()
+        ),
+    )
     if narration_text is not None:
         narration_review_findings = _collect_narration_artifact_review_findings(narration_text)
         narration_review_summary = _summarize_narration_review_findings(narration_review_findings)
@@ -1268,12 +1307,17 @@ def finalize_processing_success(
     # source carries no per-paragraph trace of it (spec 059 FR-A8, revised 2026-08-09), so the
     # pipeline hands over the prose paragraphs it already resolved rather than asking
     # finalization to re-derive a region and a role it does not have.
+    # ``paragraph_ids_named_in_narration`` is what the audio messages above already addressed.
+    # Those paragraphs are still COUNTED here — the document fact is 10 paragraphs whoever
+    # prints the address — but their fragments are not printed twice; the notice says how many
+    # went to the other message.
     source_text_delivery_facts = build_source_text_delivery_facts(
         state.processed_chunks,
         delivered_markdown=runtime_display_markdown,
         untranslated_prose_blocks=tuple(
             getattr(state, "untranslated_prose_delivered_paragraphs", None) or ()
         ),
+        paragraph_ids_reported_in_narration=paragraph_ids_named_in_narration,
     )
     source_text_delivery_notice = build_source_text_delivery_notice(
         source_text_delivery_facts,
@@ -1297,6 +1341,9 @@ def finalize_processing_success(
             ],
             source_text_delivered_anchors_dropped_not_in_delivered=source_text_delivery_facts[
                 "anchors_dropped_not_in_delivered"
+            ],
+            source_text_delivered_reported_in_narration_paragraph_count=source_text_delivery_facts[
+                "reported_in_narration_paragraph_count"
             ],
         )
         result_notices.append(source_text_delivery_notice)

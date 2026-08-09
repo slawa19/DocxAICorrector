@@ -914,8 +914,8 @@ def test_an_unrescued_paragraph_is_held_not_spoken(monkeypatch) -> None:
     spoken = block_execution.narration_projection_for_processed_block(
         _marker_block(("p1", "English that was never rescued.", PARAGRAPH_STATUS_SOURCE_RESTORED))
     )
-    assert held == ("", 1, len("English that was never rescued."))
-    assert spoken == ("English that was never rescued.", 0, 0)
+    assert held == ("", [{"paragraph_id": "p1", "text": "English that was never rescued."}])
+    assert spoken == ("English that was never rescued.", [])
 
 
 # ---------------------------------------------------------------------------

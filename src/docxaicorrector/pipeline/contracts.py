@@ -274,6 +274,19 @@ class ProcessingState:
     # 2026-08-04 run.
     narration_excluded_omitted_paragraph_count: int = 0
     narration_excluded_omitted_chars: int = 0
+    # 2026-08-09: the two families above, ADDRESSABLY. A quantity without a place is still a
+    # hunt — the recorded 20260809T_059_audio_money run published "8 paragraphs, 4 455
+    # characters" against a 512 458-character book — so each excluded paragraph keeps its
+    # ``{paragraph_id, text}``. The blocks family is counted in BLOCKS and addressed in
+    # PARAGRAPHS: the reader searches the DOCX for a passage, never for a block index. Both
+    # lists are written where the exclusion is DECIDED (``block_execution``), because only
+    # there is it known that the block was headed for the narration at all — re-deriving them
+    # at finalization would sweep in the 59 blocks the document layer had already excluded on
+    # that run. Read once, by ``quality_gate.build_narration_exclusion_facts``.
+    narration_excluded_source_fallback_paragraphs: list[dict[str, str]] = field(
+        default_factory=list
+    )
+    narration_excluded_omitted_paragraphs: list[dict[str, str]] = field(default_factory=list)
     # Spec 054, 2026-08-06: paragraph boundaries the assembly closed because the sentence
     # ran ON across them — 81 of the 83 measured on the four-book corpus arrive that way
     # from IMPORT, where a PDF line wrap became a paragraph break. Nothing is added or lost,

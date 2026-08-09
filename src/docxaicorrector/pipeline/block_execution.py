@@ -2,6 +2,7 @@ import logging
 import json
 import time
 import uuid
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any, Literal, TypeAlias
 
@@ -851,8 +852,33 @@ def build_processed_paragraph_registry_entries(
     ]
 
 
-def narration_projection_for_processed_block(processed_chunk: str) -> tuple[str, int, int]:
-    """What of this block is READ ALOUD, and how much was left out doing it.
+def excluded_narration_paragraph_records(processed_chunk: str) -> list[dict[str, str]]:
+    """One ``{paragraph_id, text}`` record per paragraph of a block kept OUT of the narration.
+
+    The address half of the audio warning, built at the point of the decision for the same
+    reason ``_delivered_prose_paragraph_records`` is: only here is it known that this block
+    was headed for the narration at all. Re-deriving the set at finalization would sweep in
+    the blocks the DOCUMENT layer excluded (59 of 338 on the recorded 20260809T_059_audio_money
+    run) and report them as an audio loss.
+
+    A block with no per-paragraph record still yields ONE record carrying the whole block —
+    it is the block that was excluded, and the sanitiser downstream decides whether that text
+    gives a searchable fragment. An empty ``paragraph_id`` is a paragraph nothing else can
+    name, never a paragraph that can be silently matched against another message's ids.
+    """
+    dispositions = marker_paragraph_dispositions(processed_chunk)
+    if dispositions is None:
+        return [{"paragraph_id": "", "text": str(processed_chunk)}]
+    return [
+        {"paragraph_id": str(disposition.paragraph_id), "text": disposition.text}
+        for disposition in dispositions
+    ]
+
+
+def narration_projection_for_processed_block(
+    processed_chunk: str,
+) -> tuple[str, list[dict[str, str]]]:
+    """What of this block is READ ALOUD, and what was left out doing it.
 
     Spec 056 E: a paragraph the model returned nothing for keeps its own SOURCE text in the
     document — losing it there would break the paragraph-per-marker mapping the formatting
@@ -861,38 +887,59 @@ def narration_projection_for_processed_block(processed_chunk: str) -> tuple[str,
     That is spec 054's rule applied one level down: source-language text does not reach the
     narration artifact, and the DOCX/narration asymmetry is deliberate.
 
-    Returns the narratable text together with the number of paragraphs and the number of
-    CHARACTERS that were withheld. The characters are the point: spec 054's own metric is a
-    share of source-language characters in the artifact, and the block-level twin of this
-    rule (``narration_source_fallback_excluded``) has always published them. A rule that
-    subtracts from the artifact and reports only "1 paragraph" cannot be compared against
-    the metric it serves — on block 174 of the 2026-08-04 run that one line stood for
-    1 378 characters.
+    Returns the narratable text together with a RECORD of every withheld paragraph rather
+    than a pair of counters. The counters are still published — spec 054's own metric is a
+    share of source-language characters in the artifact, and a rule that subtracts from the
+    artifact and reports only "1 paragraph" cannot be compared against the metric it serves;
+    on block 174 of the 2026-08-04 run that one line stood for 1 378 characters — but they
+    are now derived from the records at the call site, so the quantity on the screen and the
+    addresses under it can never describe two different sets of paragraphs. The recorded
+    20260809T_059_audio_money run is why: it published "8 paragraphs, 4 455 characters" and
+    no address at all.
 
-    A block with no per-paragraph record is returned untouched, so passthrough blocks and
-    controlled fallbacks whose substrate is a plain string behave exactly as before.
+    A block with no per-paragraph record is returned untouched with nothing withheld, so
+    passthrough blocks and controlled fallbacks whose substrate is a plain string behave
+    exactly as before.
     """
 
     dispositions = marker_paragraph_dispositions(processed_chunk)
     if dispositions is None:
-        return processed_chunk, 0, 0
+        return processed_chunk, []
     spoken: list[str] = []
-    withheld_paragraphs = 0
-    withheld_chars = 0
+    withheld: list[dict[str, str]] = []
     for disposition in dispositions:
         if disposition.status == PARAGRAPH_STATUS_OMITTED:
-            withheld_paragraphs += 1
-            withheld_chars += len(disposition.text)
+            withheld.append(
+                {"paragraph_id": str(disposition.paragraph_id), "text": disposition.text}
+            )
             continue
         if disposition.text.strip():
             spoken.append(disposition.text)
-    return "\n\n".join(spoken), withheld_paragraphs, withheld_chars
+    return "\n\n".join(spoken), withheld
 
 
 def narration_text_for_processed_block(processed_chunk: str) -> str:
     """The narratable text alone. See ``narration_projection_for_processed_block``."""
 
     return narration_projection_for_processed_block(processed_chunk)[0]
+
+
+def _record_narration_omitted_paragraphs(state: Any, withheld: Sequence[Mapping[str, str]]) -> None:
+    """Book the per-paragraph audio loss ONCE, for both call sites.
+
+    The count, the characters and the addresses come from the same list, so the warning
+    cannot say "8 paragraphs" while pointing at a different set. Written as one function
+    because the two branches that withhold paragraphs (the ordinary path and the controlled
+    fallback beside it) drifted apart once already: the fallback path had no per-paragraph
+    filter at all, and the block it delivered was read aloud in English.
+    """
+    if not withheld:
+        return
+    state.narration_excluded_omitted_paragraph_count += len(withheld)
+    state.narration_excluded_omitted_chars += sum(len(record["text"]) for record in withheld)
+    recorded = getattr(state, "narration_excluded_omitted_paragraphs", None)
+    if isinstance(recorded, list):
+        recorded.extend(dict(record) for record in withheld)
 
 
 def emit_block_started(
@@ -1342,6 +1389,16 @@ def continue_controlled_processed_block_rejection(
         narration_excluded_by_source_fallback = True
         state.narration_excluded_source_fallback_block_count += 1
         state.narration_excluded_source_fallback_chars += len(processed_chunk)
+        # The block is counted in BLOCKS and addressed in PARAGRAPHS: the reader searches the
+        # DOCX for a passage, not for a block index. Same records, same sanitiser, same floor
+        # as the per-paragraph twin below and as the document warning.
+        excluded_source_fallback_paragraphs = getattr(
+            state, "narration_excluded_source_fallback_paragraphs", None
+        )
+        if isinstance(excluded_source_fallback_paragraphs, list):
+            excluded_source_fallback_paragraphs.extend(
+                excluded_narration_paragraph_records(processed_chunk)
+            )
     else:
         # The per-paragraph filter belongs HERE too, and its absence was a hole: a block
         # holding an ``omitted`` paragraph keeps that paragraph's SOURCE text, which makes
@@ -1349,11 +1406,10 @@ def continue_controlled_processed_block_rejection(
         # then routed it down this path, which appended the raw chunk and read the English
         # aloud. The defect fed itself: the substitution caused the classification that
         # bypassed the filter that would have removed the substitution.
-        narratable_text, omitted_paragraphs, omitted_chars = narration_projection_for_processed_block(
+        narratable_text, withheld_paragraphs = narration_projection_for_processed_block(
             processed_chunk
         )
-        state.narration_excluded_omitted_paragraph_count += omitted_paragraphs
-        state.narration_excluded_omitted_chars += omitted_chars
+        _record_narration_omitted_paragraphs(state, withheld_paragraphs)
         if narratable_text.strip():
             state.narration_chunks.append(narratable_text)
     try:
@@ -1580,11 +1636,10 @@ def process_single_block(
         # Spec 056 E: the DOCX keeps every paragraph, the narration keeps only the ones the
         # model actually spoke for. Identical to ``processed_chunk`` for every block that
         # carries no per-paragraph record.
-        narratable_text, omitted_paragraphs, omitted_chars = narration_projection_for_processed_block(
+        narratable_text, withheld_paragraphs = narration_projection_for_processed_block(
             processed_chunk
         )
-        state.narration_excluded_omitted_paragraph_count += omitted_paragraphs
-        state.narration_excluded_omitted_chars += omitted_chars
+        _record_narration_omitted_paragraphs(state, withheld_paragraphs)
         if narratable_text.strip():
             state.narration_chunks.append(narratable_text)
     else:
