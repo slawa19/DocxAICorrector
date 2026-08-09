@@ -97,15 +97,11 @@ def test_pair_rule_does_not_fire_when_the_job_keeps_the_language() -> None:
     )
 
 
-def test_job_changes_language_reads_the_job_not_the_text() -> None:
-    """FR-A5. Both languages must be named for the rule to apply: an unnamed language is a
-    missing signal, and Constitution VII forbids inventing one."""
-    assert block_execution.job_changes_language(source_language="en", target_language="ru") is True
-    assert block_execution.job_changes_language(source_language="ru", target_language="ru") is False
-    assert block_execution.job_changes_language(source_language="RU", target_language=" ru ") is False
-    assert block_execution.job_changes_language(source_language="auto", target_language="ru") is True
-    assert block_execution.job_changes_language(source_language="", target_language="ru") is False
-    assert block_execution.job_changes_language(source_language="en", target_language=None) is False
+# ``test_job_changes_language_reads_the_job_not_the_text`` stood here and asked the question
+# with the language CODES alone. That was the P0 defect written as a test: it was green while
+# the pipeline answered "yes, this job translates" on the default literary edit. It is
+# replaced by the operation-aware group under "P0" below, which covers every case it covered
+# plus the four it could not see.
 
 
 # ---------------------------------------------------------------------------
@@ -936,3 +932,367 @@ def test_an_apparatus_block_in_the_same_loop_still_ships_and_is_counted_as_a_fal
     assert snapshot["untranslated_prose_block_rejection_count"] == 0
     assert snapshot["controlled_block_fallback_block_count"] == 1
     model_accounting.get_run_model_accounting_ledger().reset()
+
+
+# ---------------------------------------------------------------------------
+# P0 -- the invariant must not fire on the DEFAULT operation
+# ---------------------------------------------------------------------------
+#
+# Reading only the language codes was wrong, and wrong in the most expensive direction.
+# The shipped defaults are ``processing_operation_default = "edit"``,
+# ``source_language_default = "en"``, ``target_language_default = "ru"``
+# (``resources/config.toml:25-27``), and the UI renders the SOURCE-language selector only
+# for two operations (``ui/_ui.py:588``):
+#
+#     if processing_operation in {"translate", "audiobook"}:
+#
+# So on a literary edit the user cannot set the source language at all and it stays ``en``
+# against a target of ``ru``. Codes alone therefore answer "yes, this job changes language"
+# on the DEFAULT path -- where 1 144 of 1 761 recorded deliveries are byte-identical to
+# their source and every one of them is correct (measurement section 5). The run would have
+# died on the first unchanged paragraph of prose.
+#
+# The operation is part of the question, not context around it.
+
+_LANGUAGE_CHANGING = ("translate", "audiobook")
+_NON_LANGUAGE_CHANGING = ("edit", "", "  ", "unknown_future_operation")
+
+
+@pytest.mark.parametrize("operation", _NON_LANGUAGE_CHANGING)
+def test_an_operation_that_does_not_translate_never_changes_language(operation: str) -> None:
+    """P0. The shipped default pair en->ru on a literary edit is a UI artefact, not a job
+    that translates: the edit screen has no source-language selector to correct it with."""
+    assert (
+        block_execution.job_changes_language(
+            processing_operation=operation, source_language="en", target_language="ru"
+        )
+        is False
+    )
+
+
+@pytest.mark.parametrize("operation", _LANGUAGE_CHANGING)
+def test_the_two_translating_operations_read_the_codes(operation: str) -> None:
+    assert (
+        block_execution.job_changes_language(
+            processing_operation=operation, source_language="en", target_language="ru"
+        )
+        is True
+    )
+    assert (
+        block_execution.job_changes_language(
+            processing_operation=operation, source_language="ru", target_language="ru"
+        )
+        is False
+    )
+
+
+def test_language_codes_are_compared_as_languages_not_as_strings() -> None:
+    """A region subtag names a variety of the SAME language. ``en`` -> ``en-US`` is a
+    reformatting job, not a translation, and comparing raw strings called it one. This is
+    BCP-47 structure, not a list of locales."""
+    assert (
+        block_execution.job_changes_language(
+            processing_operation="translate", source_language="en", target_language="en-US"
+        )
+        is False
+    )
+    assert (
+        block_execution.job_changes_language(
+            processing_operation="translate", source_language="EN_gb", target_language=" en "
+        )
+        is False
+    )
+
+
+def test_an_unnamed_language_is_a_missing_signal_on_either_side() -> None:
+    for source, target in (("", "ru"), ("en", ""), ("en", None), (None, None)):
+        assert (
+            block_execution.job_changes_language(
+                processing_operation="translate", source_language=source, target_language=target
+            )
+            is False
+        )
+
+
+def test_auto_counts_as_a_change_but_only_where_the_user_asked_to_translate() -> None:
+    """``auto`` is not a language, so on its own it says nothing. What says something is the
+    OPERATION around it: in ``translate``/``audiobook`` the user asserted "put this into
+    <target>", so a delivery identical to the source means the model did nothing.
+
+    Measured, and this is what decides it: the recorded ``money_translate_docx`` run --
+    the ONLY one of the five on the document path, and therefore the only one that DELIVERS
+    untranslated text rather than dropping it -- ran with ``source_language: "auto"``
+    (``artifacts/audiobook_final_run/money_translate_docx/run_summary.txt:20``). Treating
+    ``auto`` as "unknown, rule off" would have switched the invariant off exactly where the
+    loss is delivered.
+    """
+    assert (
+        block_execution.job_changes_language(
+            processing_operation="translate", source_language="auto", target_language="ru"
+        )
+        is True
+    )
+    assert (
+        block_execution.job_changes_language(
+            processing_operation="edit", source_language="auto", target_language="ru"
+        )
+        is False
+    )
+
+
+def test_the_default_edit_run_keeps_an_unchanged_prose_block_instead_of_dying(monkeypatch) -> None:
+    """P0 driven through the block loop with the SHIPPED defaults, because the unit test
+    above would have passed even while the pipeline computed the flag from codes alone.
+
+    A literary edit that legitimately left a paragraph of prose alone: the run continues,
+    the text is delivered, and the narration keeps it.
+    """
+    from docxaicorrector.core import model_accounting
+
+    monkeypatch.setattr(block_execution, "_write_controlled_block_fallback_artifact", lambda **_kwargs: None)
+    monkeypatch.setattr(block_execution, "persist_terminal_job_result", lambda **_kwargs: None)
+    model_accounting.get_run_model_accounting_ledger().reset()
+    unchanged = "Это уже хороший абзац, и правка его не улучшит."
+    payload = SimpleNamespace(
+        job_kind="llm",
+        toc_dominant=False,
+        target_text=unchanged,
+        target_text_with_markers=unchanged,
+        paragraph_ids=["p0001"],
+        paragraph_regions=["prose"],
+        narration_include=True,
+        target_chars=len(unchanged),
+        context_chars=0,
+    )
+    outcome, state, events, rejections = _run_block_through_the_loop(
+        payload=payload,
+        classification="source_text_fallback",
+        processed_chunk=unchanged,
+        context=SimpleNamespace(
+            # The shipped defaults, verbatim: resources/config.toml:25-27.
+            processing_operation="edit",
+            source_language="en",
+            target_language="ru",
+            uploaded_filename="book.docx",
+            runtime=object(),
+            on_progress=lambda **_kwargs: None,
+        ),
+    )
+
+    assert outcome is None
+    assert rejections == []
+    assert state.processed_chunks == [unchanged]
+    assert state.narration_chunks == [unchanged]
+    assert not [event for _level, event, _ctx in events if event == "block_untranslated_prose_rejected"]
+    assert (
+        model_accounting.get_run_model_accounting_ledger().snapshot()[
+            "untranslated_prose_block_rejection_count"
+        ]
+        == 0
+    )
+    model_accounting.get_run_model_accounting_ledger().reset()
+
+
+def test_the_same_block_on_a_translate_run_still_fails(monkeypatch) -> None:
+    """Anti-vacuum for the operation gate: the fix must not switch the invariant off for
+    everyone. Same block, same text, same region -- only the operation differs."""
+    from docxaicorrector.core import model_accounting
+
+    model_accounting.get_run_model_accounting_ledger().reset()
+    english = "The monetary system is unchanged."
+    payload = SimpleNamespace(
+        job_kind="llm",
+        toc_dominant=False,
+        target_text=english,
+        target_text_with_markers=english,
+        paragraph_ids=["p0001"],
+        paragraph_regions=["prose"],
+        narration_include=True,
+        target_chars=len(english),
+        context_chars=0,
+    )
+    outcome, _state, events, rejections = _run_block_through_the_loop(
+        payload=payload,
+        classification="source_text_fallback",
+        processed_chunk=english,
+        context=SimpleNamespace(
+            processing_operation="translate",
+            source_language="en",
+            target_language="ru",
+            uploaded_filename="book.docx",
+            runtime=object(),
+            on_progress=lambda **_kwargs: None,
+        ),
+    )
+
+    assert outcome == "failed"
+    assert len(rejections) == 1
+    assert [event for _level, event, _ctx in events if event == "block_untranslated_prose_rejected"]
+    model_accounting.get_run_model_accounting_ledger().reset()
+
+
+# ---------------------------------------------------------------------------
+# P1 -- a run that stops must say what actually stopped it
+# ---------------------------------------------------------------------------
+
+
+def test_the_rejection_handler_is_told_the_real_reason_not_the_stale_status() -> None:
+    """Constitution V. The decision carries ``fail_reason="untranslated_prose"``, but the
+    handler used to be given the CLASSIFIER's status. For the main case that is
+    ``source_text_fallback``, which is not a key of ``block_failures.rejection_map``, so the
+    lookup silently fell through to the ``heading_only_output`` entry: the run stopped
+    because a paragraph of prose would have shipped untranslated, and told the user the model
+    had returned only a heading."""
+    from docxaicorrector.pipeline import block_failures
+
+    payload = SimpleNamespace(
+        job_kind="llm",
+        toc_dominant=False,
+        target_text=_SHORT_UNTRANSLATED_BLOCK,
+        target_text_with_markers=_SHORT_UNTRANSLATED_BLOCK,
+        paragraph_ids=["p0001"],
+        paragraph_regions=["prose"],
+        narration_include=True,
+        target_chars=len(_SHORT_UNTRANSLATED_BLOCK),
+        context_chars=0,
+    )
+    _outcome, _state, _events, rejections = _run_block_through_the_loop(
+        payload=payload,
+        classification="source_text_fallback",
+        processed_chunk=_SHORT_UNTRANSLATED_BLOCK,
+        context=SimpleNamespace(
+            processing_operation="translate",
+            source_language="en",
+            target_language="ru",
+            uploaded_filename="book.docx",
+            runtime=object(),
+            on_progress=lambda **_kwargs: None,
+        ),
+    )
+    assert rejections[0]["rejection_kind"] == "untranslated_prose"
+    assert "untranslated_prose" in block_failures.PROCESSED_BLOCK_REJECTION_MAP
+
+
+def test_every_status_the_classifier_can_produce_has_its_own_rejection_entry() -> None:
+    """The silent ``.get(kind, rejection_map["heading_only_output"])`` default is what let the
+    wrong message through, and it will do it again for the next status added to
+    ``ProcessedBlockStatus``. Every kind that can reach the handler is named."""
+    from docxaicorrector.pipeline import block_failures
+
+    reachable = {
+        "empty",
+        "source_text_fallback",
+        "english_residual_output",
+        "heading_only_output",
+        "bullet_heading_output",
+        "toc_body_concat",
+        "untranslated_prose",
+    }
+    named = set(block_failures.PROCESSED_BLOCK_REJECTION_MAP) | {"empty"}
+    assert reachable <= named, f"unnamed rejection kinds fall through to a wrong message: {reachable - named}"
+
+
+def test_an_unknown_rejection_kind_is_not_reported_silently(monkeypatch) -> None:
+    """Anti-vacuum for the entry above: the default still exists (a run must stop even for a
+    kind nobody named), but it is no longer silent."""
+    from docxaicorrector.pipeline import block_failures
+
+    logged: list[tuple[int, str, dict]] = []
+    presented: list[dict] = []
+    dependencies = SimpleNamespace(
+        log_event=lambda level, event, _message, **ctx: logged.append((level, event, ctx)),
+        present_error=lambda code, exc, title, **kwargs: presented.append(dict(kwargs)) or f"{title}: {exc}",
+    )
+    block_failures.handle_processed_block_rejection(
+        context=SimpleNamespace(uploaded_filename="book.docx", runtime=object()),
+        dependencies=dependencies,
+        emitters=SimpleNamespace(emit_state=lambda *_a, **_k: None),
+        initialization=SimpleNamespace(job_count=1),
+        index=1,
+        target_chars=10,
+        context_chars=0,
+        target_text="x",
+        processed_chunk="x",
+        rejection_kind="a_kind_nobody_named",
+        emit_failed_result_fn=lambda **_kwargs: "failed",
+    )
+    assert [event for _level, event, _ctx in logged if event == "processed_block_rejection_kind_unmapped"]
+
+
+# ---------------------------------------------------------------------------
+# P2 -- the parallel lists must actually be parallel
+# ---------------------------------------------------------------------------
+
+
+def test_a_region_list_of_the_wrong_length_is_refused() -> None:
+    """``paragraph_regions`` is defined as parallel to ``paragraph_ids``. Nothing checked it,
+    and a short list is the quiet failure: ``["back_matter"]`` against two paragraphs, the
+    second of them prose, reads as "all apparatus" and ships the source silently. The
+    shipped producer keeps them in step; the CONTRACT has to require it."""
+    from docxaicorrector.pipeline.contracts import BlockExecutionPayload
+    from docxaicorrector.pipeline.job_parsing import parse_processing_job
+
+    with pytest.raises(ValueError):
+        parse_processing_job(
+            job={
+                "target_text": "Body.",
+                "context_before": "",
+                "context_after": "",
+                "target_chars": 5,
+                "context_chars": 0,
+                "paragraph_ids": ["p1", "p2"],
+                "paragraph_regions": ["back_matter"],
+            },
+            payload_factory=BlockExecutionPayload,
+        )
+
+
+def test_a_structural_role_list_of_the_wrong_length_is_refused() -> None:
+    """The same contract, and the same silence, for the role list that predates this work."""
+    from docxaicorrector.pipeline.contracts import BlockExecutionPayload
+    from docxaicorrector.pipeline.job_parsing import parse_processing_job
+
+    with pytest.raises(ValueError):
+        parse_processing_job(
+            job={
+                "target_text": "Body.",
+                "context_before": "",
+                "context_after": "",
+                "target_chars": 5,
+                "context_chars": 0,
+                "paragraph_ids": ["p1", "p2"],
+                "structural_roles": ["body"],
+            },
+            payload_factory=BlockExecutionPayload,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Recorded, not fixed: the front-matter guard this call site cannot use
+# ---------------------------------------------------------------------------
+
+
+def test_front_matter_resolution_runs_without_its_documented_gate() -> None:
+    """HONEST CHARACTERIZATION of a claim that does not hold at this call site.
+
+    ``_resolve_source_front_matter_boundary`` documents itself as "gated by
+    ``first_block_has_body_start`` being False (the document opens with front-matter)". That
+    gate reads a preparation diagnostic snapshot, and ``build_editing_jobs`` has none, so
+    ``_resolve_paragraph_regions`` passes ``None`` and the gate is INERT: ``"…" in {}`` is
+    False, and the resolver falls through to its two rules.
+
+    The failure direction is recorded rather than argued: with no gate the resolver can only
+    mark a PREFIX as front matter, up to the first sustained run of body prose. Prose
+    mislabelled as apparatus makes the invariant fire LESS, never more -- it can hide a loss,
+    it cannot fail a healthy run. That is why this is a recorded residual and not a blocker,
+    and it is measured by the four-book run, not argued here.
+    """
+    from docxaicorrector.core.models import DocumentBlock, ParagraphUnit
+    from docxaicorrector.document.semantic_blocks import build_editing_jobs
+
+    body_first = [
+        DocumentBlock(paragraphs=[ParagraphUnit(text=_LONG_BODY, role="body", paragraph_id=f"p{index:04d}")])
+        for index in range(4)
+    ]
+    jobs = build_editing_jobs(body_first, max_chars=3000)
+    assert [job["paragraph_regions"] for job in jobs] == [["prose"]] * 4

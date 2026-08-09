@@ -373,9 +373,15 @@ def delivered_text_equals_source(*, target_text: str, processed_chunk: str) -> b
     payload-shaped face ``block_execution.fallback_delivered_source_text``, which the
     narration exclusion and the failure-decision table both call.
 
-    Stripped on both sides because the substitution branches reassemble a block from its
-    paragraphs and the reassembly may differ from the original in trailing whitespace
-    alone; a completeness rule that a stray newline can defeat is not a rule.
+    **Equal to the character once surrounding whitespace is trimmed** — worded that way and
+    not "byte for byte", because the code strips and the two phrases are not the same claim.
+    The trim is deliberate: the substitution branches reassemble a block from its paragraphs
+    and the reassembly can differ from the original in trailing whitespace alone, so a
+    completeness rule a stray newline defeats is not a rule. It also matches how the
+    measurement was computed, which is what makes "1 firing block in 1 394" a statement about
+    THIS rule and not about a near relative of it
+    (``scripts/measure-block-pair-rule.py``). Nothing else is normalised: no case folding, no
+    punctuation, and no whitespace INSIDE the text.
     """
     return processed_chunk.strip() == target_text.strip()
 
@@ -383,9 +389,10 @@ def delivered_text_equals_source(*, target_text: str, processed_chunk: str) -> b
 def is_source_text_fallback_output(*, target_text: str, processed_chunk: str) -> bool:
     """Spec 059 A-I: the measured pair rule, with nothing on top of it.
 
-    Two conditions, both of them structural: the delivered text IS the block's own source,
-    and the source has at least one letter once the pipeline's own placeholder markup is
-    taken out of it. Measured on 7 103 delivered records across five
+    Two conditions, both of them structural: the delivered text IS the block's own source
+    (equal to the character once surrounding whitespace is trimmed — see
+    ``delivered_text_equals_source``), and the source has at least one letter once the
+    pipeline's own placeholder markup is taken out of it. Measured on 7 103 delivered records across five
     runs: 99.4% recall, 26 false alarms (0.37%), none of them lost prose
     (``measurement-translation-signal.md`` §5); re-counted at the granularity where the
     decision is taken -- the BLOCK -- it fires on 1 of 1 394 recorded blocks, and that one

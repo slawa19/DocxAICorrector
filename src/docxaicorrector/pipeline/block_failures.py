@@ -6,6 +6,63 @@ from docxaicorrector.pipeline.job_results import persist_terminal_job_result
 
 PipelineResult: TypeAlias = Literal["succeeded", "failed", "stopped"]
 
+# What a terminal block rejection TELLS THE USER, keyed by the reason the run actually
+# stopped. Module-level so a test can assert that every reason able to reach this handler is
+# named here. The lookup below still has a default — a run must stop even for a kind nobody
+# wrote down — but the default is no longer silent.
+#
+# Spec 059: two keys were missing, and the omission was not cosmetic. ``source_text_fallback``
+# has always been reachable (a quality rejection whose fallback substrate is broken), and
+# ``untranslated_prose`` is the invariant's own reason; neither was a key, so
+# ``.get(kind, ...["heading_only_output"])`` served the wrong sentence, and a run that stopped
+# because a paragraph of prose would have shipped untranslated told the user that the model
+# had returned only a heading. Constitution V: a run that stops must explain itself truthfully.
+PROCESSED_BLOCK_REJECTION_MAP: dict[str, dict[str, Any]] = {
+    "heading_only_output": {
+        "code": "structurally_insufficient_processed_block",
+        "classification": "heading_only_output",
+        "exception": RuntimeError(
+            "Модель вернула только заголовок при наличии основного текста во входном блоке (heading_only_output)."
+        ),
+    },
+    "bullet_heading_output": {
+        "code": "structurally_insufficient_processed_block",
+        "classification": "bullet_heading_output",
+        "exception": RuntimeError(
+            "Модель вернула заголовок, состоящий только из bullet marker (bullet_heading_output)."
+        ),
+    },
+    "toc_body_concat": {
+        "code": "structurally_insufficient_processed_block",
+        "classification": "toc_body_concat",
+        "exception": RuntimeError(
+            "Модель склеила TOC entry с body/prose абзацем (toc_body_concat)."
+        ),
+    },
+    "english_residual_output": {
+        "code": "structurally_insufficient_processed_block",
+        "classification": "english_residual_output",
+        "exception": RuntimeError(
+            "Модель оставила необъяснённые английские фрагменты в целевом блоке (english_residual_output)."
+        ),
+    },
+    "source_text_fallback": {
+        "code": "structurally_insufficient_processed_block",
+        "classification": "source_text_fallback",
+        "exception": RuntimeError(
+            "Модель вернула исходный текст блока без перевода (source_text_fallback)."
+        ),
+    },
+    "untranslated_prose": {
+        "code": "untranslated_prose_block",
+        "classification": "untranslated_prose",
+        "exception": RuntimeError(
+            "Блок доставил бы абзац прозы на языке источника; подстановка исходника запрещена "
+            "(untranslated_prose). Прогон остановлен, чтобы потеря не выдала себя за успех."
+        ),
+    },
+}
+
 
 def _parse_toc_validation_failure_details(exc: Exception) -> tuple[str | None, int | None, list[str]]:
     prefix = "toc_language_validation_failed:"
@@ -207,36 +264,6 @@ def handle_processed_block_rejection(
     rejection_kind: str,
     emit_failed_result_fn: Any,
 ) -> PipelineResult:
-    rejection_map = {
-        "heading_only_output": {
-            "code": "structurally_insufficient_processed_block",
-            "classification": "heading_only_output",
-            "exception": RuntimeError(
-                "Модель вернула только заголовок при наличии основного текста во входном блоке (heading_only_output)."
-            ),
-        },
-        "bullet_heading_output": {
-            "code": "structurally_insufficient_processed_block",
-            "classification": "bullet_heading_output",
-            "exception": RuntimeError(
-                "Модель вернула заголовок, состоящий только из bullet marker (bullet_heading_output)."
-            ),
-        },
-        "toc_body_concat": {
-            "code": "structurally_insufficient_processed_block",
-            "classification": "toc_body_concat",
-            "exception": RuntimeError(
-                "Модель склеила TOC entry с body/prose абзацем (toc_body_concat)."
-            ),
-        },
-        "english_residual_output": {
-            "code": "structurally_insufficient_processed_block",
-            "classification": "english_residual_output",
-            "exception": RuntimeError(
-                "Модель оставила необъяснённые английские фрагменты в целевом блоке (english_residual_output)."
-            ),
-        },
-    }
     if rejection_kind == "empty":
         critical_message = dependencies.present_error(
             "empty_processed_block",
@@ -269,7 +296,22 @@ def handle_processed_block_rejection(
             log_details=critical_message,
         )
 
-    rejection_details = rejection_map.get(rejection_kind, rejection_map["heading_only_output"])
+    rejection_details = PROCESSED_BLOCK_REJECTION_MAP.get(rejection_kind)
+    if rejection_details is None:
+        # The run stops either way, so the default stays — but it used to stand in for the
+        # heading-only sentence without saying so, which is how a truthful failure became a
+        # false one. Constitution V: dropping a reason is an event, not a shrug.
+        rejection_details = PROCESSED_BLOCK_REJECTION_MAP["heading_only_output"]
+        dependencies.log_event(
+            logging.WARNING,
+            "processed_block_rejection_kind_unmapped",
+            "Неизвестный вид отказа блока: пользователю показано сообщение по умолчанию.",
+            filename=getattr(context, "uploaded_filename", ""),
+            block_index=index,
+            block_count=getattr(initialization, "job_count", 0),
+            rejection_kind=rejection_kind,
+            substituted_classification=str(rejection_details["classification"]),
+        )
     critical_message = dependencies.present_error(
         str(rejection_details["code"]),
         rejection_details["exception"],

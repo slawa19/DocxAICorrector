@@ -13,6 +13,21 @@ _UNSET = object()
 EXPLICIT_LIST_MARKER_PATTERN = re.compile(r"^(?:\s*[-*•]\s+|\s*\d+[\.)]\s+)")
 EXPLICIT_HEADING_PATTERN = re.compile(r"^#{1,6}\s+")
 
+# Spec 059 FR-A5: the operations that can change the language of the text. Not a matter of
+# taste and not a guess — it is the set the UI itself uses to decide whether to RENDER a
+# source-language selector at all (``ui/_ui.py:588``). Outside these two the user cannot
+# choose a source language, so the shipped ``source_language_default = "en"`` stands
+# unchallenged against ``target_language_default = "ru"`` (``resources/config.toml:25-27``),
+# and a rule reading only the codes concludes "this job translates" on a literary edit —
+# where 1 144 of 1 761 recorded deliveries are byte-identical to their source and every one
+# of them is correct. It lives here so that the pipeline and the result screen answer the
+# question from ONE definition; a set restated per module is a set that drifts per module.
+#
+# An operation this project does not know about is NOT assumed to translate: the same
+# missing-signal rule as an unnamed language, and the same failure direction — a rule that
+# does not fire can hide a loss, a rule that fires wrongly destroys a paid run.
+LANGUAGE_CHANGING_OPERATIONS = frozenset({"translate", "audiobook"})
+
 # Spec 059 A-II / A-6: which REGION of the document a paragraph belongs to. The vocabulary
 # lives here, at the bottom layer, because ``document`` resolves it and ``pipeline`` decides
 # on it, and a vocabulary restated on both sides of a contract drifts.

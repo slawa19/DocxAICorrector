@@ -9,7 +9,7 @@ from docxaicorrector.core.model_accounting import (
     record_controlled_block_fallback,
     record_untranslated_prose_block_rejection,
 )
-from docxaicorrector.core.models import PARAGRAPH_REGION_PROSE
+from docxaicorrector.core.models import LANGUAGE_CHANGING_OPERATIONS, PARAGRAPH_REGION_PROSE
 from docxaicorrector.generation._generation import (
     PARAGRAPH_STATUS_OMITTED,
     marker_paragraph_dispositions,
@@ -119,7 +119,8 @@ def fallback_delivered_source_text(*, payload: Any, processed_chunk: str) -> boo
     both without naming either, and stays correct if the policy table grows another kind.
 
     Spec 059 A-I: this is the payload-shaped face of ``delivered_text_equals_source``, which
-    is the single implementation of the comparison (FR-A2 forbids a second predicate). Until
+    is the single implementation of the comparison (FR-A2 forbids a second predicate) and
+    which compares the two texts to the character once surrounding whitespace is trimmed. Until
     that spec this function had exactly ONE consumer — the narration exclusion below — so the
     classifier and the failure-decision table could not see the rule at all, and a block
     delivered wholly in the source language was classified ``valid``. It now has three
@@ -132,22 +133,61 @@ def fallback_delivered_source_text(*, payload: Any, processed_chunk: str) -> boo
     )
 
 
-def job_changes_language(*, source_language: Any, target_language: Any) -> bool:
+def _language_subtag(value: Any) -> str:
+    """The LANGUAGE of a BCP-47 tag: ``en-US`` and ``EN_gb`` are both ``en``.
+
+    A region subtag names a variety of the same language, so ``en`` -> ``en-US`` is a
+    reformatting job and not a translation. This reads the tag's structure, not a list of
+    locales, so it needs no maintenance as languages are added.
+    """
+    normalized = str(value or "").strip().casefold()
+    for separator in ("-", "_"):
+        normalized = normalized.split(separator, 1)[0]
+    return normalized
+
+
+def job_changes_language(
+    *,
+    processing_operation: Any,
+    source_language: Any,
+    target_language: Any,
+) -> bool:
     """Does this job ask for a different language out than it takes in? (spec 059 FR-A5.)
 
-    Read off the JOB, never guessed from the text. The pair rule only means "untranslated"
-    where the languages differ: on the recorded ru->ru literary-edit run, 1 144 of 1 761
-    deliveries were byte-identical to their source and every one was the right outcome
-    (``measurement-translation-signal.md`` §5).
+    Read off the JOB, never guessed from the text — and the job is the OPERATION together
+    with the two codes, not the codes alone. Reading only the codes was a P0 defect: the
+    shipped defaults are ``processing_operation_default = "edit"`` with ``en`` -> ``ru``
+    (``resources/config.toml:25-27``), and the UI renders a source-language selector only
+    inside ``LANGUAGE_CHANGING_OPERATIONS`` (``ui/_ui.py:588``), so on a literary edit that
+    ``en`` is an artefact the user cannot even correct. Codes alone therefore answered "yes,
+    this translates" on the DEFAULT path — where 1 144 of 1 761 recorded deliveries are
+    byte-identical to their source and every one of them is right
+    (``measurement-translation-signal.md`` §5). The run would have died on the first
+    unchanged paragraph of prose.
 
-    An unnamed language on either side is a MISSING SIGNAL, and Constitution VII's "no source
-    signal, no repair" applies: the rule does not fire. ``auto`` on the source side compares
-    unequal to any concrete target and therefore counts as changing the language — the
-    conservative direction, because a job that asks for Russian out of an unknown language in
-    is asking for a translation.
+    ``processing_operation`` is required and has no default, for the same reason: a default
+    here is a guess that fails silently in exactly one of the two directions.
+
+    An unnamed language on either side is a MISSING SIGNAL and Constitution VII's "no source
+    signal, no repair" applies — the rule does not fire.
+
+    ``auto`` on the source side is not a language and says nothing on its own; what says
+    something is the operation around it. Inside ``translate``/``audiobook`` the user asserted
+    "put this into <target>", so a delivery identical to the source means the model did
+    nothing, and ``auto`` counts as a change. Decided by data rather than by taste: the
+    recorded ``money_translate_docx`` run — the only one of the five on the DOCUMENT path, and
+    therefore the only one that DELIVERS untranslated text instead of dropping it — ran with
+    ``source_language: "auto"``
+    (``artifacts/audiobook_final_run/money_translate_docx/run_summary.txt:20``). Reading
+    ``auto`` as "unknown, rule off" would have switched the invariant off precisely where the
+    loss is delivered. The residual is named rather than hidden: a ``translate`` run over a
+    document that is already in the target language can still produce a false failure, and
+    that is a misconfiguration the UI already warns about.
     """
-    source = str(source_language or "").strip().casefold()
-    target = str(target_language or "").strip().casefold()
+    if str(processing_operation or "").strip().casefold() not in LANGUAGE_CHANGING_OPERATIONS:
+        return False
+    source = _language_subtag(source_language)
+    target = _language_subtag(target_language)
     if not source or not target:
         return False
     return source != target
@@ -1294,6 +1334,7 @@ def process_single_block(
     # Spec 059 FR-A5: the pair rule is only a completeness signal where the job changes the
     # language, and that is read off the run, not off the text.
     languages_differ = job_changes_language(
+        processing_operation=getattr(context, "processing_operation", None),
         source_language=getattr(context, "source_language", None),
         target_language=getattr(context, "target_language", None),
     )
@@ -1361,7 +1402,12 @@ def process_single_block(
             context_chars=payload.context_chars,
             target_text=payload.target_text,
             processed_chunk=processed_chunk,
-            rejection_kind=processed_block_status,
+            # Spec 059, Constitution V: the reason the run STOPPED, not the classifier's
+            # status. For the invariant those differ — the classifier says
+            # ``source_text_fallback`` while the run stopped because that fallback would have
+            # delivered prose — and telling the handler the stale one made the failure
+            # explain itself with the wrong sentence.
+            rejection_kind=str(rejection_decision.get("fail_reason") or processed_block_status),
         )
 
     state.processed_chunks.append(processed_chunk)

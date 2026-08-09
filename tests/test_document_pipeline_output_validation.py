@@ -2783,6 +2783,13 @@ def test_run_document_processing_continues_on_controlled_fallback_classes(
         app_config={},
         model="gpt-5.4",
         max_retries=1,
+        # Spec 059 FR-A5: the narration exclusion this fixture pins is spec 054's rule about
+        # SOURCE-LANGUAGE text, so it applies only to a run that changes language. The
+        # operation has to be declared: the shipped default is ``edit``, where the rule is
+        # correctly off and this fixture would be asserting nothing.
+        processing_operation="translate",
+        source_language="en",
+        target_language="ru",
         on_progress=lambda **kwargs: None,
         runtime=runtime,
         resolve_uploaded_filename=lambda uploaded_file: str(uploaded_file),
