@@ -998,6 +998,9 @@ def test_get_current_result_bundle_reads_p1a_source_identity_via_state_helpers(m
         "quality_warning": None,
         "delivery_disposition": {"status": "accepted"},
         "result_notices": [],
+        # Spec 059 FR-B6: the controlled-block fallback dump is READ off session state now
+        # (it used to be written by ``block_execution`` and consumed by nothing).
+        "controlled_block_fallback_artifact": None,
     }
 
 
@@ -1020,6 +1023,7 @@ def test_get_current_result_bundle_allows_narration_only_result(monkeypatch):
         "quality_warning": None,
         "delivery_disposition": {"status": "accepted"},
         "result_notices": [],
+        "controlled_block_fallback_artifact": None,
     }
 
 

@@ -196,6 +196,86 @@ def test_migrated_ui_module_keys_present_in_both_catalogs(filename: str) -> None
     assert not missing_en, f"keys referenced by {filename} but missing from en.json: {missing_en}"
 
 
+def test_acceptance_check_names_have_catalog_entries_in_both_locales() -> None:
+    """Spec 059 FR-B3 / anti-regression #18 — a guard that SEES the naming scheme.
+
+    ``test_ui_module_keys_present_in_both_catalogs`` collects keys with a regex over
+    ``t("literal")`` occurrences, so ``t(f"result.acceptance_check.{name}")`` is invisible
+    to it: the guard would stay green while the screen printed a raw identifier. The check
+    names are a CLOSED enumeration owned by ``validation/acceptance.py`` (a structural fact,
+    not a literal from a book — Constitution VII), so the guard enumerates them from there.
+
+    Only the checks a production screen may NAME are required: the harness-only
+    source↔output comparison is never shown (production owns no source DOCX).
+    """
+    from docxaicorrector.ui.review_presentation import ACCEPTANCE_CHECK_KEY_PREFIX
+    from docxaicorrector.validation.acceptance import (
+        PRODUCTION_ACCEPTANCE_CHECK_NAMES,
+        production_reportable_failed_checks,
+    )
+
+    reportable = production_reportable_failed_checks(
+        {"failed_checks": list(PRODUCTION_ACCEPTANCE_CHECK_NAMES)}
+    )
+    assert reportable, "expected at least one production-reportable acceptance check"
+    expected_keys = {f"{ACCEPTANCE_CHECK_KEY_PREFIX}{name}" for name in reportable}
+
+    ru = json.loads(_locale_path("ru.json").read_text(encoding="utf-8"))
+    en = json.loads(_locale_path("en.json").read_text(encoding="utf-8"))
+    assert not sorted(expected_keys - set(ru)), (
+        f"acceptance check keys missing from ru.json: {sorted(expected_keys - set(ru))}"
+    )
+    assert not sorted(expected_keys - set(en)), (
+        f"acceptance check keys missing from en.json: {sorted(expected_keys - set(en))}"
+    )
+    # And the other direction: a catalog entry for a name the enumeration no longer has is
+    # a dead string that would quietly outlive its check.
+    for catalog, label in ((ru, "ru.json"), (en, "en.json")):
+        stale = {
+            key for key in catalog if key.startswith(ACCEPTANCE_CHECK_KEY_PREFIX)
+        } - expected_keys
+        assert not stale, f"{label} carries acceptance check keys with no check: {sorted(stale)}"
+
+
+@pytest.mark.parametrize("lang", ["ru", "en"])
+def test_acceptance_and_source_text_notices_render_their_params(
+    monkeypatch: pytest.MonkeyPatch, lang: str
+) -> None:
+    """Spec 059 FR-B3/FR-B5: the two new notice templates interpolate what the pipeline sends."""
+    _force_language(monkeypatch, lang)
+
+    verdict_message = i18n.t("result.acceptance_not_passed", count=2, checks="A, B")
+    assert "{" not in verdict_message
+    assert "2" in verdict_message and "A, B" in verdict_message
+
+    delivered = i18n.t(
+        "result.source_text_delivered", count=3, blocks=1, chars=5581, anchors="«Once upon»"
+    )
+    assert "{" not in delivered
+    assert "3" in delivered and "5581" in delivered and "Once upon" in delivered
+
+    unanchored = i18n.t(
+        "result.source_text_delivered_with_unanchored",
+        count=3,
+        blocks=1,
+        chars=5581,
+        anchors="«Once upon»",
+        unanchored=1,
+    )
+    assert "{" not in unanchored
+    assert "Once upon" in unanchored
+
+    without_anchors = i18n.t(
+        "result.source_text_delivered_without_anchors", count=3, blocks=1, chars=5581, unanchored=3
+    )
+    assert "{" not in without_anchors
+    assert "3" in without_anchors
+
+    artifact = i18n.t("result.controlled_block_fallback_artifact", path="/x/y.json")
+    assert "{" not in artifact
+    assert "/x/y.json" in artifact
+
+
 def test_app_and_flow_namespace_key_sets_match_between_catalogs() -> None:
     """The app.*, recommend.*, and flow.* key sets are identical across ru.json and en.json."""
     ru = json.loads(_locale_path("ru.json").read_text(encoding="utf-8"))
