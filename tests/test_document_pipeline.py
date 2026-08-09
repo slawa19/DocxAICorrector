@@ -3030,10 +3030,23 @@ def test_run_document_processing_reader_cleanup_strict_failure_preserves_base_re
             "level": "warning",
             "message_key": "result.cleanup_advisory_failed",
             "message": "Reader cleanup strict stage failed; preserved the raw translated result without cleanup.",
-        }
+        },
+        # Spec 059 FR-B1/FR-B2: the production acceptance verdict now crosses the boundary.
+        # This run delivers ``markdown_text.encode()`` as its "DOCX", so
+        # ``output_docx_openable`` genuinely fails and the verdict is genuinely red — the
+        # screen used to say nothing about it. It is REVIEW data: the delivery disposition
+        # below is untouched and the artifacts are still handed over (FR-B8).
+        {
+            "kind": "acceptance",
+            "level": "warning",
+            "message_key": "result.acceptance_not_passed",
+            "params": {"count": 1},
+            "failed_checks": ["output_docx_openable"],
+        },
     ]
     warning_events = [event for event in events if event["level"] == logging.WARNING]
     assert any(event["event_id"] == "reader_cleanup_strict_failed_base_result_preserved" for event in warning_events)
+    assert any(event["event_id"] == "acceptance_verdict_not_passed" for event in warning_events)
     raw_sidecar_path = tmp_path / "report.raw.result.md"
     report_path = tmp_path / "report.reader_cleanup_report.json"
     assert raw_sidecar_path.read_text(encoding="utf-8") == "block"

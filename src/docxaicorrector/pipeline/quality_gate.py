@@ -36,8 +36,17 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal, cast
 
+from docxaicorrector.generation._generation import (
+    PARAGRAPH_STATUS_OMITTED,
+    PARAGRAPH_STATUS_SOURCE_RESTORED,
+    _strip_narration_inline_emphasis,
+    marker_paragraph_dispositions,
+)
 from docxaicorrector.processing.preparation import humanize_quality_gate_reasons
-from docxaicorrector.validation.acceptance import build_acceptance_verdict
+from docxaicorrector.validation.acceptance import (
+    build_acceptance_verdict,
+    production_reportable_failed_checks,
+)
 from docxaicorrector.validation.formatting_coverage import (
     classify_heading_demotions,
     resolve_role_aware_formatting_unmapped_source_summary,
@@ -540,13 +549,44 @@ def _is_reviewable_list_fragment_residue(
     return True
 
 
+# The three inline tags the importer emits around a run
+# (``document/extraction.py:1389-1394``). They are OUR markup, synthesised from the DOCX run
+# properties, and Pandoc renders them back into real formatting — so the reader never sees
+# them as characters.
+_REVIEW_ANCHOR_INLINE_TAG_PATTERN = re.compile(r"</?(?:u|sup|sub)>", re.IGNORECASE)
+
+
+def _review_anchor_visible_text(text: str) -> str:
+    """The text as the reader SEES it in Word, with our own inline markup unwrapped.
+
+    The importer bakes emphasis straight into the paragraph text
+    (``document/extraction.py:1381-1394``: ``***``/``**``/``*`` for bold+italic/bold/italic,
+    then ``<u>``, ``<sup>``, ``<sub>``), and the delivered DOCX is built from that markdown
+    by Pandoc. So ``**Important passage**`` reaches the reader as bold text with no
+    asterisks in it, and an anchor that keeps them sends the reader to Ctrl+F for a string
+    the document does not contain — the address is wrong on EVERY emphasised paragraph.
+
+    Spec 057 already paid for this (``docs/WHERE_WE_ARE.md:117``): a rule that read the last
+    character of a source paragraph never fired once until it unwrapped the tail first.
+
+    The emphasis half reuses the repository's existing rule
+    (``generation._strip_narration_inline_emphasis``) rather than introducing a second one;
+    the tag half removes exactly the three forms the importer emits, and nothing else. No
+    general markdown parser is involved: this normalises OUR markup, it does not interpret
+    the document.
+    """
+    return _REVIEW_ANCHOR_INLINE_TAG_PATTERN.sub("", _strip_narration_inline_emphasis(text))
+
+
 def _sanitize_review_anchor_text(value: object) -> str:
     """Turn a raw preview into a user-locatable anchor: drop internal
     `[[DOCX_PARA_…]]` / `[[DOCX_IMAGE_…]]` placeholders (FR-004), strip a leading
-    markdown heading marker, and collapse whitespace/newlines."""
+    markdown heading marker, collapse whitespace/newlines, and unwrap the inline markup the
+    importer baked in so the anchor is what Word actually shows (spec 059 FR-B5)."""
     text = _DOCX_INTERNAL_PLACEHOLDER_PATTERN.sub(" ", str(value or ""))
     text = " ".join(text.split())
-    return _REVIEW_ANCHOR_HEADING_MARKER_PATTERN.sub("", text)
+    text = _REVIEW_ANCHOR_HEADING_MARKER_PATTERN.sub("", text)
+    return _review_anchor_visible_text(text)
 
 
 def _review_anchor_visible_char_count(text: str) -> int:
@@ -2008,6 +2048,203 @@ def _build_result_quality_warning(
             quality_report.get("formatting_review_required_count") or len(formatting_review_items)
         )
     return warning
+
+
+# --- spec 059 part B: the two facts that never used to cross the boundary --------------
+# ``grep -rni acceptance src/docxaicorrector/ui/`` returned nothing before this spec: the
+# production verdict was computed, serialized to ``.run/quality_reports/*.json`` and stopped.
+# Both builders below produce DATA for ``latest_result_notices`` — the channel that already
+# exists and is already rendered (``ui/_ui.py``) — so nothing about the result screen's
+# layout, block order or delivery semantics changes (FR-B8, Constitution VII "no verifier
+# as a gate"). Both return ``None`` when there is nothing to say: a message shown on every
+# run is noise (anti-vacuum).
+
+# The two paragraph statuses that leave the paragraph's own SOURCE text standing in the
+# delivered DOCX. ``omitted`` (the model returned nothing) and ``source_restored`` (the
+# model's answer was discarded) are different causes with the SAME consequence for a reader
+# of the document, and the document fact is what this channel reports.
+_SOURCE_TEXT_DELIVERED_PARAGRAPH_STATUSES: tuple[str, ...] = (
+    PARAGRAPH_STATUS_OMITTED,
+    PARAGRAPH_STATUS_SOURCE_RESTORED,
+)
+
+
+def build_acceptance_verdict_notice(
+    quality_report: Mapping[str, object],
+) -> dict[str, object] | None:
+    """The PRODUCTION acceptance verdict as a result notice, or ``None`` when it passed.
+
+    The trigger is ``acceptance_verdict.passed is False`` — a boolean the pipeline already
+    computed — and nothing else. In particular it is NOT ``quality_status`` and NOT
+    ``gate_reasons``: the whole hygiene gate lives under
+    ``if context.processing_operation == "translate"``, so outside ``translate`` the status
+    stays ``pass`` and the reasons stay empty however bad the residue is, which is exactly
+    why the screen was silent on three of the four books of the recorded corpus.
+
+    ``failed_checks`` travels as DATA. The UI names each check through its own catalog and
+    never imports the verdict module or recomputes anything (FR-B1). Harness-only checks are
+    dropped by ``production_reportable_failed_checks``: production owns no source DOCX and
+    must not report a judgement it did not make.
+    """
+    verdict = quality_report.get("acceptance_verdict")
+    if not isinstance(verdict, Mapping):
+        return None
+    if verdict.get("passed") is not False:
+        return None
+    failed_checks = production_reportable_failed_checks(verdict)
+    if not failed_checks:
+        # Red only on checks production cannot evaluate: nothing production may say.
+        return None
+    return {
+        "kind": "acceptance",
+        "level": "warning",
+        "message_key": "result.acceptance_not_passed",
+        "params": {"count": len(failed_checks)},
+        "failed_checks": failed_checks,
+    }
+
+
+def build_source_text_delivery_facts(
+    processed_chunks: Sequence[object],
+    *,
+    anchor_limit: int = 8,
+    delivered_markdown: str | None = None,
+) -> dict[str, object]:
+    """Which DELIVERED paragraphs still carry their own source text — and where they are.
+
+    Read off the per-paragraph record the delivered block carries
+    (``generation.marker_paragraph_dispositions``), not off any run-level counter. That
+    matters twice:
+
+    * ``model_output_discarded_reason_counts`` counts EVENTS, not blocks and not paragraphs
+      — ``record_model_output_discarded`` does ``counts[reason] += 1`` once per call — so on
+      the recorded ``rethinking_money`` run it reads ``{"marker_chunk_collapse": 1}`` beside
+      ``model_output_discarded_block_count=0``. A channel keyed on that dict would announce a
+      quantity of nothing;
+    * a block with no record (a passthrough block, a plain ``str``) makes no claim at all.
+      No signal, no repair (Constitution VII).
+
+    Anchors are the paragraph's own delivered text, put through the SAME sanitiser the
+    formatting-review items use, so an internal ``[[DOCX_PARA_…]]`` id never reaches the user,
+    the inline markup the importer baked in is unwrapped (the reader searches what Word
+    SHOWS), and a paragraph with fewer than 3 searchable characters is COUNTED
+    (``unanchored_paragraph_count``) instead of printed as an empty row — no address is
+    invented (anti-regression #14).
+
+    ``delivered_markdown`` closes the last gap in that promise. These records come from
+    ``state.processed_chunks``, which is the material as it stood BEFORE reader cleanup, while
+    the DOCX is built from the post-cleanup markdown — and cleanup can delete, merge, split or
+    rewrite a paragraph. An anchor that is no longer present in what was actually delivered is
+    therefore dropped and counted rather than offered: a wrong address is the worst kind of
+    invented one, because the reader will spend time going to it. The paragraph itself is
+    still counted — the substitution really happened — only its address is withheld. Both
+    sides are compared as VISIBLE text, because the delivered markdown still carries the
+    markup the anchor no longer does.
+    """
+    block_count = 0
+    paragraph_count = 0
+    chars = 0
+    unanchored = 0
+    dropped_not_in_delivered = 0
+    anchors: list[str] = []
+    status_counts = {status: 0 for status in _SOURCE_TEXT_DELIVERED_PARAGRAPH_STATUSES}
+    delivered_visible = (
+        None
+        if delivered_markdown is None
+        else _review_anchor_visible_text(" ".join(str(delivered_markdown).split()))
+    )
+    for chunk in processed_chunks:
+        dispositions = marker_paragraph_dispositions(chunk)
+        if dispositions is None:
+            continue
+        block_has_source_text = False
+        for disposition in dispositions:
+            if disposition.status not in status_counts:
+                continue
+            block_has_source_text = True
+            paragraph_count += 1
+            chars += len(disposition.text)
+            status_counts[disposition.status] += 1
+            anchor = _sanitize_review_anchor_text(disposition.text)
+            if _review_anchor_visible_char_count(anchor) < 3:
+                unanchored += 1
+                continue
+            if delivered_visible is not None and anchor not in delivered_visible:
+                unanchored += 1
+                dropped_not_in_delivered += 1
+                continue
+            if len(anchors) < anchor_limit:
+                anchors.append(anchor)
+        if block_has_source_text:
+            block_count += 1
+    return {
+        "block_count": block_count,
+        "paragraph_count": paragraph_count,
+        "chars": chars,
+        "anchors": anchors,
+        "unanchored_paragraph_count": unanchored,
+        "anchors_dropped_not_in_delivered": dropped_not_in_delivered,
+        "status_counts": status_counts,
+    }
+
+
+# The operations whose job is to CHANGE THE LANGUAGE. Read from the job the run was started
+# with, never from the shape of a paragraph (Constitution VII). ``edit`` rewrites text that is
+# already in the target language, so a paragraph the model did not answer for is UNEDITED
+# there, not untranslated — the same fact, and two different true sentences about it.
+_LANGUAGE_CHANGING_OPERATIONS: frozenset[str] = frozenset({"translate", "audiobook"})
+
+
+def build_source_text_delivery_notice(
+    facts: Mapping[str, object],
+    *,
+    processing_operation: str,
+) -> dict[str, object] | None:
+    """The DOCX fact as a result notice, or ``None`` when no paragraph carries source text.
+
+    Deliberately independent of narration. "Source text was delivered into the document" and
+    "the block was kept out of the narration" are two different facts about two different
+    artifacts; tying the first to ``narration_text is not None`` hid it on every ``edit`` and
+    ``translate`` run, which is the DEFAULT path (FR-B4).
+
+    ``processing_operation`` is required rather than defaulted: the wording is only true for
+    the operation the run actually ran, and a default would quietly make it false for the
+    other one.
+    """
+    paragraph_count = int(cast(int, facts.get("paragraph_count") or 0))
+    if paragraph_count <= 0:
+        return None
+    anchors = [str(anchor) for anchor in cast(Sequence[object], facts.get("anchors") or ())]
+    unanchored = int(cast(int, facts.get("unanchored_paragraph_count") or 0))
+    params: dict[str, object] = {
+        "count": paragraph_count,
+        "blocks": int(cast(int, facts.get("block_count") or 0)),
+        "chars": int(cast(int, facts.get("chars") or 0)),
+    }
+    operation = str(processing_operation or "").strip().lower()
+    key_family = (
+        "result.source_text_delivered"
+        if operation in _LANGUAGE_CHANGING_OPERATIONS
+        else "result.unedited_text_delivered"
+    )
+    # Three templates per family rather than one carrying a "{unanchored}" that reads "0" on
+    # the common case, or an "{anchors}" with nothing behind it: a number printed always is a
+    # number nobody reads, and an empty «» row is the invented address #14 forbids.
+    if not anchors:
+        params["unanchored"] = unanchored
+        message_key = f"{key_family}_without_anchors"
+    elif unanchored > 0:
+        params["unanchored"] = unanchored
+        message_key = f"{key_family}_with_unanchored"
+    else:
+        message_key = key_family
+    return {
+        "kind": "translation",
+        "level": "warning",
+        "message_key": message_key,
+        "params": params,
+        "anchors": anchors,
+    }
 
 
 def _russian_paragraph_word(count: int) -> str:

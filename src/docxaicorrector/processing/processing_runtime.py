@@ -1674,6 +1674,7 @@ def build_result_bundle(
     quality_warning: Mapping[str, object] | None = None,
     delivery_disposition: Mapping[str, object] | None = None,
     result_notices: Sequence[Mapping[str, object]] | None = None,
+    controlled_block_fallback_artifact: str | None = None,
 ) -> dict[str, object]:
     resolved_notices = [dict(notice) for notice in result_notices or ()]
     if delivery_disposition is None:
@@ -1699,6 +1700,10 @@ def build_result_bundle(
         "quality_warning": quality_warning,
         "delivery_disposition": resolved_disposition,
         "result_notices": resolved_notices,
+        # spec 059 FR-B6: the controlled-block fallback dump was emitted into session state
+        # by ``block_execution`` and read by nothing. It travels with the bundle so the
+        # result screen can point at it — and only when there is a reason to.
+        "controlled_block_fallback_artifact": controlled_block_fallback_artifact,
     }
 
 
@@ -1763,6 +1768,9 @@ def get_current_result_bundle() -> dict[str, object] | None:
             quality_warning=cast(Mapping[str, object] | None, st.session_state.get("latest_quality_warning")),
             delivery_disposition=disposition,
             result_notices=cast(Sequence[Mapping[str, object]], result_notices),
+            controlled_block_fallback_artifact=cast(
+                str | None, st.session_state.get("latest_controlled_block_fallback_artifact")
+            ),
         )
 
     try:

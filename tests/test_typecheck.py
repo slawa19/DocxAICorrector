@@ -55,6 +55,16 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 # invariant ``result_notices`` element type, and the recorded ``emit_state`` payloads in
 # ``tests/test_late_phases_finalize_gate_persistence`` are narrowed through typed accessors
 # (``_state_result_notices`` / ``_state_mapping_value``) instead of indexing ``object``.
+# 2026-08-09 (spec 059 part B): STAYS 192, and the attempt to lower it is recorded because
+# the mistake is reproducible. This branch really did clear two subscripts on ``object`` in
+# its own new test file (giving ``build_source_text_delivery_notice`` a required
+# ``processing_operation`` keyword turned inline indexing of a ``dict | None`` into
+# ``assert ... is None`` statements) — but those two errors were introduced by that same new
+# file, so the count never moved relative to ``main``. The 190 came from measuring in a SIDE
+# WORKTREE; re-measured 192 in the main tree AND in a pristine detached checkout, which is
+# what CI sees. The ratchet is two-sided, so ``main`` being green already proved ``main`` is
+# exactly 192 — a lower reading is a broken measurement, not an improvement.
+# Rule this cost: the side worktree is not a place to measure this number.
 _ERROR_BASELINE = 192
 
 

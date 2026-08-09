@@ -18,15 +18,78 @@ dependencies while remaining behaviour-identical to the harness.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable, Mapping, Sequence
-from typing import cast
+from typing import Final, cast
 
+from docxaicorrector.core.logger import log_event
 from docxaicorrector.pipeline.output_validation import collect_page_placeholder_heading_concat_samples
 from docxaicorrector.validation.formatting_coverage import (
     resolve_filtered_formatting_unmapped_source_count as _resolve_filtered_formatting_unmapped_source_count,
     resolve_role_aware_formatting_unmapped_source_summary as _resolve_role_aware_formatting_unmapped_source_summary,
     resolve_role_aware_formatting_unmapped_target_summary as _resolve_role_aware_formatting_unmapped_target_summary,
 )
+
+
+# --- spec 059 FR-B3: the check vocabulary, said out loud ------------------------------
+# Every name ``build_acceptance_verdict`` can emit on the PRODUCTION path (the one with no
+# ``structural_checks_builder``). It is a CLOSED enumeration and this module owns it,
+# because the screen has to name a failed check in words and a name is a structural fact,
+# never a literal taken from a book (Constitution VII). ``add_check`` refuses a name that
+# is not here, so the tuple cannot silently fall behind the code that emits.
+PRODUCTION_ACCEPTANCE_CHECK_NAMES: Final[tuple[str, ...]] = (
+    "pipeline_succeeded",
+    "reader_cleanup_stage_completed",
+    "output_docx_openable",
+    "no_placeholder_markup",
+    "page_placeholder_heading_concat_hygiene_applied",
+    "formatting_diagnostics_threshold",
+    "caption_heading_conflict_absent",
+    "unmapped_source_threshold",
+    "unmapped_target_threshold",
+    "translation_quality_report_not_failed",
+    "bullet_marker_headings_present",
+    "false_fragment_headings_present",
+    "residual_bullet_glyphs_present",
+    "list_fragment_regressions_present",
+    "mixed_script_terms_present",
+    "theology_style_deterministic_issues_present",
+    "emphasis_coverage_advisory",
+    "paragraph_break_advisory",
+    "no_toc_body_concat_required",
+    "structural_comparison_available",
+)
+_PRODUCTION_ACCEPTANCE_CHECK_NAME_SET: Final[frozenset[str]] = frozenset(
+    PRODUCTION_ACCEPTANCE_CHECK_NAMES
+)
+
+# ``structural_comparison_available`` is the placeholder production emits INSTEAD of the
+# harness' source↔output comparison; it is NOT-APPLICABLE by construction and can never
+# enter ``failed_checks``, so it is not something a production screen ever names.
+_NON_REPORTABLE_ACCEPTANCE_CHECK_NAMES: Final[frozenset[str]] = frozenset(
+    {"structural_comparison_available"}
+)
+
+
+def production_reportable_failed_checks(verdict: Mapping[str, object]) -> list[str]:
+    """The failed checks a PRODUCTION screen may name, in this module's own order.
+
+    Two verdicts exist and they do not judge the same set of checks (see
+    ``quality_gate.build_report_acceptance_verdict``): the harness injects a
+    ``structural_checks_builder`` and adds names such as ``key_headings_preserved``, which
+    production cannot evaluate because it never receives the source DOCX. A name outside
+    this module's enumeration therefore came from the harness and is dropped rather than
+    shown — production must not report a judgement it did not make (Constitution VII).
+    """
+    failed = verdict.get("failed_checks")
+    if not isinstance(failed, Sequence) or isinstance(failed, (str, bytes)):
+        return []
+    reported = {str(name) for name in failed if isinstance(name, str)}
+    return [
+        name
+        for name in PRODUCTION_ACCEPTANCE_CHECK_NAMES
+        if name in reported and name not in _NON_REPORTABLE_ACCEPTANCE_CHECK_NAMES
+    ]
 
 
 def _coerce_int(value: object, default: int = 0) -> int:
@@ -407,6 +470,26 @@ def build_acceptance_verdict(
     checks: list[dict[str, object]] = []
 
     def add_check(name: str, passed: bool, *, applicable: bool = True, **details: object) -> None:
+        # spec 059 FR-B3: a name the screen cannot name would reach the user as a raw
+        # identifier, so the enumeration lives in code rather than in a comment. It REPORTS,
+        # it does not enforce: this runs at FINALIZATION, after the whole run has been paid
+        # for — ``late_phases`` builds the verdict at three points and none of them sits in
+        # a try/except — so raising here would trade a documentation defect for a lost book
+        # and half a dollar. A verdict able to kill delivery is exactly the gate FR-B8 and
+        # Constitution VII forbid, in its worst form, because it destroys the artifact too.
+        # The check is still recorded, so the verdict roll-up is byte-identical to before
+        # this spec; ``production_reportable_failed_checks`` is what keeps an unknown name
+        # OFF the screen, and the closure test keeps the enumeration honest at development
+        # time, where the price of a mistake is a red test.
+        if name not in _PRODUCTION_ACCEPTANCE_CHECK_NAME_SET:
+            log_event(
+                logging.WARNING,
+                "acceptance_check_outside_enumeration",
+                "Приёмочная проверка вне объявленного перечисления: на экран она не попадёт.",
+                name=name,
+                passed=passed,
+                applicable=applicable,
+            )
         checks.append({"name": name, "passed": passed, "applicable": applicable, **details})
 
     result = str(report.get("result") or "")

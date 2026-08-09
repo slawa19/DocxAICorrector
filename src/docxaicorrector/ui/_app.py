@@ -704,6 +704,9 @@ def _render_completed_result_view(result: Mapping[str, object]) -> None:
         quality_warning=cast(Mapping[str, object] | None, result.get("quality_warning")),
         delivery_disposition=cast(Mapping[str, object] | None, result.get("delivery_disposition")),
         result_notices=cast(list[Mapping[str, object]], result.get("result_notices") or []),
+        controlled_block_fallback_artifact=cast(
+            str | None, result.get("controlled_block_fallback_artifact")
+        ),
     )
 
 

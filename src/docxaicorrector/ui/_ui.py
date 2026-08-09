@@ -1,3 +1,4 @@
+import logging
 import time
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -14,11 +15,14 @@ from docxaicorrector.core.config import (
     get_text_model_options,
     resolve_model_selector,
 )
-from docxaicorrector.core.logger import format_elapsed
+from docxaicorrector.core.logger import format_elapsed, log_event
 from docxaicorrector.generation.message_formatting import derive_live_status_title_and_severity, humanize_reason, humanize_variant
 from docxaicorrector.core.models import ImageMode
 from docxaicorrector.ui.i18n import t
-from docxaicorrector.ui.review_presentation import build_review_presentation
+from docxaicorrector.ui.review_presentation import (
+    build_notice_data_params,
+    build_review_presentation,
+)
 from docxaicorrector.runtime.artifacts import _build_formatting_review_text
 from docxaicorrector.runtime.state import (
     get_image_assets,
@@ -743,6 +747,34 @@ def render_markdown_preview(
         )
 
 
+# spec 059 FR-B7: the kinds the result screen renders. It used to be an inline literal set
+# and anything else vanished without a trace — a pipeline notice of a new kind reached the
+# user as silence, which is the one outcome a notice exists to prevent (Constitution V).
+_RENDERED_RESULT_NOTICE_KINDS = frozenset(
+    {"", "cleanup", "narration", "persistence", "acceptance", "translation"}
+)
+
+
+def _log_dropped_result_notice(
+    *, kind: str, message_key: str, drop_reason: str, error_message: str | None = None
+) -> None:
+    """Every path that discards a result notice says so, with the notice's identity.
+
+    Deliberately logs only the notice's ``kind`` / ``message_key`` / reason: the params and
+    the message body are document content, and a dropped notice must not become a way to
+    leak it into the log.
+    """
+    log_event(
+        logging.WARNING,
+        "result_notice_dropped",
+        "Уведомление результата не показано пользователю.",
+        kind=kind,
+        message_key=message_key,
+        drop_reason=drop_reason,
+        **({"error_message": error_message} if error_message else {}),
+    )
+
+
 def _render_formatting_review_block(
     *,
     original_filename: str,
@@ -798,6 +830,7 @@ def render_result_bundle(
     quality_warning: Mapping[str, object] | None = None,
     delivery_disposition: Mapping[str, object] | None = None,
     result_notices: Sequence[Mapping[str, object]] | None = None,
+    controlled_block_fallback_artifact: str | None = None,
 ) -> None:
     delivery_status = str((delivery_disposition or {}).get("status", "accepted") or "accepted")
     blocked = delivery_status == "blocked"
@@ -807,10 +840,15 @@ def render_result_bundle(
         st.error(t(message_key) if message_key else explanation or t("result.blocked_delivery_notice"))
     elif success_message:
         st.success(success_message)
+    source_text_notice_rendered = False
     for notice in result_notices or ():
-        if str(notice.get("kind", "") or "") not in {"", "cleanup", "narration", "persistence"}:
-            continue
+        notice_kind = str(notice.get("kind", "") or "")
         message_key = str(notice.get("message_key", "") or "").strip()
+        if notice_kind not in _RENDERED_RESULT_NOTICE_KINDS:
+            _log_dropped_result_notice(
+                kind=notice_kind, message_key=message_key, drop_reason="unsupported_kind"
+            )
+            continue
         try:
             raw_params = notice.get("params")
             if raw_params is None:
@@ -820,18 +858,39 @@ def render_result_bundle(
             ):
                 notice_params = dict(raw_params)
             else:
+                # The rejected value is user/pipeline content and is never logged; the
+                # notice's identity is what an operator needs to find the emitter.
+                _log_dropped_result_notice(
+                    kind=notice_kind, message_key=message_key, drop_reason="unusable_params"
+                )
                 continue
-        except Exception:
+        except Exception as exc:
+            _log_dropped_result_notice(
+                kind=notice_kind,
+                message_key=message_key,
+                drop_reason="unusable_params",
+                error_message=str(exc),
+            )
             continue
         try:
+            notice_params.update(build_notice_data_params(notice))
             message = (
                 t(message_key, **notice_params)
                 if message_key
                 else str(notice.get("message", "") or "").strip()
             )
-        except Exception:
+        except Exception as exc:
+            _log_dropped_result_notice(
+                kind=notice_kind,
+                message_key=message_key,
+                drop_reason="localization_failed",
+                error_message=str(exc),
+            )
             continue
         if not message:
+            _log_dropped_result_notice(
+                kind=notice_kind, message_key=message_key, drop_reason="empty_message"
+            )
             continue
         notice_level = str(notice.get("level", "") or "")
         if notice_level == "error":
@@ -842,6 +901,21 @@ def render_result_bundle(
             st.info(message)
         else:
             st.warning(message)
+        if notice_kind == "translation":
+            source_text_notice_rendered = True
+    # spec 059 FR-B6: ``latest_controlled_block_fallback_artifact`` is written by
+    # ``block_execution`` on every controlled fallback and, until now, read by nothing. It is
+    # the per-block dump of what the model returned versus what shipped, so it is shown
+    # exactly where it answers a question the reader already has — under the notice that says
+    # source text reached the document — and nowhere else, because a path printed on a clean
+    # run is noise.
+    if source_text_notice_rendered and str(controlled_block_fallback_artifact or "").strip():
+        st.caption(
+            t(
+                "result.controlled_block_fallback_artifact",
+                path=str(controlled_block_fallback_artifact).strip(),
+            )
+        )
     if blocked and not docx_bytes:
         return
     operation = str(processing_operation or "edit").strip().lower() or "edit"
