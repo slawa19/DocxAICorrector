@@ -45,6 +45,7 @@ This inventory is intentionally pragmatic:
 - `tests/test_logger.py`
 - `tests/test_message_formatting.py`
 - `tests/test_model_registry_sweep.py`
+- `tests/test_narration_exclusion_addresses.py`
 - `tests/test_narration_markdown.py`
 - `tests/test_output_display_hygiene.py`
 - `tests/test_output_validation_characterization.py`

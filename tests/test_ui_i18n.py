@@ -130,14 +130,23 @@ def test_narration_source_fallback_notice_renders_its_counts(
 
     The result screen renders notices through ``t(message_key, **params)``, so a template
     whose placeholders do not match the emitted params would silently ship the raw braces.
+
+    Since 2026-08-09 this key is the variant that HAS addresses: a warning that says how much
+    the audiobook lost and not where it is leaves the reader hunting through the book (the
+    recorded 20260809T_059_audio_money run: 8 paragraphs, 4 455 characters, no place). The
+    two degraded shapes have their own keys and are enumerated in
+    ``tests/test_narration_exclusion_addresses.py``.
     """
     _force_language(monkeypatch, lang)
 
-    message = i18n.t("result.narration_source_fallback_excluded", count=6, chars=20597)
+    message = i18n.t(
+        "result.narration_source_fallback_excluded", count=6, chars=20597, anchors="«Once upon»"
+    )
 
     assert "{" not in message
     assert "6" in message
     assert "20597" in message
+    assert "Once upon" in message
 
 
 @pytest.mark.parametrize("lang", ["ru", "en"])
@@ -151,11 +160,17 @@ def test_narration_omitted_paragraph_notice_renders_its_counts(
     """
     _force_language(monkeypatch, lang)
 
-    message = i18n.t("result.narration_omitted_paragraphs_excluded", count=5, chars=1378)
+    message = i18n.t(
+        "result.narration_omitted_paragraphs_excluded",
+        count=5,
+        chars=1378,
+        anchors="«Footnotes 1»",
+    )
 
     assert "{" not in message
     assert "5" in message
     assert "1378" in message
+    assert "Footnotes 1" in message
 
 
 def _ui_module_source() -> str:

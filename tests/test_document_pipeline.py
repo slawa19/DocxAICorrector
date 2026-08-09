@@ -1430,6 +1430,9 @@ def test_standalone_audiobook_excludes_a_source_fallback_block_and_reports_the_l
     assert excluded_notices[0]["level"] == "warning"
     assert _as_mapping(excluded_notices[0]["params"])["count"] == 1
     assert _as_mapping(excluded_notices[0]["params"])["chars"] == len(_UNTRANSLATED_SOURCE_BLOCK)
+    # 2026-08-09: counted in BLOCKS, addressed in PARAGRAPHS — the reader searches the DOCX
+    # for a passage, never for a block index.
+    assert list(excluded_notices[0]["anchors"]) == [_UNTRANSLATED_SOURCE_BLOCK]  # type: ignore[arg-type]
 
 
 def test_standalone_audiobook_without_a_source_fallback_block_reports_zero_and_no_notice():
@@ -8451,6 +8454,62 @@ def test_standalone_audiobook_reports_omitted_paragraph_characters_and_notifies(
     assert excluded_notices[0]["level"] == "warning"
     assert _as_mapping(excluded_notices[0]["params"])["count"] == 1
     assert _as_mapping(excluded_notices[0]["params"])["chars"] == len(_OMITTED_ENGLISH_PARAGRAPH)
+
+
+def test_standalone_audiobook_omitted_notice_carries_the_address_and_the_document_defers():
+    """2026-08-09: the audio warning names WHERE, and the two messages never quote the same
+    paragraph twice.
+
+    Measured on the paid run ``20260809T_059_audio_money``: the audio message published
+    ``{count: 8, chars: 4455}`` and no place at all, while the message beside it carried six
+    fragments — for the same paragraphs, because ``omitted`` is one of the statuses the
+    document channel counts. So the address is printed exactly once, by the message about the
+    artifact with no editor between it and its consumer, and the document message says how
+    many addresses are in the other one. This is the wiring proof: the unit builders are
+    covered in ``tests/test_narration_exclusion_addresses.py``; what is asserted here is that
+    the pipeline actually hands one message's ids to the other.
+    """
+    runtime = _build_runtime_capture()
+    events, log_event = _capture_log_events()
+
+    result = _run_standalone_audiobook_with_an_omitted_paragraph(runtime=runtime, log_event=log_event)
+
+    assert result == "succeeded"
+    notices = _as_mapping_sequence(runtime["state"]["latest_result_notices"])
+    narration_notice = next(
+        notice
+        for notice in notices
+        if str(notice.get("message_key", "")).startswith(
+            "result.narration_omitted_paragraphs_excluded"
+        )
+    )
+    document_notice = next(
+        notice
+        for notice in notices
+        if str(notice.get("message_key", "")).startswith("result.source_text_delivered")
+    )
+
+    # The audio message names the paragraph the audiobook lost...
+    assert list(narration_notice["anchors"]) == [_OMITTED_ENGLISH_PARAGRAPH]  # type: ignore[arg-type]
+    # ...and the document message counts it without quoting it a second time.
+    assert document_notice["message_key"] == "result.source_text_delivered_all_addresses_in_narration"
+    assert list(document_notice["anchors"]) == []  # type: ignore[arg-type]
+    assert _as_mapping(document_notice["params"])["count"] == 1
+    assert _as_mapping(document_notice["params"])["elsewhere"] == 1
+    assert not set(map(str, narration_notice["anchors"])) & set(  # type: ignore[arg-type]
+        map(str, document_notice["anchors"])  # type: ignore[arg-type]
+    )
+
+    excluded_event = next(
+        event for event in events if event["event_id"] == "narration_omitted_paragraphs_excluded"
+    )
+    assert excluded_event["context"]["excluded_anchor_count"] == 1
+    assert excluded_event["context"]["excluded_unanchored_paragraph_count"] == 0
+    document_event = next(
+        event for event in events if event["event_id"] == "source_text_delivered_to_document"
+    )
+    assert document_event["context"]["source_text_delivered_paragraph_count"] == 1
+    assert document_event["context"]["source_text_delivered_reported_in_narration_paragraph_count"] == 1
 
 
 def test_standalone_audiobook_publishes_how_many_sentence_continuations_were_joined():

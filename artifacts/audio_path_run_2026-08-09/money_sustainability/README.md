@@ -1,0 +1,57 @@
+# Прогон `20260809T_059_audio_money` — что увидел человек на экране
+
+Money & Sustainability (en→ru), `processing_operation=audiobook`, профиль
+`ui-parity-standalone-audiobook`, `git_head=1b52ded`, 2026‑08‑09, $0.536.
+
+Здесь лежит ровно то, что нужно, чтобы перечитать экранный вердикт этого прогона без
+повторной оплаты. Полный отчёт (97 МБ) остаётся в
+`tests/artifacts/real_document_pipeline/runs/20260809T_059_audio_money/` и в git не едет.
+
+## Файлы
+
+- `run_summary.txt` — сводка прогона как её записал прогонщик (копия).
+- `result_notices_before.json` — четыре уведомления, которые прогон опубликовал на экран
+  ДО этой правки (`runtime.state.latest_result_notices` из отчёта). Первое из них и есть
+  измеренный дефект: `result.narration_omitted_paragraphs_excluded` с `{count: 8,
+  chars: 4455}` и БЕЗ единого адреса, тогда как соседнее документное уведомление несёт
+  шесть якорей на те же самые абзацы.
+- `source_text_paragraphs.json` — все абзацы прогона, у которых в доставленном DOCX стоит
+  их собственный исходный текст: `{block_index, paragraph_id, paragraph_status, text}`,
+  взятые из `runtime.state.processed_paragraph_registry` того же отчёта. Это те же записи,
+  которые видит `quality_gate.build_source_text_delivery_facts` через
+  `generation.marker_paragraph_dispositions`, поэтому по ним воспроизводятся ВСЕ числа
+  экрана — их и воспроизводит `tests/test_narration_exclusion_addresses.py`.
+
+## Числа, которые обязаны воспроизводиться
+
+| величина | значение |
+|---|---:|
+| `paragraph_disposition_counts.accepted` | 1308 |
+| `omitted` абзацев / символов | 8 / 4455 |
+| `source_restored` абзацев / символов | 2 / 595 |
+| документный факт: абзацев / символов / блоков | 10 / 5050 / 4 |
+| абзацев без пригодного якоря | 4 |
+| `narration_artifact.excluded_omitted_paragraph_count` / `_chars` | 8 / 4455 |
+| `narration_artifact.excluded_source_fallback_block_count` | 0 |
+
+Четыре абзаца без якоря — это `«44»`, `«45»`, `«10»`, `«13»`: два видимых символа, ниже
+порога пригодности. Их адрес не выдумывается, а считается (Конституция VII). Оставшиеся
+шесть адресуемых — сноски и библиография; потеря пришлась на аппарат, а не на прозу.
+
+## Что тот же прогон показал бы после правки 2026-08-09
+
+Пересчитано на этих же записях (`tests/test_narration_exclusion_addresses.py`), без
+повторного вызова модели. Шесть адресуемых абзацев делятся между двумя сообщениями и ни
+один фрагмент не печатается дважды:
+
+| сообщение | ключ | параметры | якорей |
+|---|---|---|---:|
+| озвучка | `result.narration_omitted_paragraphs_excluded_with_unanchored` | `{count: 8, chars: 4455, unanchored: 4}` | 4 |
+| документ | `result.source_text_delivered_with_addresses_in_narration` | `{count: 10, blocks: 4, chars: 5050, elsewhere: 8}` | 2 |
+
+Обе арифметики закрываются: 8 = 4 + 4 и 10 = 2 + 8.
+
+Известная неровность, не введённая этой правкой: якорь — это ЦЕЛЫЙ абзац, и один из
+абзацев прогона длиной 2 686 символов. Он и раньше печатался целиком — в документном
+сообщении (`result_notices_before.json`, пятый якорь, 2 662 символа после санитайзера);
+правка лишь переместила его в сообщение об озвучке.
