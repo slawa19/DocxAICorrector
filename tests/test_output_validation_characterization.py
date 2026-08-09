@@ -288,6 +288,9 @@ def test_classify_processed_block_golden() -> None:
             processed_chunk="# Заголовок",
         ),
         "toc_body_concat": dict(target_text="Contents", processed_chunk="Введение....5 Начало"),
+        # Spec 059 FR-A4: the key is the input's HISTORY, not its verdict. This case used to
+        # be classified ``english_residual_output`` by a five-word list and is now ``valid``;
+        # the row is kept so the golden records the change rather than losing the input.
         "english_residual_output": dict(target_text="нечто", processed_chunk="Русский текст chapter здесь."),
         "valid": dict(target_text="нечто", processed_chunk="Просто нормальный русский текст без проблем."),
     }

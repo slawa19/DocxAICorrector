@@ -165,7 +165,11 @@ def test_run_document_processing_accepts_heading_only_output_for_legitimate_head
         emit_log=_emit_log,
         emit_status=_emit_status,
         should_stop_processing=lambda runtime: False,
-        generate_markdown_block=lambda **kwargs: "# Heading only",
+        # Spec 059 A-I: a heading-only block whose answer is byte-identical to its own
+        # source is now ``source_text_fallback``, so this fixture returns the translation it
+        # always meant. The subject of the test is unchanged: heading-only OUTPUT is
+        # legitimate when the INPUT is heading-only.
+        generate_markdown_block=lambda **kwargs: "# Только заголовок",
         process_document_images=lambda **kwargs: [],
         inspect_placeholder_integrity=_inspect_placeholder_integrity,
         convert_markdown_to_docx_bytes=_convert_markdown_to_docx_bytes,
@@ -174,7 +178,7 @@ def test_run_document_processing_accepts_heading_only_output_for_legitimate_head
     )
 
     assert result == "succeeded"
-    assert runtime["state"]["latest_markdown"] == "# Heading only"
+    assert runtime["state"]["latest_markdown"] == "# Только заголовок"
     assert runtime["state"]["latest_docx_bytes"] == b"docx-bytes"
     assert runtime["finalize"][-1][0] == "Обработка завершена"
     assert runtime["log"][-1]["status"] == "DONE"
@@ -2582,7 +2586,20 @@ def test_run_document_processing_rejects_toc_body_concat_output():
     assert "toc_body_concat" in runtime["state"]["last_error"]
 
 
-def test_run_document_processing_continues_on_english_residual_output_controlled_fallback(tmp_path, monkeypatch):
+def test_english_residue_inside_a_translated_block_is_no_longer_a_controlled_fallback(tmp_path, monkeypatch):
+    """Spec 059 FR-A4: the five-word residual detector is REMOVED, and this pins what that
+    costs and what it buys.
+
+    This block used to be classified ``english_residual_output`` because the model's answer
+    contained the word "Judgment" -- one of five book words the detector keyed on, which
+    Constitution VII forbids. The answer is a normal Russian translation that keeps a proper
+    noun, exactly the case spec 059 records as a DETECTOR-caused failure no change of model
+    could remove (`spec.md:356-359`). It is now delivered as what it is: valid.
+
+    Honest cost, named rather than hidden: a genuinely half-translated answer that is not
+    byte-identical to its source is no longer detected either. The measurement counts ZERO
+    such answers in 7 233 records (§11), and FR-A3 forbids the only other instrument.
+    """
     monkeypatch.chdir(tmp_path)
     runtime = _build_runtime_capture()
     events = []
@@ -2627,31 +2644,14 @@ def test_run_document_processing_continues_on_english_residual_output_controlled
     assert result == "succeeded"
     assert runtime["state"]["last_error"] == ""
     assert runtime["state"]["processed_block_markdowns"] == ["Суд Judgment #1 уже начался."]
-    assert runtime["state"]["processed_paragraph_registry"] == [
-        {
-            "block_index": 1,
-            "paragraph_id": "p1",
-            "text": "Суд Judgment #1 уже начался.",
-            "controlled_fallback": True,
-            "controlled_fallback_kind": "english_residual_output",
-            # Spec 054: the fallback kept the MODEL's own target-language output, so the
-            # block is still narratable and stays in the narration artifact.
-            "controlled_fallback_narration_excluded": False,
-        }
-    ]
+    # Empty, and that is the point: the registry gained a row only because the block took the
+    # controlled-fallback path. A block that passes writes no registry row here (marker mode
+    # is off in this fixture), so an empty registry IS the "no controlled fallback" assertion.
+    assert runtime["state"]["processed_paragraph_registry"] == []
     assert runtime["state"]["latest_docx_bytes"] == b"docx-bytes"
-    assert {
-        "status": "WARN",
-        "details": "controlled_fallback:english_residual_output",
-    } in [{"status": entry["status"], "details": entry.get("details")} for entry in runtime["log"]]
-
-    artifact_path = Path(runtime["state"]["latest_controlled_block_fallback_artifact"])
-    artifact_payload = json.loads(artifact_path.read_text(encoding="utf-8"))
-
-    assert artifact_path.parent == Path(".run") / "block_fallbacks"
-    assert artifact_payload["output_classification"] == "english_residual_output"
-    assert artifact_payload["processed_chunk_preview"] == "Суд Judgment #1 уже начался."
-    assert any(args[1] == "block_controlled_fallback" for args, _kwargs in events)
+    assert not [entry for entry in runtime["log"] if entry.get("details", "").startswith("controlled_fallback:")]
+    assert runtime["state"].get("latest_controlled_block_fallback_artifact") in (None, "")
+    assert not any(args[1] == "block_controlled_fallback" for args, _kwargs in events)
 
 
 # ``expected_narration_excluded`` is the spec-054 invariant, one row per rejection class:
@@ -2677,20 +2677,10 @@ def test_run_document_processing_continues_on_english_residual_output_controlled
             "Исходный абзац сохранён как fallback.",
             True,
         ),
-        (
-            {
-                "target_text": "Первый абзац с нормальным содержанием.",
-                "context_before": "",
-                "context_after": "",
-                "target_chars": 36,
-                "context_chars": 0,
-                "paragraph_ids": ["p1"],
-            },
-            "Суд Judgment #1 уже начался.",
-            "english_residual_output",
-            "Суд Judgment #1 уже начался.",
-            False,
-        ),
+        # The ``english_residual_output`` row was removed with the five-word detector that
+        # produced it (spec 059 FR-A4). The class stays legal in
+        # ``CONTROLLED_BLOCK_FAILURE_POLICY`` and in artifacts already on disk; nothing
+        # produces it from a word list any more.
         (
             {
                 "target_text": (
@@ -2887,9 +2877,11 @@ def test_run_document_processing_continues_when_multiple_controlled_fallback_blo
     monkeypatch.chdir(tmp_path)
     runtime = _build_runtime_capture()
     events = []
+    # Spec 059 FR-A4: the ``english_residual_output`` block ("Суд Judgment #1 уже начался."
+    # against an ordinary Russian source) left this fixture with the five-word detector that
+    # produced it. The remaining four classes are the ones a classifier still emits.
     generated_outputs = iter([
         "   ",
-        "Суд Judgment #1 уже начался.",
         "# Heading only",
         "## ●",
         "Заключение ........ 29 Марка 13:13 Введение",
@@ -2905,14 +2897,6 @@ def test_run_document_processing_continues_when_multiple_controlled_fallback_blo
                 "target_chars": 37,
                 "context_chars": 0,
                 "paragraph_ids": ["p1"],
-            },
-            {
-                "target_text": "Первый абзац с нормальным содержанием.",
-                "context_before": "",
-                "context_after": "",
-                "target_chars": 36,
-                "context_chars": 0,
-                "paragraph_ids": ["p2"],
             },
             {
                 "target_text": "# Заголовок\n\nЭто полноценный абзац с несколькими словами и знаками препинания.",
@@ -2968,7 +2952,6 @@ def test_run_document_processing_continues_when_multiple_controlled_fallback_blo
 
     expected_kinds = [
         "empty_processed_block",
-        "english_residual_output",
         "heading_only_output",
         "bullet_heading_output",
         "toc_body_concat",
@@ -2977,7 +2960,7 @@ def test_run_document_processing_continues_when_multiple_controlled_fallback_blo
     assert result == "succeeded"
     assert runtime["state"]["latest_docx_bytes"] == b"docx-bytes"
     assert [entry["controlled_fallback_kind"] for entry in runtime["state"]["processed_paragraph_registry"]] == expected_kinds
-    assert [args[1] for args, _kwargs in events].count("block_controlled_fallback") == 5
+    assert [args[1] for args, _kwargs in events].count("block_controlled_fallback") == 4
     artifact_payloads = [
         json.loads(path.read_text(encoding="utf-8"))
         for path in sorted((Path(".run") / "block_fallbacks").glob("report_docx_block_*.json"))
@@ -3220,6 +3203,7 @@ def test_has_toc_body_concat_signal_requires_source_toc_markers():
     ) is False
 
 
-def test_has_unexplained_english_residuals_detects_english_word_inside_cyrillic_output():
-    assert document_pipeline_output_validation.has_unexplained_english_residuals("Суд Judgment #1 уже начался.") is True
-    assert document_pipeline_output_validation.has_unexplained_english_residuals("Полностью русский абзац без остатков.") is False
+# ``test_has_unexplained_english_residuals_detects_english_word_inside_cyrillic_output``
+# lived here and is removed with the detector it covered (spec 059 FR-A4). Its replacement
+# checks the OPPOSITE direction -- that the five-word list has not come back --
+# in ``tests/test_spec_059_translation_completeness.py``.

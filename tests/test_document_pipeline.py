@@ -1008,10 +1008,12 @@ def test_run_document_processing_builds_standalone_audiobook_artifact_and_coerce
     result = document_pipeline.run_document_processing(
         uploaded_file="report.docx",
         jobs=[{
-            "target_text": "# Title\n\n[thoughtful] Body text",
+            # Spec 059 A-I: the source, not the answer. They used to be the same string,
+            # which the pair rule now reads as an untranslated delivery.
+            "target_text": "# Heading\n\nBody text",
             "context_before": "",
             "context_after": "",
-            "target_chars": 29,
+            "target_chars": 20,
             "context_chars": 0,
             "narration_include": True,
         }],
@@ -1139,6 +1141,14 @@ NARRATION_PROSE_MISREAD_AS_A_REFERENCE = (
 )
 
 
+# Spec 059 A-I: the source this fixture's single block is BUILT from. It used to be
+# ``narration_text`` itself, which made every run driven through this helper a block whose
+# delivered text was byte-identical to its own source -- exactly what the pair rule now
+# classifies as ``source_text_fallback``. The helper controls the model's OUTPUT; the input
+# has to be a different string for the run to model a translation at all.
+_STANDALONE_AUDIOBOOK_SOURCE_BLOCK = "Once upon a time, in a small village, people bartered."
+
+
 def _run_standalone_audiobook(narration_text, *, runtime, log_event=None, write_ui_result_artifacts=None):
     """Drive a whole standalone ``audiobook`` run whose model output is ``narration_text``."""
 
@@ -1157,10 +1167,10 @@ def _run_standalone_audiobook(narration_text, *, runtime, log_event=None, write_
     return document_pipeline.run_document_processing(
         uploaded_file="report.docx",
         jobs=[{
-            "target_text": narration_text,
+            "target_text": _STANDALONE_AUDIOBOOK_SOURCE_BLOCK,
             "context_before": "",
             "context_after": "",
-            "target_chars": len(narration_text),
+            "target_chars": len(_STANDALONE_AUDIOBOOK_SOURCE_BLOCK),
             "context_chars": 0,
             "narration_include": True,
         }],
@@ -2215,8 +2225,11 @@ def test_run_document_processing_applies_reader_cleanup_and_saves_raw_markdown_r
         model="gpt-5.4-translate",
         max_retries=1,
         processing_operation="translate",
+        # Spec 059 A-I: this fixture's model double returns its input verbatim, so the run
+        # it models does not change language. Declaring the pair honestly keeps the pair
+        # rule (which reads the JOB, never the text) out of a test about reader cleanup.
         source_language="en",
-        target_language="ru",
+        target_language="en",
         on_progress=lambda **kwargs: None,
         runtime=runtime,
         resolve_uploaded_filename=lambda uploaded_file: str(uploaded_file),
@@ -2321,8 +2334,11 @@ def test_run_document_processing_records_pre_cleanup_formatting_baseline_without
         model="gpt-5.4-translate",
         max_retries=1,
         processing_operation="translate",
+        # Spec 059 A-I: this fixture's model double returns its input verbatim, so the run
+        # it models does not change language. Declaring the pair honestly keeps the pair
+        # rule (which reads the JOB, never the text) out of a test about reader cleanup.
         source_language="en",
-        target_language="ru",
+        target_language="en",
         on_progress=lambda **kwargs: None,
         runtime=runtime,
         resolve_uploaded_filename=lambda uploaded_file: str(uploaded_file),
@@ -2383,8 +2399,11 @@ def test_run_document_processing_fails_on_empty_lazy_docx_after_reader_cleanup_n
         model="gpt-5.4",
         max_retries=1,
         processing_operation="translate",
+        # Spec 059 A-I: this fixture's model double returns its input verbatim, so the run
+        # it models does not change language. Declaring the pair honestly keeps the pair
+        # rule (which reads the JOB, never the text) out of a test about reader cleanup.
         source_language="en",
-        target_language="ru",
+        target_language="en",
         on_progress=lambda **kwargs: None,
         runtime=runtime,
         resolve_uploaded_filename=lambda uploaded_file: str(uploaded_file),
@@ -2525,8 +2544,11 @@ def test_run_document_processing_reader_cleanup_uses_exact_raw_markdown_for_side
         model="gpt-5.4-translate",
         max_retries=1,
         processing_operation="translate",
+        # Spec 059 A-I: this fixture's model double returns its input verbatim, so the run
+        # it models does not change language. Declaring the pair honestly keeps the pair
+        # rule (which reads the JOB, never the text) out of a test about reader cleanup.
         source_language="en",
-        target_language="ru",
+        target_language="en",
         on_progress=lambda **kwargs: None,
         runtime=runtime,
         resolve_uploaded_filename=lambda uploaded_file: str(uploaded_file),
@@ -2645,8 +2667,11 @@ def test_run_document_processing_reader_cleanup_applies_runtime_anchor_repair(tm
         model="gpt-5.4-translate",
         max_retries=1,
         processing_operation="translate",
+        # Spec 059 A-I: this fixture's model double returns its input verbatim, so the run
+        # it models does not change language. Declaring the pair honestly keeps the pair
+        # rule (which reads the JOB, never the text) out of a test about reader cleanup.
         source_language="en",
-        target_language="ru",
+        target_language="en",
         on_progress=lambda **kwargs: None,
         runtime=runtime,
         resolve_uploaded_filename=lambda uploaded_file: str(uploaded_file),
@@ -2731,8 +2756,11 @@ def test_run_document_processing_preserves_base_result_when_reader_cleanup_fails
         model="gpt-5.4",
         max_retries=1,
         processing_operation="translate",
+        # Spec 059 A-I: this fixture's model double returns its input verbatim, so the run
+        # it models does not change language. Declaring the pair honestly keeps the pair
+        # rule (which reads the JOB, never the text) out of a test about reader cleanup.
         source_language="en",
-        target_language="ru",
+        target_language="en",
         on_progress=lambda **kwargs: None,
         runtime=runtime,
         resolve_uploaded_filename=lambda uploaded_file: str(uploaded_file),
@@ -2935,8 +2963,11 @@ def test_run_document_processing_reader_cleanup_preserves_docx_image_anchor_when
         model="gpt-5.4-translate",
         max_retries=1,
         processing_operation="translate",
+        # Spec 059 A-I: this fixture's model double returns its input verbatim, so the run
+        # it models does not change language. Declaring the pair honestly keeps the pair
+        # rule (which reads the JOB, never the text) out of a test about reader cleanup.
         source_language="en",
-        target_language="ru",
+        target_language="en",
         on_progress=lambda **kwargs: None,
         runtime=runtime,
         resolve_uploaded_filename=lambda uploaded_file: str(uploaded_file),
@@ -2993,8 +3024,11 @@ def test_run_document_processing_reader_cleanup_strict_failure_preserves_base_re
         model="gpt-5.4",
         max_retries=1,
         processing_operation="translate",
+        # Spec 059 A-I: this fixture's model double returns its input verbatim, so the run
+        # it models does not change language. Declaring the pair honestly keeps the pair
+        # rule (which reads the JOB, never the text) out of a test about reader cleanup.
         source_language="en",
-        target_language="ru",
+        target_language="en",
         on_progress=lambda **kwargs: None,
         runtime=runtime,
         resolve_uploaded_filename=lambda uploaded_file: str(uploaded_file),
@@ -6468,8 +6502,12 @@ def test_run_document_processing_registry_uses_logical_marker_for_merged_source_
     result = document_pipeline.run_document_processing(
         uploaded_file="report.docx",
         jobs=[{
-            "target_text": "Слитый логический абзац",
-            "target_text_with_markers": "[[DOCX_PARA_p0007]]\nСлитый логический абзац",
+            # Spec 059 A-I: the source and the model's answer must differ, or the block is a
+            # delivery byte-identical to its own source and the pair rule classifies it
+            # ``source_text_fallback``. This fixture is about the marker registry, not about
+            # translation, so it now models the translation it always implied.
+            "target_text": "Merged logical paragraph",
+            "target_text_with_markers": "[[DOCX_PARA_p0007]]\nMerged logical paragraph",
             "paragraph_ids": ["p0007"],
             "context_before": "",
             "context_after": "",

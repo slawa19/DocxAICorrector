@@ -51,7 +51,8 @@ def _run_single_block(
     state = _make_state()
     classifier_calls: list[tuple[str, str]] = []
 
-    def classify_processed_block_fn(target_text: str, chunk: str) -> str:
+    # Spec 059 A-I: the classifier now also takes the job's language pair, keyword-only.
+    def classify_processed_block_fn(target_text: str, chunk: str, **_kwargs: object) -> str:
         classifier_calls.append((target_text, chunk))
         return classification
 

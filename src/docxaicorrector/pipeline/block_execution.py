@@ -11,7 +11,10 @@ from docxaicorrector.generation._generation import (
     marker_paragraph_dispositions,
 )
 from docxaicorrector.pipeline.job_results import persist_terminal_job_result
-from docxaicorrector.pipeline.output_validation import validate_translated_toc_block
+from docxaicorrector.pipeline.output_validation import (
+    delivered_text_equals_source,
+    validate_translated_toc_block,
+)
 from docxaicorrector.runtime.artifact_retention import prune_artifact_dir
 
 
@@ -104,11 +107,42 @@ def fallback_delivered_source_text(*, payload: Any, processed_chunk: str) -> boo
     has exactly two outcomes: ``payload.target_text`` (the ``empty*`` kinds) or the rejected
     model output, and for ``source_text_fallback`` that output IS the source by the
     classifier's own definition (``output_validation.is_source_text_fallback_output``
-    requires ``processed_chunk == target_text``). Comparing the delivered text against the
-    source recognises both without naming either, and stays correct if the policy table
-    grows another kind.
+    requires the two to be equal). Comparing the delivered text against the source recognises
+    both without naming either, and stays correct if the policy table grows another kind.
+
+    Spec 059 A-I: this is the payload-shaped face of ``delivered_text_equals_source``, which
+    is the single implementation of the comparison (FR-A2 forbids a second predicate). Until
+    that spec this function had exactly ONE consumer — the narration exclusion below — so the
+    classifier and the failure-decision table could not see the rule at all, and a block
+    delivered wholly in the source language was classified ``valid``. It now has three
+    readers: the narration branch, the untranslated-prose invariant, and (through
+    ``is_source_text_fallback_output``) the classifier itself.
     """
-    return processed_chunk.strip() == str(getattr(payload, "target_text", "") or "").strip()
+    return delivered_text_equals_source(
+        target_text=str(getattr(payload, "target_text", "") or ""),
+        processed_chunk=processed_chunk,
+    )
+
+
+def job_changes_language(*, source_language: Any, target_language: Any) -> bool:
+    """Does this job ask for a different language out than it takes in? (spec 059 FR-A5.)
+
+    Read off the JOB, never guessed from the text. The pair rule only means "untranslated"
+    where the languages differ: on the recorded ru->ru literary-edit run, 1 144 of 1 761
+    deliveries were byte-identical to their source and every one was the right outcome
+    (``measurement-translation-signal.md`` §5).
+
+    An unnamed language on either side is a MISSING SIGNAL, and Constitution VII's "no source
+    signal, no repair" applies: the rule does not fire. ``auto`` on the source side compares
+    unequal to any concrete target and therefore counts as changing the language — the
+    conservative direction, because a job that asks for Russian out of an unknown language in
+    is asking for a translation.
+    """
+    source = str(source_language or "").strip().casefold()
+    target = str(target_language or "").strip().casefold()
+    if not source or not target:
+        return False
+    return source != target
 
 
 def _has_intact_controlled_fallback_substrate(
@@ -1164,10 +1198,20 @@ def process_single_block(
     is_genuine_passthrough = payload.job_kind == "passthrough" and not _should_route_toc_through_llm(
         context=context, payload=payload
     )
+    # Spec 059 FR-A5: the pair rule is only a completeness signal where the job changes the
+    # language, and that is read off the run, not off the text.
+    languages_differ = job_changes_language(
+        source_language=getattr(context, "source_language", None),
+        target_language=getattr(context, "target_language", None),
+    )
     if is_genuine_passthrough:
         processed_block_status = "valid"
     else:
-        processed_block_status = classify_processed_block_fn(payload.target_text, processed_chunk)
+        processed_block_status = classify_processed_block_fn(
+            payload.target_text,
+            processed_chunk,
+            languages_differ=languages_differ,
+        )
     if processed_block_status != "valid":
         rejection_decision = classify_processed_block_failure_decision(
             rejection_kind=processed_block_status,
