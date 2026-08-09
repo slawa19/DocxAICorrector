@@ -1,5 +1,7 @@
 from typing import Any
 
+from docxaicorrector.core.models import PARAGRAPH_REGION_VALUES
+
 
 def coerce_required_text_field(job: Any, field_name: str, *, allow_blank: bool = True) -> str:
     value = job[field_name]
@@ -18,6 +20,24 @@ def coerce_optional_string_list(job: Any, field_name: str) -> list[str] | None:
     if not isinstance(value, list) or not all(isinstance(item, str) and item for item in value):
         raise TypeError(f"{field_name} must be a non-empty string list")
     return list(value)
+
+
+def coerce_paragraph_regions(job: Any) -> list[str] | None:
+    """Spec 059 A-II: the per-paragraph region list, validated against a CLOSED vocabulary.
+
+    An unknown name raises rather than being folded into either answer. A region the pipeline
+    does not define carries no meaning, and silently reading it as prose (or as apparatus)
+    would let the vocabulary drift on one side of the contract while the other side kept
+    deciding on it — which is the exact failure the shared constants in ``core.models`` exist
+    to prevent.
+    """
+    regions = coerce_optional_string_list(job, "paragraph_regions")
+    if regions is None:
+        return None
+    unknown = sorted({region for region in regions if region not in PARAGRAPH_REGION_VALUES})
+    if unknown:
+        raise ValueError(f"paragraph_regions carries unknown region names: {unknown}")
+    return regions
 
 
 def coerce_optional_bool(job: Any, field_name: str) -> bool | None:
@@ -61,6 +81,38 @@ def coerce_job_kind(job: Any) -> str:
     return normalized
 
 
+def _require_parallel_to_paragraph_ids(
+    paragraph_ids: list[str] | None,
+    *,
+    structural_roles: list[str] | None,
+    paragraph_regions: list[str] | None,
+) -> None:
+    """Spec 059 A-II: "parallel to ``paragraph_ids``" is a CONTRACT, so it is checked.
+
+    A short list is the quiet failure, not a loud one: ``["back_matter"]`` against two
+    paragraphs — the second of them prose — reads to
+    ``block_execution.payload_contains_prose`` as "this block is all apparatus", and the
+    block ships its own source text without a word. The shipped producer keeps the lists in
+    step; nothing until now REQUIRED it, and a contract that depends on one producer's good
+    behaviour is not a contract.
+
+    Only checked when both lists are present. Absence is a different statement — "this
+    caller resolved nothing" — and it is answered elsewhere, conservatively.
+    """
+    if paragraph_ids is None:
+        return
+    expected = len(paragraph_ids)
+    for field_name, values in (
+        ("structural_roles", structural_roles),
+        ("paragraph_regions", paragraph_regions),
+    ):
+        if values is not None and len(values) != expected:
+            raise ValueError(
+                f"{field_name} must be parallel to paragraph_ids: "
+                f"{len(values)} entries against {expected} paragraphs"
+            )
+
+
 def parse_processing_job(*, job: Any, payload_factory: Any) -> Any:
     job_kind = coerce_job_kind(job)
     target_chars = coerce_required_int_field(job, "target_chars")
@@ -69,6 +121,12 @@ def parse_processing_job(*, job: Any, payload_factory: Any) -> Any:
     target_text_with_markers = coerce_optional_text_field(job, "target_text_with_markers") or target_text
     paragraph_ids = coerce_optional_string_list(job, "paragraph_ids")
     structural_roles = coerce_optional_string_list(job, "structural_roles")
+    paragraph_regions = coerce_paragraph_regions(job)
+    _require_parallel_to_paragraph_ids(
+        paragraph_ids,
+        structural_roles=structural_roles,
+        paragraph_regions=paragraph_regions,
+    )
     context_before = coerce_required_text_field(job, "context_before")
     context_after = coerce_required_text_field(job, "context_after")
     narration_include = coerce_optional_bool(job, "narration_include")
@@ -85,6 +143,7 @@ def parse_processing_job(*, job: Any, payload_factory: Any) -> Any:
         context_before=context_before,
         context_after=context_after,
         structural_roles=structural_roles,
+        paragraph_regions=paragraph_regions,
         narration_include=True if narration_include is None else narration_include,
         toc_dominant=bool(toc_dominant),
         toc_paragraph_count=toc_paragraph_count,

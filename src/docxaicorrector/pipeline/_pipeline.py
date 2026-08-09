@@ -158,8 +158,13 @@ def _resolve_system_prompt(
     )
 
 
-def _classify_processed_block(target_text: str, processed_chunk: str) -> ProcessedBlockStatus:
-    return _classify_processed_block_impl(target_text, processed_chunk)
+def _classify_processed_block(
+    target_text: str,
+    processed_chunk: str,
+    *,
+    languages_differ: bool = True,
+) -> ProcessedBlockStatus:
+    return _classify_processed_block_impl(target_text, processed_chunk, languages_differ=languages_differ)
 
 
 def _build_formatting_diagnostics_user_feedback(artifact_paths: Sequence[str]) -> tuple[str, str]:

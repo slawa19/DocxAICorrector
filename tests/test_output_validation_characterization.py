@@ -288,10 +288,18 @@ def test_classify_processed_block_golden() -> None:
             processed_chunk="# Заголовок",
         ),
         "toc_body_concat": dict(target_text="Contents", processed_chunk="Введение....5 Начало"),
+        # Spec 059 FR-A4: the key is the input's HISTORY, not its verdict. This case used to
+        # be classified ``english_residual_output`` by a five-word list and is now ``valid``;
+        # the row is kept so the golden records the change rather than losing the input.
         "english_residual_output": dict(target_text="нечто", processed_chunk="Русский текст chapter здесь."),
         "valid": dict(target_text="нечто", processed_chunk="Просто нормальный русский текст без проблем."),
     }
-    result = {name: ov.classify_processed_block(**kwargs) for name, kwargs in cases.items()}
+    # Positional, not ``**kwargs``: since spec 059 the classifier also takes a keyword-only
+    # ``languages_differ: bool``, and splatting a ``dict[str, str]`` into it is a type error.
+    result = {
+        name: ov.classify_processed_block(kwargs["target_text"], kwargs["processed_chunk"])
+        for name, kwargs in cases.items()
+    }
     _assert_golden("classify_processed_block", result)
 
 

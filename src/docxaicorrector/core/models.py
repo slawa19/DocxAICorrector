@@ -13,6 +13,54 @@ _UNSET = object()
 EXPLICIT_LIST_MARKER_PATTERN = re.compile(r"^(?:\s*[-*•]\s+|\s*\d+[\.)]\s+)")
 EXPLICIT_HEADING_PATTERN = re.compile(r"^#{1,6}\s+")
 
+# Spec 059 FR-A5: the operations that can change the language of the text. Not a matter of
+# taste and not a guess — it is the set the UI itself uses to decide whether to RENDER a
+# source-language selector at all (``ui/_ui.py:588``). Outside these two the user cannot
+# choose a source language, so the shipped ``source_language_default = "en"`` stands
+# unchallenged against ``target_language_default = "ru"`` (``resources/config.toml:25-27``),
+# and a rule reading only the codes concludes "this job translates" on a literary edit —
+# where 1 144 of 1 761 recorded deliveries are byte-identical to their source and every one
+# of them is correct. It lives here so that the pipeline and the result screen answer the
+# question from ONE definition; a set restated per module is a set that drifts per module.
+#
+# An operation this project does not know about is NOT assumed to translate: the same
+# missing-signal rule as an unnamed language, and the same failure direction — a rule that
+# does not fire can hide a loss, a rule that fires wrongly destroys a paid run.
+#
+# TWO consumers, deliberately sharing one definition: the pipeline's completeness invariant
+# (``pipeline/block_execution.job_changes_language``) and the result screen's wording
+# (``pipeline/quality_gate.build_source_text_delivery_notice``, which says "source text
+# delivered" for these operations and "unedited text delivered" otherwise — the same fact,
+# two different true sentences about it). Parts A and B of spec 059 arrived at this set
+# independently and from opposite ends of the pipeline, which is the strongest argument
+# there is for there being exactly one of it.
+LANGUAGE_CHANGING_OPERATIONS = frozenset({"translate", "audiobook"})
+
+# Spec 059 A-II / A-6: which REGION of the document a paragraph belongs to. The vocabulary
+# lives here, at the bottom layer, because ``document`` resolves it and ``pipeline`` decides
+# on it, and a vocabulary restated on both sides of a contract drifts.
+#
+# PROSE is defined by SUBTRACTION -- the source registry minus front matter, minus the TOC,
+# minus the back-matter reference region -- which is the owner's rule written down: the book
+# must be translated in full; footnotes and the table of contents do not count. The three
+# apparatus regions are detected by document region and structural role, NEVER by the shape
+# of the text (Constitution VII); the detectors are
+# ``validation/formatting_coverage._resolve_source_front_matter_boundary`` and
+# ``document/semantic_blocks._resolve_reference_region_indexes``, both of which the
+# constitution names as the precedent for this kind of detection.
+PARAGRAPH_REGION_PROSE = "prose"
+PARAGRAPH_REGION_FRONT_MATTER = "front_matter"
+PARAGRAPH_REGION_TOC = "toc"
+PARAGRAPH_REGION_BACK_MATTER = "back_matter"
+PARAGRAPH_REGION_VALUES = frozenset(
+    {
+        PARAGRAPH_REGION_PROSE,
+        PARAGRAPH_REGION_FRONT_MATTER,
+        PARAGRAPH_REGION_TOC,
+        PARAGRAPH_REGION_BACK_MATTER,
+    }
+)
+
 
 class ImageMode(StrEnum):
     NO_CHANGE = "no_change"

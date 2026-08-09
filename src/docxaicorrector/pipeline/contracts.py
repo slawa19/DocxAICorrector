@@ -334,6 +334,14 @@ class BlockExecutionPayload:
     context_before: str
     context_after: str
     structural_roles: list[str] | None = None
+    # Spec 059 A-II: one document REGION per paragraph, parallel to ``paragraph_ids`` and to
+    # ``structural_roles``. This is what lets the failure-decision table tell apparatus from
+    # prose INSIDE one block: ``narration_include`` below is a single bool for the whole
+    # block, so on a mixed block it could not. ``None`` means the producer resolved no
+    # regions -- only ``document.semantic_blocks.build_editing_jobs`` produces them, so
+    # absence means a caller outside document preparation, and the consumer
+    # (``block_execution.payload_contains_prose``) reads it as prose rather than as apparatus.
+    paragraph_regions: list[str] | None = None
     narration_include: bool = True
     toc_dominant: bool = False
     toc_paragraph_count: int = 0

@@ -36,6 +36,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal, cast
 
+from docxaicorrector.core.models import LANGUAGE_CHANGING_OPERATIONS
 from docxaicorrector.generation._generation import (
     PARAGRAPH_STATUS_OMITTED,
     PARAGRAPH_STATUS_SOURCE_RESTORED,
@@ -2188,13 +2189,6 @@ def build_source_text_delivery_facts(
     }
 
 
-# The operations whose job is to CHANGE THE LANGUAGE. Read from the job the run was started
-# with, never from the shape of a paragraph (Constitution VII). ``edit`` rewrites text that is
-# already in the target language, so a paragraph the model did not answer for is UNEDITED
-# there, not untranslated — the same fact, and two different true sentences about it.
-_LANGUAGE_CHANGING_OPERATIONS: frozenset[str] = frozenset({"translate", "audiobook"})
-
-
 def build_source_text_delivery_notice(
     facts: Mapping[str, object],
     *,
@@ -2222,9 +2216,16 @@ def build_source_text_delivery_notice(
         "chars": int(cast(int, facts.get("chars") or 0)),
     }
     operation = str(processing_operation or "").strip().lower()
+    # ``edit`` rewrites text that is already in the target language, so a paragraph the model
+    # did not answer for is UNEDITED there, not untranslated — the same fact, two different
+    # true sentences about it. The set is ``core.models.LANGUAGE_CHANGING_OPERATIONS`` and is
+    # NOT restated here: the pipeline's completeness invariant reads the same one
+    # (``block_execution.job_changes_language``), and two copies of it would disagree the day
+    # someone adds a third operation. That disagreement has a measured price — the invariant
+    # keyed on codes alone would have failed 65% of a literary-edit run.
     key_family = (
         "result.source_text_delivered"
-        if operation in _LANGUAGE_CHANGING_OPERATIONS
+        if operation in LANGUAGE_CHANGING_OPERATIONS
         else "result.unedited_text_delivered"
     )
     # Three templates per family rather than one carrying a "{unanchored}" that reads "0" on

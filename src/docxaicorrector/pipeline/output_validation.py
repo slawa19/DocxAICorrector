@@ -65,8 +65,22 @@ TEXT_REMOVAL_SITE_REPEATED_HEADING_CLUSTER_DEDUPE = "repeated_heading_cluster_de
 DISALLOWED_GENERIC_TOC_LABELS = {"CONTENTS"}
 _BULLET_HEADING_PATTERN = re.compile(r"^#{1,6}\s*[●•\-*]\s*$")
 _MARKDOWN_HEADING_PATTERN = re.compile(r"^#{1,6}\s+\S")
-_ENGLISH_WORD_PATTERN = re.compile(r"\b[A-Za-z]{4,}\b")
-_CYRILLIC_CHAR_PATTERN = re.compile(r"[А-Яа-яЁё]")
+# Spec 059 A-I: "the source has something to translate", in any script. A Unicode word
+# character minus digits and underscore -- not an alphabet, not a count, not a threshold:
+# the pair rule fires on one letter and refuses on none. The measurement found 46 of the
+# 7 103 delivered records with no letter at all (measurement §5), and leaving those alone
+# is the right outcome rather than a miss. This replaced a Latin-word counter and a
+# Cyrillic-presence guard, both of which tied the rule to ONE language pair.
+_ANY_LETTER_PATTERN = re.compile(r"[^\W\d_]", re.UNICODE)
+# The pipeline's OWN placeholder markup, which the importer writes into paragraph text and
+# every downstream stage is required to carry through verbatim. Its letters belong to the
+# machinery, not to the book, so a block that is nothing but placeholders has nothing to
+# translate and the pair rule must not fire on it. Same reasoning, and the same wording, as
+# spec 057's unwrapping of importer-added emphasis markers: this strips exactly the markup
+# the pipeline itself added and nothing else. The regex is restated here rather than
+# imported because it is already restated in ten modules across four layers; importing
+# ``document`` from ``pipeline.output_validation`` to save one line would buy a dependency.
+_INTERNAL_PLACEHOLDER_PATTERN = re.compile(r"\[\[DOCX_[A-Za-z0-9_]+\]\]")
 _BULLET_GLYPH_PATTERN = re.compile(r"[●•◦‣]")
 _SCRIPTURE_REFERENCE_HEADING_PATTERN = re.compile(
     r"^#{1,6}\s+\((?:[1-3]\s*)?[A-ZА-ЯЁ][^()]{0,40}\s+\d{1,3}:\d{1,3}(?:[-–]\d{1,3})?\)$"
@@ -169,8 +183,6 @@ _CHAPTER_MARKER_LINE_PATTERN = re.compile(r"^(?:#{1,6}\s+)?(?:chapter|глава
 _INLINE_HEADING_FRAGMENT_MAX_WORDS = 6
 _INLINE_PARAGRAPH_FRAGMENT_MAX_WORDS = 12
 _INLINE_PARAGRAPH_FRAGMENT_MAX_CHARS = 100
-_SOURCE_TEXT_FALLBACK_MIN_CHARS = 120
-_SOURCE_TEXT_FALLBACK_MIN_ENGLISH_WORDS = 12
 
 
 @dataclass(frozen=True)
@@ -323,10 +335,26 @@ def input_has_body_text_signal(text: str) -> bool:
     return False
 
 
-def classify_processed_block(target_text: str, processed_chunk: str) -> ProcessedBlockStatus:
+def classify_processed_block(
+    target_text: str,
+    processed_chunk: str,
+    *,
+    languages_differ: bool = True,
+) -> ProcessedBlockStatus:
+    """One status per block, and since spec 059 A-I the first thing it asks is the pair rule.
+
+    ``languages_differ`` is a property of the JOB, never guessed from the text (FR-A5). When
+    the job does not change the language, a delivery byte-identical to its source is the
+    RIGHT outcome -- on the recorded ru->ru literary-edit run that is 1 144 of 1 761
+    deliveries (measurement §5) -- so the pair rule is not consulted at all. It defaults to
+    True because every caller that does not name a language pair is asking the historical
+    question, "did the model translate this".
+    """
     if not processed_chunk.strip():
         return "empty"
-    if is_source_text_fallback_output(target_text=target_text, processed_chunk=processed_chunk):
+    if languages_differ and is_source_text_fallback_output(
+        target_text=target_text, processed_chunk=processed_chunk
+    ):
         return "source_text_fallback"
     if has_bullet_heading_output(processed_chunk):
         return "bullet_heading_output"
@@ -334,20 +362,52 @@ def classify_processed_block(target_text: str, processed_chunk: str) -> Processe
         return "heading_only_output"
     if has_toc_body_concat_signal(target_text=target_text, processed_chunk=processed_chunk):
         return "toc_body_concat"
-    if has_unexplained_english_residuals(processed_chunk):
-        return "english_residual_output"
     return "valid"
 
 
+def delivered_text_equals_source(*, target_text: str, processed_chunk: str) -> bool:
+    """The pair rule's comparison, and the ONLY place in the codebase that performs it.
+
+    Spec 059 FR-A2 forbids a second predicate for this, so both readers go through here:
+    the classifier above (via ``is_source_text_fallback_output``) and the pipeline's
+    payload-shaped face ``block_execution.fallback_delivered_source_text``, which the
+    narration exclusion and the failure-decision table both call.
+
+    **Equal to the character once surrounding whitespace is trimmed** — worded that way and
+    not "byte for byte", because the code strips and the two phrases are not the same claim.
+    The trim is deliberate: the substitution branches reassemble a block from its paragraphs
+    and the reassembly can differ from the original in trailing whitespace alone, so a
+    completeness rule a stray newline defeats is not a rule. It also matches how the
+    measurement was computed, which is what makes "1 firing block in 1 394" a statement about
+    THIS rule and not about a near relative of it
+    (``scripts/measure-block-pair-rule.py``). Nothing else is normalised: no case folding, no
+    punctuation, and no whitespace INSIDE the text.
+    """
+    return processed_chunk.strip() == target_text.strip()
+
+
 def is_source_text_fallback_output(*, target_text: str, processed_chunk: str) -> bool:
-    if processed_chunk != target_text:
+    """Spec 059 A-I: the measured pair rule, with nothing on top of it.
+
+    Two conditions, both of them structural: the delivered text IS the block's own source
+    (equal to the character once surrounding whitespace is trimmed — see
+    ``delivered_text_equals_source``), and the source has at least one letter once the
+    pipeline's own placeholder markup is taken out of it. Measured on 7 103 delivered records across five
+    runs: 99.4% recall, 26 false alarms (0.37%), none of them lost prose
+    (``measurement-translation-signal.md`` §5); re-counted at the granularity where the
+    decision is taken -- the BLOCK -- it fires on 1 of 1 394 recorded blocks, and that one
+    is front matter (``scripts/measure-block-pair-rule.py``).
+
+    What used to sit on top of it, and why all three are gone: a 120-character floor and a
+    12-English-word floor, which were blind to the 14.7%-38.1% of prose shorter than 60
+    letters (measurement §2, feature 4); and a "no Cyrillic in the source" guard, which
+    made the whole rule specific to en->ru. The language pair is now the caller's business
+    (FR-A5), and no number is left on the decision path (FR-A3).
+    """
+    if not delivered_text_equals_source(target_text=target_text, processed_chunk=processed_chunk):
         return False
-    stripped = target_text.strip()
-    if len(stripped) < _SOURCE_TEXT_FALLBACK_MIN_CHARS:
-        return False
-    if _CYRILLIC_CHAR_PATTERN.search(stripped):
-        return False
-    return len(_ENGLISH_WORD_PATTERN.findall(stripped)) >= _SOURCE_TEXT_FALLBACK_MIN_ENGLISH_WORDS
+    translatable_source = _INTERNAL_PLACEHOLDER_PATTERN.sub(" ", target_text)
+    return _ANY_LETTER_PATTERN.search(translatable_source) is not None
 
 
 def has_bullet_heading_output(text: str) -> bool:
@@ -368,22 +428,26 @@ def has_toc_body_concat_markdown(text: str) -> bool:
     return any(_TOC_BODY_CONCAT_MARKDOWN_PATTERN.search(paragraph) for paragraph in paragraphs)
 
 
-def has_unexplained_english_residuals(text: str) -> bool:
-    if not _CYRILLIC_CHAR_PATTERN.search(text):
-        return False
-    lines = iter_nonempty_markdown_lines(text)
-    english_hits = 0
-    for line in lines:
-        normalized = line.lstrip("#> -*0123456789.\t ")
-        for word in _ENGLISH_WORD_PATTERN.findall(normalized):
-            upper_word = word.upper()
-            if upper_word in DISALLOWED_GENERIC_TOC_LABELS:
-                english_hits += 1
-                continue
-            if word.lower() in {"chapter", "contents", "introduction", "conclusion", "judgment"}:
-                english_hits += 1
-                continue
-    return english_hits > 0
+# ``has_unexplained_english_residuals`` used to live here and is DELETED, not moved
+# (spec 059 FR-A4, anti-regression 13). It keyed on a five-word list -- a document lexicon,
+# which Constitution VII forbids outright -- and it opened with a "the text contains
+# Cyrillic" guard, so a wholly English answer never reached the list in the first place. It
+# rejected correct translations that legitimately kept an English proper noun or discussed
+# the word "chapter", which is why spec 059 records it as a DETECTOR-caused failure that no
+# change of model could have removed (`spec.md:356-359`).
+#
+# It is replaced by the pair rule above, not extended: the outcome it was meant to catch --
+# source-language text delivered as if translated -- is caught by ``source_text_fallback``,
+# and the one case neither catches, a coherent English answer that is NOT byte-equal to its
+# source, is the residual blindness the spec names honestly (A-I) and the measurement counts
+# at ZERO in 7 233 records (§11). The alternative instrument, a target-alphabet share used as
+# a decision condition, is forbidden by FR-A3 after five runs showed it does not separate the
+# classes on the path that actually delivers untranslated text.
+#
+# ``english_residual_output`` stays in ``ProcessedBlockStatus``, in
+# ``CONTROLLED_BLOCK_FAILURE_POLICY`` and in the message catalogue: it remains a legal
+# rejection kind and a recorded fallback kind in artifacts already on disk. It is simply no
+# longer produced by a word list.
 
 
 def collect_bullet_heading_samples(text: str) -> list[QualityIssueSample]:
