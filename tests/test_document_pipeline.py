@@ -8489,8 +8489,18 @@ def test_standalone_audiobook_omitted_notice_carries_the_address_and_the_documen
         if str(notice.get("message_key", "")).startswith("result.source_text_delivered")
     )
 
-    # The audio message names the paragraph the audiobook lost...
-    assert list(narration_notice["anchors"]) == [_OMITTED_ENGLISH_PARAGRAPH]  # type: ignore[arg-type]
+    # The audio message names the paragraph the audiobook lost, by its FIRST SENTENCE: the
+    # recorded run's longest excluded paragraph is 2 686 characters, and printed whole that
+    # is a second hunt rather than an address. The cut here lands after "et al." — the
+    # ladder's sentence splitter consults no list of abbreviations, by design and by its own
+    # docstring (Constitution VII forbids the word list) — and a fragment that stops one
+    # clause early is still a fragment the reader finds, which the last assertion proves
+    # against the delivered markdown.
+    anchors = [str(anchor) for anchor in narration_notice["anchors"]]  # type: ignore[union-attr]
+    assert len(anchors) == 1
+    assert _OMITTED_ENGLISH_PARAGRAPH.startswith(anchors[0])
+    assert len(anchors[0]) < len(_OMITTED_ENGLISH_PARAGRAPH)
+    assert anchors[0] in runtime["state"]["latest_markdown"]
     # ...and the document message counts it without quoting it a second time.
     assert document_notice["message_key"] == "result.source_text_delivered_all_addresses_in_narration"
     assert list(document_notice["anchors"]) == []  # type: ignore[arg-type]

@@ -212,23 +212,32 @@ def test_the_two_messages_never_print_the_same_fragment_twice() -> None:
 
 def test_recorded_run_without_narration_publishes_every_address_in_the_document_notice() -> None:
     """The other side of the same rule (anti-regression): with nothing claimed by an audio
-    message — every ``translate``/``edit`` run — the document message is byte-identical to
-    what the recorded run published, six anchors and all."""
+    message — every ``translate``/``edit`` run — the document message keeps ALL SIX addresses,
+    the same key and the same numbers the recorded run published.
+
+    The anchor TEXTS are deliberately not byte-identical any more: each is now its
+    paragraph's first sentence. That is asserted as a relation to the recorded value —
+    same paragraph, shortened — rather than dropped, because "we still address exactly the
+    paragraphs the run addressed" is the property this test exists to hold.
+    """
     published = _recorded_notice("result.source_text_delivered")
+    published_anchors = [str(anchor) for anchor in published["anchors"]]  # type: ignore[union-attr]
 
     facts = quality_gate.build_source_text_delivery_facts(
         _recorded_blocks(), delivered_markdown=_recorded_delivered_markdown()
     )
 
     assert facts["reported_in_narration_paragraph_count"] == 0
-    assert facts["anchors"] == published["anchors"]
     assert facts["unanchored_paragraph_count"] == 4
+    anchors = [str(anchor) for anchor in facts["anchors"]]  # type: ignore[union-attr]
+    assert len(anchors) == len(published_anchors) == 6
+    for anchor, recorded in zip(anchors, published_anchors):
+        assert recorded.startswith(anchor)
 
     notice = quality_gate.build_source_text_delivery_notice(facts, processing_operation="translate")
     assert notice is not None
     assert notice["message_key"] == published["message_key"]
     assert _params(notice) == published["params"]
-    assert _anchors(notice) == published["anchors"]
 
 
 # ---------------------------------------------------------------------------------------
@@ -284,6 +293,110 @@ def test_a_lost_paragraph_with_no_usable_fragment_is_counted_not_printed() -> No
     assert notice["message_key"] == "result.narration_omitted_paragraphs_excluded_without_anchors"
     assert _params(notice) == {"count": 2, "chars": 7, "unanchored": 2}
     assert _anchors(notice) == []
+
+
+def test_the_anchor_is_the_first_sentence_not_the_whole_paragraph() -> None:
+    """An address the reader cannot use is not an address.
+
+    The recorded run's longest excluded paragraph is 2 686 characters, and printing it whole
+    turned "search for this" into a second hunt — and a warning that long is a warning nobody
+    finishes reading, which is the invisibility this spec exists to end, re-created by another
+    route. The cut is a SENTENCE boundary — a structural fact — and the splitter is the one
+    the degradation ladder already owns (``generation._ladder_sentences``), not a length.
+    """
+    records = [
+        {
+            "paragraph_id": "p1",
+            "text": (
+                "Footnotes 1 Lietaer and Kennedy on complementary currencies. "
+                "2 For applications at a city level, see in particular the later volume. "
+                "3 Arrow and Reinhardt on the same question."
+            ),
+        }
+    ]
+
+    facts = quality_gate.build_narration_exclusion_facts(records)
+
+    assert facts["anchors"] == ["Footnotes 1 Lietaer and Kennedy on complementary currencies."]
+    # ...and the paragraph is still counted in full: what was shortened is the ADDRESS.
+    assert facts["chars"] == len(records[0]["text"])
+
+
+def test_recorded_run_anchors_are_each_exactly_one_sentence() -> None:
+    """The same rule on the material that forced it. Structural assertion, no length
+    literal: every anchor the recorded run would print is one sentence, and the longest
+    address is now shorter than the longest paragraph it addresses."""
+    from docxaicorrector.generation._generation import _ladder_sentences
+
+    delivered = _recorded_delivered_markdown()
+    narration_facts = quality_gate.build_narration_exclusion_facts(
+        _narration_records("omitted"), delivered_markdown=delivered
+    )
+    document_facts = quality_gate.build_source_text_delivery_facts(
+        _recorded_blocks(),
+        delivered_markdown=delivered,
+        paragraph_ids_reported_in_narration={
+            record["paragraph_id"] for record in _narration_records("omitted")
+        },
+    )
+    anchors = [str(anchor) for anchor in narration_facts["anchors"]] + [  # type: ignore[union-attr]
+        str(anchor)
+        for anchor in document_facts["anchors"]  # type: ignore[union-attr]
+    ]
+
+    assert len(anchors) == 6
+    for anchor in anchors:
+        assert _ladder_sentences(anchor) == [anchor]
+    longest_paragraph = max(len(str(record["text"])) for record in _recorded_paragraphs())
+    assert max(len(anchor) for anchor in anchors) < longest_paragraph
+
+
+def test_a_first_sentence_below_the_usability_floor_is_counted_not_printed() -> None:
+    """The floor is applied AFTER the shortening, and it is the same floor: a first sentence
+    of two visible characters is not printed as a stub, it goes to the counter. The order
+    matters — checking the floor first would pass a paragraph on the strength of characters
+    the printed address does not contain."""
+    records = [{"paragraph_id": "p1", "text": "A. Then a sentence that would have passed."}]
+
+    facts = quality_gate.build_narration_exclusion_facts(records)
+
+    assert facts["anchors"] == []
+    assert facts["unanchored_paragraph_count"] == 1
+
+
+def test_a_paragraph_that_is_one_long_sentence_keeps_that_sentence_whole() -> None:
+    """The declared edge. Nothing is cut INSIDE a sentence, however long it is, because every
+    mid-sentence cut needs a length and every length here would be a number picked by eye
+    (Constitution VII). Borrowing the ladder's own budget constant was considered and
+    refused: it measures what a MODEL can be asked to answer, not what a human can search
+    for. A single enormous sentence therefore prints whole — visibly odd, honestly odd, and
+    it never invents an address."""
+    one_sentence = "A single clause that runs on and on and never reaches a full stop"
+    records = [{"paragraph_id": "p1", "text": one_sentence}]
+
+    facts = quality_gate.build_narration_exclusion_facts(records)
+
+    assert facts["anchors"] == [one_sentence]
+
+
+def test_the_delivered_check_is_applied_to_the_address_that_is_printed() -> None:
+    """The check asks "will the reader's search succeed", so it asks it of the SHORTENED
+    form. A paragraph whose tail cleanup rewrote is still findable by its first sentence; a
+    paragraph whose first sentence is gone is not offered at all."""
+    tail_rewritten = {
+        "paragraph_id": "p1",
+        "text": "Footnotes 1 Lietaer and Kennedy. A tail that cleanup rewrote entirely.",
+    }
+    deleted = {"paragraph_id": "p2", "text": "A paragraph cleanup deleted. With two sentences."}
+
+    facts = quality_gate.build_narration_exclusion_facts(
+        [tail_rewritten, deleted],
+        delivered_markdown="Footnotes 1 Lietaer and Kennedy. Кое-что ещё.",
+    )
+
+    assert facts["anchors"] == ["Footnotes 1 Lietaer and Kennedy."]
+    assert facts["unanchored_paragraph_count"] == 1
+    assert facts["anchors_dropped_not_in_delivered"] == 1
 
 
 def test_an_address_the_delivered_document_no_longer_contains_is_withheld() -> None:
@@ -369,6 +482,13 @@ def test_both_channels_share_one_sanitizer_and_one_usability_floor() -> None:
         "_build_formatting_review_item",
         "_collect_paragraph_anchor_facts",
     }
+    # The sentence boundary is the degradation ladder's, reached by IMPORT and not by copy —
+    # a third way of dividing text in this repository would be the same defect one level
+    # down, and a copied regex would drift silently.
+    from docxaicorrector.generation import _generation
+
+    assert quality_gate._ladder_sentences is _generation._ladder_sentences
+    assert _functions_calling("_ladder_sentences") == {"_collect_paragraph_anchor_facts"}
 
 
 # ---------------------------------------------------------------------------------------

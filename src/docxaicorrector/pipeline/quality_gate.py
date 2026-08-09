@@ -41,6 +41,7 @@ from docxaicorrector.core.models import LANGUAGE_CHANGING_OPERATIONS
 from docxaicorrector.generation._generation import (
     PARAGRAPH_STATUS_OMITTED,
     PARAGRAPH_STATUS_SOURCE_RESTORED,
+    _ladder_sentences,
     _strip_narration_inline_emphasis,
     marker_paragraph_dispositions,
 )
@@ -2216,7 +2217,24 @@ def _collect_paragraph_anchor_facts(
         if paragraph_id and paragraph_id in reported_elsewhere:
             reported_elsewhere_count += 1
             continue
-        anchor = _sanitize_review_anchor_text(text)
+        # The address is the paragraph's FIRST SENTENCE, not the paragraph. On the recorded
+        # run the longest excluded paragraph is 2 686 characters and its first sentence is 75:
+        # a whole paragraph printed as "search for this" is a second hunt, and a warning that
+        # long is a warning nobody finishes reading — the invisibility this channel exists to
+        # end, re-created by another route. The cut is a SENTENCE boundary (a structural fact,
+        # Constitution VII) and the splitter is the one the degradation ladder already owns,
+        # reached by import: a third way of dividing text in this repository would be the same
+        # defect one level down. NOTHING is cut inside a sentence, however long the sentence
+        # is: every mid-sentence cut needs a length, and every length here would be a number
+        # picked by eye. (The ladder's own budget constant was considered and refused — it
+        # measures what a MODEL can be asked to answer, not what a human can search for.)
+        sanitized = _sanitize_review_anchor_text(text)
+        sentences = _ladder_sentences(sanitized)
+        anchor = sentences[0] if sentences else sanitized
+        # Both remaining checks run on the SHORTENED form, in this order and deliberately:
+        # the floor asks "can the reader search for what we are about to print" and the
+        # delivered check asks "will that search succeed", and both questions are about the
+        # printed address, not about the paragraph behind it.
         if _review_anchor_visible_char_count(anchor) < 3:
             unanchored += 1
             continue
