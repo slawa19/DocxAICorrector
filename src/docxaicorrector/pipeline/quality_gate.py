@@ -36,8 +36,16 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal, cast
 
+from docxaicorrector.generation._generation import (
+    PARAGRAPH_STATUS_OMITTED,
+    PARAGRAPH_STATUS_SOURCE_RESTORED,
+    marker_paragraph_dispositions,
+)
 from docxaicorrector.processing.preparation import humanize_quality_gate_reasons
-from docxaicorrector.validation.acceptance import build_acceptance_verdict
+from docxaicorrector.validation.acceptance import (
+    build_acceptance_verdict,
+    production_reportable_failed_checks,
+)
 from docxaicorrector.validation.formatting_coverage import (
     classify_heading_demotions,
     resolve_role_aware_formatting_unmapped_source_summary,
@@ -2008,6 +2016,161 @@ def _build_result_quality_warning(
             quality_report.get("formatting_review_required_count") or len(formatting_review_items)
         )
     return warning
+
+
+# --- spec 059 part B: the two facts that never used to cross the boundary --------------
+# ``grep -rni acceptance src/docxaicorrector/ui/`` returned nothing before this spec: the
+# production verdict was computed, serialized to ``.run/quality_reports/*.json`` and stopped.
+# Both builders below produce DATA for ``latest_result_notices`` — the channel that already
+# exists and is already rendered (``ui/_ui.py``) — so nothing about the result screen's
+# layout, block order or delivery semantics changes (FR-B8, Constitution VII "no verifier
+# as a gate"). Both return ``None`` when there is nothing to say: a message shown on every
+# run is noise (anti-vacuum).
+
+# The two paragraph statuses that leave the paragraph's own SOURCE text standing in the
+# delivered DOCX. ``omitted`` (the model returned nothing) and ``source_restored`` (the
+# model's answer was discarded) are different causes with the SAME consequence for a reader
+# of the document, and the document fact is what this channel reports.
+_SOURCE_TEXT_DELIVERED_PARAGRAPH_STATUSES: tuple[str, ...] = (
+    PARAGRAPH_STATUS_OMITTED,
+    PARAGRAPH_STATUS_SOURCE_RESTORED,
+)
+
+
+def build_acceptance_verdict_notice(
+    quality_report: Mapping[str, object],
+) -> dict[str, object] | None:
+    """The PRODUCTION acceptance verdict as a result notice, or ``None`` when it passed.
+
+    The trigger is ``acceptance_verdict.passed is False`` — a boolean the pipeline already
+    computed — and nothing else. In particular it is NOT ``quality_status`` and NOT
+    ``gate_reasons``: the whole hygiene gate lives under
+    ``if context.processing_operation == "translate"``, so outside ``translate`` the status
+    stays ``pass`` and the reasons stay empty however bad the residue is, which is exactly
+    why the screen was silent on three of the four books of the recorded corpus.
+
+    ``failed_checks`` travels as DATA. The UI names each check through its own catalog and
+    never imports the verdict module or recomputes anything (FR-B1). Harness-only checks are
+    dropped by ``production_reportable_failed_checks``: production owns no source DOCX and
+    must not report a judgement it did not make.
+    """
+    verdict = quality_report.get("acceptance_verdict")
+    if not isinstance(verdict, Mapping):
+        return None
+    if verdict.get("passed") is not False:
+        return None
+    failed_checks = production_reportable_failed_checks(verdict)
+    if not failed_checks:
+        # Red only on checks production cannot evaluate: nothing production may say.
+        return None
+    return {
+        "kind": "acceptance",
+        "level": "warning",
+        "message_key": "result.acceptance_not_passed",
+        "params": {"count": len(failed_checks)},
+        "failed_checks": failed_checks,
+    }
+
+
+def build_source_text_delivery_facts(
+    processed_chunks: Sequence[object],
+    *,
+    anchor_limit: int = 8,
+) -> dict[str, object]:
+    """Which DELIVERED paragraphs still carry their own source text — and where they are.
+
+    Read off the per-paragraph record the delivered block carries
+    (``generation.marker_paragraph_dispositions``), not off any run-level counter. That
+    matters twice:
+
+    * ``model_output_discarded_reason_counts`` counts EVENTS, not blocks and not paragraphs
+      — ``record_model_output_discarded`` does ``counts[reason] += 1`` once per call — so on
+      the recorded ``rethinking_money`` run it reads ``{"marker_chunk_collapse": 1}`` beside
+      ``model_output_discarded_block_count=0``. A channel keyed on that dict would announce a
+      quantity of nothing;
+    * a block with no record (a passthrough block, a plain ``str``) makes no claim at all.
+      No signal, no repair (Constitution VII).
+
+    Anchors are the paragraph's own delivered text, put through the SAME sanitiser the
+    formatting-review items use, so an internal ``[[DOCX_PARA_…]]`` id never reaches the user
+    and a paragraph with fewer than 3 searchable characters is COUNTED
+    (``unanchored_paragraph_count``) instead of printed as an empty row — no address is
+    invented (anti-regression #14).
+    """
+    block_count = 0
+    paragraph_count = 0
+    chars = 0
+    unanchored = 0
+    anchors: list[str] = []
+    status_counts = {status: 0 for status in _SOURCE_TEXT_DELIVERED_PARAGRAPH_STATUSES}
+    for chunk in processed_chunks:
+        dispositions = marker_paragraph_dispositions(chunk)
+        if dispositions is None:
+            continue
+        block_has_source_text = False
+        for disposition in dispositions:
+            if disposition.status not in status_counts:
+                continue
+            block_has_source_text = True
+            paragraph_count += 1
+            chars += len(disposition.text)
+            status_counts[disposition.status] += 1
+            anchor = _sanitize_review_anchor_text(disposition.text)
+            if _review_anchor_visible_char_count(anchor) < 3:
+                unanchored += 1
+                continue
+            if len(anchors) < anchor_limit:
+                anchors.append(anchor)
+        if block_has_source_text:
+            block_count += 1
+    return {
+        "block_count": block_count,
+        "paragraph_count": paragraph_count,
+        "chars": chars,
+        "anchors": anchors,
+        "unanchored_paragraph_count": unanchored,
+        "status_counts": status_counts,
+    }
+
+
+def build_source_text_delivery_notice(
+    facts: Mapping[str, object],
+) -> dict[str, object] | None:
+    """The DOCX fact as a result notice, or ``None`` when no paragraph carries source text.
+
+    Deliberately independent of narration. "Source text was delivered into the document" and
+    "the block was kept out of the narration" are two different facts about two different
+    artifacts; tying the first to ``narration_text is not None`` hid it on every ``edit`` and
+    ``translate`` run, which is the DEFAULT path (FR-B4).
+    """
+    paragraph_count = int(cast(int, facts.get("paragraph_count") or 0))
+    if paragraph_count <= 0:
+        return None
+    anchors = [str(anchor) for anchor in cast(Sequence[object], facts.get("anchors") or ())]
+    unanchored = int(cast(int, facts.get("unanchored_paragraph_count") or 0))
+    params: dict[str, object] = {
+        "count": paragraph_count,
+        "blocks": int(cast(int, facts.get("block_count") or 0)),
+        "chars": int(cast(int, facts.get("chars") or 0)),
+    }
+    # Three templates rather than one carrying a "{unanchored}" that reads "0" on the common
+    # case, or an "{anchors}" with nothing behind it: a number printed always is a number
+    # nobody reads, and an empty «» row is the invented address anti-regression #14 forbids.
+    if not anchors:
+        params["unanchored"] = unanchored
+        message_key = "result.source_text_delivered_without_anchors"
+    elif unanchored > 0:
+        params["unanchored"] = unanchored
+        message_key = "result.source_text_delivered_with_unanchored"
+    else:
+        message_key = "result.source_text_delivered"
+    return {
+        "kind": "translation",
+        "level": "warning",
+        "message_key": message_key,
+        "params": params,
+        "anchors": anchors,
+    }
 
 
 def _russian_paragraph_word(count: int) -> str:
