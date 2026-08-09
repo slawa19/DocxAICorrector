@@ -13,13 +13,20 @@ downloadable report.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Literal
+from typing import Final, Literal
 
 from docxaicorrector.ui.i18n import t
 
 ReviewLevel = Literal["defect", "fix", "review", "clean"]
+
+# spec 059 FR-B3: the catalog key scheme for one acceptance check name. The names are a
+# closed enumeration owned by ``validation/acceptance.py``; this module only turns a name
+# into a phrase, so the UI never imports the verdict module and never recomputes a verdict
+# (FR-B1). ``tests/test_ui_i18n.py`` enumerates the same names against both catalogs,
+# because the regex guard over ``t("literal")`` cannot see a key built with an f-string.
+ACCEPTANCE_CHECK_KEY_PREFIX: Final[str] = "result.acceptance_check."
 
 # Max-severity precedence: defect > fix > review > clean.
 _SEVERITY_MARKERS = {"fix", "review", "defect"}
@@ -33,6 +40,32 @@ class ReviewPresentation:
     headline: str
     counts: dict[str, int]
     review_available: bool
+
+
+def _string_sequence(value: object) -> list[str]:
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
+        return []
+    return [item.strip() for item in value if isinstance(item, str) and item.strip()]
+
+
+def build_notice_data_params(notice: Mapping[str, object]) -> dict[str, object]:
+    """Turn the LIST data a pipeline notice carries into ``t()`` params.
+
+    The pipeline sends structural identifiers (acceptance check names) and raw anchor texts;
+    naming and punctuation are presentation, so they happen here rather than in the pipeline.
+    Returns an empty mapping when the notice carries no such data, so every existing notice
+    kind renders byte-identically (anti-regression #15).
+    """
+    params: dict[str, object] = {}
+    failed_checks = _string_sequence(notice.get("failed_checks"))
+    if failed_checks:
+        params["checks"] = ", ".join(
+            t(f"{ACCEPTANCE_CHECK_KEY_PREFIX}{name}") for name in failed_checks
+        )
+    anchors = _string_sequence(notice.get("anchors"))
+    if anchors:
+        params["anchors"] = "; ".join(f"«{anchor}»" for anchor in anchors)
+    return params
 
 
 def _item_severity(item: Mapping[str, object]) -> str:
