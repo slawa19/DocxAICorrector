@@ -55,7 +55,12 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 # invariant ``result_notices`` element type, and the recorded ``emit_state`` payloads in
 # ``tests/test_late_phases_finalize_gate_persistence`` are narrowed through typed accessors
 # (``_state_result_notices`` / ``_state_mapping_value``) instead of indexing ``object``.
-_ERROR_BASELINE = 192
+# 2026-08-09 (spec 059 part B, review round 2): 192 -> 190. No suppression and no new
+# ``Any``: the two cleared errors are subscripts on ``object`` in the spec's own test file,
+# removed while giving ``build_source_text_delivery_notice`` its required
+# ``processing_operation`` keyword — the calls that used to index a ``dict | None`` result
+# inline are now ``assert ... is None`` / ``assert ... is not None`` statements.
+_ERROR_BASELINE = 190
 
 
 def _run_pyright() -> dict:

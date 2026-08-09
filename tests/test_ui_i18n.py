@@ -271,6 +271,18 @@ def test_acceptance_and_source_text_notices_render_their_params(
     assert "{" not in without_anchors
     assert "3" in without_anchors
 
+    # Spec 059 FR-B4, review finding 4: ``edit`` rewrites text that is already in the target
+    # language, so the translating wording is false there. Second family, same three anchor
+    # variants, both catalogs.
+    for key in (
+        "result.unedited_text_delivered",
+        "result.unedited_text_delivered_with_unanchored",
+        "result.unedited_text_delivered_without_anchors",
+    ):
+        message = i18n.t(key, count=3, blocks=1, chars=5581, anchors="«Абзац»", unanchored=1)
+        assert "{" not in message, key
+        assert "5581" in message, key
+
     artifact = i18n.t("result.controlled_block_fallback_artifact", path="/x/y.json")
     assert "{" not in artifact
     assert "/x/y.json" in artifact

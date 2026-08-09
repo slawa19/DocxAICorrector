@@ -308,7 +308,10 @@ def test_source_text_delivery_is_silent_on_a_fully_accepted_block() -> None:
     assert facts["paragraph_count"] == 0
     assert facts["block_count"] == 0
     assert facts["chars"] == 0
-    assert quality_gate.build_source_text_delivery_notice(facts) is None
+    assert (
+        quality_gate.build_source_text_delivery_notice(facts, processing_operation="translate")
+        is None
+    )
 
 
 def test_source_text_delivery_counts_blocks_paragraphs_and_chars_with_anchors() -> None:
@@ -328,7 +331,7 @@ def test_source_text_delivery_counts_blocks_paragraphs_and_chars_with_anchors() 
     assert facts["anchors"] == ["Once upon a time in a small village."]
     assert facts["unanchored_paragraph_count"] == 0
 
-    notice = quality_gate.build_source_text_delivery_notice(facts)
+    notice = quality_gate.build_source_text_delivery_notice(facts, processing_operation="translate")
     assert notice is not None
     assert notice["kind"] == "translation"
     assert notice["level"] == "warning"
@@ -365,9 +368,112 @@ def test_source_text_delivery_never_invents_an_anchor() -> None:
     assert facts["anchors"] == ["Barter Systems Inc."]
     assert all("DOCX_PARA" not in anchor for anchor in facts["anchors"])  # type: ignore[union-attr]
 
-    notice = quality_gate.build_source_text_delivery_notice(facts)
+    notice = quality_gate.build_source_text_delivery_notice(facts, processing_operation="translate")
     assert notice is not None
     assert notice["message_key"] == "result.source_text_delivered_with_unanchored"
+
+
+def test_anchor_is_what_the_reader_sees_in_word_not_the_markdown() -> None:
+    """The importer BAKES emphasis into the paragraph text — ``***``/``**``/``*``, then
+    ``<u>``/``<sup>``/``<sub>`` (``document/extraction.py:1381-1394``) — and the DOCX is
+    built from that markdown by Pandoc, so Word shows the text WITHOUT any of it. An anchor
+    carrying the markup sends the reader to Ctrl+F for ``**Important**``, which the document
+    never contains: the address would be wrong on every emphasised paragraph. Spec 057 paid
+    for this exact lesson (``docs/WHERE_WE_ARE.md:117``).
+    """
+    facts = quality_gate.build_source_text_delivery_facts(
+        [
+            _block(
+                _restored("p1", "**Important passage** with *emphasis* and <u>underline</u>."),
+                _restored("p2", "***Both*** plus <sup>3</sup> and <sub>2</sub> markers."),
+            )
+        ]
+    )
+
+    assert facts["anchors"] == [
+        "Important passage with emphasis and underline.",
+        "Both plus 3 and 2 markers.",
+    ]
+    assert facts["unanchored_paragraph_count"] == 0
+
+
+def test_anchor_that_is_only_markup_is_counted_not_printed() -> None:
+    """Unwrapping can take an anchor BELOW the usability floor. It must then go to the
+    counter, exactly like any other paragraph with nothing searchable — not to an empty «»."""
+    facts = quality_gate.build_source_text_delivery_facts(
+        [_block(_restored("p1", "**a**"), _restored("p2", "<u>*b*</u>"))]
+    )
+
+    assert facts["paragraph_count"] == 2
+    assert facts["anchors"] == []
+    assert facts["unanchored_paragraph_count"] == 2
+
+    notice = quality_gate.build_source_text_delivery_notice(
+        facts, processing_operation="translate"
+    )
+    assert notice is not None
+    assert notice["message_key"] == "result.source_text_delivered_without_anchors"
+
+
+def test_anchor_absent_from_the_delivered_markdown_is_not_offered() -> None:
+    """Anti-regression #14, hardest form: the facts are read off ``state.processed_chunks``,
+    which is the PRE-reader-cleanup material, while the DOCX is built from the post-cleanup
+    markdown (``late_phases`` reassigns ``runtime_display_markdown``). Cleanup can delete,
+    merge, split or rewrite a paragraph, so an anchor is offered only when it is still
+    findable in what was actually DELIVERED. An address that does not exist is the worst
+    kind of invented address, because the reader will go looking for it."""
+    chunks = [
+        _block(
+            _restored("p1", "**Survived** the cleanup pass untouched."),
+            _restored("p2", "Deleted by the cleanup pass entirely."),
+        )
+    ]
+    delivered = "Survived the cleanup pass untouched.\n\nSomething else."
+
+    facts = quality_gate.build_source_text_delivery_facts(chunks, delivered_markdown=delivered)
+
+    assert facts["paragraph_count"] == 2
+    assert facts["anchors"] == ["Survived the cleanup pass untouched."]
+    assert facts["unanchored_paragraph_count"] == 1
+    assert facts["anchors_dropped_not_in_delivered"] == 1
+
+
+def test_delivered_markdown_check_compares_visible_text_on_both_sides() -> None:
+    """Anti-vacuum for the check above: the delivered markdown still CARRIES the markup, so
+    comparing a stripped anchor against the raw markdown would drop every emphasised
+    paragraph and the channel would go silent exactly where it matters most."""
+    chunks = [_block(_restored("p1", "**Important passage** with *emphasis*."))]
+    delivered = "Some text.\n\n**Important passage** with *emphasis*.\n\nMore text."
+
+    facts = quality_gate.build_source_text_delivery_facts(chunks, delivered_markdown=delivered)
+
+    assert facts["anchors"] == ["Important passage with emphasis."]
+    assert facts["anchors_dropped_not_in_delivered"] == 0
+
+
+@pytest.mark.parametrize(
+    ("operation", "expected_key"),
+    [
+        ("translate", "result.source_text_delivered"),
+        ("audiobook", "result.source_text_delivered"),
+        ("edit", "result.unedited_text_delivered"),
+    ],
+)
+def test_the_notice_tells_the_truth_in_each_operation(operation: str, expected_key: str) -> None:
+    """``edit`` rewrites text that is ALREADY in the target language, so calling a Russian
+    paragraph "untranslated source text" is simply false. The fact there is that the model's
+    edit was discarded. The condition comes from the JOB — the operation the run was started
+    with — never from the shape of the paragraph (Constitution VII)."""
+    facts = quality_gate.build_source_text_delivery_facts(
+        [_block(_restored("p1", "Абзац, для которого вывод модели был отброшен."))]
+    )
+
+    notice = quality_gate.build_source_text_delivery_notice(
+        facts, processing_operation=operation
+    )
+
+    assert notice is not None
+    assert notice["message_key"] == expected_key
 
 
 def test_source_text_delivery_ignores_a_block_without_a_per_paragraph_record() -> None:
@@ -375,7 +481,10 @@ def test_source_text_delivery_ignores_a_block_without_a_per_paragraph_record() -
     facts = quality_gate.build_source_text_delivery_facts(["Обычный блок без записи."])
 
     assert facts["paragraph_count"] == 0
-    assert quality_gate.build_source_text_delivery_notice(facts) is None
+    assert (
+        quality_gate.build_source_text_delivery_notice(facts, processing_operation="translate")
+        is None
+    )
 
 
 def test_recorded_discard_reason_counts_are_not_the_alarm_trigger() -> None:
@@ -401,7 +510,10 @@ def test_recorded_discard_reason_counts_are_not_the_alarm_trigger() -> None:
         [_block(_accepted("p1", "Переведённый абзац."))]
     )
 
-    assert quality_gate.build_source_text_delivery_notice(facts) is None
+    assert (
+        quality_gate.build_source_text_delivery_notice(facts, processing_operation="translate")
+        is None
+    )
 
 
 # --------------------------------------------------------------------------------------
@@ -582,7 +694,10 @@ def test_recorded_green_run_still_has_one_discarded_block() -> None:
 
     assert facts["block_count"] == 1
     assert facts["paragraph_count"] == 2
-    assert quality_gate.build_source_text_delivery_notice(facts) is not None
+    assert (
+        quality_gate.build_source_text_delivery_notice(facts, processing_operation="translate")
+        is not None
+    )
 
 
 # --------------------------------------------------------------------------------------
@@ -1034,12 +1149,45 @@ def test_edit_run_publishes_the_docx_source_text_notice_without_any_narration(mo
         notice for notice in _notices(runtime) if notice.get("kind") == "translation"
     ]
     assert len(delivered) == 1
-    assert delivered[0]["message_key"] == "result.source_text_delivered"
+    # This run is ``edit``, so the truthful wording is the unedited one (review finding 4).
+    assert delivered[0]["message_key"] == "result.unedited_text_delivered"
     assert dict(delivered[0]["params"])["count"] == 1  # type: ignore[arg-type]
     assert list(delivered[0]["anchors"]) == ["Once upon a time in a small village."]  # type: ignore[arg-type]
     assert [
         event for event in events if event["event_id"] == "source_text_delivered_to_document"
     ]
+
+
+def test_the_pipeline_hands_the_DELIVERED_markdown_to_the_facts_builder(monkeypatch) -> None:
+    """The builder can only check an anchor against the delivered text if it is GIVEN it.
+
+    ``state.processed_chunks`` is the pre-reader-cleanup material and ``runtime_display_markdown``
+    is what the DOCX is built from; the two diverge exactly when cleanup does something. A unit
+    test on the builder cannot see whether the pipeline actually threads it, so the wiring is
+    pinned here — without this, dropping the argument in ``late_phases`` breaks nothing.
+    """
+    captured: dict[str, object] = {}
+    real_builder = late_phases.build_source_text_delivery_facts
+
+    def _spy(processed_chunks, **kwargs):
+        captured.update(kwargs)
+        captured["chunk_count"] = len(list(processed_chunks))
+        return real_builder(processed_chunks, **kwargs)
+
+    monkeypatch.setattr(late_phases, "build_source_text_delivery_facts", _spy)
+    runtime = {"state": {}}
+    _events, log_event = _capture_log_events()
+
+    result = _run_pipeline(
+        runtime=runtime,
+        log_event=log_event,
+        generate=lambda **kwargs: _block(_restored("p0001", "Once upon a time in a small village.")),
+        processing_operation="edit",
+    )
+
+    assert result == "succeeded"
+    assert captured["delivered_markdown"] == runtime["state"]["latest_markdown"]
+    assert str(captured["delivered_markdown"]).strip()
 
 
 def test_clean_edit_run_publishes_no_source_text_notice() -> None:

@@ -1259,13 +1259,24 @@ def finalize_processing_success(
     # The counters above keep their ``narration_excluded_*`` names because they now report
     # only what they are named after: what the NARRATION lost. Read off the delivered blocks'
     # own per-paragraph record, so it counts paragraphs, never events.
-    source_text_delivery_facts = build_source_text_delivery_facts(state.processed_chunks)
-    source_text_delivery_notice = build_source_text_delivery_notice(source_text_delivery_facts)
+    # ``runtime_display_markdown`` is the DELIVERED text here — reader cleanup reassigned it
+    # above — while the records come from ``state.processed_chunks``, which predates cleanup.
+    # Handing it over lets an anchor be checked against what the reader will actually open,
+    # so a paragraph cleanup deleted or rewrote is counted without being given an address
+    # that no longer exists (anti-regression #14).
+    source_text_delivery_facts = build_source_text_delivery_facts(
+        state.processed_chunks,
+        delivered_markdown=runtime_display_markdown,
+    )
+    source_text_delivery_notice = build_source_text_delivery_notice(
+        source_text_delivery_facts,
+        processing_operation=str(getattr(context, "processing_operation", "") or ""),
+    )
     if source_text_delivery_notice is not None:
         dependencies.log_event(
             logging.WARNING,
             "source_text_delivered_to_document",
-            "В доставленном DOCX остались абзацы с исходным (непереведённым) текстом.",
+            "В доставленном DOCX остались абзацы, для которых вывод модели не был применён.",
             filename=context.uploaded_filename,
             processing_operation=context.processing_operation,
             review_data=True,
@@ -1276,6 +1287,9 @@ def finalize_processing_success(
             source_text_delivered_status_counts=source_text_delivery_facts["status_counts"],
             source_text_delivered_unanchored_paragraph_count=source_text_delivery_facts[
                 "unanchored_paragraph_count"
+            ],
+            source_text_delivered_anchors_dropped_not_in_delivered=source_text_delivery_facts[
+                "anchors_dropped_not_in_delivered"
             ],
         )
         result_notices.append(source_text_delivery_notice)
