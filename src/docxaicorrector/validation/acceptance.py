@@ -18,9 +18,11 @@ dependencies while remaining behaviour-identical to the harness.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable, Mapping, Sequence
 from typing import Final, cast
 
+from docxaicorrector.core.logger import log_event
 from docxaicorrector.pipeline.output_validation import collect_page_placeholder_heading_concat_samples
 from docxaicorrector.validation.formatting_coverage import (
     resolve_filtered_formatting_unmapped_source_count as _resolve_filtered_formatting_unmapped_source_count,
@@ -468,11 +470,26 @@ def build_acceptance_verdict(
     checks: list[dict[str, object]] = []
 
     def add_check(name: str, passed: bool, *, applicable: bool = True, **details: object) -> None:
-        # spec 059 FR-B3: a name the screen cannot name is a name that would reach the user
-        # as a raw identifier. Holding the enumeration here — rather than in a comment —
-        # makes adding a check without a catalog entry a red test, not a shipped defect.
+        # spec 059 FR-B3: a name the screen cannot name would reach the user as a raw
+        # identifier, so the enumeration lives in code rather than in a comment. It REPORTS,
+        # it does not enforce: this runs at FINALIZATION, after the whole run has been paid
+        # for — ``late_phases`` builds the verdict at three points and none of them sits in
+        # a try/except — so raising here would trade a documentation defect for a lost book
+        # and half a dollar. A verdict able to kill delivery is exactly the gate FR-B8 and
+        # Constitution VII forbid, in its worst form, because it destroys the artifact too.
+        # The check is still recorded, so the verdict roll-up is byte-identical to before
+        # this spec; ``production_reportable_failed_checks`` is what keeps an unknown name
+        # OFF the screen, and the closure test keeps the enumeration honest at development
+        # time, where the price of a mistake is a red test.
         if name not in _PRODUCTION_ACCEPTANCE_CHECK_NAME_SET:
-            raise ValueError(f"acceptance check outside the declared enumeration: {name}")
+            log_event(
+                logging.WARNING,
+                "acceptance_check_outside_enumeration",
+                "Приёмочная проверка вне объявленного перечисления: на экран она не попадёт.",
+                name=name,
+                passed=passed,
+                applicable=applicable,
+            )
         checks.append({"name": name, "passed": passed, "applicable": applicable, **details})
 
     result = str(report.get("result") or "")

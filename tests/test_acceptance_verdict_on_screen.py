@@ -19,13 +19,17 @@ import json
 import logging
 from collections.abc import Mapping, Sequence
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
+import docxaicorrector.generation._generation as generation
 import docxaicorrector.pipeline._pipeline as document_pipeline
+import docxaicorrector.pipeline.block_execution as block_execution
 import docxaicorrector.pipeline.late_phases as late_phases
 import docxaicorrector.pipeline.quality_gate as quality_gate
 import docxaicorrector.ui._ui as ui
+import docxaicorrector.validation.acceptance as acceptance
 from conftest import SessionState as SessionState  # noqa: F811
 from docxaicorrector.generation._generation import (
     PARAGRAPH_STATUS_ACCEPTED,
@@ -119,6 +123,65 @@ def test_production_check_enumeration_is_closed_over_the_emitted_names() -> None
     emitted = {str(check["name"]) for check in verdict["checks"]}  # type: ignore[index]
 
     assert emitted == set(PRODUCTION_ACCEPTANCE_CHECK_NAMES)
+
+
+def test_a_name_outside_the_enumeration_never_kills_the_run(monkeypatch) -> None:
+    """The enumeration REPORTS; it must not gate.
+
+    ``build_acceptance_verdict`` runs at FINALIZATION — ``late_phases`` builds it at
+    ``:674``, ``:910`` and ``:1027``, and none of the three sits inside a ``try/except`` — so
+    an exception raised here loses the book and the money already spent on it, on the very
+    last stage. That is the delivery gate FR-B8 and Constitution VII forbid, in its worst
+    form, because it destroys the artifact as well. The unknown name is logged and kept out
+    of the reportable set instead.
+    """
+    events: list[dict[str, object]] = []
+
+    def _log_event(level, event_id, message, **context):
+        events.append({"level": level, "event_id": event_id, "context": context})
+        return message
+
+    monkeypatch.setattr(acceptance, "log_event", _log_event)
+    # Shrink the declared enumeration so the verdict's own real names become "unknown".
+    monkeypatch.setattr(
+        acceptance, "_PRODUCTION_ACCEPTANCE_CHECK_NAME_SET", frozenset({"pipeline_succeeded"})
+    )
+
+    verdict = _production_verdict_over_a_rich_report()
+
+    # 1. It did not raise, and the record stays complete — the roll-up is unchanged.
+    assert {str(check["name"]) for check in verdict["checks"]} == set(  # type: ignore[index]
+        PRODUCTION_ACCEPTANCE_CHECK_NAMES
+    )
+    # 2. Every unknown name was named in the log (Constitution V).
+    outside = [
+        event for event in events if event["event_id"] == "acceptance_check_outside_enumeration"
+    ]
+    assert {str(_context(event)["name"]) for event in outside} == set(
+        PRODUCTION_ACCEPTANCE_CHECK_NAMES
+    ) - {"pipeline_succeeded"}
+    assert all(event["level"] == logging.WARNING for event in outside)
+    # 3. And a name genuinely outside the enumeration still cannot reach the screen — the
+    #    screen filter is what protects the user, not an exception at finalization.
+    assert acceptance.production_reportable_failed_checks(
+        {"failed_checks": ["a_check_nobody_declared", "pipeline_succeeded"]}
+    ) == ["pipeline_succeeded"]
+
+
+def test_a_known_enumeration_emits_no_warning(monkeypatch) -> None:
+    """Anti-vacuum: a warning raised on every run is a warning nobody reads."""
+    events: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        acceptance,
+        "log_event",
+        lambda level, event_id, message, **context: events.append({"event_id": event_id}),
+    )
+
+    _production_verdict_over_a_rich_report()
+
+    assert not [
+        event for event in events if event["event_id"] == "acceptance_check_outside_enumeration"
+    ]
 
 
 def test_harness_only_failed_checks_are_not_reportable() -> None:
@@ -339,6 +402,154 @@ def test_recorded_discard_reason_counts_are_not_the_alarm_trigger() -> None:
     )
 
     assert quality_gate.build_source_text_delivery_notice(facts) is None
+
+
+# --------------------------------------------------------------------------------------
+# Does the per-paragraph record actually SURVIVE to ``state.processed_chunks``?
+#
+# ``MarkerPreservedBlockText`` is a ``str`` subclass and its own docstring warns that any
+# string operation — ``.strip()``, a slice, an f-string — returns a plain ``str`` and the
+# record is gone SILENTLY, because the paragraph COUNT still matches afterwards. That is how
+# a review once found English being read aloud with every check green. The alarm channel
+# reads exactly that record, so the trace from where ``source_restored`` is stamped
+# (``_generation.py:814``) to ``state.processed_chunks`` is either intact or the channel is
+# blind. These tests walk it with the PRODUCTION collapse function rather than a hand-built
+# fixture, so they also pin the collapse itself.
+# --------------------------------------------------------------------------------------
+
+# Long enough for the restorer to look at (>= 40 visible chars), and the neighbour grows by
+# the whole of it, which is more than the required half.
+_COLLAPSE_SOURCE_RU_A = (
+    "Первый абзац, который модель схлопнула в соседний вместо того, чтобы обработать его отдельно."
+)
+_COLLAPSE_SOURCE_RU_B = (
+    "Второй абзац, поглотивший текст первого целиком и потому заметно выросший в ответе модели."
+)
+_COLLAPSE_SOURCE_EN_A = (
+    "Once upon a time, in a small village in the Outback, people used barter for all of their "
+    "everyday transactions with one another."
+)
+_COLLAPSE_SOURCE_EN_B = (
+    "On every market day they walked around the square with chickens, eggs and freshly baked "
+    "breads to trade for whatever they needed."
+)
+
+
+def _collapsed_model_answer(source_a: str, source_b: str) -> str:
+    """The shape the model really produces on a merge: an invented stub for the emptied
+    marker, and the neighbour holding both paragraphs."""
+    return (
+        f"[[DOCX_PARA_p1]]\n(Пусто)\n\n[[DOCX_PARA_p2]]\n{source_b} {source_a}"
+    )
+
+
+def _restored_block(source_a: str, source_b: str) -> str:
+    """Run the PRODUCTION marker path over a collapsed answer and return what it delivers."""
+    return generation._strip_and_validate_paragraph_markers(
+        _collapsed_model_answer(source_a, source_b),
+        ["p1", "p2"],
+        marker_mode=True,
+        source_paragraph_chunks=[source_a, source_b],
+    )
+
+
+def test_collapse_restore_really_stamps_source_restored_on_both_paragraphs() -> None:
+    """Step 1 of the trace: the production path produces the record at all.
+
+    This is the ``marker_chunk_collapse`` class — the one the recorded ``rethinking_money``
+    run carries — and it files itself as ``paragraph_count=2, block_count=0``, which is why
+    the run-level dict says "1" of neither.
+    """
+    delivered = _restored_block(_COLLAPSE_SOURCE_RU_A, _COLLAPSE_SOURCE_RU_B)
+
+    dispositions = quality_gate.marker_paragraph_dispositions(delivered)
+    assert dispositions is not None, "the collapse path returned a bare str: the record is lost"
+    assert [d.status for d in dispositions] == [
+        PARAGRAPH_STATUS_SOURCE_RESTORED,
+        PARAGRAPH_STATUS_SOURCE_RESTORED,
+    ]
+    assert [d.text for d in dispositions] == [_COLLAPSE_SOURCE_RU_A, _COLLAPSE_SOURCE_RU_B]
+
+
+def test_collapse_record_survives_the_accepted_block_path_into_the_alarm() -> None:
+    """Step 2a: the block is classified ``valid``, so it takes the ordinary append
+    (``block_execution.py:1205``). The alarm must see two paragraphs."""
+    runtime = {"state": {}}
+    events, log_event = _capture_log_events()
+
+    result = _run_two_paragraph_pipeline(
+        runtime=runtime,
+        log_event=log_event,
+        source_a=_COLLAPSE_SOURCE_RU_A,
+        source_b=_COLLAPSE_SOURCE_RU_B,
+        processing_operation="edit",
+    )
+
+    assert result == "succeeded"
+    delivered = [n for n in _notices(runtime) if n.get("kind") == "translation"]
+    assert len(delivered) == 1, "the per-paragraph record did not reach state.processed_chunks"
+    assert dict(delivered[0]["params"])["count"] == 2  # type: ignore[arg-type]
+    assert dict(delivered[0]["params"])["blocks"] == 1  # type: ignore[arg-type]
+    assert [
+        event for event in events if event["event_id"] == "source_text_delivered_to_document"
+    ]
+
+
+def test_collapse_record_survives_the_controlled_fallback_path_into_the_alarm() -> None:
+    """Step 2b: the SAME collapse in English is classified ``source_text_fallback`` (the
+    restored text IS the source), so the block takes the controlled-fallback append
+    (``block_execution.py:974``) with ``rejection_decision["fallback_markdown"]``. That value
+    comes from ``_fallback_markdown_for_processed_block_rejection``, which returns the
+    processed chunk itself for this kind — so the record rides along here too."""
+    runtime = {"state": {}}
+    events, log_event = _capture_log_events()
+
+    result = _run_two_paragraph_pipeline(
+        runtime=runtime,
+        log_event=log_event,
+        source_a=_COLLAPSE_SOURCE_EN_A,
+        source_b=_COLLAPSE_SOURCE_EN_B,
+        processing_operation="translate",
+    )
+
+    assert result == "succeeded"
+    delivered = [n for n in _notices(runtime) if n.get("kind") == "translation"]
+    assert len(delivered) == 1, "the per-paragraph record did not survive the controlled fallback"
+    assert dict(delivered[0]["params"])["count"] == 2  # type: ignore[arg-type]
+    assert [
+        event for event in events if event["event_id"] == "source_text_delivered_to_document"
+    ]
+
+
+def test_empty_rejection_kinds_lose_the_record_and_the_alarm_goes_blind() -> None:
+    """The one hole this trace found, pinned as a WITNESS rather than repaired.
+
+    ``_fallback_markdown_for_processed_block_rejection`` (``block_execution.py:93-96``) has
+    two outcomes. For every kind but two it returns the processed chunk, so the record rides
+    along. For ``empty`` / ``empty_processed_block`` it returns ``payload.target_text`` — a
+    plain ``str`` built long before any disposition existed — and the record is simply not
+    there to lose. The block still delivers the source text into the DOCX, and this channel
+    cannot see it.
+
+    Not repaired here: the only place that could carry the record through is
+    ``block_execution.py``, which spec 059 part A owns. Recorded so the blindness is a known
+    hole with an address rather than a silent zero.
+    """
+    payload = SimpleNamespace(target_text="Исходный текст блока, доставленный как есть.")
+    restored = _restored_block(_COLLAPSE_SOURCE_RU_A, _COLLAPSE_SOURCE_RU_B)
+
+    kept = block_execution._fallback_markdown_for_processed_block_rejection(
+        payload=payload, processed_chunk=restored, rejection_kind="source_text_fallback"
+    )
+    lost = block_execution._fallback_markdown_for_processed_block_rejection(
+        payload=payload, processed_chunk=restored, rejection_kind="empty"
+    )
+
+    assert quality_gate.marker_paragraph_dispositions(kept) is not None
+    assert quality_gate.marker_paragraph_dispositions(lost) is None
+    # The consequence, said out loud: the alarm counts nothing for the blind kind.
+    assert quality_gate.build_source_text_delivery_facts([lost])["paragraph_count"] == 0
+    assert quality_gate.build_source_text_delivery_facts([kept])["paragraph_count"] == 2
 
 
 @pytest.mark.parametrize("book", ("creating_wealth", "value_of_everything"))
@@ -726,6 +937,61 @@ def _run_pipeline(*, runtime, log_event, generate, processing_operation: str):
         emit_status=lambda runtime, **payload: None,
         should_stop_processing=lambda runtime: False,
         generate_markdown_block=generate,
+        process_document_images=lambda **kwargs: [],
+        inspect_placeholder_integrity=lambda markdown_text, image_assets: {},
+        convert_markdown_to_docx_bytes=lambda markdown_text: b"docx-bytes",
+        preserve_source_paragraph_properties=lambda docx_bytes, paragraphs, generated_paragraph_registry=None: docx_bytes,
+        reinsert_inline_images=lambda docx_bytes, image_assets: docx_bytes,
+        write_ui_result_artifacts=lambda **kwargs: {},
+    )
+
+
+def _run_two_paragraph_pipeline(
+    *, runtime, log_event, source_a: str, source_b: str, processing_operation: str
+):
+    """One marker block of TWO paragraphs whose model answer collapsed the first into the
+    second. The generator stub runs the real marker path, so what enters the pipeline is
+    what production would have produced."""
+    target_text = f"{source_a}\n\n{source_b}"
+    return document_pipeline.run_document_processing(
+        uploaded_file="report.docx",
+        jobs=[
+            {
+                "target_text": target_text,
+                "target_text_with_markers": (
+                    f"[[DOCX_PARA_p1]]\n{source_a}\n\n[[DOCX_PARA_p2]]\n{source_b}"
+                ),
+                "paragraph_ids": ["p1", "p2"],
+                "context_before": "",
+                "context_after": "",
+                "target_chars": len(target_text),
+                "context_chars": 0,
+                "narration_include": True,
+            }
+        ],
+        source_paragraphs=[],
+        image_assets=[],
+        image_mode="safe",
+        app_config={"enable_paragraph_markers": True},
+        model="gpt-5.4",
+        max_retries=1,
+        processing_operation=processing_operation,
+        source_language="auto",
+        target_language="ru",
+        on_progress=lambda **kwargs: None,
+        runtime=runtime,
+        resolve_uploaded_filename=lambda uploaded_file: str(uploaded_file),
+        get_client=lambda: object(),
+        ensure_pandoc_available=lambda: None,
+        load_system_prompt=lambda **_kw: "system",
+        log_event=log_event,
+        present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
+        emit_state=_emit_state,
+        emit_finalize=lambda runtime, stage, detail, progress, terminal_kind=None: None,
+        emit_log=lambda runtime, **payload: None,
+        emit_status=lambda runtime, **payload: None,
+        should_stop_processing=lambda runtime: False,
+        generate_markdown_block=lambda **kwargs: _restored_block(source_a, source_b),
         process_document_images=lambda **kwargs: [],
         inspect_placeholder_integrity=lambda markdown_text, image_assets: {},
         convert_markdown_to_docx_bytes=lambda markdown_text: b"docx-bytes",

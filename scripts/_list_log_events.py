@@ -34,7 +34,9 @@ TARGETS = [
     "src/docxaicorrector/processing/processing_service.py",
     "src/docxaicorrector/runtime/artifact_retention.py",
     "src/docxaicorrector/runtime/state.py",
+    "src/docxaicorrector/ui/_ui.py",
     "src/docxaicorrector/ui/application_flow.py",
+    "src/docxaicorrector/validation/acceptance.py",
     "src/docxaicorrector/validation/structural.py",
 ]
 
