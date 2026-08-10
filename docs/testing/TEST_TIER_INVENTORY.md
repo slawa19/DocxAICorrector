@@ -57,6 +57,7 @@ This inventory is intentionally pragmatic:
 - `tests/test_preserve_authored_tables.py`
 - `tests/test_processing_runtime.py`
 - `tests/test_processing_service.py`
+- `tests/test_quality_gate_hygiene_channel_operations.py`
 - `tests/test_reader_cleanup_mvp.py`
 - `tests/test_reader_cleanup_service_characterization.py`
 - `tests/test_reader_cleanup_structural_matrix.py`

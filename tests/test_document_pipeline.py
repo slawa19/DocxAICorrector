@@ -3852,13 +3852,18 @@ def test_run_document_processing_surfaces_formatting_diagnostics_artifacts(tmp_p
     )
 
     assert result == "succeeded"
+    # This run is an ``edit`` (no ``processing_operation`` passed), and 1 of its 5 source
+    # paragraphs stayed unmapped. The unmapped-coverage discrepancy is language-INDEPENDENT
+    # review data, so since the hygiene channel stopped being translate-only it reaches the
+    # user here too: the authoritative quality warn notice takes the notice slot from the
+    # formatting-diagnostics info notice. Delivery is unaffected — the verdict is ``warn``,
+    # never ``fail`` (coverage is review data, not a gate — Constitution VII).
     assert runtime["state"]["latest_result_notice"] == {
-        "level": "info",
+        "level": "warning",
         "message": (
-            "DOCX собран. Дополнительное восстановление форматирования было частично пропущено, "
-            "потому что точное сопоставление абзацев нашлось не везде. Это нормально, когда модель объединяет, "
-            "делит или переформулирует абзацы. Совпадение найдено для 4 из 5 исходных абзацев; "
-            "без точного соответствия осталось 1."
+            "Обработка завершена. Документ готов к использованию, но требует ручной "
+            "проверки оформления: 1 абзац с замечаниями. Подробности — в отчёте "
+            "проверки (formatting_review.txt)."
         ),
     }
     assert all(entry["status"] != "INFO" for entry in runtime["log"])
@@ -4879,13 +4884,23 @@ def test_build_quality_warn_notice_message_has_no_internal_tokens():
     # spec 018 Level 2: the yellow warn notice is human-readable Russian with NO internal
     # tokens and NONE of the fatal-path wording.
     message = document_pipeline_late_phases._build_quality_warn_notice_message(
-        {"formatting_review_required_count": 216}
+        {"formatting_review_required_count": 216, "processing_operation": "translate"}
     )
     assert message == (
         "Перевод завершён. Документ готов к использованию, но требует ручной "
         "проверки оформления: 216 абзацев с замечаниями. "
         "Подробности — в отчёте проверки (formatting_review.txt)."
     )
+    # The hygiene channel is emitted for every operation, so this notice is reachable on a
+    # non-translate run too; only its opening sentence changes, and it must not claim a
+    # translation happened.
+    for operation in ("audiobook", "edit"):
+        other = document_pipeline_late_phases._build_quality_warn_notice_message(
+            {"formatting_review_required_count": 216, "processing_operation": operation}
+        )
+        assert other.startswith("Обработка завершена. Документ готов к использованию")
+        assert "перевод" not in other.lower()
+        assert other.removeprefix("Обработка завершена") == message.removeprefix("Перевод завершён")
     for forbidden in (
         "translation_quality_gate_failed",
         "quality_status",
@@ -4897,7 +4912,7 @@ def test_build_quality_warn_notice_message_has_no_internal_tokens():
         assert forbidden not in message.lower()
     # Zero-count degrade path still carries the deliverable framing.
     zero = document_pipeline_late_phases._build_quality_warn_notice_message(
-        {"formatting_review_required_count": 0}
+        {"formatting_review_required_count": 0, "processing_operation": "translate"}
     )
     assert zero.startswith("Перевод завершён. Документ готов к использованию")
     assert "formatting_review.txt" in zero
