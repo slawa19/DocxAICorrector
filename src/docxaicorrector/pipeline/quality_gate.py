@@ -2142,10 +2142,13 @@ def build_acceptance_verdict_notice(
 
     The trigger is ``acceptance_verdict.passed is False`` — a boolean the pipeline already
     computed — and nothing else. In particular it is NOT ``quality_status`` and NOT
-    ``gate_reasons``: the whole hygiene gate lives under
+    ``gate_reasons``. That independence was written when the whole hygiene gate lived under
     ``if context.processing_operation == "translate"``, so outside ``translate`` the status
-    stays ``pass`` and the reasons stay empty however bad the residue is, which is exactly
-    why the screen was silent on three of the four books of the recorded corpus.
+    stayed ``pass`` and the reasons stayed empty however bad the residue was — which is why
+    the screen was silent on three of the four books of the recorded corpus. That block is
+    gone (the hygiene channel is emitted for every operation now), but the trigger stays the
+    verdict's own boolean: the acceptance verdict and the delivery gate are two different
+    judgements, and this notice reports the first one.
 
     ``failed_checks`` travels as DATA. The UI names each check through its own catalog and
     never imports the verdict module or recomputes anything (FR-B1). Harness-only checks are
