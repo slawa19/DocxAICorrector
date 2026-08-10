@@ -176,6 +176,12 @@ def _apply_quality_review_reason(
 # formatting discrepancy: the document IS delivered and the verdict is downgraded to
 # ``warn`` (review-DATA). This keys on the reason TOKEN (severity), never on document
 # content, so there are no per-book literals (Constitution VII).
+#
+# Reachability of the two tokens differs by operation, and that is deliberate:
+# ``untranslated_body_text_above_threshold`` is emitted ONLY on ``translate``
+# (see the safety-boundary comment at its emission site); ``caption_heading_conflict``
+# is operation-independent. Outside ``translate`` the untranslated-body measurement is
+# still reported, as ``untranslated_body_text_review_required`` at severity ``review``.
 _FATAL_DOCUMENT_GATE_REASONS: frozenset[str] = frozenset(
     {"untranslated_body_text_above_threshold", "caption_heading_conflict"}
 )
@@ -1397,87 +1403,58 @@ def _build_translation_quality_report(
             source_paragraph_count = prepared_paragraph_count
         if output_paragraph_count is None:
             output_paragraph_count = prepared_paragraph_count
-    if context.processing_operation == "translate":
-        basis = str(authority_fields.get("unmapped_source_count_basis") or "legacy_paragraph").strip().lower() or "legacy_paragraph"
-        effective_source_total = source_paragraph_count
-        effective_coverage_counts = (
-            _effective_formatting_coverage_counts(latest_payload)
-            if isinstance(latest_payload, Mapping)
-            else {}
-        )
-        try:
-            role_loss_count = int(effective_coverage_counts.get("content_survived_but_format_role_lost") or 0)
-        except (TypeError, ValueError):
-            role_loss_count = 0
-        # Body-integrity axis 1‑D: mapped source-heading → target body/list demotions
-        # (content survived, heading role lost). Complements the UNMAPPED role_loss above;
-        # main-content scoped inside classify_heading_demotions so TOC / front-matter /
-        # references / index / attribution demotions are never counted.
-        heading_demotion_result = (
-            classify_heading_demotions(latest_payload)
-            if isinstance(latest_payload, Mapping)
-            else {"demotion_count": 0, "samples": []}
-        )
-        # classify_heading_demotions always returns "demotion_count" as an int and
-        # "samples" as a list of mapping rows.
-        heading_demotion_count = cast(int, heading_demotion_result.get("demotion_count") or 0)
-        heading_demotion_samples = list(
-            cast("list[Mapping[str, object]]", heading_demotion_result.get("samples") or [])
-        )
-        if basis == "topology_unit":
-            structure_unit_total_count = authority_fields.get("structure_unit_total_count")
-            if isinstance(structure_unit_total_count, int) and structure_unit_total_count > 0:
-                effective_source_total = structure_unit_total_count
-        if policy == "strict" and worst_unmapped_source_count > 0:
-            if basis == "role_aware_formatting_coverage" and role_loss_count > 0:
-                role_loss_samples = (
-                    _effective_formatting_coverage_samples_by_class(
-                        latest_payload,
-                        coverage_class="content_survived_but_format_role_lost",
-                    )
-                    if isinstance(latest_payload, Mapping)
-                    else []
-                )
-                quality_status, _ = _emit_hygiene_gate(
-                    quality_status=quality_status,
-                    gate_reasons=gate_reasons,
-                    formatting_review_items=formatting_review_items,
-                    policy=policy,
-                    spec=_HYGIENE_GATE_SPECS["role_loss"],
-                    count=role_loss_count,
-                    source_total=effective_source_total,
-                    samples=role_loss_samples,
-                    sample_serializer=_serialize_role_loss_sample,
-                )
-            elif _is_reviewable_role_aware_unmapped_source_residue(
-                count=worst_unmapped_source_count,
-                source_total=effective_source_total,
-                basis=basis,
-                coverage_counts=effective_coverage_counts,
-            ):
-                quality_status = _apply_quality_review_reason(
-                    quality_status=quality_status,
-                    gate_reasons=gate_reasons,
-                    reason="unmapped_source_paragraphs_review_required",
-                )
-                formatting_review_items.append(
-                    _build_formatting_review_item(
-                        reason="unmapped_source_paragraphs_review_required",
-                        label="Абзацы без явного соответствия оригиналу",
-                        count=worst_unmapped_source_count,
-                    )
-                )
-            else:
-                quality_status = "fail"
-                gate_reasons.append("unmapped_source_paragraphs_present")
-        elif policy == "advisory" and worst_unmapped_source_count > 0:
-            if isinstance(effective_source_total, int) and effective_source_total > 0 and (worst_unmapped_source_count / effective_source_total) > 0.01:
-                quality_status = "warn"
-                gate_reasons.append("unmapped_source_paragraphs_above_advisory_threshold")
-            # DATA is policy-independent: emit the role_loss/unmapped discrepancy
-            # review-items even under advisory so the UI is not blind (the warn
-            # status above stays policy-scaled).
-            advisory_role_loss_samples = (
+    # The hygiene channel below is LANGUAGE-INDEPENDENT and therefore runs for EVERY
+    # operation. A demoted heading, a bullet glyph inside a heading, a TOC line glued to body
+    # text, a lost list fragment or an unmapped source paragraph is a defect of the DELIVERED
+    # document no matter which operation produced it. Emitting it only for ``translate`` made
+    # the audiobook path report an empty panel on runs the acceptance verdict rejected
+    # (measured 2026-08-09 over the eight delivered spec-059 runs: ``formatting_review_items``
+    # 5/8/11/8 on the document path and 0/0/0/0 on the audiobook path, while the same
+    # detectors counted 11/9/15/48 untranslated paragraphs there). The counters were already
+    # serialized unconditionally; only ``gate_reasons`` and ``formatting_review_items`` were
+    # born inside the block, so the panel said "clean" and the report said otherwise.
+    #
+    # The LANGUAGE-keyed detectors (mixed_script / untranslated_structural / untranslated_body)
+    # are scoped further down to ``core.models.LANGUAGE_CHANGING_OPERATIONS`` — the single set
+    # both halves of spec 059 key on. ``edit`` never changes the language, so "this is still in
+    # the source language" is not a statement it is entitled to make.
+    normalized_processing_operation = (
+        str(getattr(context, "processing_operation", "") or "").strip().casefold()
+    )
+    language_changing_operation = normalized_processing_operation in LANGUAGE_CHANGING_OPERATIONS
+    basis = str(authority_fields.get("unmapped_source_count_basis") or "legacy_paragraph").strip().lower() or "legacy_paragraph"
+    effective_source_total = source_paragraph_count
+    effective_coverage_counts = (
+        _effective_formatting_coverage_counts(latest_payload)
+        if isinstance(latest_payload, Mapping)
+        else {}
+    )
+    try:
+        role_loss_count = int(effective_coverage_counts.get("content_survived_but_format_role_lost") or 0)
+    except (TypeError, ValueError):
+        role_loss_count = 0
+    # Body-integrity axis 1‑D: mapped source-heading → target body/list demotions
+    # (content survived, heading role lost). Complements the UNMAPPED role_loss above;
+    # main-content scoped inside classify_heading_demotions so TOC / front-matter /
+    # references / index / attribution demotions are never counted.
+    heading_demotion_result = (
+        classify_heading_demotions(latest_payload)
+        if isinstance(latest_payload, Mapping)
+        else {"demotion_count": 0, "samples": []}
+    )
+    # classify_heading_demotions always returns "demotion_count" as an int and
+    # "samples" as a list of mapping rows.
+    heading_demotion_count = cast(int, heading_demotion_result.get("demotion_count") or 0)
+    heading_demotion_samples = list(
+        cast("list[Mapping[str, object]]", heading_demotion_result.get("samples") or [])
+    )
+    if basis == "topology_unit":
+        structure_unit_total_count = authority_fields.get("structure_unit_total_count")
+        if isinstance(structure_unit_total_count, int) and structure_unit_total_count > 0:
+            effective_source_total = structure_unit_total_count
+    if policy == "strict" and worst_unmapped_source_count > 0:
+        if basis == "role_aware_formatting_coverage" and role_loss_count > 0:
+            role_loss_samples = (
                 _effective_formatting_coverage_samples_by_class(
                     latest_payload,
                     coverage_class="content_survived_but_format_role_lost",
@@ -1485,164 +1462,214 @@ def _build_translation_quality_report(
                 if isinstance(latest_payload, Mapping)
                 else []
             )
-            _emit_unmapped_source_discrepancy_review_items(
+            quality_status, _ = _emit_hygiene_gate(
+                quality_status=quality_status,
+                gate_reasons=gate_reasons,
                 formatting_review_items=formatting_review_items,
-                basis=basis,
-                role_loss_count=role_loss_count,
-                role_loss_samples=advisory_role_loss_samples,
-                unmapped_source_count=worst_unmapped_source_count,
+                policy=policy,
+                spec=_HYGIENE_GATE_SPECS["role_loss"],
+                count=role_loss_count,
+                source_total=effective_source_total,
+                samples=role_loss_samples,
+                sample_serializer=_serialize_role_loss_sample,
             )
-        # spec 011: itemize the genuinely-unmapped TARGET paragraphs (the target-side
-        # counterpart of the source items above). Policy-independent DATA — emitted under
-        # BOTH strict and advisory, unconditionally, because target coverage is review-DATA
-        # (spec 010), not a gate; this appends review-items only and changes no verdict.
-        if role_aware_target_summary is not None:
-            raw_retained_samples = role_aware_target_summary.get("retained_target_samples")
-            retained_target_samples: Sequence[object] = (
-                raw_retained_samples
-                if isinstance(raw_retained_samples, Sequence)
-                and not isinstance(raw_retained_samples, (str, bytes, bytearray))
-                else []
+        elif _is_reviewable_role_aware_unmapped_source_residue(
+            count=worst_unmapped_source_count,
+            source_total=effective_source_total,
+            basis=basis,
+            coverage_counts=effective_coverage_counts,
+        ):
+            quality_status = _apply_quality_review_reason(
+                quality_status=quality_status,
+                gate_reasons=gate_reasons,
+                reason="unmapped_source_paragraphs_review_required",
             )
-            raw_retained_count = role_aware_target_summary.get("retained_target_count")
-            retained_target_count = raw_retained_count if isinstance(raw_retained_count, int) else 0
+            formatting_review_items.append(
+                _build_formatting_review_item(
+                    reason="unmapped_source_paragraphs_review_required",
+                    label="Абзацы без явного соответствия оригиналу",
+                    count=worst_unmapped_source_count,
+                )
+            )
         else:
-            retained_target_samples = []
-            retained_target_count = 0
-        _emit_unmapped_target_discrepancy_review_items(
-            formatting_review_items=formatting_review_items,
-            has_role_aware_summary=role_aware_target_summary is not None,
-            retained_samples=retained_target_samples,
-            retained_count=retained_target_count,
-            effective_unmapped_target_count=effective_unmapped_target_count,
+            quality_status = "fail"
+            gate_reasons.append("unmapped_source_paragraphs_present")
+    elif policy == "advisory" and worst_unmapped_source_count > 0:
+        if isinstance(effective_source_total, int) and effective_source_total > 0 and (worst_unmapped_source_count / effective_source_total) > 0.01:
+            quality_status = "warn"
+            gate_reasons.append("unmapped_source_paragraphs_above_advisory_threshold")
+        # DATA is policy-independent: emit the role_loss/unmapped discrepancy
+        # review-items even under advisory so the UI is not blind (the warn
+        # status above stays policy-scaled).
+        advisory_role_loss_samples = (
+            _effective_formatting_coverage_samples_by_class(
+                latest_payload,
+                coverage_class="content_survived_but_format_role_lost",
+            )
+            if isinstance(latest_payload, Mapping)
+            else []
         )
-        if isinstance(latest_payload, Mapping):
-            controlled_fallback_review_count, controlled_fallback_review_samples = _controlled_fallback_review_samples(
-                latest_payload
-            )
-            quality_status = _emit_controlled_fallback_review_items(
+        _emit_unmapped_source_discrepancy_review_items(
+            formatting_review_items=formatting_review_items,
+            basis=basis,
+            role_loss_count=role_loss_count,
+            role_loss_samples=advisory_role_loss_samples,
+            unmapped_source_count=worst_unmapped_source_count,
+        )
+    # spec 011: itemize the genuinely-unmapped TARGET paragraphs (the target-side
+    # counterpart of the source items above). Policy-independent DATA — emitted under
+    # BOTH strict and advisory, unconditionally, because target coverage is review-DATA
+    # (spec 010), not a gate; this appends review-items only and changes no verdict.
+    if role_aware_target_summary is not None:
+        raw_retained_samples = role_aware_target_summary.get("retained_target_samples")
+        retained_target_samples: Sequence[object] = (
+            raw_retained_samples
+            if isinstance(raw_retained_samples, Sequence)
+            and not isinstance(raw_retained_samples, (str, bytes, bytearray))
+            else []
+        )
+        raw_retained_count = role_aware_target_summary.get("retained_target_count")
+        retained_target_count = raw_retained_count if isinstance(raw_retained_count, int) else 0
+    else:
+        retained_target_samples = []
+        retained_target_count = 0
+    _emit_unmapped_target_discrepancy_review_items(
+        formatting_review_items=formatting_review_items,
+        has_role_aware_summary=role_aware_target_summary is not None,
+        retained_samples=retained_target_samples,
+        retained_count=retained_target_count,
+        effective_unmapped_target_count=effective_unmapped_target_count,
+    )
+    if isinstance(latest_payload, Mapping):
+        controlled_fallback_review_count, controlled_fallback_review_samples = _controlled_fallback_review_samples(
+            latest_payload
+        )
+        quality_status = _emit_controlled_fallback_review_items(
+            quality_status=quality_status,
+            gate_reasons=gate_reasons,
+            formatting_review_items=formatting_review_items,
+            count=controlled_fallback_review_count,
+            samples=controlled_fallback_review_samples,
+        )
+    # 1‑D heading-demotion is a fix-severity role_loss axis emitted independently of
+    # the unmapped-count gate above, so a mapped demoted heading surfaces even when
+    # every source paragraph is otherwise mapped. DATA is policy-independent (advisory
+    # applies the review reason, strict routes through the role_loss threshold).
+    if heading_demotion_count > 0:
+        quality_status, _ = _emit_hygiene_gate(
+            quality_status=quality_status,
+            gate_reasons=gate_reasons,
+            formatting_review_items=formatting_review_items,
+            policy=policy,
+            spec=_HYGIENE_GATE_SPECS["heading_demotion"],
+            count=heading_demotion_count,
+            source_total=effective_source_total,
+            samples=heading_demotion_samples,
+            # samples handed to the serializer are always mapping rows.
+            sample_serializer=cast(
+                "Callable[[object], Mapping[str, object]]", _serialize_heading_demotion_sample
+            ),
+        )
+    if bullet_heading_count > 0:
+        quality_status, _ = _emit_hygiene_gate(
+            quality_status=quality_status,
+            gate_reasons=gate_reasons,
+            formatting_review_items=formatting_review_items,
+            policy=policy,
+            spec=_HYGIENE_GATE_SPECS["bullet_heading"],
+            count=bullet_heading_count,
+            source_total=effective_source_total,
+            samples=bullet_heading_samples,
+        )
+    if toc_body_concat_detected:
+        if bool(authority_fields.get("toc_body_concat_structure_detected", False)):
+            quality_status = _apply_quality_gate_reason(
                 quality_status=quality_status,
                 gate_reasons=gate_reasons,
-                formatting_review_items=formatting_review_items,
-                count=controlled_fallback_review_count,
-                samples=controlled_fallback_review_samples,
-            )
-        # 1‑D heading-demotion is a fix-severity role_loss axis emitted independently of
-        # the unmapped-count gate above, so a mapped demoted heading surfaces even when
-        # every source paragraph is otherwise mapped. DATA is policy-independent (advisory
-        # applies the review reason, strict routes through the role_loss threshold).
-        if heading_demotion_count > 0:
-            quality_status, _ = _emit_hygiene_gate(
-                quality_status=quality_status,
-                gate_reasons=gate_reasons,
-                formatting_review_items=formatting_review_items,
                 policy=policy,
-                spec=_HYGIENE_GATE_SPECS["heading_demotion"],
-                count=heading_demotion_count,
-                source_total=effective_source_total,
-                samples=heading_demotion_samples,
-                # samples handed to the serializer are always mapping rows.
-                sample_serializer=cast(
-                    "Callable[[object], Mapping[str, object]]", _serialize_heading_demotion_sample
-                ),
+                reason="toc_body_concatenation_detected",
             )
-        if bullet_heading_count > 0:
-            quality_status, _ = _emit_hygiene_gate(
+        else:
+            quality_status = _apply_quality_review_reason(
                 quality_status=quality_status,
                 gate_reasons=gate_reasons,
-                formatting_review_items=formatting_review_items,
-                policy=policy,
-                spec=_HYGIENE_GATE_SPECS["bullet_heading"],
-                count=bullet_heading_count,
-                source_total=effective_source_total,
-                samples=bullet_heading_samples,
+                reason="toc_body_concatenation_review_required",
             )
-        if toc_body_concat_detected:
-            if bool(authority_fields.get("toc_body_concat_structure_detected", False)):
-                quality_status = _apply_quality_gate_reason(
-                    quality_status=quality_status,
-                    gate_reasons=gate_reasons,
-                    policy=policy,
-                    reason="toc_body_concatenation_detected",
-                )
-            else:
-                quality_status = _apply_quality_review_reason(
-                    quality_status=quality_status,
-                    gate_reasons=gate_reasons,
+            formatting_review_items.append(
+                _build_formatting_review_item(
                     reason="toc_body_concatenation_review_required",
+                    label="Возможная строка оглавления склеилась с текстом",
+                    sample={
+                        "line": None,
+                        "text": final_markdown,
+                        "reason": "toc_body_concatenation_detected",
+                    },
+                    severity="fix",
                 )
+            )
+    if false_fragment_heading_samples:
+        quality_status, _ = _emit_hygiene_gate(
+            quality_status=quality_status,
+            gate_reasons=gate_reasons,
+            formatting_review_items=formatting_review_items,
+            policy=policy,
+            spec=_HYGIENE_GATE_SPECS["false_fragment"],
+            count=len(false_fragment_heading_samples),
+            source_total=effective_source_total,
+            samples=false_fragment_heading_samples,
+        )
+    if residual_bullet_glyph_samples:
+        quality_status, _ = _emit_hygiene_gate(
+            quality_status=quality_status,
+            gate_reasons=gate_reasons,
+            formatting_review_items=formatting_review_items,
+            policy=policy,
+            spec=_HYGIENE_GATE_SPECS["residual_bullet"],
+            count=len(residual_bullet_glyph_samples),
+            source_total=effective_source_total,
+            samples=residual_bullet_glyph_samples,
+        )
+    if list_fragment_regression_samples:
+        if _is_reviewable_list_fragment_residue(
+            samples=list_fragment_regression_samples,
+            gate_source=list_fragment_regression_gate_source,
+        ):
+            serialized_samples = _serialize_quality_samples(list_fragment_regression_samples)
+            quality_status = _apply_quality_review_reason(
+                quality_status=quality_status,
+                gate_reasons=gate_reasons,
+                reason="list_fragment_regressions_review_required",
+            )
+            for sample in serialized_samples:
                 formatting_review_items.append(
                     _build_formatting_review_item(
-                        reason="toc_body_concatenation_review_required",
-                        label="Возможная строка оглавления склеилась с текстом",
-                        sample={
-                            "line": None,
-                            "text": final_markdown,
-                            "reason": "toc_body_concatenation_detected",
-                        },
+                        reason="list_fragment_regressions_review_required",
+                        label="Одиночный номер в сносках или библиографии",
+                        sample=sample,
+                    )
+                )
+        else:
+            quality_status = _apply_quality_gate_reason(
+                quality_status=quality_status,
+                gate_reasons=gate_reasons,
+                policy=policy,
+                reason="list_fragment_regressions_present",
+            )
+            # Even on the hard-fail path the discrepancy DATA must reach the UI:
+            # emit a review-item per residue sample (previously Money hard-failed
+            # list_fragment with review_items=0, leaving the UI blind).
+            for sample in _serialize_quality_samples(list_fragment_regression_samples):
+                formatting_review_items.append(
+                    _build_formatting_review_item(
+                        reason="list_fragment_regressions_present",
+                        label="Фрагмент списка потерял структуру",
+                        sample=sample,
                         severity="fix",
                     )
                 )
-        if false_fragment_heading_samples:
-            quality_status, _ = _emit_hygiene_gate(
-                quality_status=quality_status,
-                gate_reasons=gate_reasons,
-                formatting_review_items=formatting_review_items,
-                policy=policy,
-                spec=_HYGIENE_GATE_SPECS["false_fragment"],
-                count=len(false_fragment_heading_samples),
-                source_total=effective_source_total,
-                samples=false_fragment_heading_samples,
-            )
-        if residual_bullet_glyph_samples:
-            quality_status, _ = _emit_hygiene_gate(
-                quality_status=quality_status,
-                gate_reasons=gate_reasons,
-                formatting_review_items=formatting_review_items,
-                policy=policy,
-                spec=_HYGIENE_GATE_SPECS["residual_bullet"],
-                count=len(residual_bullet_glyph_samples),
-                source_total=effective_source_total,
-                samples=residual_bullet_glyph_samples,
-            )
-        if list_fragment_regression_samples:
-            if _is_reviewable_list_fragment_residue(
-                samples=list_fragment_regression_samples,
-                gate_source=list_fragment_regression_gate_source,
-            ):
-                serialized_samples = _serialize_quality_samples(list_fragment_regression_samples)
-                quality_status = _apply_quality_review_reason(
-                    quality_status=quality_status,
-                    gate_reasons=gate_reasons,
-                    reason="list_fragment_regressions_review_required",
-                )
-                for sample in serialized_samples:
-                    formatting_review_items.append(
-                        _build_formatting_review_item(
-                            reason="list_fragment_regressions_review_required",
-                            label="Одиночный номер в сносках или библиографии",
-                            sample=sample,
-                        )
-                    )
-            else:
-                quality_status = _apply_quality_gate_reason(
-                    quality_status=quality_status,
-                    gate_reasons=gate_reasons,
-                    policy=policy,
-                    reason="list_fragment_regressions_present",
-                )
-                # Even on the hard-fail path the discrepancy DATA must reach the UI:
-                # emit a review-item per residue sample (previously Money hard-failed
-                # list_fragment with review_items=0, leaving the UI blind).
-                for sample in _serialize_quality_samples(list_fragment_regression_samples):
-                    formatting_review_items.append(
-                        _build_formatting_review_item(
-                            reason="list_fragment_regressions_present",
-                            label="Фрагмент списка потерял структуру",
-                            sample=sample,
-                            severity="fix",
-                        )
-                    )
+    # Language-keyed detectors. ``edit`` does not change the language, so it receives the
+    # hygiene channel above and none of the reasons below.
+    if language_changing_operation:
         if mixed_script_samples:
             quality_status, _ = _emit_hygiene_gate(
                 quality_status=quality_status,
@@ -1677,8 +1704,29 @@ def _build_translation_quality_report(
                     item["aggregate_count"] = len(untranslated_structural_samples)
                 formatting_review_items.append(item)
         if untranslated_body_samples:
+            # SAFETY BOUNDARY (binding). The FATAL escalation
+            # ``untranslated_body_text_above_threshold`` — the token in
+            # ``_FATAL_DOCUMENT_GATE_REASONS`` that blocks primary-artifact publication in
+            # ``late_phases`` — stays reachable ONLY for ``translate``. Outside it the same
+            # measurement is emitted as ``untranslated_body_text_review_required`` at severity
+            # ``review``, whatever the character count and ratio.
+            #
+            # Why, with the numbers (measured 2026-08-09 on the delivered runs): on the
+            # audiobook path ``audio_money`` carries 24 382 chars / 4.76 % and ``audio_value``
+            # 29 104 chars / 3.79 %, so BOTH cross the 2 000-char / 2 % thresholds. Letting the
+            # escalation through there would have blocked two of the four paid audiobooks. And
+            # it would have blocked them on FALSE positives: blocks excluded from narration
+            # travel as ``job_kind="passthrough"`` and are never shown to a model
+            # (``document/semantic_blocks.py``), so untranslated apparatus on that path is
+            # BY DESIGN — all 48 ``audio_value`` samples are endnotes, bibliography and
+            # publisher advertising, not one paragraph of prose. The detector itself cannot
+            # tell back matter from body: ``QualityIssueSample`` carries a markdown line number
+            # and no source index (see ``quality_gate_text_detectors``). Constitution VII: the
+            # verifier is not a gate, and a rule that kills a paid run at an unmeasured rate is
+            # the same mistake as an unmeasured threshold.
             untranslated_body_fail = (
-                untranslated_body_char_count >= _UNTRANSLATED_BODY_FAIL_MIN_CHARS
+                normalized_processing_operation == "translate"
+                and untranslated_body_char_count >= _UNTRANSLATED_BODY_FAIL_MIN_CHARS
                 and untranslated_body_ratio >= _UNTRANSLATED_BODY_FAIL_RATIO
             )
             reason = (
@@ -1715,15 +1763,15 @@ def _build_translation_quality_report(
                 if sample_index == 0 and use_aggregate:
                     item["aggregate_count"] = len(untranslated_body_samples)
                 formatting_review_items.append(item)
-        mapping_text_quality_payload = (
-            latest_payload.get("mapping_text_quality") if isinstance(latest_payload, Mapping) else None
-        )
-        _emit_mapping_text_quality_defect_items(
-            formatting_review_items=formatting_review_items,
-            mapping_text_quality=(
-                mapping_text_quality_payload if isinstance(mapping_text_quality_payload, Mapping) else None
-            ),
-        )
+    mapping_text_quality_payload = (
+        latest_payload.get("mapping_text_quality") if isinstance(latest_payload, Mapping) else None
+    )
+    _emit_mapping_text_quality_defect_items(
+        formatting_review_items=formatting_review_items,
+        mapping_text_quality=(
+            mapping_text_quality_payload if isinstance(mapping_text_quality_payload, Mapping) else None
+        ),
+    )
 
     # spec 041 P1-4 / spec 042 P1-B: a caption→heading structural conflict (a figure/table
     # caption promoted to a heading) corrupts the document outline and is genuinely NON-
@@ -1732,8 +1780,9 @@ def _build_translation_quality_report(
     # SAME signal into the DELIVERY gate so ``quality_status`` becomes "fail" and a
     # ``caption_heading_conflict`` gate_reason is present — which drives the
     # ``late_phases.py`` terminal fail branch that blocks primary-artifact publication.
-    # Placed OUTSIDE the translate-only block (like the acceptance check, it is applicable
-    # whenever formatting diagnostics exist) and BEFORE the delivery-verdict resolution.
+    # Placed outside the hygiene/language channel above (like the acceptance check, it is
+    # applicable whenever formatting diagnostics exist) and BEFORE the delivery-verdict
+    # resolution. It has always been operation-independent and stays untouched here.
     # The reason token is fatal (``_FATAL_DOCUMENT_GATE_REASONS``), so the verdict below
     # preserves the ``fail`` regardless of policy — mirroring the untranslated-body
     # catastrophic gate. Keyed on the conflict count only (no per-book literal).
@@ -2551,7 +2600,12 @@ def _build_quality_warn_notice_message(quality_report: Mapping[str, object]) -> 
     of review paragraphs is the human-facing detail, not the reason tokens.
     """
     review_count = int(quality_report.get("formatting_review_required_count") or 0)
-    prefix = "Перевод завершён. Документ готов к использованию, но требует ручной проверки оформления"
+    # The hygiene channel is emitted for every operation, so this notice is now reachable on
+    # an ``edit`` / ``audiobook`` run too, where "Перевод завершён" would be a false sentence
+    # about what the run did. ``translate`` keeps its wording byte-identical.
+    operation = str(quality_report.get("processing_operation") or "").strip().casefold()
+    opening = "Перевод завершён" if operation == "translate" else "Обработка завершена"
+    prefix = f"{opening}. Документ готов к использованию, но требует ручной проверки оформления"
     suffix = "Подробности — в отчёте проверки (formatting_review.txt)."
     if review_count > 0:
         detail = f"{review_count} {_russian_paragraph_word(review_count)} с замечаниями"
