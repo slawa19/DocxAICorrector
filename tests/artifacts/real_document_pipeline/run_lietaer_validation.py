@@ -72,6 +72,7 @@ from docxaicorrector.validation.structural import (
     build_preparation_diagnostic_snapshot,
 )
 from docxaicorrector.validation.formatting_coverage import (
+    classify_heading_demotions as _classify_heading_demotions,
     formatting_payload_format_neutral_creditable_count as _formatting_payload_format_neutral_creditable_count,
     filter_benign_unmapped_source_ids as _filter_benign_unmapped_source_ids,
     resolve_filtered_formatting_unmapped_source_count as _resolve_filtered_formatting_unmapped_source_count,
@@ -3921,15 +3922,33 @@ def _build_role_survival_sample(
 
 def _resolve_heading_role_survival(
     formatting_diagnostics: Sequence[Mapping[str, object]],
+    preparation_diagnostic_snapshot: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
-    """How many source paragraphs whose ROLE is ``heading`` are delivered as headings."""
+    """How many source paragraphs whose ROLE is ``heading`` are delivered as headings.
+
+    **The failing count is scoped to the MAIN-CONTENT span**, and that scoping is delegated
+    to production's ``classify_heading_demotions`` rather than reimplemented here: it resolves
+    ``[front_matter_boundary … references_region_start)`` minus the bounded TOC from the same
+    provenance the gate uses, so a demotion inside front matter, TOC, back matter, the index
+    or an attribution block is never counted. QUALITY_BOUNDARIES §1 puts that apparatus out of
+    scope, so counting it would fail a run on something that is not a defect.
+
+    Measured over the eight 059 runs when the scoping was absent: 4 of the 18 demotions were
+    single front-matter entries at 0.3–4.7 % into the document (``advance praise for``,
+    ``messag e from the secretary general of the club of rome`` — note the import garble),
+    and they alone turned doc_money and doc_creating red. The 12 that survive scoping sit at
+    27–69 % on Creating Wealth's audiobook run (``chapter 6``, ``the creative economy``,
+    ``conclusion``) and are the real defect: a source heading delivered as body text.
+
+    ``source_heading_count`` / ``mapped_source_heading_count`` / ``unmapped_source_heading_count``
+    / ``heading_level_shift_count`` stay document-wide REVIEW DATA — they describe coverage, they
+    do not fail the run.
+    """
 
     source_heading_count = 0
     mapped_heading_count = 0
     unmapped_heading_count = 0
-    demoted_heading_count = 0
     heading_level_shift_count = 0
-    demoted_samples: list[dict[str, object]] = []
 
     for source_entry, target_registry in _iter_registry_entries(formatting_diagnostics):
         if source_entry.get("role") != "heading":
@@ -3942,18 +3961,29 @@ def _resolve_heading_role_survival(
         mapped_heading_count += 1
         target_heading_level = target_entry.get("heading_level")
         if target_heading_level is None:
-            demoted_heading_count += 1
-            if len(demoted_samples) < _STRUCTURAL_ROLE_SURVIVAL_SAMPLE_LIMIT:
-                demoted_samples.append(_build_role_survival_sample(source_entry, target_entry))
             continue
         if target_heading_level != source_entry.get("heading_level"):
             heading_level_shift_count += 1
+
+    demoted_heading_count = 0
+    demoted_samples: list[dict[str, object]] = []
+    for payload in formatting_diagnostics:
+        if not isinstance(payload, Mapping):
+            continue
+        classified = _classify_heading_demotions(payload, preparation_diagnostic_snapshot)
+        demoted_heading_count += _coerce_int(classified.get("demotion_count"))
+        for sample in classified.get("samples") or []:
+            if len(demoted_samples) >= _STRUCTURAL_ROLE_SURVIVAL_SAMPLE_LIMIT:
+                break
+            if isinstance(sample, Mapping):
+                demoted_samples.append(dict(sample))
 
     return {
         "source_heading_count": source_heading_count,
         "mapped_source_heading_count": mapped_heading_count,
         "unmapped_source_heading_count": unmapped_heading_count,
         "demoted_heading_count": demoted_heading_count,
+        "demoted_heading_scope": "main_content_span",
         "heading_level_shift_count": heading_level_shift_count,
         "demoted_samples": demoted_samples,
     }
@@ -5097,6 +5127,7 @@ def _build_structural_acceptance_checks(
     output_docx_bytes: bytes,
     processing_operation: str,
     formatting_diagnostics: Sequence[Mapping[str, object]] = (),
+    preparation_diagnostic_snapshot: Mapping[str, object] | None = None,
 ) -> list[dict[str, object]]:
     """Structural (source↔output) acceptance checks for the harness.
 
@@ -5137,7 +5168,9 @@ def _build_structural_acceptance_checks(
     # ``heading`` must reach the reader as a heading. ``heading_level_shift_count`` and
     # ``unmapped_source_heading_count`` are review data, not failures — see the module
     # note above ``_resolve_heading_role_survival``.
-    heading_survival = _resolve_heading_role_survival(formatting_diagnostics)
+    heading_survival = _resolve_heading_role_survival(
+        formatting_diagnostics, preparation_diagnostic_snapshot
+    )
     mapped_heading_count = cast(int, heading_survival["mapped_source_heading_count"])
     add_check(
         "key_headings_preserved",
@@ -5212,12 +5245,20 @@ def evaluate_lietaer_acceptance(
             Sequence[Mapping[str, object]], report.get("formatting_diagnostics") or []
         )
 
+        # The main-content span the demotion check is scoped to is resolved from the same
+        # preparation snapshot the gate uses, so the harness and production agree on where
+        # front matter ends and the references region begins.
+        preparation_snapshot_value = cast(
+            "Mapping[str, object] | None", report.get("preparation_diagnostic_snapshot")
+        )
+
         def _structural_checks_builder(processing_operation: str) -> list[dict[str, object]]:
             return _build_structural_acceptance_checks(
                 source_docx_bytes=source_docx_bytes_value,
                 output_docx_bytes=output_docx_bytes_value,
                 processing_operation=processing_operation,
                 formatting_diagnostics=formatting_diagnostics_value,
+                preparation_diagnostic_snapshot=preparation_snapshot_value,
             )
 
         structural_checks_builder = _structural_checks_builder

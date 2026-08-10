@@ -1340,17 +1340,29 @@ def test_key_headings_preserved_fails_when_a_mapped_heading_is_delivered_as_body
     # ANTI-VACUUM COUNTER-PROOF (Constitution VII): the input that makes the check fail is
     # a source paragraph whose ROLE is ``heading`` bound to a delivered paragraph with no
     # heading level — "content-presence != format-presence" (Constitution VII item 7).
-    # This is the real defect the eight 059 runs carry (14 on audio_creating, 1 each on
-    # doc_money / doc_creating / audio_money / audio_rethinking).
+    # This is the real defect the eight 059 runs carry: 8 on audio_creating and 1 on
+    # audio_rethinking once the count is scoped to the main-content span.
+    # ``first_block_has_body_start`` says the document opens with body, so there is no
+    # front-matter region and the demotion is inside main content.
+    #
+    # The title is a real section title, not a bare ``chapter N``: production treats a bare
+    # chapter ordinal as a running head (``_is_page_furniture_text``) and deliberately
+    # refuses to count it, which is why Creating Wealth's audiobook run reports 8 rather
+    # than the 14 a naive registry scan finds.
     validation = _load_validation_module()
     source_bytes, output_bytes = _minimal_docx_pair()
 
     report = _structural_report(
         _registry_diagnostics(
-            [_source_entry(0, "heading", heading_level=1, mapped_target_index=0, text_preview="chapter 6")],
-            [_target_entry(0, style_name="Body Text", text_preview="chapter 6")],
+            [
+                _source_entry(
+                    0, "heading", heading_level=1, mapped_target_index=0, text_preview="the creative economy"
+                )
+            ],
+            [_target_entry(0, style_name="Body Text", text_preview="the creative economy")],
         )
     )
+    report["preparation_diagnostic_snapshot"] = {"first_block_has_body_start": True}
 
     acceptance = validation.evaluate_lietaer_acceptance(
         report,
@@ -1363,8 +1375,52 @@ def test_key_headings_preserved_fails_when_a_mapped_heading_is_delivered_as_body
     assert "key_headings_preserved" in acceptance["failed_checks"]
     assert heading_check["applicable"] is True
     assert heading_check["demoted_heading_count"] == 1
+    assert heading_check["demoted_heading_scope"] == "main_content_span"
     assert heading_check["demoted_samples"][0]["target_style_name"] == "Body Text"
     assert heading_check["demoted_samples"][0]["source_heading_level"] == 1
+
+
+def test_key_headings_preserved_ignores_a_demotion_inside_front_matter() -> None:
+    # QUALITY_BOUNDARIES §1 puts front matter out of scope, so a heading demoted THERE is
+    # not a defect and must not fail the run. The boundary is resolved generally, by the
+    # first chapter-body heading — no literal, no eyeballed index: ``advance praise for``
+    # sits before ``chapter 1 …`` and is therefore front matter.
+    #
+    # Measured on the eight 059 runs: without this scoping, four single front-matter
+    # entries (0.3-4.7 % into the document) turned doc_money and doc_creating red on
+    # apparatus alone, while the twelve real body demotions stayed red either way.
+    validation = _load_validation_module()
+    source_bytes, output_bytes = _minimal_docx_pair()
+
+    report = _structural_report(
+        _registry_diagnostics(
+            [
+                _source_entry(
+                    0, "heading", heading_level=3, mapped_target_index=0, text_preview="advance praise for"
+                ),
+                _source_entry(
+                    1, "heading", heading_level=1, mapped_target_index=1, text_preview="chapter 1 — the beginning"
+                ),
+            ],
+            [
+                _target_entry(0, style_name="Body Text", text_preview="хвалебные отзывы"),
+                _target_entry(1, style_name="Heading 1", heading_level=1, text_preview="глава 1 начало"),
+            ],
+        )
+    )
+
+    acceptance = validation.evaluate_lietaer_acceptance(
+        report,
+        source_docx_bytes=source_bytes,
+        output_docx_bytes=output_bytes,
+    )
+    heading_check = {check["name"]: check for check in acceptance["checks"]}["key_headings_preserved"]
+
+    # The demotion is real and still visible as coverage data — it simply does not fail.
+    assert heading_check["mapped_source_heading_count"] == 2
+    assert heading_check["demoted_heading_count"] == 0
+    assert heading_check["passed"] is True
+    assert "key_headings_preserved" not in acceptance["failed_checks"]
 
 
 def test_key_headings_preserved_counts_a_demoted_heading_while_reporting_unmapped_ones() -> None:
