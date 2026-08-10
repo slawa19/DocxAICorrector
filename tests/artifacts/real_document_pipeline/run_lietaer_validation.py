@@ -11,7 +11,7 @@ import traceback
 import hashlib
 import errno
 from collections import Counter
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import replace
 from datetime import UTC, datetime
 from difflib import SequenceMatcher
@@ -56,7 +56,6 @@ from docxaicorrector.core.config import (
 )
 from docxaicorrector.document.extraction import (
     ORDERED_LIST_FORMATS,
-    extract_document_content_from_docx,
 )
 from docxaicorrector.generation._generation import (
     generate_markdown_block,
@@ -73,6 +72,7 @@ from docxaicorrector.validation.structural import (
     build_preparation_diagnostic_snapshot,
 )
 from docxaicorrector.validation.formatting_coverage import (
+    classify_heading_demotions as _classify_heading_demotions,
     formatting_payload_format_neutral_creditable_count as _formatting_payload_format_neutral_creditable_count,
     filter_benign_unmapped_source_ids as _filter_benign_unmapped_source_ids,
     resolve_filtered_formatting_unmapped_source_count as _resolve_filtered_formatting_unmapped_source_count,
@@ -3849,104 +3849,181 @@ def _normalize_structural_text(text: str) -> str:
     return normalized
 
 
-def _contains_cyrillic(text: str) -> bool:
-    return any("а" <= char <= "я" or char == "ё" for char in text.lower())
+# --- role-keyed structural survival (see ``_build_structural_acceptance_checks``) -------
+#
+# Every check below reads the formatting mapper's own registries
+# (``formatting_diagnostics[*].source_registry`` / ``target_registry``, built by
+# ``generation/formatting_mapping.py``). The registries carry, per source paragraph, the
+# structural ROLE, the heading level and the target paragraph the mapper bound it to; and,
+# per delivered paragraph, the style and heading level. That is a source↔output pairing
+# that survives a change of LANGUAGE, which is the whole point: the previous
+# implementation compared normalised heading/caption TEXT between an English source and a
+# Russian delivery, so the intersection was empty by construction — the check could not
+# fail on ``translate`` and could not pass on ``audiobook``. Constitution VII requires
+# detection keyed on region, structural ROLE or form, never on a string.
+#
+# What is deliberately NOT a failure here: a source heading the mapper never bound to a
+# target (``mapped_target_index is None``). An unmapped paragraph means the MAPPER found
+# nothing, not that the heading was lost; residual coverage is review data, not a gate
+# (Constitution VII, specs 010/038/039). It is reported as its own counter so the gap is
+# named rather than hidden. The anti-vacuum counter-proof for that subtraction is
+# ``test_key_headings_preserved_counts_a_demoted_heading_while_reporting_unmapped_ones``.
+
+_STRUCTURAL_ROLE_SURVIVAL_SAMPLE_LIMIT = 10
 
 
-def _contains_latin(text: str) -> bool:
-    return any("a" <= char <= "z" for char in text.lower())
+def _iter_registry_entries(
+    formatting_diagnostics: Sequence[Mapping[str, object]],
+) -> Iterator[tuple[Mapping[str, object], Sequence[Mapping[str, object]]]]:
+    """Yield ``(source_entry, target_registry)`` for every formatting-diagnostics payload."""
 
-
-def _is_translation_stable_key_heading(text: str) -> bool:
-    normalized = _normalize_structural_text(text)
-    if not normalized:
-        return False
-    if re.fullmatch(r"\(?matthew\s+\d+:\d+(?:-\d+)?\)?", normalized, flags=re.IGNORECASE):
-        return True
-    if re.fullmatch(r"\(?матфея\s+\d+:\d+(?:-\d+)?\)?", normalized, flags=re.IGNORECASE):
-        return True
-    return False
-
-
-def _should_enforce_source_heading_in_translate_mode(text: str) -> bool:
-    normalized = _normalize_structural_text(text)
-    if not normalized:
-        return False
-    if _contains_cyrillic(normalized):
-        return True
-    if _contains_latin(normalized):
-        return _is_translation_stable_key_heading(normalized)
-    return True
-
-
-def _extract_scripture_anchor(text: str) -> str | None:
-    normalized = _normalize_structural_text(text)
-    match = re.search(r"(\d+:\d+(?:[-–]\d+)?)", normalized)
-    if match is None:
-        return None
-    return match.group(1).replace("–", "-")
-
-
-def _scripture_heading_matches(source_heading: str, output_heading: str) -> bool:
-    source_anchor = _extract_scripture_anchor(source_heading)
-    output_anchor = _extract_scripture_anchor(output_heading)
-    if not source_anchor or not output_anchor or source_anchor != output_anchor:
-        return False
-    return _is_translation_stable_key_heading(source_heading) or _is_translation_stable_key_heading(output_heading)
-
-
-def _resolve_missing_key_headings(
-    source_heading_texts: set[str],
-    output_heading_texts: set[str],
-    *,
-    processing_operation: str,
-) -> list[str]:
-    missing = sorted(source_heading_texts - output_heading_texts)
-    if processing_operation != "translate" or not missing:
-        return missing
-
-    unmatched_output = set(output_heading_texts)
-    resolved_missing: list[str] = []
-    for source_heading in missing:
-        matched_output = next(
-            (
-                output_heading
-                for output_heading in unmatched_output
-                if _scripture_heading_matches(source_heading, output_heading)
-            ),
-            None,
-        )
-        if matched_output is not None:
-            unmatched_output.discard(matched_output)
+    for payload in formatting_diagnostics:
+        source_registry = payload.get("source_registry")
+        target_registry = payload.get("target_registry")
+        if not isinstance(source_registry, Sequence) or isinstance(source_registry, (str, bytes)):
             continue
-        resolved_missing.append(source_heading)
-    return resolved_missing
+        if not isinstance(target_registry, Sequence) or isinstance(target_registry, (str, bytes)):
+            target_registry = []
+        typed_targets = [entry for entry in target_registry if isinstance(entry, Mapping)]
+        for source_entry in source_registry:
+            if isinstance(source_entry, Mapping):
+                yield source_entry, typed_targets
 
 
-def _is_numeric_marker_or_page_range_key_heading(text: str) -> bool:
-    normalized = _normalize_structural_text(text)
-    if not normalized:
-        return False
-    numeric_fragment = r"\d[\d\s]*"
-    return bool(
-        re.fullmatch(
-            rf"{numeric_fragment}(?:(?:\s*,\s*|\s*[-–—]\s*){numeric_fragment})+",
-            normalized,
-        )
-    )
+def _resolve_mapped_target_entry(
+    source_entry: Mapping[str, object],
+    target_registry: Sequence[Mapping[str, object]],
+) -> Mapping[str, object] | None:
+    mapped_target_index = source_entry.get("mapped_target_index")
+    if not isinstance(mapped_target_index, int) or isinstance(mapped_target_index, bool):
+        return None
+    if not 0 <= mapped_target_index < len(target_registry):
+        return None
+    return target_registry[mapped_target_index]
 
 
-def _is_meaningful_key_heading(text: str) -> bool:
-    normalized = _normalize_structural_text(text)
-    fragment = _classify_centered_fragment(normalized)
-    if fragment["kind"] == "attribution":
-        return False
-    if _is_numeric_marker_or_page_range_key_heading(normalized):
-        return False
-    alnum_only = re.sub(r"[^0-9a-zа-яё]+", "", normalized, flags=re.IGNORECASE)
-    if len(alnum_only) < 3:
-        return False
-    return True
+def _build_role_survival_sample(
+    source_entry: Mapping[str, object],
+    target_entry: Mapping[str, object],
+) -> dict[str, object]:
+    return {
+        "paragraph_id": source_entry.get("paragraph_id"),
+        "source_index": source_entry.get("source_index"),
+        "source_role": source_entry.get("role"),
+        "source_heading_level": source_entry.get("heading_level"),
+        "mapping_strategy": source_entry.get("mapping_strategy"),
+        "mapped_target_index": source_entry.get("mapped_target_index"),
+        "target_style_name": target_entry.get("style_name"),
+        "target_heading_level": target_entry.get("heading_level"),
+        "source_text_preview": source_entry.get("text_preview"),
+        "target_text_preview": target_entry.get("text_preview"),
+    }
+
+
+def _resolve_heading_role_survival(
+    formatting_diagnostics: Sequence[Mapping[str, object]],
+    preparation_diagnostic_snapshot: Mapping[str, object] | None = None,
+) -> dict[str, object]:
+    """How many source paragraphs whose ROLE is ``heading`` are delivered as headings.
+
+    **The failing count is scoped to the MAIN-CONTENT span**, and that scoping is delegated
+    to production's ``classify_heading_demotions`` rather than reimplemented here: it resolves
+    ``[front_matter_boundary … references_region_start)`` minus the bounded TOC from the same
+    provenance the gate uses, so a demotion inside front matter, TOC, back matter, the index
+    or an attribution block is never counted. QUALITY_BOUNDARIES §1 puts that apparatus out of
+    scope, so counting it would fail a run on something that is not a defect.
+
+    Measured over the eight 059 runs when the scoping was absent: 4 of the 18 demotions were
+    single front-matter entries at 0.3–4.7 % into the document (``advance praise for``,
+    ``messag e from the secretary general of the club of rome`` — note the import garble),
+    and they alone turned doc_money and doc_creating red. The 12 that survive scoping sit at
+    27–69 % on Creating Wealth's audiobook run (``chapter 6``, ``the creative economy``,
+    ``conclusion``) and are the real defect: a source heading delivered as body text.
+
+    ``source_heading_count`` / ``mapped_source_heading_count`` / ``unmapped_source_heading_count``
+    / ``heading_level_shift_count`` stay document-wide REVIEW DATA — they describe coverage, they
+    do not fail the run.
+    """
+
+    source_heading_count = 0
+    mapped_heading_count = 0
+    unmapped_heading_count = 0
+    heading_level_shift_count = 0
+
+    for source_entry, target_registry in _iter_registry_entries(formatting_diagnostics):
+        if source_entry.get("role") != "heading":
+            continue
+        source_heading_count += 1
+        target_entry = _resolve_mapped_target_entry(source_entry, target_registry)
+        if target_entry is None:
+            unmapped_heading_count += 1
+            continue
+        mapped_heading_count += 1
+        target_heading_level = target_entry.get("heading_level")
+        if target_heading_level is None:
+            continue
+        if target_heading_level != source_entry.get("heading_level"):
+            heading_level_shift_count += 1
+
+    demoted_heading_count = 0
+    demoted_samples: list[dict[str, object]] = []
+    for payload in formatting_diagnostics:
+        if not isinstance(payload, Mapping):
+            continue
+        classified = _classify_heading_demotions(payload, preparation_diagnostic_snapshot)
+        demoted_heading_count += _coerce_int(classified.get("demotion_count"))
+        classified_samples = classified.get("samples")
+        if not isinstance(classified_samples, Sequence) or isinstance(classified_samples, (str, bytes)):
+            continue
+        for sample in classified_samples:
+            if len(demoted_samples) >= _STRUCTURAL_ROLE_SURVIVAL_SAMPLE_LIMIT:
+                break
+            if isinstance(sample, Mapping):
+                demoted_samples.append(dict(sample))
+
+    return {
+        "source_heading_count": source_heading_count,
+        "mapped_source_heading_count": mapped_heading_count,
+        "unmapped_source_heading_count": unmapped_heading_count,
+        "demoted_heading_count": demoted_heading_count,
+        "demoted_heading_scope": "main_content_span",
+        "heading_level_shift_count": heading_level_shift_count,
+        "demoted_samples": demoted_samples,
+    }
+
+
+def _resolve_caption_role_survival(
+    formatting_diagnostics: Sequence[Mapping[str, object]],
+) -> dict[str, object]:
+    """How many source paragraphs whose ROLE is ``caption`` are delivered as headings."""
+
+    source_caption_count = 0
+    mapped_caption_count = 0
+    unmapped_caption_count = 0
+    promoted_caption_count = 0
+    promoted_samples: list[dict[str, object]] = []
+
+    for source_entry, target_registry in _iter_registry_entries(formatting_diagnostics):
+        if source_entry.get("role") != "caption":
+            continue
+        source_caption_count += 1
+        target_entry = _resolve_mapped_target_entry(source_entry, target_registry)
+        if target_entry is None:
+            unmapped_caption_count += 1
+            continue
+        mapped_caption_count += 1
+        if target_entry.get("heading_level") is not None:
+            promoted_caption_count += 1
+            if len(promoted_samples) < _STRUCTURAL_ROLE_SURVIVAL_SAMPLE_LIMIT:
+                promoted_samples.append(_build_role_survival_sample(source_entry, target_entry))
+
+    return {
+        "source_caption_count": source_caption_count,
+        "mapped_source_caption_count": mapped_caption_count,
+        "unmapped_source_caption_count": unmapped_caption_count,
+        "promoted_caption_count": promoted_caption_count,
+        "promoted_samples": promoted_samples,
+    }
 
 
 def _find_child_by_local_name(element, local_name: str):
@@ -5052,66 +5129,58 @@ def _build_structural_acceptance_checks(
     source_docx_bytes: bytes,
     output_docx_bytes: bytes,
     processing_operation: str,
+    formatting_diagnostics: Sequence[Mapping[str, object]] = (),
+    preparation_diagnostic_snapshot: Mapping[str, object] | None = None,
 ) -> list[dict[str, object]]:
+    """Structural (source↔output) acceptance checks for the harness.
+
+    ``processing_operation`` is part of the injected-builder contract in
+    ``validation/acceptance.build_acceptance_verdict`` and is accepted here, but NO check
+    branches on it any more — that is the fix. The two operation-specific branches it used
+    to drive (skip English source headings on ``translate``; force
+    ``word_numbering_preserved`` to ``True`` on ``translate``) existed only because the
+    checks compared TEXT across a change of language, and both made a green verdict
+    unreachable as evidence.
+    """
+
     checks: list[dict[str, object]] = []
 
-    def add_check(name: str, passed: bool, **details: object) -> None:
-        checks.append({"name": name, "passed": passed, **details})
+    def add_check(name: str, passed: bool, *, applicable: bool = True, **details: object) -> None:
+        checks.append({"name": name, "passed": passed, "applicable": applicable, **details})
 
-    source_paragraphs, _ = extract_document_content_from_docx(BytesIO(source_docx_bytes))
-    output_paragraphs, _ = extract_document_content_from_docx(BytesIO(output_docx_bytes))
     source_document = Document(BytesIO(source_docx_bytes))
     output_document = Document(BytesIO(output_docx_bytes))
 
-    source_caption_texts = {
-        _normalize_structural_text(paragraph.text)
-        for paragraph in source_paragraphs
-        if paragraph.role == "caption" and _normalize_structural_text(paragraph.text)
-    }
-    output_heading_texts = {
-        _normalize_structural_text(paragraph.text)
-        for paragraph in output_paragraphs
-        if paragraph.role == "heading" and _normalize_structural_text(paragraph.text)
-    }
-    caption_heading_regressions = sorted(source_caption_texts & output_heading_texts)
+    # A caption promoted to a heading is keyed on the source paragraph's structural ROLE
+    # and the mapper's own source→target binding, not on text: the delivered paragraph is
+    # in another language, so the old normalized-text intersection was empty by
+    # construction and the check measured nothing on all eight 059 runs. With no mapped
+    # source caption there is nothing to measure and the check says so rather than
+    # reporting a vacuous pass.
+    caption_survival = _resolve_caption_role_survival(formatting_diagnostics)
+    mapped_caption_count = cast(int, caption_survival["mapped_source_caption_count"])
     add_check(
         "captions_not_promoted_to_headings",
-        not caption_heading_regressions,
-        regressions=caption_heading_regressions,
+        cast(int, caption_survival["promoted_caption_count"]) == 0,
+        applicable=mapped_caption_count > 0,
+        **({} if mapped_caption_count > 0 else {"reason": "no_mapped_source_caption_paragraphs"}),
+        **caption_survival,
     )
 
-    source_heading_texts = {
-        _normalize_structural_text(paragraph.text)
-        for paragraph in source_paragraphs
-        if paragraph.role == "heading"
-        and _normalize_structural_text(paragraph.text)
-        and len(_normalize_structural_text(paragraph.text).split()) <= 10
-        and _is_meaningful_key_heading(paragraph.text)
-    }
-    if processing_operation == "translate":
-        source_heading_texts = {
-            heading
-            for heading in source_heading_texts
-            if _should_enforce_source_heading_in_translate_mode(heading)
-        }
-    output_heading_texts = {
-        _normalize_structural_text(paragraph.text)
-        for paragraph in output_paragraphs
-        if paragraph.role == "heading"
-        and _normalize_structural_text(paragraph.text)
-        and _is_meaningful_key_heading(paragraph.text)
-    }
-    missing_key_headings = _resolve_missing_key_headings(
-        source_heading_texts,
-        output_heading_texts,
-        processing_operation=processing_operation,
+    # Same key for headings, in the other direction: a source paragraph whose ROLE is
+    # ``heading`` must reach the reader as a heading. ``heading_level_shift_count`` and
+    # ``unmapped_source_heading_count`` are review data, not failures — see the module
+    # note above ``_resolve_heading_role_survival``.
+    heading_survival = _resolve_heading_role_survival(
+        formatting_diagnostics, preparation_diagnostic_snapshot
     )
+    mapped_heading_count = cast(int, heading_survival["mapped_source_heading_count"])
     add_check(
         "key_headings_preserved",
-        not missing_key_headings,
-        missing=missing_key_headings,
-        source_heading_count=len(source_heading_texts),
-        output_heading_count=len(output_heading_texts),
+        cast(int, heading_survival["demoted_heading_count"]) == 0,
+        applicable=mapped_heading_count > 0,
+        **({} if mapped_heading_count > 0 else {"reason": "no_mapped_source_heading_paragraphs"}),
+        **heading_survival,
     )
 
     source_centered_texts = sorted(_extract_allowlisted_centered_paragraph_texts(source_document))
@@ -5129,17 +5198,25 @@ def _build_structural_acceptance_checks(
         matches=centered_matches,
     )
 
-    source_numbered_count = sum(1 for paragraph in source_paragraphs if paragraph.role == "list" and paragraph.list_kind == "ordered")
+    # Both sides are now measured with the SAME instrument — Word's own ``w:numPr`` plus
+    # the ``w:numFmt`` resolved at the paragraph's level. The source side used to be read
+    # off the extractor's ``role``/``list_kind`` instead, which reported 0 or 1 ordered
+    # paragraphs on all eight 059 runs while the converted sources carry 194–480 numbered
+    # paragraphs — every one of them ``bullet``. And ``translate`` overwrote the verdict
+    # with a literal ``True``, so the check had never once passed on its own evidence.
+    # When the source carries no ORDERED numbering there is nothing to preserve, and the
+    # check reports NOT-APPLICABLE with the numbering it did find, instead of a pass.
+    source_numbered_count = _count_ordered_word_numbered_paragraphs(source_document)
     output_numbered_count = _count_ordered_word_numbered_paragraphs(output_document)
-    word_numbering_passed = source_numbered_count == 0 or output_numbered_count >= source_numbered_count
-    if processing_operation == "translate":
-        word_numbering_passed = True
     add_check(
         "word_numbering_preserved",
-        word_numbering_passed,
+        output_numbered_count >= source_numbered_count,
+        applicable=source_numbered_count > 0,
+        **({} if source_numbered_count > 0 else {"reason": "source_carries_no_ordered_word_numbering"}),
         source_numbered_count=source_numbered_count,
         output_numbered_count=output_numbered_count,
-        processing_operation=processing_operation,
+        source_word_numbered_count=_count_word_numbered_paragraphs(source_document),
+        output_word_numbered_count=_count_word_numbered_paragraphs(output_document),
     )
     return checks
 
@@ -5162,12 +5239,29 @@ def evaluate_lietaer_acceptance(
     if source_docx_bytes and output_docx_bytes:
         source_docx_bytes_value = source_docx_bytes
         output_docx_bytes_value = output_docx_bytes
+        # The role-keyed heading/caption survival checks read the formatting mapper's
+        # source↔target registries, which live in the report; the DOCX pair still carries
+        # the centering and Word-numbering checks. Passing the diagnostics here keeps the
+        # whole structural family inside the harness, so production's verdict (which never
+        # sees a source DOCX) is untouched.
+        formatting_diagnostics_value = cast(
+            Sequence[Mapping[str, object]], report.get("formatting_diagnostics") or []
+        )
+
+        # The main-content span the demotion check is scoped to is resolved from the same
+        # preparation snapshot the gate uses, so the harness and production agree on where
+        # front matter ends and the references region begins.
+        preparation_snapshot_value = cast(
+            "Mapping[str, object] | None", report.get("preparation_diagnostic_snapshot")
+        )
 
         def _structural_checks_builder(processing_operation: str) -> list[dict[str, object]]:
             return _build_structural_acceptance_checks(
                 source_docx_bytes=source_docx_bytes_value,
                 output_docx_bytes=output_docx_bytes_value,
                 processing_operation=processing_operation,
+                formatting_diagnostics=formatting_diagnostics_value,
+                preparation_diagnostic_snapshot=preparation_snapshot_value,
             )
 
         structural_checks_builder = _structural_checks_builder

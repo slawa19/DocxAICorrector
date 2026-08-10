@@ -107,36 +107,159 @@ def _attach_numbering(paragraph, *, num_id: str, ilvl: str) -> None:
     num_id_element.set(qn("w:val"), num_id)
 
 
-def test_evaluate_lietaer_acceptance_detects_caption_heading_regression(tmp_path):
-    validation = _load_validation_module()
-    image_path = tmp_path / "caption_image.png"
-    image_path.write_bytes(PNG_BYTES)
+def _registry_diagnostics(
+    source_entries: list[dict[str, object]],
+    target_entries: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    """A formatting-diagnostics payload shaped like the real mapper's registries.
 
-    source_doc = Document()
-    source_doc.add_paragraph().add_run().add_picture(str(image_path))
-    source_doc.add_paragraph("Рисунок 1. Подпись")
+    The structural role-survival checks read ``source_registry`` / ``target_registry``
+    (built by ``generation/formatting_mapping.py``): per source paragraph the structural
+    ROLE, the heading level and the target paragraph the mapper bound it to; per delivered
+    paragraph the style and heading level. Keying on that pairing is what makes the checks
+    survive a change of LANGUAGE (Constitution VII: region / role / form, never a string).
+    """
 
-    output_doc = Document()
-    output_doc.add_paragraph().add_run().add_picture(str(image_path))
-    output_doc.add_paragraph("Рисунок 1. Подпись", style="Heading 1")
+    return [{"source_registry": source_entries, "target_registry": target_entries}]
 
-    report = {
+
+def _source_entry(
+    index: int,
+    role: str,
+    *,
+    heading_level: int | None = None,
+    mapped_target_index: int | None = None,
+    text_preview: str = "",
+) -> dict[str, object]:
+    return {
+        "paragraph_id": f"p{index:04d}",
+        "source_index": index,
+        "role": role,
+        "heading_level": heading_level,
+        "mapped_target_index": mapped_target_index,
+        "mapping_strategy": None if mapped_target_index is None else "paragraph_id_registry",
+        "text_preview": text_preview,
+    }
+
+
+def _target_entry(
+    index: int,
+    *,
+    style_name: str,
+    heading_level: int | None = None,
+    text_preview: str = "",
+) -> dict[str, object]:
+    return {
+        "target_index": index,
+        "mapped": True,
+        "style_name": style_name,
+        "heading_level": heading_level,
+        "text_preview": text_preview,
+    }
+
+
+def _structural_report(formatting_diagnostics: list[dict[str, object]]) -> dict[str, object]:
+    return {
         "result": "succeeded",
         "output_artifacts": {
             "output_docx_openable": True,
             "output_contains_placeholder_markup": False,
         },
-        "formatting_diagnostics": [],
+        "formatting_diagnostics": formatting_diagnostics,
     }
+
+
+def _minimal_docx_pair() -> tuple[bytes, bytes]:
+    # The role-survival checks read the registries, not these bytes; the DOCX pair is only
+    # what makes ``evaluate_lietaer_acceptance`` install the structural checks builder at
+    # all (and it still carries the centering / Word-numbering checks).
+    source_doc = Document()
+    source_doc.add_paragraph("Один абзац")
+    output_doc = Document()
+    output_doc.add_paragraph("Один абзац")
+    return _docx_bytes(source_doc), _docx_bytes(output_doc)
+
+
+def test_captions_not_promoted_to_headings_fails_on_a_mapped_caption_delivered_as_heading() -> None:
+    # ANTI-VACUUM COUNTER-PROOF (Constitution VII) for the re-keyed check: the input that
+    # makes it fail is a source paragraph whose ROLE is ``caption`` bound by the mapper to
+    # a delivered paragraph that carries a heading level — in ANOTHER language, which the
+    # previous normalized-text intersection could never see.
+    validation = _load_validation_module()
+    source_bytes, output_bytes = _minimal_docx_pair()
+
+    report = _structural_report(
+        _registry_diagnostics(
+            [_source_entry(0, "caption", mapped_target_index=0, text_preview="figure 1.1 illustrates")],
+            [_target_entry(0, style_name="Heading 3", heading_level=3, text_preview="Рисунок 1.1 показывает")],
+        )
+    )
 
     acceptance = validation.evaluate_lietaer_acceptance(
         report,
-        source_docx_bytes=_docx_bytes(source_doc),
-        output_docx_bytes=_docx_bytes(output_doc),
+        source_docx_bytes=source_bytes,
+        output_docx_bytes=output_bytes,
     )
+    by_name = {check["name"]: check for check in acceptance["checks"]}
+    caption_check = by_name["captions_not_promoted_to_headings"]
 
     assert acceptance["passed"] is False
     assert "captions_not_promoted_to_headings" in acceptance["failed_checks"]
+    assert caption_check["applicable"] is True
+    assert caption_check["promoted_caption_count"] == 1
+    assert caption_check["mapped_source_caption_count"] == 1
+    assert caption_check["promoted_samples"][0]["target_style_name"] == "Heading 3"
+
+
+def test_captions_not_promoted_to_headings_is_not_applicable_without_a_mapped_source_caption() -> None:
+    # The vacuum is NAMED rather than reported as a pass: no mapped caption, nothing to
+    # measure. ``passed`` must never be produced by an empty source set entering
+    # ``failed_checks`` accounting.
+    validation = _load_validation_module()
+    source_bytes, output_bytes = _minimal_docx_pair()
+
+    report = _structural_report(
+        _registry_diagnostics(
+            [_source_entry(0, "body", mapped_target_index=0)],
+            [_target_entry(0, style_name="Body Text")],
+        )
+    )
+
+    acceptance = validation.evaluate_lietaer_acceptance(
+        report,
+        source_docx_bytes=source_bytes,
+        output_docx_bytes=output_bytes,
+    )
+    caption_check = {check["name"]: check for check in acceptance["checks"]}["captions_not_promoted_to_headings"]
+
+    assert caption_check["applicable"] is False
+    assert caption_check["reason"] == "no_mapped_source_caption_paragraphs"
+    assert caption_check["source_caption_count"] == 0
+    assert "captions_not_promoted_to_headings" not in acceptance["failed_checks"]
+
+
+def test_captions_not_promoted_to_headings_passes_when_a_caption_stays_a_caption_across_languages() -> None:
+    validation = _load_validation_module()
+    source_bytes, output_bytes = _minimal_docx_pair()
+
+    report = _structural_report(
+        _registry_diagnostics(
+            [_source_entry(0, "caption", mapped_target_index=0, text_preview="figure 1.1 illustrates")],
+            [_target_entry(0, style_name="Caption", text_preview="Рисунок 1.1 показывает")],
+        )
+    )
+
+    acceptance = validation.evaluate_lietaer_acceptance(
+        report,
+        source_docx_bytes=source_bytes,
+        output_docx_bytes=output_bytes,
+    )
+    caption_check = {check["name"]: check for check in acceptance["checks"]}["captions_not_promoted_to_headings"]
+
+    assert caption_check["applicable"] is True
+    assert caption_check["passed"] is True
+    assert caption_check["mapped_source_caption_count"] == 1
+    assert caption_check["promoted_caption_count"] == 0
 
 
 def test_evaluate_lietaer_acceptance_detects_center_alignment_regression() -> None:
@@ -1149,8 +1272,11 @@ def test_evaluate_lietaer_acceptance_ignores_centered_heading_alignment_for_mini
     centered_check = next(check for check in acceptance["checks"] if check["name"] == "centered_short_paragraphs_preserved")
     heading_check = next(check for check in acceptance["checks"] if check["name"] == "key_headings_preserved")
 
-    assert heading_check["passed"] is True
-    assert heading_check["missing"] == []
+    # No formatting registries here, so heading-role survival has nothing to key on and
+    # says so; the centering check is the subject of this test and still gates.
+    assert heading_check["applicable"] is False
+    assert heading_check["reason"] == "no_mapped_source_heading_paragraphs"
+    assert "key_headings_preserved" not in acceptance["failed_checks"]
     assert centered_check["passed"] is False
     assert centered_check["missing"] == ["эпиктет"]
     assert centered_check["source_centered_count"] == 1
@@ -1168,16 +1294,228 @@ def test_extract_allowlisted_centered_paragraph_texts_excludes_centered_chapter_
     assert sorted(validation._extract_allowlisted_centered_paragraph_texts(document)) == ["эпиктет"]
 
 
-def test_evaluate_lietaer_acceptance_translate_mode_relaxes_source_language_heading_and_numbering_checks() -> None:
+def test_normalize_structural_text_strips_markdown_wrappers() -> None:
+    validation = _load_validation_module()
+
+    assert validation._normalize_structural_text("## **Религии безличного абсолюта**") == "религии безличного абсолюта"
+    assert validation._normalize_structural_text("<u>Дао</u>") == "дао"
+
+
+def test_key_headings_preserved_survives_a_change_of_language() -> None:
+    # The false alarm this replaces: English source headings, Russian delivered headings,
+    # every one of them still a heading. The old normalized-TEXT comparison reported all
+    # of them missing (131/136, 218/224, 155/158, 88/109 on the four audiobook runs of
+    # 2026-08-09); role-keyed, the delivery is clean.
+    validation = _load_validation_module()
+    source_bytes, output_bytes = _minimal_docx_pair()
+
+    report = _structural_report(
+        _registry_diagnostics(
+            [
+                _source_entry(0, "heading", heading_level=2, mapped_target_index=0, text_preview="3 measuring the wealth of nations"),
+                _source_entry(1, "heading", heading_level=3, mapped_target_index=1, text_preview="a scarcity of care"),
+            ],
+            [
+                _target_entry(0, style_name="Heading 2", heading_level=2, text_preview="3 Измерение богатства народов"),
+                _target_entry(1, style_name="Heading 3", heading_level=3, text_preview="Дефицит заботы"),
+            ],
+        )
+    )
+
+    acceptance = validation.evaluate_lietaer_acceptance(
+        report,
+        source_docx_bytes=source_bytes,
+        output_docx_bytes=output_bytes,
+    )
+    heading_check = {check["name"]: check for check in acceptance["checks"]}["key_headings_preserved"]
+
+    assert heading_check["applicable"] is True
+    assert heading_check["passed"] is True
+    assert heading_check["mapped_source_heading_count"] == 2
+    assert heading_check["demoted_heading_count"] == 0
+    assert "key_headings_preserved" not in acceptance["failed_checks"]
+
+
+def test_key_headings_preserved_fails_when_a_mapped_heading_is_delivered_as_body() -> None:
+    # ANTI-VACUUM COUNTER-PROOF (Constitution VII): the input that makes the check fail is
+    # a source paragraph whose ROLE is ``heading`` bound to a delivered paragraph with no
+    # heading level — "content-presence != format-presence" (Constitution VII item 7).
+    # This is the real defect the eight 059 runs carry: 8 on audio_creating and 1 on
+    # audio_rethinking once the count is scoped to the main-content span.
+    # ``first_block_has_body_start`` says the document opens with body, so there is no
+    # front-matter region and the demotion is inside main content.
+    #
+    # The title is a real section title, not a bare ``chapter N``: production treats a bare
+    # chapter ordinal as a running head (``_is_page_furniture_text``) and deliberately
+    # refuses to count it, which is why Creating Wealth's audiobook run reports 8 rather
+    # than the 14 a naive registry scan finds.
+    validation = _load_validation_module()
+    source_bytes, output_bytes = _minimal_docx_pair()
+
+    report = _structural_report(
+        _registry_diagnostics(
+            [
+                _source_entry(
+                    0, "heading", heading_level=1, mapped_target_index=0, text_preview="the creative economy"
+                )
+            ],
+            [_target_entry(0, style_name="Body Text", text_preview="the creative economy")],
+        )
+    )
+    report["preparation_diagnostic_snapshot"] = {"first_block_has_body_start": True}
+
+    acceptance = validation.evaluate_lietaer_acceptance(
+        report,
+        source_docx_bytes=source_bytes,
+        output_docx_bytes=output_bytes,
+    )
+    heading_check = {check["name"]: check for check in acceptance["checks"]}["key_headings_preserved"]
+
+    assert acceptance["passed"] is False
+    assert "key_headings_preserved" in acceptance["failed_checks"]
+    assert heading_check["applicable"] is True
+    assert heading_check["demoted_heading_count"] == 1
+    assert heading_check["demoted_heading_scope"] == "main_content_span"
+    assert heading_check["demoted_samples"][0]["target_style_name"] == "Body Text"
+    assert heading_check["demoted_samples"][0]["source_heading_level"] == 1
+
+
+def test_key_headings_preserved_ignores_a_demotion_inside_front_matter() -> None:
+    # QUALITY_BOUNDARIES §1 puts front matter out of scope, so a heading demoted THERE is
+    # not a defect and must not fail the run. The boundary is resolved generally, by the
+    # first chapter-body heading — no literal, no eyeballed index: ``advance praise for``
+    # sits before ``chapter 1 …`` and is therefore front matter.
+    #
+    # Measured on the eight 059 runs: without this scoping, four single front-matter
+    # entries (0.3-4.7 % into the document) turned doc_money and doc_creating red on
+    # apparatus alone, while the twelve real body demotions stayed red either way.
+    validation = _load_validation_module()
+    source_bytes, output_bytes = _minimal_docx_pair()
+
+    report = _structural_report(
+        _registry_diagnostics(
+            [
+                _source_entry(
+                    0, "heading", heading_level=3, mapped_target_index=0, text_preview="advance praise for"
+                ),
+                _source_entry(
+                    1, "heading", heading_level=1, mapped_target_index=1, text_preview="chapter 1 — the beginning"
+                ),
+            ],
+            [
+                _target_entry(0, style_name="Body Text", text_preview="хвалебные отзывы"),
+                _target_entry(1, style_name="Heading 1", heading_level=1, text_preview="глава 1 начало"),
+            ],
+        )
+    )
+
+    acceptance = validation.evaluate_lietaer_acceptance(
+        report,
+        source_docx_bytes=source_bytes,
+        output_docx_bytes=output_bytes,
+    )
+    heading_check = {check["name"]: check for check in acceptance["checks"]}["key_headings_preserved"]
+
+    # The demotion is real and still visible as coverage data — it simply does not fail.
+    assert heading_check["mapped_source_heading_count"] == 2
+    assert heading_check["demoted_heading_count"] == 0
+    assert heading_check["passed"] is True
+    assert "key_headings_preserved" not in acceptance["failed_checks"]
+
+
+def test_key_headings_preserved_counts_a_demoted_heading_while_reporting_unmapped_ones() -> None:
+    # ANTI-VACUUM COUNTER-PROOF for the one subtraction this check makes: a source heading
+    # the mapper never bound to a target is reported as review data, NOT as a loss. The
+    # counter-proof is that a genuinely demoted heading standing beside it is still
+    # counted — the subtraction cannot swallow a real defect.
+    validation = _load_validation_module()
+    source_bytes, output_bytes = _minimal_docx_pair()
+
+    report = _structural_report(
+        _registry_diagnostics(
+            [
+                _source_entry(0, "heading", heading_level=1, mapped_target_index=None, text_preview="unmapped heading"),
+                _source_entry(1, "heading", heading_level=2, mapped_target_index=0, text_preview="demoted heading"),
+            ],
+            [_target_entry(0, style_name="Normal", text_preview="демотированный заголовок")],
+        )
+    )
+
+    acceptance = validation.evaluate_lietaer_acceptance(
+        report,
+        source_docx_bytes=source_bytes,
+        output_docx_bytes=output_bytes,
+    )
+    heading_check = {check["name"]: check for check in acceptance["checks"]}["key_headings_preserved"]
+
+    assert heading_check["source_heading_count"] == 2
+    assert heading_check["unmapped_source_heading_count"] == 1
+    assert heading_check["mapped_source_heading_count"] == 1
+    assert heading_check["demoted_heading_count"] == 1
+    assert heading_check["passed"] is False
+
+
+def test_key_headings_preserved_reports_a_level_shift_as_review_data_not_a_failure() -> None:
+    validation = _load_validation_module()
+    source_bytes, output_bytes = _minimal_docx_pair()
+
+    report = _structural_report(
+        _registry_diagnostics(
+            [_source_entry(0, "heading", heading_level=2, mapped_target_index=0)],
+            [_target_entry(0, style_name="Heading 1", heading_level=1)],
+        )
+    )
+
+    acceptance = validation.evaluate_lietaer_acceptance(
+        report,
+        source_docx_bytes=source_bytes,
+        output_docx_bytes=output_bytes,
+    )
+    heading_check = {check["name"]: check for check in acceptance["checks"]}["key_headings_preserved"]
+
+    assert heading_check["heading_level_shift_count"] == 1
+    assert heading_check["demoted_heading_count"] == 0
+    assert heading_check["passed"] is True
+
+
+def test_key_headings_preserved_is_not_applicable_when_no_source_heading_is_mapped() -> None:
+    # The defect this closes: on all four ``translate`` runs of 2026-08-09 the source set
+    # was emptied by a language filter and the check reported ``passed=True`` from
+    # ``source_heading_count=0``. An empty source side is now NOT-APPLICABLE with a reason.
+    validation = _load_validation_module()
+    source_bytes, output_bytes = _minimal_docx_pair()
+
+    report = _structural_report(
+        _registry_diagnostics(
+            [_source_entry(0, "body", mapped_target_index=0)],
+            [_target_entry(0, style_name="Body Text")],
+        )
+    )
+
+    acceptance = validation.evaluate_lietaer_acceptance(
+        report,
+        source_docx_bytes=source_bytes,
+        output_docx_bytes=output_bytes,
+    )
+    heading_check = {check["name"]: check for check in acceptance["checks"]}["key_headings_preserved"]
+
+    assert heading_check["applicable"] is False
+    assert heading_check["reason"] == "no_mapped_source_heading_paragraphs"
+    assert heading_check["source_heading_count"] == 0
+    assert "key_headings_preserved" not in acceptance["failed_checks"]
+
+
+def test_word_numbering_preserved_fails_on_translate_when_ordered_numbering_is_dropped() -> None:
+    # ANTI-VACUUM COUNTER-PROOF (Constitution VII) for the check that used to be assigned
+    # ``True`` by a literal on ``translate``: an ordered-numbered source delivered without
+    # numbering now FAILS, and it fails on ``translate`` specifically.
     validation = _load_validation_module()
 
     source_doc = Document()
-    source_doc.add_paragraph("Introduction: Making versus Taking", style="Heading 1")
     source_doc.add_paragraph("First item", style="List Number")
     source_doc.add_paragraph("Second item", style="List Number")
 
     output_doc = Document()
-    output_doc.add_paragraph("Введение: созидание и присвоение", style="Heading 1")
     output_doc.add_paragraph("Первый пункт")
     output_doc.add_paragraph("Второй пункт")
 
@@ -1196,28 +1534,66 @@ def test_evaluate_lietaer_acceptance_translate_mode_relaxes_source_language_head
         source_docx_bytes=_docx_bytes(source_doc),
         output_docx_bytes=_docx_bytes(output_doc),
     )
+    numbering_check = {check["name"]: check for check in acceptance["checks"]}["word_numbering_preserved"]
 
-    heading_check = next(check for check in acceptance["checks"] if check["name"] == "key_headings_preserved")
-    numbering_check = next(check for check in acceptance["checks"] if check["name"] == "word_numbering_preserved")
+    assert numbering_check["applicable"] is True
+    assert numbering_check["passed"] is False
+    assert numbering_check["source_numbered_count"] == 2
+    assert numbering_check["output_numbered_count"] == 0
+    assert "word_numbering_preserved" in acceptance["failed_checks"]
 
-    assert heading_check["passed"] is True
-    assert heading_check["missing"] == []
+
+def test_word_numbering_preserved_passes_when_ordered_numbering_survives_translation() -> None:
+    validation = _load_validation_module()
+
+    source_doc = Document()
+    source_doc.add_paragraph("First item", style="List Number")
+    source_doc.add_paragraph("Second item", style="List Number")
+
+    output_doc = Document()
+    output_doc.add_paragraph("Первый пункт", style="List Number")
+    output_doc.add_paragraph("Второй пункт", style="List Number")
+
+    report = {
+        "result": "succeeded",
+        "runtime_config": {"effective": {"processing_operation": "translate"}},
+        "output_artifacts": {
+            "output_docx_openable": True,
+            "output_contains_placeholder_markup": False,
+        },
+        "formatting_diagnostics": [],
+    }
+
+    acceptance = validation.evaluate_lietaer_acceptance(
+        report,
+        source_docx_bytes=_docx_bytes(source_doc),
+        output_docx_bytes=_docx_bytes(output_doc),
+    )
+    numbering_check = {check["name"]: check for check in acceptance["checks"]}["word_numbering_preserved"]
+
+    assert numbering_check["applicable"] is True
     assert numbering_check["passed"] is True
-    assert numbering_check["processing_operation"] == "translate"
+    assert numbering_check["source_numbered_count"] == 2
+    assert numbering_check["output_numbered_count"] == 2
 
 
-def test_evaluate_lietaer_acceptance_translate_mode_ignores_numeric_and_english_heading_renames() -> None:
+def test_word_numbering_preserved_is_not_applicable_when_the_source_carries_only_bullets() -> None:
+    # What the PDF-derived sources actually contain: 194–480 paragraphs with ``w:numPr``
+    # on all eight 059 runs, EVERY one of them ``bullet``. There is no ordered numbering to
+    # preserve, so the check reports NOT-APPLICABLE with the numbering it did find, rather
+    # than the pass the old source-side counter produced from 0 or 1.
     validation = _load_validation_module()
 
     source_doc = Document()
-    source_doc.add_paragraph("Bowl Judgment #1 (Revelation 16:3):", style="Heading 2")
-    source_doc.add_paragraph("Year 3 (sometime between 2028-2036:)", style="Heading 2")
-    source_doc.add_paragraph("In Conclusion", style="Heading 2")
+    _append_multilevel_numbering_definition(source_doc, num_id="7", abstract_num_id="7")
+    bullet_one = source_doc.add_paragraph("First bullet")
+    bullet_two = source_doc.add_paragraph("Second bullet")
+    _attach_numbering(bullet_one, num_id="7", ilvl="0")
+    _attach_numbering(bullet_two, num_id="7", ilvl="0")
 
     output_doc = Document()
-    output_doc.add_paragraph("Суд над чашей № 1 (Откровение 16:3):", style="Heading 2")
-    output_doc.add_paragraph("Год 3 (где-то между 2028 и 2036)", style="Heading 2")
-    output_doc.add_paragraph("В заключение", style="Heading 2")
+    output_doc.add_paragraph("Первый пункт")
+    output_doc.add_paragraph("Второй пункт")
 
     report = {
         "result": "succeeded",
@@ -1234,279 +1610,15 @@ def test_evaluate_lietaer_acceptance_translate_mode_ignores_numeric_and_english_
         source_docx_bytes=_docx_bytes(source_doc),
         output_docx_bytes=_docx_bytes(output_doc),
     )
-
-    heading_check = next(check for check in acceptance["checks"] if check["name"] == "key_headings_preserved")
-
-    assert heading_check["passed"] is True
-    assert heading_check["missing"] == []
-
-
-def test_evaluate_lietaer_acceptance_translate_mode_only_enforces_translation_stable_scripture_heading() -> None:
-    validation = _load_validation_module()
-
-    source_doc = Document()
-    source_doc.add_paragraph("(Matthew 24:36)", style="Heading 2")
-    source_doc.add_paragraph("Year 3 (sometime between 2028-2036:)", style="Heading 2")
-    source_doc.add_paragraph("A Secular Timeline for AI's Destruction of Humanity", style="Heading 2")
-
-    output_doc = Document()
-    output_doc.add_paragraph("(Матфея 24:36)", style="Heading 2")
-    output_doc.add_paragraph("Год 3 (примерно между 2028 и 2036:)", style="Heading 2")
-    output_doc.add_paragraph("Светская хронология уничтожения человечества ИИ", style="Heading 2")
-
-    report = {
-        "result": "succeeded",
-        "runtime_config": {"effective": {"processing_operation": "translate"}},
-        "output_artifacts": {
-            "output_docx_openable": True,
-            "output_contains_placeholder_markup": False,
-        },
-        "formatting_diagnostics": [],
-    }
-
-    acceptance = validation.evaluate_lietaer_acceptance(
-        report,
-        source_docx_bytes=_docx_bytes(source_doc),
-        output_docx_bytes=_docx_bytes(output_doc),
-    )
-
-    heading_check = next(check for check in acceptance["checks"] if check["name"] == "key_headings_preserved")
-
-    assert heading_check["passed"] is True
-    assert heading_check["source_heading_count"] == 1
-    assert heading_check["missing"] == []
-
-
-def test_evaluate_lietaer_acceptance_translate_mode_matches_scripture_heading_by_reference_anchor() -> None:
-    validation = _load_validation_module()
-
-    source_doc = Document()
-    source_doc.add_paragraph("(Matthew 24:36)", style="Heading 2")
-
-    output_doc = Document()
-    output_doc.add_paragraph("(Матфея 24:36)", style="Heading 2")
-
-    report = {
-        "result": "succeeded",
-        "runtime_config": {"effective": {"processing_operation": "translate"}},
-        "output_artifacts": {
-            "output_docx_openable": True,
-            "output_contains_placeholder_markup": False,
-        },
-        "formatting_diagnostics": [],
-    }
-
-    acceptance = validation.evaluate_lietaer_acceptance(
-        report,
-        source_docx_bytes=_docx_bytes(source_doc),
-        output_docx_bytes=_docx_bytes(output_doc),
-    )
-
-    heading_check = next(check for check in acceptance["checks"] if check["name"] == "key_headings_preserved")
-
-    assert heading_check["passed"] is True
-    assert heading_check["missing"] == []
-
-
-def test_evaluate_lietaer_acceptance_translate_mode_ignores_numeric_body_marker_heading_token() -> None:
-    validation = _load_validation_module()
-
-    source_doc = Document()
-    source_doc.add_paragraph("11,12", style="Heading 2")
-
-    output_doc = Document()
-    output_doc.add_paragraph("Деньги против бартера", style="Heading 2")
-
-    report = {
-        "result": "succeeded",
-        "runtime_config": {"effective": {"processing_operation": "translate"}},
-        "output_artifacts": {
-            "output_docx_openable": True,
-            "output_contains_placeholder_markup": False,
-        },
-        "formatting_diagnostics": [],
-    }
-
-    acceptance = validation.evaluate_lietaer_acceptance(
-        report,
-        source_docx_bytes=_docx_bytes(source_doc),
-        output_docx_bytes=_docx_bytes(output_doc),
-    )
-
-    heading_check = next(check for check in acceptance["checks"] if check["name"] == "key_headings_preserved")
-
-    assert heading_check["passed"] is True
-    assert heading_check["missing"] == []
-    assert heading_check["source_heading_count"] == 0
-
-
-def test_evaluate_lietaer_acceptance_translate_mode_ignores_page_range_heading_token() -> None:
-    validation = _load_validation_module()
-
-    source_doc = Document()
-    source_doc.add_paragraph("179–180", style="Heading 2")
-
-    output_doc = Document()
-    output_doc.add_paragraph("Указатель", style="Heading 1")
-
-    report = {
-        "result": "succeeded",
-        "runtime_config": {"effective": {"processing_operation": "translate"}},
-        "output_artifacts": {
-            "output_docx_openable": True,
-            "output_contains_placeholder_markup": False,
-        },
-        "formatting_diagnostics": [],
-    }
-
-    acceptance = validation.evaluate_lietaer_acceptance(
-        report,
-        source_docx_bytes=_docx_bytes(source_doc),
-        output_docx_bytes=_docx_bytes(output_doc),
-    )
-
-    heading_check = next(check for check in acceptance["checks"] if check["name"] == "key_headings_preserved")
-
-    assert heading_check["passed"] is True
-    assert heading_check["missing"] == []
-    assert heading_check["source_heading_count"] == 0
-
-
-def test_evaluate_lietaer_acceptance_translate_mode_ignores_comma_plus_page_range_heading_token() -> None:
-    validation = _load_validation_module()
-
-    source_doc = Document()
-    source_doc.add_paragraph("182, 192–193", style="Heading 2")
-
-    output_doc = Document()
-    output_doc.add_paragraph("Указатель", style="Heading 1")
-
-    report = {
-        "result": "succeeded",
-        "runtime_config": {"effective": {"processing_operation": "translate"}},
-        "output_artifacts": {
-            "output_docx_openable": True,
-            "output_contains_placeholder_markup": False,
-        },
-        "formatting_diagnostics": [],
-    }
-
-    acceptance = validation.evaluate_lietaer_acceptance(
-        report,
-        source_docx_bytes=_docx_bytes(source_doc),
-        output_docx_bytes=_docx_bytes(output_doc),
-    )
-
-    heading_check = next(check for check in acceptance["checks"] if check["name"] == "key_headings_preserved")
-
-    assert heading_check["passed"] is True
-    assert heading_check["missing"] == []
-    assert heading_check["source_heading_count"] == 0
-
-
-def test_evaluate_lietaer_acceptance_translate_mode_still_requires_meaningful_heading() -> None:
-    validation = _load_validation_module()
-
-    source_doc = Document()
-    source_doc.add_paragraph("Устойчивое изобилие", style="Heading 2")
-
-    output_doc = Document()
-    output_doc.add_paragraph("Другая тема", style="Heading 2")
-
-    report = {
-        "result": "succeeded",
-        "runtime_config": {"effective": {"processing_operation": "translate"}},
-        "output_artifacts": {
-            "output_docx_openable": True,
-            "output_contains_placeholder_markup": False,
-        },
-        "formatting_diagnostics": [],
-    }
-
-    acceptance = validation.evaluate_lietaer_acceptance(
-        report,
-        source_docx_bytes=_docx_bytes(source_doc),
-        output_docx_bytes=_docx_bytes(output_doc),
-    )
-
-    heading_check = next(check for check in acceptance["checks"] if check["name"] == "key_headings_preserved")
-
-    assert heading_check["passed"] is False
-    assert heading_check["missing"] == ["устойчивое изобилие"]
-    assert heading_check["source_heading_count"] == 1
-
-
-def test_evaluate_lietaer_acceptance_translate_mode_does_not_blanket_exclude_reference_heading() -> None:
-    validation = _load_validation_module()
-
-    source_doc = Document()
-    source_doc.add_paragraph("Справочный указатель", style="Heading 1")
-
-    output_doc = Document()
-    output_doc.add_paragraph("Справочный указатель", style="Heading 1")
-
-    report = {
-        "result": "succeeded",
-        "runtime_config": {"effective": {"processing_operation": "translate"}},
-        "output_artifacts": {
-            "output_docx_openable": True,
-            "output_contains_placeholder_markup": False,
-        },
-        "formatting_diagnostics": [],
-    }
-
-    acceptance = validation.evaluate_lietaer_acceptance(
-        report,
-        source_docx_bytes=_docx_bytes(source_doc),
-        output_docx_bytes=_docx_bytes(output_doc),
-    )
-
-    heading_check = next(check for check in acceptance["checks"] if check["name"] == "key_headings_preserved")
-
-    assert heading_check["passed"] is True
-    assert heading_check["missing"] == []
-    assert heading_check["source_heading_count"] == 1
-
-
-def test_normalize_structural_text_strips_markdown_wrappers() -> None:
-    validation = _load_validation_module()
-
-    assert validation._normalize_structural_text("## **Религии безличного абсолюта**") == "религии безличного абсолюта"
-    assert validation._normalize_structural_text("<u>Дао</u>") == "дао"
-
-
-def test_evaluate_lietaer_acceptance_ignores_short_garbage_heading_and_markdown_wrapped_heading() -> None:
-    validation = _load_validation_module()
-
-    source_doc = Document()
-    source_doc.add_paragraph("ð¢", style="Heading 1")
-    source_doc.add_paragraph("**Религии безличного абсолюта**", style="Heading 2")
-
-    output_doc = Document()
-    output_doc.add_paragraph("Т", style="Heading 1")
-    output_doc.add_paragraph("Религии безличного абсолюта", style="Heading 2")
-
-    report = {
-        "result": "succeeded",
-        "output_artifacts": {
-            "output_docx_openable": True,
-            "output_contains_placeholder_markup": False,
-        },
-        "formatting_diagnostics": [],
-    }
-
-    acceptance = validation.evaluate_lietaer_acceptance(
-        report,
-        source_docx_bytes=_docx_bytes(source_doc),
-        output_docx_bytes=_docx_bytes(output_doc),
-    )
-
-    heading_check = next(check for check in acceptance["checks"] if check["name"] == "key_headings_preserved")
-
-    assert heading_check["passed"] is True
-    assert heading_check["missing"] == []
-    assert heading_check["source_heading_count"] == 1
-    assert heading_check["output_heading_count"] == 1
+    numbering_check = {check["name"]: check for check in acceptance["checks"]}["word_numbering_preserved"]
+
+    assert numbering_check["applicable"] is False
+    assert numbering_check["reason"] == "source_carries_no_ordered_word_numbering"
+    assert numbering_check["source_numbered_count"] == 0
+    # The blindness the old check also had: the bullets are counted and reported, so the
+    # gap is named rather than invisible.
+    assert numbering_check["source_word_numbered_count"] == 2
+    assert "word_numbering_preserved" not in acceptance["failed_checks"]
 
 
 _LIETAER_SOURCE_DOCX = (
