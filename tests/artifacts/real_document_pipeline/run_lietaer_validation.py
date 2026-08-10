@@ -3972,7 +3972,10 @@ def _resolve_heading_role_survival(
             continue
         classified = _classify_heading_demotions(payload, preparation_diagnostic_snapshot)
         demoted_heading_count += _coerce_int(classified.get("demotion_count"))
-        for sample in classified.get("samples") or []:
+        classified_samples = classified.get("samples")
+        if not isinstance(classified_samples, Sequence) or isinstance(classified_samples, (str, bytes)):
+            continue
+        for sample in classified_samples:
             if len(demoted_samples) >= _STRUCTURAL_ROLE_SURVIVAL_SAMPLE_LIMIT:
                 break
             if isinstance(sample, Mapping):
