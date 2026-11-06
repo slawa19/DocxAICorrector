@@ -565,12 +565,18 @@ def _collapsed_model_answer(source_a: str, source_b: str) -> str:
 
 
 def _restored_block(source_a: str, source_b: str) -> str:
-    """Run the PRODUCTION marker path over a collapsed answer and return what it delivers."""
+    """Run the PRODUCTION marker path over a collapsed answer and return what it delivers.
+
+    On the LAST attempt: since spec 061 FR-001 a merge with retry budget left raises
+    ``merged_marker_chunk`` and delivers nothing, so the repair these tests trace exists
+    only where nothing is left to ask (``allow_unresolved_paragraphs=True``).
+    """
     return generation._strip_and_validate_paragraph_markers(
         _collapsed_model_answer(source_a, source_b),
         ["p1", "p2"],
         marker_mode=True,
         source_paragraph_chunks=[source_a, source_b],
+        allow_unresolved_paragraphs=True,
     )
 
 

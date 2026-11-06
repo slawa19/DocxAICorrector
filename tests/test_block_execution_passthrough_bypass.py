@@ -15,6 +15,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 import docxaicorrector.pipeline.block_execution as block_execution
 from docxaicorrector.pipeline.block_execution import process_single_block
 
@@ -28,6 +30,7 @@ def _make_state() -> SimpleNamespace:
         narration_excluded_source_fallback_chars=0,
         narration_excluded_omitted_paragraph_count=0,
         narration_excluded_omitted_chars=0,
+        narration_excluded_omitted_paragraphs=[],
         generated_paragraph_registry=[],
         started_at=0.0,
     )
@@ -381,7 +384,9 @@ def test_registry_rejects_a_record_whose_ids_do_not_match_the_block() -> None:
     assert "paragraph_marker_registry_mismatch" in str(exc_info.value)
 
 
-def test_an_omitted_paragraph_stays_in_the_docx_and_leaves_the_narration() -> None:
+@pytest.mark.parametrize("operation", ["edit", "translate", "audiobook"])
+def test_an_omitted_paragraph_stays_in_the_docx_and_leaves_the_narration(operation: str) -> None:
+    # Spec 061 anti-regression: ``omitted`` is held on EVERY operation it was held on.
     processed_chunk = _disposition_block(
         ("p1335", "Как нам справиться с безработицей?", "accepted"),
         ("p1336", "14", "omitted"),
@@ -392,13 +397,17 @@ def test_an_omitted_paragraph_stays_in_the_docx_and_leaves_the_narration() -> No
     # mapping the formatting restorer depends on.
     assert processed_chunk == "Как нам справиться с безработицей?\n\n14\n\nПочему бы не задействовать фонд?"
     # The narration keeps only what the model actually spoke for.
-    assert block_execution.narration_text_for_processed_block(processed_chunk) == (
-        "Как нам справиться с безработицей?\n\nПочему бы не задействовать фонд?"
+    assert block_execution.narration_text_for_processed_block(
+        processed_chunk, processing_operation=operation
+    ) == ("Как нам справиться с безработицей?\n\nПочему бы не задействовать фонд?")
+
+
+@pytest.mark.parametrize("operation", ["edit", "translate"])
+def test_a_block_without_a_paragraph_record_is_narrated_unchanged(operation: str) -> None:
+    assert (
+        block_execution.narration_text_for_processed_block("Обычный блок.", processing_operation=operation)
+        == "Обычный блок."
     )
-
-
-def test_a_block_without_a_paragraph_record_is_narrated_unchanged() -> None:
-    assert block_execution.narration_text_for_processed_block("Обычный блок.") == "Обычный блок."
 
 
 def test_process_single_block_narrates_the_block_without_its_omitted_paragraph(monkeypatch) -> None:
@@ -595,6 +604,86 @@ def test_the_happy_path_counts_the_characters_it_withholds(monkeypatch) -> None:
     assert state.narration_chunks == ["Переведённый абзац."]
     assert state.narration_excluded_omitted_paragraph_count == 1
     assert state.narration_excluded_omitted_chars == len(_ENGLISH_OMITTED_PARAGRAPH)
+
+
+# --- spec 061 FR-006/007/008: the operation decides, through BOTH call sites ----------
+# A ``source_restored`` paragraph is its own SOURCE text exactly as an ``omitted`` one is.
+# In a language-changing operation it is withheld and booked into the SAME counters and the
+# SAME address record the ``narration_omitted_paragraphs_excluded`` notice is built from;
+# on ``edit`` it is a real paragraph of the book and is spoken.
+
+_ENGLISH_RESTORED_PARAGRAPH = (
+    "See, for example, the white paper on options for managing a systemic bank crisis."
+)
+
+
+def _run_restored_paragraph_block(*, operation: str, classification: str):
+    dependencies, emitters, _events = _recording_run_harness()
+    processed_chunk = _disposition_block(
+        ("p0001", "Переведённый абзац.", "accepted"),
+        ("p0002", _ENGLISH_RESTORED_PARAGRAPH, "source_restored"),
+    )
+    payload = SimpleNamespace(
+        job_kind="llm",
+        toc_dominant=False,
+        target_text=f"Source paragraph.\n\n{_ENGLISH_RESTORED_PARAGRAPH}",
+        target_text_with_markers=(
+            f"[[DOCX_PARA_p0001]]\nSource paragraph.\n\n[[DOCX_PARA_p0002]]\n{_ENGLISH_RESTORED_PARAGRAPH}"
+        ),
+        paragraph_ids=["p0001", "p0002"],
+        narration_include=True,
+        target_chars=120,
+        context_chars=0,
+    )
+    _outcome, state, _classifier_calls = _run_single_block(
+        payload=payload,
+        context=SimpleNamespace(
+            processing_operation=operation,
+            source_language="en",
+            target_language="ru",
+            uploaded_filename="book.docx",
+            runtime=object(),
+            on_progress=lambda **_kwargs: None,
+        ),
+        processed_chunk=processed_chunk,
+        classification=classification,
+        dependencies=dependencies,
+        emitters=emitters,
+    )
+    return state
+
+
+@pytest.mark.parametrize("classification", ["valid", "english_residual_output"])
+@pytest.mark.parametrize("operation", ["translate", "audiobook"])
+def test_a_restored_paragraph_is_withheld_and_addressed_in_a_translating_operation(
+    monkeypatch, operation: str, classification: str
+) -> None:
+    """ANTI-VACUUM for FR-006: the English is held, the Russian beside it is still spoken."""
+    monkeypatch.setattr(block_execution, "_write_controlled_block_fallback_artifact", lambda **_kwargs: None)
+
+    state = _run_restored_paragraph_block(operation=operation, classification=classification)
+
+    # The DOCX keeps every paragraph.
+    assert state.processed_chunks == [f"Переведённый абзац.\n\n{_ENGLISH_RESTORED_PARAGRAPH}"]
+    assert state.narration_chunks == ["Переведённый абзац."]
+    # FR-008: the same counters and the same address record ``omitted`` feeds.
+    assert state.narration_excluded_omitted_paragraph_count == 1
+    assert state.narration_excluded_omitted_chars == len(_ENGLISH_RESTORED_PARAGRAPH)
+    assert state.narration_excluded_omitted_paragraphs == [
+        {"paragraph_id": "p0002", "text": _ENGLISH_RESTORED_PARAGRAPH, "status": "source_restored"}
+    ]
+
+
+@pytest.mark.parametrize("classification", ["valid", "english_residual_output"])
+def test_a_restored_paragraph_is_spoken_on_edit(monkeypatch, classification: str) -> None:
+    """FR-007: on ``edit`` the projection does not change — both paragraphs are spoken."""
+    monkeypatch.setattr(block_execution, "_write_controlled_block_fallback_artifact", lambda **_kwargs: None)
+
+    state = _run_restored_paragraph_block(operation="edit", classification=classification)
+
+    assert state.narration_chunks == [f"Переведённый абзац.\n\n{_ENGLISH_RESTORED_PARAGRAPH}"]
+    assert state.narration_excluded_omitted_paragraph_count == 0
+    assert state.narration_excluded_omitted_paragraphs == []
 
 
 # --- run-level accounting for the pipeline half of the loss -------------------------

@@ -186,6 +186,65 @@ def test_recorded_run_document_notice_hands_the_audio_addresses_over() -> None:
     assert _params(notice) == {"count": 10, "blocks": 4, "chars": 5050, "elsewhere": 8}
 
 
+def _replayed_narration_withholding(operation: str) -> list[dict[str, str]]:
+    """The recorded blocks put through the PRODUCTION projection, as the block loop does."""
+    from docxaicorrector.pipeline.block_execution import narration_projection_for_processed_block
+
+    withheld: list[dict[str, str]] = []
+    for block in _recorded_blocks():
+        withheld.extend(
+            narration_projection_for_processed_block(block, processing_operation=operation)[1]
+        )
+    return withheld
+
+
+def test_recorded_run_replayed_withholds_the_two_restored_paragraphs_with_their_addresses() -> None:
+    """Spec 061 FR-006/008 on the run that measured the defect.
+
+    ``20260809T_059_audio_money`` spoke its two ``source_restored`` paragraphs — 587
+    characters of English in a Russian audiobook — while the audio notice counted only the
+    eight ``omitted`` ones. Replayed through today's projection on ``audiobook``, the audio
+    notice counts all ten, and the two restored paragraphs carry the two addresses the
+    DOCUMENT message used to print for them — the same address rule, now owned by the
+    message about the artifact nobody edits. Its numbers become the document's numbers:
+    10 paragraphs, 5 050 characters.
+    """
+    withheld = _replayed_narration_withholding("audiobook")
+
+    assert [record["status"] for record in withheld].count("omitted") == 8
+    assert [record["status"] for record in withheld].count("source_restored") == 2
+    restored_ids = {
+        record["paragraph_id"] for record in _narration_records("source_restored")
+    }
+    assert {r["paragraph_id"] for r in withheld if r["status"] == "source_restored"} == restored_ids
+
+    delivered = _recorded_delivered_markdown()
+    facts = quality_gate.build_narration_exclusion_facts(withheld, delivered_markdown=delivered)
+    assert facts["paragraph_count"] == 10
+    assert facts["chars"] == 5050
+    assert len(facts["anchors"]) == 6  # type: ignore[arg-type]
+    assert facts["unanchored_paragraph_count"] == 4
+
+    document_facts = quality_gate.build_source_text_delivery_facts(
+        _recorded_blocks(),
+        delivered_markdown=delivered,
+        paragraph_ids_reported_in_narration={record["paragraph_id"] for record in withheld},
+    )
+    # Every address is printed exactly once, and now all of them by the audio message.
+    assert document_facts["reported_in_narration_paragraph_count"] == 10
+    assert document_facts["anchors"] == []
+    assert document_facts["paragraph_count"] == 10
+
+
+def test_recorded_run_replayed_on_edit_still_withholds_only_the_omissions() -> None:
+    """FR-007, the other direction on the same material: on ``edit`` nothing moved."""
+    withheld = _replayed_narration_withholding("edit")
+
+    assert {record["status"] for record in withheld} == {"omitted"}
+    assert len(withheld) == 8
+    assert sum(len(record["text"]) for record in withheld) == 4455
+
+
 def test_the_two_messages_never_print_the_same_fragment_twice() -> None:
     """Two messages in a row carrying the same quotes read as an interface bug. On the
     recorded run the six addressable paragraphs split 4 (audio) + 2 (document only), and the
