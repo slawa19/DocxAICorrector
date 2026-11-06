@@ -2,7 +2,9 @@
 set -euo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-RUN_DIR="${DOCX_AI_RUN_DIR:-$PROJECT_ROOT/.run}"
+# DOCX_AI_RUN_DIR as core/constants.py reads it: surrounding whitespace trimmed, blank = default.
+read -r RUN_DIR_OVERRIDE <<< "${DOCX_AI_RUN_DIR:-}" || true
+RUN_DIR="${RUN_DIR_OVERRIDE:-$PROJECT_ROOT/.run}"
 ENV_PATH="$PROJECT_ROOT/.env"
 APP_PATH="$PROJECT_ROOT/app.py"
 VENV_DIR="$PROJECT_ROOT/.venv"
