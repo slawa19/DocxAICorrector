@@ -287,9 +287,11 @@ class MarkerValidationError(RuntimeError):
 
 # A paragraph the model visibly merged into its neighbour, raised while retry budget is
 # left (spec 061 FR-001). A ``MarkerValidationError`` like every other marker-contract code,
-# so the attempt loop retries it, the recovery prompt names it, spec 056 D' captures its
-# answer and the degradation ladder takes it as a ``marker_contract`` trigger — all without
-# a line of its own in any of them.
+# so the attempt loop retries it and spec 056 D' captures its answer without a line of their
+# own. The degradation ladder WOULD take it as a ``marker_contract`` trigger, but it never
+# receives one: the last attempt and the recovery call run with
+# ``allow_unresolved_paragraphs=True``, where a merge is repaired (``source_restored``)
+# instead of raised (FR-003).
 MERGED_MARKER_CHUNK_ERROR_CODE = "merged_marker_chunk"
 
 
