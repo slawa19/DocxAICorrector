@@ -31,6 +31,7 @@ import docxaicorrector.pipeline.narration_postprocess as narration_postprocess
 import docxaicorrector.pipeline.output_validation as output_validation
 import docxaicorrector.pipeline.quality_gate as quality_gate
 import docxaicorrector.pipeline.reader_cleanup_rebuild as reader_cleanup_rebuild
+from docxaicorrector.pipeline.contracts import LatePhaseStopped
 from docxaicorrector.ui import i18n
 from docxaicorrector.generation._generation import (
     MarkerPreservedBlockText,
@@ -518,6 +519,92 @@ def test_post_pass_answer_with_every_paragraph_is_not_reported(tmp_path) -> None
     assert saved["postprocess_paragraph_shortfall_group_count"] == 0
     assert saved["postprocess_paragraph_shortfall_paragraph_count"] == 0
     assert _shortfall_notices(_runtime) == []
+
+
+def test_stop_pressed_during_a_post_pass_call_is_honoured_inside_it(tmp_path) -> None:
+    """FR-022 in the late passes: the post-pass hands ``generate_markdown_block`` the run's
+    Stop predicate, so a Stop pressed after the call began stops its NEXT model call. The
+    double stands in for the real generator's retry loop, which asks ``should_stop`` before
+    every attempt (``_generation._raise_if_stop_requested``)."""
+    runtime: dict[str, object] = {"state": {}}
+    _events, log_event = _capture_log_events()
+    stop_requested = {"value": False}
+    post_pass_attempts: list[int] = []
+
+    def generate(**kwargs):
+        if kwargs["system_prompt"] != "system:audiobook":
+            return "Первый абзац главы."
+        should_stop = kwargs["should_stop"]
+        for attempt in (1, 2):
+            if should_stop():
+                raise LatePhaseStopped()
+            post_pass_attempts.append(attempt)
+            stop_requested["value"] = True  # the user presses Stop during attempt 1
+        return "[thoughtful] Первый абзац главы."
+
+    result = _run(
+        tmp_path,
+        processing_operation="edit",
+        app_config={"audiobook_postprocess_enabled": True},
+        jobs=[
+            {
+                "target_text": "block",
+                "context_before": "",
+                "context_after": "",
+                "target_chars": 5,
+                "context_chars": 0,
+                "narration_include": True,
+            }
+        ],
+        generate=generate,
+        log_event=log_event,
+        runtime=runtime,
+        should_stop_processing=lambda runtime: stop_requested["value"],
+    )
+
+    assert post_pass_attempts == [1]
+    assert result == "stopped"
+
+
+def test_stop_pressed_during_a_reader_cleanup_call_is_honoured_inside_it(tmp_path) -> None:
+    runtime: dict[str, object] = {"state": {}}
+    _events, log_event = _capture_log_events()
+    stop_requested = {"value": False}
+    cleanup_attempts: list[int] = []
+
+    def generate(**kwargs):
+        if not str(kwargs["system_prompt"]).startswith("You are cleaning translated book Markdown"):
+            return "Первый абзац главы."
+        should_stop = kwargs["should_stop"]
+        for attempt in (1, 2):
+            if should_stop():
+                raise LatePhaseStopped()
+            cleanup_attempts.append(attempt)
+            stop_requested["value"] = True
+        return json.dumps({"cleanup_operations": [], "warnings": []}, ensure_ascii=False)
+
+    result = _run(
+        tmp_path,
+        processing_operation="translate",
+        app_config={"reader_cleanup_enabled": True, "reader_cleanup_policy": "advisory"},
+        jobs=[
+            {
+                "target_text": "First paragraph of the chapter.",
+                "context_before": "",
+                "context_after": "",
+                "target_chars": 31,
+                "context_chars": 0,
+                "narration_include": True,
+            }
+        ],
+        generate=generate,
+        log_event=log_event,
+        runtime=runtime,
+        should_stop_processing=lambda runtime: stop_requested["value"],
+    )
+
+    assert cleanup_attempts == [1]
+    assert result == "stopped"
 
 
 def _shortfall_notices(runtime: Mapping[str, object]) -> list[Mapping[str, object]]:

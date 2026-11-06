@@ -487,6 +487,9 @@ def _run_audiobook_postprocess(*, context: Any, dependencies: Any, emitters: Any
             max_retries=context.max_retries,
             expected_paragraph_ids=None,
             marker_mode=False,
+            # Spec 061 FR-022 in the late passes: Stop is asked before every model call the
+            # group makes (each attempt, recovery, ladder step), not only between groups.
+            should_stop=lambda: bool(callable(stop_predicate) and stop_predicate(context.runtime)),
         )
         if callable(stop_predicate) and stop_predicate(context.runtime):
             raise LatePhaseStopped()
