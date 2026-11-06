@@ -32,6 +32,12 @@ else:
     os.environ["DOCX_AI_RUN_DIR"] = str(TEST_RUN_DIR)
     os.environ[_SESSION_RUN_DIR_MARKER] = str(TEST_RUN_DIR)
     atexit.register(shutil.rmtree, TEST_RUN_DIR, True)
+# Windows processes a test starts from WSL (the PowerShell wrapper smokes) see only the
+# variables WSLENV names; ``/p`` translates the path both ways, so ``scripts/_shared.ps1``
+# writes ``project.log`` under the same root and its ``wsl.exe`` calls get it back.
+_wslenv_entries = [entry for entry in os.environ.get("WSLENV", "").split(":") if entry]
+if not any(entry.split("/")[0] == "DOCX_AI_RUN_DIR" for entry in _wslenv_entries):
+    os.environ["WSLENV"] = ":".join([*_wslenv_entries, "DOCX_AI_RUN_DIR/p"])
 
 
 # Make the repo-root shared bootstrap importable, then pin src first (F5/R29).
@@ -72,54 +78,6 @@ def isolate_repo_dotenv(monkeypatch: pytest.MonkeyPatch) -> None:
             continue
         if env_name.startswith("DOCX_AI_") or env_name in {"OPENAI_API_KEY", "OPENROUTER_API_KEY"}:
             monkeypatch.delenv(env_name, raising=False)
-
-
-# The two fixtures below are the per-family redirects FR-020 wants gone. They stay because
-# these two families are NOT derived from RUN_DIR: both are cwd-relative
-# ``Path(".run") / ...`` constants in ``generation/`` (formatting_diagnostics_retention.py,
-# marker_attempt_capture.py), so redirecting the root does not reach them. Delete each
-# fixture in the same change that derives its family from ``core.constants.RUN_DIR``.
-@pytest.fixture(autouse=True)
-def isolate_formatting_diagnostics_dir(
-    tmp_path_factory: pytest.TempPathFactory,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Keep test-run diagnostics out of the operator-facing ``.run`` directory.
-
-    Retention for formatting diagnostics is family-wide (7 days / 100 artifacts),
-    so test artifacts written into the real runtime directory crowd out genuine
-    operator evidence. Each consumer captures the directory at import time, so
-    every module-level copy is redirected here.
-    """
-    import docxaicorrector.generation.formatting_diagnostics_retention as formatting_diagnostics_retention
-    import docxaicorrector.generation.formatting_transfer as formatting_transfer
-    import docxaicorrector.pipeline._pipeline as pipeline
-
-    diagnostics_dir = tmp_path_factory.mktemp("formatting_diagnostics")
-    monkeypatch.setattr(formatting_diagnostics_retention, "FORMATTING_DIAGNOSTICS_DIR", diagnostics_dir)
-    monkeypatch.setattr(formatting_transfer, "FORMATTING_DIAGNOSTICS_DIR", diagnostics_dir)
-    monkeypatch.setattr(pipeline, "FORMATTING_DIAGNOSTICS_DIR", diagnostics_dir)
-
-
-@pytest.fixture(autouse=True)
-def isolate_marker_attempt_diagnostics_dir(
-    tmp_path_factory: pytest.TempPathFactory,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Same reason as the fixture above, for the rejected-marker-attempt family.
-
-    Retention there is family-wide too (7 days / 400 artifacts), and a full test run
-    produces well over a hundred rejected attempts — enough to evict the operator evidence
-    the directory exists to hold. Tests that assert on the artifact override this with
-    their own directory.
-    """
-    import docxaicorrector.generation.marker_attempt_capture as marker_attempt_capture
-
-    monkeypatch.setattr(
-        marker_attempt_capture,
-        "MARKER_ATTEMPT_DIAGNOSTICS_DIR",
-        tmp_path_factory.mktemp("marker_attempts"),
-    )
 
 
 @pytest.fixture

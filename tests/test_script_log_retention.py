@@ -71,7 +71,7 @@ def test_streamlit_log_rotation_preserves_active_path_and_backups() -> None:
 
         env = {
             **os.environ,
-            "DOCXAI_RUN_DIR": str(run_dir),
+            "DOCX_AI_RUN_DIR": str(run_dir),
             "DOCXAI_STREAMLIT_LOG_MAX_BYTES": "120",
             "DOCXAI_STREAMLIT_LOG_BACKUP_COUNT": "2",
         }

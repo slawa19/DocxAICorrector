@@ -545,3 +545,19 @@ def test_status_scripts_derive_the_required_api_key_from_the_default_text_model(
     assert 'os.getenv("OPENAI_API_KEY"' not in control_script
     assert "$status['api_key_env']" in status_script
     assert "OPENAI_API_KEY" not in status_script
+
+
+def test_run_dir_override_has_one_name_across_python_and_scripts() -> None:
+    # Spec 061 FR-020. The shell scripts read DOCXAI_RUN_DIR while core/constants.py reads
+    # DOCX_AI_RUN_DIR, so one override moved half the artifacts. One name, every entrypoint.
+    readers = {
+        "src/docxaicorrector/core/constants.py": 'RUN_DIR_ENV_VAR = "DOCX_AI_RUN_DIR"',
+        "scripts/project-control-wsl.sh": 'RUN_DIR="${DOCX_AI_RUN_DIR:-$PROJECT_ROOT/.run}"',
+        "scripts/clean-stale-run-artifacts.sh": 'RUN_DIR="${DOCX_AI_RUN_DIR:-$PROJECT_ROOT/.run}"',
+        "scripts/_shared.ps1": "$env:DOCX_AI_RUN_DIR",
+    }
+    for relative_path, expected in readers.items():
+        assert expected in (REPO_ROOT / relative_path).read_text(encoding="utf-8"), relative_path
+    for path in sorted((REPO_ROOT / "scripts").iterdir()):
+        if path.is_file() and path.suffix in {".sh", ".ps1", ".py"}:
+            assert "DOCXAI_RUN_DIR" not in path.read_text(encoding="utf-8"), path.name

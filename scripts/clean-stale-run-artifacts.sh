@@ -23,7 +23,7 @@
 set -euo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-RUN_DIR="${DOCXAI_RUN_DIR:-$PROJECT_ROOT/.run}"
+RUN_DIR="${DOCX_AI_RUN_DIR:-$PROJECT_ROOT/.run}"
 APPLY=0
 MIN_AGE_DAYS=14
 
