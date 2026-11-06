@@ -8,7 +8,10 @@ Two behaviors are pinned here:
 2. Part 2 — a document classified as scan-origin (OCR) has its tables flattened
    into linear body paragraphs (no ``w:tbl``), with cell text conserved, while
    authored documents keep their tables. The classifier is pinned on the
-   measured provenance signals (RESISTANCE=129 multi-col vs authored 0-2).
+   measured provenance signals of the authored corpus (0-2 multi-column
+   sections) and on a synthetic scan-shaped document; the OCR scan that
+   originally motivated spec 019/020 was removed from the fixture corpus
+   (2026-11-06), so the scan side is exercised through synthetic documents.
 """
 
 import re
@@ -37,7 +40,6 @@ from docxaicorrector.document.provenance import (
 
 
 BOOK_SOURCES = Path(__file__).resolve().parent / "sources" / "book"
-RESISTANCE = BOOK_SOURCES / "RESISTANCE FACTORS AND SPECIAL FORCES AREAS UKRAINE.docx"
 MAZZUCATO = BOOK_SOURCES / "The Value of Everything. Making and Taking in the Global Economy by Mariana Mazzucato (z-lib.org).docx"
 LIETAER = BOOK_SOURCES / "Rethinking-money_-How-new-currencies-turn-scarcity-into-prosperity-Bernard-Lietaer-Jacqui-Dunne.docx"
 
@@ -88,12 +90,8 @@ def _synthetic_document_xml(*, num_sections: int, multi_column_sections: int) ->
 
 
 def test_scan_origin_classifier_pins_corpus_provenance():
-    resistance = classify_document_scan_origin(RESISTANCE.read_bytes())
     mazzucato = classify_document_scan_origin(MAZZUCATO.read_bytes())
     lietaer = classify_document_scan_origin(LIETAER.read_bytes())
-
-    assert resistance.is_scan_origin is True
-    assert resistance.multi_column_section_count == 129
 
     assert mazzucato.is_scan_origin is False
     assert mazzucato.multi_column_section_count == 0
@@ -120,13 +118,57 @@ def test_scan_origin_classifier_flags_high_multi_column_density():
     assert classification.is_scan_origin is True
 
 
+
+def _add_multi_column_section_break(document, text: str) -> None:
+    # One OCR-style column region: a paragraph that closes a two-column section.
+    paragraph = document.add_paragraph(text)
+    section_properties = OxmlElement("w:sectPr")
+    columns = OxmlElement("w:cols")
+    columns.set(qn("w:num"), "2")
+    section_properties.append(columns)
+    paragraph._p.get_or_add_pPr().append(section_properties)
+
+
+def _add_borderless_irregular_table(document, values: list[list[str]], *, widths: list[int]) -> None:
+    table = document.add_table(rows=len(values), cols=len(values[0]))
+    for row_index, row_values in enumerate(values):
+        for col_index, value in enumerate(row_values):
+            table.cell(row_index, col_index).text = value
+    grid = table._tbl.find(qn("w:tblGrid"))
+    for grid_col, width in zip(grid.findall(qn("w:gridCol")), widths):
+        grid_col.set(qn("w:w"), str(width))
+
+
+def _synthetic_scan_origin_docx(*, column_regions: int = 40, scan_tables: int = 4) -> bytes:
+    """A document shaped like an OCR->DOCX scan: dozens of two-column section
+    breaks (well past the classifier floor) and borderless, irregular-width
+    tables carrying real cell text. No book content, no per-book literals."""
+    document = Document()
+    for index in range(column_regions):
+        _add_multi_column_section_break(document, f"Строка колоночного региона {index}")
+    for table_index in range(scan_tables):
+        _add_borderless_irregular_table(
+            document,
+            [[f"Ячейка {table_index}-{row}-{col}" for col in range(3)] for row in range(6)],
+            widths=[500, 2500, 900],
+        )
+        document.add_paragraph(f"Абзац между таблицами {table_index}")
+    buffer = BytesIO()
+    document.save(buffer)
+    return buffer.getvalue()
+
+
 # --------------------------------------------------------------------------- #
-# Required counter-proof 2: scan tables flattened + conservation (RESISTANCE)  #
+# Required counter-proof 2: scan tables flattened + conservation (synthetic)   #
 # --------------------------------------------------------------------------- #
 
 
 def test_scan_origin_document_flattens_tables_and_conserves_cell_text():
-    source_bytes = RESISTANCE.read_bytes()
+    source_bytes = _synthetic_scan_origin_docx()
+    # Sanity: the synthetic shape really classifies as scan-origin, so the test
+    # cannot pass vacuously through the authored branch.
+    assert classify_document_scan_origin(source_bytes).is_scan_origin is True
+
     paragraphs, _ = extract_document_content_from_docx(BytesIO(source_bytes))
 
     # No table survives extraction for a scan-origin document.
@@ -152,11 +194,8 @@ def test_scan_origin_document_flattens_tables_and_conserves_cell_text():
                 if cell_text not in body_stream:
                     missing.append(cell.text)
 
-    assert checked > 100  # sanity: the fixture really has substantial tabular data
-    # Whitespace-insensitive conservation: at most a negligible tail of OCR cells
-    # whose surrounding punctuation (wrapping quotes) reflowed; the token content
-    # is preserved. Pin a hard, near-total conservation bound.
-    assert len(missing) <= 1, f"table cell text lost on flatten: {missing[:10]}"
+    assert checked == 4 * 6 * 3  # sanity: every synthetic cell was inspected
+    assert missing == [], f"table cell text lost on flatten: {missing[:10]}"
 
 
 # --------------------------------------------------------------------------- #
@@ -212,8 +251,8 @@ def test_mazzucato_authored_tables_survive_render_as_word_tables():
 
 
 @pytest.mark.skipif(not _pandoc_available(), reason="pandoc is unavailable in current runtime")
-def test_resistance_scan_tables_do_not_render_word_tables():
-    paragraphs, _ = extract_document_content_from_docx(BytesIO(RESISTANCE.read_bytes()))
+def test_scan_origin_tables_do_not_render_word_tables():
+    paragraphs, _ = extract_document_content_from_docx(BytesIO(_synthetic_scan_origin_docx()))
     markdown = build_document_text(paragraphs)
     output = generation.convert_markdown_to_docx_bytes(markdown)
 
@@ -260,9 +299,10 @@ def test_table_has_authored_signals_distinguishes_authored_from_scan_shapes():
     )
 
 
-def test_table_has_authored_signals_treats_real_scan_tables_as_non_authored():
-    # Anti-regression: the actual RESISTANCE scan tables must keep flattening.
-    source_document = Document(BytesIO(RESISTANCE.read_bytes()))
+def test_table_has_authored_signals_treats_scan_shaped_tables_as_non_authored():
+    # Anti-regression: borderless irregular tables inside a scan-shaped document
+    # must keep flattening (the OCR column-region shape).
+    source_document = Document(BytesIO(_synthetic_scan_origin_docx()))
     assert source_document.tables  # sanity
     for table in source_document.tables:
         assert table_has_authored_signals(table._tbl) is False
@@ -284,16 +324,6 @@ def _add_bordered_uniform_table(document, values: list[list[str]], *, widths: li
         edge_element.set(qn("w:sz"), "4")
         borders.append(edge_element)
     table_properties.append(borders)
-
-
-def _add_borderless_irregular_table(document, values: list[list[str]], *, widths: list[int]) -> None:
-    table = document.add_table(rows=len(values), cols=len(values[0]))
-    for row_index, row_values in enumerate(values):
-        for col_index, value in enumerate(row_values):
-            table.cell(row_index, col_index).text = value
-    grid = table._tbl.find(qn("w:tblGrid"))
-    for grid_col, width in zip(grid.findall(qn("w:gridCol")), widths):
-        grid_col.set(qn("w:w"), str(width))
 
 
 def test_scan_origin_preserves_authored_table_but_flattens_scan_table():

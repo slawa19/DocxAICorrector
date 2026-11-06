@@ -20,6 +20,11 @@ Changelog:
   legitimate tables that never reach the output DOCX. Meanwhile `RESISTANCE (OCR scan)` has 3 tables + **129
   multi-column sections + 86 images** (scanned two-column pages). The right discriminator is document-level
   PROVENANCE (scan vs authored), not per-table form.
+- 2026-11-06 — The OCR scan source (`RESISTANCE…UKRAINE.docx`) and its formatting-mapper golden were removed from
+  the fixture corpus by owner decision. The scan-side counter-proofs in `tests/test_preserve_authored_tables.py`
+  (flatten + cell-text conservation, no `w:tbl` on render, authored-signal override) now run on a synthetic
+  scan-shaped document (40 two-column section breaks, borderless irregular tables); the authored side still pins
+  Mazzucato/Lietaer. The real-document numbers above (129/3/86) remain historical evidence only.
 
 ## Verified findings (Constitution VIII — verified 2026-07-14)
 
