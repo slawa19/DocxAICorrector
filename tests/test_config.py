@@ -49,10 +49,14 @@ def test_constants_paths_resolve_to_repo_root() -> None:
     assert constants.CONFIG_PATH == resources / "config.toml"
     assert constants.PROMPTS_DIR == resources / "prompts"
     assert constants.ENV_PATH == repo_root / ".env"
-    assert constants.RUN_DIR == repo_root / ".run"
-    assert constants.UI_RESULT_ARTIFACTS_DIR == repo_root / ".run" / "ui_results"
-    assert constants.APP_LOG_PATH == repo_root / ".run" / "app.log"
-    assert constants.APP_READY_PATH == repo_root / ".run" / "app.ready"
+    # Outside the suite the run root defaults to <repo>/.run; inside it, tests/conftest.py
+    # redirects it through DOCX_AI_RUN_DIR (spec 061 FR-020), so the default is asserted on
+    # the resolver and the live constants only on their derivation from the root
+    # (tests/test_run_dir_isolation.py asserts where that root is).
+    assert constants.resolve_run_dir(repo_root, environ={}) == repo_root / ".run"
+    assert constants.UI_RESULT_ARTIFACTS_DIR == constants.RUN_DIR / "ui_results"
+    assert constants.APP_LOG_PATH == constants.RUN_DIR / "app.log"
+    assert constants.APP_READY_PATH == constants.RUN_DIR / "app.ready"
 
 
 def test_load_app_config_applies_env_overrides_and_clamps(monkeypatch):

@@ -1,6 +1,9 @@
+import atexit
 import base64
 import os
+import shutil
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -9,6 +12,26 @@ import pytest
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 SRC_ROOT = PROJECT_ROOT / "src"
+
+# Spec 061 FR-020: redirect the runtime-artifact root ONCE, before the package is first
+# imported. ``core/constants.py`` reads ``DOCX_AI_RUN_DIR`` at import, and every module that
+# copies a run-directory constant at import copies the redirected value, so the suite never
+# writes into the operator's ``.run`` (before this, a full run left 155 files in
+# ``.run/ui_results`` against a retention ceiling of 80 stems). The variable stays in
+# ``os.environ`` for the whole session (``isolate_repo_dotenv`` spares it), so subprocesses
+# a test spawns inherit the same root. This module is executed twice per session — as
+# pytest's ``conftest`` and again as ``tests.conftest`` by test modules that import its
+# constants — so the second execution must adopt the root the first one created, not make
+# a new one the already-imported constants never see.
+_SESSION_RUN_DIR_MARKER = "_DOCXAI_TEST_SESSION_RUN_DIR"
+_session_run_dir = os.environ.get(_SESSION_RUN_DIR_MARKER, "")
+if _session_run_dir and os.environ.get("DOCX_AI_RUN_DIR") == _session_run_dir:
+    TEST_RUN_DIR = Path(_session_run_dir)
+else:
+    TEST_RUN_DIR = Path(tempfile.mkdtemp(prefix="docxai-test-run-")).resolve()
+    os.environ["DOCX_AI_RUN_DIR"] = str(TEST_RUN_DIR)
+    os.environ[_SESSION_RUN_DIR_MARKER] = str(TEST_RUN_DIR)
+    atexit.register(shutil.rmtree, TEST_RUN_DIR, True)
 
 
 # Make the repo-root shared bootstrap importable, then pin src first (F5/R29).
@@ -20,6 +43,13 @@ ensure_src_first_import_order(SRC_ROOT)
 
 from docxaicorrector.core.config import ModelRegistry, TextModelConfig
 import docxaicorrector.core.config as config
+import docxaicorrector.core.constants as _constants
+
+if _constants.RUN_DIR != TEST_RUN_DIR:  # pragma: no cover - fails loudly, never silently
+    raise pytest.UsageError(
+        "docxaicorrector was imported before tests/conftest.py set DOCX_AI_RUN_DIR; "
+        f"RUN_DIR={_constants.RUN_DIR} would let the suite write into the operator's .run."
+    )
 
 
 TEST_TEXT_MODEL_DEFAULT = "openrouter:google/gemini-3.1-flash-lite-preview"
@@ -38,10 +68,17 @@ def isolate_repo_dotenv(monkeypatch: pytest.MonkeyPatch) -> None:
     """Prevent local repo .env values from leaking into tests by default."""
     monkeypatch.setattr(config, "ENV_PATH", PROJECT_ROOT / "__missing_test__.env")
     for env_name in tuple(os.environ):
+        if env_name == _constants.RUN_DIR_ENV_VAR:
+            continue
         if env_name.startswith("DOCX_AI_") or env_name in {"OPENAI_API_KEY", "OPENROUTER_API_KEY"}:
             monkeypatch.delenv(env_name, raising=False)
 
 
+# The two fixtures below are the per-family redirects FR-020 wants gone. They stay because
+# these two families are NOT derived from RUN_DIR: both are cwd-relative
+# ``Path(".run") / ...`` constants in ``generation/`` (formatting_diagnostics_retention.py,
+# marker_attempt_capture.py), so redirecting the root does not reach them. Delete each
+# fixture in the same change that derives its family from ``core.constants.RUN_DIR``.
 @pytest.fixture(autouse=True)
 def isolate_formatting_diagnostics_dir(
     tmp_path_factory: pytest.TempPathFactory,
