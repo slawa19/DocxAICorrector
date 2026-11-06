@@ -323,3 +323,85 @@ def test_cleaned_translate_post_pass_never_receives_an_omitted_paragraph(tmp_pat
     )
     statuses = {str(entry["paragraph_id"]): entry.get("paragraph_status") for entry in final_registry}
     assert statuses == {"p0001": "accepted", "p0002": "omitted"}
+
+
+# ---------------------------------------------------------------------------------------
+# FR-017 (narrowed): the post-pass answer with fewer paragraphs is never silent
+# ---------------------------------------------------------------------------------------
+
+
+def _run_edit_post_pass(tmp_path: Path, *, post_pass_answer: str):
+    runtime: dict[str, object] = {"state": {}}
+    events, log_event = _capture_log_events()
+
+    def generate(**kwargs):
+        if kwargs["system_prompt"] == "system:audiobook":
+            return post_pass_answer
+        return "Первый абзац главы.\n\nВторой абзац главы."
+
+    result = _run(
+        tmp_path,
+        processing_operation="edit",
+        app_config={"audiobook_postprocess_enabled": True},
+        jobs=[
+            {
+                "target_text": "block",
+                "context_before": "",
+                "context_after": "",
+                "target_chars": 5,
+                "context_chars": 0,
+                "narration_include": True,
+            }
+        ],
+        generate=generate,
+        log_event=log_event,
+        runtime=runtime,
+    )
+    return result, runtime, events
+
+
+def _saved_context(events: Sequence[Mapping[str, object]]) -> Mapping[str, object]:
+    saved = next(event for event in events if event["event_id"] == "ui_audiobook_artifact_saved")
+    context = saved["context"]
+    assert isinstance(context, Mapping)
+    return context
+
+
+def test_post_pass_answer_with_a_paragraph_missing_is_marked_for_review(tmp_path) -> None:
+    result, runtime, events = _run_edit_post_pass(
+        tmp_path, post_pass_answer="[thoughtful] Первый абзац главы."
+    )
+
+    assert result == "succeeded"
+    shortfalls = [
+        event for event in events if event["event_id"] == "audiobook_postprocess_paragraph_shortfall"
+    ]
+    assert len(shortfalls) == 1
+    assert shortfalls[0]["level"] == logging.WARNING
+    context = shortfalls[0]["context"]
+    assert isinstance(context, Mapping)
+    assert context["needs_review"] is True
+    assert context["sent_paragraph_count"] == 2
+    assert context["returned_paragraph_count"] == 1
+    assert context["missing_paragraph_count"] == 1
+    saved = _saved_context(events)
+    assert saved["postprocess_paragraph_shortfall_group_count"] == 1
+    assert saved["postprocess_paragraph_shortfall_paragraph_count"] == 1
+    # Delivered, not replaced: the check reports, it does not rewrite the answer.
+    assert "Первый абзац главы." in str(cast(Mapping[str, object], runtime["state"])["latest_narration_text"])
+
+
+def test_post_pass_answer_with_every_paragraph_is_not_reported(tmp_path) -> None:
+    """Anti-vacuum: a full answer raises nothing, and the counters say zero."""
+    result, _runtime, events = _run_edit_post_pass(
+        tmp_path,
+        post_pass_answer="[thoughtful] Первый абзац главы.\n\nВторой абзац главы.",
+    )
+
+    assert result == "succeeded"
+    assert not [
+        event for event in events if event["event_id"] == "audiobook_postprocess_paragraph_shortfall"
+    ]
+    saved = _saved_context(events)
+    assert saved["postprocess_paragraph_shortfall_group_count"] == 0
+    assert saved["postprocess_paragraph_shortfall_paragraph_count"] == 0

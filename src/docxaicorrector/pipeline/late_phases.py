@@ -1624,6 +1624,15 @@ def finalize_processing_success(
                     joined_sentence_continuation_count=int(
                         getattr(state, "narration_joined_sentence_continuation_count", 0) or 0
                     ),
+                    # Spec 061 FR-017 (narrowed): post-pass groups whose answer came back
+                    # with fewer paragraphs than were sent — delivered, marked for review,
+                    # and counted here under the same zero-is-a-statement rule.
+                    postprocess_paragraph_shortfall_group_count=int(
+                        getattr(state, "narration_postprocess_paragraph_shortfall_group_count", 0) or 0
+                    ),
+                    postprocess_paragraph_shortfall_paragraph_count=int(
+                        getattr(state, "narration_postprocess_paragraph_shortfall_paragraph_count", 0) or 0
+                    ),
                 )
         except Exception as exc:
             _log_post_delivery_secondary_failure(
