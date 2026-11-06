@@ -20,6 +20,7 @@ from docxaicorrector_bootstrap import ensure_src_first_import_order
 
 ensure_src_first_import_order(ROOT_DIR, SRC_ROOT)
 
+from docxaicorrector.core.constants import RUN_DIR
 from docxaicorrector.runtime.artifact_retention import (
     LAYOUT_CLEANUP_REPORTS_MAX_AGE_SECONDS,
     LAYOUT_CLEANUP_REPORTS_MAX_COUNT,
@@ -37,12 +38,12 @@ from docxaicorrector.runtime.artifact_retention import (
 )
 
 TARGETS = [
-    (Path(".run/paragraph_boundary_reports"), PARAGRAPH_BOUNDARY_REPORTS_MAX_AGE_SECONDS, PARAGRAPH_BOUNDARY_REPORTS_MAX_COUNT),
-    (Path(".run/relation_normalization_reports"), RELATION_NORMALIZATION_REPORTS_MAX_AGE_SECONDS, RELATION_NORMALIZATION_REPORTS_MAX_COUNT),
-    (Path(".run/layout_cleanup_reports"), LAYOUT_CLEANUP_REPORTS_MAX_AGE_SECONDS, LAYOUT_CLEANUP_REPORTS_MAX_COUNT),
-    (Path(".run/paragraph_boundary_ai_review"), PARAGRAPH_BOUNDARY_AI_REVIEW_MAX_AGE_SECONDS, PARAGRAPH_BOUNDARY_AI_REVIEW_MAX_COUNT),
-    (Path(".run/structure_maps"), STRUCTURE_MAPS_MAX_AGE_SECONDS, STRUCTURE_MAPS_MAX_COUNT),
-    (Path(".run/structure_validation"), STRUCTURE_VALIDATION_MAX_AGE_SECONDS, STRUCTURE_VALIDATION_MAX_COUNT),
+    (RUN_DIR / "paragraph_boundary_reports", PARAGRAPH_BOUNDARY_REPORTS_MAX_AGE_SECONDS, PARAGRAPH_BOUNDARY_REPORTS_MAX_COUNT),
+    (RUN_DIR / "relation_normalization_reports", RELATION_NORMALIZATION_REPORTS_MAX_AGE_SECONDS, RELATION_NORMALIZATION_REPORTS_MAX_COUNT),
+    (RUN_DIR / "layout_cleanup_reports", LAYOUT_CLEANUP_REPORTS_MAX_AGE_SECONDS, LAYOUT_CLEANUP_REPORTS_MAX_COUNT),
+    (RUN_DIR / "paragraph_boundary_ai_review", PARAGRAPH_BOUNDARY_AI_REVIEW_MAX_AGE_SECONDS, PARAGRAPH_BOUNDARY_AI_REVIEW_MAX_COUNT),
+    (RUN_DIR / "structure_maps", STRUCTURE_MAPS_MAX_AGE_SECONDS, STRUCTURE_MAPS_MAX_COUNT),
+    (RUN_DIR / "structure_validation", STRUCTURE_VALIDATION_MAX_AGE_SECONDS, STRUCTURE_VALIDATION_MAX_COUNT),
 ]
 
 
