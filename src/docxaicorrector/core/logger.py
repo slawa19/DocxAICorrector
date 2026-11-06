@@ -171,6 +171,45 @@ def _normalize_runtime_error_message(message: str) -> str:
     return message
 
 
+def _request_host(exc: Exception) -> str | None:
+    try:
+        request = getattr(exc, "request", None)
+        host = getattr(getattr(request, "url", None), "host", None)
+    except Exception:  # e.g. an httpx error whose .request property raises when unset
+        return None
+    return host.lower() if isinstance(host, str) and host else None
+
+
+def _provider_display_name(exc: Exception) -> str:
+    """Name of the provider the failing request went to (spec 061 FR-023).
+
+    Every provider error used to say "OpenAI", including OpenRouter's — the default text
+    provider. Resolution, most specific first: the request's host equals a configured
+    provider ``base_url`` host (OpenRouter talks through the openai SDK, so only the host
+    tells them apart); else the SDK package that raised (``openai`` / ``anthropic``); else
+    the provider of the default text model. Never raises: an error path must not fail
+    while describing an error."""
+    try:
+        from urllib.parse import urlsplit
+
+        from docxaicorrector.core import config as app_config
+
+        registry = app_config.get_provider_registry()
+        providers = [registry.openai, registry.openrouter, registry.anthropic]
+        host = _request_host(exc)
+        if host is not None:
+            for provider in providers:
+                if provider.base_url and (urlsplit(provider.base_url).hostname or "").lower() == host:
+                    return app_config.provider_display_name(provider)
+        sdk_package = type(exc).__module__.partition(".")[0]
+        for provider in providers:
+            if provider.name == sdk_package:
+                return app_config.provider_display_name(provider)
+        return app_config.provider_display_name(app_config.get_default_text_model_provider_config())
+    except Exception:
+        return "OpenAI"
+
+
 def format_user_error(exc: Exception) -> str:
     message = extract_exception_message(exc)
     status_code = getattr(exc, "status_code", None)
@@ -178,26 +217,33 @@ def format_user_error(exc: Exception) -> str:
 
     if "unsupported parameter" in lowered and "temperature" in lowered:
         return "Выбранная модель не поддерживает параметр temperature. Запрос отправлен с неподдерживаемой настройкой модели."
+    is_provider_error = isinstance(status_code, int) or exc.__class__.__name__ in {"APIConnectionError", "APITimeoutError"}
+    provider = _provider_display_name(exc) if is_provider_error else ""
     if status_code == 400:
-        return f"OpenAI отклонил запрос: {message}"
+        return f"{provider} отклонил запрос: {message}"
     if status_code == 401:
-        return "OpenAI отклонил запрос из-за неверного или отсутствующего API-ключа."
+        return f"{provider} отклонил запрос из-за неверного или отсутствующего API-ключа."
+    if status_code == 402:
+        return (
+            f"{provider} отклонил запрос: на аккаунте закончились кредиты (HTTP 402). "
+            f"Пополните баланс у {provider} или выберите модель другого провайдера."
+        )
     if status_code == 403:
-        return "OpenAI отклонил запрос из-за ограничений доступа к модели или аккаунту."
+        return f"{provider} отклонил запрос из-за ограничений доступа к модели или аккаунту."
     if status_code == 404:
         return f"Запрошенная модель или ресурс не найдены: {message}"
     if status_code == 408:
-        return "Запрос к OpenAI превысил время ожидания. Попробуйте повторить запуск."
+        return f"Запрос к {provider} превысил время ожидания. Попробуйте повторить запуск."
     if status_code == 409:
-        return f"OpenAI вернул конфликт состояния запроса: {message}"
+        return f"{provider} вернул конфликт состояния запроса: {message}"
     if status_code == 429:
-        return "OpenAI временно ограничил запросы. Попробуйте позже или уменьшите нагрузку."
+        return f"{provider} временно ограничил запросы. Попробуйте позже или уменьшите нагрузку."
     if isinstance(status_code, int) and status_code >= 500:
-        return "OpenAI временно недоступен. Попробуйте повторить запуск позже."
+        return f"{provider} временно недоступен. Попробуйте повторить запуск позже."
     if exc.__class__.__name__ == "APIConnectionError":
-        return "Не удалось подключиться к OpenAI. Проверьте интернет или сетевые ограничения."
+        return f"Не удалось подключиться к {provider}. Проверьте интернет или сетевые ограничения."
     if exc.__class__.__name__ == "APITimeoutError":
-        return "OpenAI не ответил вовремя. Попробуйте повторить запуск."
+        return f"{provider} не ответил вовремя. Попробуйте повторить запуск."
     if isinstance(exc, (RuntimeError, ValueError)):
         return _normalize_runtime_error_message(message)
     return f"Непредвиденная ошибка: {message}"

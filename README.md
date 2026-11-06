@@ -139,11 +139,11 @@ Universal real-document validation architecture и её implementation status а
 ## Требования
 
 - WSL2 с Linux-дистрибутивом, в котором создаётся и используется текущее `.venv`
-- Python 3.12+ for the canonical WSL runtime and editable-install/package verification
+- Python 3.12+ for the canonical WSL runtime and editable-install/package verification. Нижняя граница — `requires-python = ">=3.12"` в `pyproject.toml`; на ней же идут CI (`.github/workflows/ci.yml`, `python-version: '3.12'`) и pyright (`pyrightconfig.json`, `pythonVersion` 3.12 — анализ против поддерживаемого минимума, спека 028). Каноническая WSL `.venv` сейчас создана на Python 3.13.5, и суита зелёная на ней тоже (замер 2026-11-06; тогда же pyright с `pythonVersion` 3.13 дал то же число ошибок, что с 3.12)
 - System packages из `system-requirements.apt`: `pandoc`, `libreoffice`, `antiword`
 - Для legacy `.doc`: предпочтительно LibreOffice (`soffice`), fallback-связка `antiword` + `pandoc`
 - Для `PDF`: LibreOffice (`soffice` или `libreoffice`) внутри WSL обязателен
-- OpenAI API key
+- API-ключ провайдера дефолтной текстовой модели (`[models.text].default`); для packaged default это `OPENROUTER_API_KEY`
 - Windows PowerShell только как thin wrapper для штатных start/stop-скриптов
 
 ## Быстрый старт
@@ -173,7 +173,7 @@ Workflow contract tests теперь разделены на два слоя:
 - установлены ли Python-зависимости;
 - доступен ли Pandoc для `pypandoc`;
 - доступен ли LibreOffice (`soffice`/`libreoffice`) для PDF import и preferred legacy DOC conversion;
-- настроен ли `OPENAI_API_KEY`.
+- настроен ли API-ключ провайдера дефолтной текстовой модели: имя переменной берётся из `[models.text].default` (с учётом `.env` и `DOCX_AI_MODELS_TEXT_DEFAULT`); для packaged default это `OPENROUTER_API_KEY`.
 
 `Project Status` — именно диагностическая команда. Она показывает итоговый статус `READY`, `RUNNING`, `DEGRADED` или `CONFLICT`, но не должна считаться ошибкой только потому, что приложение сейчас не запущено.
 
@@ -240,13 +240,15 @@ cp .env.example .env
 Дефолт packaged config — `openrouter:google/gemini-3.1-flash-lite-preview` (см. `src/docxaicorrector/resources/config.toml`), поэтому для дефолтного запуска нужен `OPENROUTER_API_KEY`. `OPENAI_API_KEY` нужен, если выбраны OpenAI-модели (напр. `gpt-5.4-mini`) или для image-обработки:
 
 ```env
+OPENROUTER_API_KEY=sk-or-...
 OPENAI_API_KEY=sk-...
 ```
 
 Поддерживаемые переменные `.env`:
 
-- `OPENAI_API_KEY` — обязательный API-ключ OpenAI для текстовой и image-обработки.
-- `OPENROUTER_API_KEY` — optional API-ключ OpenRouter для provider-qualified text selectors вида `openrouter:<model_id>`.
+- `OPENROUTER_API_KEY` — API-ключ OpenRouter для selectors вида `openrouter:<model_id>`; обязателен для packaged default текстовой модели.
+- `OPENAI_API_KEY` — API-ключ OpenAI: нужен, только если выбраны OpenAI-модели (selector без префикса или `openai:<model_id>`) или включена image-обработка (её service-модели по умолчанию — OpenAI). Обязательным его делает только выбор такой модели дефолтной.
+- `ANTHROPIC_API_KEY` — API-ключ Anthropic: нужен, только если selector указывает на `anthropic:<model_id>` напрямую.
 - `DOCX_AI_BIND_HOST` — интерфейс, который слушает Streamlit. По умолчанию `127.0.0.1` (только локально). У приложения нет встроенной аутентификации, поэтому удалённый режим — явный opt-in: задайте `DOCX_AI_BIND_HOST=0.0.0.0` только за reverse proxy с аутентификацией. Приоритет секретов и настроек: `environment > .env > config defaults`.
 - `DOCX_AI_MODELS_TEXT_DEFAULT` — модель редактирования текста по умолчанию.
 - `DOCX_AI_MODELS_TEXT_OPTIONS` — список моделей для sidebar через запятую.
@@ -274,6 +276,7 @@ OPENAI_API_KEY=sk-...
 Пример полного `.env`:
 
 ```env
+OPENROUTER_API_KEY=sk-or-...
 OPENAI_API_KEY=sk-...
 DOCX_AI_PROVIDERS_OPENAI_ENABLED=true
 DOCX_AI_PROVIDERS_OPENROUTER_ENABLED=true

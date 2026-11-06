@@ -811,7 +811,7 @@ def _render_formatting_review_block(
         file_name=t("result.review_download_filename"),
         mime="text/plain",
         on_click="ignore",
-        use_container_width=True,
+        width="stretch",
     )
     if presentation.level == "review":
         # Spec 010: an accepted result can still list items to check — keep it non-alarming.
@@ -946,7 +946,7 @@ def render_result_bundle(
                     mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                     on_click="ignore",
                     type=download_type,
-                    use_container_width=True,
+                    width="stretch",
                 )
         col_tts.download_button(
             label=narration_label or t("result.narration_elevenlabs"),
@@ -955,7 +955,7 @@ def render_result_bundle(
             mime="text/plain",
             on_click="ignore",
             type=download_type,
-            use_container_width=True,
+            width="stretch",
         )
         col_md.download_button(
             label=markdown_label,
@@ -964,7 +964,7 @@ def render_result_bundle(
             mime="text/markdown",
             on_click="ignore",
             type=download_type,
-            use_container_width=True,
+            width="stretch",
         )
         if operation == "audiobook" and docx_bytes is not None:
             col_docx.download_button(
@@ -974,7 +974,7 @@ def render_result_bundle(
                 mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                 on_click="ignore",
                 type=download_type,
-                use_container_width=True,
+                width="stretch",
             )
         _render_formatting_review_block(
             original_filename=original_filename,
@@ -991,7 +991,7 @@ def render_result_bundle(
             mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             on_click="ignore",
             type=download_type,
-            use_container_width=True,
+            width="stretch",
         )
     col_md.download_button(
         label=markdown_label,
@@ -1000,7 +1000,7 @@ def render_result_bundle(
         mime="text/markdown",
         on_click="ignore",
         type=download_type,
-        use_container_width=True,
+        width="stretch",
     )
     _render_formatting_review_block(
         original_filename=original_filename,

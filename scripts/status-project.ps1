@@ -59,11 +59,14 @@ try {
         Write-Warn 'LibreOffice is unavailable; PDF import and preferred legacy DOC conversion will fail'
     }
 
+    # The required key follows the provider of [models.text].default (env-status resolves it).
+    $apiKeyEnv = [string]$status['api_key_env']
+    if ([string]::IsNullOrWhiteSpace($apiKeyEnv)) { $apiKeyEnv = 'API key of the default text model provider' }
     if ($apiKeyOk) {
-        Write-Ok 'OPENAI_API_KEY is configured'
+        Write-Ok "$apiKeyEnv is configured"
     }
     else {
-        Write-Warn 'OPENAI_API_KEY is not configured'
+        Write-Warn "$apiKeyEnv is not configured"
     }
 
     $finalStatus = 'READY'

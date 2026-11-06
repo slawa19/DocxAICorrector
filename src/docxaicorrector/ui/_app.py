@@ -668,7 +668,7 @@ def _render_processing_controls(*, can_start: bool, is_processing: bool, emphasi
     if start_col.button(
         start_label,
         type="primary" if emphasize_start else "secondary",
-        use_container_width=True,
+        width="stretch",
         disabled=(not can_start) or is_processing,
         key="start_processing_button",
     ):
@@ -676,7 +676,7 @@ def _render_processing_controls(*, can_start: bool, is_processing: bool, emphasi
 
     if stop_col.button(
         t("app.button_stopping") if stop_requested else t("app.button_stop"),
-        use_container_width=True,
+        width="stretch",
         disabled=(not is_processing) or stop_requested,
         key="stop_processing_button",
     ):
@@ -725,7 +725,7 @@ def _render_preparation_discard_confirmation(*, result: Mapping[str, object]) ->
     st.warning(t("app.preparation_discards_result_warning"))
     if st.button(
         t("app.preparation_discards_result_confirm"),
-        use_container_width=True,
+        width="stretch",
         key="confirm_preparation_discards_result",
     ):
         return True
@@ -936,7 +936,7 @@ def main() -> None:
             preparation_error = str(st.session_state.get("last_error") or "")
             if preparation_error:
                 st.error(preparation_error)
-            if st.button(t("app.button_reprocess"), use_container_width=True):
+            if st.button(t("app.button_reprocess"), width="stretch"):
                 clear_preparation_failure(preparation_request_marker)
                 st.rerun()
             render_live_status()
@@ -970,7 +970,7 @@ def main() -> None:
             return
 
     if application_flow.has_resettable_state(current_result=current_result, session_state=session_state):
-        if st.button(t("app.reset_results_button"), use_container_width=True):
+        if st.button(t("app.reset_results_button"), width="stretch"):
             reset_run_state(keep_restart_source=False)
             st.rerun()
     idle_view_state = application_flow.derive_app_idle_view_state(

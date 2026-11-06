@@ -1,4 +1,5 @@
 import os
+from collections.abc import Mapping
 from pathlib import Path
 
 
@@ -31,7 +32,23 @@ SYSTEM_PROMPT_PATH = PROMPTS_DIR / "system_prompt.txt"
 # checkout; DOCX_AI_HOME / cwd when installed.
 BASE_DIR = resolve_repo_root(Path(__file__).resolve())
 ENV_PATH = BASE_DIR / ".env"
-RUN_DIR = BASE_DIR / ".run"
+RUN_DIR_ENV_VAR = "DOCX_AI_RUN_DIR"
+
+
+def resolve_run_dir(base_dir: Path, environ: Mapping[str, str] | None = None) -> Path:
+    """Root of every runtime artifact family (spec 061 FR-020).
+
+    Read once, at import, from ``DOCX_AI_RUN_DIR`` in the PROCESS environment, defaulting to
+    ``<working root>/.run``. ``.env`` is merged later (``load_project_dotenv``), so it cannot
+    move this root. Every run-directory constant derives from this one value: redirecting the
+    root — ``tests/conftest.py`` does, before the package is first imported — redirects every
+    derived family at once, including the copies other modules capture at import time."""
+    source = os.environ if environ is None else environ
+    override = source.get(RUN_DIR_ENV_VAR, "").strip()
+    return Path(override).resolve() if override else base_dir / ".run"
+
+
+RUN_DIR = resolve_run_dir(BASE_DIR)
 UI_RESULT_ARTIFACTS_DIR = RUN_DIR / "ui_results"
 STRUCTURE_MANIFESTS_DIR = RUN_DIR / "structure_manifests"
 SEGMENT_RESULT_REGISTRY_DIR = RUN_DIR / "segment_results"
