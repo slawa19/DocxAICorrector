@@ -77,6 +77,9 @@ PROCESSING_OPERATION_VALUES = ("edit", "translate", "audiobook")
 # PROCESSING_OPERATION_VALUES so config/env/run-profile/UI all validate against one list.
 EDITORIAL_INTENSITY_VALUES = ("conservative", "literary")
 _SUPPORTED_PROVIDER_IDS = ("openai", "openrouter", "anthropic")
+# Used only when config.toml carries no provider_timeout_seconds_default: the read timeout
+# the openai and anthropic SDKs apply on their own (``_constants.DEFAULT_TIMEOUT``, 600 s).
+_PROVIDER_TIMEOUT_SECONDS_FALLBACK = 600.0
 _PROVIDER_CAPABILITIES = {
     "openai": frozenset({"responses_text", "responses_vision", "images_generate", "images_edit"}),
     "openrouter": frozenset({"responses_text"}),
@@ -1064,6 +1067,15 @@ def _resolve_provider_registry(*, config_data: dict[str, object]) -> ProviderReg
     if unknown_provider_tables:
         raise RuntimeError(f"Неизвестные provider tables в {CONFIG_PATH}: {', '.join(unknown_provider_tables)}")
 
+    # Spec 061 FR-021: one timeout for every provider client, overridable per provider.
+    global_timeout_seconds = config_data.get("provider_timeout_seconds_default", _PROVIDER_TIMEOUT_SECONDS_FALLBACK)
+    if (
+        isinstance(global_timeout_seconds, bool)
+        or not isinstance(global_timeout_seconds, (int, float))
+        or global_timeout_seconds <= 0
+    ):
+        raise RuntimeError(f"Некорректное поле provider_timeout_seconds_default в {CONFIG_PATH}")
+
     def _resolve_provider(
         provider_name: str,
         *,
@@ -1094,7 +1106,10 @@ def _resolve_provider_registry(*, config_data: dict[str, object]) -> ProviderReg
         base_url = _optional_field("base_url", default_base_url)
         referer = _optional_field("referer", default_referer)
         title = _optional_field("title", default_title)
-        timeout_seconds_value = section.get("timeout_seconds", default_timeout_seconds)
+        timeout_seconds_value = section.get(
+            "timeout_seconds",
+            default_timeout_seconds if default_timeout_seconds is not None else global_timeout_seconds,
+        )
         if timeout_seconds_value is not None and (
             isinstance(timeout_seconds_value, bool)
             or not isinstance(timeout_seconds_value, (int, float))
@@ -1150,6 +1165,8 @@ def _resolve_provider_registry(*, config_data: dict[str, object]) -> ProviderReg
             "anthropic",
             default_enabled=False,
             default_api_key_env="ANTHROPIC_API_KEY",
+            # Anthropic's own default: it outranks provider_timeout_seconds_default, as a
+            # providers.anthropic.timeout_seconds would.
             default_timeout_seconds=1200.0,
         ),
     )

@@ -87,6 +87,12 @@ reader_cleanup_max_failed_chunk_ratio = 0.1
 # here re-enables them; an empty list means all of them.
 reader_cleanup_allowed_operations = ["normalize_heading_boundary", "join_fragmented_paragraph"]
 
+# Request timeout (seconds) for EVERY provider client (spec 061 FR-021). A provider's own
+# timeout_seconds below overrides it. 600 is the read timeout the openai and anthropic SDKs
+# already apply when none is passed, so openai/openrouter keep today's wait; it is stated
+# here so one place sets it. Anthropic keeps its own longer 1200.
+provider_timeout_seconds_default = 600
+
 [models.text]
 default = "openrouter:google/gemini-3.1-flash-lite-preview"
 options = [

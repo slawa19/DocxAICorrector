@@ -1341,7 +1341,7 @@ def test_get_client_loads_openai_api_key_from_dotenv(monkeypatch, tmp_path):
     captured = {}
 
     class FakeOpenAI:
-        def __init__(self, *, api_key):
+        def __init__(self, *, api_key, timeout=None):
             captured["api_key"] = api_key
 
     monkeypatch.setattr(config, "ENV_PATH", dotenv_path)
@@ -1364,7 +1364,7 @@ def test_get_client_uses_single_locked_initialization(monkeypatch, tmp_path):
     constructor_release = threading.Event()
 
     class FakeOpenAI:
-        def __init__(self, *, api_key):
+        def __init__(self, *, api_key, timeout=None):
             created_instances.append((self, api_key))
             constructor_started.set()
             assert constructor_release.wait(timeout=2)
@@ -1439,6 +1439,70 @@ def test_get_provider_client_builds_openrouter_client(monkeypatch, tmp_path):
     }
 
 
+def _capture_provider_client_kwargs(monkeypatch, provider_name: str, app_config: object) -> dict[str, object]:
+    captured: dict[str, object] = {}
+
+    class FakeOpenAI:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setattr(config, "OpenAI", FakeOpenAI)
+    monkeypatch.setattr(config, "_CLIENT", None)
+    monkeypatch.setattr(config, "_CLIENTS_BY_PROVIDER", {})
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-openai")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-openrouter")
+    config.get_provider_client(provider_name, config_like=app_config)
+    return captured
+
+
+def test_shipped_config_gives_every_provider_client_a_timeout(monkeypatch):
+    # Spec 061 FR-021 / User Story 6-3. Before, only anthropic had timeout_seconds, so the
+    # openai and openrouter clients were built with no timeout argument at all.
+    monkeypatch.setattr(config, "CONFIG_PATH", config.CONFIG_PATH)
+    app_config = config.load_app_config()
+
+    assert app_config.providers.openai.timeout_seconds == 600.0
+    assert app_config.providers.openrouter.timeout_seconds == 600.0
+    # Anthropic's own value overrides the global default.
+    assert app_config.providers.anthropic.timeout_seconds == 1200.0
+    assert _capture_provider_client_kwargs(monkeypatch, "openai", app_config)["timeout"] == 600.0
+    assert _capture_provider_client_kwargs(monkeypatch, "openrouter", app_config)["timeout"] == 600.0
+
+
+def test_provider_timeout_override_wins_over_the_global_default(monkeypatch, tmp_path):
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        "provider_timeout_seconds_default = 42\n"
+        "[providers.openai]\nenabled = true\napi_key_env = \"OPENAI_API_KEY\"\n"
+        "[providers.openrouter]\nenabled = true\napi_key_env = \"OPENROUTER_API_KEY\"\ntimeout_seconds = 7\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(config, "CONFIG_PATH", config_path)
+    app_config = config.load_app_config()
+
+    assert _capture_provider_client_kwargs(monkeypatch, "openai", app_config)["timeout"] == 42.0
+    assert _capture_provider_client_kwargs(monkeypatch, "openrouter", app_config)["timeout"] == 7.0
+
+
+def test_provider_timeout_global_default_survives_a_missing_config_file(monkeypatch):
+    monkeypatch.setattr(config, "CONFIG_PATH", config.CONFIG_PATH.parent / "__missing_config__.toml")
+    app_config = config.load_app_config()
+
+    assert app_config.providers.openai.timeout_seconds == 600.0
+    assert app_config.providers.openrouter.timeout_seconds == 600.0
+    assert app_config.providers.anthropic.timeout_seconds == 1200.0
+
+
+@pytest.mark.parametrize("bad_value", ["0", "-5", "true", "\"600\""])
+def test_provider_timeout_global_default_rejects_non_positive_or_non_numeric(monkeypatch, tmp_path, bad_value):
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(f"provider_timeout_seconds_default = {bad_value}\n", encoding="utf-8")
+    monkeypatch.setattr(config, "CONFIG_PATH", config_path)
+
+    with pytest.raises(RuntimeError, match="provider_timeout_seconds_default"):
+        config.load_app_config()
+
+
 def test_get_provider_client_rekeys_on_secret_rotation(monkeypatch, tmp_path):
     # F9a: rotating the credential (same env NAME, new VALUE) must return a FRESH client,
     # while an unchanged secret keeps the cached client. The secret VALUE must never appear
@@ -1449,7 +1513,7 @@ def test_get_provider_client_rekeys_on_secret_rotation(monkeypatch, tmp_path):
     created: list[object] = []
 
     class FakeOpenAI:
-        def __init__(self, *, api_key):
+        def __init__(self, *, api_key, timeout=None):
             self.api_key = api_key
             created.append(self)
 
@@ -1504,7 +1568,7 @@ def test_get_provider_client_no_toctou_between_prelock_fingerprint_and_build(mon
     created: list[object] = []
 
     class FakeOpenAI:
-        def __init__(self, *, api_key):
+        def __init__(self, *, api_key, timeout=None):
             self.api_key = api_key
             created.append(self)
 

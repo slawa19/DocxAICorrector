@@ -58,7 +58,7 @@ def test_get_client_reuses_singleton_instance(monkeypatch, tmp_path) -> None:
     created_instances: list[object] = []
 
     class FakeOpenAI:
-        def __init__(self, *, api_key: str):
+        def __init__(self, *, api_key: str, timeout: float | None = None):
             self.api_key = api_key
             created_instances.append(self)
 
