@@ -28,7 +28,13 @@ API_PATH_ANTHROPIC_MESSAGES = "anthropic"
 # and ``anthropic.types.stop_reason.StopReason``. The Responses API reports it as
 # ``Response.status == "incomplete"`` instead, which its extractor reads directly.
 CHAT_COMPLETIONS_TRUNCATED_FINISH_REASON = "length"
-ANTHROPIC_TRUNCATED_STOP_REASON = "max_tokens"
+# Anthropic has TWO: ``max_tokens`` (the requested output budget ran out) and
+# ``model_context_window_exceeded`` (prompt plus output hit the model's context window, so
+# generation stopped mid-answer). The second was not read until 2026-11-06 and a cut-off
+# answer with intact markers was accepted as a translation. Both mean "the text stops
+# early"; the attempt loop treats them alike, and the degradation ladder — which asks for
+# less at a time — is the remedy that also fits the second one.
+ANTHROPIC_TRUNCATED_STOP_REASONS = frozenset({"max_tokens", "model_context_window_exceeded"})
 
 
 @dataclass(frozen=True)

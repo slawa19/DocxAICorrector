@@ -36,7 +36,7 @@ from collections.abc import Callable, Mapping
 
 from docxaicorrector.core.model_accounting import record_text_api_path
 from docxaicorrector.generation.model_response import (
-    ANTHROPIC_TRUNCATED_STOP_REASON,
+    ANTHROPIC_TRUNCATED_STOP_REASONS,
     API_PATH_ANTHROPIC_MESSAGES,
     API_PATH_CHAT_COMPLETIONS,
     API_PATH_RESPONSES,
@@ -1806,7 +1806,7 @@ def _read_anthropic_model_response(response: object) -> ModelResponse:
         if isinstance(content, list)
         else ""
     )
-    if stop_reason == ANTHROPIC_TRUNCATED_STOP_REASON:
+    if isinstance(stop_reason, str) and stop_reason in ANTHROPIC_TRUNCATED_STOP_REASONS:
         return ModelResponse(text=markdown, incomplete=True, stop_reason=stop_reason)
     if markdown:
         return ModelResponse(
