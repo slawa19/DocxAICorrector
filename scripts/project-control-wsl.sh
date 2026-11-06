@@ -2,7 +2,7 @@
 set -euo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-RUN_DIR="${DOCXAI_RUN_DIR:-$PROJECT_ROOT/.run}"
+RUN_DIR="${DOCX_AI_RUN_DIR:-$PROJECT_ROOT/.run}"
 ENV_PATH="$PROJECT_ROOT/.env"
 APP_PATH="$PROJECT_ROOT/app.py"
 VENV_DIR="$PROJECT_ROOT/.venv"
