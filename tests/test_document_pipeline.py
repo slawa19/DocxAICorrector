@@ -1964,6 +1964,7 @@ def test_translation_narration_marker_disabled_cleanup_noop_omits_tts_and_preser
 
 def test_translation_narration_projection_skips_blank_and_image_only_valid_lineage():
     context = SimpleNamespace(
+        processing_operation="translate",
         jobs=[
             {"narration_include": True},
             {"narration_include": True},
@@ -1995,6 +1996,7 @@ def test_translation_narration_projection_skips_blank_and_image_only_valid_linea
 
 def test_translation_narration_projection_accepts_cleanup_delete_split_and_join_lineage():
     context = SimpleNamespace(
+        processing_operation="translate",
         jobs=[
             {"narration_include": True},
             {"narration_include": True},
@@ -2030,31 +2032,56 @@ def test_translation_narration_projection_drops_a_source_text_fallback_paragraph
     of ``state.narration_chunks``, so the exclusion has to travel on the paragraph. Without
     it the optional ElevenLabs post-pass would narrate the untranslated source that the
     ``audiobook`` operation keeps out.
-    """
-    context = SimpleNamespace(jobs=[{"narration_include": True}, {"narration_include": True}])
 
-    projected = document_pipeline_narration_postprocess._project_final_cleanup_narration_chunks(
-        context=context,
-        final_generated_paragraph_registry=[
-            {
-                "block_index": 1,
-                "text": "Once upon a time, in a small village in the Outback.",
-                "controlled_fallback": True,
-                "controlled_fallback_kind": "source_text_fallback",
-                "controlled_fallback_narration_excluded": True,
-            },
-            # Anti-vacuum: a controlled fallback that KEPT the model's own output is narratable.
-            {
-                "block_index": 2,
-                "text": "Однажды в маленькой деревне.",
-                "controlled_fallback": True,
-                "controlled_fallback_kind": "english_residual_output",
-                "controlled_fallback_narration_excluded": False,
-            },
-        ],
+    Spec 061 FR-016: the registry is the one PRODUCTION hands the projection — written by
+    ``block_execution``, assembled into ``FinalAssemblyEntry`` objects and rebuilt by
+    ``build_generated_paragraph_registry_from_entries`` exactly as ``late_phases`` does it.
+    It used to be a list of hand-written dicts carrying the flag, which kept this test green
+    while the production builder dropped the flag and the projection never saw it.
+    """
+    source_text = "Once upon a time, in a small village in the Outback."
+    kept_model_output = "Однажды в маленькой деревне."
+    state = SimpleNamespace(generated_paragraph_registry=[])
+
+    def _append_marker_registry_entries(**kwargs):
+        block_execution.append_marker_registry_entries(
+            **kwargs,
+            build_processed_paragraph_registry_entries_fn=block_execution.build_processed_paragraph_registry_entries,
+        )
+
+    for index, paragraph_id, processed_chunk, rejection_kind, narration_excluded in (
+        (1, "p0001", source_text, "source_text_fallback", True),
+        # Anti-vacuum: a controlled fallback that KEPT the model's own output is narratable.
+        (2, "p0002", kept_model_output, "english_residual_output", False),
+    ):
+        block_execution.append_controlled_fallback_registry_entries(
+            context=SimpleNamespace(uploaded_filename="report.docx"),
+            dependencies=SimpleNamespace(log_event=lambda *args, **kwargs: None),
+            state=state,
+            initialization=SimpleNamespace(job_count=2),
+            index=index,
+            payload=SimpleNamespace(job_kind="llm", paragraph_ids=[paragraph_id]),
+            processed_chunk=processed_chunk,
+            rejection_kind=rejection_kind,
+            append_marker_registry_entries_fn=_append_marker_registry_entries,
+            narration_excluded=narration_excluded,
+        )
+    assembly_result = document_pipeline_output_validation.assemble_final_markdown(
+        processed_chunks=[source_text, kept_model_output],
+        generated_paragraph_registry=state.generated_paragraph_registry,
+        source_paragraphs=None,
+    )
+    final_registry = document_pipeline_output_validation.build_generated_paragraph_registry_from_entries(
+        assembly_result.entries
     )
 
-    assert projected == ["Однажды в маленькой деревне."]
+    projected = document_pipeline_narration_postprocess._project_final_cleanup_narration_chunks(
+        context=SimpleNamespace(processing_operation="translate", jobs=[{"narration_include": True}, {"narration_include": True}]),
+        final_generated_paragraph_registry=final_registry,
+    )
+
+    assert [entry.narration_excluded for entry in assembly_result.entries] == [True, False]
+    assert projected == [kept_model_output]
 
 
 def test_translation_narration_projection_drops_an_omitted_paragraph():
@@ -2065,7 +2092,7 @@ def test_translation_narration_projection_drops_an_omitted_paragraph():
     narration from the final registry and has to honour the same decision, or the two entry
     points diverge (spec 054 anti-regression 3).
     """
-    context = SimpleNamespace(jobs=[{"narration_include": True}, {"narration_include": True}])
+    context = SimpleNamespace(processing_operation="translate", jobs=[{"narration_include": True}, {"narration_include": True}])
 
     projected = document_pipeline_narration_postprocess._project_final_cleanup_narration_chunks(
         context=context,
@@ -2081,6 +2108,7 @@ def test_translation_narration_projection_drops_an_omitted_paragraph():
 
 def test_translation_narration_projection_rejects_join_across_inclusion_boundary():
     context = SimpleNamespace(
+        processing_operation="translate",
         jobs=[{"narration_include": True}, {"narration_include": False}]
     )
 
@@ -2098,7 +2126,7 @@ def test_translation_narration_projection_rejects_join_across_inclusion_boundary
 
 
 def test_translation_narration_projection_rejects_substantive_nonexistent_lineage():
-    context = SimpleNamespace(jobs=[{"narration_include": True}])
+    context = SimpleNamespace(processing_operation="translate", jobs=[{"narration_include": True}])
 
     with pytest.raises(
         RuntimeError,

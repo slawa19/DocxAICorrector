@@ -4,8 +4,11 @@
 
 **Created**: 2026-07-31
 
-**Status**: **IMPLEMENTED (2026-07-31) — all nine items landed; the pass is ready for its first
-production run, which has NOT been done yet.** The reader-cleanup pass had never run in the
+**Status**: **IMPLEMENTED (2026-07-31) — all nine items landed; the first live run was made on
+2026-08-02 (three books, `artifacts/reader_cleanup_live_run/first_live_run_summary.json`; the
+result is measured in `docs/WHERE_WE_ARE.md`, section «Читательская вычитка: прогнана живьём»).**
+Until 2026-11-06 this line still said the run "has NOT been done yet" (corrected under spec 061
+FR-026; see Changelog). The paragraph below is the state as of 2026-07-31, kept as history. The reader-cleanup pass had never run in the
 production UI: its toggle was dead until spec 047 fixed it, so every real-world execution so far has
 been an offline replay. This spec records what the pass actually is, what it cannot be, and the
 defects that had to be fixed before spending a book on it.
@@ -471,6 +474,11 @@ how a surprise gets noticed. What must not drift silently is the comparison in c
 against its own previous state.
 
 ## Changelog
+
+- 2026-11-06 — Status line corrected: the first live run it said was still owed had happened
+  on 2026-08-02. Found by the independent review of 2026-11-06, recorded under spec 061 FR-026.
+  The run's numbers live in `docs/WHERE_WE_ARE.md` and
+  `artifacts/reader_cleanup_live_run/first_live_run_summary.json`, not here.
 
 - **2026-08-03** — **the default operation set was narrowed to `normalize_heading_boundary` +
   `join_fragmented_paragraph`**, by the owner, on the numbers the first live run produced. The run

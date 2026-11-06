@@ -363,7 +363,12 @@ def test_generate_markdown_block_uses_degraded_prompt_after_persistent_empty_res
     assert logged_events[-1][0][1] == "markdown_empty_response_recovery_started"
 
 
-def test_generate_markdown_block_raises_on_empty_model_output(monkeypatch):
+def test_generate_markdown_block_falls_back_on_persistently_collapsed_model_output(monkeypatch):
+    """Spec 061 US3 scenario 2: ``collapsed_output`` after recovery takes the SAME controlled
+    fallback as ``empty_response`` — same text, same event, same counter. Until the error
+    classes were types this test pinned the defect: the collapsed answer escaped as an
+    exception and took the run down."""
+
     logged_events = []
     client = SimpleNamespace(
         responses=SimpleNamespace(create=lambda **_: SimpleNamespace(output_text="```\n\n```"))
@@ -373,22 +378,24 @@ def test_generate_markdown_block_raises_on_empty_model_output(monkeypatch):
         "log_event",
         lambda *args, **kwargs: logged_events.append((args, kwargs)) or "evt-collapsed",
     )
+    model_accounting.reset_run_model_accounting()
 
-    try:
-        generation.generate_markdown_block(
-            client=_as_openai_client(client),
-            model="gpt-5.4",
-            system_prompt="system",
-            target_text="target",
-            context_before="before",
-            context_after="after",
-            max_retries=1,
-        )
-    except RuntimeError as exc:
-        assert "collapsed_output" in str(exc)
-        assert logged_events[0][1]["error_code"] == "collapsed_output"
-    else:
-        raise AssertionError("Expected RuntimeError for a collapsed model response")
+    result = generation.generate_markdown_block(
+        client=_as_openai_client(client),
+        model="gpt-5.4",
+        system_prompt="system",
+        target_text="target",
+        context_before="before",
+        context_after="after",
+        max_retries=1,
+    )
+
+    assert result == "target"
+    assert logged_events[0][1]["error_code"] == "collapsed_output"
+    assert logged_events[-1][0][1] == "markdown_empty_response_source_fallback"
+    assert "collapsed_output" in logged_events[-1][1]["recovery_error"]
+    snapshot = model_accounting.snapshot_run_model_accounting()
+    assert snapshot["model_output_discarded_reason_counts"] == {"empty_response_source_fallback": 1}
 
 
 def test_generate_markdown_block_retries_on_collapsed_output(monkeypatch):
@@ -627,10 +634,10 @@ def test_generate_markdown_block_falls_back_when_recovery_returns_blank_markdown
     sleep_calls = []
     logged_events = []
 
-    def call_markdown_request_with_sdk_fallback(client, request_kwargs):
+    def call_markdown_request_with_sdk_fallback(client, request_kwargs, **_kwargs):
         attempts.append(dict(request_kwargs))
         if len(attempts) <= 2:
-            raise RuntimeError("Модель вернула пустой ответ (empty_response).")
+            raise generation.EmptyResponse("Модель вернула пустой ответ (empty_response).")
         return "", False
 
     client = SimpleNamespace(responses=SimpleNamespace(create=lambda **kwargs: SimpleNamespace(output_text="unused")))
@@ -877,7 +884,9 @@ def test_generate_markdown_block_raises_on_unsupported_response_shape_in_output_
     assert sleep_calls == []
 
 
-def test_generate_markdown_block_raises_when_supported_response_output_collapses_after_normalization(monkeypatch):
+def test_generate_markdown_block_falls_back_when_supported_response_output_collapses_after_normalization(monkeypatch):
+    """Same as above on the ``output[].content[]`` shape (spec 061 US3 scenario 2)."""
+
     logged_events = []
     client = SimpleNamespace(
         responses=SimpleNamespace(
@@ -892,21 +901,19 @@ def test_generate_markdown_block_raises_when_supported_response_output_collapses
         lambda *args, **kwargs: logged_events.append((args, kwargs)) or "evt-supported-collapse",
     )
 
-    try:
-        generation.generate_markdown_block(
-            client=_as_openai_client(client),
-            model="gpt-5.4",
-            system_prompt="system",
-            target_text="target",
-            context_before="before",
-            context_after="after",
-            max_retries=1,
-        )
-    except RuntimeError as exc:
-        assert "collapsed_output" in str(exc)
-        assert logged_events[0][1]["error_code"] == "collapsed_output"
-    else:
-        raise AssertionError("Expected RuntimeError when normalized fallback output collapses")
+    result = generation.generate_markdown_block(
+        client=_as_openai_client(client),
+        model="gpt-5.4",
+        system_prompt="system",
+        target_text="target",
+        context_before="before",
+        context_after="after",
+        max_retries=1,
+    )
+
+    assert result == "target"
+    assert logged_events[0][1]["error_code"] == "collapsed_output"
+    assert logged_events[-1][0][1] == "markdown_empty_response_source_fallback"
 
 
 def test_generate_markdown_block_raises_on_non_string_output_text():
@@ -1039,11 +1046,11 @@ def test_extract_normalized_markdown_raises_hard_on_non_completed_response(monke
 
 
 def test_incomplete_response_is_retryable():
-    assert generation._is_retryable_empty_generation_error(RuntimeError("incomplete_response")) is True
+    assert generation._is_retryable_empty_generation_error(generation.IncompleteResponse("incomplete_response")) is True
 
 
 def test_non_completed_response_is_not_retryable():
-    assert generation._is_retryable_empty_generation_error(RuntimeError("non_completed_response")) is False
+    assert generation._is_retryable_empty_generation_error(generation.NonCompletedResponse("non_completed_response")) is False
 
 
 def test_generate_markdown_block_falls_back_to_source_after_persistent_non_completed_response(monkeypatch):
@@ -1828,6 +1835,684 @@ def test_generate_markdown_block_marker_mode_replaces_stub_answer_with_source_pa
     assert result == f"{_STUB_SOURCE_ABSORBED}\n\n{_STUB_SOURCE_COLLAPSED}"
     # The paragraph-per-marker count is the invariant that must not move.
     assert len(result.split("\n\n")) == 2
+
+
+# --- spec 061 P1-1: a merge is asked again before its source ships -----------------
+# Until 2026-11-06 the pair was reverted to its source on the FIRST attempt: no exception,
+# no retry, two source-language paragraphs under ``valid`` — once per book on four of the
+# five recorded audiobook runs (``model_output_discarded_reason_counts=
+# {"marker_chunk_collapse": 1}``). The detector is unchanged; only WHEN its verdict ships.
+
+_MERGE_SOURCE_BLOCK = (
+    f"[[DOCX_PARA_p1344]]\n{_STUB_SOURCE_ABSORBED}\n\n[[DOCX_PARA_p1345]]\n{_STUB_SOURCE_COLLAPSED}"
+)
+_MERGED_ANSWER = (
+    f"[[DOCX_PARA_p1344]]\n{_STUB_SOURCE_ABSORBED} {_STUB_SOURCE_COLLAPSED}\n\n"
+    "[[DOCX_PARA_p1345]]\n(Пусто)"
+)
+_FIRST_TRANSLATION = "4. Подробнее см. «Белую книгу» Бернара Лиетара, Роберта Улановича и Салли Гёрнер."
+_SECOND_TRANSLATION = (
+    "«Обо всех вариантах управления системным банковским кризисом» — доклад о том, почему "
+    "денежная монокультура делает экономику хрупкой, а разнообразие валют — устойчивой."
+)
+_CORRECT_ANSWER = (
+    f"[[DOCX_PARA_p1344]]\n{_FIRST_TRANSLATION}\n\n[[DOCX_PARA_p1345]]\n{_SECOND_TRANSLATION}"
+)
+
+
+def _scripted_client(answers: list[str], *, requests: list[dict[str, Any]]) -> Any:
+    """Answers in order; the LAST answer repeats once the script runs out."""
+
+    def create_response(**kwargs: Any) -> SimpleNamespace:
+        requests.append(dict(kwargs))
+        return SimpleNamespace(output_text=answers[min(len(requests), len(answers)) - 1])
+
+    return _as_openai_client(SimpleNamespace(responses=SimpleNamespace(create=create_response)))
+
+
+def _merge_dispositions() -> list[Any]:
+    return generation.split_marker_preserved_paragraph_dispositions(_MERGED_ANSWER, ["p1344", "p1345"])
+
+
+def test_a_merge_with_budget_left_raises_instead_of_shipping_the_source():
+    """FR-001: the merge is a retryable marker-contract failure, carrying both ids."""
+
+    model_accounting.reset_run_model_accounting()
+
+    with pytest.raises(generation.MarkerValidationError) as exc_info:
+        generation.resolve_marker_paragraph_dispositions(
+            _merge_dispositions(),
+            source_paragraph_chunks=[_STUB_SOURCE_ABSORBED, _STUB_SOURCE_COLLAPSED],
+            allow_unresolved_paragraphs=False,
+            raw_markdown=_MERGED_ANSWER,
+        )
+
+    exc = exc_info.value
+    assert exc.error_code == generation.MERGED_MARKER_CHUNK_ERROR_CODE == "merged_marker_chunk"
+    assert exc.collapsed_paragraph_ids == ("p1345",)
+    assert exc.absorbing_paragraph_ids == ("p1344",)
+    # Spec 056 D': the answer AS RECEIVED, so the rejected attempt replays offline.
+    assert exc.raw_markdown == _MERGED_ANSWER
+    assert exc.expected_paragraph_ids == ("p1344", "p1345")
+    # Same message family as every other marker-contract code, which is what the attempt
+    # loop and the ladder key on.
+    assert str(exc) == "paragraph_marker_validation_failed:merged_marker_chunk"
+    snapshot = model_accounting.snapshot_run_model_accounting()
+    # FR-005: nothing shipped, so nothing was discarded into the document.
+    assert snapshot["marker_chunk_merge_retry_count"] == 1
+    assert snapshot["model_output_discarded_reason_counts"] == {}
+    assert snapshot["model_output_discarded_paragraph_count"] == 0
+
+
+def test_a_merge_on_the_last_attempt_still_ships_source_restored_and_counts_it():
+    """ANTI-VACUUM for FR-001 (FR-003): the retry must not turn into a silent loss of the record.
+
+    With nothing left to ask the pair is repaired exactly as before — both paragraphs keep
+    their own source, ``source_restored``, and the discard counter says so.
+    """
+
+    model_accounting.reset_run_model_accounting()
+
+    resolved = generation.resolve_marker_paragraph_dispositions(
+        _merge_dispositions(),
+        source_paragraph_chunks=[_STUB_SOURCE_ABSORBED, _STUB_SOURCE_COLLAPSED],
+        allow_unresolved_paragraphs=True,
+        raw_markdown=_MERGED_ANSWER,
+    )
+
+    assert [(item.paragraph_id, item.status) for item in resolved] == [
+        ("p1344", "source_restored"),
+        ("p1345", "source_restored"),
+    ]
+    assert [item.text for item in resolved] == [_STUB_SOURCE_ABSORBED, _STUB_SOURCE_COLLAPSED]
+    snapshot = model_accounting.snapshot_run_model_accounting()
+    assert snapshot["model_output_discarded_reason_counts"] == {"marker_chunk_collapse": 1}
+    assert snapshot["model_output_discarded_paragraph_count"] == 2
+    assert snapshot["marker_chunk_merge_retry_count"] == 0
+
+
+def test_a_merge_is_asked_again_and_the_second_answer_is_accepted(monkeypatch):
+    """ANTI-VACUUM for FR-001, end to end: merge first, correct answer second.
+
+    Exactly two calls, both paragraphs ``accepted`` with the translation — and no source in
+    the block. Before the change this block cost ONE call and shipped two English paragraphs.
+    """
+
+    monkeypatch.setattr(generation.time, "sleep", lambda _seconds: None)
+    model_accounting.reset_run_model_accounting()
+    requests: list[dict[str, Any]] = []
+
+    result = generation.generate_markdown_block(
+        client=_scripted_client([_MERGED_ANSWER, _CORRECT_ANSWER], requests=requests),
+        model="gpt-5.4",
+        system_prompt="system",
+        target_text=_MERGE_SOURCE_BLOCK,
+        context_before="",
+        context_after="",
+        max_retries=3,
+        expected_paragraph_ids=["p1344", "p1345"],
+        marker_mode=True,
+    )
+
+    assert len(requests) == 2
+    dispositions = generation.marker_paragraph_dispositions(result)
+    assert dispositions is not None
+    assert [(item.paragraph_id, item.status, item.text) for item in dispositions] == [
+        ("p1344", "accepted", _FIRST_TRANSLATION),
+        ("p1345", "accepted", _SECOND_TRANSLATION),
+    ]
+    assert _STUB_SOURCE_COLLAPSED not in result
+    snapshot = model_accounting.snapshot_run_model_accounting()
+    assert snapshot["marker_chunk_merge_retry_count"] == 1
+    assert snapshot["retry_reason_counts"] == {"marker_validation": 1}
+    assert snapshot["model_output_discarded_reason_counts"] == {}
+    assert snapshot["degradation_ladder_block_count"] == 0
+
+
+def _merge_then_ladder_client(
+    marker_answer: str, ladder_answers: dict[str, str], *, requests: list[dict[str, Any]]
+) -> Any:
+    """Every MARKER request gets ``marker_answer``; a ladder request (no markers) gets the
+    answer keyed by the source it carries, or nothing — so a test decides per paragraph
+    whether the ladder rescues it."""
+
+    def create_response(**kwargs: Any) -> SimpleNamespace:
+        requests.append(dict(kwargs))
+        prompt = kwargs["input"][1]["content"][0]["text"]
+        if "[[DOCX_PARA_" in prompt:
+            return SimpleNamespace(output_text=marker_answer)
+        target = prompt.split("[TARGET BLOCK", 1)[-1].split("[CONTEXT AFTER]", 1)[0]
+        for source, answer in ladder_answers.items():
+            if source in target:
+                return SimpleNamespace(output_text=answer)
+        return SimpleNamespace(output_text="")
+
+    return _as_openai_client(SimpleNamespace(responses=SimpleNamespace(create=create_response)))
+
+
+def test_with_the_ladder_off_a_persistent_merge_is_repaired_on_the_last_attempt(monkeypatch):
+    """Spec 061 Edge Case 1 (FR-003): no ladder, so the last attempt repairs the pair.
+
+    Exactly ``max_retries`` calls — no recovery, no ladder — and the pair ships as
+    ``source_restored`` with the discard counter; the earlier attempts are merge retries,
+    NOT discards. This is the behaviour every block had before the ladder could see merges.
+    """
+
+    monkeypatch.setattr(generation.time, "sleep", lambda _seconds: None)
+    model_accounting.reset_run_model_accounting()
+    requests: list[dict[str, Any]] = []
+    max_retries = 3
+
+    result = generation.generate_markdown_block(
+        client=_scripted_client([_MERGED_ANSWER], requests=requests),
+        model="gpt-5.4",
+        system_prompt="system",
+        target_text=_MERGE_SOURCE_BLOCK,
+        context_before="",
+        context_after="",
+        max_retries=max_retries,
+        expected_paragraph_ids=["p1344", "p1345"],
+        marker_mode=True,
+        allow_controlled_source_fallback=False,
+    )
+
+    assert len(requests) == max_retries
+    dispositions = generation.marker_paragraph_dispositions(result)
+    assert dispositions is not None
+    assert [item.status for item in dispositions] == ["source_restored", "source_restored"]
+    assert result == f"{_STUB_SOURCE_ABSORBED}\n\n{_STUB_SOURCE_COLLAPSED}"
+    snapshot = model_accounting.snapshot_run_model_accounting()
+    assert snapshot["marker_chunk_merge_retry_count"] == max_retries - 1
+    # Counted once, for the attempt whose repair actually shipped — not once per attempt.
+    assert snapshot["model_output_discarded_reason_counts"] == {"marker_chunk_collapse": 1}
+    assert snapshot["model_output_discarded_paragraph_count"] == 2
+    assert snapshot["degradation_ladder_block_count"] == 0
+
+
+def test_a_persistent_merge_reaches_the_ladder_and_both_paragraphs_come_back_translated(monkeypatch):
+    """Spec 061 User Story 1, scenario 2 (FR-002): budget exhausted, the merge repeats, and
+    the ladder asks each paragraph alone without markers — where merging is impossible.
+
+    Both paragraphs ``accepted``, no source shipped, and the cost is the attempts, the
+    recovery call and one ladder call per paragraph — inside the stated ceiling.
+    """
+
+    monkeypatch.setattr(generation.time, "sleep", lambda _seconds: None)
+    model_accounting.reset_run_model_accounting()
+    requests: list[dict[str, Any]] = []
+    max_retries = 3
+
+    result = generation.generate_markdown_block(
+        client=_merge_then_ladder_client(
+            _MERGED_ANSWER,
+            {_STUB_SOURCE_ABSORBED: _FIRST_TRANSLATION, _STUB_SOURCE_COLLAPSED: _SECOND_TRANSLATION},
+            requests=requests,
+        ),
+        model="gpt-5.4",
+        system_prompt="system",
+        target_text=_MERGE_SOURCE_BLOCK,
+        context_before="",
+        context_after="",
+        max_retries=max_retries,
+        expected_paragraph_ids=["p1344", "p1345"],
+        marker_mode=True,
+    )
+
+    dispositions = generation.marker_paragraph_dispositions(result)
+    assert dispositions is not None
+    assert [(item.paragraph_id, item.status, item.text) for item in dispositions] == [
+        ("p1344", "accepted", _FIRST_TRANSLATION),
+        ("p1345", "accepted", _SECOND_TRANSLATION),
+    ]
+    assert _STUB_SOURCE_COLLAPSED not in result
+    assert len(requests) == max_retries + 1 + 2
+    assert len(requests) <= generation.max_model_calls_per_block(
+        max_retries=max_retries, ladder_paragraph_count=2
+    )
+    snapshot = model_accounting.snapshot_run_model_accounting()
+    assert snapshot["degradation_ladder_trigger_counts"] == {"marker_contract": 1}
+    assert snapshot["degradation_ladder_translated_paragraph_count"] == 2
+    # Every attempt and the recovery call sent the merge back: 3 + 1.
+    assert snapshot["marker_chunk_merge_retry_count"] == max_retries + 1
+    # ANTI-VACUUM for FR-005: nothing was delivered as source, so nothing is a discard.
+    assert snapshot["model_output_discarded_reason_counts"] == {}
+
+
+_THIRD_SOURCE = (
+    "A third paragraph that the model translated correctly in the very same merged answer, "
+    "and which must keep that translation whatever happens to the pair beside it."
+)
+_THIRD_TRANSLATION = "Третий абзац, переведённый в том же ответе правильно."
+
+
+def test_a_persistent_merge_the_ladder_cannot_rescue_falls_back_to_the_pair_only(monkeypatch):
+    """Spec 061 User Story 1, scenario 3: the ladder rescued nothing.
+
+    The fallback is the PAIR repair — the two merged paragraphs ``source_restored``, the
+    third paragraph keeps its translation from the model's own answer — with the same
+    ``marker_chunk_collapse`` counter (2 paragraphs) and event as before, and NOT the
+    whole-block ``marker_validation_source_fallback``, which would turn a failed ladder into
+    more source text than no ladder at all.
+    """
+
+    monkeypatch.setattr(generation.time, "sleep", lambda _seconds: None)
+    model_accounting.reset_run_model_accounting()
+    requests: list[dict[str, Any]] = []
+    logged_events: list[str] = []
+    real_log_event = generation.log_event
+    monkeypatch.setattr(
+        generation,
+        "log_event",
+        lambda level, event_id, message, **context: (
+            logged_events.append(event_id) or real_log_event(level, event_id, message, **context)
+        ),
+    )
+    max_retries = 3
+    merged_answer = f"{_MERGED_ANSWER}\n\n[[DOCX_PARA_p1346]]\n{_THIRD_TRANSLATION}"
+
+    result = generation.generate_markdown_block(
+        client=_merge_then_ladder_client(merged_answer, {}, requests=requests),
+        model="gpt-5.4",
+        system_prompt="system",
+        target_text=f"{_MERGE_SOURCE_BLOCK}\n\n[[DOCX_PARA_p1346]]\n{_THIRD_SOURCE}",
+        context_before="",
+        context_after="",
+        max_retries=max_retries,
+        expected_paragraph_ids=["p1344", "p1345", "p1346"],
+        marker_mode=True,
+    )
+
+    dispositions = generation.marker_paragraph_dispositions(result)
+    assert dispositions is not None
+    assert [(item.paragraph_id, item.status, item.text) for item in dispositions] == [
+        ("p1344", "source_restored", _STUB_SOURCE_ABSORBED),
+        ("p1345", "source_restored", _STUB_SOURCE_COLLAPSED),
+        ("p1346", "accepted", _THIRD_TRANSLATION),
+    ]
+    snapshot = model_accounting.snapshot_run_model_accounting()
+    assert snapshot["model_output_discarded_reason_counts"] == {"marker_chunk_collapse": 1}
+    assert snapshot["model_output_discarded_paragraph_count"] == 2
+    assert snapshot["model_output_discarded_block_count"] == 0
+    # Review finding F1: the ladder re-asks ONLY the merged pair; the third paragraph, which
+    # the merge never touched, is not re-asked at all.
+    assert snapshot["degradation_ladder_unrescued_paragraph_count"] == 2
+    assert snapshot["degradation_ladder_translated_paragraph_count"] == 0
+    assert "marker_chunk_collapse_source_restored" in logged_events
+    assert "markdown_marker_validation_source_fallback" not in logged_events
+    # The ladder's two nested generations each spent their whole budget (attempts +
+    # recovery) on an empty answer, so this block sits exactly on the ceiling for the two
+    # paragraphs the ladder asked about.
+    assert len(requests) == generation.max_model_calls_per_block(
+        max_retries=max_retries, ladder_paragraph_count=2
+    )
+    assert len(requests) == (max_retries + 1) * (1 + 2)
+
+
+def test_a_merge_whose_recovery_fails_otherwise_still_falls_back_to_the_pair(monkeypatch):
+    """The last attempt merged, the recovery call then lost a marker, the ladder rescued
+    nothing. Before the ladder could see merges this block shipped the PAIR repair of the
+    last attempt; it must not get worse and ship the whole block's source instead."""
+
+    monkeypatch.setattr(generation.time, "sleep", lambda _seconds: None)
+    model_accounting.reset_run_model_accounting()
+    requests: list[dict[str, Any]] = []
+
+    def create_response(**kwargs: Any) -> SimpleNamespace:
+        requests.append(dict(kwargs))
+        prompt = kwargs["input"][1]["content"][0]["text"]
+        if "violated the paragraph marker contract" in prompt:
+            return SimpleNamespace(output_text="[[DOCX_PARA_p1344]]\nОдин маркер потерян.")
+        if "[[DOCX_PARA_" in prompt:
+            return SimpleNamespace(output_text=_MERGED_ANSWER)
+        return SimpleNamespace(output_text="")
+
+    result = generation.generate_markdown_block(
+        client=_as_openai_client(SimpleNamespace(responses=SimpleNamespace(create=create_response))),
+        model="gpt-5.4",
+        system_prompt="system",
+        target_text=_MERGE_SOURCE_BLOCK,
+        context_before="",
+        context_after="",
+        max_retries=2,
+        expected_paragraph_ids=["p1344", "p1345"],
+        marker_mode=True,
+    )
+
+    dispositions = generation.marker_paragraph_dispositions(result)
+    assert dispositions is not None
+    assert [item.status for item in dispositions] == ["source_restored", "source_restored"]
+    snapshot = model_accounting.snapshot_run_model_accounting()
+    assert snapshot["model_output_discarded_reason_counts"] == {"marker_chunk_collapse": 1}
+    assert snapshot["model_output_discarded_block_count"] == 0
+
+
+_THREE_PARAGRAPH_MERGE_SOURCE = f"{_MERGE_SOURCE_BLOCK}\n\n[[DOCX_PARA_p1346]]\n{_THIRD_SOURCE}"
+_THREE_PARAGRAPH_IDS = ["p1344", "p1345", "p1346"]
+
+
+def _three_paragraph_merged_answer(third_text: str = _THIRD_TRANSLATION) -> str:
+    return f"{_MERGED_ANSWER}\n\n[[DOCX_PARA_p1346]]\n{third_text}"
+
+
+def _run_three_paragraph_merge(client: Any, *, context_after: str = "") -> str:
+    return generation.generate_markdown_block(
+        client=client,
+        model="gpt-5.4",
+        system_prompt="system",
+        target_text=_THREE_PARAGRAPH_MERGE_SOURCE,
+        context_before="",
+        context_after=context_after,
+        max_retries=2,
+        expected_paragraph_ids=_THREE_PARAGRAPH_IDS,
+        marker_mode=True,
+    )
+
+
+def _ladder_requests_for(requests: list[dict[str, Any]], source: str) -> list[dict[str, Any]]:
+    ladder = [r for r in requests if "[[DOCX_PARA_" not in r["input"][1]["content"][0]["text"]]
+    return [
+        r
+        for r in ladder
+        if source in r["input"][1]["content"][0]["text"].split("[TARGET BLOCK", 1)[-1].split("[CONTEXT AFTER]", 1)[0]
+    ]
+
+
+def test_a_partial_ladder_rescue_of_a_merge_keeps_the_paragraph_the_merge_never_touched(monkeypatch):
+    """Review finding F1. A/B merged, C answered correctly; the ladder rescues A only.
+
+    Re-asking the WHOLE block made C's good translation hostage to its own re-ask: C failed
+    and shipped its source — a ladder that rescued one paragraph left the block worse than
+    one that rescued none. The merge names its paragraphs, so only A and B are re-asked; C
+    keeps the model's ORIGINAL translation, A takes the ladder's, B keeps its source
+    (``omitted``, the ladder's rule for a paragraph it could not translate).
+    """
+
+    monkeypatch.setattr(generation.time, "sleep", lambda _seconds: None)
+    model_accounting.reset_run_model_accounting()
+    requests: list[dict[str, Any]] = []
+
+    result = _run_three_paragraph_merge(
+        _merge_then_ladder_client(
+            _three_paragraph_merged_answer(),
+            {_STUB_SOURCE_ABSORBED: _FIRST_TRANSLATION},
+            requests=requests,
+        )
+    )
+
+    dispositions = generation.marker_paragraph_dispositions(result)
+    assert dispositions is not None
+    assert [(item.paragraph_id, item.status, item.text) for item in dispositions] == [
+        ("p1344", "accepted", _FIRST_TRANSLATION),
+        ("p1345", "omitted", _STUB_SOURCE_COLLAPSED),
+        ("p1346", "accepted", _THIRD_TRANSLATION),
+    ]
+    # C was never re-asked: the ladder spent its calls on the merged pair alone.
+    assert _ladder_requests_for(requests, _THIRD_SOURCE) == []
+    snapshot = model_accounting.snapshot_run_model_accounting()
+    assert snapshot["degradation_ladder_translated_paragraph_count"] == 1
+    assert snapshot["degradation_ladder_unrescued_paragraph_count"] == 1
+
+
+def test_the_partial_rescue_test_fails_on_the_old_whole_block_ladder(monkeypatch):
+    """MUTATION CHECK for the test above: with the scope switched off (the ladder re-asks the
+    whole block, the behaviour before F1), C loses its translation — so the test above can
+    tell the two apart and is not passing vacuously."""
+
+    monkeypatch.setattr(generation.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(generation, "_merge_ladder_scope", lambda *_args, **_kwargs: None)
+    model_accounting.reset_run_model_accounting()
+    requests: list[dict[str, Any]] = []
+
+    result = _run_three_paragraph_merge(
+        _merge_then_ladder_client(
+            _three_paragraph_merged_answer(),
+            {_STUB_SOURCE_ABSORBED: _FIRST_TRANSLATION},
+            requests=requests,
+        )
+    )
+
+    dispositions = generation.marker_paragraph_dispositions(result)
+    assert dispositions is not None
+    assert dispositions[2].status == "omitted"
+    assert dispositions[2].text == _THIRD_SOURCE
+    assert _ladder_requests_for(requests, _THIRD_SOURCE) != []
+
+
+def test_a_merge_followed_by_an_empty_recovery_still_reaches_the_ladder(monkeypatch):
+    """Review finding F5. The attempts merged, the recovery call answered NOTHING. An empty
+    answer is no ladder trigger, so the ladder used to be skipped and the pair fallback
+    shipped source text no per-paragraph call was ever asked for. The attempts' merge is a
+    trigger, so the ladder runs from it — and here it rescues both paragraphs."""
+
+    monkeypatch.setattr(generation.time, "sleep", lambda _seconds: None)
+    model_accounting.reset_run_model_accounting()
+    requests: list[dict[str, Any]] = []
+    ladder_answers = {_STUB_SOURCE_ABSORBED: _FIRST_TRANSLATION, _STUB_SOURCE_COLLAPSED: _SECOND_TRANSLATION}
+
+    def create_response(**kwargs: Any) -> SimpleNamespace:
+        requests.append(dict(kwargs))
+        prompt = kwargs["input"][1]["content"][0]["text"]
+        if "violated the paragraph marker contract" in prompt:
+            return SimpleNamespace(output_text="")
+        if "[[DOCX_PARA_" in prompt:
+            return SimpleNamespace(output_text=_MERGED_ANSWER)
+        target = prompt.split("[TARGET BLOCK", 1)[-1].split("[CONTEXT AFTER]", 1)[0]
+        for source, answer in ladder_answers.items():
+            if source in target:
+                return SimpleNamespace(output_text=answer)
+        return SimpleNamespace(output_text="")
+
+    result = generation.generate_markdown_block(
+        client=_as_openai_client(SimpleNamespace(responses=SimpleNamespace(create=create_response))),
+        model="gpt-5.4",
+        system_prompt="system",
+        target_text=_MERGE_SOURCE_BLOCK,
+        context_before="",
+        context_after="",
+        max_retries=2,
+        expected_paragraph_ids=["p1344", "p1345"],
+        marker_mode=True,
+    )
+
+    dispositions = generation.marker_paragraph_dispositions(result)
+    assert dispositions is not None
+    assert [(item.paragraph_id, item.status, item.text) for item in dispositions] == [
+        ("p1344", "accepted", _FIRST_TRANSLATION),
+        ("p1345", "accepted", _SECOND_TRANSLATION),
+    ]
+    snapshot = model_accounting.snapshot_run_model_accounting()
+    assert snapshot["degradation_ladder_trigger_counts"] == {"marker_contract": 1}
+    assert snapshot["model_output_discarded_reason_counts"] == {}
+
+
+_LEAKED_CONTEXT = "Дальше начинается совсем другая глава книги"
+
+
+def test_the_pair_repair_trims_a_neighbour_sentence_leaked_into_a_kept_paragraph(monkeypatch):
+    """Review finding F6. The pair repair after a failed ladder used to deliver the model's
+    kept paragraphs without the context-leakage check every other delivered answer gets, so
+    a six-word tail copied from the NEXT block shipped inside paragraph C. It now goes
+    through the same check and the tail is trimmed; the repair itself is unchanged."""
+
+    monkeypatch.setattr(generation.time, "sleep", lambda _seconds: None)
+    model_accounting.reset_run_model_accounting()
+    requests: list[dict[str, Any]] = []
+
+    result = _run_three_paragraph_merge(
+        _merge_then_ladder_client(
+            _three_paragraph_merged_answer(f"{_THIRD_TRANSLATION} {_LEAKED_CONTEXT}"),
+            {},
+            requests=requests,
+        ),
+        context_after=f"{_LEAKED_CONTEXT}. И её первый абзац продолжается здесь.",
+    )
+
+    dispositions = generation.marker_paragraph_dispositions(result)
+    assert dispositions is not None
+    assert [item.status for item in dispositions] == ["source_restored", "source_restored", "accepted"]
+    assert _LEAKED_CONTEXT not in dispositions[2].text
+    assert dispositions[2].text == _THIRD_TRANSLATION.rstrip(".")
+    snapshot = model_accounting.snapshot_run_model_accounting()
+    assert snapshot["model_output_discarded_reason_counts"] == {"marker_chunk_collapse": 1}
+
+
+def test_the_ladder_takes_a_merge_as_a_marker_contract_trigger(monkeypatch):
+    """FR-002 at the unit: handed a ``merged_marker_chunk``, the ladder asks paragraph by
+    paragraph with ``marker_mode=False``. The end-to-end route through
+    ``generate_markdown_block`` is pinned by
+    ``test_a_persistent_merge_reaches_the_ladder_and_both_paragraphs_come_back_translated``.
+    """
+
+    monkeypatch.setattr(generation.time, "sleep", lambda _seconds: None)
+    model_accounting.reset_run_model_accounting()
+    requests: list[dict[str, Any]] = []
+    merge = generation.MarkerValidationError(
+        generation.MERGED_MARKER_CHUNK_ERROR_CODE,
+        raw_markdown=_MERGED_ANSWER,
+        expected_paragraph_ids=["p1344", "p1345"],
+        found_paragraph_ids=["p1344", "p1345"],
+        collapsed_paragraph_ids=["p1345"],
+        absorbing_paragraph_ids=["p1344"],
+    )
+    assert (
+        generation._degradation_ladder_trigger(merge, marker_mode=True)
+        == generation._DEGRADATION_LADDER_TRIGGER_MARKER_CONTRACT
+    )
+
+    result = generation._attempt_degradation_ladder(
+        merge,
+        client=_ladder_client(
+            {_STUB_SOURCE_ABSORBED: _FIRST_TRANSLATION, _STUB_SOURCE_COLLAPSED: _SECOND_TRANSLATION},
+            requests=requests,
+        ),
+        model="gpt-5.4",
+        system_prompt="system",
+        max_retries=2,
+        block_index=None,
+        marker_mode=True,
+        expected_paragraph_ids=["p1344", "p1345"],
+        source_paragraph_chunks=[_STUB_SOURCE_ABSORBED, _STUB_SOURCE_COLLAPSED],
+        target_text_for_leakage=f"{_STUB_SOURCE_ABSORBED}\n\n{_STUB_SOURCE_COLLAPSED}",
+        context_before="",
+        context_after="",
+        allow_controlled_source_fallback=True,
+    )
+
+    assert result is not None
+    dispositions = generation.marker_paragraph_dispositions(result)
+    assert dispositions is not None
+    assert [(item.paragraph_id, item.status) for item in dispositions] == [
+        ("p1344", "accepted"),
+        ("p1345", "accepted"),
+    ]
+    assert len(requests) == 2
+    assert all("[[DOCX_PARA_" not in request["input"][1]["content"][0]["text"] for request in requests)
+    snapshot = model_accounting.snapshot_run_model_accounting()
+    assert snapshot["degradation_ladder_trigger_counts"] == {"marker_contract": 1}
+
+
+_CEILING_PARAGRAPHS = (
+    "The first sentence of the first paragraph. The second sentence of the first paragraph.",
+    "The first sentence of the second paragraph. The second sentence of the second paragraph.",
+)
+
+
+def _ceiling_target(kwargs: dict[str, Any]) -> str:
+    prompt = kwargs["input"][1]["content"][0]["text"]
+    return prompt.split("[TARGET BLOCK", 1)[-1].split("[CONTEXT AFTER]", 1)[0]
+
+
+def _run_ceiling_block(create_response: Any, *, max_retries: int) -> str:
+    return generation.generate_markdown_block(
+        client=_as_openai_client(SimpleNamespace(responses=SimpleNamespace(create=create_response))),
+        model="gpt-5.4",
+        system_prompt="system",
+        target_text=(
+            f"[[DOCX_PARA_p1]]\n{_CEILING_PARAGRAPHS[0]}\n\n[[DOCX_PARA_p2]]\n{_CEILING_PARAGRAPHS[1]}"
+        ),
+        context_before="",
+        context_after="",
+        max_retries=max_retries,
+        expected_paragraph_ids=["p1", "p2"],
+        marker_mode=True,
+    )
+
+
+def test_one_block_never_costs_more_than_the_stated_ceiling_and_the_ceiling_is_reachable(monkeypatch):
+    """FR-004: the ceiling is a function in the code, pinned from BOTH sides.
+
+    ``incomplete_response`` is the worst case the code admits: retried, recovered, sent to
+    the ladder, and divided again by sentences inside it. The model below makes every step
+    spend its whole budget — the block and each whole paragraph never complete, and each
+    sentence group completes only on its recovery call — so the count is asserted EQUAL to
+    the ceiling: a step that grew a call would exceed it, a ceiling that over-stated the
+    cost would not be reached.
+
+    The unit counted is a GENERATION ATTEMPT (one request here, because this client serves
+    Responses directly). On OpenRouter a compatibility-refused Responses request is re-sent
+    to Chat Completions inside the same attempt, so one attempt may cost up to two SDK
+    calls; ``test_a_compatibility_fallback_is_one_attempt_and_two_sdk_calls`` pins that.
+    """
+
+    monkeypatch.setattr(generation.time, "sleep", lambda _seconds: None)
+    model_accounting.reset_run_model_accounting()
+    max_retries = 2
+    requests: list[dict[str, Any]] = []
+    calls_per_group: dict[str, int] = {}
+
+    def create_response(**kwargs: Any) -> SimpleNamespace:
+        requests.append(dict(kwargs))
+        target = _ceiling_target(kwargs)
+        if "[[DOCX_PARA_" in target or any(text in target for text in _CEILING_PARAGRAPHS):
+            return _incomplete_response()
+        key = target.strip().splitlines()[-1]
+        calls_per_group[key] = calls_per_group.get(key, 0) + 1
+        if calls_per_group[key] <= max_retries:
+            return _incomplete_response()
+        return SimpleNamespace(output_text="Переведённая группа предложений.")
+
+    sentence_groups = sum(len(generation._ladder_sentence_groups(text)) for text in _CEILING_PARAGRAPHS)
+    assert sentence_groups == 4
+
+    result = _run_ceiling_block(create_response, max_retries=max_retries)
+
+    dispositions = generation.marker_paragraph_dispositions(result)
+    assert dispositions is not None
+    assert [item.status for item in dispositions] == ["accepted", "accepted"]
+    assert len(calls_per_group) == sentence_groups
+    assert len(requests) == generation.max_model_calls_per_block(
+        max_retries=max_retries,
+        ladder_paragraph_count=len(_CEILING_PARAGRAPHS),
+        ladder_sentence_group_count=sentence_groups,
+    )
+    assert len(requests) == (max_retries + 1) * (1 + 2 + 4)
+
+
+def test_a_model_that_always_fails_stays_under_the_ceiling(monkeypatch):
+    """The adversarial client: it never answers, and the block still costs a bounded number.
+
+    Below the ceiling rather than at it, and the gap is named: a paragraph whose FIRST
+    sentence group fails is given up on without asking the remaining groups.
+    """
+
+    monkeypatch.setattr(generation.time, "sleep", lambda _seconds: None)
+    model_accounting.reset_run_model_accounting()
+    max_retries = 2
+    requests: list[dict[str, Any]] = []
+
+    def create_response(**kwargs: Any) -> SimpleNamespace:
+        requests.append(dict(kwargs))
+        return _incomplete_response()
+
+    result = _run_ceiling_block(create_response, max_retries=max_retries)
+
+    # The block ended where it always ended for this model: its own source, with a record.
+    assert result == "\n\n".join(_CEILING_PARAGRAPHS)
+    assert len(requests) <= generation.max_model_calls_per_block(
+        max_retries=max_retries, ladder_paragraph_count=2, ladder_sentence_group_count=4
+    )
+    # Block (3) + per paragraph: the whole paragraph (3) + its first sentence group (3).
+    assert len(requests) == (max_retries + 1) * (1 + 2 * 2)
 
 
 # --- spec 056 E: a typed disposition per paragraph ----------------------------------
@@ -3924,12 +4609,16 @@ def test_step_two_keeps_the_paragraph_it_could_not_translate_and_only_that_one(m
     ]
     from docxaicorrector.pipeline.block_execution import narration_projection_for_processed_block
 
-    spoken, withheld = narration_projection_for_processed_block(result)
+    spoken, withheld = narration_projection_for_processed_block(
+        result, processing_operation="translate"
+    )
     assert spoken == "Первый абзац переведён."
     # The withheld paragraph is returned as a RECORD, not as a pair of counters: the count and
     # the characters are derived from it at the call site, so the warning's quantity and its
     # addresses can never describe two different sets of paragraphs (2026-08-09).
-    assert withheld == [{"paragraph_id": "p0002", "text": "Second source paragraph."}]
+    assert withheld == [
+        {"paragraph_id": "p0002", "text": "Second source paragraph.", "status": "omitted"}
+    ]
     assert sum(len(item["text"]) for item in withheld) == len("Second source paragraph.")
     snapshot = model_accounting.snapshot_run_model_accounting()
     assert snapshot["degradation_ladder_translated_paragraph_count"] == 1

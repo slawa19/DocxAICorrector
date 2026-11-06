@@ -18,10 +18,11 @@ import time
 from collections.abc import Mapping
 from pathlib import Path
 
+from docxaicorrector.core.constants import RUN_DIR
 from docxaicorrector.core.logger import log_event
 
 
-QUALITY_REPORTS_DIR = Path(".run") / "quality_reports"
+QUALITY_REPORTS_DIR = RUN_DIR / "quality_reports"
 QUALITY_REPORTS_MAX_AGE_SECONDS = 7 * 24 * 60 * 60
 QUALITY_REPORTS_MAX_COUNT = 100
 

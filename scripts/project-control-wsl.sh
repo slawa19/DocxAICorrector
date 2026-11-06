@@ -2,7 +2,9 @@
 set -euo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-RUN_DIR="${DOCXAI_RUN_DIR:-$PROJECT_ROOT/.run}"
+# DOCX_AI_RUN_DIR as core/constants.py reads it: surrounding whitespace trimmed, blank = default.
+read -r RUN_DIR_OVERRIDE <<< "${DOCX_AI_RUN_DIR:-}" || true
+RUN_DIR="${RUN_DIR_OVERRIDE:-$PROJECT_ROOT/.run}"
 ENV_PATH="$PROJECT_ROOT/.env"
 APP_PATH="$PROJECT_ROOT/app.py"
 VENV_DIR="$PROJECT_ROOT/.venv"
@@ -292,22 +294,27 @@ print_environment_status() {
         printf 'deps_ok=false\n'
         printf 'pandoc_ok=false\n'
         printf 'api_key_ok=false\n'
+        printf 'api_key_env=\n'
         printf 'missing_packages=venv\n'
         printf 'pandoc_path=\n'
         return 0
     fi
 
-    ENV_PATH="$ENV_PATH" PYPANDOC_PANDOC="${PYPANDOC_PANDOC:-}" "$VENV_PYTHON" - <<'PY'
+    PROJECT_ROOT="$PROJECT_ROOT" ENV_PATH="$ENV_PATH" PYPANDOC_PANDOC="${PYPANDOC_PANDOC:-}" "$VENV_PYTHON" - <<'PY'
 from __future__ import annotations
 
 import importlib
 import os
+import shutil
+import sys
+import tempfile
 from pathlib import Path
 
 status = {
     "deps_ok": True,
     "pandoc_ok": False,
     "api_key_ok": False,
+    "api_key_env": "",
     "missing_packages": "",
     "pandoc_path": "",
 }
@@ -335,16 +342,35 @@ except Exception:
     status["pandoc_ok"] = False
     status["pandoc_path"] = os.environ.get("PYPANDOC_PANDOC", "")
 
+# The required key is the one the default text model's provider needs (spec 061 FR-024),
+# resolved by the app's own config loader so config.toml, .env and environment overrides of
+# [models.text].default all count. The loader logs; a throwaway DOCX_AI_RUN_DIR keeps that
+# out of the operator's .run. A value equal to the .env.example placeholder is not a key.
+status_run_dir = tempfile.mkdtemp(prefix="docxai-status-")
 try:
-    from dotenv import load_dotenv
+    from dotenv import dotenv_values, load_dotenv
 
+    project_root = Path(os.environ["PROJECT_ROOT"])
     env_path = Path(os.environ["ENV_PATH"])
     if env_path.exists():
         load_dotenv(dotenv_path=env_path)
-    value = os.getenv("OPENAI_API_KEY", "").strip()
-    status["api_key_ok"] = bool(value and value != "your_api_key_here")
+    os.environ["DOCX_AI_RUN_DIR"] = status_run_dir
+    sys.path.insert(0, str(project_root))
+    from docxaicorrector_bootstrap import ensure_src_first_import_order
+
+    ensure_src_first_import_order(project_root, project_root / "src")
+    from docxaicorrector.core.config import get_default_text_model_provider_config
+
+    api_key_env = get_default_text_model_provider_config().api_key_env
+    status["api_key_env"] = api_key_env
+    example_path = project_root / ".env.example"
+    placeholder = dotenv_values(example_path).get(api_key_env) if example_path.exists() else None
+    value = os.getenv(api_key_env, "").strip()
+    status["api_key_ok"] = bool(value and value != placeholder and value != "your_api_key_here")
 except Exception:
     status["api_key_ok"] = False
+finally:
+    shutil.rmtree(status_run_dir, ignore_errors=True)
 
 for key, value in status.items():
     if isinstance(value, bool):
@@ -407,15 +433,16 @@ setup_project() {
 }
 
 check_api_key() {
+    # Same resolution as env-status: the key of the default text model's provider.
     require_venv
-    ENV_PATH="$ENV_PATH" "$VENV_PYTHON" - <<'PY'
-from dotenv import load_dotenv
-import os
-
-load_dotenv(dotenv_path=os.environ["ENV_PATH"])
-value = os.getenv("OPENAI_API_KEY", "").strip()
-print("KEY_OK" if value and value != "your_api_key_here" else "KEY_MISSING")
-PY
+    local env_status api_key_env
+    env_status="$(print_environment_status)"
+    api_key_env="$(printf '%s\n' "$env_status" | sed -n 's/^api_key_env=//p')"
+    if printf '%s\n' "$env_status" | grep -qx 'api_key_ok=true'; then
+        echo "KEY_OK $api_key_env"
+    else
+        echo "KEY_MISSING ${api_key_env:-<default text model provider unresolved>}"
+    fi
 }
 
 run_streamlit() {

@@ -1994,3 +1994,22 @@ def test_render_image_validation_summary_renders_inside_fragment(monkeypatch):
     ui.render_image_validation_summary(FakeTarget())
 
     assert fragment_calls == ["render_image_validation_fragment"]
+
+
+def test_ui_code_uses_width_not_the_deprecated_use_container_width():
+    # Spec 061 FR-027 / AGENTS.md "Streamlit Layout Contract": use_container_width is
+    # deprecated in the installed Streamlit and will be removed; width="stretch" /
+    # width="content" are the replacements. Scans the source, so a new call fails here.
+    from pathlib import Path
+
+    ui_dir = Path(ui.__file__).resolve().parent
+    offenders = [
+        f"{path.name}:{line_number}"
+        for path in sorted(ui_dir.glob("*.py"))
+        for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1)
+        if "use_container_width" in line
+    ]
+    assert offenders == []
+    # Anti-vacuum: the scan really reads the UI modules that render full-width buttons.
+    assert 'width="stretch"' in (ui_dir / "_app.py").read_text(encoding="utf-8")
+    assert 'width="stretch"' in (ui_dir / "_ui.py").read_text(encoding="utf-8")

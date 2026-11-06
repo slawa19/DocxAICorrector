@@ -22,6 +22,7 @@ from docxaicorrector.core.model_accounting import (
     STAGE_TEXT_GENERATION,
     get_run_model_accounting_ledger,
     record_degradation_ladder,
+    record_marker_chunk_merge_retry,
     record_model_call_usage,
     record_model_output_discarded,
     record_paragraph_disposition,
@@ -31,6 +32,25 @@ from docxaicorrector.core.model_accounting import (
 from docxaicorrector.image.shared import call_responses_create_with_retry, extract_unsupported_parameter_name, is_retryable_error
 from docxaicorrector.generation.marker_attempt_capture import capture_rejected_marker_attempt
 from docxaicorrector.generation.openai_response_utils import collect_response_text_traversal, read_response_field
+from collections.abc import Callable, Mapping
+
+from docxaicorrector.core.model_accounting import record_text_api_path
+from docxaicorrector.generation.model_response import (
+    API_PATH_ANTHROPIC_MESSAGES,
+    API_PATH_CHAT_COMPLETIONS,
+    API_PATH_RESPONSES,
+    CollapsedOutput,
+    EmptyResponse,
+    IncompleteResponse,
+    ModelResponse,
+    NonCompletedResponse,
+    anthropic_stop_is_complete,
+    chat_completion_finish_is_complete,
+)
+# The generation layer raises the pipeline's existing cooperative-stop signal rather than
+# inventing a second one (spec 061 FR-022). ``pipeline.contracts`` imports nothing from the
+# pipeline itself, so this edge cannot form an import cycle.
+from docxaicorrector.pipeline.contracts import LatePhaseStopped
 
 if TYPE_CHECKING:
     from docx.document import Document as DocxDocument
@@ -263,6 +283,8 @@ class MarkerValidationError(RuntimeError):
         expected_paragraph_ids: Sequence[str],
         found_paragraph_ids: Sequence[str] | None = None,
         leading_text: str | None = None,
+        collapsed_paragraph_ids: Sequence[str] | None = None,
+        absorbing_paragraph_ids: Sequence[str] | None = None,
     ) -> None:
         super().__init__(f"paragraph_marker_validation_failed:{error_code}")
         self.error_code = error_code
@@ -276,6 +298,20 @@ class MarkerValidationError(RuntimeError):
         self.found_paragraph_ids = tuple(found_paragraph_ids or ())
         self.leading_text = leading_text or ""
         self.leading_text_preview = (leading_text or "")[:400]
+        # ``merged_marker_chunk`` only (spec 061 FR-001): WHICH paragraph collapsed and
+        # which neighbour visibly took its text. Empty for every other code.
+        self.collapsed_paragraph_ids = tuple(collapsed_paragraph_ids or ())
+        self.absorbing_paragraph_ids = tuple(absorbing_paragraph_ids or ())
+
+
+# A paragraph the model visibly merged into its neighbour, raised whenever something is
+# still left to ask (spec 061 FR-001/002). A ``MarkerValidationError`` like every other
+# marker-contract code, so the attempt loop retries it, spec 056 D' captures its answer and
+# the degradation ladder takes it as a ``marker_contract`` trigger without a line of their
+# own. The pair is repaired to ``source_restored`` (FR-003) only where nothing is left: the
+# last attempt and the recovery call of a block with NO ladder, and — when the ladder rescued
+# nothing — by ``_merged_pair_repair_fallback`` from the recovery call's own answer.
+MERGED_MARKER_CHUNK_ERROR_CODE = "merged_marker_chunk"
 
 
 @lru_cache(maxsize=1)
@@ -776,6 +812,7 @@ def resolve_marker_paragraph_dispositions(
     source_paragraph_chunks: Sequence[str] | None = None,
     allow_unresolved_paragraphs: bool,
     raw_markdown: str | None = None,
+    allow_merge_repair: bool | None = None,
 ) -> list[ParagraphDisposition]:
     """Turn ``retry_required`` paragraphs into a final status, or ask for another attempt.
 
@@ -795,24 +832,81 @@ def resolve_marker_paragraph_dispositions(
     The collapse-restore runs FIRST, on the raw texts, so an emptied paragraph whose text
     was visibly absorbed by a neighbour is still repaired as a pair (``source_restored``)
     instead of being re-instated on its own and shipped twice.
+
+    A MERGE follows the same budget rule as an omission (spec 061 FR-001, FR-003). Until
+    2026-11-06 it did not: the pair was reverted to its source on the FIRST attempt, so
+    ``empty_marker_chunk`` never fired and the retry loop never saw a problem — the block
+    shipped two paragraphs in the source language under ``valid``, once per book on four of
+    five recorded audiobook runs. Now, while budget remains, a visible merge raises
+    ``merged_marker_chunk`` and the block is asked again; ``source_restored`` is reached
+    only when nothing is left to ask. The detector itself is unchanged — only WHEN its
+    verdict ships.
+
+    "Nothing left" is not the same moment for the two failures, so the merge has a flag of
+    its own. An omission has no better remedy than the last attempt; a merge does — the
+    degradation ladder asks each paragraph alone, without markers, where merging is
+    impossible by construction. ``allow_merge_repair`` therefore stays ``False`` through the
+    last attempt and the recovery call whenever the ladder is available, and defaults to
+    ``allow_unresolved_paragraphs`` for every caller that has no ladder to hand the block to.
     """
+
+    if allow_merge_repair is None:
+        allow_merge_repair = allow_unresolved_paragraphs
 
     texts = [disposition.text for disposition in dispositions]
     statuses = list(disposition.status for disposition in dispositions)
+    paragraph_ids = [disposition.paragraph_id for disposition in dispositions]
+
+    def _answer_as_received() -> str:
+        # The model's ACTUAL answer when the caller has it (spec 056 D' captures the
+        # exception's ``raw_markdown`` verbatim, and a reconstruction would not replay).
+        if raw_markdown is not None:
+            return raw_markdown
+        return "\n\n".join(
+            f"[[DOCX_PARA_{disposition.paragraph_id}]]\n{disposition.text}"
+            for disposition in dispositions
+        )
 
     if source_paragraph_chunks is not None:
-        restored_texts = list(
-            restore_collapsed_marker_paragraphs(
-                list(texts),
-                source_paragraph_chunks,
-                expected_paragraph_ids=[disposition.paragraph_id for disposition in dispositions],
-            )
+        merges = _find_marker_chunk_merges(
+            texts, source_paragraph_chunks, expected_paragraph_ids=paragraph_ids
         )
-        if len(restored_texts) == len(texts):
-            for index, (before, after) in enumerate(zip(texts, restored_texts)):
-                if before != after:
-                    statuses[index] = PARAGRAPH_STATUS_SOURCE_RESTORED
-            texts = restored_texts
+        if merges and not allow_merge_repair:
+            collapsed_ids = [paragraph_ids[merge.collapsed_index] for merge in merges]
+            absorbing_ids = list(
+                dict.fromkeys(
+                    paragraph_ids[index] for merge in merges for index in merge.absorbing_indexes
+                )
+            )
+            # Counted HERE, not as a discard: nothing reaches the document from this answer.
+            # The block is always asked again after this raise — a retry while attempts
+            # remain, then the recovery call, then the ladder — because
+            # ``generate_markdown_block`` withholds the repair only while one of those is
+            # still ahead.
+            record_marker_chunk_merge_retry()
+            log_event(
+                logging.WARNING,
+                "marker_chunk_merge_retry_requested",
+                "Модель слила абзац с соседним; исходник не подставляется, блок будет запрошен снова.",
+                collapsed_paragraph_ids=collapsed_ids,
+                absorbing_paragraph_ids=absorbing_ids,
+                paragraph_count=len(dispositions),
+            )
+            raise MarkerValidationError(
+                MERGED_MARKER_CHUNK_ERROR_CODE,
+                raw_markdown=_answer_as_received(),
+                expected_paragraph_ids=paragraph_ids,
+                found_paragraph_ids=paragraph_ids,
+                collapsed_paragraph_ids=collapsed_ids,
+                absorbing_paragraph_ids=absorbing_ids,
+            )
+        restored_texts = _restore_marker_chunk_merges(
+            list(texts), source_paragraph_chunks, merges, expected_paragraph_ids=paragraph_ids
+        )
+        for index, (before, after) in enumerate(zip(texts, restored_texts)):
+            if before != after:
+                statuses[index] = PARAGRAPH_STATUS_SOURCE_RESTORED
+        texts = restored_texts
 
     unresolved_indexes = [
         index
@@ -822,18 +916,9 @@ def resolve_marker_paragraph_dispositions(
     if unresolved_indexes and not allow_unresolved_paragraphs:
         raise MarkerValidationError(
             "empty_marker_chunk",
-            # The model's ACTUAL answer when the caller has it (spec 056 D' captures this
-            # exception's ``raw_markdown`` verbatim, and a reconstruction would not replay).
-            raw_markdown=(
-                raw_markdown
-                if raw_markdown is not None
-                else "\n\n".join(
-                    f"[[DOCX_PARA_{disposition.paragraph_id}]]\n{disposition.text}"
-                    for disposition in dispositions
-                )
-            ),
-            expected_paragraph_ids=[disposition.paragraph_id for disposition in dispositions],
-            found_paragraph_ids=[disposition.paragraph_id for disposition in dispositions],
+            raw_markdown=_answer_as_received(),
+            expected_paragraph_ids=paragraph_ids,
+            found_paragraph_ids=paragraph_ids,
         )
 
     for index in unresolved_indexes:
@@ -894,6 +979,14 @@ def _visible_marker_chunk_length(chunk: str) -> int:
     return len(_strip_prompt_internal_tokens(chunk))
 
 
+@dataclass(frozen=True)
+class _MarkerChunkMerge:
+    """One VISIBLE merge: the paragraph that collapsed and the neighbour(s) holding its text."""
+
+    collapsed_index: int
+    absorbing_indexes: tuple[int, ...]
+
+
 def restore_collapsed_marker_paragraphs(
     paragraph_chunks: list[str],
     source_paragraph_chunks: Sequence[str],
@@ -927,10 +1020,39 @@ def restore_collapsed_marker_paragraphs(
     quote) turned out not to be a merge at all — the model had shifted a whole endnote
     region, and that quote was already shipping five markers earlier, so re-instating it
     delivered the quote twice.
+
+    Since spec 061 FR-001 detection and repair are two steps: ``resolve_marker_paragraph_dispositions``
+    detects first (``_find_marker_chunk_merges``) and repairs (``_restore_marker_chunk_merges``)
+    only when no retry budget is left, because a repair ships source-language text. This
+    function performs both at once and is kept for callers with no budget to consult.
+    """
+
+    merges = _find_marker_chunk_merges(
+        paragraph_chunks, source_paragraph_chunks, expected_paragraph_ids=expected_paragraph_ids
+    )
+    return _restore_marker_chunk_merges(
+        paragraph_chunks,
+        source_paragraph_chunks,
+        merges,
+        expected_paragraph_ids=expected_paragraph_ids,
+    )
+
+
+def _find_marker_chunk_merges(
+    paragraph_chunks: Sequence[str],
+    source_paragraph_chunks: Sequence[str],
+    *,
+    expected_paragraph_ids: Sequence[str] | None = None,
+) -> list[_MarkerChunkMerge]:
+    """The merges ``restore_collapsed_marker_paragraphs`` would repair — found, not repaired.
+
+    Pure detection, apart from the INFO line for a shrunken paragraph nobody absorbed (that
+    answer stands either way, so there is nothing to defer). No counter is touched here:
+    whether the merge becomes a discard or a retry is the caller's decision.
     """
 
     if not source_paragraph_chunks or len(source_paragraph_chunks) != len(paragraph_chunks):
-        return paragraph_chunks
+        return []
 
     source_lengths = [_visible_marker_chunk_length(chunk) for chunk in source_paragraph_chunks]
     returned_lengths = [_visible_marker_chunk_length(chunk) for chunk in paragraph_chunks]
@@ -958,11 +1080,9 @@ def restore_collapsed_marker_paragraphs(
         collapsed_indexes.append(index)
 
     if not collapsed_indexes:
-        return paragraph_chunks
+        return []
 
-    restored = list(paragraph_chunks)
-    restored_indexes: list[int] = []
-    merged_indexes: list[int] = []
+    merges: list[_MarkerChunkMerge] = []
     kept_indexes: list[int] = []
     for index in collapsed_indexes:
         required_growth = source_lengths[index] * _ABSORBING_NEIGHBOUR_RATIO
@@ -977,10 +1097,9 @@ def restore_collapsed_marker_paragraphs(
             # answer is a short answer and the model's output stands.
             kept_indexes.append(index)
             continue
-        merged_indexes.append(index)
-        for restore_index in (index, *absorbing_indexes):
-            restored[restore_index] = source_paragraph_chunks[restore_index]
-            restored_indexes.append(restore_index)
+        merges.append(
+            _MarkerChunkMerge(collapsed_index=index, absorbing_indexes=tuple(absorbing_indexes))
+        )
 
     if kept_indexes:
         log_event(
@@ -992,13 +1111,33 @@ def restore_collapsed_marker_paragraphs(
             ],
             paragraph_count=len(paragraph_chunks),
         )
+    return merges
 
-    if not merged_indexes:
+
+def _restore_marker_chunk_merges(
+    paragraph_chunks: list[str],
+    source_paragraph_chunks: Sequence[str],
+    merges: Sequence[_MarkerChunkMerge],
+    *,
+    expected_paragraph_ids: Sequence[str] | None = None,
+) -> list[str]:
+    """Ship the SOURCE of every merged pair, and say so. Called only once nothing is left to ask."""
+
+    if not merges:
         return paragraph_chunks
+
+    restored = list(paragraph_chunks)
+    restored_indexes: list[int] = []
+    for merge in merges:
+        for restore_index in (merge.collapsed_index, *merge.absorbing_indexes):
+            restored[restore_index] = source_paragraph_chunks[restore_index]
+            restored_indexes.append(restore_index)
 
     # The run report must show these paragraphs: the block still logs ``OK``, so without a
     # counter the reader believes a paragraph was edited when in fact its edit was thrown
-    # away and the source was shipped instead.
+    # away and the source was shipped instead. Recorded only HERE, where the source really
+    # ships (spec 061 FR-005); a merge sent back for a retry is
+    # ``marker_chunk_merge_retry_count`` instead.
     record_model_output_discarded(
         reason="marker_chunk_collapse",
         paragraph_count=len(set(restored_indexes)),
@@ -1008,7 +1147,7 @@ def restore_collapsed_marker_paragraphs(
         "marker_chunk_collapse_source_restored",
         "Возвращённый абзац схлопнулся в соседний; восстановлен исходный текст обоих абзацев.",
         collapsed_paragraph_ids=[
-            _marker_paragraph_id(expected_paragraph_ids, index) for index in merged_indexes
+            _marker_paragraph_id(expected_paragraph_ids, merge.collapsed_index) for merge in merges
         ],
         restored_paragraph_count=len(set(restored_indexes)),
         paragraph_count=len(paragraph_chunks),
@@ -1051,6 +1190,7 @@ def _strip_and_validate_paragraph_markers(
     marker_mode: bool,
     source_paragraph_chunks: Sequence[str] | None = None,
     allow_unresolved_paragraphs: bool = False,
+    allow_merge_repair: bool | None = None,
 ) -> str:
     if not marker_mode:
         return markdown
@@ -1061,6 +1201,7 @@ def _strip_and_validate_paragraph_markers(
         source_paragraph_chunks=source_paragraph_chunks,
         allow_unresolved_paragraphs=allow_unresolved_paragraphs,
         raw_markdown=markdown,
+        allow_merge_repair=allow_merge_repair,
     )
     # The joined string still carries exactly one paragraph per marker — an ``omitted``
     # paragraph contributes its own source text — so everything downstream that counts
@@ -1268,6 +1409,7 @@ def _finalize_generated_markdown(
     allow_persistent_context_leakage: bool,
     source_paragraph_chunks: Sequence[str] | None = None,
     allow_unresolved_paragraphs: bool = False,
+    allow_merge_repair: bool | None = None,
 ) -> str:
     cleaned_markdown = _strip_and_validate_paragraph_markers(
         markdown,
@@ -1275,7 +1417,39 @@ def _finalize_generated_markdown(
         marker_mode=marker_mode,
         source_paragraph_chunks=source_paragraph_chunks,
         allow_unresolved_paragraphs=allow_unresolved_paragraphs,
+        allow_merge_repair=allow_merge_repair,
     )
+    return _deliver_after_context_leakage_check(
+        cleaned_markdown,
+        target_text=target_text,
+        context_before=context_before,
+        context_after=context_after,
+        marker_mode=marker_mode,
+        allow_persistent_context_leakage=allow_persistent_context_leakage,
+        stage="finalize",
+    )
+
+
+def _deliver_after_context_leakage_check(
+    cleaned_markdown: str,
+    *,
+    target_text: str,
+    context_before: str,
+    context_after: str,
+    marker_mode: bool,
+    allow_persistent_context_leakage: bool,
+    stage: str,
+    unattributable_trim_fails_open: bool = False,
+) -> str:
+    """The context-leakage check every delivered ANSWER passes, wherever it is delivered.
+
+    One copy, because a second delivery path that skipped it (the merge pair repair after
+    the ladder, review finding F6) shipped a neighbour's sentence inside a paragraph the
+    model had otherwise answered well. ``unattributable_trim_fails_open`` is for callers that
+    are themselves the last fallback: there a trim that cannot be attributed to a paragraph
+    leaves the answer as it is, logged, instead of raising past every remaining fallback.
+    """
+
     leaked_fragment = _detect_context_leakage(
         cleaned_markdown,
         target_text,
@@ -1284,15 +1458,20 @@ def _finalize_generated_markdown(
     )
     if leaked_fragment is None:
         return _deliver_marker_preserved_block(
-            cleaned_markdown, marker_mode=marker_mode, stage="finalize_clean"
+            cleaned_markdown, marker_mode=marker_mode, stage=f"{stage}_clean"
         )
 
-    trimmed_markdown, was_trimmed = _trim_marker_preserved_boundary_leakage(
-        cleaned_markdown, leaked_fragment
-    )
+    try:
+        trimmed_markdown, was_trimmed = _trim_marker_preserved_boundary_leakage(
+            cleaned_markdown, leaked_fragment
+        )
+    except MarkerValidationError:
+        if not unattributable_trim_fails_open:
+            raise
+        trimmed_markdown, was_trimmed = cleaned_markdown, False
     if was_trimmed:
         return _deliver_marker_preserved_block(
-            trimmed_markdown, marker_mode=marker_mode, stage="finalize_leakage_trimmed"
+            trimmed_markdown, marker_mode=marker_mode, stage=f"{stage}_leakage_trimmed"
         )
 
     if allow_persistent_context_leakage:
@@ -1305,7 +1484,7 @@ def _finalize_generated_markdown(
             marker_mode=marker_mode,
         )
         return _deliver_marker_preserved_block(
-            cleaned_markdown, marker_mode=marker_mode, stage="finalize_leakage_persisted"
+            cleaned_markdown, marker_mode=marker_mode, stage=f"{stage}_leakage_persisted"
         )
 
     raise ContextLeakageError(f"context_leakage_detected:{leaked_fragment}")
@@ -1364,24 +1543,53 @@ def _log_empty_response_shape(response: object, raw_output_text: str, *, error_c
     )
 
 
-def _extract_normalized_markdown(response: object) -> str:
+_EMPTY_RESPONSE_MESSAGE = "Модель вернула пустой ответ (empty_response)."
+_COLLAPSED_OUTPUT_MESSAGE = "Модель вернула ответ, который схлопнулся после нормализации (collapsed_output)."
+_INCOMPLETE_RESPONSE_MESSAGE = "Модель не завершила генерацию (incomplete_response)."
+
+
+def _require_complete_markdown(model_response: ModelResponse) -> str:
+    """The ONE place an incomplete answer is refused, whichever API produced it (FR-011).
+
+    Raising here, rather than in each extractor, is what makes the three paths behave
+    identically: a truncated answer whose markers happen to be intact is still a truncated
+    answer, and the attempt loop retries it with a larger budget on every path.
+    """
+
+    if model_response.incomplete:
+        raise IncompleteResponse(_INCOMPLETE_RESPONSE_MESSAGE)
+    return model_response.text
+
+
+def _read_responses_model_response(response: object) -> ModelResponse:
     response_status = read_response_field(response, "status")
     if response_status == "incomplete":
         _log_empty_response_shape(response, "", error_code="incomplete_response")
-        raise RuntimeError("Модель не завершила генерацию (incomplete_response).")
+        incomplete_reason = read_response_field(read_response_field(response, "incomplete_details"), "reason")
+        return ModelResponse(
+            text="",
+            incomplete=True,
+            stop_reason=incomplete_reason if isinstance(incomplete_reason, str) else None,
+        )
     if isinstance(response_status, str) and response_status != "completed":
         _log_empty_response_shape(response, "", error_code="non_completed_response")
-        raise RuntimeError(f"Модель вернула неожиданный статус ответа: {response_status} (non_completed_response).")
+        raise NonCompletedResponse(
+            f"Модель вернула неожиданный статус ответа: {response_status} (non_completed_response)."
+        )
 
     raw_output_text = _extract_response_output_text(response)
     markdown = normalize_model_output(raw_output_text)
     if markdown:
-        return markdown
+        return ModelResponse(text=markdown)
     error_code = "collapsed_output" if raw_output_text else "empty_response"
     _log_empty_response_shape(response, raw_output_text, error_code=error_code)
     if raw_output_text:
-        raise RuntimeError("Модель вернула ответ, который схлопнулся после нормализации (collapsed_output).")
-    raise RuntimeError("Модель вернула пустой ответ (empty_response).")
+        raise CollapsedOutput(_COLLAPSED_OUTPUT_MESSAGE)
+    raise EmptyResponse(_EMPTY_RESPONSE_MESSAGE)
+
+
+def _extract_normalized_markdown(response: object) -> str:
+    return _require_complete_markdown(_read_responses_model_response(response))
 
 
 def _call_responses_create(client: "OpenAI", request_kwargs: dict[str, Any]) -> object:
@@ -1479,7 +1687,12 @@ def _extract_chat_messages_from_request(request_kwargs: dict[str, object]) -> li
     return messages
 
 
-def _call_chat_completions_create(client: "OpenAI", request_kwargs: dict[str, object]) -> object:
+def _call_chat_completions_create(
+    client: "OpenAI",
+    request_kwargs: dict[str, object],
+    *,
+    should_stop: Callable[[], bool] | None = None,
+) -> object:
     chat_completions = getattr(getattr(client, "chat", None), "completions", None)
     create = getattr(chat_completions, "create", None)
     if not callable(create):
@@ -1496,6 +1709,8 @@ def _call_chat_completions_create(client: "OpenAI", request_kwargs: dict[str, ob
 
     removable_optional_params = {"temperature", "max_tokens"}
     while True:
+        # Each pass is a paid SDK call (review finding F7): Stop is honoured before it.
+        _raise_if_stop_requested(should_stop)
         try:
             response = create(**payload)
         except TypeError as exc:
@@ -1515,28 +1730,62 @@ def _call_chat_completions_create(client: "OpenAI", request_kwargs: dict[str, ob
             return response
 
 
-def _extract_chat_completion_markdown(response: object) -> str:
+def _response_item_text(item: object) -> str:
+    """The text of one content item, whether it arrived as a mapping or as an SDK object.
+
+    FR-013: branch on the item's KIND. The previous ``getattr(item, "text", "") or
+    item.get("text")`` reached ``.get`` whenever ``.text`` was empty, so an SDK object with
+    an empty text and no ``get`` raised ``AttributeError`` instead of contributing nothing.
+    """
+
+    if isinstance(item, Mapping):
+        return str(item.get("text") or "")
+    return str(getattr(item, "text", "") or "")
+
+
+def _joined_response_item_texts(content: Iterable[object]) -> str:
+    text_parts = [
+        _response_item_text(item)
+        for item in content
+        if isinstance(item, Mapping) or hasattr(item, "text")
+    ]
+    return "\n".join(part for part in text_parts if part)
+
+
+def _read_chat_completion_model_response(response: object) -> ModelResponse:
     choices = getattr(response, "choices", None)
     if not isinstance(choices, list) or not choices:
-        raise RuntimeError("Provider 'openrouter' не поддерживает required text API surface для selector '<runtime>'.")
+        # No choice at all is an answer with no text, and it takes the empty-response road
+        # (retry, recovery, controlled fallback). An untyped ``RuntimeError`` here matched
+        # none of the typed classes and ended the run.
+        raise EmptyResponse(_EMPTY_RESPONSE_MESSAGE)
     first_choice = choices[0]
+    finish_reason = getattr(first_choice, "finish_reason", None)
     message = getattr(first_choice, "message", None)
     content = getattr(message, "content", None)
     if isinstance(content, str):
-        markdown = normalize_model_output(content)
-        if markdown:
-            return markdown
-        raise RuntimeError("Модель вернула ответ, который схлопнулся после нормализации (collapsed_output).")
-    if isinstance(content, list):
-        text_parts = [
-            str(getattr(item, "text", "") or item.get("text") or "")
-            for item in content
-            if isinstance(item, dict) or hasattr(item, "text")
-        ]
-        markdown = normalize_model_output("\n".join(part for part in text_parts if part))
-        if markdown:
-            return markdown
-    raise RuntimeError("Модель вернула пустой ответ (empty_response).")
+        raw_text = content
+    elif isinstance(content, list):
+        raw_text = _joined_response_item_texts(content)
+    else:
+        raw_text = ""
+    markdown = normalize_model_output(raw_text)
+    # Completeness is read BEFORE emptiness, as on the Responses path: an answer cut off at
+    # its first token is a budget problem, and only the incomplete path raises the budget.
+    if not chat_completion_finish_is_complete(finish_reason):
+        return ModelResponse(text=markdown, incomplete=True, stop_reason=str(finish_reason))
+    if markdown:
+        return ModelResponse(
+            text=markdown,
+            stop_reason=finish_reason if isinstance(finish_reason, str) else None,
+        )
+    if isinstance(content, str):
+        raise CollapsedOutput(_COLLAPSED_OUTPUT_MESSAGE)
+    raise EmptyResponse(_EMPTY_RESPONSE_MESSAGE)
+
+
+def _extract_chat_completion_markdown(response: object) -> str:
+    return _require_complete_markdown(_read_chat_completion_model_response(response))
 
 
 def _extract_anthropic_messages_payload(request_kwargs: dict[str, object]) -> tuple[str, list[dict[str, str]]]:
@@ -1571,7 +1820,12 @@ def _extract_anthropic_messages_payload(request_kwargs: dict[str, object]) -> tu
     return "\n\n".join(system_parts), messages
 
 
-def _call_anthropic_messages_create(client: object, request_kwargs: dict[str, object]) -> object:
+def _call_anthropic_messages_create(
+    client: object,
+    request_kwargs: dict[str, object],
+    *,
+    should_stop: Callable[[], bool] | None = None,
+) -> object:
     create = getattr(getattr(client, "messages", None), "create", None)
     if not callable(create):
         raise RuntimeError("Provider 'anthropic' не поддерживает required text API surface для selector '<runtime>'.")
@@ -1590,6 +1844,7 @@ def _call_anthropic_messages_create(client: object, request_kwargs: dict[str, ob
 
     removable_optional_params = {"temperature"}
     while True:
+        _raise_if_stop_requested(should_stop)
         try:
             response = create(**payload)
         except TypeError as exc:
@@ -1611,19 +1866,26 @@ def _call_anthropic_messages_create(client: object, request_kwargs: dict[str, ob
             return response
 
 
-def _extract_anthropic_message_markdown(response: object) -> str:
+def _read_anthropic_model_response(response: object) -> ModelResponse:
+    stop_reason = getattr(response, "stop_reason", None)
     content = getattr(response, "content", None)
-    if not isinstance(content, list) or not content:
-        raise RuntimeError("Модель вернула пустой ответ (empty_response).")
-    text_parts = [
-        str(getattr(item, "text", "") or item.get("text") or "")
-        for item in content
-        if isinstance(item, dict) or hasattr(item, "text")
-    ]
-    markdown = normalize_model_output("\n".join(part for part in text_parts if part))
+    markdown = (
+        normalize_model_output(_joined_response_item_texts(content))
+        if isinstance(content, list)
+        else ""
+    )
+    if not anthropic_stop_is_complete(stop_reason):
+        return ModelResponse(text=markdown, incomplete=True, stop_reason=str(stop_reason))
     if markdown:
-        return markdown
-    raise RuntimeError("Модель вернула пустой ответ (empty_response).")
+        return ModelResponse(
+            text=markdown,
+            stop_reason=stop_reason if isinstance(stop_reason, str) else None,
+        )
+    raise EmptyResponse(_EMPTY_RESPONSE_MESSAGE)
+
+
+def _extract_anthropic_message_markdown(response: object) -> str:
+    return _require_complete_markdown(_read_anthropic_model_response(response))
 
 
 def _estimate_max_output_tokens(target_text: str) -> int:
@@ -1668,12 +1930,23 @@ def _boost_request_output_budget(
     return boosted_request
 
 
-def _call_markdown_request_with_sdk_fallback(client: "OpenAI", request_kwargs: dict[str, object]) -> tuple[str, bool]:
+def _call_markdown_request_with_sdk_fallback(
+    client: "OpenAI",
+    request_kwargs: dict[str, object],
+    *,
+    should_stop: Callable[[], bool] | None = None,
+) -> tuple[str, bool]:
+    # Each branch records which API answered BEFORE extracting, so a call that answered and
+    # was then refused (empty, truncated) still counts against the path that served it.
+    # The Assumptions of spec 061 need this number: how often the default provider really
+    # falls back to Chat Completions is unknown until it is counted.
     if _is_anthropic_client(client):
-        response = _call_anthropic_messages_create(client, request_kwargs)
+        response = _call_anthropic_messages_create(client, request_kwargs, should_stop=should_stop)
+        record_text_api_path(API_PATH_ANTHROPIC_MESSAGES)
         return _extract_anthropic_message_markdown(response), False
     try:
         response = _call_responses_create(client, cast(dict[str, Any], request_kwargs))
+        record_text_api_path(API_PATH_RESPONSES)
         return _extract_normalized_markdown(response), False
     except Exception as exc:
         if not _is_openrouter_client(client) or not _is_openrouter_responses_compatibility_error(exc):
@@ -1692,7 +1965,10 @@ def _call_markdown_request_with_sdk_fallback(client: "OpenAI", request_kwargs: d
             api_surface="chat.completions",
             fallback_reason=str(exc),
         )
-        chat_response = _call_chat_completions_create(client, request_kwargs)
+        # The compatibility fallback is a SECOND SDK call inside one generation attempt, and
+        # the user may have pressed Stop while the first one was being refused.
+        chat_response = _call_chat_completions_create(client, request_kwargs, should_stop=should_stop)
+        record_text_api_path(API_PATH_CHAT_COMPLETIONS)
         return _extract_chat_completion_markdown(chat_response), True
 
 
@@ -1706,6 +1982,8 @@ def _recover_from_persistent_empty_response(
     marker_mode: bool = False,
     minimum_output_tokens: int | None = None,
     last_exception: Exception | None = None,
+    allow_merge_repair: bool = True,
+    should_stop: Callable[[], bool] | None = None,
 ) -> str:
     log_event(
         logging.WARNING,
@@ -1733,7 +2011,7 @@ def _recover_from_persistent_empty_response(
             request_kwargs,
             minimum_tokens=minimum_output_tokens,
         )
-    markdown = _call_markdown_request_with_sdk_fallback(client, request_kwargs)[0]
+    markdown = _call_markdown_request_with_sdk_fallback(client, request_kwargs, should_stop=should_stop)[0]
     cleaned_markdown = _strip_and_validate_paragraph_markers(
         markdown,
         expected_paragraph_ids,
@@ -1745,9 +2023,11 @@ def _recover_from_persistent_empty_response(
         ),
         # The recovery call is the last chance there is; there is nothing left to retry for.
         allow_unresolved_paragraphs=True,
+        # ...except for a merge, when the caller still has a ladder to hand it to.
+        allow_merge_repair=allow_merge_repair,
     )
     if not cleaned_markdown.strip():
-        raise RuntimeError("Модель вернула пустой ответ (empty_response).")
+        raise EmptyResponse(_EMPTY_RESPONSE_MESSAGE)
     return _deliver_marker_preserved_block(
         cleaned_markdown, marker_mode=marker_mode, stage="recovery"
     )
@@ -1795,8 +2075,138 @@ def _block_source_fallback_result(
     )
 
 
-def _is_incomplete_response_error(exc: Exception) -> bool:
-    return isinstance(exc, RuntimeError) and "incomplete_response" in str(exc)
+def _non_completed_response_source_fallback(
+    target_text_for_leakage: str,
+    *,
+    model: str,
+    expected_paragraph_ids: Sequence[str] | None,
+    source_paragraph_chunks: Sequence[str] | None,
+    marker_mode: bool,
+) -> str:
+    """The ``non_completed_response`` controlled fallback, ONE copy for both places it fires:
+    the attempts ending on that class, and the recovery call ending on it."""
+
+    record_model_output_discarded(reason="non_completed_response_source_fallback", block_count=1)
+    log_event(
+        logging.WARNING,
+        "markdown_non_completed_response_source_fallback",
+        "Модель повторно вернула non_completed_response; сохраняю исходный текст блока как controlled fallback.",
+        model=model,
+        target_chars=len(target_text_for_leakage),
+        marker_mode=marker_mode,
+    )
+    return _block_source_fallback_result(
+        target_text_for_leakage,
+        expected_paragraph_ids=expected_paragraph_ids,
+        source_paragraph_chunks=source_paragraph_chunks,
+        marker_mode=marker_mode,
+    )
+
+
+def _merged_pair_repair_fallback(
+    exc: BaseException | None,
+    *,
+    expected_paragraph_ids: Sequence[str] | None,
+    source_paragraph_chunks: Sequence[str] | None,
+    marker_mode: bool,
+    target_text_for_leakage: str,
+    context_before: str,
+    context_after: str,
+) -> str | None:
+    """The merge repair the last attempt used to do, applied AFTER the ladder (FR-002/003).
+
+    Reached only when the recovery call raised ``merged_marker_chunk`` and the ladder
+    rescued nothing. The exception holds the recovery call's answer as received (spec 056
+    D'), so the repair is the SAME function over the SAME answer it would have run on a
+    block with no ladder: the merged pair ships its source as ``source_restored`` with the
+    ``marker_chunk_collapse`` counter and event, an emptied paragraph becomes ``omitted``,
+    and every other paragraph keeps its translation. ``None`` for any other exception, so
+    the block-level fallbacks below see exactly what they saw before.
+
+    The kept paragraphs are the model's text and pass the same context-leakage check every
+    delivered answer passes (``_deliver_after_context_leakage_check``), fail-open because
+    nothing is left behind this fallback but the whole-block source.
+    """
+
+    if (
+        not marker_mode
+        or not isinstance(exc, MarkerValidationError)
+        or exc.error_code != MERGED_MARKER_CHUNK_ERROR_CODE
+        or not expected_paragraph_ids
+        or source_paragraph_chunks is None
+    ):
+        return None
+    log_event(
+        logging.WARNING,
+        "marker_chunk_merge_pair_repair_after_ladder",
+        "Слияние абзацев не исправлено ни повтором, ни переспросом по абзацам (переспрос не спас ни одного абзаца или не был применим); исходный текст получает только слитая пара.",
+        collapsed_paragraph_ids=list(exc.collapsed_paragraph_ids),
+        absorbing_paragraph_ids=list(exc.absorbing_paragraph_ids),
+        paragraph_count=len(expected_paragraph_ids),
+    )
+    return _deliver_after_context_leakage_check(
+        _strip_and_validate_paragraph_markers(
+            exc.raw_markdown,
+            expected_paragraph_ids,
+            marker_mode=True,
+            source_paragraph_chunks=source_paragraph_chunks,
+            allow_unresolved_paragraphs=True,
+            allow_merge_repair=True,
+        ),
+        target_text=target_text_for_leakage,
+        context_before=context_before,
+        context_after=context_after,
+        marker_mode=True,
+        allow_persistent_context_leakage=True,
+        stage="merge_pair_repair",
+        unattributable_trim_fails_open=True,
+    )
+
+
+def _merged_marker_chunk_error(exc: BaseException | None) -> MarkerValidationError | None:
+    if isinstance(exc, MarkerValidationError) and exc.error_code == MERGED_MARKER_CHUNK_ERROR_CODE:
+        return exc
+    return None
+
+
+def _ladder_exception_for_block(
+    recovery_exc: Exception, last_exception: Exception | None, *, marker_mode: bool
+) -> Exception:
+    """WHICH failure the ladder answers, when the attempts and the recovery call disagree.
+
+    A merge comes first, from whichever call produced it, because only a merge tells the
+    ladder which paragraphs to re-ask (F1): the rest of that answer is kept. Otherwise the
+    recovery call's failure, as before — unless it is no trigger at all (an EMPTY recovery
+    answer after the attempts broke the marker contract, review finding F5), in which case
+    the attempts' marker-contract failure still is one, and skipping the ladder there would
+    ship source text no per-paragraph call was ever asked for.
+    """
+
+    for candidate in (recovery_exc, last_exception):
+        merged = _merged_marker_chunk_error(candidate)
+        if merged is not None:
+            return merged
+    if _degradation_ladder_trigger(recovery_exc, marker_mode=marker_mode) is not None:
+        return recovery_exc
+    if (
+        marker_mode
+        and last_exception is not None
+        and _is_retryable_marker_validation_error(last_exception)
+    ):
+        return last_exception
+    return recovery_exc
+
+
+# FR-012: every generation failure class below is decided by the exception's TYPE. Reading
+# a substring of the message is how ``collapsed_output`` came to be retried by one predicate
+# and unknown to the next, so that after recovery it escaped as an exception where
+# ``empty_response`` took a controlled fallback. The marker-validation predicate further
+# down still keys on its message prefix: that class has two raise sites that are bare
+# ``RuntimeError``s, and it is not one of the four classes this rule converts.
+
+
+def _is_incomplete_response_error(exc: BaseException) -> bool:
+    return isinstance(exc, IncompleteResponse)
 
 
 def _can_fallback_to_source_text_after_incomplete_response(target_text: str) -> bool:
@@ -1807,26 +2217,40 @@ def _can_fallback_to_source_text_after_marker_validation_failure(target_text: st
     return marker_mode and bool(target_text.strip())
 
 
-def _is_empty_response_error(exc: Exception) -> bool:
-    return isinstance(exc, RuntimeError) and "empty_response" in str(exc)
+def _is_empty_or_collapsed_response_error(exc: BaseException) -> bool:
+    """An answer with no usable text. One class for the fallback: whether the text was
+    absent or collapsed to nothing under normalisation, the block has no translation."""
+
+    return isinstance(exc, (EmptyResponse, CollapsedOutput))
 
 
 def _can_fallback_to_source_text_after_empty_response(target_text: str) -> bool:
     return bool(target_text.strip())
 
 
-def _is_non_completed_response_error(exc: Exception) -> bool:
-    return isinstance(exc, RuntimeError) and "non_completed_response" in str(exc)
+def _is_non_completed_response_error(exc: BaseException) -> bool:
+    return isinstance(exc, NonCompletedResponse)
 
 
 def _can_fallback_to_source_text_after_non_completed_response(target_text: str) -> bool:
     return bool(target_text.strip())
 
 
-def _is_retryable_empty_generation_error(exc: Exception) -> bool:
-    return isinstance(exc, RuntimeError) and (
-        "empty_response" in str(exc) or "collapsed_output" in str(exc) or "incomplete_response" in str(exc)
-    )
+def _is_retryable_empty_generation_error(exc: BaseException) -> bool:
+    return isinstance(exc, (EmptyResponse, CollapsedOutput, IncompleteResponse))
+
+
+def _raise_if_stop_requested(should_stop: Callable[[], bool] | None) -> None:
+    """FR-022: the Stop button is honoured before a model call, not only between blocks.
+
+    Checked before every attempt, the recovery call and — through the nested call each
+    ladder step makes — every ladder step, so one block's retries can no longer keep buying
+    calls after the user pressed Stop. ``LatePhaseStopped`` derives from ``BaseException``,
+    which is what carries it past every ``except Exception`` between here and the block loop.
+    """
+
+    if should_stop is not None and should_stop():
+        raise LatePhaseStopped()
 
 
 def _is_retryable_marker_validation_error(exc: Exception) -> bool:
@@ -1931,6 +2355,40 @@ def _capture_marker_attempt_failure(
 _DEGRADATION_LADDER_TRIGGER_MARKER_CONTRACT = "marker_contract"
 _DEGRADATION_LADDER_TRIGGER_INCOMPLETE_RESPONSE = "incomplete_response"
 
+# The calls ONE ``generate_markdown_block`` makes beyond its ``max_retries`` attempts before
+# it either answers or raises: the informed recovery call. Every call the ladder makes is a
+# nested ``generate_markdown_block`` with ladders and fallbacks off, so it costs the same
+# ``max_retries + this``.
+MODEL_CALLS_PER_GENERATION_BEYOND_RETRIES = 1
+
+
+def max_model_calls_per_block(
+    *, max_retries: int, ladder_paragraph_count: int, ladder_sentence_group_count: int = 0
+) -> int:
+    """The arithmetic ceiling on model calls for ONE block (spec 061 FR-004; spec 059 a-r 9).
+
+    ``max_retries`` attempts and one recovery for the block, then one ladder step: one nested
+    generation per paragraph, plus one per sentence group of a paragraph that came back
+    ``incomplete_response`` again. Every nested generation is bounded the same way and none
+    can open a ladder of its own, so the ceiling is a product, not a recursion.
+
+    The unit is a GENERATION ATTEMPT — one request the attempt loop, the recovery call or a
+    ladder step makes. It is not an SDK call: on OpenRouter a Responses request refused for
+    compatibility is re-sent to Chat Completions inside the same attempt, so one attempt may
+    cost up to TWO SDK calls (``api_path_counts`` counts the answers served, one per
+    attempt that got one). Parameter-removal re-sends inside one SDK dispatch are likewise
+    not counted here.
+
+    A merged paragraph (``merged_marker_chunk``, FR-001/002) travels the SAME road every other
+    marker-contract failure already did — the block's attempts, its recovery call, one ladder
+    step — and its pair-repair fallback after the ladder makes no call at all, so it does not
+    appear here. The tests that pin this ceiling are what keep it that way.
+    """
+
+    calls_per_generation = max_retries + MODEL_CALLS_PER_GENERATION_BEYOND_RETRIES
+    ladder_generations = max(0, ladder_paragraph_count) + max(0, ladder_sentence_group_count)
+    return calls_per_generation * (1 + ladder_generations)
+
 # Where a sentence ends, for the purpose of dividing one paragraph. A strict SUBSET of
 # ``_NARRATION_SENTENCE_TERMINALS``: a colon and a semicolon join clauses rather than close
 # a sentence, and cutting a translation unit at one of them would hand the model half a
@@ -2020,6 +2478,7 @@ def _ladder_model_answer(
     max_retries: int,
     block_index: int | None,
     unit_label: str,
+    should_stop: Callable[[], bool] | None = None,
 ) -> str:
     """One ladder call, for ONE paragraph, answered as one paragraph. Raises otherwise.
 
@@ -2055,10 +2514,13 @@ def _ladder_model_answer(
         marker_mode=False,
         block_index=block_index,
         allow_controlled_source_fallback=False,
+        # The nested call checks this before each of its attempts, so every ladder step is
+        # preceded by a stop check without the ladder growing one of its own (FR-022).
+        should_stop=should_stop,
     )
     cleaned = _PARAGRAPH_MARKER_PATTERN.sub("", answer).strip()
     if not cleaned:
-        raise RuntimeError("Модель вернула пустой ответ (empty_response).")
+        raise EmptyResponse(_EMPTY_RESPONSE_MESSAGE)
     if re.search(r"\n\s*\n", cleaned):
         if _has_structural_output_line(cleaned):
             raise RuntimeError(f"ladder_answer_paragraph_split:{unit_label}")
@@ -2086,6 +2548,7 @@ def _ladder_translate_unit(
     context_after: str,
     max_retries: int,
     block_index: int | None,
+    should_stop: Callable[[], bool] | None = None,
 ) -> _LadderUnitOutcome:
     """Translate ONE paragraph, dividing it by sentences if its size is what failed.
 
@@ -2108,6 +2571,7 @@ def _ladder_translate_unit(
             max_retries=max_retries,
             block_index=block_index,
             unit_label=unit_label,
+            should_stop=should_stop,
         )
         return outcome
     except Exception as exc:
@@ -2161,6 +2625,7 @@ def _ladder_translate_unit(
                     max_retries=max_retries,
                     block_index=block_index,
                     unit_label=unit_label,
+                    should_stop=should_stop,
                 )
             )
         except Exception:
@@ -2199,11 +2664,13 @@ def _degradation_ladder_divides(units: Sequence[str], *, trigger: str) -> bool:
 
 
 def _degradation_ladder_block_result(
-    outcomes: Sequence[_LadderUnitOutcome],
+    outcomes: Sequence[_LadderUnitOutcome | None],
     *,
     source_units: Sequence[str],
     expected_paragraph_ids: Sequence[str] | None,
     marker_mode: bool,
+    kept_dispositions: Mapping[int, ParagraphDisposition] | None = None,
+    leakage_context: tuple[str, str, str] | None = None,
 ) -> str:
     """Assemble the ladder's answers into ONE block, with the per-paragraph record.
 
@@ -2225,13 +2692,36 @@ def _degradation_ladder_block_result(
     DOCX, so nothing is lost and the paragraph-per-marker mapping holds, and the narration
     skips it, which is spec 054's rule. It is already wired end to end — counters, the
     ``narration_omitted_paragraphs_excluded`` notice and its characters.
+
+    Since spec 061 FR-006 the narration difference holds only on ``edit``: in a
+    language-changing operation the projection withholds ``source_restored`` too, so there
+    the choice no longer changes what is spoken. It still changes what is TRUE — the ladder
+    did not repair a merge, it failed to translate — which is why ``omitted`` stays.
+
+    ``kept_dispositions`` are paragraphs the ladder did NOT re-ask (a merge scopes it to the
+    merged paragraphs, review finding F1): they keep the record they arrived with, and a
+    ``None`` outcome stands in their slot. ``leakage_context`` — ``(target, before, after)``
+    — runs the kept model text through the same context-leakage check as any answer.
     """
 
-    resolved = [
-        outcome.text if outcome.text is not None else source
-        for outcome, source in zip(outcomes, source_units)
-    ]
-    source_restored_count = sum(1 for outcome in outcomes if outcome.text is None)
+    kept = kept_dispositions or {}
+
+    def _translated(index: int) -> str | None:
+        outcome = outcomes[index]
+        return outcome.text if outcome is not None else None
+
+    resolved: list[str] = []
+    for index, source in enumerate(source_units):
+        translated = _translated(index)
+        if index in kept:
+            resolved.append(kept[index].text)
+        elif translated is not None:
+            resolved.append(translated)
+        else:
+            resolved.append(source)
+    source_restored_count = sum(
+        1 for index in range(len(outcomes)) if index not in kept and _translated(index) is None
+    )
     if source_restored_count:
         record_model_output_discarded(
             reason="degradation_ladder_paragraph_source_fallback",
@@ -2246,24 +2736,86 @@ def _degradation_ladder_block_result(
     # and an ``assert`` disappears under ``-O``.
     if expected_paragraph_ids is None or len(expected_paragraph_ids) != len(resolved):
         raise MarkerParagraphRecordLost("degradation_ladder")
-    return _deliver_marker_preserved_block(
-        _marker_preserved_block_text(
-            [
-                ParagraphDisposition(
-                    paragraph_id=paragraph_id,
-                    text=text,
-                    status=(
-                        PARAGRAPH_STATUS_ACCEPTED
-                        if outcome.text is not None
-                        else PARAGRAPH_STATUS_OMITTED
-                    ),
-                )
-                for paragraph_id, text, outcome in zip(expected_paragraph_ids, resolved, outcomes)
-            ]
-        ),
-        marker_mode=marker_mode,
-        stage="degradation_ladder",
+    block = _marker_preserved_block_text(
+        [
+            kept[index]
+            if index in kept
+            else ParagraphDisposition(
+                paragraph_id=paragraph_id,
+                text=text,
+                status=(
+                    PARAGRAPH_STATUS_ACCEPTED
+                    if _translated(index) is not None
+                    else PARAGRAPH_STATUS_OMITTED
+                ),
+            )
+            for index, (paragraph_id, text) in enumerate(zip(expected_paragraph_ids, resolved))
+        ]
     )
+    if leakage_context is None:
+        return _deliver_marker_preserved_block(block, marker_mode=marker_mode, stage="degradation_ladder")
+    target_text, context_before, context_after = leakage_context
+    return _deliver_after_context_leakage_check(
+        block,
+        target_text=target_text,
+        context_before=context_before,
+        context_after=context_after,
+        marker_mode=marker_mode,
+        allow_persistent_context_leakage=True,
+        stage="degradation_ladder",
+        unattributable_trim_fails_open=True,
+    )
+
+
+def _merge_ladder_scope(
+    exc: Exception,
+    *,
+    expected_paragraph_ids: Sequence[str],
+    source_paragraph_chunks: Sequence[str],
+) -> tuple[list[int], dict[int, ParagraphDisposition]] | None:
+    """For a ``merged_marker_chunk``: which paragraphs to re-ask, and what the rest keep.
+
+    Review finding F1. Re-asking the WHOLE block for a merge of two paragraphs threw away
+    every other paragraph's good translation: a paragraph the merge never touched, re-asked
+    and failed, shipped its source — so a ladder that rescued ONE paragraph made the block
+    worse than a ladder that rescued none (whose pair fallback keeps them). The merge names
+    its paragraphs (the collapsed one and its absorber), and only those are re-asked; every
+    other paragraph keeps the model's answer from the exception as received — ``accepted``,
+    or ``omitted`` with its source when that chunk was empty, the last-attempt rule.
+
+    ``None`` — the whole block is re-asked, as before — for any other trigger, or when the
+    answer cannot be re-read paragraph by paragraph.
+    """
+
+    merged = _merged_marker_chunk_error(exc)
+    if merged is None:
+        return None
+    affected_ids = set(merged.collapsed_paragraph_ids) | set(merged.absorbing_paragraph_ids)
+    affected = [index for index, paragraph_id in enumerate(expected_paragraph_ids) if paragraph_id in affected_ids]
+    if not affected:
+        return None
+    try:
+        answered = split_marker_preserved_paragraph_dispositions(merged.raw_markdown, expected_paragraph_ids)
+    except MarkerValidationError:
+        return None
+    kept: dict[int, ParagraphDisposition] = {}
+    for index, disposition in enumerate(answered):
+        if index in affected:
+            continue
+        kept[index] = (
+            ParagraphDisposition(
+                paragraph_id=disposition.paragraph_id,
+                text=disposition.text,
+                status=PARAGRAPH_STATUS_ACCEPTED,
+            )
+            if disposition.text
+            else ParagraphDisposition(
+                paragraph_id=disposition.paragraph_id,
+                text=source_paragraph_chunks[index],
+                status=PARAGRAPH_STATUS_OMITTED,
+            )
+        )
+    return affected, kept
 
 
 def _attempt_degradation_ladder(
@@ -2281,6 +2833,7 @@ def _attempt_degradation_ladder(
     context_before: str,
     context_after: str,
     allow_controlled_source_fallback: bool,
+    should_stop: Callable[[], bool] | None = None,
 ) -> str | None:
     """Steps 2 and 3, or ``None`` when the ladder declines or rescues nothing.
 
@@ -2308,10 +2861,18 @@ def _attempt_degradation_ladder(
         ):
             return None
         units = list(source_paragraph_chunks)
+        scope = _merge_ladder_scope(
+            exc,
+            expected_paragraph_ids=expected_paragraph_ids,
+            source_paragraph_chunks=source_paragraph_chunks,
+        )
     else:
         units = _ladder_source_units(target_text_for_leakage)
+        scope = None
     if not _degradation_ladder_divides(units, trigger=trigger):
         return None
+    asked_indexes = scope[0] if scope is not None else list(range(len(units)))
+    kept_dispositions = scope[1] if scope is not None else {}
 
     ledger = get_run_model_accounting_ledger()
     calls_before = ledger.model_call_count()
@@ -2321,12 +2882,14 @@ def _attempt_degradation_ladder(
         "Блок отвергнут после recovery; вместо подстановки исходника переспрашиваю его частями.",
         trigger=trigger,
         block_index=block_index,
-        unit_count=len(units),
+        unit_count=len(asked_indexes),
+        block_unit_count=len(units),
         marker_mode=marker_mode,
     )
-    outcomes: list[_LadderUnitOutcome] = []
-    for index, unit_text in enumerate(units):
-        outcomes.append(
+    outcomes: list[_LadderUnitOutcome | None] = [None] * len(units)
+    for index in asked_indexes:
+        unit_text = units[index]
+        outcomes[index] = (
             _ladder_translate_unit(
                 client=client,
                 model=model,
@@ -2340,17 +2903,19 @@ def _attempt_degradation_ladder(
                 context_after=units[index + 1] if index + 1 < len(units) else context_after,
                 max_retries=max_retries,
                 block_index=block_index,
+                should_stop=should_stop,
             )
         )
 
-    translated_count = sum(1 for outcome in outcomes if outcome.text is not None)
+    asked_outcomes = [outcome for outcome in outcomes if outcome is not None]
+    translated_count = sum(1 for outcome in asked_outcomes if outcome.text is not None)
     record_degradation_ladder(
         trigger=trigger,
         model_call_count=ledger.model_call_count() - calls_before,
         translated_paragraph_count=translated_count,
-        unrescued_paragraph_count=len(outcomes) - translated_count,
-        sentence_split_paragraph_count=sum(1 for outcome in outcomes if outcome.sentence_split),
-        oversized_sentence_count=sum(outcome.oversized_sentences for outcome in outcomes),
+        unrescued_paragraph_count=len(asked_outcomes) - translated_count,
+        sentence_split_paragraph_count=sum(1 for outcome in asked_outcomes if outcome.sentence_split),
+        oversized_sentence_count=sum(outcome.oversized_sentences for outcome in asked_outcomes),
     )
     log_event(
         logging.WARNING,
@@ -2358,9 +2923,9 @@ def _attempt_degradation_ladder(
         "Переспрос блока частями завершён.",
         trigger=trigger,
         block_index=block_index,
-        unit_count=len(units),
+        unit_count=len(asked_outcomes),
         translated_unit_count=translated_count,
-        unrescued_unit_count=len(outcomes) - translated_count,
+        unrescued_unit_count=len(asked_outcomes) - translated_count,
         model_call_count=ledger.model_call_count() - calls_before,
     )
     if not translated_count:
@@ -2370,6 +2935,10 @@ def _attempt_degradation_ladder(
         source_units=units,
         expected_paragraph_ids=expected_paragraph_ids,
         marker_mode=marker_mode,
+        kept_dispositions=kept_dispositions,
+        leakage_context=(
+            (target_text_for_leakage, context_before, context_after) if kept_dispositions else None
+        ),
     )
 
 
@@ -2386,6 +2955,7 @@ def generate_markdown_block(
     block_index: int | None = None,
     *,
     allow_controlled_source_fallback: bool = True,
+    should_stop: Callable[[], bool] | None = None,
 ) -> str:
     """Process ONE block, retrying, then dividing, and only then substituting its source.
 
@@ -2394,6 +2964,10 @@ def generate_markdown_block(
     four controlled source fallbacks are off, so the caller can tell a translation from a
     silently substituted source — and, because the ladder only ever calls with ``False``,
     the ladder cannot re-enter itself and the recursion depth is exactly one.
+
+    ``should_stop``, when given, is asked before every model call this block makes — each
+    attempt, the recovery call and each ladder step — and a ``True`` raises
+    ``LatePhaseStopped`` instead of making the call (spec 061 FR-022).
     """
 
     if isinstance(max_retries, bool) or not isinstance(max_retries, int):
@@ -2462,8 +3036,12 @@ def generate_markdown_block(
     block_was_retried = False
 
     for attempt in range(1, max_retries + 1):
+        # Outside the ``try`` on purpose: a stop is not a failed attempt to classify.
+        _raise_if_stop_requested(should_stop)
         try:
-            markdown = _call_markdown_request_with_sdk_fallback(client, request_kwargs)[0]
+            markdown = _call_markdown_request_with_sdk_fallback(
+                client, request_kwargs, should_stop=should_stop
+            )[0]
             return _finalize_generated_markdown(
                 markdown,
                 target_text=target_text_for_leakage,
@@ -2479,6 +3057,12 @@ def generate_markdown_block(
                 # attempt the answer stands with a per-paragraph status instead of the
                 # whole block being replaced by its own source.
                 allow_unresolved_paragraphs=attempt >= max_retries,
+                # A merge has one more remedy than an omission: the ladder (FR-002). With
+                # the ladder available the last attempt raises ``merged_marker_chunk`` and
+                # the block goes on to the recovery call and then the ladder; without it
+                # (a nested ladder call, or a caller that turned fallbacks off) the last
+                # attempt repairs the pair, exactly as before.
+                allow_merge_repair=attempt >= max_retries and not allow_controlled_source_fallback,
             )
         except Exception as exc:
             last_exception = exc
@@ -2521,6 +3105,7 @@ def generate_markdown_block(
         _is_retryable_empty_generation_error(last_exception)
         or _is_retryable_marker_validation_error(last_exception)
     ):
+        _raise_if_stop_requested(should_stop)
         record_retry_attempt(
             reason="recovery_after_exhausted_retries",
             paragraph_count=block_paragraph_count,
@@ -2541,6 +3126,8 @@ def generate_markdown_block(
                     else None
                 ),
                 last_exception=last_exception,
+                allow_merge_repair=not allow_controlled_source_fallback,
+                should_stop=should_stop,
             )
         except Exception as recovery_exc:
             # The recovery call is the LAST answer the model gives for this block, and the
@@ -2558,7 +3145,7 @@ def generate_markdown_block(
             # substituting the source is the last resort, not the first answer to a
             # rejection. ``None`` leaves each branch below exactly as it was.
             ladder_result = _attempt_degradation_ladder(
-                recovery_exc,
+                _ladder_exception_for_block(recovery_exc, last_exception, marker_mode=marker_mode),
                 client=client,
                 model=model,
                 system_prompt=system_prompt,
@@ -2571,11 +3158,31 @@ def generate_markdown_block(
                 context_before=context_before_text,
                 context_after=context_after_text,
                 allow_controlled_source_fallback=allow_controlled_source_fallback,
+                should_stop=should_stop,
             )
             if ladder_result is not None:
                 return ladder_result
             if not allow_controlled_source_fallback:
                 raise recovery_exc
+            # A merge the ladder could not rescue falls back to the PAIR, not the block:
+            # the two paragraphs get their source, every other paragraph keeps the model's
+            # own answer. Shipping the whole block's source here would make a failed ladder
+            # cost more source-language text than having no ladder at all. The recovery
+            # call's answer is preferred; if IT failed some other way, the last attempt's
+            # merged answer is still the one the block shipped before the ladder could see
+            # merges, so it is used rather than dropping to the whole-block fallback.
+            for merged_exc in (recovery_exc, last_exception):
+                merged_pair_repair = _merged_pair_repair_fallback(
+                    merged_exc,
+                    expected_paragraph_ids=expected_paragraph_ids,
+                    source_paragraph_chunks=source_paragraph_chunks,
+                    marker_mode=marker_mode,
+                    target_text_for_leakage=target_text_for_leakage,
+                    context_before=context_before_text,
+                    context_after=context_after_text,
+                )
+                if merged_pair_repair is not None:
+                    return merged_pair_repair
             if _is_incomplete_response_error(recovery_exc) and _can_fallback_to_source_text_after_incomplete_response(target_text):
                 record_model_output_discarded(reason="incomplete_response_source_fallback", block_count=1)
                 log_event(
@@ -2612,7 +3219,10 @@ def generate_markdown_block(
                     source_paragraph_chunks=source_paragraph_chunks,
                     marker_mode=marker_mode,
                 )
-            if _is_empty_response_error(recovery_exc) and _can_fallback_to_source_text_after_empty_response(
+            # ``collapsed_output`` lands here too (FR-012): an answer that was an empty code
+            # fence is as untranslated as no answer, and until the classes were types it
+            # escaped this branch and took the run down instead.
+            if _is_empty_or_collapsed_response_error(recovery_exc) and _can_fallback_to_source_text_after_empty_response(
                 target_text
             ):
                 record_model_output_discarded(reason="empty_response_source_fallback", block_count=1)
@@ -2631,6 +3241,21 @@ def generate_markdown_block(
                     source_paragraph_chunks=source_paragraph_chunks,
                     marker_mode=marker_mode,
                 )
+            # A recovery call the provider failed or cancelled (``NonCompletedResponse``)
+            # after the attempts were spent on another class — e.g. ``incomplete_response``
+            # three times, then ``status="failed"``. The branch below the ``try`` keys on
+            # ``last_exception`` and cannot see this one, so without this line the run died
+            # after the blocks it had already paid for.
+            if _is_non_completed_response_error(recovery_exc) and _can_fallback_to_source_text_after_non_completed_response(
+                target_text
+            ):
+                return _non_completed_response_source_fallback(
+                    target_text_for_leakage,
+                    model=model,
+                    expected_paragraph_ids=expected_paragraph_ids,
+                    source_paragraph_chunks=source_paragraph_chunks,
+                    marker_mode=marker_mode,
+                )
             if _is_retryable_empty_generation_error(recovery_exc) or _is_retryable_marker_validation_error(recovery_exc):
                 raise recovery_exc
             raise recovery_exc
@@ -2641,17 +3266,9 @@ def generate_markdown_block(
         and _is_non_completed_response_error(last_exception)
         and _can_fallback_to_source_text_after_non_completed_response(target_text)
     ):
-        record_model_output_discarded(reason="non_completed_response_source_fallback", block_count=1)
-        log_event(
-            logging.WARNING,
-            "markdown_non_completed_response_source_fallback",
-            "Модель повторно вернула non_completed_response; сохраняю исходный текст блока как controlled fallback.",
-            model=model,
-            target_chars=len(target_text_for_leakage),
-            marker_mode=marker_mode,
-        )
-        return _block_source_fallback_result(
+        return _non_completed_response_source_fallback(
             target_text_for_leakage,
+            model=model,
             expected_paragraph_ids=expected_paragraph_ids,
             source_paragraph_chunks=source_paragraph_chunks,
             marker_mode=marker_mode,

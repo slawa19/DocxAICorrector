@@ -6,10 +6,11 @@ from pathlib import Path
 from typing import Literal, Mapping, Sequence
 from uuid import uuid4
 
+from docxaicorrector.core.constants import RUN_DIR
 from docxaicorrector.core.logger import log_event
 
 
-FORMATTING_DIAGNOSTICS_DIR = Path(".run") / "formatting_diagnostics"
+FORMATTING_DIAGNOSTICS_DIR = RUN_DIR / "formatting_diagnostics"
 FORMATTING_DIAGNOSTICS_MAX_AGE_SECONDS = 7 * 24 * 60 * 60
 FORMATTING_DIAGNOSTICS_MAX_COUNT = 100
 

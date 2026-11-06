@@ -45,11 +45,13 @@ This inventory is intentionally pragmatic:
 - `tests/test_logger.py`
 - `tests/test_message_formatting.py`
 - `tests/test_model_registry_sweep.py`
+- `tests/test_model_response_shape.py`
 - `tests/test_narration_exclusion_addresses.py`
 - `tests/test_narration_markdown.py`
 - `tests/test_output_display_hygiene.py`
 - `tests/test_output_validation_characterization.py`
 - `tests/test_paragraph_boundary_normalization.py`
+- `tests/test_paragraph_record_and_production_verdict.py`
 - `tests/test_passthrough_unmapped_acceptance.py`
 - `tests/test_pdf_text_layer_logical_import.py`
 - `tests/test_pdf_text_layer_quality.py`

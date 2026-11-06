@@ -12,6 +12,7 @@ harness (namespace importer). No module-level mutable state; ``emit_failed_resul
 """
 
 import json
+import logging
 import re
 import time
 from collections.abc import Mapping, Sequence
@@ -19,6 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
+from docxaicorrector.core.logger import log_event
 from docxaicorrector.reader_cleanup_mvp import build_cleanup_blocks
 from docxaicorrector.pipeline.support import call_docx_restorer_with_optional_registry
 from docxaicorrector.runtime.artifact_retention import (
@@ -29,7 +31,8 @@ from docxaicorrector.runtime.artifact_retention import (
 
 
 PipelineResult = Literal["succeeded", "failed", "stopped"]
-READER_CLEANUP_LINEAGE_DIR = Path(".run") / "reader_cleanup_lineage"
+from docxaicorrector.core.constants import RUN_DIR as _RUN_DIR
+READER_CLEANUP_LINEAGE_DIR = _RUN_DIR / "reader_cleanup_lineage"
 _DOCX_IMAGE_PLACEHOLDER_PATTERN = re.compile(r"^\[\[DOCX_IMAGE_[A-Za-z0-9_]+\]\]$")
 
 
@@ -315,6 +318,14 @@ def _append_reader_cleanup_lineage_operation(entry: dict[str, object], operation
         lineage_operations = []
         entry["reader_cleanup_operations"] = lineage_operations
     lineage_operations.append(operation_name)
+
+
+def _registry_entry_is_narration_admissible(entry: Mapping[str, object]) -> bool:
+    """The registry-dict twin of ``output_validation._entry_is_narration_admissible``: no
+    disposition or ``accepted``, and not excluded by a source-text fallback."""
+    return entry.get("paragraph_status") in (None, "accepted") and not bool(
+        entry.get("controlled_fallback_narration_excluded")
+    )
 
 
 def _registry_entry_paragraph_ids(entry: Mapping[str, object] | None) -> list[str]:
@@ -649,6 +660,7 @@ def _derive_reader_cleanup_generated_paragraph_registry(
     joined_entries = 0
     updated_entries = 0
     skipped_operations = 0
+    refused_join_narration_admissibility = 0
 
     for raw_operation in accepted_operations:
         if not isinstance(raw_operation, Mapping):
@@ -685,6 +697,27 @@ def _derive_reader_cleanup_generated_paragraph_registry(
             if next_entry is None:
                 skipped_operations += 1
                 continue
+            # Spec 061: a join never crosses a narration-admissibility boundary — the rule
+            # ``output_validation._entry_is_narration_admissible`` applies to boundary
+            # recovery. One welded record holding an accepted translation and source text
+            # would make the narration projection withhold the translation or speak the
+            # source; the operation is refused for the registry and the two entries stay.
+            if _registry_entry_is_narration_admissible(current_entry) != _registry_entry_is_narration_admissible(
+                next_entry
+            ):
+                skipped_operations += 1
+                refused_join_narration_admissibility += 1
+                log_event(
+                    logging.WARNING,
+                    "reader_cleanup_join_refused",
+                    "Reader cleanup join отклонён для реестра: он склеил бы озвучиваемый абзац с исходным текстом.",
+                    reason="join_refused_narration_admissibility",
+                    operation_id=str(raw_operation.get("id") or ""),
+                    next_operation_id=str(raw_operation.get("next_id") or ""),
+                    paragraph_ids=_registry_entry_paragraph_ids(current_entry)
+                    + _registry_entry_paragraph_ids(next_entry),
+                )
+                continue
             expected_after_preview = str(raw_operation.get("expected_after_preview") or "").strip()
             current_text = str(current_entry.get("text") or "").strip()
             next_text = str(next_entry.get("text") or "").strip()
@@ -700,6 +733,25 @@ def _derive_reader_cleanup_generated_paragraph_registry(
             current_entry["reader_cleanup_source_block_indexes"] = list(
                 dict.fromkeys(source_block_indexes)
             )
+            # Spec 061: both halves are on the same side of the admissibility boundary (checked
+            # above), and the joined record keeps that side's disposition — the rule of
+            # ``output_validation._merge_entry_pair``: a status other than ``accepted`` wins,
+            # the narration exclusion is OR. Without it two withheld halves could come out of
+            # the join without a disposition and be read aloud.
+            recorded_statuses = [
+                status
+                for status in (current_entry.get("paragraph_status"), next_entry.get("paragraph_status"))
+                if isinstance(status, str)
+            ]
+            if recorded_statuses:
+                current_entry["paragraph_status"] = next(
+                    (status for status in recorded_statuses if status != "accepted"),
+                    recorded_statuses[0],
+                )
+            if current_entry.get("controlled_fallback_narration_excluded") or next_entry.get(
+                "controlled_fallback_narration_excluded"
+            ):
+                current_entry["controlled_fallback_narration_excluded"] = True
             _append_reader_cleanup_lineage_operation(current_entry, operation_name)
             mutable_entries[next_index] = None
             applied_operations += 1
@@ -741,6 +793,7 @@ def _derive_reader_cleanup_generated_paragraph_registry(
         "joined_registry_entry_count": joined_entries,
         "updated_registry_entry_count": updated_entries,
         "skipped_operation_count": skipped_operations,
+        "refused_join_narration_admissibility_count": refused_join_narration_admissibility,
     }
 
 

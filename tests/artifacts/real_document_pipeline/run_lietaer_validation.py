@@ -4414,6 +4414,11 @@ _MODEL_ACCOUNTING_SUMMARY_FIELDS = (
     "retry_attempt_count",
     "retried_block_count",
     "retried_paragraph_count",
+    # Spec 061 FR-005: merges sent back for another attempt instead of repaired with the
+    # source. Printed beside the discard totals because it is where a merge goes now when it
+    # stops being one of them — without it a drop of ``marker_chunk_collapse`` to zero reads
+    # as "the model stopped merging" when it may mean "the merge was caught and re-asked".
+    "marker_chunk_merge_retry_count",
     "model_output_discarded_paragraph_count",
     "model_output_discarded_block_count",
     # The pipeline half of the same loss: blocks the pipeline judged bad and shipped
@@ -4473,6 +4478,9 @@ def _build_model_accounting_summary_lines(model_accounting: Mapping[str, object]
     ]
     for field in (
         "retry_reason_counts",
+        # Spec 061: which provider API answered each text call. Printed so the share of
+        # the Chat Completions fallback on the default provider is a number in the summary.
+        "api_path_counts",
         "model_output_discarded_reason_counts",
         "controlled_block_fallback_kind_counts",
         "controlled_block_fallback_kind_chars",

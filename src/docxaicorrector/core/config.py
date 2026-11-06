@@ -77,6 +77,10 @@ PROCESSING_OPERATION_VALUES = ("edit", "translate", "audiobook")
 # PROCESSING_OPERATION_VALUES so config/env/run-profile/UI all validate against one list.
 EDITORIAL_INTENSITY_VALUES = ("conservative", "literary")
 _SUPPORTED_PROVIDER_IDS = ("openai", "openrouter", "anthropic")
+# Used only when config.toml carries no provider_timeout_seconds_default: the read timeout
+# the openai and anthropic SDKs apply on their own (``_constants.DEFAULT_TIMEOUT``, 600 s).
+_PROVIDER_TIMEOUT_SECONDS_FALLBACK = 600.0
+_DEFAULT_PROVIDER_DISPLAY_NAMES = {"openai": "OpenAI", "openrouter": "OpenRouter", "anthropic": "Anthropic"}
 _PROVIDER_CAPABILITIES = {
     "openai": frozenset({"responses_text", "responses_vision", "images_generate", "images_edit"}),
     "openrouter": frozenset({"responses_text"}),
@@ -152,6 +156,17 @@ class ProviderConfig:
     referer: str | None = None
     title: str | None = None
     timeout_seconds: float | None = None
+    # Name user-facing provider errors use (spec 061 FR-023); None falls back to
+    # _DEFAULT_PROVIDER_DISPLAY_NAMES. Settable as providers.<id>.display_name.
+    display_name: str | None = None
+
+
+def provider_display_name(provider_config: ProviderConfig) -> str:
+    return (
+        provider_config.display_name
+        or _DEFAULT_PROVIDER_DISPLAY_NAMES.get(provider_config.name)
+        or provider_config.name
+    )
 
 
 @dataclass(frozen=True)
@@ -748,6 +763,17 @@ def get_provider_config(provider_name: str, config_like: object | None = None) -
     return getattr(get_provider_registry(config_like), normalized_provider_name)
 
 
+def get_default_text_model_provider_config(config_like: object | None = None) -> ProviderConfig:
+    """Provider of ``[models.text].default`` — the one key a default run cannot start without.
+
+    Spec 061 FR-024: the status scripts ask this instead of hard-coding ``OPENAI_API_KEY``.
+    A bare model id (no ``provider:`` prefix) is an OpenAI model, as everywhere else."""
+    app_config = load_app_config() if config_like is None else config_like
+    default_selector = _resolve_text_model_config_runtime(app_config).default
+    provider_id = _parse_model_selector(default_selector, source_name="models.text.default").provider
+    return get_provider_config(provider_id, app_config)
+
+
 def resolve_model_selector(
     selector: str,
     required_capability: str | None = None,
@@ -1064,6 +1090,15 @@ def _resolve_provider_registry(*, config_data: dict[str, object]) -> ProviderReg
     if unknown_provider_tables:
         raise RuntimeError(f"Неизвестные provider tables в {CONFIG_PATH}: {', '.join(unknown_provider_tables)}")
 
+    # Spec 061 FR-021: one timeout for every provider client, overridable per provider.
+    global_timeout_seconds = config_data.get("provider_timeout_seconds_default", _PROVIDER_TIMEOUT_SECONDS_FALLBACK)
+    if (
+        isinstance(global_timeout_seconds, bool)
+        or not isinstance(global_timeout_seconds, (int, float))
+        or global_timeout_seconds <= 0
+    ):
+        raise RuntimeError(f"Некорректное поле provider_timeout_seconds_default в {CONFIG_PATH}")
+
     def _resolve_provider(
         provider_name: str,
         *,
@@ -1094,7 +1129,11 @@ def _resolve_provider_registry(*, config_data: dict[str, object]) -> ProviderReg
         base_url = _optional_field("base_url", default_base_url)
         referer = _optional_field("referer", default_referer)
         title = _optional_field("title", default_title)
-        timeout_seconds_value = section.get("timeout_seconds", default_timeout_seconds)
+        display_name = _optional_field("display_name", None)
+        timeout_seconds_value = section.get(
+            "timeout_seconds",
+            default_timeout_seconds if default_timeout_seconds is not None else global_timeout_seconds,
+        )
         if timeout_seconds_value is not None and (
             isinstance(timeout_seconds_value, bool)
             or not isinstance(timeout_seconds_value, (int, float))
@@ -1130,6 +1169,7 @@ def _resolve_provider_registry(*, config_data: dict[str, object]) -> ProviderReg
                 if isinstance(timeout_seconds_value, (int, float)) and not isinstance(timeout_seconds_value, bool)
                 else None
             ),
+            display_name=display_name,
         )
 
     return ProviderRegistry(
@@ -1150,6 +1190,8 @@ def _resolve_provider_registry(*, config_data: dict[str, object]) -> ProviderReg
             "anthropic",
             default_enabled=False,
             default_api_key_env="ANTHROPIC_API_KEY",
+            # Anthropic's own default: it outranks provider_timeout_seconds_default, as a
+            # providers.anthropic.timeout_seconds would.
             default_timeout_seconds=1200.0,
         ),
     )

@@ -6,11 +6,14 @@
 
 **Date**: 2026-08-05
 
-**Status**: **IN PROGRESS (2026-08-05) — the change landed in `main` via PR #41 (`5393db2`), one
-decision is still unbuilt.** This line said "not started" until 2026-08-07, two days after the work
+**Status**: **DONE — E and D′ merged 2026-08-05 (PR #41, `5393db2`); C′ declined by the owner
+2026-08-08 (Changelog below); A withdrawn, B deferred behind E. Nothing is owed by this spec.**
+Status rewritten 2026-11-06 under spec 061 FR-026: from 2026-08-08 to 2026-11-06 this line read
+`IN PROGRESS … one decision is still unbuilt`, literally true (C′ is unbuilt) and misleading (no
+work was owed). Before that it said "not started" until 2026-08-07, two days after the work
 landed; the same drift that spec 055 had just been corrected for. Not `PARTIALLY IMPLEMENTED`: that
-status means the remainder was carried into a *later* spec, and here it was not — C′ is still owed by
-this one. What is in `main`: **E**, the typed per-paragraph disposition (`1faeb06`), and
+status means the remainder was carried into a *later* spec, and here it was not. What is in
+`main`: **E**, the typed per-paragraph disposition (`1faeb06`), and
 **D′**, capturing the rejected answer inside the attempt loop (`816a0eb`), plus three P0 fixes from the
 review of that work (`cbe0084`, `c4dfce8`, `730cf0f`). What is NOT in `main`: **C′** — no commit
 references it, and `_build_marker_recovery_user_prompt` was last changed by `6bc8ff9`, which predates
@@ -353,6 +356,14 @@ reach: **43/237, 98/325, 54/246, 13/184** — 18% to 30% per book. It did not bi
   bare-number one probably does; neither is measured on the other three books.
 
 ## Changelog
+
+- **2026-11-06 — Status closed as `DONE` (spec 061 FR-026).** The 2026-08-08 entry below
+  left the status line untouched on purpose and named it an owner decision; the owner delegated
+  that decision on 2026-11-06, and `DONE` is the only closed value whose definition fits: code
+  landed and merged, no remainder carried anywhere. `docs/WHERE_WE_ARE.md` was changed in the
+  same commit. The behaviour of `source_restored` in the narration — the one open question
+  that still touched E — is decided in `specs/061-source-ships-under-green/spec.md` (FR-006,
+  FR-009), not here.
 
 - **2026-08-08 — C′ WILL NOT BE BUILT. Owner decision, recorded here so the question cannot come back
   through this spec's side.** C′ (`:203-212`) proposed telling the model what it violated from the

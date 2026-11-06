@@ -1,6 +1,9 @@
+import atexit
 import base64
 import os
+import shutil
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -9,6 +12,32 @@ import pytest
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 SRC_ROOT = PROJECT_ROOT / "src"
+
+# Spec 061 FR-020: redirect the runtime-artifact root ONCE, before the package is first
+# imported. ``core/constants.py`` reads ``DOCX_AI_RUN_DIR`` at import, and every module that
+# copies a run-directory constant at import copies the redirected value, so the suite never
+# writes into the operator's ``.run`` (before this, a full run left 155 files in
+# ``.run/ui_results`` against a retention ceiling of 80 stems). The variable stays in
+# ``os.environ`` for the whole session (``isolate_repo_dotenv`` spares it), so subprocesses
+# a test spawns inherit the same root. This module is executed twice per session — as
+# pytest's ``conftest`` and again as ``tests.conftest`` by test modules that import its
+# constants — so the second execution must adopt the root the first one created, not make
+# a new one the already-imported constants never see.
+_SESSION_RUN_DIR_MARKER = "_DOCXAI_TEST_SESSION_RUN_DIR"
+_session_run_dir = os.environ.get(_SESSION_RUN_DIR_MARKER, "")
+if _session_run_dir and os.environ.get("DOCX_AI_RUN_DIR") == _session_run_dir:
+    TEST_RUN_DIR = Path(_session_run_dir)
+else:
+    TEST_RUN_DIR = Path(tempfile.mkdtemp(prefix="docxai-test-run-")).resolve()
+    os.environ["DOCX_AI_RUN_DIR"] = str(TEST_RUN_DIR)
+    os.environ[_SESSION_RUN_DIR_MARKER] = str(TEST_RUN_DIR)
+    atexit.register(shutil.rmtree, TEST_RUN_DIR, True)
+# Windows processes a test starts from WSL (the PowerShell wrapper smokes) see only the
+# variables WSLENV names; ``/p`` translates the path both ways, so ``scripts/_shared.ps1``
+# writes ``project.log`` under the same root and its ``wsl.exe`` calls get it back.
+_wslenv_entries = [entry for entry in os.environ.get("WSLENV", "").split(":") if entry]
+if not any(entry.split("/")[0] == "DOCX_AI_RUN_DIR" for entry in _wslenv_entries):
+    os.environ["WSLENV"] = ":".join([*_wslenv_entries, "DOCX_AI_RUN_DIR/p"])
 
 
 # Make the repo-root shared bootstrap importable, then pin src first (F5/R29).
@@ -20,6 +49,13 @@ ensure_src_first_import_order(SRC_ROOT)
 
 from docxaicorrector.core.config import ModelRegistry, TextModelConfig
 import docxaicorrector.core.config as config
+import docxaicorrector.core.constants as _constants
+
+if _constants.RUN_DIR != TEST_RUN_DIR:  # pragma: no cover - fails loudly, never silently
+    raise pytest.UsageError(
+        "docxaicorrector was imported before tests/conftest.py set DOCX_AI_RUN_DIR; "
+        f"RUN_DIR={_constants.RUN_DIR} would let the suite write into the operator's .run."
+    )
 
 
 TEST_TEXT_MODEL_DEFAULT = "openrouter:google/gemini-3.1-flash-lite-preview"
@@ -38,51 +74,10 @@ def isolate_repo_dotenv(monkeypatch: pytest.MonkeyPatch) -> None:
     """Prevent local repo .env values from leaking into tests by default."""
     monkeypatch.setattr(config, "ENV_PATH", PROJECT_ROOT / "__missing_test__.env")
     for env_name in tuple(os.environ):
+        if env_name == _constants.RUN_DIR_ENV_VAR:
+            continue
         if env_name.startswith("DOCX_AI_") or env_name in {"OPENAI_API_KEY", "OPENROUTER_API_KEY"}:
             monkeypatch.delenv(env_name, raising=False)
-
-
-@pytest.fixture(autouse=True)
-def isolate_formatting_diagnostics_dir(
-    tmp_path_factory: pytest.TempPathFactory,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Keep test-run diagnostics out of the operator-facing ``.run`` directory.
-
-    Retention for formatting diagnostics is family-wide (7 days / 100 artifacts),
-    so test artifacts written into the real runtime directory crowd out genuine
-    operator evidence. Each consumer captures the directory at import time, so
-    every module-level copy is redirected here.
-    """
-    import docxaicorrector.generation.formatting_diagnostics_retention as formatting_diagnostics_retention
-    import docxaicorrector.generation.formatting_transfer as formatting_transfer
-    import docxaicorrector.pipeline._pipeline as pipeline
-
-    diagnostics_dir = tmp_path_factory.mktemp("formatting_diagnostics")
-    monkeypatch.setattr(formatting_diagnostics_retention, "FORMATTING_DIAGNOSTICS_DIR", diagnostics_dir)
-    monkeypatch.setattr(formatting_transfer, "FORMATTING_DIAGNOSTICS_DIR", diagnostics_dir)
-    monkeypatch.setattr(pipeline, "FORMATTING_DIAGNOSTICS_DIR", diagnostics_dir)
-
-
-@pytest.fixture(autouse=True)
-def isolate_marker_attempt_diagnostics_dir(
-    tmp_path_factory: pytest.TempPathFactory,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Same reason as the fixture above, for the rejected-marker-attempt family.
-
-    Retention there is family-wide too (7 days / 400 artifacts), and a full test run
-    produces well over a hundred rejected attempts — enough to evict the operator evidence
-    the directory exists to hold. Tests that assert on the artifact override this with
-    their own directory.
-    """
-    import docxaicorrector.generation.marker_attempt_capture as marker_attempt_capture
-
-    monkeypatch.setattr(
-        marker_attempt_capture,
-        "MARKER_ATTEMPT_DIAGNOSTICS_DIR",
-        tmp_path_factory.mktemp("marker_attempts"),
-    )
 
 
 @pytest.fixture

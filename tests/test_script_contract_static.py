@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import platform
 import re
 import subprocess
@@ -534,3 +535,84 @@ def test_production_validation_modules_are_free_of_book_specific_literals() -> N
         "(keep detectors config-driven with empty defaults; move per-book regressions to "
         "fixture tests): " + "; ".join(violations)
     )
+
+def test_status_scripts_derive_the_required_api_key_from_the_default_text_model() -> None:
+    # Spec 061 FR-024 / User Story 7-1. Both status paths used to check OPENAI_API_KEY only,
+    # while the packaged default text model is an openrouter: selector.
+    control_script = (REPO_ROOT / "scripts" / "project-control-wsl.sh").read_text(encoding="utf-8")
+    status_script = (REPO_ROOT / "scripts" / "status-project.ps1").read_text(encoding="utf-8")
+
+    assert "get_default_text_model_provider_config().api_key_env" in control_script
+    assert 'os.getenv("OPENAI_API_KEY"' not in control_script
+    assert "$status['api_key_env']" in status_script
+    assert "OPENAI_API_KEY" not in status_script
+
+
+_RUN_DIR_TRIM_LINE = 'read -r RUN_DIR_OVERRIDE <<< "${DOCX_AI_RUN_DIR:-}" || true'
+_RUN_DIR_ASSIGN_LINE = 'RUN_DIR="${RUN_DIR_OVERRIDE:-$PROJECT_ROOT/.run}"'
+_RUN_DIR_SHELL_READERS = ("scripts/project-control-wsl.sh", "scripts/clean-stale-run-artifacts.sh")
+
+
+def test_run_dir_override_has_one_name_across_python_and_scripts() -> None:
+    # Spec 061 FR-020. The shell scripts read DOCXAI_RUN_DIR while core/constants.py reads
+    # DOCX_AI_RUN_DIR, so one override moved half the artifacts. One name, every entrypoint.
+    readers = {
+        "src/docxaicorrector/core/constants.py": 'RUN_DIR_ENV_VAR = "DOCX_AI_RUN_DIR"',
+        "scripts/_run_cleanup_now.py": "from docxaicorrector.core.constants import RUN_DIR",
+        "scripts/_shared.ps1": "$env:DOCX_AI_RUN_DIR",
+        **{path: _RUN_DIR_ASSIGN_LINE for path in _RUN_DIR_SHELL_READERS},
+    }
+    for relative_path, expected in readers.items():
+        assert expected in (REPO_ROOT / relative_path).read_text(encoding="utf-8"), relative_path
+    for path in sorted((REPO_ROOT / "scripts").iterdir()):
+        if path.is_file() and path.suffix in {".sh", ".ps1", ".py"}:
+            assert "DOCXAI_RUN_DIR" not in path.read_text(encoding="utf-8"), path.name
+    assert 'Path(".run' not in (REPO_ROOT / "scripts" / "_run_cleanup_now.py").read_text(encoding="utf-8")
+
+
+def test_powershell_wrapper_forwards_the_run_dir_override_to_wsl() -> None:
+    # Review finding F8: _shared.ps1 honoured a Windows-side DOCX_AI_RUN_DIR, but WSL sees only
+    # the variables WSLENV names, so project-control-wsl.sh and the app used the default root
+    # and app.ready was looked for where the app never wrote it.
+    shared = (REPO_ROOT / "scripts" / "_shared.ps1").read_text(encoding="utf-8")
+
+    assert "$env:WSLENV = (@($entries) + 'DOCX_AI_RUN_DIR/p') -join ':'" in shared
+    invoke_body = shared.split("function Invoke-WslInProject", 1)[1]
+    forwarding_call = invoke_body.index("Enable-RunDirForwardingToWsl")
+    assert forwarding_call < invoke_body.index("& wsl.exe")
+    # Every wsl.exe call in the wrappers goes through Invoke-WslInProject.
+    for path in sorted((REPO_ROOT / "scripts").glob("*.ps1")):
+        lines = [line for line in path.read_text(encoding="utf-8").splitlines() if not line.lstrip().startswith("#")]
+        calls = [line for line in lines if "& wsl.exe" in line]
+        assert len(calls) == (1 if path.name == "_shared.ps1" else 0), path.name
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [(None, "/repo/.run"), ("", "/repo/.run"), ("   ", "/repo/.run"), ("  /tmp/x  ", "/tmp/x"), ("/tmp/a b", "/tmp/a b")],
+)
+def test_shell_run_dir_rule_trims_like_python(value: str | None, expected: str) -> None:
+    # Same review finding: ${DOCX_AI_RUN_DIR:-...} took a whitespace-only value as a directory
+    # name, while core/constants.py strips it and falls back to the default.
+    if platform.system() == "Windows":
+        pytest.skip("runs the shell rule with bash; the check runs on the Linux/WSL runner")
+    for relative_path in _RUN_DIR_SHELL_READERS:
+        text = (REPO_ROOT / relative_path).read_text(encoding="utf-8")
+        assert _RUN_DIR_TRIM_LINE in text and _RUN_DIR_ASSIGN_LINE in text, relative_path
+    env = {key: item for key, item in os.environ.items() if key != "DOCX_AI_RUN_DIR"}
+    env["PROJECT_ROOT"] = "/repo"
+    if value is not None:
+        env["DOCX_AI_RUN_DIR"] = value
+    result = subprocess.run(
+        ["bash", "-c", f'{_RUN_DIR_TRIM_LINE}\n{_RUN_DIR_ASSIGN_LINE}\nprintf "%s" "$RUN_DIR"'],
+        capture_output=True,
+        text=True,
+        check=True,
+        env=env,
+    )
+    assert result.stdout == expected
+    # Python agrees on every case.
+    from docxaicorrector.core.constants import resolve_run_dir
+
+    environ = {} if value is None else {"DOCX_AI_RUN_DIR": value}
+    assert str(resolve_run_dir(Path("/repo"), environ=environ)) == expected

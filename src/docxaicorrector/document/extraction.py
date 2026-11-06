@@ -18,6 +18,7 @@ from docxaicorrector.core.constants import (
     MAX_DOCX_COMPRESSION_RATIO,
     MAX_DOCX_ENTRY_COUNT,
     MAX_DOCX_UNCOMPRESSED_SIZE_BYTES,
+    RUN_DIR,
 )
 from docxaicorrector.document.boundaries import (
     evaluate_paragraph_boundary as _evaluate_paragraph_boundary_impl,
@@ -162,10 +163,10 @@ ORDERED_LIST_FORMATS = {
     "vietnameseCounting",
 }
 UNORDERED_LIST_FORMATS = {"bullet", "none"}
-PARAGRAPH_BOUNDARY_REPORTS_DIR = Path(".run") / "paragraph_boundary_reports"
-RELATION_NORMALIZATION_REPORTS_DIR = Path(".run") / "relation_normalization_reports"
-LAYOUT_CLEANUP_REPORTS_DIR = Path(".run") / "layout_cleanup_reports"
-PARAGRAPH_BOUNDARY_AI_REVIEW_DIR = Path(".run") / "paragraph_boundary_ai_review"
+PARAGRAPH_BOUNDARY_REPORTS_DIR = RUN_DIR / "paragraph_boundary_reports"
+RELATION_NORMALIZATION_REPORTS_DIR = RUN_DIR / "relation_normalization_reports"
+LAYOUT_CLEANUP_REPORTS_DIR = RUN_DIR / "layout_cleanup_reports"
+PARAGRAPH_BOUNDARY_AI_REVIEW_DIR = RUN_DIR / "paragraph_boundary_ai_review"
 _TYPOGRAPHIC_BULLET_CHARS = {"\u2014", "\u2013"}
 _INLINE_BREAK_PATTERN = re.compile(r"<br\s*/?>", re.IGNORECASE)
 _TOC_HEADER_LINE_VALUES = {"contents", "содержание"}

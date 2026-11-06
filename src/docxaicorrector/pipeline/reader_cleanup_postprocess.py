@@ -200,11 +200,19 @@ def _run_reader_cleanup_postprocess(
             return built_docx_bytes
         return b""
 
-    def _raise_if_stopped() -> None:
+    def _stop_requested() -> bool:
         stop_predicate = getattr(dependencies, "should_stop_processing", None)
-        if callable(stop_predicate) and stop_predicate(context.runtime):
+        return bool(callable(stop_predicate) and stop_predicate(context.runtime))
+
+    def _raise_if_stopped() -> None:
+        if _stop_requested():
             raise LatePhaseStopped()
 
+    # Spec 061 FR-015: either side of this ``or`` carries the per-paragraph dispositions
+    # (``paragraph_status``, ``controlled_fallback_narration_excluded``) — the state registry
+    # because ``block_execution`` writes them, the assembly registry because
+    # ``build_generated_paragraph_registry_from_entries`` re-emits them — so preferring the
+    # first can no longer hand the narration projection a record without them.
     active_formatting_registry = formatting_registry or state.generated_paragraph_registry or None
     base_final_generated_registry = _resolve_final_generated_paragraph_registry(
         markdown_text=runtime_display_markdown,
@@ -302,6 +310,9 @@ def _run_reader_cleanup_postprocess(
             max_retries=context.max_retries,
             expected_paragraph_ids=None,
             marker_mode=False,
+            # Spec 061 FR-022 in the late passes: asked before every model call inside
+            # the block (each attempt, recovery, ladder step), not only between requests.
+            should_stop=_stop_requested,
         )
         _raise_if_stopped()
         dependencies.log_event(
@@ -355,6 +366,9 @@ def _run_reader_cleanup_postprocess(
             max_retries=context.max_retries,
             expected_paragraph_ids=None,
             marker_mode=False,
+            # Spec 061 FR-022 in the late passes: asked before every model call inside
+            # the block (each attempt, recovery, ladder step), not only between requests.
+            should_stop=_stop_requested,
         )
         _raise_if_stopped()
         dependencies.log_event(
@@ -410,6 +424,9 @@ def _run_reader_cleanup_postprocess(
             max_retries=context.max_retries,
             expected_paragraph_ids=None,
             marker_mode=False,
+            # Spec 061 FR-022 in the late passes: asked before every model call inside
+            # the block (each attempt, recovery, ladder step), not only between requests.
+            should_stop=_stop_requested,
         )
         _raise_if_stopped()
         dependencies.log_event(

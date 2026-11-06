@@ -15,7 +15,23 @@ $projectRoot = Split-Path -Parent $PSScriptRoot
 $wslDistro = 'Debian'
 $wslControlScript = Join-Path $PSScriptRoot 'project-control-wsl.sh'
 $appPath = Join-Path $projectRoot 'app.py'
-$runDir = Join-Path $projectRoot '.run'
+# Same root and default as the Python side (core/constants.py) and project-control-wsl.sh:
+# DOCX_AI_RUN_DIR, else <repo>/.run. From WSL it arrives as a Windows path only when WSLENV
+# lists it with /p (tests/conftest.py does, so wrapper smokes keep project.log out of .run).
+$runDir = if ([string]::IsNullOrWhiteSpace($env:DOCX_AI_RUN_DIR)) { Join-Path $projectRoot '.run' } else { $env:DOCX_AI_RUN_DIR.Trim() }
+
+# An override set on the Windows side must reach project-control-wsl.sh and the app inside
+# WSL too, or PowerShell writes under one root while the app writes app.ready under another.
+# WSL sees only the variables WSLENV names; '/p' translates the Windows path to its /mnt form.
+# Called before every wsl.exe invocation; appends the entry once and keeps existing ones.
+function Enable-RunDirForwardingToWsl {
+    if ([string]::IsNullOrWhiteSpace($env:DOCX_AI_RUN_DIR)) { return }
+    $env:DOCX_AI_RUN_DIR = $runDir
+    $entries = @(([string]$env:WSLENV).Split(':') | Where-Object { $_ -ne '' })
+    if (-not ($entries | Where-Object { $_.Split('/')[0] -eq 'DOCX_AI_RUN_DIR' })) {
+        $env:WSLENV = (@($entries) + 'DOCX_AI_RUN_DIR/p') -join ':'
+    }
+}
 $projectLogPath = Join-Path $runDir 'project.log'
 $projectLogMaxBytes = 262144
 $projectLogBackupCount = 5
@@ -76,6 +92,7 @@ function Invoke-WslInProject {
     )
 
     $wslScriptPath = Convert-ToWslPath $wslControlScript
+    Enable-RunDirForwardingToWsl
     $maxAttempts = 3
     $lastOutput = @()
     $lastExitCode = 0

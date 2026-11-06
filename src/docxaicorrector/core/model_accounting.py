@@ -241,6 +241,7 @@ class RunModelAccountingLedger:
         self._retried_block_count = 0
         self._retried_paragraph_count = 0
         self._retry_reason_counts: dict[str, int] = {}
+        self._marker_chunk_merge_retry_count = 0
         self._discarded_paragraph_count = 0
         self._discarded_block_count = 0
         self._discard_reason_counts: dict[str, int] = {}
@@ -249,6 +250,7 @@ class RunModelAccountingLedger:
         self._paragraph_disposition_counts: dict[str, int] = {
             status: 0 for status in PARAGRAPH_DISPOSITION_STATUSES
         }
+        self._api_path_counts: dict[str, int] = {}
         self._controlled_block_fallback_block_count = 0
         self._controlled_block_fallback_chars = 0
         self._controlled_block_fallback_kind_counts: dict[str, int] = {}
@@ -277,10 +279,12 @@ class RunModelAccountingLedger:
             self._retried_block_count = 0
             self._retried_paragraph_count = 0
             self._retry_reason_counts = {}
+            self._marker_chunk_merge_retry_count = 0
             self._discarded_paragraph_count = 0
             self._discarded_block_count = 0
             self._discard_reason_counts = {}
             self._paragraph_disposition_counts = {status: 0 for status in PARAGRAPH_DISPOSITION_STATUSES}
+            self._api_path_counts = {}
             self._controlled_block_fallback_block_count = 0
             self._controlled_block_fallback_chars = 0
             self._controlled_block_fallback_kind_counts = {}
@@ -325,6 +329,19 @@ class RunModelAccountingLedger:
             if first_retry_for_block:
                 self._retried_block_count += 1
                 self._retried_paragraph_count += max(0, paragraph_count)
+
+    def record_marker_chunk_merge_retry(self) -> None:
+        """Count ONE answer whose paragraph merge was sent back instead of repaired (spec 061 FR-005).
+
+        Not a ``reason`` on ``record_model_output_discarded``, because nothing was
+        discarded INTO the document: the block is asked again, and if the retry answers
+        correctly no source text ships at all. ``model_output_discarded_reason_counts
+        ["marker_chunk_collapse"]`` keeps meaning "paragraphs delivered as their own source",
+        and this number says how often a merge was caught early enough to ask again — so a
+        run where the old counter went to zero can show WHERE its merges went.
+        """
+        with self._lock:
+            self._marker_chunk_merge_retry_count += 1
 
     def record_model_output_discarded(self, *, reason: str, paragraph_count: int = 0, block_count: int = 0) -> None:
         with self._lock:
@@ -434,7 +451,7 @@ class RunModelAccountingLedger:
         rescued and how much still keeps its own source text in the document. "Unrescued"
         rather than "source restored" because the two are not the same fact — the paragraph
         the ladder gave up on ships as ``omitted``, which the narration withholds, while
-        ``source_restored`` is the merge-repair status the narration speaks.
+        ``source_restored`` is the merge-repair status, spoken only on ``edit`` (spec 061 FR-006).
         ``oversized_sentence_count`` is the named honest edge — a single sentence whose own
         answer cannot fit under the provider's output ceiling, which nothing below the
         sentence divides further.
@@ -500,6 +517,16 @@ class RunModelAccountingLedger:
         with self._lock:
             self._paragraph_disposition_counts[status] = self._paragraph_disposition_counts.get(status, 0) + count
 
+    def record_text_api_path(self, api_path: str) -> None:
+        """Count ONE text-generation answer by the provider API that served it (spec 061).
+
+        Responses, Chat Completions or Anthropic Messages. Without it the share of calls the
+        default provider routes through the Chat Completions fallback is unknowable, and
+        that share is what says how often the incomplete check on that path matters.
+        """
+        with self._lock:
+            self._api_path_counts[api_path] = self._api_path_counts.get(api_path, 0) + 1
+
     def model_call_count(self) -> int:
         with self._lock:
             return self._totals.model_call_count
@@ -536,6 +563,10 @@ class RunModelAccountingLedger:
                 "retried_block_count": self._retried_block_count,
                 "retried_paragraph_count": self._retried_paragraph_count,
                 "retry_reason_counts": dict(sorted(self._retry_reason_counts.items())),
+                # Spec 061 FR-005: answers whose paragraph merge was sent back for another
+                # attempt. Each one is also one of the ``marker_validation`` retries above;
+                # it is NOT a discard — the source ships only if the last attempt merges too.
+                "marker_chunk_merge_retry_count": self._marker_chunk_merge_retry_count,
                 "model_output_discarded_paragraph_count": self._discarded_paragraph_count,
                 "model_output_discarded_block_count": self._discarded_block_count,
                 "model_output_discarded_reason_counts": dict(sorted(self._discard_reason_counts.items())),
@@ -543,6 +574,10 @@ class RunModelAccountingLedger:
                 # accepted / omitted / source_restored / retry_required. Always all four
                 # keys; a zero states that nothing landed in that bucket.
                 "paragraph_disposition_counts": dict(sorted(self._paragraph_disposition_counts.items())),
+                # Spec 061: text-generation answers per provider API path — ``responses``,
+                # ``chat_completions``, ``anthropic``. An empty mapping means no text call
+                # was answered in this scope.
+                "api_path_counts": dict(sorted(self._api_path_counts.items())),
                 # Blocks the pipeline rejected and shipped anyway (decision
                 # ``fallback_continue``). Reported in characters as well as blocks because
                 # the volume of substituted text IS the price of the defect and blocks
@@ -728,6 +763,10 @@ def record_retry_attempt(*, reason: str, paragraph_count: int = 0, first_retry_f
     )
 
 
+def record_marker_chunk_merge_retry() -> None:
+    get_run_model_accounting_ledger().record_marker_chunk_merge_retry()
+
+
 def record_model_output_discarded(*, reason: str, paragraph_count: int = 0, block_count: int = 0) -> None:
     get_run_model_accounting_ledger().record_model_output_discarded(
         reason=reason,
@@ -775,6 +814,10 @@ def record_text_removal(*, site: str, chars: int = 0, emptied_units: int = 0) ->
 
 def record_paragraph_disposition(*, status: str, count: int = 1) -> None:
     get_run_model_accounting_ledger().record_paragraph_disposition(status=status, count=count)
+
+
+def record_text_api_path(api_path: str) -> None:
+    get_run_model_accounting_ledger().record_text_api_path(api_path)
 
 
 def snapshot_run_model_accounting() -> dict[str, object]:

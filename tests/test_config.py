@@ -49,10 +49,14 @@ def test_constants_paths_resolve_to_repo_root() -> None:
     assert constants.CONFIG_PATH == resources / "config.toml"
     assert constants.PROMPTS_DIR == resources / "prompts"
     assert constants.ENV_PATH == repo_root / ".env"
-    assert constants.RUN_DIR == repo_root / ".run"
-    assert constants.UI_RESULT_ARTIFACTS_DIR == repo_root / ".run" / "ui_results"
-    assert constants.APP_LOG_PATH == repo_root / ".run" / "app.log"
-    assert constants.APP_READY_PATH == repo_root / ".run" / "app.ready"
+    # Outside the suite the run root defaults to <repo>/.run; inside it, tests/conftest.py
+    # redirects it through DOCX_AI_RUN_DIR (spec 061 FR-020), so the default is asserted on
+    # the resolver and the live constants only on their derivation from the root
+    # (the FR-020 tests at the end of this module assert where that root is).
+    assert constants.resolve_run_dir(repo_root, environ={}) == repo_root / ".run"
+    assert constants.UI_RESULT_ARTIFACTS_DIR == constants.RUN_DIR / "ui_results"
+    assert constants.APP_LOG_PATH == constants.RUN_DIR / "app.log"
+    assert constants.APP_READY_PATH == constants.RUN_DIR / "app.ready"
 
 
 def test_load_app_config_applies_env_overrides_and_clamps(monkeypatch):
@@ -1337,7 +1341,7 @@ def test_get_client_loads_openai_api_key_from_dotenv(monkeypatch, tmp_path):
     captured = {}
 
     class FakeOpenAI:
-        def __init__(self, *, api_key):
+        def __init__(self, *, api_key, timeout=None):
             captured["api_key"] = api_key
 
     monkeypatch.setattr(config, "ENV_PATH", dotenv_path)
@@ -1360,7 +1364,7 @@ def test_get_client_uses_single_locked_initialization(monkeypatch, tmp_path):
     constructor_release = threading.Event()
 
     class FakeOpenAI:
-        def __init__(self, *, api_key):
+        def __init__(self, *, api_key, timeout=None):
             created_instances.append((self, api_key))
             constructor_started.set()
             assert constructor_release.wait(timeout=2)
@@ -1435,6 +1439,70 @@ def test_get_provider_client_builds_openrouter_client(monkeypatch, tmp_path):
     }
 
 
+def _capture_provider_client_kwargs(monkeypatch, provider_name: str, app_config: object) -> dict[str, object]:
+    captured: dict[str, object] = {}
+
+    class FakeOpenAI:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setattr(config, "OpenAI", FakeOpenAI)
+    monkeypatch.setattr(config, "_CLIENT", None)
+    monkeypatch.setattr(config, "_CLIENTS_BY_PROVIDER", {})
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-openai")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-openrouter")
+    config.get_provider_client(provider_name, config_like=app_config)
+    return captured
+
+
+def test_shipped_config_gives_every_provider_client_a_timeout(monkeypatch):
+    # Spec 061 FR-021 / User Story 6-3. Before, only anthropic had timeout_seconds, so the
+    # openai and openrouter clients were built with no timeout argument at all.
+    monkeypatch.setattr(config, "CONFIG_PATH", config.CONFIG_PATH)
+    app_config = config.load_app_config()
+
+    assert app_config.providers.openai.timeout_seconds == 600.0
+    assert app_config.providers.openrouter.timeout_seconds == 600.0
+    # Anthropic's own value overrides the global default.
+    assert app_config.providers.anthropic.timeout_seconds == 1200.0
+    assert _capture_provider_client_kwargs(monkeypatch, "openai", app_config)["timeout"] == 600.0
+    assert _capture_provider_client_kwargs(monkeypatch, "openrouter", app_config)["timeout"] == 600.0
+
+
+def test_provider_timeout_override_wins_over_the_global_default(monkeypatch, tmp_path):
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        "provider_timeout_seconds_default = 42\n"
+        "[providers.openai]\nenabled = true\napi_key_env = \"OPENAI_API_KEY\"\n"
+        "[providers.openrouter]\nenabled = true\napi_key_env = \"OPENROUTER_API_KEY\"\ntimeout_seconds = 7\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(config, "CONFIG_PATH", config_path)
+    app_config = config.load_app_config()
+
+    assert _capture_provider_client_kwargs(monkeypatch, "openai", app_config)["timeout"] == 42.0
+    assert _capture_provider_client_kwargs(monkeypatch, "openrouter", app_config)["timeout"] == 7.0
+
+
+def test_provider_timeout_global_default_survives_a_missing_config_file(monkeypatch):
+    monkeypatch.setattr(config, "CONFIG_PATH", config.CONFIG_PATH.parent / "__missing_config__.toml")
+    app_config = config.load_app_config()
+
+    assert app_config.providers.openai.timeout_seconds == 600.0
+    assert app_config.providers.openrouter.timeout_seconds == 600.0
+    assert app_config.providers.anthropic.timeout_seconds == 1200.0
+
+
+@pytest.mark.parametrize("bad_value", ["0", "-5", "true", "\"600\""])
+def test_provider_timeout_global_default_rejects_non_positive_or_non_numeric(monkeypatch, tmp_path, bad_value):
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(f"provider_timeout_seconds_default = {bad_value}\n", encoding="utf-8")
+    monkeypatch.setattr(config, "CONFIG_PATH", config_path)
+
+    with pytest.raises(RuntimeError, match="provider_timeout_seconds_default"):
+        config.load_app_config()
+
+
 def test_get_provider_client_rekeys_on_secret_rotation(monkeypatch, tmp_path):
     # F9a: rotating the credential (same env NAME, new VALUE) must return a FRESH client,
     # while an unchanged secret keeps the cached client. The secret VALUE must never appear
@@ -1445,7 +1513,7 @@ def test_get_provider_client_rekeys_on_secret_rotation(monkeypatch, tmp_path):
     created: list[object] = []
 
     class FakeOpenAI:
-        def __init__(self, *, api_key):
+        def __init__(self, *, api_key, timeout=None):
             self.api_key = api_key
             created.append(self)
 
@@ -1500,7 +1568,7 @@ def test_get_provider_client_no_toctou_between_prelock_fingerprint_and_build(mon
     created: list[object] = []
 
     class FakeOpenAI:
-        def __init__(self, *, api_key):
+        def __init__(self, *, api_key, timeout=None):
             self.api_key = api_key
             created.append(self)
 
@@ -2118,3 +2186,150 @@ def test_config_can_still_widen_the_reader_cleanup_operation_set(monkeypatch, tm
 
     assert widened["reader_cleanup_allowed_operations"] == ()
     assert resolve_reader_cleanup_config(app_config=dict(widened), fallback_model="gpt-5.4").allowed_operations == ()
+
+
+# --- Spec 061 FR-020 / User Story 6-1: the suite never writes into the operator's .run ---
+#
+# Before the fix RUN_DIR and its sub-directories were import-time constants with no override,
+# and tests/conftest.py redirected two artifact families by name; UI_RESULT_ARTIFACTS_DIR was
+# not one of them, and a suite run left 155 test files in .run/ui_results against a retention
+# ceiling of 80 stems. Now the root is read once from DOCX_AI_RUN_DIR, which conftest.py sets
+# before the package is first imported, so every constant derived from it — including the
+# copies other modules captured at import — lands under a per-session temporary root.
+
+_RUN_DIR_CONSTANT_NAMES = (
+    "RUN_DIR",
+    "UI_RESULT_ARTIFACTS_DIR",
+    "STRUCTURE_MANIFESTS_DIR",
+    "SEGMENT_RESULT_REGISTRY_DIR",
+    "JOB_RESULT_REGISTRY_DIR",
+    "APP_LOG_PATH",
+    "APP_READY_PATH",
+)
+
+
+def _is_under(path: Path, root: Path) -> bool:
+    return Path(path).resolve().is_relative_to(root.resolve())
+
+
+def _parameter_default_path(function: object, parameter: str) -> Path:
+    import inspect
+
+    default = inspect.signature(function).parameters[parameter].default  # type: ignore[arg-type]
+    assert isinstance(default, Path)
+    return default
+
+
+def test_suite_run_dir_is_a_temporary_directory_outside_the_repository() -> None:
+    from tests.conftest import TEST_RUN_DIR
+
+    assert os.environ[constants.RUN_DIR_ENV_VAR] == str(TEST_RUN_DIR)
+    assert constants.RUN_DIR == TEST_RUN_DIR
+    assert not _is_under(TEST_RUN_DIR, constants.BASE_DIR)
+
+
+def test_every_run_directory_constant_resolves_under_the_suite_root() -> None:
+    from tests.conftest import TEST_RUN_DIR
+
+    repo_run_dir = constants.BASE_DIR / ".run"
+    for name in _RUN_DIR_CONSTANT_NAMES:
+        value = getattr(constants, name)
+        assert _is_under(value, TEST_RUN_DIR), f"{name} = {value} escapes the suite root {TEST_RUN_DIR}"
+        assert not _is_under(value, repo_run_dir), f"{name} = {value} points into the repository .run"
+
+
+def test_run_dir_copies_captured_at_import_follow_the_redirected_root() -> None:
+    # The reason a per-family redirect was ever needed: these modules copy the constant at
+    # import. With the root redirected before the first import, every copy is already right.
+    import docxaicorrector.core.logger as logger
+    import docxaicorrector.document.extraction as extraction
+    import docxaicorrector.pipeline.reassembly as reassembly
+    import docxaicorrector.processing.restart_store as restart_store
+    import docxaicorrector.runtime.artifacts as runtime_artifacts
+    import docxaicorrector.runtime.state as runtime_state
+    import docxaicorrector.structure.validation as structure_validation
+    from tests.conftest import TEST_RUN_DIR
+
+    captured = {
+        "logger.RUN_DIR": logger.RUN_DIR,
+        "logger.APP_LOG_PATH": logger.APP_LOG_PATH,
+        "runtime.state.APP_LOG_PATH": runtime_state.APP_LOG_PATH,
+        "restart_store.RUN_DIR": restart_store.RUN_DIR,
+        "structure.validation debug dir": structure_validation._STRUCTURE_VALIDATION_DEBUG_DIR,
+        "extraction.PARAGRAPH_BOUNDARY_REPORTS_DIR": extraction.PARAGRAPH_BOUNDARY_REPORTS_DIR,
+        "extraction.RELATION_NORMALIZATION_REPORTS_DIR": extraction.RELATION_NORMALIZATION_REPORTS_DIR,
+        "extraction.LAYOUT_CLEANUP_REPORTS_DIR": extraction.LAYOUT_CLEANUP_REPORTS_DIR,
+        "extraction.PARAGRAPH_BOUNDARY_AI_REVIEW_DIR": extraction.PARAGRAPH_BOUNDARY_AI_REVIEW_DIR,
+        "write_ui_result_artifacts(output_dir=)": _parameter_default_path(
+            runtime_artifacts.write_ui_result_artifacts, "output_dir"
+        ),
+        "load_segment_result_records(input_dir=)": _parameter_default_path(
+            reassembly.load_segment_result_records, "input_dir"
+        ),
+    }
+    for label, value in captured.items():
+        assert _is_under(value, TEST_RUN_DIR), f"{label} = {value} escapes the suite root"
+
+
+def test_former_cwd_relative_families_derive_from_the_run_root() -> None:
+    # These five were Path(".run") / ... — relative to the working directory, not RUN_DIR — so
+    # the root redirect missed them and a suite run left quality_reports, block_fallbacks and
+    # reader_cleanup_lineage files in the repository .run; two of them needed per-family
+    # conftest fixtures. Each must now be RUN_DIR / <family>, including the module copies.
+    import docxaicorrector.generation.formatting_diagnostics_retention as formatting_diagnostics_retention
+    import docxaicorrector.generation.formatting_transfer as formatting_transfer
+    import docxaicorrector.generation.marker_attempt_capture as marker_attempt_capture
+    import docxaicorrector.pipeline._pipeline as pipeline
+    import docxaicorrector.pipeline.block_execution as block_execution
+    import docxaicorrector.pipeline.late_phases as late_phases
+    import docxaicorrector.pipeline.quality_report_retention as quality_report_retention
+    import docxaicorrector.pipeline.reader_cleanup_rebuild as reader_cleanup_rebuild
+
+    expected = {
+        "formatting_diagnostics_retention.FORMATTING_DIAGNOSTICS_DIR": (
+            formatting_diagnostics_retention.FORMATTING_DIAGNOSTICS_DIR, "formatting_diagnostics"
+        ),
+        "formatting_transfer.FORMATTING_DIAGNOSTICS_DIR": (
+            formatting_transfer.FORMATTING_DIAGNOSTICS_DIR, "formatting_diagnostics"
+        ),
+        "pipeline._pipeline.FORMATTING_DIAGNOSTICS_DIR": (pipeline.FORMATTING_DIAGNOSTICS_DIR, "formatting_diagnostics"),
+        "marker_attempt_capture.MARKER_ATTEMPT_DIAGNOSTICS_DIR": (
+            marker_attempt_capture.MARKER_ATTEMPT_DIAGNOSTICS_DIR, "marker_attempts"
+        ),
+        "block_execution.CONTROLLED_BLOCK_FALLBACK_DIR": (block_execution.CONTROLLED_BLOCK_FALLBACK_DIR, "block_fallbacks"),
+        "quality_report_retention.QUALITY_REPORTS_DIR": (quality_report_retention.QUALITY_REPORTS_DIR, "quality_reports"),
+        "late_phases.QUALITY_REPORTS_DIR": (late_phases.QUALITY_REPORTS_DIR, "quality_reports"),
+        "reader_cleanup_rebuild.READER_CLEANUP_LINEAGE_DIR": (
+            reader_cleanup_rebuild.READER_CLEANUP_LINEAGE_DIR, "reader_cleanup_lineage"
+        ),
+        "late_phases.READER_CLEANUP_LINEAGE_DIR": (late_phases.READER_CLEANUP_LINEAGE_DIR, "reader_cleanup_lineage"),
+    }
+    for label, (value, family) in expected.items():
+        assert value == constants.RUN_DIR / family, f"{label} = {value}, expected RUN_DIR / {family!r}"
+
+
+def test_resolve_run_dir_defaults_to_the_working_root_and_honours_the_override(tmp_path: Path) -> None:
+    base = tmp_path / "home"
+    assert constants.resolve_run_dir(base, environ={}) == base / ".run"
+    assert constants.resolve_run_dir(base, environ={constants.RUN_DIR_ENV_VAR: "   "}) == base / ".run"
+    override = tmp_path / "elsewhere"
+    assert constants.resolve_run_dir(base, environ={constants.RUN_DIR_ENV_VAR: str(override)}) == override.resolve()
+
+
+def test_default_text_model_provider_names_the_key_a_default_run_needs(monkeypatch, tmp_path):
+    # Spec 061 FR-024: the status scripts ask this instead of hard-coding OPENAI_API_KEY.
+    monkeypatch.setattr(config, "CONFIG_PATH", config.CONFIG_PATH)
+    assert config.get_default_text_model_provider_config().api_key_env == "OPENROUTER_API_KEY"
+
+    # A bare model id is an OpenAI model (anti-vacuum: the answer follows the config).
+    config_path = tmp_path / "config.toml"
+    config_path.write_text('[models.text]\ndefault = "gpt-5.4-mini"\noptions = ["gpt-5.4-mini"]\n', encoding="utf-8")
+    monkeypatch.setattr(config, "CONFIG_PATH", config_path)
+    config.reset_app_config_cache()
+    assert config.get_default_text_model_provider_config().api_key_env == "OPENAI_API_KEY"
+
+    # The environment override of the default model counts too.
+    monkeypatch.setenv("DOCX_AI_MODELS_TEXT_DEFAULT", "openrouter:google/gemini-3.1-flash-lite-preview")
+    monkeypatch.setenv("DOCX_AI_PROVIDERS_OPENROUTER_ENABLED", "true")
+    config.reset_app_config_cache()
+    assert config.get_default_text_model_provider_config().api_key_env == "OPENROUTER_API_KEY"

@@ -4,6 +4,10 @@ from typing import cast
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import httpx2
+import openai
+import pytest
+
 import docxaicorrector.core.logger as logger
 from docxaicorrector.core.logger import _WSLSafeRotatingFileHandler
 
@@ -57,6 +61,77 @@ def test_format_user_error_maps_status_code_and_runtime_errors():
 
     runtime_exc = RuntimeError("custom runtime")
     assert logger.format_user_error(runtime_exc) == "custom runtime"
+
+
+def _sdk_status_error(status_code: int, url: str) -> Exception:
+    request = httpx2.Request("POST", url)
+    response = httpx2.Response(status_code, request=request, json={"error": {"message": "provider said no"}})
+    return openai.APIStatusError("provider said no", response=response, body=None)
+
+
+_OPENROUTER_URL = "https://openrouter.ai/api/v1/responses"
+
+
+@pytest.fixture
+def shipped_config(monkeypatch):
+    import docxaicorrector.core.config as config
+
+    monkeypatch.setattr(config, "CONFIG_PATH", config.CONFIG_PATH)
+    config.reset_app_config_cache()
+    yield config
+    config.reset_app_config_cache()
+
+
+@pytest.mark.parametrize("status_code", [401, 402, 429])
+def test_openrouter_errors_name_openrouter_not_openai(shipped_config, status_code):
+    # Spec 061 FR-023 / User Story 6-4. OpenRouter is reached through the openai SDK, so the
+    # exception class alone says "openai"; the request host is what identifies it.
+    text = logger.format_user_error(_sdk_status_error(status_code, _OPENROUTER_URL))
+
+    assert text.startswith("OpenRouter ")
+    assert "OpenAI" not in text
+
+
+def test_http_402_explains_exhausted_credits(shipped_config):
+    text = logger.format_user_error(_sdk_status_error(402, _OPENROUTER_URL))
+
+    assert "закончились кредиты" in text
+    assert "402" in text
+
+
+def test_openai_host_errors_still_name_openai(shipped_config):
+    # Anti-vacuum: the substitution must not turn every provider into OpenRouter.
+    text = logger.format_user_error(_sdk_status_error(401, "https://api.openai.com/v1/responses"))
+
+    assert text == "OpenAI отклонил запрос из-за неверного или отсутствующего API-ключа."
+
+
+def test_connection_errors_name_the_provider_of_the_request(shipped_config):
+    request = httpx2.Request("POST", _OPENROUTER_URL)
+
+    assert logger.format_user_error(openai.APIConnectionError(request=request)).startswith(
+        "Не удалось подключиться к OpenRouter."
+    )
+    assert logger.format_user_error(openai.APITimeoutError(request=request)).startswith("OpenRouter не ответил")
+
+
+def test_configured_display_name_is_used(monkeypatch, tmp_path):
+    import docxaicorrector.core.config as config
+
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        '[providers.openrouter]\nenabled = true\napi_key_env = "OPENROUTER_API_KEY"\n'
+        'base_url = "https://openrouter.ai/api/v1"\ndisplay_name = "Шлюз OpenRouter"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(config, "CONFIG_PATH", config_path)
+    config.reset_app_config_cache()
+    try:
+        text = logger.format_user_error(_sdk_status_error(429, _OPENROUTER_URL))
+    finally:
+        config.reset_app_config_cache()
+
+    assert text.startswith("Шлюз OpenRouter временно ограничил запросы.")
 
 
 def test_format_user_error_normalizes_heading_only_runtime_error():

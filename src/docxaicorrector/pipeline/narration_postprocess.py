@@ -26,7 +26,10 @@ import re
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+from docxaicorrector.core.models import LANGUAGE_CHANGING_OPERATIONS
 from docxaicorrector.generation._generation import (
+    PARAGRAPH_STATUS_OMITTED,
+    PARAGRAPH_STATUS_SOURCE_RESTORED,
     strip_markdown_for_narration,
     strip_markdown_for_narration_with_stats,
 )
@@ -74,6 +77,9 @@ _NARRATION_DISALLOWED_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
 # few truncated examples — enough to judge the class, small enough for a log line.
 _NARRATION_REVIEW_SAMPLE_LIMIT = 3
 _NARRATION_REVIEW_SAMPLE_CHARS = 120
+# A blank line, possibly carrying spaces, is a paragraph break — the same unit the post-pass
+# groups are joined with (``"\n\n".join``). Form only, no content.
+_NARRATION_PARAGRAPH_BREAK_PATTERN = re.compile(r"\n[ \t]*\n")
 
 
 def _project_final_cleanup_narration_chunks(
@@ -84,6 +90,13 @@ def _project_final_cleanup_narration_chunks(
     if final_generated_paragraph_registry is None:
         raise RuntimeError("narration_cleanup_projection_unsafe:missing_final_registry")
     jobs = list(getattr(context, "jobs", ()) or ())
+    # Read off the context, never defaulted: a default would be a guess that fails silently
+    # in one of the two directions (the reason ``block_execution.job_changes_language`` gives).
+    withheld_statuses = (
+        {PARAGRAPH_STATUS_OMITTED, PARAGRAPH_STATUS_SOURCE_RESTORED}
+        if str(context.processing_operation or "").strip().casefold() in LANGUAGE_CHANGING_OPERATIONS
+        else {PARAGRAPH_STATUS_OMITTED}
+    )
     projected: list[str] = []
     for raw_entry in final_generated_paragraph_registry:
         if not isinstance(raw_entry, Mapping):
@@ -136,7 +149,11 @@ def _project_final_cleanup_narration_chunks(
         # chunk is ever appended; this projection rebuilds the narration from the final
         # registry, so it has to honour the same decision or the two entry points diverge
         # (spec 054 anti-regression 3).
-        if str(raw_entry.get("paragraph_status", "") or "") == "omitted":
+        # Spec 061 FR-006, the rule ``block_execution.narration_projection_for_processed_block``
+        # applies on the standalone path: in an operation that changes the language a
+        # ``source_restored`` paragraph is source-language text too and is withheld beside
+        # ``omitted``; on ``edit`` the source IS target-language text and is spoken.
+        if str(raw_entry.get("paragraph_status", "") or "") in withheld_statuses:
             continue
         if True in inclusion_flags:
             projected.append(text)
@@ -325,6 +342,65 @@ def _build_narration_postprocess_groups(*, narration_chunks: Sequence[str], chun
     return groups
 
 
+def _count_narration_paragraphs(text: str) -> int:
+    return sum(1 for part in _NARRATION_PARAGRAPH_BREAK_PATTERN.split(str(text)) if part.strip())
+
+
+def _record_postprocess_paragraph_shortfall(
+    *,
+    context: Any,
+    dependencies: Any,
+    state: Any,
+    target_text: str,
+    processed_chunk: str,
+    group_index: int,
+    group_count: int,
+    start_index: int,
+    end_index: int,
+) -> None:
+    """Spec 061 FR-017 (narrowed): a post-pass answer with FEWER paragraphs is never silent.
+
+    The answer is still delivered — the audiobook prompt is allowed to drop non-narrative
+    residue (rule 1: footnote markers, citations, identifiers), so a lower count is not proof
+    of a lost paragraph and replacing the answer would undo that legitimate removal. It is
+    marked ``needs_review`` instead: a WARNING event with the group's address and counts, and
+    two run counters that ``ui_audiobook_artifact_saved`` publishes beside the other
+    narration counters. More paragraphs than were sent is not a loss (rule 5 splits long
+    sentences) and is not reported.
+    """
+    sent_paragraph_count = _count_narration_paragraphs(target_text)
+    returned_paragraph_count = _count_narration_paragraphs(processed_chunk)
+    if returned_paragraph_count >= sent_paragraph_count:
+        return
+    missing_paragraph_count = sent_paragraph_count - returned_paragraph_count
+    if state is not None:
+        state.narration_postprocess_paragraph_shortfall_group_count = (
+            int(getattr(state, "narration_postprocess_paragraph_shortfall_group_count", 0) or 0) + 1
+        )
+        state.narration_postprocess_paragraph_shortfall_paragraph_count = (
+            int(getattr(state, "narration_postprocess_paragraph_shortfall_paragraph_count", 0) or 0)
+            + missing_paragraph_count
+        )
+    dependencies.log_event(
+        logging.WARNING,
+        "audiobook_postprocess_paragraph_shortfall",
+        "Audiobook post-pass вернул меньше абзацев, чем получил; ответ доставлен и требует проверки.",
+        filename=context.uploaded_filename,
+        operation="audiobook",
+        **{"pass": "postprocess"},
+        review_data=True,
+        advisory=True,
+        needs_review=True,
+        chunk_index=group_index,
+        chunk_count=group_count,
+        start_index=start_index,
+        end_index=end_index,
+        sent_paragraph_count=sent_paragraph_count,
+        returned_paragraph_count=returned_paragraph_count,
+        missing_paragraph_count=missing_paragraph_count,
+    )
+
+
 def _run_audiobook_postprocess(*, context: Any, dependencies: Any, emitters: Any, state: Any, narration_chunks_override: Sequence[str] | None = None) -> str | None:
     narration_chunks = list(narration_chunks_override) if narration_chunks_override is not None else _collect_narration_chunks(state=state)
     stop_predicate = getattr(dependencies, "should_stop_processing", None)
@@ -396,6 +472,11 @@ def _run_audiobook_postprocess(*, context: Any, dependencies: Any, emitters: Any
             start_index=start_index,
             end_index=end_index,
         )
+        # Spec 061 FR-017, narrowed per the spec's Assumption: the groups are NOT built from
+        # paragraphs with ids. ``state.narration_chunks`` holds one string per BLOCK (the
+        # paragraph ids are gone by then) and the cleaned-translate projection hands over
+        # texts only, so there are no ``expected_paragraph_ids`` to put the marker contract
+        # on. What can be checked without them is the paragraph COUNT.
         processed_chunk = dependencies.generate_markdown_block(
             client=client,
             model=model_id,
@@ -406,9 +487,23 @@ def _run_audiobook_postprocess(*, context: Any, dependencies: Any, emitters: Any
             max_retries=context.max_retries,
             expected_paragraph_ids=None,
             marker_mode=False,
+            # Spec 061 FR-022 in the late passes: Stop is asked before every model call the
+            # group makes (each attempt, recovery, ladder step), not only between groups.
+            should_stop=lambda: bool(callable(stop_predicate) and stop_predicate(context.runtime)),
         )
         if callable(stop_predicate) and stop_predicate(context.runtime):
             raise LatePhaseStopped()
+        _record_postprocess_paragraph_shortfall(
+            context=context,
+            dependencies=dependencies,
+            state=state,
+            target_text=target_text,
+            processed_chunk=processed_chunk,
+            group_index=group_index,
+            group_count=len(groups),
+            start_index=start_index,
+            end_index=end_index,
+        )
         processed_groups.append(processed_chunk)
         dependencies.log_event(
             logging.INFO,

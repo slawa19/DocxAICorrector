@@ -122,7 +122,7 @@ def test_render_processing_controls_keeps_start_visible_while_processing(monkeyp
         app.t("app.button_processing_running"),
         {
             "type": "primary",
-            "use_container_width": True,
+            "width": "stretch",
             "disabled": True,
             "key": "start_processing_button",
         },
@@ -130,7 +130,7 @@ def test_render_processing_controls_keeps_start_visible_while_processing(monkeyp
     assert stop_column.calls == [(
         app.t("app.button_stop"),
         {
-            "use_container_width": True,
+            "width": "stretch",
             "disabled": False,
             "key": "stop_processing_button",
         },
@@ -151,7 +151,7 @@ def test_render_processing_controls_enables_start_and_disables_stop_when_idle(mo
         app.t("app.button_start_processing"),
         {
             "type": "primary",
-            "use_container_width": True,
+            "width": "stretch",
             "disabled": False,
             "key": "start_processing_button",
         },
@@ -173,7 +173,7 @@ def test_render_processing_controls_demotes_start_after_completed_result(monkeyp
         app.t("app.button_reprocess"),
         {
             "type": "secondary",
-            "use_container_width": True,
+            "width": "stretch",
             "disabled": False,
             "key": "start_processing_button",
         },
@@ -181,7 +181,7 @@ def test_render_processing_controls_demotes_start_after_completed_result(monkeyp
     assert stop_column.calls == [(
         app.t("app.button_stop"),
         {
-            "use_container_width": True,
+            "width": "stretch",
             "disabled": True,
             "key": "stop_processing_button",
         },

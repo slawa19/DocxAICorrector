@@ -13,8 +13,10 @@ from docxaicorrector.core.model_accounting import (
 from docxaicorrector.core.models import LANGUAGE_CHANGING_OPERATIONS, PARAGRAPH_REGION_PROSE
 from docxaicorrector.generation._generation import (
     PARAGRAPH_STATUS_OMITTED,
+    PARAGRAPH_STATUS_SOURCE_RESTORED,
     marker_paragraph_dispositions,
 )
+from docxaicorrector.pipeline.contracts import LatePhaseStopped
 from docxaicorrector.pipeline.job_results import persist_terminal_job_result
 from docxaicorrector.pipeline.output_validation import (
     delivered_text_equals_source,
@@ -68,7 +70,8 @@ UNTRANSLATED_PROSE_WARNING_REASON = "untranslated_prose"
 # separate key from ``fail_reason`` on purpose: the two are not the same kind of fact any
 # more, and reusing the old name would let a reader (or a call site) believe the run stops.
 UNTRANSLATED_PROSE_WARNING_KEY = "warning_reason"
-CONTROLLED_BLOCK_FALLBACK_DIR = Path(".run") / "block_fallbacks"
+from docxaicorrector.core.constants import RUN_DIR as _RUN_DIR
+CONTROLLED_BLOCK_FALLBACK_DIR = _RUN_DIR / "block_fallbacks"
 # Retention budget for controlled-block fallback diagnostics (F26). Each rejected
 # block writes a uuid-suffixed artifact that never overwrites, so this flat family
 # grew without bound. Values match the diagnostic tier used elsewhere under
@@ -694,6 +697,9 @@ def _generate_block_chunk(
         # no other way to say WHICH block an artifact under ``.run/marker_attempts/``
         # belongs to, and without that the record cannot be matched to the run log.
         block_index=index,
+        # Spec 061 FR-022: the same Stop the block loop checks between blocks, asked before
+        # every model call inside this block's retries and ladder as well.
+        should_stop=lambda: bool(dependencies.should_stop_processing(context.runtime)),
     )
 
 
@@ -877,6 +883,8 @@ def excluded_narration_paragraph_records(processed_chunk: str) -> list[dict[str,
 
 def narration_projection_for_processed_block(
     processed_chunk: str,
+    *,
+    processing_operation: Any,
 ) -> tuple[str, list[dict[str, str]]]:
     """What of this block is READ ALOUD, and what was left out doing it.
 
@@ -900,17 +908,41 @@ def narration_projection_for_processed_block(
     A block with no per-paragraph record is returned untouched with nothing withheld, so
     passthrough blocks and controlled fallbacks whose substrate is a plain string behave
     exactly as before.
+
+    WHICH paragraphs are withheld is decided by the OPERATION, not by the status alone
+    (spec 061 FR-006/007). Both ``omitted`` and ``source_restored`` mean the same thing about
+    the text — it is the paragraph's own SOURCE — and in an operation that changes the
+    language (``core.models.LANGUAGE_CHANGING_OPERATIONS``) that is source-language text,
+    which a listener must not hear under either label. Until 2026-11-06 only ``omitted`` was
+    withheld and ``source_restored`` was spoken; on ``20260809T_059_audio_money`` that read
+    two English paragraphs (587 characters, target-alphabet share 0.000) into a Russian
+    audiobook. On ``edit`` the source IS in the target language, so a restored paragraph is
+    a real paragraph of the book and is spoken, as before; ``omitted`` stays withheld on
+    every operation, as before. ``accepted`` is always spoken.
+
+    ``processing_operation`` has no default for the reason ``job_changes_language`` gives:
+    a default is a guess that fails silently in one of the two directions. The record
+    carries the status so the notice built from it can tell the two causes apart.
     """
 
     dispositions = marker_paragraph_dispositions(processed_chunk)
     if dispositions is None:
         return processed_chunk, []
+    withheld_statuses = (
+        {PARAGRAPH_STATUS_OMITTED, PARAGRAPH_STATUS_SOURCE_RESTORED}
+        if str(processing_operation or "").strip().casefold() in LANGUAGE_CHANGING_OPERATIONS
+        else {PARAGRAPH_STATUS_OMITTED}
+    )
     spoken: list[str] = []
     withheld: list[dict[str, str]] = []
     for disposition in dispositions:
-        if disposition.status == PARAGRAPH_STATUS_OMITTED:
+        if disposition.status in withheld_statuses:
             withheld.append(
-                {"paragraph_id": str(disposition.paragraph_id), "text": disposition.text}
+                {
+                    "paragraph_id": str(disposition.paragraph_id),
+                    "text": disposition.text,
+                    "status": str(disposition.status),
+                }
             )
             continue
         if disposition.text.strip():
@@ -918,10 +950,12 @@ def narration_projection_for_processed_block(
     return "\n\n".join(spoken), withheld
 
 
-def narration_text_for_processed_block(processed_chunk: str) -> str:
+def narration_text_for_processed_block(processed_chunk: str, *, processing_operation: Any) -> str:
     """The narratable text alone. See ``narration_projection_for_processed_block``."""
 
-    return narration_projection_for_processed_block(processed_chunk)[0]
+    return narration_projection_for_processed_block(
+        processed_chunk, processing_operation=processing_operation
+    )[0]
 
 
 def _record_narration_omitted_paragraphs(state: Any, withheld: Sequence[Mapping[str, str]]) -> None:
@@ -1407,7 +1441,7 @@ def continue_controlled_processed_block_rejection(
         # aloud. The defect fed itself: the substitution caused the classification that
         # bypassed the filter that would have removed the substitution.
         narratable_text, withheld_paragraphs = narration_projection_for_processed_block(
-            processed_chunk
+            processed_chunk, processing_operation=getattr(context, "processing_operation", None)
         )
         _record_narration_omitted_paragraphs(state, withheld_paragraphs)
         if narratable_text.strip():
@@ -1637,7 +1671,7 @@ def process_single_block(
         # model actually spoke for. Identical to ``processed_chunk`` for every block that
         # carries no per-paragraph record.
         narratable_text, withheld_paragraphs = narration_projection_for_processed_block(
-            processed_chunk
+            processed_chunk, processing_operation=getattr(context, "processing_operation", None)
         )
         _record_narration_omitted_paragraphs(state, withheld_paragraphs)
         if narratable_text.strip():
@@ -1692,27 +1726,36 @@ def run_block_processing_phase(
     current_markdown_fn: Any,
     emit_failed_result_fn: Any,
 ) -> PipelineResult | None:
+    def _emit_stopped(index: int) -> PipelineResult | None:
+        stop_message = "Обработка остановлена пользователем."
+        return emit_stopped_result_fn(
+            emitters=emitters,
+            runtime=context.runtime,
+            detail=stop_message,
+            progress=(index - 1) / initialization.job_count,
+            block_index=max(0, index - 1),
+            block_count=initialization.job_count,
+        )
+
     for index, job in enumerate(context.jobs, start=1):
         if dependencies.should_stop_processing(context.runtime):
-            stop_message = "Обработка остановлена пользователем."
-            return emit_stopped_result_fn(
-                emitters=emitters,
-                runtime=context.runtime,
-                detail=stop_message,
-                progress=(index - 1) / initialization.job_count,
-                block_index=max(0, index - 1),
-                block_count=initialization.job_count,
-            )
+            return _emit_stopped(index)
 
-        block_outcome = process_single_block_fn(
-            context=context,
-            dependencies=dependencies,
-            emitters=emitters,
-            state=state,
-            initialization=initialization,
-            index=index,
-            job=job,
-        )
+        try:
+            block_outcome = process_single_block_fn(
+                context=context,
+                dependencies=dependencies,
+                emitters=emitters,
+                state=state,
+                initialization=initialization,
+                index=index,
+                job=job,
+            )
+        except LatePhaseStopped:
+            # Spec 061 FR-022: Stop pressed while this block was still retrying. The
+            # generator refused the next model call; the block is not delivered, and the
+            # run stops exactly as if Stop had been seen before the block began.
+            return _emit_stopped(index)
         if block_outcome is not None:
             return block_outcome
 
