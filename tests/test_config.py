@@ -2293,3 +2293,22 @@ def test_resolve_run_dir_defaults_to_the_working_root_and_honours_the_override(t
     assert constants.resolve_run_dir(base, environ={constants.RUN_DIR_ENV_VAR: "   "}) == base / ".run"
     override = tmp_path / "elsewhere"
     assert constants.resolve_run_dir(base, environ={constants.RUN_DIR_ENV_VAR: str(override)}) == override.resolve()
+
+
+def test_default_text_model_provider_names_the_key_a_default_run_needs(monkeypatch, tmp_path):
+    # Spec 061 FR-024: the status scripts ask this instead of hard-coding OPENAI_API_KEY.
+    monkeypatch.setattr(config, "CONFIG_PATH", config.CONFIG_PATH)
+    assert config.get_default_text_model_provider_config().api_key_env == "OPENROUTER_API_KEY"
+
+    # A bare model id is an OpenAI model (anti-vacuum: the answer follows the config).
+    config_path = tmp_path / "config.toml"
+    config_path.write_text('[models.text]\ndefault = "gpt-5.4-mini"\noptions = ["gpt-5.4-mini"]\n', encoding="utf-8")
+    monkeypatch.setattr(config, "CONFIG_PATH", config_path)
+    config.reset_app_config_cache()
+    assert config.get_default_text_model_provider_config().api_key_env == "OPENAI_API_KEY"
+
+    # The environment override of the default model counts too.
+    monkeypatch.setenv("DOCX_AI_MODELS_TEXT_DEFAULT", "openrouter:google/gemini-3.1-flash-lite-preview")
+    monkeypatch.setenv("DOCX_AI_PROVIDERS_OPENROUTER_ENABLED", "true")
+    config.reset_app_config_cache()
+    assert config.get_default_text_model_provider_config().api_key_env == "OPENROUTER_API_KEY"

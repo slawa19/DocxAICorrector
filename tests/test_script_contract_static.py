@@ -534,3 +534,14 @@ def test_production_validation_modules_are_free_of_book_specific_literals() -> N
         "(keep detectors config-driven with empty defaults; move per-book regressions to "
         "fixture tests): " + "; ".join(violations)
     )
+
+def test_status_scripts_derive_the_required_api_key_from_the_default_text_model() -> None:
+    # Spec 061 FR-024 / User Story 7-1. Both status paths used to check OPENAI_API_KEY only,
+    # while the packaged default text model is an openrouter: selector.
+    control_script = (REPO_ROOT / "scripts" / "project-control-wsl.sh").read_text(encoding="utf-8")
+    status_script = (REPO_ROOT / "scripts" / "status-project.ps1").read_text(encoding="utf-8")
+
+    assert "get_default_text_model_provider_config().api_key_env" in control_script
+    assert 'os.getenv("OPENAI_API_KEY"' not in control_script
+    assert "$status['api_key_env']" in status_script
+    assert "OPENAI_API_KEY" not in status_script
