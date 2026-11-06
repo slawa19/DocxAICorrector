@@ -15,7 +15,10 @@ $projectRoot = Split-Path -Parent $PSScriptRoot
 $wslDistro = 'Debian'
 $wslControlScript = Join-Path $PSScriptRoot 'project-control-wsl.sh'
 $appPath = Join-Path $projectRoot 'app.py'
-$runDir = Join-Path $projectRoot '.run'
+# Same root and default as the Python side (core/constants.py) and project-control-wsl.sh:
+# DOCX_AI_RUN_DIR, else <repo>/.run. From WSL it arrives as a Windows path only when WSLENV
+# lists it with /p (tests/conftest.py does, so wrapper smokes keep project.log out of .run).
+$runDir = if ([string]::IsNullOrWhiteSpace($env:DOCX_AI_RUN_DIR)) { Join-Path $projectRoot '.run' } else { $env:DOCX_AI_RUN_DIR.Trim() }
 $projectLogPath = Join-Path $runDir 'project.log'
 $projectLogMaxBytes = 262144
 $projectLogBackupCount = 5

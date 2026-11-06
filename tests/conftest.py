@@ -32,6 +32,12 @@ else:
     os.environ["DOCX_AI_RUN_DIR"] = str(TEST_RUN_DIR)
     os.environ[_SESSION_RUN_DIR_MARKER] = str(TEST_RUN_DIR)
     atexit.register(shutil.rmtree, TEST_RUN_DIR, True)
+# Windows processes a test starts from WSL (the PowerShell wrapper smokes) see only the
+# variables WSLENV names; ``/p`` translates the path both ways, so ``scripts/_shared.ps1``
+# writes ``project.log`` under the same root and its ``wsl.exe`` calls get it back.
+_wslenv_entries = [entry for entry in os.environ.get("WSLENV", "").split(":") if entry]
+if not any(entry.split("/")[0] == "DOCX_AI_RUN_DIR" for entry in _wslenv_entries):
+    os.environ["WSLENV"] = ":".join([*_wslenv_entries, "DOCX_AI_RUN_DIR/p"])
 
 
 # Make the repo-root shared bootstrap importable, then pin src first (F5/R29).
