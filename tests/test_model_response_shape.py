@@ -391,7 +391,7 @@ def test_stop_inside_the_ladder_is_not_swallowed_by_its_per_unit_fallback():
 
     with pytest.raises(LatePhaseStopped):
         generation.generate_markdown_block(
-            client=client,
+            client=cast(Any, client),
             model="m",
             system_prompt="system",
             target_text="Первый абзац исходника.\n\nВторой абзац исходника.",
@@ -413,7 +413,7 @@ def test_a_predicate_that_never_stops_changes_nothing():
         return SimpleNamespace(status="completed", output_text="" if len(calls) == 1 else "Готово")
 
     result = generation.generate_markdown_block(
-        client=SimpleNamespace(responses=SimpleNamespace(create=create)),
+        client=cast(Any, SimpleNamespace(responses=SimpleNamespace(create=create))),
         model="m",
         system_prompt="system",
         target_text="Исходный абзац.",
@@ -512,7 +512,7 @@ def test_responses_path_is_counted_and_the_counter_is_always_published():
     assert model_accounting.snapshot_run_model_accounting()["api_path_counts"] == {}
 
     generation.generate_markdown_block(
-        client=SimpleNamespace(responses=SimpleNamespace(create=lambda **_: SimpleNamespace(output_text="Готово"))),
+        client=cast(Any, SimpleNamespace(responses=SimpleNamespace(create=lambda **_: SimpleNamespace(output_text="Готово")))),
         model="m",
         system_prompt="system",
         target_text="Исходный абзац.",
