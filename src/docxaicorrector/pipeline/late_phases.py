@@ -1310,7 +1310,7 @@ def finalize_processing_success(
     }
     _publish_narration_exclusion(
         event_id="narration_omitted_paragraphs_excluded",
-        event_message="Абзацы, для которых модель не вернула текст, исключены из narration; в DOCX исходный текст сохранён.",
+        event_message="Абзацы, для которых модель не дала принятого перевода, исключены из narration; в DOCX исходный текст сохранён.",
         message_key_family="result.narration_omitted_paragraphs_excluded",
         summary=narration_omitted_paragraph_summary,
         count=int(cast(int, narration_omitted_paragraph_summary["excluded_omitted_paragraph_count"])),
@@ -1319,6 +1319,25 @@ def finalize_processing_success(
             getattr(state, "narration_excluded_omitted_paragraphs", None) or ()
         ),
     )
+    # Spec 061 FR-017 (narrowed): post-pass groups answered with FEWER paragraphs than were
+    # sent. The WARNING event is written per group where it is detected
+    # (``narration_postprocess._record_postprocess_paragraph_shortfall``); the reader gets one
+    # notice for the run. Zero groups means no notice, like every other narration message.
+    postprocess_shortfall_group_count = int(
+        getattr(state, "narration_postprocess_paragraph_shortfall_group_count", 0) or 0
+    )
+    if narration_text is not None and postprocess_shortfall_group_count > 0:
+        result_notices.append({
+            "kind": "narration",
+            "level": "warning",
+            "message_key": "result.narration_postprocess_paragraph_shortfall",
+            "params": {
+                "count": postprocess_shortfall_group_count,
+                "paragraphs": int(
+                    getattr(state, "narration_postprocess_paragraph_shortfall_paragraph_count", 0) or 0
+                ),
+            },
+        })
     if narration_text is not None:
         narration_review_findings = _collect_narration_artifact_review_findings(narration_text)
         narration_review_summary = _summarize_narration_review_findings(narration_review_findings)

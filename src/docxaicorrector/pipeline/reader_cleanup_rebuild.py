@@ -700,6 +700,26 @@ def _derive_reader_cleanup_generated_paragraph_registry(
             current_entry["reader_cleanup_source_block_indexes"] = list(
                 dict.fromkeys(source_block_indexes)
             )
+            # Spec 061: the joined entry is ONE paragraph of text holding both halves, so it
+            # keeps either half's disposition — the rule of
+            # ``output_validation._merge_entry_pair``. A status other than ``accepted`` wins
+            # (that half's source text is still in it) and the narration exclusion is OR.
+            # Without this a joined ``omitted`` / excluded neighbour vanished from the record
+            # and the narration projection read its source text aloud.
+            recorded_statuses = [
+                status
+                for status in (current_entry.get("paragraph_status"), next_entry.get("paragraph_status"))
+                if isinstance(status, str)
+            ]
+            if recorded_statuses:
+                current_entry["paragraph_status"] = next(
+                    (status for status in recorded_statuses if status != "accepted"),
+                    recorded_statuses[0],
+                )
+            if current_entry.get("controlled_fallback_narration_excluded") or next_entry.get(
+                "controlled_fallback_narration_excluded"
+            ):
+                current_entry["controlled_fallback_narration_excluded"] = True
             _append_reader_cleanup_lineage_operation(current_entry, operation_name)
             mutable_entries[next_index] = None
             applied_operations += 1

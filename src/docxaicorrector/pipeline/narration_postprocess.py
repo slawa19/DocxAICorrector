@@ -26,7 +26,10 @@ import re
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+from docxaicorrector.core.models import LANGUAGE_CHANGING_OPERATIONS
 from docxaicorrector.generation._generation import (
+    PARAGRAPH_STATUS_OMITTED,
+    PARAGRAPH_STATUS_SOURCE_RESTORED,
     strip_markdown_for_narration,
     strip_markdown_for_narration_with_stats,
 )
@@ -87,6 +90,13 @@ def _project_final_cleanup_narration_chunks(
     if final_generated_paragraph_registry is None:
         raise RuntimeError("narration_cleanup_projection_unsafe:missing_final_registry")
     jobs = list(getattr(context, "jobs", ()) or ())
+    # Read off the context, never defaulted: a default would be a guess that fails silently
+    # in one of the two directions (the reason ``block_execution.job_changes_language`` gives).
+    withheld_statuses = (
+        {PARAGRAPH_STATUS_OMITTED, PARAGRAPH_STATUS_SOURCE_RESTORED}
+        if str(context.processing_operation or "").strip().casefold() in LANGUAGE_CHANGING_OPERATIONS
+        else {PARAGRAPH_STATUS_OMITTED}
+    )
     projected: list[str] = []
     for raw_entry in final_generated_paragraph_registry:
         if not isinstance(raw_entry, Mapping):
@@ -139,7 +149,11 @@ def _project_final_cleanup_narration_chunks(
         # chunk is ever appended; this projection rebuilds the narration from the final
         # registry, so it has to honour the same decision or the two entry points diverge
         # (spec 054 anti-regression 3).
-        if str(raw_entry.get("paragraph_status", "") or "") == "omitted":
+        # Spec 061 FR-006, the rule ``block_execution.narration_projection_for_processed_block``
+        # applies on the standalone path: in an operation that changes the language a
+        # ``source_restored`` paragraph is source-language text too and is withheld beside
+        # ``omitted``; on ``edit`` the source IS target-language text and is spoken.
+        if str(raw_entry.get("paragraph_status", "") or "") in withheld_statuses:
             continue
         if True in inclusion_flags:
             projected.append(text)

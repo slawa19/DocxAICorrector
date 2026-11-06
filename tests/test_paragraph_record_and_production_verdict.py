@@ -30,6 +30,8 @@ import docxaicorrector.pipeline.block_execution as block_execution
 import docxaicorrector.pipeline.narration_postprocess as narration_postprocess
 import docxaicorrector.pipeline.output_validation as output_validation
 import docxaicorrector.pipeline.quality_gate as quality_gate
+import docxaicorrector.pipeline.reader_cleanup_rebuild as reader_cleanup_rebuild
+from docxaicorrector.ui import i18n
 from docxaicorrector.generation._generation import (
     MarkerPreservedBlockText,
     ParagraphDisposition,
@@ -90,9 +92,13 @@ def _final_registry(processed_chunks: Sequence[str], state) -> tuple[tuple[outpu
     )
 
 
-def _project(registry: Sequence[Mapping[str, object]], *, job_count: int) -> list[str]:
+def _project(
+    registry: Sequence[Mapping[str, object]], *, job_count: int, processing_operation: str = "translate"
+) -> list[str]:
     return narration_postprocess._project_final_cleanup_narration_chunks(
-        context=SimpleNamespace(jobs=[{"narration_include": True}] * job_count),
+        context=SimpleNamespace(
+            processing_operation=processing_operation, jobs=[{"narration_include": True}] * job_count
+        ),
         final_generated_paragraph_registry=list(registry),
     )
 
@@ -188,6 +194,91 @@ def test_a_merged_entry_keeps_the_disposition_of_either_half() -> None:
     assert both_accepted.narration_excluded is False
 
 
+_RESTORED_SOURCE_TEXT = "People used barter for all their transactions."
+
+
+def _restored_registry() -> list[dict[str, object]]:
+    state = SimpleNamespace(generated_paragraph_registry=[])
+    block = _block(
+        ParagraphDisposition(paragraph_id="p0001", text=_ACCEPTED_TEXT, status="accepted"),
+        ParagraphDisposition(paragraph_id="p0002", text=_RESTORED_SOURCE_TEXT, status="source_restored"),
+        ParagraphDisposition(paragraph_id="p0003", text=_OMITTED_SOURCE_TEXT, status="omitted"),
+    )
+    _write_block(
+        state,
+        index=1,
+        payload=SimpleNamespace(job_kind="llm", paragraph_ids=["p0001", "p0002", "p0003"]),
+        processed_chunk=block,
+    )
+    _entries, registry = _final_registry([block], state)
+    return registry
+
+
+def test_late_projection_withholds_source_restored_in_a_language_changing_operation() -> None:
+    """FR-006 on the cleaned-translate path: ``source_restored`` is the paragraph's own source
+    text, which in ``translate`` is the other language — withheld beside ``omitted``, exactly
+    as ``block_execution.narration_projection_for_processed_block`` does on the standalone
+    path. Anti-vacuum: the accepted paragraph is spoken."""
+    assert _project(_restored_registry(), job_count=1, processing_operation="translate") == [_ACCEPTED_TEXT]
+
+
+def test_late_projection_speaks_source_restored_on_edit() -> None:
+    """FR-007: on ``edit`` the source IS target-language text, so a restored paragraph is a real
+    paragraph of the book and is spoken; ``omitted`` stays withheld on every operation."""
+    assert _project(_restored_registry(), job_count=1, processing_operation="edit") == [
+        _ACCEPTED_TEXT,
+        _RESTORED_SOURCE_TEXT,
+    ]
+
+
+def _joined_registry(next_entry_extra: Mapping[str, object]) -> list[dict[str, object]]:
+    registry = [
+        {"block_index": 1, "paragraph_id": "p0001", "text": "First fragment", "paragraph_status": "accepted"},
+        {"block_index": 2, "paragraph_id": "p0002", "text": "second fragment", **next_entry_extra},
+    ]
+    derived, diagnostics = reader_cleanup_rebuild._derive_reader_cleanup_generated_paragraph_registry(
+        generated_paragraph_registry=registry,
+        cleanup_report={
+            "accepted_cleanup_operations": [
+                {
+                    "id": "b_000000",
+                    "operation": "join_fragmented_paragraph",
+                    "next_id": "b_000001",
+                    "expected_after_preview": "First fragment second fragment",
+                }
+            ]
+        },
+        raw_markdown="First fragment\n\nsecond fragment",
+    )
+    assert diagnostics["joined_registry_entry_count"] == 1
+    assert derived is not None and len(derived) == 1
+    return derived
+
+
+def test_cleanup_join_keeps_the_disposition_of_the_absorbed_neighbour() -> None:
+    """A reader-cleanup join welds the next entry into the current one. The welded paragraph
+    still holds the neighbour's source text, so it keeps the neighbour's disposition — the
+    rule ``output_validation._merge_entry_pair`` applies — instead of the current entry's
+    keys alone, which made the narration projection read that source aloud."""
+    omitted = _joined_registry({"paragraph_status": "omitted"})[0]
+    assert omitted["paragraph_status"] == "omitted"
+    excluded = _joined_registry(
+        {"paragraph_status": "accepted", "controlled_fallback": True, "controlled_fallback_narration_excluded": True}
+    )[0]
+    assert excluded["paragraph_status"] == "accepted"
+    assert excluded["controlled_fallback_narration_excluded"] is True
+    assert _project([omitted], job_count=2) == []
+    assert _project([excluded], job_count=2) == []
+
+
+def test_cleanup_join_of_two_accepted_paragraphs_stays_narratable() -> None:
+    """Anti-vacuum: two accepted halves give an accepted, narratable paragraph."""
+    joined = _joined_registry({"paragraph_status": "accepted"})[0]
+    assert joined["paragraph_status"] == "accepted"
+    assert "controlled_fallback_narration_excluded" not in joined
+    assert _project([joined], job_count=2) == ["First fragment second fragment"]
+
+
 # ---------------------------------------------------------------------------------------
 # end to end: translate + reader cleanup + the optional post-pass
 # ---------------------------------------------------------------------------------------
@@ -221,7 +312,17 @@ def _persisting_writer(tmp_path: Path):
     return _write
 
 
-def _run(tmp_path: Path, *, processing_operation: str, app_config: dict[str, object], jobs, generate, log_event, runtime):
+def _run(
+    tmp_path: Path,
+    *,
+    processing_operation: str,
+    app_config: dict[str, object],
+    jobs,
+    generate,
+    log_event,
+    runtime,
+    should_stop_processing=lambda runtime: False,
+):
     return document_pipeline.run_document_processing(
         uploaded_file="report.docx",
         jobs=jobs,
@@ -246,7 +347,7 @@ def _run(tmp_path: Path, *, processing_operation: str, app_config: dict[str, obj
         emit_finalize=lambda runtime, stage, detail, progress, terminal_kind=None: None,
         emit_log=lambda runtime, **payload: None,
         emit_status=lambda runtime, **payload: None,
-        should_stop_processing=lambda runtime: False,
+        should_stop_processing=should_stop_processing,
         generate_markdown_block=generate,
         process_document_images=lambda **kwargs: [],
         inspect_placeholder_integrity=lambda markdown_text, image_assets: {},
@@ -389,6 +490,17 @@ def test_post_pass_answer_with_a_paragraph_missing_is_marked_for_review(tmp_path
     assert saved["postprocess_paragraph_shortfall_paragraph_count"] == 1
     # Delivered, not replaced: the check reports, it does not rewrite the answer.
     assert "Первый абзац главы." in str(cast(Mapping[str, object], runtime["state"])["latest_narration_text"])
+    # ...and the reader is told, once, with the counts the template prints.
+    notices = _shortfall_notices(runtime)
+    assert len(notices) == 1
+    assert notices[0]["level"] == "warning"
+    assert notices[0]["params"] == {"count": 1, "paragraphs": 1}
+    for language in ("ru", "en"):
+        catalog = json.loads(
+            (Path(i18n.__file__).resolve().parent / "locales" / f"{language}.json").read_text(encoding="utf-8")
+        )
+        rendered = catalog["result.narration_postprocess_paragraph_shortfall"].format(count=1, paragraphs=1)
+        assert "{" not in rendered
 
 
 def test_post_pass_answer_with_every_paragraph_is_not_reported(tmp_path) -> None:
@@ -405,6 +517,18 @@ def test_post_pass_answer_with_every_paragraph_is_not_reported(tmp_path) -> None
     saved = _saved_context(events)
     assert saved["postprocess_paragraph_shortfall_group_count"] == 0
     assert saved["postprocess_paragraph_shortfall_paragraph_count"] == 0
+    assert _shortfall_notices(_runtime) == []
+
+
+def _shortfall_notices(runtime: Mapping[str, object]) -> list[Mapping[str, object]]:
+    notices = cast(Mapping[str, object], runtime["state"]).get("latest_result_notices") or []
+    assert isinstance(notices, Sequence)
+    return [
+        notice
+        for notice in notices
+        if isinstance(notice, Mapping)
+        and notice.get("message_key") == "result.narration_postprocess_paragraph_shortfall"
+    ]
 
 
 # ---------------------------------------------------------------------------------------
