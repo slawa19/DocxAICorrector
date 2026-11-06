@@ -434,7 +434,7 @@ class RunModelAccountingLedger:
         rescued and how much still keeps its own source text in the document. "Unrescued"
         rather than "source restored" because the two are not the same fact — the paragraph
         the ladder gave up on ships as ``omitted``, which the narration withholds, while
-        ``source_restored`` is the merge-repair status the narration speaks.
+        ``source_restored`` is the merge-repair status, spoken only on ``edit`` (spec 061 FR-006).
         ``oversized_sentence_count`` is the named honest edge — a single sentence whose own
         answer cannot fit under the provider's output ceiling, which nothing below the
         sentence divides further.

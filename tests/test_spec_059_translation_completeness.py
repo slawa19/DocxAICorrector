@@ -895,27 +895,63 @@ def test_a_block_the_region_excludes_is_counted_as_a_region_exclusion(monkeypatc
     assert state.narration_excluded_source_fallback_block_count == 0
 
 
-def test_an_unrescued_paragraph_is_held_not_spoken(monkeypatch) -> None:
-    """Anti-regression 11, and it is a test on the STATUS rather than on the text.
+@pytest.mark.parametrize("operation", ["translate", "audiobook"])
+def test_source_text_is_never_spoken_in_a_language_changing_operation(operation) -> None:
+    """Anti-regression 11 as rewritten by spec 061 FR-009 — and ANTI-VACUUM for FR-006.
 
-    ``narration_projection_for_processed_block`` HOLDS an ``omitted`` paragraph and SPEAKS a
-    ``source_restored`` one. A paragraph the degradation ladder could not rescue therefore has
-    to keep ``omitted``: relabelling it ``source_restored`` would read MORE source-language
-    text aloud than having no ladder at all.
+    "A paragraph carrying source text is not spoken in a translating operation; ``accepted``
+    is always spoken." Both statuses that mean "this is the paragraph's own SOURCE" are held,
+    each with its address and its status in the record; the ``accepted`` Russian paragraph
+    beside them is spoken, so the rule is shown not to subtract everything.
+
+    The previous wording — ``omitted`` held, ``source_restored`` spoken — protected a
+    partial-rescue argument and is what read two English paragraphs (587 characters,
+    target-alphabet share 0.000) into the Russian audiobook of ``20260809T_059_audio_money``.
     """
     from docxaicorrector.generation._generation import (
+        PARAGRAPH_STATUS_ACCEPTED,
         PARAGRAPH_STATUS_OMITTED,
         PARAGRAPH_STATUS_SOURCE_RESTORED,
     )
 
-    held = block_execution.narration_projection_for_processed_block(
-        _marker_block(("p1", "English that was never rescued.", PARAGRAPH_STATUS_OMITTED))
+    spoken, withheld = block_execution.narration_projection_for_processed_block(
+        _marker_block(
+            ("p1", "Этот абзац переведён на русский.", PARAGRAPH_STATUS_ACCEPTED),
+            ("p2", "English restored after a merge.", PARAGRAPH_STATUS_SOURCE_RESTORED),
+            ("p3", "English the model returned nothing for.", PARAGRAPH_STATUS_OMITTED),
+        ),
+        processing_operation=operation,
     )
-    spoken = block_execution.narration_projection_for_processed_block(
-        _marker_block(("p1", "English that was never rescued.", PARAGRAPH_STATUS_SOURCE_RESTORED))
+
+    assert spoken == "Этот абзац переведён на русский."
+    assert withheld == [
+        {"paragraph_id": "p2", "text": "English restored after a merge.", "status": "source_restored"},
+        {"paragraph_id": "p3", "text": "English the model returned nothing for.", "status": "omitted"},
+    ]
+
+
+def test_on_edit_a_restored_paragraph_is_spoken_and_an_omitted_one_is_still_held() -> None:
+    """FR-007: on ``edit`` nothing changes — ``source_restored`` is a real paragraph of the book.
+
+    And the omission rule spec 056 E introduced keeps holding on every operation it held on.
+    """
+    from docxaicorrector.generation._generation import (
+        PARAGRAPH_STATUS_ACCEPTED,
+        PARAGRAPH_STATUS_OMITTED,
+        PARAGRAPH_STATUS_SOURCE_RESTORED,
     )
-    assert held == ("", [{"paragraph_id": "p1", "text": "English that was never rescued."}])
-    assert spoken == ("English that was never rescued.", [])
+
+    spoken, withheld = block_execution.narration_projection_for_processed_block(
+        _marker_block(
+            ("p1", "Отредактированный абзац.", PARAGRAPH_STATUS_ACCEPTED),
+            ("p2", "Исходный абзац, восстановленный после слияния.", PARAGRAPH_STATUS_SOURCE_RESTORED),
+            ("p3", "14", PARAGRAPH_STATUS_OMITTED),
+        ),
+        processing_operation="edit",
+    )
+
+    assert spoken == "Отредактированный абзац.\n\nИсходный абзац, восстановленный после слияния."
+    assert withheld == [{"paragraph_id": "p3", "text": "14", "status": "omitted"}]
 
 
 # ---------------------------------------------------------------------------

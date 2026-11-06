@@ -3924,12 +3924,16 @@ def test_step_two_keeps_the_paragraph_it_could_not_translate_and_only_that_one(m
     ]
     from docxaicorrector.pipeline.block_execution import narration_projection_for_processed_block
 
-    spoken, withheld = narration_projection_for_processed_block(result)
+    spoken, withheld = narration_projection_for_processed_block(
+        result, processing_operation="translate"
+    )
     assert spoken == "Первый абзац переведён."
     # The withheld paragraph is returned as a RECORD, not as a pair of counters: the count and
     # the characters are derived from it at the call site, so the warning's quantity and its
     # addresses can never describe two different sets of paragraphs (2026-08-09).
-    assert withheld == [{"paragraph_id": "p0002", "text": "Second source paragraph."}]
+    assert withheld == [
+        {"paragraph_id": "p0002", "text": "Second source paragraph.", "status": "omitted"}
+    ]
     assert sum(len(item["text"]) for item in withheld) == len("Second source paragraph.")
     snapshot = model_accounting.snapshot_run_model_accounting()
     assert snapshot["degradation_ladder_translated_paragraph_count"] == 1

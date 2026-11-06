@@ -2225,6 +2225,11 @@ def _degradation_ladder_block_result(
     DOCX, so nothing is lost and the paragraph-per-marker mapping holds, and the narration
     skips it, which is spec 054's rule. It is already wired end to end — counters, the
     ``narration_omitted_paragraphs_excluded`` notice and its characters.
+
+    Since spec 061 FR-006 the narration difference holds only on ``edit``: in a
+    language-changing operation the projection withholds ``source_restored`` too, so there
+    the choice no longer changes what is spoken. It still changes what is TRUE — the ladder
+    did not repair a merge, it failed to translate — which is why ``omitted`` stays.
     """
 
     resolved = [

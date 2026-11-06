@@ -13,6 +13,7 @@ from docxaicorrector.core.model_accounting import (
 from docxaicorrector.core.models import LANGUAGE_CHANGING_OPERATIONS, PARAGRAPH_REGION_PROSE
 from docxaicorrector.generation._generation import (
     PARAGRAPH_STATUS_OMITTED,
+    PARAGRAPH_STATUS_SOURCE_RESTORED,
     marker_paragraph_dispositions,
 )
 from docxaicorrector.pipeline.job_results import persist_terminal_job_result
@@ -877,6 +878,8 @@ def excluded_narration_paragraph_records(processed_chunk: str) -> list[dict[str,
 
 def narration_projection_for_processed_block(
     processed_chunk: str,
+    *,
+    processing_operation: Any,
 ) -> tuple[str, list[dict[str, str]]]:
     """What of this block is READ ALOUD, and what was left out doing it.
 
@@ -900,17 +903,41 @@ def narration_projection_for_processed_block(
     A block with no per-paragraph record is returned untouched with nothing withheld, so
     passthrough blocks and controlled fallbacks whose substrate is a plain string behave
     exactly as before.
+
+    WHICH paragraphs are withheld is decided by the OPERATION, not by the status alone
+    (spec 061 FR-006/007). Both ``omitted`` and ``source_restored`` mean the same thing about
+    the text — it is the paragraph's own SOURCE — and in an operation that changes the
+    language (``core.models.LANGUAGE_CHANGING_OPERATIONS``) that is source-language text,
+    which a listener must not hear under either label. Until 2026-11-06 only ``omitted`` was
+    withheld and ``source_restored`` was spoken; on ``20260809T_059_audio_money`` that read
+    two English paragraphs (587 characters, target-alphabet share 0.000) into a Russian
+    audiobook. On ``edit`` the source IS in the target language, so a restored paragraph is
+    a real paragraph of the book and is spoken, as before; ``omitted`` stays withheld on
+    every operation, as before. ``accepted`` is always spoken.
+
+    ``processing_operation`` has no default for the reason ``job_changes_language`` gives:
+    a default is a guess that fails silently in one of the two directions. The record
+    carries the status so the notice built from it can tell the two causes apart.
     """
 
     dispositions = marker_paragraph_dispositions(processed_chunk)
     if dispositions is None:
         return processed_chunk, []
+    withheld_statuses = (
+        {PARAGRAPH_STATUS_OMITTED, PARAGRAPH_STATUS_SOURCE_RESTORED}
+        if str(processing_operation or "").strip().casefold() in LANGUAGE_CHANGING_OPERATIONS
+        else {PARAGRAPH_STATUS_OMITTED}
+    )
     spoken: list[str] = []
     withheld: list[dict[str, str]] = []
     for disposition in dispositions:
-        if disposition.status == PARAGRAPH_STATUS_OMITTED:
+        if disposition.status in withheld_statuses:
             withheld.append(
-                {"paragraph_id": str(disposition.paragraph_id), "text": disposition.text}
+                {
+                    "paragraph_id": str(disposition.paragraph_id),
+                    "text": disposition.text,
+                    "status": str(disposition.status),
+                }
             )
             continue
         if disposition.text.strip():
@@ -918,10 +945,12 @@ def narration_projection_for_processed_block(
     return "\n\n".join(spoken), withheld
 
 
-def narration_text_for_processed_block(processed_chunk: str) -> str:
+def narration_text_for_processed_block(processed_chunk: str, *, processing_operation: Any) -> str:
     """The narratable text alone. See ``narration_projection_for_processed_block``."""
 
-    return narration_projection_for_processed_block(processed_chunk)[0]
+    return narration_projection_for_processed_block(
+        processed_chunk, processing_operation=processing_operation
+    )[0]
 
 
 def _record_narration_omitted_paragraphs(state: Any, withheld: Sequence[Mapping[str, str]]) -> None:
@@ -1407,7 +1436,7 @@ def continue_controlled_processed_block_rejection(
         # aloud. The defect fed itself: the substitution caused the classification that
         # bypassed the filter that would have removed the substitution.
         narratable_text, withheld_paragraphs = narration_projection_for_processed_block(
-            processed_chunk
+            processed_chunk, processing_operation=getattr(context, "processing_operation", None)
         )
         _record_narration_omitted_paragraphs(state, withheld_paragraphs)
         if narratable_text.strip():
@@ -1637,7 +1666,7 @@ def process_single_block(
         # model actually spoke for. Identical to ``processed_chunk`` for every block that
         # carries no per-paragraph record.
         narratable_text, withheld_paragraphs = narration_projection_for_processed_block(
-            processed_chunk
+            processed_chunk, processing_operation=getattr(context, "processing_operation", None)
         )
         _record_narration_omitted_paragraphs(state, withheld_paragraphs)
         if narratable_text.strip():
