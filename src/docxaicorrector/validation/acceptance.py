@@ -500,7 +500,24 @@ def build_acceptance_verdict(
     translation_quality_report = cast(Mapping[str, object], report.get("translation_quality_report") or {})
     reader_cleanup_evidence = cast(Mapping[str, object], report.get("reader_cleanup_evidence") or {})
 
-    add_check("pipeline_succeeded", result == "succeeded", result=result)
+    # Spec 061 FR-019: a check whose INPUT the report does not carry is NOT-APPLICABLE with a
+    # reason — the rule ``output_docx_openable`` below already follows, and the one PR #79
+    # applied to three harness checks. Production finalization builds its verdict before the
+    # run has a result, and every path that reaches delivery has succeeded by construction;
+    # it never holds reader-cleanup evidence either (only the harness reads it off the saved
+    # artifacts). Its context used to pass ``"succeeded"`` and ``{}``, so both checks could
+    # only pass; it now omits both keys. The harness always writes both, so its verdict is
+    # unchanged. See docs/QUALITY_BOUNDARIES.md, section 2.
+    if "result" in report:
+        add_check("pipeline_succeeded", result == "succeeded", result=result)
+    else:
+        add_check(
+            "pipeline_succeeded",
+            False,
+            applicable=False,
+            reason="pipeline_result_not_in_report",
+            result=None,
+        )
     reader_cleanup_stage_status = str(reader_cleanup_evidence.get("stage_status") or "").strip()
     reader_cleanup_failed_chunk_count = _coerce_int(reader_cleanup_evidence.get("failed_chunk_count"))
     reader_cleanup_chunk_count = _coerce_int(reader_cleanup_evidence.get("cleanup_chunk_count"))
@@ -509,14 +526,23 @@ def build_acceptance_verdict(
         if reader_cleanup_chunk_count <= 0
         else round(reader_cleanup_failed_chunk_count / reader_cleanup_chunk_count, 6)
     )
-    add_check(
-        "reader_cleanup_stage_completed",
-        not reader_cleanup_stage_status or reader_cleanup_stage_status.lower() == "completed",
-        stage_status=reader_cleanup_stage_status or None,
-        failed_chunk_count=reader_cleanup_failed_chunk_count,
-        cleanup_chunk_count=reader_cleanup_chunk_count,
-        failed_chunk_ratio=reader_cleanup_failure_ratio,
-    )
+    if "reader_cleanup_evidence" in report:
+        add_check(
+            "reader_cleanup_stage_completed",
+            not reader_cleanup_stage_status or reader_cleanup_stage_status.lower() == "completed",
+            stage_status=reader_cleanup_stage_status or None,
+            failed_chunk_count=reader_cleanup_failed_chunk_count,
+            cleanup_chunk_count=reader_cleanup_chunk_count,
+            failed_chunk_ratio=reader_cleanup_failure_ratio,
+        )
+    else:
+        add_check(
+            "reader_cleanup_stage_completed",
+            False,
+            applicable=False,
+            reason="reader_cleanup_evidence_not_in_report",
+            stage_status=None,
+        )
     output_docx_openable_value = output_artifacts.get("output_docx_openable")
     if output_docx_openable_value is None:
         # Production finalization computes this verdict before the delivered DOCX

@@ -405,3 +405,77 @@ def test_post_pass_answer_with_every_paragraph_is_not_reported(tmp_path) -> None
     saved = _saved_context(events)
     assert saved["postprocess_paragraph_shortfall_group_count"] == 0
     assert saved["postprocess_paragraph_shortfall_paragraph_count"] == 0
+
+
+# ---------------------------------------------------------------------------------------
+# FR-019: the production context fakes no input; the harness still judges both checks
+# ---------------------------------------------------------------------------------------
+
+
+def _checks_by_name(verdict: Mapping[str, object]) -> dict[str, Mapping[str, object]]:
+    checks = verdict["checks"]
+    assert isinstance(checks, Sequence)
+    return {str(check["name"]): check for check in checks if isinstance(check, Mapping)}
+
+
+def _failed(verdict: Mapping[str, object]) -> list[str]:
+    failed = verdict["failed_checks"]
+    assert isinstance(failed, Sequence)
+    return [str(name) for name in failed]
+
+
+def _production_verdict(quality_report: Mapping[str, object]) -> dict[str, object]:
+    context = quality_gate._build_report_context_for_acceptance(
+        context=SimpleNamespace(processing_operation="translate"),
+        quality_report=quality_report,
+        formatting_diagnostics_payloads=[{"unmapped_source_ids": [], "caption_heading_conflicts": []}],
+        output_artifacts={"output_docx_openable": True},
+    )
+    assert "result" not in context
+    assert "reader_cleanup_evidence" not in context
+    return quality_gate.build_report_acceptance_verdict(context, require_no_toc_body_concat=True)
+
+
+def test_production_verdict_does_not_judge_inputs_it_does_not_have() -> None:
+    verdict = _production_verdict({"quality_status": "pass", "gate_reasons": []})
+
+    by_name = _checks_by_name(verdict)
+    # The enumeration is unchanged: the checks are still reported, as NOT-APPLICABLE.
+    assert set(by_name) == set(PRODUCTION_ACCEPTANCE_CHECK_NAMES)
+    assert by_name["pipeline_succeeded"]["applicable"] is False
+    assert by_name["pipeline_succeeded"]["reason"] == "pipeline_result_not_in_report"
+    assert by_name["reader_cleanup_stage_completed"]["applicable"] is False
+    assert by_name["reader_cleanup_stage_completed"]["reason"] == "reader_cleanup_evidence_not_in_report"
+    assert "pipeline_succeeded" not in _failed(verdict)
+    assert "reader_cleanup_stage_completed" not in _failed(verdict)
+
+
+def test_production_verdict_still_fails_on_a_check_it_can_measure() -> None:
+    """Anti-vacuum: excluding two checks did not quiet the verdict. A failed quality report
+    is an input production DOES have, and it still turns the verdict red."""
+    verdict = _production_verdict({"quality_status": "fail", "gate_reasons": ["untranslated_body_text_above_threshold"]})
+
+    assert verdict["passed"] is False
+    assert "translation_quality_report_not_failed" in _failed(verdict)
+
+
+def test_harness_verdict_still_judges_pipeline_result_and_reader_cleanup() -> None:
+    """The harness writes both keys from the real run, so both checks stay applicable there
+    and still fail on the evidence that should fail them."""
+    report = {
+        "result": "failed",
+        "runtime_config": {"effective": {"processing_operation": "translate"}},
+        "translation_quality_report": {"quality_status": "pass", "gate_reasons": []},
+        "formatting_diagnostics": [{"unmapped_source_ids": [], "caption_heading_conflicts": []}],
+        "output_artifacts": {"output_docx_openable": True},
+        "runtime": {},
+        "reader_cleanup_evidence": {"stage_status": "failed", "failed_chunk_count": 2, "cleanup_chunk_count": 2},
+        "preparation_diagnostic_snapshot": {},
+    }
+
+    verdict = build_acceptance_verdict(report, structural_checks_builder=None)
+
+    by_name = _checks_by_name(verdict)
+    assert by_name["pipeline_succeeded"]["applicable"] is True
+    assert by_name["reader_cleanup_stage_completed"]["applicable"] is True
+    assert {"pipeline_succeeded", "reader_cleanup_stage_completed"} <= set(_failed(verdict))
