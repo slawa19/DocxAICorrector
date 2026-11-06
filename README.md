@@ -139,7 +139,7 @@ Universal real-document validation architecture и её implementation status а
 ## Требования
 
 - WSL2 с Linux-дистрибутивом, в котором создаётся и используется текущее `.venv`
-- Python 3.12+ for the canonical WSL runtime and editable-install/package verification
+- Python 3.12+ for the canonical WSL runtime and editable-install/package verification. Нижняя граница — `requires-python = ">=3.12"` в `pyproject.toml`; на ней же идут CI (`.github/workflows/ci.yml`, `python-version: '3.12'`) и pyright (`pyrightconfig.json`, `pythonVersion` 3.12 — анализ против поддерживаемого минимума, спека 028). Каноническая WSL `.venv` сейчас создана на Python 3.13.5, и суита зелёная на ней тоже (замер 2026-11-06; тогда же pyright с `pythonVersion` 3.13 дал то же число ошибок, что с 3.12)
 - System packages из `system-requirements.apt`: `pandoc`, `libreoffice`, `antiword`
 - Для legacy `.doc`: предпочтительно LibreOffice (`soffice`), fallback-связка `antiword` + `pandoc`
 - Для `PDF`: LibreOffice (`soffice` или `libreoffice`) внутри WSL обязателен
