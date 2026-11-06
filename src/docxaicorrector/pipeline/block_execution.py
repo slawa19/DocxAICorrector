@@ -70,7 +70,8 @@ UNTRANSLATED_PROSE_WARNING_REASON = "untranslated_prose"
 # separate key from ``fail_reason`` on purpose: the two are not the same kind of fact any
 # more, and reusing the old name would let a reader (or a call site) believe the run stops.
 UNTRANSLATED_PROSE_WARNING_KEY = "warning_reason"
-CONTROLLED_BLOCK_FALLBACK_DIR = Path(".run") / "block_fallbacks"
+from docxaicorrector.core.constants import RUN_DIR as _RUN_DIR
+CONTROLLED_BLOCK_FALLBACK_DIR = _RUN_DIR / "block_fallbacks"
 # Retention budget for controlled-block fallback diagnostics (F26). Each rejected
 # block writes a uuid-suffixed artifact that never overwrites, so this flat family
 # grew without bound. Values match the diagnostic tier used elsewhere under

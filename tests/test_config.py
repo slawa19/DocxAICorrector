@@ -2271,20 +2271,41 @@ def test_run_dir_copies_captured_at_import_follow_the_redirected_root() -> None:
         assert _is_under(value, TEST_RUN_DIR), f"{label} = {value} escapes the suite root"
 
 
-def test_families_outside_the_shared_root_are_still_redirected_per_test() -> None:
-    # Why the two per-family conftest fixtures stay: these families are cwd-relative
-    # Path(".run") / ... constants in generation/, NOT derived from RUN_DIR, so the root
-    # redirect does not reach them and the fixtures must.
+def test_former_cwd_relative_families_derive_from_the_run_root() -> None:
+    # These five were Path(".run") / ... — relative to the working directory, not RUN_DIR — so
+    # the root redirect missed them and a suite run left quality_reports, block_fallbacks and
+    # reader_cleanup_lineage files in the repository .run; two of them needed per-family
+    # conftest fixtures. Each must now be RUN_DIR / <family>, including the module copies.
     import docxaicorrector.generation.formatting_diagnostics_retention as formatting_diagnostics_retention
+    import docxaicorrector.generation.formatting_transfer as formatting_transfer
     import docxaicorrector.generation.marker_attempt_capture as marker_attempt_capture
+    import docxaicorrector.pipeline._pipeline as pipeline
+    import docxaicorrector.pipeline.block_execution as block_execution
+    import docxaicorrector.pipeline.late_phases as late_phases
+    import docxaicorrector.pipeline.quality_report_retention as quality_report_retention
+    import docxaicorrector.pipeline.reader_cleanup_rebuild as reader_cleanup_rebuild
 
-    repo_run_dir = constants.BASE_DIR / ".run"
-    for value in (
-        formatting_diagnostics_retention.FORMATTING_DIAGNOSTICS_DIR,
-        marker_attempt_capture.MARKER_ATTEMPT_DIAGNOSTICS_DIR,
-    ):
-        assert value.is_absolute()
-        assert not _is_under(value, repo_run_dir)
+    expected = {
+        "formatting_diagnostics_retention.FORMATTING_DIAGNOSTICS_DIR": (
+            formatting_diagnostics_retention.FORMATTING_DIAGNOSTICS_DIR, "formatting_diagnostics"
+        ),
+        "formatting_transfer.FORMATTING_DIAGNOSTICS_DIR": (
+            formatting_transfer.FORMATTING_DIAGNOSTICS_DIR, "formatting_diagnostics"
+        ),
+        "pipeline._pipeline.FORMATTING_DIAGNOSTICS_DIR": (pipeline.FORMATTING_DIAGNOSTICS_DIR, "formatting_diagnostics"),
+        "marker_attempt_capture.MARKER_ATTEMPT_DIAGNOSTICS_DIR": (
+            marker_attempt_capture.MARKER_ATTEMPT_DIAGNOSTICS_DIR, "marker_attempts"
+        ),
+        "block_execution.CONTROLLED_BLOCK_FALLBACK_DIR": (block_execution.CONTROLLED_BLOCK_FALLBACK_DIR, "block_fallbacks"),
+        "quality_report_retention.QUALITY_REPORTS_DIR": (quality_report_retention.QUALITY_REPORTS_DIR, "quality_reports"),
+        "late_phases.QUALITY_REPORTS_DIR": (late_phases.QUALITY_REPORTS_DIR, "quality_reports"),
+        "reader_cleanup_rebuild.READER_CLEANUP_LINEAGE_DIR": (
+            reader_cleanup_rebuild.READER_CLEANUP_LINEAGE_DIR, "reader_cleanup_lineage"
+        ),
+        "late_phases.READER_CLEANUP_LINEAGE_DIR": (late_phases.READER_CLEANUP_LINEAGE_DIR, "reader_cleanup_lineage"),
+    }
+    for label, (value, family) in expected.items():
+        assert value == constants.RUN_DIR / family, f"{label} = {value}, expected RUN_DIR / {family!r}"
 
 
 def test_resolve_run_dir_defaults_to_the_working_root_and_honours_the_override(tmp_path: Path) -> None:

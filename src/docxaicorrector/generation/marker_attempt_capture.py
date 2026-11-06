@@ -27,6 +27,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from uuid import uuid4
 
+from docxaicorrector.core.constants import RUN_DIR
 from docxaicorrector.core.logger import log_event
 from docxaicorrector.runtime.artifact_retention import (
     MARKER_ATTEMPT_ARTIFACTS_MAX_AGE_SECONDS,
@@ -35,7 +36,7 @@ from docxaicorrector.runtime.artifact_retention import (
 )
 
 
-MARKER_ATTEMPT_DIAGNOSTICS_DIR = Path(".run") / "marker_attempts"
+MARKER_ATTEMPT_DIAGNOSTICS_DIR = RUN_DIR / "marker_attempts"
 MARKER_ATTEMPT_ARTIFACT_SCHEMA_VERSION = 1
 MARKER_ATTEMPT_REJECTED_EVENT = "marker_attempt_rejected"
 

@@ -2833,7 +2833,7 @@ def test_run_document_processing_continues_on_controlled_fallback_classes(
     artifact_path = Path(runtime["state"]["latest_controlled_block_fallback_artifact"])
     artifact_payload = json.loads(artifact_path.read_text(encoding="utf-8"))
 
-    assert artifact_path.parent == Path(".run") / "block_fallbacks"
+    assert artifact_path.parent == block_execution.CONTROLLED_BLOCK_FALLBACK_DIR
     assert artifact_payload["output_classification"] == expected_kind
     assert artifact_payload["processed_chunk_preview"] == expected_markdown
     assert any(args[1] == "block_controlled_fallback" for args, _kwargs in events)
@@ -2889,6 +2889,10 @@ def test_run_document_processing_fails_controlled_fallback_when_paragraph_substr
 
 def test_run_document_processing_continues_when_multiple_controlled_fallback_blocks_are_emitted(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
+    # The family is RUN_DIR-derived, i.e. shared by the whole session; this test counts
+    # every artifact in it, so it needs a directory of its own.
+    fallback_dir = tmp_path / "block_fallbacks"
+    monkeypatch.setattr(block_execution, "CONTROLLED_BLOCK_FALLBACK_DIR", fallback_dir)
     runtime = _build_runtime_capture()
     events = []
     # Spec 059 FR-A4: the ``english_residual_output`` block ("Суд Judgment #1 уже начался."
@@ -2981,7 +2985,7 @@ def test_run_document_processing_continues_when_multiple_controlled_fallback_blo
     assert [args[1] for args, _kwargs in events].count("block_controlled_fallback") == 4
     artifact_payloads = [
         json.loads(path.read_text(encoding="utf-8"))
-        for path in sorted((Path(".run") / "block_fallbacks").glob("report_docx_block_*.json"))
+        for path in sorted(fallback_dir.glob("report_docx_block_*.json"))
     ]
     assert [payload["output_classification"] for payload in artifact_payloads] == expected_kinds
 

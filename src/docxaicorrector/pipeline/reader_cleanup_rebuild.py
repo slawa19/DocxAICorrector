@@ -29,7 +29,8 @@ from docxaicorrector.runtime.artifact_retention import (
 
 
 PipelineResult = Literal["succeeded", "failed", "stopped"]
-READER_CLEANUP_LINEAGE_DIR = Path(".run") / "reader_cleanup_lineage"
+from docxaicorrector.core.constants import RUN_DIR as _RUN_DIR
+READER_CLEANUP_LINEAGE_DIR = _RUN_DIR / "reader_cleanup_lineage"
 _DOCX_IMAGE_PLACEHOLDER_PATTERN = re.compile(r"^\[\[DOCX_IMAGE_[A-Za-z0-9_]+\]\]$")
 
 
