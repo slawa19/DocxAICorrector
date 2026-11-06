@@ -25,6 +25,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
 
+import pytest
+
 import docxaicorrector.pipeline._pipeline as document_pipeline
 import docxaicorrector.pipeline.block_execution as block_execution
 import docxaicorrector.pipeline.narration_postprocess as narration_postprocess
@@ -166,33 +168,102 @@ def test_production_builder_without_a_fallback_leaves_the_paragraph_narratable()
     assert _project(registry, job_count=1) == [_PLAIN_TEXT]
 
 
-def test_a_merged_entry_keeps_the_disposition_of_either_half() -> None:
-    """Boundary recovery may weld two entries into one paragraph of text. If either half is
-    source text kept out of the narration, the welded paragraph carries it too, so the
-    disposition survives the merge rather than belonging to the left half only."""
-    left = output_validation.FinalAssemblyEntry(
-        text="Первая половина предложения", block_index=1, paragraph_id="p1", paragraph_status="accepted"
+def test_merge_entry_pair_keeps_the_disposition_of_two_withheld_halves() -> None:
+    """``_merge_entry_pair`` only ever sees two halves on the SAME side of the narration
+    boundary (its caller refuses a mixed pair, below). Two withheld halves weld into a
+    withheld paragraph: a status other than ``accepted`` wins, the exclusion is OR."""
+    omitted = output_validation.FinalAssemblyEntry(
+        text="First half of the source sentence", block_index=1, paragraph_id="p1", paragraph_status="omitted"
     )
-    right = output_validation.FinalAssemblyEntry(
+    restored = output_validation.FinalAssemblyEntry(
         text="and its untranslated tail.",
         block_index=1,
         paragraph_id="p2",
-        paragraph_status="omitted",
+        paragraph_status="source_restored",
         narration_excluded=True,
     )
 
-    merged = output_validation._merge_entry_pair(left, right)
+    merged = output_validation._merge_entry_pair(omitted, restored)
 
     assert merged.paragraph_status == "omitted"
     assert merged.narration_excluded is True
     both_accepted = output_validation._merge_entry_pair(
-        left,
+        output_validation.FinalAssemblyEntry(
+            text="Первая половина предложения", block_index=1, paragraph_id="p1", paragraph_status="accepted"
+        ),
         output_validation.FinalAssemblyEntry(
             text="и её переведённый хвост.", block_index=1, paragraph_id="p2", paragraph_status="accepted"
         ),
     )
     assert both_accepted.paragraph_status == "accepted"
     assert both_accepted.narration_excluded is False
+
+
+_CONTINUED_HEAD = "Первая половина предложения"
+_CONTINUED_TAIL = "и её хвост, который модель вернула отдельно."
+
+
+def _assemble_continuation(left_status: str, right_status: str) -> output_validation.FinalMarkdownAssemblyResult:
+    """One marker block whose two paragraphs are a sentence broken across a paragraph break —
+    the shape boundary recovery (``_recover_adjacent_entries``) welds back together."""
+    state = SimpleNamespace(generated_paragraph_registry=[])
+    block = _block(
+        ParagraphDisposition(paragraph_id="p0001", text=_CONTINUED_HEAD, status=left_status),
+        ParagraphDisposition(paragraph_id="p0002", text=_CONTINUED_TAIL, status=right_status),
+    )
+    _write_block(
+        state,
+        index=1,
+        payload=SimpleNamespace(job_kind="llm", paragraph_ids=["p0001", "p0002"]),
+        processed_chunk=block,
+    )
+    return output_validation.assemble_final_markdown(
+        processed_chunks=[block],
+        generated_paragraph_registry=state.generated_paragraph_registry,
+        source_paragraphs=None,
+    )
+
+
+def test_boundary_recovery_refuses_to_weld_accepted_text_to_withheld_text() -> None:
+    """The review finding (F2): recovery used to weld A=``accepted`` and B=``omitted`` into ONE
+    record carrying B's status, and the late projection then withheld both — A's translation
+    vanished from the narration and no counter knew. The pair now stays two paragraphs, is
+    recorded as a refused merge rather than a repaired boundary, A is spoken and B withheld
+    with its own address."""
+    result = _assemble_continuation("accepted", "omitted")
+
+    assert [(entry.paragraph_id, entry.paragraph_status) for entry in result.entries] == [
+        ("p0001", "accepted"),
+        ("p0002", "omitted"),
+    ]
+    assert result.diagnostics.accepted_merges == 0
+    assert [decision.reason for decision in result.diagnostics.merge_decisions] == [
+        "narration_admissibility_boundary"
+    ]
+    registry = output_validation.build_generated_paragraph_registry_from_entries(result.entries)
+    assert _project(registry, job_count=1) == [_CONTINUED_HEAD]
+
+
+def test_boundary_recovery_still_welds_two_withheld_halves() -> None:
+    result = _assemble_continuation("omitted", "source_restored")
+
+    assert len(result.entries) == 1
+    assert result.entries[0].paragraph_status == "omitted"
+    assert result.diagnostics.accepted_merges == 1
+    registry = output_validation.build_generated_paragraph_registry_from_entries(result.entries)
+    assert _project(registry, job_count=1) == []
+
+
+def test_boundary_recovery_still_welds_two_accepted_halves() -> None:
+    """Anti-vacuum: the refusal is about the boundary, not about merging — two accepted halves
+    of one sentence are still welded and spoken as one paragraph."""
+    result = _assemble_continuation("accepted", "accepted")
+
+    assert len(result.entries) == 1
+    assert result.entries[0].paragraph_status == "accepted"
+    assert result.diagnostics.accepted_merges == 1
+    registry = output_validation.build_generated_paragraph_registry_from_entries(result.entries)
+    assert _project(registry, job_count=1) == [result.entries[0].text]
 
 
 _RESTORED_SOURCE_TEXT = "People used barter for all their transactions."
@@ -232,10 +303,12 @@ def test_late_projection_speaks_source_restored_on_edit() -> None:
     ]
 
 
-def _joined_registry(next_entry_extra: Mapping[str, object]) -> list[dict[str, object]]:
+def _join(
+    current_extra: Mapping[str, object], next_extra: Mapping[str, object]
+) -> tuple[list[dict[str, object]], Mapping[str, object]]:
     registry = [
-        {"block_index": 1, "paragraph_id": "p0001", "text": "First fragment", "paragraph_status": "accepted"},
-        {"block_index": 2, "paragraph_id": "p0002", "text": "second fragment", **next_entry_extra},
+        {"block_index": 1, "paragraph_id": "p0001", "text": "First fragment", **current_extra},
+        {"block_index": 2, "paragraph_id": "p0002", "text": "second fragment", **next_extra},
     ]
     derived, diagnostics = reader_cleanup_rebuild._derive_reader_cleanup_generated_paragraph_registry(
         generated_paragraph_registry=registry,
@@ -251,33 +324,73 @@ def _joined_registry(next_entry_extra: Mapping[str, object]) -> list[dict[str, o
         },
         raw_markdown="First fragment\n\nsecond fragment",
     )
+    assert derived is not None
+    return derived, diagnostics
+
+
+_EXCLUDED_FALLBACK = {
+    "paragraph_status": "accepted",
+    "controlled_fallback": True,
+    "controlled_fallback_narration_excluded": True,
+}
+
+
+@pytest.mark.parametrize(
+    "withheld_extra",
+    [{"paragraph_status": "omitted"}, {"paragraph_status": "source_restored"}, _EXCLUDED_FALLBACK],
+    ids=["omitted", "source_restored", "excluded_fallback"],
+)
+def test_cleanup_join_refuses_to_weld_accepted_text_to_withheld_text(monkeypatch, withheld_extra) -> None:
+    """The review finding (F2) on the cleanup path: the join welded A=``accepted`` and a
+    withheld B into one record with B's disposition, and the projection then withheld both.
+    A join across the narration-admissibility boundary is now refused for the registry:
+    counted as a skipped operation, logged with its reason, A spoken, B withheld with its own
+    paragraph id and text (its address)."""
+    events: list[tuple[str, Mapping[str, object]]] = []
+    monkeypatch.setattr(
+        reader_cleanup_rebuild,
+        "log_event",
+        lambda level, event_id, message, **context: events.append((event_id, context)),
+    )
+
+    derived, diagnostics = _join({"paragraph_status": "accepted"}, withheld_extra)
+
+    assert [entry["paragraph_id"] for entry in derived] == ["p0001", "p0002"]
+    assert derived[1]["text"] == "second fragment"
+    assert derived[1]["paragraph_status"] == withheld_extra["paragraph_status"]
+    assert diagnostics["joined_registry_entry_count"] == 0
+    assert diagnostics["skipped_operation_count"] == 1
+    assert diagnostics["refused_join_narration_admissibility_count"] == 1
+    assert [(event_id, context["reason"]) for event_id, context in events] == [
+        ("reader_cleanup_join_refused", "join_refused_narration_admissibility")
+    ]
+    assert _project(derived, job_count=2) == ["First fragment"]
+
+
+def test_cleanup_join_still_welds_two_withheld_halves() -> None:
+    derived, diagnostics = _join({"paragraph_status": "omitted"}, {"paragraph_status": "source_restored"})
+
     assert diagnostics["joined_registry_entry_count"] == 1
-    assert derived is not None and len(derived) == 1
-    return derived
-
-
-def test_cleanup_join_keeps_the_disposition_of_the_absorbed_neighbour() -> None:
-    """A reader-cleanup join welds the next entry into the current one. The welded paragraph
-    still holds the neighbour's source text, so it keeps the neighbour's disposition — the
-    rule ``output_validation._merge_entry_pair`` applies — instead of the current entry's
-    keys alone, which made the narration projection read that source aloud."""
-    omitted = _joined_registry({"paragraph_status": "omitted"})[0]
-    assert omitted["paragraph_status"] == "omitted"
-    excluded = _joined_registry(
-        {"paragraph_status": "accepted", "controlled_fallback": True, "controlled_fallback_narration_excluded": True}
-    )[0]
-    assert excluded["paragraph_status"] == "accepted"
-    assert excluded["controlled_fallback_narration_excluded"] is True
-    assert _project([omitted], job_count=2) == []
-    assert _project([excluded], job_count=2) == []
+    assert diagnostics["refused_join_narration_admissibility_count"] == 0
+    assert len(derived) == 1
+    assert derived[0]["paragraph_status"] == "omitted"
+    assert _project(derived, job_count=2) == []
+    excluded_pair, _ = _join(_EXCLUDED_FALLBACK, {"paragraph_status": "omitted"})
+    assert len(excluded_pair) == 1
+    assert excluded_pair[0]["paragraph_status"] == "omitted"
+    assert excluded_pair[0]["controlled_fallback_narration_excluded"] is True
 
 
 def test_cleanup_join_of_two_accepted_paragraphs_stays_narratable() -> None:
-    """Anti-vacuum: two accepted halves give an accepted, narratable paragraph."""
-    joined = _joined_registry({"paragraph_status": "accepted"})[0]
-    assert joined["paragraph_status"] == "accepted"
-    assert "controlled_fallback_narration_excluded" not in joined
-    assert _project([joined], job_count=2) == ["First fragment second fragment"]
+    """Anti-vacuum: two accepted halves are still joined into one narratable paragraph."""
+    derived, diagnostics = _join({"paragraph_status": "accepted"}, {"paragraph_status": "accepted"})
+
+    assert diagnostics["joined_registry_entry_count"] == 1
+    assert diagnostics["refused_join_narration_admissibility_count"] == 0
+    assert len(derived) == 1
+    assert derived[0]["paragraph_status"] == "accepted"
+    assert "controlled_fallback_narration_excluded" not in derived[0]
+    assert _project(derived, job_count=2) == ["First fragment second fragment"]
 
 
 # ---------------------------------------------------------------------------------------

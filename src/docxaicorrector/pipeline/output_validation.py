@@ -1450,6 +1450,15 @@ def _right_entry_looks_like_continuation(entry: FinalAssemblyEntry) -> bool:
     return body_text.startswith(("(", '"', "«", "—", "–"))
 
 
+def _entry_is_narration_admissible(entry: FinalAssemblyEntry) -> bool:
+    """May this entry's text be read aloud? ``None`` (no disposition) or ``accepted``, and
+    not excluded by a source-text fallback. Everything else is source text kept out of the
+    narration, and a merge must never weld the two kinds into one paragraph: the projection
+    judges the welded record as a whole, so it would either withhold an accepted translation
+    or speak source text."""
+    return entry.paragraph_status in (None, "accepted") and not entry.narration_excluded
+
+
 def _merged_paragraph_status(left: str | None, right: str | None) -> str | None:
     for status in (left, right):
         if status is not None and status != "accepted":
@@ -1570,6 +1579,24 @@ def _recover_adjacent_entries(
                         block_index=normalized_entry.block_index,
                         paragraph_ids=_entry_paragraph_ids(previous) + _entry_paragraph_ids(normalized_entry),
                         reason="source_boundary_unit_role",
+                    )
+                )
+                recovered.append(normalized_entry)
+                continue
+
+            # Spec 061: a merge never crosses a narration-admissibility boundary. Welding an
+            # accepted paragraph to a withheld one (``omitted`` / ``source_restored`` /
+            # excluded) makes one record that the narration projection must either withhold
+            # whole — losing the accepted translation, uncounted — or speak whole, source text
+            # included. The pair stays two paragraphs; it is a refusal, not a repair.
+            if _entry_is_narration_admissible(previous) != _entry_is_narration_admissible(normalized_entry):
+                denied_merges += 1
+                recovery_decisions.append(
+                    FinalAssemblyDecision(
+                        action="deny_merge",
+                        block_index=normalized_entry.block_index,
+                        paragraph_ids=_entry_paragraph_ids(previous) + _entry_paragraph_ids(normalized_entry),
+                        reason="narration_admissibility_boundary",
                     )
                 )
                 recovered.append(normalized_entry)
