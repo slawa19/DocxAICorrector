@@ -1964,6 +1964,7 @@ def test_translation_narration_marker_disabled_cleanup_noop_omits_tts_and_preser
 
 def test_translation_narration_projection_skips_blank_and_image_only_valid_lineage():
     context = SimpleNamespace(
+        processing_operation="translate",
         jobs=[
             {"narration_include": True},
             {"narration_include": True},
@@ -1995,6 +1996,7 @@ def test_translation_narration_projection_skips_blank_and_image_only_valid_linea
 
 def test_translation_narration_projection_accepts_cleanup_delete_split_and_join_lineage():
     context = SimpleNamespace(
+        processing_operation="translate",
         jobs=[
             {"narration_include": True},
             {"narration_include": True},
@@ -2074,7 +2076,7 @@ def test_translation_narration_projection_drops_a_source_text_fallback_paragraph
     )
 
     projected = document_pipeline_narration_postprocess._project_final_cleanup_narration_chunks(
-        context=SimpleNamespace(jobs=[{"narration_include": True}, {"narration_include": True}]),
+        context=SimpleNamespace(processing_operation="translate", jobs=[{"narration_include": True}, {"narration_include": True}]),
         final_generated_paragraph_registry=final_registry,
     )
 
@@ -2090,7 +2092,7 @@ def test_translation_narration_projection_drops_an_omitted_paragraph():
     narration from the final registry and has to honour the same decision, or the two entry
     points diverge (spec 054 anti-regression 3).
     """
-    context = SimpleNamespace(jobs=[{"narration_include": True}, {"narration_include": True}])
+    context = SimpleNamespace(processing_operation="translate", jobs=[{"narration_include": True}, {"narration_include": True}])
 
     projected = document_pipeline_narration_postprocess._project_final_cleanup_narration_chunks(
         context=context,
@@ -2106,6 +2108,7 @@ def test_translation_narration_projection_drops_an_omitted_paragraph():
 
 def test_translation_narration_projection_rejects_join_across_inclusion_boundary():
     context = SimpleNamespace(
+        processing_operation="translate",
         jobs=[{"narration_include": True}, {"narration_include": False}]
     )
 
@@ -2123,7 +2126,7 @@ def test_translation_narration_projection_rejects_join_across_inclusion_boundary
 
 
 def test_translation_narration_projection_rejects_substantive_nonexistent_lineage():
-    context = SimpleNamespace(jobs=[{"narration_include": True}])
+    context = SimpleNamespace(processing_operation="translate", jobs=[{"narration_include": True}])
 
     with pytest.raises(
         RuntimeError,
