@@ -104,6 +104,7 @@ class MarkdownGenerator(Protocol):
         expected_paragraph_ids: Sequence[str] | None = None,
         marker_mode: bool = False,
         block_index: int | None = None,
+        should_stop: Callable[[], bool] | None = None,
     ) -> str: ...
 
 

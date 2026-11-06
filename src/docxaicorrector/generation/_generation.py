@@ -31,7 +31,7 @@ from docxaicorrector.core.model_accounting import (
 from docxaicorrector.image.shared import call_responses_create_with_retry, extract_unsupported_parameter_name, is_retryable_error
 from docxaicorrector.generation.marker_attempt_capture import capture_rejected_marker_attempt
 from docxaicorrector.generation.openai_response_utils import collect_response_text_traversal, read_response_field
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 
 from docxaicorrector.core.model_accounting import record_text_api_path
 from docxaicorrector.generation.model_response import (
@@ -46,6 +46,10 @@ from docxaicorrector.generation.model_response import (
     ModelResponse,
     NonCompletedResponse,
 )
+# The generation layer raises the pipeline's existing cooperative-stop signal rather than
+# inventing a second one (spec 061 FR-022). ``pipeline.contracts`` imports nothing from the
+# pipeline itself, so this edge cannot form an import cycle.
+from docxaicorrector.pipeline.contracts import LatePhaseStopped
 
 if TYPE_CHECKING:
     from docx.document import Document as DocxDocument
@@ -1927,6 +1931,19 @@ def _is_retryable_empty_generation_error(exc: BaseException) -> bool:
     return isinstance(exc, (EmptyResponse, CollapsedOutput, IncompleteResponse))
 
 
+def _raise_if_stop_requested(should_stop: Callable[[], bool] | None) -> None:
+    """FR-022: the Stop button is honoured before a model call, not only between blocks.
+
+    Checked before every attempt, the recovery call and — through the nested call each
+    ladder step makes — every ladder step, so one block's retries can no longer keep buying
+    calls after the user pressed Stop. ``LatePhaseStopped`` derives from ``BaseException``,
+    which is what carries it past every ``except Exception`` between here and the block loop.
+    """
+
+    if should_stop is not None and should_stop():
+        raise LatePhaseStopped()
+
+
 def _is_retryable_marker_validation_error(exc: Exception) -> bool:
     return isinstance(exc, RuntimeError) and "paragraph_marker_validation_failed" in str(exc)
 
@@ -2118,6 +2135,7 @@ def _ladder_model_answer(
     max_retries: int,
     block_index: int | None,
     unit_label: str,
+    should_stop: Callable[[], bool] | None = None,
 ) -> str:
     """One ladder call, for ONE paragraph, answered as one paragraph. Raises otherwise.
 
@@ -2153,6 +2171,9 @@ def _ladder_model_answer(
         marker_mode=False,
         block_index=block_index,
         allow_controlled_source_fallback=False,
+        # The nested call checks this before each of its attempts, so every ladder step is
+        # preceded by a stop check without the ladder growing one of its own (FR-022).
+        should_stop=should_stop,
     )
     cleaned = _PARAGRAPH_MARKER_PATTERN.sub("", answer).strip()
     if not cleaned:
@@ -2184,6 +2205,7 @@ def _ladder_translate_unit(
     context_after: str,
     max_retries: int,
     block_index: int | None,
+    should_stop: Callable[[], bool] | None = None,
 ) -> _LadderUnitOutcome:
     """Translate ONE paragraph, dividing it by sentences if its size is what failed.
 
@@ -2206,6 +2228,7 @@ def _ladder_translate_unit(
             max_retries=max_retries,
             block_index=block_index,
             unit_label=unit_label,
+            should_stop=should_stop,
         )
         return outcome
     except Exception as exc:
@@ -2259,6 +2282,7 @@ def _ladder_translate_unit(
                     max_retries=max_retries,
                     block_index=block_index,
                     unit_label=unit_label,
+                    should_stop=should_stop,
                 )
             )
         except Exception:
@@ -2379,6 +2403,7 @@ def _attempt_degradation_ladder(
     context_before: str,
     context_after: str,
     allow_controlled_source_fallback: bool,
+    should_stop: Callable[[], bool] | None = None,
 ) -> str | None:
     """Steps 2 and 3, or ``None`` when the ladder declines or rescues nothing.
 
@@ -2438,6 +2463,7 @@ def _attempt_degradation_ladder(
                 context_after=units[index + 1] if index + 1 < len(units) else context_after,
                 max_retries=max_retries,
                 block_index=block_index,
+                should_stop=should_stop,
             )
         )
 
@@ -2484,6 +2510,7 @@ def generate_markdown_block(
     block_index: int | None = None,
     *,
     allow_controlled_source_fallback: bool = True,
+    should_stop: Callable[[], bool] | None = None,
 ) -> str:
     """Process ONE block, retrying, then dividing, and only then substituting its source.
 
@@ -2492,6 +2519,10 @@ def generate_markdown_block(
     four controlled source fallbacks are off, so the caller can tell a translation from a
     silently substituted source — and, because the ladder only ever calls with ``False``,
     the ladder cannot re-enter itself and the recursion depth is exactly one.
+
+    ``should_stop``, when given, is asked before every model call this block makes — each
+    attempt, the recovery call and each ladder step — and a ``True`` raises
+    ``LatePhaseStopped`` instead of making the call (spec 061 FR-022).
     """
 
     if isinstance(max_retries, bool) or not isinstance(max_retries, int):
@@ -2560,6 +2591,8 @@ def generate_markdown_block(
     block_was_retried = False
 
     for attempt in range(1, max_retries + 1):
+        # Outside the ``try`` on purpose: a stop is not a failed attempt to classify.
+        _raise_if_stop_requested(should_stop)
         try:
             markdown = _call_markdown_request_with_sdk_fallback(client, request_kwargs)[0]
             return _finalize_generated_markdown(
@@ -2619,6 +2652,7 @@ def generate_markdown_block(
         _is_retryable_empty_generation_error(last_exception)
         or _is_retryable_marker_validation_error(last_exception)
     ):
+        _raise_if_stop_requested(should_stop)
         record_retry_attempt(
             reason="recovery_after_exhausted_retries",
             paragraph_count=block_paragraph_count,
@@ -2669,6 +2703,7 @@ def generate_markdown_block(
                 context_before=context_before_text,
                 context_after=context_after_text,
                 allow_controlled_source_fallback=allow_controlled_source_fallback,
+                should_stop=should_stop,
             )
             if ladder_result is not None:
                 return ladder_result

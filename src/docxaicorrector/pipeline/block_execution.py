@@ -15,6 +15,7 @@ from docxaicorrector.generation._generation import (
     PARAGRAPH_STATUS_OMITTED,
     marker_paragraph_dispositions,
 )
+from docxaicorrector.pipeline.contracts import LatePhaseStopped
 from docxaicorrector.pipeline.job_results import persist_terminal_job_result
 from docxaicorrector.pipeline.output_validation import (
     delivered_text_equals_source,
@@ -694,6 +695,9 @@ def _generate_block_chunk(
         # no other way to say WHICH block an artifact under ``.run/marker_attempts/``
         # belongs to, and without that the record cannot be matched to the run log.
         block_index=index,
+        # Spec 061 FR-022: the same Stop the block loop checks between blocks, asked before
+        # every model call inside this block's retries and ladder as well.
+        should_stop=lambda: bool(dependencies.should_stop_processing(context.runtime)),
     )
 
 
@@ -1692,27 +1696,36 @@ def run_block_processing_phase(
     current_markdown_fn: Any,
     emit_failed_result_fn: Any,
 ) -> PipelineResult | None:
+    def _emit_stopped(index: int) -> PipelineResult | None:
+        stop_message = "Обработка остановлена пользователем."
+        return emit_stopped_result_fn(
+            emitters=emitters,
+            runtime=context.runtime,
+            detail=stop_message,
+            progress=(index - 1) / initialization.job_count,
+            block_index=max(0, index - 1),
+            block_count=initialization.job_count,
+        )
+
     for index, job in enumerate(context.jobs, start=1):
         if dependencies.should_stop_processing(context.runtime):
-            stop_message = "Обработка остановлена пользователем."
-            return emit_stopped_result_fn(
-                emitters=emitters,
-                runtime=context.runtime,
-                detail=stop_message,
-                progress=(index - 1) / initialization.job_count,
-                block_index=max(0, index - 1),
-                block_count=initialization.job_count,
-            )
+            return _emit_stopped(index)
 
-        block_outcome = process_single_block_fn(
-            context=context,
-            dependencies=dependencies,
-            emitters=emitters,
-            state=state,
-            initialization=initialization,
-            index=index,
-            job=job,
-        )
+        try:
+            block_outcome = process_single_block_fn(
+                context=context,
+                dependencies=dependencies,
+                emitters=emitters,
+                state=state,
+                initialization=initialization,
+                index=index,
+                job=job,
+            )
+        except LatePhaseStopped:
+            # Spec 061 FR-022: Stop pressed while this block was still retrying. The
+            # generator refused the next model call; the block is not delivered, and the
+            # run stops exactly as if Stop had been seen before the block began.
+            return _emit_stopped(index)
         if block_outcome is not None:
             return block_outcome
 

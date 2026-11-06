@@ -1,10 +1,11 @@
-"""Spec 061 P1-3 (User Story 3): one response shape and typed failure classes.
+"""Spec 061 P1-3 (User Story 3) and FR-022: one response shape, typed failure classes, and a
+stop check before every model call inside one block.
 
 Every test here is deterministic: the provider is a stub, no model is called.
 """
 
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from anthropic.types import Message as AnthropicMessage
@@ -15,6 +16,7 @@ from openai.types.responses import Response as ResponsesResponse
 
 import docxaicorrector.core.model_accounting as model_accounting
 import docxaicorrector.generation._generation as generation
+import docxaicorrector.pipeline.block_execution as block_execution
 from docxaicorrector.generation.model_response import (
     CollapsedOutput,
     EmptyResponse,
@@ -23,6 +25,7 @@ from docxaicorrector.generation.model_response import (
     ModelResponseError,
     NonCompletedResponse,
 )
+from docxaicorrector.pipeline.contracts import LatePhaseStopped
 
 _SOURCE = "[[DOCX_PARA_p0001]]\nSource paragraph one.\n\n[[DOCX_PARA_p0002]]\nSource paragraph two."
 _EXPECTED_IDS = ["p0001", "p0002"]
@@ -324,6 +327,182 @@ def test_only_empty_items_is_an_empty_response_not_an_attribute_error():
         generation._read_anthropic_model_response(anthropic)
     with pytest.raises(EmptyResponse):
         generation._read_chat_completion_model_response(chat)
+
+
+# --- FR-022: Stop is honoured before every model call inside one block -------------------
+
+
+def _counting_empty_client(calls: list[int]) -> Any:
+    def create(**_kwargs):
+        calls.append(1)
+        return SimpleNamespace(status="completed", output_text="")
+
+    return SimpleNamespace(responses=SimpleNamespace(create=create))
+
+
+def test_stop_after_the_first_call_prevents_the_retry():
+    calls: list[int] = []
+
+    with pytest.raises(LatePhaseStopped):
+        generation.generate_markdown_block(
+            client=_counting_empty_client(calls),
+            model="m",
+            system_prompt="system",
+            target_text="Исходный абзац.",
+            context_before="",
+            context_after="",
+            max_retries=3,
+            should_stop=lambda: len(calls) >= 1,
+        )
+
+    assert calls == [1]
+
+
+def test_stop_after_the_last_attempt_prevents_the_recovery_call():
+    calls: list[int] = []
+
+    with pytest.raises(LatePhaseStopped):
+        generation.generate_markdown_block(
+            client=_counting_empty_client(calls),
+            model="m",
+            system_prompt="system",
+            target_text="Исходный абзац.",
+            context_before="",
+            context_after="",
+            max_retries=1,
+            should_stop=lambda: len(calls) >= 1,
+        )
+
+    assert calls == [1]
+    assert model_accounting.snapshot_run_model_accounting()["retry_reason_counts"] == {}
+
+
+def test_stop_inside_the_ladder_is_not_swallowed_by_its_per_unit_fallback():
+    """The ladder answers every per-unit failure by keeping that unit's source. A stop must
+    not look like such a failure: it leaves the block, and no further unit is asked."""
+
+    calls: list[int] = []
+
+    def create(**_kwargs):
+        calls.append(1)
+        return SimpleNamespace(status="incomplete", output=[SimpleNamespace(type="reasoning", status="incomplete")])
+
+    client = SimpleNamespace(responses=SimpleNamespace(create=create))
+
+    with pytest.raises(LatePhaseStopped):
+        generation.generate_markdown_block(
+            client=client,
+            model="m",
+            system_prompt="system",
+            target_text="Первый абзац исходника.\n\nВторой абзац исходника.",
+            context_before="",
+            context_after="",
+            max_retries=1,
+            # attempt (1) + recovery (2) + the ladder's first unit (3); stop before the 4th.
+            should_stop=lambda: len(calls) >= 3,
+        )
+
+    assert calls == [1, 1, 1]
+
+
+def test_a_predicate_that_never_stops_changes_nothing():
+    calls: list[int] = []
+
+    def create(**_kwargs):
+        calls.append(1)
+        return SimpleNamespace(status="completed", output_text="" if len(calls) == 1 else "Готово")
+
+    result = generation.generate_markdown_block(
+        client=SimpleNamespace(responses=SimpleNamespace(create=create)),
+        model="m",
+        system_prompt="system",
+        target_text="Исходный абзац.",
+        context_before="",
+        context_after="",
+        max_retries=2,
+        should_stop=lambda: False,
+    )
+
+    assert result == "Готово"
+    assert calls == [1, 1]
+
+
+def test_block_layer_threads_the_runs_stop_predicate_into_the_generator():
+    stop_state = {"stop": False}
+    calls: list[int] = []
+
+    def create(**_kwargs):
+        calls.append(1)
+        stop_state["stop"] = True  # Stop pressed while the provider was answering.
+        return SimpleNamespace(status="completed", output_text="")
+
+    runtime = object()
+    seen_runtimes: list[object] = []
+
+    def should_stop_processing(observed_runtime):
+        seen_runtimes.append(observed_runtime)
+        return stop_state["stop"]
+
+    with pytest.raises(LatePhaseStopped):
+        block_execution._generate_block_chunk(
+            context=SimpleNamespace(
+                processing_operation="edit", model_id=None, model="m", max_retries=3, runtime=runtime
+            ),
+            dependencies=SimpleNamespace(
+                generate_markdown_block=generation.generate_markdown_block,
+                should_stop_processing=should_stop_processing,
+            ),
+            state=SimpleNamespace(),
+            initialization=SimpleNamespace(
+                text_client=SimpleNamespace(responses=SimpleNamespace(create=create)),
+                client=None,
+                text_model_id=None,
+            ),
+            index=1,
+            payload=SimpleNamespace(
+                target_text="Исходный абзац.",
+                target_text_with_markers="[[DOCX_PARA_p0001]]\nИсходный абзац.",
+                context_before="",
+                context_after="",
+                paragraph_ids=["p0001"],
+            ),
+            marker_mode_enabled=False,
+            system_prompt="system",
+        )
+
+    assert calls == [1]
+    assert seen_runtimes and all(observed is runtime for observed in seen_runtimes)
+
+
+def test_block_loop_maps_a_stop_raised_inside_a_block_to_the_stopped_result():
+    stopped_calls: list[dict[str, Any]] = []
+    processed: list[int] = []
+
+    def process_single_block(**kwargs):
+        processed.append(kwargs["index"])
+        if kwargs["index"] == 2:
+            raise LatePhaseStopped()
+        return None
+
+    result = block_execution.run_block_processing_phase(
+        context=SimpleNamespace(jobs=["a", "b", "c"], runtime="rt"),
+        dependencies=SimpleNamespace(should_stop_processing=lambda _runtime: False),
+        emitters=SimpleNamespace(),
+        state=SimpleNamespace(processed_chunks=["a"]),
+        initialization=SimpleNamespace(job_count=3),
+        emit_stopped_result_fn=lambda **kwargs: stopped_calls.append(kwargs) or "stopped",
+        process_single_block_fn=process_single_block,
+        current_markdown_fn=lambda chunks: "",
+        emit_failed_result_fn=lambda **kwargs: cast(Any, "failed"),
+    )
+
+    assert result == "stopped"
+    assert processed == [1, 2]
+    assert len(stopped_calls) == 1
+    assert stopped_calls[0]["block_index"] == 1
+    assert stopped_calls[0]["block_count"] == 3
+    assert stopped_calls[0]["progress"] == pytest.approx(1 / 3)
+    assert stopped_calls[0]["runtime"] == "rt"
 
 
 # --- api_path accounting (spec 061 Assumptions) ------------------------------------------
