@@ -631,6 +631,39 @@ def finalize_processing_success(
             block_count=job_count,
         )
 
+    def _publish_acceptance_verdict_notice(
+        notice: Mapping[str, object] | None,
+        notices: list[dict[str, object]],
+        *,
+        report: Mapping[str, object],
+    ) -> None:
+        """One route for the production verdict, whichever branch the run then takes.
+
+        Spec 061 FR-018: the verdict is a fact about the RUN's state, so its notice is built
+        from ``quality_report`` before anything branches on ``quality_status``. It used to be
+        built only on the delivered path, at the very end, so it vanished exactly when the
+        run was blocked — the case in which the reader needs it most.
+        """
+        if notice is None:
+            return
+        dependencies.log_event(
+            logging.WARNING,
+            "acceptance_verdict_not_passed",
+            "Приёмочный вердикт production не пройден; результат доставляется как ревью-данные.",
+            filename=context.uploaded_filename,
+            processing_operation=context.processing_operation,
+            review_data=True,
+            advisory=True,
+            quality_status=report.get("quality_status"),
+            acceptance_failed_checks=_acceptance_failed_checks(notice),
+        )
+        notices.append(dict(notice))
+
+    def _acceptance_failed_checks(notice: Mapping[str, object] | None) -> list[str]:
+        if notice is None:
+            return []
+        return list(cast(Sequence[str], notice.get("failed_checks") or ()))
+
     stopped_result = _stop_at_late_boundary("Обработка остановлена перед финализацией результата.")
     if stopped_result is not None:
         return stopped_result
@@ -687,6 +720,8 @@ def finalize_processing_success(
         unmapped_target_threshold=_acceptance_unmapped_target_threshold,
         require_no_toc_body_concat=_acceptance_require_no_toc_body_concat,
     )
+    # Spec 061 FR-018: from the report, before any branch on ``quality_status``.
+    acceptance_verdict_notice = build_acceptance_verdict_notice(quality_report)
     if quality_report.get("quality_status") == "warn":
         docx_phase = dict(docx_phase)
         docx_phase["latest_result_notice"] = {
@@ -725,6 +760,11 @@ def finalize_processing_success(
             quality_status=quality_report.get("quality_status"),
             gate_reasons=gate_reasons,
             quality_report_path=quality_report_path,
+            acceptance_failed_checks=_acceptance_failed_checks(acceptance_verdict_notice),
+        )
+        blocked_result_notices: list[dict[str, object]] = []
+        _publish_acceptance_verdict_notice(
+            acceptance_verdict_notice, blocked_result_notices, report=quality_report
         )
         emitters.emit_state(
             context.runtime,
@@ -740,6 +780,7 @@ def finalize_processing_success(
                 "level": "error",
                 "message": "Результат заблокирован document-level quality gate.",
             },
+            latest_result_notices=blocked_result_notices,
             last_error=error_message,
         )
         dependencies.log_event(
@@ -750,6 +791,7 @@ def finalize_processing_success(
             quality_report_path=quality_report_path,
             gate_reasons=gate_reasons,
             quality_status=quality_report.get("quality_status"),
+            acceptance_failed_checks=_acceptance_failed_checks(acceptance_verdict_notice),
         )
         return emit_failed_result(
             emitters=emitters,
@@ -786,6 +828,10 @@ def finalize_processing_success(
             base_docx_bytes=cast(bytes | None, docx_phase.get("docx_bytes")),
             job_count=job_count,
             processed_image_assets=cast(Sequence[Any], docx_phase.get("processed_image_assets") or []),
+            # Spec 061 FR-015: built from the assembly entries, which carry each paragraph's
+            # ``paragraph_status`` and narration exclusion (FR-014). This registry becomes the
+            # FINAL one the narration projection reads, so it must not be poorer than
+            # ``state.generated_paragraph_registry`` it was assembled from.
             formatting_registry=build_generated_paragraph_registry_from_entries(assembly_result.entries),
             base_docx_builder=cast(Callable[[], bytes] | None, docx_phase.get("base_docx_builder")),
         )
@@ -923,6 +969,8 @@ def finalize_processing_success(
             unmapped_target_threshold=_acceptance_unmapped_target_threshold,
             require_no_toc_body_concat=_acceptance_require_no_toc_body_concat,
         )
+        # Spec 061 FR-018: the report was rebuilt, so is its notice — before the branch below.
+        acceptance_verdict_notice = build_acceptance_verdict_notice(quality_report)
         # Supersede the pre-cleanup artifact: write the delivered report and drop the
         # now-stale pre-cleanup file so the saved record is never the outdated one.
         superseded_report_path = quality_report_path
@@ -974,6 +1022,10 @@ def finalize_processing_success(
                 quality_status=quality_report.get("quality_status"),
                 gate_reasons=post_cleanup_gate_reasons,
                 quality_report_path=quality_report_path,
+                acceptance_failed_checks=_acceptance_failed_checks(acceptance_verdict_notice),
+            )
+            _publish_acceptance_verdict_notice(
+                acceptance_verdict_notice, result_notices, report=quality_report
             )
             emitters.emit_state(
                 context.runtime,
@@ -1000,6 +1052,7 @@ def finalize_processing_success(
                 quality_report_path=quality_report_path,
                 gate_reasons=post_cleanup_gate_reasons,
                 quality_status=quality_report.get("quality_status"),
+                acceptance_failed_checks=_acceptance_failed_checks(acceptance_verdict_notice),
             )
             return emit_failed_result(
                 emitters=emitters,
@@ -1040,6 +1093,8 @@ def finalize_processing_success(
                 unmapped_target_threshold=_acceptance_unmapped_target_threshold,
                 require_no_toc_body_concat=_acceptance_require_no_toc_body_concat,
             )
+            # Spec 061 FR-018: the verdict changed, so does the notice built from it.
+            acceptance_verdict_notice = build_acceptance_verdict_notice(quality_report)
             # Supersede the pre-cleanup report so the saved record's verdict reflects
             # the delivered DOCX. Only the acceptance verdict changed; the markdown
             # metrics (and thus quality_status/gate_reasons/result notice) are identical,
@@ -1350,22 +1405,11 @@ def finalize_processing_success(
     # spec 059 FR-B1/FR-B2: the production acceptance verdict crosses the boundary as DATA.
     # It is REVIEW data, not a gate: ``delivery_disposition`` below is untouched and the only
     # thing that still blocks delivery is ``caption_heading_conflict`` (FR-B8, spec 010).
-    acceptance_verdict_notice = build_acceptance_verdict_notice(quality_report)
-    if acceptance_verdict_notice is not None:
-        dependencies.log_event(
-            logging.WARNING,
-            "acceptance_verdict_not_passed",
-            "Приёмочный вердикт production не пройден; результат доставляется как ревью-данные.",
-            filename=context.uploaded_filename,
-            processing_operation=context.processing_operation,
-            review_data=True,
-            advisory=True,
-            quality_status=quality_report.get("quality_status"),
-            acceptance_failed_checks=list(
-                cast(Sequence[str], acceptance_verdict_notice["failed_checks"])
-            ),
-        )
-        result_notices.append(acceptance_verdict_notice)
+    # Spec 061 FR-018: the notice itself was built where the report (or its verdict) was last
+    # built, before any branch on ``quality_status``; the blocked paths above deliver the same.
+    _publish_acceptance_verdict_notice(
+        acceptance_verdict_notice, result_notices, report=quality_report
+    )
     # Presentation-only: surface the SAME quality_warning the review artifact carries into
     # session state so the unified result screen can render the formatting-review block.
     quality_warning = _build_result_quality_warning(
@@ -1579,6 +1623,15 @@ def finalize_processing_success(
                     # is never an absent field.
                     joined_sentence_continuation_count=int(
                         getattr(state, "narration_joined_sentence_continuation_count", 0) or 0
+                    ),
+                    # Spec 061 FR-017 (narrowed): post-pass groups whose answer came back
+                    # with fewer paragraphs than were sent — delivered, marked for review,
+                    # and counted here under the same zero-is-a-statement rule.
+                    postprocess_paragraph_shortfall_group_count=int(
+                        getattr(state, "narration_postprocess_paragraph_shortfall_group_count", 0) or 0
+                    ),
+                    postprocess_paragraph_shortfall_paragraph_count=int(
+                        getattr(state, "narration_postprocess_paragraph_shortfall_paragraph_count", 0) or 0
                     ),
                 )
         except Exception as exc:

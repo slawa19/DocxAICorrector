@@ -1586,3 +1586,143 @@ def test_finalize_post_delivery_secondary_guard_does_not_swallow_cooperative_sto
 
     assert "post_delivery_secondary_step_failed" not in _events(deps)
     assert "segment_result_records_build_failed" not in _events(deps)
+
+
+# --------------------------------------------------------------------------- #
+# Spec 061 FR-018 — the acceptance verdict is a fact about the run's state, so its notice
+# reaches the reader on the BLOCKED paths too, together with the error.
+# --------------------------------------------------------------------------- #
+
+_FAILED_VERDICT = {
+    "passed": False,
+    "failed_checks": ["mixed_script_terms_present"],
+    "checks": [],
+}
+
+
+def _blocked_state(emitters: _RecordingEmitters) -> Mapping[str, object]:
+    blocked = [
+        call
+        for call in emitters.state_calls
+        if _state_mapping_value(call, "latest_delivery_disposition", "status") == "blocked"
+    ]
+    assert blocked, "the run was expected to be blocked"
+    return blocked[-1]
+
+
+def _acceptance_notices(state_call: Mapping[str, object]) -> list[Mapping[str, object]]:
+    return [
+        notice for notice in _state_result_notices(state_call) if notice.get("kind") == "acceptance"
+    ]
+
+
+def test_blocked_run_still_delivers_the_acceptance_verdict_notice(monkeypatch):
+    gate_input = "GATE_FAIL текст, который document-level gate отклоняет."
+    report_fn, _calls = _fail_when_marker_report()
+    _install_stubs(
+        monkeypatch,
+        gate_input_markdown=gate_input,
+        cleanup_result=_cleanup_result(markdown=gate_input),
+        report_fn=report_fn,
+    )
+    monkeypatch.setattr(
+        late_phases, "build_report_acceptance_verdict", lambda *a, **k: dict(_FAILED_VERDICT)
+    )
+    deps = _RecordingDependencies(artifact_writer=lambda: {})
+    emitters = _RecordingEmitters()
+    docx_phase = _make_docx_phase(gate_input)
+    # Non-empty DOCX so the quality-gate fail branch, not the empty-DOCX guard, fires.
+    docx_phase["docx_bytes"] = b"PK\x03\x04 non-empty docx"
+
+    result = _run_finalize(
+        context=_make_context(),
+        dependencies=deps,
+        emitters=emitters,
+        state=_make_state(),
+        docx_phase=docx_phase,
+    )
+
+    assert result == "failed"
+    blocked = _blocked_state(emitters)
+    notices = _acceptance_notices(blocked)
+    assert len(notices) == 1
+    assert notices[0]["failed_checks"] == ["mixed_script_terms_present"]
+    # Delivered WITH the error, on the same state update.
+    assert blocked.get("last_error")
+    _level, gate_ctx = _event(deps, "translation_quality_gate_failed")
+    assert gate_ctx["acceptance_failed_checks"] == ["mixed_script_terms_present"]
+    level, verdict_ctx = _event(deps, "acceptance_verdict_not_passed")
+    assert level == logging.WARNING
+    assert verdict_ctx["quality_status"] == "fail"
+
+
+def test_run_blocked_after_cleanup_still_delivers_the_acceptance_verdict_notice(monkeypatch):
+    gate_input = "Чистый переведённый абзац."
+    cleaned_bad = "GATE_FAIL regression introduced by reader cleanup."
+    report_fn, _calls = _fail_when_marker_report()
+    _install_stubs(
+        monkeypatch,
+        gate_input_markdown=gate_input,
+        cleanup_result=_cleanup_result(markdown=cleaned_bad),
+        report_fn=report_fn,
+    )
+    monkeypatch.setattr(
+        late_phases, "build_report_acceptance_verdict", lambda *a, **k: dict(_FAILED_VERDICT)
+    )
+    deps = _RecordingDependencies(artifact_writer=lambda: {})
+    emitters = _RecordingEmitters()
+
+    result = _run_finalize(
+        context=_make_context(),
+        dependencies=deps,
+        emitters=emitters,
+        state=_make_state(),
+        docx_phase=_make_docx_phase(gate_input),
+    )
+
+    assert result == "failed"
+    blocked = _blocked_state(emitters)
+    assert [notice["failed_checks"] for notice in _acceptance_notices(blocked)] == [
+        ["mixed_script_terms_present"]
+    ]
+    assert blocked.get("last_error")
+    _level, gate_ctx = _event(deps, "translation_quality_gate_failed_post_cleanup")
+    assert gate_ctx["acceptance_failed_checks"] == ["mixed_script_terms_present"]
+    # One verdict, one event: the blocked path published it, the delivered path never ran.
+    assert _events(deps).count("acceptance_verdict_not_passed") == 1
+
+
+def test_blocked_run_with_a_passed_verdict_carries_no_acceptance_notice(monkeypatch):
+    """Anti-vacuum: the blocked path says what the verdict says, and a green verdict says
+    nothing — the notice is not a decoration attached to every error."""
+    gate_input = "GATE_FAIL текст, который document-level gate отклоняет."
+    report_fn, _calls = _fail_when_marker_report()
+    _install_stubs(
+        monkeypatch,
+        gate_input_markdown=gate_input,
+        cleanup_result=_cleanup_result(markdown=gate_input),
+        report_fn=report_fn,
+    )
+    monkeypatch.setattr(
+        late_phases,
+        "build_report_acceptance_verdict",
+        lambda *a, **k: {"passed": True, "failed_checks": [], "checks": []},
+    )
+    deps = _RecordingDependencies(artifact_writer=lambda: {})
+    emitters = _RecordingEmitters()
+    docx_phase = _make_docx_phase(gate_input)
+    docx_phase["docx_bytes"] = b"PK\x03\x04 non-empty docx"
+
+    result = _run_finalize(
+        context=_make_context(),
+        dependencies=deps,
+        emitters=emitters,
+        state=_make_state(),
+        docx_phase=docx_phase,
+    )
+
+    assert result == "failed"
+    assert _acceptance_notices(_blocked_state(emitters)) == []
+    assert "acceptance_verdict_not_passed" not in _events(deps)
+    _level, gate_ctx = _event(deps, "translation_quality_gate_failed")
+    assert gate_ctx["acceptance_failed_checks"] == []

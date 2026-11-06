@@ -1144,9 +1144,14 @@ def build_report_acceptance_verdict(
     - ``output_docx_openable`` (and ``no_placeholder_markup``) reflect the real
       ``output_artifacts`` when the DOCX bytes exist at finalization; when the
       delivered DOCX has not been built yet they are NOT-APPLICABLE, never a guess.
+    - ``pipeline_succeeded`` and ``reader_cleanup_stage_completed`` are NOT-APPLICABLE
+      in production (spec 061 FR-019): the verdict is built before the run has a
+      result, and reader-cleanup evidence exists only in the harness. The context used
+      to carry ``"succeeded"`` and an empty evidence mapping, so both checks could only
+      pass — a green that measured nothing.
 
-    What both CAN evaluate in common (pipeline success, reader-cleanup stage,
-    display-hygiene, translation-quality residue) is judged identically.
+    What both CAN evaluate in common (display-hygiene, translation-quality residue) is
+    judged identically.
     """
     return build_acceptance_verdict(
         report,
@@ -1198,8 +1203,10 @@ def _build_report_context_for_acceptance(
     formatting_diagnostics_payloads: Sequence[Mapping[str, object]],
     output_artifacts: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
+    # Spec 061 FR-019: no ``"result"`` and no ``"reader_cleanup_evidence"`` here. Production
+    # has neither input at this point; the shared verdict renders their two checks
+    # NOT-APPLICABLE when the keys are absent instead of passing them on a literal.
     return {
-        "result": "succeeded",
         "runtime_config": {
             "effective": {"processing_operation": getattr(context, "processing_operation", "")}
         },
@@ -1210,7 +1217,6 @@ def _build_report_context_for_acceptance(
         # ``output_docx_openable`` rather than a guessed pass (spec FR-001).
         "output_artifacts": dict(output_artifacts) if output_artifacts else {},
         "runtime": {},
-        "reader_cleanup_evidence": {},
         "preparation_diagnostic_snapshot": {},
         # spec 059 FR-A8, revised 2026-08-09: the run's own accounting, under the same key the
         # harness report uses, so ``untranslated_prose_not_delivered`` is judged from the same

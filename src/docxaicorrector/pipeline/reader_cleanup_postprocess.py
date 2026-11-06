@@ -205,6 +205,11 @@ def _run_reader_cleanup_postprocess(
         if callable(stop_predicate) and stop_predicate(context.runtime):
             raise LatePhaseStopped()
 
+    # Spec 061 FR-015: either side of this ``or`` carries the per-paragraph dispositions
+    # (``paragraph_status``, ``controlled_fallback_narration_excluded``) — the state registry
+    # because ``block_execution`` writes them, the assembly registry because
+    # ``build_generated_paragraph_registry_from_entries`` re-emits them — so preferring the
+    # first can no longer hand the narration projection a record without them.
     active_formatting_registry = formatting_registry or state.generated_paragraph_registry or None
     base_final_generated_registry = _resolve_final_generated_paragraph_registry(
         markdown_text=runtime_display_markdown,

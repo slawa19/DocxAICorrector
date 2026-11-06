@@ -233,6 +233,14 @@ class FinalAssemblyEntry:
     merged_paragraph_ids: tuple[str, ...] = ()
     controlled_fallback: bool = False
     controlled_fallback_kind: str | None = None
+    # Spec 061 FR-014: what became of the paragraph, copied from the state registry entry
+    # this assembly entry was built from (``block_execution`` writes both). Without them the
+    # late-phase registry rebuilt from these entries carries no disposition, and the
+    # narration projection that reads it can never drop an ``omitted`` paragraph or a
+    # source-text fallback. ``None`` / ``False`` mean "no disposition recorded", which is
+    # what a plain-text (non-marker) block and a registry-mismatch fallback entry carry.
+    paragraph_status: str | None = None
+    narration_excluded: bool = False
     # Spec 057. True/False: the FULL text of the source paragraph this entry ENDS with
     # does / does not end in terminal punctuation. None: the source paragraph is unknown
     # (fallback entry, missing paragraph_id, or no source_paragraphs) -- no signal.
@@ -887,6 +895,8 @@ def _normalize_final_entry_list_fragments(entries: Sequence[FinalAssemblyEntry])
             merged_paragraph_ids=entry.merged_paragraph_ids,
             controlled_fallback=entry.controlled_fallback,
             controlled_fallback_kind=entry.controlled_fallback_kind,
+            paragraph_status=entry.paragraph_status,
+            narration_excluded=entry.narration_excluded,
             source_ends_sentence=entry.source_ends_sentence,
         )
 
@@ -1023,6 +1033,8 @@ def _apply_final_entry_post_normalization(entries: Sequence[FinalAssemblyEntry])
                 merged_paragraph_ids=entry.merged_paragraph_ids,
                 controlled_fallback=entry.controlled_fallback,
                 controlled_fallback_kind=entry.controlled_fallback_kind,
+                paragraph_status=entry.paragraph_status,
+                narration_excluded=entry.narration_excluded,
                 source_ends_sentence=entry.source_ends_sentence,
             )
         )
@@ -1193,6 +1205,8 @@ def _build_recovery_entry(
         merged_paragraph_ids=_entry_paragraph_ids(entry),
         controlled_fallback=entry.controlled_fallback,
         controlled_fallback_kind=entry.controlled_fallback_kind,
+        paragraph_status=entry.paragraph_status,
+        narration_excluded=entry.narration_excluded,
         source_ends_sentence=entry.source_ends_sentence,
     )
 
@@ -1436,6 +1450,13 @@ def _right_entry_looks_like_continuation(entry: FinalAssemblyEntry) -> bool:
     return body_text.startswith(("(", '"', "«", "—", "–"))
 
 
+def _merged_paragraph_status(left: str | None, right: str | None) -> str | None:
+    for status in (left, right):
+        if status is not None and status != "accepted":
+            return status
+    return left if left is not None else right
+
+
 def _merge_entry_pair(left: FinalAssemblyEntry, right: FinalAssemblyEntry) -> FinalAssemblyEntry:
     return FinalAssemblyEntry(
         text=_merge_content_line(left.text, right.text),
@@ -1454,6 +1475,11 @@ def _merge_entry_pair(left: FinalAssemblyEntry, right: FinalAssemblyEntry) -> Fi
         merged_paragraph_ids=_merge_paragraph_ids(left, right),
         controlled_fallback=left.controlled_fallback or right.controlled_fallback,
         controlled_fallback_kind=left.controlled_fallback_kind or right.controlled_fallback_kind,
+        # Spec 061 FR-014: the merged entry is ONE paragraph of text carrying both halves, so
+        # if either half must not be read aloud, neither can the whole; and a half whose
+        # status is not ``accepted`` is still in it, so that status is the one it keeps.
+        paragraph_status=_merged_paragraph_status(left.paragraph_status, right.paragraph_status),
+        narration_excluded=left.narration_excluded or right.narration_excluded,
         # Spec 057: every other field is the LEFT entry's, but the merged entry now ENDS
         # where the RIGHT one ended, so its source-terminal signal is the RIGHT one's.
         # Taking the left's here would judge a three-paragraph chain by the source
@@ -1638,6 +1664,12 @@ def assemble_final_markdown(
                         if isinstance(entry.get("controlled_fallback_kind"), str)
                         else None
                     ),
+                    paragraph_status=(
+                        str(entry.get("paragraph_status"))
+                        if isinstance(entry.get("paragraph_status"), str)
+                        else None
+                    ),
+                    narration_excluded=bool(entry.get("controlled_fallback_narration_excluded")),
                     source_ends_sentence=_source_text_ends_sentence(
                         _coerce_source_paragraph_str(source_paragraph, "text") if source_paragraph is not None else None
                     ),
@@ -1845,6 +1877,17 @@ def build_generated_paragraph_registry_from_entries(entries: Sequence[FinalAssem
             payload["controlled_fallback"] = True
             if entry.controlled_fallback_kind:
                 payload["controlled_fallback_kind"] = entry.controlled_fallback_kind
+        # Spec 061 FR-014: the dispositions travel under the SAME keys the state registry
+        # uses (``block_execution.build_processed_paragraph_registry_entries`` /
+        # ``append_controlled_fallback_registry_entries``): the status whenever one was
+        # recorded, the narration exclusion whenever it is set (absent reads as ``False``,
+        # which is all the projection asks). The late phases hand THIS registry to reader
+        # cleanup and to the narration projection, so a key missing here is a disposition
+        # missing everywhere after it.
+        if entry.paragraph_status is not None:
+            payload["paragraph_status"] = entry.paragraph_status
+        if entry.narration_excluded:
+            payload["controlled_fallback_narration_excluded"] = True
         registry.append(payload)
     return registry
 

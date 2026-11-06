@@ -62,6 +62,16 @@
   своим исходником законно (переводить нечего) и структурного признака не имеют. Измерено: 26 таких
   на 7 103 доставленных абзаца, ни одна не является потерянной прозой
   (`specs/059-…/measurement-translation-signal.md`, §5).
+- **Production-вердикт приёмки не судит `pipeline_succeeded` и `reader_cleanup_stage_completed`.**
+  В production обе проверки выходят `applicable=False` с причиной (`pipeline_result_not_in_report`,
+  `reader_cleanup_evidence_not_in_report`) — тот же приём, которым PR #79 закрыл три проверки
+  harness, не способные ничего измерить. Причина: контекст приёмки
+  (`pipeline/quality_gate.py`, `_build_report_context_for_acceptance`) писал литерал
+  `"result": "succeeded"` и пустой `reader_cleanup_evidence`, потому что вердикт строится раньше,
+  чем у прогона появляется результат, а evidence вычитки есть только у harness. Проверка, которая
+  не может упасть, даёт ложную зелень. Harness по-прежнему судит обе: он пишет оба ключа в отчёт
+  (`validation/acceptance.py`, `build_acceptance_verdict`). Спека 061, FR-019, решение 2026-11-06.
+  **Не возвращать литерал ради зелёной галочки.**
 
 ## 3. Запрещённые инструменты — чем чинить нельзя
 
