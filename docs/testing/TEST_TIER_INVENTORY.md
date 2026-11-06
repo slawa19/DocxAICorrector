@@ -50,6 +50,7 @@ This inventory is intentionally pragmatic:
 - `tests/test_output_display_hygiene.py`
 - `tests/test_output_validation_characterization.py`
 - `tests/test_paragraph_boundary_normalization.py`
+- `tests/test_paragraph_record_and_production_verdict.py`
 - `tests/test_passthrough_unmapped_acceptance.py`
 - `tests/test_pdf_text_layer_logical_import.py`
 - `tests/test_pdf_text_layer_quality.py`

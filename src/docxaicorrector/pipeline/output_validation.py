@@ -1879,14 +1879,15 @@ def build_generated_paragraph_registry_from_entries(entries: Sequence[FinalAssem
                 payload["controlled_fallback_kind"] = entry.controlled_fallback_kind
         # Spec 061 FR-014: the dispositions travel under the SAME keys the state registry
         # uses (``block_execution.build_processed_paragraph_registry_entries`` /
-        # ``append_controlled_fallback_registry_entries``) and under the same presence rule:
-        # the status whenever one was recorded, the narration flag on every fallback entry.
-        # The late phases hand THIS registry to reader cleanup and to the narration
-        # projection, so a key missing here is a disposition missing everywhere after it.
+        # ``append_controlled_fallback_registry_entries``): the status whenever one was
+        # recorded, the narration exclusion whenever it is set (absent reads as ``False``,
+        # which is all the projection asks). The late phases hand THIS registry to reader
+        # cleanup and to the narration projection, so a key missing here is a disposition
+        # missing everywhere after it.
         if entry.paragraph_status is not None:
             payload["paragraph_status"] = entry.paragraph_status
-        if entry.controlled_fallback or entry.narration_excluded:
-            payload["controlled_fallback_narration_excluded"] = entry.narration_excluded
+        if entry.narration_excluded:
+            payload["controlled_fallback_narration_excluded"] = True
         registry.append(payload)
     return registry
 
