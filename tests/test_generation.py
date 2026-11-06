@@ -363,7 +363,12 @@ def test_generate_markdown_block_uses_degraded_prompt_after_persistent_empty_res
     assert logged_events[-1][0][1] == "markdown_empty_response_recovery_started"
 
 
-def test_generate_markdown_block_raises_on_empty_model_output(monkeypatch):
+def test_generate_markdown_block_falls_back_on_persistently_collapsed_model_output(monkeypatch):
+    """Spec 061 US3 scenario 2: ``collapsed_output`` after recovery takes the SAME controlled
+    fallback as ``empty_response`` — same text, same event, same counter. Until the error
+    classes were types this test pinned the defect: the collapsed answer escaped as an
+    exception and took the run down."""
+
     logged_events = []
     client = SimpleNamespace(
         responses=SimpleNamespace(create=lambda **_: SimpleNamespace(output_text="```\n\n```"))
@@ -373,22 +378,24 @@ def test_generate_markdown_block_raises_on_empty_model_output(monkeypatch):
         "log_event",
         lambda *args, **kwargs: logged_events.append((args, kwargs)) or "evt-collapsed",
     )
+    model_accounting.reset_run_model_accounting()
 
-    try:
-        generation.generate_markdown_block(
-            client=_as_openai_client(client),
-            model="gpt-5.4",
-            system_prompt="system",
-            target_text="target",
-            context_before="before",
-            context_after="after",
-            max_retries=1,
-        )
-    except RuntimeError as exc:
-        assert "collapsed_output" in str(exc)
-        assert logged_events[0][1]["error_code"] == "collapsed_output"
-    else:
-        raise AssertionError("Expected RuntimeError for a collapsed model response")
+    result = generation.generate_markdown_block(
+        client=_as_openai_client(client),
+        model="gpt-5.4",
+        system_prompt="system",
+        target_text="target",
+        context_before="before",
+        context_after="after",
+        max_retries=1,
+    )
+
+    assert result == "target"
+    assert logged_events[0][1]["error_code"] == "collapsed_output"
+    assert logged_events[-1][0][1] == "markdown_empty_response_source_fallback"
+    assert "collapsed_output" in logged_events[-1][1]["recovery_error"]
+    snapshot = model_accounting.snapshot_run_model_accounting()
+    assert snapshot["model_output_discarded_reason_counts"] == {"empty_response_source_fallback": 1}
 
 
 def test_generate_markdown_block_retries_on_collapsed_output(monkeypatch):
@@ -630,7 +637,7 @@ def test_generate_markdown_block_falls_back_when_recovery_returns_blank_markdown
     def call_markdown_request_with_sdk_fallback(client, request_kwargs):
         attempts.append(dict(request_kwargs))
         if len(attempts) <= 2:
-            raise RuntimeError("Модель вернула пустой ответ (empty_response).")
+            raise generation.EmptyResponse("Модель вернула пустой ответ (empty_response).")
         return "", False
 
     client = SimpleNamespace(responses=SimpleNamespace(create=lambda **kwargs: SimpleNamespace(output_text="unused")))
@@ -877,7 +884,9 @@ def test_generate_markdown_block_raises_on_unsupported_response_shape_in_output_
     assert sleep_calls == []
 
 
-def test_generate_markdown_block_raises_when_supported_response_output_collapses_after_normalization(monkeypatch):
+def test_generate_markdown_block_falls_back_when_supported_response_output_collapses_after_normalization(monkeypatch):
+    """Same as above on the ``output[].content[]`` shape (spec 061 US3 scenario 2)."""
+
     logged_events = []
     client = SimpleNamespace(
         responses=SimpleNamespace(
@@ -892,21 +901,19 @@ def test_generate_markdown_block_raises_when_supported_response_output_collapses
         lambda *args, **kwargs: logged_events.append((args, kwargs)) or "evt-supported-collapse",
     )
 
-    try:
-        generation.generate_markdown_block(
-            client=_as_openai_client(client),
-            model="gpt-5.4",
-            system_prompt="system",
-            target_text="target",
-            context_before="before",
-            context_after="after",
-            max_retries=1,
-        )
-    except RuntimeError as exc:
-        assert "collapsed_output" in str(exc)
-        assert logged_events[0][1]["error_code"] == "collapsed_output"
-    else:
-        raise AssertionError("Expected RuntimeError when normalized fallback output collapses")
+    result = generation.generate_markdown_block(
+        client=_as_openai_client(client),
+        model="gpt-5.4",
+        system_prompt="system",
+        target_text="target",
+        context_before="before",
+        context_after="after",
+        max_retries=1,
+    )
+
+    assert result == "target"
+    assert logged_events[0][1]["error_code"] == "collapsed_output"
+    assert logged_events[-1][0][1] == "markdown_empty_response_source_fallback"
 
 
 def test_generate_markdown_block_raises_on_non_string_output_text():
@@ -1039,11 +1046,11 @@ def test_extract_normalized_markdown_raises_hard_on_non_completed_response(monke
 
 
 def test_incomplete_response_is_retryable():
-    assert generation._is_retryable_empty_generation_error(RuntimeError("incomplete_response")) is True
+    assert generation._is_retryable_empty_generation_error(generation.IncompleteResponse("incomplete_response")) is True
 
 
 def test_non_completed_response_is_not_retryable():
-    assert generation._is_retryable_empty_generation_error(RuntimeError("non_completed_response")) is False
+    assert generation._is_retryable_empty_generation_error(generation.NonCompletedResponse("non_completed_response")) is False
 
 
 def test_generate_markdown_block_falls_back_to_source_after_persistent_non_completed_response(monkeypatch):
