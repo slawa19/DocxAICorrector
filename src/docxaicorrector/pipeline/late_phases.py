@@ -786,6 +786,10 @@ def finalize_processing_success(
             base_docx_bytes=cast(bytes | None, docx_phase.get("docx_bytes")),
             job_count=job_count,
             processed_image_assets=cast(Sequence[Any], docx_phase.get("processed_image_assets") or []),
+            # Spec 061 FR-015: built from the assembly entries, which carry each paragraph's
+            # ``paragraph_status`` and narration exclusion (FR-014). This registry becomes the
+            # FINAL one the narration projection reads, so it must not be poorer than
+            # ``state.generated_paragraph_registry`` it was assembled from.
             formatting_registry=build_generated_paragraph_registry_from_entries(assembly_result.entries),
             base_docx_builder=cast(Callable[[], bytes] | None, docx_phase.get("base_docx_builder")),
         )
