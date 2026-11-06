@@ -22,6 +22,7 @@ from docxaicorrector.core.model_accounting import (
     STAGE_TEXT_GENERATION,
     get_run_model_accounting_ledger,
     record_degradation_ladder,
+    record_marker_chunk_merge_retry,
     record_model_call_usage,
     record_model_output_discarded,
     record_paragraph_disposition,
@@ -263,6 +264,8 @@ class MarkerValidationError(RuntimeError):
         expected_paragraph_ids: Sequence[str],
         found_paragraph_ids: Sequence[str] | None = None,
         leading_text: str | None = None,
+        collapsed_paragraph_ids: Sequence[str] | None = None,
+        absorbing_paragraph_ids: Sequence[str] | None = None,
     ) -> None:
         super().__init__(f"paragraph_marker_validation_failed:{error_code}")
         self.error_code = error_code
@@ -276,6 +279,18 @@ class MarkerValidationError(RuntimeError):
         self.found_paragraph_ids = tuple(found_paragraph_ids or ())
         self.leading_text = leading_text or ""
         self.leading_text_preview = (leading_text or "")[:400]
+        # ``merged_marker_chunk`` only (spec 061 FR-001): WHICH paragraph collapsed and
+        # which neighbour visibly took its text. Empty for every other code.
+        self.collapsed_paragraph_ids = tuple(collapsed_paragraph_ids or ())
+        self.absorbing_paragraph_ids = tuple(absorbing_paragraph_ids or ())
+
+
+# A paragraph the model visibly merged into its neighbour, raised while retry budget is
+# left (spec 061 FR-001). A ``MarkerValidationError`` like every other marker-contract code,
+# so the attempt loop retries it, the recovery prompt names it, spec 056 D' captures its
+# answer and the degradation ladder takes it as a ``marker_contract`` trigger — all without
+# a line of its own in any of them.
+MERGED_MARKER_CHUNK_ERROR_CODE = "merged_marker_chunk"
 
 
 @lru_cache(maxsize=1)
@@ -795,24 +810,70 @@ def resolve_marker_paragraph_dispositions(
     The collapse-restore runs FIRST, on the raw texts, so an emptied paragraph whose text
     was visibly absorbed by a neighbour is still repaired as a pair (``source_restored``)
     instead of being re-instated on its own and shipped twice.
+
+    A MERGE follows the same budget rule as an omission (spec 061 FR-001, FR-003). Until
+    2026-11-06 it did not: the pair was reverted to its source on the FIRST attempt, so
+    ``empty_marker_chunk`` never fired and the retry loop never saw a problem — the block
+    shipped two paragraphs in the source language under ``valid``, once per book on four of
+    five recorded audiobook runs. Now, while budget remains, a visible merge raises
+    ``merged_marker_chunk`` and the block is asked again; ``source_restored`` is reached
+    only when ``allow_unresolved_paragraphs`` says nothing is left to ask, exactly where
+    ``omitted`` is. The detector itself is unchanged — only WHEN its verdict ships.
     """
 
     texts = [disposition.text for disposition in dispositions]
     statuses = list(disposition.status for disposition in dispositions)
+    paragraph_ids = [disposition.paragraph_id for disposition in dispositions]
+
+    def _answer_as_received() -> str:
+        # The model's ACTUAL answer when the caller has it (spec 056 D' captures the
+        # exception's ``raw_markdown`` verbatim, and a reconstruction would not replay).
+        if raw_markdown is not None:
+            return raw_markdown
+        return "\n\n".join(
+            f"[[DOCX_PARA_{disposition.paragraph_id}]]\n{disposition.text}"
+            for disposition in dispositions
+        )
 
     if source_paragraph_chunks is not None:
-        restored_texts = list(
-            restore_collapsed_marker_paragraphs(
-                list(texts),
-                source_paragraph_chunks,
-                expected_paragraph_ids=[disposition.paragraph_id for disposition in dispositions],
-            )
+        merges = _find_marker_chunk_merges(
+            texts, source_paragraph_chunks, expected_paragraph_ids=paragraph_ids
         )
-        if len(restored_texts) == len(texts):
-            for index, (before, after) in enumerate(zip(texts, restored_texts)):
-                if before != after:
-                    statuses[index] = PARAGRAPH_STATUS_SOURCE_RESTORED
-            texts = restored_texts
+        if merges and not allow_unresolved_paragraphs:
+            collapsed_ids = [paragraph_ids[merge.collapsed_index] for merge in merges]
+            absorbing_ids = list(
+                dict.fromkeys(
+                    paragraph_ids[index] for merge in merges for index in merge.absorbing_indexes
+                )
+            )
+            # Counted HERE, not as a discard: nothing reaches the document from this answer.
+            # A raise with budget left is always a retry — ``generate_markdown_block`` passes
+            # ``allow_unresolved_paragraphs=False`` only while ``attempt < max_retries``, and
+            # every ``MarkerValidationError`` is retryable there.
+            record_marker_chunk_merge_retry()
+            log_event(
+                logging.WARNING,
+                "marker_chunk_merge_retry_requested",
+                "Модель слила абзац с соседним; исходник не подставляется, блок будет запрошен снова.",
+                collapsed_paragraph_ids=collapsed_ids,
+                absorbing_paragraph_ids=absorbing_ids,
+                paragraph_count=len(dispositions),
+            )
+            raise MarkerValidationError(
+                MERGED_MARKER_CHUNK_ERROR_CODE,
+                raw_markdown=_answer_as_received(),
+                expected_paragraph_ids=paragraph_ids,
+                found_paragraph_ids=paragraph_ids,
+                collapsed_paragraph_ids=collapsed_ids,
+                absorbing_paragraph_ids=absorbing_ids,
+            )
+        restored_texts = _restore_marker_chunk_merges(
+            list(texts), source_paragraph_chunks, merges, expected_paragraph_ids=paragraph_ids
+        )
+        for index, (before, after) in enumerate(zip(texts, restored_texts)):
+            if before != after:
+                statuses[index] = PARAGRAPH_STATUS_SOURCE_RESTORED
+        texts = restored_texts
 
     unresolved_indexes = [
         index
@@ -822,18 +883,9 @@ def resolve_marker_paragraph_dispositions(
     if unresolved_indexes and not allow_unresolved_paragraphs:
         raise MarkerValidationError(
             "empty_marker_chunk",
-            # The model's ACTUAL answer when the caller has it (spec 056 D' captures this
-            # exception's ``raw_markdown`` verbatim, and a reconstruction would not replay).
-            raw_markdown=(
-                raw_markdown
-                if raw_markdown is not None
-                else "\n\n".join(
-                    f"[[DOCX_PARA_{disposition.paragraph_id}]]\n{disposition.text}"
-                    for disposition in dispositions
-                )
-            ),
-            expected_paragraph_ids=[disposition.paragraph_id for disposition in dispositions],
-            found_paragraph_ids=[disposition.paragraph_id for disposition in dispositions],
+            raw_markdown=_answer_as_received(),
+            expected_paragraph_ids=paragraph_ids,
+            found_paragraph_ids=paragraph_ids,
         )
 
     for index in unresolved_indexes:
@@ -894,6 +946,14 @@ def _visible_marker_chunk_length(chunk: str) -> int:
     return len(_strip_prompt_internal_tokens(chunk))
 
 
+@dataclass(frozen=True)
+class _MarkerChunkMerge:
+    """One VISIBLE merge: the paragraph that collapsed and the neighbour(s) holding its text."""
+
+    collapsed_index: int
+    absorbing_indexes: tuple[int, ...]
+
+
 def restore_collapsed_marker_paragraphs(
     paragraph_chunks: list[str],
     source_paragraph_chunks: Sequence[str],
@@ -927,10 +987,39 @@ def restore_collapsed_marker_paragraphs(
     quote) turned out not to be a merge at all — the model had shifted a whole endnote
     region, and that quote was already shipping five markers earlier, so re-instating it
     delivered the quote twice.
+
+    Since spec 061 FR-001 detection and repair are two steps: ``resolve_marker_paragraph_dispositions``
+    detects first (``_find_marker_chunk_merges``) and repairs (``_restore_marker_chunk_merges``)
+    only when no retry budget is left, because a repair ships source-language text. This
+    function performs both at once and is kept for callers with no budget to consult.
+    """
+
+    merges = _find_marker_chunk_merges(
+        paragraph_chunks, source_paragraph_chunks, expected_paragraph_ids=expected_paragraph_ids
+    )
+    return _restore_marker_chunk_merges(
+        paragraph_chunks,
+        source_paragraph_chunks,
+        merges,
+        expected_paragraph_ids=expected_paragraph_ids,
+    )
+
+
+def _find_marker_chunk_merges(
+    paragraph_chunks: Sequence[str],
+    source_paragraph_chunks: Sequence[str],
+    *,
+    expected_paragraph_ids: Sequence[str] | None = None,
+) -> list[_MarkerChunkMerge]:
+    """The merges ``restore_collapsed_marker_paragraphs`` would repair — found, not repaired.
+
+    Pure detection, apart from the INFO line for a shrunken paragraph nobody absorbed (that
+    answer stands either way, so there is nothing to defer). No counter is touched here:
+    whether the merge becomes a discard or a retry is the caller's decision.
     """
 
     if not source_paragraph_chunks or len(source_paragraph_chunks) != len(paragraph_chunks):
-        return paragraph_chunks
+        return []
 
     source_lengths = [_visible_marker_chunk_length(chunk) for chunk in source_paragraph_chunks]
     returned_lengths = [_visible_marker_chunk_length(chunk) for chunk in paragraph_chunks]
@@ -958,11 +1047,9 @@ def restore_collapsed_marker_paragraphs(
         collapsed_indexes.append(index)
 
     if not collapsed_indexes:
-        return paragraph_chunks
+        return []
 
-    restored = list(paragraph_chunks)
-    restored_indexes: list[int] = []
-    merged_indexes: list[int] = []
+    merges: list[_MarkerChunkMerge] = []
     kept_indexes: list[int] = []
     for index in collapsed_indexes:
         required_growth = source_lengths[index] * _ABSORBING_NEIGHBOUR_RATIO
@@ -977,10 +1064,9 @@ def restore_collapsed_marker_paragraphs(
             # answer is a short answer and the model's output stands.
             kept_indexes.append(index)
             continue
-        merged_indexes.append(index)
-        for restore_index in (index, *absorbing_indexes):
-            restored[restore_index] = source_paragraph_chunks[restore_index]
-            restored_indexes.append(restore_index)
+        merges.append(
+            _MarkerChunkMerge(collapsed_index=index, absorbing_indexes=tuple(absorbing_indexes))
+        )
 
     if kept_indexes:
         log_event(
@@ -992,13 +1078,33 @@ def restore_collapsed_marker_paragraphs(
             ],
             paragraph_count=len(paragraph_chunks),
         )
+    return merges
 
-    if not merged_indexes:
+
+def _restore_marker_chunk_merges(
+    paragraph_chunks: list[str],
+    source_paragraph_chunks: Sequence[str],
+    merges: Sequence[_MarkerChunkMerge],
+    *,
+    expected_paragraph_ids: Sequence[str] | None = None,
+) -> list[str]:
+    """Ship the SOURCE of every merged pair, and say so. Called only once nothing is left to ask."""
+
+    if not merges:
         return paragraph_chunks
+
+    restored = list(paragraph_chunks)
+    restored_indexes: list[int] = []
+    for merge in merges:
+        for restore_index in (merge.collapsed_index, *merge.absorbing_indexes):
+            restored[restore_index] = source_paragraph_chunks[restore_index]
+            restored_indexes.append(restore_index)
 
     # The run report must show these paragraphs: the block still logs ``OK``, so without a
     # counter the reader believes a paragraph was edited when in fact its edit was thrown
-    # away and the source was shipped instead.
+    # away and the source was shipped instead. Recorded only HERE, where the source really
+    # ships (spec 061 FR-005); a merge sent back for a retry is
+    # ``marker_chunk_merge_retry_count`` instead.
     record_model_output_discarded(
         reason="marker_chunk_collapse",
         paragraph_count=len(set(restored_indexes)),
@@ -1008,7 +1114,7 @@ def restore_collapsed_marker_paragraphs(
         "marker_chunk_collapse_source_restored",
         "Возвращённый абзац схлопнулся в соседний; восстановлен исходный текст обоих абзацев.",
         collapsed_paragraph_ids=[
-            _marker_paragraph_id(expected_paragraph_ids, index) for index in merged_indexes
+            _marker_paragraph_id(expected_paragraph_ids, merge.collapsed_index) for merge in merges
         ],
         restored_paragraph_count=len(set(restored_indexes)),
         paragraph_count=len(paragraph_chunks),
@@ -1930,6 +2036,32 @@ def _capture_marker_attempt_failure(
 
 _DEGRADATION_LADDER_TRIGGER_MARKER_CONTRACT = "marker_contract"
 _DEGRADATION_LADDER_TRIGGER_INCOMPLETE_RESPONSE = "incomplete_response"
+
+# The calls ONE ``generate_markdown_block`` makes beyond its ``max_retries`` attempts before
+# it either answers or raises: the informed recovery call. Every call the ladder makes is a
+# nested ``generate_markdown_block`` with ladders and fallbacks off, so it costs the same
+# ``max_retries + this``.
+MODEL_CALLS_PER_GENERATION_BEYOND_RETRIES = 1
+
+
+def max_model_calls_per_block(
+    *, max_retries: int, ladder_paragraph_count: int, ladder_sentence_group_count: int = 0
+) -> int:
+    """The arithmetic ceiling on model calls for ONE block (spec 061 FR-004; spec 059 a-r 9).
+
+    ``max_retries`` attempts and one recovery for the block, then one ladder step: one nested
+    generation per paragraph, plus one per sentence group of a paragraph that came back
+    ``incomplete_response`` again. Every nested generation is bounded the same way and none
+    can open a ladder of its own, so the ceiling is a product, not a recursion.
+
+    Retrying a merged paragraph (``merged_marker_chunk``, FR-001) spends the SAME attempts the
+    loop already had — it changes which attempt answers, not how many there are — so it does
+    not appear here, and the test that pins this ceiling is what keeps it that way.
+    """
+
+    calls_per_generation = max_retries + MODEL_CALLS_PER_GENERATION_BEYOND_RETRIES
+    ladder_generations = max(0, ladder_paragraph_count) + max(0, ladder_sentence_group_count)
+    return calls_per_generation * (1 + ladder_generations)
 
 # Where a sentence ends, for the purpose of dividing one paragraph. A strict SUBSET of
 # ``_NARRATION_SENTENCE_TERMINALS``: a colon and a semicolon join clauses rather than close

@@ -241,6 +241,7 @@ class RunModelAccountingLedger:
         self._retried_block_count = 0
         self._retried_paragraph_count = 0
         self._retry_reason_counts: dict[str, int] = {}
+        self._marker_chunk_merge_retry_count = 0
         self._discarded_paragraph_count = 0
         self._discarded_block_count = 0
         self._discard_reason_counts: dict[str, int] = {}
@@ -277,6 +278,7 @@ class RunModelAccountingLedger:
             self._retried_block_count = 0
             self._retried_paragraph_count = 0
             self._retry_reason_counts = {}
+            self._marker_chunk_merge_retry_count = 0
             self._discarded_paragraph_count = 0
             self._discarded_block_count = 0
             self._discard_reason_counts = {}
@@ -325,6 +327,19 @@ class RunModelAccountingLedger:
             if first_retry_for_block:
                 self._retried_block_count += 1
                 self._retried_paragraph_count += max(0, paragraph_count)
+
+    def record_marker_chunk_merge_retry(self) -> None:
+        """Count ONE answer whose paragraph merge was sent back instead of repaired (spec 061 FR-005).
+
+        Not a ``reason`` on ``record_model_output_discarded``, because nothing was
+        discarded INTO the document: the block is asked again, and if the retry answers
+        correctly no source text ships at all. ``model_output_discarded_reason_counts
+        ["marker_chunk_collapse"]`` keeps meaning "paragraphs delivered as their own source",
+        and this number says how often a merge was caught early enough to ask again — so a
+        run where the old counter went to zero can show WHERE its merges went.
+        """
+        with self._lock:
+            self._marker_chunk_merge_retry_count += 1
 
     def record_model_output_discarded(self, *, reason: str, paragraph_count: int = 0, block_count: int = 0) -> None:
         with self._lock:
@@ -536,6 +551,10 @@ class RunModelAccountingLedger:
                 "retried_block_count": self._retried_block_count,
                 "retried_paragraph_count": self._retried_paragraph_count,
                 "retry_reason_counts": dict(sorted(self._retry_reason_counts.items())),
+                # Spec 061 FR-005: answers whose paragraph merge was sent back for another
+                # attempt. Each one is also one of the ``marker_validation`` retries above;
+                # it is NOT a discard — the source ships only if the last attempt merges too.
+                "marker_chunk_merge_retry_count": self._marker_chunk_merge_retry_count,
                 "model_output_discarded_paragraph_count": self._discarded_paragraph_count,
                 "model_output_discarded_block_count": self._discarded_block_count,
                 "model_output_discarded_reason_counts": dict(sorted(self._discard_reason_counts.items())),
@@ -726,6 +745,10 @@ def record_retry_attempt(*, reason: str, paragraph_count: int = 0, first_retry_f
         paragraph_count=paragraph_count,
         first_retry_for_block=first_retry_for_block,
     )
+
+
+def record_marker_chunk_merge_retry() -> None:
+    get_run_model_accounting_ledger().record_marker_chunk_merge_retry()
 
 
 def record_model_output_discarded(*, reason: str, paragraph_count: int = 0, block_count: int = 0) -> None:
