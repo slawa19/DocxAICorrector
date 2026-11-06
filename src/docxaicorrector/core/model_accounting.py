@@ -250,6 +250,7 @@ class RunModelAccountingLedger:
         self._paragraph_disposition_counts: dict[str, int] = {
             status: 0 for status in PARAGRAPH_DISPOSITION_STATUSES
         }
+        self._api_path_counts: dict[str, int] = {}
         self._controlled_block_fallback_block_count = 0
         self._controlled_block_fallback_chars = 0
         self._controlled_block_fallback_kind_counts: dict[str, int] = {}
@@ -283,6 +284,7 @@ class RunModelAccountingLedger:
             self._discarded_block_count = 0
             self._discard_reason_counts = {}
             self._paragraph_disposition_counts = {status: 0 for status in PARAGRAPH_DISPOSITION_STATUSES}
+            self._api_path_counts = {}
             self._controlled_block_fallback_block_count = 0
             self._controlled_block_fallback_chars = 0
             self._controlled_block_fallback_kind_counts = {}
@@ -515,6 +517,16 @@ class RunModelAccountingLedger:
         with self._lock:
             self._paragraph_disposition_counts[status] = self._paragraph_disposition_counts.get(status, 0) + count
 
+    def record_text_api_path(self, api_path: str) -> None:
+        """Count ONE text-generation answer by the provider API that served it (spec 061).
+
+        Responses, Chat Completions or Anthropic Messages. Without it the share of calls the
+        default provider routes through the Chat Completions fallback is unknowable, and
+        that share is what says how often the incomplete check on that path matters.
+        """
+        with self._lock:
+            self._api_path_counts[api_path] = self._api_path_counts.get(api_path, 0) + 1
+
     def model_call_count(self) -> int:
         with self._lock:
             return self._totals.model_call_count
@@ -562,6 +574,10 @@ class RunModelAccountingLedger:
                 # accepted / omitted / source_restored / retry_required. Always all four
                 # keys; a zero states that nothing landed in that bucket.
                 "paragraph_disposition_counts": dict(sorted(self._paragraph_disposition_counts.items())),
+                # Spec 061: text-generation answers per provider API path — ``responses``,
+                # ``chat_completions``, ``anthropic``. An empty mapping means no text call
+                # was answered in this scope.
+                "api_path_counts": dict(sorted(self._api_path_counts.items())),
                 # Blocks the pipeline rejected and shipped anyway (decision
                 # ``fallback_continue``). Reported in characters as well as blocks because
                 # the volume of substituted text IS the price of the defect and blocks
@@ -798,6 +814,10 @@ def record_text_removal(*, site: str, chars: int = 0, emptied_units: int = 0) ->
 
 def record_paragraph_disposition(*, status: str, count: int = 1) -> None:
     get_run_model_accounting_ledger().record_paragraph_disposition(status=status, count=count)
+
+
+def record_text_api_path(api_path: str) -> None:
+    get_run_model_accounting_ledger().record_text_api_path(api_path)
 
 
 def snapshot_run_model_accounting() -> dict[str, object]:

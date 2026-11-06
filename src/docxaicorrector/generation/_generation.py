@@ -32,6 +32,25 @@ from docxaicorrector.core.model_accounting import (
 from docxaicorrector.image.shared import call_responses_create_with_retry, extract_unsupported_parameter_name, is_retryable_error
 from docxaicorrector.generation.marker_attempt_capture import capture_rejected_marker_attempt
 from docxaicorrector.generation.openai_response_utils import collect_response_text_traversal, read_response_field
+from collections.abc import Callable, Mapping
+
+from docxaicorrector.core.model_accounting import record_text_api_path
+from docxaicorrector.generation.model_response import (
+    ANTHROPIC_TRUNCATED_STOP_REASON,
+    API_PATH_ANTHROPIC_MESSAGES,
+    API_PATH_CHAT_COMPLETIONS,
+    API_PATH_RESPONSES,
+    CHAT_COMPLETIONS_TRUNCATED_FINISH_REASON,
+    CollapsedOutput,
+    EmptyResponse,
+    IncompleteResponse,
+    ModelResponse,
+    NonCompletedResponse,
+)
+# The generation layer raises the pipeline's existing cooperative-stop signal rather than
+# inventing a second one (spec 061 FR-022). ``pipeline.contracts`` imports nothing from the
+# pipeline itself, so this edge cannot form an import cycle.
+from docxaicorrector.pipeline.contracts import LatePhaseStopped
 
 if TYPE_CHECKING:
     from docx.document import Document as DocxDocument
@@ -1472,24 +1491,53 @@ def _log_empty_response_shape(response: object, raw_output_text: str, *, error_c
     )
 
 
-def _extract_normalized_markdown(response: object) -> str:
+_EMPTY_RESPONSE_MESSAGE = "Модель вернула пустой ответ (empty_response)."
+_COLLAPSED_OUTPUT_MESSAGE = "Модель вернула ответ, который схлопнулся после нормализации (collapsed_output)."
+_INCOMPLETE_RESPONSE_MESSAGE = "Модель не завершила генерацию (incomplete_response)."
+
+
+def _require_complete_markdown(model_response: ModelResponse) -> str:
+    """The ONE place an incomplete answer is refused, whichever API produced it (FR-011).
+
+    Raising here, rather than in each extractor, is what makes the three paths behave
+    identically: a truncated answer whose markers happen to be intact is still a truncated
+    answer, and the attempt loop retries it with a larger budget on every path.
+    """
+
+    if model_response.incomplete:
+        raise IncompleteResponse(_INCOMPLETE_RESPONSE_MESSAGE)
+    return model_response.text
+
+
+def _read_responses_model_response(response: object) -> ModelResponse:
     response_status = read_response_field(response, "status")
     if response_status == "incomplete":
         _log_empty_response_shape(response, "", error_code="incomplete_response")
-        raise RuntimeError("Модель не завершила генерацию (incomplete_response).")
+        incomplete_reason = read_response_field(read_response_field(response, "incomplete_details"), "reason")
+        return ModelResponse(
+            text="",
+            incomplete=True,
+            stop_reason=incomplete_reason if isinstance(incomplete_reason, str) else None,
+        )
     if isinstance(response_status, str) and response_status != "completed":
         _log_empty_response_shape(response, "", error_code="non_completed_response")
-        raise RuntimeError(f"Модель вернула неожиданный статус ответа: {response_status} (non_completed_response).")
+        raise NonCompletedResponse(
+            f"Модель вернула неожиданный статус ответа: {response_status} (non_completed_response)."
+        )
 
     raw_output_text = _extract_response_output_text(response)
     markdown = normalize_model_output(raw_output_text)
     if markdown:
-        return markdown
+        return ModelResponse(text=markdown)
     error_code = "collapsed_output" if raw_output_text else "empty_response"
     _log_empty_response_shape(response, raw_output_text, error_code=error_code)
     if raw_output_text:
-        raise RuntimeError("Модель вернула ответ, который схлопнулся после нормализации (collapsed_output).")
-    raise RuntimeError("Модель вернула пустой ответ (empty_response).")
+        raise CollapsedOutput(_COLLAPSED_OUTPUT_MESSAGE)
+    raise EmptyResponse(_EMPTY_RESPONSE_MESSAGE)
+
+
+def _extract_normalized_markdown(response: object) -> str:
+    return _require_complete_markdown(_read_responses_model_response(response))
 
 
 def _call_responses_create(client: "OpenAI", request_kwargs: dict[str, Any]) -> object:
@@ -1623,28 +1671,59 @@ def _call_chat_completions_create(client: "OpenAI", request_kwargs: dict[str, ob
             return response
 
 
-def _extract_chat_completion_markdown(response: object) -> str:
+def _response_item_text(item: object) -> str:
+    """The text of one content item, whether it arrived as a mapping or as an SDK object.
+
+    FR-013: branch on the item's KIND. The previous ``getattr(item, "text", "") or
+    item.get("text")`` reached ``.get`` whenever ``.text`` was empty, so an SDK object with
+    an empty text and no ``get`` raised ``AttributeError`` instead of contributing nothing.
+    """
+
+    if isinstance(item, Mapping):
+        return str(item.get("text") or "")
+    return str(getattr(item, "text", "") or "")
+
+
+def _joined_response_item_texts(content: Iterable[object]) -> str:
+    text_parts = [
+        _response_item_text(item)
+        for item in content
+        if isinstance(item, Mapping) or hasattr(item, "text")
+    ]
+    return "\n".join(part for part in text_parts if part)
+
+
+def _read_chat_completion_model_response(response: object) -> ModelResponse:
     choices = getattr(response, "choices", None)
     if not isinstance(choices, list) or not choices:
         raise RuntimeError("Provider 'openrouter' не поддерживает required text API surface для selector '<runtime>'.")
     first_choice = choices[0]
+    finish_reason = getattr(first_choice, "finish_reason", None)
     message = getattr(first_choice, "message", None)
     content = getattr(message, "content", None)
     if isinstance(content, str):
-        markdown = normalize_model_output(content)
-        if markdown:
-            return markdown
-        raise RuntimeError("Модель вернула ответ, который схлопнулся после нормализации (collapsed_output).")
-    if isinstance(content, list):
-        text_parts = [
-            str(getattr(item, "text", "") or item.get("text") or "")
-            for item in content
-            if isinstance(item, dict) or hasattr(item, "text")
-        ]
-        markdown = normalize_model_output("\n".join(part for part in text_parts if part))
-        if markdown:
-            return markdown
-    raise RuntimeError("Модель вернула пустой ответ (empty_response).")
+        raw_text = content
+    elif isinstance(content, list):
+        raw_text = _joined_response_item_texts(content)
+    else:
+        raw_text = ""
+    markdown = normalize_model_output(raw_text)
+    # Truncation is read BEFORE emptiness, as on the Responses path: an answer cut off at
+    # its first token is a budget problem, and only the incomplete path raises the budget.
+    if finish_reason == CHAT_COMPLETIONS_TRUNCATED_FINISH_REASON:
+        return ModelResponse(text=markdown, incomplete=True, stop_reason=finish_reason)
+    if markdown:
+        return ModelResponse(
+            text=markdown,
+            stop_reason=finish_reason if isinstance(finish_reason, str) else None,
+        )
+    if isinstance(content, str):
+        raise CollapsedOutput(_COLLAPSED_OUTPUT_MESSAGE)
+    raise EmptyResponse(_EMPTY_RESPONSE_MESSAGE)
+
+
+def _extract_chat_completion_markdown(response: object) -> str:
+    return _require_complete_markdown(_read_chat_completion_model_response(response))
 
 
 def _extract_anthropic_messages_payload(request_kwargs: dict[str, object]) -> tuple[str, list[dict[str, str]]]:
@@ -1719,19 +1798,26 @@ def _call_anthropic_messages_create(client: object, request_kwargs: dict[str, ob
             return response
 
 
-def _extract_anthropic_message_markdown(response: object) -> str:
+def _read_anthropic_model_response(response: object) -> ModelResponse:
+    stop_reason = getattr(response, "stop_reason", None)
     content = getattr(response, "content", None)
-    if not isinstance(content, list) or not content:
-        raise RuntimeError("Модель вернула пустой ответ (empty_response).")
-    text_parts = [
-        str(getattr(item, "text", "") or item.get("text") or "")
-        for item in content
-        if isinstance(item, dict) or hasattr(item, "text")
-    ]
-    markdown = normalize_model_output("\n".join(part for part in text_parts if part))
+    markdown = (
+        normalize_model_output(_joined_response_item_texts(content))
+        if isinstance(content, list)
+        else ""
+    )
+    if stop_reason == ANTHROPIC_TRUNCATED_STOP_REASON:
+        return ModelResponse(text=markdown, incomplete=True, stop_reason=stop_reason)
     if markdown:
-        return markdown
-    raise RuntimeError("Модель вернула пустой ответ (empty_response).")
+        return ModelResponse(
+            text=markdown,
+            stop_reason=stop_reason if isinstance(stop_reason, str) else None,
+        )
+    raise EmptyResponse(_EMPTY_RESPONSE_MESSAGE)
+
+
+def _extract_anthropic_message_markdown(response: object) -> str:
+    return _require_complete_markdown(_read_anthropic_model_response(response))
 
 
 def _estimate_max_output_tokens(target_text: str) -> int:
@@ -1777,11 +1863,17 @@ def _boost_request_output_budget(
 
 
 def _call_markdown_request_with_sdk_fallback(client: "OpenAI", request_kwargs: dict[str, object]) -> tuple[str, bool]:
+    # Each branch records which API answered BEFORE extracting, so a call that answered and
+    # was then refused (empty, truncated) still counts against the path that served it.
+    # The Assumptions of spec 061 need this number: how often the default provider really
+    # falls back to Chat Completions is unknown until it is counted.
     if _is_anthropic_client(client):
         response = _call_anthropic_messages_create(client, request_kwargs)
+        record_text_api_path(API_PATH_ANTHROPIC_MESSAGES)
         return _extract_anthropic_message_markdown(response), False
     try:
         response = _call_responses_create(client, cast(dict[str, Any], request_kwargs))
+        record_text_api_path(API_PATH_RESPONSES)
         return _extract_normalized_markdown(response), False
     except Exception as exc:
         if not _is_openrouter_client(client) or not _is_openrouter_responses_compatibility_error(exc):
@@ -1801,6 +1893,7 @@ def _call_markdown_request_with_sdk_fallback(client: "OpenAI", request_kwargs: d
             fallback_reason=str(exc),
         )
         chat_response = _call_chat_completions_create(client, request_kwargs)
+        record_text_api_path(API_PATH_CHAT_COMPLETIONS)
         return _extract_chat_completion_markdown(chat_response), True
 
 
@@ -1855,7 +1948,7 @@ def _recover_from_persistent_empty_response(
         allow_unresolved_paragraphs=True,
     )
     if not cleaned_markdown.strip():
-        raise RuntimeError("Модель вернула пустой ответ (empty_response).")
+        raise EmptyResponse(_EMPTY_RESPONSE_MESSAGE)
     return _deliver_marker_preserved_block(
         cleaned_markdown, marker_mode=marker_mode, stage="recovery"
     )
@@ -1903,8 +1996,16 @@ def _block_source_fallback_result(
     )
 
 
-def _is_incomplete_response_error(exc: Exception) -> bool:
-    return isinstance(exc, RuntimeError) and "incomplete_response" in str(exc)
+# FR-012: every generation failure class below is decided by the exception's TYPE. Reading
+# a substring of the message is how ``collapsed_output`` came to be retried by one predicate
+# and unknown to the next, so that after recovery it escaped as an exception where
+# ``empty_response`` took a controlled fallback. The marker-validation predicate further
+# down still keys on its message prefix: that class has two raise sites that are bare
+# ``RuntimeError``s, and it is not one of the four classes this rule converts.
+
+
+def _is_incomplete_response_error(exc: BaseException) -> bool:
+    return isinstance(exc, IncompleteResponse)
 
 
 def _can_fallback_to_source_text_after_incomplete_response(target_text: str) -> bool:
@@ -1915,26 +2016,40 @@ def _can_fallback_to_source_text_after_marker_validation_failure(target_text: st
     return marker_mode and bool(target_text.strip())
 
 
-def _is_empty_response_error(exc: Exception) -> bool:
-    return isinstance(exc, RuntimeError) and "empty_response" in str(exc)
+def _is_empty_or_collapsed_response_error(exc: BaseException) -> bool:
+    """An answer with no usable text. One class for the fallback: whether the text was
+    absent or collapsed to nothing under normalisation, the block has no translation."""
+
+    return isinstance(exc, (EmptyResponse, CollapsedOutput))
 
 
 def _can_fallback_to_source_text_after_empty_response(target_text: str) -> bool:
     return bool(target_text.strip())
 
 
-def _is_non_completed_response_error(exc: Exception) -> bool:
-    return isinstance(exc, RuntimeError) and "non_completed_response" in str(exc)
+def _is_non_completed_response_error(exc: BaseException) -> bool:
+    return isinstance(exc, NonCompletedResponse)
 
 
 def _can_fallback_to_source_text_after_non_completed_response(target_text: str) -> bool:
     return bool(target_text.strip())
 
 
-def _is_retryable_empty_generation_error(exc: Exception) -> bool:
-    return isinstance(exc, RuntimeError) and (
-        "empty_response" in str(exc) or "collapsed_output" in str(exc) or "incomplete_response" in str(exc)
-    )
+def _is_retryable_empty_generation_error(exc: BaseException) -> bool:
+    return isinstance(exc, (EmptyResponse, CollapsedOutput, IncompleteResponse))
+
+
+def _raise_if_stop_requested(should_stop: Callable[[], bool] | None) -> None:
+    """FR-022: the Stop button is honoured before a model call, not only between blocks.
+
+    Checked before every attempt, the recovery call and — through the nested call each
+    ladder step makes — every ladder step, so one block's retries can no longer keep buying
+    calls after the user pressed Stop. ``LatePhaseStopped`` derives from ``BaseException``,
+    which is what carries it past every ``except Exception`` between here and the block loop.
+    """
+
+    if should_stop is not None and should_stop():
+        raise LatePhaseStopped()
 
 
 def _is_retryable_marker_validation_error(exc: Exception) -> bool:
@@ -2154,6 +2269,7 @@ def _ladder_model_answer(
     max_retries: int,
     block_index: int | None,
     unit_label: str,
+    should_stop: Callable[[], bool] | None = None,
 ) -> str:
     """One ladder call, for ONE paragraph, answered as one paragraph. Raises otherwise.
 
@@ -2189,10 +2305,13 @@ def _ladder_model_answer(
         marker_mode=False,
         block_index=block_index,
         allow_controlled_source_fallback=False,
+        # The nested call checks this before each of its attempts, so every ladder step is
+        # preceded by a stop check without the ladder growing one of its own (FR-022).
+        should_stop=should_stop,
     )
     cleaned = _PARAGRAPH_MARKER_PATTERN.sub("", answer).strip()
     if not cleaned:
-        raise RuntimeError("Модель вернула пустой ответ (empty_response).")
+        raise EmptyResponse(_EMPTY_RESPONSE_MESSAGE)
     if re.search(r"\n\s*\n", cleaned):
         if _has_structural_output_line(cleaned):
             raise RuntimeError(f"ladder_answer_paragraph_split:{unit_label}")
@@ -2220,6 +2339,7 @@ def _ladder_translate_unit(
     context_after: str,
     max_retries: int,
     block_index: int | None,
+    should_stop: Callable[[], bool] | None = None,
 ) -> _LadderUnitOutcome:
     """Translate ONE paragraph, dividing it by sentences if its size is what failed.
 
@@ -2242,6 +2362,7 @@ def _ladder_translate_unit(
             max_retries=max_retries,
             block_index=block_index,
             unit_label=unit_label,
+            should_stop=should_stop,
         )
         return outcome
     except Exception as exc:
@@ -2295,6 +2416,7 @@ def _ladder_translate_unit(
                     max_retries=max_retries,
                     block_index=block_index,
                     unit_label=unit_label,
+                    should_stop=should_stop,
                 )
             )
         except Exception:
@@ -2420,6 +2542,7 @@ def _attempt_degradation_ladder(
     context_before: str,
     context_after: str,
     allow_controlled_source_fallback: bool,
+    should_stop: Callable[[], bool] | None = None,
 ) -> str | None:
     """Steps 2 and 3, or ``None`` when the ladder declines or rescues nothing.
 
@@ -2479,6 +2602,7 @@ def _attempt_degradation_ladder(
                 context_after=units[index + 1] if index + 1 < len(units) else context_after,
                 max_retries=max_retries,
                 block_index=block_index,
+                should_stop=should_stop,
             )
         )
 
@@ -2525,6 +2649,7 @@ def generate_markdown_block(
     block_index: int | None = None,
     *,
     allow_controlled_source_fallback: bool = True,
+    should_stop: Callable[[], bool] | None = None,
 ) -> str:
     """Process ONE block, retrying, then dividing, and only then substituting its source.
 
@@ -2533,6 +2658,10 @@ def generate_markdown_block(
     four controlled source fallbacks are off, so the caller can tell a translation from a
     silently substituted source — and, because the ladder only ever calls with ``False``,
     the ladder cannot re-enter itself and the recursion depth is exactly one.
+
+    ``should_stop``, when given, is asked before every model call this block makes — each
+    attempt, the recovery call and each ladder step — and a ``True`` raises
+    ``LatePhaseStopped`` instead of making the call (spec 061 FR-022).
     """
 
     if isinstance(max_retries, bool) or not isinstance(max_retries, int):
@@ -2601,6 +2730,8 @@ def generate_markdown_block(
     block_was_retried = False
 
     for attempt in range(1, max_retries + 1):
+        # Outside the ``try`` on purpose: a stop is not a failed attempt to classify.
+        _raise_if_stop_requested(should_stop)
         try:
             markdown = _call_markdown_request_with_sdk_fallback(client, request_kwargs)[0]
             return _finalize_generated_markdown(
@@ -2660,6 +2791,7 @@ def generate_markdown_block(
         _is_retryable_empty_generation_error(last_exception)
         or _is_retryable_marker_validation_error(last_exception)
     ):
+        _raise_if_stop_requested(should_stop)
         record_retry_attempt(
             reason="recovery_after_exhausted_retries",
             paragraph_count=block_paragraph_count,
@@ -2710,6 +2842,7 @@ def generate_markdown_block(
                 context_before=context_before_text,
                 context_after=context_after_text,
                 allow_controlled_source_fallback=allow_controlled_source_fallback,
+                should_stop=should_stop,
             )
             if ladder_result is not None:
                 return ladder_result
@@ -2751,7 +2884,10 @@ def generate_markdown_block(
                     source_paragraph_chunks=source_paragraph_chunks,
                     marker_mode=marker_mode,
                 )
-            if _is_empty_response_error(recovery_exc) and _can_fallback_to_source_text_after_empty_response(
+            # ``collapsed_output`` lands here too (FR-012): an answer that was an empty code
+            # fence is as untranslated as no answer, and until the classes were types it
+            # escaped this branch and took the run down instead.
+            if _is_empty_or_collapsed_response_error(recovery_exc) and _can_fallback_to_source_text_after_empty_response(
                 target_text
             ):
                 record_model_output_discarded(reason="empty_response_source_fallback", block_count=1)

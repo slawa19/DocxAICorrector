@@ -4478,6 +4478,9 @@ def _build_model_accounting_summary_lines(model_accounting: Mapping[str, object]
     ]
     for field in (
         "retry_reason_counts",
+        # Spec 061: which provider API answered each text call. Printed so the share of
+        # the Chat Completions fallback on the default provider is a number in the summary.
+        "api_path_counts",
         "model_output_discarded_reason_counts",
         "controlled_block_fallback_kind_counts",
         "controlled_block_fallback_kind_chars",
