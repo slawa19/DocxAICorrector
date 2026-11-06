@@ -142,17 +142,114 @@ def test_anthropic_context_window_stop_reason_reads_as_incomplete():
         generation._extract_anthropic_message_markdown(response)
 
 
-def test_every_anthropic_truncation_reason_is_a_real_sdk_stop_reason():
-    """The set is read from the SDK, not invented: each member is a ``StopReason`` literal,
-    and ``end_turn`` (the normal finish) is not one of them (anti-vacuum)."""
+def test_completion_is_defined_positively_against_the_sdk_literals():
+    """The complete sets are read from the SDK, not invented, and EVERY other reason the SDK
+    can report reads as incomplete — so a reason added to the SDK later is incomplete until
+    someone decides otherwise, instead of silently accepted."""
     from typing import get_args
 
     from anthropic.types.stop_reason import StopReason
+    from openai.types.chat.chat_completion import Choice
 
-    from docxaicorrector.generation.model_response import ANTHROPIC_TRUNCATED_STOP_REASONS
+    from docxaicorrector.generation.model_response import (
+        ANTHROPIC_COMPLETE_STOP_REASONS,
+        CHAT_COMPLETIONS_COMPLETE_FINISH_REASONS,
+        anthropic_stop_is_complete,
+        chat_completion_finish_is_complete,
+    )
 
-    assert ANTHROPIC_TRUNCATED_STOP_REASONS <= set(get_args(StopReason))
-    assert "end_turn" not in ANTHROPIC_TRUNCATED_STOP_REASONS
+    anthropic_reasons = set(get_args(StopReason))
+    chat_reasons = set(get_args(Choice.model_fields["finish_reason"].annotation))
+    assert ANTHROPIC_COMPLETE_STOP_REASONS <= anthropic_reasons
+    assert CHAT_COMPLETIONS_COMPLETE_FINISH_REASONS <= chat_reasons
+    assert {reason for reason in anthropic_reasons if anthropic_stop_is_complete(reason)} == {
+        "end_turn",
+        "stop_sequence",
+    }
+    assert {reason for reason in chat_reasons if chat_completion_finish_is_complete(reason)} == {"stop"}
+    # A provider that reports no reason has not said the answer was cut off.
+    assert anthropic_stop_is_complete(None) and chat_completion_finish_is_complete(None)
+
+
+@pytest.mark.parametrize("finish_reason", ["content_filter", "tool_calls", "function_call"])
+def test_a_non_normal_chat_finish_with_text_reads_as_incomplete(finish_reason):
+    response = ChatCompletion.model_construct(
+        choices=[
+            ChatChoice.model_construct(
+                index=0,
+                finish_reason=finish_reason,
+                message=ChatCompletionMessage.model_construct(role="assistant", content="Частичный ответ"),
+            )
+        ]
+    )
+
+    assert generation._read_chat_completion_model_response(response) == ModelResponse(
+        text="Частичный ответ", incomplete=True, stop_reason=finish_reason
+    )
+
+
+@pytest.mark.parametrize("stop_reason", ["refusal", "tool_use", "pause_turn"])
+def test_a_non_normal_anthropic_stop_with_text_reads_as_incomplete(stop_reason):
+    response = AnthropicMessage.model_construct(
+        content=[AnthropicTextBlock.model_construct(type="text", text="Частичный ответ")],
+        stop_reason=stop_reason,
+    )
+
+    assert generation._read_anthropic_model_response(response) == ModelResponse(
+        text="Частичный ответ", incomplete=True, stop_reason=stop_reason
+    )
+
+
+def test_a_content_filtered_chat_answer_with_intact_markers_is_retried_not_accepted():
+    """Review finding F3: the filtered answer is non-empty and its markers are intact, so by
+    the marker contract alone it would ship. It is retried and the clean answer is kept."""
+    chat_calls: list[dict[str, Any]] = []
+    client = _openrouter_chat_only_client(
+        [(_COMPLETE_ANSWER.replace("Второй абзац.", "Отфильтровано."), "content_filter"), (_COMPLETE_ANSWER, "stop")],
+        chat_calls,
+    )
+
+    result = _generate_marker_block(client)
+
+    assert len(chat_calls) == 2
+    assert "Второй абзац." in str(result)
+    assert "Отфильтровано." not in str(result)
+    assert model_accounting.snapshot_run_model_accounting()["retry_reason_counts"] == {
+        "incomplete_response": 1
+    }
+
+
+def test_an_anthropic_refusal_with_intact_markers_is_retried_not_accepted():
+    calls: list[dict[str, Any]] = []
+    client = _anthropic_client(
+        [(_COMPLETE_ANSWER.replace("Второй абзац.", "Не могу."), "refusal"), (_COMPLETE_ANSWER, "end_turn")],
+        calls,
+    )
+
+    result = _generate_marker_block(client)
+
+    assert len(calls) == 2
+    assert "Второй абзац." in str(result)
+    assert "Не могу." not in str(result)
+
+
+def test_a_normal_finish_is_accepted_on_the_first_call_on_both_paths():
+    """Anti-vacuum for the two tests above: ``stop`` and ``end_turn`` cost one call each."""
+    chat_calls: list[dict[str, Any]] = []
+    anthropic_calls: list[dict[str, Any]] = []
+
+    chat_result = _generate_marker_block(_openrouter_chat_only_client([(_COMPLETE_ANSWER, "stop")], chat_calls))
+    anthropic_result = _generate_marker_block(_anthropic_client([(_COMPLETE_ANSWER, "end_turn")], anthropic_calls))
+
+    assert (len(chat_calls), len(anthropic_calls)) == (1, 1)
+    assert "Второй абзац." in str(chat_result) and "Второй абзац." in str(anthropic_result)
+
+
+def test_a_chat_answer_with_no_choices_takes_the_empty_response_road():
+    """Review finding F4 (second half): no choice at all is an EMPTY answer, typed, so the
+    retry / recovery / controlled-fallback road handles it instead of the run ending."""
+    with pytest.raises(EmptyResponse):
+        generation._read_chat_completion_model_response(ChatCompletion.model_construct(choices=[]))
 
 
 def test_responses_incomplete_status_reads_as_incomplete_with_the_provider_reason():
@@ -567,3 +664,204 @@ def test_run_summary_prints_the_api_path_counter():
     lines = harness._build_model_accounting_summary_lines({"api_path_counts": {"chat_completions": 3, "responses": 97}})
 
     assert 'model_accounting_api_path_counts={"chat_completions": 3, "responses": 97}' in lines
+
+
+# --- review findings F4 and F7 -----------------------------------------------------------
+
+
+def test_incomplete_attempts_then_a_failed_recovery_take_the_controlled_fallback(monkeypatch):
+    """Review finding F4. Every attempt came back ``incomplete``, then the recovery call came
+    back ``status="failed"``. The non-completed fallback keyed on the ATTEMPTS' exception and
+    could not see the recovery's, so the exception escaped and the run died after the blocks
+    it had paid for. The recovery's non-completed answer now takes the same controlled
+    fallback, with the same event and counter."""
+
+    events: list[str] = []
+    monkeypatch.setattr(generation, "log_event", lambda _level, event_id, *_a, **_k: events.append(event_id))
+    calls: list[dict[str, Any]] = []
+    max_retries = 2
+
+    def create(**kwargs):
+        calls.append(dict(kwargs))
+        if len(calls) <= max_retries:
+            return SimpleNamespace(status="incomplete", output=[SimpleNamespace(type="reasoning", status="incomplete")])
+        return SimpleNamespace(status="failed", output=[])
+
+    result = _generate_marker_block(SimpleNamespace(responses=SimpleNamespace(create=create)), max_retries=max_retries)
+
+    assert len(calls) == max_retries + 1
+    assert str(result) == "Source paragraph one.\n\nSource paragraph two."
+    dispositions = generation.marker_paragraph_dispositions(result)
+    assert dispositions is not None
+    assert [item.status for item in dispositions] == ["source_restored", "source_restored"]
+    assert "markdown_non_completed_response_source_fallback" in events
+    snapshot = model_accounting.snapshot_run_model_accounting()
+    assert snapshot["model_output_discarded_reason_counts"] == {"non_completed_response_source_fallback": 1}
+
+
+def test_a_failed_recovery_with_the_fallback_off_still_raises():
+    """Anti-vacuum for F4: the fallback is a CONTROLLED one — with fallbacks off (a ladder
+    step) the non-completed recovery still raises, so a ladder can tell it from a translation."""
+    calls: list[dict[str, Any]] = []
+
+    def create(**kwargs):
+        calls.append(dict(kwargs))
+        if len(calls) <= 1:
+            return SimpleNamespace(status="incomplete", output=[])
+        return SimpleNamespace(status="cancelled", output=[])
+
+    with pytest.raises(NonCompletedResponse):
+        generation.generate_markdown_block(
+            client=cast(Any, SimpleNamespace(responses=SimpleNamespace(create=create))),
+            model="some-model",
+            system_prompt="system",
+            target_text="Один абзац.",
+            context_before="",
+            context_after="",
+            max_retries=1,
+            allow_controlled_source_fallback=False,
+        )
+
+
+def test_a_chat_answer_with_no_choices_ends_in_the_empty_response_fallback_not_a_crash():
+    """Review finding F4, second half, through the loop: an OpenRouter Chat Completions answer
+    with no choices used to raise an untyped ``RuntimeError`` and take the run down."""
+
+    class UnsupportedResponsesError(Exception):
+        status_code = 400
+
+    def responses_create(**_kwargs):
+        raise UnsupportedResponsesError("Responses API unsupported for this model; use chat.completions instead.")
+
+    chat_calls: list[dict[str, Any]] = []
+
+    def chat_create(**kwargs):
+        chat_calls.append(dict(kwargs))
+        return ChatCompletion.model_construct(choices=[])
+
+    client = SimpleNamespace(
+        base_url="https://openrouter.ai/api/v1",
+        responses=SimpleNamespace(create=responses_create),
+        chat=SimpleNamespace(completions=SimpleNamespace(create=chat_create)),
+    )
+    target_text = "Короткий исходный абзац, который должен сохраниться без падения пайплайна."
+
+    result = generation.generate_markdown_block(
+        client=cast(Any, client),
+        model="some-model",
+        system_prompt="system",
+        target_text=target_text,
+        context_before="",
+        context_after="",
+        max_retries=2,
+    )
+
+    assert result == target_text
+    assert len(chat_calls) == 3
+    assert model_accounting.snapshot_run_model_accounting()["model_output_discarded_reason_counts"] == {
+        "empty_response_source_fallback": 1
+    }
+
+
+def test_stop_pressed_during_a_refused_responses_call_prevents_the_chat_fallback_call():
+    """Review finding F7. The Chat Completions fallback is a second SDK call inside ONE
+    generation attempt; Stop pressed while the first was being refused must stop it."""
+
+    class UnsupportedResponsesError(Exception):
+        status_code = 400
+
+    stop = {"pressed": False}
+
+    def responses_create(**_kwargs):
+        stop["pressed"] = True
+        raise UnsupportedResponsesError("Responses API unsupported for this model; use chat.completions instead.")
+
+    chat_calls: list[dict[str, Any]] = []
+
+    def chat_create(**kwargs):
+        chat_calls.append(dict(kwargs))
+        raise AssertionError("the chat fallback must not be called after Stop")
+
+    client = SimpleNamespace(
+        base_url="https://openrouter.ai/api/v1",
+        responses=SimpleNamespace(create=responses_create),
+        chat=SimpleNamespace(completions=SimpleNamespace(create=chat_create)),
+    )
+
+    with pytest.raises(LatePhaseStopped):
+        _generate_marker_block(client, should_stop=lambda: stop["pressed"])
+
+    assert chat_calls == []
+
+
+@pytest.mark.parametrize("path", ["chat", "anthropic"])
+def test_stop_pressed_during_a_parameter_refusal_prevents_the_resend(path):
+    """Review finding F7: the parameter-removal loop re-sends the request without the refused
+    parameter — another paid SDK call — and checks Stop before each send."""
+
+    stop = {"pressed": False}
+    calls: list[dict[str, Any]] = []
+
+    def create(**kwargs):
+        calls.append(dict(kwargs))
+        stop["pressed"] = True
+        raise TypeError("create() got an unexpected keyword argument 'temperature'")
+
+    if path == "chat":
+
+        class UnsupportedResponsesError(Exception):
+            status_code = 400
+
+        def responses_create(**_kwargs):
+            raise UnsupportedResponsesError("Responses API unsupported for this model; use chat.completions instead.")
+
+        client: Any = SimpleNamespace(
+            base_url="https://openrouter.ai/api/v1",
+            responses=SimpleNamespace(create=responses_create),
+            chat=SimpleNamespace(completions=SimpleNamespace(create=create)),
+        )
+    else:
+        client = SimpleNamespace(messages=SimpleNamespace(create=create))
+
+    with pytest.raises(LatePhaseStopped):
+        _generate_marker_block(client, should_stop=lambda: stop["pressed"])
+
+    assert len(calls) == 1
+
+
+def test_a_compatibility_fallback_is_one_attempt_and_two_sdk_calls():
+    """``max_model_calls_per_block`` counts GENERATION ATTEMPTS. On OpenRouter a Responses
+    request refused for compatibility is re-sent to Chat Completions inside the same attempt:
+    one attempt, two SDK calls, one served answer in ``api_path_counts``."""
+
+    class UnsupportedResponsesError(Exception):
+        status_code = 400
+
+    sdk_calls: list[str] = []
+
+    def responses_create(**_kwargs):
+        sdk_calls.append("responses")
+        raise UnsupportedResponsesError("Responses API unsupported for this model; use chat.completions instead.")
+
+    def chat_create(**_kwargs):
+        sdk_calls.append("chat")
+        return ChatCompletion.model_construct(
+            choices=[
+                ChatChoice.model_construct(
+                    index=0,
+                    finish_reason="stop",
+                    message=ChatCompletionMessage.model_construct(role="assistant", content=_COMPLETE_ANSWER),
+                )
+            ]
+        )
+
+    client = SimpleNamespace(
+        base_url="https://openrouter.ai/api/v1",
+        responses=SimpleNamespace(create=responses_create),
+        chat=SimpleNamespace(completions=SimpleNamespace(create=chat_create)),
+    )
+
+    _generate_marker_block(client, max_retries=1)
+
+    assert sdk_calls == ["responses", "chat"]
+    assert model_accounting.snapshot_run_model_accounting()["api_path_counts"] == {"chat_completions": 1}

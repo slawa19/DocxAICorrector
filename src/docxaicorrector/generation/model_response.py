@@ -23,18 +23,31 @@ API_PATH_RESPONSES = "responses"
 API_PATH_CHAT_COMPLETIONS = "chat_completions"
 API_PATH_ANTHROPIC_MESSAGES = "anthropic"
 
-# The verbatim provider values that mean "the output budget ran out". Read from the
-# installed SDK types, not guessed: ``openai.types.chat.chat_completion.Choice.finish_reason``
-# and ``anthropic.types.stop_reason.StopReason``. The Responses API reports it as
-# ``Response.status == "incomplete"`` instead, which its extractor reads directly.
-CHAT_COMPLETIONS_TRUNCATED_FINISH_REASON = "length"
-# Anthropic has TWO: ``max_tokens`` (the requested output budget ran out) and
-# ``model_context_window_exceeded`` (prompt plus output hit the model's context window, so
-# generation stopped mid-answer). The second was not read until 2026-11-06 and a cut-off
-# answer with intact markers was accepted as a translation. Both mean "the text stops
-# early"; the attempt loop treats them alike, and the degradation ladder — which asks for
-# less at a time — is the remedy that also fits the second one.
-ANTHROPIC_TRUNCATED_STOP_REASONS = frozenset({"max_tokens", "model_context_window_exceeded"})
+# Completion is defined POSITIVELY: an answer is complete only when the provider says it
+# finished normally. Until 2026-11-06 it was defined negatively — only "the output budget ran
+# out" counted as incomplete — so a non-empty answer stopped by a content filter, a refusal
+# or a tool call was accepted as the block's translation. Every other reason the installed
+# SDK can report (``openai.types.chat.chat_completion.Choice.finish_reason``,
+# ``anthropic.types.stop_reason.StopReason``) is incomplete, with the reason kept verbatim
+# in ``ModelResponse.stop_reason`` for the log. ``None`` is complete: a compatible provider
+# that does not report a reason at all has not said the answer was cut off, and treating
+# silence as truncation would retry every answer of such a provider.
+# The Responses API reports completion as ``Response.status`` and is read by its own
+# extractor, unchanged.
+CHAT_COMPLETIONS_COMPLETE_FINISH_REASONS = frozenset({"stop"})
+ANTHROPIC_COMPLETE_STOP_REASONS = frozenset({"end_turn", "stop_sequence"})
+
+
+def chat_completion_finish_is_complete(finish_reason: object) -> bool:
+    return finish_reason is None or (
+        isinstance(finish_reason, str) and finish_reason in CHAT_COMPLETIONS_COMPLETE_FINISH_REASONS
+    )
+
+
+def anthropic_stop_is_complete(stop_reason: object) -> bool:
+    return stop_reason is None or (
+        isinstance(stop_reason, str) and stop_reason in ANTHROPIC_COMPLETE_STOP_REASONS
+    )
 
 
 @dataclass(frozen=True)
