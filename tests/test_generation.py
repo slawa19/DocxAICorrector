@@ -1969,13 +1969,33 @@ def test_a_merge_is_asked_again_and_the_second_answer_is_accepted(monkeypatch):
     assert snapshot["degradation_ladder_block_count"] == 0
 
 
-def test_a_merge_that_persists_costs_the_attempts_it_already_had_and_ships_restored(monkeypatch):
-    """FR-003 + FR-004 on the loop: every attempt merges.
+def _merge_then_ladder_client(
+    marker_answer: str, ladder_answers: dict[str, str], *, requests: list[dict[str, Any]]
+) -> Any:
+    """Every MARKER request gets ``marker_answer``; a ladder request (no markers) gets the
+    answer keyed by the source it carries, or nothing — so a test decides per paragraph
+    whether the ladder rescues it."""
 
-    The retries spend the SAME ``max_retries`` the loop always had — no recovery call, no
-    ladder, because the last attempt accepts the repair — and the last attempt ships the
-    pair as ``source_restored`` with the discard counter, while the earlier attempts are
-    counted as merge retries and NOT as discards.
+    def create_response(**kwargs: Any) -> SimpleNamespace:
+        requests.append(dict(kwargs))
+        prompt = kwargs["input"][1]["content"][0]["text"]
+        if "[[DOCX_PARA_" in prompt:
+            return SimpleNamespace(output_text=marker_answer)
+        target = prompt.split("[TARGET BLOCK", 1)[-1].split("[CONTEXT AFTER]", 1)[0]
+        for source, answer in ladder_answers.items():
+            if source in target:
+                return SimpleNamespace(output_text=answer)
+        return SimpleNamespace(output_text="")
+
+    return _as_openai_client(SimpleNamespace(responses=SimpleNamespace(create=create_response)))
+
+
+def test_with_the_ladder_off_a_persistent_merge_is_repaired_on_the_last_attempt(monkeypatch):
+    """Spec 061 Edge Case 1 (FR-003): no ladder, so the last attempt repairs the pair.
+
+    Exactly ``max_retries`` calls — no recovery, no ladder — and the pair ships as
+    ``source_restored`` with the discard counter; the earlier attempts are merge retries,
+    NOT discards. This is the behaviour every block had before the ladder could see merges.
     """
 
     monkeypatch.setattr(generation.time, "sleep", lambda _seconds: None)
@@ -1993,12 +2013,10 @@ def test_a_merge_that_persists_costs_the_attempts_it_already_had_and_ships_resto
         max_retries=max_retries,
         expected_paragraph_ids=["p1344", "p1345"],
         marker_mode=True,
+        allow_controlled_source_fallback=False,
     )
 
     assert len(requests) == max_retries
-    assert len(requests) <= generation.max_model_calls_per_block(
-        max_retries=max_retries, ladder_paragraph_count=2
-    )
     dispositions = generation.marker_paragraph_dispositions(result)
     assert dispositions is not None
     assert [item.status for item in dispositions] == ["source_restored", "source_restored"]
@@ -2008,15 +2026,167 @@ def test_a_merge_that_persists_costs_the_attempts_it_already_had_and_ships_resto
     # Counted once, for the attempt whose repair actually shipped — not once per attempt.
     assert snapshot["model_output_discarded_reason_counts"] == {"marker_chunk_collapse": 1}
     assert snapshot["model_output_discarded_paragraph_count"] == 2
+    assert snapshot["degradation_ladder_block_count"] == 0
+
+
+def test_a_persistent_merge_reaches_the_ladder_and_both_paragraphs_come_back_translated(monkeypatch):
+    """Spec 061 User Story 1, scenario 2 (FR-002): budget exhausted, the merge repeats, and
+    the ladder asks each paragraph alone without markers — where merging is impossible.
+
+    Both paragraphs ``accepted``, no source shipped, and the cost is the attempts, the
+    recovery call and one ladder call per paragraph — inside the stated ceiling.
+    """
+
+    monkeypatch.setattr(generation.time, "sleep", lambda _seconds: None)
+    model_accounting.reset_run_model_accounting()
+    requests: list[dict[str, Any]] = []
+    max_retries = 3
+
+    result = generation.generate_markdown_block(
+        client=_merge_then_ladder_client(
+            _MERGED_ANSWER,
+            {_STUB_SOURCE_ABSORBED: _FIRST_TRANSLATION, _STUB_SOURCE_COLLAPSED: _SECOND_TRANSLATION},
+            requests=requests,
+        ),
+        model="gpt-5.4",
+        system_prompt="system",
+        target_text=_MERGE_SOURCE_BLOCK,
+        context_before="",
+        context_after="",
+        max_retries=max_retries,
+        expected_paragraph_ids=["p1344", "p1345"],
+        marker_mode=True,
+    )
+
+    dispositions = generation.marker_paragraph_dispositions(result)
+    assert dispositions is not None
+    assert [(item.paragraph_id, item.status, item.text) for item in dispositions] == [
+        ("p1344", "accepted", _FIRST_TRANSLATION),
+        ("p1345", "accepted", _SECOND_TRANSLATION),
+    ]
+    assert _STUB_SOURCE_COLLAPSED not in result
+    assert len(requests) == max_retries + 1 + 2
+    assert len(requests) <= generation.max_model_calls_per_block(
+        max_retries=max_retries, ladder_paragraph_count=2
+    )
+    snapshot = model_accounting.snapshot_run_model_accounting()
+    assert snapshot["degradation_ladder_trigger_counts"] == {"marker_contract": 1}
+    assert snapshot["degradation_ladder_translated_paragraph_count"] == 2
+    # Every attempt and the recovery call sent the merge back: 3 + 1.
+    assert snapshot["marker_chunk_merge_retry_count"] == max_retries + 1
+    # ANTI-VACUUM for FR-005: nothing was delivered as source, so nothing is a discard.
+    assert snapshot["model_output_discarded_reason_counts"] == {}
+
+
+_THIRD_SOURCE = (
+    "A third paragraph that the model translated correctly in the very same merged answer, "
+    "and which must keep that translation whatever happens to the pair beside it."
+)
+_THIRD_TRANSLATION = "Третий абзац, переведённый в том же ответе правильно."
+
+
+def test_a_persistent_merge_the_ladder_cannot_rescue_falls_back_to_the_pair_only(monkeypatch):
+    """Spec 061 User Story 1, scenario 3: the ladder rescued nothing.
+
+    The fallback is the PAIR repair — the two merged paragraphs ``source_restored``, the
+    third paragraph keeps its translation from the model's own answer — with the same
+    ``marker_chunk_collapse`` counter (2 paragraphs) and event as before, and NOT the
+    whole-block ``marker_validation_source_fallback``, which would turn a failed ladder into
+    more source text than no ladder at all.
+    """
+
+    monkeypatch.setattr(generation.time, "sleep", lambda _seconds: None)
+    model_accounting.reset_run_model_accounting()
+    requests: list[dict[str, Any]] = []
+    logged_events: list[str] = []
+    real_log_event = generation.log_event
+    monkeypatch.setattr(
+        generation,
+        "log_event",
+        lambda level, event_id, message, **context: (
+            logged_events.append(event_id) or real_log_event(level, event_id, message, **context)
+        ),
+    )
+    max_retries = 3
+    merged_answer = f"{_MERGED_ANSWER}\n\n[[DOCX_PARA_p1346]]\n{_THIRD_TRANSLATION}"
+
+    result = generation.generate_markdown_block(
+        client=_merge_then_ladder_client(merged_answer, {}, requests=requests),
+        model="gpt-5.4",
+        system_prompt="system",
+        target_text=f"{_MERGE_SOURCE_BLOCK}\n\n[[DOCX_PARA_p1346]]\n{_THIRD_SOURCE}",
+        context_before="",
+        context_after="",
+        max_retries=max_retries,
+        expected_paragraph_ids=["p1344", "p1345", "p1346"],
+        marker_mode=True,
+    )
+
+    dispositions = generation.marker_paragraph_dispositions(result)
+    assert dispositions is not None
+    assert [(item.paragraph_id, item.status, item.text) for item in dispositions] == [
+        ("p1344", "source_restored", _STUB_SOURCE_ABSORBED),
+        ("p1345", "source_restored", _STUB_SOURCE_COLLAPSED),
+        ("p1346", "accepted", _THIRD_TRANSLATION),
+    ]
+    snapshot = model_accounting.snapshot_run_model_accounting()
+    assert snapshot["model_output_discarded_reason_counts"] == {"marker_chunk_collapse": 1}
+    assert snapshot["model_output_discarded_paragraph_count"] == 2
+    assert snapshot["model_output_discarded_block_count"] == 0
+    assert snapshot["degradation_ladder_unrescued_paragraph_count"] == 3
+    assert "marker_chunk_collapse_source_restored" in logged_events
+    assert "markdown_marker_validation_source_fallback" not in logged_events
+    # The ladder's three nested generations each spent their whole budget (attempts +
+    # recovery) on an empty answer, so this block sits exactly on the ceiling.
+    assert len(requests) == generation.max_model_calls_per_block(
+        max_retries=max_retries, ladder_paragraph_count=3
+    )
+    assert len(requests) == (max_retries + 1) * (1 + 3)
+
+
+def test_a_merge_whose_recovery_fails_otherwise_still_falls_back_to_the_pair(monkeypatch):
+    """The last attempt merged, the recovery call then lost a marker, the ladder rescued
+    nothing. Before the ladder could see merges this block shipped the PAIR repair of the
+    last attempt; it must not get worse and ship the whole block's source instead."""
+
+    monkeypatch.setattr(generation.time, "sleep", lambda _seconds: None)
+    model_accounting.reset_run_model_accounting()
+    requests: list[dict[str, Any]] = []
+
+    def create_response(**kwargs: Any) -> SimpleNamespace:
+        requests.append(dict(kwargs))
+        prompt = kwargs["input"][1]["content"][0]["text"]
+        if "violated the paragraph marker contract" in prompt:
+            return SimpleNamespace(output_text="[[DOCX_PARA_p1344]]\nОдин маркер потерян.")
+        if "[[DOCX_PARA_" in prompt:
+            return SimpleNamespace(output_text=_MERGED_ANSWER)
+        return SimpleNamespace(output_text="")
+
+    result = generation.generate_markdown_block(
+        client=_as_openai_client(SimpleNamespace(responses=SimpleNamespace(create=create_response))),
+        model="gpt-5.4",
+        system_prompt="system",
+        target_text=_MERGE_SOURCE_BLOCK,
+        context_before="",
+        context_after="",
+        max_retries=2,
+        expected_paragraph_ids=["p1344", "p1345"],
+        marker_mode=True,
+    )
+
+    dispositions = generation.marker_paragraph_dispositions(result)
+    assert dispositions is not None
+    assert [item.status for item in dispositions] == ["source_restored", "source_restored"]
+    snapshot = model_accounting.snapshot_run_model_accounting()
+    assert snapshot["model_output_discarded_reason_counts"] == {"marker_chunk_collapse": 1}
+    assert snapshot["model_output_discarded_block_count"] == 0
 
 
 def test_the_ladder_takes_a_merge_as_a_marker_contract_trigger(monkeypatch):
-    """FR-002: handed a ``merged_marker_chunk``, the ladder asks paragraph by paragraph.
-
-    Called directly because under FR-003 the attempt loop accepts a merge on its last
-    attempt and the recovery call, so the merge does not reach the ladder through
-    ``generate_markdown_block``; what is pinned here is that nothing in the ladder would
-    turn it away, and that it rescues the pair with ``marker_mode=False``.
+    """FR-002 at the unit: handed a ``merged_marker_chunk``, the ladder asks paragraph by
+    paragraph with ``marker_mode=False``. The end-to-end route through
+    ``generate_markdown_block`` is pinned by
+    ``test_a_persistent_merge_reaches_the_ladder_and_both_paragraphs_come_back_translated``.
     """
 
     monkeypatch.setattr(generation.time, "sleep", lambda _seconds: None)

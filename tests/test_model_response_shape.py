@@ -127,6 +127,34 @@ def test_anthropic_max_tokens_stop_reason_reads_as_incomplete():
     )
 
 
+def test_anthropic_context_window_stop_reason_reads_as_incomplete():
+    """``model_context_window_exceeded`` stops the answer mid-text exactly as ``max_tokens``
+    does; it is in the installed SDK's ``StopReason`` and was read as a complete answer."""
+    response = AnthropicMessage.model_construct(
+        content=[AnthropicTextBlock.model_construct(type="text", text="Обрезанный")],
+        stop_reason="model_context_window_exceeded",
+    )
+
+    assert generation._read_anthropic_model_response(response) == ModelResponse(
+        text="Обрезанный", incomplete=True, stop_reason="model_context_window_exceeded"
+    )
+    with pytest.raises(IncompleteResponse):
+        generation._extract_anthropic_message_markdown(response)
+
+
+def test_every_anthropic_truncation_reason_is_a_real_sdk_stop_reason():
+    """The set is read from the SDK, not invented: each member is a ``StopReason`` literal,
+    and ``end_turn`` (the normal finish) is not one of them (anti-vacuum)."""
+    from typing import get_args
+
+    from anthropic.types.stop_reason import StopReason
+
+    from docxaicorrector.generation.model_response import ANTHROPIC_TRUNCATED_STOP_REASONS
+
+    assert ANTHROPIC_TRUNCATED_STOP_REASONS <= set(get_args(StopReason))
+    assert "end_turn" not in ANTHROPIC_TRUNCATED_STOP_REASONS
+
+
 def test_responses_incomplete_status_reads_as_incomplete_with_the_provider_reason():
     response = ResponsesResponse.model_construct(
         status="incomplete",

@@ -36,7 +36,7 @@ from collections.abc import Callable, Mapping
 
 from docxaicorrector.core.model_accounting import record_text_api_path
 from docxaicorrector.generation.model_response import (
-    ANTHROPIC_TRUNCATED_STOP_REASON,
+    ANTHROPIC_TRUNCATED_STOP_REASONS,
     API_PATH_ANTHROPIC_MESSAGES,
     API_PATH_CHAT_COMPLETIONS,
     API_PATH_RESPONSES,
@@ -304,13 +304,13 @@ class MarkerValidationError(RuntimeError):
         self.absorbing_paragraph_ids = tuple(absorbing_paragraph_ids or ())
 
 
-# A paragraph the model visibly merged into its neighbour, raised while retry budget is
-# left (spec 061 FR-001). A ``MarkerValidationError`` like every other marker-contract code,
-# so the attempt loop retries it and spec 056 D' captures its answer without a line of their
-# own. The degradation ladder WOULD take it as a ``marker_contract`` trigger, but it never
-# receives one: the last attempt and the recovery call run with
-# ``allow_unresolved_paragraphs=True``, where a merge is repaired (``source_restored``)
-# instead of raised (FR-003).
+# A paragraph the model visibly merged into its neighbour, raised whenever something is
+# still left to ask (spec 061 FR-001/002). A ``MarkerValidationError`` like every other
+# marker-contract code, so the attempt loop retries it, spec 056 D' captures its answer and
+# the degradation ladder takes it as a ``marker_contract`` trigger without a line of their
+# own. The pair is repaired to ``source_restored`` (FR-003) only where nothing is left: the
+# last attempt and the recovery call of a block with NO ladder, and — when the ladder rescued
+# nothing — by ``_merged_pair_repair_fallback`` from the recovery call's own answer.
 MERGED_MARKER_CHUNK_ERROR_CODE = "merged_marker_chunk"
 
 
@@ -812,6 +812,7 @@ def resolve_marker_paragraph_dispositions(
     source_paragraph_chunks: Sequence[str] | None = None,
     allow_unresolved_paragraphs: bool,
     raw_markdown: str | None = None,
+    allow_merge_repair: bool | None = None,
 ) -> list[ParagraphDisposition]:
     """Turn ``retry_required`` paragraphs into a final status, or ask for another attempt.
 
@@ -838,9 +839,19 @@ def resolve_marker_paragraph_dispositions(
     shipped two paragraphs in the source language under ``valid``, once per book on four of
     five recorded audiobook runs. Now, while budget remains, a visible merge raises
     ``merged_marker_chunk`` and the block is asked again; ``source_restored`` is reached
-    only when ``allow_unresolved_paragraphs`` says nothing is left to ask, exactly where
-    ``omitted`` is. The detector itself is unchanged — only WHEN its verdict ships.
+    only when nothing is left to ask. The detector itself is unchanged — only WHEN its
+    verdict ships.
+
+    "Nothing left" is not the same moment for the two failures, so the merge has a flag of
+    its own. An omission has no better remedy than the last attempt; a merge does — the
+    degradation ladder asks each paragraph alone, without markers, where merging is
+    impossible by construction. ``allow_merge_repair`` therefore stays ``False`` through the
+    last attempt and the recovery call whenever the ladder is available, and defaults to
+    ``allow_unresolved_paragraphs`` for every caller that has no ladder to hand the block to.
     """
+
+    if allow_merge_repair is None:
+        allow_merge_repair = allow_unresolved_paragraphs
 
     texts = [disposition.text for disposition in dispositions]
     statuses = list(disposition.status for disposition in dispositions)
@@ -860,7 +871,7 @@ def resolve_marker_paragraph_dispositions(
         merges = _find_marker_chunk_merges(
             texts, source_paragraph_chunks, expected_paragraph_ids=paragraph_ids
         )
-        if merges and not allow_unresolved_paragraphs:
+        if merges and not allow_merge_repair:
             collapsed_ids = [paragraph_ids[merge.collapsed_index] for merge in merges]
             absorbing_ids = list(
                 dict.fromkeys(
@@ -868,9 +879,10 @@ def resolve_marker_paragraph_dispositions(
                 )
             )
             # Counted HERE, not as a discard: nothing reaches the document from this answer.
-            # A raise with budget left is always a retry — ``generate_markdown_block`` passes
-            # ``allow_unresolved_paragraphs=False`` only while ``attempt < max_retries``, and
-            # every ``MarkerValidationError`` is retryable there.
+            # The block is always asked again after this raise — a retry while attempts
+            # remain, then the recovery call, then the ladder — because
+            # ``generate_markdown_block`` withholds the repair only while one of those is
+            # still ahead.
             record_marker_chunk_merge_retry()
             log_event(
                 logging.WARNING,
@@ -1178,6 +1190,7 @@ def _strip_and_validate_paragraph_markers(
     marker_mode: bool,
     source_paragraph_chunks: Sequence[str] | None = None,
     allow_unresolved_paragraphs: bool = False,
+    allow_merge_repair: bool | None = None,
 ) -> str:
     if not marker_mode:
         return markdown
@@ -1188,6 +1201,7 @@ def _strip_and_validate_paragraph_markers(
         source_paragraph_chunks=source_paragraph_chunks,
         allow_unresolved_paragraphs=allow_unresolved_paragraphs,
         raw_markdown=markdown,
+        allow_merge_repair=allow_merge_repair,
     )
     # The joined string still carries exactly one paragraph per marker — an ``omitted``
     # paragraph contributes its own source text — so everything downstream that counts
@@ -1395,6 +1409,7 @@ def _finalize_generated_markdown(
     allow_persistent_context_leakage: bool,
     source_paragraph_chunks: Sequence[str] | None = None,
     allow_unresolved_paragraphs: bool = False,
+    allow_merge_repair: bool | None = None,
 ) -> str:
     cleaned_markdown = _strip_and_validate_paragraph_markers(
         markdown,
@@ -1402,6 +1417,7 @@ def _finalize_generated_markdown(
         marker_mode=marker_mode,
         source_paragraph_chunks=source_paragraph_chunks,
         allow_unresolved_paragraphs=allow_unresolved_paragraphs,
+        allow_merge_repair=allow_merge_repair,
     )
     leaked_fragment = _detect_context_leakage(
         cleaned_markdown,
@@ -1806,7 +1822,7 @@ def _read_anthropic_model_response(response: object) -> ModelResponse:
         if isinstance(content, list)
         else ""
     )
-    if stop_reason == ANTHROPIC_TRUNCATED_STOP_REASON:
+    if isinstance(stop_reason, str) and stop_reason in ANTHROPIC_TRUNCATED_STOP_REASONS:
         return ModelResponse(text=markdown, incomplete=True, stop_reason=stop_reason)
     if markdown:
         return ModelResponse(
@@ -1907,6 +1923,7 @@ def _recover_from_persistent_empty_response(
     marker_mode: bool = False,
     minimum_output_tokens: int | None = None,
     last_exception: Exception | None = None,
+    allow_merge_repair: bool = True,
 ) -> str:
     log_event(
         logging.WARNING,
@@ -1946,6 +1963,8 @@ def _recover_from_persistent_empty_response(
         ),
         # The recovery call is the last chance there is; there is nothing left to retry for.
         allow_unresolved_paragraphs=True,
+        # ...except for a merge, when the caller still has a ladder to hand it to.
+        allow_merge_repair=allow_merge_repair,
     )
     if not cleaned_markdown.strip():
         raise EmptyResponse(_EMPTY_RESPONSE_MESSAGE)
@@ -1993,6 +2012,54 @@ def _block_source_fallback_result(
         ),
         marker_mode=marker_mode,
         stage="block_source_fallback",
+    )
+
+
+def _merged_pair_repair_fallback(
+    exc: BaseException | None,
+    *,
+    expected_paragraph_ids: Sequence[str] | None,
+    source_paragraph_chunks: Sequence[str] | None,
+    marker_mode: bool,
+) -> str | None:
+    """The merge repair the last attempt used to do, applied AFTER the ladder (FR-002/003).
+
+    Reached only when the recovery call raised ``merged_marker_chunk`` and the ladder
+    rescued nothing. The exception holds the recovery call's answer as received (spec 056
+    D'), so the repair is the SAME function over the SAME answer it would have run on a
+    block with no ladder: the merged pair ships its source as ``source_restored`` with the
+    ``marker_chunk_collapse`` counter and event, an emptied paragraph becomes ``omitted``,
+    and every other paragraph keeps its translation. ``None`` for any other exception, so
+    the block-level fallbacks below see exactly what they saw before.
+    """
+
+    if (
+        not marker_mode
+        or not isinstance(exc, MarkerValidationError)
+        or exc.error_code != MERGED_MARKER_CHUNK_ERROR_CODE
+        or not expected_paragraph_ids
+        or source_paragraph_chunks is None
+    ):
+        return None
+    log_event(
+        logging.WARNING,
+        "marker_chunk_merge_pair_repair_after_ladder",
+        "Слияние абзацев не исправлено ни повтором, ни переспросом по абзацам; исходный текст получает только слитая пара.",
+        collapsed_paragraph_ids=list(exc.collapsed_paragraph_ids),
+        absorbing_paragraph_ids=list(exc.absorbing_paragraph_ids),
+        paragraph_count=len(expected_paragraph_ids),
+    )
+    return _deliver_marker_preserved_block(
+        _strip_and_validate_paragraph_markers(
+            exc.raw_markdown,
+            expected_paragraph_ids,
+            marker_mode=True,
+            source_paragraph_chunks=source_paragraph_chunks,
+            allow_unresolved_paragraphs=True,
+            allow_merge_repair=True,
+        ),
+        marker_mode=True,
+        stage="merge_pair_repair",
     )
 
 
@@ -2171,9 +2238,10 @@ def max_model_calls_per_block(
     ``incomplete_response`` again. Every nested generation is bounded the same way and none
     can open a ladder of its own, so the ceiling is a product, not a recursion.
 
-    Retrying a merged paragraph (``merged_marker_chunk``, FR-001) spends the SAME attempts the
-    loop already had — it changes which attempt answers, not how many there are — so it does
-    not appear here, and the test that pins this ceiling is what keeps it that way.
+    A merged paragraph (``merged_marker_chunk``, FR-001/002) travels the SAME road every other
+    marker-contract failure already did — the block's attempts, its recovery call, one ladder
+    step — and its pair-repair fallback after the ladder makes no call at all, so it does not
+    appear here. The tests that pin this ceiling are what keep it that way.
     """
 
     calls_per_generation = max_retries + MODEL_CALLS_PER_GENERATION_BEYOND_RETRIES
@@ -2749,6 +2817,12 @@ def generate_markdown_block(
                 # attempt the answer stands with a per-paragraph status instead of the
                 # whole block being replaced by its own source.
                 allow_unresolved_paragraphs=attempt >= max_retries,
+                # A merge has one more remedy than an omission: the ladder (FR-002). With
+                # the ladder available the last attempt raises ``merged_marker_chunk`` and
+                # the block goes on to the recovery call and then the ladder; without it
+                # (a nested ladder call, or a caller that turned fallbacks off) the last
+                # attempt repairs the pair, exactly as before.
+                allow_merge_repair=attempt >= max_retries and not allow_controlled_source_fallback,
             )
         except Exception as exc:
             last_exception = exc
@@ -2812,6 +2886,7 @@ def generate_markdown_block(
                     else None
                 ),
                 last_exception=last_exception,
+                allow_merge_repair=not allow_controlled_source_fallback,
             )
         except Exception as recovery_exc:
             # The recovery call is the LAST answer the model gives for this block, and the
@@ -2848,6 +2923,22 @@ def generate_markdown_block(
                 return ladder_result
             if not allow_controlled_source_fallback:
                 raise recovery_exc
+            # A merge the ladder could not rescue falls back to the PAIR, not the block:
+            # the two paragraphs get their source, every other paragraph keeps the model's
+            # own answer. Shipping the whole block's source here would make a failed ladder
+            # cost more source-language text than having no ladder at all. The recovery
+            # call's answer is preferred; if IT failed some other way, the last attempt's
+            # merged answer is still the one the block shipped before the ladder could see
+            # merges, so it is used rather than dropping to the whole-block fallback.
+            for merged_exc in (recovery_exc, last_exception):
+                merged_pair_repair = _merged_pair_repair_fallback(
+                    merged_exc,
+                    expected_paragraph_ids=expected_paragraph_ids,
+                    source_paragraph_chunks=source_paragraph_chunks,
+                    marker_mode=marker_mode,
+                )
+                if merged_pair_repair is not None:
+                    return merged_pair_repair
             if _is_incomplete_response_error(recovery_exc) and _can_fallback_to_source_text_after_incomplete_response(target_text):
                 record_model_output_discarded(reason="incomplete_response_source_fallback", block_count=1)
                 log_event(
