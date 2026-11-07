@@ -28,8 +28,9 @@ from __future__ import annotations
 import json
 import math
 import re
+import unicodedata
 from collections import Counter, defaultdict
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from functools import lru_cache
 
@@ -1059,26 +1060,20 @@ def _spelling_identity(source_term: str) -> str:
     return letters.casefold()
 
 
-def _is_abbreviation(source_term: str) -> bool:
-    letters = re.sub(r"[.\s]", "", str(source_term or ""))
-    return len(letters) >= 2 and letters.isalpha() and letters.isupper()
-
-
 def same_spelling_family(first: str, second: str) -> bool:
     """Two source terms that are one name written two ways (spec 064 FR-009), by form only.
 
-    Equal once case, periods and a plural ``s`` are taken off ("US" / "U.S.", "TRC" / "TRCs"),
-    or two abbreviations the longer of which is the shorter plus one letter ("US" / "USA").
+    Equal once case, periods and a plural ``s`` are taken off ("US" / "U.S.", "TRC" / "TRCs").
     Such a pair sharing a rendering is not a collision: there is nothing to tell apart.
+
+    Two DIFFERENT abbreviations are not one spelling, however alike: "GDP" / "GDPR" are two
+    concepts, and "US" / "USA" is one pair, not a class of form (Codex review 2026-11-07,
+    Constitution VII). Such a pair goes to call C, whose answer may say "the same thing
+    written another way" (``find_rendering_collisions``'s ``declared_same``).
     """
 
     first_identity, second_identity = _spelling_identity(first), _spelling_identity(second)
-    if first_identity and first_identity == second_identity:
-        return True
-    if _is_abbreviation(first) and _is_abbreviation(second):
-        shorter, longer = sorted((first_identity, second_identity), key=len)
-        return len(longer) == len(shorter) + 1 and longer.startswith(shorter)
-    return False
+    return bool(first_identity) and first_identity == second_identity
 
 
 def _collision_rendering_key(term: GlossaryTerm) -> tuple[str, ...]:
@@ -1091,12 +1086,25 @@ def _collision_rendering_key(term: GlossaryTerm) -> tuple[str, ...]:
     return normalize_rendering(term.target_term)
 
 
-def find_rendering_collisions(terms: Sequence[GlossaryTerm]) -> list[list[GlossaryTerm]]:
+def find_rendering_collisions(
+    terms: Sequence[GlossaryTerm],
+    *,
+    declared_same: Collection[frozenset[tuple[str, ...]]] = (),
+) -> list[list[GlossaryTerm]]:
     """Groups of entries whose DIFFERENT source terms share one rendering (decision 3).
 
     Two source terms of one spelling family (``same_spelling_family``) are one term here: a
-    group whose members all belong to one such family is not a collision.
+    group whose members all belong to one such family is not a collision. So are two source
+    terms ``declared_same`` -- pairs of keys call C answered as one thing written two ways
+    (the kept rendering returned for the other member, with a note saying why).
     """
+
+    def same(first: GlossaryTerm, second: GlossaryTerm) -> bool:
+        if same_spelling_family(first.source_term, second.source_term):
+            return True
+        pair = frozenset((normalize_glossary_key(first.source_term), normalize_glossary_key(second.source_term)))
+        return pair in declared_same
+
 
     by_rendering: dict[tuple[str, ...], dict[tuple[str, ...], GlossaryTerm]] = defaultdict(dict)
     for term in terms:
@@ -1113,7 +1121,7 @@ def find_rendering_collisions(terms: Sequence[GlossaryTerm]) -> list[list[Glossa
                 (
                     known
                     for known in families
-                    if any(same_spelling_family(member.source_term, other.source_term) for other in known)
+                    if any(same(member, other) for other in known)
                 ),
                 None,
             )
@@ -1148,6 +1156,39 @@ def collision_keepers(group: Sequence[GlossaryTerm]) -> list[GlossaryTerm]:
         return []
     head = group[0]
     return [term for term in group if term is head or same_spelling_family(term.source_term, head.source_term)]
+
+
+def declared_spellings(
+    groups: Sequence[Sequence[GlossaryTerm]],
+    answer: Sequence[GlossaryTerm],
+) -> set[frozenset[tuple[str, ...]]]:
+    """Pairs call C answered as ONE thing written two ways (Codex review 2026-11-07, finding 6).
+
+    The distinction prompt says: an expression that really is the kept one written another way
+    gets current_rendering too, with a note saying so. Such an answer is a resolution, not a
+    failure to tell the terms apart: the pair (kept term, that member) is returned, and
+    ``find_rendering_collisions(..., declared_same=...)`` no longer counts it. An answer that
+    repeats the shared rendering WITHOUT a note says nothing and stays a collision.
+    """
+
+    answers: dict[tuple[str, ...], list[GlossaryTerm]] = defaultdict(list)
+    for entry in answer:
+        answers[normalize_glossary_key(entry.source_term)].append(entry)
+    declared: set[frozenset[tuple[str, ...]]] = set()
+    for group in groups:
+        keepers = collision_keepers(group)
+        if not keepers:
+            continue
+        kept = keepers[0]
+        kept_key = normalize_glossary_key(kept.source_term)
+        for participant in group:
+            if any(participant is keeper for keeper in keepers):
+                continue
+            participant_key = normalize_glossary_key(participant.source_term)
+            for entry in answers.get(participant_key, []):
+                if entry.note and normalize_rendering(entry.target_term) == normalize_rendering(kept.target_term):
+                    declared.add(frozenset((kept_key, participant_key)))
+    return declared
 
 
 def build_distinction_request(
@@ -1258,11 +1299,26 @@ def split_name_families(
         if candidate.name_head and candidate.name_head in by_surface and not candidate.required
     ]
     member_ids = {id(member.member) for member in family}
+    forms_by_head: dict[int, list[GlossaryCandidate]] = defaultdict(list)
+    for member in family:
+        forms_by_head[id(member.head)].append(member.member)
     family_counts: dict[int, int] = defaultdict(int)
     members: list[NameFamilyMember] = []
     for member in family:
-        # Each occurrence of the full form contains one of the short form.
-        standalone = member.member.occurrence_count - member.head.occurrence_count
+        # Codex review 2026-11-07 (finding 5): every form of the family is a suffix of the
+        # head, so the forms that contain this one are nested; the occurrences it has on its
+        # own are its count minus the count of the NEXT longer form (whose count already holds
+        # the longer ones). Summed over the family this telescopes to the count of its
+        # shortest form -- the family's real number of mentions, with nothing counted twice.
+        words = str(member.member.source_term).casefold().split()
+        containing = [
+            form
+            for form in (member.head, *forms_by_head[id(member.head)])
+            if len(str(form.source_term).split()) > len(words)
+            and str(form.source_term).casefold().split()[-len(words) :] == words
+        ]
+        next_longer = min(containing, key=lambda form: len(str(form.source_term).split()))
+        standalone = member.member.occurrence_count - next_longer.occurrence_count
         if standalone > 0:
             family_counts[id(member.head)] += standalone
             members.append(member)
@@ -1276,16 +1332,51 @@ def split_name_families(
     return requested, tuple(members)
 
 
+def _first_letter(word: str) -> str:
+    return next((char for char in word if char.isalpha()), "")
+
+
+def _latin_base(char: str) -> str:
+    """The Latin base letter of ``char`` ("é" -> "e"), or "" when it is not a Latin letter."""
+
+    base = unicodedata.normalize("NFD", char)[:1]
+    return base.casefold() if base and unicodedata.name(base, "").startswith("LATIN") else ""
+
+
+def _is_word_for_word_name_rendering(source_words: Sequence[str], rendering_words: Sequence[str]) -> bool:
+    """A rendering whose words stand for the source's words one by one, in order (finding 4).
+
+    By form: as many words as the source, and EVERY rendered word capitalised -- a rendered
+    proper name («Бернар Лиетар»); «Женевское озеро» for "Lake Geneva" fails on «озеро», whose
+    last word is not the name. Where a rendered word is in the source's (Latin) script, it
+    must begin with its source word's letter, which catches a swapped order ("Lietaer
+    Bernard"). Across scripts the order cannot be checked without a transliteration table,
+    which the repository does not keep (Constitution VII): there the rule trusts the order.
+    """
+
+    if len(rendering_words) != len(source_words):
+        return False
+    for source_word, rendered_word in zip(source_words, rendering_words):
+        rendered_letter = _first_letter(rendered_word)
+        if not rendered_letter or not rendered_letter.isupper():
+            return False
+        rendered_base, source_base = _latin_base(rendered_letter), _latin_base(_first_letter(source_word))
+        if rendered_base and source_base and rendered_base != source_base:
+            return False
+    return True
+
+
 def inherit_name_renderings(
     terms: Sequence[GlossaryTerm],
     members: Sequence[NameFamilyMember],
 ) -> tuple[tuple[GlossaryTerm, ...], list[dict[str, str]]]:
     """Give each short form the matching end of its head's rendering, right after the head.
 
-    "Bernard Lietaer -> Бернар Лиетар" gives "Lietaer -> Лиетар". Only when the rendering has as
-    many words as the head (a name rendered word for word); otherwise the short form gets no
-    entry and the head's entry stands for the family; so it does when the head was kept as
-    written. Returns the terms and what was inherited.
+    "Bernard Lietaer -> Бернар Лиетар" gives "Lietaer -> Лиетар". Only when the rendering is a
+    word-for-word name rendering (``_is_word_for_word_name_rendering``); otherwise the short
+    form gets no entry and the head's entry stands for the family (the phase records it in
+    ``uninherited_name_members`` -- the calls are spent, so it cannot be asked for any more);
+    so it does when the head was kept as written. Returns the terms and what was inherited.
     """
 
     rendered = {normalize_glossary_key(term.source_term) for term in terms}
@@ -1309,7 +1400,7 @@ def inherit_name_renderings(
         head_words = str(family_member.head.source_term).split()
         member_words = str(family_member.member.source_term).split()
         rendering_words = str(head_term.target_term).split()
-        if len(rendering_words) != len(head_words):
+        if not _is_word_for_word_name_rendering(head_words, rendering_words):
             continue
         derived = GlossaryTerm(
             source_term=family_member.member.source_term,
@@ -1478,6 +1569,7 @@ __all__ = [
     "build_glossary_request",
     "build_distinction_request",
     "collision_keepers",
+    "declared_spellings",
     "describe_source_language",
     "find_rendering_collisions",
     "inherit_name_renderings",
