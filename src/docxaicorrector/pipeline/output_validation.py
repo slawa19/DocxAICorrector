@@ -438,6 +438,112 @@ def is_source_text_fallback_output(*, target_text: str, processed_chunk: str) ->
     return _ANY_LETTER_PATTERN.search(translatable_source) is not None
 
 
+# --- Spec 064 FR-006: is an unchanged note a CITATION by its form? ------------------------
+#
+# Not a second pair rule: whether a paragraph came back unchanged is still decided by
+# ``delivered_text_equals_source`` alone (Anti-regression 4). This answers the other half --
+# whether what came back unchanged is a bibliographic reference (kept under prompt rule 12,
+# decision D1 of spec 063) or a sentence of commentary the model failed to translate. It reads
+# the SHAPE of the text and nothing else (Constitution VII): no word lists, no book literals.
+#
+# The idea: a reference is names, titles, numbers and addresses; commentary is lowercase
+# running words. So take out what a reference is made of -- title spans (``*Title*``,
+# ``'Title'``, ``"Title"``, ``«Title»``), parentheticals and brackets, address-shaped tokens,
+# tokens with a digit, abbreviations of up to three letters with a full stop (``p.``, ``ed.``)
+# -- and count the lowercase words that are left. A title span is taken out only while it is
+# short enough to be a title: a quoted passage of commentary is prose, whatever encloses it.
+#
+# Measured on the 2026-11-07 translate runs, 1 192 note paragraphs of VoE, RM and CW (numbers
+# in spec 064's Changelog): of the 312 paragraphs VoE filed as fallbacks, 311 read as references
+# and one -- itself a torn reference -- as prose; of the 289 notes delivered unchanged without
+# a fallback, the one commentary note (CW, the Knapp/Chartalism note) reads as prose and so do
+# seven references; no commentary reads as a reference. Title spans in the 312 are
+# at most 20 words long.
+CITATION_TITLE_SPAN_MAX_WORDS = 24
+PROSE_FORM_MIN_RESIDUE_WORDS = 6
+PROSE_FORM_SHORT_MIN_RESIDUE_WORDS = 3
+PROSE_FORM_MIN_RESIDUE_SHARE = 0.4
+_LETTER_CLASS = r"[^\W\d_]"
+# Inside a single-quoted title an apostrophe (``Apple's``) is a ``'`` followed by a letter and
+# does not close the span.
+_SINGLE_QUOTED_BODY = rf"(?:[^’]|’(?={_LETTER_CLASS}))*"
+_CITATION_SPAN_PATTERN = re.compile(
+    rf"\*[^*\n]+\*|‘{_SINGLE_QUOTED_BODY}’(?!{_LETTER_CLASS})|“[^”]*”|\"[^\"]*\"|«[^»]*»|\([^()]*\)|\[[^\]]*\]"
+)
+# A note torn across lines leaves a title open at its end or closed at its start.
+_CITATION_OPEN_TAIL_PATTERN = re.compile(rf"(?:‘{_SINGLE_QUOTED_BODY}|“[^”]*|«[^»]*)$")
+_CITATION_CLOSE_HEAD_PATTERN = re.compile(
+    rf"^(?:[^‘“«’”»]|’(?={_LETTER_CLASS}))*[’”»](?!{_LETTER_CLASS})"
+)
+_ADDRESS_SHAPED_TOKEN_PATTERN = re.compile(r"[/=+%@#]|\w\.\w")
+_TOKEN_EDGE_PUNCTUATION = ".,;:!?()[]{}*‘’“”\"«»—–-"
+
+
+def _drop_title_length_spans(pattern: re.Pattern[str], text: str) -> str:
+    def _replace(match: re.Match[str]) -> str:
+        span = match.group(0)
+        return " " if len(span.split()) <= CITATION_TITLE_SPAN_MAX_WORDS else span
+
+    return pattern.sub(_replace, text)
+
+
+def prose_form_word_counts(text: str) -> tuple[int, int]:
+    """``(lowercase words left outside reference material, words with a letter)`` of one paragraph.
+
+    The denominator counts only tokens that carry a letter: a note number or a page range is
+    not a word, and counting it would dilute a short sentence ("2. See Figure 1 in Chapter 7
+    for details.") into the shape of a reference.
+    """
+    stripped = _HEADING_PREFIX_PATTERN.sub(
+        "", _INTERNAL_PLACEHOLDER_PATTERN.sub(" ", str(text or "")).strip()
+    )
+    total = sum(
+        1 for token in stripped.split() if any(char.isalpha() for char in token.strip(_TOKEN_EDGE_PUNCTUATION))
+    )
+    residue_text = _drop_title_length_spans(_CITATION_SPAN_PATTERN, stripped)
+    residue_text = _drop_title_length_spans(_CITATION_OPEN_TAIL_PATTERN, residue_text)
+    residue_text = _drop_title_length_spans(_CITATION_CLOSE_HEAD_PATTERN, residue_text)
+    residue = 0
+    for raw in residue_text.split():
+        token = raw.strip(_TOKEN_EDGE_PUNCTUATION)
+        if not token or _ADDRESS_SHAPED_TOKEN_PATTERN.search(token):
+            continue
+        if any(char.isdigit() for char in token):
+            continue
+        if raw.rstrip("),;:").endswith(".") and len(token) <= 3:
+            continue
+        if token[0].isalpha() and token[0].islower() and all(char.isalpha() or char in "'’-" for char in token):
+            residue += 1
+    return residue, total
+
+
+def is_citation_form_paragraph(text: str) -> bool:
+    """True when a note paragraph reads as a REFERENCE by its form, not as commentary.
+
+    Prose by form is ``PROSE_FORM_MIN_RESIDUE_WORDS`` lowercase words left outside the
+    reference material, or ``PROSE_FORM_SHORT_MIN_RESIDUE_WORDS`` of them making up at least
+    ``PROSE_FORM_MIN_RESIDUE_SHARE`` of the paragraph (a short sentence such as "See Figure 1
+    for details." has few words, most of them running prose). Everything else is a reference.
+
+    The error this tolerates is the safe one. A reference read as prose stays a controlled
+    fallback, exactly as before spec 064; prose read as a reference would be English
+    commentary filed as apparatus. So the thresholds are set low enough that a few measured
+    references read as prose, not in the middle of the gap. What the form cannot see, named
+    rather than patched: a torn fragment of commentary made mostly of names ("1. Both Tony
+    Blair, the former British Prime Minister, and Chuka") reads as a reference.
+    """
+    residue, total = prose_form_word_counts(text)
+    if residue >= PROSE_FORM_MIN_RESIDUE_WORDS:
+        return False
+    if (
+        residue >= PROSE_FORM_SHORT_MIN_RESIDUE_WORDS
+        and total
+        and residue / total >= PROSE_FORM_MIN_RESIDUE_SHARE
+    ):
+        return False
+    return True
+
+
 def has_bullet_heading_output(text: str) -> bool:
     return any(_BULLET_HEADING_PATTERN.match(line) for line in iter_nonempty_markdown_lines(text))
 

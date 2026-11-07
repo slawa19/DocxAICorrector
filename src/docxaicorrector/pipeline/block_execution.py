@@ -3,6 +3,7 @@ import json
 import time
 import uuid
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, TypeAlias
 
@@ -20,6 +21,7 @@ from docxaicorrector.core.models import (
     PARAGRAPH_STATUS_POLICY_KEPT_SOURCE,
 )
 from docxaicorrector.generation._generation import (
+    PARAGRAPH_STATUS_ACCEPTED,
     PARAGRAPH_STATUS_OMITTED,
     PARAGRAPH_STATUS_SOURCE_RESTORED,
     MarkerPreservedBlockText,
@@ -31,6 +33,7 @@ from docxaicorrector.pipeline.footnote_markers import preserve_footnote_markers_
 from docxaicorrector.pipeline.job_results import persist_terminal_job_result
 from docxaicorrector.pipeline.output_validation import (
     delivered_text_equals_source,
+    is_citation_form_paragraph,
     validate_translated_toc_block,
 )
 from docxaicorrector.runtime.artifact_retention import prune_artifact_dir
@@ -448,6 +451,116 @@ def policy_kept_source_chunk(*, context: Any, payload: Any, marker_mode_enabled:
     return MarkerPreservedBlockText("\n\n".join(texts), dispositions)
 
 
+# --- Spec 064 FR-006: a reference the MODEL kept is apparatus, not a fallback -------------
+#
+# Prompt rule 12 (``operation_translate.txt``) tells the model to leave references in notes and
+# reference lists as they are, and it does. Until this rule the pair rule of spec 059 then read
+# the unchanged answer as ``source_text_fallback`` and the run filed it as a controlled fallback
+# -- a counter, an artifact in ``block_fallbacks/`` and a warning on the screen for the outcome
+# the prompt asked for: 209 blocks and 312 paragraphs of The Value of Everything's notes on the
+# 2026-11-07 rerun. What changes is the DISPOSITION by region, never the predicate: "unchanged"
+# is still ``delivered_text_equals_source`` and nothing else (spec 064 Anti-regression 4).
+_APPARATUS_POLICY_SECTIONS = frozenset({BACK_MATTER_SECTION_NOTES, BACK_MATTER_SECTION_REFERENCES})
+
+
+@dataclass(frozen=True)
+class ModelKeptApparatus:
+    """What FR-006 decided for one model-answered block.
+
+    ``processed_chunk`` is the block to deliver -- the model's own text, with the per-paragraph
+    record relabelled in marker mode; ``paragraph_count`` is how many paragraphs now carry
+    ``policy_kept_source``; ``whole_block`` says that every paragraph of the block is such a
+    reference, which is the only case in which a ``source_text_fallback`` stops being one.
+    """
+
+    processed_chunk: str
+    paragraph_count: int
+    whole_block: bool
+
+
+def model_kept_apparatus(*, context: Any, payload: Any, processed_chunk: str) -> ModelKeptApparatus | None:
+    """Which paragraphs of this answer are references the model kept under rule 12, or ``None``.
+
+    A paragraph qualifies when, all of:
+
+    * the job is ``translate`` and the block lies in a ``notes`` or ``references`` section --
+      the two D1 speaks about; the index is translated, so an unchanged index entry stays what
+      it was;
+    * the paragraph lies in the back-matter REGION -- a prose paragraph in the same block is
+      never apparatus, which keeps the spec 059 invariant out of reach of this rule;
+    * the generator ACCEPTED it (an ``omitted`` or ``source_restored`` paragraph is a loss and
+      keeps its own status) and its text equals its own source (``delivered_text_equals_source``);
+    * the source reads as a reference by its form (``output_validation.is_citation_form_paragraph``)
+      -- an unchanged sentence of commentary stays a fallback, which is the anti-vacuum half.
+
+    Decided per PARAGRAPH where the answer carries its per-paragraph record. Without markers
+    there is no record to carry a status, so the decision is per BLOCK: the whole answer equals
+    the whole source, every paragraph is in the back-matter region and reads as a reference,
+    and the document layer already keeps the block out of the narration (without a record
+    nothing else would). Every input that is missing or out of step answers ``None``: the safe
+    direction is the old one.
+    """
+    if not _is_translate_job(context):
+        return None
+    if getattr(payload, "job_kind", None) != "llm" or bool(getattr(payload, "toc_dominant", False)):
+        return None
+    if getattr(payload, "back_matter_section", None) not in _APPARATUS_POLICY_SECTIONS:
+        return None
+    regions = getattr(payload, "paragraph_regions", None)
+    paragraph_ids = getattr(payload, "paragraph_ids", None)
+    if not isinstance(regions, list) or not regions:
+        return None
+    if not isinstance(paragraph_ids, list) or len(paragraph_ids) != len(regions):
+        return None
+    dispositions = marker_paragraph_dispositions(processed_chunk)
+    if dispositions is None:
+        target_text = str(getattr(payload, "target_text", "") or "")
+        if bool(getattr(payload, "narration_include", True)):
+            return None
+        if any(region != PARAGRAPH_REGION_BACK_MATTER for region in regions):
+            return None
+        if not delivered_text_equals_source(target_text=target_text, processed_chunk=processed_chunk):
+            return None
+        source_paragraphs = [chunk.strip() for chunk in target_text.split("\n\n") if chunk.strip()]
+        if not source_paragraphs or not all(is_citation_form_paragraph(text) for text in source_paragraphs):
+            return None
+        return ModelKeptApparatus(
+            processed_chunk=processed_chunk, paragraph_count=len(paragraph_ids), whole_block=True
+        )
+    if [str(disposition.paragraph_id) for disposition in dispositions] != [str(pid) for pid in paragraph_ids]:
+        return None
+    source_texts = _source_paragraph_texts(payload)
+    if source_texts is None:
+        return None
+    kept_positions = {
+        position
+        for position, disposition in enumerate(dispositions)
+        if regions[position] == PARAGRAPH_REGION_BACK_MATTER
+        and disposition.status == PARAGRAPH_STATUS_ACCEPTED
+        and delivered_text_equals_source(target_text=source_texts[position], processed_chunk=disposition.text)
+        and is_citation_form_paragraph(source_texts[position])
+    }
+    if not kept_positions:
+        return None
+    relabelled = tuple(
+        ParagraphDisposition(
+            paragraph_id=disposition.paragraph_id,
+            text=disposition.text,
+            status=PARAGRAPH_STATUS_POLICY_KEPT_SOURCE,
+        )
+        if position in kept_positions
+        else disposition
+        for position, disposition in enumerate(dispositions)
+    )
+    return ModelKeptApparatus(
+        processed_chunk=MarkerPreservedBlockText(
+            "\n\n".join(disposition.text for disposition in relabelled), relabelled
+        ),
+        paragraph_count=len(kept_positions),
+        whole_block=len(kept_positions) == len(dispositions),
+    )
+
+
 def _build_block_apparatus_prompt(*, context: Any, payload: Any, marker_mode_enabled: bool) -> str:
     """The per-block half of FR-011: which paragraphs of THIS block are apparatus, and the rule.
 
@@ -500,6 +613,8 @@ def _record_back_matter_delivery(
     payload: Any,
     processed_chunk: str,
     kept_by_policy: bool,
+    model_kept_paragraph_count: int = 0,
+    model_kept_replaced_fallback: bool = False,
 ) -> None:
     """Spec 063 FR-012: book how this block's back-matter paragraphs reached the reader.
 
@@ -549,6 +664,8 @@ def _record_back_matter_delivery(
         kept_by_policy=kept_by_policy,
         kept_chars=len(processed_chunk) if kept_by_policy else 0,
         mixed=mixed,
+        model_kept_paragraph_count=model_kept_paragraph_count,
+        model_kept_replaced_fallback=model_kept_replaced_fallback,
     )
     if mixed:
         dependencies.log_event(
@@ -1849,6 +1966,38 @@ def _announce_policy_kept_source_block(
     )
 
 
+def _announce_model_kept_apparatus(
+    *,
+    context: Any,
+    dependencies: Any,
+    initialization: Any,
+    index: int,
+    payload: Any,
+    model_kept: ModelKeptApparatus,
+    replaced_fallback: bool,
+) -> None:
+    """Spec 064 FR-006: one INFO line per block whose references the model kept.
+
+    INFO, like its twin ``block_apparatus_policy_kept_source``: this is the outcome rule 12
+    asked for, not a defect. ``replaced_fallback`` says the pair rule had read the block as a
+    ``source_text_fallback`` -- the number of controlled fallbacks this rule took off the
+    screen, counted here rather than inferred later.
+    """
+    dependencies.log_event(
+        logging.INFO,
+        "block_apparatus_kept_by_model",
+        "Ссылки справочного аппарата оставлены моделью на языке оригинала по правилу 12; это не controlled fallback.",
+        filename=context.uploaded_filename,
+        block_index=index,
+        block_count=initialization.job_count,
+        back_matter_section=str(getattr(payload, "back_matter_section", "") or ""),
+        paragraph_count=len(getattr(payload, "paragraph_ids", None) or ()),
+        kept_paragraph_count=model_kept.paragraph_count,
+        whole_block=model_kept.whole_block,
+        replaced_fallback=replaced_fallback,
+    )
+
+
 def process_single_block(
     *,
     context: Any,
@@ -1955,6 +2104,27 @@ def process_single_block(
             processed_chunk,
             languages_differ=languages_differ,
         )
+    # Spec 064 FR-006: references the model kept under prompt rule 12 are apparatus by region.
+    # A valid block keeps its translated paragraphs and relabels the kept references; a
+    # ``source_text_fallback`` stops being one only when EVERY paragraph is such a reference.
+    model_kept = None
+    if not is_genuine_passthrough and processed_block_status in {"valid", "source_text_fallback"}:
+        model_kept = model_kept_apparatus(context=context, payload=payload, processed_chunk=processed_chunk)
+        if model_kept is not None and processed_block_status == "source_text_fallback" and not model_kept.whole_block:
+            model_kept = None
+    model_kept_replaced_fallback = model_kept is not None and processed_block_status == "source_text_fallback"
+    if model_kept is not None:
+        processed_chunk = model_kept.processed_chunk
+        processed_block_status = "valid"
+        _announce_model_kept_apparatus(
+            context=context,
+            dependencies=dependencies,
+            initialization=initialization,
+            index=index,
+            payload=payload,
+            model_kept=model_kept,
+            replaced_fallback=model_kept_replaced_fallback,
+        )
     if processed_block_status != "valid":
         rejection_decision = classify_processed_block_failure_decision(
             rejection_kind=processed_block_status,
@@ -2052,6 +2222,8 @@ def process_single_block(
         payload=payload,
         processed_chunk=processed_chunk,
         kept_by_policy=policy_kept_chunk is not None,
+        model_kept_paragraph_count=model_kept.paragraph_count if model_kept is not None else 0,
+        model_kept_replaced_fallback=model_kept_replaced_fallback,
     )
     emit_block_completed_fn(
         context=context,

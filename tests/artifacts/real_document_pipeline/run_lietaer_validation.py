@@ -4532,6 +4532,11 @@ _MODEL_ACCOUNTING_SUMMARY_FIELDS = (
     "back_matter_policy_kept_paragraph_count",
     "back_matter_policy_kept_chars",
     "back_matter_mixed_block_count",
+    # Spec 064 FR-006: the "kept by the model" twin of the three lines above -- references the
+    # model returned unchanged under prompt rule 12, filed as ``policy_kept_source`` -- and the
+    # blocks among them that the pair rule would otherwise have made a controlled fallback.
+    "back_matter_model_kept_paragraph_count",
+    "back_matter_model_kept_fallback_block_count",
     # Spec 063 FR-006: footnote references the import recognised in the source, how many the
     # model carried, how many the pipeline restored (FR-005), and what was delivered. Data,
     # not a gate; ``kept / source`` is the model's own keep rate that SC-002 measures.
