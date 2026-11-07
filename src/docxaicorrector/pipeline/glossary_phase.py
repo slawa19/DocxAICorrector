@@ -27,7 +27,6 @@ from typing import Any
 from docxaicorrector.core import constants
 from docxaicorrector.core.model_accounting import STAGE_GLOSSARY_EXTRACTION, snapshot_run_model_accounting
 from docxaicorrector.document.segments import (
-    DEFAULT_GLOSSARY_PROMPT_MAX_CHARS,
     GlossaryTerm,
     render_glossary_prompt_section,
 )
@@ -46,6 +45,9 @@ from docxaicorrector.text.glossary_pass import (
     build_glossary_request,
     domain_glossary_terms,
     extract_glossary_candidates,
+    missing_required_candidates,
+    normalize_glossary_key,
+    order_required_first,
     parse_glossary_response,
     request_candidates,
     select_glossary_source_units,
@@ -63,6 +65,11 @@ RUN_GLOSSARY_NOTICE_KIND = "glossary"
 RUN_GLOSSARY_BUILT_MESSAGE_KEY = "result.run_glossary_built"
 RUN_GLOSSARY_FAILED_MESSAGE_KEY = "result.run_glossary_failed"
 _ERROR_PREVIEW_CHARS = 120
+_LANGUAGE_SAMPLE_CHARS = 2000
+# The run glossary's default budget: the rule-included terms (56–89 per corpus book) plus the
+# model's own choices, names first among them. Measured on Money 2026-11-07: 72 rule-included
+# entries render in 2 250 characters. The profile slot keeps DEFAULT_GLOSSARY_PROMPT_MAX_CHARS.
+RUN_GLOSSARY_PROMPT_MAX_CHARS = 4000
 _UNSAFE_STEM_CHARS_RE = re.compile(r"[^A-Za-z0-9_.-]+")
 
 
@@ -235,7 +242,7 @@ def _run_glossary_phase(
 ) -> Any:
     app_config: Mapping[str, object] = getattr(context, "app_config", None) or {}
     max_terms = max(0, _int_setting(app_config, "glossary_max_terms", DEFAULT_GLOSSARY_MAX_TERMS))
-    prompt_max_chars = max(0, _int_setting(app_config, "glossary_prompt_max_chars", DEFAULT_GLOSSARY_PROMPT_MAX_CHARS))
+    prompt_max_chars = max(0, _int_setting(app_config, "glossary_prompt_max_chars", RUN_GLOSSARY_PROMPT_MAX_CHARS))
     candidate_limit = max(0, _int_setting(app_config, "glossary_candidate_limit", DEFAULT_GLOSSARY_CANDIDATE_LIMIT))
     model = str(getattr(initialization, "text_model_id", "") or getattr(context, "model", "") or "")
 
@@ -269,6 +276,13 @@ def _run_glossary_phase(
         "usage": {"prompt_tokens": None, "completion_tokens": None, "cost_usd": None},
         "request_chars": 0,
         "candidates": [candidate.to_payload() for candidate in candidates],
+        "domain_terms": [
+            {"source_term": term.source_term, "target_term": term.target_term} for term in fixed_terms
+        ],
+        "required_count": sum(1 for candidate in sent_candidates if candidate.required),
+        "reasked_required_count": 0,
+        "unrendered_terms": [],
+        "model_call_count": 0,
         "error_code": None,
     }
 
@@ -287,6 +301,7 @@ def _run_glossary_phase(
             sent_candidates=sent_candidates,
             fixed_terms=fixed_terms,
             max_terms=max_terms,
+            sample_text="\n\n".join(unit.text for unit in units)[:_LANGUAGE_SAMPLE_CHARS],
             record=record,
             request_text_completion_fn=request_text_completion_fn,
         )
@@ -342,6 +357,11 @@ def _run_glossary_phase(
             term_count=len(terms),
             rendered_term_count=record["rendered_term_count"],
             prompt_section_chars=record["prompt_section_chars"],
+            required_count=record["required_count"],
+            reasked_required_count=record["reasked_required_count"],
+            unrendered_count=len(record["unrendered_terms"]) if isinstance(record["unrendered_terms"], list) else 0,
+            unrendered_terms=record["unrendered_terms"],
+            model_call_count=record["model_call_count"],
             rejected_counts=dict(record["rejected_counts"]) if isinstance(record["rejected_counts"], Mapping) else {},
             prompt_tokens=usage.get("prompt_tokens"),
             completion_tokens=usage.get("completion_tokens"),
@@ -356,6 +376,61 @@ def _run_glossary_phase(
     return replace(context, document_context_prompt=combined_prompt)
 
 
+_ASK_OK = "ok"
+
+
+def _ask(
+    *,
+    context: Any,
+    dependencies: Any,
+    client: Any,
+    model: str,
+    candidates: tuple[GlossaryCandidate, ...],
+    fixed_terms: tuple[GlossaryTerm, ...],
+    max_terms: int,
+    sample_text: str,
+    request_text_completion_fn: Callable[..., str],
+) -> tuple[str, Any, int]:
+    """One call: ``(outcome, parsed result or error, request characters)``."""
+
+    request = build_glossary_request(
+        model=model,
+        candidates=candidates,
+        fixed_terms=fixed_terms,
+        source_language=str(getattr(context, "source_language", "") or ""),
+        target_language=str(getattr(context, "target_language", "") or ""),
+        max_terms=max_terms,
+        sample_text=sample_text,
+    )
+    request_input = request.get("input")
+    request_chars = sum(
+        len(str(part.get("text", "")))
+        for item in (request_input if isinstance(request_input, list) else [])
+        if isinstance(item, Mapping)
+        for part in (item.get("content") or [])
+        if isinstance(part, Mapping)
+    )
+    try:
+        raw_text = request_text_completion_fn(
+            client,
+            request,
+            usage_stage=STAGE_GLOSSARY_EXTRACTION,
+            should_stop=lambda: bool(dependencies.should_stop_processing(context.runtime)),
+        )
+    except LatePhaseStopped:
+        return RUN_GLOSSARY_STATUS_STOPPED, None, request_chars
+    except Exception as exc:
+        return RUN_GLOSSARY_STATUS_FAILED, exc, request_chars
+    try:
+        return _ASK_OK, parse_glossary_response(raw_text, candidates=candidates, max_terms=max_terms), request_chars
+    except GlossaryResponseError as exc:
+        return RUN_GLOSSARY_STATUS_FAILED, exc, request_chars
+
+
+def _error_code(error: object) -> str:
+    return error.code if isinstance(error, GlossaryResponseError) else type(error).__name__
+
+
 def _call_model(
     *,
     context: Any,
@@ -366,6 +441,7 @@ def _call_model(
     sent_candidates: tuple[GlossaryCandidate, ...],
     fixed_terms: tuple[GlossaryTerm, ...],
     max_terms: int,
+    sample_text: str,
     record: dict[str, object],
     request_text_completion_fn: Callable[..., str] | None,
 ) -> tuple[str, tuple[GlossaryTerm, ...]]:
@@ -385,49 +461,56 @@ def _call_model(
         progress=0.0,
         is_running=True,
     )
-    request = build_glossary_request(
-        model=model,
-        candidates=sent_candidates,
-        fixed_terms=fixed_terms,
-        source_language=str(getattr(context, "source_language", "") or ""),
-        target_language=str(getattr(context, "target_language", "") or ""),
-        max_terms=max_terms,
-    )
-    request_input = request.get("input")
-    record["request_chars"] = sum(
-        len(str(part.get("text", "")))
-        for item in (request_input if isinstance(request_input, list) else [])
-        if isinstance(item, Mapping)
-        for part in (item.get("content") or [])
-        if isinstance(part, Mapping)
-    )
     client = getattr(initialization, "text_client", None) or getattr(initialization, "client", None)
-    try:
-        raw_text = request_text_completion_fn(
-            client,
-            request,
-            usage_stage=STAGE_GLOSSARY_EXTRACTION,
-            should_stop=lambda: bool(dependencies.should_stop_processing(context.runtime)),
-        )
-    except LatePhaseStopped:
-        record["usage"] = _stage_usage()
-        return RUN_GLOSSARY_STATUS_STOPPED, ()
-    except Exception as exc:
-        record["usage"] = _stage_usage()
-        record["error_code"] = type(exc).__name__
-        record["error_message"] = str(exc)[:_ERROR_PREVIEW_CHARS]
-        return RUN_GLOSSARY_STATUS_FAILED, ()
+    ask_kwargs = {
+        "context": context,
+        "dependencies": dependencies,
+        "client": client,
+        "model": model,
+        "fixed_terms": fixed_terms,
+        "sample_text": sample_text,
+        "request_text_completion_fn": request_text_completion_fn,
+    }
+    outcome, result, request_chars = _ask(candidates=sent_candidates, max_terms=max_terms, **ask_kwargs)
+    record["request_chars"] = request_chars
+    record["model_call_count"] = 1
     record["usage"] = _stage_usage()
-    try:
-        parsed = parse_glossary_response(raw_text, candidates=sent_candidates, max_terms=max_terms)
-    except GlossaryResponseError as exc:
-        record["error_code"] = exc.code
-        record["error_message"] = str(exc)[:_ERROR_PREVIEW_CHARS]
+    if outcome == RUN_GLOSSARY_STATUS_STOPPED:
+        return RUN_GLOSSARY_STATUS_STOPPED, ()
+    if outcome == RUN_GLOSSARY_STATUS_FAILED:
+        record["error_code"] = _error_code(result)
+        record["error_message"] = str(result)[:_ERROR_PREVIEW_CHARS]
         return RUN_GLOSSARY_STATUS_FAILED, ()
-    record["rejected_counts"] = dict(parsed.rejected_counts)
-    if not parsed.terms:
+    rejected = dict(result.rejected_counts)
+    terms: tuple[GlossaryTerm, ...] = tuple(result.terms)
+
+    # Inclusion rule: a candidate the author defined or marked at first use (or a family head)
+    # is in the glossary by FORM; the model only renders it. An answer that leaves such a term
+    # out is asked once more, for exactly the omitted ones; what is still missing is recorded,
+    # never silently dropped. Optional candidates the model passed over are NOT re-asked.
+    missing = missing_required_candidates(sent_candidates, terms)
+    record["reasked_required_count"] = len(missing)
+    if missing and not dependencies.should_stop_processing(context.runtime):
+        reask_outcome, reask_result, _ = _ask(candidates=missing, max_terms=0, **ask_kwargs)
+        record["model_call_count"] = 2
+        record["usage"] = _stage_usage()
+        if reask_outcome == _ASK_OK:
+            known = {normalize_glossary_key(term.source_term) for term in terms}
+            terms = terms + tuple(
+                term for term in reask_result.terms if normalize_glossary_key(term.source_term) not in known
+            )
+            for reason, count in reask_result.rejected_counts.items():
+                rejected[reason] = rejected.get(reason, 0) + int(count)
+        elif reask_outcome == RUN_GLOSSARY_STATUS_FAILED:
+            record["reask_error_code"] = _error_code(reask_result)
+    record["rejected_counts"] = rejected
+    record["required_count"] = sum(1 for candidate in sent_candidates if candidate.required)
+    record["unrendered_terms"] = [
+        candidate.source_term for candidate in missing_required_candidates(sent_candidates, terms)
+    ]
+    if not terms:
         return RUN_GLOSSARY_STATUS_EMPTY, ()
-    return RUN_GLOSSARY_STATUS_BUILT, parsed.terms
+    return RUN_GLOSSARY_STATUS_BUILT, order_required_first(sent_candidates, terms)
 
 
 __all__ = [

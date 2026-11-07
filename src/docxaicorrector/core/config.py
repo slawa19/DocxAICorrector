@@ -357,7 +357,7 @@ class AppConfig(Mapping[str, Any]):
     # OFF: a caller that never heard of it must not silently start paying for a model call.
     glossary_pass_enabled: bool = False
     glossary_max_terms: int = 60
-    glossary_prompt_max_chars: int = 3000
+    glossary_prompt_max_chars: int = 4000
     glossary_candidate_limit: int = 400
 
     def __getitem__(self, key: str) -> object:

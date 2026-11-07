@@ -9,6 +9,7 @@ if it matched a made-up word, which it cannot.
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from types import SimpleNamespace
 from typing import Any, cast
 
@@ -27,9 +28,12 @@ from docxaicorrector.text.glossary_pass import (
     GlossaryResponseError,
     GlossarySourceUnit,
     build_glossary_request,
+    describe_source_language,
     domain_glossary_terms,
     extract_glossary_candidates,
+    missing_required_candidates,
     normalize_glossary_key,
+    order_required_first,
     parse_glossary_response,
     request_candidates,
     select_glossary_source_units,
@@ -209,7 +213,7 @@ def test_unicode_letters_keep_a_name_whole():
 
 
 def test_italic_at_first_use_counts_but_italic_for_stress_later_does_not():
-    introduced = ["The *velloran* principle is introduced here.", *_FILLER, "The velloran principle returns."]
+    introduced = ["The *velloran* principle is introduced here.", *_FILLER, *_FILLER, *_FILLER, "The velloran principle returns."]
     stressed = [
         "The harbour was quiet and the harbour was cold.",
         "But the *harbour* was what mattered.",
@@ -596,3 +600,129 @@ def test_consistency_script_tells_two_transliterations_apart():
 
     assert rows[0]["adherent_pairs"] == 1
     assert rows[0]["other_idx"] == [2]
+
+
+# --- inclusion rule (orchestrator decision 2026-11-07): what the author marked is required ----
+
+
+def test_required_flag_follows_the_authors_marking_not_the_family_score():
+    paragraphs = [
+        "From now on we will refer to this voucher as *varrow scrip*.",
+        "The *brennic* principle is introduced here.",
+        "Some people called it “real” money, and others said the “sound note” was better.",
+        *_FILLER,
+        "The varrow scrip, the brennic principle, the sound note and real money returned.",
+        "Once more, Kelbrook and the sound note; the varrow scrip and the brennic principle too.",
+        *(_FILLER * 4),
+    ]
+    keys = _keys(extract_glossary_candidates(_units(paragraphs * 2)))
+
+    assert keys["varrow scrip"].required  # defined
+    assert keys["brennic"].required  # italics at first use
+    assert keys["sound note"].required  # quotes around an expression
+    assert "real" not in keys or not keys["real"].required  # quotes around one word: model's choice
+    assert not keys["kelbrook"].required  # a name stays at the model's discretion
+
+
+def test_family_heads_are_required_and_collocations_are_not():
+    paragraphs = []
+    for _ in range(6):
+        paragraphs.append("The worth creation and the worth extraction were measured.")
+        paragraphs.append("Their worth creation exceeded worth extraction, and surplus worth grew.")
+        paragraphs.append("Surplus worth and worth creation, again; surplus worth once more.")
+        paragraphs.extend(_FILLER)
+    keys = _keys(extract_glossary_candidates(_units(paragraphs)))
+
+    assert keys["worth"].family == "head" and keys["worth"].required
+    assert keys["worth creation"].family == "collocation" and not keys["worth creation"].required
+
+
+def test_stress_italics_on_the_documents_most_common_words_are_not_marked():
+    # "after" and "always" are among the words that make up half of this document's text.
+    common = "It was always after dark, always after rain, and always after the bell rang after noon."
+    paragraphs = ["The *after* effect was *always* there.", common, common, *_FILLER] * 3
+    keys = _keys(extract_glossary_candidates(_units(paragraphs)))
+
+    for word in ("after", "always"):
+        assert word not in keys or "emphasis" not in keys[word].signals
+
+
+def test_required_candidates_ignore_the_limit_on_the_models_own_choices():
+    candidates = (
+        replace(_candidate("quillet bond", "marked"), required=True),
+        _candidate("Alpha"),
+        _candidate("Brava"),
+    )
+    raw = json.dumps(
+        {
+            "terms": [
+                {"source_term": "Alpha", "target_term": "Альфа"},
+                {"source_term": "Brava", "target_term": "Брава"},
+                {"source_term": "quillet bond", "target_term": "киллетная облигация"},
+            ]
+        },
+        ensure_ascii=False,
+    )
+    result = parse_glossary_response(raw, candidates=candidates, max_terms=1)
+
+    assert [term.source_term for term in result.terms] == ["Alpha", "quillet bond"]
+    assert result.rejected_counts["over_limit"] == 1
+    ordered = order_required_first(candidates, result.terms)
+    assert [term.source_term for term in ordered] == ["quillet bond", "Alpha"]
+    assert missing_required_candidates(candidates, result.terms) == ()
+    assert missing_required_candidates(candidates, result.terms[:1]) == (candidates[0],)
+
+
+def test_request_marks_required_candidates_for_the_model():
+    request = build_glossary_request(
+        model="m",
+        candidates=(replace(_candidate("quillet bond", "marked"), required=True), _candidate("Alpha")),
+        fixed_terms=(),
+        source_language="en",
+        target_language="ru",
+        max_terms=5,
+    )
+    request_input = cast(list[dict[str, Any]], request["input"])
+    payload = json.loads(request_input[1]["content"][0]["text"])
+
+    assert [item["required"] for item in payload["candidates"]] == [True, False]
+    assert "Return a rendering for EVERY required candidate" in request_input[0]["content"][0]["text"]
+
+
+@pytest.mark.parametrize(
+    ("setting", "sample", "expected"),
+    [
+        ("en", "", "en"),
+        ("auto", "Plain English prose of the book.", "the source language of the text"),
+        ("auto", "", "the source language of the text"),
+        ("auto", "Русский текст книги без латиницы.", "ru"),
+        ("", "Plain text.", "the source language of the text"),
+    ],
+)
+def test_auto_is_resolved_or_described_never_passed_through(setting, sample, expected):
+    assert describe_source_language(setting, sample_text=sample) == expected
+    request = build_glossary_request(
+        model="m",
+        candidates=(_candidate("Alpha"),),
+        fixed_terms=(),
+        source_language=setting,
+        target_language="ru",
+        max_terms=5,
+        sample_text=sample,
+    )
+    request_input = cast(list[dict[str, Any]], request["input"])
+    assert f"from {expected} into ru" in request_input[0]["content"][0]["text"]
+    assert json.loads(request_input[1]["content"][0]["text"])["source_language"] == expected
+
+
+def test_parse_reads_the_required_and_other_lists_together():
+    candidates = (replace(_candidate("quillet bond", "marked"), required=True), _candidate("Alpha"))
+    raw = json.dumps(
+        {
+            "required_terms": [{"source_term": "quillet bond", "target_term": "Q"}],
+            "other_terms": [{"source_term": "Alpha", "target_term": "A", "kind": "name"}],
+        }
+    )
+    result = parse_glossary_response(raw, candidates=candidates, max_terms=5)
+
+    assert [(term.source_term, term.kind) for term in result.terms] == [("quillet bond", "term"), ("Alpha", "name")]
