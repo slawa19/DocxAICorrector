@@ -64,7 +64,7 @@ Clarification for AI agents:
 - output seen only through agent-side tool capture is not the same thing as a visible VS Code terminal run;
 - foreground agent shell output is also not the same thing as the user's visible VS Code terminal panel;
 - before any ad-hoc shell test command, identify the current shell with `uname` and `pwd` instead of assuming it is WSL or Git Bash;
-- if the shell is already Linux inside `/mnt/d/www/projects/2025/DocxAICorrector`, run `bash scripts/test.sh ...` directly and do not nest `wsl.exe` inside that shell;
+- if the shell is already Linux inside `/mnt/d/Work/Projects/DocxAICorrector`, run `bash scripts/test.sh ...` directly and do not nest `wsl.exe` inside that shell;
 - if the shell is MSYS/Git Bash or PowerShell, use `wsl.exe -d Debian ...` only as a transport wrapper into the project WSL runtime, and treat that path as debugging rather than final proof;
 - if the requested output is a structural preparation diagnostic snapshot, prefer the dedicated script/task entrypoint and do not hand-roll JSON printing with inline imports unless you are debugging the CLI itself;
 - for `Run Structural Preparation Diagnostic`, leave the optional second prompt blank for the default profile on the document; if you need an explicit `--run-profile-id ...`, prefer the direct shell command instead of relying on task quoting;

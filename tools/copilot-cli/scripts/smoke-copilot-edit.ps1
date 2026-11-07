@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$TempDirectory = 'E:\Temp\kilo',
+    [string]$TempDirectory = [System.IO.Path]::GetTempPath(),
     [string]$CopilotPath,
     [switch]$KeepFiles
 )

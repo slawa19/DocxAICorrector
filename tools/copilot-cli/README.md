@@ -49,7 +49,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\copilot-cli\scripts\
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\copilot-cli\scripts\run-copilot-edit.ps1 `
-  -WorkingDirectory "D:\www\Projects\2025\DocxAICorrector" `
+  -WorkingDirectory "D:\Work\Projects\DocxAICorrector" `
   -Prompt "Edit only the minimum necessary files to ..."
 ```
 
@@ -119,7 +119,7 @@ Text-only prompt:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\copilot-cli\scripts\invoke-copilot.ps1 `
-  -WorkingDirectory "D:\www\Projects\2025\DocxAICorrector" `
+  -WorkingDirectory "D:\Work\Projects\DocxAICorrector" `
   -Prompt "Reply with exactly: cli-ok"
 ```
 
@@ -127,7 +127,7 @@ Edit prompt с минимальными правами:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\copilot-cli\scripts\run-copilot-edit.ps1 `
-  -WorkingDirectory "D:\www\Projects\2025\DocxAICorrector" `
+  -WorkingDirectory "D:\Work\Projects\DocxAICorrector" `
   -Prompt "Edit only the minimum necessary files to add a focused regression test for ..."
 ```
 
@@ -135,7 +135,7 @@ Edit prompt с `git`-доступом:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\copilot-cli\scripts\run-copilot-edit.ps1 `
-  -WorkingDirectory "D:\www\Projects\2025\DocxAICorrector" `
+  -WorkingDirectory "D:\Work\Projects\DocxAICorrector" `
   -Prompt "Inspect git diff if needed, then make the minimum fix for ..." `
   -AllowTool 'shell(git:*)'
 ```

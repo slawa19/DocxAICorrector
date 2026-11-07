@@ -60,6 +60,14 @@ the owner ever wants the full cycle mandatory more often, or not at all, the "Tw
 list in Principle III is the paragraph to change. What is NOT open for reinterpretation:
 plan.md and tasks.md are
 never written retroactively for work that is already implemented.
+
+Version change: 2.0.0 -> 2.0.1 (2026-11-07, PATCH: factual correction, no principle touched)
+Modified sections: Runtime Boundaries. The checkout moved on 2026-09-20 from
+D:\www\Projects\2025\DocxAICorrector (/mnt/d/www/projects/2025/DocxAICorrector), which no
+longer exists on disk, to D:\Work\Projects\DocxAICorrector (/mnt/d/Work/Projects/DocxAICorrector).
+Only the path changes; the rule (WSL/Debian is the canonical runtime, wsl.exe is transport
+only, never nested) is unchanged. AGENTS.md Runtime Contract corrected in the same commit.
+Templates requiring updates: none.
 -->
 
 # DocxAICorrector Constitution
@@ -241,11 +249,11 @@ correct code satisfy an impossible criterion.
 The canonical project runtime is WSL/Debian at:
 
 ```text
-/mnt/d/www/projects/2025/DocxAICorrector
+/mnt/d/Work/Projects/DocxAICorrector
 ```
 
 From Windows/PowerShell agent terminals, use `wsl.exe -d Debian --cd
-"D:\www\Projects\2025\DocxAICorrector" -- ...` for canonical commands. Do not
+"D:\Work\Projects\DocxAICorrector" -- ...` for canonical commands. Do not
 nest `wsl.exe` inside an already-WSL shell.
 
 PDF import readiness requires LibreOffice availability inside WSL
@@ -360,7 +368,7 @@ Versioning follows semantic versioning:
 - MINOR for adding principles or material governance sections;
 - PATCH for wording clarifications.
 
-**Version**: 2.0.0 | **Ratified**: 2026-07-09 | **Last Amended**: 2026-08-01 | **2.0.0 ratified**: 2026-08-03
+**Version**: 2.0.1 | **Ratified**: 2026-07-09 | **Last Amended**: 2026-11-07 | **2.0.0 ratified**: 2026-08-03
 
 The 2.0.0 step narrows an obligation in Principle III: when the full Spec → Plan → Tasks cycle is
 required, versus a spec on its own. It was written to match how the repository has actually worked —

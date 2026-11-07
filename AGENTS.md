@@ -127,7 +127,17 @@ replace canonical commands with direct Python/pytest/debug paths.
 
 ## Runtime Contract
 
-Канонический project runtime — **WSL Debian** по пути `/mnt/d/www/projects/2025/DocxAICorrector`. Для тестов, диагностических импортов, проверки зависимостей и runtime-выводов источником истины считается он.
+Канонический project runtime — **WSL Debian** по пути `/mnt/d/Work/Projects/DocxAICorrector` (Windows: `D:\Work\Projects\DocxAICorrector`). Для тестов, диагностических импортов, проверки зависимостей и runtime-выводов источником истины считается он.
+
+С 2026-09-20 чекаут живёт здесь; прежний путь `D:\www\Projects\2025\DocxAICorrector`
+(`/mnt/d/www/projects/2025/DocxAICorrector`) на диске больше не существует, и команда с ним падает
+на `--cd`, а не на тестах. Датированные записи со старым путём в спеках и журналах остаются
+историей и не правятся.
+
+**Что не переезжает вместе с чекаутом.** `.env` (ключи API), `tests/artifacts/real_document_pipeline/runs/<run_id>/`
+(отчёты прогонов) и `.run/` исключены из git и живут только в том каталоге, где их создали. После
+переноса или нового clone их надо восстановить вручную; иначе «ключа нет» и «прогонов нет» — это
+состояние нового чекаута, а не дефект кода (так и было найдено 2026-11-07).
 
 ### Shell identity: определять фактически, не предполагать
 
@@ -136,9 +146,12 @@ replace canonical commands with direct Python/pytest/debug paths.
 | Признак | MSYS/Git Bash | WSL |
 | --- | --- | --- |
 | `uname` | `MSYS_NT-…` / `MINGW64_NT-…` | `Linux …microsoft-standard-WSL2…` |
-| `pwd` | `/d/www/…` | `/mnt/d/www/…` |
+| `pwd` | `/d/Work/…` | `/mnt/d/Work/…` |
 
-Проверено 2026-08-03: Bash tool в этом workspace — MINGW64, `pwd` = `/d/www/Projects/2025/DocxAICorrector`.
+Проверено 2026-08-03 по старому пути: Bash tool в этом workspace — MINGW64, `pwd` =
+`/d/www/Projects/2025/DocxAICorrector`. С 2026-09-20 чекаут живёт в `D:\Work\Projects\DocxAICorrector`,
+и тот же признак выглядит как `pwd` = `/d/Work/Projects/DocxAICorrector` (`uname` 2026-11-07 —
+по-прежнему `MINGW64_NT`). Правило не изменилось: shell определяется по `uname`, а не по пути.
 
 ### Два venv с разными layout'ами
 
@@ -153,7 +166,7 @@ replace canonical commands with direct Python/pytest/debug paths.
 
 ```bash
 wsl.exe -l -q
-wsl.exe -d Debian --cd "D:\www\Projects\2025\DocxAICorrector" -- bash -lc "uname; pwd; test -f scripts/test.sh; test -f .venv/bin/activate; echo READY"
+wsl.exe -d Debian --cd "D:\Work\Projects\DocxAICorrector" -- bash -lc "uname; pwd; test -f scripts/test.sh; test -f .venv/bin/activate; echo READY"
 ```
 
 Если `Debian` виден и READY printed — canonical path доступен: **сразу запускайте requested команду и прекращайте поисковые проверки окружения**. Блокером считается только отсутствие `wsl.exe`, отсутствие `Debian` в списке, отказ `wsl.exe -d Debian` стартовать, отсутствие `scripts/test.sh` или `.venv/bin/activate` внутри Debian. `wsl --list --online` prerequisite не является; его падение ничего не говорит о локальном Debian.
@@ -161,21 +174,22 @@ wsl.exe -d Debian --cd "D:\www\Projects\2025\DocxAICorrector" -- bash -lc "uname
 ### Транспорт из не-WSL shell
 
 ```bash
-wsl.exe -d Debian --cd "D:\www\Projects\2025\DocxAICorrector" -- bash scripts/test.sh <selector> [опции]
-wsl.exe -d Debian --cd "D:\www\Projects\2025\DocxAICorrector" -- bash -lc "<команда>"
+wsl.exe -d Debian --cd "D:\Work\Projects\DocxAICorrector" -- bash scripts/test.sh <selector> [опции]
+wsl.exe -d Debian --cd "D:\Work\Projects\DocxAICorrector" -- bash -lc "<команда>"
 ```
 
 - Всегда `wsl.exe`, не голое `wsl` (в PATH MSYS его может не быть).
 - Если `uname` уже показывает Linux — **не вкладывайте `wsl.exe` повторно**: это даёт ложные path/stdio проблемы и ломает диагностику.
-- Fallback, если `--cd` недоступен: `wsl.exe -d Debian bash -c "cd /mnt/d/www/projects/2025/DocxAICorrector && …"`.
+- Fallback, если `--cd` недоступен: `wsl.exe -d Debian bash -c "cd /mnt/d/Work/Projects/DocxAICorrector && …"`.
 
 ### Боковые worktree для агентов
 
 Механика выстрадана 2026-08-07/08, когда над деревом одновременно работали несколько агентов. Каждый
 пункт стоил либо потерянного прогона, либо красного CI.
 
-- **Worktree создавайте ВНЕ репозитория** (например `E:\Temp\claude\wt-<slug>`, он же
-  `/mnt/e/Temp/claude/wt-<slug>`). Встроенная изоляция агентского инструмента кладёт worktree внутрь
+- **Worktree создавайте ВНЕ репозитория** (например `D:\Temp\claude\wt-<slug>`, он же
+  `/mnt/d/Temp/claude/wt-<slug>`; до 2026-11-07 здесь стоял `E:\Temp\claude`, но диска `E:` на этой
+  машине нет). Встроенная изоляция агентского инструмента кладёт worktree внутрь
   дерева, и git отказывается: `core.worktree redirect`. `.venv` подключайте симлинком на главное
   дерево — без него `scripts/test.sh` не найдёт активатор и агент объявит окружение сломанным.
 - **`$VAR` схлопывается в пустую строку** на границе Git Bash → `wsl.exe`, ДАЖЕ в одинарных кавычках.

@@ -150,7 +150,7 @@ Universal real-document validation architecture и её implementation status а
 
 Проект использует WSL-first workflow. Для штатного runtime, Streamlit, shell-driven validation и финальной проверки источником истины считается project runtime внутри WSL. Но агентам и automation нельзя предполагать layout `.venv` заранее: сначала нужно фактологически проверить, это Linux layout (`.venv/bin/activate`) или Windows layout (`.venv\Scripts\python.exe`). PowerShell-скрипты в `scripts/` являются thin wrapper entry points для штатного запуска в WSL.
 
-Project runtime source of truth для разработки, проверок, тестов и live-валидации — путь `/mnt/d/www/projects/2025/DocxAICorrector` внутри WSL вместе с проектной `.venv`, если она реально имеет WSL/Linux layout. Не делайте выводы о зависимостях, доступности Pandoc, import health или runtime-состоянии по случайному `python`, `py`, Windows virtualenv или иному системному интерпретатору, пока не проверен project runtime. Если системный интерпретатор и project runtime расходятся, источником истины считается project runtime.
+Project runtime source of truth для разработки, проверок, тестов и live-валидации — путь `/mnt/d/Work/Projects/DocxAICorrector` внутри WSL вместе с проектной `.venv`, если она реально имеет WSL/Linux layout. Не делайте выводы о зависимостях, доступности Pandoc, import health или runtime-состоянии по случайному `python`, `py`, Windows virtualenv или иному системному интерпретатору, пока не проверен project runtime. Если системный интерпретатор и project runtime расходятся, источником истины считается project runtime.
 
 Если для вспомогательных Windows-only сценариев нужен отдельный virtualenv, используйте каталог `.venv-win/`. Это окружение допустимо для editor tooling и статического анализа вроде Pyright, но не для штатного runtime проекта. Через WSL dispatcher должны работать только lifecycle и diagnostic wrappers: `scripts/start-project.ps1`, `scripts/stop-project.ps1`, `scripts/status-project.ps1` и `scripts/tail-streamlit-log.ps1`.
 
@@ -584,7 +584,7 @@ pytest tests -q
 Прямой запуск из WSL shell по-прежнему допустим для ручной диагностики:
 
 ```bash
-bash -lc 'cd /mnt/d/www/projects/2025/DocxAICorrector && . .venv/bin/activate && pytest tests -q'
+bash -lc 'cd /mnt/d/Work/Projects/DocxAICorrector && . .venv/bin/activate && pytest tests -q'
 ```
 
 До интерпретации любого test/debug результата сначала проверяйте project runtime в WSL. Вывод случайного системного `python`, `py` или Windows-интерпретатора не считается источником истины, пока не подтверждено поведение проектной `.venv` внутри WSL.
