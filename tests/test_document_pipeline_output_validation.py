@@ -1970,6 +1970,36 @@ def _assert_delivered_unchanged(paragraphs, result):
     _assert_list_fragment_carry_invariants(paragraphs, result)
 
 
+def test_list_fragment_carry_moves_the_digits_exactly_as_written():
+    # Codex acceptance finding 6: the carry parsed "02" to an int and printed "2", so the
+    # multiset of number tokens changed. A carry moves the token; it never rewrites it.
+    paragraphs = [
+        ("item-1", "1. Первый пункт 02.", "", "body", None),
+        ("item-2", "Продолжение второго пункта.", "", "body", None),
+    ]
+
+    result = _assemble_single_block(paragraphs)
+
+    assert [entry.text for entry in result.entries] == ["1. Первый пункт", "02. Продолжение второго пункта."]
+    _assert_list_fragment_carry_invariants(paragraphs, result)
+
+
+def test_list_fragment_carry_sees_an_ordinal_inside_emphasis_markers():
+    # Codex acceptance finding 6: the follower already opens with its ordinal, written
+    # inside the bold the importer baked in; carrying would give "2. **2. Второй пункт**".
+    paragraphs = [
+        ("item-1", "1. Первый пункт 2.", "", "body", None),
+        ("item-2", "**2. Второй пункт**", "", "body", None),
+    ]
+
+    result = _assemble_single_block(paragraphs)
+
+    _assert_delivered_unchanged(paragraphs, result)
+    assert result.final_markdown == document_pipeline_output_validation.normalize_list_fragment_regressions_markdown(
+        "1. Первый пункт 2.\n\n**2. Второй пункт**"
+    )
+
+
 def test_assemble_final_markdown_keeps_a_trailing_year_the_source_owns():
     # Rethinking Money 2026-11-07, delivered.md:3201-3203: the year closing a bibliography
     # entry was cut off and prepended to the NEXT entry ("2010. www…"), and "2009." was

@@ -897,7 +897,9 @@ def _normalize_final_entry_text(text: str) -> str:
 # through ``decide_list_fragment_carry`` so their guards cannot diverge again. Until spec
 # 063 P0 only the markdown twin had them (6bc8ff9), and the registry twin, which runs
 # first, delivered "…June 14," + "2010. www…" and "6. Macmillan, 1865), с." + "7. 5. П. …".
-_LIST_FRAGMENT_LEADING_ORDINAL_PATTERN = re.compile(r"^\d+[.)]\s")
+# The importer bakes emphasis into the text, so a follower can open with its ordinal inside
+# the markers: "**2. Второй пункт**" already has its ordinal (Codex acceptance finding 6).
+_LIST_FRAGMENT_LEADING_ORDINAL_PATTERN = re.compile(r"^[*_]*\d+[.)]\s")
 _LIST_FRAGMENT_INTRO_PATTERN = re.compile(r"^(?P<prefix>.+?):\s+1\.$")
 _LIST_FRAGMENT_CARRY_PATTERN = re.compile(r"^(?:(?P<current>\d+)\.\s+)?(?P<body>.+?)\s+(?P<next>\d+)\.$")
 _LIST_FRAGMENT_NUMBER_TOKEN_PATTERN = re.compile(r"\d+")
@@ -964,7 +966,10 @@ def decide_list_fragment_carry(
     carry_match = _LIST_FRAGMENT_CARRY_PATTERN.match(stripped)
     if carry_match is None:
         return None
-    next_number = int(carry_match.group("next"))
+    # The digits are moved exactly as the model wrote them: "02." carries as "02.", not as
+    # "2." -- a carry MOVES a number token and never rewrites it (Codex acceptance finding 6).
+    next_digits = carry_match.group("next")
+    next_number = int(next_digits)
     own_ordinal = carry_match.group("current")
     if own_ordinal is not None and next_number != int(own_ordinal) + 1:
         return None
@@ -980,7 +985,7 @@ def decide_list_fragment_carry(
         # The text minus its trailing " N." only: the paragraph's own ordinal, if any,
         # stays exactly as written, and none is invented for a paragraph that had none.
         current_text=stripped[: carry_match.start("next")].rstrip(),
-        follower_text=f"{next_number}. {follower}",
+        follower_text=f"{next_digits}. {follower}",
         is_intro=False,
         current_has_own_ordinal=own_ordinal is not None,
     )
