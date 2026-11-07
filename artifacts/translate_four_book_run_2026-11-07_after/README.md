@@ -159,3 +159,7 @@ Every cell below is `before → after`.
   66.1/73.6/60.2/62.7 %; terms with ≤ 1 rendering 4/0/3/8 → 5/0/5/8. The glossary itself maps
   `sustainability -> жизнеспособность` (Money), `Resilience -> живучесть` (RM, used in 0 of 18 pairs),
   `Lietaer -> Литар/Лита`, and has no `value` entry for VoE; the value split by chapter is unchanged.
+
+## Поправка оркестратора 2026-11-07
+
+Ноль вызовов анализа картинок во всех четырёх прогонах — не дефект: профиль идёт в режиме `safe`, где по спеке 062 FR-033 план PIL-only и vision-вызов не делается (`image/pipeline.py:1243-1250`). Экономия в таблице стоимости — в основном это. Остальные неожиданности прогона разобраны в `specs/064-context-never-reached-the-model/spec.md` (R-1…R-7); главная из них найдена при проверке утверждения «глоссарий не повлиял»: секция глоссария, как и весь `document_context_prompt`, никогда не попадала в системный промпт.
