@@ -24,9 +24,9 @@ the 2026-11-07 reviewers wrote: a list of ``{"term": ...}``, ``{"terms": [...]}`
 keyed by term) the share of the reviewer's key terms that appear among the candidates, with the
 misses named. ``--extra-term`` adds terms named elsewhere (repeatable).
 
-``--live`` (SPENDS MONEY: one call)
-    Builds the product request, sends it ONCE through ``request_text_completion`` with the run's
-    default text model (or ``--model``), parses it with the product's acceptance rules and prints
+``--live`` (SPENDS MONEY: one call, plus one re-ask when rule-included terms were left out)
+    Runs the product call sequence (``pipeline/glossary_phase._call_model``) with the run's
+    default text model (or ``--model``), with the product's acceptance rules, and prints
     the entries, ``prompt_tokens``, ``completion_tokens``, the provider's ``cost``, the rendered
     prompt section's characters and the measured characters-per-input-token ratio. Writes the
     result in the ``.run/run_glossaries`` artifact shape to ``--glossary-out``. Never runs a book.
@@ -59,10 +59,8 @@ from docxaicorrector.text.glossary_pass import (  # noqa: E402
     DEFAULT_GLOSSARY_CANDIDATE_LIMIT,
     DEFAULT_GLOSSARY_MAX_TERMS,
     RUN_GLOSSARY_SECTION_HEADER,
-    build_glossary_request,
     extract_glossary_candidates,
     normalize_glossary_key,
-    parse_glossary_response,
     select_glossary_source_units,
 )
 
@@ -182,56 +180,78 @@ def _recall(candidates, terms: list[str]) -> tuple[list[str], list[str]]:
     return caught, missed
 
 
-def _live_call(candidates, *, model: str | None, max_terms: int, prompt_max_chars: int, glossary_out: Path | None) -> None:
+def _live_call(
+    candidates,
+    units,
+    *,
+    model: str | None,
+    max_terms: int,
+    prompt_max_chars: int,
+    source_language: str,
+    glossary_out: Path | None,
+) -> None:
+    """The PRODUCT call sequence (``pipeline/glossary_phase._call_model``): one call, then one
+    re-ask for the rule-included terms the answer left out, then rule-included first."""
+
     from docxaicorrector.core import model_accounting
     from docxaicorrector.core.config import get_client_for_model_selector, load_app_config, resolve_model_selector
     from docxaicorrector.document.segments import render_glossary_prompt_section
-    from docxaicorrector.generation._generation import request_text_completion
+    from docxaicorrector.pipeline import glossary_phase
 
     app_config = load_app_config()
     selector = model or str(app_config["default_model"])
     model_id = resolve_model_selector(selector, "responses_text", source_name="measure-glossary-candidates").model_id
     client = get_client_for_model_selector(selector, "responses_text")
-    request = build_glossary_request(
-        model=model_id,
-        candidates=candidates,
-        fixed_terms=(),
-        source_language="en",
-        target_language="ru",
-        max_terms=max_terms,
-    )
-    request_chars = sum(len(part["text"]) for item in request["input"] for part in item["content"])
+    record: dict[str, object] = {}
+    runtime = object()
     with model_accounting.run_model_accounting_scope(run_id="measure-glossary-live", source_token="measure"):
-        raw = request_text_completion(
-            client, request, usage_stage=model_accounting.STAGE_GLOSSARY_EXTRACTION
+        status, terms = glossary_phase._call_model(
+            context=SimpleNamespace(source_language=source_language, target_language="ru", runtime=runtime),
+            dependencies=SimpleNamespace(should_stop_processing=lambda _runtime: False),
+            emitters=SimpleNamespace(emit_status=lambda *_args, **_kwargs: None),
+            initialization=SimpleNamespace(text_client=client, job_count=0),
+            model=model_id,
+            sent_candidates=tuple(candidates),
+            fixed_terms=(),
+            max_terms=max_terms,
+            sample_text="\n\n".join(unit.text for unit in units)[:2000],
+            record=record,
+            request_text_completion_fn=None,
         )
         stage = model_accounting.snapshot_run_model_accounting()["stages"].get("glossary_extraction", {})
-    parsed = parse_glossary_response(raw, candidates=candidates, max_terms=max_terms)
-    section = render_glossary_prompt_section(parsed.terms, header=RUN_GLOSSARY_SECTION_HEADER, max_chars=prompt_max_chars)
+    section = render_glossary_prompt_section(terms, header=RUN_GLOSSARY_SECTION_HEADER, max_chars=prompt_max_chars)
     prompt_tokens = int(stage.get("prompt_tokens") or 0)
-    print(f"live: model={selector} entries={len(parsed.terms)} rejected={parsed.rejected_counts}")
+    request_chars = int(record.get("request_chars") or 0)
+    rendered = sum(1 for line in section.splitlines() if line.startswith("- ") and line != "- ...")
+    print(
+        f"live: model={selector} status={status} calls={record.get('model_call_count')} entries={len(terms)} "
+        f"required={record.get('required_count')} reasked={record.get('reasked_required_count')} "
+        f"unrendered={record.get('unrendered_terms')} rejected={record.get('rejected_counts')}"
+    )
     print(
         f"live: prompt_tokens={prompt_tokens} completion_tokens={stage.get('completion_tokens')} "
-        f"cost_usd={stage.get('cost_usd_reported_by_provider')} request_chars={request_chars} "
-        f"chars_per_input_token={(request_chars / prompt_tokens) if prompt_tokens else None}"
+        f"cost_usd={stage.get('cost_usd_reported_by_provider')} first_request_chars={request_chars}"
     )
-    rendered = sum(1 for line in section.splitlines() if line.startswith("- ") and line != "- ...")
-    print(f"live: prompt_section_chars={len(section)} rendered_terms={rendered}")
-    for term in parsed.terms:
+    print(f"live: prompt_section_chars={len(section)} rendered_terms={rendered} of {len(terms)}")
+    for term in terms:
         print(f"  {term.kind:4} {term.source_term} -> {term.target_term}" + (f"  [{term.note}]" if term.note else ""))
     if glossary_out is not None:
         glossary_out.write_text(
             json.dumps(
                 {
                     "schema": "run_glossary/v1",
-                    "status": "built" if parsed.terms else "empty",
+                    "status": status,
                     "model": selector,
                     "candidate_count": len(candidates),
                     "terms": [
                         {"source_term": t.source_term, "target_term": t.target_term, "kind": t.kind, "note": t.note}
-                        for t in parsed.terms
+                        for t in terms
                     ],
-                    "rejected_counts": parsed.rejected_counts,
+                    "rejected_counts": record.get("rejected_counts"),
+                    "required_count": record.get("required_count"),
+                    "reasked_required_count": record.get("reasked_required_count"),
+                    "unrendered_terms": record.get("unrendered_terms"),
+                    "model_call_count": record.get("model_call_count"),
                     "rendered_term_count": rendered,
                     "prompt_section_chars": len(section),
                     "request_chars": request_chars,
@@ -240,7 +260,6 @@ def _live_call(candidates, *, model: str | None, max_terms: int, prompt_max_char
                         "completion_tokens": stage.get("completion_tokens"),
                         "cost_usd": stage.get("cost_usd_reported_by_provider"),
                     },
-                    "raw_response_chars": len(raw),
                 },
                 ensure_ascii=False,
                 indent=1,
@@ -266,6 +285,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--max-terms", type=int, default=DEFAULT_GLOSSARY_MAX_TERMS)
     parser.add_argument("--prompt-max-chars", type=int, default=3000)
     parser.add_argument("--glossary-out", type=Path)
+    parser.add_argument("--source-language", default="auto", help="as the run profile sets it; 'auto' is resolved like the product does")
     args = parser.parse_args(argv)
 
     if args.document_profile:
@@ -298,6 +318,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.live:
         _live_call(
             candidates,
+            units,
+            source_language=args.source_language,
             model=args.model,
             max_terms=args.max_terms,
             prompt_max_chars=args.prompt_max_chars,

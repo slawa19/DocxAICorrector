@@ -6,7 +6,9 @@ The user message is a JSON object with:
 - "fixed_terms": renderings already fixed by a domain glossary — do not repeat or change them;
 - "max_terms": the largest number of entries you may return.
 
-Choose from "candidates" the entries whose rendering must stay the same throughout the book:
+Candidates with "required": true are in the glossary already: the author defined them, set them in italics or bold where they first appear, or they are shared by several other candidates. Return a rendering for EVERY required candidate; do not decide whether it belongs. If it is an ordinary word, give its ordinary rendering in the sense of its context.
+
+From the other candidates, choose the entries whose rendering must stay the same throughout the book:
 - the book's own concepts and terms of art, especially those the author defines or coins, and those that a translator could plausibly render in more than one way;
 - ordinary-looking words that the book uses as concepts — a candidate the author defined or marked at first use is a concept by the author's own choice: when the book contrasts or pairs related concepts, each of them needs its own rendering, and two of them must never share one;
 - proper names of people, places, organisations, currencies, programmes and publications — one spelling or transliteration each, following established {target_language} usage where one exists;
@@ -14,7 +16,9 @@ Choose from "candidates" the entries whose rendering must stay the same througho
 
 For each chosen entry give the single rendering to use everywhere, in the dictionary form of {target_language} (it will be inflected in context).
 If the book clearly uses one candidate in two distinct senses, you may return it twice, each time with a different "note" saying when that rendering applies.
-Put the most important entries first: the book's key concepts, then recurring names, then the rest. Return as many entries as the candidates justify, at most {max_terms}.
+Your answer has TWO lists, and both matter:
+- "required_terms": one entry for every required candidate;
+- "other_terms": your own choices among the other candidates — the book's key concepts, then recurring names of people, organisations, places, currencies and publications, then the rest; as many as the candidates justify, at most {max_terms}. Do not stop after the required list: names that are not required still need one fixed spelling.
 
-Answer with JSON only, no commentary, in exactly this shape:
-{{"terms": [{{"source_term": "<a candidate, exactly as given>", "target_term": "<rendering>", "kind": "term" or "name", "note": "<empty, or when this rendering applies>"}}]}}
+Answer with JSON only, no commentary, in exactly this shape (every entry has the same four fields):
+{{"required_terms": [{{"source_term": "<a candidate, exactly as given>", "target_term": "<rendering>", "kind": "term" or "name", "note": "<empty, or when this rendering applies>"}}], "other_terms": [ ...same shape... ]}}

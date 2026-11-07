@@ -66,6 +66,7 @@ _SPREAD_BINS = 10
 _MIN_COLLOCATION_COUNT = 3
 _MIN_COLLOCATION_EDGE_LETTERS = 4
 _MAX_JOINER_LETTERS = 3
+_ZIPF_HEAD_SHARE = 0.5
 
 _LETTER = r"[^\W\d_]"
 _WORD = _LETTER + r"(?:" + _LETTER + r"|['’\-])*" + _LETTER + r"|" + _LETTER
@@ -125,11 +126,16 @@ class GlossaryCandidate:
     first_unit_id: str
     context: str
     score: float
+    # Spec 063 P2, inclusion rule: the AUTHOR marked or defined this expression (or it heads a
+    # family of at least three candidates), so it enters the glossary by rule — the model is
+    # asked only for its rendering, never whether to include it.
+    required: bool = False
 
     def to_payload(self) -> dict[str, object]:
         return {
             "term": self.source_term,
             "family": self.family,
+            "required": self.required,
             "signals": list(self.signals),
             "count": self.occurrence_count,
             "unit_count": self.unit_count,
@@ -318,6 +324,17 @@ def _defined_term_words(tail: str) -> list[str]:
     return []
 
 
+def _trim_joiners(words: Sequence[str]) -> list[str]:
+    """A marked span without the short words at its edges ("The problem" -> "problem")."""
+
+    trimmed = list(words)
+    while trimmed and len(trimmed[0]) <= _MAX_JOINER_LETTERS and not trimmed[0].isupper():
+        trimmed.pop(0)
+    while trimmed and len(trimmed[-1]) <= _MAX_JOINER_LETTERS and not trimmed[-1].isupper():
+        trimmed.pop()
+    return trimmed
+
+
 def _log_likelihood_term(k: float, n: float) -> float:
     return k * math.log(k / n) if k > 0 and n > 0 else 0.0
 
@@ -402,6 +419,30 @@ def extract_glossary_candidates(
             draft = drafts[key] = _Draft(key=key, surface=" ".join(raw_words), proper=proper)
         draft.signals.add(signal)
 
+    word_counts: Counter[str] = Counter()
+    total_words = 0
+    for unit_index in body_indexes:
+        word_counts.update(word.lower() for word in folded_tokens[unit_index])
+        total_words += len(folded_tokens[unit_index])
+    # The document's own Zipf head: the most frequent words that together make up half of its
+    # running text. A single word from the head that the author italicised is stress, not a term
+    # being introduced ("after", "itself", "real"); the book's own key words sit far below it.
+    zipf_head: set[str] = set()
+    covered = 0
+    for word, count in word_counts.most_common():
+        if covered >= total_words * _ZIPF_HEAD_SHARE:
+            break
+        zipf_head.add(word)
+        covered += count
+
+    def admit_marked(words: Sequence[str], signal: str, unit_index: int) -> None:
+        trimmed = _trim_joiners(words)
+        if not trimmed:
+            return
+        if len(trimmed) == 1 and _fold_word(trimmed[0]).lower() in zipf_head:
+            return
+        admit(trimmed, signal, unit_index, proper=False)
+
     for unit_index in body_indexes:
         plain = plains[unit_index]
         source = marked_sources[unit_index]
@@ -423,18 +464,13 @@ def extract_glossary_candidates(
                 span = match.group(1)
                 words = _WORD_RE.findall(span)
                 if 1 <= len(words) <= _MAX_TERM_WORDS and len(span) < 0.8 * len(text):
-                    admit(words, signal, unit_index, proper=False)
+                    admit_marked(words, signal, unit_index)
         for pattern in _DEFINITION_PATTERNS:
             for match in pattern.finditer(source):
                 words = _defined_term_words(match.group("tail"))
                 if words:
-                    admit(words, "defined", unit_index, proper=False)
+                    admit_marked(words, "defined", unit_index)
 
-    word_counts: Counter[str] = Counter()
-    total_words = 0
-    for unit_index in body_indexes:
-        word_counts.update(word.lower() for word in folded_tokens[unit_index])
-        total_words += len(folded_tokens[unit_index])
     gram_counts: Counter[tuple[str, ...]] = Counter()
     for unit_index in body_indexes:
         for clause in _CLAUSE_SPLIT_RE.split(plains[unit_index]):
@@ -567,9 +603,29 @@ def extract_glossary_candidates(
                 first_unit_id=units[first_unit].unit_id,
                 context=_context_snippet(plains[context_unit], draft.surface),
                 score=round(draft.score, 4),
+                required=_included_by_rule(draft),
             )
         )
     return tuple(candidates)
+
+
+def _included_by_rule(draft: _Draft) -> bool:
+    """Which candidates the author put in the glossary, by form (spec 063 P2 inclusion rule).
+
+    A definition and italics or bold at first use are the author's own act of naming a
+    concept; a family head stands for at least three candidates (``_HEAD_MIN_MEMBERSHIP``).
+    Quotes around ONE word are left to the model: on the four corpus books they are mostly
+    scare quotes rather than terms being introduced; quotes around a multi-word expression
+    still count.
+    """
+
+    if draft.family == FAMILY_HEAD:
+        return True
+    if draft.family != FAMILY_MARKED:
+        return False
+    if draft.signals & {"defined", "emphasis"}:
+        return True
+    return "quoted" in draft.signals and len(draft.key) > 1
 
 
 def _context_snippet(plain: str, surface: str) -> str:
@@ -639,16 +695,18 @@ def build_glossary_request(
     source_language: str,
     target_language: str,
     max_terms: int,
+    sample_text: str = "",
 ) -> dict[str, object]:
-    """The one request, in the Responses ``input`` shape every provider helper accepts."""
+    """The request, in the Responses ``input`` shape every provider helper accepts."""
 
+    source_label = describe_source_language(source_language, sample_text=sample_text)
     instructions = _load_glossary_instructions().format(
-        source_language=str(source_language or "auto"),
+        source_language=source_label,
         target_language=str(target_language or ""),
         max_terms=int(max_terms),
     )
     payload = {
-        "source_language": str(source_language or "auto"),
+        "source_language": source_label,
         "target_language": str(target_language or ""),
         "max_terms": int(max_terms),
         "fixed_terms": [
@@ -659,6 +717,7 @@ def build_glossary_request(
                 "id": index + 1,
                 "term": candidate.source_term,
                 "family": candidate.family,
+                "required": candidate.required,
                 "signals": list(candidate.signals),
                 "count": candidate.occurrence_count,
                 "context": candidate.context,
@@ -678,6 +737,66 @@ def build_glossary_request(
         "temperature": 0.2,
         "max_output_tokens": glossary_max_output_tokens(max_terms),
     }
+
+
+_SOURCE_LANGUAGE_UNKNOWN = "the source language of the text"
+
+
+def describe_source_language(source_language: str, *, sample_text: str = "") -> str:
+    """A language the model can be told, never the literal setting ``auto``.
+
+    ``auto`` is a UI choice, not a language. The product's only detector is the script
+    assessment of ``text/transform_assessment.py``, which names a language only when the
+    script settles it (Cyrillic today); otherwise the instruction says what is known.
+    """
+
+    normalized = str(source_language or "").strip().lower()
+    if normalized and normalized != "auto":
+        return normalized
+    if sample_text:
+        from docxaicorrector.text.transform_assessment import assess_text_transform_excerpt
+
+        detected = assess_text_transform_excerpt(sample_text, target_language="")["dominant_language"]
+        if detected:
+            return str(detected)
+    return _SOURCE_LANGUAGE_UNKNOWN
+
+
+def missing_required_candidates(
+    candidates: Sequence[GlossaryCandidate],
+    terms: Sequence[GlossaryTerm],
+) -> tuple[GlossaryCandidate, ...]:
+    """Required candidates the answer gave no rendering for."""
+
+    rendered = {normalize_glossary_key(term.source_term) for term in terms}
+    return tuple(
+        candidate
+        for candidate in candidates
+        if candidate.required and normalize_glossary_key(candidate.source_term) not in rendered
+    )
+
+
+def order_required_first(
+    candidates: Sequence[GlossaryCandidate],
+    terms: Sequence[GlossaryTerm],
+) -> tuple[GlossaryTerm, ...]:
+    """Rule-included entries first (in candidate order), then the model's own choices.
+
+    The prompt budget cuts from the END, so a rule-included term is never the one dropped
+    to make room for an optional one.
+    """
+
+    by_key: dict[tuple[str, ...], list[GlossaryTerm]] = defaultdict(list)
+    for term in terms:
+        by_key[normalize_glossary_key(term.source_term)].append(term)
+    ordered: list[GlossaryTerm] = []
+    for candidate in candidates:
+        if candidate.required:
+            ordered.extend(by_key.pop(normalize_glossary_key(candidate.source_term), []))
+    for term in terms:
+        if normalize_glossary_key(term.source_term) in by_key:
+            ordered.append(term)
+    return tuple(ordered)
 
 
 def _load_json_object(raw_text: str) -> dict[str, object]:
@@ -709,14 +828,27 @@ def parse_glossary_response(
     """Accept only renderings of terms the request carried (contract: ``contracts/glossary.md``)."""
 
     payload = _load_json_object(raw_text)
-    entries = payload.get("terms")
-    if not isinstance(entries, list):
-        raise GlossaryResponseError("invalid_shape", "glossary JSON has no 'terms' list")
+    # Two lists (required renderings, then the model's own choices) make the model answer
+    # both halves; a single "terms" list is still accepted.
+    entries: list[object] = []
+    found_list = False
+    for list_key in ("required_terms", "other_terms", "terms"):
+        value = payload.get(list_key)
+        if isinstance(value, list):
+            entries.extend(value)
+            found_list = True
+    if not found_list:
+        raise GlossaryResponseError("invalid_shape", "glossary JSON has no list of terms")
     surface_by_key = {}
+    required_keys: set[tuple[str, ...]] = set()
     for candidate in candidates:
-        surface_by_key.setdefault(normalize_glossary_key(candidate.source_term), candidate.source_term)
+        candidate_key = normalize_glossary_key(candidate.source_term)
+        surface_by_key.setdefault(candidate_key, candidate.source_term)
+        if candidate.required:
+            required_keys.add(candidate_key)
     rejected = {"not_a_candidate": 0, "empty_target": 0, "duplicate_sense": 0, "over_limit": 0}
     accepted: list[GlossaryTerm] = []
+    optional_count = 0
     notes_by_key: dict[tuple[str, ...], list[str]] = defaultdict(list)
     limit = max(0, int(max_terms))
     for entry in entries:
@@ -736,9 +868,14 @@ def parse_glossary_response(
         if previous_notes and (len(previous_notes) >= 2 or not note or note in previous_notes):
             rejected["duplicate_sense"] += 1
             continue
-        if len(accepted) >= limit:
+        is_required = key in required_keys
+        if not is_required and optional_count >= limit:
+            # ``max_terms`` bounds the model's OWN choices; a rule-included term is never
+            # refused for lack of room (spec 063 P2 inclusion rule).
             rejected["over_limit"] += 1
             continue
+        if not is_required:
+            optional_count += 1
         kind = str(entry.get("kind", "") or "").strip().lower()
         previous_notes.append(note)
         accepted.append(
@@ -763,11 +900,14 @@ __all__ = [
     "GlossarySourceUnit",
     "RUN_GLOSSARY_SECTION_HEADER",
     "build_glossary_request",
+    "describe_source_language",
     "domain_glossary_terms",
     "extract_glossary_candidates",
     "glossary_max_output_tokens",
     "glossary_terms_from_plan",
+    "missing_required_candidates",
     "normalize_glossary_key",
+    "order_required_first",
     "parse_glossary_response",
     "request_candidates",
     "select_glossary_source_units",
