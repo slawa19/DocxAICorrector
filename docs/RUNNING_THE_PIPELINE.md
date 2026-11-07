@@ -117,7 +117,7 @@ wsl.exe -d Debian -- bash -lc 'cd /mnt/d/Work/Projects/DocxAICorrector && . .ven
 ```
 Outputs in `runs/<RUN_ID>/`: `..._report.json`, `..._summary.txt`, and `<output_basename>.docx` — plus
 `<output_basename>.md` and, on audiobook runs, `<output_basename>.tts.txt`
-(`scripts/run_lietaer_validation.py:3489-3491`, `src/docxaicorrector/runtime/artifacts.py:382`). Five
+(`tests/artifacts/real_document_pipeline/run_lietaer_validation.py`, `src/docxaicorrector/runtime/artifacts.py:382`). Five
 files, not three. On an audiobook run the `.tts.txt` **is** the product.
 
 ### Reading `..._summary.txt`: the `model_accounting_*` lines (added 2026-08-08)
