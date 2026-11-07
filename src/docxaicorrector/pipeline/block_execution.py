@@ -7,13 +7,23 @@ from pathlib import Path
 from typing import Any, Literal, TypeAlias
 
 from docxaicorrector.core.model_accounting import (
+    record_back_matter_delivery,
     record_controlled_block_fallback,
     record_untranslated_prose_block_delivery,
 )
-from docxaicorrector.core.models import LANGUAGE_CHANGING_OPERATIONS, PARAGRAPH_REGION_PROSE
+from docxaicorrector.core.models import (
+    BACK_MATTER_SECTION_NOTES,
+    BACK_MATTER_SECTION_REFERENCES,
+    LANGUAGE_CHANGING_OPERATIONS,
+    PARAGRAPH_REGION_BACK_MATTER,
+    PARAGRAPH_REGION_PROSE,
+    PARAGRAPH_STATUS_POLICY_KEPT_SOURCE,
+)
 from docxaicorrector.generation._generation import (
     PARAGRAPH_STATUS_OMITTED,
     PARAGRAPH_STATUS_SOURCE_RESTORED,
+    MarkerPreservedBlockText,
+    ParagraphDisposition,
     marker_paragraph_dispositions,
 )
 from docxaicorrector.pipeline.contracts import LatePhaseStopped
@@ -293,6 +303,267 @@ def payload_contains_prose(payload: Any) -> bool:
     if not isinstance(regions, list) or not regions:
         return True
     return bool(prose_paragraph_indexes(payload))
+
+
+# --- Spec 063 FR-011 / FR-012: the apparatus policy of owner decision D1 -----------------
+#
+# D1 (2026-11-07): entries of a bibliography and references stay in the SOURCE language, the
+# commentary of notes is translated, one policy per book -- keyed on the REGION, never on the
+# shape of an entry (Constitution VII). The region and its section are resolved by the document
+# layer (``semantic_blocks._resolve_back_matter_sections``); this module only reads them.
+#
+# The structural roles a reference-list ENTRY arrives with. Measured on the four corpus books
+# (2026-11-07 runs, ``pairs.jsonl``): every paragraph of their back matter is ``body``,
+# ``list`` or ``heading``. A heading inside a reference list -- the section title itself, a
+# sub-list title such as "Articles" -- is not an entry and is translated, so a block carrying
+# one goes to the model under the prompt rule rather than being kept whole. Anything else
+# (``image``, ``caption``, ...) is not an entry either, and the same conservative direction
+# applies: an unknown role sends the block to the model.
+REFERENCE_ENTRY_STRUCTURAL_ROLES = frozenset({"body", "list"})
+# The sections D1 speaks about. The index is not one of them: it is translated as before, and
+# its repair is a non-goal of spec 063 (P-6).
+_BACK_MATTER_POLICY_SECTION_NAMES = {
+    BACK_MATTER_SECTION_NOTES: "примечания",
+    BACK_MATTER_SECTION_REFERENCES: "список литературы",
+}
+_APPARATUS_PROMPT_HEADER = "СПРАВОЧНЫЙ АППАРАТ БЛОКА:"
+_APPARATUS_PROMPT_RULE = (
+    "- Записи библиографии и ссылки на источники оставляйте как есть, на языке оригинала: "
+    "авторов, названия, издательства, годы, страницы и адреса не переводите и не "
+    "транслитерируйте. Переводите только авторский комментарий."
+)
+
+
+def _is_translate_job(context: Any) -> bool:
+    """D1 is a TRANSLATION policy. On ``edit`` the source is already in the target language,
+    and ``audiobook`` never narrates the back matter at all (spec 054)."""
+    return str(getattr(context, "processing_operation", "") or "").strip().casefold() == "translate"
+
+
+def back_matter_paragraph_indexes(payload: Any) -> tuple[int, ...]:
+    """Which paragraphs of this block lie in the back-matter REGION. Empty when the producer
+    resolved no regions: absence is never read as apparatus (the ``prose_paragraph_indexes``
+    rule, from the other side)."""
+    regions = getattr(payload, "paragraph_regions", None)
+    if not isinstance(regions, list):
+        return ()
+    return tuple(index for index, region in enumerate(regions) if region == PARAGRAPH_REGION_BACK_MATTER)
+
+
+def reference_list_block_keeps_source(*, context: Any, payload: Any) -> bool:
+    """Is this a block the pipeline delivers in the source language WITHOUT a model call?
+    (spec 063 FR-011.)
+
+    All of, and nothing else:
+
+    * the job is ``translate``;
+    * the block lies in a back-matter section that is a REFERENCE LIST (by its anchor title);
+    * EVERY paragraph is in the back-matter region -- one paragraph of any other region, prose
+      above all, sends the block to the model, which is the anti-vacuum half of the rule;
+    * EVERY paragraph carries an entry role (``REFERENCE_ENTRY_STRUCTURAL_ROLES``) -- a
+      heading is translated, so a block carrying one is a mixed block;
+    * the block is an ordinary model block with addressable paragraphs, not a TOC routed
+      through its own validator.
+
+    Every input that is missing or out of step answers "no": the safe direction is the model.
+    """
+    if not _is_translate_job(context):
+        return False
+    if getattr(payload, "job_kind", None) != "llm" or bool(getattr(payload, "toc_dominant", False)):
+        return False
+    if getattr(payload, "back_matter_section", None) != BACK_MATTER_SECTION_REFERENCES:
+        return False
+    regions = getattr(payload, "paragraph_regions", None)
+    roles = getattr(payload, "structural_roles", None)
+    paragraph_ids = getattr(payload, "paragraph_ids", None)
+    if not isinstance(regions, list) or not regions:
+        return False
+    if not isinstance(roles, list) or len(roles) != len(regions):
+        return False
+    if not isinstance(paragraph_ids, list) or len(paragraph_ids) != len(regions):
+        return False
+    if any(region != PARAGRAPH_REGION_BACK_MATTER for region in regions):
+        return False
+    return all(str(role or "").strip().casefold() in REFERENCE_ENTRY_STRUCTURAL_ROLES for role in roles)
+
+
+def _source_paragraph_texts(payload: Any) -> list[str] | None:
+    """The block's own SOURCE text per paragraph, parallel to ``paragraph_ids``, or ``None``.
+
+    Read off ``target_text_with_markers`` -- the producer's ``[[DOCX_PARA_<id>]]`` + newline +
+    text wrapping (``semantic_blocks.build_marker_wrapped_block_text``) -- by locating each
+    expected marker in order. Exact, never repaired: a marker missing, out of order, or text in
+    front of the first one means the source cannot be addressed paragraph by paragraph, and
+    the caller then falls back to the model or counts nothing.
+    """
+    paragraph_ids = getattr(payload, "paragraph_ids", None)
+    if not isinstance(paragraph_ids, list) or not paragraph_ids:
+        return None
+    marked = str(getattr(payload, "target_text_with_markers", "") or "")
+    spans: list[tuple[int, int]] = []
+    cursor = 0
+    for paragraph_id in paragraph_ids:
+        marker = f"[[DOCX_PARA_{paragraph_id}]]\n"
+        position = marked.find(marker, cursor)
+        if position < 0:
+            return None
+        spans.append((position, position + len(marker)))
+        cursor = position + len(marker)
+    if marked[: spans[0][0]].strip():
+        return None
+    texts = [
+        marked[end : (spans[order + 1][0] if order + 1 < len(spans) else len(marked))].strip()
+        for order, (_, end) in enumerate(spans)
+    ]
+    if any(not text for text in texts):
+        return None
+    return texts
+
+
+def policy_kept_source_chunk(*, context: Any, payload: Any, marker_mode_enabled: bool) -> str | None:
+    """The block exactly as its source, when FR-011 keeps it without a model call; else ``None``.
+
+    In marker mode the text carries a per-paragraph record whose every status is
+    ``policy_kept_source`` (``core.models.PARAGRAPH_STATUS_POLICY_KEPT_SOURCE``), so the
+    registry, the source-text delivery channel and both narration projections can tell this
+    paragraph from a translation and from a loss. Without markers there is no registry to
+    carry it and the block's own source text ships as one string, as a passthrough block does.
+    """
+    if not reference_list_block_keeps_source(context=context, payload=payload):
+        return None
+    if not marker_mode_enabled:
+        return str(getattr(payload, "target_text", "") or "")
+    texts = _source_paragraph_texts(payload)
+    if texts is None:
+        return None
+    dispositions = tuple(
+        ParagraphDisposition(
+            paragraph_id=str(paragraph_id),
+            text=text,
+            status=PARAGRAPH_STATUS_POLICY_KEPT_SOURCE,
+        )
+        for paragraph_id, text in zip(payload.paragraph_ids, texts)
+    )
+    return MarkerPreservedBlockText("\n\n".join(texts), dispositions)
+
+
+def _build_block_apparatus_prompt(*, context: Any, payload: Any, marker_mode_enabled: bool) -> str:
+    """The per-block half of FR-011: which paragraphs of THIS block are apparatus, and the rule.
+
+    The system prompt is cached per run (``_get_cached_system_prompt``) and cannot know the
+    block; the region is per paragraph. So the rule in ``operation_translate.txt`` names this
+    section, and this section names the paragraphs. Only notes and reference lists carry it --
+    the two D1 speaks about.
+    """
+    if not _is_translate_job(context):
+        return ""
+    section_name = _BACK_MATTER_POLICY_SECTION_NAMES.get(str(getattr(payload, "back_matter_section", "") or ""))
+    if section_name is None:
+        return ""
+    indexes = back_matter_paragraph_indexes(payload)
+    if not indexes:
+        return ""
+    regions = getattr(payload, "paragraph_regions", None) or []
+    paragraph_ids = getattr(payload, "paragraph_ids", None)
+    if len(indexes) == len(regions):
+        scope = "все абзацы блока"
+    elif marker_mode_enabled and isinstance(paragraph_ids, list) and len(paragraph_ids) == len(regions):
+        scope = ", ".join(f"[[DOCX_PARA_{paragraph_ids[index]}]]" for index in indexes)
+    else:
+        scope = "абзацы этого раздела в блоке"
+    return "\n".join(
+        (
+            _APPARATUS_PROMPT_HEADER,
+            f"- Раздел: {section_name}",
+            f"- Абзацы: {scope}",
+            _APPARATUS_PROMPT_RULE,
+        )
+    )
+
+
+def _delivered_paragraph_texts(processed_chunk: str, paragraph_count: int) -> list[str] | None:
+    dispositions = marker_paragraph_dispositions(processed_chunk)
+    if dispositions is not None:
+        texts = [disposition.text for disposition in dispositions]
+    else:
+        texts = [chunk.strip() for chunk in str(processed_chunk).split("\n\n") if chunk.strip()]
+    return texts if len(texts) == paragraph_count else None
+
+
+def _record_back_matter_delivery(
+    *,
+    context: Any,
+    dependencies: Any,
+    initialization: Any,
+    index: int,
+    payload: Any,
+    processed_chunk: str,
+    kept_by_policy: bool,
+) -> None:
+    """Spec 063 FR-012: book how this block's back-matter paragraphs reached the reader.
+
+    Data, not a gate. A paragraph counts as delivered in the source language when its
+    delivered text equals its own source (``delivered_text_equals_source`` -- the one
+    comparison, FR-A2 of spec 059), and as translated otherwise. A paragraph with nothing to
+    translate (a year, a URL) counts as source: the share is an upper bound on the policy's
+    reach, said here rather than discovered. A block whose paragraphs cannot be aligned to
+    their source is not counted at all, rather than counted by a guess.
+    """
+    if not _is_translate_job(context):
+        return
+    section = getattr(payload, "back_matter_section", None)
+    indexes = back_matter_paragraph_indexes(payload)
+    if not section or not indexes:
+        return
+    paragraph_ids = getattr(payload, "paragraph_ids", None)
+    if not isinstance(paragraph_ids, list) or not paragraph_ids:
+        return
+    source_texts = _source_paragraph_texts(payload)
+    delivered_texts = _delivered_paragraph_texts(processed_chunk, len(paragraph_ids))
+    if source_texts is None or delivered_texts is None:
+        return
+    kept = [
+        position
+        for position in indexes
+        if delivered_text_equals_source(
+            target_text=source_texts[position], processed_chunk=delivered_texts[position]
+        )
+    ]
+    translated = [position for position in indexes if position not in kept]
+    roles = getattr(payload, "structural_roles", None)
+    role_list = roles if isinstance(roles, list) else []
+    entry_positions = {
+        position
+        for position in indexes
+        if position < len(role_list)
+        and str(role_list[position] or "").strip().casefold() in REFERENCE_ENTRY_STRUCTURAL_ROLES
+    }
+    kept_entries = [position for position in kept if position in entry_positions]
+    translated_entries = [position for position in translated if position in entry_positions]
+    mixed = section == BACK_MATTER_SECTION_REFERENCES and bool(kept_entries) and bool(translated_entries)
+    record_back_matter_delivery(
+        section=str(section),
+        source_paragraph_count=len(kept),
+        translated_paragraph_count=len(translated),
+        kept_by_policy=kept_by_policy,
+        kept_chars=len(processed_chunk) if kept_by_policy else 0,
+        mixed=mixed,
+    )
+    if mixed:
+        dependencies.log_event(
+            logging.WARNING,
+            "back_matter_policy_mixed_block",
+            "Записи списка литературы в одном блоке доставлены частью на языке оригинала, частью переведёнными; нужна проверка.",
+            filename=context.uploaded_filename,
+            block_index=index,
+            block_count=initialization.job_count,
+            back_matter_section=str(section),
+            needs_review=True,
+            review_data=True,
+            advisory=True,
+            source_paragraph_ids=[str(paragraph_ids[position]) for position in kept_entries][:20],
+            translated_paragraph_ids=[str(paragraph_ids[position]) for position in translated_entries][:20],
+        )
 
 
 def _has_intact_controlled_fallback_substrate(
@@ -679,6 +950,12 @@ def _generate_block_chunk(
                     initialization=initialization,
                     index=index,
                 ),
+                # Spec 063 FR-011: the block's back-matter paragraphs and the D1 rule.
+                _build_block_apparatus_prompt(
+                    context=context,
+                    payload=payload,
+                    marker_mode_enabled=marker_mode_enabled,
+                ),
             )
             if part
         ),
@@ -936,6 +1213,11 @@ def narration_projection_for_processed_block(
     spoken: list[str] = []
     withheld: list[dict[str, str]] = []
     for disposition in dispositions:
+        # Spec 063 FR-011: a reference-list entry kept in the source language by policy is
+        # apparatus by region -- never read aloud, and not an audio LOSS either (spec 054
+        # never narrates the back matter), so it is neither spoken nor booked as withheld.
+        if disposition.status == PARAGRAPH_STATUS_POLICY_KEPT_SOURCE:
+            continue
         if disposition.status in withheld_statuses:
             withheld.append(
                 {
@@ -1369,6 +1651,15 @@ def continue_controlled_processed_block_rejection(
     # cost — the same quantity and the same unit as
     # ``state.narration_excluded_source_fallback_chars`` below.
     record_controlled_block_fallback(kind=rejection_kind, chars=len(processed_chunk))
+    _record_back_matter_delivery(
+        context=context,
+        dependencies=dependencies,
+        initialization=initialization,
+        index=index,
+        payload=payload,
+        processed_chunk=processed_chunk,
+        kept_by_policy=False,
+    )
     if untranslated_prose_delivered:
         _announce_untranslated_prose_delivery(
             context=context,
@@ -1533,6 +1824,49 @@ def continue_controlled_processed_block_rejection(
     context.on_progress(preview_title="Текущий Markdown")
 
 
+def _announce_policy_kept_source_block(
+    *,
+    context: Any,
+    dependencies: Any,
+    emitters: Any,
+    initialization: Any,
+    index: int,
+    payload: Any,
+    processed_chunk: str,
+) -> None:
+    """Say on the screen and in the log that a block was kept by policy, not translated.
+
+    INFO, not WARNING: this is the decided outcome of D1, not a defect -- the fallback's
+    WARNING twin (``block_controlled_fallback``) is for blocks that were supposed to be
+    translated and were not.
+    """
+    emitters.emit_status(
+        context.runtime,
+        stage="Список литературы",
+        detail=(
+            f"Блок {index}: записи списка литературы остаются на языке оригинала "
+            "(политика справочного аппарата), без вызова модели."
+        ),
+        current_block=index,
+        block_count=initialization.job_count,
+        target_chars=payload.target_chars,
+        context_chars=payload.context_chars,
+        progress=(index - 1) / initialization.job_count,
+        is_running=True,
+    )
+    dependencies.log_event(
+        logging.INFO,
+        "block_apparatus_policy_kept_source",
+        "Блок списка литературы доставлен на языке оригинала по политике аппарата, без вызова модели.",
+        filename=context.uploaded_filename,
+        block_index=index,
+        block_count=initialization.job_count,
+        back_matter_section=str(getattr(payload, "back_matter_section", "") or ""),
+        paragraph_count=len(getattr(payload, "paragraph_ids", None) or ()),
+        delivered_chars=len(processed_chunk),
+    )
+
+
 def process_single_block(
     *,
     context: Any,
@@ -1576,37 +1910,54 @@ def process_single_block(
         payload=payload,
     )
     marker_mode_enabled = is_marker_mode_enabled_fn(context, payload)
-    try:
-        processed_chunk, marker_mode_enabled = execute_processing_block_fn(
+    # Spec 063 FR-011: a block of reference-list entries is delivered as its own source with no
+    # model call. Decided ONCE, here, so the classifier skip below reads the same answer.
+    policy_kept_chunk = policy_kept_source_chunk(
+        context=context, payload=payload, marker_mode_enabled=marker_mode_enabled
+    )
+    if policy_kept_chunk is not None:
+        processed_chunk = policy_kept_chunk
+        _announce_policy_kept_source_block(
             context=context,
             dependencies=dependencies,
             emitters=emitters,
-            state=state,
             initialization=initialization,
             index=index,
             payload=payload,
+            processed_chunk=processed_chunk,
         )
-    except Exception as exc:
-        return handle_block_generation_failure_fn(
-            context=context,
-            dependencies=dependencies,
-            emitters=emitters,
-            state=state,
-            initialization=initialization,
-            index=index,
-            payload=payload,
-            marker_mode_enabled=marker_mode_enabled,
-            exc=exc,
-        )
+    else:
+        try:
+            processed_chunk, marker_mode_enabled = execute_processing_block_fn(
+                context=context,
+                dependencies=dependencies,
+                emitters=emitters,
+                state=state,
+                initialization=initialization,
+                index=index,
+                payload=payload,
+            )
+        except Exception as exc:
+            return handle_block_generation_failure_fn(
+                context=context,
+                dependencies=dependencies,
+                emitters=emitters,
+                state=state,
+                initialization=initialization,
+                index=index,
+                payload=payload,
+                marker_mode_enabled=marker_mode_enabled,
+                exc=exc,
+            )
 
     # A genuine passthrough block is emitted as the VERBATIM source markdown (no LLM call), so
     # the LLM-output-quality classifier (heading_only_output / untranslated / ...) must not gate
     # it — doing so produced hard failures and EMPTY DOCX for passthrough-heavy real documents
     # (round-5 finding 1). TOC blocks routed through the LLM are genuinely processed and stay
     # classified as before.
-    is_genuine_passthrough = payload.job_kind == "passthrough" and not _should_route_toc_through_llm(
-        context=context, payload=payload
-    )
+    is_genuine_passthrough = (
+        payload.job_kind == "passthrough" and not _should_route_toc_through_llm(context=context, payload=payload)
+    ) or policy_kept_chunk is not None
     # Spec 059 FR-A5: the pair rule is only a completeness signal where the job changes the
     # language, and that is read off the run, not off the text.
     languages_differ = job_changes_language(
@@ -1701,6 +2052,15 @@ def process_single_block(
                 processed_chunk=processed_chunk,
                 exc=exc,
             )
+    _record_back_matter_delivery(
+        context=context,
+        dependencies=dependencies,
+        initialization=initialization,
+        index=index,
+        payload=payload,
+        processed_chunk=processed_chunk,
+        kept_by_policy=policy_kept_chunk is not None,
+    )
     emit_block_completed_fn(
         context=context,
         dependencies=dependencies,

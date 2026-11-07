@@ -373,6 +373,11 @@ class BlockExecutionPayload:
     # absence means a caller outside document preparation, and the consumer
     # (``block_execution.payload_contains_prose``) reads it as prose rather than as apparatus.
     paragraph_regions: list[str] | None = None
+    # Spec 063 FR-011: which back-matter SECTION the block belongs to (``notes`` /
+    # ``references`` / ``index``, ``core.models.BACK_MATTER_SECTION_VALUES``), or ``None``
+    # outside the back-matter region. One value per block, not per paragraph, because the
+    # region it qualifies is resolved per block (``semantic_blocks._resolve_reference_sections``).
+    back_matter_section: str | None = None
     narration_include: bool = True
     toc_dominant: bool = False
     toc_paragraph_count: int = 0

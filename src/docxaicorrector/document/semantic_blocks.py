@@ -7,6 +7,9 @@ from docxaicorrector.document.structure_authority import (
 )
 from docxaicorrector.document.relations import build_paragraph_relations, resolve_effective_relation_kinds
 from docxaicorrector.core.models import (
+    BACK_MATTER_SECTION_INDEX,
+    BACK_MATTER_SECTION_NOTES,
+    BACK_MATTER_SECTION_REFERENCES,
     PARAGRAPH_REGION_BACK_MATTER,
     PARAGRAPH_REGION_FRONT_MATTER,
     PARAGRAPH_REGION_PROSE,
@@ -43,6 +46,41 @@ _SEMANTIC_BLOCK_TOC_ENTRY_PATTERN = re.compile(r"^.{1,120}(?:\.{2,}|\s{2,})\s*\d
 # its constant are gone rather than commented out: the next reader should see the decision, not its
 # archaeology.
 _NARRATION_REFERENCE_SECTION_TITLES = frozenset(_BACKMATTER_SECTION_TITLES)
+
+# Spec 063 FR-011 (owner decision D1): what each title of that SAME lexicon opens -- notes, a
+# reference list, or an index. A partition of the blessed anchor lexicon, not a second word
+# list: no title is added here, and the check below fails at import if the two ever stop
+# covering each other, so a title added to the lexicon must be given a kind in the same
+# change. Constitution VII's acknowledged language-coverage residual is the lexicon's, not
+# this table's. Named residual (2026-11-07): an ANNOTATED reading list under "further
+# reading" or "sources" carries commentary inside its entries; it is a reference list by
+# its title, so its entries are kept in the source language with their annotations. None of
+# the four corpus books has one -- their reference lists are all titled "Bibliography".
+_BACK_MATTER_SECTION_KIND_BY_TITLE: dict[str, str] = {
+    "notes": BACK_MATTER_SECTION_NOTES,
+    "endnotes": BACK_MATTER_SECTION_NOTES,
+    "footnotes": BACK_MATTER_SECTION_NOTES,
+    "примечания": BACK_MATTER_SECTION_NOTES,
+    "сноски": BACK_MATTER_SECTION_NOTES,
+    "references": BACK_MATTER_SECTION_REFERENCES,
+    "bibliography": BACK_MATTER_SECTION_REFERENCES,
+    "sources": BACK_MATTER_SECTION_REFERENCES,
+    "works cited": BACK_MATTER_SECTION_REFERENCES,
+    "further reading": BACK_MATTER_SECTION_REFERENCES,
+    "библиография": BACK_MATTER_SECTION_REFERENCES,
+    "источники": BACK_MATTER_SECTION_REFERENCES,
+    "литература": BACK_MATTER_SECTION_REFERENCES,
+    "список литературы": BACK_MATTER_SECTION_REFERENCES,
+    "index": BACK_MATTER_SECTION_INDEX,
+    "указатель": BACK_MATTER_SECTION_INDEX,
+    "именной указатель": BACK_MATTER_SECTION_INDEX,
+    "предметный указатель": BACK_MATTER_SECTION_INDEX,
+}
+if frozenset(_BACK_MATTER_SECTION_KIND_BY_TITLE) != _NARRATION_REFERENCE_SECTION_TITLES:
+    raise RuntimeError(
+        "back-matter section partition is out of step with the anchor lexicon: "
+        f"{sorted(frozenset(_BACK_MATTER_SECTION_KIND_BY_TITLE) ^ _NARRATION_REFERENCE_SECTION_TITLES)}"
+    )
 
 # Markdown emphasis the PDF import path carries INSIDE `ParagraphUnit.text`.
 _INLINE_EMPHASIS_MARKERS = ("**", "__", "*", "_")
@@ -245,6 +283,9 @@ def build_editing_jobs(
     jobs: list[dict[str, object]] = []
     fallback_paragraph_index = 0
     reference_region_indexes = _resolve_reference_region_indexes(blocks, structure_phase=structure_phase)
+    # Spec 063 FR-011: which back-matter section each block of that region belongs to. The
+    # same anchors, so the two can never disagree about WHICH blocks are back matter.
+    back_matter_sections = _resolve_back_matter_sections(blocks, structure_phase=structure_phase)
     # Spec 059 A-II: resolved once for the whole document, because the front-matter boundary
     # is a property of the document and not of any one block.
     paragraph_regions_by_block = _resolve_paragraph_regions(
@@ -299,6 +340,8 @@ def build_editing_jobs(
                 "structural_roles": structural_roles,
                 # Spec 059 A-II: parallel to ``paragraph_ids``, one label per paragraph.
                 "paragraph_regions": paragraph_regions_by_block[index],
+                # Spec 063 FR-011: ``None`` outside the back-matter region.
+                "back_matter_section": back_matter_sections.get(index),
                 "narration_include": narration_include,
                 "toc_dominant": toc_dominant,
                 "toc_paragraph_count": toc_only_paragraph_count,
@@ -742,28 +785,32 @@ def _resolve_reference_region_end(
     return _nearest_following_heading_index(blocks, start_index)
 
 
-def _resolve_reference_regions(blocks: list[DocumentBlock], *, structure_phase: str = "post_ai_final") -> list[tuple[int, int]]:
-    """Every back-matter reference section of the document, as `(start, end)` half-open block
-    ranges, in document order.
+def _resolve_reference_sections(
+    blocks: list[DocumentBlock], *, structure_phase: str = "post_ai_final"
+) -> list[tuple[int, int, str]]:
+    """Every back-matter reference section of the document, as `(start, end, title)` with a
+    half-open block range, in document order. `title` is the normalised anchor title that
+    opened the section -- the one fact spec 063 FR-011 needs to tell notes from a reference
+    list from an index, and it is the anchor itself, not a reading of the entries.
 
     Resolved in two passes on purpose: all the anchors first, then the ends. The end rule needs
     to know where the NEXT reference section starts, and a single forward pass cannot tell it
     that without re-deriving the anchor it is about to walk into.
     """
-    anchors: list[tuple[int, int | None]] = []
+    anchors: list[tuple[int, int | None, str]] = []
     for index in range(len(blocks)):
         start_index = _block_reference_region_start(blocks, index, structure_phase=structure_phase)
         if start_index is None:
             continue
         hit = _block_reference_title_position(blocks[index], structure_phase=structure_phase)
         title_level = _paragraph_heading_level(blocks[index].paragraphs[hit[0]]) if hit is not None else None
-        anchors.append((start_index, title_level))
+        anchors.append((start_index, title_level, hit[1] if hit is not None else ""))
 
     document_top_heading_level = _document_top_heading_level(blocks)
-    regions: list[tuple[int, int]] = []
-    for order, (start_index, title_level) in enumerate(anchors):
+    sections: list[tuple[int, int, str]] = []
+    for order, (start_index, title_level, title) in enumerate(anchors):
         next_region_start = next(
-            (start for start, _ in anchors[order + 1 :] if start > start_index),
+            (start for start, _, _ in anchors[order + 1 :] if start > start_index),
             None,
         )
         end_index = _resolve_reference_region_end(
@@ -774,8 +821,39 @@ def _resolve_reference_regions(blocks: list[DocumentBlock], *, structure_phase: 
             next_region_start=next_region_start,
         )
         if end_index > start_index:
-            regions.append((start_index, end_index))
-    return regions
+            sections.append((start_index, end_index, title))
+    return sections
+
+
+def _resolve_reference_regions(blocks: list[DocumentBlock], *, structure_phase: str = "post_ai_final") -> list[tuple[int, int]]:
+    """Every back-matter reference section of the document, as `(start, end)` half-open block
+    ranges, in document order. See `_resolve_reference_sections`."""
+    return [
+        (start_index, end_index)
+        for start_index, end_index, _ in _resolve_reference_sections(blocks, structure_phase=structure_phase)
+    ]
+
+
+def _resolve_back_matter_sections(
+    blocks: list[DocumentBlock], *, structure_phase: str = "post_ai_final"
+) -> dict[int, str]:
+    """Spec 063 FR-011: block index -> which back-matter SECTION it belongs to (notes, a
+    reference list, an index), for every block of the back-matter region.
+
+    The kind is the anchor title's, through `_BACK_MATTER_SECTION_KIND_BY_TITLE`. Sections never
+    overlap -- each ends no later than the next one starts -- so a block has at most one kind.
+    A block outside the region has none, and a region opened by a title the partition does not
+    know (impossible while the import-time check below holds) gets none either: no kind means
+    no policy, which is the direction that cannot keep prose in the source language.
+    """
+    kinds: dict[int, str] = {}
+    for start_index, end_index, title in _resolve_reference_sections(blocks, structure_phase=structure_phase):
+        kind = _BACK_MATTER_SECTION_KIND_BY_TITLE.get(title)
+        if kind is None:
+            continue
+        for block_index in range(start_index, end_index):
+            kinds[block_index] = kind
+    return kinds
 
 
 def _resolve_reference_region_indexes(blocks: list[DocumentBlock], *, structure_phase: str = "post_ai_final") -> set[int]:

@@ -1,6 +1,6 @@
 from typing import Any
 
-from docxaicorrector.core.models import PARAGRAPH_REGION_VALUES
+from docxaicorrector.core.models import BACK_MATTER_SECTION_VALUES, PARAGRAPH_REGION_VALUES
 
 
 def coerce_required_text_field(job: Any, field_name: str, *, allow_blank: bool = True) -> str:
@@ -38,6 +38,18 @@ def coerce_paragraph_regions(job: Any) -> list[str] | None:
     if unknown:
         raise ValueError(f"paragraph_regions carries unknown region names: {unknown}")
     return regions
+
+
+def coerce_back_matter_section(job: Any) -> str | None:
+    """Spec 063 FR-011: which back-matter section the block belongs to, from a CLOSED
+    vocabulary, for the same reason ``coerce_paragraph_regions`` closes its own: a policy
+    that keeps text in the source language must never be keyed on a name nobody defined."""
+    value = coerce_optional_text_field(job, "back_matter_section")
+    if value is None:
+        return None
+    if value not in BACK_MATTER_SECTION_VALUES:
+        raise ValueError(f"back_matter_section carries an unknown section name: {value!r}")
+    return value
 
 
 def coerce_optional_bool(job: Any, field_name: str) -> bool | None:
@@ -122,6 +134,7 @@ def parse_processing_job(*, job: Any, payload_factory: Any) -> Any:
     paragraph_ids = coerce_optional_string_list(job, "paragraph_ids")
     structural_roles = coerce_optional_string_list(job, "structural_roles")
     paragraph_regions = coerce_paragraph_regions(job)
+    back_matter_section = coerce_back_matter_section(job)
     _require_parallel_to_paragraph_ids(
         paragraph_ids,
         structural_roles=structural_roles,
@@ -144,6 +157,7 @@ def parse_processing_job(*, job: Any, payload_factory: Any) -> Any:
         context_after=context_after,
         structural_roles=structural_roles,
         paragraph_regions=paragraph_regions,
+        back_matter_section=back_matter_section,
         narration_include=True if narration_include is None else narration_include,
         toc_dominant=bool(toc_dominant),
         toc_paragraph_count=toc_paragraph_count,

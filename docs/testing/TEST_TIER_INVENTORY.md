@@ -73,6 +73,7 @@ This inventory is intentionally pragmatic:
 - `tests/test_session_artifact_isolation.py`
 - `tests/test_session_state_ownership.py`
 - `tests/test_spec_059_translation_completeness.py`
+- `tests/test_spec_063_apparatus_policy.py`
 - `tests/test_spec_image_followup.py`
 - `tests/test_spec_image_level1.py`
 - `tests/test_startup_performance_contract.py`

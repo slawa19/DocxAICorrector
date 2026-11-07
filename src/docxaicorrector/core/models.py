@@ -61,6 +61,45 @@ PARAGRAPH_REGION_VALUES = frozenset(
     }
 )
 
+# Spec 063 FR-011 (owner decision D1, 2026-11-07): WHICH back-matter section a block of the
+# back-matter region belongs to. The region is resolved on a section title from the blessed
+# structural-anchor lexicon (``validation/formatting_coverage._BACKMATTER_SECTION_TITLES``),
+# and the title already says what the section IS: a set of notes, a list of references, or
+# an index. That is a property of the REGION, read off the same anchor that opened it --
+# never off the shape of the entries (Constitution VII). The partition of the lexicon lives
+# beside the resolver (``document/semantic_blocks``) and is checked there to cover every
+# title, so a title added to the lexicon cannot fall through to "no kind".
+#
+# D1 keys the translation policy on it: entries of a REFERENCE LIST stay in the source
+# language; NOTES keep their references and translate their commentary; the INDEX is not
+# covered by D1 and is translated as before (its repair is spec 063's non-goal P-6).
+BACK_MATTER_SECTION_NOTES = "notes"
+BACK_MATTER_SECTION_REFERENCES = "references"
+BACK_MATTER_SECTION_INDEX = "index"
+BACK_MATTER_SECTION_VALUES = frozenset(
+    {
+        BACK_MATTER_SECTION_NOTES,
+        BACK_MATTER_SECTION_REFERENCES,
+        BACK_MATTER_SECTION_INDEX,
+    }
+)
+
+# Spec 063 FR-011: the per-paragraph status of a reference-list entry the PIPELINE delivered
+# in the source language by policy, without asking the model. Not one of the generator's
+# dispositions (``generation._generation.PARAGRAPH_STATUS_*`` and
+# ``model_accounting.PARAGRAPH_DISPOSITION_STATUSES`` count what the GENERATOR decided, and
+# the generator never saw this paragraph), and deliberately not ``source_restored``: nothing
+# was discarded and nothing was lost. Its consumers read it as follows:
+#
+# * the source-text delivery channel (``quality_gate._SOURCE_TEXT_DELIVERED_PARAGRAPH_STATUSES``)
+#   does not count it -- the paragraph is apparatus by region, not a loss;
+# * every narration filter treats any status other than ``accepted`` as NOT admissible
+#   (``output_validation._entry_is_narration_admissible``,
+#   ``reader_cleanup_rebuild._registry_entry_is_narration_admissible``) and the two
+#   projections skip it outright, so source-language text is never read aloud -- and is
+#   not booked as an audio LOSS either, because spec 054 never narrates the back matter.
+PARAGRAPH_STATUS_POLICY_KEPT_SOURCE = "policy_kept_source"
+
 
 class ImageMode(StrEnum):
     NO_CHANGE = "no_change"
