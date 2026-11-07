@@ -1137,6 +1137,8 @@ def _restore_semantic_output(
             if normalized_image.width <= 0 or normalized_image.height <= 0:
                 return image_bytes
 
+            if prefer_light_background:
+                normalized_image = _flatten_transparency_onto_white(normalized_image)
             cropped = _trim_generated_outer_padding(normalized_image, image_output_policy)
             if prefer_light_background:
                 cropped = _normalize_generated_document_background(cropped)
@@ -1491,6 +1493,8 @@ def _restore_generated_output(
         with Image.open(BytesIO(image_bytes)) as generated_image:
             generated_image.load()
             normalized_image = ImageOps.exif_transpose(generated_image)
+            if prefer_light_background:
+                normalized_image = _flatten_transparency_onto_white(normalized_image)
             trimmed_image = _trim_generated_outer_padding(normalized_image, image_output_policy)
             if prefer_light_background:
                 trimmed_image = _normalize_generated_document_background(trimmed_image)
@@ -1580,6 +1584,30 @@ def _trim_generated_outer_padding(image: Image.Image, image_output_policy=None) 
     if cropped.width <= 0 or cropped.height <= 0:
         return image
     return cropped
+
+
+def _flatten_transparency_onto_white(image: Image.Image) -> Image.Image:
+    """Composite a raster with transparent pixels over white, using its alpha channel.
+
+    Spec 062 (image comparison of 2026-11-07, finding 1): the creative and structured
+    ``images.generate`` calls ask for ``background="transparent"``, and a 2.5 answer leaves a
+    dark colour in the RGB of its fully transparent pixels (measured ``(1, 11, 41, 0)``). The
+    background clean-up below reads RGB only, so it took that hidden colour for a dark
+    page and flood-filled every dark glyph next to it white. Flattening first makes the
+    clean-up see what a reader sees: a white page, the same white background the
+    ``images.edit`` path returns (an opaque RGB answer, which passes through unchanged).
+    """
+
+    if image.mode == "P" and "transparency" in image.info:
+        image = image.convert("RGBA")
+    if image.mode not in {"RGBA", "LA", "PA"}:
+        return image
+    rgba_image = image.convert("RGBA")
+    alpha_min, _alpha_max = rgba_image.getchannel("A").getextrema()
+    if alpha_min >= 255:
+        return image
+    white_canvas = Image.new("RGBA", rgba_image.size, (255, 255, 255, 255))
+    return Image.alpha_composite(white_canvas, rgba_image).convert("RGB")
 
 
 def _normalize_generated_document_background(image: Image.Image) -> Image.Image:
