@@ -458,6 +458,69 @@ def test_the_delivered_check_is_applied_to_the_address_that_is_printed() -> None
     assert facts["anchors_dropped_not_in_delivered"] == 1
 
 
+# A delivered document in which an UNPAIRED asterisk in one paragraph (a literal "2*n") sits
+# before an emphasised title in the next. Emphasis never crosses a blank line in markdown,
+# but the stripper, run over the whole document as one string, pairs the first paragraph's
+# asterisk with the title's closing one and leaves the title's opening asterisk behind —
+# the shape of the ``20261107T_061_audio_money`` miss (``*No Logo`` delivered, ``No Logo``
+# in the anchor).
+_STRAY_ASTERISK_DELIVERED = (
+    "A formula with a literal 2*n in it.\n\n"
+    "Footnotes 1 Quoted in Naomi Klein, *No Logo* (2000), p.325. 2 See Appendix A."
+)
+
+
+def test_the_delivered_text_is_normalised_paragraph_by_paragraph() -> None:
+    """The anchor is sanitised one paragraph at a time, so the delivered text it is looked
+    up in must be too — otherwise the stripper pairs asterisks across paragraphs and a
+    perfectly usable first sentence is reported as an address the document no longer has."""
+    records = [
+        {
+            "paragraph_id": "p1",
+            "text": "Footnotes 1 Quoted in Naomi Klein, *No Logo* (2000), p.325. 2 See Appendix A.",
+        }
+    ]
+
+    facts = quality_gate.build_narration_exclusion_facts(
+        records, delivered_markdown=_STRAY_ASTERISK_DELIVERED
+    )
+
+    assert facts["anchors"] == ["Footnotes 1 Quoted in Naomi Klein, No Logo (2000), p.325."]
+    assert facts["unanchored_paragraph_count"] == 0
+    assert facts["anchors_dropped_not_in_delivered"] == 0
+
+
+def test_the_stray_asterisk_fixture_really_breaks_whole_string_normalisation() -> None:
+    """Counter-proof that the test above is not vacuous: normalising the same delivered text
+    as ONE string — the previous behaviour — does leave the stray asterisk, so the anchor is
+    absent from it."""
+    whole = quality_gate._review_anchor_visible_text(" ".join(_STRAY_ASTERISK_DELIVERED.split()))
+
+    assert "*No Logo" in whole
+    assert "Footnotes 1 Quoted in Naomi Klein, No Logo (2000), p.325." not in whole
+
+
+def test_per_paragraph_normalisation_still_withholds_an_address_that_is_gone() -> None:
+    """Anti-vacuum: normalising per paragraph must not turn the delivered check into a
+    pass-everything. An anchor that is genuinely absent from the delivered text is still
+    withheld and still counted."""
+    records = [
+        {
+            "paragraph_id": "p1",
+            "text": "Footnotes 1 Quoted in Naomi Klein, *No Logo* (2000), p.325. 2 See Appendix A.",
+        },
+        {"paragraph_id": "p2", "text": "A *paragraph* reader cleanup removed. Its second sentence."},
+    ]
+
+    facts = quality_gate.build_narration_exclusion_facts(
+        records, delivered_markdown=_STRAY_ASTERISK_DELIVERED
+    )
+
+    assert facts["anchors"] == ["Footnotes 1 Quoted in Naomi Klein, No Logo (2000), p.325."]
+    assert facts["unanchored_paragraph_count"] == 1
+    assert facts["anchors_dropped_not_in_delivered"] == 1
+
+
 def test_an_address_the_delivered_document_no_longer_contains_is_withheld() -> None:
     """The reader is sent to the DOCX to find what the audio lost, so an anchor that reader
     cleanup deleted or rewrote is a WRONG address — worse than none, because the reader

@@ -563,6 +563,9 @@ def _is_reviewable_list_fragment_residue(
 # properties, and Pandoc renders them back into real formatting — so the reader never sees
 # them as characters.
 _REVIEW_ANCHOR_INLINE_TAG_PATTERN = re.compile(r"</?(?:u|sup|sub)>", re.IGNORECASE)
+# A markdown paragraph break: a blank line, possibly carrying whitespace. Inline emphasis
+# never crosses one, so it is the unit the delivered text is normalised in.
+_REVIEW_ANCHOR_PARAGRAPH_BREAK_PATTERN = re.compile(r"\n\s*\n")
 
 
 def _review_anchor_visible_text(text: str) -> str:
@@ -2263,10 +2266,25 @@ def _collect_paragraph_anchor_facts(
     reported_elsewhere_count = 0
     anchors: list[str] = []
     paragraph_ids: list[str] = []
+    # Normalised PARAGRAPH BY PARAGRAPH, then joined — never as one string. Emphasis cannot
+    # span a blank line in markdown, but the stripper pairs asterisks wherever it finds them:
+    # run over the whole document, an unmatched ``*`` in one paragraph pairs with an opening
+    # one in a later paragraph and leaves a stray ``*`` inside the text between. The recorded
+    # ``20261107T_061_audio_money`` run lost a 75-character first-sentence anchor that way
+    # (``*No Logo`` in the delivered text against ``No Logo`` in the anchor) and reported the
+    # paragraph as unanchorable. The anchor side is sanitised per paragraph already; this
+    # makes the delivered side the same unit. The join keeps the previous search semantics.
     delivered_visible = (
         None
         if delivered_markdown is None
-        else _review_anchor_visible_text(" ".join(str(delivered_markdown).split()))
+        else " ".join(
+            visible
+            for visible in (
+                _review_anchor_visible_text(" ".join(paragraph.split()))
+                for paragraph in _REVIEW_ANCHOR_PARAGRAPH_BREAK_PATTERN.split(str(delivered_markdown))
+            )
+            if visible
+        )
     )
     for paragraph_id, text in records:
         paragraph_count += 1
