@@ -14,7 +14,7 @@ INPUT (one of)
     ``prepared.paragraphs``. No model may be called during preparation; if one is requested the
     script stops instead of spending.
 ``--paragraphs <dump.json>``
-    A dump with ``{"paragraphs": [{paragraph_id, text, role, region, in_llm_job}, ...]}`` —
+    A dump with ``{"paragraphs": [{paragraph_id, text, role, heading_level, region, in_llm_job}, ...]}`` —
     the shape ``--dump-paragraphs`` writes — so later measurements need no PDF import.
 
 OUTPUT
@@ -136,17 +136,45 @@ def _dump(jobs: list[dict[str, Any]], paragraphs: list[Any], path: Path) -> None
             region_by_id[paragraph_id] = str(region)
         if job.get("job_kind") == "llm":
             llm_ids.update(ids)
+    # Every field ``select_glossary_source_units`` reads off a paragraph. ``heading_level``
+    # was missing (Codex acceptance finding 5): a dump replayed without it has no level-1/2
+    # headings, so heading candidates, h1-requiredness and the chapter split all changed.
+    # Emphasis and quotes need no field of their own -- the importer bakes them into ``text``.
     records = [
         {
             "paragraph_id": paragraph.paragraph_id,
             "text": paragraph.text,
             "role": paragraph.role,
+            "heading_level": getattr(paragraph, "heading_level", None),
             "region": region_by_id.get(paragraph.paragraph_id),
             "in_llm_job": paragraph.paragraph_id in llm_ids,
         }
         for paragraph in paragraphs
     ]
     path.write_text(json.dumps({"paragraphs": records}, ensure_ascii=False), encoding="utf-8")
+
+
+def _candidate_identity(candidates) -> list[tuple[object, ...]]:
+    return [(candidate.source_term, candidate.family, candidate.required) for candidate in candidates]
+
+
+def _assert_dump_parity(jobs: list[dict[str, Any]], paragraphs: list[Any], path: Path, *, limit: int) -> int:
+    """The dump must reproduce the production decision: same candidates, same required set.
+
+    Returns the number of required candidates (for the printout); raises ``SystemExit`` on a
+    difference, because a measurement taken off a lossy dump is not the product's number.
+    """
+
+    produced = extract_glossary_candidates(select_glossary_source_units(jobs, paragraphs), limit=limit)
+    reloaded_jobs, reloaded_paragraphs = _load_dump(path)
+    replayed = extract_glossary_candidates(select_glossary_source_units(reloaded_jobs, reloaded_paragraphs), limit=limit)
+    if _candidate_identity(produced) != _candidate_identity(replayed):
+        produced_ids, replayed_ids = set(_candidate_identity(produced)), set(_candidate_identity(replayed))
+        raise SystemExit(
+            f"dump parity failed for {path}: only in production {sorted(produced_ids - replayed_ids, key=str)[:10]}, "
+            f"only in the dump {sorted(replayed_ids - produced_ids, key=str)[:10]}"
+        )
+    return sum(1 for candidate in produced if candidate.required)
 
 
 def _reviewer_terms(path: Path) -> list[str]:
@@ -304,6 +332,8 @@ def main(argv: list[str] | None = None) -> int:
         jobs, paragraphs = _load_dump(args.paragraphs)
     if args.dump_paragraphs:
         _dump(jobs, paragraphs, args.dump_paragraphs)
+        required_count = _assert_dump_parity(jobs, paragraphs, args.dump_paragraphs, limit=args.limit)
+        print(f"dump parity: candidates and required set reproduced from {args.dump_paragraphs} (required={required_count})")
     units = select_glossary_source_units(jobs, paragraphs)
     candidates = extract_glossary_candidates(units, limit=args.limit)
     families: dict[str, int] = {}

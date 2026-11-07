@@ -141,6 +141,42 @@ def test_ordinary_number_equal_to_the_reference_is_not_converted() -> None:
     assert outcome.placement == PLACEMENT_SENTENCE
 
 
+@pytest.mark.parametrize(
+    ("source", "translation", "expected"),
+    [
+        # Codex acceptance finding 2: the source wrote the number in words, so the
+        # source-side spelling guard cannot see it; the translation's digits are a time.
+        (
+            "At twelve thirty-six the train left.³⁶",
+            "Поезд отправился в 12:36.",
+            "Поезд отправился в 12:36.³⁶",
+        ),
+        # A decimal comma the translation turned into a point.
+        ("Le prix est 2,36 euros.³⁶", "The price is 2.36 euros.", "The price is 2.36 euros.³⁶"),
+        ("See volume 3.14 of the series.¹⁴", "См. том 3.14 серии.", "См. том 3.14 серии.¹⁴"),
+    ],
+)
+def test_digits_after_a_separator_that_follows_a_digit_are_a_number_not_a_reference(
+    source: str, translation: str, expected: str
+) -> None:
+    outcome = restore_lost_footnote_markers(source, translation)
+
+    assert outcome.placement == PLACEMENT_SENTENCE
+    assert outcome.text == expected
+
+
+def test_reference_welded_to_a_period_after_a_word_is_still_converted() -> None:
+    # Anti-vacuum for the guard above: the separator follows a LETTER, so the digits are
+    # the model's plain-digit copy of the reference.
+    outcome = restore_lost_footnote_markers(
+        "It rose to £30,000, well above average earnings.³⁹ Nobody noticed.",
+        "Она выросла до 30 000 фунтов, намного выше средних доходов.39 Никто не заметил.",
+    )
+
+    assert outcome.placement == PLACEMENT_CONVERTED
+    assert outcome.text == "Она выросла до 30 000 фунтов, намного выше средних доходов.³⁹ Никто не заметил."
+
+
 def test_abbreviation_does_not_count_as_a_sentence_end() -> None:
     # "U.S. college" stays one sentence; otherwise the counts differ and the reference
     # would fall to the paragraph end.

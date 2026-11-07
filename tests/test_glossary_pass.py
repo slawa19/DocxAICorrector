@@ -659,6 +659,37 @@ def test_a_defined_term_is_required_even_when_rare():
     assert keys["tallow gap"].required
 
 
+def test_a_term_defined_once_is_required_even_against_a_full_family_quota():
+    # Codex acceptance finding 4: the defined term occurs in ONE unit, at the end of a book
+    # whose author-marked family is far over its quota. The frequency cut (>= 2 units) and the
+    # quota both used to drop it before the "a definition is always required" rule saw it.
+    paragraphs: list[str] = []
+    for index in range(30):
+        paragraphs.append(f"The *brennic {chr(97 + index % 26)}{index} rule* is stressed here.")
+        paragraphs.append(f"Again the brennic {chr(97 + index % 26)}{index} rule, and the brennic {chr(97 + index % 26)}{index} rule.")
+        paragraphs.extend(_FILLER)
+    paragraphs.append("At the very end we call this *the tallow gap* in our models.")
+    candidates = extract_glossary_candidates(_units(paragraphs), limit=20)
+    keys = _keys(candidates)
+
+    marked = [candidate for candidate in candidates if candidate.family == "marked"]
+    # Thirty marked terms compete for a marked quota of four at this limit; the defined one
+    # rides over it.
+    assert len(marked) == 5
+    assert keys["tallow gap"].occurrence_count == 1
+    assert keys["tallow gap"].required
+    # Only the defined term rides over the limit; the optional candidates still fit it.
+    assert sum(1 for candidate in candidates if not candidate.required) <= 20
+
+
+def test_an_undefined_term_seen_in_one_unit_is_still_not_a_candidate():
+    # Anti-vacuum for the bypass above: frequency still cuts what the author did not define.
+    paragraphs = ["The *tallow gap* appears once, stressed.", *(_FILLER * 6)]
+    keys = _keys(extract_glossary_candidates(_units(paragraphs)))
+
+    assert "tallow gap" not in keys
+
+
 def test_a_word_stressed_once_is_not_required():
     """Anti-vacuum: italics once, on a word the text uses anyway, is stress, not a term."""
     paragraphs = []
@@ -934,3 +965,52 @@ def test_requests_ask_for_standard_transcription_and_the_full_name():
         text = cast(list[dict[str, Any]], request["input"])[0]["content"][0]["text"]
         assert "standard practical transcription of ru" in text
         assert "first name together with the surname" in text
+
+
+# --- Codex acceptance finding 5: the measurer's dump reproduces the production decision -----------
+
+
+def _load_candidates_script():
+    import importlib.util
+    from pathlib import Path
+
+    path = Path(__file__).resolve().parents[1] / "scripts" / "measure-glossary-candidates.py"
+    spec = importlib.util.spec_from_file_location("measure_glossary_candidates", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_measurer_dump_round_trip_keeps_heading_levels_and_the_required_set(tmp_path):
+    script = _load_candidates_script()
+    paragraphs = [SimpleNamespace(paragraph_id="p0000", text="Money and Durability", role="heading", heading_level=1)]
+    for chapter in range(4):
+        paragraphs.append(
+            SimpleNamespace(paragraph_id=f"p1{chapter:03d}", text=f"Chapter {chapter} Notes", role="heading", heading_level=1)
+        )
+        for line, text in enumerate(
+            ("The question of durability returns here, and durability matters.", *_FILLER)
+        ):
+            paragraphs.append(
+                SimpleNamespace(paragraph_id=f"p2{chapter:02d}{line}", text=text, role="body", heading_level=None)
+            )
+    jobs = [
+        {
+            "job_kind": "llm",
+            "paragraph_ids": [paragraph.paragraph_id for paragraph in paragraphs],
+            "paragraph_regions": ["prose"] * len(paragraphs),
+        }
+    ]
+    produced = extract_glossary_candidates(select_glossary_source_units(jobs, paragraphs))
+    assert _keys(produced)["durability"].required  # an h1 phrase: the field decides it
+
+    dump = tmp_path / "dump.json"
+    script._dump(jobs, paragraphs, dump)
+    replayed_jobs, replayed_paragraphs = script._load_dump(dump)
+    replayed = extract_glossary_candidates(select_glossary_source_units(replayed_jobs, replayed_paragraphs))
+
+    assert [(c.source_term, c.family, c.required) for c in replayed] == [
+        (c.source_term, c.family, c.required) for c in produced
+    ]
+    assert script._assert_dump_parity(jobs, paragraphs, dump, limit=400) == sum(c.required for c in produced)

@@ -1970,6 +1970,36 @@ def _assert_delivered_unchanged(paragraphs, result):
     _assert_list_fragment_carry_invariants(paragraphs, result)
 
 
+def test_list_fragment_carry_moves_the_digits_exactly_as_written():
+    # Codex acceptance finding 6: the carry parsed "02" to an int and printed "2", so the
+    # multiset of number tokens changed. A carry moves the token; it never rewrites it.
+    paragraphs = [
+        ("item-1", "1. Первый пункт 02.", "", "body", None),
+        ("item-2", "Продолжение второго пункта.", "", "body", None),
+    ]
+
+    result = _assemble_single_block(paragraphs)
+
+    assert [entry.text for entry in result.entries] == ["1. Первый пункт", "02. Продолжение второго пункта."]
+    _assert_list_fragment_carry_invariants(paragraphs, result)
+
+
+def test_list_fragment_carry_sees_an_ordinal_inside_emphasis_markers():
+    # Codex acceptance finding 6: the follower already opens with its ordinal, written
+    # inside the bold the importer baked in; carrying would give "2. **2. Второй пункт**".
+    paragraphs = [
+        ("item-1", "1. Первый пункт 2.", "", "body", None),
+        ("item-2", "**2. Второй пункт**", "", "body", None),
+    ]
+
+    result = _assemble_single_block(paragraphs)
+
+    _assert_delivered_unchanged(paragraphs, result)
+    assert result.final_markdown == document_pipeline_output_validation.normalize_list_fragment_regressions_markdown(
+        "1. Первый пункт 2.\n\n**2. Второй пункт**"
+    )
+
+
 def test_assemble_final_markdown_keeps_a_trailing_year_the_source_owns():
     # Rethinking Money 2026-11-07, delivered.md:3201-3203: the year closing a bibliography
     # entry was cut off and prepended to the NEXT entry ("2010. www…"), and "2009." was
@@ -3500,6 +3530,136 @@ def test_has_toc_body_concat_signal_requires_source_toc_markers():
 # in ``tests/test_spec_059_translation_completeness.py``.
 
 
+# --- Spec 063, Codex acceptance finding 1: a trailing footnote reference ends a sentence --------
+#
+# FR-005 puts a lost reference back AFTER the sentence's terminal punctuation. Boundary
+# recovery read "магазина.²⁰" as an unfinished sentence and welded it to the next paragraph;
+# `_source_text_ends_sentence` read "store.²⁰" the same way, so the spec 057 refusal could not
+# step in. Replayed on the recorded Rethinking Money run, restoration created four new merges.
+
+# Rethinking Money p0526 / p0527, block 73 of the 2026-11-07 run, verbatim.
+_RM_P0526_SOURCE = (
+    "A case in point: A study designed to evaluate the economic role played by in de pen dent "
+    "businesses in the busy Chicago North Side found that every $100 spent with a local fi rm "
+    "leaves $68 in the Chicago economy, while $100 spent at a chain store leaves only $43 in "
+    "Chicago. And for every square foot occupied by a local fi rm, the local economic impact is "
+    "$179, versus $105 for a chain store.²⁰"
+)
+_RM_P0526_TRANSLATION = (
+    "Показательный пример: исследование, призванное оценить экономическую роль независимого "
+    "бизнеса в оживленном районе Чикаго Норт-Сайд, показало, что каждые 100 долларов, "
+    "потраченные в местной фирме, оставляют 68 долларов в экономике Чикаго, тогда как 100 "
+    "долларов, потраченные в сетевом магазине, оставляют в городе лишь 43 доллара. Кроме того, "
+    "на каждый квадратный фут площади, занимаемой местной фирмой, приходится 179 долларов "
+    "экономического эффекта, по сравнению со 105 долларами у сетевого магазина."
+)
+_RM_P0527_SOURCE = (
+    "Regios, by contrast, support regionally based commerce, adding to the uniqueness and "
+    "strength of each area."
+)
+_RM_P0527_TRANSLATION = (
+    "Регио, напротив, поддерживают региональную торговлю, добавляя уникальности и силы каждому району."
+)
+
+
+def test_restored_footnote_reference_does_not_merge_rm_p0526_into_p0527():
+    from docxaicorrector.pipeline.footnote_markers import restore_lost_footnote_markers
+
+    restored = restore_lost_footnote_markers(_RM_P0526_SOURCE, _RM_P0526_TRANSLATION)
+    assert restored.text.endswith("у сетевого магазина.²⁰")
+
+    result = document_pipeline_output_validation.assemble_final_markdown(
+        processed_chunks=[f"{restored.text}\n\n{_RM_P0527_TRANSLATION}"],
+        generated_paragraph_registry=[
+            {"block_index": 1, "paragraph_id": "p0526", "text": restored.text},
+            {"block_index": 1, "paragraph_id": "p0527", "text": _RM_P0527_TRANSLATION},
+        ],
+        source_paragraphs=[
+            _make_paragraph_stub("p0526", 0, text=_RM_P0526_SOURCE),
+            _make_paragraph_stub("p0527", 1, text=_RM_P0527_SOURCE),
+        ],
+    )
+
+    assert [entry.merged_paragraph_ids for entry in result.entries] == [("p0526",), ("p0527",)]
+    assert result.final_markdown == f"{restored.text}\n\n{_RM_P0527_TRANSLATION}"
+    assert result.diagnostics.accepted_merges == 0
+    assert result.entries[0].source_ends_sentence is True
+
+
+def test_heading_after_a_paragraph_ending_in_a_footnote_reference_is_not_demoted():
+    # Money and Sustainability p1342 / p1343 / p1344 (blocks 311 / 312 / 312 of the
+    # 2026-11-07 run): "Appendices" was demoted and welded to its neighbours because
+    # "…посади его».¹⁷" read as an unfinished sentence across the block boundary.
+    result = document_pipeline_output_validation.assemble_final_markdown(
+        processed_chunks=[
+            "В исламе есть похожее учение: если в Судный день у тебя в руке саженец пальмы, посади его».¹⁷",
+            "## Приложения\n\nСледующие приложения доступны онлайн по адресу *bit.ly/TPmissinglink*",
+        ],
+        generated_paragraph_registry=[
+            {
+                "block_index": 1,
+                "paragraph_id": "p1342",
+                "text": "В исламе есть похожее учение: если в Судный день у тебя в руке саженец пальмы, посади его».¹⁷",
+            },
+            {"block_index": 2, "paragraph_id": "p1343", "text": "## Приложения"},
+            {
+                "block_index": 2,
+                "paragraph_id": "p1344",
+                "text": "Следующие приложения доступны онлайн по адресу *bit.ly/TPmissinglink*",
+            },
+        ],
+        source_paragraphs=[
+            _make_paragraph_stub(
+                "p1342",
+                0,
+                text="Islam has a similar teaching: if you have a palm cutting in your hand on Judgement Day, plant the cutting.”¹⁷",
+            ),
+            _make_paragraph_stub("p1343", 1, role="heading", structural_role="heading", heading_level=2, text="Appendices"),
+            _make_paragraph_stub(
+                "p1344", 2, text="The following appendices are available online at *bit.ly/TPmissinglink*"
+            ),
+        ],
+    )
+
+    assert [entry.merged_paragraph_ids for entry in result.entries] == [("p1342",), ("p1343",), ("p1344",)]
+    assert "\n\n## Приложения\n\n" in result.final_markdown
+    assert result.diagnostics.demoted_false_headings == 0
+
+
+@pytest.mark.parametrize(
+    ("source_text", "expected"),
+    [
+        ("…versus $105 for a chain store.²⁰", True),
+        ("…plant the cutting.”¹⁷", True),
+        ("…for the first time.¹²,¹³", True),
+        ("**…the end of the chapter.³⁴**", True),
+        # Anti-vacuum: a trailing PLAIN number is not a reference by form.
+        ("…versus $105 for a chain store.20", False),
+        ("…founded in a Californian garage in 1976", False),
+        ("The area is 40 m²", False),
+    ],
+)
+def test_source_text_ends_sentence_reads_through_trailing_superscript_references(source_text, expected):
+    assert document_pipeline_output_validation._source_text_ends_sentence(source_text) is expected
+
+
+def test_translation_ending_in_a_bare_number_still_reads_as_unfinished():
+    # Anti-vacuum for the translation side: only superscript GLYPHS after terminal
+    # punctuation close a sentence; "в 1976" and "магазина.20" do not.
+    result = document_pipeline_output_validation.assemble_final_markdown(
+        processed_chunks=["Компания была основана в калифорнийском гараже в 1976\n\nи быстро выросла"],
+        generated_paragraph_registry=[
+            {"block_index": 1, "paragraph_id": "left", "text": "Компания была основана в калифорнийском гараже в 1976"},
+            {"block_index": 1, "paragraph_id": "right", "text": "и быстро выросла"},
+        ],
+        source_paragraphs=None,
+    )
+
+    assert result.final_markdown == "Компания была основана в калифорнийском гараже в 1976 и быстро выросла"
+    assert document_pipeline_output_validation._SENTENCE_TERMINAL_PATTERN.search("у сетевого магазина.20") is None
+    assert document_pipeline_output_validation._SENTENCE_TERMINAL_PATTERN.search("у сетевого магазина.²⁰") is not None
+
+
 # --- Spec 063 P0: replay of the list-fragment carry on recorded translate runs ---------------
 #
 # Opt-in evidence, not a CI test: the recorded run reports (21-98 MB each) and the re-derived
@@ -3624,3 +3784,97 @@ def test_list_fragment_carry_replay_on_recorded_translate_runs(monkeypatch, book
     }
     assert stacked <= stacked_without_carry
     assert len(drift) <= allowed_drift
+
+
+@pytest.mark.skipif(
+    not _TRANSLATE_REPLAY_ROOT,
+    reason=f"Set {_TRANSLATE_REPLAY_ROOT_ENV} to the recorded translate-run directory to replay FR-005 + assembly.",
+)
+@pytest.mark.parametrize(
+    ("book", "report_name", "shipped_drift", "allowed_drift"),
+    _TRANSLATE_REPLAY_BOOKS,
+    ids=[book[0] for book in _TRANSLATE_REPLAY_BOOKS],
+)
+def test_footnote_restoration_then_assembly_replay_moves_no_boundary(book, report_name, shipped_drift, allowed_drift):
+    # Codex acceptance finding 1 (spec 063): the replay above assembles the model's text as
+    # it was recorded, BEFORE FR-005 existed, so it could not see a restored reference turn a
+    # complete paragraph into an "unfinished" one. Here the production restoration runs on
+    # every accepted paragraph first, exactly as ``process_single_block`` does, and the
+    # assembly must merge and demote exactly what it does without it. Measured before the
+    # fix: four new merges on Rethinking Money (p0164+p0165, p0520+p0521, p0526+p0527,
+    # p0529+p0530), none on the other three books.
+    from docxaicorrector.pipeline.footnote_markers import restore_lost_footnote_markers
+
+    book_dir = Path(_TRANSLATE_REPLAY_ROOT) / book
+    report_path = book_dir / report_name
+    source_path = book_dir / "source_paragraphs.json"
+    if not report_path.is_file() or not source_path.is_file():
+        pytest.skip(f"recorded run for {book} is absent under {book_dir}")
+
+    with report_path.open(encoding="utf-8") as handle:
+        state = json.load(handle)["runtime"]["state"]
+    with source_path.open(encoding="utf-8") as handle:
+        source_records = json.load(handle)["paragraphs"]
+    source_text_by_id = {record["paragraph_id"]: record["text"] for record in source_records}
+    source_paragraphs = [
+        SimpleNamespace(**{**record, "boundary_source": None, "boundary_confidence": None}) for record in source_records
+    ]
+    chunks = list(state["processed_block_markdowns"])
+    registry = state["processed_paragraph_registry"]
+    del state
+
+    restored_chunks = list(chunks)
+    restored_registry = []
+    restored_ids = []
+    converted_digits: Counter = Counter()
+    for entry in registry:
+        restored_entry = dict(entry)
+        source_text = source_text_by_id.get(entry.get("paragraph_id"))
+        text = entry.get("text")
+        if source_text is not None and entry.get("paragraph_status", "accepted") == "accepted" and isinstance(text, str):
+            outcome = restore_lost_footnote_markers(source_text, text)
+            block_position = int(entry["block_index"]) - 1
+            if outcome.restored_markers and text in restored_chunks[block_position]:
+                restored_chunks[block_position] = restored_chunks[block_position].replace(text, outcome.text, 1)
+                restored_entry["text"] = outcome.text
+                restored_ids.append(entry["paragraph_id"])
+                if "converted" in outcome.placement:
+                    converted_digits.update(
+                        marker.translate(str.maketrans("⁰¹²³⁴⁵⁶⁷⁸⁹", "0123456789"))
+                        for marker in outcome.restored_markers
+                    )
+        restored_registry.append(restored_entry)
+    assert restored_ids, "anti-vacuum: the recorded run must contain paragraphs FR-005 restores"
+
+    def shape(result):
+        merges = {entry.merged_paragraph_ids for entry in result.entries if len(entry.merged_paragraph_ids) > 1}
+        demoted = {
+            decision.paragraph_ids
+            for decision in result.diagnostics.merge_decisions
+            if decision.action == "demote_heading"
+        }
+        return merges, demoted
+
+    plain = document_pipeline_output_validation.assemble_final_markdown(
+        processed_chunks=chunks, generated_paragraph_registry=registry, source_paragraphs=source_paragraphs
+    )
+    restored = document_pipeline_output_validation.assemble_final_markdown(
+        processed_chunks=restored_chunks,
+        generated_paragraph_registry=restored_registry,
+        source_paragraphs=source_paragraphs,
+    )
+    plain_merges, plain_demoted = shape(plain)
+    restored_merges, restored_demoted = shape(restored)
+    print(json.dumps({"book": book, "restored_paragraphs": len(restored_ids), "merges": len(restored_merges)}))
+
+    assert restored_merges == plain_merges, {
+        "new": sorted(restored_merges - plain_merges),
+        "gone": sorted(plain_merges - restored_merges),
+    }
+    assert restored_demoted == plain_demoted
+    # Restoration creates no plain number. The only plain digits it removes are the model's
+    # plain-digit copies of a reference it turned back into the glyph (Money p0458 "»34.").
+    plain_numbers = Counter(_NUMBER_TOKEN_PATTERN.findall(plain.final_markdown))
+    restored_numbers = Counter(_NUMBER_TOKEN_PATTERN.findall(restored.final_markdown))
+    assert not restored_numbers - plain_numbers
+    assert not (plain_numbers - restored_numbers) - converted_digits

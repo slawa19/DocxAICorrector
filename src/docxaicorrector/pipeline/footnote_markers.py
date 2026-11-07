@@ -227,9 +227,18 @@ def _welded_plain_digit_pattern(digits: str) -> re.Pattern[str]:
 
     Preceded, with no space, by a letter or one of the closing marks a reference follows;
     not part of a longer number on either side ("2034", "34.5", "34,000").
+
+    Spec 063 (Codex acceptance finding 2): a separator that itself follows a digit makes the
+    digits the second half of a number, not a reference welded to punctuation -- the time
+    "12:36", the decimal "2.36", the "2011.36" the model wrote for "2011 and 36". The
+    source-side guard below looks for the same SPELLING and cannot see these when the
+    translation changed the number's form (a word number turned into digits, a decimal
+    comma turned into a point). Such digits are left alone and the reference is inserted at
+    its sentence end instead -- a number is a fact, and a reference printed next to it costs
+    less than a fact turned into a reference.
     """
     return re.compile(
-        r"(?<=[^\W\d_]|[.!?:;)\]}»”\"'’*_])" + re.escape(digits) + r"(?![\d]|[.,]\d)"
+        r"(?<=[^\W\d_]|[.!?:;)\]}»”\"'’*_])(?<!\d[.,:;])" + re.escape(digits) + r"(?![\d]|[.,]\d)"
     )
 
 

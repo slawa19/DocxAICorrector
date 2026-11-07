@@ -48,12 +48,17 @@ def _paragraph_break_ends_without_terminal(text: str) -> bool:
     character and the terminal pattern does not match it (spec 008 edge case).
     """
 
-    from docxaicorrector.pipeline.output_validation import _SENTENCE_TERMINAL_PATTERN
+    # Spec 063: boundary recovery's ``_SENTENCE_TERMINAL_PATTERN`` now reads a trailing
+    # superscript reference as closing the sentence; this detector keeps spec 008's edge
+    # case and so keeps the form without references.
+    from docxaicorrector.pipeline.output_validation import (
+        _SENTENCE_TERMINAL_WITHOUT_REFERENCES_PATTERN,
+    )
 
     stripped = text.strip()
     if not stripped:
         return False
-    return _SENTENCE_TERMINAL_PATTERN.search(stripped) is None
+    return _SENTENCE_TERMINAL_WITHOUT_REFERENCES_PATTERN.search(stripped) is None
 
 
 def _paragraph_break_starts_continuation(text: str) -> bool:

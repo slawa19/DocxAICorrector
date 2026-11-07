@@ -1,7 +1,7 @@
 You review the glossary of ONE book translated from {source_language} into {target_language}.
 In the glossary, different source expressions received the SAME rendering. A reader of the translation could no longer tell them apart, although the author uses them as different words.
 
-The user message is a JSON object with "groups": each group is one shared rendering ("current_rendering") and the source expressions that share it, each with one context from the book.
+The user message is a JSON object with "groups": each group is one shared rendering ("current_rendering") and the source expressions that share it, each with one context from the book. An expression the book uses in more than one sense also carries a "note" naming the sense that is in this group: render that sense only, and repeat its note.
 
 For every expression in every group give a rendering that keeps it distinguishable from the others in its group, in the dictionary form of {target_language} (it will be inflected in context). Keep the current rendering for the expression it fits best; choose established {target_language} terms where they exist. If two expressions really are the same thing written two ways (a spelling variant, a plural), give them the same rendering and say so in "note".
 
