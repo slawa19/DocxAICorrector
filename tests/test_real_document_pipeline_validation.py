@@ -6687,6 +6687,129 @@ def test_run_report_carries_the_narration_exclusion_counters_from_the_event_log(
     assert "narration_excluded_blocks=59" in lines
 
 
+def test_run_summary_prints_every_spec_061_counter_the_report_carries() -> None:
+    """The 2026-11-07 ``20261107T_061_audio_money`` summary printed none of these, although
+    every one of them was in report.json: the paragraph disposition counts, the FR-008
+    per-paragraph narration exclusion and the FR-017 post-pass shortfall. A counter that is
+    only in a 27 MB report is a counter nobody reads. Zeros are printed too — a zero is the
+    statement "nothing landed here", not an absent field."""
+    validation = _load_validation_module()
+
+    narration_lines = validation._build_narration_summary_lines(
+        {
+            "char_count": 467958,
+            "excluded_omitted_paragraph_count": 8,
+            "excluded_omitted_paragraph_chars": 4455,
+            "postprocess_paragraph_shortfall_group_count": 0,
+            "postprocess_paragraph_shortfall_paragraph_count": 0,
+            "mode": "standalone",
+        }
+    )
+
+    assert "narration_excluded_omitted_paragraph_count=8" in narration_lines
+    assert "narration_excluded_omitted_paragraph_chars=4455" in narration_lines
+    assert "narration_postprocess_paragraph_shortfall_group_count=0" in narration_lines
+    assert "narration_postprocess_paragraph_shortfall_paragraph_count=0" in narration_lines
+
+    accounting_lines = validation._build_model_accounting_summary_lines(
+        {
+            "paragraph_disposition_counts": {
+                "accepted": 1370,
+                "omitted": 8,
+                "retry_required": 0,
+                "source_restored": 2,
+            }
+        }
+    )
+
+    assert (
+        'model_accounting_paragraph_disposition_counts={"accepted": 1370, "omitted": 8, '
+        '"retry_required": 0, "source_restored": 2}'
+    ) in accounting_lines
+
+
+_SIDE_WORKTREE_OBJECT_ID = "8a5e5f0" + "1" * 33
+
+
+def _shape_side_worktree(tmp_path: Path, *, packed: bool) -> Path:
+    """A main repository and a side worktree laid out the way ``git worktree add`` lays them
+    out: the worktree's ``.git`` is a FILE pointing at ``<main>/.git/worktrees/<name>``,
+    whose ``commondir`` leads back to the main ``.git`` where the branch refs live."""
+    main_git = tmp_path / "main" / ".git"
+    worktree_git_dir = main_git / "worktrees" / "wt"
+    worktree_git_dir.mkdir(parents=True)
+    (worktree_git_dir / "HEAD").write_text("ref: refs/heads/fix/side\n", encoding="utf-8")
+    (worktree_git_dir / "commondir").write_text("../..\n", encoding="utf-8")
+    if packed:
+        (main_git / "packed-refs").write_text(
+            f"# pack-refs with: peeled fully-peeled sorted\n{_SIDE_WORKTREE_OBJECT_ID} refs/heads/fix/side\n",
+            encoding="utf-8",
+        )
+    else:
+        ref_file = main_git / "refs" / "heads" / "fix" / "side"
+        ref_file.parent.mkdir(parents=True)
+        ref_file.write_text(f"{_SIDE_WORKTREE_OBJECT_ID}\n", encoding="utf-8")
+    worktree = tmp_path / "wt"
+    worktree.mkdir()
+    (worktree / ".git").write_text(f"gitdir: {worktree_git_dir.as_posix()}\n", encoding="utf-8")
+    return worktree
+
+
+@pytest.mark.parametrize("packed", [False, True])
+def test_git_head_is_read_from_a_side_worktree_without_git(tmp_path: Path, packed: bool) -> None:
+    """Under WSL ``git`` cannot open a side worktree whose ``.git`` file names a Windows
+    path, and the 2026-11-07 summaries recorded ``git_head=None``. The fallback reads the
+    commit off the files themselves: ``.git`` → ``HEAD`` → the ref in the common dir (loose
+    or packed)."""
+    validation = _load_validation_module()
+    worktree = _shape_side_worktree(tmp_path, packed=packed)
+
+    assert validation._read_git_head_from_files(worktree) == "8a5e5f0"
+
+
+def test_git_head_fallback_reads_a_plain_repository_with_a_detached_head(tmp_path: Path) -> None:
+    validation = _load_validation_module()
+    git_dir = tmp_path / ".git"
+    git_dir.mkdir()
+    (git_dir / "HEAD").write_text("0123456" + "a" * 33 + "\n", encoding="utf-8")
+
+    assert validation._read_git_head_from_files(tmp_path) == "0123456"
+
+
+def test_git_head_fallback_returns_none_when_nothing_is_readable(tmp_path: Path) -> None:
+    """Anti-vacuum: no ``.git`` at all, a ref that does not exist, or a pointer to nowhere
+    still says ``None`` — the fallback never invents a commit."""
+    validation = _load_validation_module()
+
+    assert validation._read_git_head_from_files(tmp_path) is None
+
+    dangling = tmp_path / "dangling"
+    (dangling / ".git").mkdir(parents=True)
+    (dangling / ".git" / "HEAD").write_text("ref: refs/heads/missing\n", encoding="utf-8")
+    assert validation._read_git_head_from_files(dangling) is None
+
+    nowhere = tmp_path / "nowhere"
+    nowhere.mkdir()
+    (nowhere / ".git").write_text(f"gitdir: {(tmp_path / 'absent').as_posix()}\n", encoding="utf-8")
+    assert validation._read_git_head_from_files(nowhere) is None
+
+
+def test_a_windows_gitdir_pointer_maps_to_the_wsl_mount(tmp_path: Path) -> None:
+    """The pointer git writes from Windows is ``D:/…``; a Linux process must read it as
+    ``/mnt/d/…`` rather than as a path relative to the worktree."""
+    validation = _load_validation_module()
+
+    resolved = validation._resolve_git_pointer_path(
+        "D:/Work/Projects/DocxAICorrector/.git/worktrees/wt", relative_to=tmp_path
+    )
+
+    if os.name == "nt":
+        assert resolved == Path("D:/Work/Projects/DocxAICorrector/.git/worktrees/wt")
+    else:
+        assert resolved == Path("/mnt/d/Work/Projects/DocxAICorrector/.git/worktrees/wt")
+    assert validation._resolve_git_pointer_path("../..", relative_to=tmp_path) == tmp_path / "../.."
+
+
 def test_run_report_says_not_reported_when_no_narration_artifact_was_saved() -> None:
     """A run without a narration artifact must not read as "nothing was excluded"."""
     validation = _load_validation_module()

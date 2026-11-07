@@ -467,8 +467,82 @@ def _safe_git_head() -> str | None:
             text=True,
         )
     except Exception:
+        return _read_git_head_from_files(PROJECT_ROOT)
+    return result.stdout.strip() or _read_git_head_from_files(PROJECT_ROOT)
+
+
+_GIT_SHORT_HEAD_LENGTH = 7
+_WINDOWS_DRIVE_PATH_PATTERN = re.compile(r"^([A-Za-z]):[\\/](.*)$")
+_GIT_OBJECT_ID_PATTERN = re.compile(r"^[0-9a-f]{40}(?:[0-9a-f]{24})?$")
+
+
+def _resolve_git_pointer_path(raw: str, *, relative_to: Path) -> Path:
+    """A path written by git into a pointer file (``gitdir:``, ``commondir``).
+
+    A side worktree created from Windows records its ``gitdir`` as a Windows path
+    (``D:/Work/…/.git/worktrees/<name>``), which a Linux process reads as RELATIVE. Under
+    WSL the drive maps to ``/mnt/<drive>/``, the documented mount of this runtime.
+    """
+
+    drive_path = _WINDOWS_DRIVE_PATH_PATTERN.match(raw)
+    if drive_path is not None and os.name != "nt":
+        drive, rest = drive_path.groups()
+        return Path("/mnt") / drive.lower() / rest.replace("\\", "/")
+    candidate = Path(raw)
+    return candidate if candidate.is_absolute() else (relative_to / candidate)
+
+
+def _read_git_head_from_files(project_root: Path) -> str | None:
+    """The checked-out commit read straight from the git files, no git subprocess.
+
+    Fallback for ``_safe_git_head``: under WSL, ``git`` cannot open a side worktree whose
+    ``.git`` FILE points at a Windows path (``AGENTS.md``, «Боковые worktree для агентов»),
+    and the 2026-11-07 run summaries recorded ``git_head=None`` — a run whose commit nobody
+    can name. ``.git`` (directory, or file with ``gitdir:``) → ``HEAD`` → the ref file in
+    the common dir, or ``packed-refs``. Any unreadable step returns ``None``, as before.
+    """
+
+    try:
+        dot_git = project_root / ".git"
+        if dot_git.is_file():
+            pointer = dot_git.read_text(encoding="utf-8").strip()
+            if not pointer.startswith("gitdir:"):
+                return None
+            git_dir = _resolve_git_pointer_path(pointer[len("gitdir:") :].strip(), relative_to=project_root)
+        elif dot_git.is_dir():
+            git_dir = dot_git
+        else:
+            return None
+        common_dir = git_dir
+        commondir_file = git_dir / "commondir"
+        if commondir_file.is_file():
+            common_dir = _resolve_git_pointer_path(
+                commondir_file.read_text(encoding="utf-8").strip(), relative_to=git_dir
+            )
+        head = (git_dir / "HEAD").read_text(encoding="utf-8").strip()
+        if head.startswith("ref:"):
+            ref = head[len("ref:") :].strip()
+            object_id = None
+            for ref_root in (git_dir, common_dir):
+                ref_file = ref_root / ref
+                if ref_file.is_file():
+                    object_id = ref_file.read_text(encoding="utf-8").strip()
+                    break
+            if object_id is None:
+                packed_refs = common_dir / "packed-refs"
+                if packed_refs.is_file():
+                    for line in packed_refs.read_text(encoding="utf-8").splitlines():
+                        parts = line.split()
+                        if len(parts) == 2 and parts[1] == ref:
+                            object_id = parts[0]
+                            break
+        else:
+            object_id = head
+    except OSError:
         return None
-    return result.stdout.strip() or None
+    if not object_id or not _GIT_OBJECT_ID_PATTERN.match(object_id):
+        return None
+    return object_id[:_GIT_SHORT_HEAD_LENGTH]
 
 
 def _detect_wsl_runtime() -> bool:
@@ -4481,6 +4555,10 @@ def _build_model_accounting_summary_lines(model_accounting: Mapping[str, object]
         # Spec 061: which provider API answered each text call. Printed so the share of
         # the Chat Completions fallback on the default provider is a number in the summary.
         "api_path_counts",
+        # Spec 056 E / 061: what became of every marker-mode paragraph (accepted / omitted /
+        # source_restored / retry_required). It was in report.json and nowhere in the
+        # summary, so the 2026-11-07 runs had to be read out of a 27 MB report.
+        "paragraph_disposition_counts",
         "model_output_discarded_reason_counts",
         "controlled_block_fallback_kind_counts",
         "controlled_block_fallback_kind_chars",
@@ -4502,6 +4580,13 @@ _NARRATION_SUMMARY_FIELDS = (
     "excluded_source_fallback_block_count",
     "excluded_source_fallback_chars",
     "joined_sentence_continuation_count",
+    # Spec 061 FR-008: paragraphs withheld from the narration because the model gave no
+    # accepted translation — the per-paragraph twin of the two block counters above.
+    "excluded_omitted_paragraph_count",
+    "excluded_omitted_paragraph_chars",
+    # Spec 061 FR-017: post-pass groups answered with fewer paragraphs than were sent.
+    "postprocess_paragraph_shortfall_group_count",
+    "postprocess_paragraph_shortfall_paragraph_count",
     "review_finding_count",
     "review_match_count",
     "mode",
