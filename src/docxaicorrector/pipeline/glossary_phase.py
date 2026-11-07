@@ -11,6 +11,12 @@ FAIL-OPEN. The glossary makes renderings consistent; without it the run is today
 Any failure is logged as WARNING, surfaced as a notice and recorded in the artifact, and the
 run goes on with the context it had. No status of this phase touches delivery, the quality
 gate or the acceptance verdict (Constitution VII, "no verifier as a gate").
+
+RECOVERY (spec 064, 2026-11-08). One long call must not leave a book with no glossary: an
+unusable answer to call A (cut off at the token cap, or JSON that does not parse) is asked
+again ONCE as two halves of its candidate list, each with its own budget; what the halves
+return is kept, and call B still runs as the second chance for anything left out. Every
+failed call is logged as WARNING ``run_glossary_call_failed`` with its tokens and its cap.
 """
 
 from __future__ import annotations
@@ -30,6 +36,7 @@ from docxaicorrector.document.segments import (
     GlossaryTerm,
     render_glossary_prompt_section,
 )
+from docxaicorrector.generation.model_response import ModelResponseError
 from docxaicorrector.pipeline.contracts import LatePhaseStopped
 from docxaicorrector.runtime.artifact_retention import (
     RUN_GLOSSARIES_MAX_AGE_SECONDS,
@@ -60,6 +67,7 @@ from docxaicorrector.text.glossary_pass import (
     parse_glossary_response,
     request_candidates,
     select_glossary_source_units,
+    split_candidates_in_halves,
     split_name_families,
 )
 
@@ -76,7 +84,8 @@ RUN_GLOSSARY_BUILT_MESSAGE_KEY = "result.run_glossary_built"
 RUN_GLOSSARY_FAILED_MESSAGE_KEY = "result.run_glossary_failed"
 _ERROR_PREVIEW_CHARS = 120
 _LANGUAGE_SAMPLE_CHARS = 2000
-_MAX_GLOSSARY_CALLS = 3
+# A, A retried as two halves (spec 064, 2026-11-08), B and C.
+_MAX_GLOSSARY_CALLS = 5
 # The run glossary's default budget: the rule-included terms (56–89 per corpus book) plus the
 # model's own choices, names first among them. Measured on Money 2026-11-07: 72 rule-included
 # entries render in 2 250 characters. The profile slot keeps DEFAULT_GLOSSARY_PROMPT_MAX_CHARS.
@@ -227,7 +236,10 @@ def _log_failed(
     error_message: str,
     candidate_count: int,
     artifact_path: str | None,
+    record: Mapping[str, object] | None = None,
 ) -> None:
+    usage = (record or {}).get("usage")
+    usage = usage if isinstance(usage, Mapping) else {}
     dependencies.log_event(
         logging.WARNING,
         "run_glossary_failed",
@@ -239,8 +251,34 @@ def _log_failed(
         error_message=" ".join(str(error_message or "").split())[:_ERROR_PREVIEW_CHARS],
         candidate_count=candidate_count,
         artifact_path=artifact_path,
+        model_call_count=(record or {}).get("model_call_count", 0),
+        prompt_tokens=usage.get("prompt_tokens"),
+        completion_tokens=usage.get("completion_tokens"),
+        cost_usd=usage.get("cost_usd"),
+        **_failure_fields(record or {}),
         **_system_prompt_size_fields(context=context, dependencies=dependencies),
     )
+
+
+def _failure_fields(record: Mapping[str, object]) -> dict[str, object]:
+    """Which glossary calls failed, why, and against what budget (spec 064, 2026-11-08).
+
+    The ``failed_*`` fields name the FIRST failure — the reason the phase had to recover or
+    give up; ``failed_calls`` lists every one, in call order.
+    """
+
+    raw_calls = record.get("failed_calls")
+    failed_calls = [dict(call) for call in (raw_calls if isinstance(raw_calls, list) else []) if isinstance(call, Mapping)]
+    first = failed_calls[0] if failed_calls else {}
+    return {
+        "failed_call_count": len(failed_calls),
+        "failed_role": first.get("role"),
+        "failed_part": first.get("part"),
+        "failed_error_code": first.get("error_code"),
+        "failed_max_output_tokens": first.get("max_output_tokens"),
+        "failed_completion_tokens": first.get("completion_tokens"),
+        "failed_calls": failed_calls,
+    }
 
 
 def _with_run_glossary_section(context: Any, section: str) -> Any:
@@ -340,6 +378,7 @@ def _run_glossary_phase(
         "collision_groups_found": [],
         "calls": [],
         "model_call_count": 0,
+        "failed_calls": [],
         "error_code": None,
     }
 
@@ -404,6 +443,7 @@ def _run_glossary_phase(
             error_message=str(record.get("error_message") or ""),
             candidate_count=len(candidates),
             artifact_path=artifact_path,
+            record=record,
         )
     elif status != RUN_GLOSSARY_STATUS_STOPPED:
         dependencies.log_event(
@@ -433,6 +473,7 @@ def _run_glossary_phase(
             completion_tokens=usage.get("completion_tokens"),
             cost_usd=usage.get("cost_usd"),
             artifact_path=artifact_path,
+            **_failure_fields(record),
             **_system_prompt_size_fields(context=_with_run_glossary_section(context, section), dependencies=dependencies),
         )
 
@@ -481,6 +522,64 @@ def _ask(
 
 def _error_code(error: object) -> str:
     return error.code if isinstance(error, GlossaryResponseError) else type(error).__name__
+
+
+def _is_unusable_answer(error: object) -> bool:
+    """The model answered, and the answer cannot be used: cut off at the cap, empty, or not JSON.
+
+    Such a failure is one of size or shape and a smaller request may succeed; a transport or
+    provider error (anything else) would fail the same way on half the list.
+    """
+
+    return isinstance(error, (ModelResponseError, GlossaryResponseError))
+
+
+def _usage_delta(before: Mapping[str, object], after: Mapping[str, object]) -> dict[str, int | None]:
+    """One call's tokens as the difference of the stage totals around it (``None``: not reported)."""
+
+    delta: dict[str, int | None] = {}
+    for key in ("prompt_tokens", "completion_tokens"):
+        previous, current = before.get(key), after.get(key)
+        if isinstance(current, int) and not isinstance(current, bool):
+            base = previous if isinstance(previous, int) and not isinstance(previous, bool) else 0
+            delta[key] = current - base
+        else:
+            delta[key] = None
+    return delta
+
+
+def _log_call_failed(
+    dependencies: Any,
+    *,
+    context: Any,
+    model: str,
+    call: Mapping[str, object],
+    next_step: str,
+) -> None:
+    """WARNING for one failed glossary call: which call, why, its cap and what it spent.
+
+    ``next_step``: ``retry_in_halves`` (call A, unusable answer), ``continue_to_call_b`` (what
+    is missing is re-asked by B), ``keep_what_parsed`` (B failed; A's entries stay),
+    ``keep_collisions`` (C failed; the collided entries stay as they were), ``give_up`` (no
+    entry at all; ``run_glossary_failed`` follows).
+    """
+
+    dependencies.log_event(
+        logging.WARNING,
+        "run_glossary_call_failed",
+        "Вызов глоссария прогона не дал пригодного ответа.",
+        filename=getattr(context, "uploaded_filename", ""),
+        model=model,
+        role=call.get("role"),
+        part=call.get("part"),
+        error_code=call.get("error_code"),
+        error_message=call.get("error_message"),
+        candidate_count=call.get("candidate_count"),
+        max_output_tokens=call.get("max_output_tokens"),
+        prompt_tokens=call.get("prompt_tokens"),
+        completion_tokens=call.get("completion_tokens"),
+        next_step=next_step,
+    )
 
 
 def _merge(terms: tuple[GlossaryTerm, ...], new_terms: tuple[GlossaryTerm, ...]) -> tuple[GlossaryTerm, ...]:
@@ -557,9 +656,10 @@ def _call_model(
     record: dict[str, object],
     request_text_completion_fn: Callable[..., str] | None,
 ) -> tuple[str, tuple[GlossaryTerm, ...]]:
-    """Calls by role (third pass, decision 4) and one collision call (decision 3); at most 3.
+    """Calls by role (third pass, decision 4) and one collision call (decision 3); at most 5.
 
-    A — renderings for every REQUIRED candidate (what the author introduced and reuses).
+    A — renderings for every REQUIRED candidate (what the author introduced and reuses). An
+        unusable answer is asked again once as two halves (spec 064, 2026-11-08).
     B — the model's own choices among the optional candidates, within ``max_terms``, plus a
         second chance for any required candidate A left out; B sees A's renderings.
     C — only if two different source terms ended with one rendering: one request for all such
@@ -586,9 +686,19 @@ def _call_model(
     source_language = str(getattr(context, "source_language", "") or "")
     target_language = str(getattr(context, "target_language", "") or "")
     calls: list[dict[str, object]] = []
+    failed_calls: list[dict[str, object]] = []
+    record["failed_calls"] = failed_calls
     rejected: dict[str, int] = {}
 
-    def ask(role: str, request: dict[str, object], candidates: tuple[GlossaryCandidate, ...], limit: int):
+    def ask(
+        role: str,
+        request: dict[str, object],
+        candidates: tuple[GlossaryCandidate, ...],
+        limit: int,
+        *,
+        part: str | None = None,
+    ) -> tuple[str, Any, dict[str, object]]:
+        usage_before = _stage_usage()
         outcome, result, request_chars = _ask(
             context=context,
             dependencies=dependencies,
@@ -598,13 +708,23 @@ def _call_model(
             max_terms=limit,
             request_text_completion_fn=request_text_completion_fn,
         )
+        usage_after = _stage_usage()
         call: dict[str, object] = {"role": role, "candidate_count": len(candidates), "request_chars": request_chars}
+        if part is not None:
+            call["part"] = part
+        # Spec 064, 2026-11-08: each call's own cap and tokens, so the next budget is measured
+        # on calls and not decomposed from the stage total.
+        call["max_output_tokens"] = request.get("max_output_tokens")
+        call.update(_usage_delta(usage_before, usage_after))
         if outcome == _ASK_OK:
             call["entries"] = len(result.terms)
             for reason, count in result.rejected_counts.items():
                 rejected[reason] = rejected.get(reason, 0) + int(count)
         elif outcome == RUN_GLOSSARY_STATUS_FAILED:
             call["error_code"] = _error_code(result)
+            call["error_message"] = " ".join(str(result).split())[:_ERROR_PREVIEW_CHARS]
+            failed_calls.append(dict(call))
+            record["failed_calls"] = failed_calls
         else:
             call["stopped"] = True
         calls.append(call)
@@ -612,7 +732,16 @@ def _call_model(
         record["model_call_count"] = len(calls)
         record["request_chars"] = sum(int(cast(int, item.get("request_chars", 0) or 0)) for item in calls)
         record["usage"] = _stage_usage()
-        return outcome, result
+        return outcome, result, call
+
+    def warn(call: Mapping[str, object], next_step: str) -> None:
+        _log_call_failed(dependencies, context=context, model=model, call=call, next_step=next_step)
+
+    def give_up() -> tuple[str, tuple[GlossaryTerm, ...]]:
+        first = failed_calls[0] if failed_calls else {}
+        record["error_code"] = first.get("error_code") or "unknown"
+        record["error_message"] = first.get("error_message") or ""
+        return RUN_GLOSSARY_STATUS_FAILED, ()
 
     def request_for(role: str, candidates: tuple[GlossaryCandidate, ...], limit: int, fixed: tuple[GlossaryTerm, ...] = ()):
         return build_glossary_request(
@@ -636,36 +765,64 @@ def _call_model(
     record["optional_candidate_count"] = len(optional)
     terms: tuple[GlossaryTerm, ...] = ()
 
-    # Call A.
+    # Call A. An unusable answer (cut off at the cap, or JSON that does not parse) is asked
+    # again ONCE as two halves, each with its own budget; a half that fails again is left to
+    # call B, which re-asks every required candidate still without a rendering. A transport
+    # failure is not a size problem: it goes straight to B (spec 064, 2026-11-08).
     if required:
-        outcome, result = ask(GLOSSARY_ROLE_REQUIRED, request_for(GLOSSARY_ROLE_REQUIRED, required, 0), required, 0)
+        outcome, result, call = ask(
+            GLOSSARY_ROLE_REQUIRED, request_for(GLOSSARY_ROLE_REQUIRED, required, 0), required, 0
+        )
         if outcome == RUN_GLOSSARY_STATUS_STOPPED:
             return RUN_GLOSSARY_STATUS_STOPPED, ()
-        if outcome == RUN_GLOSSARY_STATUS_FAILED:
-            record["error_code"] = _error_code(result)
-            record["error_message"] = str(result)[:_ERROR_PREVIEW_CHARS]
-            return RUN_GLOSSARY_STATUS_FAILED, ()
-        terms = tuple(result.terms)
+        if outcome == _ASK_OK:
+            terms = tuple(result.terms)
+        else:
+            halves = split_candidates_in_halves(required) if _is_unusable_answer(result) and len(required) > 1 else ()
+            warn(call, "retry_in_halves" if halves else "continue_to_call_b")
+            for index, half in enumerate(halves, start=1):
+                if dependencies.should_stop_processing(context.runtime):
+                    return RUN_GLOSSARY_STATUS_STOPPED, ()
+                outcome, result, call = ask(
+                    GLOSSARY_ROLE_REQUIRED,
+                    request_for(GLOSSARY_ROLE_REQUIRED, half, 0),
+                    half,
+                    0,
+                    part=f"{index}/{len(halves)}",
+                )
+                if outcome == RUN_GLOSSARY_STATUS_STOPPED:
+                    return RUN_GLOSSARY_STATUS_STOPPED, ()
+                if outcome == _ASK_OK:
+                    # The halves carry disjoint candidates, so their answers simply add up.
+                    terms = terms + tuple(result.terms)
+                else:
+                    warn(call, "continue_to_call_b")
 
     # Call B: the model's own choices, and a second chance for what A left out.
     leftover = missing_required_candidates(required, terms)
     record["reasked_required_count"] = len(leftover)
     call_b_candidates = leftover + optional
-    if call_b_candidates and (leftover or max_terms > 0) and not dependencies.should_stop_processing(context.runtime):
-        outcome, result = ask(
-            GLOSSARY_ROLE_OPTIONAL,
-            request_for(GLOSSARY_ROLE_OPTIONAL, call_b_candidates, max_terms, terms),
-            call_b_candidates,
-            max_terms,
-        )
-        if outcome == _ASK_OK:
-            terms = _merge(terms, tuple(result.terms))
-        elif outcome == RUN_GLOSSARY_STATUS_FAILED and not terms:
-            record["error_code"] = _error_code(result)
-            record["error_message"] = str(result)[:_ERROR_PREVIEW_CHARS]
-            return RUN_GLOSSARY_STATUS_FAILED, ()
-        elif outcome == RUN_GLOSSARY_STATUS_STOPPED and not terms:
-            return RUN_GLOSSARY_STATUS_STOPPED, ()
+    if call_b_candidates and (leftover or max_terms > 0):
+        if dependencies.should_stop_processing(context.runtime):
+            if not terms and failed_calls:
+                return RUN_GLOSSARY_STATUS_STOPPED, ()
+        else:
+            outcome, result, call = ask(
+                GLOSSARY_ROLE_OPTIONAL,
+                request_for(GLOSSARY_ROLE_OPTIONAL, call_b_candidates, max_terms, terms),
+                call_b_candidates,
+                max_terms,
+            )
+            if outcome == _ASK_OK:
+                terms = _merge(terms, tuple(result.terms))
+            elif outcome == RUN_GLOSSARY_STATUS_FAILED:
+                warn(call, "keep_what_parsed" if terms else "give_up")
+                if not terms:
+                    return give_up()
+            elif outcome == RUN_GLOSSARY_STATUS_STOPPED and not terms:
+                return RUN_GLOSSARY_STATUS_STOPPED, ()
+    if not terms and failed_calls:
+        return give_up()
 
     # Call C: different source terms that ended with one rendering. The term the book uses
     # most keeps the rendering (spec 064 FR-009); each group is ordered that way.
@@ -690,7 +847,7 @@ def _call_model(
                 for term in group
             )
         )
-        outcome, result = ask(
+        outcome, result, call = ask(
             GLOSSARY_ROLE_DISTINGUISH,
             build_distinction_request(
                 model=model,
@@ -704,6 +861,8 @@ def _call_model(
             group_candidates,
             len(group_candidates),
         )
+        if outcome == RUN_GLOSSARY_STATUS_FAILED:
+            warn(call, "keep_collisions")
         if outcome == _ASK_OK:
             terms = _apply_distinction(terms, collisions, tuple(result.terms))
             # Codex review 2026-11-07 (finding 6): "the same thing written another way",

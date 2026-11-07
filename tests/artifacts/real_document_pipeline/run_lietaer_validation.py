@@ -4738,15 +4738,33 @@ def _build_run_glossary_summary_lines(run_glossary: Mapping[str, object] | None)
         if isinstance(term, Mapping)
     ]
     term_count = run_glossary.get("term_count", len(term_lines))
+    # Spec 064, 2026-11-08: a failed or recovered call is named here with its cap and its
+    # tokens — the third run's Creating Wealth glossary failed and the summary did not say why.
+    raw_failed_calls = run_glossary.get("failed_calls")
+    failed_calls = [
+        {
+            key: call.get(key)
+            for key in ("role", "part", "error_code", "max_output_tokens", "completion_tokens")
+            if call.get(key) is not None
+        }
+        for call in (raw_failed_calls if isinstance(raw_failed_calls, list) else [])
+        if isinstance(call, Mapping)
+    ]
     return [
         f"run_glossary_status={run_glossary.get('status')}",
         f"run_glossary_term_count={term_count}",
         f"run_glossary_rendered_term_count={run_glossary.get('rendered_term_count')}",
         f"run_glossary_candidate_count={run_glossary.get('candidate_count')}",
         f"run_glossary_prompt_section_chars={run_glossary.get('prompt_section_chars')}",
+        f"run_glossary_system_prompt_chars={run_glossary.get('system_prompt_chars')}",
+        f"run_glossary_document_context_prompt_chars={run_glossary.get('document_context_prompt_chars')}",
+        f"run_glossary_model_call_count={run_glossary.get('model_call_count')}",
         f"run_glossary_prompt_tokens={usage.get('prompt_tokens', run_glossary.get('prompt_tokens'))}",
         f"run_glossary_completion_tokens={usage.get('completion_tokens', run_glossary.get('completion_tokens'))}",
         f"run_glossary_cost_usd={usage.get('cost_usd', run_glossary.get('cost_usd'))}",
+        f"run_glossary_error_code={run_glossary.get('error_code')}",
+        f"run_glossary_error_message={run_glossary.get('error_message')}",
+        f"run_glossary_failed_calls={json.dumps(failed_calls, ensure_ascii=False)}",
         f"run_glossary_terms={json.dumps(term_lines, ensure_ascii=False)}",
         f"run_glossary_artifact={run_glossary.get('artifact_path')}",
     ]

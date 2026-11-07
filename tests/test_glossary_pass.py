@@ -1564,3 +1564,163 @@ def test_review5_the_family_count_does_not_win_a_collision_it_should_lose():
 
     # 24 real mentions against 27: the other term keeps the rendering (the old sum, 30, won).
     assert [term.source_term for term in ordered] == ["Quisting", "Arlo Maynard Quist"]
+
+
+# --- spec 064, 2026-11-08: the completion budget and the recovery of call A ------------------
+
+
+def test_the_completion_budget_is_the_measured_entry_size_with_headroom():
+    """The budget per entry is derived from measurement, not a flat guess of 60.
+
+    Measured on the seven successful glossary stages of the 2026-11-07 runs (19 calls, 1 018
+    answer entries; spec 064 Changelog, 2026-11-08): per answer entry p95 38.7 and max 47.3
+    tokens, a per-call overhead of 212 tokens by least squares. The failed call (Creating
+    Wealth, third run) spent 4 436 tokens on a 74-entry list against a cap of 4 440.
+    """
+
+    from docxaicorrector.generation import _generation
+
+    measured_max_per_entry, measured_overhead = 47.3, 212
+    assert glossary_pass.GLOSSARY_OUTPUT_TOKENS_PER_ENTRY >= 2 * measured_max_per_entry
+    assert glossary_pass.GLOSSARY_OUTPUT_TOKENS_ENVELOPE >= measured_overhead
+    # The failed list now has room for the answer it was cut off in, and more.
+    assert glossary_pass.glossary_max_output_tokens(74) == 256 + 74 * 96 == 7360
+    assert glossary_pass.glossary_max_output_tokens(74) > 4436
+    # Every call A of the corpus fits under the budget at the measured max entry size.
+    for required_count in (74, 80, 83, 87, 89, 93, 96, 110):
+        needed = measured_overhead + measured_max_per_entry * required_count
+        assert glossary_pass.glossary_max_output_tokens(required_count) >= 1.5 * needed
+    # A floor for a short list and the ceiling every block call already sends this provider.
+    assert glossary_pass.glossary_max_output_tokens(1) == 1024
+    assert glossary_pass.glossary_max_output_tokens(10_000) == _generation._MODEL_OUTPUT_TOKEN_CEILING
+    assert glossary_pass.GLOSSARY_OUTPUT_TOKENS_CEILING == _generation._MODEL_OUTPUT_TOKEN_CEILING
+
+
+def test_call_a_is_split_in_two_halves_in_request_order():
+    five = tuple(_candidate(f"Term{index}") for index in range(5))
+
+    first, second = glossary_pass.split_candidates_in_halves(five)
+
+    assert [candidate.source_term for candidate in first] == ["Term0", "Term1", "Term2"]
+    assert [candidate.source_term for candidate in second] == ["Term3", "Term4"]
+    assert glossary_pass.split_candidates_in_halves(five[:1]) == (five[:1], ())
+
+
+def _recovery_sequence(sent, answers):
+    """``_call_model`` with scripted answers; an ``Exception`` answer is raised by the provider."""
+
+    from docxaicorrector.pipeline import glossary_phase
+
+    requested: list[list[str]] = []
+    events: list[tuple[int, str, dict[str, Any]]] = []
+
+    def fake_request(_client, request, **_kwargs):
+        payload = json.loads(request["input"][1]["content"][0]["text"])
+        requested.append([item["term"] for item in payload["candidates"]])
+        answer = answers[len(requested) - 1]
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+    record: dict[str, object] = {}
+    status, terms = glossary_phase._call_model(
+        context=SimpleNamespace(source_language="en", target_language="ru", runtime=object()),
+        dependencies=SimpleNamespace(
+            should_stop_processing=lambda _runtime: False,
+            log_event=lambda level, event_id, _message, **context: events.append((level, event_id, context)),
+        ),
+        emitters=SimpleNamespace(emit_status=lambda *_args, **_kwargs: None),
+        initialization=SimpleNamespace(text_client=object(), job_count=0),
+        model="m",
+        sent_candidates=tuple(sent),
+        fixed_terms=(),
+        max_terms=10,
+        sample_text="",
+        record=record,
+        request_text_completion_fn=fake_request,
+    )
+    return status, terms, record, requested, events
+
+
+def _answer(*pairs):
+    return json.dumps(
+        {"terms": [{"source_term": source, "target_term": target} for source, target in pairs]}, ensure_ascii=False
+    )
+
+
+_FOUR_REQUIRED = tuple(
+    _counted(term, 5, family="marked", required=True)
+    for term in ("quillet bond", "harvest ledger", "council charter", "evening tithe")
+)
+
+
+def test_call_a_answered_with_json_cut_mid_entry_is_asked_again_in_halves():
+    import logging
+
+    cut = '{"terms": [{"source_term": "quillet bond", "target_term": "киллетная облига'
+    status, terms, record, requested, events = _recovery_sequence(
+        _FOUR_REQUIRED,
+        [
+            cut,
+            _answer(("quillet bond", "киллетная облигация"), ("harvest ledger", "урожайная книга")),
+            _answer(("council charter", "хартия совета"), ("evening tithe", "вечерняя десятина")),
+        ],
+    )
+
+    assert status == "built"
+    assert requested == [
+        ["quillet bond", "harvest ledger", "council charter", "evening tithe"],
+        ["quillet bond", "harvest ledger"],
+        ["council charter", "evening tithe"],
+    ]
+    assert len(terms) == 4
+    assert record["model_call_count"] == 3
+    assert record["unrendered_terms"] == []
+    failed_calls = cast(list[dict[str, Any]], record["failed_calls"])
+    assert [(call["role"], call["error_code"]) for call in failed_calls] == [("required", "no_json")]
+    assert failed_calls[0]["max_output_tokens"] == glossary_pass.glossary_max_output_tokens(4)
+    assert [(level, event_id, context["next_step"]) for level, event_id, context in events] == [
+        (logging.WARNING, "run_glossary_call_failed", "retry_in_halves")
+    ]
+
+
+def test_a_provider_error_on_call_a_is_not_split_and_call_b_takes_the_required_terms():
+    # A transport failure is not a size problem: half the list would fail the same way.
+    status, terms, record, requested, events = _recovery_sequence(
+        _FOUR_REQUIRED,
+        [
+            RuntimeError("provider down"),
+            _answer(
+                ("quillet bond", "киллетная облигация"),
+                ("harvest ledger", "урожайная книга"),
+                ("council charter", "хартия совета"),
+                ("evening tithe", "вечерняя десятина"),
+            ),
+        ],
+    )
+
+    assert status == "built"
+    assert len(requested) == 2 and len(requested[1]) == 4
+    assert len(terms) == 4
+    assert record["reasked_required_count"] == 4
+    assert [context["next_step"] for _level, _event_id, context in events] == ["continue_to_call_b"]
+    assert cast(list[dict[str, Any]], record["failed_calls"])[0]["error_code"] == "RuntimeError"
+
+
+def test_anti_vacuum_a_good_call_a_makes_no_extra_call_and_no_warning():
+    status, terms, record, requested, events = _recovery_sequence(
+        _FOUR_REQUIRED,
+        [
+            _answer(
+                ("quillet bond", "киллетная облигация"),
+                ("harvest ledger", "урожайная книга"),
+                ("council charter", "хартия совета"),
+                ("evening tithe", "вечерняя десятина"),
+            ),
+        ],
+    )
+
+    assert status == "built"
+    assert len(requested) == 1 and len(terms) == 4
+    assert record["failed_calls"] == []
+    assert events == []

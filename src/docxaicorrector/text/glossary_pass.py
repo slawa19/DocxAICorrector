@@ -972,8 +972,39 @@ def request_candidates(
     return tuple(candidate for candidate in candidates if normalize_glossary_key(candidate.source_term) not in fixed_keys)
 
 
-def glossary_max_output_tokens(max_terms: int) -> int:
-    return max(1024, min(8192, 60 * max(1, int(max_terms))))
+# The completion budget of one glossary call (spec 064, 2026-11-08). The old flat 60 tokens per
+# entry was a guess, and on Creating Wealth (third run) call A spent 4 436 of its 4 440 tokens on
+# 74 entries and was cut off. Measured on the seven successful glossary stages of the two
+# 2026-11-07 runs (19 calls, 1 018 answer entries; per-call usage was not recorded, so the
+# stage totals were decomposed): one entry costs 26.7 tokens by least squares over the stages
+# (30.7 with no per-call term), with a per-call overhead of 212; entry by entry, the answer JSON
+# rebuilt from the artifact and converted at each stage's own tokens-per-character ratio gives
+# p50 30.0, p95 38.7, max 47.3 tokens. The budget is the measured MAX doubled (the failed call
+# shows a model can answer at ~60 tokens an entry) plus the overhead rounded up. A budget only
+# caps: tokens are paid as generated, so the headroom costs nothing on a normal answer.
+GLOSSARY_OUTPUT_TOKENS_PER_ENTRY = 96
+GLOSSARY_OUTPUT_TOKENS_ENVELOPE = 256
+GLOSSARY_OUTPUT_TOKENS_MIN = 1024
+# The same ceiling every block call of the run already sends to this provider
+# (``generation._generation._MODEL_OUTPUT_TOKEN_CEILING``); a list longer than it fits is the
+# phase's to split (``pipeline/glossary_phase.py``, call A in halves), not the budget's.
+GLOSSARY_OUTPUT_TOKENS_CEILING = 16384
+
+
+def glossary_max_output_tokens(entry_count: int) -> int:
+    """``max_output_tokens`` for a glossary answer of ``entry_count`` entries."""
+
+    budget = GLOSSARY_OUTPUT_TOKENS_ENVELOPE + GLOSSARY_OUTPUT_TOKENS_PER_ENTRY * max(1, int(entry_count))
+    return max(GLOSSARY_OUTPUT_TOKENS_MIN, min(GLOSSARY_OUTPUT_TOKENS_CEILING, budget))
+
+
+def split_candidates_in_halves(
+    candidates: Sequence[GlossaryCandidate],
+) -> tuple[tuple[GlossaryCandidate, ...], tuple[GlossaryCandidate, ...]]:
+    """The two halves call A is retried with after an unusable answer, in request order."""
+
+    middle = (len(candidates) + 1) // 2
+    return tuple(candidates[:middle]), tuple(candidates[middle:])
 
 
 def build_glossary_request(
@@ -1578,6 +1609,10 @@ __all__ = [
     "split_name_families",
     "domain_glossary_terms",
     "extract_glossary_candidates",
+    "GLOSSARY_OUTPUT_TOKENS_CEILING",
+    "GLOSSARY_OUTPUT_TOKENS_ENVELOPE",
+    "GLOSSARY_OUTPUT_TOKENS_MIN",
+    "GLOSSARY_OUTPUT_TOKENS_PER_ENTRY",
     "glossary_max_output_tokens",
     "glossary_terms_from_plan",
     "missing_required_candidates",
@@ -1587,4 +1622,5 @@ __all__ = [
     "parse_glossary_response",
     "request_candidates",
     "select_glossary_source_units",
+    "split_candidates_in_halves",
 ]
