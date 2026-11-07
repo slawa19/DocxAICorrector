@@ -9218,7 +9218,7 @@ def test_the_distinction_call_changes_only_the_sense_that_collided(monkeypatch, 
     assert case.result == "succeeded"
     section = case.block_system_prompts[0]
     assert "- quillet bond -> киллетная облигация" in section
-    assert "- quillet bond -> квиллетный инструмент" in section
+    assert "- quillet bond -> квиллет — the tool" in section
     assert "- Kelbrook -> Келбрук (имя)" in section
     group = case.client.payloads[2]["groups"][0]
     # The model is told WHICH sense collided.
