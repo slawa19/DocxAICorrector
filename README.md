@@ -616,6 +616,8 @@ bash -lc 'cd /mnt/d/Work/Projects/DocxAICorrector && . .venv/bin/activate && pyt
 └── .github/
 ```
 
+Что лежит в `scripts/`, кто на какой скрипт опирается и когда что запускать — [`scripts/README.md`](scripts/README.md).
+
 ## Ограничения
 
 - Поддерживаются только inline-изображения в основном потоке документа; floating shapes, SmartArt, OLE и сложная Word-верстка по-прежнему не гарантируются.
