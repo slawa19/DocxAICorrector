@@ -4,6 +4,84 @@ from collections.abc import Mapping
 from typing import Any
 
 
+# Spec 062: the six image roles, split into the two choices the UI offers. The vision
+# model reads images (analysis, validation, reconstruction scene, generation brief); the
+# drawing model produces them (images.generate / images.edit).
+IMAGE_VISION_ROLE_NAMES = (
+    "image_analysis",
+    "image_validation",
+    "image_reconstruction",
+    "image_generation_vision",
+)
+IMAGE_DRAW_ROLE_NAMES = ("image_generation", "image_edit")
+IMAGE_MODEL_ROLE_NAMES = (
+    "image_analysis",
+    "image_validation",
+    "image_reconstruction",
+    "image_generation",
+    "image_edit",
+    "image_generation_vision",
+)
+# group id -> (roles, config section under [models], env variable for the default)
+IMAGE_MODEL_GROUPS: dict[str, tuple[tuple[str, ...], str, str]] = {
+    "vision": (IMAGE_VISION_ROLE_NAMES, "image_vision", "DOCX_AI_IMAGE_VISION_MODEL"),
+    "draw": (IMAGE_DRAW_ROLE_NAMES, "image_draw", "DOCX_AI_IMAGE_DRAW_MODEL"),
+}
+IMAGE_MODEL_GROUP_SOURCE_PREFIX = "group:"
+
+
+def image_model_group_for_role(role_name: str) -> str:
+    for group_id, (roles, _section, _env) in IMAGE_MODEL_GROUPS.items():
+        if role_name in roles:
+            return group_id
+    raise KeyError(role_name)
+
+
+def resolve_image_model_groups(
+    *,
+    models_config: Mapping[str, object],
+    builtin_groups: Mapping[str, tuple[str, tuple[str, ...]]],
+    config_path: Any,
+) -> dict[str, dict[str, Any]]:
+    """Resolve the default and the offered options of the two image-model choices.
+
+    Returns ``{group_id: {"default", "options", "default_source"}}``. The default is
+    ``DOCX_AI_IMAGE_<GROUP>_MODEL`` > ``[models.image_<group>].default`` > built-in; options
+    come from ``[models.image_<group>].options`` (or the built-in list) and always contain
+    the default, first if it was not listed — the same rule ``[models.text]`` follows.
+    """
+
+    resolved: dict[str, dict[str, Any]] = {}
+    for group_id, (_roles, section_name, env_name) in IMAGE_MODEL_GROUPS.items():
+        builtin_default, builtin_options = builtin_groups[group_id]
+        raw_section = models_config.get(section_name)
+        section: Mapping[str, object] = raw_section if isinstance(raw_section, Mapping) else {}
+        if raw_section is not None and not isinstance(raw_section, Mapping):
+            raise RuntimeError(f"Некорректная секция models.{section_name} в {config_path}")
+        source_prefix = f"{config_path}: models.{section_name}"
+        if "options" in section:
+            options = parse_model_options_value(
+                section.get("options"),
+                source_name=f"{source_prefix}.options",
+                coerce_model_name_fn=coerce_model_name,
+            )
+        else:
+            options = tuple(builtin_options)
+        env_value = os.getenv(env_name, "").strip()
+        if env_value:
+            default, default_source = env_value, f"env:{env_name}"
+        elif "default" in section:
+            default = coerce_model_name(section.get("default"), source_name=f"{source_prefix}.default")
+            default_source = f"toml:models.{section_name}.default"
+        else:
+            default, default_source = builtin_default, f"default:builtin:{section_name}"
+        options = dedupe_preserving_order(options)
+        if default not in options:
+            options = (default, *options)
+        resolved[group_id] = {"default": default, "options": options, "default_source": default_source}
+    return resolved
+
+
 def coerce_model_name(value: object, *, source_name: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise RuntimeError(f"Некорректное значение модели в {source_name}: ожидается непустая строка")
@@ -390,16 +468,11 @@ def resolve_model_registry_settings(
     model_registry_factory_fn: Any,
     config_path: Any,
     migration_default_model_roles: Mapping[str, str],
+    builtin_image_model_groups: Mapping[str, tuple[str, tuple[str, ...]]] | None = None,
 ) -> dict[str, Any]:
     models_config = parse_optional_config_section_fn(config_data, "models")
     models_text_config = parse_optional_config_section_fn(models_config, "text", parent_name="models")
     models_structure_recognition_config = parse_optional_config_section_fn(models_config, "structure_recognition", parent_name="models")
-    models_image_analysis_config = parse_optional_config_section_fn(models_config, "image_analysis", parent_name="models")
-    models_image_validation_config = parse_optional_config_section_fn(models_config, "image_validation", parent_name="models")
-    models_image_reconstruction_config = parse_optional_config_section_fn(models_config, "image_reconstruction", parent_name="models")
-    models_image_generation_config = parse_optional_config_section_fn(models_config, "image_generation", parent_name="models")
-    models_image_edit_config = parse_optional_config_section_fn(models_config, "image_edit", parent_name="models")
-    models_image_generation_vision_config = parse_optional_config_section_fn(models_config, "image_generation_vision", parent_name="models")
 
     model_options, text_options_source = resolve_text_model_options_fn(
         models_text_config=models_text_config,
@@ -422,69 +495,47 @@ def resolve_model_registry_settings(
         legacy_value_key="model",
         fallback_source="default:derived:text.default",
     )
-    image_analysis_model, image_analysis_model_source = resolve_model_role_assignment_fn(
-        role_name="image_analysis",
-        config_path_suffix="models.image_analysis",
-        new_env_name="DOCX_AI_MODELS_IMAGE_ANALYSIS_DEFAULT",
-        new_role_config=models_image_analysis_config,
-        fallback_value=migration_default_model_roles["image_analysis"],
+    # Spec 062: each image role resolves per-role override > its group's model. The
+    # per-role env and [models.image_<role>] are read exactly as before; only the fallback
+    # changed from a fixed migration id to the default of the role's group (vision/draw).
+    resolved_builtin_groups = builtin_image_model_groups or {
+        "vision": (migration_default_model_roles["image_analysis"], (migration_default_model_roles["image_analysis"],)),
+        "draw": (migration_default_model_roles["image_generation"], (migration_default_model_roles["image_generation"],)),
+    }
+    image_model_groups = resolve_image_model_groups(
+        models_config=models_config,
+        builtin_groups=resolved_builtin_groups,
+        config_path=config_path,
     )
-    image_validation_model, image_validation_model_source = resolve_model_role_assignment_fn(
-        role_name="image_validation",
-        config_path_suffix="models.image_validation",
-        new_env_name="DOCX_AI_MODELS_IMAGE_VALIDATION_DEFAULT",
-        new_role_config=models_image_validation_config,
-        fallback_value=migration_default_model_roles["image_validation"],
-    )
-    image_reconstruction_model, image_reconstruction_model_source = resolve_model_role_assignment_fn(
-        role_name="image_reconstruction",
-        config_path_suffix="models.image_reconstruction",
-        new_env_name="DOCX_AI_MODELS_IMAGE_RECONSTRUCTION_DEFAULT",
-        new_role_config=models_image_reconstruction_config,
-        fallback_value=migration_default_model_roles["image_reconstruction"],
-    )
-    image_generation_model, image_generation_model_source = resolve_model_role_assignment_fn(
-        role_name="image_generation",
-        config_path_suffix="models.image_generation",
-        new_env_name="DOCX_AI_MODELS_IMAGE_GENERATION_DEFAULT",
-        new_role_config=models_image_generation_config,
-        fallback_value=migration_default_model_roles["image_generation"],
-    )
-    image_edit_model, image_edit_model_source = resolve_model_role_assignment_fn(
-        role_name="image_edit",
-        config_path_suffix="models.image_edit",
-        new_env_name="DOCX_AI_MODELS_IMAGE_EDIT_DEFAULT",
-        new_role_config=models_image_edit_config,
-        fallback_value=migration_default_model_roles["image_edit"],
-    )
-    image_generation_vision_model, image_generation_vision_model_source = resolve_model_role_assignment_fn(
-        role_name="image_generation_vision",
-        config_path_suffix="models.image_generation_vision",
-        new_env_name="DOCX_AI_MODELS_IMAGE_GENERATION_VISION_DEFAULT",
-        new_role_config=models_image_generation_vision_config,
-        fallback_value=migration_default_model_roles["image_generation_vision"],
-    )
+    image_role_models: dict[str, str] = {}
+    image_role_sources: dict[str, str] = {}
+    image_model_role_overrides: dict[str, str] = {}
+    for role_name in IMAGE_MODEL_ROLE_NAMES:
+        group_id = image_model_group_for_role(role_name)
+        group = image_model_groups[group_id]
+        role_model, role_source = resolve_model_role_assignment_fn(
+            role_name=role_name,
+            config_path_suffix=f"models.{role_name}",
+            new_env_name=f"DOCX_AI_MODELS_{role_name.upper()}_DEFAULT",
+            new_role_config=parse_optional_config_section_fn(models_config, role_name, parent_name="models"),
+            fallback_value=group["default"],
+            fallback_source=f"{IMAGE_MODEL_GROUP_SOURCE_PREFIX}{group_id}<-{group['default_source']}",
+        )
+        image_role_models[role_name] = role_model
+        image_role_sources[role_name] = role_source
+        if not role_source.startswith(IMAGE_MODEL_GROUP_SOURCE_PREFIX):
+            image_model_role_overrides[role_name] = role_model
 
     models = model_registry_factory_fn(
         text=text_model_config,
         structure_recognition=structure_recognition_model,
-        image_analysis=image_analysis_model,
-        image_validation=image_validation_model,
-        image_reconstruction=image_reconstruction_model,
-        image_generation=image_generation_model,
-        image_edit=image_edit_model,
-        image_generation_vision=image_generation_vision_model,
+        **image_role_models,
     )
     model_sources = {
         "text.default": text_default_source,
         "text.options": text_options_source,
         "structure_recognition": structure_recognition_model_source,
-        "image_analysis": image_analysis_model_source,
-        "image_validation": image_validation_model_source,
-        "image_reconstruction": image_reconstruction_model_source,
-        "image_generation": image_generation_model_source,
-        "image_edit": image_edit_model_source,
-        "image_generation_vision": image_generation_vision_model_source,
+        **image_role_sources,
     }
     emit_legacy_model_config_warnings_fn(config_data, model_sources)
 
@@ -492,4 +543,9 @@ def resolve_model_registry_settings(
         "default_model": default_model,
         "models": models,
         "model_sources": model_sources,
+        "image_vision_model_default": image_model_groups["vision"]["default"],
+        "image_vision_model_options": tuple(image_model_groups["vision"]["options"]),
+        "image_draw_model_default": image_model_groups["draw"]["default"],
+        "image_draw_model_options": tuple(image_model_groups["draw"]["options"]),
+        "image_model_role_overrides": image_model_role_overrides,
     }

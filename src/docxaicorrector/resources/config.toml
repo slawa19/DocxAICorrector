@@ -114,23 +114,30 @@ options = [
 # [models.structure_recognition]
 # default = "openrouter:google/gemini-3.1-flash-lite-preview"
 
-[models.image_analysis]
+# Image roles (spec 062). Two model choices drive the six image roles, each selectable in
+# the UI next to the image-mode selector:
+#   [models.image_vision] -> image_analysis, image_validation, image_reconstruction,
+#                            image_generation_vision   (env DOCX_AI_IMAGE_VISION_MODEL)
+#   [models.image_draw]   -> image_generation, image_edit (env DOCX_AI_IMAGE_DRAW_MODEL)
+# Per role, highest first:
+#   1. DOCX_AI_MODELS_IMAGE_<ROLE>_DEFAULT      (per-role override, env)
+#   2. [models.image_<role>] default = "..."    (per-role override, this file)
+#   3. the UI selector / run profile image_vision_model, image_draw_model
+#   4. DOCX_AI_IMAGE_VISION_MODEL / DOCX_AI_IMAGE_DRAW_MODEL, then `default` below
+# A per-role override pins that role whatever the selectors say and is logged as
+# image_model_role_override_active. All image roles are OpenAI-only. `options` is what
+# the UI offers; extend it without code. Spec 062 "Variant 1" = gpt-5.4-mini +
+# gpt-image-2.5-flare, "Variant 2" = gpt-6.1-sol + gpt-image-2.5-sunburst.
+# Example per-role override:
+# [models.image_generation]
+# default = "gpt-image-2.5-flare-2026-09-08"
+[models.image_vision]
 default = "gpt-5.4-mini"
+options = ["gpt-5.4-mini", "gpt-6.1-sol", "gpt-6.1-terra"]
 
-[models.image_validation]
-default = "gpt-5.4-mini"
-
-[models.image_reconstruction]
-default = "gpt-5.4-mini"
-
-[models.image_generation]
-default = "gpt-image-1.5"
-
-[models.image_edit]
-default = "gpt-image-1.5"
-
-[models.image_generation_vision]
-default = "gpt-5.4-mini"
+[models.image_draw]
+default = "gpt-image-2.5-flare"
+options = ["gpt-image-2.5-flare", "gpt-image-2.5-sunburst"]
 
 [providers.openai]
 enabled = true
@@ -184,7 +191,10 @@ save_debug_artifacts = true
 
 [image_output]
 generate_candidate_sizes = ["1536x1024", "1024x1536", "1024x1024"]
-edit_candidate_sizes = ["1536x1024", "1024x1536", "1024x1024", "512x512", "256x256"]
+# Spec 062 FR-003: 512x512 / 256x256 were dall-e-2 sizes; every GPT image model in
+# image/model_capabilities.py accepts the three standard sizes, and the 2.x family rejects
+# anything under 655 360 pixels. The capability table filters this grid per model.
+edit_candidate_sizes = ["1536x1024", "1024x1536", "1024x1024"]
 generate_size_square = "1024x1024"
 generate_size_landscape = "1536x1024"
 generate_size_portrait = "1024x1536"

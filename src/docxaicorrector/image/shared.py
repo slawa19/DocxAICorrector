@@ -1,7 +1,24 @@
 import json
 import time
 
-from docxaicorrector.core.model_accounting import STAGE_UNATTRIBUTED, record_model_call_usage
+from docxaicorrector.core.model_accounting import (
+    STAGE_IMAGE_ANALYSIS,
+    STAGE_IMAGE_GENERATION,
+    STAGE_IMAGE_RECONSTRUCTION,
+    STAGE_IMAGE_VALIDATION,
+    STAGE_UNATTRIBUTED,
+    record_model_call_usage,
+)
+
+# Spec 062: the image role a ``responses.create`` call serves, by its accounting stage.
+# On this path ``image_generation`` is always the vision brief that precedes a drawing
+# call; the drawing calls themselves are recorded in image/generation.py.
+_IMAGE_ROLE_BY_RESPONSES_STAGE = {
+    STAGE_IMAGE_ANALYSIS: "image_analysis",
+    STAGE_IMAGE_VALIDATION: "image_validation",
+    STAGE_IMAGE_RECONSTRUCTION: "image_reconstruction",
+    STAGE_IMAGE_GENERATION: "image_generation_vision",
+}
 from docxaicorrector.generation.openai_response_utils import collect_response_text_traversal, read_response_field
 
 
@@ -62,6 +79,11 @@ def extract_unsupported_parameter_name(error_message: str) -> str | None:
         "Unsupported parameter: '",
         "Unknown parameter: '",
         "unexpected keyword argument '",
+        # Spec 062 FR-006, measured 2026-11-07: the 2.5 image models answer
+        # "The model 'gpt-image-2.5-flare' does not support the 'input_fidelity' parameter."
+        # The capability table keeps such a parameter out of the request; this marker only
+        # lets the last-resort retry recognise the wording if a new model surprises it.
+        "does not support the '",
     )
     for marker in markers:
         if marker not in error_message:
@@ -197,6 +219,11 @@ def call_responses_create_with_retry(
                 break
             else:
                 consume_budget()
-                record_model_call_usage(stage=usage_stage, response=response)
+                record_model_call_usage(
+                    stage=usage_stage,
+                    response=response,
+                    model=str(current_payload.get("model") or ""),
+                    image_role=_IMAGE_ROLE_BY_RESPONSES_STAGE.get(usage_stage, ""),
+                )
                 return response
     raise RuntimeError("Responses retry loop exhausted unexpectedly.")

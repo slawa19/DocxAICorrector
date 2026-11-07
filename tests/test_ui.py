@@ -250,6 +250,10 @@ def test_render_sidebar_returns_image_settings(monkeypatch):
         ],
         "image_mode_default": "semantic_redraw_direct",
         "keep_all_image_variants": False,
+        "image_vision_model_default": "gpt-5.4-mini",
+        "image_vision_model_options": ("gpt-5.4-mini", "gpt-6.1-sol", "gpt-6.1-terra"),
+        "image_draw_model_default": "gpt-image-2.5-flare",
+        "image_draw_model_options": ("gpt-image-2.5-flare", "gpt-image-2.5-sunburst"),
     }
 
     sidebar_calls = []
@@ -279,7 +283,20 @@ def test_render_sidebar_returns_image_settings(monkeypatch):
 
     result = ui.render_sidebar(config)
 
-    assert result == ("gpt-5-mini", 6000, 3, "semantic_redraw_direct", False, "edit", "en", "ru", False, "literary")
+    assert result == (
+        "gpt-5-mini",
+        6000,
+        3,
+        "semantic_redraw_direct",
+        False,
+        "edit",
+        "en",
+        "ru",
+        False,
+        "literary",
+        "gpt-5.4-mini",
+        "gpt-image-2.5-flare",
+    )
     assert sidebar_calls[:4] == [
         ("header", "Настройки"),
         (
@@ -316,6 +333,21 @@ def test_render_sidebar_returns_image_settings(monkeypatch):
             None,
         ),
         ("caption", ui.IMAGE_MODE_DESCRIPTIONS["semantic_redraw_direct"]),
+        # Spec 062: the two image-model selectors sit right under the image mode.
+        (
+            "selectbox",
+            "Модель разбора изображений",
+            "Читает изображения: анализ перед обработкой, проверка перерисовки, сцена для реконструкции таблиц и описание для генерации.",
+            ("gpt-5.4-mini", "gpt-6.1-sol", "gpt-6.1-terra"),
+            None,
+        ),
+        (
+            "selectbox",
+            "Модель рисования",
+            "Рисует изображения в режимах AI-перерисовки (Images API: генерация и правка).",
+            ("gpt-image-2.5-flare", "gpt-image-2.5-sunburst"),
+            None,
+        ),
     ]
     assert checkbox_calls == [
         (
@@ -498,7 +530,20 @@ def test_render_sidebar_warns_when_translate_source_matches_target(monkeypatch):
 
     result = ui.render_sidebar(config)
 
-    assert result == ("gpt-5-mini", 6000, 3, "semantic_redraw_direct", False, "translate", "en", "en", False, "literary")
+    assert result == (
+        "gpt-5-mini",
+        6000,
+        3,
+        "semantic_redraw_direct",
+        False,
+        "translate",
+        "en",
+        "en",
+        False,
+        "literary",
+        "gpt-5.4-mini",
+        "gpt-image-2.5-flare",
+    )
     assert checkbox_calls == [
         (
             "Дополнительно: подготовить текст для ElevenLabs (не меняя основной результат)",
@@ -672,7 +717,8 @@ def test_render_sidebar_audiobook_forces_no_change_and_hides_pass_checkboxes(mon
 
     result = ui.render_sidebar(config)
 
-    assert result == ("gpt-5-mini", 6000, 3, "no_change", False, "audiobook", "auto", "ru", False, "literary")
+    # no_change calls no image model, so neither image-model selector is drawn ("").
+    assert result == ("gpt-5-mini", 6000, 3, "no_change", False, "audiobook", "auto", "ru", False, "literary", "", "")
     assert checkbox_calls == [
         (
             "Сохранять все варианты изображений",
@@ -2013,3 +2059,74 @@ def test_ui_code_uses_width_not_the_deprecated_use_container_width():
     # Anti-vacuum: the scan really reads the UI modules that render full-width buttons.
     assert 'width="stretch"' in (ui_dir / "_app.py").read_text(encoding="utf-8")
     assert 'width="stretch"' in (ui_dir / "_ui.py").read_text(encoding="utf-8")
+
+
+def _render_sidebar_for_image_mode(monkeypatch, *, image_mode, extra_config=None, choices=None):
+    """Spec 062: render the sidebar in ``image_mode`` and record selectboxes and captions."""
+    config = _editorial_intensity_sidebar_config("edit")
+    config["image_mode_default"] = image_mode
+    config.update(extra_config or {})
+    selectbox_calls = []
+    captions = []
+
+    def fake_selectbox(label, options, index=0, format_func=None, help=None, key=None, disabled=False):
+        selectbox_calls.append({"label": label, "options": tuple(options), "index": index, "key": key})
+        if choices and key in choices:
+            return choices[key]
+        return options[index]
+
+    monkeypatch.setattr(ui.st.sidebar, "header", lambda text: None)
+    monkeypatch.setattr(ui.st.sidebar, "caption", lambda text: None)
+    monkeypatch.setattr(ui.st.sidebar, "warning", lambda text: None)
+    monkeypatch.setattr(ui.st.sidebar, "selectbox", fake_selectbox)
+    monkeypatch.setattr(ui.st.sidebar, "text_input", lambda *args, **kwargs: "")
+    monkeypatch.setattr(ui.st.sidebar, "checkbox", lambda label, value, key=None, help=None: value)
+    _mirror_bare_sidebar(monkeypatch, selectbox=fake_selectbox, caption=captions.append)
+    result = ui.render_sidebar(config)
+    keys = [call["key"] for call in selectbox_calls]
+    return result, keys, captions
+
+
+def test_render_sidebar_image_model_selectors_follow_the_image_mode(monkeypatch):
+    # no_change calls no image model; safe only READS images; the redraw modes also draw.
+    no_change, no_change_keys, _ = _render_sidebar_for_image_mode(monkeypatch, image_mode="no_change")
+    safe, safe_keys, _ = _render_sidebar_for_image_mode(monkeypatch, image_mode="safe")
+    compare, compare_keys, _ = _render_sidebar_for_image_mode(monkeypatch, image_mode="compare_all")
+
+    assert "sidebar_image_vision_model" not in no_change_keys and "sidebar_image_draw_model" not in no_change_keys
+    assert no_change[10:] == ("", "")
+    assert "sidebar_image_vision_model" in safe_keys and "sidebar_image_draw_model" not in safe_keys
+    assert safe[10:] == ("gpt-5.4-mini", "")
+    assert "sidebar_image_vision_model" in compare_keys and "sidebar_image_draw_model" in compare_keys
+    assert compare[10:] == ("gpt-5.4-mini", "gpt-image-2.5-flare")
+
+
+def test_render_sidebar_returns_the_chosen_image_models_and_preselects_the_config_default(monkeypatch):
+    extra = {
+        "image_vision_model_default": "gpt-6.1-sol",
+        "image_vision_model_options": ("gpt-5.4-mini", "gpt-6.1-sol", "gpt-6.1-terra"),
+        "image_draw_model_default": "gpt-image-2.5-flare",
+        "image_draw_model_options": ("gpt-image-2.5-flare", "gpt-image-2.5-sunburst"),
+    }
+    result, _, _ = _render_sidebar_for_image_mode(
+        monkeypatch,
+        image_mode="semantic_redraw_structured",
+        extra_config=extra,
+        choices={"sidebar_image_draw_model": "gpt-image-2.5-sunburst"},
+    )
+
+    assert result[10:] == ("gpt-6.1-sol", "gpt-image-2.5-sunburst")
+
+
+def test_render_sidebar_says_when_a_per_role_pin_outranks_the_selectors(monkeypatch):
+    _, _, captions = _render_sidebar_for_image_mode(
+        monkeypatch,
+        image_mode="semantic_redraw_direct",
+        extra_config={"image_model_role_overrides": (("image_edit", "gpt-image-2.5-flare-2026-09-08"),)},
+    )
+    _, _, quiet_captions = _render_sidebar_for_image_mode(monkeypatch, image_mode="semantic_redraw_direct")
+
+    pin_captions = [caption for caption in captions if "image_edit = gpt-image-2.5-flare-2026-09-08" in caption]
+    assert len(pin_captions) == 1
+    assert pin_captions[0].startswith("Закреплено в .env или config.toml")
+    assert not any("Закреплено" in caption for caption in quiet_captions)

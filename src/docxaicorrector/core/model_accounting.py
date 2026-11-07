@@ -251,6 +251,8 @@ class RunModelAccountingLedger:
             status: 0 for status in PARAGRAPH_DISPOSITION_STATUSES
         }
         self._api_path_counts: dict[str, int] = {}
+        # Spec 062: image role -> model id -> calls answered.
+        self._image_model_call_counts_by_role: dict[str, dict[str, int]] = {}
         self._controlled_block_fallback_block_count = 0
         self._controlled_block_fallback_chars = 0
         self._controlled_block_fallback_kind_counts: dict[str, int] = {}
@@ -285,6 +287,7 @@ class RunModelAccountingLedger:
             self._discard_reason_counts = {}
             self._paragraph_disposition_counts = {status: 0 for status in PARAGRAPH_DISPOSITION_STATUSES}
             self._api_path_counts = {}
+            self._image_model_call_counts_by_role = {}
             self._controlled_block_fallback_block_count = 0
             self._controlled_block_fallback_chars = 0
             self._controlled_block_fallback_kind_counts = {}
@@ -305,8 +308,22 @@ class RunModelAccountingLedger:
             self._text_removal_site_counts = {}
             self._text_removal_site_chars = {}
 
-    def record_model_call(self, *, stage: str, usage: ModelCallUsage) -> None:
+    def record_model_call(
+        self,
+        *,
+        stage: str,
+        usage: ModelCallUsage,
+        model: str = "",
+        image_role: str = "",
+    ) -> None:
         with self._lock:
+            if image_role:
+                # Spec 062: per image role, which model id the request named. Stages cannot
+                # say this — ``image_generation`` covers images.generate, images.edit AND
+                # the vision brief — and a model comparison run needs it per role.
+                role_counts = self._image_model_call_counts_by_role.setdefault(image_role, {})
+                model_key = model or "unreported"
+                role_counts[model_key] = role_counts.get(model_key, 0) + 1
             stage_totals = self._stages.setdefault(stage, _StageTotals())
             for totals in (self._totals, stage_totals):
                 totals.model_call_count += 1
@@ -578,6 +595,13 @@ class RunModelAccountingLedger:
                 # ``chat_completions``, ``anthropic``. An empty mapping means no text call
                 # was answered in this scope.
                 "api_path_counts": dict(sorted(self._api_path_counts.items())),
+                # Spec 062: image role -> model id -> calls answered, from the model id each
+                # request named (the Images API does not echo one). An empty mapping means
+                # no image model answered in this scope.
+                "image_model_call_counts_by_role": {
+                    role: dict(sorted(counts.items()))
+                    for role, counts in sorted(self._image_model_call_counts_by_role.items())
+                },
                 # Blocks the pipeline rejected and shipped anyway (decision
                 # ``fallback_continue``). Reported in characters as well as blocks because
                 # the volume of substituted text IS the price of the defect and blocks
@@ -739,7 +763,13 @@ def reset_run_model_accounting() -> None:
     get_run_model_accounting_ledger().reset()
 
 
-def record_model_call_usage(*, stage: str, response: object) -> ModelCallUsage:
+def record_model_call_usage(
+    *,
+    stage: str,
+    response: object,
+    model: str = "",
+    image_role: str = "",
+) -> ModelCallUsage:
     """Record one provider response against the active scope. Never raises.
 
     Accounting must not be able to break a run it only observes, so an exotic response
@@ -751,7 +781,12 @@ def record_model_call_usage(*, stage: str, response: object) -> ModelCallUsage:
         usage = extract_model_call_usage(response)
     except Exception:
         usage = UNREPORTED_MODEL_CALL_USAGE
-    get_run_model_accounting_ledger().record_model_call(stage=stage, usage=usage)
+    get_run_model_accounting_ledger().record_model_call(
+        stage=stage,
+        usage=usage,
+        model=str(model or ""),
+        image_role=str(image_role or ""),
+    )
     return usage
 
 

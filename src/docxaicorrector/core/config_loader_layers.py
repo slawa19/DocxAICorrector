@@ -51,6 +51,14 @@ def build_app_config_payload(
         "providers": provider_registry,
         "default_model": model_registry_settings["default_model"],
         "model_options": list(models.text.options),
+        # Spec 062: the two image-model choices and the per-role pins that outrank them.
+        "image_vision_model_default": model_registry_settings.get("image_vision_model_default", models.image_analysis),
+        "image_vision_model_options": tuple(model_registry_settings.get("image_vision_model_options", ())),
+        "image_draw_model_default": model_registry_settings.get("image_draw_model_default", models.image_generation),
+        "image_draw_model_options": tuple(model_registry_settings.get("image_draw_model_options", ())),
+        "image_model_role_overrides": tuple(
+            sorted((model_registry_settings.get("image_model_role_overrides") or {}).items())
+        ),
         "chunk_size": text_runtime_defaults["chunk_size"],
         "max_retries": text_runtime_defaults["max_retries"],
         "processing_operation_default": text_runtime_defaults["processing_operation_default"],
