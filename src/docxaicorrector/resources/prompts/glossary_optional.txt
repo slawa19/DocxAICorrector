@@ -16,6 +16,7 @@ From the other candidates, choose the entries whose rendering must stay the same
 Return as many as the candidates justify, at most {max_terms} besides the required ones.
 
 Give each entry the single rendering to use everywhere, in the dictionary form of {target_language} (it will be inflected in context). If the book clearly uses one candidate in two distinct senses, you may return it twice with a different "note" each time.
+For every entry of kind "name": transliterate by the standard practical transcription of {target_language} (the system its publishers and reference works use, not a letter-by-letter rendering of the spelling), and keep the full form the author uses — the first name together with the surname when the book gives both; the source_term stays exactly as given.
 
 Answer with JSON only, no commentary, in exactly this shape:
 {{"terms": [{{"source_term": "<a candidate, exactly as given>", "target_term": "<rendering>", "kind": "term" or "name", "note": "<empty, or when this rendering applies>"}}]}}

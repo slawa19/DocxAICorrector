@@ -10,6 +10,7 @@ These expressions are in the glossary already; do not decide whether they belong
 - proper names — one spelling or transliteration each, following established {target_language} usage where one exists;
 - if a candidate is an ordinary word, give its ordinary rendering in the sense of its context.
 If the book clearly uses one candidate in two distinct senses, you may return it twice, each time with a different "note" saying when that rendering applies.
+For every entry of kind "name": transliterate by the standard practical transcription of {target_language} (the system its publishers and reference works use, not a letter-by-letter rendering of the spelling), and keep the full form the author uses — the first name together with the surname when the book gives both; the source_term stays exactly as given.
 
 Answer with JSON only, no commentary, in exactly this shape:
 {{"terms": [{{"source_term": "<a candidate, exactly as given>", "target_term": "<rendering>", "kind": "term" or "name", "note": "<empty, or when this rendering applies>"}}]}}

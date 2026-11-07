@@ -5,5 +5,7 @@ The user message is a JSON object with "groups": each group is one shared render
 
 For every expression in every group give a rendering that keeps it distinguishable from the others in its group, in the dictionary form of {target_language} (it will be inflected in context). Keep the current rendering for the expression it fits best; choose established {target_language} terms where they exist. If two expressions really are the same thing written two ways (a spelling variant, a plural), give them the same rendering and say so in "note".
 
+For every entry of kind "name": transliterate by the standard practical transcription of {target_language} (the system its publishers and reference works use, not a letter-by-letter rendering of the spelling), and keep the full form the author uses — the first name together with the surname when the book gives both; the source_term stays exactly as given.
+
 Answer with JSON only, no commentary, in exactly this shape:
 {{"terms": [{{"source_term": "<an expression, exactly as given>", "target_term": "<rendering>", "kind": "term" or "name", "note": "<empty, or why two expressions share a rendering>"}}]}}

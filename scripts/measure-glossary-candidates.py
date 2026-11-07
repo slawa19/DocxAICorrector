@@ -258,6 +258,10 @@ def _live_call(
                     "collisions_found": record.get("collisions_found"),
                     "collisions_resolved": record.get("collisions_resolved"),
                     "collisions": record.get("collisions"),
+                    "collision_groups_found": record.get("collision_groups_found"),
+                    "name_entries": [
+                        {"source_term": t.source_term, "target_term": t.target_term} for t in terms if t.kind == "name"
+                    ],
                     "rendered_term_count": rendered,
                     "prompt_section_chars": len(section),
                     "request_chars": request_chars,
