@@ -967,3 +967,67 @@ def test_process_document_images_wires_text_operation_and_target_language(monkey
 
     assert (captured_contexts[0].processing_operation, captured_contexts[0].target_language) == ("translate", "de")
     assert (captured_contexts[1].processing_operation, captured_contexts[1].target_language) == ("", "")
+
+
+class _NoModelCallsClient:
+    """Responses/Images client that records every call; safe mode must make none."""
+
+    def __init__(self):
+        self.calls = []
+        self.responses = self
+        self.images = self
+
+    def create(self, **kwargs):
+        self.calls.append(kwargs)
+        raise AssertionError("safe mode must not call a model")
+
+
+def test_safe_mode_makes_no_model_call_and_output_is_the_pil_step(monkeypatch, resolved_test_model_registry):
+    """Spec 062 FR-033 (M3) + Anti-regression: in ``safe`` the analysis runs without vision
+    (the safe plan ignores it), and the delivered bytes are exactly the PIL safe step."""
+    import docxaicorrector.image.analysis as image_analysis
+    import docxaicorrector.image.generation as image_generation
+
+    _prepare_state(monkeypatch)
+    monkeypatch.setattr(processing_service, "analyze_image", image_analysis.analyze_image)
+    monkeypatch.setattr(processing_service, "generate_image_candidate", image_generation.generate_image_candidate)
+    service = processing_service.build_processing_service()
+    client = _NoModelCallsClient()
+
+    result = service.process_document_images(
+        image_assets=[build_asset()],
+        image_mode="safe",
+        config=_config_with_models(resolved_test_model_registry, enable_vision_image_analysis=True),
+        on_progress=lambda **kwargs: None,
+        client=client,
+    )
+
+    assert client.calls == []
+    assert result[0].safe_bytes == image_generation._generate_safe_candidate(PNG_BYTES)
+    assert result[0].resolved_delivery_payload().final_bytes == image_generation._generate_safe_candidate(PNG_BYTES)
+
+
+def test_semantic_modes_still_request_vision_analysis(monkeypatch, resolved_test_model_registry):
+    """FR-033 counter-proof: only ``safe`` turns vision off; a semantic mode keeps the
+    configured ``enable_vision_image_analysis``."""
+    _prepare_state(monkeypatch)
+    seen_enable_vision = []
+
+    def spy_analyze(*args, **kwargs):
+        seen_enable_vision.append(kwargs.get("enable_vision"))
+        return build_analysis_result()
+
+    monkeypatch.setattr(processing_service, "analyze_image", spy_analyze)
+    service = processing_service.build_processing_service()
+
+    for image_mode in ("safe", "semantic_redraw_direct"):
+        service.process_document_images(
+            image_assets=[build_asset()],
+            image_mode=image_mode,
+            config=_config_with_models(resolved_test_model_registry, enable_vision_image_analysis=True),
+            on_progress=lambda **kwargs: None,
+        )
+
+    # The second semantic analysis call is the candidate analysis.
+    assert seen_enable_vision[0] is False
+    assert seen_enable_vision[1:] and all(flag is True for flag in seen_enable_vision[1:])

@@ -311,3 +311,17 @@ def test_app_and_flow_namespace_key_sets_match_between_catalogs() -> None:
         ru_keys = {key for key in ru if key.startswith(namespace)}
         en_keys = {key for key in en if key.startswith(namespace)}
         assert ru_keys == en_keys, f"{namespace}* key sets differ between catalogs"
+
+
+def test_compare_all_label_does_not_promise_three_variants_or_a_choice() -> None:
+    """Spec 062 FR-032 (M2): compare_all puts up to three pictures side by side and has no
+    "pick the best" step, so neither catalog promises exactly three or a choice."""
+    ru = json.loads(_locale_path("ru.json").read_text(encoding="utf-8"))
+    en = json.loads(_locale_path("en.json").read_text(encoding="utf-8"))
+
+    assert ru["image.mode_compare_all"] == "До 3 вариантов для сравнения"
+    assert en["image.mode_compare_all"] == "Up to 3 variants to compare"
+    for catalog in (ru, en):
+        text = f'{catalog["image.mode_compare_all"]} {catalog["image.desc_compare_all"]}'.lower()
+        for promise in ("сгенерировать 3", "выбрать лучший", "generate 3", "pick the best"):
+            assert promise not in text

@@ -640,3 +640,68 @@ def test_candidate_equal_to_safe_still_goes_to_safe_first(resolved_test_model_re
     assert validator_calls == []
     assert result.final_decision == "fallback_safe"
     assert result.final_reason == "semantic_redraw_fell_back_to_safe_candidate"
+
+
+# --- spec 062 P3/P1: compare_all delivery and document budget (FR-032, FR-022) -------
+
+
+def test_compare_all_does_not_deliver_a_semantic_variant_that_is_the_safe_picture(resolved_test_model_registry):
+    """FR-032 (M2): when both semantic variants fall back to the safe picture, the DOCX
+    gets one picture, not the same picture three times under three captions."""
+    safe_like = PNG_BYTES + b"safe"
+    context = _build_context(
+        resolved_test_model_registry,
+        config={"models": resolved_test_model_registry},
+        generate_image_candidate_fn=lambda image_bytes, analysis, **kwargs: safe_like,
+    )
+
+    asset = _build_asset()
+    result = cast(ImageAsset, _prepare_compare_variants(asset, _build_analysis(), context, client=object()))
+
+    assert result is asset
+    assert result.validation_status == "compared"
+    assert set(result.comparison_variants) == {"safe", "semantic_redraw_direct", "semantic_redraw_structured"}
+    for mode in ("semantic_redraw_direct", "semantic_redraw_structured"):
+        variant = cast(ImageVariantCandidate, result.comparison_variants[mode])
+        assert variant.bytes is None
+        assert str(variant.final_reason).startswith("compare_all_semantic_variant_equals_safe:")
+    insertions = result.resolved_delivery_payload().insertions
+    assert [insertion.variant_key for insertion in insertions] == ["safe"]
+
+
+def test_compare_all_still_delivers_semantic_variants_that_differ(resolved_test_model_registry):
+    """FR-032 counter-proof: genuinely different semantic variants are all delivered."""
+    context = _build_context(
+        resolved_test_model_registry,
+        config={"models": resolved_test_model_registry},
+        generate_image_candidate_fn=lambda image_bytes, analysis, *, mode, **kwargs: PNG_BYTES + mode.encode("ascii"),
+    )
+
+    result = cast(ImageAsset, _prepare_compare_variants(_build_asset(), _build_analysis(), context, client=object()))
+
+    insertions = result.resolved_delivery_payload().insertions
+    assert [insertion.variant_key for insertion in insertions] == [
+        "safe",
+        "semantic_redraw_direct",
+        "semantic_redraw_structured",
+    ]
+
+
+def test_compare_all_document_budget_covers_two_semantic_variants():
+    """FR-022 (M7): each semantic variant has its own per-image budget, so compare_all
+    needs 2 × per_image + 1 calls per image; the old flat 7 was below one variant's 9."""
+    config = {"semantic_redraw_max_model_calls_per_image": 9}
+
+    assert image_pipeline._resolve_document_model_call_budget(config, total_images=3, image_mode="compare_all") == 3 * 19
+    # Counter-proof: the single-mode estimate is unchanged.
+    assert (
+        image_pipeline._resolve_document_model_call_budget(config, total_images=3, image_mode="semantic_redraw_direct")
+        == 3 * 10
+    )
+    # An explicit document limit still wins.
+    assert (
+        image_pipeline._resolve_document_model_call_budget(
+            {**config, "image_model_call_budget_per_document": 4}, total_images=3, image_mode="compare_all"
+        )
+        == 4
+    )

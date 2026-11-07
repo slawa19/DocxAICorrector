@@ -105,13 +105,18 @@ class ImageProcessingContext:
         mime_type: str | None,
         client=None,
         budget: _ImageModelCallBudgetLike | None = None,
+        enable_vision: bool | None = None,
     ) -> ImageAnalysisResult:
         return self.analyze_image_fn(
             image_bytes,
             model=get_model_role_value(self.config, "image_analysis"),
             mime_type=mime_type,
             client=client,
-            enable_vision=_config_bool(self.config, "enable_vision_image_analysis", True),
+            enable_vision=(
+                _config_bool(self.config, "enable_vision_image_analysis", True)
+                if enable_vision is None
+                else enable_vision
+            ),
             dense_text_bypass_threshold=_config_int(self.config, "dense_text_bypass_threshold", 18),
             non_latin_text_bypass_threshold=_config_int(self.config, "non_latin_text_bypass_threshold", 12),
             budget=budget,
@@ -407,6 +412,20 @@ def _build_compare_variant_candidate(
         candidate_bytes = delivery_payload.final_bytes
         candidate_mime_type = pipeline_context.detect_image_mime_type_fn(candidate_bytes) if candidate_bytes else None
 
+    semantic_variant_is_safe_copy = (
+        candidate_mode != ImageMode.SAFE.value
+        and bool(candidate_bytes)
+        and bool(asset.safe_bytes)
+        and candidate_bytes == asset.safe_bytes
+    )
+    if semantic_variant_is_safe_copy:
+        # Spec 062 FR-032 (M2): a semantic variant that fell back to the safe picture
+        # is not delivered a second time under a "creative"/"structural" caption.
+        # The variant stays in the map (the compare set is complete) without bytes,
+        # so the DOCX inserts only the pictures that are actually different.
+        candidate_bytes = None
+        candidate_mime_type = None
+
     variant = ImageVariantCandidate(
         mode=candidate_mode,
         bytes=candidate_bytes,
@@ -421,6 +440,8 @@ def _build_compare_variant_candidate(
     if candidate_mode == ImageMode.SAFE.value:
         asset.safe_bytes = candidate_asset.safe_bytes or candidate_bytes
         variant.final_reason = "compare_all_safe_variant_ready"
+    elif semantic_variant_is_safe_copy:
+        variant.final_reason = f"compare_all_semantic_variant_equals_safe:{candidate_asset.final_reason or 'unknown'}"
 
     return variant
 
@@ -1178,6 +1199,10 @@ def process_document_images(
                 mime_type=detected_source_mime_type,
                 client=image_client,
                 budget=document_call_budget,
+                # Spec 062 FR-033 (M3): the safe plan is PIL only and ignores the
+                # analysis, so a vision call there is paid for and cannot change the
+                # output. The heuristic still fills prompt_key/render_strategy for logs.
+                enable_vision=False if image_mode == ImageMode.SAFE.value else None,
             )
             asset.analysis_result = analysis
             asset.prompt_key = analysis.prompt_key
@@ -1361,7 +1386,13 @@ def _resolve_document_model_call_budget(
             max(1, min(_config_int(config, "semantic_redraw_max_attempts", 2), 2)) * 3,
         ),
     )
-    estimated_calls_per_image = 7 if image_mode == ImageMode.COMPARE_ALL.value else per_image_attempt_budget + 1
+    # Spec 062 FR-022 (M7): compare_all runs two semantic variants, each with its own
+    # per-image budget (`select_best_semantic_asset`), plus the source analysis; the old
+    # flat 7 starved the document budget at the default per-image budget of 9.
+    if image_mode == ImageMode.COMPARE_ALL.value:
+        estimated_calls_per_image = 2 * per_image_attempt_budget + 1
+    else:
+        estimated_calls_per_image = per_image_attempt_budget + 1
     return max(estimated_calls_per_image, max(1, total_images) * estimated_calls_per_image)
 
 
