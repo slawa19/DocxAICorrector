@@ -8,6 +8,9 @@
      `classify_passthrough_unmapped_source`, with the anti-vacuum valve preserved.
   3. list_fragment references crediting + hard-fail review-item emission
      (`_is_reviewable_list_fragment_residue` / `_is_citation_form_list_fragment_sample`).
+  4. Spec 064 (end of file): a policy-kept source paragraph is not untranslated body
+     (FR-004), list-fragment residue is credited by region/status before form (FR-005), and
+     the prose-delivery acceptance check respects the anchor floor (FR-008).
 
 Every assertion is form/region based (no per-book literal). The anti-vacuum counter-proofs
 prove a real body paragraph and a real demoted body heading are STILL counted.
@@ -15,6 +18,9 @@ prove a real body paragraph and a real demoted body heading are STILL counted.
 
 from __future__ import annotations
 
+import ast
+import json
+from pathlib import Path
 from types import SimpleNamespace
 
 from docxaicorrector.validation.formatting_coverage import (
@@ -26,6 +32,12 @@ from docxaicorrector.validation.formatting_coverage import (
     _is_index_row_text,
 )
 import docxaicorrector.pipeline.late_phases as late_phases
+from docxaicorrector.core.models import PARAGRAPH_STATUS_POLICY_KEPT_SOURCE
+from docxaicorrector.pipeline import output_validation
+from docxaicorrector.pipeline import quality_gate
+from docxaicorrector.pipeline import quality_gate_text_detectors
+from docxaicorrector.validation import acceptance
+from docxaicorrector.validation.acceptance import build_acceptance_verdict
 
 
 def _src(index, role, hl, mti, text, struct=None):
@@ -658,3 +670,388 @@ def test_heading_demotion_serializer_carries_heading_level():
         }
     )
     assert serialized["heading_level"] == 2
+
+
+# =========================================================================== #
+# Spec 064 — the gate half: FR-004 (R-2), FR-005 (R-3), FR-008 (R-6).          #
+# =========================================================================== #
+#
+# Measured on the 2026-11-07 four-book rerun (`D:\Temp\docxai-runs\2026-11-07-translate-after`,
+# outside git):
+#
+# * FR-004: Money & Sustainability was BLOCKED by ``untranslated_body_text_above_threshold`` on
+#   19 027 chars / 3.5 % that were entirely ``policy_kept_source`` reference paragraphs.
+# * FR-005: ``list_fragment_regressions_present`` hard-failed acceptance on Creating Wealth (11
+#   gated), Rethinking Money (2) and The Value of Everything (42) — wrapped tails of notes /
+#   bibliography entries ending in a year, all in the back-matter region or policy-kept.
+# * FR-008: ``untranslated_prose_not_delivered`` failed Rethinking Money on one block of two
+#   characters, the diagram label «2b».
+#
+# Every rule here keys on a recorded STATUS, a REGION resolved by the existing provenance, or
+# the existing anchor floor — never on the words of a book (Constitution VII). Each credit has a
+# counter-proof on the same input shape without the signal.
+
+
+class _Context:
+    def __init__(self, operation: str = "translate", *, policy: str = "strict") -> None:
+        self.processing_operation = operation
+        self.uploaded_filename = "book.docx"
+        self.translation_domain = "general"
+        self.app_config = {"translation_output_quality_gate_policy": policy}
+
+
+# English running prose: >= 280 chars, >= 30 latin words, not bibliography/URL dominant.
+_ENGLISH_BODY = (
+    "The company kept the same policy for another year and nobody in the office was willing "
+    "to explain why the numbers had moved so far away from the plan that everyone had signed "
+    "in the spring, so the meeting ended without a decision and the team went back to work on "
+    "the parts of the product that were still moving forward without any argument at all."
+)
+# One paragraph that alone crosses BOTH catastrophic thresholds (>= 2000 chars, >= 2 %).
+_LONG_ENGLISH_BODY = " ".join([_ENGLISH_BODY] * 7)
+
+
+def _entry(
+    text: str,
+    index: int,
+    *,
+    role: str = "body",
+    list_kind: str | None = None,
+    heading_level: int | None = None,
+    status: str | None = "accepted",
+    from_registry: bool = True,
+    used_fallback: bool = False,
+) -> output_validation.FinalAssemblyEntry:
+    return output_validation.FinalAssemblyEntry(
+        text=text,
+        block_index=1,
+        paragraph_id=f"p{index:04d}",
+        source_index=index,
+        role=role,
+        structural_role=role,
+        heading_level=heading_level,
+        list_kind=list_kind,
+        from_registry=from_registry,
+        used_fallback=used_fallback,
+        paragraph_status=status,
+    )
+
+
+def _assembly(entries) -> output_validation.FinalMarkdownAssemblyResult:
+    entries = tuple(entries)
+    return output_validation.FinalMarkdownAssemblyResult(
+        final_markdown="\n\n".join(entry.text for entry in entries),
+        entries=entries,
+        diagnostics=output_validation.FinalAssemblyDiagnostics(),
+    )
+
+
+def _report(assembly, *, artifacts: list[str] | None = None, operation: str = "translate") -> dict:
+    return quality_gate._build_translation_quality_report(
+        context=_Context(operation),
+        final_markdown=assembly.final_markdown,
+        formatting_diagnostics_artifacts=artifacts or [],
+        assembly_result=assembly,
+        runtime_display_markdown=assembly.final_markdown,
+    )
+
+
+# --------------------------------------------------------------------------------------- #
+# FR-004 — ``policy_kept_source`` is the third exemption of the untranslated-body numerator
+# --------------------------------------------------------------------------------------- #
+
+
+def _english_document(status: str | None):
+    return _assembly(
+        [
+            _entry("## Библиография", 0, role="heading", heading_level=2),
+            _entry(_LONG_ENGLISH_BODY, 1, status=status),
+        ]
+    )
+
+
+def test_policy_kept_source_english_paragraph_is_not_untranslated_body():
+    report = _report(_english_document(PARAGRAPH_STATUS_POLICY_KEPT_SOURCE))
+
+    assert report["untranslated_body_text_count"] == 0
+    assert report["untranslated_body_text_chars"] == 0
+    assert "untranslated_body_text_above_threshold" not in report["gate_reasons"]
+    assert "untranslated_body_text_review_required" not in report["gate_reasons"]
+    assert report["quality_status"] != "fail"
+
+
+def test_same_english_paragraph_without_the_status_still_blocks_translate():
+    """Counter-proof (anti-regression 2): the exemption is the STATUS, not the text. The
+    identical paragraph recorded ``accepted`` still crosses both thresholds and is fatal."""
+    report = _report(_english_document("accepted"))
+
+    assert report["untranslated_body_text_chars"] >= quality_gate._UNTRANSLATED_BODY_FAIL_MIN_CHARS
+    assert report["untranslated_body_text_ratio"] >= quality_gate._UNTRANSLATED_BODY_FAIL_RATIO
+    assert "untranslated_body_text_above_threshold" in report["gate_reasons"]
+    assert report["quality_status"] == "fail"
+
+
+def test_no_recorded_status_is_not_an_exemption():
+    """A plain-text block carries ``paragraph_status=None`` — no disposition, no exemption."""
+    report = _report(_english_document(None))
+
+    assert "untranslated_body_text_above_threshold" in report["gate_reasons"]
+
+
+def test_ratio_denominator_is_still_the_whole_delivered_markdown():
+    """FR-004: the policy-kept paragraph leaves the NUMERATOR only. The denominator stays the
+    whole delivered markdown, policy-kept text included."""
+    assembly = _assembly(
+        [
+            _entry(_ENGLISH_BODY, 0, status="accepted"),
+            _entry(_LONG_ENGLISH_BODY, 1, status=PARAGRAPH_STATUS_POLICY_KEPT_SOURCE),
+        ]
+    )
+    report = _report(assembly)
+
+    assert report["untranslated_body_text_count"] == 1
+    assert report["untranslated_body_text_chars"] == len(_ENGLISH_BODY)
+    expected_ratio = len(_ENGLISH_BODY) / len(
+        quality_gate._strip_structural_markdown_prefix(assembly.final_markdown)
+    )
+    assert report["untranslated_body_text_ratio"] == round(expected_ratio, 4)
+
+
+def test_policy_kept_source_heading_is_not_an_untranslated_structural_element():
+    heading = "## Selected Bibliography Of Works Consulted"
+    kept = _assembly([_entry(heading, 0, role="heading", heading_level=2, status=PARAGRAPH_STATUS_POLICY_KEPT_SOURCE)])
+    accepted = _assembly([_entry(heading, 0, role="heading", heading_level=2, status="accepted")])
+
+    assert quality_gate._collect_untranslated_structural_samples(
+        final_markdown=kept.final_markdown, assembly_entries=kept.entries
+    ) == []
+    # Counter-proof: the same heading without the status is still reported.
+    assert len(
+        quality_gate._collect_untranslated_structural_samples(
+            final_markdown=accepted.final_markdown, assembly_entries=accepted.entries
+        )
+    ) == 1
+
+
+# --------------------------------------------------------------------------------------- #
+# FR-005 — list-fragment residue credited by REGION and STATUS before form
+# --------------------------------------------------------------------------------------- #
+
+# The Creating Wealth shape: a notes entry wrapped by the PDF layer, its tail a separate
+# body paragraph ending in a year. One citation signal (the year) — the form credit alone
+# does NOT take it, which is exactly why it hard-failed acceptance.
+_NOTE_HEAD = "- 13. Dennis and Donella Meadows, Jorgen Randers and William Behrens. *The Limits to Growth*. Universe Books, 1972; Donella"
+_NOTE_TAIL = "Meadows, Jorgen Randers and Dennis L. Meadows. *Limits to Growth: The 30-Year Update*. Chelsea Green, 2004."
+_NOTE_NEXT = "- 14. Расчёт предоставлен автором на основе его собственных данных."
+
+
+def _registry_row(index: int, role: str, text: str, heading_level: int | None = None) -> dict[str, object]:
+    return {
+        "paragraph_id": f"p{index:04d}",
+        "source_index": index,
+        "role": role,
+        "structural_role": role,
+        "heading_level": heading_level,
+        "list_kind": None,
+        "mapped_target_index": index,
+        "text_preview": text,
+    }
+
+
+def _notes_document(tmp_path: Path, *, notes_title: bool, tail_status: str = "accepted"):
+    """Body, a bare back-matter title, then a wrapped note. ``notes_title=False`` drops the
+    title from the source registry: the same text with no region anchor."""
+    entries = [
+        _entry("Основной текст главы, переведённый полностью и без замечаний.", 0),
+        _entry("## Примечания", 1, role="heading", heading_level=2),
+        _entry(_NOTE_HEAD, 2, role="list", list_kind="unordered"),
+        _entry(_NOTE_TAIL, 3, status=tail_status),
+        _entry(_NOTE_NEXT, 4, role="list", list_kind="unordered"),
+    ]
+    registry = [
+        _registry_row(0, "body", "chapter text"),
+        _registry_row(1, "heading", "notes" if notes_title else "a chapter heading", 1),
+        _registry_row(2, "list", "13. dennis and donella meadows"),
+        _registry_row(3, "body", "meadows, jorgen randers"),
+        _registry_row(4, "list", "14. calculation"),
+    ]
+    artifact = tmp_path / "formatting_diagnostics.json"
+    artifact.write_text(json.dumps({"source_registry": registry}), encoding="utf-8")
+    return _assembly(entries), [str(artifact)]
+
+
+def _broken_body_list_document(tmp_path: Path):
+    """The same wrapped-tail shape, but in the MAIN BODY, BEFORE the back-matter title."""
+    entries = [
+        _entry("- 1. Первый пункт списка в основном тексте главы, без завершения", 0, role="list", list_kind="ordered"),
+        _entry("Green, 2004.", 1),
+        _entry("- 2. Второй пункт списка.", 2, role="list", list_kind="ordered"),
+        _entry("## Примечания", 3, role="heading", heading_level=2),
+        _entry("- 1. См. главу 9.", 4, role="list", list_kind="ordered"),
+    ]
+    registry = [
+        _registry_row(0, "list", "1. first item"),
+        _registry_row(1, "body", "green, 2004."),
+        _registry_row(2, "list", "2. second item"),
+        _registry_row(3, "heading", "notes", 1),
+        _registry_row(4, "list", "1. see chapter 9."),
+    ]
+    artifact = tmp_path / "formatting_diagnostics.json"
+    artifact.write_text(json.dumps({"source_registry": registry}), encoding="utf-8")
+    return _assembly(entries), [str(artifact)]
+
+
+def test_note_tail_in_back_matter_region_is_credited_to_review(tmp_path):
+    assembly, artifacts = _notes_document(tmp_path, notes_title=True)
+    report = _report(assembly, artifacts=artifacts)
+
+    assert report["list_fragment_regression_gate_source"] == "entry_assembly"
+    assert report["list_fragment_regression_count"] == 1
+    # Precondition: form alone does not credit this line (the measured defect).
+    sample = report["list_fragment_regression_samples"][0]
+    assert not quality_gate._is_citation_form_list_fragment_sample(
+        type("S", (), {"text": sample["text"], "line": sample["line"]})()
+    )
+    assert "list_fragment_regressions_review_required" in report["gate_reasons"]
+    assert "list_fragment_regressions_present" not in report["gate_reasons"]
+    verdict = build_acceptance_verdict({"translation_quality_report": report})
+    assert "list_fragment_regressions_present" not in verdict["failed_checks"]
+
+
+def test_note_tail_without_region_anchor_still_hard_fails(tmp_path):
+    """Counter-proof: identical text and neighbours, no back-matter title in the registry —
+    no region signal, no credit (Constitution VII)."""
+    assembly, artifacts = _notes_document(tmp_path, notes_title=False)
+    report = _report(assembly, artifacts=artifacts)
+
+    assert report["list_fragment_regression_count"] == 1
+    assert "list_fragment_regressions_present" in report["gate_reasons"]
+    verdict = build_acceptance_verdict({"translation_quality_report": report})
+    assert "list_fragment_regressions_present" in verdict["failed_checks"]
+
+
+def test_policy_kept_source_tail_is_credited_without_a_region_anchor(tmp_path):
+    """The Rethinking Money shape: the entry is ``policy_kept_source`` — STATUS alone
+    credits it, whatever the registry says about the region."""
+    assembly, artifacts = _notes_document(
+        tmp_path, notes_title=False, tail_status=PARAGRAPH_STATUS_POLICY_KEPT_SOURCE
+    )
+    report = _report(assembly, artifacts=artifacts)
+
+    assert report["list_fragment_regression_count"] == 1
+    assert "list_fragment_regressions_review_required" in report["gate_reasons"]
+    assert "list_fragment_regressions_present" not in report["gate_reasons"]
+
+
+def test_broken_body_list_before_the_back_matter_region_still_hard_fails(tmp_path):
+    """Anti-regression 3: a broken list in the MAIN BODY is not credited by a back-matter
+    region that exists later in the same document."""
+    assembly, artifacts = _broken_body_list_document(tmp_path)
+    report = _report(assembly, artifacts=artifacts)
+
+    assert report["list_fragment_regression_count"] >= 1
+    assert "list_fragment_regressions_present" in report["gate_reasons"]
+    assert "list_fragment_regressions_review_required" not in report["gate_reasons"]
+
+
+def test_apparatus_credit_needs_a_source_backed_resolved_entry():
+    samples = [type("S", (), {"text": _NOTE_TAIL, "line": line})() for line in (1, 3, 5, 99)]
+    entries = (
+        _entry("x", 10),  # line 1 -> region (source_index 10 >= 5)
+        _entry("y", 11, from_registry=False, used_fallback=True),  # line 3 -> fallback entry
+        _entry("z", 2),  # line 5 -> before the region
+    )
+    markdown = "x\n\ny\n\nz"
+    credited = quality_gate._list_fragment_apparatus_credited_lines(
+        samples=samples,
+        final_markdown=markdown,
+        assembly_entries=entries,
+        references_region_start=5,
+    )
+    # line 99 does not resolve to an entry: no signal, no credit.
+    assert credited == frozenset({1})
+    assert (
+        quality_gate._list_fragment_apparatus_credited_lines(
+            samples=samples,
+            final_markdown=markdown,
+            assembly_entries=entries,
+            references_region_start=None,
+        )
+        == frozenset()
+    )
+
+
+def test_residue_with_one_uncredited_body_fragment_still_hard_fails():
+    credited = type("S", (), {"text": _NOTE_TAIL, "line": 1})()
+    broken = type("S", (), {"text": "- продолжение мысли без завершения", "line": 2})()
+    assert quality_gate._is_reviewable_list_fragment_residue(
+        samples=[credited], gate_source="entry_assembly", apparatus_credited_lines={1}
+    )
+    assert not quality_gate._is_reviewable_list_fragment_residue(
+        samples=[credited, broken], gate_source="entry_assembly", apparatus_credited_lines={1}
+    )
+    # The credit never reaches the legacy markdown path (no entries, no region, no status).
+    assert not quality_gate._is_reviewable_list_fragment_residue(
+        samples=[credited], gate_source="legacy_markdown", apparatus_credited_lines={1}
+    )
+
+
+# --------------------------------------------------------------------------------------- #
+# FR-008 — prose residue under the anchor floor is not "untranslated prose delivered"
+# --------------------------------------------------------------------------------------- #
+
+
+def _prose_check(count: int, chars: int) -> dict[str, object]:
+    verdict = build_acceptance_verdict(
+        {
+            "model_accounting": {
+                "untranslated_prose_block_delivery_count": count,
+                "untranslated_prose_block_delivery_chars": chars,
+                "untranslated_prose_block_delivery_kind_counts": {"source_text_fallback": count} if count else {},
+            }
+        }
+    )
+    return next(check for check in verdict["checks"] if check["name"] == "untranslated_prose_not_delivered")
+
+
+def test_two_character_block_under_the_anchor_floor_passes():
+    """The recorded Rethinking Money case: one block, «2b», 2 characters."""
+    check = _prose_check(1, 2)
+    assert check["passed"] is True
+    assert check["untranslated_prose_below_anchor_floor"] is True
+    assert check["untranslated_prose_block_delivery_count"] == 1
+
+
+def test_block_at_the_anchor_floor_still_fails():
+    check = _prose_check(1, quality_gate_text_detectors.REVIEW_ANCHOR_MIN_VISIBLE_CHARS)
+    assert check["passed"] is False
+    assert check["untranslated_prose_below_anchor_floor"] is False
+
+
+def test_several_tiny_blocks_whose_total_reaches_the_floor_still_fail():
+    """The ledger holds only the run total; it cannot prove each of two 2-character blocks
+    is below the floor, so it does not guess."""
+    assert _prose_check(2, 4)["passed"] is False
+
+
+def test_real_prose_block_still_fails_and_zero_still_passes():
+    assert _prose_check(1, 33)["passed"] is False
+    assert _prose_check(0, 0)["passed"] is True
+
+
+def test_one_anchor_floor_in_the_repository():
+    """FR-008 reuses the floor; it does not add a second one. The acceptance module and the
+    gate share the same object, and the gate no longer spells the floor as a literal."""
+    assert acceptance.REVIEW_ANCHOR_MIN_VISIBLE_CHARS is quality_gate.REVIEW_ANCHOR_MIN_VISIBLE_CHARS
+    assert quality_gate_text_detectors.REVIEW_ANCHOR_MIN_VISIBLE_CHARS == 3
+    tree = ast.parse(Path(quality_gate.__file__).read_text(encoding="utf-8"))
+    literal_floor_comparisons = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Compare)
+        and isinstance(node.left, ast.Call)
+        and isinstance(node.left.func, ast.Name)
+        and node.left.func.id == "_review_anchor_visible_char_count"
+        and any(isinstance(comparator, ast.Constant) for comparator in node.comparators)
+    ]
+    assert literal_floor_comparisons == []

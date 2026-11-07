@@ -14,6 +14,16 @@ import re
 _STANDALONE_NUMERIC_CONTINUATION_PATTERN = re.compile(r"^\s*\d{1,6}\.\s*$")
 
 
+# The usability floor of a review / delivery anchor (specs 059 and 061): a fragment
+# with fewer visible (non-whitespace) characters than this cannot be searched for in the
+# delivered document ("$", "2b", a two-digit page number). It was the literal ``3`` in
+# ``quality_gate._build_formatting_review_item`` and ``_collect_paragraph_anchor_facts``;
+# named here (spec 064 FR-008) so the acceptance check ``untranslated_prose_not_delivered``
+# reuses the SAME floor instead of inventing a second one. This module is import-free, so
+# both ``pipeline.quality_gate`` and ``validation.acceptance`` can depend on it.
+REVIEW_ANCHOR_MIN_VISIBLE_CHARS = 3
+
+
 _UNTRANSLATED_BODY_MIN_CHARS = 280
 _UNTRANSLATED_BODY_MIN_LATIN_WORDS = 30
 _UNTRANSLATED_BODY_FAIL_MIN_CHARS = 2000

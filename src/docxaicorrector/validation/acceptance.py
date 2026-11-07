@@ -24,6 +24,7 @@ from typing import Final, cast
 
 from docxaicorrector.core.logger import log_event
 from docxaicorrector.pipeline.output_validation import collect_page_placeholder_heading_concat_samples
+from docxaicorrector.pipeline.quality_gate_text_detectors import REVIEW_ANCHOR_MIN_VISIBLE_CHARS
 from docxaicorrector.validation.formatting_coverage import (
     resolve_filtered_formatting_unmapped_source_count as _resolve_filtered_formatting_unmapped_source_count,
     resolve_role_aware_formatting_unmapped_source_summary as _resolve_role_aware_formatting_unmapped_source_summary,
@@ -970,14 +971,33 @@ def build_acceptance_verdict(
     untranslated_prose_block_count = _coerce_int(
         untranslated_prose_accounting.get("untranslated_prose_block_delivery_count")
     )
+    untranslated_prose_block_chars = _coerce_int(
+        untranslated_prose_accounting.get("untranslated_prose_block_delivery_chars")
+    )
+    # Spec 064 FR-008: residue too small to be prose a reader loses. The recorded
+    # 20261107 Rethinking Money run failed this check on ONE block of TWO characters — the
+    # diagram step label «2b» (role ``body``, region ``prose``, between two figure images),
+    # the very residual ``block_execution.prose_paragraph_indexes`` documents as accepted
+    # ("the outcome is now a warning, not a dead run"). The warning still ships
+    # (``result.source_text_delivered_without_anchors``); the verdict stops calling it lost
+    # prose. The floor is the existing anchor-usability floor, not a new threshold. The
+    # ledger carries only the run TOTAL (``len`` of each delivered block, whitespace
+    # included, so never below the visible count), so the credit is taken only when the
+    # WHOLE delivered volume is under the floor — then no block can hold a searchable
+    # fragment. Two such blocks of 2 characters each still fail: the aggregate cannot prove
+    # each is below the floor, and a guessed pass is worse than a false alarm.
+    untranslated_prose_below_anchor_floor = (
+        untranslated_prose_block_count > 0
+        and untranslated_prose_block_chars < REVIEW_ANCHOR_MIN_VISIBLE_CHARS
+    )
     add_check(
         "untranslated_prose_not_delivered",
-        untranslated_prose_block_count == 0,
+        untranslated_prose_block_count == 0 or untranslated_prose_below_anchor_floor,
         applicable="untranslated_prose_block_delivery_count" in untranslated_prose_accounting,
         untranslated_prose_block_delivery_count=untranslated_prose_block_count,
-        untranslated_prose_block_delivery_chars=_coerce_int(
-            untranslated_prose_accounting.get("untranslated_prose_block_delivery_chars")
-        ),
+        untranslated_prose_block_delivery_chars=untranslated_prose_block_chars,
+        untranslated_prose_below_anchor_floor=untranslated_prose_below_anchor_floor,
+        anchor_min_visible_chars=REVIEW_ANCHOR_MIN_VISIBLE_CHARS,
         untranslated_prose_block_delivery_kind_counts=untranslated_prose_accounting.get(
             "untranslated_prose_block_delivery_kind_counts"
         ),
