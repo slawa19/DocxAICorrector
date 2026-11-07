@@ -4687,6 +4687,66 @@ def _build_narration_summary_lines(narration: Mapping[str, object] | None) -> li
     return lines
 
 
+_RUN_GLOSSARY_EVENT_IDS = ("run_glossary_built", "run_glossary_failed")
+
+
+def _extract_run_glossary_record(event_log: Sequence[Mapping[str, object]]) -> dict[str, object] | None:
+    """Spec 063 P2: the run glossary, by the same route as ``model_accounting``.
+
+    The event says what happened; when it names a readable artifact, the artifact (the
+    glossary itself, its candidates and the call's usage) becomes the report section, with the
+    event's own fields kept beside it. ``None`` means no glossary event — the operation was not
+    ``translate`` or the pass was switched off — and the summary says ``not_reported``.
+    """
+
+    for event in reversed(event_log):
+        if str(event.get("event_id") or "") not in _RUN_GLOSSARY_EVENT_IDS:
+            continue
+        context = event.get("context") or {}
+        if not isinstance(context, Mapping):
+            continue
+        record: dict[str, object] = {str(key): value for key, value in context.items()}
+        record["event_id"] = str(event.get("event_id"))
+        artifact_path = record.get("artifact_path")
+        if isinstance(artifact_path, str) and artifact_path.strip():
+            try:
+                artifact = json.loads(Path(artifact_path).read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                artifact = None
+            if isinstance(artifact, Mapping):
+                merged = {str(key): value for key, value in artifact.items()}
+                merged.update({key: value for key, value in record.items() if key not in merged})
+                record = merged
+        return record
+    return None
+
+
+def _build_run_glossary_summary_lines(run_glossary: Mapping[str, object] | None) -> list[str]:
+    if run_glossary is None:
+        return ["run_glossary=not_reported"]
+    usage = run_glossary.get("usage") if isinstance(run_glossary.get("usage"), Mapping) else {}
+    usage = cast(Mapping[str, object], usage)
+    raw_terms = run_glossary.get("terms")
+    term_lines = [
+        f"{term.get('source_term')} -> {term.get('target_term')}"
+        for term in (raw_terms if isinstance(raw_terms, list) else [])
+        if isinstance(term, Mapping)
+    ]
+    term_count = run_glossary.get("term_count", len(term_lines))
+    return [
+        f"run_glossary_status={run_glossary.get('status')}",
+        f"run_glossary_term_count={term_count}",
+        f"run_glossary_rendered_term_count={run_glossary.get('rendered_term_count')}",
+        f"run_glossary_candidate_count={run_glossary.get('candidate_count')}",
+        f"run_glossary_prompt_section_chars={run_glossary.get('prompt_section_chars')}",
+        f"run_glossary_prompt_tokens={usage.get('prompt_tokens', run_glossary.get('prompt_tokens'))}",
+        f"run_glossary_completion_tokens={usage.get('completion_tokens', run_glossary.get('completion_tokens'))}",
+        f"run_glossary_cost_usd={usage.get('cost_usd', run_glossary.get('cost_usd'))}",
+        f"run_glossary_terms={json.dumps(term_lines, ensure_ascii=False)}",
+        f"run_glossary_artifact={run_glossary.get('artifact_path')}",
+    ]
+
+
 def _extract_quality_report_artifact_path(event_log: Sequence[Mapping[str, object]]) -> str | None:
     for event in reversed(event_log):
         if str(event.get("event_id") or "") != "quality_report_saved":
@@ -5926,6 +5986,7 @@ def main() -> None:
         "model_accounting": _extract_model_accounting(event_log),
         "footnote_marker_restorations": _extract_footnote_marker_restorations(event_log),
         "narration_artifact": _extract_narration_artifact_record(event_log),
+        "run_glossary": _extract_run_glossary_record(event_log),
         "preparation_diagnostic_snapshot": preparation_diagnostic_snapshot,
         "source_cleanup_evidence": _build_source_cleanup_evidence(getattr(prepared, "cleanup_report", None)),
         "runtime": runtime_snapshot,
@@ -6131,6 +6192,9 @@ def main() -> None:
         ),
         *_build_narration_summary_lines(
             cast("Mapping[str, object] | None", report.get("narration_artifact"))
+        ),
+        *_build_run_glossary_summary_lines(
+            cast("Mapping[str, object] | None", report.get("run_glossary"))
         ),
         f"source_chars={report['preparation']['source_chars']}",
         f"final_markdown_chars={final_markdown_chars}",

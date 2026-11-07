@@ -539,6 +539,18 @@ def resolve_text_runtime_defaults(
         supported_language_codes=supported_language_codes,
     )
     enable_paragraph_markers = parse_config_bool_fn(config_data, "enable_paragraph_markers", False)
+    # Spec 063 P2: the per-run glossary pass of ``translate`` (FR-013…FR-016).
+    glossary_pass_enabled = parse_config_bool_fn(config_data, "glossary_pass_enabled", True)
+    glossary_int_settings: dict[str, int] = {}
+    for glossary_key, glossary_default in (
+        ("glossary_max_terms", 60),
+        ("glossary_prompt_max_chars", 3000),
+        ("glossary_candidate_limit", 400),
+    ):
+        glossary_value = config_data.get(glossary_key, glossary_default)
+        if not isinstance(glossary_value, int) or isinstance(glossary_value, bool):
+            raise RuntimeError(f"Некорректное поле {glossary_key} в {config_path}")
+        glossary_int_settings[glossary_key] = glossary_value
 
     chunk_size = parse_int_env_fn("DOCX_AI_CHUNK_SIZE", chunk_size)
     max_retries = parse_int_env_fn("DOCX_AI_MAX_RETRIES", max_retries)
@@ -578,6 +590,12 @@ def resolve_text_runtime_defaults(
         "DOCX_AI_ENABLE_PARAGRAPH_MARKERS",
         enable_paragraph_markers,
     )
+    glossary_pass_enabled = parse_bool_env_fn("DOCX_AI_GLOSSARY_PASS_ENABLED", glossary_pass_enabled)
+    for glossary_key in tuple(glossary_int_settings):
+        glossary_int_settings[glossary_key] = parse_int_env_fn(
+            f"DOCX_AI_{glossary_key.upper()}",
+            glossary_int_settings[glossary_key],
+        )
 
     return {
         "chunk_size": clamp_int_fn(chunk_size, minimum=3000, maximum=12000),
@@ -591,6 +609,14 @@ def resolve_text_runtime_defaults(
         "audiobook_postprocess_default": audiobook_postprocess_default,
         "audiobook_model": audiobook_model,
         "enable_paragraph_markers": enable_paragraph_markers,
+        "glossary_pass_enabled": glossary_pass_enabled,
+        "glossary_max_terms": clamp_int_fn(glossary_int_settings["glossary_max_terms"], minimum=0, maximum=200),
+        "glossary_prompt_max_chars": clamp_int_fn(
+            glossary_int_settings["glossary_prompt_max_chars"], minimum=0, maximum=20000
+        ),
+        "glossary_candidate_limit": clamp_int_fn(
+            glossary_int_settings["glossary_candidate_limit"], minimum=20, maximum=1000
+        ),
     }
 
 

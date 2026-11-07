@@ -367,6 +367,7 @@ def execute_processing_run(
     run_docx_build_phase_fn: Callable[..., Any | None],
     finalize_processing_success_fn: Callable[..., PipelineResult],
     initialization_type: type,
+    run_glossary_phase_fn: Callable[..., Any] | None = None,
 ) -> PipelineResult:
     initialization = initialize_processing_run_fn(
         context=context,
@@ -383,6 +384,17 @@ def execute_processing_run(
         )
 
     state = processing_state_factory_fn()
+    if run_glossary_phase_fn is not None:
+        # Spec 063 P2: one call before the first block fixes the renderings of the book's own
+        # terms and names; the phase returns the context the block phase must use (its
+        # ``document_context_prompt`` carries the glossary) and never fails the run.
+        context = run_glossary_phase_fn(
+            context=context,
+            dependencies=dependencies,
+            emitters=emitters,
+            state=state,
+            initialization=initialization,
+        )
     block_phase_outcome = run_block_processing_phase_fn(
         context=context,
         dependencies=dependencies,

@@ -37,6 +37,7 @@ from docxaicorrector.pipeline.block_execution import (
     process_single_block as _process_single_block_impl,
     run_block_processing_phase as _run_block_processing_phase_impl,
 )
+from docxaicorrector.pipeline.glossary_phase import run_glossary_phase as _run_glossary_phase_impl
 from docxaicorrector.pipeline.job_parsing import (
     coerce_job_kind as _coerce_job_kind_impl,
     coerce_optional_string_list as _coerce_optional_string_list_impl,
@@ -485,6 +486,7 @@ def _execute_processing_run(
         run_docx_build_phase_fn=_run_docx_build_phase,
         finalize_processing_success_fn=_finalize_processing_success,
         initialization_type=ProcessingInitialization,
+        run_glossary_phase_fn=_run_glossary_phase,
     )
 
 
@@ -775,6 +777,23 @@ def _handle_marker_registry_failure(
         extract_marker_diagnostics_code_fn=_extract_marker_diagnostics_code,
         current_markdown_fn=_current_markdown,
         emit_failed_result_fn=_emit_failed_result,
+    )
+
+
+def _run_glossary_phase(
+    *,
+    context: ProcessingContext,
+    dependencies: ProcessingDependencies,
+    emitters: ProcessingEmitters,
+    state: ProcessingState,
+    initialization: ProcessingInitialization,
+) -> ProcessingContext:
+    return _run_glossary_phase_impl(
+        context=context,
+        dependencies=dependencies,
+        emitters=emitters,
+        state=state,
+        initialization=initialization,
     )
 
 

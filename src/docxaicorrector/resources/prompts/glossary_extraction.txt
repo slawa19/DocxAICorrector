@@ -1,0 +1,20 @@
+You prepare the glossary of ONE book before it is translated block by block from {source_language} into {target_language}.
+Every block is translated by a separate call that cannot see the others, so any term or name that is not fixed here may be rendered differently in different chapters. Your glossary is added to every one of those calls.
+
+The user message is a JSON object with:
+- "candidates": expressions found in the book by their form, each with how often it occurs, the signals that found it and one short context — for a term the author introduced, the context is where it was introduced. Signals: "defined" (the author defines or names it), "emphasis" or "quoted" (italics or quotes at first use), "capitalised" (a name), "collocation" (a recurring word combination), "family_head" (a word shared by several candidates);
+- "fixed_terms": renderings already fixed by a domain glossary — do not repeat or change them;
+- "max_terms": the largest number of entries you may return.
+
+Choose from "candidates" the entries whose rendering must stay the same throughout the book:
+- the book's own concepts and terms of art, especially those the author defines or coins, and those that a translator could plausibly render in more than one way;
+- ordinary-looking words that the book uses as concepts — a candidate the author defined or marked at first use is a concept by the author's own choice: when the book contrasts or pairs related concepts, each of them needs its own rendering, and two of them must never share one;
+- proper names of people, places, organisations, currencies, programmes and publications — one spelling or transliteration each, following established {target_language} usage where one exists;
+- skip ordinary vocabulary that has one obvious translation, fragments that are not expressions of their own, and artefacts of text extraction (split words, stray letters).
+
+For each chosen entry give the single rendering to use everywhere, in the dictionary form of {target_language} (it will be inflected in context).
+If the book clearly uses one candidate in two distinct senses, you may return it twice, each time with a different "note" saying when that rendering applies.
+Put the most important entries first: the book's key concepts, then recurring names, then the rest. Return as many entries as the candidates justify, at most {max_terms}.
+
+Answer with JSON only, no commentary, in exactly this shape:
+{{"terms": [{{"source_term": "<a candidate, exactly as given>", "target_term": "<rendering>", "kind": "term" or "name", "note": "<empty, or when this rendering applies>"}}]}}

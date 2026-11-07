@@ -79,6 +79,8 @@ UNSCOPED_ACCOUNTING_SCOPE = "unscoped"
 
 STAGE_TEXT_GENERATION = "text_generation"
 STAGE_BOUNDARY_REVIEW = "boundary_review"
+# Spec 063 P2: the one call per translate run that fixes the run glossary's renderings.
+STAGE_GLOSSARY_EXTRACTION = "glossary_extraction"
 STAGE_IMAGE_ANALYSIS = "image_analysis"
 STAGE_IMAGE_VALIDATION = "image_validation"
 STAGE_IMAGE_RECONSTRUCTION = "image_reconstruction"

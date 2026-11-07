@@ -79,6 +79,12 @@ READER_CLEANUP_LINEAGE_MAX_COUNT = 50
 MARKER_ATTEMPT_ARTIFACTS_MAX_AGE_SECONDS = 7 * 24 * 60 * 60
 MARKER_ATTEMPT_ARTIFACTS_MAX_COUNT = 400
 
+# Spec 063 P2: one run glossary per ``translate`` run (``pipeline/glossary_phase.py``) —
+# the glossary, its candidates and the call's usage. Same policy as the paragraph-boundary
+# AI review it resembles: one small JSON per run that called a model.
+RUN_GLOSSARIES_MAX_AGE_SECONDS = 14 * 24 * 60 * 60
+RUN_GLOSSARIES_MAX_COUNT = 200
+
 _UI_RESULT_GROUP_SUFFIXES = (
     ".result.manifest.json",
     ".result.meta.json",

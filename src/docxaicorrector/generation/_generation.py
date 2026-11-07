@@ -1592,14 +1592,19 @@ def _extract_normalized_markdown(response: object) -> str:
     return _require_complete_markdown(_read_responses_model_response(response))
 
 
-def _call_responses_create(client: "OpenAI", request_kwargs: dict[str, Any]) -> object:
+def _call_responses_create(
+    client: "OpenAI",
+    request_kwargs: dict[str, Any],
+    *,
+    usage_stage: str = STAGE_TEXT_GENERATION,
+) -> object:
     return call_responses_create_with_retry(
         client,
         request_kwargs,
         max_retries=1,
         retryable_error_predicate=lambda exc: False,
         retryable_optional_params={"temperature", "max_output_tokens"},
-        usage_stage=STAGE_TEXT_GENERATION,
+        usage_stage=usage_stage,
     )
 
 
@@ -1692,6 +1697,7 @@ def _call_chat_completions_create(
     request_kwargs: dict[str, object],
     *,
     should_stop: Callable[[], bool] | None = None,
+    usage_stage: str = STAGE_TEXT_GENERATION,
 ) -> object:
     chat_completions = getattr(getattr(client, "chat", None), "completions", None)
     create = getattr(chat_completions, "create", None)
@@ -1726,7 +1732,7 @@ def _call_chat_completions_create(
                 continue
             raise
         else:
-            record_model_call_usage(stage=STAGE_TEXT_GENERATION, response=response)
+            record_model_call_usage(stage=usage_stage, response=response)
             return response
 
 
@@ -1825,6 +1831,7 @@ def _call_anthropic_messages_create(
     request_kwargs: dict[str, object],
     *,
     should_stop: Callable[[], bool] | None = None,
+    usage_stage: str = STAGE_TEXT_GENERATION,
 ) -> object:
     create = getattr(getattr(client, "messages", None), "create", None)
     if not callable(create):
@@ -1862,7 +1869,7 @@ def _call_anthropic_messages_create(
         else:
             # Anthropic reports ``usage.input_tokens``/``output_tokens`` but no cost, so
             # this path deliberately leaves cost unknown instead of applying a price list.
-            record_model_call_usage(stage=STAGE_TEXT_GENERATION, response=response)
+            record_model_call_usage(stage=usage_stage, response=response)
             return response
 
 
@@ -1970,6 +1977,41 @@ def _call_markdown_request_with_sdk_fallback(
         chat_response = _call_chat_completions_create(client, request_kwargs, should_stop=should_stop)
         record_text_api_path(API_PATH_CHAT_COMPLETIONS)
         return _extract_chat_completion_markdown(chat_response), True
+
+
+def request_text_completion(
+    client: Any,
+    request_kwargs: dict[str, object],
+    *,
+    usage_stage: str,
+    should_stop: Callable[[], bool] | None = None,
+) -> str:
+    """One auxiliary text call through the SAME provider path as the block calls.
+
+    Spec 063 P2: the run glossary is fixed by one call of the run's text model. It goes the
+    way every block goes — Anthropic Messages for an Anthropic client, otherwise the Responses
+    API with the OpenRouter Chat Completions fallback on a compatibility refusal — but its
+    tokens are booked under ``usage_stage`` and it does NOT touch ``api_path_counts``: that
+    counter answers "what served each block" (spec 061), and a service call would skew it.
+    Returns the complete answer text; an incomplete or empty answer raises like a block's would.
+    """
+
+    if _is_anthropic_client(client):
+        response = _call_anthropic_messages_create(
+            client, request_kwargs, should_stop=should_stop, usage_stage=usage_stage
+        )
+        return _extract_anthropic_message_markdown(response)
+    _raise_if_stop_requested(should_stop)
+    try:
+        response = _call_responses_create(client, cast(dict[str, Any], request_kwargs), usage_stage=usage_stage)
+        return _extract_normalized_markdown(response)
+    except Exception as exc:
+        if not _is_openrouter_client(client) or not _is_openrouter_responses_compatibility_error(exc):
+            raise
+        chat_response = _call_chat_completions_create(
+            client, request_kwargs, should_stop=should_stop, usage_stage=usage_stage
+        )
+        return _extract_chat_completion_markdown(chat_response)
 
 
 def _recover_from_persistent_empty_response(

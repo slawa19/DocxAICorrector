@@ -6863,3 +6863,66 @@ def test_run_report_says_not_reported_when_no_narration_artifact_was_saved() -> 
 
     assert validation._extract_narration_artifact_record([{"event_id": "processing_completed"}]) is None
     assert validation._build_narration_summary_lines(None) == ["narration_artifact=not_reported"]
+
+
+def test_run_report_carries_the_run_glossary_from_its_event_and_artifact(tmp_path) -> None:
+    """Spec 063 P2: the glossary is provenance — what the run fixed, how big, what it cost."""
+    validation = _load_validation_module()
+    artifact_path = tmp_path / "run_glossary.json"
+    artifact_path.write_text(
+        json.dumps(
+            {
+                "schema": "run_glossary/v1",
+                "status": "built",
+                "candidate_count": 398,
+                "terms": [
+                    {"source_term": "quillet bond", "target_term": "киллетная облигация", "kind": "term", "note": ""},
+                    {"source_term": "Kelbrook", "target_term": "Келбрук", "kind": "name", "note": ""},
+                ],
+                "rendered_term_count": 2,
+                "prompt_section_chars": 180,
+                "usage": {"prompt_tokens": 13210, "completion_tokens": 2104, "cost_usd": 0.0065},
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    event_log = [
+        {"event_id": "processing_started", "context": {}},
+        {
+            "event_id": "run_glossary_built",
+            "context": {"status": "built", "term_count": 2, "artifact_path": str(artifact_path)},
+        },
+    ]
+
+    record = validation._extract_run_glossary_record(event_log)
+
+    assert record is not None
+    assert record["schema"] == "run_glossary/v1"
+    assert record["term_count"] == 2
+    lines = validation._build_run_glossary_summary_lines(record)
+    assert "run_glossary_status=built" in lines
+    assert "run_glossary_term_count=2" in lines
+    assert "run_glossary_candidate_count=398" in lines
+    assert "run_glossary_prompt_tokens=13210" in lines
+    assert "run_glossary_cost_usd=0.0065" in lines
+    assert 'run_glossary_terms=["quillet bond -> киллетная облигация", "Kelbrook -> Келбрук"]' in lines
+
+
+def test_run_report_keeps_a_failed_glossary_event_without_an_artifact() -> None:
+    validation = _load_validation_module()
+    record = validation._extract_run_glossary_record(
+        [{"event_id": "run_glossary_failed", "context": {"status": "failed", "error_code": "no_json", "artifact_path": None}}]
+    )
+
+    assert record is not None
+    lines = validation._build_run_glossary_summary_lines(record)
+    assert "run_glossary_status=failed" in lines
+    assert "run_glossary_term_count=0" in lines
+
+
+def test_run_report_says_not_reported_without_a_glossary_event() -> None:
+    validation = _load_validation_module()
+
+    assert validation._extract_run_glossary_record([{"event_id": "processing_completed"}]) is None
+    assert validation._build_run_glossary_summary_lines(None) == ["run_glossary=not_reported"]

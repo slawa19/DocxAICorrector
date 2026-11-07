@@ -2333,3 +2333,67 @@ def test_default_text_model_provider_names_the_key_a_default_run_needs(monkeypat
     monkeypatch.setenv("DOCX_AI_PROVIDERS_OPENROUTER_ENABLED", "true")
     config.reset_app_config_cache()
     assert config.get_default_text_model_provider_config().api_key_env == "OPENROUTER_API_KEY"
+
+
+# --- spec 063 P2: the run glossary's four keys -------------------------------------------------
+
+
+def test_glossary_pass_keys_come_from_config_toml(monkeypatch):
+    for name in (
+        "DOCX_AI_GLOSSARY_PASS_ENABLED",
+        "DOCX_AI_GLOSSARY_MAX_TERMS",
+        "DOCX_AI_GLOSSARY_PROMPT_MAX_CHARS",
+        "DOCX_AI_GLOSSARY_CANDIDATE_LIMIT",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(config, "CONFIG_PATH", config.CONFIG_PATH)
+
+    app_config = config.load_app_config()
+
+    assert app_config["glossary_pass_enabled"] is True
+    assert app_config["glossary_max_terms"] == 60
+    assert app_config["glossary_prompt_max_chars"] == 3000
+    assert app_config["glossary_candidate_limit"] == 400
+
+
+def test_glossary_pass_keys_default_on_without_a_config_file(monkeypatch):
+    monkeypatch.setattr(config, "CONFIG_PATH", config.CONFIG_PATH.parent / "__missing_config__.toml")
+    for name in (
+        "DOCX_AI_GLOSSARY_PASS_ENABLED",
+        "DOCX_AI_GLOSSARY_MAX_TERMS",
+        "DOCX_AI_GLOSSARY_PROMPT_MAX_CHARS",
+        "DOCX_AI_GLOSSARY_CANDIDATE_LIMIT",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    app_config = config.load_app_config()
+
+    assert app_config["glossary_pass_enabled"] is True
+    assert app_config["glossary_max_terms"] == 60
+
+
+def test_glossary_pass_env_overrides_and_clamps(monkeypatch):
+    monkeypatch.setattr(config, "CONFIG_PATH", config.CONFIG_PATH)
+    monkeypatch.setenv("DOCX_AI_GLOSSARY_PASS_ENABLED", "false")
+    monkeypatch.setenv("DOCX_AI_GLOSSARY_MAX_TERMS", "900")
+    monkeypatch.setenv("DOCX_AI_GLOSSARY_PROMPT_MAX_CHARS", "-5")
+    monkeypatch.setenv("DOCX_AI_GLOSSARY_CANDIDATE_LIMIT", "3")
+
+    app_config = config.load_app_config()
+
+    assert app_config["glossary_pass_enabled"] is False
+    assert app_config["glossary_max_terms"] == 200
+    assert app_config["glossary_prompt_max_chars"] == 0
+    assert app_config["glossary_candidate_limit"] == 20
+
+
+def test_env_example_documents_the_glossary_overrides():
+    env_example = (Path(__file__).resolve().parents[1] / ".env.example").read_text(encoding="utf-8")
+
+    for name in (
+        "DOCX_AI_GLOSSARY_PASS_ENABLED",
+        "DOCX_AI_GLOSSARY_MAX_TERMS",
+        "DOCX_AI_GLOSSARY_PROMPT_MAX_CHARS",
+        "DOCX_AI_GLOSSARY_CANDIDATE_LIMIT",
+    ):
+        assert f"# {name}=" in env_example, name

@@ -8636,3 +8636,214 @@ def test_standalone_audiobook_without_an_omitted_paragraph_stays_silent():
         for notice in notices
         if notice.get("message_key") == "result.narration_omitted_paragraphs_excluded"
     ]
+
+
+# --- spec 063 P2: the run glossary phase, end to end through the pipeline --------------------
+
+
+class _GlossaryResponsesClient:
+    """A text client whose ``responses.create`` answers the one glossary call."""
+
+    def __init__(self, answer):
+        self.calls = []
+        self._answer = answer
+        self.responses = SimpleNamespace(create=self._create)
+
+    def _create(self, **kwargs):
+        self.calls.append(kwargs)
+        if isinstance(self._answer, Exception):
+            raise self._answer
+        return SimpleNamespace(
+            status="completed",
+            output_text=self._answer,
+            usage=SimpleNamespace(prompt_tokens=900, completion_tokens=120, cost=0.0004),
+        )
+
+
+_GLOSSARY_SOURCE_TEXTS = (
+    "In the town of Kelbrook the council debated the quillet bond for a long time.",
+    "For the rest of the book we will refer to this paper as *quillet bond*.",
+    "Zorvane Pettish argued that Kelbrook needed the quillet bond more than gold.",
+    "The weather changed and the harvest came in late that year, as it often did.",
+    "Later, Zorvane Pettish wrote to Kelbrook about the quillet bond once more.",
+    "Many people talked about it, and most of them agreed with what was said.",
+    "Kelbrook kept the quillet bond, and Zorvane Pettish was satisfied with that.",
+    "It rained again, and the visitors went home before the evening was over.",
+)
+
+
+def _glossary_jobs_and_paragraphs():
+    paragraphs = [
+        SimpleNamespace(paragraph_id=f"p{index:04d}", text=text, role="body")
+        for index, text in enumerate(_GLOSSARY_SOURCE_TEXTS)
+    ]
+    jobs = [
+        {
+            "job_kind": "llm",
+            "target_text": "\n\n".join(paragraph.text for paragraph in paragraphs[start : start + 4]),
+            "paragraph_ids": [paragraph.paragraph_id for paragraph in paragraphs[start : start + 4]],
+            "paragraph_regions": ["prose"] * 4,
+            "context_before": "",
+            "context_after": "",
+            "target_chars": 10,
+            "context_chars": 0,
+        }
+        for start in (0, 4)
+    ]
+    return jobs, paragraphs
+
+
+_GLOSSARY_ANSWER = json.dumps(
+    {
+        "terms": [
+            {"source_term": "quillet bond", "target_term": "киллетная облигация", "kind": "term"},
+            {"source_term": "Zorvane Pettish", "target_term": "Зорвейн Петтиш", "kind": "name"},
+            {"source_term": "Kelbrook", "target_term": "Келбрук", "kind": "name"},
+        ]
+    },
+    ensure_ascii=False,
+)
+
+
+def _run_glossary_case(monkeypatch, tmp_path, *, answer, operation="translate", app_config=None, should_stop=None):
+    import docxaicorrector.core.constants as constants
+
+    monkeypatch.setattr(constants, "RUN_GLOSSARIES_DIR", tmp_path / "run_glossaries")
+    runtime = _build_runtime_capture()
+    client = _GlossaryResponsesClient(answer)
+    prompt_sources: list[str] = []
+    captured, log_event = _capture_log_events()
+    jobs, paragraphs = _glossary_jobs_and_paragraphs()
+
+    def capture_load_system_prompt(**kwargs):
+        prompt_sources.append(str(kwargs.get("source_text", "")))
+        return "system"
+
+    overrides: dict[str, Any] = {}
+    if should_stop is not None:
+        overrides["should_stop_processing"] = should_stop
+    result = _run_processing(
+        runtime,
+        jobs=jobs,
+        source_paragraphs=paragraphs,
+        processing_operation=operation,
+        source_language="en",
+        target_language="ru",
+        run_id="run-glossary",
+        app_config=app_config if app_config is not None else {"glossary_pass_enabled": True},
+        get_client=lambda: client,
+        load_system_prompt=capture_load_system_prompt,
+        log_event=log_event,
+        document_context_prompt="КОНТЕКСТ ДОКУМЕНТА: заглушка",
+        **overrides,
+    )
+    return SimpleNamespace(
+        result=result,
+        runtime=runtime,
+        client=client,
+        prompt_sources=prompt_sources,
+        events=captured,
+        artifacts=sorted((tmp_path / "run_glossaries").glob("*.json")),
+    )
+
+
+def _glossary_notices(runtime):
+    return [
+        notice
+        for notice in runtime["state"].get("latest_result_notices") or []
+        if notice.get("kind") == "glossary"
+    ]
+
+
+def test_translate_run_builds_the_glossary_once_and_every_block_prompt_carries_it(monkeypatch, tmp_path):
+    case = _run_glossary_case(monkeypatch, tmp_path, answer=_GLOSSARY_ANSWER)
+
+    assert case.result == "succeeded"
+    assert len(case.client.calls) == 1
+    assert case.prompt_sources, "the system prompt was never built"
+    for source_text in case.prompt_sources:
+        assert "КОНТЕКСТ ДОКУМЕНТА: заглушка" in source_text
+        assert "ГЛОССАРИЙ ЭТОЙ КНИГИ" in source_text
+        assert "- quillet bond -> киллетная облигация" in source_text
+        assert "- Zorvane Pettish -> Зорвейн Петтиш (имя)" in source_text
+    built = [event for event in case.events if event["event_id"] == "run_glossary_built"]
+    assert len(built) == 1
+    context = built[0]["context"]
+    assert built[0]["level"] == logging.INFO
+    assert context["status"] == "built"
+    assert context["term_count"] == 3
+    assert context["rendered_term_count"] == 3
+    assert context["prompt_tokens"] == 900
+    assert context["cost_usd"] == pytest.approx(0.0004)
+    assert len(case.artifacts) == 1
+    artifact = json.loads(case.artifacts[0].read_text(encoding="utf-8"))
+    assert artifact["schema"] == "run_glossary/v1"
+    assert artifact["run_id"] == "run-glossary"
+    assert [term["target_term"] for term in artifact["terms"]] == [
+        "киллетная облигация",
+        "Зорвейн Петтиш",
+        "Келбрук",
+    ]
+    assert artifact["candidate_count"] >= 3
+    assert context["artifact_path"] == str(case.artifacts[0])
+    assert _glossary_notices(case.runtime) == [
+        {"kind": "glossary", "level": "info", "message_key": "result.run_glossary_built", "params": {"count": 3}}
+    ]
+
+
+@pytest.mark.parametrize("operation", ["edit", "audiobook"])
+def test_glossary_pass_does_nothing_outside_translate(monkeypatch, tmp_path, operation):
+    case = _run_glossary_case(monkeypatch, tmp_path, answer=_GLOSSARY_ANSWER, operation=operation)
+
+    assert case.result == "succeeded"
+    assert case.client.calls == []
+    assert not any(str(event["event_id"]).startswith("run_glossary") for event in case.events)
+    assert case.artifacts == []
+    assert _glossary_notices(case.runtime) == []
+
+
+@pytest.mark.parametrize("app_config", [{"glossary_pass_enabled": False}, {}])
+def test_glossary_pass_does_nothing_when_switched_off_or_unconfigured(monkeypatch, tmp_path, app_config):
+    case = _run_glossary_case(monkeypatch, tmp_path, answer=_GLOSSARY_ANSWER, app_config=app_config)
+
+    assert case.result == "succeeded"
+    assert case.client.calls == []
+    assert not any("ГЛОССАРИЙ ЭТОЙ КНИГИ" in source for source in case.prompt_sources)
+
+
+@pytest.mark.parametrize(
+    ("answer", "error_code"),
+    [(RuntimeError("provider down"), "RuntimeError"), ("this is not json", "no_json")],
+)
+def test_glossary_failure_never_fails_the_run(monkeypatch, tmp_path, answer, error_code):
+    case = _run_glossary_case(monkeypatch, tmp_path, answer=answer)
+
+    assert case.result == "succeeded"
+    assert case.runtime["state"]["latest_markdown"]
+    assert not any("ГЛОССАРИЙ ЭТОЙ КНИГИ" in source for source in case.prompt_sources)
+    failed = [event for event in case.events if event["event_id"] == "run_glossary_failed"]
+    assert len(failed) == 1 and failed[0]["level"] == logging.WARNING
+    assert failed[0]["context"]["error_code"] == error_code
+    assert _glossary_notices(case.runtime) == [
+        {"kind": "glossary", "level": "warning", "message_key": "result.run_glossary_failed"}
+    ]
+    assert case.runtime["state"]["latest_delivery_disposition"] == {"status": "accepted"}
+
+
+def test_glossary_answer_without_a_single_candidate_leaves_the_prompt_alone(monkeypatch, tmp_path):
+    answer = json.dumps({"terms": [{"source_term": "Invented Elsewhere", "target_term": "выдумка"}]})
+    case = _run_glossary_case(monkeypatch, tmp_path, answer=answer)
+
+    assert case.result == "succeeded"
+    built = [event for event in case.events if event["event_id"] == "run_glossary_built"]
+    assert built[0]["context"]["status"] == "empty"
+    assert built[0]["context"]["rejected_counts"]["not_a_candidate"] == 1
+    assert not any("ГЛОССАРИЙ ЭТОЙ КНИГИ" in source for source in case.prompt_sources)
+    assert _glossary_notices(case.runtime) == []
+
+
+def test_glossary_call_is_not_made_after_stop(monkeypatch, tmp_path):
+    case = _run_glossary_case(monkeypatch, tmp_path, answer=_GLOSSARY_ANSWER, should_stop=lambda runtime: True)
+
+    assert case.client.calls == []
+    assert not any(str(event["event_id"]).startswith("run_glossary") for event in case.events)
