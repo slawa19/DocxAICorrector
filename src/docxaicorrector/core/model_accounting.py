@@ -280,6 +280,8 @@ class RunModelAccountingLedger:
         self._back_matter_source_paragraph_counts: dict[str, int] = {}
         self._back_matter_translated_paragraph_counts: dict[str, int] = {}
         self._back_matter_mixed_block_count = 0
+        self._back_matter_model_kept_paragraph_count = 0
+        self._back_matter_model_kept_fallback_block_count = 0
         self._footnote_marker_source_count = 0
         self._footnote_marker_kept_count = 0
         self._footnote_marker_restored_count = 0
@@ -324,6 +326,8 @@ class RunModelAccountingLedger:
             self._back_matter_source_paragraph_counts = {}
             self._back_matter_translated_paragraph_counts = {}
             self._back_matter_mixed_block_count = 0
+            self._back_matter_model_kept_paragraph_count = 0
+            self._back_matter_model_kept_fallback_block_count = 0
             self._footnote_marker_source_count = 0
             self._footnote_marker_kept_count = 0
             self._footnote_marker_restored_count = 0
@@ -552,6 +556,8 @@ class RunModelAccountingLedger:
         kept_by_policy: bool = False,
         kept_chars: int = 0,
         mixed: bool = False,
+        model_kept_paragraph_count: int = 0,
+        model_kept_replaced_fallback: bool = False,
     ) -> None:
         """Count how ONE delivered block of the back-matter region came out (spec 063 FR-012).
 
@@ -571,8 +577,19 @@ class RunModelAccountingLedger:
         found inside one book (P-5). Notes are not judged this way: a note that is a bare
         reference stays in the source language beside a translated comment by the policy
         itself, so a per-paragraph mix there is the expected outcome, not a finding.
+
+        Spec 064 FR-006: ``model_kept_paragraph_count`` is how many of the block's paragraphs
+        the MODEL returned unchanged as references under prompt rule 12 and the pipeline filed
+        as ``policy_kept_source`` -- the "kept by the model" twin of the "kept without a call"
+        counters above; they are among ``source_paragraph_count`` too.
+        ``model_kept_replaced_fallback`` marks a block the pair rule had read as a
+        ``source_text_fallback``, so the run counter says how many controlled fallbacks the
+        rule took away.
         """
         with self._lock:
+            self._back_matter_model_kept_paragraph_count += max(0, model_kept_paragraph_count)
+            if model_kept_replaced_fallback:
+                self._back_matter_model_kept_fallback_block_count += 1
             if source_paragraph_count > 0:
                 self._back_matter_source_paragraph_counts[section] = (
                     self._back_matter_source_paragraph_counts.get(section, 0) + source_paragraph_count
@@ -757,6 +774,13 @@ class RunModelAccountingLedger:
                     sorted(self._back_matter_translated_paragraph_counts.items())
                 ),
                 "back_matter_mixed_block_count": self._back_matter_mixed_block_count,
+                # Spec 064 FR-006: references the MODEL kept under prompt rule 12, filed as
+                # ``policy_kept_source`` -- paragraphs, and blocks that would otherwise have
+                # been a controlled ``source_text_fallback``.
+                "back_matter_model_kept_paragraph_count": self._back_matter_model_kept_paragraph_count,
+                "back_matter_model_kept_fallback_block_count": (
+                    self._back_matter_model_kept_fallback_block_count
+                ),
                 # Spec 063 FR-006: footnote references (superscript glyphs the import put in
                 # the source) across every accepted paragraph — how many there were, how many
                 # the model carried, and how many the pipeline restored after the model
@@ -961,6 +985,8 @@ def record_back_matter_delivery(
     kept_by_policy: bool = False,
     kept_chars: int = 0,
     mixed: bool = False,
+    model_kept_paragraph_count: int = 0,
+    model_kept_replaced_fallback: bool = False,
 ) -> None:
     get_run_model_accounting_ledger().record_back_matter_delivery(
         section=section,
@@ -969,6 +995,8 @@ def record_back_matter_delivery(
         kept_by_policy=kept_by_policy,
         kept_chars=kept_chars,
         mixed=mixed,
+        model_kept_paragraph_count=model_kept_paragraph_count,
+        model_kept_replaced_fallback=model_kept_replaced_fallback,
     )
 
 

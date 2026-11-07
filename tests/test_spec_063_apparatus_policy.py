@@ -634,3 +634,374 @@ def test_the_run_summary_prints_the_back_matter_policy_counters() -> None:
     assert "model_accounting_back_matter_mixed_block_count=0" in lines
     assert 'model_accounting_back_matter_source_paragraph_counts={"notes": 120, "references": 310}' in lines
     assert 'model_accounting_back_matter_translated_paragraph_counts={"notes": 567}' in lines
+
+
+# --- spec 064 FR-006: a reference the MODEL kept under rule 12 is apparatus, not a fallback ----
+#
+# On the 2026-11-07 rerun The Value of Everything filed 209 blocks / 312 paragraphs of its notes
+# as controlled ``source_text_fallback``: the model kept citation-only notes and URLs as prompt
+# rule 12 told it to, and the pair rule of spec 059 read the unchanged answer as a failure. The
+# predicate is untouched (``delivered_text_equals_source`` stays the only comparison); what
+# changes is the DISPOSITION of such a paragraph in a ``notes``/``references`` section.
+
+_NOTE_URL = "3. https://www.ft.com/content/cc58c190-6ec3-11e6-a0c9-1365ce54b926"
+_NOTE_REPORT = "2. Goldman Sachs Annual Report, 2010."
+_NOTE_ARTICLE = (
+    "7. W. Lazonick, M. Mazzucato and Ö. Tulum, ‘Apple’s changing business model: What should "
+    "the world’s richest company do with its profits?’, *Accounting Forum* 37 (2103), pp. 249–67."
+)
+_NOTE_TORN_TITLE = "13. P. Steiner, ‘Wealth and power: Quesnay’s political economy of the"
+_NOTE_TORN_TAIL = "*Private Sector Myths* (London: Anthem Press, 2013)."
+_NOTE_COMMENTARY = (
+    "6. GDP (Gross domestic product) superseded GNP as the standard measure of output in the "
+    "1980s. The difference is not relevant to value creation."
+)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        _NOTE_URL,
+        _NOTE_REPORT,
+        _NOTE_ARTICLE,
+        _NOTE_TORN_TITLE,
+        _NOTE_TORN_TAIL,
+        "15. Ibid.",
+        "1489.",
+        "### *Economy: What Should Change?* (Washington DC: Bureau of",
+        "3. Studenski, *Income of Nations*, p. 127.",
+        "16. C. A. E. Goodhart, ‘Competition and credit control’, Financial Markets",
+        "title=Economia+non+osservata+-+04%2Fdic%2F2015+- +Testo+integrale+con+nota+metodologica.pdf",
+    ],
+)
+def test_a_reference_reads_as_a_citation_by_its_form(text: str) -> None:
+    from docxaicorrector.pipeline.output_validation import is_citation_form_paragraph
+
+    assert is_citation_form_paragraph(text) is True
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        _NOTE_COMMENTARY,
+        "2. See Figure 1 in Chapter 7 for details.",
+        "11. There was only one test so far.",
+        # A quotation is commentary however it is enclosed: a span longer than a title is not
+        # taken out, so its running words count.
+        "25. The full quote is: ‘The labour of some of the most respectable orders in the society "
+        "is, like that of menial servants, unproductive of any value, and does not fix or realize "
+        "itself in any permanent subject, or vendible commodity, which endures after that labour is past.’",
+        # The R-7 note of Creating Wealth: commentary that happens to name works and years.
+        "Maynard Keynes — Knapp and Chartalism are cited approvingly in its opening pages. "
+        "Chartalism experienced a revival under Abba P. Lerner in *The* *Economics of Control* (1944) "
+        "and later in *The Economics of Employment* (1951).",
+    ],
+)
+def test_anti_vacuum_commentary_does_not_read_as_a_citation(text: str) -> None:
+    from docxaicorrector.pipeline.output_validation import is_citation_form_paragraph
+
+    assert is_citation_form_paragraph(text) is False
+
+
+def _echo(payload: SimpleNamespace, statuses: list[str] | None = None) -> MarkerPreservedBlockText:
+    texts = payload.target_text.split("\n\n")
+    resolved = statuses or [PARAGRAPH_STATUS_ACCEPTED] * len(texts)
+    return MarkerPreservedBlockText(
+        payload.target_text,
+        tuple(
+            ParagraphDisposition(pid, text, status)
+            for pid, text, status in zip(payload.paragraph_ids, texts, resolved)
+        ),
+    )
+
+
+def _fallback_artifacts(monkeypatch) -> list[dict[str, object]]:
+    written: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        block_execution, "_write_controlled_block_fallback_artifact", lambda **kwargs: written.append(kwargs)
+    )
+    return written
+
+
+def _statuses(chunk: str) -> list[str]:
+    return [disposition.status for disposition in block_execution.marker_paragraph_dispositions(chunk) or ()]
+
+
+def test_a_notes_block_the_model_kept_whole_is_policy_kept_not_a_fallback(monkeypatch) -> None:
+    written = _fallback_artifacts(monkeypatch)
+    payload = _payload(texts=[_NOTE_REPORT, _NOTE_URL], roles=["list", "body"], section=BACK_MATTER_SECTION_NOTES)
+
+    run = _run(payload, model_answer=_echo(payload), classification="source_text_fallback")
+
+    assert run.outcome is None
+    assert len(run.model_calls) == 1  # unlike FR-011 the model WAS asked: notes carry commentary
+    assert written == []
+    assert run.state.processed_chunks == [payload.target_text]
+    assert [entry["paragraph_status"] for entry in run.state.generated_paragraph_registry] == [
+        PARAGRAPH_STATUS_POLICY_KEPT_SOURCE
+    ] * 2
+    assert not any(entry.get("controlled_fallback") for entry in run.state.generated_paragraph_registry)
+    events = [event for event, _ in run.events]
+    assert events.count("block_controlled_fallback") == 0
+    assert events.count("block_apparatus_kept_by_model") == 1
+    assert run.snapshot["controlled_block_fallback_block_count"] == 0
+    assert run.snapshot["untranslated_prose_block_delivery_count"] == 0
+    assert run.snapshot["back_matter_model_kept_paragraph_count"] == 2
+    assert run.snapshot["back_matter_model_kept_fallback_block_count"] == 1
+    # "Kept without a call" is a different family and stays untouched.
+    assert run.snapshot["back_matter_policy_kept_block_count"] == 0
+    assert run.snapshot["back_matter_source_paragraph_counts"] == {"notes": 2}
+
+
+def test_anti_vacuum_an_unchanged_commentary_note_keeps_the_block_a_fallback(monkeypatch) -> None:
+    written = _fallback_artifacts(monkeypatch)
+    payload = _payload(
+        texts=[_NOTE_REPORT, _NOTE_COMMENTARY], roles=["list", "list"], section=BACK_MATTER_SECTION_NOTES
+    )
+
+    run = _run(payload, model_answer=_echo(payload), classification="source_text_fallback")
+
+    assert len(written) == 1
+    assert run.snapshot["controlled_block_fallback_block_count"] == 1
+    assert run.snapshot["back_matter_model_kept_paragraph_count"] == 0
+    assert run.snapshot["back_matter_model_kept_fallback_block_count"] == 0
+    assert [event for event, _ in run.events].count("block_controlled_fallback") == 1
+    assert [entry["paragraph_status"] for entry in run.state.generated_paragraph_registry] == [
+        PARAGRAPH_STATUS_ACCEPTED
+    ] * 2
+
+
+def test_a_translated_note_beside_a_kept_reference_relabels_only_the_reference(monkeypatch) -> None:
+    written = _fallback_artifacts(monkeypatch)
+    payload = _payload(
+        texts=[_NOTE_COMMENTARY, _NOTE_ARTICLE], roles=["list", "list"], section=BACK_MATTER_SECTION_NOTES
+    )
+    translated = "6. ВВП пришёл на смену ВНП."
+    answer = MarkerPreservedBlockText(
+        "\n\n".join([translated, _NOTE_ARTICLE]),
+        (
+            ParagraphDisposition("p0000", translated, PARAGRAPH_STATUS_ACCEPTED),
+            ParagraphDisposition("p0001", _NOTE_ARTICLE, PARAGRAPH_STATUS_ACCEPTED),
+        ),
+    )
+
+    run = _run(payload, model_answer=answer)
+
+    assert written == []
+    assert [entry["paragraph_status"] for entry in run.state.generated_paragraph_registry] == [
+        PARAGRAPH_STATUS_ACCEPTED,
+        PARAGRAPH_STATUS_POLICY_KEPT_SOURCE,
+    ]
+    assert run.state.processed_chunks == [answer]
+    assert run.snapshot["back_matter_model_kept_paragraph_count"] == 1
+    assert run.snapshot["back_matter_model_kept_fallback_block_count"] == 0
+    assert run.snapshot["back_matter_translated_paragraph_counts"] == {"notes": 1}
+
+
+def test_an_omitted_reference_keeps_its_own_status() -> None:
+    """``omitted`` is the generator's word for a loss; FR-006 relabels only what it ACCEPTED."""
+    payload = _payload(texts=[_NOTE_REPORT, _NOTE_URL], roles=["list", "body"], section=BACK_MATTER_SECTION_NOTES)
+    answer = _echo(payload, [PARAGRAPH_STATUS_ACCEPTED, "omitted"])
+
+    kept = block_execution.model_kept_apparatus(context=_TRANSLATE, payload=payload, processed_chunk=answer)
+
+    assert kept is not None
+    assert kept.whole_block is False
+    assert _statuses(kept.processed_chunk) == [PARAGRAPH_STATUS_POLICY_KEPT_SOURCE, "omitted"]
+    assert kept.processed_chunk == answer  # the text is the model's, to the character
+
+
+@pytest.mark.parametrize(
+    ("override", "operation"),
+    [
+        pytest.param({"section": BACK_MATTER_SECTION_INDEX}, "translate", id="the-index-is-translated"),
+        pytest.param({"section": None}, "translate", id="outside-the-back-matter"),
+        pytest.param({"toc_dominant": True}, "translate", id="toc-routed"),
+        pytest.param({"job_kind": "passthrough"}, "translate", id="passthrough"),
+        pytest.param({}, "edit", id="not-a-translation"),
+        pytest.param({}, "audiobook", id="audiobook-is-not-D1"),
+    ],
+)
+def test_outside_notes_and_references_of_a_translation_nothing_is_relabelled(
+    override: dict[str, Any], operation: str
+) -> None:
+    arguments: dict[str, Any] = {"section": BACK_MATTER_SECTION_NOTES, **override}
+    payload = _payload(texts=[_NOTE_REPORT, _NOTE_URL], roles=["list", "body"], **arguments)
+    context = SimpleNamespace(processing_operation=operation)
+
+    assert block_execution.model_kept_apparatus(context=context, payload=payload, processed_chunk=_echo(payload)) is None
+
+
+def test_a_prose_region_paragraph_is_never_relabelled() -> None:
+    payload = _payload(
+        texts=[_NOTE_REPORT, _NOTE_URL],
+        roles=["list", "body"],
+        regions=["back_matter", "prose"],
+        section=BACK_MATTER_SECTION_NOTES,
+    )
+
+    kept = block_execution.model_kept_apparatus(context=_TRANSLATE, payload=payload, processed_chunk=_echo(payload))
+
+    assert kept is not None and kept.whole_block is False
+    assert _statuses(kept.processed_chunk) == [PARAGRAPH_STATUS_POLICY_KEPT_SOURCE, PARAGRAPH_STATUS_ACCEPTED]
+
+
+def test_anti_vacuum_a_prose_region_echo_still_announces_untranslated_prose(monkeypatch) -> None:
+    """The 059 invariant is out of reach: a notes block carrying a PROSE-region paragraph that
+    comes back unchanged stays a fallback and is announced, whatever its other paragraphs are."""
+    _fallback_artifacts(monkeypatch)
+    payload = _payload(
+        texts=[_NOTE_REPORT, _NOTE_URL],
+        roles=["list", "body"],
+        regions=["back_matter", "prose"],
+        section=BACK_MATTER_SECTION_NOTES,
+    )
+    payload.narration_include = True
+
+    run = _run(payload, model_answer=_echo(payload), classification="source_text_fallback")
+
+    assert run.snapshot["controlled_block_fallback_block_count"] == 1
+    assert run.snapshot["untranslated_prose_block_delivery_count"] == 1
+    assert run.snapshot["back_matter_model_kept_fallback_block_count"] == 0
+
+
+@pytest.mark.parametrize("narration_include", [False, True])
+def test_without_markers_the_decision_is_per_block(monkeypatch, narration_include: bool) -> None:
+    """No per-paragraph record, no status to carry: the whole block qualifies or nothing does,
+    and only where the document layer already keeps it out of the narration."""
+    written = _fallback_artifacts(monkeypatch)
+    payload = _payload(texts=[_NOTE_REPORT, _NOTE_URL], roles=["list", "body"], section=BACK_MATTER_SECTION_NOTES)
+    payload.narration_include = narration_include
+
+    run = _run(payload, model_answer=payload.target_text, classification="source_text_fallback", marker_mode=False)
+
+    expected_fallbacks = 1 if narration_include else 0
+    assert len(written) == expected_fallbacks
+    assert run.snapshot["controlled_block_fallback_block_count"] == expected_fallbacks
+    assert run.snapshot["back_matter_model_kept_fallback_block_count"] == 1 - expected_fallbacks
+    assert run.state.narration_chunks == []
+
+
+def test_a_model_kept_reference_is_neither_narrated_nor_a_loss_in_either_channel() -> None:
+    payload = _payload(texts=[_NOTE_REPORT, _NOTE_URL], roles=["list", "body"], section=BACK_MATTER_SECTION_NOTES)
+    kept = block_execution.model_kept_apparatus(context=_TRANSLATE, payload=payload, processed_chunk=_echo(payload))
+    assert kept is not None
+
+    text, withheld = block_execution.narration_projection_for_processed_block(
+        kept.processed_chunk, processing_operation="translate"
+    )
+    assert (text, withheld) == ("", [])
+    facts = quality_gate.build_source_text_delivery_facts([kept.processed_chunk])
+    assert facts["block_count"] == 0
+
+
+def test_the_run_summary_prints_the_model_kept_counters() -> None:
+    import importlib.util
+
+    harness_path = _REPO_ROOT / "tests" / "artifacts" / "real_document_pipeline" / "run_lietaer_validation.py"
+    spec = importlib.util.spec_from_file_location("run_lietaer_validation_model_kept_probe", harness_path)
+    assert spec is not None and spec.loader is not None
+    harness = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(harness)
+
+    lines = harness._build_model_accounting_summary_lines(
+        {"back_matter_model_kept_paragraph_count": 414, "back_matter_model_kept_fallback_block_count": 209}
+    )
+
+    assert "model_accounting_back_matter_model_kept_paragraph_count=414" in lines
+    assert "model_accounting_back_matter_model_kept_fallback_block_count=209" in lines
+
+
+# Opt-in replay over the 2026-11-07 RERUN on the spec 063 code (``aca048a``) -- a different set
+# of recorded runs from the one above, hence its own variable: point
+# ``DOCXAI_TRANSLATE_RERUN_REPLAY_ROOT`` at ``D:\Temp\docxai-runs\2026-11-07-translate-after``.
+# Every back-matter block the model answered is re-classified by the PRODUCTION pair rule and
+# re-decided by the PRODUCTION ``model_kept_apparatus``. (book, report, controlled fallbacks
+# recorded, controlled fallbacks after FR-006, paragraphs relabelled) measured 2026-11-07.
+_RERUN_REPLAY_ROOT_ENV = "DOCXAI_TRANSLATE_RERUN_REPLAY_ROOT"
+_RERUN_REPLAY_ROOT = os.environ.get(_RERUN_REPLAY_ROOT_ENV, "").strip()
+_FR006_REPLAY_BOOKS = [
+    ("value_of_everything", "mazzucato_pdf_full_benchmark_report.json", 209, 1, 410),
+    ("rethinking_money", "lietaer_pdf_full_benchmark_report.json", 0, 0, 88),
+    ("creating_wealth", "creatingwealth_pdf_full_benchmark_report.json", 0, 0, 142),
+    ("money_sustainability", "money_sustainability_pdf_full_heldout_report.json", 0, 0, 1),
+]
+
+
+@pytest.mark.skipif(
+    not _RERUN_REPLAY_ROOT, reason=f"Set {_RERUN_REPLAY_ROOT_ENV} to the recorded translate-rerun directory."
+)
+@pytest.mark.parametrize(
+    ("book", "report_name", "recorded_fallbacks", "fallbacks_after", "relabelled"),
+    _FR006_REPLAY_BOOKS,
+    ids=[book[0] for book in _FR006_REPLAY_BOOKS],
+)
+def test_fr006_replay_on_recorded_translate_runs(book, report_name, recorded_fallbacks, fallbacks_after, relabelled) -> None:
+    from docxaicorrector.document.semantic_blocks import build_marker_wrapped_block_text
+    from docxaicorrector.pipeline.output_validation import classify_processed_block
+
+    book_dir = Path(_RERUN_REPLAY_ROOT) / book
+    report_path = book_dir / report_name
+    source_path = book_dir / "source_paragraphs.json"
+    if not report_path.is_file() or not source_path.is_file():
+        pytest.skip(f"recorded run for {book} is absent under {book_dir}")
+    with report_path.open(encoding="utf-8") as handle:
+        registry = json.load(handle)["runtime"]["state"]["processed_paragraph_registry"]
+    with source_path.open(encoding="utf-8") as handle:
+        source = json.load(handle)
+    record_by_id = {record["paragraph_id"]: record for record in source["paragraphs"]}
+    job_by_ids = {tuple(job["paragraph_ids"]): job for job in source["jobs"] if job["job_kind"] == "llm"}
+    entries_by_block: dict[int, list[dict[str, Any]]] = {}
+    for entry in registry:
+        entries_by_block.setdefault(entry["block_index"], []).append(entry)
+
+    recorded, after, relabelled_count = 0, 0, 0
+    for entries in entries_by_block.values():
+        ids = tuple(entry["paragraph_id"] for entry in entries)
+        job = job_by_ids.get(ids)
+        if job is None or not job.get("back_matter_section"):
+            continue
+        if all(entry.get("paragraph_status") == PARAGRAPH_STATUS_POLICY_KEPT_SOURCE for entry in entries):
+            continue  # FR-011: kept without a model call, never classified
+        units = [
+            ParagraphUnit(
+                text=record_by_id[pid]["text"],
+                role=record_by_id[pid]["role"],
+                paragraph_id=pid,
+                heading_level=record_by_id[pid].get("heading_level"),
+                list_kind=record_by_id[pid].get("list_kind"),
+                structural_role=record_by_id[pid].get("structural_role") or "body",
+            )
+            for pid in ids
+        ]
+        payload = SimpleNamespace(
+            job_kind="llm",
+            toc_dominant=False,
+            target_text="\n\n".join(unit.rendered_text for unit in units).strip(),
+            target_text_with_markers=build_marker_wrapped_block_text(units, paragraph_ids=list(ids)),
+            paragraph_ids=list(ids),
+            paragraph_regions=list(job["paragraph_regions"]),
+            back_matter_section=job["back_matter_section"],
+            narration_include=False,
+        )
+        dispositions = tuple(
+            ParagraphDisposition(
+                entry["paragraph_id"], entry["text"], entry.get("paragraph_status") or PARAGRAPH_STATUS_ACCEPTED
+            )
+            for entry in entries
+        )
+        chunk = MarkerPreservedBlockText("\n\n".join(d.text for d in dispositions), dispositions)
+        recorded += int(any(entry.get("controlled_fallback") for entry in entries))
+        status = classify_processed_block(payload.target_text, chunk, languages_differ=True)
+        if status not in {"valid", "source_text_fallback"}:
+            after += 1
+            continue
+        kept = block_execution.model_kept_apparatus(context=_TRANSLATE, payload=payload, processed_chunk=chunk)
+        if status == "source_text_fallback" and (kept is None or not kept.whole_block):
+            after += 1
+            continue
+        if kept is not None:
+            relabelled_count += kept.paragraph_count
+
+    print(json.dumps({"book": book, "recorded_fallbacks": recorded, "after": after, "relabelled": relabelled_count}))
+    assert (recorded, after, relabelled_count) == (recorded_fallbacks, fallbacks_after, relabelled)
