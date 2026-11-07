@@ -8759,7 +8759,7 @@ def test_translate_run_builds_the_glossary_once_and_every_block_prompt_carries_i
     case = _run_glossary_case(monkeypatch, tmp_path, answer=_GLOSSARY_ANSWER)
 
     assert case.result == "succeeded"
-    assert len(case.client.calls) == 1
+    assert len(case.client.calls) == 2  # call A (required) and call B (optional)
     assert case.prompt_sources, "the system prompt was never built"
     for source_text in case.prompt_sources:
         assert "КОНТЕКСТ ДОКУМЕНТА: заглушка" in source_text
@@ -8773,8 +8773,8 @@ def test_translate_run_builds_the_glossary_once_and_every_block_prompt_carries_i
     assert context["status"] == "built"
     assert context["term_count"] == 3
     assert context["rendered_term_count"] == 3
-    assert context["prompt_tokens"] == 900
-    assert context["cost_usd"] == pytest.approx(0.0004)
+    assert context["prompt_tokens"] == 1800  # two calls, 900 each
+    assert context["cost_usd"] == pytest.approx(0.0008)
     assert len(case.artifacts) == 1
     artifact = json.loads(case.artifacts[0].read_text(encoding="utf-8"))
     assert artifact["schema"] == "run_glossary/v1"
@@ -8854,22 +8854,27 @@ def test_glossary_call_is_not_made_after_stop(monkeypatch, tmp_path):
     assert not any(str(event["event_id"]).startswith("run_glossary") for event in case.events)
 
 
-# --- spec 063 P2 inclusion rule: author-marked terms are rendered, not chosen ------------------
+# --- spec 063 P2: calls by role, the inclusion rule, distinct renderings -----------------------
 
 
 class _SequencedGlossaryClient:
-    """Answers the glossary calls in order; records each request's candidate terms."""
+    """Answers the glossary calls in order; records each request's role-relevant payload."""
 
     def __init__(self, answers):
         self.answers = list(answers)
         self.requested_terms: list[list[str]] = []
+        self.payloads: list[dict[str, Any]] = []
         self.system_texts: list[str] = []
         self.source_languages: list[str] = []
         self.responses = SimpleNamespace(create=self._create)
 
     def _create(self, **kwargs):
         payload = json.loads(kwargs["input"][1]["content"][0]["text"])
-        self.requested_terms.append([item["term"] for item in payload["candidates"]])
+        self.payloads.append(payload)
+        if "groups" in payload:
+            self.requested_terms.append([item["term"] for group in payload["groups"] for item in group["terms"]])
+        else:
+            self.requested_terms.append([item["term"] for item in payload["candidates"]])
         self.system_texts.append(kwargs["input"][0]["content"][0]["text"])
         self.source_languages.append(payload["source_language"])
         answer = self.answers.pop(0)
@@ -8911,71 +8916,110 @@ def _run_rule_case(monkeypatch, tmp_path, answers):
     return SimpleNamespace(result=result, client=client, prompt_sources=prompt_sources, built=built)
 
 
+_QUILLET = {"source_term": "quillet bond", "target_term": "киллетная облигация", "kind": "term"}
 _NAMES_ONLY = [
     {"source_term": "Zorvane Pettish", "target_term": "Зорвейн Петтиш", "kind": "name"},
     {"source_term": "Kelbrook", "target_term": "Келбрук", "kind": "name"},
 ]
 
 
-def test_a_marked_term_the_model_left_out_is_asked_for_once_more_and_kept(monkeypatch, tmp_path):
-    case = _run_rule_case(
-        monkeypatch,
-        tmp_path,
-        [_NAMES_ONLY, [{"source_term": "quillet bond", "target_term": "киллетная облигация", "kind": "term"}]],
-    )
+def test_call_a_renders_the_required_set_and_call_b_chooses_among_the_rest(monkeypatch, tmp_path):
+    case = _run_rule_case(monkeypatch, tmp_path, [[_QUILLET], _NAMES_ONLY])
 
     assert case.result == "succeeded"
-    assert len(case.client.requested_terms) == 2
-    # The second call carries exactly the omitted rule-included terms, nothing else.
-    assert case.client.requested_terms[1] == ["quillet bond"]
+    assert case.client.requested_terms[0] == ["quillet bond"]  # A: only what the author introduced
+    assert "quillet bond" not in case.client.requested_terms[1]  # B: the optional candidates
+    assert {"Zorvane Pettish", "Kelbrook"} <= set(case.client.requested_terms[1])
+    # B sees what A fixed, so no optional entry takes a rendering already in use.
+    assert case.client.payloads[1]["already_fixed"] == [
+        {"source_term": "quillet bond", "target_term": "киллетная облигация"}
+    ]
     context = case.built[0]["context"]
     assert context["model_call_count"] == 2
-    assert context["reasked_required_count"] == 1
-    assert context["unrendered_terms"] == []
+    assert context["required_count"] == 1
     assert context["term_count"] == 3
+    assert context["collisions_found"] == 0
     section = case.prompt_sources[0]
-    # Rule-included entries come first, so the budget never cuts them for an optional one.
     assert section.index("- quillet bond -> киллетная облигация") < section.index("- Zorvane Pettish")
 
 
-def test_a_marked_term_still_left_out_after_the_second_ask_is_recorded_unrendered(monkeypatch, tmp_path):
-    case = _run_rule_case(monkeypatch, tmp_path, [_NAMES_ONLY, []])
+def test_a_required_term_call_a_left_out_gets_its_second_chance_in_call_b(monkeypatch, tmp_path):
+    case = _run_rule_case(monkeypatch, tmp_path, [[], [_QUILLET, *_NAMES_ONLY]])
 
     assert case.result == "succeeded"
-    assert len(case.client.requested_terms) == 2
+    assert "quillet bond" in case.client.requested_terms[1]
+    required_flags = {item["term"]: item["required"] for item in case.client.payloads[1]["candidates"]}
+    assert required_flags["quillet bond"] is True and required_flags["Kelbrook"] is False
+    context = case.built[0]["context"]
+    assert context["reasked_required_count"] == 1
+    assert context["unrendered_terms"] == []
+    assert context["model_call_count"] == 2
+
+
+def test_a_required_term_still_left_out_after_call_b_is_recorded_unrendered(monkeypatch, tmp_path):
+    case = _run_rule_case(monkeypatch, tmp_path, [[], _NAMES_ONLY])
+
+    assert case.result == "succeeded"
     context = case.built[0]["context"]
     assert context["status"] == "built"
     assert context["unrendered_terms"] == ["quillet bond"]
     assert context["unrendered_count"] == 1
     artifact = json.loads(Path(context["artifact_path"]).read_text(encoding="utf-8"))
     assert artifact["unrendered_terms"] == ["quillet bond"]
+    assert [call["role"] for call in artifact["calls"]] == ["required", "optional"]
     assert "quillet bond" not in case.prompt_sources[0]
 
 
-def test_anti_vacuum_an_unmarked_candidate_the_model_passed_over_is_not_asked_again(monkeypatch, tmp_path):
-    case = _run_rule_case(
-        monkeypatch,
-        tmp_path,
-        [[{"source_term": "quillet bond", "target_term": "киллетная облигация", "kind": "term"}]],
-    )
+def test_anti_vacuum_optional_candidates_the_model_passed_over_are_not_asked_again(monkeypatch, tmp_path):
+    case = _run_rule_case(monkeypatch, tmp_path, [[_QUILLET], []])
 
     assert case.result == "succeeded"
-    # Kelbrook and Zorvane Pettish are names: the model may leave them out, and does.
-    assert len(case.client.requested_terms) == 1
+    assert len(case.client.requested_terms) == 2
     context = case.built[0]["context"]
-    assert context["model_call_count"] == 1
+    assert context["model_call_count"] == 2
     assert context["reasked_required_count"] == 0
     assert context["unrendered_terms"] == []
 
 
-def test_auto_source_language_never_reaches_the_model_as_auto(monkeypatch, tmp_path):
-    case = _run_rule_case(
-        monkeypatch,
-        tmp_path,
-        [[{"source_term": "quillet bond", "target_term": "киллетная облигация", "kind": "term"}]],
-    )
+def test_a_collision_the_distinction_call_resolves_leaves_no_collision(monkeypatch, tmp_path):
+    clash = {"source_term": "Kelbrook", "target_term": "Киллетная облигация", "kind": "name"}
+    fixed = {"source_term": "Kelbrook", "target_term": "Келбрук", "kind": "name"}
+    case = _run_rule_case(monkeypatch, tmp_path, [[_QUILLET], [clash], [_QUILLET, fixed]])
 
     assert case.result == "succeeded"
-    assert case.client.source_languages == ["the source language of the text"]
+    assert len(case.client.requested_terms) == 3
+    assert sorted(case.client.requested_terms[2]) == ["Kelbrook", "quillet bond"]
+    group = case.client.payloads[2]["groups"][0]
+    assert all(item["context"] for item in group["terms"])
+    context = case.built[0]["context"]
+    assert context["collisions_found"] == 1
+    assert context["collisions_resolved"] == 1
+    assert context["collisions"] == []
+    assert "- Kelbrook -> Келбрук (имя)" in case.prompt_sources[0]
+
+
+def test_a_collision_the_distinction_call_does_not_resolve_is_recorded_and_both_are_kept(monkeypatch, tmp_path):
+    clash = {"source_term": "Kelbrook", "target_term": "Киллетная облигация", "kind": "name"}
+    case = _run_rule_case(monkeypatch, tmp_path, [[_QUILLET], [clash], [_QUILLET, clash]])
+
+    assert case.result == "succeeded"
+    context = case.built[0]["context"]
+    assert context["model_call_count"] == 3
+    assert context["collisions_found"] == 1
+    assert context["collisions_resolved"] == 0
+    assert context["collisions"] == [
+        {"target_term": "киллетная облигация", "source_terms": ["quillet bond", "Kelbrook"]}
+    ]
+    assert context["term_count"] == 2
+    section = case.prompt_sources[0]
+    assert "- quillet bond -> киллетная облигация" in section
+    assert "- Kelbrook -> Киллетная облигация (имя)" in section
+
+
+def test_auto_source_language_never_reaches_the_model_as_auto(monkeypatch, tmp_path):
+    case = _run_rule_case(monkeypatch, tmp_path, [[_QUILLET], []])
+
+    assert case.result == "succeeded"
+    assert case.client.source_languages == ["the source language of the text"] * 2
     assert "from the source language of the text into ru" in case.client.system_texts[0]
     assert " auto " not in case.client.system_texts[0]

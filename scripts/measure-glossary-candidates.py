@@ -24,7 +24,7 @@ the 2026-11-07 reviewers wrote: a list of ``{"term": ...}``, ``{"terms": [...]}`
 keyed by term) the share of the reviewer's key terms that appear among the candidates, with the
 misses named. ``--extra-term`` adds terms named elsewhere (repeatable).
 
-``--live`` (SPENDS MONEY: one call, plus one re-ask when rule-included terms were left out)
+``--live`` (SPENDS MONEY: up to three calls — required, optional, collisions)
     Runs the product call sequence (``pipeline/glossary_phase._call_model``) with the run's
     default text model (or ``--model``), with the product's acceptance rules, and prints
     the entries, ``prompt_tokens``, ``completion_tokens``, the provider's ``cost``, the rendered
@@ -58,7 +58,6 @@ if str(SRC_ROOT) not in sys.path:
 from docxaicorrector.text.glossary_pass import (  # noqa: E402
     DEFAULT_GLOSSARY_CANDIDATE_LIMIT,
     DEFAULT_GLOSSARY_MAX_TERMS,
-    RUN_GLOSSARY_SECTION_HEADER,
     extract_glossary_candidates,
     normalize_glossary_key,
     select_glossary_source_units,
@@ -195,7 +194,6 @@ def _live_call(
 
     from docxaicorrector.core import model_accounting
     from docxaicorrector.core.config import get_client_for_model_selector, load_app_config, resolve_model_selector
-    from docxaicorrector.document.segments import render_glossary_prompt_section
     from docxaicorrector.pipeline import glossary_phase
 
     app_config = load_app_config()
@@ -219,7 +217,7 @@ def _live_call(
             request_text_completion_fn=None,
         )
         stage = model_accounting.snapshot_run_model_accounting()["stages"].get("glossary_extraction", {})
-    section = render_glossary_prompt_section(terms, header=RUN_GLOSSARY_SECTION_HEADER, max_chars=prompt_max_chars)
+    section = glossary_phase.render_run_glossary_section(terms, tuple(candidates), max_chars=prompt_max_chars)
     prompt_tokens = int(stage.get("prompt_tokens") or 0)
     request_chars = int(record.get("request_chars") or 0)
     rendered = sum(1 for line in section.splitlines() if line.startswith("- ") and line != "- ...")
@@ -227,6 +225,10 @@ def _live_call(
         f"live: model={selector} status={status} calls={record.get('model_call_count')} entries={len(terms)} "
         f"required={record.get('required_count')} reasked={record.get('reasked_required_count')} "
         f"unrendered={record.get('unrendered_terms')} rejected={record.get('rejected_counts')}"
+    )
+    print(
+        f"live: collisions_found={record.get('collisions_found')} resolved={record.get('collisions_resolved')} "
+        f"remaining={record.get('collisions')} calls={record.get('calls')}"
     )
     print(
         f"live: prompt_tokens={prompt_tokens} completion_tokens={stage.get('completion_tokens')} "
@@ -252,6 +254,10 @@ def _live_call(
                     "reasked_required_count": record.get("reasked_required_count"),
                     "unrendered_terms": record.get("unrendered_terms"),
                     "model_call_count": record.get("model_call_count"),
+                    "calls": record.get("calls"),
+                    "collisions_found": record.get("collisions_found"),
+                    "collisions_resolved": record.get("collisions_resolved"),
+                    "collisions": record.get("collisions"),
                     "rendered_term_count": rendered,
                     "prompt_section_chars": len(section),
                     "request_chars": request_chars,
@@ -283,7 +289,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--live", action="store_true", help="SPENDS MONEY: one glossary call")
     parser.add_argument("--model")
     parser.add_argument("--max-terms", type=int, default=DEFAULT_GLOSSARY_MAX_TERMS)
-    parser.add_argument("--prompt-max-chars", type=int, default=3000)
+    parser.add_argument("--prompt-max-chars", type=int, default=4000)
     parser.add_argument("--glossary-out", type=Path)
     parser.add_argument("--source-language", default="auto", help="as the run profile sets it; 'auto' is resolved like the product does")
     args = parser.parse_args(argv)
