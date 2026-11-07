@@ -1172,12 +1172,13 @@ def _prose_check_passed(accounting: dict[str, object]) -> bool:
 def test_floor_credit_needs_a_measured_chars_field():
     """Codex acceptance finding 8: a missing, ``None``, unparsable or negative chars field is
     not a measurement, and the absence of a number must not pass the check."""
-    for accounting in (
+    unmeasured: tuple[dict[str, object], ...] = (
         {"untranslated_prose_block_delivery_count": 1},
         {"untranslated_prose_block_delivery_count": 1, "untranslated_prose_block_delivery_chars": None},
         {"untranslated_prose_block_delivery_count": 1, "untranslated_prose_block_delivery_chars": "n/a"},
         {"untranslated_prose_block_delivery_count": 1, "untranslated_prose_block_delivery_chars": -1},
-    ):
+    )
+    for accounting in unmeasured:
         assert _prose_check_passed(accounting) is False, accounting
     # A measured value carried as a numeric string is still a measurement.
     assert _prose_check_passed(
