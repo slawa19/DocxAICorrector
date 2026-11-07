@@ -19,7 +19,7 @@ import json
 import logging
 import re
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, cast
@@ -446,6 +446,51 @@ def _merge(terms: tuple[GlossaryTerm, ...], new_terms: tuple[GlossaryTerm, ...])
     return terms + tuple(term for term in new_terms if normalize_glossary_key(term.source_term) not in known)
 
 
+def _apply_distinction(
+    terms: tuple[GlossaryTerm, ...],
+    collisions: Sequence[Sequence[GlossaryTerm]],
+    answer: tuple[GlossaryTerm, ...],
+) -> tuple[GlossaryTerm, ...]:
+    """Give call C's renderings to the ENTRIES that collided, and to nothing else.
+
+    FR-013 lets one source term keep two senses — two entries with their own notes ("bank →
+    банк, the institution"; "bank → берег, of a river"). Only the sense that shared a
+    rendering with another term was in the collision; replacing every entry with that
+    source term would hand the distinction meant for "берег" to "банк" as well (Codex
+    acceptance finding 3). The answer's entries are matched to the participants in request
+    order, one per participant of the same source term.
+    """
+
+    answers_by_key: dict[tuple[str, ...], list[GlossaryTerm]] = {}
+    for entry in answer:
+        answers_by_key.setdefault(normalize_glossary_key(entry.source_term), []).append(entry)
+    replacement_by_position: dict[int, GlossaryTerm] = {}
+    for group in collisions:
+        for participant in group:
+            position = next(
+                (
+                    index
+                    for index, term in enumerate(terms)
+                    if term is participant and index not in replacement_by_position
+                ),
+                None,
+            )
+            queue = answers_by_key.get(normalize_glossary_key(participant.source_term))
+            if position is None or not queue:
+                continue
+            replacement_by_position[position] = queue.pop(0)
+    return tuple(
+        replace(
+            term,
+            target_term=replacement_by_position[index].target_term,
+            note=replacement_by_position[index].note or term.note,
+        )
+        if index in replacement_by_position
+        else term
+        for index, term in enumerate(terms)
+    )
+
+
 def _call_model(
     *,
     context: Any,
@@ -601,13 +646,7 @@ def _call_model(
             len(group_candidates),
         )
         if outcome == _ASK_OK:
-            replacement = {normalize_glossary_key(term.source_term): term for term in result.terms}
-            terms = tuple(
-                replace(term, target_term=replacement[key].target_term, note=replacement[key].note or term.note)
-                if (key := normalize_glossary_key(term.source_term)) in replacement
-                else term
-                for term in terms
-            )
+            terms = _apply_distinction(terms, collisions, tuple(result.terms))
     remaining = find_rendering_collisions(terms)
     record["collisions_resolved"] = max(0, len(collisions) - len(remaining))
     record["collisions"] = [

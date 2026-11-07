@@ -575,11 +575,17 @@ def extract_glossary_candidates(
     for key, draft in drafts.items():
         hits = hits_exact.get(key, []) if draft.proper else hits_folded_case.get(key, [])
         units_hit = set(hits)
-        if len(units_hit) < 2:
+        # A definition is the author naming a concept, required however rare (see
+        # ``_included_by_rule``); the frequency cuts below are for everything else. Before this
+        # (Codex acceptance finding 4) a term defined in ONE unit was dropped here, before the
+        # rule ever saw it.
+        defined = bool(defined_units.get(key))
+        if not units_hit or (len(units_hit) < 2 and not defined):
             continue
         idf = math.log(unit_count / len(units_hit))
-        if idf <= 0:
+        if idf <= 0 and not defined:
             continue
+        idf = max(idf, 0.0)
         draft.count = len(hits)
         draft.units = units_hit
         if key in marked_units:
@@ -659,18 +665,33 @@ def extract_glossary_candidates(
         head.heads_required_member = word in required_membership
         families[FAMILY_HEAD].append(head)
 
+    # A DEFINED term is never cut for room — not by its family's quota, not by ``limit``
+    # (Codex acceptance finding 4): the definition is the one mark the rule calls required
+    # "however rare", and a rare term ranks low. Other required candidates (marked and
+    # recurring, h1 phrases, heads) still compete inside their family's quota -- a narrowing
+    # recorded in the spec with its counts, because lifting it doubles the required set.
     selected: list[_Draft] = []
     seen_keys: set[tuple[str, ...]] = set()
     for family in _FAMILY_ORDER:
-        for draft in ranked(family)[: quotas[family]]:
+        for rank, draft in enumerate(ranked(family)):
+            if rank >= quotas[family] and not _is_defined(draft):
+                continue
             identity = tuple(word.lower() for word in draft.key)
             if identity in seen_keys:
                 continue
             seen_keys.add(identity)
             selected.append(draft)
+    optional_room = max(0, limit - sum(1 for draft in selected if _is_defined(draft)))
+    kept: list[_Draft] = []
+    for draft in selected:
+        if _is_defined(draft):
+            kept.append(draft)
+        elif optional_room > 0:
+            optional_room -= 1
+            kept.append(draft)
 
     candidates: list[GlossaryCandidate] = []
-    for draft in selected[:limit]:
+    for draft in kept:
         first_unit = min(draft.units)
         if draft.family == FAMILY_MARKED and draft.signal_unit is not None:
             context_unit = draft.signal_unit
@@ -694,6 +715,12 @@ def extract_glossary_candidates(
             )
         )
     return tuple(candidates)
+
+
+def _is_defined(draft: _Draft) -> bool:
+    """The author defined this term in the text ("we call this …", "known as …")."""
+
+    return draft.family == FAMILY_MARKED and "defined" in draft.signals
 
 
 def _included_by_rule(draft: _Draft) -> bool:
@@ -722,7 +749,7 @@ def _included_by_rule(draft: _Draft) -> bool:
         return draft.heads_required_member
     if draft.family != FAMILY_MARKED:
         return False
-    if "defined" in draft.signals:
+    if _is_defined(draft):
         return True
     marked = "emphasis" in draft.signals or ("quoted" in draft.signals and len(draft.key) > 1)
     recurring = draft.count >= _REQUIRED_MIN_COUNT and draft.chapters >= _REQUIRED_MIN_CHAPTERS
@@ -917,6 +944,9 @@ def build_distinction_request(
                     {
                         "term": term.source_term,
                         "context": contexts.get(normalize_glossary_key(term.source_term), ""),
+                        # The sense this entry stands for, when the term has more than one
+                        # (FR-013): without it the model cannot tell which of them collided.
+                        **({"note": term.note} if term.note else {}),
                     }
                     for term in group
                 ],

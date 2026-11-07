@@ -9030,6 +9030,32 @@ def test_a_collision_the_distinction_call_does_not_resolve_is_recorded_and_both_
     assert "- Kelbrook -> Киллетная облигация (имя)" in section
 
 
+def test_the_distinction_call_changes_only_the_sense_that_collided(monkeypatch, tmp_path):
+    # Codex acceptance finding 3: FR-013 lets one source term keep two senses. Only the
+    # second sense of "quillet bond" shares a rendering with "Kelbrook"; the distinction
+    # call's new rendering must reach that sense and leave the first one alone.
+    first_sense = {**_QUILLET, "note": "the bond"}
+    second_sense = {"source_term": "quillet bond", "target_term": "квиллет", "kind": "term", "note": "the tool"}
+    clash = {"source_term": "Kelbrook", "target_term": "Квиллет", "kind": "name"}
+    distinguished = [
+        {"source_term": "quillet bond", "target_term": "квиллетный инструмент", "kind": "term", "note": "the tool"},
+        {"source_term": "Kelbrook", "target_term": "Келбрук", "kind": "name"},
+    ]
+    case = _run_rule_case(monkeypatch, tmp_path, [[first_sense, second_sense], [clash], distinguished])
+
+    assert case.result == "succeeded"
+    section = case.prompt_sources[0]
+    assert "- quillet bond -> киллетная облигация" in section
+    assert "- quillet bond -> квиллетный инструмент" in section
+    assert "- Kelbrook -> Келбрук (имя)" in section
+    group = case.client.payloads[2]["groups"][0]
+    # The model is told WHICH sense collided.
+    assert {"term": "quillet bond", "note": "the tool"}.items() <= group["terms"][0].items()
+    context = case.built[0]["context"]
+    assert context["collisions_found"] == 1
+    assert context["collisions_resolved"] == 1
+
+
 def test_auto_source_language_never_reaches_the_model_as_auto(monkeypatch, tmp_path):
     case = _run_rule_case(monkeypatch, tmp_path, [[_QUILLET], []])
 
