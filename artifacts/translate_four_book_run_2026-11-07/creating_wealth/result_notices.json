@@ -1,0 +1,15 @@
+{
+  "latest_result_notices": [],
+  "latest_result_notice": {
+    "level": "warning",
+    "message": "Перевод завершён. Документ готов к использованию, но требует ручной проверки оформления: 7 абзацев с замечаниями. Подробности — в отчёте проверки (formatting_review.txt)."
+  },
+  "latest_delivery_disposition": {
+    "status": "accepted_with_advisory"
+  },
+  "latest_controlled_block_fallback_artifact": null,
+  "acceptance": {
+    "passed": true,
+    "failed_checks": []
+  }
+}
