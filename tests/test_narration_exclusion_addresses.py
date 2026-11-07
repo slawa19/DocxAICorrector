@@ -381,6 +381,24 @@ def test_the_anchor_is_the_first_sentence_not_the_whole_paragraph() -> None:
     assert facts["chars"] == len(records[0]["text"])
 
 
+def test_an_abbreviation_does_not_shorten_the_address() -> None:
+    """The ``20261107T_061_audio_money`` run printed "Reinhart et al." — 15 characters, cut at
+    the abbreviation — as the address of a paragraph whose first sentence runs on to the
+    year. The splitter now reads the abbreviation's FORM (short lowercase token, lowercase or
+    digit after it), so the address is the whole first sentence and is still found in the
+    delivered text, emphasis and all."""
+    text = (
+        "Reinhart *et al.* (2004). 7 Adrian Blundell-Wignall and Paul Atkinson, "
+        "‘Thinking Beyond Basel III’."
+    )
+    records = [{"paragraph_id": "p1", "text": text}]
+
+    facts = quality_gate.build_narration_exclusion_facts(records, delivered_markdown=text)
+
+    assert facts["anchors"] == ["Reinhart et al. (2004)."]
+    assert facts["unanchored_paragraph_count"] == 0
+
+
 def test_recorded_run_anchors_are_each_exactly_one_sentence() -> None:
     """The same rule on the material that forced it. Structural assertion, no length
     literal: every anchor the recorded run would print is one sentence, and the longest

@@ -2393,10 +2393,23 @@ def max_model_calls_per_block(
 # ``_NARRATION_SENTENCE_TERMINALS``: a colon and a semicolon join clauses rather than close
 # a sentence, and cutting a translation unit at one of them would hand the model half a
 # thought. Punctuation classes only — Constitution VII forbids word lists, and no list of
-# abbreviations is consulted, so "т. д." can be split at the wrong place. That mis-split
-# costs coherence inside ONE paragraph on the last resort before shipping English, and it
-# cannot move text between paragraphs: the pieces are re-joined into the same paragraph.
+# abbreviations is consulted. An abbreviation is recognised by its FORM instead (see
+# ``_ladder_boundary_is_abbreviation``), so "et al. (2004)" and "т. д. и" stay whole; an
+# abbreviation of another form ("U.S. Treasury", "approx. 5") can still be split at the wrong
+# place. That mis-split costs coherence inside ONE paragraph on the last resort before
+# shipping English, and it cannot move text between paragraphs: the pieces are re-joined
+# into the same paragraph.
 _LADDER_SENTENCE_TERMINALS = ".!?…"
+# Characters that may OPEN the text after a boundary before its first letter or digit, as
+# the bracket in "et al. (2004)" does. Punctuation only.
+_LADDER_OPENING_MARKS = "«“‘\"'([{"
+# The token in front of a dot: a run of letters not preceded by another letter. Its LENGTH
+# and CASE are what the abbreviation rule reads; the letters themselves are never compared
+# to anything.
+_LADDER_DOT_TOKEN_PATTERN = re.compile(r"(?<![^\W\d_])([^\W\d_]+)\.$")
+# The longest lowercase token the abbreviation rule treats as shortened ("al.", "pp.",
+# "т."); "approx." is longer and still splits — an accepted tail, not a list entry.
+_LADDER_ABBREVIATION_MAX_LETTERS = 3
 # Two fixed-width look-behinds rather than one with an optional class: Python's ``re``
 # rejects a variable-width look-behind outright.
 _LADDER_SENTENCE_BOUNDARY_PATTERN = re.compile(
@@ -2428,8 +2441,48 @@ def _ladder_source_units(text: str) -> list[str]:
     return [unit.strip() for unit in text.split("\n\n") if unit.strip()]
 
 
+def _ladder_boundary_is_abbreviation(before: str, after: str) -> bool:
+    """Whether the dot in front of a boundary shortens a word rather than ends a sentence.
+
+    A FORM rule, not a list (Constitution VII): the dot follows a lowercase token of at most
+    ``_LADDER_ABBREVIATION_MAX_LETTERS`` letters, AND the text after the boundary begins —
+    past any opening bracket or quote — with a lowercase letter or a digit, which a new
+    sentence does not. Both halves are required: "the end. Then" splits on the second, a
+    long word before the dot splits on the first. A dot INSIDE a token ("p.325", "e.g")
+    was never a boundary — the boundary needs whitespace after the terminal.
+
+    Measured cause: the 2026-11-07 ``20261107T_061_audio_money`` run printed "Reinhart
+    et al." as the address of a paragraph whose first sentence is "Reinhart et al. (2004).".
+    """
+
+    token = _LADDER_DOT_TOKEN_PATTERN.search(before)
+    if token is None:
+        return False
+    letters = token.group(1)
+    if len(letters) > _LADDER_ABBREVIATION_MAX_LETTERS or not letters.islower():
+        return False
+    head = after.lstrip(_LADDER_OPENING_MARKS)
+    if not head:
+        return False
+    first = head[0]
+    return first.isdigit() or (first.isalpha() and first.islower())
+
+
 def _ladder_sentences(text: str) -> list[str]:
-    return [part.strip() for part in _LADDER_SENTENCE_BOUNDARY_PATTERN.split(text) if part.strip()]
+    sentences: list[str] = []
+    start = 0
+    for boundary in _LADDER_SENTENCE_BOUNDARY_PATTERN.finditer(text):
+        # Small slices, not the whole text on each side: the rule reads one token on each
+        # side, and full slices per boundary of a long paragraph would make the split
+        # quadratic. A slice one letter longer than the limit shows a token is too long.
+        before = text[max(0, boundary.start() - _LADDER_ABBREVIATION_MAX_LETTERS - 2) : boundary.start()]
+        after = text[boundary.end() : boundary.end() + len(_LADDER_OPENING_MARKS) + 1]
+        if _ladder_boundary_is_abbreviation(before, after):
+            continue
+        sentences.append(text[start : boundary.start()])
+        start = boundary.end()
+    sentences.append(text[start:])
+    return [part.strip() for part in sentences if part.strip()]
 
 
 def _ladder_sentence_groups(text: str) -> list[str]:

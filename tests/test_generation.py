@@ -5027,3 +5027,50 @@ def test_the_sentence_split_refuses_to_cut_a_structural_line():
     assert generation._ladder_sentence_groups(f"## Заголовок\n{prose}") == []
     # A single sentence declines too: dividing it would re-ask the identical text.
     assert generation._ladder_sentence_groups("Одно предложение без границ.") == []
+
+
+def test_the_sentence_split_keeps_a_short_lowercase_abbreviation_inside_its_sentence():
+    """A FORM rule, not an abbreviation list (Constitution VII): a dot after a lowercase token
+    of at most three letters, followed — past an opening bracket or quote — by a lowercase
+    letter or a digit, shortens a word rather than ends a sentence.
+
+    Measured cause: the ``20261107T_061_audio_money`` run cut "Reinhart et al. (2004)." at
+    "al." and printed a 15-character address. The same splitter divides ladder units, so the
+    rule also stops "т. д." from cutting a ladder unit in half.
+    """
+
+    assert generation._ladder_sentences(
+        "Reinhart et al. (2004). 7 Adrian Blundell-Wignall and Paul Atkinson."
+    ) == ["Reinhart et al. (2004).", "7 Adrian Blundell-Wignall and Paul Atkinson."]
+    assert generation._ladder_sentences("See p. 325 of the report. Then more.") == [
+        "See p. 325 of the report.",
+        "Then more.",
+    ]
+    assert generation._ladder_sentences("Яблоки, груши и т. д. Новое предложение.") == [
+        "Яблоки, груши и т. д.",
+        "Новое предложение.",
+    ]
+
+
+def test_the_abbreviation_rule_needs_both_halves_of_its_form():
+    """Anti-vacuum: each half of the rule alone still splits, so ordinary sentence ends are
+    not swallowed. A short lowercase word followed by a capital is a sentence end; a long
+    word followed by a lowercase letter is a sentence end too; an uppercase short token
+    ("U.S.") is outside the rule and splits — an accepted tail, not a list entry."""
+
+    assert generation._ladder_sentences("It is the end. Then a new one.") == [
+        "It is the end.",
+        "Then a new one.",
+    ]
+    assert generation._ladder_sentences("Arrow and Reinhardt agreed. and then the rest.") == [
+        "Arrow and Reinhardt agreed.",
+        "and then the rest.",
+    ]
+    assert generation._ladder_sentences("Stated in the U.S. Treasury report.") == [
+        "Stated in the U.S.",
+        "Treasury report.",
+    ]
+    # A dot inside a token was never a boundary and still is not.
+    assert generation._ladder_sentences("Quoted at p.325 and e.g.here.") == [
+        "Quoted at p.325 and e.g.here."
+    ]
