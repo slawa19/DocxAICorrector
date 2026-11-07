@@ -8534,15 +8534,18 @@ def test_standalone_audiobook_omitted_notice_carries_the_address_and_the_documen
 
     # The audio message names the paragraph the audiobook lost, by its FIRST SENTENCE: the
     # recorded run's longest excluded paragraph is 2 686 characters, and printed whole that
-    # is a second hunt rather than an address. The cut here lands after "et al." — the
-    # ladder's sentence splitter consults no list of abbreviations, by design and by its own
-    # docstring (Constitution VII forbids the word list) — and a fragment that stops one
-    # clause early is still a fragment the reader finds, which the last assertion proves
-    # against the delivered markdown.
+    # is a second hunt rather than an address. This paragraph is ONE sentence: until
+    # 2026-11-07 the cut landed after "et al." and this test pinned that mis-split (the
+    # ``20261107T_061_audio_money`` run printed "Reinhart et al." as an address). The splitter
+    # now recognises a short lowercase abbreviation by its FORM, not by a word list
+    # (Constitution VII), so the address is the whole sentence — still a fragment the reader
+    # finds, which the last assertion proves against the delivered markdown.
+    from docxaicorrector.generation._generation import _ladder_sentences
+
     anchors = [str(anchor) for anchor in narration_notice["anchors"]]  # type: ignore[union-attr]
     assert len(anchors) == 1
-    assert _OMITTED_ENGLISH_PARAGRAPH.startswith(anchors[0])
-    assert len(anchors[0]) < len(_OMITTED_ENGLISH_PARAGRAPH)
+    assert anchors[0] == _ladder_sentences(_OMITTED_ENGLISH_PARAGRAPH)[0]
+    assert "et al. (2004)" in anchors[0]
     assert anchors[0] in runtime["state"]["latest_markdown"]
     # ...and the document message counts it without quoting it a second time.
     assert document_notice["message_key"] == "result.source_text_delivered_all_addresses_in_narration"
