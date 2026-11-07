@@ -158,7 +158,16 @@ IMAGE_MODEL_CAPABILITIES: dict[str, ImageModelCapabilities] = {
 _WARNED_UNKNOWN_IMAGE_MODELS: set[str] = set()
 
 
-def _normalize_model_id(model: str) -> str:
+def api_model_id(model: str) -> str:
+    """The id an OpenAI request carries: the selector without its ``openai:`` provider prefix.
+
+    Spec 062 acceptance review 2026-11-07, finding 3: ``openai:gpt-image-2.5-flare`` is a valid
+    selector (``core.config._validate_image_model_selection``), but the prefix was stripped
+    only to look up this table, and the request went out with ``model="openai:…"``. Every
+    image-pipeline request (Images API and the vision Responses calls) passes its model
+    through here; the configuration keeps the selector as written.
+    """
+
     normalized = str(model or "").strip()
     if normalized.lower().startswith("openai:"):
         normalized = normalized.split(":", 1)[1].strip()
@@ -168,7 +177,7 @@ def _normalize_model_id(model: str) -> str:
 def resolve_image_model_capabilities(model: str) -> ImageModelCapabilities | None:
     """The table row for ``model`` or its dated snapshot; None when the id is unknown."""
 
-    model_id = _normalize_model_id(model)
+    model_id = api_model_id(model)
     if model_id in IMAGE_MODEL_CAPABILITIES:
         return IMAGE_MODEL_CAPABILITIES[model_id]
     snapshot_match = _SNAPSHOT_SUFFIX_PATTERN.match(model_id)
@@ -265,14 +274,14 @@ def build_images_request(
     if operation not in {"generate", "edit"}:
         raise ValueError(f"Unknown Images API operation: {operation}")
     capabilities = resolve_image_model_capabilities(model)
-    payload: dict[str, Any] = {"model": model}
+    payload: dict[str, Any] = {"model": api_model_id(model)}
     if operation == "edit":
         payload["image"] = image
     payload["prompt"] = prompt
     payload["size"] = _coerce_size(capabilities, size)
     payload["output_format"] = output_format
     if capabilities is None:
-        _warn_unknown_image_model(_normalize_model_id(model), operation)
+        _warn_unknown_image_model(api_model_id(model), operation)
         payload["quality"] = quality
         return payload
     if quality in capabilities.quality_values:

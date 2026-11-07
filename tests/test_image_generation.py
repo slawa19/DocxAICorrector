@@ -1752,3 +1752,222 @@ def test_semantic_profile_keys_still_reach_the_semantic_route(monkeypatch):
 
     assert candidate == b"semantic"
     assert calls == ["semantic_redraw_direct"]
+
+
+# --- spec 062 acceptance review 2026-11-07 (Codex) ------------------------------------
+
+
+def _png_with_trns(mode: str, background, text_colour) -> Image.Image:
+    """A PNG whose ``tRNS`` chunk makes ``background`` transparent, reopened from bytes."""
+    image = Image.new(mode, (6, 4), background)
+    for x in range(1, 5):
+        image.putpixel((x, 2), text_colour)
+    output = BytesIO()
+    image.save(output, format="PNG", transparency=background)
+    reopened = Image.open(BytesIO(output.getvalue()))
+    reopened.load()
+    return reopened
+
+
+def test_flatten_transparency_composites_rgb_and_grey_pngs_with_trns():
+    """Finding 8: the alpha-fix honoured ``info["transparency"]`` only for mode ``P``; an RGB
+    or L PNG with ``tRNS`` came back with its hidden colour, which the clean-up then read as a
+    dark page. The review's input: transparent (0,0,0), opaque text (10,10,10)."""
+    rgb = _png_with_trns("RGB", (0, 0, 0), (10, 10, 10))
+    assert rgb.mode == "RGB" and rgb.info.get("transparency") == (0, 0, 0)
+
+    flattened = image_generation._flatten_transparency_onto_white(rgb)
+
+    assert flattened.mode == "RGB"
+    assert flattened.getpixel((0, 0)) == (255, 255, 255)
+    assert flattened.getpixel((2, 2)) == (10, 10, 10)
+
+    grey = _png_with_trns("L", 0, 10)
+    assert grey.mode == "L" and grey.info.get("transparency") == 0
+    flattened_grey = image_generation._flatten_transparency_onto_white(grey)
+    assert flattened_grey.getpixel((0, 0)) == (255, 255, 255)
+    assert flattened_grey.getpixel((2, 2)) == (10, 10, 10)
+
+    # Through the clean-up that follows: the opaque near-black text survives.
+    cleaned = image_generation._normalize_generated_document_background(flattened)
+    assert cleaned.convert("RGB").getpixel((2, 2)) == (10, 10, 10)
+
+
+def test_creative_fallback_edit_reaches_the_request_builder(monkeypatch, resolved_test_model_registry):
+    """Finding 7: the direct-edit fallback after a failed creative generate did not get
+    ``model_config``, raised while resolving ``image_edit`` and never sent its request; the
+    structured fallback then made the edit instead (so the older creative-fallback test could
+    not tell them apart). Here the first fallback edit must succeed on its own."""
+    events: list[tuple[str, dict]] = []
+    edit_calls: list[dict] = []
+
+    class FakeResponsesClient:
+        def create(self, **kwargs):
+            return SimpleNamespace(output_text="creative redraw brief")
+
+    class FakeImagesClient:
+        def generate(self, **kwargs):
+            raise RuntimeError("temporary creative generate failure")
+
+        def edit(self, **kwargs):
+            edit_calls.append(kwargs)
+            return SimpleNamespace(
+                data=[
+                    SimpleNamespace(
+                        b64_json=base64.b64encode(build_square_semantic_output_bytes()).decode("ascii"),
+                        revised_prompt=None,
+                    )
+                ]
+            )
+
+    client = build_semantic_client(images=FakeImagesClient(), responses=FakeResponsesClient())
+    monkeypatch.setattr(image_generation, "log_event", lambda level, name, *args, **kwargs: events.append((name, kwargs)))
+
+    candidate = image_generation.generate_image_candidate(
+        build_detailed_png_bytes(),
+        build_analysis_result(render_strategy="semantic_redraw_direct"),
+        mode="semantic_redraw_direct",
+        client=client,
+        model_config=resolved_test_model_registry,
+    )
+
+    names = [name for name, _ in events]
+    assert candidate
+    assert len(edit_calls) == 1
+    assert edit_calls[0]["model"] == resolved_test_model_registry.image_edit
+    assert "creative_semantic_generate_fallback_to_direct_edit" in names
+    assert "semantic_image_edit_fallback_to_structured_generate" not in names
+    completed = [payload for name, payload in events if name == "semantic_image_edit_completed"]
+    assert [payload["requested_mode"] for payload in completed] == ["semantic_redraw_direct"]
+
+
+def test_openai_prefixed_selectors_reach_the_apis_as_bare_ids(monkeypatch, resolved_test_model_registry):
+    """Finding 3: ``openai:gpt-image-2.5-flare`` passes config validation, but the Images and
+    Responses payloads carried it as is. Both must carry the API id."""
+    captured: dict[str, list[dict]] = {"vision": [], "generate": []}
+
+    class FakeResponsesClient:
+        def create(self, **kwargs):
+            captured["vision"].append(kwargs)
+            return SimpleNamespace(output_text="creative redraw brief")
+
+    class FakeImagesClient:
+        def generate(self, **kwargs):
+            captured["generate"].append(kwargs)
+            return SimpleNamespace(
+                data=[
+                    SimpleNamespace(
+                        b64_json=base64.b64encode(build_square_semantic_output_bytes()).decode("ascii"),
+                        revised_prompt=None,
+                    )
+                ]
+            )
+
+    prefixed = dataclasses.replace(
+        resolved_test_model_registry,
+        image_generation="openai:gpt-image-2.5-flare",
+        image_edit="openai:gpt-image-2.5-flare",
+        image_generation_vision="openai:gpt-5.4-mini",
+    )
+    client = build_semantic_client(images=FakeImagesClient(), responses=FakeResponsesClient())
+    monkeypatch.setattr(image_generation, "log_event", lambda *args, **kwargs: None)
+
+    candidate = image_generation.generate_image_candidate(
+        build_detailed_png_bytes(),
+        build_analysis_result(render_strategy="semantic_redraw_direct"),
+        mode="semantic_redraw_direct",
+        client=client,
+        model_config=prefixed,
+    )
+
+    assert candidate
+    assert [request["model"] for request in captured["vision"]] == ["gpt-5.4-mini"]
+    assert [request["model"] for request in captured["generate"]] == ["gpt-image-2.5-flare"]
+    # The capability table still applies to the prefixed selector (transparent background).
+    assert captured["generate"][0]["background"] == "transparent"
+
+
+def test_creative_brief_keeps_the_image_type_and_never_asks_for_an_infographic(resolved_test_model_registry):
+    """Finding 4: the vision stage of the creative path told the model it was an
+    "infographic art director" and asked for "a more polished infographic composition" for
+    every type; its brief goes into the final prompt FR-013 made genre-keeping. The FR-013
+    test injects a neutral brief, so this one goes through the real brief builder."""
+    requests: list[dict] = []
+
+    class FakeResponsesClient:
+        def create(self, **kwargs):
+            requests.append(kwargs)
+            return SimpleNamespace(output_text="creative redraw brief")
+
+    client = build_semantic_client(responses=FakeResponsesClient())
+
+    for image_type, kept in (("table", "rows and columns"), ("chart", "series and values")):
+        requests.clear()
+        image_generation._extract_creative_redraw_brief(
+            client,
+            build_detailed_png_bytes(),
+            build_analysis_result(image_type=image_type, prompt_key=f"{image_type}_semantic_redraw"),
+            model_config=resolved_test_model_registry,
+        )
+        texts = [
+            part["text"]
+            for message in requests[0]["input"]
+            for part in message["content"]
+            if part["type"] == "input_text"
+        ]
+        joined = "\n".join(texts)
+        assert "infographic" not in joined.lower(), image_type
+        assert f"a {image_type} stays a {image_type}" in joined, image_type
+        assert kept in joined, image_type
+
+
+def _long_summary_analysis() -> ImageAnalysisResult:
+    return build_analysis_result(
+        image_type="chart",
+        prompt_key="chart_semantic_redraw",
+        structure_summary="Series point described at length. " * 1500,
+        extracted_labels=[f"Label {index} " + "x" * 80 for index in range(12)],
+        extracted_text="",
+    )
+
+
+def test_shortened_prompts_keep_constraints_when_the_summary_is_unbounded():
+    """Finding 6: in the edit and structured-generate prompts the vision summary and labels
+    (no length bound) came BEFORE ``text_policy`` and the background rule, so a prompt cut
+    from its tail lost the constraints. Real profile text, a summary longer than the limit."""
+    from docxaicorrector.image.prompts import get_image_prompt_profile, load_image_prompt_text
+
+    analysis = _long_summary_analysis()
+    prompt_text = load_image_prompt_text("chart_semantic_redraw")
+    profile = get_image_prompt_profile("chart_semantic_redraw")
+    limit = 32000
+    edit_prompt = image_generation._build_image_edit_prompt(
+        analysis,
+        requested_mode="semantic_redraw_structured",
+        prompt_text=prompt_text,
+        prompt_profile=profile,
+        source_size=(400, 300),
+    )
+    structured = image_generation._build_structured_generate_prompt(
+        analysis,
+        prompt_text=prompt_text,
+        prompt_profile=profile,
+        base_prompt=edit_prompt,
+        layout_description="LAYOUT " * 200,
+        source_size=(400, 300),
+    )
+    background_rule = "Never use a black, charcoal, dark, or night-style canvas."
+
+    for name, prompt, return_line in (
+        ("edit", edit_prompt, image_generation.IMAGE_EDIT_RETURN_LINE),
+        ("structured_generate", structured, image_generation.IMAGE_GENERATE_RETURN_LINE),
+    ):
+        assert len(prompt) > limit, name
+        shortened = image_generation._shorten_prompt_for_limit(prompt, limit)
+        assert len(shortened) <= limit, name
+        assert shortened.endswith(return_line), name
+        assert image_generation.DEFAULT_IMAGE_TEXT_POLICY in shortened, name
+        assert background_rule in shortened, name
+        assert prompt_text.strip() in shortened, name
+        # What was cut is the unbounded data.
+        assert shortened.count("Series point") < prompt.count("Series point"), name

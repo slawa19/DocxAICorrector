@@ -722,7 +722,10 @@ def render_sidebar(config: Mapping[str, Any]) -> tuple[str, int, int, str, bool,
         st.caption(IMAGE_MODE_DESCRIPTIONS.get(image_mode, ""))
         image_vision_model = ""
         image_draw_model = ""
-        if image_mode != ImageMode.NO_CHANGE.value:
+        # Spec 062 FR-033: ``safe`` calls no image model at all (the analysis runs without
+        # vision), so a model selector there would be a control that changes nothing
+        # (acceptance review 2026-11-07, note on ``_ui.py:725``).
+        if image_mode in _IMAGE_DRAW_MODES:
             image_vision_model, image_draw_model = _render_image_model_selectors(config, image_mode)
         keep_all_image_variants = st.checkbox(
             t("sidebar.keep_variants_label"),

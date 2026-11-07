@@ -853,6 +853,98 @@ def test_dense_table_keeps_reconstruction_route_in_structured_mode(monkeypatch):
     assert len(reconstruction_calls) == 1
 
 
+def test_model_safe_route_table_keeps_reconstruction_when_heuristic_saw_a_screenshot(monkeypatch):
+    """Acceptance review 2026-11-07, finding 2: the routing guard restored the HEURISTIC's
+    ``render_strategy``. When the heuristic typed the raster table a screenshot, that was
+    ``safe_mode``, so the restored redraw skipped reconstruction and the dense table went
+    to the generative path (FR-012). The review's exact input."""
+    from dataclasses import replace
+
+    from docxaicorrector.image.pipeline_policy import build_generation_analysis, should_attempt_semantic_redraw
+
+    screenshot_heuristic = replace(
+        image_analysis._build_heuristic_analysis("image/png", None),
+        image_type="screenshot",
+        prompt_key="screenshot_safe_fallback",
+        render_strategy="safe_mode",
+        semantic_redraw_allowed=False,
+    )
+    monkeypatch.setattr(image_analysis, "_build_heuristic_analysis", lambda *args, **kwargs: screenshot_heuristic)
+
+    analysis = _analyze_with_vision_payload(
+        '{"image_type":"table","contains_text":true,"semantic_redraw_allowed":false,'
+        '"prompt_key":"table_semantic_redraw","recommended_route":"safe_mode",'
+        '"structure_summary":"table with 6 rows and 4 columns","extracted_labels":["A","B"],'
+        '"text_node_count":22,"extracted_text":"A B","fallback_reason":"Dense table."}'
+    )
+
+    assert analysis.image_type == "table"
+    assert analysis.render_strategy == "deterministic_reconstruction"
+    assert should_attempt_semantic_redraw(analysis, "semantic_redraw_structured") is True
+
+    reconstruction_calls = []
+    monkeypatch.setattr(
+        image_generation,
+        "_generate_reconstructed_candidate",
+        lambda image_bytes, analysis, **kwargs: reconstruction_calls.append(analysis) or b"reconstructed",
+    )
+
+    def _no_semantic(*args, **kwargs):
+        raise AssertionError("a dense table must take the PIL reconstruction route")
+
+    monkeypatch.setattr(image_generation, "_generate_semantic_candidate", _no_semantic)
+
+    candidate = image_generation.generate_image_candidate(
+        _make_diagram_like_jpeg(),
+        build_generation_analysis(analysis),
+        mode="semantic_redraw_structured",
+        client=object(),
+    )
+
+    assert candidate == b"reconstructed"
+    assert len(reconstruction_calls) == 1
+
+
+def test_model_safe_route_keeps_a_heuristic_redraw_strategy():
+    """Counter-proof for the test above: when the heuristic already named a redraw route,
+    the guard keeps it rather than forcing reconstruction."""
+    from dataclasses import replace
+
+    heuristic = replace(
+        image_analysis._build_heuristic_analysis("image/png", None),
+        image_type="chart",
+        render_strategy="semantic_redraw_direct",
+    )
+    payload: dict[str, object] = {"image_type": "chart", "recommended_route": "safe_mode", "fallback_reason": "Dense chart."}
+
+    analysis = image_analysis._coerce_vision_analysis_payload(payload, heuristic)
+
+    assert analysis.fallback_reason == "model_safe_route:Dense chart."
+    assert analysis.render_strategy == "semantic_redraw_direct"
+
+
+def test_photo_or_screenshot_is_never_redrawn_even_when_the_answer_allows_it():
+    """Acceptance review 2026-11-07 (note on ``pipeline_policy.py:28``): a contradictory
+    answer — ``photo`` with ``semantic_redraw_allowed=true`` and a redraw prompt key — passed
+    the flag check. The type is an absolute guard now."""
+    from dataclasses import replace
+
+    from docxaicorrector.image.pipeline_policy import should_attempt_semantic_redraw
+
+    redrawable = replace(
+        image_analysis._build_heuristic_analysis("image/png", None),
+        image_type="diagram",
+        semantic_redraw_allowed=True,
+        prompt_key="diagram_semantic_redraw",
+        render_strategy="semantic_redraw_structured",
+    )
+    assert should_attempt_semantic_redraw(redrawable, "semantic_redraw_structured") is True
+    for image_type in ("photo", "screenshot"):
+        contradictory = replace(redrawable, image_type=image_type)
+        for mode in ("semantic_redraw_structured", "semantic_redraw_direct", "compare_all"):
+            assert should_attempt_semantic_redraw(contradictory, mode) is False, (image_type, mode)
+
+
 def test_dense_photo_does_not_reach_reconstruction(monkeypatch):
     """Counter-proof for the test above: the same text-node count on a photo does not
     send it to reconstruction (nor to a generative redraw)."""
@@ -1088,3 +1180,19 @@ def test_image_type_outside_the_enum_becomes_mixed_or_ambiguous_with_warning(mon
     assert image_analysis._coerce_vision_analysis_payload({"image_type": "table"}, heuristic).image_type == "table"
     assert image_analysis._coerce_vision_analysis_payload({}, heuristic).image_type == heuristic.image_type
     assert logged == []
+
+
+def test_analysis_request_carries_the_api_model_id_without_provider_prefix():
+    """Acceptance review 2026-11-07, finding 3: a valid ``openai:`` selector reached the
+    Responses API as is; the request carries the bare id."""
+    client = _CapturingResponsesClient('{"image_type":"diagram","semantic_redraw_allowed":true}')
+
+    image_analysis.analyze_image(
+        _make_diagram_like_jpeg(),
+        model="openai:gpt-5.4-mini",
+        mime_type="image/jpeg",
+        client=client,
+        enable_vision=True,
+    )
+
+    assert client.requests[0]["model"] == "gpt-5.4-mini"

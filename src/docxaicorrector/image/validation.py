@@ -6,6 +6,7 @@ from typing import Any, Mapping
 
 from docxaicorrector.core.config import get_model_role_value
 from docxaicorrector.image.analysis import image_within_pixel_budget
+from docxaicorrector.image.model_capabilities import api_model_id
 from docxaicorrector.image.shared import (
     call_responses_create_with_retry,
     clamp_score,
@@ -427,7 +428,7 @@ def _build_vision_validation_assessment(
     response = call_responses_create_with_retry(
         client,
         {
-            "model": model,
+            "model": api_model_id(model),
             "input": [
                 {
                     "role": "system",
@@ -531,11 +532,18 @@ def _merge_with_vision_assessment(
     vision_assessment: dict[str, Any],
 ) -> ImageValidationResult:
     type_match_score = _type_match_score(analysis_before.image_type, candidate_analysis.image_type)
-    missing_labels = sorted(set(heuristic_result.missing_labels) | set(_normalize_labels_list(vision_assessment.get("missing_labels", []))))
-    added_entities = _normalize_labels_list(vision_assessment.get("added_entities", []))
+    missing_labels = sorted(
+        set(heuristic_result.missing_labels)
+        | set(_normalize_labels_list(_coerce_string_list(vision_assessment.get("missing_labels"))))
+    )
+    added_entities = _normalize_labels_list(_coerce_string_list(vision_assessment.get("added_entities")))
     suspicious_reasons = list(dict.fromkeys(
         list(heuristic_result.suspicious_reasons)
-        + [str(reason).strip() for reason in vision_assessment.get("suspicious_reasons", []) if str(reason).strip()]
+        + [
+            reason.strip()
+            for reason in _coerce_string_list(vision_assessment.get("suspicious_reasons"), split_separators=True)
+            if reason.strip()
+        ]
     ))
 
     semantic_match_score = _clamp_score(
@@ -550,7 +558,10 @@ def _merge_with_vision_assessment(
         (heuristic_result.validator_confidence + _clamp_score(vision_assessment.get("validator_confidence", 0.0))) / 2.0
     )
     added_entities_detected = heuristic_result.added_entities_detected or bool(added_entities)
-    candidate_contains_text = bool(vision_assessment.get("candidate_contains_text", candidate_analysis.contains_text))
+    candidate_contains_text = _coerce_json_bool(
+        vision_assessment.get("candidate_contains_text"),
+        candidate_analysis.contains_text,
+    )
 
     if analysis_before.contains_text and not candidate_contains_text and "text_missing_in_candidate" not in suspicious_reasons:
         suspicious_reasons.append("text_missing_in_candidate")
@@ -584,6 +595,46 @@ def _merge_with_vision_assessment(
     )
 
 
+
+
+def _coerce_string_list(value: object, *, split_separators: bool = False) -> list[str]:
+    """A JSON array of strings from the validator answer, tolerating a bare string.
+
+    Spec 062 acceptance review 2026-11-07 (note on ``validation.py:538``): a string
+    ``suspicious_reasons`` was iterated character by character and a string
+    ``missing_labels`` was dropped, which could hide a concrete defect from the FR-016
+    challenger. A bare string is one item; for the reason codes (no commas in any code)
+    ``split_separators`` also splits "a, b" into two.
+    """
+
+    if value is None:
+        return []
+    if isinstance(value, str):
+        if not split_separators:
+            return [value] if value.strip() else []
+        return [part for part in re.split(r"[,;\n]", value) if part.strip()]
+    if isinstance(value, (list, tuple)):
+        return [str(item) for item in value if item is not None and str(item).strip()]
+    return []
+
+
+def _coerce_json_bool(value: object, fallback: bool) -> bool:
+    """A JSON boolean; the strings "true"/"false" are read, not taken as truthy text."""
+
+    if value is None:
+        return fallback
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "1", "yes"}:
+            return True
+        if normalized in {"false", "0", "no", ""}:
+            return False
+        return fallback
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return fallback
 
 
 def _normalize_labels_list(labels: object) -> list[str]:

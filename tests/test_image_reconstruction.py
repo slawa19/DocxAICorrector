@@ -672,6 +672,22 @@ def test_extract_scene_graph_uses_retry_wrapper_with_timeout_and_budget(monkeypa
     assert captured["kwargs"]["budget"] is budget
 
 
+def test_extract_scene_graph_sends_the_api_model_id_without_provider_prefix(monkeypatch):
+    """Spec 062 acceptance review 2026-11-07, finding 3: an ``openai:`` selector is valid
+    configuration, but the request must carry the bare API id."""
+    captured = {}
+
+    def fake_retry(client, request_payload, **kwargs):
+        captured["payload"] = request_payload
+        return SimpleNamespace(output_text=json.dumps({"canvas": {"width": 10, "height": 10}, "elements": []}))
+
+    monkeypatch.setattr(image_reconstruction, "call_responses_create_with_retry", fake_retry)
+
+    extract_scene_graph(_build_test_png(), model="openai:gpt-5.4-mini", client=object())
+
+    assert captured["payload"]["model"] == "gpt-5.4-mini"
+
+
 def test_extract_scene_graph_reads_nested_output_text(monkeypatch):
     def fake_retry(client, request_payload, **kwargs):
         return SimpleNamespace(

@@ -22,6 +22,7 @@ from PIL import Image, ImageDraw, ImageFont, ImageOps
 
 from docxaicorrector.core.constants import PROMPTS_DIR
 from docxaicorrector.image.analysis import image_within_pixel_budget
+from docxaicorrector.image.model_capabilities import api_model_id
 from docxaicorrector.image.shared import call_responses_create_with_retry, detect_image_mime_type, extract_response_text, is_retryable_error
 from docxaicorrector.core.logger import log_event
 from docxaicorrector.core.model_accounting import STAGE_IMAGE_RECONSTRUCTION
@@ -149,7 +150,7 @@ def extract_scene_graph(
     response = call_responses_create_with_retry(
         client,
         {
-            "model": resolved_model,
+            "model": api_model_id(resolved_model),
             "input": [
                 {
                     "role": "user",
