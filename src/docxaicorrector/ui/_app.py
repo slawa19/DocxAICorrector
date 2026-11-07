@@ -28,7 +28,12 @@ from docxaicorrector.ui.recommended_text_settings import (
     normalize_manual_text_settings_override,
     normalize_recommendation_snapshot,
 )
-from docxaicorrector.core.config import get_client, get_client_for_model_selector, load_app_config
+from docxaicorrector.core.config import (
+    apply_image_model_selection,
+    get_client,
+    get_client_for_model_selector,
+    load_app_config,
+)
 from docxaicorrector.ui.app_runtime import (
     build_preparation_request_marker,
     drain_preparation_events as _drain_preparation_events,
@@ -117,7 +122,7 @@ _APP_READY_MARKER_WRITER = AppReadyMarkerWriter(
     time_fn=time.monotonic,
 )
 
-SidebarSettings: TypeAlias = tuple[str, int, int, str, bool, str, str, str, bool, str]
+SidebarSettings: TypeAlias = tuple[str, int, int, str, bool, str, str, str, bool, str, str, str]
 
 
 def _cached_load_app_config():
@@ -300,17 +305,20 @@ def _start_background_processing(
 
 
 def _resolve_sidebar_settings(sidebar_result: object) -> SidebarSettings:
-    # Legacy (shorter) contracts get an empty editorial_intensity, which the caller reads
-    # as "not chosen in the sidebar" and therefore leaves the loaded config default alone.
-    if isinstance(sidebar_result, tuple) and len(sidebar_result) == 10:
+    # Legacy (shorter) contracts get an empty editorial_intensity and empty image-model
+    # choices (spec 062), which the caller reads as "not chosen in the sidebar" and
+    # therefore leaves the loaded config defaults alone.
+    if isinstance(sidebar_result, tuple) and len(sidebar_result) == 12:
         return sidebar_result
+    if isinstance(sidebar_result, tuple) and len(sidebar_result) == 10:
+        return (*sidebar_result, "", "")
     if isinstance(sidebar_result, tuple) and len(sidebar_result) == 9:
-        return (*sidebar_result, "")
+        return (*sidebar_result, "", "", "")
     if isinstance(sidebar_result, tuple) and len(sidebar_result) == 8:
-        return (*sidebar_result, False, "")
+        return (*sidebar_result, False, "", "", "")
     if isinstance(sidebar_result, tuple) and len(sidebar_result) == 5:
         model, chunk_size, max_retries, image_mode, keep_all_image_variants = sidebar_result
-        return model, chunk_size, max_retries, image_mode, keep_all_image_variants, "edit", "en", "ru", False, ""
+        return model, chunk_size, max_retries, image_mode, keep_all_image_variants, "edit", "en", "ru", False, "", "", ""
     raise RuntimeError("Некорректный контракт render_sidebar().")
 
 
@@ -815,8 +823,18 @@ def main() -> None:
         target_language,
         audiobook_postprocess_enabled,
         editorial_intensity,
+        image_vision_model,
+        image_draw_model,
     ) = _resolve_sidebar_settings(render_sidebar(app_config))
-    app_config = dict(app_config)
+    # Spec 062: the two image-model selectors set the six image roles for this run; a
+    # per-role pin from .env / config.toml still wins (core.config.resolve_image_role_models).
+    app_config = dict(
+        apply_image_model_selection(
+            app_config,
+            vision_model=image_vision_model,
+            draw_model=image_draw_model,
+        )
+    )
     app_config["reader_cleanup_enabled"] = bool(app_config.get("reader_cleanup_default", False))
     app_config["keep_all_image_variants"] = keep_all_image_variants
     app_config["processing_operation"] = processing_operation

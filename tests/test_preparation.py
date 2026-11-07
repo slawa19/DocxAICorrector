@@ -204,8 +204,8 @@ def _build_runtime_model_registry(*, structure_recognition_model: str = "gpt-4o-
         image_analysis="gpt-5.4-mini",
         image_validation="gpt-5.4-mini",
         image_reconstruction="gpt-5.4-mini",
-        image_generation="gpt-image-1.5",
-        image_edit="gpt-image-1.5",
+        image_generation="gpt-image-2.5-flare",
+        image_edit="gpt-image-2.5-flare",
         image_generation_vision="gpt-5.4-mini",
     )
 

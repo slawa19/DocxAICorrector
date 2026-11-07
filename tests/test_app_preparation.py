@@ -307,6 +307,52 @@ def test_main_keeps_configured_editorial_intensity_for_legacy_sidebar_contract(m
     assert start_call["app_config"]["editorial_intensity_default"] == "conservative"
 
 
+
+def test_main_applies_the_sidebar_image_model_choices_to_the_run_config(monkeypatch):
+    # Spec 062: the two image-model selectors set the six image roles of THIS run, and a
+    # per-role pin carried by the loaded config still wins over them.
+    from docxaicorrector.core import config as config_module
+
+    registry = config_module.ModelRegistry(
+        text=config_module.TextModelConfig(default="gpt-5.4", options=("gpt-5.4",)),
+        structure_recognition="gpt-5.4",
+        image_analysis="gpt-5.4-mini",
+        image_validation="gpt-5.4-mini",
+        image_reconstruction="gpt-5.4-mini",
+        image_generation="gpt-image-2.5-flare",
+        image_edit="gpt-image-2.5-flare-2026-09-08",
+        image_generation_vision="gpt-5.4-mini",
+    )
+    start_call = _run_main_capturing_preparation_start(
+        monkeypatch,
+        sidebar_result=(
+            "gpt-5.4", 7000, 3, "semantic_redraw_structured", True, "edit", "en", "ru", False, "literary",
+            "gpt-6.1-terra", "gpt-image-2.5-sunburst",
+        ),
+        app_config={
+            "models": registry,
+            "image_model_role_overrides": (("image_edit", "gpt-image-2.5-flare-2026-09-08"),),
+        },
+    )
+
+    models = start_call["app_config"]["models"]
+    assert models.image_analysis == models.image_validation == models.image_reconstruction == "gpt-6.1-terra"
+    assert models.image_generation_vision == "gpt-6.1-terra"
+    assert models.image_generation == "gpt-image-2.5-sunburst"
+    assert models.image_edit == "gpt-image-2.5-flare-2026-09-08"
+    assert start_call["app_config"]["validation_model"] == "gpt-6.1-terra"
+
+
+def test_main_keeps_the_loaded_image_models_for_the_legacy_sidebar_contract(monkeypatch):
+    start_call = _run_main_capturing_preparation_start(
+        monkeypatch,
+        sidebar_result=("gpt-5.4", 7000, 3, "safe", True, "edit", "en", "ru", False, "literary"),
+        app_config={"models": "untouched"},
+    )
+
+    assert start_call["app_config"]["models"] == "untouched"
+
+
 def test_main_restarts_background_preparation_when_uploaded_file_changes(monkeypatch):
     session_state = SessionState(
         app_start_logged=True,

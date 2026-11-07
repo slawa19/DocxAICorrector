@@ -219,6 +219,85 @@ reader_cleanup_policy = "off"
 reader_verifier_enabled = false
 repeat_count = 1
 
+# Spec 062 FR-007 / SC-002: the image-model comparison. Same shape as the profile above,
+# but in the two semantic image modes and with the image models named explicitly, one
+# profile per (mode, combination). "v1" = Variant 1 of the spec (gpt-5.4-mini reads,
+# gpt-image-2.5-flare draws); "v2" = Variant 2 (gpt-6.1-sol reads, gpt-image-2.5-sunburst
+# draws). Paid runs: the owner decides when to start them. A per-role
+# DOCX_AI_MODELS_IMAGE_<ROLE>_DEFAULT in .env outranks these values — check the run's
+# image_models= summary line before reading the comparison.
+[[run_profiles]]
+id = "ui-parity-translate-benchmark-advisory-image-structured-v1-no-cleanup"
+tier = "full"
+mode = "regression"
+processing_operation = "translate"
+source_language = "auto"
+target_language = "ru"
+image_mode = "semantic_redraw_structured"
+image_vision_model = "gpt-5.4-mini"
+image_draw_model = "gpt-image-2.5-flare"
+audiobook_postprocess_enabled = false
+enable_paragraph_markers = true
+translation_output_quality_gate_policy = "advisory"
+reader_cleanup_enabled = false
+reader_cleanup_policy = "off"
+reader_verifier_enabled = false
+repeat_count = 1
+
+[[run_profiles]]
+id = "ui-parity-translate-benchmark-advisory-image-direct-v1-no-cleanup"
+tier = "full"
+mode = "regression"
+processing_operation = "translate"
+source_language = "auto"
+target_language = "ru"
+image_mode = "semantic_redraw_direct"
+image_vision_model = "gpt-5.4-mini"
+image_draw_model = "gpt-image-2.5-flare"
+audiobook_postprocess_enabled = false
+enable_paragraph_markers = true
+translation_output_quality_gate_policy = "advisory"
+reader_cleanup_enabled = false
+reader_cleanup_policy = "off"
+reader_verifier_enabled = false
+repeat_count = 1
+
+[[run_profiles]]
+id = "ui-parity-translate-benchmark-advisory-image-structured-v2-no-cleanup"
+tier = "full"
+mode = "regression"
+processing_operation = "translate"
+source_language = "auto"
+target_language = "ru"
+image_mode = "semantic_redraw_structured"
+image_vision_model = "gpt-6.1-sol"
+image_draw_model = "gpt-image-2.5-sunburst"
+audiobook_postprocess_enabled = false
+enable_paragraph_markers = true
+translation_output_quality_gate_policy = "advisory"
+reader_cleanup_enabled = false
+reader_cleanup_policy = "off"
+reader_verifier_enabled = false
+repeat_count = 1
+
+[[run_profiles]]
+id = "ui-parity-translate-benchmark-advisory-image-direct-v2-no-cleanup"
+tier = "full"
+mode = "regression"
+processing_operation = "translate"
+source_language = "auto"
+target_language = "ru"
+image_mode = "semantic_redraw_direct"
+image_vision_model = "gpt-6.1-sol"
+image_draw_model = "gpt-image-2.5-sunburst"
+audiobook_postprocess_enabled = false
+enable_paragraph_markers = true
+translation_output_quality_gate_policy = "advisory"
+reader_cleanup_enabled = false
+reader_cleanup_policy = "off"
+reader_verifier_enabled = false
+repeat_count = 1
+
 [[run_profiles]]
 id = "ui-parity-translate-benchmark-advisory-image-safe-no-cleanup-chunk30000"
 tier = "full"

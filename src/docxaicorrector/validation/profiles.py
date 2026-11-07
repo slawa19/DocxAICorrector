@@ -1,12 +1,19 @@
 from __future__ import annotations
 
 import tomllib
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-from docxaicorrector.core.config import EDITORIAL_INTENSITY_VALUES, get_text_model_default
+from docxaicorrector.core.config import (
+    EDITORIAL_INTENSITY_VALUES,
+    apply_image_model_selection,
+    get_image_model_choice,
+    get_text_model_default,
+    resolve_image_role_models,
+)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_REGISTRY_PATH = PROJECT_ROOT / "corpus_registry.toml"
@@ -81,6 +88,10 @@ class RunProfile:
     chunk_size: int | None = None
     max_retries: int | None = None
     image_mode: str | None = None
+    # Spec 062: the image reading / drawing model for this profile (see
+    # core.config.resolve_image_role_models for how they meet per-role pins).
+    image_vision_model: str | None = None
+    image_draw_model: str | None = None
     processing_operation: str | None = None
     source_language: str | None = None
     target_language: str | None = None
@@ -150,6 +161,11 @@ class ResolvedRuntimeConfig:
     reader_cleanup_enabled: bool
     enable_paragraph_markers: bool
     keep_all_image_variants: bool
+    # Spec 062: the two image-model choices and the six role ids they resolved to, so a
+    # report's runtime_config.effective proves which model served which image role.
+    image_vision_model: str = ""
+    image_draw_model: str = ""
+    image_models: Mapping[str, str] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -166,7 +182,29 @@ class ResolvedRuntimeConfig:
             "reader_cleanup_enabled": self.reader_cleanup_enabled,
             "enable_paragraph_markers": self.enable_paragraph_markers,
             "keep_all_image_variants": self.keep_all_image_variants,
+            "image_vision_model": self.image_vision_model,
+            "image_draw_model": self.image_draw_model,
+            "image_models": dict(self.image_models),
         }
+
+
+def _resolve_image_models(app_config, *, vision_model: str | None, draw_model: str | None) -> dict[str, str]:
+    # A config without image roles (an offline stub) reports no image models rather than
+    # failing the whole resolution; a real AppConfig always carries all six. A profile that
+    # NAMES a model is never swallowed: a rejected choice (non-OpenAI) must stop the run.
+    try:
+        return resolve_image_role_models(app_config, vision_model=vision_model, draw_model=draw_model)
+    except RuntimeError:
+        if vision_model or draw_model:
+            raise
+        return {}
+
+
+def _image_model_choice_default(app_config, group: str) -> str:
+    try:
+        return get_image_model_choice(app_config, group)[0]
+    except (RuntimeError, KeyError):
+        return ""
 
 
 def _resolve_run_profile_field(value: object, default: object) -> object:
@@ -210,6 +248,9 @@ def resolve_runtime_resolution(app_config, run_profile: RunProfile) -> RuntimeRe
         reader_cleanup_enabled=bool(getattr(app_config, "reader_cleanup_default", False)),
         enable_paragraph_markers=bool(app_config.enable_paragraph_markers),
         keep_all_image_variants=bool(app_config.keep_all_image_variants),
+        image_vision_model=_image_model_choice_default(app_config, "vision"),
+        image_draw_model=_image_model_choice_default(app_config, "draw"),
+        image_models=_resolve_image_models(app_config, vision_model=None, draw_model=None),
     )
     effective = ResolvedRuntimeConfig(
         model=run_profile.model or ui_defaults.model,
@@ -243,12 +284,21 @@ def resolve_runtime_resolution(app_config, run_profile: RunProfile) -> RuntimeRe
             if run_profile.keep_all_image_variants is not None
             else ui_defaults.keep_all_image_variants
         ),
+        image_vision_model=run_profile.image_vision_model or ui_defaults.image_vision_model,
+        image_draw_model=run_profile.image_draw_model or ui_defaults.image_draw_model,
+        image_models=_resolve_image_models(
+            app_config,
+            vision_model=run_profile.image_vision_model,
+            draw_model=run_profile.image_draw_model,
+        ),
     )
     explicit_profile_overrides = {
         "model": run_profile.model,
         "chunk_size": run_profile.chunk_size,
         "max_retries": run_profile.max_retries,
         "image_mode": run_profile.image_mode,
+        "image_vision_model": run_profile.image_vision_model,
+        "image_draw_model": run_profile.image_draw_model,
         "processing_operation": run_profile.processing_operation,
         "source_language": run_profile.source_language,
         "target_language": run_profile.target_language,
@@ -342,6 +392,15 @@ def apply_runtime_resolution_to_app_config(app_config, resolution: RuntimeResolu
     app_config_dict["keep_all_image_variants"] = resolution.effective.keep_all_image_variants
     app_config_dict["enable_paragraph_markers"] = resolution.effective.enable_paragraph_markers
     app_config_dict.update(resolution.app_config_overrides)
+    # Spec 062: a profile that names an image model sets the six roles exactly as the UI
+    # selectors do; per-role pins still win. A profile that names none leaves the loaded
+    # registry untouched.
+    if "image_vision_model" in resolution.overrides or "image_draw_model" in resolution.overrides:
+        app_config_dict = apply_image_model_selection(
+            app_config_dict,
+            vision_model=str(resolution.overrides.get("image_vision_model") or ""),
+            draw_model=str(resolution.overrides.get("image_draw_model") or ""),
+        )
     return app_config_dict
 
 
@@ -453,6 +512,8 @@ def _build_run_profile(payload: Any) -> RunProfile:
         chunk_size=_optional_int(payload, "chunk_size"),
         max_retries=_optional_int(payload, "max_retries"),
         image_mode=_optional_str(payload, "image_mode"),
+        image_vision_model=_optional_str(payload, "image_vision_model"),
+        image_draw_model=_optional_str(payload, "image_draw_model"),
         processing_operation=_optional_processing_operation(payload, "processing_operation"),
         source_language=_optional_str(payload, "source_language"),
         target_language=_optional_str(payload, "target_language"),

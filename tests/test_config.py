@@ -191,7 +191,7 @@ def test_load_app_config_exposes_image_validation_defaults(monkeypatch):
     assert app_config["image_output_generate_size_landscape"] == "1536x1024"
     assert app_config["image_output_generate_size_portrait"] == "1024x1536"
     assert app_config["image_output_generate_candidate_sizes"] == ("1536x1024", "1024x1536", "1024x1024")
-    assert app_config["image_output_edit_candidate_sizes"] == ("1536x1024", "1024x1536", "1024x1024", "512x512", "256x256")
+    assert app_config["image_output_edit_candidate_sizes"] == ("1536x1024", "1024x1536", "1024x1024")
     assert app_config["image_output_aspect_ratio_threshold"] == 1.2
     assert app_config["image_output_trim_tolerance"] == 20
     assert app_config["image_output_trim_padding_ratio"] == 0.02
@@ -1199,8 +1199,8 @@ def test_load_app_config_new_env_overrides_legacy_toml_models(monkeypatch, tmp_p
     monkeypatch.setenv("DOCX_AI_MODELS_IMAGE_ANALYSIS_DEFAULT", "gpt-5.4-mini")
     monkeypatch.setenv("DOCX_AI_MODELS_IMAGE_VALIDATION_DEFAULT", "gpt-5-mini")
     monkeypatch.setenv("DOCX_AI_MODELS_IMAGE_RECONSTRUCTION_DEFAULT", "gpt-5.4-mini")
-    monkeypatch.setenv("DOCX_AI_MODELS_IMAGE_GENERATION_DEFAULT", "gpt-image-1.5")
-    monkeypatch.setenv("DOCX_AI_MODELS_IMAGE_EDIT_DEFAULT", "gpt-image-1.5")
+    monkeypatch.setenv("DOCX_AI_MODELS_IMAGE_GENERATION_DEFAULT", "gpt-image-2.5-sunburst")
+    monkeypatch.setenv("DOCX_AI_MODELS_IMAGE_EDIT_DEFAULT", "gpt-image-2.5-sunburst")
     monkeypatch.setenv("DOCX_AI_MODELS_IMAGE_GENERATION_VISION_DEFAULT", "gpt-5.4-mini")
 
     app_config = config.load_app_config()
@@ -1212,8 +1212,8 @@ def test_load_app_config_new_env_overrides_legacy_toml_models(monkeypatch, tmp_p
     assert models.image_analysis == "gpt-5.4-mini"
     assert models.image_validation == "gpt-5-mini"
     assert models.image_reconstruction == "gpt-5.4-mini"
-    assert models.image_generation == "gpt-image-1.5"
-    assert models.image_edit == "gpt-image-1.5"
+    assert models.image_generation == "gpt-image-2.5-sunburst"
+    assert models.image_edit == "gpt-image-2.5-sunburst"
     assert models.image_generation_vision == "gpt-5.4-mini"
 
 

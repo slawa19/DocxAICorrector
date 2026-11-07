@@ -11,6 +11,8 @@ import streamlit as st
 from docxaicorrector.ui.application_flow import flatten_normalization_metrics
 from docxaicorrector.core.config import (
     describe_provider_availability,
+    get_image_model_choice,
+    get_image_model_role_overrides,
     get_text_model_default,
     get_text_model_options,
     resolve_model_selector,
@@ -540,7 +542,57 @@ def _asset_value(asset, field_name: str, default=None):
     return getattr(asset, field_name, default)
 
 
-def render_sidebar(config: Mapping[str, Any]) -> tuple[str, int, int, str, bool, str, str, str, bool, str]:
+# Image modes that call the drawing model (Images API). safe only reads images, so it
+# shows the reading-model selector alone; no_change calls no image model at all.
+_IMAGE_DRAW_MODES = frozenset(
+    {
+        ImageMode.SEMANTIC_REDRAW_DIRECT.value,
+        ImageMode.SEMANTIC_REDRAW_STRUCTURED.value,
+        ImageMode.COMPARE_ALL.value,
+    }
+)
+
+
+def _render_image_model_selectors(config: Mapping[str, Any], image_mode: str) -> tuple[str, str]:
+    """Spec 062: the reading and drawing image-model selectors, drawn under the image mode.
+
+    Returns ``(vision_model, draw_model)``; "" for a selector that is not on screen, which
+    the caller reads as "keep the configured default". Must run inside the advanced
+    expander, so it uses bare ``st.*``.
+    """
+
+    vision_default, vision_options = get_image_model_choice(config, "vision")
+    vision_model = st.selectbox(
+        t("sidebar.image_vision_model_label"),
+        list(vision_options),
+        index=vision_options.index(vision_default),
+        help=t("sidebar.image_vision_model_help"),
+        key="sidebar_image_vision_model",
+    )
+    draw_model = ""
+    if image_mode in _IMAGE_DRAW_MODES:
+        draw_default, draw_options = get_image_model_choice(config, "draw")
+        draw_model = st.selectbox(
+            t("sidebar.image_draw_model_label"),
+            list(draw_options),
+            index=draw_options.index(draw_default),
+            help=t("sidebar.image_draw_model_help"),
+            key="sidebar_image_draw_model",
+        )
+    role_overrides = get_image_model_role_overrides(config)
+    if role_overrides:
+        # A pinned role ignores both selectors; say so where the selectors are, so the
+        # choice on screen never claims more than the run will do.
+        st.caption(
+            t(
+                "sidebar.image_model_override_caption",
+                roles=", ".join(f"{role} = {model}" for role, model in sorted(role_overrides.items())),
+            )
+        )
+    return str(vision_model or ""), str(draw_model or "")
+
+
+def render_sidebar(config: Mapping[str, Any]) -> tuple[str, int, int, str, bool, str, str, str, bool, str, str, str]:
     st.sidebar.header(t("sidebar.settings_header"))
     operation_default = str(config.get("processing_operation_default", "edit"))
     operation_options = list(TEXT_OPERATION_LABELS.values())
@@ -668,6 +720,10 @@ def render_sidebar(config: Mapping[str, Any]) -> tuple[str, int, int, str, bool,
             )
             image_mode = IMAGE_MODE_VALUES_BY_LABEL.get(selected_image_mode_label, ImageMode.NO_CHANGE.value)
         st.caption(IMAGE_MODE_DESCRIPTIONS.get(image_mode, ""))
+        image_vision_model = ""
+        image_draw_model = ""
+        if image_mode != ImageMode.NO_CHANGE.value:
+            image_vision_model, image_draw_model = _render_image_model_selectors(config, image_mode)
         keep_all_image_variants = st.checkbox(
             t("sidebar.keep_variants_label"),
             value=bool(config.get("keep_all_image_variants", False)),
@@ -689,6 +745,8 @@ def render_sidebar(config: Mapping[str, Any]) -> tuple[str, int, int, str, bool,
         target_language,
         audiobook_postprocess_enabled,
         editorial_intensity,
+        image_vision_model,
+        image_draw_model,
     )
 
 

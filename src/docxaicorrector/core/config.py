@@ -2,7 +2,7 @@ import hashlib
 import logging
 import os
 from collections.abc import Iterator, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from functools import lru_cache
 from pathlib import Path
 from threading import Lock
@@ -17,6 +17,9 @@ from docxaicorrector.core.config_loader_layers import (
     resolve_optional_section_configs,
 )
 from docxaicorrector.core.config_model_registry import (
+    IMAGE_DRAW_ROLE_NAMES,
+    IMAGE_MODEL_ROLE_NAMES,
+    IMAGE_VISION_ROLE_NAMES,
     build_text_model_config as _build_text_model_config_impl,
     coerce_model_name as _coerce_model_name_impl,
     emit_legacy_model_config_warnings as _emit_legacy_model_config_warnings_impl,
@@ -97,9 +100,22 @@ _MIGRATION_DEFAULT_MODEL_ROLES = {
     "image_analysis": "gpt-5.4-mini",
     "image_validation": "gpt-5.4-mini",
     "image_reconstruction": "gpt-5.4-mini",
-    "image_generation": "gpt-image-1.5",
-    "image_edit": "gpt-image-1.5",
+    "image_generation": "gpt-image-2.5-flare",
+    "image_edit": "gpt-image-2.5-flare",
     "image_generation_vision": "gpt-5.4-mini",
+}
+# Spec 062: the two image-model choices when config.toml carries no [models.image_vision]
+# / [models.image_draw]: (default, options). The defaults are the migration ids above
+# ("Variant 1" of the spec); config.toml ships the same lists.
+_BUILTIN_IMAGE_MODEL_GROUPS: dict[str, tuple[str, tuple[str, ...]]] = {
+    "vision": (
+        _MIGRATION_DEFAULT_MODEL_ROLES["image_analysis"],
+        ("gpt-5.4-mini", "gpt-6.1-sol", "gpt-6.1-terra"),
+    ),
+    "draw": (
+        _MIGRATION_DEFAULT_MODEL_ROLES["image_generation"],
+        ("gpt-image-2.5-flare", "gpt-image-2.5-sunburst"),
+    ),
 }
 # Removed legacy key -> canonical replacement. Values must name a role that really
 # exists in ModelRegistry (see tests/test_config.py::
@@ -328,6 +344,14 @@ class AppConfig(Mapping[str, Any]):
         "normalize_heading_boundary",
         "join_fragmented_paragraph",
     )
+    # Spec 062: the two image-model choices the UI and run profiles select from, and the
+    # per-role overrides (env DOCX_AI_MODELS_IMAGE_<ROLE>_DEFAULT or [models.image_<role>])
+    # that win over either choice. ``models`` already carries the resolved six ids.
+    image_vision_model_default: str = ""
+    image_vision_model_options: tuple[str, ...] = ()
+    image_draw_model_default: str = ""
+    image_draw_model_options: tuple[str, ...] = ()
+    image_model_role_overrides: tuple[tuple[str, str], ...] = ()
 
     def __getitem__(self, key: str) -> object:
         try:
@@ -667,6 +691,128 @@ def get_text_model_options(config_like: object | None) -> tuple[str, ...]:
     return get_text_model_config(config_like).options
 
 
+# Spec 062: the two image-model choices and the roles each one sets.
+IMAGE_MODEL_GROUP_ROLES: dict[str, tuple[str, ...]] = {
+    "vision": IMAGE_VISION_ROLE_NAMES,
+    "draw": IMAGE_DRAW_ROLE_NAMES,
+}
+
+
+def get_image_model_choice(config_like: object | None, group: str) -> tuple[str, tuple[str, ...]]:
+    """``(default, options)`` of the ``"vision"`` or ``"draw"`` image-model choice.
+
+    A config that predates spec 062 (or a test stub) carries no choice fields; the default
+    then falls back to the role the group is named after, so a selector built from it
+    still preselects what the run would use anyway.
+    """
+
+    role_names = IMAGE_MODEL_GROUP_ROLES[group]
+    raw_default = _resolve_config_value(config_like, f"image_{group}_model_default")
+    raw_options = _resolve_config_value(config_like, f"image_{group}_model_options")
+    if isinstance(raw_default, str) and raw_default.strip():
+        default = raw_default.strip()
+    else:
+        try:
+            default = get_model_role_value(config_like, role_names[0])
+        except RuntimeError:
+            default = _BUILTIN_IMAGE_MODEL_GROUPS[group][0]
+    options: tuple[str, ...] = ()
+    if isinstance(raw_options, (list, tuple)):
+        options = tuple(str(item).strip() for item in raw_options if isinstance(item, str) and item.strip())
+    options = _dedupe_preserving_order(options)
+    if default not in options:
+        options = (default, *options)
+    return default, options
+
+
+def get_image_model_role_overrides(config_like: object | None) -> dict[str, str]:
+    """Image roles pinned by DOCX_AI_MODELS_IMAGE_<ROLE>_DEFAULT or [models.image_<role>]."""
+
+    raw_overrides = _resolve_config_value(config_like, "image_model_role_overrides")
+    if isinstance(raw_overrides, Mapping):
+        return {str(role): str(model) for role, model in raw_overrides.items()}
+    if isinstance(raw_overrides, (list, tuple)):
+        return {str(pair[0]): str(pair[1]) for pair in raw_overrides if isinstance(pair, (list, tuple)) and len(pair) == 2}
+    return {}
+
+
+def _validate_image_model_selection(selector: str, *, group: str) -> str:
+    resolved = _parse_model_selector(selector, source_name=f"image {group} model selection")
+    if resolved.provider != "openai":
+        raise RuntimeError(
+            f"Provider '{resolved.provider}' не поддерживает image {group} roles: все image-роли только OpenAI."
+        )
+    return selector.strip()
+
+
+def resolve_image_role_models(
+    config_like: object | None,
+    *,
+    vision_model: str | None = None,
+    draw_model: str | None = None,
+) -> dict[str, str]:
+    """The six image-role model ids a run will use (spec 062).
+
+    Per role, highest first: a per-role override (env ``DOCX_AI_MODELS_IMAGE_<ROLE>_DEFAULT``
+    or ``[models.image_<role>].default``) > the selection passed here (UI selector or run
+    profile) > the role's value in the loaded config (``DOCX_AI_IMAGE_<GROUP>_MODEL`` >
+    ``[models.image_<group>].default`` > built-in).
+    """
+
+    overrides = get_image_model_role_overrides(config_like)
+    selections = {"vision": (vision_model or "").strip(), "draw": (draw_model or "").strip()}
+    role_models: dict[str, str] = {}
+    for group, role_names in IMAGE_MODEL_GROUP_ROLES.items():
+        selected = selections[group]
+        if selected:
+            _validate_image_model_selection(selected, group=group)
+        for role_name in role_names:
+            if role_name in overrides:
+                role_models[role_name] = overrides[role_name]
+            elif selected:
+                role_models[role_name] = selected
+            else:
+                role_models[role_name] = get_model_role_value(config_like, role_name)
+    return {role_name: role_models[role_name] for role_name in IMAGE_MODEL_ROLE_NAMES}
+
+
+def apply_image_model_selection(
+    config_like: Any,
+    *,
+    vision_model: str | None = None,
+    draw_model: str | None = None,
+) -> Any:
+    """Return ``config_like`` with the six image roles set from the two selections.
+
+    Works on the loaded ``AppConfig`` and on the plain dicts the UI and the real-document
+    runner pass to a run. With no selection it returns the input unchanged. The flat
+    ``validation_model`` / ``reconstruction_model`` copies are kept in step with ``models``.
+    """
+
+    if not (vision_model or "").strip() and not (draw_model or "").strip():
+        return config_like
+    role_models = resolve_image_role_models(config_like, vision_model=vision_model, draw_model=draw_model)
+    models_value = _resolve_config_value(config_like, "models")
+    if isinstance(models_value, ModelRegistry):
+        resolved_models: object = replace(models_value, **role_models)
+    elif isinstance(models_value, Mapping):
+        resolved_models = {**dict(models_value), **role_models}
+    else:
+        raise RuntimeError("Image model selection needs a resolved model registry in the runtime config.")
+    updates: dict[str, Any] = {
+        "models": resolved_models,
+        "validation_model": role_models["image_validation"],
+        "reconstruction_model": role_models["image_reconstruction"],
+    }
+    if isinstance(config_like, AppConfig):
+        return replace(config_like, **updates)
+    if isinstance(config_like, Mapping):
+        updated_config = dict(config_like)
+        updated_config.update(updates)
+        return updated_config
+    raise RuntimeError("Image model selection needs a mapping runtime config.")
+
+
 def _parse_model_selector(selector: str, *, source_name: str) -> ResolvedModelSelector:
     raw_selector = selector.strip()
     if not raw_selector:
@@ -884,6 +1030,32 @@ def _log_resolved_model_registry(models: ModelRegistry, model_sources: Mapping[s
     )
 
 
+def _log_image_model_role_overrides(
+    role_overrides: Mapping[str, str],
+    model_sources: Mapping[str, str],
+) -> None:
+    """Spec 062: say once per distinct set that per-role pins outrank the UI selectors.
+
+    A pinned role ignores both image-model selectors, so an operator whose .env still pins
+    all six roles would otherwise pick "gpt-6.1-sol" in the UI and silently run on the
+    pinned ids. WARNING because the selector on screen then does not describe the run.
+    """
+
+    if not role_overrides:
+        return
+    dedupe_key = f"image-role-overrides:{sorted(role_overrides.items())!r}"
+    if dedupe_key in _EMITTED_MODEL_REGISTRY_LOG_KEYS:
+        return
+    _EMITTED_MODEL_REGISTRY_LOG_KEYS.add(dedupe_key)
+    log_event(
+        logging.WARNING,
+        "image_model_role_override_active",
+        "Per-role переопределение image-модели действует поверх выбора модели разбора/рисования.",
+        role_overrides=dict(sorted(role_overrides.items())),
+        role_sources={role: model_sources.get(role, "") for role in sorted(role_overrides)},
+    )
+
+
 def _emit_legacy_model_config_warnings(config_data: Mapping[str, object], model_sources: Mapping[str, str]) -> None:
     _emit_legacy_model_config_warnings_impl(
         config_data,
@@ -1081,6 +1253,7 @@ def _resolve_model_registry_settings(
         model_registry_factory_fn=ModelRegistry,
         config_path=CONFIG_PATH,
         migration_default_model_roles=_MIGRATION_DEFAULT_MODEL_ROLES,
+        builtin_image_model_groups=_BUILTIN_IMAGE_MODEL_GROUPS,
     )
 
 
@@ -1244,15 +1417,22 @@ def _validate_provider_model_contracts(
         source_name="models.audiobook.default",
     )
 
-    openai_only_roles = {
-        "models.image_analysis.default": (models.image_analysis, "responses_vision"),
-        "models.image_validation.default": (models.image_validation, "responses_vision"),
-        "models.image_reconstruction.default": (models.image_reconstruction, "responses_vision"),
-        "models.image_generation.default": (models.image_generation, "images_generate"),
-        "models.image_edit.default": (models.image_edit, "images_edit"),
-        "models.image_generation_vision.default": (models.image_generation_vision, "responses_vision"),
-    }
-    for role_name, (selector, required_capability) in openai_only_roles.items():
+    openai_only_roles: list[tuple[str, str, str]] = [
+        ("models.image_analysis.default", models.image_analysis, "responses_vision"),
+        ("models.image_validation.default", models.image_validation, "responses_vision"),
+        ("models.image_reconstruction.default", models.image_reconstruction, "responses_vision"),
+        ("models.image_generation.default", models.image_generation, "images_generate"),
+        ("models.image_edit.default", models.image_edit, "images_edit"),
+        ("models.image_generation_vision.default", models.image_generation_vision, "responses_vision"),
+    ]
+    # Spec 062: every model the two image selectors can offer is held to the same lock, so
+    # the UI can never present an option that load would have rejected as a role default.
+    for index, option in enumerate(model_registry_settings.get("image_vision_model_options", ())):
+        openai_only_roles.append((f"models.image_vision.options[{index}]", option, "responses_vision"))
+    for index, option in enumerate(model_registry_settings.get("image_draw_model_options", ())):
+        openai_only_roles.append((f"models.image_draw.options[{index}]", option, "images_generate"))
+        openai_only_roles.append((f"models.image_draw.options[{index}]", option, "images_edit"))
+    for role_name, selector, required_capability in openai_only_roles:
         resolved_selector = resolve_model_selector(
             selector,
             required_capability=required_capability,
@@ -1374,6 +1554,10 @@ def _load_app_config_uncached() -> AppConfig:
     )
     _log_resolved_model_registry(
         resolved_sections.model_registry_settings["models"],
+        resolved_sections.model_registry_settings["model_sources"],
+    )
+    _log_image_model_role_overrides(
+        resolved_sections.model_registry_settings.get("image_model_role_overrides") or {},
         resolved_sections.model_registry_settings["model_sources"],
     )
     provider_registry = _resolve_provider_registry(config_data=config_data)

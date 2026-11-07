@@ -123,6 +123,15 @@ pandoc --version
 - Бюджет `semantic_redraw_max_model_calls_per_image` (по умолчанию 9) считает логические операции на один семантический вариант — ретраи и адаптации параметров одной операции списываются один раз — и не включает анализ исходного изображения: тот списывается только с бюджета документа. Оценка бюджета документа для `compare_all` — `2 × per_image + 1` на изображение (два семантических варианта плюс анализ).
 - `preferred_strategy` в `image_prompt_registry.toml` — информационное поле: оно только логируется и маршрутизацию не определяет.
 
+## Image Models (spec 062)
+
+Под режимом изображений в sidebar стоят два выбора модели; оба OpenAI-only (замок провайдера в `src/docxaicorrector/core/config.py`):
+
+- **«Модель разбора изображений»** — четыре роли, которые читают картинки: `image_analysis`, `image_validation`, `image_reconstruction`, `image_generation_vision`. Показывается во всех режимах, кроме `no_change`: `safe` тоже анализирует изображения. Варианты — `[models.image_vision].options` в `config.toml` (`gpt-5.4-mini` по умолчанию, `gpt-6.1-sol`, `gpt-6.1-terra`).
+- **«Модель рисования»** — две роли Images API: `image_generation`, `image_edit`. Показывается только в режимах, которые рисуют (`semantic_redraw_direct`, `semantic_redraw_structured`, `compare_all`). Варианты — `[models.image_draw].options` (`gpt-image-2.5-flare` по умолчанию, `gpt-image-2.5-sunburst`).
+
+Порядок разрешения для каждой роли, старший первым: `DOCX_AI_MODELS_IMAGE_<ROLE>_DEFAULT` → `[models.image_<role>].default` → выбор в UI или поле run-профиля `image_vision_model` / `image_draw_model` → `DOCX_AI_IMAGE_VISION_MODEL` / `DOCX_AI_IMAGE_DRAW_MODEL` → `default` секции. Закреплённая по роли модель не меняется выбором в UI; sidebar пишет об этом подписью, лог — событием `image_model_role_override_active`. «Вариант 1» спеки 062 — `gpt-5.4-mini` + `gpt-image-2.5-flare`, «вариант 2» — `gpt-6.1-sol` + `gpt-image-2.5-sunburst`; это сочетания двух выборов, а не отдельные сущности. Что ушло в прогон, видно в `runtime_config.effective.image_models`, строке `image_models=` в `run_summary.txt` и в `model_accounting_image_model_call_counts_by_role` (роль → модель → число вызовов). Параметры запроса Images API строятся по таблице возможностей `src/docxaicorrector/image/model_capabilities.py`.
+
 ## Audiobook Mode And Post-Pass
 
 - `processing_operation="audiobook"` является отдельным text mode наряду с `edit` и `translate`.

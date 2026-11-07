@@ -3783,6 +3783,7 @@ def _run_repeat_validation(
             f"failure_classification={failure_classification}",
             f"repeat_count={run_profile.repeat_count}",
             f"runtime_overrides={json.dumps(cast(Mapping[str, object], report['runtime_config']).get('overrides') or {}, ensure_ascii=False, sort_keys=True)}",
+            _build_image_models_summary_line(cast(Mapping[str, object], report['runtime_config'])),
             f"pipeline_succeeded_count={repeat_summary['pipeline_succeeded_count']}",
             f"acceptance_passed_count={repeat_summary['acceptance_passed_count']}",
             f"intermittent_failure_detected={repeat_summary['intermittent_failure_detected']}",
@@ -4543,6 +4544,18 @@ def _extract_model_accounting(event_log: Sequence[Mapping[str, object]]) -> dict
     return None
 
 
+def _build_image_models_summary_line(runtime_config: Mapping[str, object] | None) -> str:
+    """Spec 062: the six image-role model ids the run resolved, as one summary line.
+
+    ``runtime_config.effective.image_models`` already holds them; printing them beside
+    ``runtime_overrides`` lets a comparison run be read off ``run_summary.txt`` without
+    opening report.json, and ``model_accounting_image_model_call_counts_by_role`` below
+    says which of them actually answered a call.
+    """
+    effective = cast("Mapping[str, object]", (runtime_config or {}).get("effective") or {})
+    return f"image_models={json.dumps(effective.get('image_models') or {}, ensure_ascii=False, sort_keys=True)}"
+
+
 def _build_model_accounting_summary_lines(model_accounting: Mapping[str, object] | None) -> list[str]:
     if model_accounting is None:
         return ["model_accounting=not_reported"]
@@ -4565,6 +4578,8 @@ def _build_model_accounting_summary_lines(model_accounting: Mapping[str, object]
         "degradation_ladder_trigger_counts",
         "text_removal_site_counts",
         "text_removal_site_chars",
+        # Spec 062: which model answered each image role, counted per call.
+        "image_model_call_counts_by_role",
         "stages",
     ):
         lines.append(
@@ -6047,6 +6062,7 @@ def main() -> None:
         f"result={report['result']}",
         f"failure_classification={report['failure_classification']}",
         f"runtime_overrides={json.dumps(cast(Mapping[str, object], report['runtime_config']).get('overrides') or {}, ensure_ascii=False, sort_keys=True)}",
+        _build_image_models_summary_line(cast(Mapping[str, object], report['runtime_config'])),
         f"paragraph_count={report['preparation']['paragraph_count']}",
         f"image_count={report['preparation']['image_count']}",
         f"job_count={report['preparation']['job_count']}",

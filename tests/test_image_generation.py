@@ -1,3 +1,4 @@
+import dataclasses
 import base64
 from io import BytesIO
 from types import SimpleNamespace
@@ -324,7 +325,8 @@ def test_generate_image_candidate_structured_uses_vision_and_images_generate(mon
     assert captured["generate"] is not None
     assert captured["vision"]["model"] == resolved_test_model_registry.image_generation_vision
     assert captured["generate"]["model"] == resolved_test_model_registry.image_generation
-    assert captured["generate"]["response_format"] == "b64_json"
+    # Spec 062 FR-004: GPT image models reject response_format; it is no longer sent.
+    assert "response_format" not in captured["generate"]
     assert captured["generate"]["quality"] == "high"
     assert captured["generate"]["size"] == "1024x1024"
     assert captured["generate"]["background"] == "transparent"
@@ -492,7 +494,8 @@ def test_generate_image_candidate_direct_uses_creative_vision_and_images_generat
     assert captured["generate"] is not None
     assert captured["vision"]["model"] == resolved_test_model_registry.image_generation_vision
     assert captured["generate"]["model"] == resolved_test_model_registry.image_generation
-    assert captured["generate"]["response_format"] == "b64_json"
+    # Spec 062 FR-004: GPT image models reject response_format; it is no longer sent.
+    assert "response_format" not in captured["generate"]
     assert captured["generate"]["quality"] == "high"
     assert captured["generate"]["size"] == "1024x1024"
     assert captured["generate"]["background"] == "transparent"
@@ -1373,8 +1376,46 @@ def test_generate_image_candidate_structured_prefers_high_fidelity_edit_before_g
 
     assert candidate
     assert captured["edit"]["model"] == resolved_test_model_registry.image_edit
-    assert captured["edit"]["input_fidelity"] == "high"
+    # Spec 062 FR-004: the 2.5 family is not documented to accept input_fidelity, so the
+    # capability table leaves it out (see the gpt-image-1.5 counter-test below).
+    assert "input_fidelity" not in captured["edit"]
+    assert "response_format" not in captured["edit"]
+    assert captured["edit"]["quality"] == "high"
     assert captured["edit"]["output_format"] == "png"
+
+
+def test_structured_edit_still_sends_input_fidelity_to_a_model_that_accepts_it(monkeypatch, resolved_test_model_registry):
+    # Anti-vacuum for the test above: the parameter is dropped by the TABLE, not removed
+    # from the code path. gpt-image-1.5 accepts input_fidelity and must still get it.
+    captured = {}
+
+    class FakeImagesClient:
+        def edit(self, **kwargs):
+            captured["edit"] = kwargs
+            return SimpleNamespace(
+                data=[
+                    SimpleNamespace(
+                        b64_json=base64.b64encode(build_square_semantic_output_bytes()).decode("ascii"),
+                        revised_prompt=None,
+                    )
+                ]
+            )
+
+    client = build_semantic_client(images=FakeImagesClient())
+    monkeypatch.setattr(image_generation, "log_event", lambda *args, **kwargs: None)
+
+    candidate = image_generation.generate_image_candidate(
+        build_detailed_png_bytes(),
+        build_analysis_result(render_strategy="semantic_redraw_structured"),
+        mode="semantic_redraw_structured",
+        client=client,
+        model_config=dataclasses.replace(resolved_test_model_registry, image_edit="gpt-image-1.5"),
+    )
+
+    assert candidate
+    assert captured["edit"]["model"] == "gpt-image-1.5"
+    assert captured["edit"]["input_fidelity"] == "high"
+    assert "response_format" not in captured["edit"]
 
 
 def test_generate_image_candidate_direct_includes_extracted_text_in_prompt(monkeypatch, resolved_test_model_registry):

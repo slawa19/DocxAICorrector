@@ -303,12 +303,10 @@ DOCX_AI_LOG_LEVEL=INFO
 DOCX_AI_IMAGE_MODE_DEFAULT=no_change
 DOCX_AI_SEMANTIC_VALIDATION_POLICY=advisory
 DOCX_AI_KEEP_ALL_IMAGE_VARIANTS=false
-DOCX_AI_MODELS_IMAGE_ANALYSIS_DEFAULT=gpt-5.4-mini
-DOCX_AI_MODELS_IMAGE_VALIDATION_DEFAULT=gpt-5.4-mini
-DOCX_AI_MODELS_IMAGE_RECONSTRUCTION_DEFAULT=gpt-5.4-mini
-DOCX_AI_MODELS_IMAGE_GENERATION_DEFAULT=gpt-image-1.5
-DOCX_AI_MODELS_IMAGE_EDIT_DEFAULT=gpt-image-1.5
-DOCX_AI_MODELS_IMAGE_GENERATION_VISION_DEFAULT=gpt-5.4-mini
+DOCX_AI_IMAGE_VISION_MODEL=gpt-5.4-mini
+DOCX_AI_IMAGE_DRAW_MODEL=gpt-image-2.5-flare
+# Per-role pins outrank both selectors; set one only to pin that role:
+# DOCX_AI_MODELS_IMAGE_EDIT_DEFAULT=gpt-image-2.5-flare-2026-09-08
 ```
 
 Для текущего canonical baseline нужен `OPENROUTER_API_KEY`, потому что `models.text.default` по умолчанию уже указывает на provider-qualified OpenRouter selector.
@@ -356,11 +354,11 @@ streamlit run app.py
 | Main default text transform policy | `openrouter:google/gemini-3.1-flash-lite-preview` | `recommended_default` | Canonical repository default для text runtime через OpenRouter. |
 | Budget text fallback | `gpt-5-mini` | `supported_fallback` | Текущий repository default и lower-cost fallback. |
 | Structure recognition | `openrouter:google/gemini-3.1-flash-lite-preview` | `default_inherits_text` | По умолчанию использует тот же provider-qualified selector, что и основной text runtime; отдельный role override остаётся optional. |
-| Pipeline image analysis | `gpt-5.4-mini` | `balanced_cost_quality` | Основной balanced multimodal default для routing и vision analysis. |
-| Image validation | `gpt-5.4-mini` | `balanced_cost_quality` | Quality gate для post-check без цены full-tier модели. |
-| Image reconstruction | `gpt-5.4-mini` | `balanced_cost_quality` | Лучший balanced choice для scene-graph extraction и text-sensitive reconstruction. |
-| Image generation/edit | `gpt-image-1.5` | `balanced_cost_quality` | Обновленный image-native baseline для generation/edit ветки. |
-| Generation-time image vision | `gpt-5.4-mini` | `balanced_cost_quality` | Unified vision tier для generation/edit orchestration. |
+| Pipeline image analysis | `gpt-5.4-mini` | `balanced_cost_quality` | «Модель разбора изображений»; в UI также `gpt-6.1-sol`, `gpt-6.1-terra`. |
+| Image validation | `gpt-5.4-mini` | `balanced_cost_quality` | Та же «модель разбора изображений». |
+| Image reconstruction | `gpt-5.4-mini` | `balanced_cost_quality` | Та же «модель разбора изображений» (scene-graph для реконструкции). |
+| Image generation/edit | `gpt-image-2.5-flare` | `balanced_cost_quality` | «Модель рисования»; в UI также `gpt-image-2.5-sunburst`. Прежняя модель отключается OpenAI 2026-12-01 (spec 062). |
+| Generation-time image vision | `gpt-5.4-mini` | `balanced_cost_quality` | Та же «модель разбора изображений» (бриф перед генерацией). |
 
 Важно:
 
@@ -394,23 +392,16 @@ title = "DocxAICorrector"
 # [models.structure_recognition]
 # default = "openrouter:google/gemini-3.1-flash-lite-preview"
 
-[models.image_analysis]
+# Spec 062: two choices drive the six image roles; the UI shows both next to the image
+# mode. Per role: DOCX_AI_MODELS_IMAGE_<ROLE>_DEFAULT > [models.image_<role>].default >
+# UI / run profile choice > DOCX_AI_IMAGE_VISION_MODEL / DOCX_AI_IMAGE_DRAW_MODEL > default.
+[models.image_vision]   # image_analysis, image_validation, image_reconstruction, image_generation_vision
 default = "gpt-5.4-mini"
+options = ["gpt-5.4-mini", "gpt-6.1-sol", "gpt-6.1-terra"]
 
-[models.image_validation]
-default = "gpt-5.4-mini"
-
-[models.image_reconstruction]
-default = "gpt-5.4-mini"
-
-[models.image_generation]
-default = "gpt-image-1.5"
-
-[models.image_edit]
-default = "gpt-image-1.5"
-
-[models.image_generation_vision]
-default = "gpt-5.4-mini"
+[models.image_draw]     # image_generation, image_edit
+default = "gpt-image-2.5-flare"
+options = ["gpt-image-2.5-flare", "gpt-image-2.5-sunburst"]
 
 chunk_size = 6000
 max_retries = 3
@@ -456,12 +447,10 @@ DOCX_AI_LOG_LEVEL=INFO
 DOCX_AI_IMAGE_MODE_DEFAULT=no_change
 DOCX_AI_SEMANTIC_VALIDATION_POLICY=advisory
 DOCX_AI_KEEP_ALL_IMAGE_VARIANTS=false
-DOCX_AI_MODELS_IMAGE_ANALYSIS_DEFAULT=gpt-5.4-mini
-DOCX_AI_MODELS_IMAGE_VALIDATION_DEFAULT=gpt-5.4-mini
-DOCX_AI_MODELS_IMAGE_RECONSTRUCTION_DEFAULT=gpt-5.4-mini
-DOCX_AI_MODELS_IMAGE_GENERATION_DEFAULT=gpt-image-1.5
-DOCX_AI_MODELS_IMAGE_EDIT_DEFAULT=gpt-image-1.5
-DOCX_AI_MODELS_IMAGE_GENERATION_VISION_DEFAULT=gpt-5.4-mini
+DOCX_AI_IMAGE_VISION_MODEL=gpt-5.4-mini
+DOCX_AI_IMAGE_DRAW_MODEL=gpt-image-2.5-flare
+# Per-role pins outrank both selectors; set one only to pin that role:
+# DOCX_AI_MODELS_IMAGE_EDIT_DEFAULT=gpt-image-2.5-flare-2026-09-08
 DOCX_AI_ENABLE_VISION_IMAGE_ANALYSIS=true
 DOCX_AI_ENABLE_VISION_IMAGE_VALIDATION=true
 DOCX_AI_SEMANTIC_REDRAW_MAX_ATTEMPTS=2
