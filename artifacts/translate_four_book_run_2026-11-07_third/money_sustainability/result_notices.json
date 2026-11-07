@@ -1,0 +1,24 @@
+{
+  "latest_result_notices": [
+    {
+      "kind": "glossary",
+      "level": "info",
+      "message_key": "result.run_glossary_built",
+      "params": {
+        "count": 145
+      }
+    }
+  ],
+  "latest_result_notice": {
+    "level": "warning",
+    "message": "Перевод завершён. Документ готов к использованию, но требует ручной проверки оформления: 5 абзацев с замечаниями. Подробности — в отчёте проверки (formatting_review.txt)."
+  },
+  "latest_delivery_disposition": {
+    "status": "accepted_with_advisory"
+  },
+  "latest_controlled_block_fallback_artifact": "/mnt/d/Temp/claude/wt-064-run/.run/block_fallbacks/bernardlietaer-moneyandsustainabilitypdffromepub-160516072426_docx_block_3_d0a857ac.json",
+  "acceptance": {
+    "passed": true,
+    "failed_checks": []
+  }
+}
