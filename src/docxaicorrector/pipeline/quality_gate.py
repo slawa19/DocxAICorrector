@@ -31,6 +31,7 @@ wrapper is out of this module's scope (would edit ``validation/structural.py``);
 documented private-access seam until that module exposes a public entry point.
 """
 
+import difflib
 import re
 from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
@@ -72,6 +73,7 @@ from docxaicorrector.pipeline.output_validation import (
     collect_page_placeholder_heading_concat_samples,
     collect_residual_bullet_glyph_samples,
     has_toc_body_concat_markdown,
+    is_citation_form_paragraph,
 )
 from docxaicorrector.pipeline.formatting_diagnostics_feedback import (
     _load_formatting_diagnostics_payloads,
@@ -282,25 +284,79 @@ def _resolve_list_fragment_regression_gate_samples(
     return list(raw_samples), "legacy_markdown"
 
 
+# A list-item marker the display normalisation may rewrite (``•`` -> ``- ``) or the assembly
+# may carry: the structural prefix plus the bullet glyphs ``output_validation`` already knows.
+_LINE_ALIGNMENT_LEADING_MARKER_PATTERN = re.compile(r"^(?:[●•◦‣]\s*)+")
+
+
+def _line_alignment_key(line: str) -> str:
+    """The comparison form of one markdown line for entry alignment: structural markdown
+    prefix and a leading bullet glyph removed, whitespace collapsed. It only decides whether
+    two lines are THE SAME line; it never changes what the gate measures."""
+    stripped = _strip_structural_markdown_prefix(line)
+    stripped = _LINE_ALIGNMENT_LEADING_MARKER_PATTERN.sub("", stripped)
+    return " ".join(stripped.split())
+
+
+def _build_markdown_line_entry_index(
+    *,
+    final_markdown: str,
+    assembly_entries: Sequence[object],
+) -> dict[int, int]:
+    """Map each markdown line to the 0-based position of the assembly entry that PRODUCED it.
+
+    Spec 064, Codex acceptance finding 2. This used to be a non-empty-line ordinal — line k ->
+    entry k — which assumes one line per entry. Entries keep single newlines inside their text
+    (the assembler lays each out as ``max(1, len(text.splitlines()))`` lines plus a blank, see
+    ``output_validation._iter_entry_heading_positions``), so after the first multi-line entry
+    every later line resolved to a different paragraph. Measured on the 2026-11-07 reports:
+    837 of 1 379 lines wrong on Money and 1 747 of 1 857 on Rethinking Money, each after ONE
+    multi-line entry — and every status / region / list-context decision read off the wrong
+    paragraph.
+
+    Now each entry contributes its own non-empty lines, and the two line sequences are
+    ALIGNED (``difflib.SequenceMatcher``) on ``_line_alignment_key``: a markdown line maps to
+    an entry only when it IS one of that entry's lines. The alignment, not a running count,
+    is what keeps the map right on the post-cleanup display markdown, where normalisation
+    rewrites bullet glyphs and can drop a line. A line that matches no entry line is left
+    unmapped: no signal, no decision (Constitution VII).
+    """
+    entry_keys: list[str] = []
+    entry_positions: list[int] = []
+    for position, entry in enumerate(assembly_entries):
+        for entry_line in str(getattr(entry, "text", "") or "").splitlines():
+            if entry_line.strip():
+                entry_keys.append(_line_alignment_key(entry_line))
+                entry_positions.append(position)
+    markdown_keys: list[str] = []
+    markdown_line_numbers: list[int] = []
+    for line_number, raw_line in enumerate(final_markdown.splitlines(), start=1):
+        if raw_line.strip():
+            markdown_keys.append(_line_alignment_key(raw_line))
+            markdown_line_numbers.append(line_number)
+    matcher = difflib.SequenceMatcher(a=markdown_keys, b=entry_keys, autojunk=False)
+    entry_index_by_line: dict[int, int] = {}
+    for markdown_start, entry_start, size in matcher.get_matching_blocks():
+        for offset in range(size):
+            entry_index_by_line[markdown_line_numbers[markdown_start + offset]] = entry_positions[
+                entry_start + offset
+            ]
+    return entry_index_by_line
+
+
 def _build_source_backed_entry_by_markdown_line(
     *,
     final_markdown: str,
     assembly_entries: Sequence[object],
 ) -> dict[int, object]:
-    entry_by_nonempty_line_index: dict[int, object] = {}
-    for index, entry in enumerate(assembly_entries, start=1):
-        entry_by_nonempty_line_index[index] = entry
-
-    entry_by_line: dict[int, object] = {}
-    nonempty_index = 0
-    for line_number, raw_line in enumerate(final_markdown.splitlines(), start=1):
-        if not raw_line.strip():
-            continue
-        nonempty_index += 1
-        entry = entry_by_nonempty_line_index.get(nonempty_index)
-        if entry is not None:
-            entry_by_line[line_number] = entry
-    return entry_by_line
+    """Each markdown line's producing assembly entry (``_build_markdown_line_entry_index``)."""
+    return {
+        line_number: assembly_entries[position]
+        for line_number, position in _build_markdown_line_entry_index(
+            final_markdown=final_markdown,
+            assembly_entries=assembly_entries,
+        ).items()
+    }
 
 
 def _build_source_backed_entry_index_by_markdown_line(
@@ -308,20 +364,13 @@ def _build_source_backed_entry_index_by_markdown_line(
     final_markdown: str,
     assembly_entries: Sequence[object],
 ) -> dict[int, int]:
-    """Map each non-empty markdown line to its 0-based position in ``assembly_entries``
-    (the same non-empty-line ordinal alignment ``_build_source_backed_entry_by_markdown_line``
-    relies on). The index lets a sample's entry look at its k-1 / k+1 document neighbours."""
-    entry_count = len(assembly_entries)
-    entry_index_by_line: dict[int, int] = {}
-    nonempty_index = 0
-    for line_number, raw_line in enumerate(final_markdown.splitlines(), start=1):
-        if not raw_line.strip():
-            continue
-        entry_position = nonempty_index
-        nonempty_index += 1
-        if entry_position < entry_count:
-            entry_index_by_line[line_number] = entry_position
-    return entry_index_by_line
+    """Each markdown line's producing entry as a 0-based position in ``assembly_entries``, so
+    a sample's entry can look at its k-1 / k+1 document neighbours. Same alignment as
+    ``_build_source_backed_entry_by_markdown_line`` (``_build_markdown_line_entry_index``)."""
+    return _build_markdown_line_entry_index(
+        final_markdown=final_markdown,
+        assembly_entries=assembly_entries,
+    )
 
 
 def _sample_has_source_list_context(
@@ -566,29 +615,35 @@ def _list_fragment_apparatus_credited_lines(
     references_region_start: int | None,
 ) -> frozenset[int]:
     """Spec 064 FR-005: the markdown lines of list-fragment residue that sits in APPARATUS —
-    credited to review by the REGION and STATUS the pipeline recorded, before any form test.
+    credited to review by the STATUS and REGION the pipeline recorded, before any form test.
 
-    A sample is credited when its resolved assembly entry (the same non-empty-line ordinal
-    alignment ``_resolve_list_fragment_regression_gate_samples`` uses) is source-backed and
+    A sample is credited when its resolved assembly entry (``_build_markdown_line_entry_index``,
+    the line-span alignment) is source-backed and
 
     * carries ``paragraph_status == policy_kept_source`` — kept in the source language by
       policy (spec 063 FR-011), so a "fragment" there is the source's own line, not a
       regression the translation introduced; or
-    * has a ``source_index`` at or after ``references_region_start`` — the back-matter
-      notes / bibliography / index region, resolved by the SAME provenance the heading-
-      demotion and paragraph-break detectors already use
-      (``formatting_coverage.resolve_main_content_scope``).
+    * has a ``source_index`` at or after ``references_region_start`` (the back-matter
+      region, resolved by the SAME provenance the heading-demotion and paragraph-break
+      detectors use, ``formatting_coverage.resolve_main_content_scope``) AND is itself
+      reference-shaped — its own text, or the text of its immediate source-backed body/list
+      neighbour, reads as a reference by ``output_validation.is_citation_form_paragraph``.
 
-    Why region and not form: on the 2026-11-07 rerun every gated sample on Creating Wealth,
-    Rethinking Money and The Value of Everything that hard-failed acceptance was a wrapped
-    tail of a notes / bibliography entry ending in a year («… Chelsea Green, 2004.»,
-    «(London: Macmillan, 1936), гл. 24.») — measured: 54 of 55 gated samples sit at or after
-    the region start; the remaining one (CW «14.») is a standalone number the form credit
-    already takes.
-    Form alone could not tell them from body text (one citation signal of the two
-    required). A broken list in the MAIN BODY has neither the status nor the region, so it
-    is not credited here and still hard-fails (anti-regression 3). No signal — an unresolved
-    line, a fallback entry, no region anchor — means no credit (Constitution VII).
+    Why the second condition needs the positive form signal (Codex acceptance finding 7):
+    the region start is anchored on the EARLIEST bare back-matter title and has no end, so
+    an appendix or an afterword placed after «Notes» lies inside it. Region alone would
+    credit a broken list there. The form test is imported from the notes classifier (spec
+    064 FR-006), not copied: one definition of "reads as a reference" in the repository.
+
+    Measured on the 2026-11-07 rerun: every gated sample that hard-failed acceptance on
+    Creating Wealth, Rethinking Money and The Value of Everything was a wrapped tail of a
+    notes / bibliography entry ending in a year («… Chelsea Green, 2004.», «(London:
+    Macmillan, 1936), гл. 24.»); CW «14.» is a standalone number the form credit already
+    takes. Form alone (``_is_citation_form_list_fragment_sample``) could not tell them from
+    body text — one citation signal of the two required. A broken list in the MAIN BODY has
+    neither the status nor the region, so it still hard-fails (anti-regression 3). No signal
+    — an unresolved line, a fallback entry, no region anchor — means no credit
+    (Constitution VII).
     """
     if not samples or not assembly_entries:
         return frozenset()
@@ -596,6 +651,7 @@ def _list_fragment_apparatus_credited_lines(
         final_markdown=final_markdown,
         assembly_entries=assembly_entries,
     )
+    entry_count = len(assembly_entries)
     credited: set[int] = set()
     for sample in samples:
         line = getattr(sample, "line", None)
@@ -605,20 +661,46 @@ def _list_fragment_apparatus_credited_lines(
         if index is None:
             continue
         entry = assembly_entries[index]
-        if not bool(getattr(entry, "from_registry", False)) or bool(getattr(entry, "used_fallback", False)):
+        if not _is_source_backed_entry(entry):
             continue
         if _is_policy_kept_source_entry(entry):
             credited.add(line)
             continue
         source_index = getattr(entry, "source_index", None)
-        if (
+        in_region = (
             references_region_start is not None
             and isinstance(source_index, int)
             and not isinstance(source_index, bool)
             and source_index >= references_region_start
+        )
+        if not in_region:
+            continue
+        if any(
+            0 <= position < entry_count and _is_reference_form_entry(assembly_entries[position])
+            for position in (index, index - 1, index + 1)
         ):
             credited.add(line)
     return frozenset(credited)
+
+
+def _is_source_backed_entry(entry: object) -> bool:
+    return bool(getattr(entry, "from_registry", False)) and not bool(getattr(entry, "used_fallback", False))
+
+
+def _is_reference_form_entry(entry: object) -> bool:
+    """A source-backed body/list entry whose own text reads as a REFERENCE by form
+    (``output_validation.is_citation_form_paragraph``). Headings and captions are excluded:
+    a bare section title has no prose words and would otherwise read as a reference."""
+    if not _is_source_backed_entry(entry):
+        return False
+    role = str(getattr(entry, "role", "") or "").strip().lower()
+    structural_role = str(getattr(entry, "structural_role", "") or "").strip().lower()
+    if role in {"heading", "caption"} or structural_role in {"heading", "caption"}:
+        return False
+    text = str(getattr(entry, "text", "") or "").strip()
+    if not text or text.startswith("#"):
+        return False
+    return is_citation_form_paragraph(text)
 
 
 def _is_reviewable_list_fragment_residue(

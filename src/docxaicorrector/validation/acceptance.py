@@ -94,6 +94,22 @@ def production_reportable_failed_checks(verdict: Mapping[str, object]) -> list[s
     ]
 
 
+def _strict_non_negative_int_or_none(value: object) -> int | None:
+    """An integer the field actually CARRIES, or ``None``: a bool, ``None``, a float, an
+    empty or non-numeric string and a negative number are not a measurement."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value if value >= 0 else None
+    if isinstance(value, str):
+        try:
+            parsed = int(value.strip())
+        except ValueError:
+            return None
+        return parsed if parsed >= 0 else None
+    return None
+
+
 def _coerce_int(value: object, default: int = 0) -> int:
     if isinstance(value, bool):
         return int(value)
@@ -974,6 +990,13 @@ def build_acceptance_verdict(
     untranslated_prose_block_chars = _coerce_int(
         untranslated_prose_accounting.get("untranslated_prose_block_delivery_chars")
     )
+    # Codex acceptance finding 8: the floor credit is taken only on a MEASURED volume. A
+    # missing, ``None`` or unparsable chars field coerces to 0 above (kept for the record),
+    # and 0 is below any floor — so without this the check would pass on the absence of a
+    # number. No measurement, no credit (Constitution VII).
+    measured_untranslated_prose_block_chars = _strict_non_negative_int_or_none(
+        untranslated_prose_accounting.get("untranslated_prose_block_delivery_chars")
+    )
     # Spec 064 FR-008: residue too small to be prose a reader loses. The recorded
     # 20261107 Rethinking Money run failed this check on ONE block of TWO characters — the
     # diagram step label «2b» (role ``body``, region ``prose``, between two figure images),
@@ -988,7 +1011,8 @@ def build_acceptance_verdict(
     # each is below the floor, and a guessed pass is worse than a false alarm.
     untranslated_prose_below_anchor_floor = (
         untranslated_prose_block_count > 0
-        and untranslated_prose_block_chars < REVIEW_ANCHOR_MIN_VISIBLE_CHARS
+        and measured_untranslated_prose_block_chars is not None
+        and measured_untranslated_prose_block_chars < REVIEW_ANCHOR_MIN_VISIBLE_CHARS
     )
     add_check(
         "untranslated_prose_not_delivered",
