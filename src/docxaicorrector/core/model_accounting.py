@@ -270,6 +270,9 @@ class RunModelAccountingLedger:
         self._text_removal_emptied_unit_count = 0
         self._text_removal_site_counts: dict[str, int] = {}
         self._text_removal_site_chars: dict[str, int] = {}
+        self._footnote_marker_source_count = 0
+        self._footnote_marker_kept_count = 0
+        self._footnote_marker_restored_count = 0
 
     def reset(self) -> None:
         with self._lock:
@@ -304,6 +307,9 @@ class RunModelAccountingLedger:
             self._text_removal_emptied_unit_count = 0
             self._text_removal_site_counts = {}
             self._text_removal_site_chars = {}
+            self._footnote_marker_source_count = 0
+            self._footnote_marker_kept_count = 0
+            self._footnote_marker_restored_count = 0
 
     def record_model_call(self, *, stage: str, usage: ModelCallUsage) -> None:
         with self._lock:
@@ -506,6 +512,19 @@ class RunModelAccountingLedger:
             self._text_removal_site_counts[site] = self._text_removal_site_counts.get(site, 0) + 1
             self._text_removal_site_chars[site] = self._text_removal_site_chars.get(site, 0) + max(0, chars)
 
+    def record_footnote_markers(self, *, source_count: int, kept_count: int, restored_count: int) -> None:
+        """Count the footnote references of one block's accepted paragraphs (spec 063 FR-006).
+
+        ``source_count`` — references the import recognised in the source (superscript
+        glyphs); ``kept_count`` — those the model's translation carried; ``restored_count``
+        — those the pipeline put back (FR-005). Delivered is ``kept + restored``. Data, not
+        a gate: nothing reads these to decide anything.
+        """
+        with self._lock:
+            self._footnote_marker_source_count += max(0, source_count)
+            self._footnote_marker_kept_count += max(0, kept_count)
+            self._footnote_marker_restored_count += max(0, restored_count)
+
     def record_paragraph_disposition(self, *, status: str, count: int = 1) -> None:
         """Count how ONE block's paragraphs came out (spec 056 E).
 
@@ -638,6 +657,17 @@ class RunModelAccountingLedger:
                 "text_removal_emptied_unit_count": self._text_removal_emptied_unit_count,
                 "text_removal_site_counts": dict(sorted(self._text_removal_site_counts.items())),
                 "text_removal_site_chars": dict(sorted(self._text_removal_site_chars.items())),
+                # Spec 063 FR-006: footnote references (superscript glyphs the import put in
+                # the source) across every accepted paragraph — how many there were, how many
+                # the model carried, and how many the pipeline restored after the model
+                # dropped them. Delivered = kept + restored; the model's own keep rate is
+                # kept / source.
+                "footnote_marker_source_count": self._footnote_marker_source_count,
+                "footnote_marker_kept_count": self._footnote_marker_kept_count,
+                "footnote_marker_restored_count": self._footnote_marker_restored_count,
+                "footnote_marker_delivered_count": (
+                    self._footnote_marker_kept_count + self._footnote_marker_restored_count
+                ),
                 "stages": {stage: self._stages[stage].to_dict() for stage in sorted(self._stages)},
             }
             return payload
@@ -809,6 +839,14 @@ def record_text_removal(*, site: str, chars: int = 0, emptied_units: int = 0) ->
         site=site,
         chars=chars,
         emptied_units=emptied_units,
+    )
+
+
+def record_footnote_markers(*, source_count: int, kept_count: int, restored_count: int) -> None:
+    get_run_model_accounting_ledger().record_footnote_markers(
+        source_count=source_count,
+        kept_count=kept_count,
+        restored_count=restored_count,
     )
 
 

@@ -4523,6 +4523,13 @@ _MODEL_ACCOUNTING_SUMMARY_FIELDS = (
     "text_removal_event_count",
     "text_removal_chars",
     "text_removal_emptied_unit_count",
+    # Spec 063 FR-006: footnote references the import recognised in the source, how many the
+    # model carried, how many the pipeline restored (FR-005), and what was delivered. Data,
+    # not a gate; ``kept / source`` is the model's own keep rate that SC-002 measures.
+    "footnote_marker_source_count",
+    "footnote_marker_kept_count",
+    "footnote_marker_restored_count",
+    "footnote_marker_delivered_count",
 )
 
 
@@ -4541,6 +4548,38 @@ def _extract_model_accounting(event_log: Sequence[Mapping[str, object]]) -> dict
         if isinstance(context, Mapping):
             return {str(key): value for key, value in context.items()}
     return None
+
+
+def _extract_footnote_marker_restorations(
+    event_log: Sequence[Mapping[str, object]],
+) -> list[dict[str, object]]:
+    """Spec 063 FR-005: one record per paragraph whose dropped footnote references were put back.
+
+    The address half of the FR-006 counter — which paragraphs, so a reader can open them.
+    Read off the ``footnote_markers_restored`` events, the same route as every other per-run
+    record here.
+    """
+    records: list[dict[str, object]] = []
+    for event in event_log:
+        if str(event.get("event_id") or "") != "footnote_markers_restored":
+            continue
+        context = event.get("context") or {}
+        if not isinstance(context, Mapping):
+            continue
+        records.append(
+            {
+                "block_index": context.get("block_index"),
+                "paragraph_id": context.get("paragraph_id"),
+                "restored_markers": list(context.get("restored_markers") or []),
+                "placement": context.get("placement"),
+            }
+        )
+    return records
+
+
+def _build_footnote_marker_summary_lines(records: Sequence[Mapping[str, object]] | None) -> list[str]:
+    paragraph_ids = [str(record.get("paragraph_id")) for record in records or ()]
+    return [f"footnote_marker_restored_paragraph_ids={json.dumps(paragraph_ids, ensure_ascii=False)}"]
 
 
 def _build_model_accounting_summary_lines(model_accounting: Mapping[str, object] | None) -> list[str]:
@@ -5860,6 +5899,7 @@ def main() -> None:
         "runtime_config": build_validation_runtime_config(runtime_resolution),
         "preparation": preparation_payload,
         "model_accounting": _extract_model_accounting(event_log),
+        "footnote_marker_restorations": _extract_footnote_marker_restorations(event_log),
         "narration_artifact": _extract_narration_artifact_record(event_log),
         "preparation_diagnostic_snapshot": preparation_diagnostic_snapshot,
         "source_cleanup_evidence": _build_source_cleanup_evidence(getattr(prepared, "cleanup_report", None)),
@@ -6059,6 +6099,9 @@ def main() -> None:
         f"preparation_diagnostic_snapshot={json.dumps(report['preparation_diagnostic_snapshot'], ensure_ascii=False, sort_keys=True)}",
         *_build_model_accounting_summary_lines(
             cast("Mapping[str, object] | None", report.get("model_accounting"))
+        ),
+        *_build_footnote_marker_summary_lines(
+            cast("Sequence[Mapping[str, object]] | None", report.get("footnote_marker_restorations"))
         ),
         *_build_narration_summary_lines(
             cast("Mapping[str, object] | None", report.get("narration_artifact"))
