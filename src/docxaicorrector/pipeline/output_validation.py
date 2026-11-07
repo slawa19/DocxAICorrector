@@ -121,7 +121,22 @@ _RUSSIAN_PRONOUN_CONTINUATION_START_PATTERN = re.compile(
     re.IGNORECASE,
 )
 _LOWERCASE_START_PATTERN = re.compile(r"^[a-zа-яё]")
-_SENTENCE_TERMINAL_PATTERN = re.compile(r"[.!?…:](?:[)\]»”’'\"])?$")
+# Spec 063 (Codex acceptance finding 1): a footnote reference the import rendered as Unicode
+# superscript digits ("…store.²⁰", "…cutting.”¹⁷", "…year.¹²,¹³") stands AFTER the
+# sentence's terminal punctuation and does not reopen the sentence. Before this, FR-005's
+# restoration of a lost reference turned a complete translated paragraph ("магазина.") into
+# an "unfinished" one ("магазина.²⁰"), and boundary recovery welded it to the next paragraph
+# -- measured on the recorded Rethinking Money run: four new merges, p0526+p0527 among them.
+# Only the superscript GLYPHS count: a plain trailing number ("в 2011", "store.20") is not a
+# reference by form and still does not close the sentence.
+_TRAILING_FOOTNOTE_REFERENCES = r"(?:[⁰¹²³⁴⁵⁶⁷⁸⁹]+(?:,[⁰¹²³⁴⁵⁶⁷⁸⁹]+)*)?"
+_SENTENCE_TERMINAL_PATTERN = re.compile(r"[.!?…:](?:[)\]»”’'\"])?" + _TRAILING_FOOTNOTE_REFERENCES + r"$")
+# The pre-063 form, kept for ONE reader: spec 008's advisory split detector
+# (``paragraph_break_detection``), whose recorded edge case calls a fragment ending in a
+# footnote marker non-terminal on purpose -- the two halves already share one source
+# paragraph there, and the question it asks is "was that paragraph cut", not "is this a
+# boundary the source wrote".
+_SENTENCE_TERMINAL_WITHOUT_REFERENCES_PATTERN = re.compile(r"[.!?…:](?:[)\]»”’'\"])?$")
 # Spec 057: terminal punctuation of a SOURCE paragraph. Read off the input document,
 # never off the translation, and used only to REFUSE a boundary merge the source itself
 # does not authorise.
@@ -163,6 +178,11 @@ _SOURCE_TRAILING_CLOSERS = "»”’\"')]}"
 _SOURCE_TRAILING_EMPHASIS_MARKERS = "*"
 _SOURCE_TRAILING_INLINE_TAGS = ("</u>", "</sup>", "</sub>")
 _SOURCE_TRAILING_TRIM_CHARS = _SOURCE_TRAILING_CLOSERS + _SOURCE_TRAILING_EMPHASIS_MARKERS
+# Spec 063: the footnote references the import itself writes as superscript glyphs, peeled
+# off the tail like the markup above -- "store.²⁰" and "cutting.”¹⁷" end a sentence. The same
+# group as ``_SENTENCE_TERMINAL_PATTERN`` accepts on the translation side, so the two halves
+# of the merge decision read the same character the same way.
+_SOURCE_TRAILING_FOOTNOTE_REFERENCES_PATTERN = re.compile(r"[⁰¹²³⁴⁵⁶⁷⁸⁹]+(?:,[⁰¹²³⁴⁵⁶⁷⁸⁹]+)*$")
 _TOC_BODY_CONCAT_MARKDOWN_PATTERN = re.compile(
     r"(?:\.{2,}|[\u2024\u2025\u2026\u2027\u2219\u22c5\u00b7]{2,}|\s{2,})\s*[0-9ivxlcdmIVXLCDM]+\s+[А-Яа-яЁёA-Za-z]"
 )
@@ -1165,6 +1185,9 @@ def _source_text_ends_sentence(source_text: str | None) -> bool | None:
     ASCII-only trim would read ``**Complete.** `` as not ending a sentence and destroy
     a real boundary.
 
+    Spec 063: trailing footnote references in superscript glyphs are peeled off too, so
+    "…store.²⁰" ends a sentence; a trailing PLAIN number ("…store.20", "…in 2011") does not.
+
     ``None`` means the source is unknown, or is nothing but markup: a missing signal must
     not quietly become a new rule (Constitution VII).
     """
@@ -1174,6 +1197,7 @@ def _source_text_ends_sentence(source_text: str | None) -> bool | None:
     while True:
         previous = trimmed
         trimmed = trimmed.rstrip().rstrip(_SOURCE_TRAILING_TRIM_CHARS).rstrip()
+        trimmed = _SOURCE_TRAILING_FOOTNOTE_REFERENCES_PATTERN.sub("", trimmed)
         for tag in _SOURCE_TRAILING_INLINE_TAGS:
             if trimmed.endswith(tag):
                 trimmed = trimmed[: -len(tag)]
