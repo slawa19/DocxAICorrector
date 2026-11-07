@@ -168,7 +168,9 @@ def test_analyze_image_normalizes_bypass_route_from_vision_payload():
         enable_vision=True,
     )
 
-    assert result.image_type == "dense_document_or_table"
+    # Spec 062 enum guard: a type outside ANALYSIS_IMAGE_TYPES no longer passes through
+    # raw; it becomes mixed_or_ambiguous, on which a safe_mode route stays hard.
+    assert result.image_type == "mixed_or_ambiguous"
     assert result.render_strategy == "safe_mode"
     assert result.semantic_redraw_allowed is False
     assert result.text_node_count == 26
@@ -700,8 +702,10 @@ def test_vision_analysis_prompt_names_allowed_values_and_registry_keys():
     # FR-020: the copy rule is script-agnostic, not tied to three named languages.
     assert image_analysis.TEXT_COPY_RULE in text
     assert "Cyrillic, Ukrainian, and Russian" not in text
-    # FR-024 (P2) is not done here: the dense-text sentence stays until the Cyrillic gate.
-    assert "If text is too dense for faithful redraw, set recommended_route to safe_mode." in text
+    # FR-024 (P2, done after the Cyrillic gate passed for the structured mode): the
+    # dense-text sentence is gone; test_vision_analysis_prompts_never_send_dense_or_non_latin_text_to_safe
+    # checks both prompts.
+    assert "If text is too dense for faithful redraw, set recommended_route to safe_mode." not in text
 
 
 def test_valid_prompt_keys_follow_the_registry(monkeypatch):
@@ -875,3 +879,212 @@ def test_dense_photo_does_not_reach_reconstruction(monkeypatch):
     )
 
     assert isinstance(candidate, bytes) and candidate
+
+
+# --- spec 062 P2: FR-024, the routing guard and the enum guard ------------------------------
+
+# The raw vision payloads ``gpt-6.1-terra`` returned in the spec 062 image comparison
+# (2026-11-07, ``analysis/analysis_gpt-6.1-terra.json``) for the Cyrillic infographic and for
+# the dense chart img_027. Both carry ``semantic_redraw_allowed: false`` WITH
+# ``recommended_route: "safe_mode"``, as did sol's; mini typed the same images as redrawable.
+_TERRA_INFOGRAPHIC_PAYLOAD = {
+    "image_type": "infographic",
+    "image_subtype": "Ukrainian facts-versus-manipulation comparison poster",
+    "contains_text": True,
+    "semantic_redraw_allowed": False,
+    "confidence": 0.99,
+    "structured_parse_confidence": 0.84,
+    "prompt_key": "infographic_semantic_redraw",
+    "recommended_route": "safe_mode",
+    "structure_summary": (
+        "One comparison infographic contains five annotated groups, one central illustration, "
+        "one news label, and three organization logos."
+    ),
+    "extracted_labels": [
+        "ФАКТИ VS МАНІПУЛЯЦІЇ",
+        "не вказано",
+        "підміняється",
+        "Фактична інформація",
+        "Категоричний висновок",
+        "вставні слова та епітети",
+        "НОВИНА",
+        "Вказується",
+        "неможливо",
+        "можливо",
+        "Оціночні судження",
+        "Конкретні факти",
+    ],
+    "text_node_count": 21,
+    "extracted_text": "ФАКТИ VS МАНІПУЛЯЦІЇ\nЯк зрозуміти, що у новині використовуються оціночні судження?",
+    "fallback_reason": "Dense Cyrillic comparison poster with complex decorative illustration and small logo text.",
+}
+_TERRA_CHART_PAYLOAD = {
+    "image_type": "chart",
+    "image_subtype": "stacked area chart",
+    "contains_text": True,
+    "semantic_redraw_allowed": False,
+    "confidence": 0.9,
+    "structured_parse_confidence": 0.8,
+    "prompt_key": "chart_semantic_redraw",
+    "recommended_route": "safe_mode",
+    "structure_summary": "A stacked area chart with 4 series, 13 y ticks and 37 x ticks.",
+    "extracted_labels": ["1970", "1975", "1980"],
+    "text_node_count": 56,
+    "extracted_text": "1970 1975 1980",
+    "fallback_reason": "Exact series values cannot be recovered reliably from the image.",
+}
+
+
+def _analyze_payload(payload: dict) -> "image_analysis.ImageAnalysisResult":
+    import json
+
+    return _analyze_with_vision_payload(json.dumps(payload, ensure_ascii=False))
+
+
+def _system_text(request: dict) -> str:
+    system_message = request["input"][0]
+    return next(part["text"] for part in system_message["content"] if part["type"] == "input_text")
+
+
+def test_vision_analysis_prompts_never_send_dense_or_non_latin_text_to_safe():
+    """FR-024 (D2): neither prompt tells the model to prefer safe_mode for dense or
+    non-Latin text. Fails on the old prompts ("especially in Cyrillic or mixed non-Latin
+    text, should prefer safe_mode"; "If text is too dense ... safe_mode")."""
+    client = _CapturingResponsesClient('{"image_type":"diagram","semantic_redraw_allowed":true}')
+    image_analysis.analyze_image(
+        _make_diagram_like_jpeg(), model="gpt-4.1", mime_type="image/jpeg", client=client, enable_vision=True
+    )
+
+    system_text = _system_text(client.requests[0])
+    user_text = _vision_user_text(client.requests[0])
+    for text in (system_text, user_text):
+        assert "Cyrillic" not in text
+        assert "non-Latin" not in text
+        assert "too dense" not in text
+        assert "Dense" not in text
+    # Anti-vacuum: the photo/screenshot advice survives, so safe_mode is still offered.
+    assert "Screenshots and photos should usually stay in safe_mode" in system_text
+    assert '"safe_mode"' in user_text
+
+
+def test_model_safe_route_on_redrawable_type_is_advisory_in_semantic_modes(monkeypatch):
+    """Routing guard: terra's safe_mode for the Cyrillic infographic no longer switches the
+    redraw off in the semantic modes the user chose; ``safe`` still makes no redraw."""
+    from docxaicorrector.image.pipeline_policy import (
+        build_generation_analysis,
+        is_advisory_safe_fallback,
+        should_attempt_semantic_redraw,
+    )
+
+    analysis = _analyze_payload(_TERRA_INFOGRAPHIC_PAYLOAD)
+
+    assert analysis.image_type == "infographic"
+    assert analysis.semantic_redraw_allowed is False
+    assert analysis.fallback_reason == (
+        "model_safe_route:Dense Cyrillic comparison poster with complex decorative illustration and small logo text."
+    )
+    assert analysis.render_strategy != "safe_mode"
+    assert is_advisory_safe_fallback(analysis) is True
+    assert should_attempt_semantic_redraw(analysis, "semantic_redraw_structured") is True
+    assert should_attempt_semantic_redraw(analysis, "semantic_redraw_direct") is True
+    assert should_attempt_semantic_redraw(analysis, "safe") is False
+    assert should_attempt_semantic_redraw(analysis, "no_change") is False
+
+    semantic_calls: list[str] = []
+
+    def _fake_semantic(image_bytes, generation_analysis, *, requested_mode, **kwargs):
+        semantic_calls.append(requested_mode)
+        return b"redrawn"
+
+    monkeypatch.setattr(image_generation, "_generate_semantic_candidate", _fake_semantic)
+    candidate = image_generation.generate_image_candidate(
+        _make_diagram_like_jpeg(),
+        build_generation_analysis(analysis),
+        mode="semantic_redraw_structured",
+        client=object(),
+    )
+
+    assert candidate == b"redrawn"
+    assert semantic_calls == ["semantic_redraw_structured"]
+
+
+def test_model_safe_route_on_dense_chart_is_advisory():
+    """The second terra shape: the chart's free reason is about the series values."""
+    from docxaicorrector.image.pipeline_policy import build_generation_analysis, should_attempt_semantic_redraw
+
+    analysis = _analyze_payload(_TERRA_CHART_PAYLOAD)
+
+    assert analysis.fallback_reason is not None
+    assert analysis.fallback_reason.startswith("model_safe_route:")
+    assert should_attempt_semantic_redraw(analysis, "semantic_redraw_structured") is True
+    assert build_generation_analysis(analysis).semantic_redraw_allowed is True
+
+
+def test_model_safe_route_without_reason_is_still_advisory():
+    payload = dict(_TERRA_CHART_PAYLOAD, fallback_reason=None)
+
+    analysis = _analyze_payload(payload)
+
+    assert analysis.fallback_reason == "model_safe_route:unspecified"
+
+
+def test_model_safe_route_on_photo_screenshot_or_unknown_type_stays_hard(monkeypatch):
+    """Anti-vacuum for the routing guard: a photo, a screenshot and an out-of-enum type the
+    model sent to safe_mode get no redraw in any semantic mode."""
+    from docxaicorrector.image.pipeline_policy import build_generation_analysis, should_attempt_semantic_redraw
+
+    def _forbidden(*args, **kwargs):
+        raise AssertionError("a photo, screenshot or unclassified image must stay on the safe route")
+
+    monkeypatch.setattr(image_generation, "_generate_semantic_candidate", _forbidden)
+    monkeypatch.setattr(image_generation, "_generate_reconstructed_candidate", _forbidden)
+
+    for image_type, prompt_key in (
+        ("photo", "photo_safe_fallback"),
+        ("screenshot", "screenshot_safe_fallback"),
+        ("logo", "mixed_or_ambiguous_fallback"),
+    ):
+        payload = dict(
+            _TERRA_INFOGRAPHIC_PAYLOAD,
+            image_type=image_type,
+            prompt_key=prompt_key,
+            fallback_reason="Cover page with text and logo.",
+        )
+        analysis = _analyze_payload(payload)
+
+        assert analysis.render_strategy == "safe_mode"
+        assert analysis.semantic_redraw_allowed is False
+        assert analysis.fallback_reason == "Cover page with text and logo."
+        for mode in ("semantic_redraw_structured", "semantic_redraw_direct", "compare_all"):
+            assert should_attempt_semantic_redraw(analysis, mode) is False
+        candidate = image_generation.generate_image_candidate(
+            _make_diagram_like_jpeg(),
+            build_generation_analysis(analysis),
+            mode="semantic_redraw_structured",
+            client=object(),
+        )
+        assert isinstance(candidate, bytes) and candidate
+
+
+def test_image_type_outside_the_enum_becomes_mixed_or_ambiguous_with_warning(monkeypatch):
+    """Enum guard (comparison finding 6: mini answered "logo" for 2 of 43 book images)."""
+    logged: list[tuple[int, str, dict]] = []
+    monkeypatch.setattr(
+        image_analysis,
+        "log_event",
+        lambda level, event, message, **context: logged.append((level, event, context)),
+    )
+    heuristic = image_analysis._build_heuristic_analysis("image/jpeg", None)
+
+    logo = image_analysis._coerce_vision_analysis_payload({"image_type": "logo"}, heuristic)
+    assert logo.image_type == "mixed_or_ambiguous"
+    assert [(level, event) for level, event, _ in logged] == [(30, "image_analysis_image_type_out_of_enum")]
+    assert logged[0][2]["image_type"] == "logo"
+
+    logged.clear()
+    # Counter-proof: allowed values (any case) pass without a warning; a missing value keeps
+    # the heuristic type as before.
+    assert image_analysis._coerce_vision_analysis_payload({"image_type": "Diagram"}, heuristic).image_type == "diagram"
+    assert image_analysis._coerce_vision_analysis_payload({"image_type": "table"}, heuristic).image_type == "table"
+    assert image_analysis._coerce_vision_analysis_payload({}, heuristic).image_type == heuristic.image_type
+    assert logged == []
