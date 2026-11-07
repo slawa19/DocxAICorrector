@@ -2,6 +2,11 @@
 import json
 import sys
 from collections import Counter
+from pathlib import Path
+
+# Derived from this script's location, so the prefix strip follows the checkout
+# (main tree or side worktree) instead of naming one path that can move.
+REPO_ROOT_PREFIX = Path(__file__).resolve().parents[1].as_posix().rstrip("/") + "/"
 
 r = json.load(sys.stdin)
 diags = r.get("generalDiagnostics", [])
@@ -9,7 +14,7 @@ errors = [d for d in diags if d.get("severity") == "error"]
 
 file_counts: Counter[str] = Counter()
 for e in errors:
-    f = e.get("file", "?").replace("/mnt/d/www/projects/2025/DocxAICorrector/", "")
+    f = e.get("file", "?").replace(REPO_ROOT_PREFIX, "")
     file_counts[f] += 1
 
 print(f"Total errors: {len(errors)}")

@@ -71,7 +71,7 @@ Startup contract считается отдельной защищённой по
 
 ## 0.2. WSL-first project runtime — источник истины для разработки и валидации
 
-Для этого репозитория канонический runtime — project runtime в WSL по пути `/mnt/d/www/projects/2025/DocxAICorrector`.
+Для этого репозитория канонический runtime — project runtime в WSL по пути `/mnt/d/Work/Projects/DocxAICorrector`.
 
 ИИ-агенту и любому automation/tooling в проекте обязательно:
 
@@ -103,7 +103,7 @@ Setup/runtime dependencies являются отдельным защищённ�
 
 ```bash
 bash scripts/test.sh tests/ -q
-bash -lc 'cd /mnt/d/www/projects/2025/DocxAICorrector && . .venv/bin/activate && python -m pytest tests/test_config.py -vv'
+bash -lc 'cd /mnt/d/Work/Projects/DocxAICorrector && . .venv/bin/activate && python -m pytest tests/test_config.py -vv'
 ```
 
 ---
@@ -483,7 +483,7 @@ Operational-уточнение для visual debugging:
 - если нужно прогнать весь test suite, ИИ-агент должен использовать `bash scripts/test.sh tests/ -q` из WSL или task `Run Full Pytest`;
 - для file-level и node-level сценариев агент должен использовать `bash scripts/test.sh <target> -vv` или соответствующие `Run Current Test File` и `Run Current Test Node` tasks;
 - перед первым ручным test command агент обязан определить текущий shell через `uname` и `pwd`, а не угадывать его по умолчанию;
-- если shell уже Linux и рабочий каталог находится внутри `/mnt/d/www/projects/2025/DocxAICorrector`, агент обязан запускать `bash scripts/test.sh ...` напрямую и не вкладывать туда `wsl.exe`;
+- если shell уже Linux и рабочий каталог находится внутри `/mnt/d/Work/Projects/DocxAICorrector`, агент обязан запускать `bash scripts/test.sh ...` напрямую и не вкладывать туда `wsl.exe`;
 - если shell не WSL, допустим только transport-path `wsl.exe -d Debian ...` до project runtime, причём как debug-layer, а не как финальный user-visible proof;
 - для одного расследования агент не должен держать несколько параллельных pytest run по одной и той же проблеме; один selector на один активный запуск, затем решение о сужении или расширении scope;
 - при CI-reproduction агент сначала подтверждает tested SHA failing run; если локальный worktree грязный или не совпадает с tested commit, нужно переключаться на clean worktree или Docker parity path до интерпретации результата;
@@ -500,7 +500,7 @@ bash scripts/test.sh tests/ -q
 Низкоуровневый fallback:
 
 ```bash
-bash -lc 'cd /mnt/d/www/projects/2025/DocxAICorrector && . .venv/bin/activate && pytest tests -q'
+bash -lc 'cd /mnt/d/Work/Projects/DocxAICorrector && . .venv/bin/activate && pytest tests -q'
 ```
 
 Если нужен подробный прогресс по каждому тесту, агент должен переключаться на `pytest tests -vv`.

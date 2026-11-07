@@ -82,7 +82,7 @@
 Полный актуальный список events можно перегенерировать:
 
 ```bash
-bash -c "cd /mnt/d/www/projects/2025/DocxAICorrector && python3 scripts/_list_log_events.py"
+bash -c "cd /mnt/d/Work/Projects/DocxAICorrector && python3 scripts/_list_log_events.py"
 ```
 
 Скрипт сканирует ключевые production-модули и печатает `event\tfile`. Используйте его как инструмент аудита перед добавлением новых имён, чтобы избежать дубликатов.

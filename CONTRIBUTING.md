@@ -103,13 +103,13 @@ bash scripts/test.sh tests/test_config.py::test_name -vv -x
 Низкоуровневый fallback во встроенном WSL-терминале VS Code:
 
 ```bash
-bash -lc 'cd /mnt/d/www/projects/2025/DocxAICorrector && . .venv/bin/activate && pytest tests -q'
+bash -lc 'cd /mnt/d/Work/Projects/DocxAICorrector && . .venv/bin/activate && pytest tests -q'
 ```
 
 Для живого прогресса по каждому тесту:
 
 ```bash
-bash -lc 'cd /mnt/d/www/projects/2025/DocxAICorrector && . .venv/bin/activate && pytest tests -vv'
+bash -lc 'cd /mnt/d/Work/Projects/DocxAICorrector && . .venv/bin/activate && pytest tests -vv'
 ```
 
 WSL-driven tasks открывают отдельный терминал и оставляют его видимым после завершения.
