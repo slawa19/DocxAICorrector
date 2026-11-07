@@ -370,7 +370,7 @@ def test_request_carries_languages_limit_candidates_and_fixed_terms():
     request_input = cast(list[dict[str, Any]], request["input"])
     system_text = request_input[0]["content"][0]["text"]
     assert "from en into ru" in system_text
-    assert "at most 12." in system_text
+    assert "at most 12 besides the required ones" in system_text
     user_payload = json.loads(request_input[1]["content"][0]["text"])
     assert user_payload["max_terms"] == 12
     assert [item["term"] for item in user_payload["candidates"]] == ["Zorvane Pettish", "quillet bond"]
@@ -624,7 +624,8 @@ def test_required_flag_follows_the_authors_marking_not_the_family_score():
     assert not keys["kelbrook"].required  # a name stays at the model's discretion
 
 
-def test_family_heads_are_required_and_collocations_are_not():
+def test_a_family_of_unmarked_collocations_has_an_optional_head():
+    """Anti-vacuum: a head is required only when the author marked one of its members."""
     paragraphs = []
     for _ in range(6):
         paragraphs.append("The worth creation and the worth extraction were measured.")
@@ -633,18 +634,96 @@ def test_family_heads_are_required_and_collocations_are_not():
         paragraphs.extend(_FILLER)
     keys = _keys(extract_glossary_candidates(_units(paragraphs)))
 
-    assert keys["worth"].family == "head" and keys["worth"].required
+    assert keys["worth"].family == "head" and not keys["worth"].required
     assert keys["worth creation"].family == "collocation" and not keys["worth creation"].required
 
 
-def test_stress_italics_on_the_documents_most_common_words_are_not_marked():
-    # "after" and "always" are among the words that make up half of this document's text.
-    common = "It was always after dark, always after rain, and always after the bell rang after noon."
-    paragraphs = ["The *after* effect was *always* there.", common, common, *_FILLER] * 3
+def test_a_family_with_an_author_marked_member_has_a_required_head():
+    paragraphs = ["This we will call *worth creation* from here on.", "The *surplus worth* is introduced."]
+    for _ in range(6):
+        paragraphs.append("The worth creation and the worth extraction were measured.")
+        paragraphs.append("Their worth creation exceeded worth extraction, and surplus worth grew.")
+        paragraphs.append("Surplus worth and worth creation, again; surplus worth once more.")
+        paragraphs.extend(_FILLER)
     keys = _keys(extract_glossary_candidates(_units(paragraphs)))
 
-    for word in ("after", "always"):
-        assert word not in keys or "emphasis" not in keys[word].signals
+    assert keys["worth creation"].required
+    assert keys["worth"].family == "head" and keys["worth"].required
+
+
+def test_a_defined_term_is_required_even_when_rare():
+    paragraphs = ["We call this *the tallow gap* in our models.", *(_FILLER * 6), "The tallow gap closed."]
+    keys = _keys(extract_glossary_candidates(_units(paragraphs)))
+
+    assert keys["tallow gap"].occurrence_count == 2
+    assert keys["tallow gap"].required
+
+
+def test_a_word_stressed_once_is_not_required():
+    """Anti-vacuum: italics once, on a word the text uses anyway, is stress, not a term."""
+    paragraphs = []
+    for index in range(8):
+        paragraphs.append("The harvest was late and the harvest was small, as harvests often are.")
+        paragraphs.extend(_FILLER)
+        if index == 4:
+            paragraphs.append("But the *harvest* mattered more than anything.")
+    keys = _keys(extract_glossary_candidates(_units(paragraphs)))
+
+    assert "harvest" not in keys or not keys["harvest"].required
+
+
+def test_an_italic_term_marked_twice_and_recurring_is_required():
+    paragraphs = []
+    for index in range(8):
+        paragraphs.append("Later the brennic rule applied again, as the brennic rule does.")
+        paragraphs.extend(_FILLER)
+        if index in (2, 5):
+            paragraphs.append("Here the *brennic* rule is set out.")
+    keys = _keys(extract_glossary_candidates(_units(paragraphs)))
+
+    assert keys["brennic"].required
+
+
+def _heading_units(paragraphs):
+    units = []
+    for index, (text, level) in enumerate(paragraphs):
+        units.append(
+            GlossarySourceUnit(unit_id=f"p{index:04d}", text=text, is_heading=level is not None, heading_level=level)
+        )
+    return tuple(units)
+
+
+def test_a_heading_word_the_body_keeps_using_is_a_candidate_with_the_heading_as_context():
+    paragraphs: list[tuple[str, int | None]] = [("Money and Durability", 1)]
+    for chapter in range(4):
+        paragraphs.append((f"Chapter {chapter} Notes", 2))
+        paragraphs.append(("The question of durability returns here, and durability matters.", None))
+        paragraphs.extend((text, None) for text in _FILLER)
+    candidate = _keys(extract_glossary_candidates(_heading_units(paragraphs)))["durability"]
+
+    assert candidate.family == "heading"
+    assert candidate.context == "Money and Durability"
+    assert not candidate.required
+
+
+def test_a_heading_phrase_the_body_never_repeats_is_not_a_candidate():
+    """Anti-vacuum: a word only in a title is not a subject the book keeps using."""
+    paragraphs: list[tuple[str, int | None]] = [("Tidewater Ledger Concerns", 1)]
+    for _ in range(4):
+        paragraphs.extend((text, None) for text in _FILLER)
+    keys = _keys(extract_glossary_candidates(_heading_units(paragraphs)))
+
+    assert "tidewater" not in keys and "ledger" not in keys and "tidewater ledger" not in keys
+
+
+def test_level_three_headings_are_not_a_candidate_source():
+    paragraphs: list[tuple[str, int | None]] = [("Durability Box", 3)]
+    for _ in range(4):
+        paragraphs.append(("The question of durability returns here, and durability matters.", None))
+        paragraphs.extend((text, None) for text in _FILLER)
+    keys = _keys(extract_glossary_candidates(_heading_units(paragraphs)))
+
+    assert "durability" not in keys or keys["durability"].family != "heading"
 
 
 def test_required_candidates_ignore_the_limit_on_the_models_own_choices():
@@ -686,7 +765,54 @@ def test_request_marks_required_candidates_for_the_model():
     payload = json.loads(request_input[1]["content"][0]["text"])
 
     assert [item["required"] for item in payload["candidates"]] == [True, False]
-    assert "Return a rendering for EVERY required candidate" in request_input[0]["content"][0]["text"]
+    assert "return a rendering for every one of them" in request_input[0]["content"][0]["text"]
+
+
+def test_role_requests_and_collision_helpers():
+    from docxaicorrector.text.glossary_pass import (
+        build_distinction_request,
+        find_rendering_collisions,
+        normalize_rendering,
+    )
+
+    required_request = build_glossary_request(
+        model="m",
+        candidates=(replace(_candidate("quillet bond", "marked"), required=True),),
+        fixed_terms=(),
+        source_language="en",
+        target_language="ru",
+        max_terms=0,
+        role="required",
+    )
+    required_text = cast(list[dict[str, Any]], required_request["input"])[0]["content"][0]["text"]
+    assert "Give EVERY candidate one rendering" in required_text
+    assert "max_terms" not in json.loads(cast(list[dict[str, Any]], required_request["input"])[1]["content"][0]["text"])
+
+    assert normalize_rendering("Устойчивость") == normalize_rendering("устойчивости")
+    assert normalize_rendering("устойчивость") != normalize_rendering("жизнестойкость")
+    terms = (
+        GlossaryTerm(source_term="durability", target_term="устойчивость"),
+        GlossaryTerm(source_term="steadiness", target_term="Устойчивости"),
+        GlossaryTerm(source_term="Kelbrook", target_term="Келбрук", kind="name"),
+        GlossaryTerm(source_term="durabilities", target_term="устойчивость"),
+    )
+    groups = find_rendering_collisions(terms)
+    # "durabilities" folds to the same source key as "durability": a plural is not a collision.
+    assert [[term.source_term for term in group] for group in groups] == [["durability", "steadiness"]]
+    request = build_distinction_request(
+        model="m",
+        groups=groups,
+        contexts={("durability",): "ctx one", ("steadiness",): "ctx two"},
+        source_language="en",
+        target_language="ru",
+    )
+    payload = json.loads(cast(list[dict[str, Any]], request["input"])[1]["content"][0]["text"])
+    assert payload["groups"] == [
+        {
+            "current_rendering": "устойчивость",
+            "terms": [{"term": "durability", "context": "ctx one"}, {"term": "steadiness", "context": "ctx two"}],
+        }
+    ]
 
 
 @pytest.mark.parametrize(
@@ -726,3 +852,22 @@ def test_parse_reads_the_required_and_other_lists_together():
     result = parse_glossary_response(raw, candidates=candidates, max_terms=5)
 
     assert [(term.source_term, term.kind) for term in result.terms] == [("quillet bond", "term"), ("Alpha", "name")]
+
+
+def test_budget_drops_optional_entries_lowest_rank_first_and_never_a_required_one():
+    from docxaicorrector.pipeline.glossary_phase import render_run_glossary_section
+
+    required = tuple(replace(_candidate(f"Req{chr(97 + i)}", "marked"), required=True) for i in range(3))
+    optional = tuple(_candidate(f"Opt{chr(97 + i)}") for i in range(3))
+    terms = tuple(
+        GlossaryTerm(source_term=candidate.source_term, target_term="перевод-" + candidate.source_term.lower())
+        for candidate in (*required, *optional)
+    )
+    full = render_run_glossary_section(terms, (*required, *optional), max_chars=100_000)
+    tight = render_run_glossary_section(terms, (*required, *optional), max_chars=len(full) - 10)
+    tiny = render_run_glossary_section(terms, (*required, *optional), max_chars=10)
+
+    assert "Optc" in full and "Optc" not in tight and "Optb" in tight  # last-ranked optional goes first
+    for name in ("Reqa", "Reqb", "Reqc"):
+        assert name in tight and name in tiny  # required entries survive any budget
+    assert "Opta" not in tiny

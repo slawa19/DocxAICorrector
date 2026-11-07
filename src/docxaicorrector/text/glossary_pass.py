@@ -42,7 +42,15 @@ GLOSSARY_SOURCE_REGIONS = frozenset({"prose", "front_matter"})
 DEFAULT_GLOSSARY_CANDIDATE_LIMIT = 400
 DEFAULT_GLOSSARY_MAX_TERMS = 60
 GLOSSARY_CONTEXT_CHARS = 100
-GLOSSARY_PROMPT_FILE = "glossary_extraction.txt"
+# Spec 063 P2, two calls by role plus one for collisions (orchestrator decision 4, third pass).
+GLOSSARY_ROLE_REQUIRED = "required"
+GLOSSARY_ROLE_OPTIONAL = "optional"
+GLOSSARY_ROLE_DISTINGUISH = "distinguish"
+GLOSSARY_PROMPT_FILES = {
+    GLOSSARY_ROLE_REQUIRED: "glossary_required.txt",
+    GLOSSARY_ROLE_OPTIONAL: "glossary_optional.txt",
+    GLOSSARY_ROLE_DISTINGUISH: "glossary_distinguish.txt",
+}
 RUN_GLOSSARY_SECTION_HEADER = (
     "ГЛОССАРИЙ ЭТОЙ КНИГИ (построен по документу для текущего запуска; передавайте эти термины "
     "и имена так во всех блоках, склоняя по правилам языка перевода, если не сказано иное):"
@@ -52,11 +60,20 @@ FAMILY_MARKED = "marked"
 FAMILY_NAME = "name"
 FAMILY_COLLOCATION = "collocation"
 FAMILY_HEAD = "head"
-_FAMILY_ORDER = (FAMILY_MARKED, FAMILY_NAME, FAMILY_COLLOCATION, FAMILY_HEAD)
+FAMILY_HEADING = "heading"
+_FAMILY_ORDER = (FAMILY_MARKED, FAMILY_NAME, FAMILY_HEADING, FAMILY_COLLOCATION, FAMILY_HEAD)
 # Shares of the candidate limit per family, after the head family's small fixed slice. Measured
 # on the four corpus books (research R3): 74 of the reviewers' 85 key terms land in a list of
 # ~400 split 20/50/30; tripling the name share adds none.
-_FAMILY_SHARES = ((FAMILY_MARKED, 0.2), (FAMILY_NAME, 0.5), (FAMILY_COLLOCATION, 0.3))
+_FAMILY_SHARES = ((FAMILY_MARKED, 0.2), (FAMILY_NAME, 0.45), (FAMILY_HEADING, 0.1), (FAMILY_COLLOCATION, 0.25))
+# A heading word or phrase is a candidate only when the BODY uses it at least this often: a word
+# the author put in a title and then keeps using is a subject of the book (spec 063 P2, decision
+# 2 of the third pass); a heading word the body never repeats is not.
+_HEADING_MIN_BODY_COUNT = 3
+_HEADING_SOURCE_LEVELS = frozenset({1, 2})
+# The inclusion rule's "recurring": at least this many occurrences in at least two chapters.
+_REQUIRED_MIN_COUNT = 3
+_REQUIRED_MIN_CHAPTERS = 2
 _HEAD_SHARE_DIVISOR = 25
 _HEAD_MAX = 16
 _HEAD_MIN_MEMBERSHIP = 3
@@ -66,7 +83,6 @@ _SPREAD_BINS = 10
 _MIN_COLLOCATION_COUNT = 3
 _MIN_COLLOCATION_EDGE_LETTERS = 4
 _MAX_JOINER_LETTERS = 3
-_ZIPF_HEAD_SHARE = 0.5
 
 _LETTER = r"[^\W\d_]"
 _WORD = _LETTER + r"(?:" + _LETTER + r"|['’\-])*" + _LETTER + r"|" + _LETTER
@@ -112,6 +128,7 @@ class GlossarySourceUnit:
     unit_id: str
     text: str
     is_heading: bool = False
+    heading_level: int | None = None
 
 
 @dataclass(frozen=True)
@@ -164,6 +181,11 @@ class _Draft:
     # Where the author introduced the term (a definition, or italics/quotes at first use): the
     # model reads THIS context, not an incidental first mention, to choose the rendering.
     signal_unit: int | None = None
+    chapters: int = 0
+    heading_unit: int | None = None
+    heading_weight: int = 0
+    marked_count: int = 0
+    heads_required_member: bool = False
 
 
 # --- unit selection --------------------------------------------------------------------------
@@ -215,9 +237,17 @@ def select_glossary_source_units(
                     unit_id=paragraph_id,
                     text=text,
                     is_heading=str(getattr(paragraph, "role", "") or "") == "heading",
+                    heading_level=_heading_level(paragraph),
                 )
             )
     return tuple(units)
+
+
+def _heading_level(paragraph: object) -> int | None:
+    if str(getattr(paragraph, "role", "") or "") != "heading":
+        return None
+    level = getattr(paragraph, "heading_level", None)
+    return level if isinstance(level, int) and not isinstance(level, bool) else None
 
 
 # --- normalisation ---------------------------------------------------------------------------
@@ -325,12 +355,16 @@ def _defined_term_words(tail: str) -> list[str]:
 
 
 def _trim_joiners(words: Sequence[str]) -> list[str]:
-    """A marked span without the short words at its edges ("The problem" -> "problem")."""
+    """A marked span without the short words at its edges ("The problem" -> "problem").
+
+    Up to three letters at the START ("the", "of", "as a"), only up to two at the END ("of",
+    "to"): a three-letter word that ends an expression is usually its noun ("tallow gap").
+    """
 
     trimmed = list(words)
     while trimmed and len(trimmed[0]) <= _MAX_JOINER_LETTERS and not trimmed[0].isupper():
         trimmed.pop(0)
-    while trimmed and len(trimmed[-1]) <= _MAX_JOINER_LETTERS and not trimmed[-1].isupper():
+    while trimmed and len(trimmed[-1]) <= _MAX_JOINER_LETTERS - 1 and not trimmed[-1].isupper():
         trimmed.pop()
     return trimmed
 
@@ -362,7 +396,9 @@ def _family_quotas(limit: int) -> dict[str, int]:
     head = min(_HEAD_MAX, limit // _HEAD_SHARE_DIVISOR)
     rest = limit - head
     quotas = {family: int(round(rest * share)) for family, share in _FAMILY_SHARES}
-    quotas[FAMILY_COLLOCATION] = max(0, rest - quotas[FAMILY_MARKED] - quotas[FAMILY_NAME])
+    quotas[FAMILY_COLLOCATION] = max(
+        0, rest - quotas[FAMILY_MARKED] - quotas[FAMILY_NAME] - quotas[FAMILY_HEADING]
+    )
     quotas[FAMILY_HEAD] = head
     return quotas
 
@@ -424,22 +460,24 @@ def extract_glossary_candidates(
     for unit_index in body_indexes:
         word_counts.update(word.lower() for word in folded_tokens[unit_index])
         total_words += len(folded_tokens[unit_index])
-    # The document's own Zipf head: the most frequent words that together make up half of its
-    # running text. A single word from the head that the author italicised is stress, not a term
-    # being introduced ("after", "itself", "real"); the book's own key words sit far below it.
-    zipf_head: set[str] = set()
-    covered = 0
-    for word, count in word_counts.most_common():
-        if covered >= total_words * _ZIPF_HEAD_SHARE:
-            break
-        zipf_head.add(word)
-        covered += count
+
+    # Chapters: the stretches between headings of level 1 or 2. A document with fewer than two
+    # such headings falls back to tenths of the text, so "recurs in two chapters" still means
+    # "recurs in two separate places".
+    chapter_of: list[int] = []
+    chapter_index = 0
+    top_headings = sum(1 for unit in units if unit.is_heading and unit.heading_level in _HEADING_SOURCE_LEVELS)
+    for unit_index, unit in enumerate(units):
+        if top_headings >= 2:
+            if unit.is_heading and unit.heading_level in _HEADING_SOURCE_LEVELS:
+                chapter_index += 1
+            chapter_of.append(chapter_index)
+        else:
+            chapter_of.append(unit_index * _SPREAD_BINS // unit_count)
 
     def admit_marked(words: Sequence[str], signal: str, unit_index: int) -> None:
         trimmed = _trim_joiners(words)
         if not trimmed:
-            return
-        if len(trimmed) == 1 and _fold_word(trimmed[0]).lower() in zipf_head:
             return
         admit(trimmed, signal, unit_index, proper=False)
 
@@ -470,6 +508,32 @@ def extract_glossary_candidates(
                 words = _defined_term_words(match.group("tail"))
                 if words:
                     admit_marked(words, "defined", unit_index)
+
+    body_index_set = set(body_indexes)
+    for unit_index, unit in enumerate(units):
+        if not unit.is_heading or unit.heading_level not in _HEADING_SOURCE_LEVELS:
+            continue
+        heading_words = _WORD_RE.findall(plains[unit_index])
+        for size in (1, 2, 3):
+            for start in range(len(heading_words) - size + 1):
+                phrase = heading_words[start : start + size]
+                if _trim_joiners(phrase) != phrase:
+                    continue
+                if size == 1 and len(phrase[0]) <= _MAX_JOINER_LETTERS:
+                    continue
+                key = tuple(_fold_word(word).lower() for word in phrase)
+                body_hits = [hit for hit in hits_folded_case.get(key, []) if hit in body_index_set]
+                if len(body_hits) < _HEADING_MIN_BODY_COUNT:
+                    continue
+                draft = drafts.get(key)
+                if draft is None:
+                    draft = drafts[key] = _Draft(key=key, surface=" ".join(word.lower() for word in phrase), proper=False)
+                draft.signals.add("heading")
+                # A level-1 heading (chapter, title) weighs twice a level-2 one; the phrase's
+                # weight is what ranks it among heading candidates, ahead of its body frequency.
+                draft.heading_weight += 2 if unit.heading_level == 1 else 1
+                if draft.heading_unit is None:
+                    draft.heading_unit = unit_index
 
     gram_counts: Counter[tuple[str, ...]] = Counter()
     for unit_index in body_indexes:
@@ -522,6 +586,7 @@ def extract_glossary_candidates(
             )
             if first_use_units:
                 draft.signal_unit = first_use_units[0]
+                draft.marked_count = len(marked_units[key])
             else:
                 draft.signals -= {"emphasis", "quoted"}
         if defined_units.get(key):
@@ -535,14 +600,19 @@ def extract_glossary_candidates(
         if not draft.signals:
             continue
         spread = len({bin_of(unit) for unit in units_hit})
+        draft.chapters = len({chapter_of[unit] for unit in units_hit})
         if draft.signals & {"emphasis", "quoted", "defined"}:
             draft.family = FAMILY_MARKED
         elif "capitalised" in draft.signals:
             draft.family = FAMILY_NAME
+        elif "heading" in draft.signals:
+            draft.family = FAMILY_HEADING
         else:
             draft.family = FAMILY_COLLOCATION
         if draft.family == FAMILY_COLLOCATION:
             draft.score = collocation_scores.get(key, 0.0)
+        elif draft.family == FAMILY_HEADING:
+            draft.score = draft.heading_weight * math.log2(1 + draft.count) * idf
         else:
             draft.score = math.log2(1 + draft.count) * idf * (1 + spread / _SPREAD_BINS)
         families[draft.family].append(draft)
@@ -553,12 +623,17 @@ def extract_glossary_candidates(
         return sorted(families[family], key=lambda draft: (-draft.score, draft.key))
 
     membership: Counter[str] = Counter()
-    for family in (FAMILY_MARKED, FAMILY_NAME, FAMILY_COLLOCATION):
+    required_membership: set[str] = set()
+    for family in (FAMILY_MARKED, FAMILY_NAME, FAMILY_HEADING, FAMILY_COLLOCATION):
         for draft in ranked(family)[: quotas[family]]:
             if len(draft.key) >= 2:
-                for word in {item.lower() for item in draft.key}:
+                # Only a word at the EDGE of a member counts: "value" in "value creation" and
+                # "surplus value" heads a family; a word inside an expression does not.
+                for word in {draft.key[0].lower(), draft.key[-1].lower()}:
                     if len(word) >= _MIN_COLLOCATION_EDGE_LETTERS:
                         membership[word] += 1
+                        if _included_by_rule(draft):
+                            required_membership.add(word)
     for word, members in membership.items():
         if members < _HEAD_MIN_MEMBERSHIP:
             continue
@@ -575,6 +650,7 @@ def extract_glossary_candidates(
         head.count = len(hits_folded_case.get(key, []))
         head.units = units_hit
         head.score = float(members) + head.count / (head.count + 1.0)
+        head.heads_required_member = word in required_membership
         families[FAMILY_HEAD].append(head)
 
     selected: list[_Draft] = []
@@ -590,7 +666,12 @@ def extract_glossary_candidates(
     candidates: list[GlossaryCandidate] = []
     for draft in selected[:limit]:
         first_unit = min(draft.units)
-        context_unit = draft.signal_unit if draft.signal_unit is not None and draft.family == FAMILY_MARKED else first_unit
+        if draft.family == FAMILY_MARKED and draft.signal_unit is not None:
+            context_unit = draft.signal_unit
+        elif draft.family == FAMILY_HEADING and draft.heading_unit is not None:
+            context_unit = draft.heading_unit
+        else:
+            context_unit = first_unit
         candidates.append(
             GlossaryCandidate(
                 source_term=draft.surface,
@@ -612,20 +693,30 @@ def extract_glossary_candidates(
 def _included_by_rule(draft: _Draft) -> bool:
     """Which candidates the author put in the glossary, by form (spec 063 P2 inclusion rule).
 
-    A definition and italics or bold at first use are the author's own act of naming a
-    concept; a family head stands for at least three candidates (``_HEAD_MIN_MEMBERSHIP``).
-    Quotes around ONE word are left to the model: on the four corpus books they are mostly
-    scare quotes rather than terms being introduced; quotes around a multi-word expression
-    still count.
+    MARKED AND RECURRING. A definition is the author's own act of naming a concept and is
+    required however rare. Italics or bold at first use (and quotes around an expression) are
+    required only when the term then RECURS — at least ``_REQUIRED_MIN_COUNT`` occurrences in at
+    least ``_REQUIRED_MIN_CHAPTERS`` chapters — AND the marking itself is not a one-off stress:
+    the author marks it at least twice, or marks it where it first appears in the text. A word
+    stressed once in passing is not promoted to a term (it may stay an optional candidate). A family head stands for at least three
+    candidates (``_HEAD_MIN_MEMBERSHIP``) and is required when at least one member is. Quotes
+    around ONE word are left to the model.
     """
 
     if draft.family == FAMILY_HEAD:
-        return True
+        # A head is required when it heads a family (>= 3 members) one of whose members the
+        # author marked; a head of grammatical collocations ("have been", "they have") is not.
+        return draft.heads_required_member
     if draft.family != FAMILY_MARKED:
         return False
-    if draft.signals & {"defined", "emphasis"}:
+    if "defined" in draft.signals:
         return True
-    return "quoted" in draft.signals and len(draft.key) > 1
+    marked = "emphasis" in draft.signals or ("quoted" in draft.signals and len(draft.key) > 1)
+    recurring = draft.count >= _REQUIRED_MIN_COUNT and draft.chapters >= _REQUIRED_MIN_CHAPTERS
+    # An ordinary word recurs anyway; what recurs for a TERM is the author's marking of it.
+    # Marked once, the expression must be marked where it first appears in the whole text.
+    marking_recurs = draft.marked_count >= 2 or draft.signal_unit == min(draft.units, default=-1)
+    return marked and recurring and marking_recurs
 
 
 def _context_snippet(plain: str, surface: str) -> str:
@@ -668,9 +759,24 @@ def domain_glossary_terms(*, source_text: str, translation_domain: str) -> tuple
 # --- the model call's contract ---------------------------------------------------------------
 
 
-@lru_cache(maxsize=1)
-def _load_glossary_instructions() -> str:
-    return (PROMPTS_DIR / GLOSSARY_PROMPT_FILE).read_text(encoding="utf-8").strip()
+@lru_cache(maxsize=4)
+def _load_glossary_instructions(role: str) -> str:
+    return (PROMPTS_DIR / GLOSSARY_PROMPT_FILES[role]).read_text(encoding="utf-8").strip()
+
+
+def _request_envelope(*, model: str, instructions: str, payload: Mapping[str, object], max_output_tokens: int) -> dict[str, object]:
+    return {
+        "model": model,
+        "input": [
+            {"role": "system", "content": [{"type": "input_text", "text": instructions}]},
+            {
+                "role": "user",
+                "content": [{"type": "input_text", "text": json.dumps(payload, ensure_ascii=False)}],
+            },
+        ],
+        "temperature": 0.2,
+        "max_output_tokens": max_output_tokens,
+    }
 
 
 def request_candidates(
@@ -696,19 +802,25 @@ def build_glossary_request(
     target_language: str,
     max_terms: int,
     sample_text: str = "",
+    role: str = GLOSSARY_ROLE_OPTIONAL,
+    already_fixed: Sequence[GlossaryTerm] = (),
 ) -> dict[str, object]:
-    """The request, in the Responses ``input`` shape every provider helper accepts."""
+    """One glossary request, in the Responses ``input`` shape every provider helper accepts.
+
+    ``role="required"`` asks only for renderings of what the author introduced (call A);
+    ``role="optional"`` asks for the model's own choices plus anything call A left out, and
+    shows what is ``already_fixed`` so no optional entry takes a rendering already in use (B).
+    """
 
     source_label = describe_source_language(source_language, sample_text=sample_text)
-    instructions = _load_glossary_instructions().format(
+    instructions = _load_glossary_instructions(role).format(
         source_language=source_label,
         target_language=str(target_language or ""),
         max_terms=int(max_terms),
     )
-    payload = {
+    payload: dict[str, object] = {
         "source_language": source_label,
         "target_language": str(target_language or ""),
-        "max_terms": int(max_terms),
         "fixed_terms": [
             {"source_term": term.source_term, "target_term": term.target_term} for term in fixed_terms
         ],
@@ -725,18 +837,86 @@ def build_glossary_request(
             for index, candidate in enumerate(candidates)
         ],
     }
-    return {
-        "model": model,
-        "input": [
-            {"role": "system", "content": [{"type": "input_text", "text": instructions}]},
+    if role == GLOSSARY_ROLE_OPTIONAL:
+        payload["max_terms"] = int(max_terms)
+        payload["already_fixed"] = [
+            {"source_term": term.source_term, "target_term": term.target_term} for term in already_fixed
+        ]
+    entry_budget = len(candidates) if role == GLOSSARY_ROLE_REQUIRED else int(max_terms) + sum(
+        1 for candidate in candidates if candidate.required
+    )
+    return _request_envelope(
+        model=model,
+        instructions=instructions,
+        payload=payload,
+        max_output_tokens=glossary_max_output_tokens(entry_budget),
+    )
+
+
+def normalize_rendering(target_term: str) -> tuple[str, ...]:
+    """A rendering's identity for the collision check: case, «ё», punctuation and endings off.
+
+    Each word is cut to its first ``max(3, len - 3)`` letters — the same stem rule as the
+    consistency script — so «устойчивость» and «устойчивости» are one rendering, while
+    «жизнестойкость» is another.
+    """
+
+    words = re.findall(_LETTER + r"+", str(target_term or "").lower().replace("ё", "е"))
+    return tuple(word[: max(3, len(word) - 3)] for word in words)
+
+
+def find_rendering_collisions(terms: Sequence[GlossaryTerm]) -> list[list[GlossaryTerm]]:
+    """Groups of entries whose DIFFERENT source terms share one rendering (decision 3)."""
+
+    by_rendering: dict[tuple[str, ...], dict[tuple[str, ...], GlossaryTerm]] = defaultdict(dict)
+    for term in terms:
+        rendering = normalize_rendering(term.target_term)
+        if not rendering:
+            continue
+        by_rendering[rendering].setdefault(normalize_glossary_key(term.source_term), term)
+    return [list(group.values()) for group in by_rendering.values() if len(group) >= 2]
+
+
+def build_distinction_request(
+    *,
+    model: str,
+    groups: Sequence[Sequence[GlossaryTerm]],
+    contexts: Mapping[tuple[str, ...], str],
+    source_language: str,
+    target_language: str,
+    sample_text: str = "",
+) -> dict[str, object]:
+    """Call C: one request for every collision group, with each term's context."""
+
+    source_label = describe_source_language(source_language, sample_text=sample_text)
+    instructions = _load_glossary_instructions(GLOSSARY_ROLE_DISTINGUISH).format(
+        source_language=source_label,
+        target_language=str(target_language or ""),
+        max_terms=0,
+    )
+    payload = {
+        "source_language": source_label,
+        "target_language": str(target_language or ""),
+        "groups": [
             {
-                "role": "user",
-                "content": [{"type": "input_text", "text": json.dumps(payload, ensure_ascii=False)}],
-            },
+                "current_rendering": group[0].target_term,
+                "terms": [
+                    {
+                        "term": term.source_term,
+                        "context": contexts.get(normalize_glossary_key(term.source_term), ""),
+                    }
+                    for term in group
+                ],
+            }
+            for group in groups
         ],
-        "temperature": 0.2,
-        "max_output_tokens": glossary_max_output_tokens(max_terms),
     }
+    return _request_envelope(
+        model=model,
+        instructions=instructions,
+        payload=payload,
+        max_output_tokens=glossary_max_output_tokens(sum(len(group) for group in groups)),
+    )
 
 
 _SOURCE_LANGUAGE_UNKNOWN = "the source language of the text"
@@ -900,13 +1080,16 @@ __all__ = [
     "GlossarySourceUnit",
     "RUN_GLOSSARY_SECTION_HEADER",
     "build_glossary_request",
+    "build_distinction_request",
     "describe_source_language",
+    "find_rendering_collisions",
     "domain_glossary_terms",
     "extract_glossary_candidates",
     "glossary_max_output_tokens",
     "glossary_terms_from_plan",
     "missing_required_candidates",
     "normalize_glossary_key",
+    "normalize_rendering",
     "order_required_first",
     "parse_glossary_response",
     "request_candidates",
