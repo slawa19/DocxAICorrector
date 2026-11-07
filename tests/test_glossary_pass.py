@@ -272,6 +272,21 @@ def test_anti_vacuum_plain_prose_gives_no_function_words():
     assert not any(candidate.family in {"name", "marked"} for candidate in keys.values())
 
 
+def test_a_defined_term_carries_the_context_where_the_author_introduced_it():
+    paragraphs = [
+        "People mentioned the varrow scrip in passing, and nobody paid attention.",
+        *_FILLER,
+        "From now on we will refer to this voucher as *varrow scrip*.",
+        *_FILLER,
+        "The varrow scrip spread across the valley.",
+    ]
+    candidate = _keys(extract_glossary_candidates(_units(paragraphs * 2)))["varrow scrip"]
+
+    # The incidental first mention is not where the rendering is decided; the definition is.
+    assert candidate.first_unit_id == "p0000"
+    assert "refer to this voucher" in candidate.context
+
+
 def test_candidate_payload_carries_count_and_one_context():
     candidate = _keys(extract_glossary_candidates(_units(_document())))["kelbrook"]
     payload = candidate.to_payload()
@@ -349,10 +364,11 @@ def test_request_carries_languages_limit_candidates_and_fixed_terms():
     assert request["temperature"] == 0.2
     system_text = request["input"][0]["content"][0]["text"]
     assert "from en into ru" in system_text
-    assert "at most 12 entries" in system_text
+    assert "at most 12." in system_text
     user_payload = json.loads(request["input"][1]["content"][0]["text"])
     assert user_payload["max_terms"] == 12
     assert [item["term"] for item in user_payload["candidates"]] == ["Zorvane Pettish", "quillet bond"]
+    assert user_payload["candidates"][0]["signals"] == ["capitalised"]
     assert user_payload["candidates"][0]["context"] == "... Zorvane Pettish ..."
     assert user_payload["fixed_terms"] == [{"source_term": "Great Tribulation", "target_term": "Великая скорбь"}]
 
@@ -532,3 +548,48 @@ def test_glossary_notice_keys_exist_in_both_locales():
         catalog = json.loads((locales / f"{language}.json").read_text(encoding="utf-8"))
         assert "{count}" in catalog["result.run_glossary_built"]
         assert catalog["result.run_glossary_failed"]
+
+
+# --- T017: the consistency instrument of SC-006 ---------------------------------------------------
+
+
+def _load_consistency_script():
+    import importlib.util
+    from pathlib import Path
+
+    path = Path(__file__).resolve().parents[1] / "scripts" / "measure-glossary-consistency.py"
+    spec = importlib.util.spec_from_file_location("measure_glossary_consistency", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_consistency_script_counts_declined_renderings_and_rejects_other_words():
+    script = _load_consistency_script()
+    pairs = [
+        {"idx": 1, "source_text": "The quillet bond was issued.", "target_text": "Киллетная облигация была выпущена."},
+        {"idx": 2, "source_text": "Holders of quillet bonds waited.", "target_text": "Держатели киллетных облигаций ждали."},
+        {"idx": 3, "source_text": "A *quillet bond* again.", "target_text": "Снова кильская расписка."},
+        {"idx": 4, "source_text": "The quillet bond, once more.", "target_text": "The quillet bond, once more.", "controlled_fallback": True},
+        {"idx": 5, "source_text": "Nothing here.", "target_text": "Ничего."},
+        {"idx": 6, "source_text": "Image", "target_text": None, "missing": True},
+    ]
+    rows = script.measure(pairs, [{"source_term": "quillet bond", "target_term": "киллетная облигация", "kind": "term", "note": ""}])
+
+    assert rows[0]["source_pairs"] == 3
+    assert rows[0]["adherent_pairs"] == 2
+    assert rows[0]["other_idx"] == [3]
+    assert rows[0]["controlled_fallback_pairs"] == 1
+
+
+def test_consistency_script_tells_two_transliterations_apart():
+    script = _load_consistency_script()
+    pairs = [
+        {"idx": 1, "source_text": "In Kelbrook, Vermont.", "target_text": "В Келбруке, Вермонт."},
+        {"idx": 2, "source_text": "Kelbrook's bank.", "target_text": "Банк Кельбрука."},
+    ]
+    rows = script.measure(pairs, [{"source_term": "Kelbrook", "target_term": "Келбрук", "kind": "name", "note": ""}])
+
+    assert rows[0]["adherent_pairs"] == 1
+    assert rows[0]["other_idx"] == [2]

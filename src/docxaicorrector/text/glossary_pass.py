@@ -155,6 +155,9 @@ class _Draft:
     units: set[int] = field(default_factory=set)
     score: float = 0.0
     family: str = ""
+    # Where the author introduced the term (a definition, or italics/quotes at first use): the
+    # model reads THIS context, not an incidental first mention, to choose the rendering.
+    signal_unit: int | None = None
 
 
 # --- unit selection --------------------------------------------------------------------------
@@ -378,6 +381,7 @@ def extract_glossary_candidates(
 
     drafts: dict[tuple[str, ...], _Draft] = {}
     marked_units: dict[tuple[str, ...], set[int]] = defaultdict(set)
+    defined_units: dict[tuple[str, ...], set[int]] = defaultdict(set)
     capitalised_noninitial: Counter[tuple[str, ...]] = Counter()
 
     def admit(raw_words: Sequence[str], signal: str, unit_index: int, *, proper: bool) -> None:
@@ -389,6 +393,8 @@ def extract_glossary_candidates(
         key = tuple(words) if proper else tuple(word.lower() for word in words)
         if signal in {"emphasis", "quoted"}:
             marked_units[key].add(unit_index)
+        if signal == "defined":
+            defined_units[key].add(unit_index)
         if signal == "capitalised":
             capitalised_noninitial[key] += 1
         draft = drafts.get(key)
@@ -473,12 +479,17 @@ def extract_glossary_candidates(
         if key in marked_units:
             # First-use marking: the marked occurrence opens its stretch of the book. A word
             # italicised for stress somewhere in the middle is not a term being introduced.
-            first_use = any(
-                not any(first_unit_of_bin(bin_of(marked)) <= unit < marked for unit in units_hit)
+            first_use_units = sorted(
+                marked
                 for marked in marked_units[key]
+                if not any(first_unit_of_bin(bin_of(marked)) <= unit < marked for unit in units_hit)
             )
-            if not first_use:
+            if first_use_units:
+                draft.signal_unit = first_use_units[0]
+            else:
                 draft.signals -= {"emphasis", "quoted"}
+        if defined_units.get(key):
+            draft.signal_unit = min(defined_units[key])
         if "capitalised" in draft.signals and not _is_acronym_like(key):
             # The document's own case test: a capitalised form is a name only when the lowercase
             # form is rarer than the capitalised one mid-sentence ("This", "Bank", "Money" fail).
@@ -543,6 +554,7 @@ def extract_glossary_candidates(
     candidates: list[GlossaryCandidate] = []
     for draft in selected[:limit]:
         first_unit = min(draft.units)
+        context_unit = draft.signal_unit if draft.signal_unit is not None and draft.family == FAMILY_MARKED else first_unit
         candidates.append(
             GlossaryCandidate(
                 source_term=draft.surface,
@@ -553,7 +565,7 @@ def extract_glossary_candidates(
                 unit_count=len(draft.units),
                 spread=len({bin_of(unit) for unit in draft.units}),
                 first_unit_id=units[first_unit].unit_id,
-                context=_context_snippet(plains[first_unit], draft.surface),
+                context=_context_snippet(plains[context_unit], draft.surface),
                 score=round(draft.score, 4),
             )
         )
@@ -647,6 +659,7 @@ def build_glossary_request(
                 "id": index + 1,
                 "term": candidate.source_term,
                 "family": candidate.family,
+                "signals": list(candidate.signals),
                 "count": candidate.occurrence_count,
                 "context": candidate.context,
             }

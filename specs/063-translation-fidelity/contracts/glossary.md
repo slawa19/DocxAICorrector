@@ -14,7 +14,7 @@
 - системная инструкция — `resources/prompts/glossary_extraction.txt` (языки подставляются);
 - пользовательская часть — JSON: `source_language`, `target_language`, `max_terms`,
   `fixed_terms` (доменный вход FR-016: `[{source_term, target_term}]`), `candidates`
-  (`[{id, term, family, count, context}]`);
+  (`[{id, term, family, signals, count, context}]`);
 - `temperature = 0.2`, `max_output_tokens` — по `max_terms` (≈ 60 токенов на запись, не меньше
   1 024, не больше 8 192).
 

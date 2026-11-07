@@ -1,0 +1,310 @@
+"""Spec 063 P2: what the run glossary's extractor finds in a book, and (``--live``) what one call fixes.
+
+Companion to ``specs/063-translation-fidelity/research.md`` (R3, R5) and ``tasks.md`` (T016,
+T018, T019). It runs the PRODUCT code — ``select_glossary_source_units`` and
+``extract_glossary_candidates`` from ``src/docxaicorrector/text/glossary_pass.py`` — on exactly
+the input a ``translate`` run would give it, so a number printed here is the product's number,
+not a prototype's.
+
+INPUT (one of)
+--------------
+``--document-profile <id>`` [``--run-profile <id>``]
+    Re-runs the run's own preparation (``prepare_run_context_for_background`` with the run
+    profile's resolved config) with a model client that RAISES, then takes ``prepared.jobs`` and
+    ``prepared.paragraphs``. No model may be called during preparation; if one is requested the
+    script stops instead of spending.
+``--paragraphs <dump.json>``
+    A dump with ``{"paragraphs": [{paragraph_id, text, role, region, in_llm_job}, ...]}`` —
+    the shape ``--dump-paragraphs`` writes — so later measurements need no PDF import.
+
+OUTPUT
+------
+The candidate list (``--out``); with ``--reviewer-terminology <terminology.json>`` (the shape
+the 2026-11-07 reviewers wrote: a list of ``{"term": ...}``, ``{"terms": [...]}`` or a mapping
+keyed by term) the share of the reviewer's key terms that appear among the candidates, with the
+misses named. ``--extra-term`` adds terms named elsewhere (repeatable).
+
+``--live`` (SPENDS MONEY: one call)
+    Builds the product request, sends it ONCE through ``request_text_completion`` with the run's
+    default text model (or ``--model``), parses it with the product's acceptance rules and prints
+    the entries, ``prompt_tokens``, ``completion_tokens``, the provider's ``cost``, the rendered
+    prompt section's characters and the measured characters-per-input-token ratio. Writes the
+    result in the ``.run/run_glossaries`` artifact shape to ``--glossary-out``. Never runs a book.
+
+USAGE (WSL)
+-----------
+    . .venv/bin/activate && export PYTHONPATH="$PWD/src:$PWD"
+    python scripts/measure-glossary-candidates.py --document-profile money-sustainability-pdf-full-heldout \\
+        --reviewer-terminology /mnt/d/Temp/docxai-runs/2026-11-07-translate/money_sustainability/review/terminology.json \\
+        --out /tmp/money.candidates.json
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import sys
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+SRC_ROOT = PROJECT_ROOT / "src"
+if str(SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(SRC_ROOT))
+
+from docxaicorrector.text.glossary_pass import (  # noqa: E402
+    DEFAULT_GLOSSARY_CANDIDATE_LIMIT,
+    DEFAULT_GLOSSARY_MAX_TERMS,
+    RUN_GLOSSARY_SECTION_HEADER,
+    build_glossary_request,
+    extract_glossary_candidates,
+    normalize_glossary_key,
+    parse_glossary_response,
+    select_glossary_source_units,
+)
+
+DEFAULT_RUN_PROFILE = "ui-parity-translate-benchmark-advisory-image-safe-no-cleanup"
+_PARENTHETICAL_RE = re.compile(r"\([^)]*\)")
+
+
+def _prepare(document_profile_id: str, run_profile_id: str) -> tuple[list[dict[str, Any]], list[Any]]:
+    os.chdir(PROJECT_ROOT)
+    from docxaicorrector.core.config import load_app_config
+    from docxaicorrector.processing.application_flow import prepare_run_context_for_background
+    from docxaicorrector.processing.preparation import prepare_document_for_processing
+    from docxaicorrector.processing.processing_runtime import freeze_uploaded_file
+    from docxaicorrector.validation.profiles import (
+        apply_runtime_resolution_to_app_config,
+        load_validation_registry,
+        resolve_runtime_resolution,
+    )
+    from docxaicorrector.validation.structural import UploadedFileStub
+
+    registry = load_validation_registry()
+    document_profile = registry.get_document_profile(document_profile_id)
+    run_profile = registry.resolve_run_profile(document_profile, run_profile_id)
+    app_config = load_app_config()
+    resolution = resolve_runtime_resolution(app_config, run_profile)
+    app_config_dict = apply_runtime_resolution_to_app_config(app_config, resolution)
+    source_path = document_profile.resolved_source_path(PROJECT_ROOT)
+    requested: list[str] = []
+
+    def _no_client(*args: object, **kwargs: object) -> object:
+        requested.append(repr((args, kwargs))[:200])
+        raise RuntimeError("measure-glossary-candidates: preparation asked for a model client; refusing to spend")
+
+    payload = freeze_uploaded_file(UploadedFileStub(source_path.name, source_path.read_bytes()))
+    prepared = prepare_run_context_for_background(
+        uploaded_payload=payload,
+        chunk_size=int(resolution.effective.chunk_size),
+        image_mode=resolution.effective.image_mode,
+        keep_all_image_variants=resolution.effective.keep_all_image_variants,
+        processing_operation=resolution.effective.processing_operation,
+        app_config=app_config_dict,
+        prepare_document_for_processing_fn=lambda **kwargs: prepare_document_for_processing(
+            get_client_fn=_no_client,
+            client_factory=_no_client,
+            client_cache_identity=None,
+            **kwargs,
+        ),
+    )
+    if requested:
+        raise SystemExit(f"preparation requested a model client: {requested}")
+    return [dict(job) for job in prepared.jobs], list(prepared.paragraphs)
+
+
+def _load_dump(path: Path) -> tuple[list[dict[str, Any]], list[Any]]:
+    data = json.loads(path.read_text(encoding="utf-8"))
+    paragraphs = [SimpleNamespace(**record) for record in data["paragraphs"]]
+    jobs = [
+        {
+            "job_kind": "llm" if record.get("in_llm_job", True) else "passthrough",
+            "paragraph_ids": [record["paragraph_id"]],
+            "paragraph_regions": [record.get("region") or "prose"],
+        }
+        for record in data["paragraphs"]
+    ]
+    return jobs, paragraphs
+
+
+def _dump(jobs: list[dict[str, Any]], paragraphs: list[Any], path: Path) -> None:
+    region_by_id: dict[str, str] = {}
+    llm_ids: set[str] = set()
+    for job in jobs:
+        ids = [str(item) for item in job.get("paragraph_ids") or []]
+        for paragraph_id, region in zip(ids, job.get("paragraph_regions") or []):
+            region_by_id[paragraph_id] = str(region)
+        if job.get("job_kind") == "llm":
+            llm_ids.update(ids)
+    records = [
+        {
+            "paragraph_id": paragraph.paragraph_id,
+            "text": paragraph.text,
+            "role": paragraph.role,
+            "region": region_by_id.get(paragraph.paragraph_id),
+            "in_llm_job": paragraph.paragraph_id in llm_ids,
+        }
+        for paragraph in paragraphs
+    ]
+    path.write_text(json.dumps({"paragraphs": records}, ensure_ascii=False), encoding="utf-8")
+
+
+def _reviewer_terms(path: Path) -> list[str]:
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if isinstance(data, list):
+        return [str(item["term"]) for item in data if isinstance(item, dict) and "term" in item]
+    if isinstance(data, dict) and isinstance(data.get("terms"), list):
+        return [str(item["term"]) for item in data["terms"] if isinstance(item, dict) and "term" in item]
+    if isinstance(data, dict):
+        return [str(key) for key in data]
+    return []
+
+
+def _variants(term: str) -> list[str]:
+    """A reviewer's label as source spellings: ``A / B`` alternatives, ``(…)`` remarks dropped."""
+
+    label = term.replace("(y|ies)", "y").replace("(s)", "")
+    label = _PARENTHETICAL_RE.sub("", label)
+    return [variant.strip() for variant in re.split(r"\s*/\s*", label) if variant.strip()]
+
+
+def _recall(candidates, terms: list[str]) -> tuple[list[str], list[str]]:
+    keys = {normalize_glossary_key(candidate.source_term) for candidate in candidates}
+    caught, missed = [], []
+    for term in terms:
+        if any(normalize_glossary_key(variant) in keys for variant in _variants(term)):
+            caught.append(term)
+        else:
+            missed.append(term)
+    return caught, missed
+
+
+def _live_call(candidates, *, model: str | None, max_terms: int, prompt_max_chars: int, glossary_out: Path | None) -> None:
+    from docxaicorrector.core import model_accounting
+    from docxaicorrector.core.config import get_client_for_model_selector, load_app_config, resolve_model_selector
+    from docxaicorrector.document.segments import render_glossary_prompt_section
+    from docxaicorrector.generation._generation import request_text_completion
+
+    app_config = load_app_config()
+    selector = model or str(app_config["default_model"])
+    model_id = resolve_model_selector(selector, "responses_text", source_name="measure-glossary-candidates").model_id
+    client = get_client_for_model_selector(selector, "responses_text")
+    request = build_glossary_request(
+        model=model_id,
+        candidates=candidates,
+        fixed_terms=(),
+        source_language="en",
+        target_language="ru",
+        max_terms=max_terms,
+    )
+    request_chars = sum(len(part["text"]) for item in request["input"] for part in item["content"])
+    with model_accounting.run_model_accounting_scope(run_id="measure-glossary-live", source_token="measure"):
+        raw = request_text_completion(
+            client, request, usage_stage=model_accounting.STAGE_GLOSSARY_EXTRACTION
+        )
+        stage = model_accounting.snapshot_run_model_accounting()["stages"].get("glossary_extraction", {})
+    parsed = parse_glossary_response(raw, candidates=candidates, max_terms=max_terms)
+    section = render_glossary_prompt_section(parsed.terms, header=RUN_GLOSSARY_SECTION_HEADER, max_chars=prompt_max_chars)
+    prompt_tokens = int(stage.get("prompt_tokens") or 0)
+    print(f"live: model={selector} entries={len(parsed.terms)} rejected={parsed.rejected_counts}")
+    print(
+        f"live: prompt_tokens={prompt_tokens} completion_tokens={stage.get('completion_tokens')} "
+        f"cost_usd={stage.get('cost_usd_reported_by_provider')} request_chars={request_chars} "
+        f"chars_per_input_token={(request_chars / prompt_tokens) if prompt_tokens else None}"
+    )
+    rendered = sum(1 for line in section.splitlines() if line.startswith("- ") and line != "- ...")
+    print(f"live: prompt_section_chars={len(section)} rendered_terms={rendered}")
+    for term in parsed.terms:
+        print(f"  {term.kind:4} {term.source_term} -> {term.target_term}" + (f"  [{term.note}]" if term.note else ""))
+    if glossary_out is not None:
+        glossary_out.write_text(
+            json.dumps(
+                {
+                    "schema": "run_glossary/v1",
+                    "status": "built" if parsed.terms else "empty",
+                    "model": selector,
+                    "candidate_count": len(candidates),
+                    "terms": [
+                        {"source_term": t.source_term, "target_term": t.target_term, "kind": t.kind, "note": t.note}
+                        for t in parsed.terms
+                    ],
+                    "rejected_counts": parsed.rejected_counts,
+                    "rendered_term_count": rendered,
+                    "prompt_section_chars": len(section),
+                    "request_chars": request_chars,
+                    "usage": {
+                        "prompt_tokens": stage.get("prompt_tokens"),
+                        "completion_tokens": stage.get("completion_tokens"),
+                        "cost_usd": stage.get("cost_usd_reported_by_provider"),
+                    },
+                    "raw_response_chars": len(raw),
+                },
+                ensure_ascii=False,
+                indent=1,
+            ),
+            encoding="utf-8",
+        )
+        print(f"live: glossary written to {glossary_out}")
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument("--document-profile")
+    source.add_argument("--paragraphs", type=Path)
+    parser.add_argument("--run-profile", default=DEFAULT_RUN_PROFILE)
+    parser.add_argument("--dump-paragraphs", type=Path, help="write the prepared paragraphs with regions here")
+    parser.add_argument("--limit", type=int, default=DEFAULT_GLOSSARY_CANDIDATE_LIMIT)
+    parser.add_argument("--reviewer-terminology", type=Path)
+    parser.add_argument("--extra-term", action="append", default=[])
+    parser.add_argument("--out", type=Path)
+    parser.add_argument("--live", action="store_true", help="SPENDS MONEY: one glossary call")
+    parser.add_argument("--model")
+    parser.add_argument("--max-terms", type=int, default=DEFAULT_GLOSSARY_MAX_TERMS)
+    parser.add_argument("--prompt-max-chars", type=int, default=3000)
+    parser.add_argument("--glossary-out", type=Path)
+    args = parser.parse_args(argv)
+
+    if args.document_profile:
+        jobs, paragraphs = _prepare(args.document_profile, args.run_profile)
+    else:
+        jobs, paragraphs = _load_dump(args.paragraphs)
+    if args.dump_paragraphs:
+        _dump(jobs, paragraphs, args.dump_paragraphs)
+    units = select_glossary_source_units(jobs, paragraphs)
+    candidates = extract_glossary_candidates(units, limit=args.limit)
+    families: dict[str, int] = {}
+    for candidate in candidates:
+        families[candidate.family] = families.get(candidate.family, 0) + 1
+    request_chars = sum(len(candidate.source_term) + len(candidate.context) for candidate in candidates)
+    print(f"units={len(units)} candidates={len(candidates)} families={families} term+context_chars={request_chars}")
+
+    terms: list[str] = []
+    if args.reviewer_terminology:
+        terms.extend(_reviewer_terms(args.reviewer_terminology))
+    terms.extend(args.extra_term)
+    if terms:
+        caught, missed = _recall(candidates, terms)
+        print(f"reviewer terms in candidates: {len(caught)}/{len(terms)}")
+        print(f"  missed: {missed}")
+    if args.out:
+        args.out.write_text(
+            json.dumps([candidate.to_payload() for candidate in candidates], ensure_ascii=False, indent=1),
+            encoding="utf-8",
+        )
+    if args.live:
+        _live_call(
+            candidates,
+            model=args.model,
+            max_terms=args.max_terms,
+            prompt_max_chars=args.prompt_max_chars,
+            glossary_out=args.glossary_out,
+        )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
