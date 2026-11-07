@@ -618,7 +618,9 @@ def test_required_flag_follows_the_authors_marking_not_the_family_score():
     keys = _keys(extract_glossary_candidates(_units(paragraphs * 2)))
 
     assert keys["varrow scrip"].required  # defined
-    assert keys["brennic"].required  # italics at first use
+    # Spec 064 FR-009: ONE lowercase word in italics, even at first use and recurring, is a
+    # candidate the model may choose, not a term by rule (see the tests below).
+    assert "brennic" in keys and not keys["brennic"].required
     assert keys["sound note"].required  # quotes around an expression
     assert "real" not in keys or not keys["real"].required  # quotes around one word: model's choice
     assert not keys["kelbrook"].required  # a name stays at the model's discretion
@@ -709,10 +711,100 @@ def test_an_italic_term_marked_twice_and_recurring_is_required():
         paragraphs.append("Later the brennic rule applied again, as the brennic rule does.")
         paragraphs.extend(_FILLER)
         if index in (2, 5):
-            paragraphs.append("Here the *brennic* rule is set out.")
+            paragraphs.append("Here the *brennic rule* is set out.")
+    keys = _keys(extract_glossary_candidates(_units(paragraphs)))
+
+    assert keys["brennic rule"].required
+
+
+# --- Spec 064 FR-009: what the rule "marked and recurring" requires besides the marking ---------
+
+
+def _marked_word_document(word: str, *, capitalised: bool = False) -> list[str]:
+    """``word`` set in italics where it first appears in two stretches, and used throughout.
+
+    ``capitalised``: the body writes it with a capital in mid-sentence, as a name is written.
+    """
+
+    shown = word[:1].upper() + word[1:] if capitalised else word
+    paragraphs = []
+    for index in range(8):
+        paragraphs.append(f"Later the town spoke of {shown} again, as people of {shown} do.")
+        paragraphs.extend(_FILLER)
+        if index in (2, 5):
+            paragraphs.append(f"Here *{shown}* is set out once more.")
+    paragraphs.insert(0, f"At first *{shown}* appears in this book.")
+    return paragraphs
+
+
+def test_fr009_one_lowercase_marked_word_is_an_optional_candidate():
+    keys = _keys(extract_glossary_candidates(_units(_marked_word_document("brennic"))))
+
+    assert "brennic" in keys
+    assert keys["brennic"].family == "marked"
+    assert not keys["brennic"].required
+
+
+def test_fr009_one_capitalised_marked_word_stays_required():
+    # ANTI-VACUUM for the test above: the same document, the word written as a name in
+    # mid-sentence by the document itself -- the capital is the form that keeps it required.
+    keys = _keys(extract_glossary_candidates(_units(_marked_word_document("brennic", capitalised=True))))
+
+    assert keys["brennic"].required
+
+
+def test_fr009_one_lowercase_defined_word_stays_required():
+    paragraphs = _marked_word_document("brennic")
+    paragraphs.insert(1, "This old practice is known as *brennic* in the valley.")
     keys = _keys(extract_glossary_candidates(_units(paragraphs)))
 
     assert keys["brennic"].required
+    assert "defined" in keys["brennic"].signals
+
+
+def test_fr009_two_adjacent_italic_runs_are_one_marked_expression():
+    # The importer closes emphasis at a run boundary: "*growth* *hierarchy*" is one term.
+    paragraphs = ["The order has been called a *quillet* *ladder* by its critics."]
+    for _ in range(6):
+        paragraphs.append("The quillet ladder returned, and the quillet ladder grew.")
+        paragraphs.extend(_FILLER)
+    keys = _keys(extract_glossary_candidates(_units(paragraphs)))
+
+    assert "quillet ladder" in keys and "defined" in keys["quillet ladder"].signals
+    assert "quillet" not in keys or "defined" not in keys["quillet"].signals
+
+
+def test_fr009_a_definition_names_the_marked_term_not_the_object_before_it():
+    # "a movement that called itself 'Varrow Economics' (VE)": the verb's object is not the
+    # term. The marked span must end the phrase -- "called it 'real' money" (the test above)
+    # marks a word inside an expression and defines nothing.
+    paragraphs = ["A movement that called itself ‘Varrow Economics’ (VE) was born in the valley."]
+    for _ in range(6):
+        paragraphs.append("Varrow Economics spread, and itself was a word nobody used as a term.")
+        paragraphs.extend(_FILLER)
+    keys = _keys(extract_glossary_candidates(_units(paragraphs)))
+
+    assert "varrow economics" in keys and "defined" in keys["varrow economics"].signals
+    assert "itself" not in keys or "defined" not in keys["itself"].signals
+
+
+def test_fr009_a_word_found_by_another_route_still_heads_a_family_with_a_required_member():
+    # "worth" is an h2 heading word the body keeps using (heading family, optional) AND the
+    # edge of three candidates one of which the author marked: it is required as their head.
+    paragraphs: list[tuple[str, int | None]] = [("Book of Things", 1), ("On Worth", 2)]
+    paragraphs.append(("This we will call *worth creation* from here on.", None))
+    paragraphs.append(("The *surplus worth* is introduced.", None))
+    for chapter in range(6):
+        paragraphs.append((f"Part {chapter}", 1))
+        paragraphs.append(("The worth creation and the worth extraction were measured.", None))
+        paragraphs.append(("Their worth creation exceeded worth extraction, and surplus worth grew.", None))
+        paragraphs.append(("Surplus worth and worth creation, again; surplus worth once more.", None))
+        paragraphs.extend((text, None) for text in _FILLER)
+    keys = _keys(extract_glossary_candidates(_heading_units(paragraphs)))
+
+    assert keys["worth"].family == "heading"
+    assert "family_head" in keys["worth"].signals
+    assert keys["worth"].required
 
 
 def _heading_units(paragraphs):
@@ -842,7 +934,10 @@ def test_role_requests_and_collision_helpers():
     assert payload["groups"] == [
         {
             "current_rendering": "устойчивость",
-            "terms": [{"term": "durability", "context": "ctx one"}, {"term": "steadiness", "context": "ctx two"}],
+            "terms": [
+                {"term": "durability", "count": 0, "keep": True, "context": "ctx one"},
+                {"term": "steadiness", "count": 0, "keep": False, "context": "ctx two"},
+            ],
         }
     ]
 
@@ -1014,3 +1109,309 @@ def test_measurer_dump_round_trip_keeps_heading_levels_and_the_required_set(tmp_
         (c.source_term, c.family, c.required) for c in produced
     ]
     assert script._assert_dump_parity(jobs, paragraphs, dump, limit=400) == sum(c.required for c in produced)
+
+
+# --- Spec 064 FR-009: collisions keep the frequent term's rendering; names keep one form ---------
+
+
+def _counted(term, count, family="name", required=False):
+    return replace(_candidate(term, family), occurrence_count=count, required=required)
+
+
+@pytest.mark.parametrize(
+    ("first", "second", "same"),
+    [
+        ("US", "USA", True),  # an abbreviation and the same one plus a letter
+        ("U.S.", "US", True),  # periods
+        ("TRC", "TRCs", True),  # a plural s
+        ("Quillet", "quillets", True),
+        ("UN", "UNESCO", False),  # more than one letter longer: another name
+        ("BIS", "Bi", False),  # the capital S of an abbreviation is not a plural s
+        ("WIR", "Wired", False),  # not two abbreviations
+        ("durability", "steadiness", False),
+    ],
+)
+def test_fr009_same_spelling_family_is_decided_by_form(first, second, same):
+    assert glossary_pass.same_spelling_family(first, second) is same
+    assert glossary_pass.same_spelling_family(second, first) is same
+
+
+def test_fr009_spellings_of_one_name_sharing_a_rendering_are_not_a_collision():
+    terms = (
+        GlossaryTerm(source_term="US", target_term="США", kind="name"),
+        GlossaryTerm(source_term="USA", target_term="США", kind="name"),
+    )
+
+    assert glossary_pass.find_rendering_collisions(terms) == []
+
+
+def test_fr009_a_third_term_on_a_shared_rendering_is_still_a_collision():
+    # ANTI-VACUUM: the spelling family is one member of the group, not a pass for the group.
+    terms = (
+        GlossaryTerm(source_term="US", target_term="США", kind="name"),
+        GlossaryTerm(source_term="USA", target_term="США", kind="name"),
+        GlossaryTerm(source_term="Zorvania", target_term="США", kind="name"),
+    )
+
+    groups = glossary_pass.find_rendering_collisions(terms)
+    assert [[term.source_term for term in group] for group in groups] == [["US", "USA", "Zorvania"]]
+
+
+def test_fr009_two_names_kept_as_written_do_not_collide_through_the_stem_rule():
+    # The stem rule cuts "wired" to "wir"; two names left in their own script are compared whole.
+    terms = (
+        GlossaryTerm(source_term="QIR", target_term="QIR", kind="name"),
+        GlossaryTerm(source_term="Qired", target_term="Qired", kind="name"),
+    )
+
+    assert glossary_pass.normalize_rendering("QIR") == glossary_pass.normalize_rendering("Qired")
+    assert glossary_pass.find_rendering_collisions(terms) == []
+
+
+def test_fr009_the_frequent_term_keeps_the_rendering_whatever_order_the_answer_takes():
+    from docxaicorrector.pipeline.glossary_phase import _apply_distinction
+
+    rare = GlossaryTerm(source_term="steadiness", target_term="устойчивость")
+    frequent = GlossaryTerm(source_term="durability", target_term="устойчивость")
+    terms = (rare, frequent)
+    counts = {("steadiness",): 18, ("durability",): 144}
+    groups = [
+        glossary_pass.order_collision_group(group, counts)
+        for group in glossary_pass.find_rendering_collisions(terms)
+    ]
+    assert [term.source_term for term in groups[0]] == ["durability", "steadiness"]
+
+    request = glossary_pass.build_distinction_request(
+        model="m", groups=groups, contexts={}, source_language="en", target_language="ru", counts=counts
+    )
+    payload = json.loads(cast(list[dict[str, Any]], request["input"])[1]["content"][0]["text"])
+    assert [(item["term"], item["count"], item["keep"]) for item in payload["groups"][0]["terms"]] == [
+        ("durability", 144, True),
+        ("steadiness", 18, False),
+    ]
+    # The model renames the FREQUENT term (what call C did to Money's sustainability): the
+    # code keeps the frequent term's rendering and takes only the rare term's new one.
+    answer = (
+        GlossaryTerm(source_term="steadiness", target_term="стойкость"),
+        GlossaryTerm(source_term="durability", target_term="жизнеспособность"),
+    )
+    result = {term.source_term: term.target_term for term in _apply_distinction(terms, groups, answer)}
+    assert result == {"durability": "устойчивость", "steadiness": "стойкость"}
+
+
+def _name_document(full_names, short, *, ordinary_words=()):
+    """A body that uses every full name, the short form alone, and ``ordinary_words`` in lowercase."""
+
+    paragraphs = []
+    for index in range(6):
+        for full in full_names:
+            paragraphs.append(f"In round {index} the council heard {full} speak about the harvest.")
+        paragraphs.append(f"The elders said later that {short} was right, and {short} was heard by all.")
+        for word in ordinary_words:
+            paragraphs.append(f"The {word} road was long, and the {word} gate was shut.")
+        paragraphs.extend(_FILLER)
+    return paragraphs
+
+
+def test_fr009_a_surname_belongs_to_the_full_name_by_form():
+    keys = _keys(extract_glossary_candidates(_units(_name_document(["Zorvane Pettish"], "Pettish"))))
+
+    assert keys["pettish"].name_head == "Zorvane Pettish"
+    assert keys["zorvane pettish"].name_head == ""
+    assert keys["pettish"].to_payload()["name_head"] == "Zorvane Pettish"
+
+
+@pytest.mark.parametrize(
+    "full_names",
+    [
+        ["Adar Quist", "Belo Quist"],  # two people with one surname
+        ["Latin Zorvania", "Norrin Zorvania"],  # one word ending two different names
+    ],
+)
+def test_fr009_a_short_form_that_ends_two_different_names_has_no_head(full_names):
+    # ANTI-VACUUM: ambiguity is decided by form; the short form is asked for on its own.
+    short = full_names[0].split()[-1]
+    keys = _keys(extract_glossary_candidates(_units(_name_document(full_names, short))))
+
+    assert keys[short.lower()].name_head == ""
+
+
+def test_fr009_a_head_that_adds_an_ordinary_word_is_another_entity():
+    # "Central Vermont" is not a fuller form of "Vermont": the body writes "central" in lowercase.
+    paragraphs = _name_document(["Brisk Zorvania"], "Zorvania", ordinary_words=["brisk"])
+    keys = _keys(extract_glossary_candidates(_units(paragraphs)))
+
+    assert "brisk zorvania" in keys
+    assert keys["zorvania"].name_head == ""
+
+
+def test_fr009_a_surname_is_not_requested_and_inherits_the_full_name():
+    candidates = (
+        _counted("Zorvane Pettish", 18),
+        replace(_counted("Pettish", 32), name_head="Zorvane Pettish"),
+        _counted("Kelbrook", 7),
+    )
+
+    requested, members = glossary_pass.split_name_families(candidates)
+
+    assert [candidate.source_term for candidate in requested] == ["Zorvane Pettish", "Kelbrook"]
+    assert requested[0].occurrence_count == 32  # the head carries the family's standalone uses
+    assert [(member.member.source_term, member.head.source_term) for member in members] == [
+        ("Pettish", "Zorvane Pettish")
+    ]
+    terms = (
+        GlossaryTerm(source_term="Zorvane Pettish", target_term="Зорвейн Петтиш", kind="name"),
+        GlossaryTerm(source_term="Kelbrook", target_term="Келбрук", kind="name"),
+    )
+    inherited_terms, inherited = glossary_pass.inherit_name_renderings(terms, members)
+    assert [(term.source_term, term.target_term) for term in inherited_terms] == [
+        ("Zorvane Pettish", "Зорвейн Петтиш"),
+        ("Pettish", "Петтиш"),
+        ("Kelbrook", "Келбрук"),
+    ]
+    assert inherited == [{"source_term": "Pettish", "target_term": "Петтиш", "from": "Zorvane Pettish"}]
+
+
+def test_fr009_a_short_form_never_used_alone_is_neither_sent_nor_inherited():
+    # Every "Pettish" is inside "Zorvane Pettish": it is part of the full name, not an entry.
+    candidates = (_counted("Zorvane Pettish", 6), replace(_counted("Pettish", 6), name_head="Zorvane Pettish"))
+
+    requested, members = glossary_pass.split_name_families(candidates)
+
+    assert [candidate.source_term for candidate in requested] == ["Zorvane Pettish"]
+    assert requested[0].occurrence_count == 6
+    assert members == ()
+
+
+def test_fr009_a_middle_form_and_a_surname_both_inherit_from_the_longest_form():
+    paragraphs = _name_document(["Arlo Maynard Quist", "Maynard Quist"], "Quist")
+    candidates = extract_glossary_candidates(_units(paragraphs))
+    keys = _keys(candidates)
+    assert keys["quist"].name_head == "Arlo Maynard Quist"
+    assert keys["maynard quist"].name_head == "Arlo Maynard Quist"
+
+    requested, members = glossary_pass.split_name_families(candidates)
+    terms, _ = glossary_pass.inherit_name_renderings(
+        (GlossaryTerm(source_term="Arlo Maynard Quist", target_term="Арло Мейнард Квист", kind="name"),), members
+    )
+
+    assert "Quist" not in [candidate.source_term for candidate in requested]
+    assert {term.source_term: term.target_term for term in terms} == {
+        "Arlo Maynard Quist": "Арло Мейнард Квист",
+        "Maynard Quist": "Мейнард Квист",
+        "Quist": "Квист",
+    }
+
+
+@pytest.mark.parametrize("head", ["Bank of Zorvania", "US Zorvania", "Silicon Zorvania’s"])
+def test_fr009_only_a_name_shaped_head_takes_a_family(head):
+    # A joiner (an institution), an abbreviation, a possessive: not one name of a person or place.
+    keys = _keys(extract_glossary_candidates(_units(_name_document([head], "Zorvania"))))
+
+    assert keys["zorvania"].name_head == ""
+
+
+@pytest.mark.parametrize(
+    ("rendering", "expected"),
+    [
+        ("Сан-Квилло", []),  # another word count: no inherited entry
+        ("San Quillo", []),  # kept as written: not a transliteration to share
+    ],
+)
+def test_fr009_a_short_form_inherits_only_a_word_for_word_transliteration(rendering, expected):
+    candidates = (_counted("San Quillo", 4), replace(_counted("Quillo", 9), name_head="San Quillo"))
+    _, members = glossary_pass.split_name_families(candidates)
+
+    terms, inherited = glossary_pass.inherit_name_renderings(
+        (GlossaryTerm(source_term="San Quillo", target_term=rendering, kind="name"),), members
+    )
+
+    assert [term.source_term for term in terms] == ["San Quillo"]
+    assert inherited == expected
+
+
+def test_fr009_call_sequence_never_sends_a_surname_and_keeps_the_frequent_rendering():
+    from docxaicorrector.pipeline import glossary_phase
+
+    sent = (
+        _counted("durability", 144, family="marked", required=True),
+        _counted("steadiness", 18, family="marked", required=True),
+        _counted("Zorvane Pettish", 18),
+        replace(_counted("Pettish", 32), name_head="Zorvane Pettish"),
+    )
+    answers = [
+        {
+            "terms": [
+                {"source_term": "durability", "target_term": "устойчивость"},
+                {"source_term": "steadiness", "target_term": "устойчивость"},
+            ]
+        },
+        {"terms": [{"source_term": "Zorvane Pettish", "target_term": "Зорвейн Петтиш", "kind": "name"}]},
+        {
+            "terms": [
+                {"source_term": "durability", "target_term": "жизнеспособность"},
+                {"source_term": "steadiness", "target_term": "стойкость"},
+            ]
+        },
+    ]
+    payloads: list[dict[str, Any]] = []
+
+    def fake_request(_client, request, **_kwargs):
+        payloads.append(json.loads(request["input"][1]["content"][0]["text"]))
+        return json.dumps(answers[len(payloads) - 1], ensure_ascii=False)
+
+    record: dict[str, object] = {}
+    status, terms = glossary_phase._call_model(
+        context=SimpleNamespace(source_language="en", target_language="ru", runtime=object()),
+        dependencies=SimpleNamespace(should_stop_processing=lambda _runtime: False),
+        emitters=SimpleNamespace(emit_status=lambda *_args, **_kwargs: None),
+        initialization=SimpleNamespace(text_client=object(), job_count=0),
+        model="m",
+        sent_candidates=sent,
+        fixed_terms=(),
+        max_terms=10,
+        sample_text="",
+        record=record,
+        request_text_completion_fn=fake_request,
+    )
+
+    assert status == "built"
+    sent_terms = [item["term"] for payload in payloads[:2] for item in payload["candidates"]]
+    assert "Pettish" not in sent_terms and "Zorvane Pettish" in sent_terms
+    rendered = {term.source_term: term.target_term for term in terms}
+    assert rendered["durability"] == "устойчивость"
+    assert rendered["steadiness"] == "стойкость"
+    assert rendered["Pettish"] == "Петтиш"
+    assert record["collisions"] == []
+    assert record["inherited_name_entries"] == [
+        {"source_term": "Pettish", "target_term": "Петтиш", "from": "Zorvane Pettish"}
+    ]
+
+
+def test_fr009_a_renamed_rare_term_changes_only_the_sense_that_collided():
+    # Codex acceptance finding 3 under the direction rule: the RARE term is renamed, and of its
+    # two senses only the one that shared the frequent term's rendering takes the new one.
+    from docxaicorrector.pipeline.glossary_phase import _apply_distinction
+
+    bond = GlossaryTerm(source_term="quillet bond", target_term="киллетная облигация", note="the bond")
+    tool = GlossaryTerm(source_term="quillet bond", target_term="квиллет", note="the tool")
+    frequent = GlossaryTerm(source_term="Kelbrook", target_term="Квиллет", kind="name")
+    terms = (bond, tool, frequent)
+    counts = {("quillet", "bond"): 5, ("kelbrook",): 50}
+    groups = [
+        glossary_pass.order_collision_group(group, counts)
+        for group in glossary_pass.find_rendering_collisions(terms)
+    ]
+    assert [term.source_term for term in groups[0]] == ["Kelbrook", "quillet bond"]
+    answer = (
+        GlossaryTerm(source_term="Kelbrook", target_term="Келбрук", kind="name"),
+        GlossaryTerm(source_term="quillet bond", target_term="квиллетный инструмент", note="the tool"),
+    )
+
+    result = [(term.source_term, term.target_term) for term in _apply_distinction(terms, groups, answer)]
+
+    assert result == [
+        ("quillet bond", "киллетная облигация"),
+        ("quillet bond", "квиллетный инструмент"),
+        ("Kelbrook", "Квиллет"),
+    ]

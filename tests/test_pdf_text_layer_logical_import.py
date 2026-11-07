@@ -1889,3 +1889,103 @@ def test_fr009_body_size_line_at_the_top_of_a_page_stays_body() -> None:
 
     line = next(p for p in result.paragraphs if p.text == "Why this Report, Now?")
     assert line.role == "body"
+
+
+# Spec 064 FR-007 (R-5): a cell of a table or diagram is not a heading. Creating Wealth's figure
+# "Competition and Cooperation" came through as a run of level-3 headings ("Peak Experience" |
+# "Endurance-Sus tainability" on one baseline); the model merged one into the body and
+# ``key_headings_preserved`` failed. The form: two short spans of one size on one baseline.
+
+
+def _subheading_page(*middle: PdfTextSpan) -> list[PdfTextSpan]:
+    return [
+        _span(1, "The time currency also created stronger", top=100, bottom=112, x0=50),
+        _span(1, "community ties.", top=114, bottom=126, x0=50),
+        *middle,
+        _span(1, "The first LETS systems originated in Canada in northern regions", top=142, bottom=154, x0=50),
+        _span(1, "aiming specifically at currency scarcity in areas.", top=156, bottom=168, x0=50),
+    ]
+
+
+def test_fr007_short_line_alone_on_its_baseline_is_a_heading() -> None:
+    # ANTI-VACUUM for the next test: the same line, alone on its row, is a heading today.
+    result = build_paragraph_units_from_text_spans(
+        _subheading_page(_span(1, "Employment", top=128, bottom=140, x0=50, x1=120))
+    )
+
+    assert [p.role for p in result.paragraphs] == ["body", "heading", "body"]
+
+
+def test_fr007_two_short_cells_on_one_baseline_are_not_headings() -> None:
+    result = build_paragraph_units_from_text_spans(
+        _subheading_page(
+            _span(1, "Employment", top=128, bottom=140, x0=50, x1=120),
+            _span(1, "Endurance", top=128, bottom=140, x0=200, x1=270),
+        )
+    )
+
+    assert not any(p.role == "heading" for p in result.paragraphs)
+
+
+def test_fr007_cell_one_line_off_its_row_belongs_to_the_table() -> None:
+    # A header cell set a little above its row, or two cells the extractor read as one line
+    # (Creating Wealth: "Command and Control Mutual Trust and Action"), sits within one line
+    # of a row cell of the same size: it is part of the table too. A line of the same size
+    # further away than one line is not reached.
+    spans = _subheading_page(
+        _span(1, "Characteristics", top=126, bottom=132, x0=50, x1=90, font_size=5),
+        _span(1, "Competition", top=134, bottom=140, x0=120, x1=170, font_size=5),
+        _span(1, "Cooperation", top=134, bottom=140, x0=200, x1=250, font_size=5),
+        _span(1, "Far Away Label", top=60, bottom=66, x0=50, x1=90, font_size=5),
+    )
+
+    result = build_paragraph_units_from_text_spans(spans)
+    keys = logical_import._detect_table_row_span_keys(
+        spans, repeated_furniture_keys=set(), body_line_length_p75=64.0
+    )
+
+    assert not any(p.role == "heading" for p in result.paragraphs if "Co" in p.text)
+    assert (1, 126.0, 50.0) in keys
+    assert (1, 60.0, 50.0) not in keys
+
+
+def test_fr007_line_beside_a_full_body_line_of_another_column_is_not_a_table_cell() -> None:
+    # ANTI-VACUUM (two-column body): the line beside the short one is a whole column line,
+    # longer than half a body line, so the row is not a table row. The importer orders a
+    # two-column page by baseline and has no column model, so this is checked on the row
+    # detector itself, the one place the bound lives.
+    spans = _subheading_page(
+        _span(1, "Employment", top=128, bottom=140, x0=50, x1=120),
+        _span(1, "a whole line of the second column of a body set in two", top=128, bottom=140, x0=300, x1=560),
+    )
+    keys = logical_import._detect_table_row_span_keys(
+        spans, repeated_furniture_keys=set(), body_line_length_p75=64.0
+    )
+
+    assert keys == frozenset()
+    short_row = logical_import._detect_table_row_span_keys(
+        _subheading_page(
+            _span(1, "Employment", top=128, bottom=140, x0=50, x1=120),
+            _span(1, "Endurance", top=128, bottom=140, x0=200, x1=270),
+        ),
+        repeated_furniture_keys=set(),
+        body_line_length_p75=64.0,
+    )
+    assert {(1, 128.0, 50.0), (1, 128.0, 200.0)} <= short_row
+
+
+def test_fr007_display_size_line_beside_a_short_span_stays_a_heading() -> None:
+    # ANTI-VACUUM: a line set ABOVE the body is display type, not a table cell, even when a
+    # short span of its size stands on its baseline (a chapter number set beside the title).
+    spans = [
+        _span(1, "Body line one keeps the dominant document style", top=100, bottom=112, x0=50),
+        _span(1, "body line two keeps the dominant document style", top=114, bottom=126, x0=50),
+        _span(1, "Body line three keeps the dominant document style.", top=128, bottom=140, x0=50),
+        _span(1, "PART ONE", top=180, bottom=202, x0=150, x1=260, font_size=18, bold=True),
+        _span(1, "I", top=180, bottom=202, x0=300, x1=310, font_size=18, bold=True),
+        _span(1, "Body text resumes with the dominant document style.", top=270, bottom=282, x0=50),
+    ]
+
+    result = build_paragraph_units_from_text_spans(spans)
+
+    assert any(p.role == "heading" and "PART ONE" in p.text for p in result.paragraphs)

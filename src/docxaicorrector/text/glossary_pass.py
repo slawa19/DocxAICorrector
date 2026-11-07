@@ -30,7 +30,7 @@ import math
 import re
 from collections import Counter, defaultdict
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from functools import lru_cache
 
 from docxaicorrector.core.constants import PROMPTS_DIR
@@ -92,8 +92,14 @@ _ITALIC_RE = re.compile(r"(?<![*\w])\*(?!\*)([^*\n]{1,80}?)(?<!\s)\*(?![*\w])")
 _BOLD_RE = re.compile(r"\*\*([^*\n]{1,80}?)\*\*")
 _QUOTE_RE = re.compile(r"[“\"‘]([^“”\"‘’\n]{1,60}?)[”\"’](?!" + _LETTER + r")")
 _EMPHASIS_MARKS_RE = re.compile(r"\*+")
+# Spec 064 FR-009: the importer closes and reopens emphasis at every word it set as its own run
+# ("called a *growth* *hierarchy*"); two marked runs with only a space between them are ONE
+# marked expression. Bold first, so "**a** **b**" is not read as two italics.
+_ADJACENT_BOLD_RE = re.compile(r"(?<=[^\s*])\*\*(\s+)\*\*(?=[^\s*])")
+_ADJACENT_ITALIC_RE = re.compile(r"(?<=[^\s*])\*(\s+)\*(?=[^\s*])")
 _URL_RE = re.compile(r"(?:https?://|www\.)\S+|\S*[A-Za-z0-9]\.[A-Za-z]{2,}/\S*")
 _ROMAN_NUMERAL_RE = re.compile(r"^[IVXLCDM]+$")
+_POSSESSIVE_RE = re.compile(r"[’']s$")
 _SENTENCE_BREAKS = frozenset(".!?:;\"“”‘(—–[•")
 _CLAUSE_SPLIT_RE = re.compile(r"[.!?:;,()\[\]—–\"“”‘’•]")
 _LEADING_ARTICLE_RE = re.compile(r"^\s*(?:a|an|the)\s+", re.IGNORECASE)
@@ -101,6 +107,10 @@ _LEADING_MARKED_SPAN_RE = (
     re.compile(r"\s*\*([^*]{1,80}?)\*"),
     re.compile(r"\s*[“\"‘]([^”\"’]{1,60})[”\"’]"),
 )
+# Spec 064 FR-009: "call X 'Y'" -- one unmarked word (the object of the verb: "itself",
+# "landlords") and then the marked name the author gives it. The marking says which is the term.
+_OBJECT_THEN_MARKED_SPAN_RE = re.compile(r"\s*" + _WORD + r"(?=\s+[*“\"‘])")
+_CONTINUING_WORD_RE = re.compile(r"\s*\*?" + _LETTER)
 # The grammar of an English definition — six verbs, no term. The constitution's acknowledged
 # class of language resource ("general across books and extensible per language, NOT a per-book
 # literal"); a source language without these constructions simply has no definitional signal and
@@ -147,9 +157,12 @@ class GlossaryCandidate:
     # family of at least three candidates), so it enters the glossary by rule — the model is
     # asked only for its rendering, never whether to include it.
     required: bool = False
+    # Spec 064 FR-009: the full form of the name this short form belongs to ("Bernard Lietaer"
+    # for "Lietaer"), decided by form in ``extract_glossary_candidates``; empty otherwise.
+    name_head: str = ""
 
     def to_payload(self) -> dict[str, object]:
-        return {
+        payload: dict[str, object] = {
             "term": self.source_term,
             "family": self.family,
             "required": self.required,
@@ -160,6 +173,9 @@ class GlossaryCandidate:
             "first_unit_id": self.first_unit_id,
             "context": self.context,
         }
+        if self.name_head:
+            payload["name_head"] = self.name_head
+        return payload
 
 
 @dataclass(frozen=True)
@@ -187,6 +203,9 @@ class _Draft:
     in_h1: bool = False
     marked_count: int = 0
     heads_required_member: bool = False
+    # The document writes this one-word term capitalised more often than lowercase (the same
+    # case test the name family uses); spec 064 FR-009 rule "capital letter".
+    capitalised_form: bool = False
 
 
 # --- unit selection --------------------------------------------------------------------------
@@ -280,6 +299,10 @@ def _plain(text: str) -> str:
     return _URL_RE.sub(" ", _EMPHASIS_MARKS_RE.sub("", text))
 
 
+def _join_adjacent_emphasis(text: str) -> str:
+    return _ADJACENT_ITALIC_RE.sub(r"\1", _ADJACENT_BOLD_RE.sub(r"\1", text))
+
+
 # --- extraction ------------------------------------------------------------------------------
 
 
@@ -344,6 +367,15 @@ def _defined_term_words(tail: str) -> list[str]:
         match = pattern.match(tail)
         if match:
             return _WORD_RE.findall(match.group(1))
+    object_word = _OBJECT_THEN_MARKED_SPAN_RE.match(tail)
+    if object_word:
+        rest = tail[object_word.end() :]
+        for pattern in _LEADING_MARKED_SPAN_RE:
+            match = pattern.match(rest)
+            # The marked span must END the phrase: in "called it 'real' money" the quotes
+            # mark a word inside an expression, not a name given to the object.
+            if match and not _CONTINUING_WORD_RE.match(rest[match.end() :]):
+                return _WORD_RE.findall(match.group(1))
     words: list[str] = []
     for match in _TOKEN_RE.finditer(_EMPHASIS_MARKS_RE.sub("", tail)):
         token = match.group(0)
@@ -418,7 +450,7 @@ def extract_glossary_candidates(
     if unit_count == 0 or limit <= 0:
         return ()
     plains = [_plain(unit.text) for unit in units]
-    marked_sources = [_URL_RE.sub(" ", unit.text) for unit in units]
+    marked_sources = [_join_adjacent_emphasis(_URL_RE.sub(" ", unit.text)) for unit in units]
     folded_tokens = [[_fold_word(word) for word in _WORD_RE.findall(plain)] for plain in plains]
 
     hits_exact: dict[tuple[str, ...], list[int]] = defaultdict(list)
@@ -531,7 +563,9 @@ def extract_glossary_candidates(
                     continue
                 draft = drafts.get(key)
                 if draft is None:
-                    draft = drafts[key] = _Draft(key=key, surface=" ".join(word.lower() for word in phrase), proper=False)
+                    draft = drafts[key] = _Draft(
+                        key=key, surface=" ".join(_POSSESSIVE_RE.sub("", word.lower()) for word in phrase), proper=False
+                    )
                 draft.signals.add("heading")
                 # A level-1 heading (chapter, title) weighs twice a level-2 one; the phrase's
                 # weight is what ranks it among heading candidates, ahead of its body frequency.
@@ -621,6 +655,17 @@ def extract_glossary_candidates(
             draft.family = FAMILY_HEADING
         else:
             draft.family = FAMILY_COLLOCATION
+        if len(key) == 1:
+            # The name family's own case test, on the body: capitalised in mid-sentence more
+            # often than lowercase. Headings are left out -- title case is not the word's case.
+            lower = key[0].lower()
+            capitalised_count = (
+                capitalised_noninitial[(lower[:1].upper() + lower[1:],)] + capitalised_noninitial[(lower.upper(),)]
+                if lower != lower.upper()
+                else 0
+            )
+            lowercase_count = sum(1 for unit in hits_exact.get((lower,), []) if unit in body_index_set)
+            draft.capitalised_form = capitalised_count > lowercase_count
         if draft.family == FAMILY_COLLOCATION:
             draft.score = collocation_scores.get(key, 0.0)
         elif draft.family == FAMILY_HEADING:
@@ -652,6 +697,13 @@ def extract_glossary_candidates(
         key = (word,)
         existing = drafts.get(key)
         if existing is not None and existing.family:
+            # Spec 064 FR-009: a word another route already found (an h2 heading word, a
+            # one-word marked term) still heads its family. Before, finding it elsewhere
+            # skipped the head rule, and The Value of Everything's *value* -- head of
+            # "value added", "surplus value", "theory of value" -- stayed optional.
+            if word in required_membership and existing.family != FAMILY_HEAD:
+                existing.signals.add("family_head")
+                existing.heads_required_member = True
             continue
         units_hit = set(hits_folded_case.get(key, []))
         if len(units_hit) < 2:
@@ -693,6 +745,10 @@ def extract_glossary_candidates(
             optional_room -= 1
             kept.append(draft)
 
+    body_lowercase_words = Counter(
+        word for unit_index in body_indexes for word in _WORD_RE.findall(plains[unit_index]) if word.islower()
+    )
+    name_heads = _name_family_heads(kept, lowercase_words=body_lowercase_words)
     candidates: list[GlossaryCandidate] = []
     for draft in kept:
         first_unit = min(draft.units)
@@ -715,9 +771,70 @@ def extract_glossary_candidates(
                 context=_context_snippet(plains[context_unit], draft.surface),
                 score=round(draft.score, 4),
                 required=_included_by_rule(draft),
+                name_head=name_heads[id(draft)].surface if id(draft) in name_heads else "",
             )
         )
     return tuple(candidates)
+
+
+def _name_words(draft: _Draft) -> list[str] | None:
+    """The words of a candidate written as a personal or place name: 1-3 capitalised words.
+
+    Not an abbreviation ("US GDP"), not a possessive ("Silicon Valley's"), no lowercase joiner
+    ("Bank of England", "Smith and Ricardo" -- an institution or two people, not one name).
+    """
+
+    if draft.family not in (FAMILY_NAME, FAMILY_MARKED):
+        return None
+    words = draft.surface.split()
+    if not 1 <= len(words) <= 3:
+        return None
+    for word in words:
+        if not _WORD_RE.fullmatch(word) or not word[:1].isupper() or _POSSESSIVE_RE.search(word):
+            return None
+        if len(word) > 1 and word.isupper():
+            return None
+    return words
+
+
+def _name_family_heads(drafts: Sequence[_Draft], *, lowercase_words: Counter[str]) -> dict[int, _Draft]:
+    """Short forms of a name and the full form each belongs to (spec 064 FR-009, R-9).
+
+    Money rendered "Lietaer" as one transliteration while Creating Wealth rendered "Bernard
+    Lietaer" as another: a surname asked for on its own is transliterated on its own. By form,
+    a name candidate whose words END a longer name candidate ("Lietaer" in "Bernard Lietaer",
+    "Maynard Keynes" in "John Maynard Keynes") is a member of its family; the longest form is
+    the head. The words the head adds must be names themselves -- the body never writes them in
+    lowercase: "Central Vermont", "Great Depression", "New England" add ordinary words
+    ("central", "great", "new") and are other entities, not a fuller form of "Vermont".
+    A short form that ends two different longer names ("Smith" in "Adam Smith" and "John
+    Smith"; "America" in "North America" and "South America", whichever of them qualifies) is
+    ambiguous; it, and a REQUIRED short form, stay candidates of their own.
+    """
+
+    named = []
+    for draft in drafts:
+        words = _name_words(draft)
+        if words:
+            named.append((draft, [word.casefold() for word in words]))
+    heads_of: dict[int, _Draft] = {}
+    for draft, words in named:
+        if _included_by_rule(draft):
+            continue
+        size = len(words)
+        longer = [(other, other_words) for other, other_words in named if len(other_words) > size and other_words[-size:] == words]
+        heads = [
+            (other, other_words)
+            for other, other_words in longer
+            if all(lowercase_words[word] == 0 for word in other_words[:-size])
+        ]
+        if not heads:
+            continue
+        head, head_words = max(heads, key=lambda item: (len(item[1]), item[0].count))
+        if any(head_words[-len(other_words) :] != other_words for _, other_words in longer):
+            continue
+        heads_of[id(draft)] = head
+    return heads_of
 
 
 def _is_defined(draft: _Draft) -> bool:
@@ -746,20 +863,42 @@ def _included_by_rule(draft: _Draft) -> bool:
         # condition under which it became a candidate at all — is the strongest mark an author
         # makes. h2 phrases stay optional.
         return True
-    if draft.family == FAMILY_HEAD:
+    if draft.heads_required_member:
         # A head is required when it heads a family (>= 3 members) one of whose members the
         # author marked; a head of grammatical collocations ("have been", "they have") is not.
-        return draft.heads_required_member
+        # Spec 064: this holds for a word another route found first, too.
+        return True
     if draft.family != FAMILY_MARKED:
         return False
     if _is_defined(draft):
         return True
+    if _is_lowercase_single_marked(draft):
+        # Spec 064 FR-009: one lowercase word under italics is how an author STRESSES a
+        # word as often as how they introduce a term ("after", "taxes"); alone it does not
+        # make a term. It stays an optional candidate, ranked by use x marking.
+        return False
     marked = "emphasis" in draft.signals or ("quoted" in draft.signals and len(draft.key) > 1)
     recurring = draft.count >= _REQUIRED_MIN_COUNT and draft.chapters >= _REQUIRED_MIN_CHAPTERS
     # An ordinary word recurs anyway; what recurs for a TERM is the author's marking of it.
     # Marked once, the expression must be marked where it first appears in the whole text.
     marking_recurs = draft.marked_count >= 2 or draft.signal_unit == min(draft.units, default=-1)
     return marked and recurring and marking_recurs
+
+
+def _is_lowercase_single_marked(draft: _Draft) -> bool:
+    """A marked candidate of ONE word that the document writes in lowercase, not defined.
+
+    Spec 064 FR-009: "marked and recurring" makes a candidate required only when it also has
+    a form of its own -- several words, a capital letter (by the document's own case counts:
+    the capitalised form outnumbers the lowercase one), or a definition.
+    """
+
+    return (
+        draft.family == FAMILY_MARKED
+        and len(draft.key) == 1
+        and not draft.capitalised_form
+        and not _is_defined(draft)
+    )
 
 
 def _context_snippet(plain: str, surface: str) -> str:
@@ -908,16 +1047,107 @@ def normalize_rendering(target_term: str) -> tuple[str, ...]:
     return tuple(word[: max(3, len(word) - 3)] for word in words)
 
 
+def _spelling_identity(source_term: str) -> str:
+    """A source term with case, periods and a plural ``s`` taken off ("U.S." = "US", "TRCs" = "TRC").
+
+    Only a LOWERCASE final ``s`` is a plural: in "BIS" the ``S`` is a letter of the name.
+    """
+
+    letters = re.sub(r"[.\s]", "", str(source_term or ""))
+    if len(letters) > 2 and letters.endswith("s"):
+        letters = letters[:-1]
+    return letters.casefold()
+
+
+def _is_abbreviation(source_term: str) -> bool:
+    letters = re.sub(r"[.\s]", "", str(source_term or ""))
+    return len(letters) >= 2 and letters.isalpha() and letters.isupper()
+
+
+def same_spelling_family(first: str, second: str) -> bool:
+    """Two source terms that are one name written two ways (spec 064 FR-009), by form only.
+
+    Equal once case, periods and a plural ``s`` are taken off ("US" / "U.S.", "TRC" / "TRCs"),
+    or two abbreviations the longer of which is the shorter plus one letter ("US" / "USA").
+    Such a pair sharing a rendering is not a collision: there is nothing to tell apart.
+    """
+
+    first_identity, second_identity = _spelling_identity(first), _spelling_identity(second)
+    if first_identity and first_identity == second_identity:
+        return True
+    if _is_abbreviation(first) and _is_abbreviation(second):
+        shorter, longer = sorted((first_identity, second_identity), key=len)
+        return len(longer) == len(shorter) + 1 and longer.startswith(shorter)
+    return False
+
+
+def _collision_rendering_key(term: GlossaryTerm) -> tuple[str, ...]:
+    # A rendering that IS its source term (a name kept in its own script: "WIR", "Wired") is
+    # compared whole. The stem rule cuts a short word to three letters, and two different
+    # names kept as written then looked like one rendering (spec 064 R-9: RM "WIR" / "Wired").
+    target = " ".join(str(term.target_term or "").split())
+    if target and target.casefold() == " ".join(str(term.source_term or "").split()).casefold():
+        return ("\0verbatim", target.casefold())
+    return normalize_rendering(term.target_term)
+
+
 def find_rendering_collisions(terms: Sequence[GlossaryTerm]) -> list[list[GlossaryTerm]]:
-    """Groups of entries whose DIFFERENT source terms share one rendering (decision 3)."""
+    """Groups of entries whose DIFFERENT source terms share one rendering (decision 3).
+
+    Two source terms of one spelling family (``same_spelling_family``) are one term here: a
+    group whose members all belong to one such family is not a collision.
+    """
 
     by_rendering: dict[tuple[str, ...], dict[tuple[str, ...], GlossaryTerm]] = defaultdict(dict)
     for term in terms:
-        rendering = normalize_rendering(term.target_term)
+        rendering = _collision_rendering_key(term)
         if not rendering:
             continue
         by_rendering[rendering].setdefault(normalize_glossary_key(term.source_term), term)
-    return [list(group.values()) for group in by_rendering.values() if len(group) >= 2]
+    collisions: list[list[GlossaryTerm]] = []
+    for group in by_rendering.values():
+        members = list(group.values())
+        families: list[list[GlossaryTerm]] = []
+        for member in members:
+            family = next(
+                (
+                    known
+                    for known in families
+                    if any(same_spelling_family(member.source_term, other.source_term) for other in known)
+                ),
+                None,
+            )
+            if family is None:
+                families.append([member])
+            else:
+                family.append(member)
+        if len(families) >= 2:
+            collisions.append(members)
+    return collisions
+
+
+def order_collision_group(
+    group: Sequence[GlossaryTerm],
+    counts: Mapping[tuple[str, ...], int],
+) -> list[GlossaryTerm]:
+    """The group with the source term the book uses MOST first: it keeps the rendering.
+
+    Spec 064 FR-009 (R-9): call C renamed Money's *sustainability* (129 of 144 delivered pairs
+    say «устойчив-») to «жизнеспособность» and left the rare *resilience* «устойчивость». The
+    rendering stays with the frequent term; the rarer ones are asked for a new one. Ties keep
+    the glossary's order.
+    """
+
+    return sorted(group, key=lambda term: -int(counts.get(normalize_glossary_key(term.source_term), 0)))
+
+
+def collision_keepers(group: Sequence[GlossaryTerm]) -> list[GlossaryTerm]:
+    """The members of an ordered group that keep the rendering: the first and its spellings."""
+
+    if not group:
+        return []
+    head = group[0]
+    return [term for term in group if term is head or same_spelling_family(term.source_term, head.source_term)]
 
 
 def build_distinction_request(
@@ -928,8 +1158,15 @@ def build_distinction_request(
     source_language: str,
     target_language: str,
     sample_text: str = "",
+    counts: Mapping[tuple[str, ...], int] | None = None,
 ) -> dict[str, object]:
-    """Call C: one request for every collision group, with each term's context."""
+    """Call C: one request for every collision group, with each term's context.
+
+    ``groups`` come ordered by ``order_collision_group``: the first member (and its spellings)
+    KEEPS ``current_rendering`` and is marked ``"keep": true``; every term carries how often the
+    book uses it. The phase applies the answer to the other members only, whatever the model
+    returns for the kept ones (``pipeline/glossary_phase._apply_distinction``).
+    """
 
     source_label = describe_source_language(source_language, sample_text=sample_text)
     instructions = _load_glossary_instructions(GLOSSARY_ROLE_DISTINGUISH).format(
@@ -937,25 +1174,30 @@ def build_distinction_request(
         target_language=str(target_language or ""),
         max_terms=0,
     )
+    counts = counts or {}
+
+    def group_payload(group: Sequence[GlossaryTerm]) -> dict[str, object]:
+        keepers = collision_keepers(group)
+        return {
+            "current_rendering": group[0].target_term,
+            "terms": [
+                {
+                    "term": term.source_term,
+                    "count": int(counts.get(normalize_glossary_key(term.source_term), 0)),
+                    "keep": any(term is keeper for keeper in keepers),
+                    "context": contexts.get(normalize_glossary_key(term.source_term), ""),
+                    # The sense this entry stands for, when the term has more than one
+                    # (FR-013): without it the model cannot tell which of them collided.
+                    **({"note": term.note} if term.note else {}),
+                }
+                for term in group
+            ],
+        }
+
     payload = {
         "source_language": source_label,
         "target_language": str(target_language or ""),
-        "groups": [
-            {
-                "current_rendering": group[0].target_term,
-                "terms": [
-                    {
-                        "term": term.source_term,
-                        "context": contexts.get(normalize_glossary_key(term.source_term), ""),
-                        # The sense this entry stands for, when the term has more than one
-                        # (FR-013): without it the model cannot tell which of them collided.
-                        **({"note": term.note} if term.note else {}),
-                    }
-                    for term in group
-                ],
-            }
-            for group in groups
-        ],
+        "groups": [group_payload(group) for group in groups],
     }
     return _request_envelope(
         model=model,
@@ -986,6 +1228,113 @@ def describe_source_language(source_language: str, *, sample_text: str = "") -> 
         if detected:
             return str(detected)
     return _SOURCE_LANGUAGE_UNKNOWN
+
+
+@dataclass(frozen=True)
+class NameFamilyMember:
+    """A short form of a name ("Lietaer") and the full form it inherits from ("Bernard Lietaer")."""
+
+    member: GlossaryCandidate
+    head: GlossaryCandidate
+
+
+def split_name_families(
+    candidates: Sequence[GlossaryCandidate],
+) -> tuple[tuple[GlossaryCandidate, ...], tuple[NameFamilyMember, ...]]:
+    """Take the short forms of a name out of the request; they inherit the full form's rendering.
+
+    Which short form belongs to which full form is decided at extraction, by form
+    (``GlossaryCandidate.name_head``; ``_name_family_heads``). A short form the book never uses
+    on its own -- every occurrence is inside the full form ("Pettish" counted only within
+    "Zorvane Pettish") -- is part of the full name, not an entry: it is neither sent nor
+    inherited. Returns the candidates to send -- each head carrying its family's count, so the
+    model sees how much rests on it -- and the members that stand alone.
+    """
+
+    by_surface = {candidate.source_term: candidate for candidate in candidates}
+    family = [
+        NameFamilyMember(member=candidate, head=by_surface[candidate.name_head])
+        for candidate in candidates
+        if candidate.name_head and candidate.name_head in by_surface and not candidate.required
+    ]
+    member_ids = {id(member.member) for member in family}
+    family_counts: dict[int, int] = defaultdict(int)
+    members: list[NameFamilyMember] = []
+    for member in family:
+        # Each occurrence of the full form contains one of the short form.
+        standalone = member.member.occurrence_count - member.head.occurrence_count
+        if standalone > 0:
+            family_counts[id(member.head)] += standalone
+            members.append(member)
+    requested = tuple(
+        replace(candidate, occurrence_count=candidate.occurrence_count + family_counts[id(candidate)])
+        if id(candidate) in family_counts
+        else candidate
+        for candidate in candidates
+        if id(candidate) not in member_ids
+    )
+    return requested, tuple(members)
+
+
+def inherit_name_renderings(
+    terms: Sequence[GlossaryTerm],
+    members: Sequence[NameFamilyMember],
+) -> tuple[tuple[GlossaryTerm, ...], list[dict[str, str]]]:
+    """Give each short form the matching end of its head's rendering, right after the head.
+
+    "Bernard Lietaer -> Бернар Лиетар" gives "Lietaer -> Лиетар". Only when the rendering has as
+    many words as the head (a name rendered word for word); otherwise the short form gets no
+    entry and the head's entry stands for the family; so it does when the head was kept as
+    written. Returns the terms and what was inherited.
+    """
+
+    rendered = {normalize_glossary_key(term.source_term) for term in terms}
+    derived_by_head: dict[tuple[str, ...], list[GlossaryTerm]] = defaultdict(list)
+    inherited: list[dict[str, str]] = []
+    head_terms = {}
+    for term in terms:
+        head_terms.setdefault(normalize_glossary_key(term.source_term), term)
+    for family_member in members:
+        member_key = normalize_glossary_key(family_member.member.source_term)
+        head_key = normalize_glossary_key(family_member.head.source_term)
+        head_term = head_terms.get(head_key)
+        if head_term is None or member_key in rendered:
+            continue
+        if " ".join(str(head_term.target_term).split()).casefold() == " ".join(
+            str(family_member.head.source_term).split()
+        ).casefold():
+            # A full form kept as written is not a transliteration to share: "Plan-It
+            # Newburgh" left in Latin says nothing about how the city "Newburgh" is written.
+            continue
+        head_words = str(family_member.head.source_term).split()
+        member_words = str(family_member.member.source_term).split()
+        rendering_words = str(head_term.target_term).split()
+        if len(rendering_words) != len(head_words):
+            continue
+        derived = GlossaryTerm(
+            source_term=family_member.member.source_term,
+            target_term=" ".join(rendering_words[-len(member_words) :]),
+            confidence=head_term.confidence,
+            kind=head_term.kind,
+        )
+        derived_by_head[head_key].append(derived)
+        rendered.add(member_key)
+        inherited.append(
+            {
+                "source_term": derived.source_term,
+                "target_term": derived.target_term,
+                "from": head_term.source_term,
+            }
+        )
+    result: list[GlossaryTerm] = []
+    placed: set[tuple[str, ...]] = set()
+    for term in terms:
+        result.append(term)
+        key = normalize_glossary_key(term.source_term)
+        if key in derived_by_head and key not in placed:
+            placed.add(key)
+            result.extend(derived_by_head[key])
+    return tuple(result), inherited
 
 
 def missing_required_candidates(
@@ -1124,11 +1473,17 @@ __all__ = [
     "GlossaryParseResult",
     "GlossaryResponseError",
     "GlossarySourceUnit",
+    "NameFamilyMember",
     "RUN_GLOSSARY_SECTION_HEADER",
     "build_glossary_request",
     "build_distinction_request",
+    "collision_keepers",
     "describe_source_language",
     "find_rendering_collisions",
+    "inherit_name_renderings",
+    "order_collision_group",
+    "same_spelling_family",
+    "split_name_families",
     "domain_glossary_terms",
     "extract_glossary_candidates",
     "glossary_max_output_tokens",

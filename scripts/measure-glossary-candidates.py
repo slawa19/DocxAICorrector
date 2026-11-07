@@ -61,6 +61,7 @@ from docxaicorrector.text.glossary_pass import (  # noqa: E402
     extract_glossary_candidates,
     normalize_glossary_key,
     select_glossary_source_units,
+    split_name_families,
 )
 
 DEFAULT_RUN_PROFILE = "ui-parity-translate-benchmark-advisory-image-safe-no-cleanup"
@@ -341,6 +342,25 @@ def main(argv: list[str] | None = None) -> int:
         families[candidate.family] = families.get(candidate.family, 0) + 1
     request_chars = sum(len(candidate.source_term) + len(candidate.context) for candidate in candidates)
     print(f"units={len(units)} candidates={len(candidates)} families={families} term+context_chars={request_chars}")
+    # Spec 064 FR-009: the required set by route, one-word lowercase entries among them, and the
+    # short forms of names that are not asked for (they inherit the full form's rendering).
+    required = [candidate for candidate in candidates if candidate.required]
+    routes: dict[str, int] = {}
+    for candidate in required:
+        route = (
+            "defined" if "defined" in candidate.signals
+            else "family_head" if "family_head" in candidate.signals
+            else "heading" if candidate.family == "heading"
+            else "marked"
+        )
+        routes[route] = routes.get(route, 0) + 1
+    single_lowercase = [c.source_term for c in required if len(c.key) == 1 and c.source_term == c.source_term.lower()]
+    _, name_members = split_name_families(candidates)
+    print(f"required={len(required)} by_route={routes} single_lowercase={len(single_lowercase)} {single_lowercase}")
+    print(
+        f"name_family_members={len(name_members)} "
+        + str([f"{member.member.source_term} <- {member.head.source_term}" for member in name_members])
+    )
 
     terms: list[str] = []
     if args.reviewer_terminology:
