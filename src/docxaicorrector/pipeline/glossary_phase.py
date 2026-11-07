@@ -48,6 +48,7 @@ from docxaicorrector.text.glossary_pass import (
     build_distinction_request,
     build_glossary_request,
     collision_keepers,
+    declared_spellings,
     domain_glossary_terms,
     extract_glossary_candidates,
     find_rendering_collisions,
@@ -670,6 +671,7 @@ def _call_model(
     # most keeps the rendering (spec 064 FR-009); each group is ordered that way.
     counts = {normalize_glossary_key(candidate.source_term): candidate.occurrence_count for candidate in requested}
     collisions = [order_collision_group(group, counts) for group in find_rendering_collisions(terms)]
+    declared_same: set[frozenset[tuple[str, ...]]] = set()
     record["collisions_found"] = len(collisions)
     # What collided BEFORE the distinction call, with the renderings it was given then; the
     # outcome is the glossary itself, and what stayed identical is ``collisions`` below.
@@ -704,12 +706,21 @@ def _call_model(
         )
         if outcome == _ASK_OK:
             terms = _apply_distinction(terms, collisions, tuple(result.terms))
+            # Codex review 2026-11-07 (finding 6): "the same thing written another way",
+            # answered with the kept rendering and a note, resolves the collision.
+            declared_same = declared_spellings(collisions, tuple(result.terms))
+    record["collisions_declared_same"] = sorted(sorted(" ".join(key) for key in pair) for pair in declared_same)
     terms, inherited = inherit_name_renderings(terms, name_members)
     record["name_family_members"] = [
         {"source_term": member.member.source_term, "head": member.head.source_term} for member in name_members
     ]
     record["inherited_name_entries"] = inherited
-    remaining = find_rendering_collisions(terms)
+    record["uninherited_name_members"] = [
+        member.member.source_term
+        for member in name_members
+        if member.member.source_term not in {entry["source_term"] for entry in inherited}
+    ]
+    remaining = find_rendering_collisions(terms, declared_same=declared_same)
     record["collisions_resolved"] = max(0, len(collisions) - len(remaining))
     record["collisions"] = [
         {"target_term": group[0].target_term, "source_terms": [term.source_term for term in group]}

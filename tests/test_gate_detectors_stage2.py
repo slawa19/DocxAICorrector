@@ -959,14 +959,132 @@ def test_broken_body_list_before_the_back_matter_region_still_hard_fails(tmp_pat
     assert "list_fragment_regressions_review_required" not in report["gate_reasons"]
 
 
+def test_multi_line_entry_does_not_shift_later_lines_onto_another_entry(tmp_path):
+    """Codex acceptance finding 2. Entries keep single newlines inside their text; the old
+    non-empty-line ordinal sent every line after a three-line entry two entries further on.
+    Here that lands the broken body continuation on a ``policy_kept_source`` entry, whose
+    STATUS would then credit a real body defect. With the line-span alignment the
+    continuation resolves to its own body entry and still hard-fails."""
+    continuation = "продолжение пункта о реформе, которое так и не было доведено до конца в 2004."
+    entries = [
+        _entry("Первая строка абзаца\nвторая строка того же абзаца\nтретья строка того же абзаца", 0),
+        _entry("- 1. Первый пункт списка в основном тексте главы", 1, role="list", list_kind="ordered"),
+        _entry(continuation, 2),
+        _entry("- 2. Второй пункт списка.", 3, role="list", list_kind="ordered"),
+        _entry(
+            "Lietaer, B. *The Future of Money*. London: Century, 2001.",
+            4,
+            status=PARAGRAPH_STATUS_POLICY_KEPT_SOURCE,
+        ),
+        _entry("## Примечания", 5, role="heading", heading_level=2),
+    ]
+    assembly = _assembly(entries)
+    line_of_continuation = assembly.final_markdown.splitlines().index(continuation) + 1
+    index_by_line = quality_gate._build_source_backed_entry_index_by_markdown_line(
+        final_markdown=assembly.final_markdown, assembly_entries=assembly.entries
+    )
+    assert index_by_line[line_of_continuation] == 2
+    # Every non-empty line resolves to the entry whose text contains it.
+    for line_number, line in enumerate(assembly.final_markdown.splitlines(), start=1):
+        if line.strip():
+            assert line.strip() in assembly.entries[index_by_line[line_number]].text.splitlines()
+
+    report = _report(assembly)
+    samples = cast("list[dict[str, object]]", report["list_fragment_regression_samples"])
+    assert line_of_continuation in [sample["line"] for sample in samples]
+    assert "list_fragment_regressions_present" in report["gate_reasons"]
+    assert "list_fragment_regressions_review_required" not in report["gate_reasons"]
+
+
+def test_line_alignment_survives_the_display_bullet_rewrite():
+    """The post-cleanup gate reads the display markdown, where a bullet glyph became
+    ``- ``; the alignment matches the same line through that rewrite and maps nothing it
+    cannot match."""
+    entries = (
+        _entry("Абзац перед списком.", 0),
+        _entry("\u2022 Пункт, который отображение переписало", 1, role="list", list_kind="unordered"),
+        _entry("Абзац после списка.", 2),
+    )
+    display = (
+        "Абзац перед списком.\n\n- Пункт, который отображение переписало\n\n"
+        "Строка, которой в сборке нет.\n\nАбзац после списка."
+    )
+    index_by_line = quality_gate._build_source_backed_entry_index_by_markdown_line(
+        final_markdown=display, assembly_entries=entries
+    )
+    assert index_by_line == {1: 0, 3: 1, 7: 2}
+
+
+def _appendix_after_notes_document(tmp_path: Path):
+    """Codex acceptance finding 7: «Notes» -> «Appendix» -> an ordinary list with a broken
+    continuation. The region start has no end, so the appendix lies inside it; nothing in
+    the appendix reads as a reference."""
+    continuation = "и продолжают эту работу на протяжении всего следующего года вплоть до 2004."
+    entries = [
+        _entry("Основной текст главы, переведённый полностью и без замечаний.", 0),
+        _entry("## Примечания", 1, role="heading", heading_level=2),
+        _entry(
+            "- 1. J. M. Keynes, *The General Theory* (London: Macmillan, 1936), p. 59.",
+            2,
+            role="list",
+            list_kind="ordered",
+        ),
+        _entry("## Приложение", 3, role="heading", heading_level=2),
+        _entry(
+            "- 1. Участники сообщества договариваются о правилах обмена между собой",
+            4,
+            role="list",
+            list_kind="ordered",
+        ),
+        _entry(continuation, 5),
+        _entry(
+            "- 2. Правила обмена меняются со временем, когда участники накапливают опыт.",
+            6,
+            role="list",
+            list_kind="ordered",
+        ),
+    ]
+    registry = [
+        _registry_row(0, "body", "chapter text"),
+        _registry_row(1, "heading", "notes", 1),
+        _registry_row(2, "list", "1. keynes"),
+        _registry_row(3, "heading", "appendix one", 1),
+        _registry_row(4, "list", "1. members agree"),
+        _registry_row(5, "body", "and keep working"),
+        _registry_row(6, "list", "2. rules change"),
+    ]
+    artifact = tmp_path / "formatting_diagnostics.json"
+    artifact.write_text(json.dumps({"source_registry": registry}), encoding="utf-8")
+    return _assembly(entries), [str(artifact)], continuation
+
+
+def test_broken_list_in_an_appendix_after_notes_still_hard_fails(tmp_path):
+    assembly, artifacts, continuation = _appendix_after_notes_document(tmp_path)
+    report = _report(assembly, artifacts=artifacts)
+
+    line_of_continuation = assembly.final_markdown.splitlines().index(continuation) + 1
+    samples = cast("list[dict[str, object]]", report["list_fragment_regression_samples"])
+    assert [sample["line"] for sample in samples] == [line_of_continuation]
+    # Precondition: the sample IS inside the region (source_index 5 >= the «notes» row 1).
+    registry = json.loads(Path(artifacts[0]).read_text(encoding="utf-8"))["source_registry"]
+    assert quality_gate.resolve_main_content_scope(registry)[1] == 1
+    assert "list_fragment_regressions_present" in report["gate_reasons"]
+    assert "list_fragment_regressions_review_required" not in report["gate_reasons"]
+
+
 def test_apparatus_credit_needs_a_source_backed_resolved_entry():
     samples = [type("S", (), {"text": _NOTE_TAIL, "line": line})() for line in (1, 3, 5, 99)]
+    # Three reference-shaped entries, so the only difference between them is the signal
+    # under test: region (line 1), a fallback entry (line 3), before the region (line 5).
+    reference_x = "Keynes, *The General Theory* (London: Macmillan, 1936), p. 59."
+    reference_y = "Polanyi, *The Great Transformation* (Boston: Beacon Press, 2001), p. 144."
+    reference_z = "Minsky, *Stabilizing an Unstable Economy* (New Haven: Yale, 1986), p. 369."
     entries = (
-        _entry("x", 10),  # line 1 -> region (source_index 10 >= 5)
-        _entry("y", 11, from_registry=False, used_fallback=True),  # line 3 -> fallback entry
-        _entry("z", 2),  # line 5 -> before the region
+        _entry(reference_x, 10),
+        _entry(reference_y, 11, from_registry=False, used_fallback=True),
+        _entry(reference_z, 2),
     )
-    markdown = "x\n\ny\n\nz"
+    markdown = "\n\n".join((reference_x, reference_y, reference_z))
     credited = quality_gate._list_fragment_apparatus_credited_lines(
         samples=samples,
         final_markdown=markdown,
@@ -1043,6 +1161,29 @@ def test_several_tiny_blocks_whose_total_reaches_the_floor_still_fail():
 def test_real_prose_block_still_fails_and_zero_still_passes():
     assert _prose_check(1, 33)["passed"] is False
     assert _prose_check(0, 0)["passed"] is True
+
+
+def _prose_check_passed(accounting: dict[str, object]) -> bool:
+    verdict = build_acceptance_verdict({"model_accounting": accounting})
+    checks = cast("list[dict[str, object]]", verdict["checks"])
+    return bool(next(item for item in checks if item["name"] == "untranslated_prose_not_delivered")["passed"])
+
+
+def test_floor_credit_needs_a_measured_chars_field():
+    """Codex acceptance finding 8: a missing, ``None``, unparsable or negative chars field is
+    not a measurement, and the absence of a number must not pass the check."""
+    unmeasured: tuple[dict[str, object], ...] = (
+        {"untranslated_prose_block_delivery_count": 1},
+        {"untranslated_prose_block_delivery_count": 1, "untranslated_prose_block_delivery_chars": None},
+        {"untranslated_prose_block_delivery_count": 1, "untranslated_prose_block_delivery_chars": "n/a"},
+        {"untranslated_prose_block_delivery_count": 1, "untranslated_prose_block_delivery_chars": -1},
+    )
+    for accounting in unmeasured:
+        assert _prose_check_passed(accounting) is False, accounting
+    # A measured value carried as a numeric string is still a measurement.
+    assert _prose_check_passed(
+        {"untranslated_prose_block_delivery_count": 1, "untranslated_prose_block_delivery_chars": "2"}
+    )
 
 
 def test_one_anchor_floor_in_the_repository():

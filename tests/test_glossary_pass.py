@@ -1121,7 +1121,10 @@ def _counted(term, count, family="name", required=False):
 @pytest.mark.parametrize(
     ("first", "second", "same"),
     [
-        ("US", "USA", True),  # an abbreviation and the same one plus a letter
+        # Codex review 2026-11-07 (finding 6): two different abbreviations are not one
+        # spelling by form -- "US"/"USA" goes to call C like "GDP"/"GDPR".
+        ("US", "USA", False),
+        ("GDP", "GDPR", False),
         ("U.S.", "US", True),  # periods
         ("TRC", "TRCs", True),  # a plural s
         ("Quillet", "quillets", True),
@@ -1139,7 +1142,7 @@ def test_fr009_same_spelling_family_is_decided_by_form(first, second, same):
 def test_fr009_spellings_of_one_name_sharing_a_rendering_are_not_a_collision():
     terms = (
         GlossaryTerm(source_term="US", target_term="США", kind="name"),
-        GlossaryTerm(source_term="USA", target_term="США", kind="name"),
+        GlossaryTerm(source_term="U.S.", target_term="США", kind="name"),
     )
 
     assert glossary_pass.find_rendering_collisions(terms) == []
@@ -1149,12 +1152,12 @@ def test_fr009_a_third_term_on_a_shared_rendering_is_still_a_collision():
     # ANTI-VACUUM: the spelling family is one member of the group, not a pass for the group.
     terms = (
         GlossaryTerm(source_term="US", target_term="США", kind="name"),
-        GlossaryTerm(source_term="USA", target_term="США", kind="name"),
+        GlossaryTerm(source_term="U.S.", target_term="США", kind="name"),
         GlossaryTerm(source_term="Zorvania", target_term="США", kind="name"),
     )
 
     groups = glossary_pass.find_rendering_collisions(terms)
-    assert [[term.source_term for term in group] for group in groups] == [["US", "USA", "Zorvania"]]
+    assert [[term.source_term for term in group] for group in groups] == [["US", "U.S.", "Zorvania"]]
 
 
 def test_fr009_two_names_kept_as_written_do_not_collide_through_the_stem_rule():
@@ -1415,3 +1418,149 @@ def test_fr009_a_renamed_rare_term_changes_only_the_sense_that_collided():
         ("quillet bond", "квиллетный инструмент"),
         ("Kelbrook", "Квиллет"),
     ]
+
+
+# --- Codex acceptance review 2026-11-07: findings 4, 5, 6 --------------------------------------
+
+
+def test_review6_two_different_abbreviations_on_one_rendering_stay_a_collision():
+    terms = (
+        GlossaryTerm(source_term="GDP", target_term="ВВП"),
+        GlossaryTerm(source_term="GDPR", target_term="ВВП"),
+    )
+
+    groups = glossary_pass.find_rendering_collisions(terms)
+
+    assert [[term.source_term for term in group] for group in groups] == [["GDP", "GDPR"]]
+
+
+def _run_call_sequence(sent, answers):
+    from docxaicorrector.pipeline import glossary_phase
+
+    payloads: list[dict[str, Any]] = []
+
+    def fake_request(_client, request, **_kwargs):
+        payloads.append(json.loads(request["input"][1]["content"][0]["text"]))
+        return json.dumps(answers[len(payloads) - 1], ensure_ascii=False)
+
+    record: dict[str, object] = {}
+    status, terms = glossary_phase._call_model(
+        context=SimpleNamespace(source_language="en", target_language="ru", runtime=object()),
+        dependencies=SimpleNamespace(should_stop_processing=lambda _runtime: False),
+        emitters=SimpleNamespace(emit_status=lambda *_args, **_kwargs: None),
+        initialization=SimpleNamespace(text_client=object(), job_count=0),
+        model="m",
+        sent_candidates=tuple(sent),
+        fixed_terms=(),
+        max_terms=10,
+        sample_text="",
+        record=record,
+        request_text_completion_fn=fake_request,
+    )
+    return status, terms, record, payloads
+
+
+@pytest.mark.parametrize(
+    ("note", "resolved"),
+    [
+        ("the same country written another way", True),
+        ("", False),  # ANTI-VACUUM: the same rendering with no note says nothing; still a collision
+    ],
+)
+def test_review6_us_usa_resolved_by_call_c_answering_the_same_with_a_note(note, resolved):
+    sent = (_counted("US", 40), _counted("USA", 12))
+    answers = [
+        {
+            "terms": [
+                {"source_term": "US", "target_term": "США", "kind": "name"},
+                {"source_term": "USA", "target_term": "США", "kind": "name"},
+            ]
+        },
+        {
+            "terms": [
+                {"source_term": "US", "target_term": "США", "kind": "name"},
+                {"source_term": "USA", "target_term": "США", "kind": "name", "note": note},
+            ]
+        },
+    ]
+
+    status, terms, record, payloads = _run_call_sequence(sent, answers)
+
+    assert status == "built"
+    assert len(payloads) == 2  # B (the optional names), then C for the collision
+    assert [(item["term"], item["keep"]) for item in payloads[1]["groups"][0]["terms"]] == [
+        ("US", True),
+        ("USA", False),
+    ]
+    assert {term.source_term: term.target_term for term in terms} == {"US": "США", "USA": "США"}
+    assert record["collisions_found"] == 1
+    if resolved:
+        assert record["collisions"] == []
+        assert record["collisions_resolved"] == 1
+        assert record["collisions_declared_same"] == [["us", "usa"]]
+    else:
+        assert record["collisions"] == [{"target_term": "США", "source_terms": ["US", "USA"]}]
+        assert record["collisions_resolved"] == 0
+
+
+def test_review4_lake_geneva_does_not_give_geneva_the_word_lake():
+    candidates = (_counted("Lake Geneva", 4), replace(_counted("Geneva", 9), name_head="Lake Geneva"))
+    _, members = glossary_pass.split_name_families(candidates)
+
+    terms, inherited = glossary_pass.inherit_name_renderings(
+        (GlossaryTerm(source_term="Lake Geneva", target_term="Женевское озеро", kind="name"),), members
+    )
+
+    assert inherited == []
+    assert "Geneva" not in [term.source_term for term in terms]
+
+
+def test_review4_a_swapped_name_order_gives_no_inheritance_where_the_script_shows_it():
+    candidates = (_counted("Zorvane Pettish", 4), replace(_counted("Pettish", 9), name_head="Zorvane Pettish"))
+    _, members = glossary_pass.split_name_families(candidates)
+
+    swapped, swapped_inherited = glossary_pass.inherit_name_renderings(
+        (GlossaryTerm(source_term="Zorvane Pettish", target_term="Pettish Zorvane", kind="name"),), members
+    )
+    in_order, in_order_inherited = glossary_pass.inherit_name_renderings(
+        (GlossaryTerm(source_term="Zorvane Pettish", target_term="Zorváne Péttish", kind="name"),), members
+    )
+
+    assert swapped_inherited == []
+    # ANTI-VACUUM: the same name in order (diacritics are the same letters) is inherited.
+    assert in_order_inherited == [{"source_term": "Pettish", "target_term": "Péttish", "from": "Zorvane Pettish"}]
+
+
+def test_review5_nested_name_forms_count_each_mention_once():
+    candidates = (
+        _counted("Arlo Maynard Quist", 6),
+        replace(_counted("Maynard Quist", 12), name_head="Arlo Maynard Quist"),
+        replace(_counted("Quist", 24), name_head="Arlo Maynard Quist"),
+    )
+
+    requested, members = glossary_pass.split_name_families(candidates)
+
+    assert [(candidate.source_term, candidate.occurrence_count) for candidate in requested] == [
+        ("Arlo Maynard Quist", 24)
+    ]
+    assert len(members) == 2
+
+
+def test_review5_the_family_count_does_not_win_a_collision_it_should_lose():
+    candidates = (
+        _counted("Arlo Maynard Quist", 6),
+        replace(_counted("Maynard Quist", 12), name_head="Arlo Maynard Quist"),
+        replace(_counted("Quist", 24), name_head="Arlo Maynard Quist"),
+        _counted("Quisting", 27),
+    )
+    requested, _ = glossary_pass.split_name_families(candidates)
+    counts = {normalize_glossary_key(candidate.source_term): candidate.occurrence_count for candidate in requested}
+    group = [
+        GlossaryTerm(source_term="Arlo Maynard Quist", target_term="Квист", kind="name"),
+        GlossaryTerm(source_term="Quisting", target_term="Квист"),
+    ]
+
+    ordered = glossary_pass.order_collision_group(group, counts)
+
+    # 24 real mentions against 27: the other term keeps the rendering (the old sum, 30, won).
+    assert [term.source_term for term in ordered] == ["Quisting", "Arlo Maynard Quist"]

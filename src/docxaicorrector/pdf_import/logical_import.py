@@ -794,9 +794,21 @@ def _detect_table_row_span_keys(
             if _table_row_span_key(span) in keys:
                 continue
             line_height = float(span.bottom) - float(span.top) or float(span.font_size or 0)
-            for cell in page_cells:
-                if abs(float(cell.font_size or 0) - float(span.font_size or 0)) >= _TABLE_ROW_SIZE_TOLERANCE_PT:
-                    continue
+            same_size_cells = [
+                cell
+                for cell in page_cells
+                if abs(float(cell.font_size or 0) - float(span.font_size or 0)) < _TABLE_ROW_SIZE_TOLERANCE_PT
+            ]
+            if not same_size_cells:
+                continue
+            # Codex review 2026-11-07: the span must also stand within the table's width --
+            # the horizontal extent of its cells of this size on the page. A short heading in
+            # the other column, one line above a table row, is not part of the table.
+            table_x0 = min(float(cell.x0) for cell in same_size_cells)
+            table_x1 = max(float(cell.x1) for cell in same_size_cells)
+            if float(span.x1) <= table_x0 or float(span.x0) >= table_x1:
+                continue
+            for cell in same_size_cells:
                 vertical_gap = max(float(cell.top) - float(span.bottom), float(span.top) - float(cell.bottom))
                 if vertical_gap <= line_height:
                     keys.add(_table_row_span_key(span))

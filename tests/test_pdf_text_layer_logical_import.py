@@ -1933,7 +1933,7 @@ def test_fr007_cell_one_line_off_its_row_belongs_to_the_table() -> None:
     # of a row cell of the same size: it is part of the table too. A line of the same size
     # further away than one line is not reached.
     spans = _subheading_page(
-        _span(1, "Characteristics", top=126, bottom=132, x0=50, x1=90, font_size=5),
+        _span(1, "Characteristics", top=126, bottom=132, x0=110, x1=160, font_size=5),
         _span(1, "Competition", top=134, bottom=140, x0=120, x1=170, font_size=5),
         _span(1, "Cooperation", top=134, bottom=140, x0=200, x1=250, font_size=5),
         _span(1, "Far Away Label", top=60, bottom=66, x0=50, x1=90, font_size=5),
@@ -1945,7 +1945,7 @@ def test_fr007_cell_one_line_off_its_row_belongs_to_the_table() -> None:
     )
 
     assert not any(p.role == "heading" for p in result.paragraphs if "Co" in p.text)
-    assert (1, 126.0, 50.0) in keys
+    assert (1, 126.0, 110.0) in keys
     assert (1, 60.0, 50.0) not in keys
 
 
@@ -1989,3 +1989,20 @@ def test_fr007_display_size_line_beside_a_short_span_stays_a_heading() -> None:
     result = build_paragraph_units_from_text_spans(spans)
 
     assert any(p.role == "heading" and "PART ONE" in p.text for p in result.paragraphs)
+
+
+def test_fr007_second_pass_does_not_reach_a_heading_beside_the_table():
+    # Codex review 2026-11-07: a short heading of the cells' size, one line above a table row
+    # but horizontally outside every cell of the table (the other column of the page), is not
+    # part of the table.
+    spans = _subheading_page(
+        _span(1, "Side Heading", top=121, bottom=127, x0=300, x1=360, font_size=5),
+        _span(1, "Competition", top=128, bottom=134, x0=50, x1=100, font_size=5),
+        _span(1, "Cooperation", top=128, bottom=134, x0=150, x1=200, font_size=5),
+    )
+    keys = logical_import._detect_table_row_span_keys(
+        spans, repeated_furniture_keys=set(), body_line_length_p75=64.0
+    )
+
+    assert {(1, 128.0, 50.0), (1, 128.0, 150.0)} <= keys
+    assert (1, 121.0, 300.0) not in keys
