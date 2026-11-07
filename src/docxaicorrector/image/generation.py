@@ -1603,8 +1603,9 @@ def _flatten_transparency_onto_white(image: Image.Image) -> Image.Image:
     if image.mode not in {"RGBA", "LA", "PA"}:
         return image
     rgba_image = image.convert("RGBA")
-    alpha_min, _alpha_max = rgba_image.getchannel("A").getextrema()
-    if alpha_min >= 255:
+    # A single-band "L" image: histogram()[255] counts the fully opaque pixels.
+    alpha_channel = rgba_image.getchannel("A")
+    if alpha_channel.histogram()[255] == alpha_channel.width * alpha_channel.height:
         return image
     white_canvas = Image.new("RGBA", rgba_image.size, (255, 255, 255, 255))
     return Image.alpha_composite(white_canvas, rgba_image).convert("RGB")
