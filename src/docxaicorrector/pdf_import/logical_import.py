@@ -54,6 +54,11 @@ _BLANK_PAGE_NOTICE_PATTERN = re.compile(
     re.IGNORECASE,
 )
 _TERMINAL_SENTENCE_PUNCTUATION = ".!?;:»”\"'"
+# Spec 064 FR-007: two spans are in one table row when their tops differ by at most this share
+# of a line's height and their sizes by less than this many points.
+_TABLE_ROW_BASELINE_TOLERANCE = 0.3
+_TABLE_ROW_SIZE_TOLERANCE_PT = 0.5
+_TABLE_CELL_MAX_FONT_RATIO = 1.1
 _OPENING_TEXT_BOUNDARY_CHARS = "\"“‘'«"
 
 
@@ -89,6 +94,9 @@ class _PdfHeadingLayoutProfile:
     ambiguous_cluster_ids: frozenset[int] = frozenset()
     repeated_display_text_keys: frozenset[str] = frozenset()
     heading_prominence_threshold: float = 0.0
+    # Spec 064 FR-007: spans that share their baseline with another short span of the same
+    # size across a horizontal gap -- the cells of a table, the columns of an index.
+    table_row_span_keys: frozenset[tuple[int, float, float]] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -716,7 +724,84 @@ def _build_heading_layout_profile(
         ambiguous_cluster_ids=ambiguous_cluster_ids,
         repeated_display_text_keys=repeated_display_text_keys,
         heading_prominence_threshold=heading_prominence_threshold,
+        table_row_span_keys=_detect_table_row_span_keys(
+            spans,
+            repeated_furniture_keys=repeated_furniture_keys,
+            body_line_length_p75=body_line_length_p75,
+        ),
     )
+
+
+def _table_row_span_key(span: PdfTextSpan) -> tuple[int, float, float]:
+    return (span.page_number, round(float(span.top), 2), round(float(span.x0), 2))
+
+
+def _detect_table_row_span_keys(
+    spans: list[PdfTextSpan],
+    *,
+    repeated_furniture_keys: set[tuple[str, str]],
+    body_line_length_p75: float,
+) -> frozenset[tuple[int, float, float]]:
+    """Spans that sit in one ROW with another short span of the same size (spec 064 FR-007).
+
+    A heading stands alone on its line. Two or more spans on one baseline, separated by a
+    horizontal gap, set in the same size and each shorter than half a body line, are the
+    cells of a table or a diagram, or the two columns of an index: Creating Wealth's
+    "Competition and Cooperation" figure ("Peak Experience" | "Endurance-Sus tainability")
+    came through as a run of level-3 headings (spec 064 R-5). The half-line bound keeps a
+    two-column body out: there the line beside a heading is a full column line.
+    """
+
+    if body_line_length_p75 <= 0:
+        return frozenset()
+    max_cell_chars = 0.5 * body_line_length_p75
+    by_page: dict[int, list[PdfTextSpan]] = {}
+    for span in spans:
+        text = _normalize_text(span.text)
+        if not text or len(text) >= max_cell_chars or not span.font_size:
+            continue
+        if _span_furniture_key(span) in repeated_furniture_keys or _looks_like_page_number(span):
+            continue
+        by_page.setdefault(span.page_number, []).append(span)
+    keys: set[tuple[int, float, float]] = set()
+    for page_spans in by_page.values():
+        for index, span in enumerate(page_spans):
+            line_height = float(span.bottom) - float(span.top) or float(span.font_size or 0)
+            for other in page_spans[index + 1 :]:
+                if abs(float(other.top) - float(span.top)) > _TABLE_ROW_BASELINE_TOLERANCE * line_height:
+                    continue
+                if not (other.x1 <= span.x0 or other.x0 >= span.x1):
+                    continue
+                if abs(float(other.font_size or 0) - float(span.font_size or 0)) >= _TABLE_ROW_SIZE_TOLERANCE_PT:
+                    continue
+                keys.add(_table_row_span_key(span))
+                keys.add(_table_row_span_key(other))
+    # One hop more: a short span of the same size within one line of a cell belongs to the
+    # same table -- a header cell set a little above its row, or two cells the extractor
+    # read as one line ("Command and Control Mutual Trust and Action"). Only one hop, so a
+    # heading set at a heading's distance above a table is not reached.
+    row_cells = [
+        span for page_spans in by_page.values() for span in page_spans if _table_row_span_key(span) in keys
+    ]
+    cells_by_page: dict[int, list[PdfTextSpan]] = {}
+    for cell in row_cells:
+        cells_by_page.setdefault(cell.page_number, []).append(cell)
+    for page_number, page_spans in by_page.items():
+        page_cells = cells_by_page.get(page_number, [])
+        if not page_cells:
+            continue
+        for span in page_spans:
+            if _table_row_span_key(span) in keys:
+                continue
+            line_height = float(span.bottom) - float(span.top) or float(span.font_size or 0)
+            for cell in page_cells:
+                if abs(float(cell.font_size or 0) - float(span.font_size or 0)) >= _TABLE_ROW_SIZE_TOLERANCE_PT:
+                    continue
+                vertical_gap = max(float(cell.top) - float(span.bottom), float(span.top) - float(cell.bottom))
+                if vertical_gap <= line_height:
+                    keys.add(_table_row_span_key(span))
+                    break
+    return frozenset(keys)
 
 
 def _nearest_content_span(
@@ -1237,6 +1322,8 @@ def _looks_like_pdf_heading_candidate(
         previous_span=previous_span,
     ):
         return False
+    if _is_table_row_cell(span, layout_profile=layout_profile):
+        return False
     signature = _style_signature(
         span,
         layout_profile=layout_profile,
@@ -1253,6 +1340,22 @@ def _looks_like_pdf_heading_candidate(
         return False
     if cluster.cluster_id in layout_profile.ambiguous_cluster_ids:
         return _ambiguous_signature_has_structural_support(signature)
+    return True
+
+
+def _is_table_row_cell(span: PdfTextSpan, *, layout_profile: _PdfHeadingLayoutProfile) -> bool:
+    """A table cell is not a heading -- unless it is set ABOVE the body (display type).
+
+    Only the typographic path asks this: a chapter label or a numbered section heading is
+    decided by its own deterministic rule, and a line set larger than the body is display
+    type that a table of body-size cells does not produce.
+    """
+
+    if _table_row_span_key(span) not in layout_profile.table_row_span_keys:
+        return False
+    body_font_size = layout_profile.body_font_size
+    if body_font_size and span.font_size and float(span.font_size) > _TABLE_CELL_MAX_FONT_RATIO * body_font_size:
+        return False
     return True
 
 
