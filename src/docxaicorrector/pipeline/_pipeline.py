@@ -146,6 +146,7 @@ def _resolve_system_prompt(
     prompt_variant: str = "default",
     translation_domain: str = "general",
     source_text: str = "",
+    document_context_prompt: str = "",
 ) -> str:
     return _resolve_system_prompt_impl(
         load_system_prompt,
@@ -156,6 +157,7 @@ def _resolve_system_prompt(
         prompt_variant=prompt_variant,
         translation_domain=translation_domain,
         source_text=source_text,
+        document_context_prompt=document_context_prompt,
     )
 
 

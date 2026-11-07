@@ -1,5 +1,5 @@
 import inspect
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -7,6 +7,59 @@ from docxaicorrector.generation.formatting_diagnostics_retention import (
     resolve_owned_diagnostics_scope,
     write_formatting_diagnostics_artifact,
 )
+
+
+def resolve_prompt_document_context(context: Any) -> str:
+    """The document context the run's system prompt renders in its own section.
+
+    Only ``translate`` carries it: the outline, the style instructions and the glossaries
+    (the run glossary of spec 063 is appended to it by the glossary phase) exist to keep a
+    translation consistent across blocks. Spec 064 FR-001: this string used to be handed to
+    the loader as ``source_text`` and never rendered.
+    """
+
+    if getattr(context, "processing_operation", "") != "translate":
+        return ""
+    app_config = getattr(context, "app_config", None)
+    fallback = app_config.get("document_context_prompt", "") if isinstance(app_config, Mapping) else ""
+    return str(getattr(context, "document_context_prompt", "") or fallback or "").strip()
+
+
+def resolve_prompt_source_text(context: Any) -> str:
+    """The input of the domain term scanner (``build_terminology_plan``), and nothing else.
+
+    It is the run's domain instructions, as it was from the scanner's introduction
+    (``3750218``) until ``892dc07`` folded the document context into it. The scanner only
+    looks for the theology domain's own term patterns, and the domain instructions already
+    carry that glossary, so adding the context to the scanner's input changed nothing it
+    found; the context now has its own slot (spec 064 FR-001).
+    """
+
+    return str(getattr(context, "translation_domain_instructions", "") or "").strip()
+
+
+def build_system_prompt_arguments(*, context: Any, prompt_variant: str = "default") -> dict[str, Any]:
+    """The one set of loader arguments for a run's system prompt.
+
+    The block phase renders the prompt from it and the glossary phase measures the same
+    prompt from it (spec 064 FR-003), so the logged length is the length of what the block
+    calls receive.
+    """
+
+    app_config = getattr(context, "app_config", None)
+    editorial_intensity = app_config.get("editorial_intensity_default", "literary") if isinstance(app_config, Mapping) else "literary"
+    arguments: dict[str, Any] = {
+        "operation": context.processing_operation,
+        "source_language": context.source_language,
+        "target_language": context.target_language,
+        "editorial_intensity": str(editorial_intensity),
+    }
+    if prompt_variant != "default":
+        arguments["prompt_variant"] = prompt_variant
+    arguments["translation_domain"] = context.translation_domain
+    arguments["source_text"] = resolve_prompt_source_text(context)
+    arguments["document_context_prompt"] = resolve_prompt_document_context(context)
+    return arguments
 
 
 def resolve_system_prompt(
@@ -19,11 +72,23 @@ def resolve_system_prompt(
     prompt_variant: str = "default",
     translation_domain: str = "general",
     source_text: str = "",
+    document_context_prompt: str = "",
 ) -> str:
+    """Call ``load_system_prompt`` with the arguments it accepts.
+
+    Older loaders (and test doubles) are detected by their parameter names. The document
+    context is passed only when there is one, so a run without it calls every loader exactly
+    as before spec 064; a loader that cannot take it gets the prompt it always got.
+    """
+
     try:
         signature = inspect.signature(load_system_prompt)
     except (TypeError, ValueError):
         signature = None
+
+    context_arguments: dict[str, str] = {}
+    if document_context_prompt:
+        context_arguments["document_context_prompt"] = document_context_prompt
 
     if signature is None:
         return load_system_prompt(
@@ -34,6 +99,7 @@ def resolve_system_prompt(
             prompt_variant=prompt_variant,
             translation_domain=translation_domain,
             source_text=source_text,
+            **context_arguments,
         )
 
     parameters = signature.parameters.values()
@@ -46,6 +112,7 @@ def resolve_system_prompt(
             prompt_variant=prompt_variant,
             translation_domain=translation_domain,
             source_text=source_text,
+            **context_arguments,
         )
 
     parameter_names = {parameter.name for parameter in parameters}
@@ -58,6 +125,7 @@ def resolve_system_prompt(
             prompt_variant=prompt_variant,
             translation_domain=translation_domain,
             source_text=source_text,
+            **(context_arguments if "document_context_prompt" in parameter_names else {}),
         )
 
     if {"operation", "source_language", "target_language", "editorial_intensity", "prompt_variant"}.issubset(parameter_names):

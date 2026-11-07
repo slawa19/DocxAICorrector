@@ -1,6 +1,7 @@
 import hashlib
 import logging
 import os
+import re
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field, replace
 from functools import lru_cache
@@ -1599,6 +1600,36 @@ def _read_prompt_file(path: Path) -> str:
     return prompt_text
 
 
+# An optional section of a prompt template: ``[[IF name]]\n<body>[[END name]]\n``. The body is
+# kept when ``name`` is present and the whole block, its markers and their line breaks, is cut
+# when it is not — so an absent section leaves the template byte-for-byte as it would be
+# without the block (spec 064 Anti-regression 5).
+_OPTIONAL_PROMPT_SECTION_PATTERN = re.compile(r"\[\[IF (\w+)\]\]\n(.*?)\[\[END \1\]\]\n", re.DOTALL)
+
+
+def _render_optional_prompt_sections(template: str, *, present: Mapping[str, bool]) -> str:
+    seen: set[str] = set()
+
+    def _replace(match: re.Match[str]) -> str:
+        name = match.group(1)
+        if name not in present:
+            raise RuntimeError(f"Неизвестная необязательная секция системного промпта: {name}")
+        seen.add(name)
+        return match.group(2) if present[name] else ""
+
+    rendered = _OPTIONAL_PROMPT_SECTION_PATTERN.sub(_replace, template)
+    # A template without a section renders as long as there is nothing to put in it; content
+    # for a section the template lacks is refused rather than dropped in silence — which is
+    # how the document context went missing before spec 064.
+    missing = sorted(name for name, is_present in present.items() if is_present and name not in seen)
+    if missing or "[[IF " in rendered or "[[END " in rendered:
+        raise RuntimeError(
+            "Повреждена разметка необязательных секций системного промпта: "
+            + (", ".join(missing) if missing else "непарный маркер")
+        )
+    return rendered
+
+
 def _resolve_language_label(language_code: str) -> str:
     normalized = language_code.strip().lower()
     if normalized == "auto":
@@ -1629,7 +1660,17 @@ def load_system_prompt(
     prompt_variant: str = "default",
     translation_domain: str = "general",
     source_text: str = "",
+    document_context_prompt: str = "",
 ) -> str:
+    """Render ``system_prompt.txt`` for one run.
+
+    ``source_text`` is only the input of the domain term scanner
+    (``build_translation_domain_instructions``); none of it is rendered by itself.
+    ``document_context_prompt`` — the book's metadata, style instructions, outline and
+    glossaries, the run glossary of spec 063 included — is rendered in its own section after
+    the domain section (spec 064 FR-001). Without it the prompt is byte-for-byte what it was
+    before that section existed: the optional block is cut out of the template whole.
+    """
     normalized_operation = operation.strip().lower() or "edit"
     normalized_source_language = source_language.strip().lower() or "en"
     normalized_target_language = target_language.strip().lower() or "ru"
@@ -1671,8 +1712,13 @@ def load_system_prompt(
         source_language=_resolve_language_label(normalized_source_language),
         target_language=_resolve_language_label(normalized_target_language),
     )
-    prompt_template = _read_prompt_file(SYSTEM_PROMPT_PATH)
+    normalized_document_context_prompt = str(document_context_prompt or "").strip()
+    prompt_template = _render_optional_prompt_sections(
+        _read_prompt_file(SYSTEM_PROMPT_PATH),
+        present={"document_context_prompt": bool(normalized_document_context_prompt)},
+    )
     return prompt_template.format(
+        document_context_prompt=normalized_document_context_prompt,
         source_language=_resolve_language_label(normalized_source_language),
         target_language=_resolve_language_label(normalized_target_language),
         operation_instructions=operation_instructions,
