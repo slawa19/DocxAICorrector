@@ -870,11 +870,123 @@ def _normalize_final_entry_text(text: str) -> str:
     return normalized.strip()
 
 
-def _normalize_final_entry_list_fragments(entries: Sequence[FinalAssemblyEntry]) -> tuple[FinalAssemblyEntry, ...]:
+# A list-fragment carry moves the ordinal of the NEXT list item from the end of this
+# paragraph to the start of the next one: "Обвинитель-Противник 2." / "Звероподобная…"
+# → "Обвинитель-Противник" / "2. Звероподобная…". Both twins -- the registry pass that
+# shapes the delivered entries and the markdown pass behind the delivered DOCX -- decide
+# through ``decide_list_fragment_carry`` so their guards cannot diverge again. Until spec
+# 063 P0 only the markdown twin had them (6bc8ff9), and the registry twin, which runs
+# first, delivered "…June 14," + "2010. www…" and "6. Macmillan, 1865), с." + "7. 5. П. …".
+_LIST_FRAGMENT_LEADING_ORDINAL_PATTERN = re.compile(r"^\d+[.)]\s")
+_LIST_FRAGMENT_INTRO_PATTERN = re.compile(r"^(?P<prefix>.+?):\s+1\.$")
+_LIST_FRAGMENT_CARRY_PATTERN = re.compile(r"^(?:(?P<current>\d+)\.\s+)?(?P<body>.+?)\s+(?P<next>\d+)\.$")
+_LIST_FRAGMENT_NUMBER_TOKEN_PATTERN = re.compile(r"\d+")
+
+
+@dataclass(frozen=True)
+class ListFragmentCarry:
+    """One accepted carry: what the current paragraph and its follower become."""
+
+    current_text: str
+    follower_text: str
+    is_intro: bool
+    current_has_own_ordinal: bool
+
+
+def _source_owns_number(source_text: str | None, number: int) -> bool:
+    if source_text is None:
+        return False
+    return any(int(token) == number for token in _LIST_FRAGMENT_NUMBER_TOKEN_PATTERN.findall(source_text))
+
+
+def decide_list_fragment_carry(
+    text: str,
+    follower_content: str,
+    *,
+    source_text: str | None,
+) -> ListFragmentCarry | None:
+    """Decide whether the trailing ``N.`` of ``text`` is the displaced ordinal of the follower.
+
+    ``follower_content`` is the next paragraph with any markdown heading prefix already
+    stripped. ``source_text`` is the full source text of the paragraph(s) ``text`` was made
+    from, or ``None`` when the source is unknown. Heading guards stay with the callers:
+    they differ in what they know about the follower.
+
+    By form only (Constitution VII). A carry only ever MOVES the one number token: it
+    never invents an ordinal and never deletes one.
+
+    1. A follower that already opens with an ordinal gets no second one ("7. 5. П. …").
+    2. A number the source paragraph contains -- anywhere, because translation reorders
+       words ("See Chapter 11 for details" → "…см. главу 11.") -- is the paragraph's own
+       content: a year, a page, a cross-reference. It stays.
+    3. With the source unknown, a paragraph without its own ordinal is a list fragment only
+       when what precedes the number is short and letter-free page furniture ("😂 2."); a
+       prose paragraph that merely ends in a number keeps it.
+    """
+    stripped = text.strip()
+    follower = follower_content.strip()
+    if not stripped or not follower:
+        return None
+    if _LIST_FRAGMENT_LEADING_ORDINAL_PATTERN.match(follower):
+        return None
+
+    intro_match = _LIST_FRAGMENT_INTRO_PATTERN.match(stripped)
+    if intro_match is not None:
+        if _source_owns_number(source_text, 1):
+            return None
+        return ListFragmentCarry(
+            current_text=intro_match.group("prefix") + ":",
+            follower_text=f"1. {follower}",
+            is_intro=True,
+            current_has_own_ordinal=False,
+        )
+
+    carry_match = _LIST_FRAGMENT_CARRY_PATTERN.match(stripped)
+    if carry_match is None:
+        return None
+    next_number = int(carry_match.group("next"))
+    own_ordinal = carry_match.group("current")
+    if own_ordinal is not None and next_number != int(own_ordinal) + 1:
+        return None
+    body = str(carry_match.group("body") or "").strip()
+    if not body:
+        return None
+    if _source_owns_number(source_text, next_number):
+        return None
+    if own_ordinal is None and source_text is None:
+        if len(body.split()) > 2 or any(character.isalpha() for character in body):
+            return None
+    return ListFragmentCarry(
+        # The text minus its trailing " N." only: the paragraph's own ordinal, if any,
+        # stays exactly as written, and none is invented for a paragraph that had none.
+        current_text=stripped[: carry_match.start("next")].rstrip(),
+        follower_text=f"{next_number}. {follower}",
+        is_intro=False,
+        current_has_own_ordinal=own_ordinal is not None,
+    )
+
+
+def _entry_source_text(entry: FinalAssemblyEntry, source_text_by_id: Mapping[str, str]) -> str | None:
+    # Known only when EVERY paragraph the entry was made from has non-empty source text:
+    # a number owned by an unknown part must not be read as absent.
+    paragraph_ids = _entry_paragraph_ids(entry)
+    if not paragraph_ids:
+        return None
+    texts = [source_text_by_id.get(paragraph_id) or "" for paragraph_id in paragraph_ids]
+    if any(not text.strip() for text in texts):
+        return None
+    return "\n".join(texts)
+
+
+def _normalize_final_entry_list_fragments(
+    entries: Sequence[FinalAssemblyEntry],
+    source_text_by_id: Mapping[str, str] | None = None,
+) -> tuple[FinalAssemblyEntry, ...]:
     if not entries:
         return ()
 
     normalized_entries = list(entries)
+    source_texts = source_text_by_id or {}
 
     def _replace_entry(index: int, text: str) -> None:
         entry = normalized_entries[index]
@@ -900,67 +1012,47 @@ def _normalize_final_entry_list_fragments(entries: Sequence[FinalAssemblyEntry])
             source_ends_sentence=entry.source_ends_sentence,
         )
 
-    for index, entry in enumerate(list(normalized_entries)):
-        stripped = entry.text.strip()
-        if not stripped:
-            continue
-        next_index = index + 1
-        if next_index >= len(normalized_entries):
-            continue
-        next_entry = normalized_entries[next_index]
+    # Walk the LIVE list, not a snapshot: an entry that has just received a carried
+    # ordinal must be read with it. Reading the stale copy re-parsed "Brands …, 2008."
+    # without the "2007. " it had just been given, wrote it back without that prefix and so
+    # deleted the carried year (16 number tokens on Rethinking Money, 2026-11-07).
+    for index in range(len(normalized_entries) - 1):
+        entry = normalized_entries[index]
+        next_entry = normalized_entries[index + 1]
         next_stripped = next_entry.text.strip()
-        if not next_stripped:
-            continue
-
-        intro_match = re.match(r"^(?P<prefix>.+?):\s+1\.$", stripped)
-        if intro_match is not None and not _entry_is_heading(next_entry):
-            _replace_entry(index, intro_match.group("prefix") + ":")
-            next_content = _trim_heading_prefix(next_stripped) if is_markdown_heading_line(next_stripped) else next_stripped
-            _replace_entry(next_index, f"1. {next_content}")
-            continue
-
-        carry_match = re.match(r"^(?:(?P<current>\d+)\.\s+)?(?P<body>.+?)\s+(?P<next>\d+)\.$", stripped)
-        if carry_match is None:
-            continue
-
-        next_number = int(carry_match.group("next"))
-        current_number_group = carry_match.group("current")
-        current_number = int(current_number_group) if current_number_group is not None else max(1, next_number - 1)
-        if current_number_group is not None and next_number != current_number + 1:
-            continue
-
-        body = str(carry_match.group("body") or "").strip()
-        if not body:
-            continue
-        if not next_stripped or _entry_is_heading(entry):
-            continue
-
-        # A hanging trailing number on a footnote/body block (e.g. an endnote
-        # block ending in a page reference "… с. 24.") must not steal the number
-        # of a following chapter/section heading. Mirror the intro-branch guard
-        # (`not _entry_is_heading(next_entry)`): only fold the follower into a
-        # list marker when it is NOT itself a heading — unless the current entry
-        # is a genuine numbered list item carrying an explicit leading ordinal,
-        # which is the legitimate list-continuation case where a mis-tagged
-        # subheading really is the next list item.
-        next_is_heading = (
-            _entry_is_heading(next_entry)
-            or next_entry.heading_level is not None
-            or is_markdown_heading_line(next_stripped)
-        )
-        if next_is_heading and not (
-            current_number_group is not None and _entry_is_list(entry)
-        ):
-            continue
-
-        body_tokens = body.split()
-        if current_number_group is None and len(body_tokens) <= 2 and not re.search(r"[A-Za-zА-Яа-яЁё]", body):
-            _replace_entry(index, body)
-        else:
-            _replace_entry(index, f"{current_number}. {body}")
-
         next_content = _trim_heading_prefix(next_stripped) if is_markdown_heading_line(next_stripped) else next_stripped
-        _replace_entry(next_index, f"{next_number}. {next_content}")
+        carry = decide_list_fragment_carry(
+            entry.text,
+            next_content,
+            source_text=_entry_source_text(entry, source_texts),
+        )
+        if carry is None:
+            continue
+
+        if carry.is_intro:
+            if _entry_is_heading(next_entry):
+                continue
+        else:
+            if _entry_is_heading(entry):
+                continue
+            # A hanging trailing number on a footnote/body block (e.g. an endnote
+            # block ending in a page reference "… с. 24.") must not steal the number
+            # of a following chapter/section heading. Mirror the intro-branch guard
+            # (`not _entry_is_heading(next_entry)`): only fold the follower into a
+            # list marker when it is NOT itself a heading — unless the current entry
+            # is a genuine numbered list item carrying an explicit leading ordinal,
+            # which is the legitimate list-continuation case where a mis-tagged
+            # subheading really is the next list item.
+            next_is_heading = (
+                _entry_is_heading(next_entry)
+                or next_entry.heading_level is not None
+                or is_markdown_heading_line(next_stripped)
+            )
+            if next_is_heading and not (carry.current_has_own_ordinal and _entry_is_list(entry)):
+                continue
+
+        _replace_entry(index, carry.current_text)
+        _replace_entry(index + 1, carry.follower_text)
 
     return tuple(normalized_entries)
 
@@ -1008,7 +1100,10 @@ def _dedupe_repeated_real_heading_cluster_tokens(entries: Sequence[FinalAssembly
     return tuple(deduped)
 
 
-def _apply_final_entry_post_normalization(entries: Sequence[FinalAssemblyEntry]) -> tuple[FinalAssemblyEntry, ...]:
+def _apply_final_entry_post_normalization(
+    entries: Sequence[FinalAssemblyEntry],
+    source_text_by_id: Mapping[str, str] | None = None,
+) -> tuple[FinalAssemblyEntry, ...]:
     normalized_entries: list[FinalAssemblyEntry] = []
     for entry in entries:
         normalized_text = _normalize_final_entry_text(entry.text)
@@ -1038,7 +1133,7 @@ def _apply_final_entry_post_normalization(entries: Sequence[FinalAssemblyEntry])
                 source_ends_sentence=entry.source_ends_sentence,
             )
         )
-    normalized_entries = list(_normalize_final_entry_list_fragments(tuple(normalized_entries)))
+    normalized_entries = list(_normalize_final_entry_list_fragments(tuple(normalized_entries), source_text_by_id))
     return _dedupe_repeated_real_heading_cluster_tokens(tuple(normalized_entries))
 
 
@@ -1109,6 +1204,17 @@ def _build_source_paragraph_lookup(source_paragraphs: Sequence[object] | None) -
         if paragraph_id:
             lookup[paragraph_id] = paragraph
     return lookup
+
+
+def _build_source_text_by_id(source_lookup: Mapping[str, object]) -> dict[str, str]:
+    # The FULL source text per paragraph id. The list-fragment carry reads it to tell a
+    # displaced ordinal from the paragraph's own trailing number.
+    source_text_by_id: dict[str, str] = {}
+    for paragraph_id, paragraph in source_lookup.items():
+        text = _coerce_source_paragraph_str(paragraph, "text")
+        if text is not None:
+            source_text_by_id[paragraph_id] = text
+    return source_text_by_id
 
 
 def _build_registry_by_block(generated_paragraph_registry: Sequence[Mapping[str, object]] | None) -> dict[int, list[Mapping[str, object]]]:
@@ -1714,7 +1820,10 @@ def assemble_final_markdown(
         demoted_false_headings,
         merge_decisions,
     ) = _recover_adjacent_entries(entries)
-    recovered_entries = _apply_final_entry_post_normalization(recovered_entries)
+    recovered_entries = _apply_final_entry_post_normalization(
+        recovered_entries,
+        _build_source_text_by_id(source_lookup),
+    )
     assembled_markdown = "\n\n".join(entry.text for entry in recovered_entries).strip()
     final_markdown = _collapse_markdown_blank_lines(assembled_markdown)
     paragraph_count_drift = len(_split_markdown_paragraphs(final_markdown)) - original_entry_count
@@ -2236,8 +2345,12 @@ def normalize_list_fragment_regressions_markdown(
             return _trim_heading_prefix(stripped_line)
         return stripped_line
 
-    for index, raw_line in enumerate(list(lines)):
-        stripped = raw_line.strip()
+    # The LIVE lines, not a snapshot: a line that has just received a carried ordinal is
+    # read with it (see _normalize_final_entry_list_fragments). The source is unknown here,
+    # so decide_list_fragment_carry applies its letter-free guard: a prose line that merely
+    # ENDS in a number ("…вышел на пенсию в 65.", 2026-08-03 p0106) keeps it.
+    for index in range(len(lines)):
+        stripped = lines[index].strip()
         if not stripped:
             continue
 
@@ -2245,51 +2358,16 @@ def normalize_list_fragment_regressions_markdown(
         if next_index is None:
             continue
         next_stripped = lines[next_index].strip()
-        if re.match(r"^\d+[.)]\s+", next_stripped):
-            continue
         # A footnote entry ending in the next ordinal ("… 24.") must not steal a
         # source-declared heading and render it as list item "24. Глава IV".
         if is_protected_heading_line(next_stripped):
             continue
 
-        intro_match = re.match(r"^(?P<prefix>.+?):\s+1\.$", stripped)
-        if intro_match is not None:
-            lines[index] = intro_match.group("prefix") + ":"
-            next_content = _strip_heading_prefix(lines[next_index])
-            lines[next_index] = f"1. {next_content}"
+        carry = decide_list_fragment_carry(stripped, _strip_heading_prefix(next_stripped), source_text=None)
+        if carry is None:
             continue
-
-        carry_match = re.match(r"^(?:(?P<current>\d+)\.\s+)?(?P<body>.+?)\s+(?P<next>\d+)\.$", stripped)
-        if carry_match is None:
-            continue
-
-        next_number = int(carry_match.group("next"))
-        current_number_group = carry_match.group("current")
-        current_number = int(current_number_group) if current_number_group is not None else max(1, next_number - 1)
-        if current_number_group is not None and next_number != current_number + 1:
-            continue
-
-        body = str(carry_match.group("body") or "").strip()
-        if not body:
-            continue
-
-        body_tokens = body.split()
-        if current_number_group is None:
-            # The line carries NO ordinal of its own, so it is only a list fragment when
-            # what precedes the trailing number is page furniture (a short, letter-free
-            # run such as "116" or an emoji marker). A prose paragraph that merely ENDS
-            # in a number ("…вышел на пенсию в 65.") is NOT a list item: rewriting it
-            # would fabricate an ordinal that was never in the document AND move the
-            # paragraph's own last token into the NEXT paragraph — the boundary shift
-            # observed on the 2026-08-03 literary-edit run (p0106/p1224 and the back-of-
-            # book index). One marker — one paragraph: content stays in its own paragraph.
-            if len(body_tokens) > 2 or re.search(r"[A-Za-zА-Яа-яЁё]", body):
-                continue
-            lines[index] = body
-        else:
-            lines[index] = f"{current_number}. {body}"
-        next_content = _strip_heading_prefix(lines[next_index])
-        lines[next_index] = f"{next_number}. {next_content}"
+        lines[index] = carry.current_text
+        lines[next_index] = carry.follower_text
 
     return "\n".join(lines)
 

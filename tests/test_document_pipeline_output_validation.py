@@ -1,5 +1,7 @@
 import json
 import os
+import re
+from collections import Counter
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -1805,6 +1807,12 @@ def test_assemble_final_markdown_normalizes_registry_backed_intro_and_carryover_
 
 
 def test_assemble_final_markdown_normalizes_registry_backed_number_carryover_chain():
+    # Positive control for spec 063 P0. The sources are the real list-fragment shape: every
+    # ordinal opens its OWN source paragraph, so no source paragraph contains the number its
+    # translation ends in. Until 2026-11-07 the stubs had empty text, which made this chain
+    # indistinguishable from a bibliography whose entries end in years -- and the test pinned
+    # the defect: "Обвинитель-Противник 2." became "1. …" through an INVENTED "1.". Now the
+    # "1." is the intro's own, moved and then read from the live entry; nothing is invented.
     result = document_pipeline_output_validation.assemble_final_markdown(
         processed_chunks=[
             "Сатана-Дьявол пытается воспроизвести Троицу: 1.\n\n"
@@ -1819,10 +1827,10 @@ def test_assemble_final_markdown_normalizes_registry_backed_number_carryover_cha
             {"block_index": 1, "paragraph_id": "item-3", "text": "Вторая сущность — зверь/лжепророк."},
         ],
         source_paragraphs=[
-            _make_paragraph_stub("intro", 0),
-            _make_paragraph_stub("item-1", 1),
-            _make_paragraph_stub("item-2", 2),
-            _make_paragraph_stub("item-3", 3),
+            _make_paragraph_stub("intro", 0, text="Satan the Devil tries to imitate the Trinity:"),
+            _make_paragraph_stub("item-1", 1, text="1. The Accuser-Adversary"),
+            _make_paragraph_stub("item-2", 2, text="2. The beast-like entity of the Antichrist"),
+            _make_paragraph_stub("item-3", 3, text="3. The second entity, the beast/false prophet."),
         ],
     )
 
@@ -1830,6 +1838,7 @@ def test_assemble_final_markdown_normalizes_registry_backed_number_carryover_cha
     assert result.entries[1].text == "1. Обвинитель-Противник"
     assert result.entries[2].text == "2. Звероподобная сущность Антихриста"
     assert result.entries[3].text == "3. Вторая сущность — зверь/лжепророк."
+    assert Counter(re.findall(r"\d+", result.final_markdown)) == Counter({"1": 1, "2": 1, "3": 1})
 
 
 def test_assemble_final_markdown_normalizes_registry_backed_emoji_marker_fragment():
@@ -1870,9 +1879,18 @@ def test_assemble_final_markdown_normalizes_registry_backed_trailing_next_item_w
                 "text": "## Примите срочные меры, чтобы подготовиться к почти неизбежному полному глобальному экономическому исключению:",
             },
         ],
+        # Positive control for spec 063 P0: "6." opens the NEXT source paragraph and is absent
+        # from item-5's own source, so it is a displaced ordinal, not item-5's content.
         source_paragraphs=[
-            _make_paragraph_stub("item-5", 0),
-            _make_paragraph_stub("heading-6", 1, role="heading", structural_role="heading", heading_level=2),
+            _make_paragraph_stub("item-5", 0, text="5. Stay away from evil. Avoid such people."),
+            _make_paragraph_stub(
+                "heading-6",
+                1,
+                role="heading",
+                structural_role="heading",
+                heading_level=2,
+                text="6. Take urgent steps to prepare for an almost inevitable total global economic exclusion:",
+            ),
         ],
     )
 
@@ -1906,6 +1924,257 @@ def test_assemble_final_markdown_keeps_chapter_heading_after_footnote_hanging_nu
     # footnote block gained no parasitic leading "23." marker.
     assert "24. Глава IV" not in result.final_markdown
     assert not result.entries[0].text.startswith("23.")
+
+
+_NUMBER_TOKEN_PATTERN = re.compile(r"\d+")
+_STACKED_LEADING_ORDINALS_PATTERN = re.compile(r"^(?:#{1,6}\s+)?\d+[.)]\s+\d+[.)]\s")
+
+
+def _assemble_single_block(paragraphs):
+    """Run the PRODUCTION assembly on one registry-backed block.
+
+    ``paragraphs``: ``(paragraph_id, model_text, source_text, role, heading_level)``. An empty
+    ``source_text`` is "source unknown", which is how the older stub tests above read.
+    """
+    return document_pipeline_output_validation.assemble_final_markdown(
+        processed_chunks=["\n\n".join(paragraph[1] for paragraph in paragraphs)],
+        generated_paragraph_registry=[
+            {"block_index": 1, "paragraph_id": paragraph[0], "text": paragraph[1]} for paragraph in paragraphs
+        ],
+        source_paragraphs=[
+            _make_paragraph_stub(
+                paragraph[0],
+                position,
+                role=paragraph[3],
+                structural_role=paragraph[3],
+                heading_level=paragraph[4],
+                text=paragraph[2],
+            )
+            for position, paragraph in enumerate(paragraphs)
+        ],
+    )
+
+
+def _assert_list_fragment_carry_invariants(paragraphs, result):
+    # Spec 063 P0 invariant: the list-fragment carry may MOVE a number token, never CREATE or
+    # DELETE one, and never leaves a paragraph opening with two ordinals.
+    model_numbers = Counter(_NUMBER_TOKEN_PATTERN.findall("\n".join(paragraph[1] for paragraph in paragraphs)))
+    delivered_numbers = Counter(_NUMBER_TOKEN_PATTERN.findall(result.final_markdown))
+    assert delivered_numbers == model_numbers
+    assert not any(_STACKED_LEADING_ORDINALS_PATTERN.match(entry.text) for entry in result.entries)
+
+
+def _assert_delivered_unchanged(paragraphs, result):
+    assert result.diagnostics.accepted_merges == 0
+    assert [entry.text for entry in result.entries] == [paragraph[1] for paragraph in paragraphs]
+    _assert_list_fragment_carry_invariants(paragraphs, result)
+
+
+def test_assemble_final_markdown_keeps_a_trailing_year_the_source_owns():
+    # Rethinking Money 2026-11-07, delivered.md:3201-3203: the year closing a bibliography
+    # entry was cut off and prepended to the NEXT entry ("2010. www…"), and "2009." was
+    # invented for the entry that lost it.
+    paragraphs = [
+        (
+            "p1676",
+            "“Gallery of States in Debt.” Daily Beast Business Section, June 14, 2010.",
+            "“Gallery of States in Debt.” Daily Beast Business Section, June 14, 2010.",
+            "body",
+            None,
+        ),
+        (
+            "p1677",
+            "www .thedailybeast .com /galleries /2010 /06 /14 /50 -states -in -debt -html .",
+            "www .thedailybeast .com /galleries /2010 /06 /14 /50 -states -in -debt -html .",
+            "body",
+            None,
+        ),
+    ]
+
+    result = _assemble_single_block(paragraphs)
+
+    _assert_delivered_unchanged(paragraphs, result)
+
+
+@pytest.mark.parametrize("source_known", [True, False], ids=["source-known", "source-unknown"])
+def test_assemble_final_markdown_keeps_every_number_of_a_year_chain(source_known):
+    # Rethinking Money p1641-p1643: every entry ends in a year. The pass used to walk a stale
+    # copy of the list, so the year carried onto entry N+1 was overwritten when N+1 was
+    # processed: 2008 and 1981 vanished from the document.
+    paragraphs = [
+        (
+            "a",
+            "Brands, H. W. *Traitor to His Class.* New York: Doubleday, 2008.",
+            "Brands, H. W. *Traitor to His Class.* New York: Doubleday, 2008.",
+            "body",
+            None,
+        ),
+        (
+            "b",
+            "Braudel, Fernand. *La dinamica del capitalismo.* Bologna: Il Mulino, 1981.",
+            "Braudel, Fernand. *La dinamica del capitalismo.* Bologna: Il Mulino, 1981.",
+            "body",
+            None,
+        ),
+        (
+            "c",
+            "Brzezinski, Zbigniew. *The Choice.* New York: Basic Books, 2004.",
+            "Brzezinski, Zbigniew. *The Choice.* New York: Basic Books, 2004.",
+            "body",
+            None,
+        ),
+        ("d", "Кассий Дион. *Римская история*, кн. 66.", "Cassius Dio. *Roman History*, book 66.", "body", None),
+    ]
+    if not source_known:
+        paragraphs = [(pid, text, "", role, level) for pid, text, _source, role, level in paragraphs]
+
+    result = _assemble_single_block(paragraphs)
+
+    _assert_delivered_unchanged(paragraphs, result)
+
+
+def test_assemble_final_markdown_never_deletes_a_carried_number_in_a_chain():
+    # The stale-copy deletion in isolation. Here the sources do NOT contain the trailing
+    # numbers, so the first carry is legitimate; the second entry then opens with the moved
+    # "2008." and ends in "1981.", which is not 2009, so it must stay as it now reads. The
+    # stale walk re-parsed "Gamma delta, 1981." without its new prefix and wrote "1980. Gamma
+    # delta," over it: 2008 and 1981 gone, 1980 invented.
+    paragraphs = [
+        ("a", "Alpha beta, 2008.", "Alpha beta", "body", None),
+        ("b", "Gamma delta, 1981.", "Gamma delta", "body", None),
+        ("c", "Epsilon zeta.", "Epsilon zeta.", "body", None),
+    ]
+
+    result = _assemble_single_block(paragraphs)
+
+    assert [entry.text for entry in result.entries] == [
+        "Alpha beta,",
+        "2008. Gamma delta, 1981.",
+        "Epsilon zeta.",
+    ]
+    _assert_list_fragment_carry_invariants(paragraphs, result)
+
+
+def test_assemble_final_markdown_keeps_a_split_endnote_page_number():
+    # Value of Everything p1340-p1342: the PDF import split note 4, and its continuation ends
+    # in a page number. "7" was carried onto note 5 ("7. 5. П. Студенски…") and "6." was
+    # invented for the continuation.
+    paragraphs = [
+        (
+            "a",
+            "4. Т. Ман, «Богатство Англии во внешней торговле» (1664; Лондон:",
+            "4. T. Mun, England's Treasure by Forraign Trade (1664; London:",
+            "body",
+            None,
+        ),
+        ("c", "Macmillan, 1865), с. 7.", "Macmillan, 1865), p. 7.", "body", None),
+        (
+            "b",
+            "5. П. Студенски, *Доход наций* (Нью-Йорк: University Press, 1958), с. 27.",
+            "5. P. Studenski, The Income of Nations (New York: University Press, 1958), p. 27.",
+            "body",
+            None,
+        ),
+    ]
+
+    result = _assemble_single_block(paragraphs)
+
+    _assert_delivered_unchanged(paragraphs, result)
+
+
+def test_assemble_final_markdown_keeps_a_chapter_reference_and_the_heading_after_it():
+    # Creating Wealth p1790/p1791: "10. См. главу 11." lost its "11", and the heading after it
+    # was demoted to the list item "11. Приложение". The note's own ordinal made the heading
+    # guard step aside; the source owning "11" is what tells the two apart.
+    paragraphs = [
+        ("p1790", "10. См. главу 11.", "10. See Chapter 11.", "body", None),
+        ("p1791", "### Приложение", "Appendix", "heading", 3),
+    ]
+
+    result = _assemble_single_block(paragraphs)
+
+    _assert_delivered_unchanged(paragraphs, result)
+    assert "### Приложение" in result.final_markdown
+
+
+@pytest.mark.parametrize("source_known", [True, False], ids=["source-known", "source-unknown"])
+def test_assemble_final_markdown_keeps_prose_ending_in_a_number_intact(source_known):
+    # 6bc8ff9's own example (2026-08-03 literary-edit p0106), through the production
+    # assembly. Its anti-regression test calls only the markdown twin, which runs second:
+    # this text still delivered "64. …на пенсию в" + "65. Он гордый человек…".
+    paragraphs = [
+        (
+            "p0106",
+            "Бывший лаборант, он подрабатывает здесь уже 18 лет — с тех пор как вышел на пенсию в 65.",
+            "A former lab technician, he has worked here for 18 years, since he retired at 65." if source_known else "",
+            "body",
+            None,
+        ),
+        (
+            "p0107",
+            "Он гордый человек и говорит, что устроился на эту работу по настоянию жены.",
+            "He is a proud man and says he took the job at his wife's insistence." if source_known else "",
+            "body",
+            None,
+        ),
+    ]
+
+    result = _assemble_single_block(paragraphs)
+
+    _assert_delivered_unchanged(paragraphs, result)
+
+
+def test_assemble_final_markdown_keeps_index_entry_ending_in_a_page_number():
+    # Registry-pass sibling of the markdown twin's index-entry test: same input.
+    paragraphs = [
+        ("i1", "Carebank, 84–85; НКО, 162; Кимгауэр (Chiemgauer), 74–75, 87–89, 88.", "", "body", None),
+        ("i2", "Conjunto Palmeira, 103–108; консьюмеризм, 20; сокращение (экономическое), 51–52.", "", "body", None),
+    ]
+
+    result = _assemble_single_block(paragraphs)
+
+    _assert_delivered_unchanged(paragraphs, result)
+
+
+def test_assemble_final_markdown_never_stacks_an_ordinal_on_a_numbered_follower():
+    # The source is unknown and the note carries its own consecutive ordinal, so only the
+    # stacking guard stands between this and "7. 7. Следующая заметка.".
+    paragraphs = [
+        ("n6", "6. См. главу 7.", "", "body", None),
+        ("n7", "7. Следующая заметка.", "", "body", None),
+    ]
+
+    result = _assemble_single_block(paragraphs)
+
+    _assert_delivered_unchanged(paragraphs, result)
+
+
+@pytest.mark.parametrize(
+    "markdown",
+    [
+        "Поразительно, но все петли следуют одной и той же схеме: 1.\n\nДуховные существа восстают.\n\n2. Бог судит их.",
+        "Сатана пытается воспроизвести Троицу: 1.\n\nОбвинитель 2.\n\nЗверь 3.\n\nВторая сущность.",
+        "Представьте, если этим лидером окажется Дональд Трамп.\n\n😂 2.\n\nВ первой половине",
+        "5. Держитесь подальше от зла. 6.\n\nПримите срочные меры.",
+        "Бывший лаборант вышел на пенсию в 65.\n\nОн гордый человек.",
+        "Daily Beast Business Section, June 14, 2010.\n\nwww .thedailybeast .com .",
+        "6. См. главу 7.\n\n7. Следующая заметка.",
+        "Схема: 1.\n\n1. Уже пронумерованный пункт.",
+    ],
+    ids=["intro", "intro-chain", "emoji", "own-ordinal", "prose", "year", "stacking", "intro-stacking"],
+)
+def test_registry_and_markdown_list_fragment_twins_decide_alike_when_the_source_is_unknown(markdown):
+    # One carry decision for both twins: with no source to consult, the registry pass that
+    # shapes delivery and the markdown pass behind the DOCX must agree line for line.
+    paragraphs = [
+        (f"p{position}", text, "", "body", None) for position, text in enumerate(markdown.split("\n\n"))
+    ]
+
+    result = _assemble_single_block(paragraphs)
+    markdown_twin = document_pipeline_output_validation.normalize_list_fragment_regressions_markdown(markdown)
+
+    assert result.final_markdown == markdown_twin
+    _assert_list_fragment_carry_invariants(paragraphs, result)
 
 
 def test_assemble_final_markdown_demotes_false_generated_heading_between_blockquote_fragments():
@@ -3229,3 +3498,129 @@ def test_has_toc_body_concat_signal_requires_source_toc_markers():
 # lived here and is removed with the detector it covered (spec 059 FR-A4). Its replacement
 # checks the OPPOSITE direction -- that the five-word list has not come back --
 # in ``tests/test_spec_059_translation_completeness.py``.
+
+
+# --- Spec 063 P0: replay of the list-fragment carry on recorded translate runs ---------------
+#
+# Opt-in evidence, not a CI test: the recorded run reports (21-98 MB each) and the re-derived
+# full-text source paragraphs live OUTSIDE the repository. Point
+# ``DOCXAI_TRANSLATE_REPLAY_ROOT`` at a directory holding ``<book>/<report>.json`` and
+# ``<book>/source_paragraphs.json`` (the 2026-11-07 four-book translate run); without it, or
+# with a book missing, the test skips.
+#
+# For each book it feeds the run's own ``processed_block_markdowns`` and
+# ``processed_paragraph_registry`` into the PRODUCTION ``assemble_final_markdown`` and checks
+# that the carry only MOVES number tokens (same multiset of numbers as the same assembly with
+# the carry switched off, no new double leading ordinal), and that the never-merged
+# paragraphs differ from the model's text in at most the residue the 2026-11-07 diagnosis
+# measured for the source-aware rule (1 / 0 / 0 / 3), down from the 10 / 24 / 87 / 100 that
+# shipped.
+_TRANSLATE_REPLAY_ROOT_ENV = "DOCXAI_TRANSLATE_REPLAY_ROOT"
+_TRANSLATE_REPLAY_ROOT = os.environ.get(_TRANSLATE_REPLAY_ROOT_ENV, "").strip()
+# (book directory, report file, shipped never-merged drift on 2026-11-07, allowed residue)
+_TRANSLATE_REPLAY_BOOKS = [
+    ("money_sustainability", "money_sustainability_pdf_full_heldout_report.json", 10, 1),
+    ("creating_wealth", "creatingwealth_pdf_full_benchmark_report.json", 24, 0),
+    ("rethinking_money", "lietaer_pdf_full_benchmark_report.json", 87, 0),
+    ("value_of_everything", "mazzucato_pdf_full_benchmark_report.json", 100, 3),
+]
+
+
+def _never_merged_drift(registry, model_text_by_id):
+    return [
+        entry["paragraph_id"]
+        for entry in registry
+        if len(entry.get("merged_paragraph_ids") or []) <= 1
+        and model_text_by_id.get(entry["paragraph_id"]) != entry["text"]
+    ]
+
+
+@pytest.mark.skipif(
+    not _TRANSLATE_REPLAY_ROOT,
+    reason=f"Set {_TRANSLATE_REPLAY_ROOT_ENV} to the recorded translate-run directory to replay the list-fragment carry.",
+)
+@pytest.mark.parametrize(
+    ("book", "report_name", "shipped_drift", "allowed_drift"),
+    _TRANSLATE_REPLAY_BOOKS,
+    ids=[book[0] for book in _TRANSLATE_REPLAY_BOOKS],
+)
+def test_list_fragment_carry_replay_on_recorded_translate_runs(monkeypatch, book, report_name, shipped_drift, allowed_drift):
+    book_dir = Path(_TRANSLATE_REPLAY_ROOT) / book
+    report_path = book_dir / report_name
+    source_path = book_dir / "source_paragraphs.json"
+    if not report_path.is_file() or not source_path.is_file():
+        pytest.skip(f"recorded run for {book} is absent under {book_dir}")
+
+    with report_path.open(encoding="utf-8") as handle:
+        state = json.load(handle)["runtime"]["state"]
+    with source_path.open(encoding="utf-8") as handle:
+        source_records = json.load(handle)["paragraphs"]
+    source_paragraphs = [
+        SimpleNamespace(**{**record, "boundary_source": None, "boundary_confidence": None}) for record in source_records
+    ]
+    chunks = state["processed_block_markdowns"]
+    processed_registry = state["processed_paragraph_registry"]
+    model_text_by_id = {entry["paragraph_id"]: entry.get("text") for entry in processed_registry}
+    # The recorded run is the one the diagnosis measured.
+    assert len(_never_merged_drift(state["final_generated_paragraph_registry"], model_text_by_id)) == shipped_drift
+    del state
+
+    def assemble():
+        return document_pipeline_output_validation.assemble_final_markdown(
+            processed_chunks=chunks,
+            generated_paragraph_registry=processed_registry,
+            source_paragraphs=source_paragraphs,
+        )
+
+    result = assemble()
+    registry = document_pipeline_output_validation.build_generated_paragraph_registry_from_entries(result.entries)
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            document_pipeline_output_validation,
+            "_normalize_final_entry_list_fragments",
+            lambda entries, source_text_by_id=None: tuple(entries),
+        )
+        without_carry = assemble()
+
+    drift = _never_merged_drift(registry, model_text_by_id)
+    # The markdown twin behind the delivered DOCX, run on this assembly's output with the
+    # protected headings the late phase gives it. It has no source to consult.
+    display = document_pipeline_output_validation.normalize_list_fragment_regressions_markdown(
+        result.final_markdown,
+        protected_heading_texts=late_phases._registry_protected_heading_texts(registry),
+    )
+    print(
+        json.dumps(
+            {
+                "book": book,
+                "never_merged_drift_shipped": shipped_drift,
+                "never_merged_drift_replayed": len(drift),
+                "drift_ids": drift[:10],
+                "entries_rewritten_by_carry": sum(
+                    1 for left, right in zip(result.entries, without_carry.entries) if left.text != right.text
+                ),
+                "display_twin_lines_changed": sum(
+                    1
+                    for left, right in zip(result.final_markdown.splitlines(), display.splitlines())
+                    if left != right
+                ),
+            },
+            ensure_ascii=False,
+        )
+    )
+
+    numbers = Counter(_NUMBER_TOKEN_PATTERN.findall(result.final_markdown))
+    numbers_without_carry = Counter(_NUMBER_TOKEN_PATTERN.findall(without_carry.final_markdown))
+    assert numbers == numbers_without_carry, {
+        "created": dict(numbers - numbers_without_carry),
+        "deleted": dict(numbers_without_carry - numbers),
+    }
+    assert Counter(_NUMBER_TOKEN_PATTERN.findall(display)) == numbers
+    stacked = {entry.paragraph_id for entry in result.entries if _STACKED_LEADING_ORDINALS_PATTERN.match(entry.text)}
+    stacked_without_carry = {
+        entry.paragraph_id
+        for entry in without_carry.entries
+        if _STACKED_LEADING_ORDINALS_PATTERN.match(entry.text)
+    }
+    assert stacked <= stacked_without_carry
+    assert len(drift) <= allowed_drift
