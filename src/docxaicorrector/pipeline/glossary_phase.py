@@ -47,15 +47,19 @@ from docxaicorrector.text.glossary_pass import (
     GLOSSARY_ROLE_REQUIRED,
     build_distinction_request,
     build_glossary_request,
+    collision_keepers,
     domain_glossary_terms,
     extract_glossary_candidates,
     find_rendering_collisions,
+    inherit_name_renderings,
     missing_required_candidates,
     normalize_glossary_key,
+    order_collision_group,
     order_required_first,
     parse_glossary_response,
     request_candidates,
     select_glossary_source_units,
+    split_name_families,
 )
 
 
@@ -459,6 +463,10 @@ def _apply_distinction(
     source term would hand the distinction meant for "берег" to "банк" as well (Codex
     acceptance finding 3). The answer's entries are matched to the participants in request
     order, one per participant of the same source term.
+
+    Spec 064 FR-009: ``collisions`` come ordered by ``order_collision_group``; the KEPT
+    members (the most frequent term and its spellings) keep their rendering whatever the
+    model answers for them -- the direction is the code's, not the model's.
     """
 
     answers_by_key: dict[tuple[str, ...], list[GlossaryTerm]] = {}
@@ -466,7 +474,13 @@ def _apply_distinction(
         answers_by_key.setdefault(normalize_glossary_key(entry.source_term), []).append(entry)
     replacement_by_position: dict[int, GlossaryTerm] = {}
     for group in collisions:
+        keepers = collision_keepers(group)
         for participant in group:
+            if any(participant is keeper for keeper in keepers):
+                queue = answers_by_key.get(normalize_glossary_key(participant.source_term))
+                if queue:
+                    queue.pop(0)  # its answer is spent, so a second sense still gets its own
+                continue
             position = next(
                 (
                     index
@@ -575,8 +589,11 @@ def _call_model(
             already_fixed=fixed,
         )
 
-    required = tuple(candidate for candidate in sent_candidates if candidate.required)
-    optional = tuple(candidate for candidate in sent_candidates if not candidate.required)
+    # Spec 064 FR-009: a short form of a name is never asked for on its own; it inherits the
+    # rendering of the full form after the calls (``inherit_name_renderings`` below).
+    requested, name_members = split_name_families(sent_candidates)
+    required = tuple(candidate for candidate in requested if candidate.required)
+    optional = tuple(candidate for candidate in requested if not candidate.required)
     record["required_count"] = len(required)
     record["optional_candidate_count"] = len(optional)
     terms: tuple[GlossaryTerm, ...] = ()
@@ -612,8 +629,10 @@ def _call_model(
         elif outcome == RUN_GLOSSARY_STATUS_STOPPED and not terms:
             return RUN_GLOSSARY_STATUS_STOPPED, ()
 
-    # Call C: different source terms that ended with one rendering.
-    collisions = find_rendering_collisions(terms)
+    # Call C: different source terms that ended with one rendering. The term the book uses
+    # most keeps the rendering (spec 064 FR-009); each group is ordered that way.
+    counts = {normalize_glossary_key(candidate.source_term): candidate.occurrence_count for candidate in requested}
+    collisions = [order_collision_group(group, counts) for group in find_rendering_collisions(terms)]
     record["collisions_found"] = len(collisions)
     # What collided BEFORE the distinction call, with the renderings it was given then; the
     # outcome is the glossary itself, and what stayed identical is ``collisions`` below.
@@ -641,12 +660,18 @@ def _call_model(
                 source_language=source_language,
                 target_language=target_language,
                 sample_text=sample_text,
+                counts=counts,
             ),
             group_candidates,
             len(group_candidates),
         )
         if outcome == _ASK_OK:
             terms = _apply_distinction(terms, collisions, tuple(result.terms))
+    terms, inherited = inherit_name_renderings(terms, name_members)
+    record["name_family_members"] = [
+        {"source_term": member.member.source_term, "head": member.head.source_term} for member in name_members
+    ]
+    record["inherited_name_entries"] = inherited
     remaining = find_rendering_collisions(terms)
     record["collisions_resolved"] = max(0, len(collisions) - len(remaining))
     record["collisions"] = [
