@@ -294,7 +294,6 @@ def extract_pdf_text_spans_with_pdfminer(pdf_path: str | Path) -> list[PdfTextSp
                     y1=float(line.y1),
                     page_height=page_height,
                 )
-                trailing_superscript_split = _split_trailing_superscript_marker_chars(chars)
                 # Footnote references set inside the line are rendered as Unicode
                 # superscript digits in place. The span keeps its geometry and its
                 # character count, so every boundary decision downstream (soft-wrap
@@ -307,6 +306,9 @@ def extract_pdf_text_spans_with_pdfminer(pdf_path: str | Path) -> list[PdfTextSp
                 # font, and a rule that saw only the real characters would read the
                 # space-separated "paper 28" as welded.
                 inline_marker_overrides = _inline_superscript_marker_char_ids(list(line))
+                trailing_superscript_split = _trailing_marker_split_left_to_importer(
+                    chars, inline_marker_overrides
+                )
                 if trailing_superscript_split is None:
                     spans.append(
                         PdfTextSpan(
@@ -368,7 +370,9 @@ def _inline_superscript_marker_char_ids(chars: Sequence[object]) -> dict[int, st
 
     * it is welded to the end of a word or of a sentence: the character immediately
       before it, with no space between, is a letter or a closing mark (``.``, ``”``,
-      ``)``…). A digit that follows a space is a number in the prose, never a reference;
+      ``)``…); OR (spec 063 FR-007) it stands apart — after a space or at the start of
+      the line — and is raised ALONE: neither of its non-space neighbours is itself
+      small and raised, which keeps an exponent group such as ``(n - 1)`` a formula;
     * it is at most three digits long — references are numbered, page-scale quantities
       and years are not;
     * it is set SMALLER than the text on its line;
@@ -376,7 +380,16 @@ def _inline_superscript_marker_char_ids(chars: Sequence[object]) -> dict[int, st
 
     The last two are the discriminating pair. An ordinary number welded to a word by a
     line break ("$16.58", "0.005") is full size and baseline-aligned; a chemical
-    subscript ("CO2", "H2O") is smaller but LOWERED. Neither passes both.
+    subscript ("CO2", "H2O") is smaller but LOWERED. Neither passes both — and neither
+    does a full-size number after a space ("nearly 39 million"), which is why dropping
+    the weld requirement for a stand-alone run is safe. Measured 2026-11-07 on the four
+    corpus PDFs: the stand-alone form takes Rethinking Money's 15 references set after a
+    closing quote and a space ("works.” 9") and Money and Sustainability's "paper 28";
+    the raised-alone test rejects the one exponent the size-and-raise pair alone would
+    take (Rethinking Money p. 244).
+
+    A stand-alone run keeps the space before it: only the digits are rewritten, so the
+    span's character count stays what it was, like for every other reference.
     """
     non_space_indexes = [
         index for index, char in enumerate(chars) if _char_display_text(char).strip()
@@ -401,18 +414,38 @@ def _inline_superscript_marker_char_ids(chars: Sequence[object]) -> dict[int, st
             position += 1
             continue
         run_start = position
+        position += 1
+        # A run is digits with nothing between them: a space ends it, so "$1,300 36" is
+        # "300" and "36", not one five-digit "30036" (spec 063 FR-007 reads the second).
         while (
             position < len(non_space_indexes)
             and _char_display_text(chars[non_space_indexes[position]]).strip() in _ASCII_DIGITS
+            and not _whitespace_between(
+                chars,
+                anchor_index=non_space_indexes[position - 1],
+                run_start_index=non_space_indexes[position],
+            )
         ):
             position += 1
         run_indexes = non_space_indexes[run_start:position]
-        if run_start == 0 or len(run_indexes) > _SUPERSCRIPT_MARKER_MAX_DIGITS:
+        if len(run_indexes) > _SUPERSCRIPT_MARKER_MAX_DIGITS:
             continue
-        if not _digit_run_is_welded_to_preceding_text(
+        welded = run_start > 0 and _digit_run_is_welded_to_preceding_text(
             chars,
             anchor_index=non_space_indexes[run_start - 1],
             run_start_index=run_indexes[0],
+        )
+        # Spec 063 FR-007: a reference that does NOT touch the previous word — a space
+        # between them, or the start of the line — is read by the same two typographic
+        # signals. Nothing else about it is required: what precedes it may be a digit
+        # ("$1,300 36 billion"), a closing quote or nothing at all.
+        if not welded and not (
+            run_start == 0
+            or _whitespace_between(
+                chars,
+                anchor_index=non_space_indexes[run_start - 1],
+                run_start_index=run_indexes[0],
+            )
         ):
             continue
         run_font_sizes = [
@@ -423,19 +456,43 @@ def _inline_superscript_marker_char_ids(chars: Sequence[object]) -> dict[int, st
         )
         if marker_font_size > line_text_font_size * _SUPERSCRIPT_MARKER_MAX_SIZE_RATIO:
             continue
+        # The baseline the digits must rise above: the text before them, or — for a run
+        # that opens the line — the text after them. For a welded run the first list is
+        # never empty, so the welded rule reads exactly what it read before FR-007.
         text_baselines = [
             _char_baseline(chars[index])
             for index in non_space_indexes
             if index < run_indexes[0]
+        ] or [
+            _char_baseline(chars[index])
+            for index in non_space_indexes
+            if index > run_indexes[-1]
         ]
         marker_baselines = [_char_baseline(chars[index]) for index in run_indexes]
         if not text_baselines or not marker_baselines:
             continue
+        text_baseline = float(median(text_baselines))
         required_baseline = (
-            float(median(text_baselines))
-            + marker_font_size * _SUPERSCRIPT_MARKER_MIN_BASELINE_RISE_RATIO
+            text_baseline + marker_font_size * _SUPERSCRIPT_MARKER_MIN_BASELINE_RISE_RATIO
         )
         if float(median(marker_baselines)) < required_baseline:
+            continue
+        # An unattached run must be raised ALONE. In "(1 + i)^(n - 1)" the exponent's "1"
+        # is small, raised and follows a space — but so do the "(", "n" and "-" around it:
+        # it is one character of a raised group, not a reference. A footnote reference is
+        # digits and nothing else; its neighbours are set as text.
+        if not welded and any(
+            _char_is_raised_and_smaller(
+                chars[neighbour],
+                line_text_font_size=line_text_font_size,
+                text_baseline=text_baseline,
+            )
+            for neighbour in (
+                non_space_indexes[run_start - 1] if run_start > 0 else None,
+                non_space_indexes[position] if position < len(non_space_indexes) else None,
+            )
+            if neighbour is not None
+        ):
             continue
         for index in run_indexes:
             overrides[id(chars[index])] = (
@@ -454,10 +511,74 @@ def _digit_run_is_welded_to_preceding_text(
     last_char = anchor_text[-1]
     if not (last_char.isalpha() or last_char in _SUPERSCRIPT_MARKER_ANCHOR_CLOSERS):
         return False
-    return not any(
+    return not _whitespace_between(
+        chars, anchor_index=anchor_index, run_start_index=run_start_index
+    )
+
+
+def _whitespace_between(
+    chars: Sequence[object], *, anchor_index: int, run_start_index: int
+) -> bool:
+    """True when a space item — real or inferred by the extractor — separates the two."""
+    return any(
         _char_display_text(chars[index]) and not _char_display_text(chars[index]).strip()
         for index in range(anchor_index + 1, run_start_index)
     )
+
+
+def _char_is_raised_and_smaller(
+    char: object, *, line_text_font_size: float, text_baseline: float
+) -> bool:
+    """The reference conjunction, asked of ONE character: smaller than its line AND raised."""
+    size = _char_font_size(char)
+    if size <= 0 or size > line_text_font_size * _SUPERSCRIPT_MARKER_MAX_SIZE_RATIO:
+        return False
+    return _char_baseline(char) >= text_baseline + size * _SUPERSCRIPT_MARKER_MIN_BASELINE_RISE_RATIO
+
+
+def _trailing_marker_split_left_to_importer(
+    chars: Sequence[object], inline_marker_overrides: Mapping[int, str]
+) -> tuple[Sequence[object], Sequence[object]] | None:
+    """The end-of-line split, except for a reference the importer would read out of place.
+
+    Spec 063 FR-007, measured 2026-11-07 on the corpus PDFs. The split hands the importer
+    the reference as its own span, and the importer orders spans by ``(page, top, x0)``.
+    A reference is raised; when it is raised far enough that its box clears the top of
+    its own line, it has the smaller ``top`` and is read BEFORE that line — after the
+    previous one — and re-bound there. On The Value of Everything, which sets references
+    at 0.60 of the body and raises them by 0.43 of it, every one of the 130 end-of-line
+    references took this path: "…less than £300 billion in 2011.³⁶" arrived as
+    "($1,300 36 billion)", and "…well above average earnings.³⁹" as "equivalent to nearly
+    / 39 / £30,000 for each adult", which the pipeline later re-joined into "nearly 39
+    £30,000" — the corpus's only blocker, where the model read the two as one sum. The
+    stray span also cut 11 paragraphs in two and, by ending the line before it with a full
+    stop, let the importer's boundary rule break 12 more in the middle (the next line was
+    not indented; that book indents every paragraph start).
+
+    Such a reference, when the in-line rule claims it (welded, at most three digits,
+    smaller, raised), is rendered where it is set — "earnings.³⁹" — on its own line, and
+    needs no re-binding. Every other split is left exactly as it was: Money and
+    Sustainability sets its references at 0.40, their box mostly stays under the line's
+    top, and the re-binding path has worked there since it was written. Keeping the split
+    there also keeps the span population the importer's heading clustering is computed
+    over — measured: dropping the split for every claimed reference moved Money's heading
+    threshold and promoted five note lines to headings.
+    """
+    split = _split_trailing_superscript_marker_chars(chars)
+    if split is None:
+        return None
+    body_chars, marker_chars = split
+    claimed = [char for char in marker_chars if _char_display_text(char).strip()]
+    if not claimed or not all(id(char) in inline_marker_overrides for char in claimed):
+        return split
+    if _char_top_edge(marker_chars) > _char_top_edge(body_chars):
+        return None
+    return split
+
+
+def _char_top_edge(chars: Sequence[object]) -> float:
+    """The highest point of the characters, in the extractor's bottom-origin coordinates."""
+    return max((float(getattr(char, "y1", 0.0) or 0.0) for char in chars), default=0.0)
 
 
 def _line_text_with_char_overrides(
