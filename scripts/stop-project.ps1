@@ -1,4 +1,5 @@
 ﻿. $PSScriptRoot\_shared.ps1
+Invoke-ExplorerLaunchGuard -ScriptPath $PSCommandPath
 
 try {
     Write-Step 'Останавливаю проект'

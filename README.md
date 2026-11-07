@@ -315,6 +315,19 @@ DOCX_AI_MODELS_IMAGE_GENERATION_VISION_DEFAULT=gpt-5.4-mini
 
 ### 5. Запустить приложение
 
+Двойной клик в проводнике: `scripts\start-project.cmd` / `stop-project.cmd` / `restart-project.cmd` / `status-project.cmd`.
+Эти `.cmd` запускают одноимённый `.ps1` через `powershell.exe -NoProfile -ExecutionPolicy Bypass -File`, поэтому работают при политике выполнения по умолчанию; саму политику машины они не меняют. Окно остаётся открытым до нажатия клавиши, чтобы можно было прочитать результат (`DOCX_AI_NO_PAUSE=1` отключает паузу); код выхода — код скрипта. Из консоли `cmd` или PowerShell их можно вызывать так же: `scripts\start-project.cmd`.
+
+Сами `.ps1` двойным кликом не запускаются. На Windows политика выполнения по умолчанию (`Undefined`, то есть `Restricted`) запрещает скрипты: «Run with PowerShell» в проводнике и `.\scripts\start-project.ps1` в консоли Windows PowerShell отвечают `cannot be loaded because running scripts is disabled on this system`, а окно проводника закрывается раньше, чем это можно прочитать (обычный двойной клик по `.ps1` вообще открывает его в редакторе). Из PowerShell-терминала `.ps1` запускаются так:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\start-project.ps1
+```
+
+либо после однократного `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` — это решение владельца машины, скрипты проекта его не выполняют. Если политика пропускает «Run with PowerShell», обёртка сама перезапускается с `-ExecutionPolicy Bypass` и ждёт клавишу перед закрытием окна.
+
+`start-project` ждёт, пока приложение отрисует первый кадр (маркер `.run/app.ready`); открытая вкладка браузера для этого не нужна — скрипт сам открывает одну сессию Streamlit и закрывает её после отрисовки.
+
 Вариант напрямую из WSL:
 
 ```bash

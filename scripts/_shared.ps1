@@ -11,6 +11,49 @@ try {
 catch {
 }
 
+# Explorer's "Run with PowerShell" verb (HKCR\SystemFileAssociations\.ps1\Shell\Windows.PowerShell.Run)
+# starts `powershell.exe "-file" " <script> "`: no -ExecutionPolicy, and the console closes the
+# moment the script exits, so neither the result nor an error is ever read. Under the default
+# policy (Undefined = Restricted) the verb is refused before this file loads; the scripts\*.cmd
+# launchers cover that case. When a policy does let the verb through, the wrapper re-runs itself
+# once with -ExecutionPolicy Bypass and waits for a key before the window closes. Every caller
+# that names a policy itself (the .cmd launchers, VS Code tasks, restart-project.ps1, the smoke
+# tests) passes straight through.
+function Test-IsExplorerVerbLaunch {
+    param([string]$ScriptPath)
+
+    $hostArgs = @([Environment]::GetCommandLineArgs() | ForEach-Object { ([string]$_).Trim() })
+    if (@($hostArgs | Where-Object { $_ -match '^[-/](ex|ep)' }).Count -gt 0) { return $false }
+    $startedForThisScript = $false
+    for ($index = 1; $index -lt $hostArgs.Count - 1; $index++) {
+        if ($hostArgs[$index] -match '^[-/]f(ile)?$' -and $hostArgs[$index + 1] -eq $ScriptPath) {
+            $startedForThisScript = $true
+        }
+    }
+    if (-not $startedForThisScript) { return $false }
+    try {
+        $parentId = (Get-CimInstance Win32_Process -Filter "ProcessId=$PID" -ErrorAction Stop).ParentProcessId
+        return ((Get-Process -Id $parentId -ErrorAction Stop).ProcessName -eq 'explorer')
+    }
+    catch {
+        return $false
+    }
+}
+
+function Invoke-ExplorerLaunchGuard {
+    param([string]$ScriptPath)
+
+    if (-not (Test-IsExplorerVerbLaunch -ScriptPath $ScriptPath)) { return }
+    & (Get-Process -Id $PID).Path -NoProfile -ExecutionPolicy Bypass -File $ScriptPath
+    $childExitCode = $LASTEXITCODE
+    Write-Host ''
+    if (-not [Console]::IsInputRedirected) {
+        Write-Host 'Press any key to close this window...'
+        try { [void]$Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown') } catch { }
+    }
+    exit $childExitCode
+}
+
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $wslDistro = 'Debian'
 $wslControlScript = Join-Path $PSScriptRoot 'project-control-wsl.sh'
