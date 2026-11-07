@@ -1455,7 +1455,7 @@ def _build_image_output_config(config: Mapping[str, object]) -> dict[str, object
         ),
         "image_output_edit_candidate_sizes": config.get(
             "image_output_edit_candidate_sizes",
-            ("1536x1024", "1024x1536", "1024x1024", "512x512", "256x256"),
+            ("1536x1024", "1024x1536", "1024x1024"),
         ),
         "image_output_generate_size_square": _config_str(config, "image_output_generate_size_square", "1024x1024"),
         "image_output_generate_size_landscape": _config_str(config, "image_output_generate_size_landscape", "1536x1024"),

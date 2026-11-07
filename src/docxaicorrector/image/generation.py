@@ -15,7 +15,14 @@ from docxaicorrector.image.analysis import (
     encoded_image_within_byte_budget,
     image_within_pixel_budget,
 )
-from docxaicorrector.image.output_policy import resolve_image_output_policy, select_nearest_fallback_size, select_nearest_size
+from docxaicorrector.image.model_capabilities import build_images_request, filter_sizes_for_model
+from docxaicorrector.image.output_policy import (
+    DEFAULT_EDIT_CANDIDATE_SIZES,
+    DEFAULT_GENERATE_CANDIDATE_SIZES,
+    resolve_image_output_policy,
+    select_nearest_fallback_size,
+    select_nearest_size,
+)
 from docxaicorrector.image.shared import (
     call_responses_create_with_retry,
     detect_image_mime_type as shared_detect_image_mime_type,
@@ -447,20 +454,22 @@ def _generate_creative_candidate(
         creative_brief=creative_brief,
         source_size=original_size,
     )
-    request_payload = {
-        "model": get_model_role_value(model_config, "image_generation"),
-        "prompt": generate_prompt,
-        "size": _select_generate_size(original_size, image_output_policy),
-        "quality": "high",
-        "background": "transparent",
-        "output_format": "png",
-        "response_format": "b64_json",
-    }
+    # Spec 062 FR-004: the payload holds only what this model accepts (model_capabilities).
+    generate_model = get_model_role_value(model_config, "image_generation")
+    request_payload = build_images_request(
+        operation="generate",
+        model=generate_model,
+        prompt=generate_prompt,
+        size=_select_generate_size(original_size, image_output_policy),
+        quality="high",
+        background="transparent",
+        output_format="png",
+    )
     assert image_output_policy is not None
     response = _call_images_generate(
         client,
         request_payload,
-        fallback_sizes=image_output_policy.generate_candidate_sizes,
+        fallback_sizes=filter_sizes_for_model(generate_model, image_output_policy.generate_candidate_sizes),
         budget=budget,
     )
     candidate_bytes, revised_prompt = _extract_image_bytes(response)
@@ -502,21 +511,23 @@ def _generate_direct_semantic_candidate(
     semantic_upload, restore_context = _prepare_semantic_edit_image(image_bytes)
     original_size = restore_context["original_size"]
     assert isinstance(original_size, tuple)
-    request_payload = {
-        "model": get_model_role_value(model_config, "image_edit"),
-        "image": [_build_edit_file_like(semantic_upload)],
-        "prompt": prompt,
-        "quality": "high" if use_high_fidelity else "medium",
-        "input_fidelity": "high" if use_high_fidelity else "low",
-        "output_format": "png",
-        "size": _select_generate_size(original_size, image_output_policy),
-        "response_format": "b64_json",
-    }
+    # Spec 062 FR-004: input_fidelity is sent only to a model the table says accepts it.
+    edit_model = get_model_role_value(model_config, "image_edit")
+    request_payload = build_images_request(
+        operation="edit",
+        model=edit_model,
+        image=[_build_edit_file_like(semantic_upload)],
+        prompt=prompt,
+        size=_select_generate_size(original_size, image_output_policy),
+        quality="high" if use_high_fidelity else "medium",
+        input_fidelity="high" if use_high_fidelity else "low",
+        output_format="png",
+    )
     assert image_output_policy is not None
     response = _call_images_edit(
         client,
         request_payload,
-        fallback_sizes=image_output_policy.edit_candidate_sizes,
+        fallback_sizes=filter_sizes_for_model(edit_model, image_output_policy.edit_candidate_sizes),
         budget=budget,
     )
     candidate_bytes, revised_prompt = _extract_image_bytes(response)
@@ -594,20 +605,22 @@ def _generate_structured_candidate(
         layout_description=layout_description,
         source_size=original_size,
     )
-    request_payload = {
-        "model": get_model_role_value(model_config, "image_generation"),
-        "prompt": generate_prompt,
-        "size": _select_generate_size(original_size, image_output_policy),
-        "quality": "high",
-        "background": "transparent",
-        "output_format": "png",
-        "response_format": "b64_json",
-    }
+    # Spec 062 FR-004: the payload holds only what this model accepts (model_capabilities).
+    generate_model = get_model_role_value(model_config, "image_generation")
+    request_payload = build_images_request(
+        operation="generate",
+        model=generate_model,
+        prompt=generate_prompt,
+        size=_select_generate_size(original_size, image_output_policy),
+        quality="high",
+        background="transparent",
+        output_format="png",
+    )
     assert image_output_policy is not None
     response = _call_images_generate(
         client,
         request_payload,
-        fallback_sizes=image_output_policy.generate_candidate_sizes,
+        fallback_sizes=filter_sizes_for_model(generate_model, image_output_policy.generate_candidate_sizes),
         budget=budget,
     )
     candidate_bytes, revised_prompt = _extract_image_bytes(response)
@@ -665,10 +678,11 @@ def _call_images_edit(
             if adaptation_attempts > IMAGE_API_MAX_ADAPTATION_RETRIES:
                 raise RuntimeError("Images.edit adaptation retry limit exceeded.") from exc
             log_event(
-                logging.DEBUG,
+                logging.WARNING,
                 "semantic_image_edit_retry_without_optional_param",
                 "OpenAI SDK не поддерживает один из optional params для Images.edit, повторяю запрос без него.",
                 removed_param=unsupported_param,
+                model=current_payload.get("model"),
             )
             continue
         except Exception as exc:
@@ -696,10 +710,11 @@ def _call_images_edit(
                 if adaptation_attempts > IMAGE_API_MAX_ADAPTATION_RETRIES:
                     raise RuntimeError("Images.edit adaptation retry limit exceeded.") from exc
                 log_event(
-                    logging.DEBUG,
+                    logging.WARNING,
                     "semantic_image_edit_retry_with_fallback_size",
                     "Images API отклонил auto-size, повторяю запрос с совместимым фиксированным размером.",
                     fallback_size=fallback_size,
+                    model=current_payload.get("model"),
                 )
                 continue
             unsupported_param = _extract_unsupported_parameter_name(str(exc))
@@ -709,10 +724,11 @@ def _call_images_edit(
                 if adaptation_attempts > IMAGE_API_MAX_ADAPTATION_RETRIES:
                     raise RuntimeError("Images.edit adaptation retry limit exceeded.") from exc
                 log_event(
-                    logging.DEBUG,
+                    logging.WARNING,
                     "semantic_image_edit_retry_without_optional_param",
                     "Images API отклонил optional param, повторяю запрос без него.",
                     removed_param=unsupported_param,
+                    model=current_payload.get("model"),
                 )
                 continue
             if attempt < IMAGE_API_MAX_RETRIES and _is_retryable_api_error(exc):
@@ -736,7 +752,12 @@ def _call_images_edit(
             _consume_budget(budget, "images.edit")
             # The Images API reports its own ``usage`` (gpt-image-1); models that do not
             # are counted as unaccounted rather than as free.
-            record_model_call_usage(stage=STAGE_IMAGE_GENERATION, response=result)
+            record_model_call_usage(
+                stage=STAGE_IMAGE_GENERATION,
+                response=result,
+                model=str(current_payload.get("model") or ""),
+                image_role="image_edit",
+            )
             return result
 
 
@@ -764,10 +785,11 @@ def _call_images_generate(
             if adaptation_attempts > IMAGE_API_MAX_ADAPTATION_RETRIES:
                 raise RuntimeError("Images.generate adaptation retry limit exceeded.") from exc
             log_event(
-                logging.DEBUG,
+                logging.WARNING,
                 "structured_image_generate_retry_without_optional_param",
                 "OpenAI SDK не поддерживает optional param для Images.generate, повторяю запрос без него.",
                 removed_param=unsupported_param,
+                model=current_payload.get("model"),
             )
             continue
         except Exception as exc:
@@ -795,10 +817,11 @@ def _call_images_generate(
                 if adaptation_attempts > IMAGE_API_MAX_ADAPTATION_RETRIES:
                     raise RuntimeError("Images.generate adaptation retry limit exceeded.") from exc
                 log_event(
-                    logging.DEBUG,
+                    logging.WARNING,
                     "structured_image_generate_retry_with_fallback_size",
                     "Images.generate отклонил размер, повторяю запрос с совместимым размером.",
                     fallback_size=fallback_size,
+                    model=current_payload.get("model"),
                 )
                 continue
             unsupported_param = _extract_unsupported_parameter_name(str(exc))
@@ -808,10 +831,11 @@ def _call_images_generate(
                 if adaptation_attempts > IMAGE_API_MAX_ADAPTATION_RETRIES:
                     raise RuntimeError("Images.generate adaptation retry limit exceeded.") from exc
                 log_event(
-                    logging.DEBUG,
+                    logging.WARNING,
                     "structured_image_generate_retry_without_optional_param",
                     "Images.generate отклонил optional param, повторяю запрос без него.",
                     removed_param=unsupported_param,
+                    model=current_payload.get("model"),
                 )
                 continue
             if attempt < IMAGE_API_MAX_RETRIES and _is_retryable_api_error(exc):
@@ -833,7 +857,12 @@ def _call_images_generate(
             raise
         else:
             _consume_budget(budget, "images.generate")
-            record_model_call_usage(stage=STAGE_IMAGE_GENERATION, response=result)
+            record_model_call_usage(
+                stage=STAGE_IMAGE_GENERATION,
+                response=result,
+                model=str(current_payload.get("model") or ""),
+                image_role="image_generation",
+            )
             return result
 
 
@@ -955,7 +984,7 @@ def _extract_supported_size_fallback(
         return None
     supported_sizes = _extract_supported_sizes_from_error(
         error_message,
-        fallback_sizes or ("1536x1024", "1024x1536", "1024x1024", "512x512", "256x256"),
+        fallback_sizes or DEFAULT_EDIT_CANDIDATE_SIZES,
     )
     next_size = select_nearest_fallback_size(current_size, supported_sizes)
     if next_size == current_size:
@@ -973,7 +1002,7 @@ def _extract_supported_generate_size_fallback(
         return None
     supported_sizes = _extract_supported_sizes_from_error(
         error_message,
-        fallback_sizes or ("1536x1024", "1024x1536", "1024x1024", "1792x1024", "1024x1792"),
+        fallback_sizes or DEFAULT_GENERATE_CANDIDATE_SIZES,
     )
     next_size = select_nearest_fallback_size(current_size, supported_sizes)
     if next_size == current_size:

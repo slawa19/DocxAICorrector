@@ -16,6 +16,7 @@ import docxaicorrector.real_image.manifest as real_image_manifest
 from docxaicorrector.core.config import get_client, load_app_config
 from docxaicorrector.core.constants import ENV_PATH
 from docxaicorrector.image.analysis import analyze_image
+from docxaicorrector.image.model_capabilities import resolve_image_model_capabilities
 from docxaicorrector.image.reconstruction import reconstruct_image
 
 
@@ -270,15 +271,18 @@ class TestRedrawRoutingRealInputs:
         if requested_mode == "semantic_redraw_structured":
             if "edit" in captured:
                 assert captured["edit"]["model"] == model_registry.image_edit
-                assert captured["edit"]["response_format"] == "b64_json"
-                assert captured["edit"]["input_fidelity"] == "high"
+                # Spec 062 FR-004: built from the capability table, not a fixed dict.
+                assert "response_format" not in captured["edit"]
+                edit_capabilities = resolve_image_model_capabilities(model_registry.image_edit)
+                assert edit_capabilities is not None
+                assert ("input_fidelity" in captured["edit"]) is edit_capabilities.accepts_input_fidelity
             else:
                 assert captured["vision"]["model"] == model_registry.image_generation_vision
                 assert captured["generate"]["model"] == model_registry.image_generation
-                assert captured["generate"]["response_format"] == "b64_json"
+                assert "response_format" not in captured["generate"]
         else:
             assert captured["edit"]["model"] == model_registry.image_edit
-            assert captured["edit"]["response_format"] == "b64_json"
+            assert "response_format" not in captured["edit"]
         assert elapsed_seconds < 4.0
 
     @pytest.mark.manual_ai_heavy

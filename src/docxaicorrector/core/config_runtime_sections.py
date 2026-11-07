@@ -358,7 +358,7 @@ def resolve_image_output_settings(
     image_output_edit_candidate_sizes = parse_image_output_size_list_fn(
         image_output_config.get("edit_candidate_sizes"),
         source_name=f"{config_path}: image_output.edit_candidate_sizes",
-        default=("1536x1024", "1024x1536", "1024x1024", "512x512", "256x256"),
+        default=("1536x1024", "1024x1536", "1024x1024"),
     )
     image_output_trim_tolerance = parse_config_int_fn(image_output_config, "trim_tolerance", 20)
     image_output_trim_padding_ratio = parse_config_float_fn(image_output_config, "trim_padding_ratio", 0.02)
