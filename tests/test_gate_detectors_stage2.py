@@ -22,6 +22,7 @@ import ast
 import json
 from pathlib import Path
 from types import SimpleNamespace
+from typing import cast
 
 from docxaicorrector.validation.formatting_coverage import (
     classify_heading_demotions,
@@ -837,6 +838,10 @@ def test_policy_kept_source_heading_is_not_an_untranslated_structural_element():
 # FR-005 — list-fragment residue credited by REGION and STATUS before form
 # --------------------------------------------------------------------------------------- #
 
+def _failed_checks(verdict: dict[str, object]) -> list[str]:
+    return cast("list[str]", verdict["failed_checks"])
+
+
 # The Creating Wealth shape: a notes entry wrapped by the PDF layer, its tail a separate
 # body paragraph ending in a year. One citation signal (the year) — the form credit alone
 # does NOT take it, which is exactly why it hard-failed acceptance.
@@ -915,7 +920,7 @@ def test_note_tail_in_back_matter_region_is_credited_to_review(tmp_path):
     assert "list_fragment_regressions_review_required" in report["gate_reasons"]
     assert "list_fragment_regressions_present" not in report["gate_reasons"]
     verdict = build_acceptance_verdict({"translation_quality_report": report})
-    assert "list_fragment_regressions_present" not in verdict["failed_checks"]
+    assert "list_fragment_regressions_present" not in _failed_checks(verdict)
 
 
 def test_note_tail_without_region_anchor_still_hard_fails(tmp_path):
@@ -927,7 +932,7 @@ def test_note_tail_without_region_anchor_still_hard_fails(tmp_path):
     assert report["list_fragment_regression_count"] == 1
     assert "list_fragment_regressions_present" in report["gate_reasons"]
     verdict = build_acceptance_verdict({"translation_quality_report": report})
-    assert "list_fragment_regressions_present" in verdict["failed_checks"]
+    assert "list_fragment_regressions_present" in _failed_checks(verdict)
 
 
 def test_policy_kept_source_tail_is_credited_without_a_region_anchor(tmp_path):
@@ -1011,7 +1016,8 @@ def _prose_check(count: int, chars: int) -> dict[str, object]:
             }
         }
     )
-    return next(check for check in verdict["checks"] if check["name"] == "untranslated_prose_not_delivered")
+    checks = cast("list[dict[str, object]]", verdict["checks"])
+    return next(check for check in checks if check["name"] == "untranslated_prose_not_delivered")
 
 
 def test_two_character_block_under_the_anchor_floor_passes():
