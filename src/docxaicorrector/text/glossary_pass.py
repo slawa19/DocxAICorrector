@@ -681,10 +681,13 @@ def extract_glossary_candidates(
                 continue
             seen_keys.add(identity)
             selected.append(draft)
-    optional_room = max(0, limit - sum(1 for draft in selected if _is_defined(draft)))
+    # ``limit`` then cuts optional candidates only: a defined term riding over its quota must
+    # not push out a required family head that its quota admitted (measured: it did, five
+    # heads on CW / RM / VoE, while the bypass covered only defined terms here).
+    optional_room = max(0, limit - sum(1 for draft in selected if _included_by_rule(draft)))
     kept: list[_Draft] = []
     for draft in selected:
-        if _is_defined(draft):
+        if _included_by_rule(draft):
             kept.append(draft)
         elif optional_room > 0:
             optional_room -= 1
