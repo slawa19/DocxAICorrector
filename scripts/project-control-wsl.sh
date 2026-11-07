@@ -502,9 +502,49 @@ wait_health() {
     return 1
 }
 
+# A headless Streamlit server runs app.py only for a connected client session, and app.ready is
+# written by that run. With no browser tab open nothing ever connected, so wait_ready timed out
+# after a successful start (start-project.ps1: "not available within 180 seconds") while the app
+# was up. Open one session the way the browser does (websocket + rerun request) and close it
+# once the run finishes. All output is discarded: wait-ready's stdout must stay exactly ok/timeout.
+trigger_app_render() {
+    local port="${1:-$DEFAULT_PORT}"
+    local timeout_seconds="${2:-60}"
+    venv_ready || return 1
+    "$VENV_PYTHON" - "$port" "$timeout_seconds" > /dev/null 2>&1 <<'PY'
+import asyncio
+import sys
+import time
+
+import websockets
+from streamlit.proto.BackMsg_pb2 import BackMsg
+from streamlit.proto.ForwardMsg_pb2 import ForwardMsg
+
+
+async def render_once(port: int, timeout_seconds: float) -> int:
+    deadline = time.monotonic() + timeout_seconds
+    uri = f"ws://127.0.0.1:{port}/_stcore/stream"
+    async with websockets.connect(uri, subprotocols=["streamlit"], max_size=None, open_timeout=5) as socket:
+        request = BackMsg()
+        request.rerun_script.query_string = ""
+        request.rerun_script.page_script_hash = ""
+        await socket.send(request.SerializeToString())
+        while (remaining := deadline - time.monotonic()) > 0:
+            message = ForwardMsg()
+            message.ParseFromString(await asyncio.wait_for(socket.recv(), timeout=remaining))
+            if message.WhichOneof("type") == "script_finished":
+                return 0
+    return 1
+
+
+sys.exit(asyncio.run(render_once(int(sys.argv[1]), float(sys.argv[2]))))
+PY
+}
+
 wait_ready() {
     local port="${1:-$DEFAULT_PORT}"
     local deadline=$((SECONDS + ${2:-90}))
+    local next_render_at=0
     while [[ $SECONDS -lt $deadline ]]; do
         # The authoritative readiness signal is the render marker app.ready, which the
         # Streamlit app writes on its first successful frame (_finalize_app_frame ->
@@ -515,6 +555,13 @@ wait_ready() {
         if health_ok "$port" && app_ready && app_page_ok "$port"; then
             echo "ok"
             return 0
+        fi
+        # The server answers but nothing has rendered: request the render ourselves instead of
+        # waiting for a browser tab. Retried every 15 s in case the first session came too early.
+        if [[ $SECONDS -ge $next_render_at ]] && health_ok "$port" && app_page_ok "$port"; then
+            next_render_at=$((SECONDS + 15))
+            trigger_app_render "$port" "$((deadline - SECONDS > 1 ? deadline - SECONDS : 1))" || true
+            continue
         fi
         sleep 0.25
     done
