@@ -3,10 +3,19 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from statistics import median
 
-from docxaicorrector.core.models import ParagraphUnit
+from docxaicorrector.core.models import (
+    BACK_MATTER_SECTION_NOTES,
+    BACK_MATTER_SECTION_REFERENCES,
+    ParagraphUnit,
+)
+from docxaicorrector.document.semantic_blocks import (
+    _BACK_MATTER_SECTION_KIND_BY_TITLE,
+    _unwrap_inline_emphasis,
+)
+from docxaicorrector.validation.formatting_coverage import _normalize_structural_text
 from docxaicorrector.pdf_import.text_layer_quality import (
     PdfTextSpan,
     _can_end_with_superscript_marker,
@@ -340,6 +349,14 @@ def build_paragraph_units_from_text_spans(
     # After the structural pass: a heading that pass makes keeps the level it gives, and
     # FR-009 only reads what is still body.
     emitted = _reconcile_display_titles(emitted, ordered_spans, layout_profile=layout_profile)
+    # Spec 064 R-7: after every role is final, because the region is anchored on a heading
+    # and the join refuses to touch one.
+    emitted = _join_torn_back_matter_entries(
+        emitted,
+        ordered_spans,
+        layout_profile=layout_profile,
+        dehyphenation_evidence=dehyphenation_evidence,
+    )
 
     _attach_pdf_layout_signals(emitted, ordered_spans, layout_profile=layout_profile)
 
@@ -3012,6 +3029,338 @@ def _infer_font_heading_level(span: PdfTextSpan, *, median_font_size: float | No
 
 def _has_leading_section_ordinal(span: PdfTextSpan) -> bool:
     return bool(_SECTION_ORDINAL_HEADING_PATTERN.match(_normalize_text(span.text)))
+
+
+# ----------------------------------------------------------------------------------------
+# Spec 064 R-7: an entry of a notes / reference section that the importer split into two
+# paragraphs in the middle of a sentence ("1. Both Tony Blair, ... and Chuka" + "Umunna,
+# considered ..."; "33. Barba and de Vivo, ..., pp." + "1490-91.") is joined back here.
+#
+# Why the tear happens: an entry wraps with a hanging indent, and the span-level list/body
+# merges only accept a wrapped line that starts lowercase (`_is_soft_wrap_continuation_pair`)
+# or that sits at the previous line's indent. A wrap that happens to start on a capitalised
+# name, a digit or an opening parenthesis is therefore cut off into a paragraph of its own.
+# Downstream the model either translates the whole sentence under the first marker and leaves
+# the second empty (delivered as untranslated source, content twice) or translates the tail
+# on its own, where it is neither prose nor a citation for the acceptance gate.
+#
+# Why it lives HERE and not where the regions are resolved (`document/semantic_blocks.py`):
+# the evidence that tells a wrapped line from a new entry is geometry -- whether the previous
+# line ran out of room and whether a blank line separates them -- and the coordinates stop
+# existing the moment the intermediate DOCX is written. The region the importer can see is
+# narrower but sufficient: the anchor is the same blessed back-matter title lexicon, read
+# through the same partition (`_BACK_MATTER_SECTION_KIND_BY_TITLE`), on a unit that is already
+# a heading; the outline bound mirrors `_resolve_reference_region_outline_bound`.
+#
+# The rule reads form and geometry only, never a word (Constitution VII). A unit is joined to
+# the one before it when ALL hold:
+#   * both are inside a notes / reference section and both are body or list units (never a
+#     heading, caption, TOC row or footnote marker);
+#   * the predecessor does not end a sentence: its last character, past closing quotes,
+#     brackets and superscript digits, is none of . ! ? ... -- a comma, a colon, a semicolon,
+#     a dash, an open quote or parenthesis, a hyphen-broken word or a bare word all leave it
+#     open ("(London:" + "Macmillan, 1865)"; "(1848;" + "London: ..."; 48 of the measured
+#     joins end so, all of them correct), and so does a locator abbreviation before a number
+#     (`_entry_text_ends_sentence`);
+#   * the unit does not open a new entry: no leading note number ("12.", "12)", "12 Text"),
+#     no bullet, no repeated-author dash run, no author form ("Surname, X." / "Surname,
+#     Firstname" within the first four words);
+#   * the predecessor's last line is FULL: the unit's first word, at that line's own average
+#     character width, would not have fit before the body column's right edge -- so the line
+#     broke because it ran out of room, not because the entry ended;
+#   * the unit's first line is the next line: on the same page with less than a blank line
+#     (one font size) of white space above it, or at the top of the very next page;
+#   * on the same page, the unit's first line does not step back left of a wrapped
+#     predecessor's last line (`_entry_continuation_keeps_the_wrap_indent`).
+# A line the TOC heuristic flagged (`structural_role == "toc_entry"`, a line that ends in a
+# number) is left alone even here: the flag feeds the TOC-region bound downstream
+# (`toc_entry_count`), and clearing it is a separate decision (spec 064 Changelog, notes-join).
+# The importer does not see images (they are extracted separately and interleaved by the
+# PDF->DOCX bridge), so "not across an image" rests on the blank-line test on the same page;
+# across a page break it is a measured residual (spec 064 Changelog, notes-join).
+# ----------------------------------------------------------------------------------------
+
+_BACK_MATTER_ENTRY_SECTION_KINDS = frozenset(
+    {BACK_MATTER_SECTION_NOTES, BACK_MATTER_SECTION_REFERENCES}
+)
+_BACK_MATTER_ENTRY_ROLES = frozenset({"body", "list"})
+_ENTRY_SENTENCE_END_CHARS = ".!?…"
+_ENTRY_TRAILING_CLOSER_CHARS = "’”\"')]}»⁰¹²³⁴⁵⁶⁷⁸⁹"
+_ENTRY_NOTE_NUMBER_OPENER_PATTERN = re.compile(r"^\d{1,3}(?:[.)](?:\s|$)|\s+[^\W\d_])")
+_ENTRY_REPEATED_AUTHOR_DASH_PATTERN = re.compile(r"^[‒–—―-]{2,}")
+_ENTRY_AUTHOR_FORM_MAX_NAME_WORDS = 4
+# A short lowercase token closed by a period at the very end ("p.", "pp.", "vol."), standing
+# after a space or an opening bracket -- the shape of a locator abbreviation.
+_ENTRY_LOCATOR_TOKEN_PATTERN = re.compile(r"(?:^|[\s(\[])(?P<token>[^\W\d_]{1,3})\.\Z", re.UNICODE)
+_ENTRY_HARD_HYPHEN_TAIL_PATTERN = re.compile(rf"[^\W_][{_SOFT_WRAP_HYPHEN_CHARS}]\Z", re.UNICODE)
+
+
+def _back_matter_anchor_kind(unit: ParagraphUnit) -> str | None:
+    """The back-matter section kind a HEADING unit opens, or None. Exact title match after the
+    same normalisation `semantic_blocks._reference_section_title` applies -- never containment."""
+    if unit.role != "heading":
+        return None
+    title = _normalize_structural_text(_unwrap_inline_emphasis(unit.text or "")).lower()
+    return _BACK_MATTER_SECTION_KIND_BY_TITLE.get(title)
+
+
+def _back_matter_entry_region_flags(units: list[ParagraphUnit]) -> list[bool]:
+    """Per unit: does it sit inside a notes / reference section?
+
+    A section opens after a heading whose whole text is a notes or reference title and runs
+    until the next back-matter title of any kind (an index ends a bibliography), or until the
+    outline returns to the title's depth or shallower; a heading with no depth closes it, and
+    so does any heading when the title itself has none. The same reading of the outline as
+    `semantic_blocks._resolve_reference_region_outline_bound`, cut short where that one needs
+    blocks: a bound that comes too early only loses joins, it never makes one."""
+    flags = [False] * len(units)
+    index = 0
+    while index < len(units):
+        kind = _back_matter_anchor_kind(units[index])
+        if kind not in _BACK_MATTER_ENTRY_SECTION_KINDS:
+            index += 1
+            continue
+        title_level = units[index].heading_level
+        end = index + 1
+        while end < len(units):
+            candidate = units[end]
+            if candidate.role == "heading" and (
+                _back_matter_anchor_kind(candidate) is not None
+                or title_level is None
+                or candidate.heading_level is None
+                or candidate.heading_level <= title_level
+            ):
+                break
+            end += 1
+        for position in range(index + 1, end):
+            flags[position] = True
+        index = end
+    return flags
+
+
+def _entry_text_ends_sentence(text: str, *, next_text: str = "") -> bool:
+    """Does `text` end a sentence? A trailing period that closes a short lowercase token
+    ("p.", "pp.", "vol.") right before a line that opens with a digit is a locator waiting for
+    its number ("..., pp." + "1490-91."), not the end of a sentence -- the shape of the token and
+    of the next line decide it, no list of abbreviations does."""
+    stripped = text.rstrip()
+    while stripped and (stripped[-1] in _ENTRY_TRAILING_CLOSER_CHARS or stripped[-1].isspace()):
+        stripped = stripped[:-1]
+    if not stripped or stripped[-1] not in _ENTRY_SENTENCE_END_CHARS:
+        return not stripped
+    if stripped[-1] == "." and next_text.lstrip()[:1].isdigit():
+        locator = _ENTRY_LOCATOR_TOKEN_PATTERN.search(stripped)
+        return locator is None or not locator.group("token").islower()
+    return True
+
+
+def _opens_with_author_form(text: str) -> bool:
+    """"Surname, X." / "Surname, Firstname" / "Body Corporate, Title": a capitalised name of at
+    most four words, a comma, then a capitalised token. A wrapped line that merely contains a
+    comma ("Umunna, considered ...", "Blackwell, 2013)") does not have this shape."""
+    head, separator, tail = text.partition(",")
+    if not separator:
+        return False
+    words = head.split()
+    if not 1 <= len(words) <= _ENTRY_AUTHOR_FORM_MAX_NAME_WORDS:
+        return False
+    if not (words[0][:1].isalpha() and words[0][:1].isupper()):
+        return False
+    after = tail.lstrip()
+    return bool(after) and after[0].isalpha() and after[0].isupper()
+
+
+def _text_opens_back_matter_entry(text: str) -> bool:
+    stripped = text.lstrip()
+    if not stripped:
+        return True
+    return bool(
+        _ENTRY_NOTE_NUMBER_OPENER_PATTERN.match(stripped)
+        or _BULLET_PATTERN.match(stripped)
+        or stripped[0] in "•●"
+        or _ENTRY_REPEATED_AUTHOR_DASH_PATTERN.match(stripped)
+        or _opens_with_author_form(stripped)
+    )
+
+
+def _unit_line_span(
+    unit: ParagraphUnit,
+    position: int,
+    spans_by_origin: dict[int, list[PdfTextSpan]],
+) -> PdfTextSpan | None:
+    """The span of one line of `unit` (`position` indexes its origin lists), matched by the
+    origin coordinate AND the line text, so two spans that share a baseline are never confused."""
+    origins = unit.origin_raw_indexes or []
+    texts = unit.origin_raw_texts or []
+    if not origins or len(origins) != len(texts):
+        return None
+    origin = int(origins[position])
+    line_text = texts[position]
+    for span in spans_by_origin.get(origin, []):
+        if _normalize_text(span.text) == line_text:
+            return span
+    return None
+
+
+def _entry_line_ran_out_of_room(
+    last_line: PdfTextSpan,
+    next_line_text: str,
+    *,
+    layout_profile: _PdfHeadingLayoutProfile,
+) -> bool:
+    """Would the next line's first word have fit at the end of `last_line`? If it would, the
+    line ended for a reason of its own -- the entry ended -- and nothing is joined."""
+    right_edge = layout_profile.body_right_x1
+    line_text = _normalize_text(last_line.text)
+    words = next_line_text.split()
+    if right_edge is None or not line_text or not words:
+        return False
+    char_width = (float(last_line.x1) - float(last_line.x0)) / len(line_text)
+    # The word plus the one space that would have separated it.
+    needed = char_width * (len(words[0]) + 1)
+    return float(last_line.x1) + needed > float(right_edge)
+
+
+def _entry_lines_are_consecutive(last_line: PdfTextSpan, first_line: PdfTextSpan) -> bool:
+    if first_line.page_number == last_line.page_number + 1:
+        return True
+    if first_line.page_number != last_line.page_number:
+        return False
+    if float(first_line.top) <= float(last_line.top):
+        return False
+    font_size = _span_font_size(last_line) or _span_font_size(first_line)
+    if font_size is None:
+        return False
+    return float(first_line.top) - float(last_line.bottom) < font_size
+
+
+def _entry_continuation_keeps_the_wrap_indent(
+    head: ParagraphUnit, last_line: PdfTextSpan, first_line: PdfTextSpan
+) -> bool:
+    """On one page, a wrapped line never steps back out to where entries begin. When the
+    predecessor already has a wrapped line, its last line sits at the wrap indent; a line that
+    starts half a font size or more to the LEFT of it starts a new entry, whatever the line
+    above looks like -- VoE's bibliography, "...file/228786/7529.pdf" (an address that overran
+    the column, so it reads as full) then "'Fiscal policy as a countercyclical tool', ..." back
+    at the entry margin. Across a page break the margins of facing pages differ, so the test
+    is not made there."""
+    if len(head.origin_raw_indexes or []) < 2 or first_line.page_number != last_line.page_number:
+        return True
+    font_size = _span_font_size(last_line) or _span_font_size(first_line)
+    if font_size is None:
+        return False
+    return float(first_line.x0) >= float(last_line.x0) - 0.5 * font_size
+
+
+def _is_torn_back_matter_entry_continuation(
+    head: ParagraphUnit,
+    tail: ParagraphUnit,
+    *,
+    spans_by_origin: dict[int, list[PdfTextSpan]],
+    layout_profile: _PdfHeadingLayoutProfile,
+) -> bool:
+    if head.role not in _BACK_MATTER_ENTRY_ROLES or tail.role not in _BACK_MATTER_ENTRY_ROLES:
+        return False
+    if head.structural_role not in _BACK_MATTER_ENTRY_ROLES or tail.structural_role not in _BACK_MATTER_ENTRY_ROLES:
+        return False
+    tail_texts = tail.origin_raw_texts or []
+    if not tail_texts or _text_opens_back_matter_entry(tail.text or ""):
+        return False
+    if _entry_text_ends_sentence(head.text or "", next_text=tail_texts[0]):
+        return False
+    last_line = _unit_line_span(head, -1, spans_by_origin)
+    first_line = _unit_line_span(tail, 0, spans_by_origin)
+    if last_line is None or first_line is None:
+        return False
+    return (
+        _entry_lines_are_consecutive(last_line, first_line)
+        and _entry_continuation_keeps_the_wrap_indent(head, last_line, first_line)
+        and _entry_line_ran_out_of_room(last_line, tail_texts[0], layout_profile=layout_profile)
+    )
+
+
+def _join_entry_continuation_runs(
+    head_runs: list[StyleRun],
+    tail_runs: list[StyleRun],
+    *,
+    dehyphenation_evidence: _SoftWrapDehyphenationEvidence | None,
+) -> list[StyleRun]:
+    head_text = "".join(text for text, _, _ in head_runs)
+    tail_text = "".join(text for text, _, _ in tail_runs)
+    if (
+        _soft_wrap_hyphen_boundary(head_text, tail_text) is None
+        and _ENTRY_HARD_HYPHEN_TAIL_PATTERN.search(head_text)
+        and tail_text[:1]
+        and not tail_text[0].isspace()
+    ):
+        # A compound or an address broken at its own hyphen before a capital or a digit
+        # ("Wiley-" + "Blackwell", "co-gp-" + "20110913.html"): the hyphen is part of the
+        # token, so it stays and no space is put in.
+        return [*head_runs, *tail_runs]
+    return _join_soft_wrapped_run_pieces(
+        [head_runs, tail_runs], dehyphenation_evidence=dehyphenation_evidence
+    )
+
+
+def _merge_torn_back_matter_entry(
+    head: ParagraphUnit,
+    tail: ParagraphUnit,
+    *,
+    dehyphenation_evidence: _SoftWrapDehyphenationEvidence | None,
+) -> ParagraphUnit:
+    joined_runs = _join_entry_continuation_runs(
+        _unit_style_runs(head),
+        _unit_style_runs(tail),
+        dehyphenation_evidence=dehyphenation_evidence,
+    )
+    return replace(
+        head,
+        text="".join(text for text, _, _ in joined_runs),
+        pdf_emphasis_runs=joined_runs,
+        is_bold=head.is_bold and tail.is_bold,
+        is_italic=head.is_italic and tail.is_italic,
+        origin_raw_indexes=[*(head.origin_raw_indexes or []), *(tail.origin_raw_indexes or [])],
+        origin_raw_texts=[*(head.origin_raw_texts or []), *(tail.origin_raw_texts or [])],
+        boundary_rationale="merged_back_matter_entry_continuation",
+    )
+
+
+def _join_torn_back_matter_entries(
+    units: list[ParagraphUnit],
+    ordered_spans: list[PdfTextSpan],
+    *,
+    layout_profile: _PdfHeadingLayoutProfile,
+    dehyphenation_evidence: _SoftWrapDehyphenationEvidence | None = None,
+) -> list[ParagraphUnit]:
+    """Spec 064 R-7: join an entry of a notes / reference section that import tore in the
+    middle of a sentence. See the block comment above for the rule and why it lives here."""
+    flags = _back_matter_entry_region_flags(units)
+    if not any(flags):
+        return units
+    spans_by_origin: dict[int, list[PdfTextSpan]] = {}
+    for span in ordered_spans:
+        spans_by_origin.setdefault(_span_origin_index(span), []).append(span)
+    result: list[ParagraphUnit] = []
+    previous_in_region = False
+    for unit, in_region in zip(units, flags):
+        if (
+            in_region
+            and previous_in_region
+            and result
+            and _is_torn_back_matter_entry_continuation(
+                result[-1],
+                unit,
+                spans_by_origin=spans_by_origin,
+                layout_profile=layout_profile,
+            )
+        ):
+            result[-1] = _merge_torn_back_matter_entry(
+                result[-1], unit, dehyphenation_evidence=dehyphenation_evidence
+            )
+            continue
+        result.append(unit)
+        previous_in_region = in_region
+    return result
 
 
 def _attach_pdf_layout_signals(

@@ -2006,3 +2006,213 @@ def test_fr007_second_pass_does_not_reach_a_heading_beside_the_table():
 
     assert {(1, 128.0, 50.0), (1, 128.0, 150.0)} <= keys
     assert (1, 121.0, 300.0) not in keys
+
+
+# Spec 064 R-7: an entry of a notes / reference section that import tore in the middle of a
+# sentence is joined back -- by form and geometry, never by a word. The page below is set like
+# the corpus notes: body column 50..450, notes numbered at x0=50 with a hanging indent of 70, a
+# wrapped line follows its predecessor with no blank line between them.
+
+
+def _notes_page(*entries: PdfTextSpan, title: str = "Notes") -> list[PdfTextSpan]:
+    return [
+        _span(1, "A first running body line that establishes the document leading here.", top=40, bottom=54),
+        _span(1, "A second running body line that establishes the document leading here.", top=56, bottom=70),
+        _span(1, "A third running body line that establishes the document leading here.", top=72, bottom=86),
+        _span(1, title, top=120, bottom=140, x0=50, x1=140, font_size=18, bold=True),
+        *entries,
+    ]
+
+
+def _texts(spans: list[PdfTextSpan]) -> list[str]:
+    return [paragraph.text for paragraph in build_paragraph_units_from_text_spans(spans).paragraphs]
+
+
+_TORN_HEAD = "1. Both Tony Blair, the former British Prime Minister, and Chuka"
+_TORN_TAIL = "Umunna, considered a rising star in the Labour Party, argued so."
+_NEXT_NOTE = "2. Next note opens with its own number and ends a sentence."
+
+
+def test_r7_torn_note_is_joined_into_one_paragraph() -> None:
+    # VoE p1923/p1924 (run ids), CW p1781/p1782: the wrap starts on a capitalised name, which
+    # the span-level merges do not accept; the line above ran out of room.
+    texts = _texts(
+        _notes_page(
+            _span(1, _TORN_HEAD, top=160, bottom=172, x0=50, x1=446),
+            _span(1, _TORN_TAIL, top=174, bottom=186, x0=70, x1=440),
+            _span(1, _NEXT_NOTE, top=188, bottom=200, x0=50, x1=420),
+        )
+    )
+
+    assert f"{_TORN_HEAD} {_TORN_TAIL}" in texts
+    assert _NEXT_NOTE in texts
+    assert _TORN_TAIL not in texts
+
+
+def test_r7_tear_is_real_without_the_join() -> None:
+    # ANTI-VACUUM: the same page without the pass is torn, so the join above is what fixes it.
+    spans = _notes_page(
+        _span(1, _TORN_HEAD, top=160, bottom=172, x0=50, x1=446),
+        _span(1, _TORN_TAIL, top=174, bottom=186, x0=70, x1=440),
+    )
+    original = logical_import._join_torn_back_matter_entries
+    logical_import._join_torn_back_matter_entries = lambda units, *args, **kwargs: units
+    try:
+        texts = _texts(spans)
+    finally:
+        logical_import._join_torn_back_matter_entries = original
+
+    assert _TORN_HEAD in texts
+    assert _TORN_TAIL in texts
+
+
+def test_r7_numbered_next_note_is_not_joined() -> None:
+    next_note = "2. Umunna, considered a rising star in the Labour Party."
+    texts = _texts(
+        _notes_page(
+            _span(1, _TORN_HEAD, top=160, bottom=172, x0=50, x1=446),
+            _span(1, next_note, top=174, bottom=186, x0=50, x1=420),
+        )
+    )
+
+    assert _TORN_HEAD in texts
+    assert next_note in texts
+
+
+def test_r7_predecessor_ending_with_a_period_is_not_joined() -> None:
+    head = "1. Both Tony Blair, the former British Prime Minister, said that."
+    texts = _texts(
+        _notes_page(
+            _span(1, head, top=160, bottom=172, x0=50, x1=446),
+            _span(1, _TORN_TAIL, top=174, bottom=186, x0=70, x1=440),
+        )
+    )
+
+    assert head in texts
+    assert _TORN_TAIL in texts
+
+
+def test_r7_heading_is_not_joined() -> None:
+    # A line typed heading inside the notes (a per-chapter label, or a reference fragment
+    # import set as a heading) is never a side of a join, whatever its punctuation.
+    spans = _notes_page(
+        _span(1, "1. A complete first note that ends its own sentence here.", top=160, bottom=172, x0=50, x1=420),
+        _span(1, "Chapter Two Of The Book Under Discussion", top=190, bottom=204, x0=50, x1=446, font_size=13, bold=True),
+        _span(1, _TORN_TAIL, top=206, bottom=218, x0=70, x1=440),
+    )
+    paragraphs = build_paragraph_units_from_text_spans(spans).paragraphs
+    heading = next(p for p in paragraphs if p.text.startswith("Chapter Two"))
+
+    assert heading.role == "heading"
+    assert heading.text == "Chapter Two Of The Book Under Discussion"
+    assert _TORN_TAIL in [p.text for p in paragraphs]
+
+
+def test_r7_second_paragraph_of_a_note_after_a_sentence_end_is_not_joined() -> None:
+    # A note of two paragraphs: the first ends a sentence. The model keeps seeing two
+    # paragraphs there, even though its last line ran to the column edge.
+    first = "1. The first paragraph of this note ends a sentence right at the edge."
+    second = "Further paragraph of the same note continues the argument."
+    texts = _texts(
+        _notes_page(
+            _span(1, first, top=160, bottom=172, x0=50, x1=448),
+            _span(1, second, top=174, bottom=186, x0=70, x1=400),
+        )
+    )
+
+    assert first in texts
+    assert second in texts
+
+
+def test_r7_short_last_line_is_an_entry_end_even_without_punctuation() -> None:
+    # Money & Sustainability's bibliography: entries carry no final period. The line ended
+    # well before the column edge, so the next word would have fit -- a new entry, not a wrap.
+    first = "1. Georg Friedrich Knapp, The State Theory of Money [1924]"
+    second = "Anthony B. Atkinson and S. Morelli and others, An Inequality Database"
+    texts = _texts(
+        _notes_page(
+            _span(1, first, top=160, bottom=172, x0=50, x1=330),
+            _span(1, second, top=174, bottom=186, x0=70, x1=380),
+        )
+    )
+
+    assert first in texts
+    assert second in texts
+
+
+def test_r7_blank_line_between_is_a_boundary() -> None:
+    texts = _texts(
+        _notes_page(
+            _span(1, _TORN_HEAD, top=160, bottom=172, x0=50, x1=446),
+            _span(1, _TORN_TAIL, top=190, bottom=202, x0=70, x1=440),
+        )
+    )
+
+    assert _TORN_HEAD in texts
+    assert _TORN_TAIL in texts
+
+
+def test_r7_same_tear_outside_a_notes_section_is_left_alone() -> None:
+    # The rule is scoped to the notes / reference region a back-matter title anchors.
+    texts = _texts(
+        _notes_page(
+            _span(1, _TORN_HEAD, top=160, bottom=172, x0=50, x1=446),
+            _span(1, _TORN_TAIL, top=174, bottom=186, x0=70, x1=440),
+            title="Overview",
+        )
+    )
+
+    assert _TORN_HEAD in texts
+    assert _TORN_TAIL in texts
+
+
+def test_r7_locator_abbreviation_waits_for_its_number() -> None:
+    # VoE "33. Barba and de Vivo, ..., pp." + "1490-91.": a period after a short lowercase
+    # token, before a line that opens with a digit, is a locator, not a sentence end.
+    head = "33. Barba and de Vivo, An unproductive labour view of finance, pp."
+    texts = _texts(
+        _notes_page(
+            _span(1, head, top=160, bottom=172, x0=50, x1=445),
+            _span(1, "1490–91.", top=174, bottom=186, x0=70, x1=120),
+        )
+    )
+
+    assert f"{head} 1490–91." in texts
+
+
+def test_r7_compound_broken_at_its_hyphen_keeps_the_hyphen_without_a_space() -> None:
+    head = "20. B. Christophers, Banking Across Boundaries (Chichester: Wiley-"
+    texts = _texts(
+        _notes_page(
+            _span(1, head, top=160, bottom=172, x0=50, x1=420),
+            _span(1, "Blackwell, 2013), p. 38.", top=174, bottom=186, x0=70, x1=200),
+        )
+    )
+
+    assert f"{head}Blackwell, 2013), p. 38." in texts
+
+
+def test_r7_line_back_at_the_entry_margin_starts_a_new_entry() -> None:
+    # VoE bibliography shape: an address that overran the column reads as a full line, and the
+    # next entry has no author ("'Fiscal policy ...', World Economic Outlook"). It starts back at
+    # the entry margin, left of the wrapped line above it, so it is a new entry.
+    url = "https://www.gov.uk/government/uploads/system/uploads/attachment_data/file/228786/7529.pdf"
+    entry = "‘Fiscal policy as a countercyclical tool’, World Economic Outlook (2008)."
+    spans = _notes_page(
+        _span(1, "1. Hutton, D., Smith, I. R. and Hooper, R., Modernise or Decline: Policies to", top=160, bottom=172, x0=50, x1=446),
+        _span(1, url, top=174, bottom=186, x0=70, x1=600),
+        _span(1, entry, top=188, bottom=200, x0=50, x1=430),
+    )
+    texts = _texts(spans)
+
+    assert any(text.endswith("7529.pdf") for text in texts)
+    assert entry in texts
+
+
+def test_r7_tear_across_a_page_break_is_joined() -> None:
+    spans = _notes_page(_span(1, _TORN_HEAD, top=760, bottom=772, x0=50, x1=446))
+    spans.append(_span(2, _TORN_TAIL, top=60, bottom=72, x0=70, x1=440))
+
+    texts = _texts(spans)
+
+    assert f"{_TORN_HEAD} {_TORN_TAIL}" in texts
