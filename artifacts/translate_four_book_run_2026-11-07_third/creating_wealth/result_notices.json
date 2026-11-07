@@ -1,0 +1,34 @@
+{
+  "latest_result_notices": [
+    {
+      "kind": "glossary",
+      "level": "warning",
+      "message_key": "result.run_glossary_failed"
+    },
+    {
+      "kind": "acceptance",
+      "level": "warning",
+      "message_key": "result.acceptance_not_passed",
+      "params": {
+        "count": 1
+      },
+      "failed_checks": [
+        "list_fragment_regressions_present"
+      ]
+    }
+  ],
+  "latest_result_notice": {
+    "level": "warning",
+    "message": "Перевод завершён. Документ готов к использованию, но требует ручной проверки оформления: 15 абзацев с замечаниями. Подробности — в отчёте проверки (formatting_review.txt)."
+  },
+  "latest_delivery_disposition": {
+    "status": "accepted_with_advisory"
+  },
+  "latest_controlled_block_fallback_artifact": null,
+  "acceptance": {
+    "passed": false,
+    "failed_checks": [
+      "list_fragment_regressions_present"
+    ]
+  }
+}
