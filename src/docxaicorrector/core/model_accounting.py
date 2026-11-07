@@ -967,6 +967,9 @@ def record_back_matter_delivery(
         kept_by_policy=kept_by_policy,
         kept_chars=kept_chars,
         mixed=mixed,
+    )
+
+
 def record_footnote_markers(*, source_count: int, kept_count: int, restored_count: int) -> None:
     get_run_model_accounting_ledger().record_footnote_markers(
         source_count=source_count,
