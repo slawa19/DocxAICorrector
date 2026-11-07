@@ -1445,3 +1445,202 @@ def test_generate_safe_candidate_processes_normal_image_within_budget():
 
     assert isinstance(result, bytes)
     assert result
+
+
+# --- spec 062 P1: prompt composition (FR-010, FR-013, FR-014, FR-019, FR-021, FR-023) ---
+
+_NEUTRAL_PROFILE = {"description": "Profile description.", "preferred_strategy": "semantic_redraw_structured", "path": "x"}
+
+
+def _spec062_analysis(**overrides) -> ImageAnalysisResult:
+    payload = {
+        "image_type": "diagram",
+        "image_subtype": None,
+        "contains_text": True,
+        "semantic_redraw_allowed": True,
+        "confidence": 0.9,
+        "structured_parse_confidence": 0.9,
+        "prompt_key": "diagram_semantic_redraw",
+        "render_strategy": "semantic_redraw_structured",
+        "structure_summary": "Summary of the structure.",
+        "extracted_labels": ["Alpha", "Beta"],
+        "text_node_count": 2,
+        "extracted_text": "Alpha -> Beta",
+        "fallback_reason": None,
+    }
+    payload.update(overrides)
+    return ImageAnalysisResult(**payload)
+
+
+def _all_three_prompts(analysis: ImageAnalysisResult, **kwargs) -> dict[str, str]:
+    edit_prompt = image_generation._build_image_edit_prompt(
+        analysis,
+        requested_mode="semantic_redraw_structured",
+        prompt_text="PROFILE TEXT",
+        prompt_profile=_NEUTRAL_PROFILE,
+        source_size=(400, 300),
+        **kwargs,
+    )
+    structured = image_generation._build_structured_generate_prompt(
+        analysis,
+        prompt_text="PROFILE TEXT",
+        prompt_profile=_NEUTRAL_PROFILE,
+        base_prompt=edit_prompt,
+        layout_description="LAYOUT DESCRIPTION",
+        source_size=(400, 300),
+        **kwargs,
+    )
+    creative = image_generation._build_creative_generate_prompt(
+        analysis,
+        prompt_text="PROFILE TEXT",
+        prompt_profile=_NEUTRAL_PROFILE,
+        base_prompt=edit_prompt,
+        creative_brief="CREATIVE BRIEF",
+        source_size=(400, 300),
+        **kwargs,
+    )
+    return {"edit": edit_prompt, "structured_generate": structured, "creative_generate": creative}
+
+
+def test_fallback_reason_never_reaches_the_image_model_prompt():
+    """FR-010 (W1): internal routing codes and free vision text stay out of the prompts."""
+    prompts = _all_three_prompts(_spec062_analysis(fallback_reason="dense_text_bypass:24_nodes"))
+
+    for name, prompt in prompts.items():
+        assert "dense_text_bypass" not in prompt, name
+        assert "failure mode" not in prompt, name
+
+
+def test_genre_lines_follow_image_type_and_never_ask_for_an_infographic():
+    """FR-013 (D4, W6): a table stays a table and a chart stays a chart; the creative
+    prompt no longer asks for "a polished, publication-ready infographic"."""
+    table_prompts = _all_three_prompts(_spec062_analysis(image_type="table", prompt_key="table_semantic_redraw"))
+    chart_prompts = _all_three_prompts(_spec062_analysis(image_type="chart", prompt_key="chart_semantic_redraw"))
+
+    for prompts in (table_prompts, chart_prompts):
+        for name, prompt in prompts.items():
+            assert "infographic" not in prompt.lower(), name
+    assert "publication-ready version of this table from scratch" in table_prompts["creative_generate"]
+    assert "a table stays a table with the same rows and columns" in table_prompts["creative_generate"]
+    assert "keep the same blocks, series, rows, columns, connectors and their order" in table_prompts["creative_generate"]
+    assert "office-presentation-style chart from scratch" in chart_prompts["structured_generate"]
+    assert "office-presentation-style diagram" not in chart_prompts["structured_generate"]
+
+
+def test_edit_and_generate_prompts_say_whether_the_model_sees_the_source():
+    """FR-014 (D5): only the edit call carries the image; generate prompts say so and
+    never carry the edit return line."""
+    prompts = _all_three_prompts(_spec062_analysis())
+
+    assert "Use the attached image as reference" in prompts["edit"]
+    assert "you do not see it" not in prompts["edit"]
+    assert prompts["edit"].endswith(image_generation.IMAGE_EDIT_RETURN_LINE)
+    for name in ("structured_generate", "creative_generate"):
+        prompt = prompts[name]
+        assert "The source is described below; you do not see it." in prompt, name
+        assert "attached image" not in prompt, name
+        assert "original image" not in prompt.lower(), name
+        assert "Return a single edited image" not in prompt, name
+        assert prompt.endswith(image_generation.IMAGE_GENERATE_RETURN_LINE), name
+        # The edit prompt is no longer embedded, so the profile text appears once.
+        assert prompt.count("PROFILE TEXT") == 1, name
+
+
+def test_text_policy_slot_defaults_to_verbatim_and_is_a_real_slot():
+    """FR-023: every builder carries the ``text_policy`` slot; its default keeps today's
+    meaning, and a different policy replaces it rather than being appended."""
+    default_prompts = _all_three_prompts(_spec062_analysis())
+    custom_prompts = _all_three_prompts(_spec062_analysis(), text_policy="CUSTOM TEXT POLICY.")
+
+    for name in default_prompts:
+        assert image_generation.DEFAULT_IMAGE_TEXT_POLICY in default_prompts[name], name
+        assert "CUSTOM TEXT POLICY." in custom_prompts[name], name
+        assert image_generation.DEFAULT_IMAGE_TEXT_POLICY not in custom_prompts[name], name
+
+
+def test_prompt_labels_follow_the_analysis_cap():
+    """FR-021 (W3): the prompt slice matches the analysis cap of 12 labels."""
+
+    analysis_cap = len(image_analysis._coerce_extracted_labels([f"L{index}" for index in range(30)]))
+    assert image_generation.MAX_PROMPT_LABELS == analysis_cap
+
+    labels = [f"Label{index:02d}" for index in range(15)]
+    prompt = _all_three_prompts(_spec062_analysis(extracted_labels=labels))["edit"]
+    assert "Label11" in prompt
+    assert "Label12" not in prompt
+
+
+def test_shorten_prompt_cuts_bulk_first_and_keeps_its_own_return_line():
+    """FR-021 (W5): the shortener keeps the constraints and the return line of the prompt's
+    own kind; the old code cut the tail and appended "Return a single edited image." even to
+    a generate prompt."""
+    analysis = _spec062_analysis(extracted_text="TEXT " * 400)
+    structured = image_generation._build_structured_generate_prompt(
+        analysis,
+        prompt_text="PROFILE TEXT",
+        prompt_profile=_NEUTRAL_PROFILE,
+        base_prompt="",
+        layout_description="LAYOUT " * 200,
+        source_size=(400, 300),
+    )
+    limit = len(structured) - 1500
+    shortened = image_generation._shorten_prompt_for_limit(structured, limit)
+
+    assert len(shortened) <= limit
+    assert shortened.endswith(image_generation.IMAGE_GENERATE_RETURN_LINE)
+    assert "Return a single edited image" not in shortened
+    # Constraints survive, the bulk is what got cut.
+    assert image_generation.DEFAULT_IMAGE_TEXT_POLICY in shortened
+    assert "Never use a black, charcoal, dark, or night-style canvas." in shortened
+    assert "office-presentation-style diagram from scratch" in shortened
+    assert shortened.count("TEXT ") < structured.count("TEXT ")
+
+    edit_prompt = image_generation._build_image_edit_prompt(
+        analysis,
+        requested_mode="semantic_redraw_direct",
+        prompt_text="PROFILE TEXT",
+        prompt_profile=_NEUTRAL_PROFILE,
+        source_size=(400, 300),
+    )
+    shortened_edit = image_generation._shorten_prompt_for_limit(edit_prompt, 1000)
+    assert len(shortened_edit) <= 1000
+    assert shortened_edit.endswith(image_generation.IMAGE_EDIT_RETURN_LINE)
+    assert image_generation.DEFAULT_IMAGE_TEXT_POLICY in shortened_edit
+    # A prompt that already fits is returned unchanged.
+    assert image_generation._shorten_prompt_for_limit("short", 1000) == "short"
+
+
+@pytest.mark.parametrize("prompt_key", ["photo_safe_fallback", "screenshot_safe_fallback", "mixed_or_ambiguous_fallback"])
+def test_safe_profile_keys_always_take_the_safe_route(monkeypatch, prompt_key):
+    """FR-019 (M4): the safe profiles are never sent to an image model, even when the
+    analysis allowed a redraw."""
+    source_bytes = PNG_BYTES
+
+    def _no_semantic(*args, **kwargs):
+        raise AssertionError("a safe-profile image must not reach the semantic route")
+
+    monkeypatch.setattr(image_generation, "_generate_semantic_candidate", _no_semantic)
+    analysis = _spec062_analysis(image_type="photo", prompt_key=prompt_key, semantic_redraw_allowed=True)
+
+    candidate = image_generation.generate_image_candidate(
+        source_bytes, analysis, mode="semantic_redraw_direct", client=object()
+    )
+
+    assert candidate == image_generation._generate_safe_candidate(source_bytes)
+
+
+def test_semantic_profile_keys_still_reach_the_semantic_route(monkeypatch):
+    """Counter-proof for FR-019: a redrawable profile key is not forced into safe."""
+    calls = []
+    monkeypatch.setattr(
+        image_generation,
+        "_generate_semantic_candidate",
+        lambda image_bytes, analysis, **kwargs: calls.append(kwargs["requested_mode"]) or b"semantic",
+    )
+
+    candidate = image_generation.generate_image_candidate(
+        PNG_BYTES, _spec062_analysis(), mode="semantic_redraw_direct", client=object()
+    )
+
+    assert candidate == b"semantic"
+    assert calls == ["semantic_redraw_direct"]

@@ -153,6 +153,8 @@ class ProcessingService:
         on_progress,
         runtime=None,
         client=None,
+        processing_operation: str = "",
+        target_language: str = "",
     ) -> list:
         deps = self.dependencies
         pipeline_context = ImageProcessingContext(
@@ -174,6 +176,8 @@ class ProcessingService:
             detect_image_mime_type_fn=deps.detect_image_mime_type_fn,
             image_model_call_budget_cls=deps.image_model_call_budget_cls,
             image_model_call_budget_exceeded_cls=deps.image_model_call_budget_exceeded_cls,
+            processing_operation=processing_operation,
+            target_language=target_language,
         )
         return deps.process_document_images_impl_fn(
             image_assets=image_assets,

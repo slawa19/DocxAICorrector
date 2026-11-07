@@ -936,3 +936,32 @@ def test_process_document_images_does_not_request_candidate2_after_hard_validati
 
     assert generated_modes == ["safe", "semantic_redraw_direct"]
     assert [variant.mode for variant in result[0].attempt_variants] == ["candidate1"]
+
+
+def test_process_document_images_wires_text_operation_and_target_language(monkeypatch, resolved_test_model_registry):
+    """Spec 062 FR-023 (wiring only): the image context carries the run's text operation
+    and target language; the defaults stay empty for callers that do not pass them."""
+    _prepare_state(monkeypatch)
+    captured_contexts = []
+    service = processing_service.build_processing_service().clone(
+        process_document_images_impl_fn=lambda *, image_assets, image_mode, context: captured_contexts.append(context)
+        or list(image_assets),
+    )
+
+    service.process_document_images(
+        image_assets=[build_asset()],
+        image_mode="safe",
+        config=_config_with_models(resolved_test_model_registry),
+        on_progress=lambda **kwargs: None,
+        processing_operation="translate",
+        target_language="de",
+    )
+    service.process_document_images(
+        image_assets=[build_asset()],
+        image_mode="safe",
+        config=_config_with_models(resolved_test_model_registry),
+        on_progress=lambda **kwargs: None,
+    )
+
+    assert (captured_contexts[0].processing_operation, captured_contexts[0].target_language) == ("translate", "de")
+    assert (captured_contexts[1].processing_operation, captured_contexts[1].target_language) == ("", "")

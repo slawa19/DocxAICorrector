@@ -86,6 +86,12 @@ class ImageProcessingContext:
     # ``process_document_images`` and forwarded to every candidate generation so a
     # provider-returned image charges the same budget as the source image.
     document_pixel_budget: ImageBudget | None = None
+    # Text operation of the run and its target language (spec 062 FR-023, wiring only).
+    # Nothing reads them yet: the prompt builders' ``text_policy`` slot keeps its
+    # "verbatim, original language" default until translating labels in images is
+    # decided (FR-025).
+    processing_operation: str = ""
+    target_language: str = ""
 
     def ensure_client(self) -> object:
         if self.client is None:

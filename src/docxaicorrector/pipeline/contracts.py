@@ -118,6 +118,8 @@ class ImageProcessor(Protocol):
         on_progress: ProgressCallback,
         runtime: object,
         client: object,
+        processing_operation: str = "",
+        target_language: str = "",
     ) -> Iterable[ImageAssetLike] | None: ...
 
 

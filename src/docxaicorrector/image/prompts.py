@@ -48,3 +48,12 @@ def load_image_prompt_text(prompt_key: str) -> str:
     if not prompt_text:
         raise RuntimeError(f"Пустой image prompt file для {prompt_key}: {prompt_profile['path']}")
     return prompt_text
+
+
+def is_safe_only_prompt_key(prompt_key: str) -> bool:
+    """True for the profiles that describe the deterministic PIL step (spec 062 FR-019).
+
+    Their text is never sent to an image model: an image keyed to one of them is
+    delivered through the safe route in every mode.
+    """
+    return prompt_key.endswith("_safe_fallback") or prompt_key == "mixed_or_ambiguous_fallback"

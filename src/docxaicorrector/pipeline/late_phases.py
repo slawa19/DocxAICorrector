@@ -272,6 +272,9 @@ def run_image_processing_phase(
             on_progress=context.on_progress,
             runtime=context.runtime,
             client=image_client,
+            # Spec 062 FR-023: wiring only; the image prompts do not use them yet.
+            processing_operation=str(getattr(context, "processing_operation", "") or ""),
+            target_language=str(getattr(context, "target_language", "") or ""),
         )
         if processed_image_assets is None:
             raise RuntimeError("Пайплайн обработки изображений вернул None вместо коллекции ассетов.")

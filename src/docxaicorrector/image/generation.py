@@ -25,7 +25,7 @@ from docxaicorrector.image.shared import (
     is_retryable_error,
     is_supported_image_bytes,
 )
-from docxaicorrector.image.prompts import get_image_prompt_profile, load_image_prompt_text
+from docxaicorrector.image.prompts import get_image_prompt_profile, is_safe_only_prompt_key, load_image_prompt_text
 from docxaicorrector.image.reconstruction import reconstruct_image
 from docxaicorrector.core.logger import log_event
 from docxaicorrector.core.model_accounting import STAGE_IMAGE_GENERATION, record_model_call_usage
@@ -99,6 +99,11 @@ def generate_image_candidate(
     prompt_text = load_image_prompt_text(analysis.prompt_key)
     requested_mode = mode if mode in {ImageMode.SAFE.value, *SEMANTIC_MODES} else ImageMode.SAFE.value
     if requested_mode != ImageMode.SAFE.value and not analysis.semantic_redraw_allowed:
+        requested_mode = ImageMode.SAFE.value
+    if requested_mode != ImageMode.SAFE.value and is_safe_only_prompt_key(analysis.prompt_key):
+        # Spec 062 FR-019 (M4): the safe profiles describe the PIL step and are never
+        # sent to an image model; a photo, screenshot or unclassified image keyed to
+        # one of them goes to the safe route even if the analysis allowed a redraw.
         requested_mode = ImageMode.SAFE.value
     image_output_policy = resolve_image_output_policy(image_output_config)
 
@@ -937,11 +942,23 @@ def _extract_prompt_limit(error_message: str) -> int | None:
 
 
 def _shorten_prompt_for_limit(prompt_text: str, limit: int) -> str:
+    """Fit a prompt into ``limit`` characters, cutting the bulk first (spec 062 FR-021).
+
+    The builders (see "Prompt composition" below) put every constraint before the bulk
+    blocks — extracted source text and the vision layout description or brief — and the
+    return line last. So the body is cut from its tail, which removes extracted text
+    first and the layout description next, and the prompt's OWN return line is kept:
+    the old code appended "Return a single edited image." even to ``images.generate``.
+    """
     if len(prompt_text) <= limit:
         return prompt_text
-    suffix = "\n\nReturn a single edited image."
+    body, separator, last_paragraph = prompt_text.rpartition("\n\n")
+    if separator and last_paragraph.startswith(_RETURN_LINE_PREFIX):
+        suffix = f"{separator}{last_paragraph}"
+    else:
+        body, suffix = prompt_text, ""
     allowed_body_length = max(0, limit - len(suffix))
-    shortened_body = prompt_text[:allowed_body_length].rstrip()
+    shortened_body = body[:allowed_body_length].rstrip()
     return f"{shortened_body}{suffix}"[:limit]
 
 
@@ -1118,6 +1135,75 @@ def _restore_semantic_output(
         return image_bytes
 
 
+# --- Prompt composition (spec 062 P1: FR-010, FR-013, FR-014, FR-021, FR-023) -------
+#
+# Layout contract shared by the three builders below and ``_shorten_prompt_for_limit``:
+# every constraint comes first, the bulk blocks (vision layout description, creative
+# brief, extracted source text) come after them, and the return line is last. A prompt
+# that is too long is therefore cut from the tail of its bulk, never in its constraints,
+# and keeps the return line of its own kind (edit vs generate).
+IMAGE_EDIT_RETURN_LINE = "Return a single edited image, not a textual explanation."
+IMAGE_GENERATE_RETURN_LINE = "Return a single generated image, not a textual explanation."
+_RETURN_LINE_PREFIX = "Return a single "
+# Default of the ``{text_policy}`` slot (FR-023). Same meaning as the sentence it
+# replaces; the image pipeline does not translate labels until FR-025 is decided.
+DEFAULT_IMAGE_TEXT_POLICY = (
+    "Keep all visible text verbatim in its original language: do not remove, translate, paraphrase, or invent labels."
+)
+# The analysis caps ``extracted_labels`` at 12 (``analysis._coerce_extracted_labels``);
+# the prompt slice used 20 (W3). Raising the analysis cap without a measurement is not
+# worth it (FR-021), so the prompt follows the analysis.
+MAX_PROMPT_LABELS = 12
+
+_EDIT_REFERENCE_GUIDANCE = {
+    "semantic_redraw_direct": (
+        "Use the attached image as reference: treat it strictly as a semantic reference and fully re-render it from scratch "
+        "as a clean publication-ready graphic, while preserving meaning, key labels, and the overall information hierarchy."
+    ),
+    "semantic_redraw_structured": (
+        "Use the attached image as reference: treat it as a content-accurate structural reference and redraw it in a conservative "
+        "office presentation style. Preserve blocks, connectors, table logic, reading order, and readable labels, but improve "
+        "spacing, typography, alignment, and visual consistency instead of reproducing pixel coordinates literally."
+    ),
+}
+_GENERATE_REFERENCE_GUIDANCE = {
+    "semantic_redraw_direct": (
+        "The source is described below; you do not see it. Re-render it from scratch as a clean publication-ready graphic, "
+        "preserving its meaning, key labels, and overall information hierarchy."
+    ),
+    "semantic_redraw_structured": (
+        "The source is described below; you do not see it. Redraw it in a conservative office presentation style: preserve "
+        "its blocks, connectors, table logic, reading order, and readable labels, and improve spacing, typography, alignment, "
+        "and visual consistency."
+    ),
+}
+
+
+def _reference_prompt_parts(
+    analysis: ImageAnalysisResult,
+    *,
+    requested_mode: str,
+    target: str,
+) -> list[str]:
+    """Guidance and content facts shared by the edit and generate prompts.
+
+    ``target`` is ``"edit"`` (the call carries the source image) or ``"generate"``
+    (it does not, FR-014). ``analysis.fallback_reason`` is never included: it holds
+    internal routing codes and free vision text, not instructions (FR-010).
+    """
+    guidance_by_mode = _EDIT_REFERENCE_GUIDANCE if target == "edit" else _GENERATE_REFERENCE_GUIDANCE
+    parts = [
+        guidance_by_mode[requested_mode],
+        f"Structure summary: {analysis.structure_summary}",
+    ]
+    labels = ", ".join(label for label in analysis.extracted_labels[:MAX_PROMPT_LABELS] if label.strip())
+    if labels:
+        parts.append(f"Preserve these labels exactly when readable: {labels}")
+    if analysis.contains_text:
+        parts.append("Prioritize legible text and preserve the same count of labeled elements and connectors.")
+    return parts
+
+
 def _build_image_edit_prompt(
     analysis: ImageAnalysisResult,
     *,
@@ -1125,39 +1211,25 @@ def _build_image_edit_prompt(
     prompt_text: str,
     prompt_profile: dict[str, str],
     source_size: tuple[int, int],
+    text_policy: str = DEFAULT_IMAGE_TEXT_POLICY,
 ) -> str:
-    mode_guidance = {
-        "semantic_redraw_direct": (
-            "Use the original image strictly as a semantic reference and fully re-render it from scratch as a clean publication-ready graphic, "
-            "while preserving meaning, key labels, and the overall information hierarchy."
-        ),
-        "semantic_redraw_structured": (
-            "Use the original image as a content-accurate structural reference and redraw it in a conservative office presentation style. "
-            "Preserve blocks, connectors, table logic, reading order, and readable labels, but improve spacing, typography, alignment, and visual consistency instead of reproducing pixel coordinates literally."
-        ),
-    }[requested_mode]
-    labels = ", ".join(label for label in analysis.extracted_labels[:20] if label.strip())
+    """Prompt for ``images.edit``, the only call that carries the source image."""
+    guidance, *content_parts = _reference_prompt_parts(analysis, requested_mode=requested_mode, target="edit")
     prompt_parts = [
         prompt_text,
-        mode_guidance,
+        guidance,
         f"Profile: {prompt_profile['description']}",
         f"Detected image type: {analysis.image_type}.",
         f"Original content aspect ratio: {source_size[0]}:{source_size[1]}. Fill the entire generated canvas completely from edge to edge — no empty outer margins, padding, or borders around the artwork.",
-        f"Structure summary: {analysis.structure_summary}",
+        *content_parts,
+        text_policy,
+        "Use a white or transparent background only. Never use a black, charcoal, dark, or night-style canvas.",
+        "Do not merely upscale, sharpen, or restyle the existing pixels. Rebuild the visual from scratch while keeping the same meaning and layout.",
     ]
-    if labels:
-        prompt_parts.append(f"Preserve these labels exactly when readable: {labels}")
-        prompt_parts.append("Do not remove, translate, paraphrase, or invent labels. Preserve visible text verbatim.")
     if analysis.extracted_text.strip():
         prompt_parts.append("Preserve this extracted source text verbatim when it is readable:")
         prompt_parts.append(analysis.extracted_text.strip())
-    if analysis.fallback_reason:
-        prompt_parts.append(f"Avoid the failure mode noted during analysis: {analysis.fallback_reason}.")
-    if analysis.contains_text:
-        prompt_parts.append("Prioritize legible text and preserve the same count of labeled elements and connectors.")
-    prompt_parts.append("Use a white or transparent background only. Never use a black, charcoal, dark, or night-style canvas.")
-    prompt_parts.append("Do not merely upscale, sharpen, or restyle the existing pixels. Rebuild the visual from scratch while keeping the same meaning and layout.")
-    prompt_parts.append("Return a single edited image, not a textual explanation.")
+    prompt_parts.append(IMAGE_EDIT_RETURN_LINE)
     return "\n\n".join(part for part in prompt_parts if part)
 
 
@@ -1169,25 +1241,36 @@ def _build_structured_generate_prompt(
     base_prompt: str,
     layout_description: str,
     source_size: tuple[int, int],
+    text_policy: str = DEFAULT_IMAGE_TEXT_POLICY,
 ) -> str:
+    """Prompt for a text-only ``images.generate`` after a structured vision description.
+
+    ``base_prompt`` is the edit prompt the caller already built. It is deliberately not
+    embedded (FR-014): it tells the model to use an attached image that this call does
+    not carry, and repeats the profile text and the return line of an edit. The
+    parameter stays so the call sites in the request region keep their shape.
+    """
+    del base_prompt
     prompt_parts = [
         prompt_text,
         f"Profile: {prompt_profile['description']}",
         f"Detected image type: {analysis.image_type}.",
         f"Original content aspect ratio: {source_size[0]}:{source_size[1]}. Fill the entire generated canvas completely from edge to edge — no empty outer margins, padding, or borders.",
-        "Generate a brand-new clean office-presentation-style diagram from scratch. Do not mimic scan artifacts, JPEG noise, blur, shadows, or the original raster texture.",
+        f"Generate a brand-new clean office-presentation-style {analysis.image_type} from scratch. Do not mimic scan artifacts, JPEG noise, blur, shadows, or the original raster texture.",
         "Preserve every readable label, connector, block, lane, table cell, legend item, and hierarchy level from the source structure.",
         "Be conservative in content but not literal in coordinates: improve spacing, alignment, typography, grouping, and visual hierarchy so the result looks like a polished PowerPoint or Office presentation graphic.",
         "Avoid spreadsheet aesthetics, cramped grids, raw Excel-table styling, and mechanical box repetition unless the source is truly a table.",
-        base_prompt,
+        *_reference_prompt_parts(analysis, requested_mode="semantic_redraw_structured", target="generate"),
+        text_policy,
+        "Use a white or transparent background only. Never use a black, charcoal, dark, or night-style canvas.",
         "Structured layout description for conservative redraw:",
         layout_description,
     ]
     if analysis.extracted_text.strip():
         prompt_parts.append("Verbatim text that should appear in the generated image when readable:")
         prompt_parts.append(analysis.extracted_text.strip())
-    prompt_parts.append("Return a single generated image, not a textual explanation.")
-    return "\n\n".join(prompt_parts)
+    prompt_parts.append(IMAGE_GENERATE_RETURN_LINE)
+    return "\n\n".join(part for part in prompt_parts if part)
 
 
 def _build_creative_generate_prompt(
@@ -1198,27 +1281,35 @@ def _build_creative_generate_prompt(
     base_prompt: str,
     creative_brief: str,
     source_size: tuple[int, int],
+    text_policy: str = DEFAULT_IMAGE_TEXT_POLICY,
 ) -> str:
+    """Prompt for the creative text-only ``images.generate``; see the structured builder
+    for why ``base_prompt`` is not embedded (FR-014)."""
+    del base_prompt
     prompt_parts = [
         prompt_text,
         f"Profile: {prompt_profile['description']}",
         f"Detected image type: {analysis.image_type}.",
         f"Original content aspect ratio: {source_size[0]}:{source_size[1]}. Fill the entire generated canvas completely from edge to edge — no empty outer margins, padding, or borders.",
-        "Create a polished, publication-ready infographic from scratch instead of tracing the source literally.",
-        "You may redesign composition, spacing, typography, card shapes, connector styling, icon treatment, and color hierarchy to make the result feel intentional, contemporary, and visually rich.",
+        (
+            f"Create a polished, publication-ready version of this {analysis.image_type} from scratch instead of tracing the source literally. "
+            "It must stay the same kind of graphic (a chart stays a chart with the same series and values, "
+            "a table stays a table with the same rows and columns)."
+        ),
+        "You may restyle spacing, typography, colours and shape styling; keep the same blocks, series, rows, columns, connectors and their order.",
         "Do not make it look like an Excel sheet, raw spreadsheet, scan, or low-level vector export.",
         "The final background must be white or transparent, never black, charcoal, or dark.",
-        "Preserve meaning, reading order, hierarchy, and every readable label from the source. Do not remove, translate, paraphrase, or invent text.",
+        f"Preserve meaning, reading order, hierarchy, and every readable label from the source. {text_policy}",
         "Use a cohesive editorial design system: balanced whitespace, clear grouping, softer shapes, restrained but confident colors, and typographic contrast between headers and body text.",
-        base_prompt,
+        *_reference_prompt_parts(analysis, requested_mode="semantic_redraw_direct", target="generate"),
         "Creative redraw brief from vision analysis:",
         creative_brief,
     ]
     if analysis.extracted_text.strip():
         prompt_parts.append("Verbatim text that should appear in the generated image when readable:")
         prompt_parts.append(analysis.extracted_text.strip())
-    prompt_parts.append("Return a single generated image, not a textual explanation.")
-    return "\n\n".join(prompt_parts)
+    prompt_parts.append(IMAGE_GENERATE_RETURN_LINE)
+    return "\n\n".join(part for part in prompt_parts if part)
 
 
 def _extract_structured_layout_description(
