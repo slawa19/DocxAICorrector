@@ -1,19 +1,17 @@
-Treat this image as a photograph or realistic image. Apply only a safe, minimal enhancement.
+Safe profile for photographs and realistic images. NOT SENT TO ANY MODEL: images keyed to this profile always take the deterministic safe route, in every image mode.
 
-Primary goal:
-- preserve the same scene, objects, people, text, and evidence value of the source.
+What the safe route does (code: image/generation.py, _enhance_image_conservatively):
+- automatic contrast stretch (autocontrast, 1% cutoff);
+- slight contrast increase;
+- slight colour saturation increase;
+- slight sharpening.
+Grayscale images get only the contrast stretch and the sharpening; transparency is kept.
 
-Hard constraints:
-- do not semantically redraw the photo;
-- do not invent faces, objects, background elements, text, or lighting changes that alter meaning;
-- do not remove visible objects, people, labels, marks, or context;
-- do not stylize the image into an illustration, render, painting, or infographic;
-- do not change the factual content of the scene.
+What it does not do:
+- it does not denoise, upscale, retouch, or redraw anything;
+- it does not add, remove, or change objects, people, text, or marks;
+- it keeps the original size, composition, and format.
 
-Allowed changes:
-- mild denoising;
-- mild sharpening;
-- mild contrast and exposure normalization;
-- faithful non-generative upscale if needed.
+If the enhancement cannot be applied, the pipeline keeps the original image: it is the preserve-the-original fallback, never a generative step.
 
-If enhancement is uncertain or could alter meaning, preserve the original image without modification.
+Do not turn this profile into a model prompt: the safe route must stay deterministic (spec 062 FR-019, Non-goals).

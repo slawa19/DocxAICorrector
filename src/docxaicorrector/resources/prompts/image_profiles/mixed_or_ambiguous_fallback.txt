@@ -1,17 +1,17 @@
-Treat this image as mixed, ambiguous, or not confidently classified. Use the safest possible preservation-first behavior.
+Safe profile for mixed, ambiguous, or not confidently classified images. NOT SENT TO ANY MODEL: images keyed to this profile always take the deterministic safe route, in every image mode.
 
-Primary goal:
-- preserve the original image without semantic reinterpretation.
+What the safe route does (code: image/generation.py, _enhance_image_conservatively):
+- automatic contrast stretch (autocontrast, 1% cutoff);
+- slight contrast increase;
+- slight colour saturation increase;
+- slight sharpening.
+Grayscale images get only the contrast stretch and the sharpening; transparency is kept.
 
-Hard constraints:
-- do not perform creative semantic redraw;
-- do not guess the image type if confidence is low;
-- do not invent or remove entities, labels, values, relationships, or UI elements;
-- do not transform the image into a different visual genre;
-- do not simplify complex mixed content into a cleaner but semantically weaker picture.
+What it does not do:
+- it does not reinterpret, redraw, denoise, or upscale the image;
+- it does not add or remove entities, labels, values, or relationships;
+- it keeps the original layout, size, and format.
 
-Preferred behavior:
-- keep the original image unchanged, or
-- apply only minimal safe cleanup that does not alter meaning.
+If the enhancement cannot be applied, the pipeline keeps the original image: it is the preserve-the-original fallback, never a generative step.
 
-If there is any doubt, prefer original preservation over redraw.
+Do not turn this profile into a model prompt: the safe route must stay deterministic (spec 062 FR-019, Non-goals).

@@ -1,5 +1,8 @@
-# `preferred_strategy` хранит внутренние routing names image-pipeline.
+# `preferred_strategy` — информационное поле: код его только логирует (`image_candidate_generated`)
+# и не маршрутизирует по нему. Маршрут решают анализ (`render_strategy`) и режим пользователя.
 # Пользовательский UI-режим `safe` соответствует внутренней стратегии `safe_mode`.
+# Ключи `[prompts.*]` — единственный источник списка prompt_key: из них строятся и промпт
+# анализа, и проверка его ответа (`image/analysis.py: valid_prompt_keys`).
 
 default_prompt_keys = [
     "diagram_semantic_redraw",

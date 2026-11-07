@@ -616,3 +616,93 @@ def test_resolve_validation_delivery_outcome_keeps_type_drift_advisory_soft_acce
     assert outcome["final_decision"] == "accept_soft"
     assert outcome["final_variant"] == "redrawn"
     assert outcome["soft_accepted"] is True
+
+
+# --- spec 062 P1: validator prompt and tokeniser (FR-015, FR-018) ------------------
+
+
+class _CapturingValidationClient:
+    def __init__(self, output_text: str):
+        self.output_text = output_text
+        self.requests: list[dict] = []
+        self.responses = self
+
+    def create(self, **kwargs):
+        self.requests.append(kwargs)
+        return type("Response", (), {"output_text": self.output_text})()
+
+
+_VISION_OK = (
+    '{"semantic_match_score":0.9,"text_match_score":0.9,"structure_match_score":0.9,'
+    '"validator_confidence":0.9,"candidate_contains_text":true,"missing_labels":[],'
+    '"added_entities":[],"suspicious_reasons":[]}'
+)
+
+
+def _validation_user_text(image_mode: str, labels: list[str]) -> str:
+    client = _CapturingValidationClient(_VISION_OK)
+    image_validation.validate_redraw_result(
+        PNG_BYTES,
+        PNG_BYTES,
+        build_analysis_result(extracted_labels=labels),
+        candidate_analysis=build_analysis_result(extracted_labels=labels),
+        image_context={"image_id": "img_001", "image_mode": image_mode},
+        client=client,
+        enable_vision_validation=True,
+        validation_model="gpt-4.1",
+    )
+    user_message = client.requests[0]["input"][1]
+    return next(part["text"] for part in user_message["content"] if part["type"] == "input_text")
+
+
+def test_validation_prompt_names_the_original_the_mode_and_the_score_range():
+    """FR-015 (W7): the old prompt did not say which image is the original, gave no score
+    range, did not define added_entities and ignored the mode."""
+    creative = _validation_user_text("semantic_redraw_direct", ["Старт", "Finish"])
+    structured = _validation_user_text("semantic_redraw_structured", ["Старт", "Finish"])
+
+    for text in (creative, structured):
+        assert text.startswith("The FIRST image is the original document image; the SECOND is a redrawn candidate")
+        assert "numbers from 0.0 to 1.0" in text
+        assert "`added_entities` (labels, blocks or values in the candidate that are not in the original)" in text
+        assert (
+            "`suspicious_reasons` (zero or more of: image_type_changed, labels_missing, values_changed, "
+            "entities_added, layout_changed, text_unreadable)"
+        ) in text
+        assert 'Original labels: ["Старт", "Finish"].' in text
+    assert "made in mode creative (layout and styling may change, content may not)" in creative
+    assert "ignore colours and fonts; ignore placement)" in creative
+    assert "made in mode structured (layout should be kept)" in structured
+    assert "ignore placement" not in structured
+
+
+def test_validation_tokeniser_reads_any_script_case_folded():
+    """FR-018 (D10): CJK labels are no longer normalised away, so a missing one is caught;
+    the old Latin+Cyrillic pattern made ``text_match_score`` pass vacuously at 1.0."""
+    assert image_validation._normalize_labels(["数据", "市场", "STRASSE", "Größe"]) == {"数据", "市场", "strasse", "grösse"}
+    assert image_validation._normalize_labels(["Straße"]) == image_validation._normalize_labels(["STRASSE"])
+
+    result = image_validation.validate_redraw_result(
+        PNG_BYTES,
+        PNG_BYTES,
+        build_analysis_result(extracted_labels=["数据", "市场"]),
+        candidate_analysis=build_analysis_result(extracted_labels=["数据"]),
+        enable_vision_validation=False,
+    )
+
+    assert result.missing_labels == ["市场"]
+    assert result.text_match_score < 1.0
+    assert result.validation_passed is False
+
+
+def test_validation_tokeniser_counter_proof_identical_labels_still_pass():
+    result = image_validation.validate_redraw_result(
+        PNG_BYTES,
+        PNG_BYTES,
+        build_analysis_result(extracted_labels=["数据", "Start"]),
+        candidate_analysis=build_analysis_result(extracted_labels=["数据", "START"]),
+        enable_vision_validation=False,
+    )
+
+    assert result.missing_labels == []
+    assert result.text_match_score == 1.0

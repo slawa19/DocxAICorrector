@@ -381,6 +381,9 @@ def test_run_document_processing_routes_provider_aware_text_and_image_clients():
     assert text_calls[0]["client"] is openrouter_client
     assert text_calls[0]["model"] == "google/gemini-3.1-flash-lite-preview"
     assert image_calls[0]["client"] is openai_client
+    # Spec 062 FR-023: the image phase receives the run's text operation and target language.
+    assert image_calls[0]["processing_operation"] == "edit"
+    assert image_calls[0]["target_language"] == "ru"
 
 
 def test_run_document_processing_does_not_fallback_to_text_client_for_openai_image_phase():

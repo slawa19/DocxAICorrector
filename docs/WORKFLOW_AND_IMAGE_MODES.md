@@ -100,25 +100,28 @@ pandoc --version
 
 ## Image Modes
 
-- `safe`: консервативная доставка без semantic redraw; используется как fallback для unsafe/high-risk кейсов.
+- `no_change` (умолчание, `image_mode_default` в `config.toml`): изображения остаются как есть; ни анализа, ни вызовов моделей.
+- `safe`: консервативная доставка без semantic redraw — детерминированный PIL-шаг (автоконтраст, лёгкий контраст, цвет, резкость); анализ изображения идёт без vision-вызова, потому что safe-план его не использует. Используется и как fallback для unsafe/high-risk кейсов.
 - `semantic_redraw_direct`: creative redraw по смыслу, когда analysis/policy допускают semantic route.
-- `semantic_redraw_structured`: conservative structured redraw; для части diagram/infographic кейсов может доставляться через deterministic reconstruction.
-- `compare_all`: compare-panel режим ручной проверки, где pipeline может сохранить несколько вариантов в финальном DOCX.
+- `semantic_redraw_structured`: conservative structured redraw; deterministic reconstruction (сцена от vision-модели, текст рисуется локальными шрифтами) идёт первой только для таблиц, а для остальных типов — только как запасной путь, если structured edit/generate не удался.
+- `compare_all`: compare-panel режим ручной проверки — до трёх вариантов рядом в финальном DOCX.
 
 ## Mode Selection Guidance
 
 - `safe` выбирается для фотографий, скриншотов и любых кейсов, где важнее всего не потерять исходное содержание.
 - `semantic_redraw_direct` выбирается для explainers, инфографики, слайдов и других визуалов, где допустим redesign композиции.
 - `semantic_redraw_structured` выбирается для таблиц, схем, диаграмм и других изображений, где важнее сохранить отношения, текст и layout.
-- `compare_all` выбирается, когда пользователь хочет получить safe/direct/structured варианты сразу и сравнить их визуально в итоговом DOCX.
+- `compare_all` выбирается, когда пользователь хочет сравнить варианты визуально в итоговом DOCX: safe-вариант всегда, креативный и структурный — только если анализ разрешил перерисовку. Семантический вариант, совпавший с safe, не вставляется повторно; выбора «лучшего» варианта нет.
 
 ## Internal Routing Notes
 
 - Пользовательский UI mode фиксирует intent, но не заставляет pipeline нарушать safety/policy/validation ограничения.
-- `safe` не запускает semantic redraw вообще.
+- `safe` не запускает semantic redraw вообще; изображения с safe-профилем (`*_safe_fallback`, `mixed_or_ambiguous_fallback`) идут в safe в любом режиме.
 - `semantic_redraw_direct` не обязан насильно переключаться в deterministic reconstruction только из-за структурности картинки; route определяется analysis/policy.
 - `semantic_redraw_structured` остаётся generation-first/conservative режимом, при этом deterministic reconstruction допустим как внутренний delivery path без смены пользовательского mode label.
 - `compare_all` готовит несколько candidate-вариантов в одном проходе и не требует отдельной финальной пересборки из compare-panel.
+- Бюджет `semantic_redraw_max_model_calls_per_image` (по умолчанию 9) считает логические операции на один семантический вариант — ретраи и адаптации параметров одной операции списываются один раз — и не включает анализ исходного изображения: тот списывается только с бюджета документа. Оценка бюджета документа для `compare_all` — `2 × per_image + 1` на изображение (два семантических варианта плюс анализ).
+- `preferred_strategy` в `image_prompt_registry.toml` — информационное поле: оно только логируется и маршрутизацию не определяет.
 
 ## Audiobook Mode And Post-Pass
 

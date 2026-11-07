@@ -18,7 +18,7 @@ def test_should_attempt_semantic_redraw_allows_advisory_dense_text_bypass():
         confidence=0.9,
         structured_parse_confidence=0.8,
         prompt_key="infographic_semantic_redraw",
-        render_strategy="safe_mode",
+        render_strategy="deterministic_reconstruction",  # spec 062 FR-011: bypass no longer overwrites it
         structure_summary="dense infographic",
         extracted_labels=["A"],
         fallback_reason="dense_text_bypass:24_nodes",
@@ -26,6 +26,7 @@ def test_should_attempt_semantic_redraw_allows_advisory_dense_text_bypass():
 
     assert should_attempt_semantic_redraw(analysis, "semantic_redraw_structured") is True
     assert build_generation_analysis(analysis).semantic_redraw_allowed is True
+    assert build_generation_analysis(analysis).render_strategy == "deterministic_reconstruction"
 
 
 def test_is_advisory_safe_fallback_checks_known_prefixes():
@@ -37,7 +38,7 @@ def test_is_advisory_safe_fallback_checks_known_prefixes():
         confidence=0.7,
         structured_parse_confidence=0.6,
         prompt_key="infographic_semantic_redraw",
-        render_strategy="safe_mode",
+        render_strategy="deterministic_reconstruction",  # spec 062 FR-011
         structure_summary="dense infographic",
         extracted_labels=[],
         fallback_reason="dense_non_latin_text_bypass:12_nodes",

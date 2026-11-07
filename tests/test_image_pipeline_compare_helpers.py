@@ -430,7 +430,7 @@ def test_build_compare_variant_candidate_uses_processed_semantic_outcome(resolve
         resolved_test_model_registry,
         config={"models": resolved_test_model_registry},
         analyze_image_fn=lambda *args, **kwargs: _build_analysis(),
-        generate_image_candidate_fn=lambda image_bytes, analysis, **kwargs: PNG_BYTES,
+        generate_image_candidate_fn=lambda image_bytes, analysis, **kwargs: PNG_BYTES + b"redrawn",  # spec 062 FR-017: a candidate equal to the source is now rejected
         validate_redraw_result_fn=lambda *args, **kwargs: _build_validation_result(
             validation_passed=False,
             decision="fallback_safe",
@@ -520,3 +520,188 @@ def test_image_variant_candidate_to_dict_is_json_safe_summary():
     assert "bytes" not in payload
     assert payload["has_bytes"] is True
     assert payload["bytes_size"] == len(b"payload")
+
+
+# --- spec 062 P1: candidate selection (FR-016, FR-017) -------------------------------
+
+
+def _run_semantic_selection(resolved_test_model_registry, *, candidates, validations):
+    """Drive ``select_best_semantic_asset`` with scripted candidates and verdicts."""
+    candidate_iter = iter(candidates)
+    validation_iter = iter(validations)
+    validator_calls = []
+    logged = []
+
+    def _validate(*args, **kwargs):
+        validator_calls.append(args)
+        return next(validation_iter)
+
+    asset = _build_asset()
+    asset.safe_bytes = PNG_BYTES + b"safe"
+    context = _build_context(
+        resolved_test_model_registry,
+        config={"models": resolved_test_model_registry, "semantic_redraw_max_attempts": 2},
+        generate_image_candidate_fn=lambda image_bytes, analysis, **kwargs: next(candidate_iter),
+        validate_redraw_result_fn=_validate,
+        log_event_fn=lambda *args, **kwargs: logged.append(args[1]),
+    )
+    result = image_pipeline.select_best_semantic_asset(
+        asset,
+        _build_analysis(),
+        "semantic_redraw_direct",
+        pipeline_context=context,
+        client=object(),
+    )
+    return result, validator_calls, logged
+
+
+_STRUCTURE_ONLY_MISS = dict(
+    validation_passed=False,
+    decision="fallback_safe",
+    structure_match_score=0.4,
+    suspicious_reasons=["structure_mismatch", "validator_confidence_too_low"],
+)
+
+
+def test_structure_mismatch_alone_no_longer_requests_a_challenger(resolved_test_model_registry):
+    """FR-016 (D7): a low structure Jaccard is data, not a reason for a second paid candidate."""
+    result, validator_calls, _ = _run_semantic_selection(
+        resolved_test_model_registry,
+        candidates=[PNG_BYTES + b"candidate1", PNG_BYTES + b"candidate2"],
+        validations=[_build_validation_result(**_STRUCTURE_ONLY_MISS)],
+    )
+
+    assert len(validator_calls) == 1
+    assert result.final_decision == "accept_soft"
+    assert [variant.mode for variant in result.attempt_variants] == ["candidate1"]
+
+
+def test_concrete_validation_failures_still_request_a_challenger(resolved_test_model_registry):
+    """FR-016 anti-vacuum: missing labels, added entities and a type change still do."""
+    concrete_failures = [
+        dict(missing_labels=["review"], suspicious_reasons=["missing_labels:review"]),
+        dict(added_entities_detected=True, suspicious_reasons=["added_entities:extra"]),
+        dict(suspicious_reasons=["image_type_changed"]),
+        dict(suspicious_reasons=["text_missing_in_candidate"]),
+        dict(suspicious_reasons=["entities_added"]),
+    ]
+    for failure in concrete_failures:
+        result, validator_calls, _ = _run_semantic_selection(
+            resolved_test_model_registry,
+            candidates=[PNG_BYTES + b"candidate1", PNG_BYTES + b"candidate2"],
+            validations=[
+                _build_validation_result(validation_passed=False, decision="fallback_safe", **failure),
+                _build_validation_result(),
+            ],
+        )
+
+        assert len(validator_calls) == 2, failure
+        assert result.final_decision == "accept", failure
+        assert [variant.mode for variant in result.attempt_variants] == ["candidate1", "candidate2"], failure
+
+
+def test_candidate_equal_to_source_is_rejected_without_validation(resolved_test_model_registry):
+    """FR-017 (D6): generation returned the source bytes (refused provider raster); the
+    validator must not compare the original with itself."""
+    result, validator_calls, logged = _run_semantic_selection(
+        resolved_test_model_registry,
+        candidates=[PNG_BYTES],
+        validations=[],
+    )
+
+    assert validator_calls == []
+    assert result.final_decision == "fallback_original"
+    assert result.final_variant == "original"
+    assert result.final_reason == "semantic_redraw_returned_source"
+    assert "semantic_candidate_returned_source" in logged
+
+
+def test_candidate_different_from_source_still_passes_validation(resolved_test_model_registry):
+    """FR-017 counter-proof: a genuinely different candidate is validated and accepted."""
+    result, validator_calls, _ = _run_semantic_selection(
+        resolved_test_model_registry,
+        candidates=[PNG_BYTES + b"redrawn"],
+        validations=[_build_validation_result()],
+    )
+
+    assert len(validator_calls) == 1
+    assert result.final_decision == "accept"
+    assert result.final_variant == "redrawn"
+
+
+def test_candidate_equal_to_safe_still_goes_to_safe_first(resolved_test_model_registry):
+    """Anti-regression: the existing safe-equality check keeps precedence over FR-017."""
+    result, validator_calls, _ = _run_semantic_selection(
+        resolved_test_model_registry,
+        candidates=[PNG_BYTES + b"safe"],
+        validations=[],
+    )
+
+    assert validator_calls == []
+    assert result.final_decision == "fallback_safe"
+    assert result.final_reason == "semantic_redraw_fell_back_to_safe_candidate"
+
+
+# --- spec 062 P3/P1: compare_all delivery and document budget (FR-032, FR-022) -------
+
+
+def test_compare_all_does_not_deliver_a_semantic_variant_that_is_the_safe_picture(resolved_test_model_registry):
+    """FR-032 (M2): when both semantic variants fall back to the safe picture, the DOCX
+    gets one picture, not the same picture three times under three captions."""
+    safe_like = PNG_BYTES + b"safe"
+    context = _build_context(
+        resolved_test_model_registry,
+        config={"models": resolved_test_model_registry},
+        generate_image_candidate_fn=lambda image_bytes, analysis, **kwargs: safe_like,
+    )
+
+    asset = _build_asset()
+    result = cast(ImageAsset, _prepare_compare_variants(asset, _build_analysis(), context, client=object()))
+
+    assert result is asset
+    assert result.validation_status == "compared"
+    assert set(result.comparison_variants) == {"safe", "semantic_redraw_direct", "semantic_redraw_structured"}
+    for mode in ("semantic_redraw_direct", "semantic_redraw_structured"):
+        variant = cast(ImageVariantCandidate, result.comparison_variants[mode])
+        assert variant.bytes is None
+        assert str(variant.final_reason).startswith("compare_all_semantic_variant_equals_safe:")
+    insertions = result.resolved_delivery_payload().insertions
+    assert [insertion.variant_key for insertion in insertions] == ["safe"]
+
+
+def test_compare_all_still_delivers_semantic_variants_that_differ(resolved_test_model_registry):
+    """FR-032 counter-proof: genuinely different semantic variants are all delivered."""
+    context = _build_context(
+        resolved_test_model_registry,
+        config={"models": resolved_test_model_registry},
+        generate_image_candidate_fn=lambda image_bytes, analysis, *, mode, **kwargs: PNG_BYTES + mode.encode("ascii"),
+    )
+
+    result = cast(ImageAsset, _prepare_compare_variants(_build_asset(), _build_analysis(), context, client=object()))
+
+    insertions = result.resolved_delivery_payload().insertions
+    assert [insertion.variant_key for insertion in insertions] == [
+        "safe",
+        "semantic_redraw_direct",
+        "semantic_redraw_structured",
+    ]
+
+
+def test_compare_all_document_budget_covers_two_semantic_variants():
+    """FR-022 (M7): each semantic variant has its own per-image budget, so compare_all
+    needs 2 × per_image + 1 calls per image; the old flat 7 was below one variant's 9."""
+    config = {"semantic_redraw_max_model_calls_per_image": 9}
+
+    assert image_pipeline._resolve_document_model_call_budget(config, total_images=3, image_mode="compare_all") == 3 * 19
+    # Counter-proof: the single-mode estimate is unchanged.
+    assert (
+        image_pipeline._resolve_document_model_call_budget(config, total_images=3, image_mode="semantic_redraw_direct")
+        == 3 * 10
+    )
+    # An explicit document limit still wins.
+    assert (
+        image_pipeline._resolve_document_model_call_budget(
+            {**config, "image_model_call_budget_per_document": 4}, total_images=3, image_mode="compare_all"
+        )
+        == 4
+    )

@@ -2,9 +2,11 @@ import base64
 from dataclasses import dataclass, replace
 from io import BytesIO
 import logging
+import unicodedata
 
 from PIL import Image, ImageFilter, ImageOps
 
+from docxaicorrector.image.prompts import load_image_prompt_registry
 from docxaicorrector.image.shared import (
     call_responses_create_with_retry,
     clamp_score,
@@ -20,19 +22,30 @@ from docxaicorrector.core.models import ImageAnalysisResult
 
 
 VISION_ANALYSIS_TIMEOUT_SECONDS = 45.0
-_VALID_PROMPT_KEYS: frozenset[str] = frozenset({
-    "diagram_semantic_redraw",
-    "table_semantic_redraw",
-    "infographic_semantic_redraw",
-    "mindmap_semantic_redraw",
-    "chart_semantic_redraw",
-    "screenshot_safe_fallback",
-    "photo_safe_fallback",
-    "mixed_or_ambiguous_fallback",
-})
 VISION_ANALYSIS_MAX_RETRIES = 2
-# Empirical thresholds from image-pipeline tuning: above these values the pipeline
-# should keep the original raster more often than attempt semantic redraw.
+# The image types and routes the analysis prompt offers the model (spec 062 FR-008).
+# Downstream routing keys on these exact values (bypass set below, reconstruction on
+# "table"), so the prompt names them instead of leaving the model to invent its own.
+ANALYSIS_IMAGE_TYPES: tuple[str, ...] = (
+    "diagram",
+    "table",
+    "chart",
+    "infographic",
+    "mindmap",
+    "screenshot",
+    "photo",
+    "mixed_or_ambiguous",
+)
+ANALYSIS_ROUTES: tuple[str, ...] = (
+    "safe_mode",
+    "semantic_redraw_direct",
+    "semantic_redraw_structured",
+    "deterministic_reconstruction",
+)
+# Text-density thresholds from image-pipeline tuning. Crossing them is ADVISORY
+# (spec 062 FR-011/FR-012): the analysis records it in ``fallback_reason`` and the
+# semantic modes still attempt a redraw; ``render_strategy`` is never overwritten,
+# so dense tables keep the deterministic-reconstruction route with real fonts.
 DENSE_TEXT_BYPASS_THRESHOLD = 18
 NON_LATIN_DENSE_TEXT_BYPASS_THRESHOLD = 12
 HEURISTIC_WHITE_RATIO_THRESHOLD = 0.55
@@ -355,7 +368,10 @@ def _build_heuristic_analysis(
                 structured_parse_confidence=0.62,
                 prompt_key="diagram_semantic_redraw",
                 render_strategy="deterministic_reconstruction",
-                structure_summary="three boxes connected by arrows",
+                # Structural fallback only (spec 062 FR-009, Constitution VII): the
+                # heuristic knows the format and the visual class, never the content,
+                # so it must not describe blocks, counts or connectors it never saw.
+                structure_summary="JPEG image with diagram-like visual features; structure not analysed.",
                 extracted_labels=[],
             )
         return ImageAnalysisResult(
@@ -442,6 +458,47 @@ def _build_heuristic_analysis(
     )
 
 
+TEXT_COPY_RULE = (
+    'Copy all text exactly in its original script and language (any language); never transliterate; '
+    'write "unreadable" for illegible text.'
+)
+
+
+def valid_prompt_keys() -> tuple[str, ...]:
+    """Prompt keys the registry defines, in registry order (spec 062 FR-008/FR-022).
+
+    Built from ``image_prompt_registry.toml`` so the analysis prompt and the parser
+    cannot drift from the profiles that actually exist.
+    """
+    return tuple(load_image_prompt_registry()["prompts"])
+
+
+def build_vision_analysis_user_prompt() -> str:
+    image_types = ",".join(f'"{image_type}"' for image_type in ANALYSIS_IMAGE_TYPES)
+    routes = ",".join(f'"{route}"' for route in ANALYSIS_ROUTES)
+    prompt_keys = ",".join(f'"{prompt_key}"' for prompt_key in valid_prompt_keys())
+    return (
+        "Return one JSON object with exactly these keys. "
+        f"`image_type`: one of {image_types}. "
+        "`image_subtype`: short text or null. "
+        "`contains_text`: true/false. "
+        "`semantic_redraw_allowed`: true only for diagram/table/chart/infographic/mindmap whose content can be redrawn "
+        "without losing information. "
+        "`confidence`, `structured_parse_confidence`: numbers 0..1. "
+        f"`prompt_key`: one of {prompt_keys}, matching image_type (photo→photo_safe_fallback, "
+        "screenshot→screenshot_safe_fallback, mixed_or_ambiguous→mixed_or_ambiguous_fallback). "
+        f"`recommended_route`: one of {routes}. "
+        "`structure_summary`: one sentence naming the element counts (blocks, rows×columns, series). "
+        "`extracted_labels`: up to 12 clearly readable labels, verbatim. "
+        "`text_node_count`: integer count of separate text blocks (labels, cells, captions, legend items). "
+        "`extracted_text`: all readable text verbatim, in reading order. "
+        "`fallback_reason`: null or a short reason. "
+        f"{TEXT_COPY_RULE} "
+        # Untouched until the Cyrillic gate (spec 062 FR-024, P2) passes.
+        "If text is too dense for faithful redraw, set recommended_route to safe_mode."
+    )
+
+
 def _extract_vision_analysis(
     *,
     client,
@@ -474,14 +531,7 @@ def _extract_vision_analysis(
                     "content": [
                         {
                             "type": "input_text",
-                            "text": (
-                                "Return JSON with keys: image_type, image_subtype, contains_text, semantic_redraw_allowed, confidence, "
-                                "structured_parse_confidence, prompt_key, render_strategy, recommended_route, structure_summary, extracted_labels, "
-                                "text_node_count, extracted_text, fallback_reason. "
-                                "Populate extracted_labels only with clearly readable labels, max 12 items. Heuristic baseline: "
-                                f"image_type={heuristic_result.image_type}, prompt_key={heuristic_result.prompt_key}, render_strategy={heuristic_result.render_strategy}. "
-                                "Copy Cyrillic, Ukrainian, and Russian text exactly in Unicode. If text is too dense for faithful redraw, set recommended_route to safe_mode."
-                            ),
+                            "text": build_vision_analysis_user_prompt(),
                         },
                         {
                             "type": "input_image",
@@ -536,7 +586,7 @@ def _coerce_vision_analysis_payload(
         semantic_redraw_allowed=semantic_redraw_allowed,
         confidence=_clamp_score(payload.get("confidence", heuristic_result.confidence)),
         structured_parse_confidence=_clamp_score(payload.get("structured_parse_confidence", heuristic_result.structured_parse_confidence)),
-        prompt_key=prompt_key if prompt_key in _VALID_PROMPT_KEYS else heuristic_result.prompt_key,
+        prompt_key=prompt_key if prompt_key in valid_prompt_keys() else heuristic_result.prompt_key,
         render_strategy=render_strategy,
         structure_summary=_coerce_non_empty_string(payload.get("structure_summary"), heuristic_result.structure_summary),
         extracted_labels=extracted_labels or heuristic_result.extracted_labels,
@@ -657,7 +707,15 @@ def _apply_routing_overrides(
     dense_text_bypass_threshold: int,
     non_latin_text_bypass_threshold: int,
 ) -> ImageAnalysisResult:
-    """Override to safe_mode when Vision detects text density too high for reliable regeneration."""
+    """Record an ADVISORY dense-text bypass without rerouting the image.
+
+    Spec 062 FR-011/FR-012: the bypass is written to ``fallback_reason`` (with the
+    advisory prefixes ``pipeline_policy`` recognises) and clears
+    ``semantic_redraw_allowed``, which the semantic modes restore through
+    ``build_generation_analysis``. ``render_strategy`` keeps the analysis value: before
+    this change it was overwritten with ``safe_mode``, which silently took the densest
+    tables off the deterministic-reconstruction route that renders text with real fonts.
+    """
     if (
         result.text_node_count is not None
         and result.text_node_count >= dense_text_bypass_threshold
@@ -666,7 +724,6 @@ def _apply_routing_overrides(
     ):
         return replace(
             result,
-            render_strategy="safe_mode",
             semantic_redraw_allowed=False,
             fallback_reason=f"dense_text_bypass:{result.text_node_count}_nodes",
         )
@@ -679,7 +736,6 @@ def _apply_routing_overrides(
     ):
         return replace(
             result,
-            render_strategy="safe_mode",
             semantic_redraw_allowed=False,
             fallback_reason=f"dense_non_latin_text_bypass:{result.text_node_count}_nodes",
         )
@@ -708,13 +764,13 @@ def _normalize_render_strategy(route_hint: object, fallback_strategy: str) -> tu
         "semantic_redraw_structured",
     }:
         return "deterministic_reconstruction", False
-    if route.startswith("gpt-"):
-        if fallback_strategy in {"semantic_redraw_direct", "semantic_redraw_structured"}:
-            return fallback_strategy, False
-        if fallback_strategy == "deterministic_reconstruction":
-            return "deterministic_reconstruction", False
-        return "semantic_redraw_structured", False
-    return str(route_hint).strip() or fallback_strategy, False
+    if route in ANALYSIS_ROUTES:
+        return route, False
+    # Spec 062 FR-008 (D8, W9): an unknown route no longer passes through raw into
+    # ``render_strategy``, and the model-name branch (``gpt-…``, the archived
+    # ``recommended_route: "gpt-image-1"`` contract) is gone — anything outside the
+    # routes the prompt offers keeps the heuristic strategy.
+    return fallback_strategy, False
 
 
 def _extract_visual_features(image_bytes: bytes) -> dict[str, float] | None:
@@ -828,5 +884,13 @@ def _clamp_score(value: object) -> float:
 
 
 def _contains_non_latin_text(extracted_text: str, extracted_labels: list[str]) -> bool:
+    """True when the text holds a letter outside the Latin script (spec 062 FR-011, D9).
+
+    Keyed on the Unicode character name, not on ``ord > 127``: é, ü, ß, ł, ñ are Latin
+    letters of supported languages and must not trip the non-Latin bypass.
+    """
     joined_text = " ".join([extracted_text, *extracted_labels])
-    return any(ord(character) > 127 and character.isalpha() for character in joined_text)
+    return any(
+        character.isalpha() and not unicodedata.name(character, "").startswith("LATIN")
+        for character in joined_text
+    )
