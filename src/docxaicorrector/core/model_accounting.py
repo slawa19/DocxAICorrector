@@ -270,6 +270,12 @@ class RunModelAccountingLedger:
         self._text_removal_emptied_unit_count = 0
         self._text_removal_site_counts: dict[str, int] = {}
         self._text_removal_site_chars: dict[str, int] = {}
+        self._back_matter_policy_kept_block_count = 0
+        self._back_matter_policy_kept_paragraph_count = 0
+        self._back_matter_policy_kept_chars = 0
+        self._back_matter_source_paragraph_counts: dict[str, int] = {}
+        self._back_matter_translated_paragraph_counts: dict[str, int] = {}
+        self._back_matter_mixed_block_count = 0
 
     def reset(self) -> None:
         with self._lock:
@@ -304,6 +310,12 @@ class RunModelAccountingLedger:
             self._text_removal_emptied_unit_count = 0
             self._text_removal_site_counts = {}
             self._text_removal_site_chars = {}
+            self._back_matter_policy_kept_block_count = 0
+            self._back_matter_policy_kept_paragraph_count = 0
+            self._back_matter_policy_kept_chars = 0
+            self._back_matter_source_paragraph_counts = {}
+            self._back_matter_translated_paragraph_counts = {}
+            self._back_matter_mixed_block_count = 0
 
     def record_model_call(self, *, stage: str, usage: ModelCallUsage) -> None:
         with self._lock:
@@ -506,6 +518,52 @@ class RunModelAccountingLedger:
             self._text_removal_site_counts[site] = self._text_removal_site_counts.get(site, 0) + 1
             self._text_removal_site_chars[site] = self._text_removal_site_chars.get(site, 0) + max(0, chars)
 
+    def record_back_matter_delivery(
+        self,
+        *,
+        section: str,
+        source_paragraph_count: int = 0,
+        translated_paragraph_count: int = 0,
+        kept_by_policy: bool = False,
+        kept_chars: int = 0,
+        mixed: bool = False,
+    ) -> None:
+        """Count how ONE delivered block of the back-matter region came out (spec 063 FR-012).
+
+        A seventh family, and DATA, not a gate: D1 asks for one apparatus policy per book, and
+        whether a book got one is a share -- back-matter paragraphs delivered in the source
+        language against those delivered translated, per section (``notes`` /
+        ``references`` / ``index``). Before this the share could only be re-derived by an
+        external review script (rule (a) of the 2026-11-07 review) from a 21-98 MB report.
+
+        ``kept_by_policy`` marks the block the pipeline kept in the source language WITHOUT a
+        model call (FR-011), so ``back_matter_policy_kept_block_count`` is also the number of
+        model calls the policy saved. Its paragraphs are counted among the source ones too:
+        the share describes what the reader got, whatever path delivered it.
+
+        ``mixed`` is the ``needs_review`` case: a reference-list block whose ENTRIES came out
+        partly in the source language and partly translated -- the inconsistency the review
+        found inside one book (P-5). Notes are not judged this way: a note that is a bare
+        reference stays in the source language beside a translated comment by the policy
+        itself, so a per-paragraph mix there is the expected outcome, not a finding.
+        """
+        with self._lock:
+            if source_paragraph_count > 0:
+                self._back_matter_source_paragraph_counts[section] = (
+                    self._back_matter_source_paragraph_counts.get(section, 0) + source_paragraph_count
+                )
+            if translated_paragraph_count > 0:
+                self._back_matter_translated_paragraph_counts[section] = (
+                    self._back_matter_translated_paragraph_counts.get(section, 0)
+                    + translated_paragraph_count
+                )
+            if kept_by_policy:
+                self._back_matter_policy_kept_block_count += 1
+                self._back_matter_policy_kept_paragraph_count += max(0, source_paragraph_count)
+                self._back_matter_policy_kept_chars += max(0, kept_chars)
+            if mixed:
+                self._back_matter_mixed_block_count += 1
+
     def record_paragraph_disposition(self, *, status: str, count: int = 1) -> None:
         """Count how ONE block's paragraphs came out (spec 056 E).
 
@@ -638,6 +696,23 @@ class RunModelAccountingLedger:
                 "text_removal_emptied_unit_count": self._text_removal_emptied_unit_count,
                 "text_removal_site_counts": dict(sorted(self._text_removal_site_counts.items())),
                 "text_removal_site_chars": dict(sorted(self._text_removal_site_chars.items())),
+                # Spec 063 FR-012: the back-matter apparatus policy as DATA. Blocks kept in the
+                # source language without a model call (= model calls saved), and per section
+                # how many back-matter paragraphs reached the reader in the source language
+                # versus translated. Empty mappings beside zeros: no back matter was delivered
+                # under ``translate`` in this scope.
+                "back_matter_policy_kept_block_count": self._back_matter_policy_kept_block_count,
+                "back_matter_policy_kept_paragraph_count": (
+                    self._back_matter_policy_kept_paragraph_count
+                ),
+                "back_matter_policy_kept_chars": self._back_matter_policy_kept_chars,
+                "back_matter_source_paragraph_counts": dict(
+                    sorted(self._back_matter_source_paragraph_counts.items())
+                ),
+                "back_matter_translated_paragraph_counts": dict(
+                    sorted(self._back_matter_translated_paragraph_counts.items())
+                ),
+                "back_matter_mixed_block_count": self._back_matter_mixed_block_count,
                 "stages": {stage: self._stages[stage].to_dict() for stage in sorted(self._stages)},
             }
             return payload
@@ -809,6 +884,25 @@ def record_text_removal(*, site: str, chars: int = 0, emptied_units: int = 0) ->
         site=site,
         chars=chars,
         emptied_units=emptied_units,
+    )
+
+
+def record_back_matter_delivery(
+    *,
+    section: str,
+    source_paragraph_count: int = 0,
+    translated_paragraph_count: int = 0,
+    kept_by_policy: bool = False,
+    kept_chars: int = 0,
+    mixed: bool = False,
+) -> None:
+    get_run_model_accounting_ledger().record_back_matter_delivery(
+        section=section,
+        source_paragraph_count=source_paragraph_count,
+        translated_paragraph_count=translated_paragraph_count,
+        kept_by_policy=kept_by_policy,
+        kept_chars=kept_chars,
+        mixed=mixed,
     )
 
 

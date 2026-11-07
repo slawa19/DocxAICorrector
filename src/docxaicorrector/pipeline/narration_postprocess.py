@@ -26,7 +26,7 @@ import re
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from docxaicorrector.core.models import LANGUAGE_CHANGING_OPERATIONS
+from docxaicorrector.core.models import LANGUAGE_CHANGING_OPERATIONS, PARAGRAPH_STATUS_POLICY_KEPT_SOURCE
 from docxaicorrector.generation._generation import (
     PARAGRAPH_STATUS_OMITTED,
     PARAGRAPH_STATUS_SOURCE_RESTORED,
@@ -154,6 +154,13 @@ def _project_final_cleanup_narration_chunks(
         # ``source_restored`` paragraph is source-language text too and is withheld beside
         # ``omitted``; on ``edit`` the source IS target-language text and is spoken.
         if str(raw_entry.get("paragraph_status", "") or "") in withheld_statuses:
+            continue
+        # Spec 063 FR-011: a reference-list entry kept in the source language by policy is
+        # apparatus, never narrated -- the same answer the standalone projection gives
+        # (``block_execution.narration_projection_for_processed_block``). Its block is outside
+        # the narration anyway (back matter); this keeps the two entry points identical even
+        # if that ever changes.
+        if str(raw_entry.get("paragraph_status", "") or "") == PARAGRAPH_STATUS_POLICY_KEPT_SOURCE:
             continue
         if True in inclusion_flags:
             projected.append(text)

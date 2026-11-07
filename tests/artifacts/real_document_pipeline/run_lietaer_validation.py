@@ -4523,6 +4523,14 @@ _MODEL_ACCOUNTING_SUMMARY_FIELDS = (
     "text_removal_event_count",
     "text_removal_chars",
     "text_removal_emptied_unit_count",
+    # Spec 063 FR-012: the back-matter apparatus policy (owner decision D1) as data. Blocks
+    # kept in the source language without a model call -- the model calls the policy saved --
+    # and reference-list blocks whose entries came out partly kept and partly translated,
+    # which are the ``needs_review`` cases. The per-section shares are printed below.
+    "back_matter_policy_kept_block_count",
+    "back_matter_policy_kept_paragraph_count",
+    "back_matter_policy_kept_chars",
+    "back_matter_mixed_block_count",
 )
 
 
@@ -4565,6 +4573,10 @@ def _build_model_accounting_summary_lines(model_accounting: Mapping[str, object]
         "degradation_ladder_trigger_counts",
         "text_removal_site_counts",
         "text_removal_site_chars",
+        # Spec 063 FR-012: back-matter paragraphs delivered in the source language versus
+        # translated, per section (notes / references / index) -- one policy per book.
+        "back_matter_source_paragraph_counts",
+        "back_matter_translated_paragraph_counts",
         "stages",
     ):
         lines.append(
