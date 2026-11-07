@@ -705,3 +705,128 @@ def test_compare_all_document_budget_covers_two_semantic_variants():
         )
         == 4
     )
+
+
+# --- spec 062 acceptance review 2026-11-07 (Codex): selection and compare_all delivery ---
+
+
+_LABELS_MISSING_SOFT = dict(
+    validation_passed=False,
+    decision="fallback_safe",
+    missing_labels=["review"],
+    suspicious_reasons=["missing_labels:review"],
+)
+
+
+def test_second_candidate_scoring_lower_does_not_replace_the_first(resolved_test_model_registry):
+    """Finding 1: on the last attempt the challenger check is necessarily False and the code
+    returned the second candidate, discarding a better first one (7 of 22 two-attempt cells
+    of the 2026-11-07 comparison). The review's input: both ``accept_soft``, the second with
+    a lower score."""
+    first = _build_validation_result(
+        semantic_match_score=0.9, text_match_score=0.9, structure_match_score=0.9, validator_confidence=0.9,
+        **_LABELS_MISSING_SOFT,
+    )
+    second = _build_validation_result(
+        semantic_match_score=0.5, text_match_score=0.5, structure_match_score=0.5, validator_confidence=0.5,
+        **_LABELS_MISSING_SOFT,
+    )
+
+    result, validator_calls, _ = _run_semantic_selection(
+        resolved_test_model_registry,
+        candidates=[PNG_BYTES + b"candidate1", PNG_BYTES + b"candidate2"],
+        validations=[first, second],
+    )
+
+    assert len(validator_calls) == 2
+    assert result.final_decision == "accept_soft"
+    assert result.final_variant == "redrawn"
+    assert result.redrawn_bytes == PNG_BYTES + b"candidate1"
+    assert image_pipeline.score_semantic_candidate(result) > 0.9
+    # Both attempts stay recorded on the delivered asset.
+    assert [variant.mode for variant in result.attempt_variants] == ["candidate1", "candidate2"]
+
+
+def test_second_candidate_scoring_higher_still_wins(resolved_test_model_registry):
+    """Counter-proof: a challenger that scores higher is delivered."""
+    first = _build_validation_result(
+        semantic_match_score=0.5, text_match_score=0.5, structure_match_score=0.5, validator_confidence=0.5,
+        **_LABELS_MISSING_SOFT,
+    )
+    second = _build_validation_result(
+        semantic_match_score=0.9, text_match_score=0.9, structure_match_score=0.9, validator_confidence=0.9,
+        **_LABELS_MISSING_SOFT,
+    )
+
+    result, _, _ = _run_semantic_selection(
+        resolved_test_model_registry,
+        candidates=[PNG_BYTES + b"candidate1", PNG_BYTES + b"candidate2"],
+        validations=[first, second],
+    )
+
+    assert result.redrawn_bytes == PNG_BYTES + b"candidate2"
+    assert [variant.mode for variant in result.attempt_variants] == ["candidate1", "candidate2"]
+
+
+def test_unreadable_second_candidate_does_not_replace_the_first(resolved_test_model_registry):
+    first = _build_validation_result(**_LABELS_MISSING_SOFT)
+    unreadable = _build_validation_result(
+        validation_passed=False,
+        decision="fallback_safe",
+        suspicious_reasons=["candidate_image_unreadable"],
+    )
+
+    result, _, _ = _run_semantic_selection(
+        resolved_test_model_registry,
+        candidates=[PNG_BYTES + b"candidate1", PNG_BYTES + b"candidate2"],
+        validations=[first, unreadable],
+    )
+
+    assert result.final_variant == "redrawn"
+    assert result.redrawn_bytes == PNG_BYTES + b"candidate1"
+
+
+def test_second_candidate_equal_to_original_or_safe_keeps_the_first(resolved_test_model_registry):
+    """Finding 1, second half: the early returns for a candidate equal to the source
+    (FR-017) or to the safe picture dropped the first, scored candidate."""
+    for second_bytes, name in ((PNG_BYTES, "original"), (PNG_BYTES + b"safe", "safe")):
+        result, validator_calls, _ = _run_semantic_selection(
+            resolved_test_model_registry,
+            candidates=[PNG_BYTES + b"candidate1", second_bytes],
+            validations=[_build_validation_result(**_LABELS_MISSING_SOFT)],
+        )
+
+        assert len(validator_calls) == 1, name
+        assert result.final_variant == "redrawn", name
+        assert result.final_decision == "accept_soft", name
+        assert result.redrawn_bytes == PNG_BYTES + b"candidate1", name
+        assert [variant.mode for variant in result.attempt_variants] == ["candidate1"], name
+
+
+def test_compare_all_never_captions_the_original_as_a_redraw(resolved_test_model_registry):
+    """Finding 5: generation handed the source back (FR-017, pixel-budget refusal on the
+    output) while the safe picture differs from it. The semantic variants became
+    ``fallback_original`` and the comparison builder read ``final_bytes`` — the original —
+    and put it into the DOCX under the creative and structural captions. Only equality with
+    the safe picture was suppressed."""
+
+    def _generate(image_bytes, analysis, *, mode, **kwargs):
+        return PNG_BYTES + b"safe" if mode == "safe" else image_bytes
+
+    context = _build_context(
+        resolved_test_model_registry,
+        config={"models": resolved_test_model_registry},
+        generate_image_candidate_fn=_generate,
+    )
+
+    result = cast(ImageAsset, _prepare_compare_variants(_build_asset(), _build_analysis(), context, client=object()))
+
+    assert result.validation_status == "compared"
+    for mode in ("semantic_redraw_direct", "semantic_redraw_structured"):
+        variant = cast(ImageVariantCandidate, result.comparison_variants[mode])
+        assert variant.final_variant == "original", mode
+        assert variant.bytes is None, mode
+        assert str(variant.final_reason).startswith("compare_all_semantic_variant_not_redrawn:original:"), mode
+    insertions = result.resolved_delivery_payload().insertions
+    assert [insertion.variant_key for insertion in insertions] == ["safe"]
+    assert all(insertion.bytes != PNG_BYTES for insertion in insertions)
