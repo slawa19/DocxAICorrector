@@ -223,11 +223,13 @@
       "passed": true
     },
     {
+      "anchor_min_visible_chars": 3,
       "applicable": false,
       "controlled_block_fallback_block_count": 0,
       "name": "untranslated_prose_not_delivered",
       "passed": true,
       "reason": "model_accounting_not_available",
+      "untranslated_prose_below_anchor_floor": false,
       "untranslated_prose_block_delivery_chars": 0,
       "untranslated_prose_block_delivery_count": 0,
       "untranslated_prose_block_delivery_kind_counts": null

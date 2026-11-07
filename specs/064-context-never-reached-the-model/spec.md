@@ -273,3 +273,42 @@ FR-010, статусы спек 062/063/064 и `docs/WHERE_WE_ARE.md`.
 - 2026-11-07 — спека создана по отчёту повторного прогона (`3bfadd6`); R-1 найден оркестратором
   при проверке утверждения прогона «глоссарий не повлиял» — трассировкой
   `document_context_prompt` до `load_system_prompt`.
+- 2026-11-07 (gate) — FR-004, FR-005, FR-008 сделаны в ветке `064/gate`. Офлайн-перемер по
+  четырём отчётам `D:\Temp\docxai-runs\2026-11-07-translate-after\<slug>\` — скрипт
+  `.run/remeasure_064_gate.py` (вне git) переигрывает производственную сборку
+  `assemble_final_markdown` на записанных `processed_block_markdowns` /
+  `processed_paragraph_registry` и `source_paragraphs.json`; самопроверка совпала на всех
+  четырёх: сырой `list_fragment` 6/53/117/149, `final_markdown_chars` и записанные символы
+  непереведённого тела — байт в байт. **FR-004**: `paragraph_status == policy_kept_source`
+  исключён из обоих сборщиков (`quality_gate._is_policy_kept_source_entry`), знаменатель и
+  пороги 2 000 / 2 % прежние, комментарий у эскалации называет три исключения. Money
+  19 027 симв. / 3,5 % / фатально → 0 / 0 / не фатально (статус шлюза fail → pass); VoE 16 обр.
+  / 9 384 / 1,17 % → 2 / 1 063 / 0,13 % (остаток — два примечания `accepted`, эхо модели, к
+  R-4); RM 1 / 285 без изменений (`p1623`, статус `accepted`); CW 0. **FR-005**: остаток
+  кредитуется в review по СТАТУСУ (`policy_kept_source`) или РЕГИОНУ (`source_index` ≥ начала
+  back-matter из `formatting_coverage.resolve_main_content_scope` — та же провенанс, что у
+  детектора разрывов абзацев) до проверки формы (`_list_fragment_apparatus_credited_lines`).
+  Граница региона совпала с первым `back_matter`-абзацем импортёра на всех четырёх книгах (1374
+  / 1543 / 1344 / 1249) и не зависит от снимка подготовки. Гейтовых образцов по-прежнему
+  CW 11 / RM 2 / VoE 42, из них по региону/статусу 10 / 2 / 42, последний CW «14.» — форма;
+  некредитованных 8 / 2 / 11 → 0 / 0 / 0; `list_fragment_regressions_present` в приёмке
+  fail → pass на всех трёх. Форменное кредитование («автор-форма») НЕ расширялось: регион и
+  статус закрыли все 55 образцов, а новая форма потребовала бы замера ложных срабатываний без
+  нужды. **FR-008**: двухсимвольный блок RM — блок 148, абзац `p0803` «2b», роль `body`, регион
+  `prose`, после `img_031` и перед меткой «Bank User Z 4a 4b» — подпись шага диаграммы, тот
+  остаток, что `block_execution.prose_paragraph_indexes` уже документирует как принятый; классификатор
+  переделывать незачем. Проверка проходит, когда ВЕСЬ объём доставленной прозы-исходника
+  меньше порога якоря: литерал `3` из `_build_formatting_review_item` /
+  `_collect_paragraph_anchor_facts` назван `REVIEW_ANCHOR_MIN_VISIBLE_CHARS`
+  (`quality_gate_text_detectors`) и используется приёмкой — новой границы нет. Ограничение:
+  счётчик хранит только сумму, поэтому два блока по 2 символа (сумма 4) по-прежнему fail.
+  RM fail → pass, три другие книги 0 → pass без изменений. Итог офлайн-приёмки (производственный
+  вердикт без структурных проверок харнесса): Money `[translation_quality_report_not_failed]`
+  → `[]` (кроме `pipeline_succeeded`, который отражает записанный заблокированный прогон и
+  офлайн не перемеряется), CW / VoE `[list_fragment_regressions_present]` → `[]`, RM
+  `[list_fragment_regressions_present, untranslated_prose_not_delivered]` → `[]`. Контрпримеры
+  тела остались красными: `test_list_fragment_broken_body_list_still_hard_fails`,
+  `test_build_translation_quality_report_hard_fails_non_numeric_body_list_fragment_residue`,
+  `test_untranslated_body_above_both_thresholds_still_fails_on_translate`; новые — в
+  `tests/test_gate_detectors_stage2.py` (раздел «Spec 064»), каждая мутация правила (снять
+  исключение статуса, снять кредит, кредитовать без региона, снять порог) роняет 2–3 теста.

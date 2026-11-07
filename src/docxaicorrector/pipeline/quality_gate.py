@@ -37,7 +37,10 @@ from dataclasses import dataclass
 from typing import Any, Literal, cast
 
 from docxaicorrector.core.model_accounting import get_run_model_accounting_ledger
-from docxaicorrector.core.models import LANGUAGE_CHANGING_OPERATIONS
+from docxaicorrector.core.models import (
+    LANGUAGE_CHANGING_OPERATIONS,
+    PARAGRAPH_STATUS_POLICY_KEPT_SOURCE,
+)
 from docxaicorrector.generation._generation import (
     PARAGRAPH_STATUS_OMITTED,
     PARAGRAPH_STATUS_SOURCE_RESTORED,
@@ -52,6 +55,7 @@ from docxaicorrector.validation.acceptance import (
 )
 from docxaicorrector.validation.formatting_coverage import (
     classify_heading_demotions,
+    resolve_main_content_scope,
     resolve_role_aware_formatting_unmapped_source_summary,
     resolve_role_aware_formatting_unmapped_target_summary,
 )
@@ -89,6 +93,7 @@ from docxaicorrector.pipeline.quality_gate_serializers import (  # noqa: F401
     _serialize_heading_demotion_sample,
 )
 from docxaicorrector.pipeline.quality_gate_text_detectors import (  # noqa: F401
+    REVIEW_ANCHOR_MIN_VISIBLE_CHARS,
     _STANDALONE_NUMERIC_CONTINUATION_PATTERN,
     _UNTRANSLATED_BODY_MIN_CHARS,
     _UNTRANSLATED_BODY_MIN_LATIN_WORDS,
@@ -458,6 +463,13 @@ _HYGIENE_GATE_SPECS: dict[str, _HygieneGateSpec] = {
 }
 
 
+def _is_policy_kept_source_entry(entry: object) -> bool:
+    """True iff the assembly entry's recorded disposition is ``policy_kept_source``
+    (``FinalAssemblyEntry.paragraph_status``, spec 061 FR-014 / spec 063 FR-011). Keyed on the
+    STATUS the pipeline wrote, never on the text (Constitution VII)."""
+    return str(getattr(entry, "paragraph_status", "") or "") == PARAGRAPH_STATUS_POLICY_KEPT_SOURCE
+
+
 def _collect_untranslated_structural_samples(
     *,
     final_markdown: str,
@@ -477,6 +489,10 @@ def _collect_untranslated_structural_samples(
         if role not in {"heading", "caption"} and structural_role not in {"heading", "caption"}:
             continue
         if bool(getattr(entry, "controlled_fallback", False)):
+            continue
+        # Spec 064 FR-004: a paragraph kept in the source language BY POLICY (spec 063
+        # FR-011, apparatus by region) is not an untranslated structural element.
+        if _is_policy_kept_source_entry(entry):
             continue
         text = str(getattr(entry, "text", "") or "").strip()
         if not _is_untranslated_structural_text(text):
@@ -515,6 +531,16 @@ def _collect_untranslated_body_samples(
             continue
         if bool(getattr(entry, "controlled_fallback", False)):
             continue
+        # Spec 064 FR-004 — the THIRD exemption, beside heading/caption and controlled
+        # fallback: a paragraph whose disposition is ``policy_kept_source`` was kept in the
+        # source language on purpose (spec 063 FR-011: a reference-list entry is apparatus by
+        # region and is not sent for translation). Counting it as untranslated BODY is what
+        # blocked Money & Sustainability on the 2026-11-07 rerun: 19 027 chars / 3.5 % — all
+        # four samples were ``references`` paragraphs of that status. The ratio denominator
+        # (the whole delivered markdown) is deliberately unchanged; only the numerator stops
+        # counting text the pipeline did not try to translate.
+        if _is_policy_kept_source_entry(entry):
+            continue
         text = str(getattr(entry, "text", "") or "").strip()
         if not _is_untranslated_body_text(text):
             continue
@@ -532,26 +558,93 @@ def _collect_untranslated_body_samples(
     return samples
 
 
+def _list_fragment_apparatus_credited_lines(
+    *,
+    samples: Sequence[object],
+    final_markdown: str,
+    assembly_entries: Sequence[object],
+    references_region_start: int | None,
+) -> frozenset[int]:
+    """Spec 064 FR-005: the markdown lines of list-fragment residue that sits in APPARATUS —
+    credited to review by the REGION and STATUS the pipeline recorded, before any form test.
+
+    A sample is credited when its resolved assembly entry (the same non-empty-line ordinal
+    alignment ``_resolve_list_fragment_regression_gate_samples`` uses) is source-backed and
+
+    * carries ``paragraph_status == policy_kept_source`` — kept in the source language by
+      policy (spec 063 FR-011), so a "fragment" there is the source's own line, not a
+      regression the translation introduced; or
+    * has a ``source_index`` at or after ``references_region_start`` — the back-matter
+      notes / bibliography / index region, resolved by the SAME provenance the heading-
+      demotion and paragraph-break detectors already use
+      (``formatting_coverage.resolve_main_content_scope``).
+
+    Why region and not form: on the 2026-11-07 rerun every gated sample on Creating Wealth,
+    Rethinking Money and The Value of Everything that hard-failed acceptance was a wrapped
+    tail of a notes / bibliography entry ending in a year («… Chelsea Green, 2004.»,
+    «(London: Macmillan, 1936), гл. 24.») — measured: 54 of 55 gated samples sit at or after
+    the region start; the remaining one (CW «14.») is a standalone number the form credit
+    already takes.
+    Form alone could not tell them from body text (one citation signal of the two
+    required). A broken list in the MAIN BODY has neither the status nor the region, so it
+    is not credited here and still hard-fails (anti-regression 3). No signal — an unresolved
+    line, a fallback entry, no region anchor — means no credit (Constitution VII).
+    """
+    if not samples or not assembly_entries:
+        return frozenset()
+    entry_index_by_line = _build_source_backed_entry_index_by_markdown_line(
+        final_markdown=final_markdown,
+        assembly_entries=assembly_entries,
+    )
+    credited: set[int] = set()
+    for sample in samples:
+        line = getattr(sample, "line", None)
+        if not isinstance(line, int):
+            continue
+        index = entry_index_by_line.get(line)
+        if index is None:
+            continue
+        entry = assembly_entries[index]
+        if not bool(getattr(entry, "from_registry", False)) or bool(getattr(entry, "used_fallback", False)):
+            continue
+        if _is_policy_kept_source_entry(entry):
+            credited.add(line)
+            continue
+        source_index = getattr(entry, "source_index", None)
+        if (
+            references_region_start is not None
+            and isinstance(source_index, int)
+            and not isinstance(source_index, bool)
+            and source_index >= references_region_start
+        ):
+            credited.add(line)
+    return frozenset(credited)
+
+
 def _is_reviewable_list_fragment_residue(
     *,
     samples: Sequence[object],
     gate_source: str,
+    apparatus_credited_lines: Collection[int] = frozenset(),
 ) -> bool:
     if gate_source != "entry_assembly":
         return False
     if not samples:
         return False
-    # Partition the residue: form-credited citation residue (standalone footnote / page
-    # numbers such as "18." or "1491.", and citation-form notes lines) vs. real body-text
-    # list fragments (broken bullets / list items). A single non-creditable body fragment
-    # hard-fails; a residue that is ENTIRELY citation-form routes to soft review, regardless
-    # of count, so footnote / page / bibliography residue cannot tip an otherwise-good book
-    # into an acceptance hard-fail (1‑A references crediting extended from bare numbers to
-    # full notes/bibliography lines).
+    # Partition the residue: credited residue vs. real body-text list fragments (broken
+    # bullets / list items). Credit comes from two sources, REGION/STATUS first (spec 064
+    # FR-005, ``_list_fragment_apparatus_credited_lines``: the sample's entry is
+    # policy-kept or in the back-matter notes/references region), then FORM (standalone
+    # footnote / page numbers such as "18." or "1491.", and citation-form notes lines). A
+    # single non-creditable body fragment hard-fails; a residue that is ENTIRELY credited
+    # routes to soft review, regardless of count, so footnote / page / bibliography residue
+    # cannot tip an otherwise-good book into an acceptance hard-fail (1‑A references
+    # crediting extended from bare numbers to full notes/bibliography lines).
     non_creditable_residue = [
         sample
         for sample in samples
-        if not _is_citation_form_list_fragment_sample(sample)
+        if getattr(sample, "line", None) not in apparatus_credited_lines
+        and not _is_citation_form_list_fragment_sample(sample)
     ]
     if non_creditable_residue:
         return False
@@ -654,7 +747,7 @@ def _build_formatting_review_item(
         # FR-006: an anchor with fewer than 3 locatable characters (e.g. "$", "", "###")
         # cannot be searched for. Mark it so the renderer counts it instead of printing an
         # empty «» row. No anchor is invented (Constitution VII, "No source signal…").
-        if _review_anchor_visible_char_count(anchor_text) < 3:
+        if _review_anchor_visible_char_count(anchor_text) < REVIEW_ANCHOR_MIN_VISIBLE_CHARS:
             sample_dict["anchor_usable"] = False
         # FR-005: a role_loss / heading-demotion item carries the concrete manual action —
         # the Word style to REAPPLY — derived purely from the source role/level. Gated on the
@@ -1367,6 +1460,27 @@ def _build_translation_quality_report(
         source_backed_entry_authority=source_backed_entry_authority,
         topology_projection_supported=bool(authority_fields.get("topology_projection_supported", False)),
     )
+    # Spec 064 FR-005: the back-matter region start, from the same provenance (and the same
+    # source registry) the paragraph-break detector scopes by; no snapshot here, as there.
+    # Measured on the four 2026-11-07 reports: identical with and without the snapshot, and
+    # equal to the importer's own first ``back_matter`` paragraph on all four books.
+    list_fragment_references_region_start = (
+        resolve_main_content_scope(
+            cast(Sequence[Mapping[str, object]], source_registry_entries)
+        )[1]
+        if isinstance(source_registry_entries, Sequence) and not isinstance(source_registry_entries, str)
+        else None
+    )
+    list_fragment_apparatus_credited_lines = (
+        _list_fragment_apparatus_credited_lines(
+            samples=list_fragment_regression_samples,
+            final_markdown=final_markdown,
+            assembly_entries=assembly_entries,
+            references_region_start=list_fragment_references_region_start,
+        )
+        if list_fragment_regression_gate_source == "entry_assembly"
+        else frozenset()
+    )
     suspicious_heading_repetition_samples = [
         sample for sample in false_fragment_heading_samples if getattr(sample, "reason", "") == "suspicious_heading_repetition_present"
     ]
@@ -1642,6 +1756,7 @@ def _build_translation_quality_report(
         if _is_reviewable_list_fragment_residue(
             samples=list_fragment_regression_samples,
             gate_source=list_fragment_regression_gate_source,
+            apparatus_credited_lines=list_fragment_apparatus_credited_lines,
         ):
             serialized_samples = _serialize_quality_samples(list_fragment_regression_samples)
             quality_status = _apply_quality_review_reason(
@@ -1733,6 +1848,18 @@ def _build_translation_quality_report(
             # and no source index (see ``quality_gate_text_detectors``). Constitution VII: the
             # verifier is not a gate, and a rule that kills a paid run at an unmeasured rate is
             # the same mistake as an unmeasured threshold.
+            #
+            # What the numerator EXCLUDES (``_collect_untranslated_body_samples``), three
+            # exemptions, each keyed on a fact the pipeline recorded rather than on the text:
+            # (1) heading/caption roles (their own review channel above); (2) a
+            # ``controlled_fallback`` entry (reported by the controlled-fallback review items);
+            # (3) spec 064 FR-004 — an entry whose ``paragraph_status`` is
+            # ``policy_kept_source``: kept in the source language BY POLICY (spec 063 FR-011,
+            # reference lists are apparatus by region), so it is not untranslated body. Without
+            # (3) the 2026-11-07 Money & Sustainability rerun was BLOCKED on 19 027 chars /
+            # 3.5 % that were entirely policy-kept ``references`` paragraphs. The 2 000-char /
+            # 2 % thresholds and the denominator (the whole delivered markdown) are unchanged:
+            # English prose without that status still escalates exactly as before.
             untranslated_body_fail = (
                 normalized_processing_operation == "translate"
                 and untranslated_body_char_count >= _UNTRANSLATED_BODY_FAIL_MIN_CHARS
@@ -2311,7 +2438,7 @@ def _collect_paragraph_anchor_facts(
         # the floor asks "can the reader search for what we are about to print" and the
         # delivered check asks "will that search succeed", and both questions are about the
         # printed address, not about the paragraph behind it.
-        if _review_anchor_visible_char_count(anchor) < 3:
+        if _review_anchor_visible_char_count(anchor) < REVIEW_ANCHOR_MIN_VISIBLE_CHARS:
             unanchored += 1
             continue
         if delivered_visible is not None and anchor not in delivered_visible:
