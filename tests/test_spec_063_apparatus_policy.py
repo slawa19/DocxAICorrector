@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from collections import Counter
 from pathlib import Path
 from types import SimpleNamespace
@@ -666,9 +667,8 @@ _NOTE_COMMENTARY = (
         _NOTE_ARTICLE,
         _NOTE_TORN_TITLE,
         _NOTE_TORN_TAIL,
-        "15. Ibid.",
-        "1489.",
         "### *Economy: What Should Change?* (Washington DC: Bureau of",
+        "1. R. Sahay, M. Cihak, P. N\u2019Diaye, A. Barajas, R. Bi, D. Ayala, Y. Gao,",
         "3. Studenski, *Income of Nations*, p. 127.",
         "16. C. A. E. Goodhart, ‘Competition and credit control’, Financial Markets",
         "title=Economia+non+osservata+-+04%2Fdic%2F2015+- +Testo+integrale+con+nota+metodologica.pdf",
@@ -691,6 +691,15 @@ def test_a_reference_reads_as_a_citation_by_its_form(text: str) -> None:
         "25. The full quote is: ‘The labour of some of the most respectable orders in the society "
         "is, like that of menial servants, unproductive of any value, and does not fix or realize "
         "itself in any permanent subject, or vendible commodity, which endures after that labour is past.’",
+        # Codex acceptance review 2026-11-07, finding 1: few running words is not a reference.
+        "See Figure 1 for details.",
+        "(This argument assumes that all prices remain constant over time.)",
+        "\u201cCan you be more precise?\u201d",
+        "\u8fd9\u4e00\u8bba\u70b9\u5047\u8bbe\u6240\u6709\u4ef7\u683c\u968f\u65f6\u95f4\u4fdd\u6301\u4e0d\u53d8\u3002",
+        "Notes",
+        # No positive mark of a reference at all: such a line stays on the diagnostic path.
+        "15. Ibid.",
+        "1489.",
         # The R-7 note of Creating Wealth: commentary that happens to name works and years.
         "Maynard Keynes — Knapp and Chartalism are cited approvingly in its opening pages. "
         "Chartalism experienced a revival under Abba P. Lerner in *The* *Economics of Control* (1944) "
@@ -912,6 +921,62 @@ def test_the_run_summary_prints_the_model_kept_counters() -> None:
     assert "model_accounting_back_matter_model_kept_fallback_block_count=209" in lines
 
 
+# --- Codex acceptance review 2026-11-07, findings 1 and 3: counter-proofs through the block ---
+
+
+@pytest.mark.parametrize(
+    ("text", "role"),
+    [
+        pytest.param("See Figure 1 for details.", "body", id="a-short-sentence"),
+        pytest.param("(This argument assumes that all prices remain constant over time.)", "body", id="a-whole-parenthetical"),
+        pytest.param("“Can you be more precise?”", "body", id="a-quoted-dialogue-line"),
+        pytest.param(
+            "这一论点假设所有价格随时间保持不变。",
+            "body",
+            id="a-cjk-paragraph",
+        ),
+        pytest.param("Notes", "heading", id="a-heading-echo"),
+        # Even a heading that LOOKS like a reference: D1 translates the apparatus headings.
+        pytest.param("### *Economy: What Should Change?* (Washington DC: Bureau of", "heading", id="a-reference-shaped-heading"),
+    ],
+)
+def test_an_echoed_non_reference_stays_a_controlled_fallback(monkeypatch, text: str, role: str) -> None:
+    written = _fallback_artifacts(monkeypatch)
+    payload = _payload(texts=[text], roles=[role], section=BACK_MATTER_SECTION_NOTES)
+
+    run = _run(payload, model_answer=_echo(payload), classification="source_text_fallback")
+
+    assert len(written) == 1
+    assert run.snapshot["controlled_block_fallback_block_count"] == 1
+    assert run.snapshot["back_matter_model_kept_paragraph_count"] == 0
+    assert run.snapshot["back_matter_model_kept_fallback_block_count"] == 0
+    assert [entry["paragraph_status"] for entry in run.state.generated_paragraph_registry] == [PARAGRAPH_STATUS_ACCEPTED]
+    assert [event for event, _ in run.events].count("block_apparatus_kept_by_model") == 0
+
+
+def test_a_torn_reference_is_relabelled_whole_or_not_at_all() -> None:
+    """Finding 3: assembly welds the two halves of a torn entry back together, but never halves
+    of different narration admissibility. A translated head with an echoed tail therefore keeps
+    the tail ``accepted`` -- the CW p1623/p1624 case -- and an echoed pair is relabelled together."""
+    head = "Complementary Currency.” Paper presented for publication in the *International Journal for Community Currency*"
+    tail = "Vol. 10 (2006). [online]. [cited November 2, 2010]. www.uea.ac.uk/env/ijccr/abstracts/vol10(3)lietaer.html."
+    payload = _payload(texts=[head, tail], roles=["body", "body"], section=BACK_MATTER_SECTION_NOTES)
+    translated_head = "Complementary Currency.” Статья, представленная в *International Journal for Community Currency*"
+    answer = MarkerPreservedBlockText(
+        "\n\n".join([translated_head, tail]),
+        (
+            ParagraphDisposition("p0000", translated_head, PARAGRAPH_STATUS_ACCEPTED),
+            ParagraphDisposition("p0001", tail, PARAGRAPH_STATUS_ACCEPTED),
+        ),
+    )
+
+    assert block_execution.model_kept_apparatus(context=_TRANSLATE, payload=payload, processed_chunk=answer) is None
+
+    kept = block_execution.model_kept_apparatus(context=_TRANSLATE, payload=payload, processed_chunk=_echo(payload))
+    assert kept is not None and kept.whole_block is True
+    assert _statuses(kept.processed_chunk) == [PARAGRAPH_STATUS_POLICY_KEPT_SOURCE] * 2
+
+
 # Opt-in replay over the 2026-11-07 RERUN on the spec 063 code (``aca048a``) -- a different set
 # of recorded runs from the one above, hence its own variable: point
 # ``DOCXAI_TRANSLATE_RERUN_REPLAY_ROOT`` at ``D:\Temp\docxai-runs\2026-11-07-translate-after``.
@@ -921,9 +986,9 @@ def test_the_run_summary_prints_the_model_kept_counters() -> None:
 _RERUN_REPLAY_ROOT_ENV = "DOCXAI_TRANSLATE_RERUN_REPLAY_ROOT"
 _RERUN_REPLAY_ROOT = os.environ.get(_RERUN_REPLAY_ROOT_ENV, "").strip()
 _FR006_REPLAY_BOOKS = [
-    ("value_of_everything", "mazzucato_pdf_full_benchmark_report.json", 209, 1, 410),
-    ("rethinking_money", "lietaer_pdf_full_benchmark_report.json", 0, 0, 88),
-    ("creating_wealth", "creatingwealth_pdf_full_benchmark_report.json", 0, 0, 142),
+    ("value_of_everything", "mazzucato_pdf_full_benchmark_report.json", 209, 15, 331),
+    ("rethinking_money", "lietaer_pdf_full_benchmark_report.json", 0, 0, 78),
+    ("creating_wealth", "creatingwealth_pdf_full_benchmark_report.json", 0, 0, 110),
     ("money_sustainability", "money_sustainability_pdf_full_heldout_report.json", 0, 0, 1),
 ]
 
@@ -937,8 +1002,14 @@ _FR006_REPLAY_BOOKS = [
     ids=[book[0] for book in _FR006_REPLAY_BOOKS],
 )
 def test_fr006_replay_on_recorded_translate_runs(book, report_name, recorded_fallbacks, fallbacks_after, relabelled) -> None:
+    """Replayed through ASSEMBLY, not only through the status counts (Codex review finding 3):
+    the final markdown and the final registry with FR-006 applied must equal the ones without it,
+    and the replay without it must reproduce the run's own recorded final registry."""
+    from collections import Counter as _Counter
+
     from docxaicorrector.document.semantic_blocks import build_marker_wrapped_block_text
-    from docxaicorrector.pipeline.output_validation import classify_processed_block
+    from docxaicorrector.pipeline import output_validation as ov
+    from docxaicorrector.pipeline.reader_cleanup_rebuild import _resolve_final_generated_paragraph_registry
 
     book_dir = Path(_RERUN_REPLAY_ROOT) / book
     report_path = book_dir / report_name
@@ -946,41 +1017,58 @@ def test_fr006_replay_on_recorded_translate_runs(book, report_name, recorded_fal
     if not report_path.is_file() or not source_path.is_file():
         pytest.skip(f"recorded run for {book} is absent under {book_dir}")
     with report_path.open(encoding="utf-8") as handle:
-        registry = json.load(handle)["runtime"]["state"]["processed_paragraph_registry"]
+        state = json.load(handle)["runtime"]["state"]
+    registry = state["processed_paragraph_registry"]
+    chunks = state["processed_block_markdowns"]
+    recorded_final = state.get("final_generated_paragraph_registry")
+    del state
+    if recorded_final is None:  # a blocked run: the runner's own replay of its final registry
+        replayed_path = book_dir / "final_registry_replayed.json"
+        if not replayed_path.is_file():
+            pytest.skip(f"{book}: blocked run without final_registry_replayed.json")
+        with replayed_path.open(encoding="utf-8") as handle:
+            recorded_final = json.load(handle)["final_generated_paragraph_registry"]
     with source_path.open(encoding="utf-8") as handle:
         source = json.load(handle)
+
+    def unit(record: dict[str, Any]) -> ParagraphUnit:
+        return ParagraphUnit(
+            text=record["text"],
+            role=record["role"],
+            paragraph_id=record["paragraph_id"],
+            heading_level=record.get("heading_level"),
+            list_kind=record.get("list_kind"),
+            structural_role=record.get("structural_role") or "body",
+            source_index=int(record["source_index"]),
+            asset_id=record.get("asset_id"),
+        )
+
     record_by_id = {record["paragraph_id"]: record for record in source["paragraphs"]}
+    source_units = [unit(record) for record in source["paragraphs"]]
     job_by_ids = {tuple(job["paragraph_ids"]): job for job in source["jobs"] if job["job_kind"] == "llm"}
     entries_by_block: dict[int, list[dict[str, Any]]] = {}
     for entry in registry:
         entries_by_block.setdefault(entry["block_index"], []).append(entry)
 
-    recorded, after, relabelled_count = 0, 0, 0
-    for entries in entries_by_block.values():
+    recorded, after = 0, 0
+    relabel_ids: set[str] = set()
+    converted_blocks: set[int] = set()
+    for block_index, entries in entries_by_block.items():
         ids = tuple(entry["paragraph_id"] for entry in entries)
         job = job_by_ids.get(ids)
         if job is None or not job.get("back_matter_section"):
             continue
         if all(entry.get("paragraph_status") == PARAGRAPH_STATUS_POLICY_KEPT_SOURCE for entry in entries):
             continue  # FR-011: kept without a model call, never classified
-        units = [
-            ParagraphUnit(
-                text=record_by_id[pid]["text"],
-                role=record_by_id[pid]["role"],
-                paragraph_id=pid,
-                heading_level=record_by_id[pid].get("heading_level"),
-                list_kind=record_by_id[pid].get("list_kind"),
-                structural_role=record_by_id[pid].get("structural_role") or "body",
-            )
-            for pid in ids
-        ]
+        units = [unit(record_by_id[pid]) for pid in ids]
         payload = SimpleNamespace(
             job_kind="llm",
             toc_dominant=False,
-            target_text="\n\n".join(unit.rendered_text for unit in units).strip(),
+            target_text="\n\n".join(item.rendered_text for item in units).strip(),
             target_text_with_markers=build_marker_wrapped_block_text(units, paragraph_ids=list(ids)),
             paragraph_ids=list(ids),
             paragraph_regions=list(job["paragraph_regions"]),
+            structural_roles=[item.structural_role for item in units],
             back_matter_section=job["back_matter_section"],
             narration_include=False,
         )
@@ -992,7 +1080,7 @@ def test_fr006_replay_on_recorded_translate_runs(book, report_name, recorded_fal
         )
         chunk = MarkerPreservedBlockText("\n\n".join(d.text for d in dispositions), dispositions)
         recorded += int(any(entry.get("controlled_fallback") for entry in entries))
-        status = classify_processed_block(payload.target_text, chunk, languages_differ=True)
+        status = ov.classify_processed_block(payload.target_text, chunk, languages_differ=True)
         if status not in {"valid", "source_text_fallback"}:
             after += 1
             continue
@@ -1000,8 +1088,44 @@ def test_fr006_replay_on_recorded_translate_runs(book, report_name, recorded_fal
         if status == "source_text_fallback" and (kept is None or not kept.whole_block):
             after += 1
             continue
-        if kept is not None:
-            relabelled_count += kept.paragraph_count
+        if kept is None:
+            continue
+        if status == "source_text_fallback":
+            converted_blocks.add(block_index)
+        for old, new in zip(dispositions, block_execution.marker_paragraph_dispositions(kept.processed_chunk) or ()):
+            if old.status != new.status:
+                relabel_ids.add(new.paragraph_id)
 
-    print(json.dumps({"book": book, "recorded_fallbacks": recorded, "after": after, "relabelled": relabelled_count}))
-    assert (recorded, after, relabelled_count) == (recorded_fallbacks, fallbacks_after, relabelled)
+    after_registry = [dict(entry) for entry in registry]
+    for entry in after_registry:
+        if entry["paragraph_id"] in relabel_ids:
+            entry["paragraph_status"] = PARAGRAPH_STATUS_POLICY_KEPT_SOURCE
+        if entry["block_index"] in converted_blocks:
+            for key in ("controlled_fallback", "controlled_fallback_kind", "controlled_fallback_narration_excluded"):
+                entry.pop(key, None)
+
+    def assemble(paragraph_registry: list[dict[str, Any]]) -> tuple[str, list[tuple[object, ...]]]:
+        result = ov.assemble_final_markdown(
+            processed_chunks=chunks, generated_paragraph_registry=paragraph_registry, source_paragraphs=source_units
+        )
+        final = _resolve_final_generated_paragraph_registry(
+            markdown_text=result.final_markdown,
+            generated_paragraph_registry=ov.build_generated_paragraph_registry_from_entries(result.entries),
+        )
+        return result.final_markdown, [
+            (entry.get("paragraph_id"), entry.get("text"), tuple(cast(list[str], entry.get("merged_paragraph_ids") or [])))
+            for entry in (final or [])
+        ]
+
+    base_markdown, base_final = assemble(registry)
+    after_markdown, after_final = assemble(after_registry)
+    print(json.dumps({"book": book, "recorded_fallbacks": recorded, "after": after, "relabelled": len(relabel_ids)}))
+
+    assert (recorded, after, len(relabel_ids)) == (recorded_fallbacks, fallbacks_after, relabelled)
+    # The replay IS the run: without FR-006 it reproduces the recorded final registry.
+    assert [text for _, text, _ in base_final] == [entry.get("text") for entry in recorded_final]
+    # FR-006 changes statuses, never the delivered artifact: same markdown, same paragraphs,
+    # same merges, and the 061 invariants (numbers, footnote markers) hold trivially on it.
+    assert after_markdown == base_markdown
+    assert after_final == base_final
+    assert _Counter(re.findall(r"\d+", after_markdown)) == _Counter(re.findall(r"\d+", base_markdown))

@@ -1,4 +1,5 @@
 import logging
+import re
 import json
 import time
 import uuid
@@ -478,6 +479,23 @@ class ModelKeptApparatus:
     whole_block: bool
 
 
+# How a paragraph ENDS when it ends a sentence: a full stop, a question or exclamation mark or
+# an ellipsis, optionally followed by closing quotes or brackets. A paragraph that ends any other
+# way continues in the next one -- the torn line of a PDF text layer.
+_SENTENCE_END_PATTERN = re.compile(r'[.!?…]["”’»)\]*]*\s*$')
+
+
+def _torn_paragraph_runs(source_texts: Sequence[str]) -> list[list[int]]:
+    """Positions grouped into runs joined by a torn end (no sentence end) in the SOURCE."""
+    runs: list[list[int]] = []
+    for position, text in enumerate(source_texts):
+        if runs and _SENTENCE_END_PATTERN.search(source_texts[position - 1]) is None:
+            runs[-1].append(position)
+        else:
+            runs.append([position])
+    return runs
+
+
 def model_kept_apparatus(*, context: Any, payload: Any, processed_chunk: str) -> ModelKeptApparatus | None:
     """Which paragraphs of this answer are references the model kept under rule 12, or ``None``.
 
@@ -491,7 +509,10 @@ def model_kept_apparatus(*, context: Any, payload: Any, processed_chunk: str) ->
     * the generator ACCEPTED it (an ``omitted`` or ``source_restored`` paragraph is a loss and
       keeps its own status) and its text equals its own source (``delivered_text_equals_source``);
     * the source reads as a reference by its form (``output_validation.is_citation_form_paragraph``)
-      -- an unchanged sentence of commentary stays a fallback, which is the anti-vacuum half.
+      -- an unchanged sentence of commentary stays a fallback, which is the anti-vacuum half;
+    * its structural role is not ``heading``: D1 translates the titles of the apparatus (a block
+      carrying one goes to the model, ``reference_list_block_keeps_source``), so an echoed
+      heading is a heading left untranslated, whatever it looks like.
 
     Decided per PARAGRAPH where the answer carries its per-paragraph record. Without markers
     there is no record to carry a status, so the decision is per BLOCK: the whole answer equals
@@ -512,12 +533,19 @@ def model_kept_apparatus(*, context: Any, payload: Any, processed_chunk: str) ->
         return None
     if not isinstance(paragraph_ids, list) or len(paragraph_ids) != len(regions):
         return None
+    roles = getattr(payload, "structural_roles", None)
+    if not isinstance(roles, list) or len(roles) != len(regions):
+        return None
+    eligible = [
+        region == PARAGRAPH_REGION_BACK_MATTER and str(role or "").strip().casefold() != "heading"
+        for region, role in zip(regions, roles)
+    ]
     dispositions = marker_paragraph_dispositions(processed_chunk)
     if dispositions is None:
         target_text = str(getattr(payload, "target_text", "") or "")
         if bool(getattr(payload, "narration_include", True)):
             return None
-        if any(region != PARAGRAPH_REGION_BACK_MATTER for region in regions):
+        if not all(eligible):
             return None
         if not delivered_text_equals_source(target_text=target_text, processed_chunk=processed_chunk):
             return None
@@ -535,10 +563,21 @@ def model_kept_apparatus(*, context: Any, payload: Any, processed_chunk: str) ->
     kept_positions = {
         position
         for position, disposition in enumerate(dispositions)
-        if regions[position] == PARAGRAPH_REGION_BACK_MATTER
+        if eligible[position]
         and disposition.status == PARAGRAPH_STATUS_ACCEPTED
         and delivered_text_equals_source(target_text=source_texts[position], processed_chunk=disposition.text)
         and is_citation_form_paragraph(source_texts[position])
+    }
+    # A reference torn across two paragraphs is ONE entry: assembly welds the halves back
+    # together, but never two halves of different narration admissibility
+    # (``output_validation._entry_is_narration_admissible``). Relabelling one half alone would
+    # therefore split an entry the reader saw whole (Codex acceptance review 2026-11-07,
+    # finding 3), so a torn run is relabelled together or not at all.
+    kept_positions = {
+        position
+        for run in _torn_paragraph_runs(source_texts)
+        if all(member in kept_positions for member in run)
+        for position in run
     }
     if not kept_positions:
         return None
