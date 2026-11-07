@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 
@@ -292,7 +293,7 @@ def test_candidate_payload_carries_count_and_one_context():
     payload = candidate.to_payload()
 
     assert payload["term"] == "Kelbrook"
-    assert payload["count"] >= 6
+    assert cast(int, payload["count"]) >= 6
     assert "Kelbrook" in str(payload["context"])
     assert len(str(payload["context"])) <= glossary_pass.GLOSSARY_CONTEXT_CHARS
 
@@ -362,10 +363,11 @@ def test_request_carries_languages_limit_candidates_and_fixed_terms():
 
     assert request["model"] == "model-x"
     assert request["temperature"] == 0.2
-    system_text = request["input"][0]["content"][0]["text"]
+    request_input = cast(list[dict[str, Any]], request["input"])
+    system_text = request_input[0]["content"][0]["text"]
     assert "from en into ru" in system_text
     assert "at most 12." in system_text
-    user_payload = json.loads(request["input"][1]["content"][0]["text"])
+    user_payload = json.loads(request_input[1]["content"][0]["text"])
     assert user_payload["max_terms"] == 12
     assert [item["term"] for item in user_payload["candidates"]] == ["Zorvane Pettish", "quillet bond"]
     assert user_payload["candidates"][0]["signals"] == ["capitalised"]
@@ -479,7 +481,7 @@ def test_request_text_completion_books_the_glossary_stage_and_not_the_api_path_c
 
     assert text == '{"terms": []}'
     assert len(client.calls) == 1
-    stages = snapshot["stages"]
+    stages = cast(dict[str, dict[str, Any]], snapshot["stages"])
     assert set(stages) == {"glossary_extraction"}
     assert stages["glossary_extraction"]["prompt_tokens"] == 1200
     assert stages["glossary_extraction"]["completion_tokens"] == 300
@@ -534,7 +536,8 @@ def test_run_glossary_notice_only_when_there_is_something_to_say():
         "message_key": "result.run_glossary_built",
         "params": {"count": 5},
     }
-    assert build_run_glossary_notice(status="failed", term_count=0)["level"] == "warning"
+    failed_notice = build_run_glossary_notice(status="failed", term_count=0)
+    assert failed_notice is not None and failed_notice["level"] == "warning"
     for status in ("not_applicable", "no_candidates", "empty", "stopped"):
         assert build_run_glossary_notice(status=status, term_count=0) is None
     assert build_run_glossary_notice(status="built", term_count=0) is None

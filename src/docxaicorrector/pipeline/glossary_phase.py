@@ -393,9 +393,10 @@ def _call_model(
         target_language=str(getattr(context, "target_language", "") or ""),
         max_terms=max_terms,
     )
+    request_input = request.get("input")
     record["request_chars"] = sum(
         len(str(part.get("text", "")))
-        for item in request.get("input", []) or []
+        for item in (request_input if isinstance(request_input, list) else [])
         if isinstance(item, Mapping)
         for part in (item.get("content") or [])
         if isinstance(part, Mapping)

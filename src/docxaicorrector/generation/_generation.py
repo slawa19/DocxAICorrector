@@ -1980,7 +1980,7 @@ def _call_markdown_request_with_sdk_fallback(
 
 
 def request_text_completion(
-    client: object,
+    client: Any,
     request_kwargs: dict[str, object],
     *,
     usage_stage: str,
