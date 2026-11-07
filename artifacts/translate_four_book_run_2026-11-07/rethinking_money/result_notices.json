@@ -1,0 +1,49 @@
+{
+  "latest_result_notices": [
+    {
+      "kind": "translation",
+      "level": "warning",
+      "message_key": "result.source_text_delivered",
+      "params": {
+        "count": 9,
+        "blocks": 1,
+        "chars": 1694
+      },
+      "anchors": [
+        "Jacqui Dunne",
+        "Copyright © 2013 by Bernard Lietaer and Jacqui Dunne All rights reserved.",
+        "Berrett-Koehler Publishers, Inc.",
+        "235 Montgomery Street, Suite 650",
+        "San Francisco, California 94104-2916 Tel: (415) 288-0260, Fax: (415) 362-2512 www.bkconnection.com Ordering information for print editions Quantity sales.",
+        "Individual sales.",
+        "Tel: (800) 929-2929; Fax: (802) 864-7626.",
+        "Orders by U.S."
+      ]
+    },
+    {
+      "kind": "acceptance",
+      "level": "warning",
+      "message_key": "result.acceptance_not_passed",
+      "params": {
+        "count": 1
+      },
+      "failed_checks": [
+        "untranslated_prose_not_delivered"
+      ]
+    }
+  ],
+  "latest_result_notice": {
+    "level": "warning",
+    "message": "Перевод завершён. Документ готов к использованию, но требует ручной проверки оформления: 7 абзацев с замечаниями. Подробности — в отчёте проверки (formatting_review.txt)."
+  },
+  "latest_delivery_disposition": {
+    "status": "accepted_with_advisory"
+  },
+  "latest_controlled_block_fallback_artifact": "/mnt/d/Temp/claude/wt-fidelity/.run/block_fallbacks/Rethinking-money_-How-new-currencies-turn-scarcity-into-prosperity-Bernard-Lieta_block_246_60ba184d.json",
+  "acceptance": {
+    "passed": false,
+    "failed_checks": [
+      "untranslated_prose_not_delivered"
+    ]
+  }
+}
