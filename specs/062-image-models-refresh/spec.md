@@ -1,0 +1,769 @@
+# Feature Specification: Модели обработки изображений устаревают 2026-12-01 — замена моделей и починка промптов, два варианта на выбор
+
+**Feature Branch**: `[062-image-models-refresh]`
+
+**Created**: 2026-11-07
+
+**Date**: 2026-11-07 (все строки кода проверены на `2ce8f9c`, последнем коммите `main` на эту дату)
+
+**Status**: **NEEDS DECISION (2026-11-07) — владелец выбирает вариант 1 (`gpt-image-2.5-flare`, роли
+зрения остаются на `gpt-5.4-mini`) или вариант 2 (`gpt-image-2.5-sunburst` и `gpt-6.1-sol` на ролях
+зрения); жёсткий срок — 2026-12-01, в этот день OpenAI отключает `gpt-image-1.5`, на котором сегодня
+стоят обе image-роли.** Других продуктовых развилок в спеке нет: технические решения приняты агентом
+и записаны в самих требованиях (FR-012, FR-021), владелец может их переиграть. Spec-only tier
+(Конституция III): каждое требование ограничено названной находкой и проверяется детерминированным
+тестом без вызова модели, кроме P0-гейта кириллицы и платного прогона из Success Criteria. `plan.md` и
+`tasks.md` не пишутся.
+
+**Owner surface**:
+`src/docxaicorrector/image/generation.py` — три payload'а Images API (`:450-458`, `:505-514`,
+`:597-605`), адаптация параметров (`:636-837`), обрезка промпта (`:939-945`), запасные размеры
+(`:948-1002`), сборка промптов (`:1121-1221`), vision-брифы (`:1224-1341`);
+`src/docxaicorrector/image/analysis.py` — эвристика (`:358`), промпт анализа (`:454-499`), разбор
+ответа (`:513-546`), обходы по плотности текста (`:654-686`), нормализация маршрута (`:689-717`),
+детектор «не-латиницы» (`:830-832`);
+`src/docxaicorrector/image/validation.py` — токенизатор (`:32`), оценки (`:290-340`), промпт
+(`:383-429`); `src/docxaicorrector/image/pipeline.py` — выбор кандидата (`:807-947`), compare_all
+(`:344-411`, `:1232-1298`), бюджет документа (`:1301-1322`);
+`src/docxaicorrector/image/pipeline_policy.py:6-33`; `src/docxaicorrector/image/output_policy.py:7-8`;
+`src/docxaicorrector/image/reconstruction.py:146-163`; `src/docxaicorrector/image/shared.py:60-71`;
+`src/docxaicorrector/resources/config.toml` — `[models.image_*]` (`:117-133`), пороги (`:41-55`),
+`[image_output]` (`:185-195`); `.env.example:70-75`;
+`src/docxaicorrector/resources/prompts/scene_graph_extraction.txt`,
+`src/docxaicorrector/resources/prompts/image_prompt_registry.toml`,
+`src/docxaicorrector/resources/prompts/image_profiles/*_safe_fallback.txt`;
+`src/docxaicorrector/core/config.py` — замок провайдера (`:84-88`, `:1247-1265`) и запасные id
+(`:100-101`); `src/docxaicorrector/core/models.py:1087-1093`;
+`src/docxaicorrector/ui/locales/ru.json:69,74`, `src/docxaicorrector/ui/locales/en.json:68,73`;
+`README.md:309-310,362,407,410,462-463` (тоже несёт `gpt-image-1.5`; в отчётах исследования не
+упомянут); `tests/conftest.py:67-68`; `docs/WORKFLOW_AND_IMAGE_MODES.md:101-121`;
+`corpus_registry.toml` (два новых run-профиля для Success Criteria).
+
+**Companion**:
+`docs/WORKFLOW_AND_IMAGE_MODES.md` — контракт режимов изображений, правится по M5;
+два отчёта исследования от 2026-11-07, лежащие **вне репозитория** у владельца:
+`D:\Temp\docxai-research\image-models-2026-11-07.md` (сравнение моделей, цены, варианты) и
+`D:\Temp\docxai-research\image-prompts-audit-2026-11-07.md` (аудит промптов, 27 находок).
+Их ключевые таблицы воспроизведены здесь, идентификаторы находок аудита (D1…D10, M1…M8, W1…W9)
+сохранены, чтобы документы оставались сверяемыми. Источник правды — эта спека и код, не отчёты
+(правило `docs/reviews/README.md`).
+
+**Changelog**:
+
+- 2026-11-07 — создана по двум отчётам исследования. Каждое утверждение о коде перепроверено
+  оркестратором по `2ce8f9c` в боковом дереве; внешний факт о сроке перепроверен по странице
+  OpenAI в тот же день. Ничего не исправлено.
+- 2026-11-07 — **поправки к отчётам, найденные при перепроверке** (подробно — в Verified findings):
+  (1) базовая линия «43 вызова `image_analysis`, $0,066» найдена —
+  `artifacts/audiobook_final_run/money_translate_docx/run_summary.txt:48`, прогон 2026-08-06 в
+  режиме `safe`; оговорка отчёта «43 вызова могут завышать масштаб вдвое, в книге 18 якорей»
+  **опровергнута**: в Money & Sustainability 43 изображения (`image_count=43`,
+  `output_inline_shapes=43` в четырёх записанных сводках), 18 якорей из коммита `7819933` относятся
+  к другому документу; (2) профиль токенов одного вызова — 400 входных и 277 выходных, а не
+  «≈1 300 и ≈125»; сумма при этом сходится с ценой `gpt-5.4-mini` до цента; (3) прогноз аудита M3
+  «запрос анализа в safe-режиме падает» опровергнут тем же прогоном — 43 вызова прошли с ценой от
+  провайдера; (4) запасные размеры `512x512`/`256x256` не «всегда отклоняются и тратят попытки», а
+  выбираются, только если их перечислил текст ошибки — устаревшие, но почти недостижимые; (5) порог
+  `non_latin_text_bypass_threshold` стоит на `config.toml:55`, не `:56`; (6) D6 сужен: случай
+  пропуска по pixel budget на входе уже ловится `pipeline.py:842`, живы три места отказа на выходе.
+  Замечание к постановке задачи: Money & Sustainability несёт **43** изображения, не 18; в
+  `corpus_registry.toml` флаг `has_images = true` стоит только у неё, но изображения есть во всех
+  четырёх книгах (62, 55, 42 — по сводкам прогонов); флаг — требование приёмки, а не факт.
+
+## Почему сейчас
+
+**2026-12-01 OpenAI отключает `gpt-image-1.5`** — модель, которая сегодня стоит на обеих image-ролях:
+`[models.image_generation] default = "gpt-image-1.5"` (`config.toml:126-127`),
+`[models.image_edit] default = "gpt-image-1.5"` (`:129-130`), те же id в запасной карте
+(`core/config.py:100-101`) и в `.env.example:73-74`. Страница
+https://developers.openai.com/api/docs/deprecations, перечитана 2026-11-07: «On June 2, 2026, we
+notified developers using older GPT Image models», строка «Dec 1, 2026 | `gpt-image-1.5` \|
+`gpt-image-1.5-2025-12-16` | `gpt-image-2.6-sunburst` or `gpt-image-2.6-flare`». Тем же днём уходят
+`gpt-image-1-mini` и `chatgpt-image-latest`; `gpt-image-1` отключён 2026-10-23. `gpt-5.4-mini`
+(четыре роли зрения) в таблице отключений отсутствует.
+
+**Что будет 2 декабря, если ничего не делать** (прочитано по коду 2026-11-07; текст ошибки
+отключённой модели неизвестен — это прогноз, но любой 4xx ведёт по одному пути, потому что
+`is_retryable_error` повторяет только 408/409/429 и 5xx, `image/shared.py:51-57`):
+
+- **Креативная перерисовка** (`semantic_redraw_direct`). Цепочка `generation.py:361-418`: креативный
+  `images.generate` падает → `images.edit` падает → `_generate_structured_candidate` снова пробует
+  `images.edit`, затем vision-описание и `images.generate` — падает. Исключение уходит в
+  `select_best_semantic_asset`, там `semantic_candidate_attempt_failed` уровня WARNING и `continue`
+  (`pipeline.py:895-905`); после двух попыток — `_apply_safe_fallback_outcome(...,
+  reason="semantic_candidate_attempts_exhausted")` (`pipeline.py:931-938`) или, раньше, исчерпанный
+  бюджет (`:875-894`). Каждая попытка успевает оплатить vision-бриф и vision-описание
+  (`generation.py:435`, `:582`) до того, как упадёт image-вызов.
+- **Структурная перерисовка** (`semantic_redraw_structured`). `images.edit` падает, затем
+  `images.generate` падает (`generation.py:558-612`); при `render_strategy ==
+  "deterministic_reconstruction"` изображение уходит в реконструкцию (`:336-358`), иначе — тот же
+  safe-откат. Таблицы с маршрутом «сначала реконструкция» (`generation.py:107-120`, `:158-167`)
+  image-модель не зовут и не пострадают.
+- **«Сгенерировать 3 варианта»** (`compare_all`). Семантические варианты получают
+  `semantic_candidate_attempts_exhausted`, это «неполный вариант» (`pipeline.py:336-341`, `:367-370`),
+  и изображение уходит в `compare_all_variants_incomplete` с safe-доставкой (`:403-411`, `:1288-1289`)
+  — в DOCX один вариант вместо трёх.
+- **Прогон при этом зелёный.** Все откаты — WARNING; книга доставляется с PIL-подправленными
+  картинками (`generation.py:288-292`), и пользователь, выбравший AI-перерисовку, получает «Просто
+  улучшить», заплатив за vision-вызовы.
+
+Режимы `no_change` и `safe` image-модель не вызывают (`pipeline.py:434-462`) и не пострадают.
+
+## Зачем одна спека, а не две
+
+Смена модели и правка промптов связаны в одну сторону: половина промптов писалась под возможности
+семейства gpt-image-1 и DALL·E (параметры запроса, размеры, «модель не рисует кириллицу»), и после
+смены модели эти допущения либо становятся ложными, либо их надо переутвердить на новой модели. Другая
+половина находок от модели не зависит и чинится сейчас. Поэтому порядок такой: **P0** — замена модели
+до срока, **P1** — правки, не зависящие от модели, **P2** — правки, которые ждут выбора варианта,
+**P3** — расхождения подписей режимов с поведением.
+
+## User Scenarios & Testing *(mandatory)*
+
+### User Story 1 — AI-перерисовка продолжает работать после 2026-12-01 (Priority: P0)
+
+Пользователь выбирает «Структурная AI-перерисовка» или «Креативная AI-перерисовка». После 1 декабря
+изображения по-прежнему перерисовываются выбранной image-моделью, а не тихо деградируют в safe.
+
+**Independent Test**: платный прогон двух книг (SC-002) без единого события
+`semantic_candidate_attempt_failed`, вызванного ошибкой Images API.
+
+**Acceptance Scenarios**:
+
+1. **Given** конфиг с выбранной моделью, **When** идёт структурная перерисовка, **Then** запрос
+   уходит без параметров, которые модель не принимает, и без единого `*_retry_without_optional_param`.
+2. **Given** ключ `[models.image_generation]` отсутствует в пользовательском конфиге, **When**
+   приложение стартует, **Then** запасной id — новая модель, а не отключённая.
+
+### User Story 2 — Промпт говорит модели то, что она получает (Priority: P1)
+
+Модель генерации не слышит «используй исходное изображение», которого ей не передали, не получает
+внутренних кодов вида `dense_text_bypass:24_nodes` и не просит «инфографику» для графика.
+
+**Independent Test**: детерминированные тесты на собранный текст промпта (без вызова модели).
+
+### User Story 3 — Подписи режимов обещают то, что режим делает (Priority: P3)
+
+«Сгенерировать 3 варианта» не обещает три варианта фотографии, которой положен один.
+
+**Independent Test**: тест каталога строк и тест compare_all на фото — один вставленный вариант,
+подпись не обещает трёх.
+
+### Edge Cases
+
+- Модель выбрана, но её id не в таблице возможностей (FR-004) — запрос уходит с минимальным набором
+  параметров, одно WARNING на прогон, а не тихая цепочка адаптаций.
+- Ключ API без доступа к выбранной модели — та же ошибка, что после отключения: safe-откат с
+  WARNING. Гейт FR-006 ловит это до объявления готовности.
+- Изображение с кириллицей на английской книге — не возникает: пайплайн изображений не знает языка
+  цели и запрещает перевод подписей (M1), поэтому кириллица в картинках появляется только у
+  документов на русском. Гейт FR-005 проверяет именно такие изображения.
+
+## Verified findings
+
+Все строки проверены 2026-11-07 на `2ce8f9c`. Первая группа (R) — факты отчёта о моделях, вторая —
+находки аудита промптов с их идентификаторами. Перенесены только подтверждённые; уточнения помечены.
+
+### R. Модели и параметры
+
+- **R1. Срок.** См. «Почему сейчас»; таблица отключений перечитана 2026-11-07. Отметим: OpenAI
+  рекомендует пользователям 1.5 семейство **2.6**, а не 2.5, на которое опираются оба варианта
+  (обоснование выбора 2.5 — в «Два варианта»).
+- **R2. Все шесть image-ролей привязаны к OpenAI.** `_PROVIDER_CAPABILITIES` (`core/config.py:84-88`):
+  `"openrouter": frozenset({"responses_text"})`, `"anthropic": frozenset({"responses_text"})`;
+  `openai_only_roles` (`:1247-1265`) поднимает `RuntimeError(f"Provider '{resolved_selector.provider}'
+  не поддерживает role ...")` на загрузке конфига; клиент — `get_client()` →
+  `get_provider_client("openai")` (`:1699-1700`), подключён в `processing/processing_service.py:614` и
+  `processing/preparation.py:1027`; для режимов кроме `no_change`/`safe` —
+  `provider_client_factory("openai")` (`pipeline/setup.py:497-507`, `pipeline/late_phases.py:253-267`).
+  Любая модель не от OpenAI на image-роли — новый код, а не правка конфига.
+- **R3. Параметры, которых новые модели не принимают, убираются только по тексту ошибки.** Все три
+  payload'а несут `"response_format": "b64_json"` (`generation.py:457`, `:513`, `:604`); edit несёт
+  `"input_fidelity": "high" if use_high_fidelity else "low"` (`:510`). Оба в списках «можно выбросить»
+  (`:643-651`, `:750`), но выбрасываются, только если текст ошибки содержит один из маркеров
+  `"Unsupported parameter: '"`, `"Unknown parameter: '"`, `"unexpected keyword argument '"`
+  (`shared.py:60-71`). Иначе ошибка не ретраится и уходит по цепочке откатов. По справочнику OpenAI
+  (из отчёта): `response_format` «Unsupported for GPT image models», `input_fidelity` для
+  `gpt-image-2` «Not supported … Omit it», для 2.5/2.6 документация молчит. Тесты закрепляют
+  отправку: `tests/test_image_generation.py:327`, `:495` (`response_format == "b64_json"`), `:1376`
+  (`input_fidelity == "high"`).
+- **R4. Запасные размеры — эпохи DALL·E (уточнено).** `edit_candidate_sizes = [..., "512x512",
+  "256x256"]` (`config.toml:187`), та же пара в `output_policy.py:8` и во вшитой подстановке
+  `generation.py:958`; генерация держит `"1792x1024", "1024x1792"` (`:976`). Для 2.x минимум —
+  655 360 пикселей (по отчёту), так что 512² и 256² недопустимы. **Уточнение к отчёту:** эти размеры
+  выбираются, только если ошибка содержит `"Supported values are:"` и перечисляет их
+  (`generation.py:954-1002`); «всегда тратят попытки адаптации» — неверно, они устаревшие, но почти
+  недостижимые. Основные размеры 1024², 1536×1024, 1024×1536 (`config.toml:186`) для 2.x допустимы.
+- **R5. Качество вшито.** `"quality": "high"` (`generation.py:454`, `:601`), `"high" if
+  use_high_fidelity else "medium"` (`:509`); значения `xhigh`/`max` семейства 2.5 недоступны без
+  правки кода.
+- **R6. Запасные id.** `_MIGRATION_DEFAULT_MODEL_ROLES` содержит `"image_generation": "gpt-image-1.5"`,
+  `"image_edit": "gpt-image-1.5"` (`core/config.py:100-101`) — без правки старый id вернётся при
+  отсутствии ключа в конфиге.
+- **R7. Структурная перерисовка таблиц рисует текст локальными шрифтами, не моделью.** При
+  `prefer_deterministic_reconstruction = true` (`config.toml:49`) VLM возвращает JSON-сцену
+  (`reconstruction.py:127-187`), а PIL рисует её шрифтами из `COMMON_SANS_FONTS`
+  (`reconstruction.py:38-75`: `segoeui.ttf`, `calibri.ttf`, `arial.ttf`, `DejaVuSans.ttf`,
+  `LiberationSans-Regular.ttf`) через `_get_font` (`:651`). Кириллицу image-модель рисует только в
+  креативной генерации (`generation.py:421`), прямом edit (`:489`) и структурном edit/generate
+  (`:545`).
+- **R8. `detail` на `input_image` не задаётся нигде**: `analysis.py:486-489`, `validation.py:412-419`,
+  `reconstruction.py:158`, `generation.py:1266`, `:1326`. Стоимость и разборчивость мелких подписей
+  зависят от умолчания модели.
+- **R9. Базовая линия стоимости зрения найдена и уточнена.**
+  `artifacts/audiobook_final_run/money_translate_docx/run_summary.txt:48`: `"image_analysis":
+  {"completion_tokens": 11897, "cost_usd_reported_by_provider": 0.066451, "model_call_count": 43, ...
+  "prompt_tokens": 17219}`; `:20` — `"image_mode": "safe"`, запуск 2026-08-06 (`:11`). На вызов — 400
+  входных и 277 выходных токенов; по ценам `gpt-5.4-mini` ($0,75/$4,50 за миллион) это ровно $0,0665.
+  Отчёт брал профиль «≈1 300 + ≈125» — сумма та же, форма другая; для моделей с другим соотношением
+  цен вход/выход (вариант 2) это существенно, и цены в «Два варианта» пересчитаны по замеренной
+  форме. **400 входных токенов на вызов с картинкой подозрительно мало** — оплачивалась ли картинка
+  как image-токены на этом пути, не установлено (прогноз; проверяется полем `usage` одного прямого
+  вызова OpenAI).
+- **R10. Число изображений в книгах.** `image_count=43` у Money & Sustainability
+  (`artifacts/audio_path_run_2026-11-07/money_sustainability/run_summary.txt:22`, то же 43 в трёх
+  других сводках), `62` у Creating Wealth, `55` у Rethinking Money
+  (`artifacts/audiobook_four_book_run_2026-11-07/*/run_summary.txt:22`), `42` у The Value of
+  Everything (`artifacts/audiobook_final_run/value_of_everything/run_summary.txt:22`). Оговорка отчёта
+  «43 вызова могут завышать масштаб примерно вдвое, в книге 18 якорей» **опровергнута**: 43 вызова —
+  по одному на изображение; 18 якорей из `7819933` — русский DOCX из
+  `.run/reader_cleanup_faithful_replay/`, другой документ.
+- **R11. Кириллические образцы в репозитории есть, но их мало.** `tests/test_real_image_pipeline.py:22-56`
+  описывает три живых случая: `pic1_lietaer.jpg` (схема), `кпсс.jpg` (фото),
+  `журналистика факты манипуляции.png` (инфографика; для живого вызова ожидается
+  `"expected_live_strategy": "safe_mode"`, `"live_semantic_allowed": False` — это закрепление D2 в
+  живом тесте, включаемом `DOCX_AI_RUN_LIVE_IMAGE_API_TESTS`, `:62`).
+
+### D. Дефекты
+
+- **D1. Обходы «плотный текст» и «не-латиница» ничего не обходят; они только отключают
+  реконструкцию и протекают в промпт.** `analysis.py:661-685` ставит `render_strategy="safe_mode"`,
+  `semantic_redraw_allowed=False`, `fallback_reason=f"dense_text_bypass:{result.text_node_count}_nodes"`
+  (и `dense_non_latin_...`). `pipeline_policy.py:6-9` объявляет эти префиксы рекомендательными, и
+  `build_generation_analysis` (`:25-28`) возвращает `semantic_redraw_allowed=True`. Остаётся: (а)
+  `render_strategy` остаётся `safe_mode`, а и гейт реконструкции (`generation.py:158-163`), и её
+  откат (`:337`) требуют `deterministic_reconstruction` — **самые плотные таблицы теряют PIL-маршрут**
+  и уходят в генеративный edit; (б) `generation.py:1154-1155` добавляет в промпт `f"Avoid the failure
+  mode noted during analysis: {analysis.fallback_reason}."`. Комментарий к порогам говорит обратное:
+  «above these values the pipeline should keep the original raster more often» (`analysis.py:34-35`).
+  Закреплено тестами `tests/test_image_pipeline_policy.py:12`, `:31`, `tests/test_image_analysis.py:221-227`.
+- **D2. Промпт анализа жёстко отправляет плотную кириллицу в safe.** Системный текст: «Dense
+  infographics, posters, and comparison charts with many text blocks, especially in Cyrillic or mixed
+  non-Latin text, should prefer safe_mode.» (`analysis.py:467`); пользовательский: «If text is too
+  dense for faithful redraw, set recommended_route to safe_mode.» (`:483`). `recommended_route=
+  "safe_mode"` → `_normalize_render_strategy` возвращает `("safe_mode", True)` (`:693-694`) →
+  `semantic_redraw_allowed = False` (`:528-529`); `fallback_reason` здесь — свободный текст модели без
+  рекомендательного префикса, поэтому запрет **жёсткий** даже в семантических режимах. Это допущение
+  о возможностях модели эпохи gpt-image-1.
+- **D3. Литерал из тестовой фикстуры в продуктовой эвристике (Конституция VII).** `analysis.py:358`:
+  `structure_summary="three boxes connected by arrows"` для любого JPEG, похожего на схему, когда
+  зрение выключено или упало. Та же строка — фикстура в `tests/test_image_analysis.py:136`, `:277`,
+  `:299`, `:328`, `tests/test_image_generation.py:33`, `tests/test_image_validation.py:35` и ещё шести
+  местах. Литерал попадает в промпт (`generation.py:1146`, `f"Structure summary:
+  {analysis.structure_summary}"`), в vision-запросы (`:1263`, `:1323`) и в оценку структуры
+  валидатора (`validation.py:173-176`). Тест `tests/test_image_analysis.py:362` закрепляет литерал.
+- **D4. Креативный промпт противоречит профилям графика, таблицы, схемы и mindmap.**
+  `generation.py:1207`: «Create a polished, publication-ready infographic from scratch instead of
+  tracing the source literally.»; `:1208`: «You may redesign composition, spacing, typography, card
+  shapes, connector styling, icon treatment, and color hierarchy…». В том же промпте —
+  `chart_semantic_redraw.txt:1` «Redraw this chart very conservatively», `:12` «do not convert the
+  chart into an illustration or decorative infographic»; `table_semantic_redraw.txt:12`;
+  `diagram_semantic_redraw.txt:12`; `mindmap_semantic_redraw.txt:12`.
+- **D5. Промпт ссылается на изображение, которого вызов не несёт.** Направляющие
+  `_build_image_edit_prompt`: «Use the original image strictly as a semantic reference…»
+  (`generation.py:1131`), «Use the original image as a content-accurate structural reference…»
+  (`:1135`). Этот текст вкладывается как `base_prompt` в текстовые `images.generate` (`:1213` в
+  креативном, `:1182` в структурном), payload'ы которых изображения не содержат (`:450-458`,
+  `:597-605`). Промпт генерации несёт одновременно «Return a single edited image, not a textual
+  explanation.» (`:1160`) и «Return a single generated image…» (`:1189`, `:1220`).
+- **D6. Валидатор может сравнить оригинал с самим собой (уточнено).** При отказе от сгенерированного
+  растра по pixel budget генерация возвращает исходные байты: `return image_bytes` на
+  `generation.py:469-470`, `:525-526`, `:616-617`. `pipeline.py:842` сравнивает кандидата только с
+  `safe_bytes`; safe-кандидат отличается от оригинала (PIL), и валидатор получает
+  `attempt_asset.original_bytes` и `attempt_asset.redrawn_bytes`, равные друг другу (`pipeline.py:281-283`).
+  **Уточнение:** случай пропуска по pixel budget на входе (`generation.py:87-96`) уже ловится —
+  `_generate_safe_candidate` проверяет тот же бюджет (`:171-172`) и тоже вернёт оригинал, совпадение с
+  `safe_bytes` срабатывает. Частота — прогноз, редко (`image_generation_skipped_over_budget`,
+  `*_output`-стадии pixel budget).
+- **D7. Валидатор не знает режима, его проверка структуры почти непроходима, поэтому второй кандидат
+  — норма.** Оценка структуры — Жаккар токенов двух независимо сгенерированных фраз
+  (`validation.py:317-329`) против `min_structure_match_score = 0.70` (`config.toml:46`); тип —
+  точное равенство строк (`validation.py:307-314`). При `advisory` провал становится `accept_soft`
+  (`pipeline_policy.py:64-74`), а `accept_soft` **всегда** запрашивает challenger
+  (`pipeline.py:327-328`). `image_context` несёт `"image_mode": image_mode` (`pipeline.py:289`), но
+  промпт валидации его не использует (`validation.py:406-409`). Доля провалов структуры — прогноз;
+  мерится распределением `structure_match_score` в `image_validation_completed`.
+- **D8. Промпт анализа не задаёт значений, которых ждут разбор и маршрутизация.** Пользовательский
+  текст перечисляет ключи без допустимых значений (`analysis.py:478-480`); при этом `prompt_key` молча
+  заменяется эвристикой вне `_VALID_PROMPT_KEYS` (`:539`), обходы ключуются на точном
+  `image_type in {"infographic", "mixed_or_ambiguous", "chart", "table"}` (`:665`, `:677`),
+  реконструкция — на `image_type == "table"` (`generation.py:167`), неизвестный `recommended_route`
+  проходит сырым в `render_strategy` (`analysis.py:717`), `text_node_count` нигде не определён, а
+  `render_strategy` и `recommended_route` запрашиваются оба и читаются через `or` (`:521`).
+- **D9. Детектор «не-латиницы» срабатывает на любую не-ASCII букву.** `analysis.py:832`:
+  `any(ord(character) > 127 and character.isalpha() ...)` — é, ü, ß, ł, ñ считаются не-латиницей,
+  хотя `de`, `fr`, `es`, `it`, `pl` — поддерживаемые языки (`config.toml:32-36`).
+- **D10. Токенизатор валидатора знает только латиницу и кириллицу.** `validation.py:32`:
+  `re.compile(r"[0-9A-Za-zА-Яа-яІіЇїЄєҐґ]+")`. Подписи на `zh`/`ja` (`config.toml:37-38`)
+  нормализуются в пустую строку и отбрасываются (`:332-340`); при пустом множестве оригинальных
+  подписей `text_match_score = 1.0` (`:297-299`) — проверка проходит вакуумно.
+
+### M. Расхождения подписи или документа с поведением
+
+- **M1. Пайплайн изображений не знает языка цели.** `grep target_language|source_language|
+  processing_operation` по `src/docxaicorrector/image/` — 0 совпадений; `ImageProcessingContext`
+  (`pipeline.py:63-88`) и его сборка (`processing/processing_service.py:158-177`) поля языка не имеют.
+  Промпты запрещают перевод: `generation.py:1150` «Do not remove, translate, paraphrase, or invent
+  labels.», `:1211`, `scene_graph_extraction.txt:57` «do not translate». Переведённая книга
+  сохраняет в перерисованных картинках подписи на языке источника. Обещания перевода подписей нет
+  нигде — это пробел продукта, а не нарушенный контракт.
+- **M2. «Сгенерировать 3 варианта» обещает больше, чем делает.** `ru.json:69` «Сгенерировать 3
+  варианта», `:74` «…чтобы выбрать лучший перед итоговым DOCX». Если анализ запрещает перерисовку,
+  `compare_modes = [safe]` (`pipeline.py:464-472`) — один вариант (фото и скриншоты — всегда). Выбора
+  нет: `selected_compare_variant="original"` (`:1291-1297`), варианты вставляются рядом
+  (`core/models.py:1077-1099`). Семантический вариант, ушедший в safe, вставляется с safe-байтами
+  (`pipeline.py:374-376`) под подписью «Вариант 2: Креативная AI-перерисовка» (`core/models.py:1090`);
+  подписи вшиты по-русски вне каталога.
+- **M3. «Просто улучшить» тратит vision-вызов, который не может изменить результат (уточнено).**
+  Анализ идёт до планирования для каждого изображения (`pipeline.py:1133-1138`), а safe-план —
+  только PIL (`generation.py:105-106`). В safe-режиме клиент — **текстовый** (`pipeline/setup.py:497-507`,
+  `pipeline/late_phases.py:266-267`), модель — `gpt-5.4-mini` из `config.toml:118`. **Прогноз аудита
+  «запрос падает и откатывается к эвристике» опровергнут** записанным прогоном 2026-08-06 в режиме
+  `safe`: 43 вызова с usage и ценой от провайдера (R9); цену сообщает только OpenRouter
+  (`core/model_accounting.py:19-21`). Вызов работает — и всё равно ничего не меняет, $0,066 на книгу.
+- **M4. Тексты safe-профилей описывают поведение, которого нет.** `photo_safe_fallback.txt:14-17`
+  «mild denoising… faithful non-generative upscale if needed», `screenshot_safe_fallback.txt:15-18`,
+  `:20` «If safe cleanup is uncertain, preserve the original image without modification»,
+  `mixed_or_ambiguous_fallback.txt:14` «keep the original image unchanged». Код safe — всегда
+  автоконтраст, контраст, цвет, резкость (`generation.py:288-292`). Модели эти тексты доходят только
+  на семантическом маршруте (`prompt_text` грузится на `:99`, используется в
+  `_generate_semantic_candidate`), где рядом стоит «Do not merely upscale… Rebuild the visual from
+  scratch» (`:1159`).
+- **M5. `docs/WORKFLOW_AND_IMAGE_MODES.md` расходится с кодом.** `:101-106` перечисляет четыре режима
+  без `no_change`, хотя это умолчание (`config.toml:41`); `:105`, `:120`, `:139` обещают реконструкцию
+  «для части diagram/infographic кейсов», а первой она идёт только для таблиц
+  (`generation.py:166-167`); `:113` — см. M2.
+- **M6. Метаданные реестра заявляют маршрутизацию, которой нет.** `image_prompt_registry.toml:1`:
+  «`preferred_strategy` хранит внутренние routing names»; в коде поле только логируется
+  (`generation.py:144`), `default_prompt_keys` (`:4-13`) читают только тесты
+  (`tests/test_image_prompts.py:53`); `_VALID_PROMPT_KEYS` дублирует список вручную (`analysis.py:23-32`).
+- **M7. Бюджет вызовов документа для compare_all занижен.** `estimated_calls_per_image = 7 if
+  image_mode == ImageMode.COMPARE_ALL.value else per_image_attempt_budget + 1` (`pipeline.py:1321`),
+  а каждый семантический вариант получает собственный бюджет 9 (`pipeline.py:818-824`, вызов на
+  вариант через `:353-364`). Исчерпание мерится `semantic_candidate_budget_exhausted` с
+  `exhausted_reason=document_model_call_budget_exhausted`.
+- **M8. «9» считает логические операции, не HTTP-запросы, и не включает анализ источника.** Ретраи
+  и адаптации списываются один раз (`generation.py:718-736`, `:817-835`, `shared.py:192-199`); анализ
+  источника списывается только с бюджета документа (`pipeline.py:1133-1138`). Поведение намеренное,
+  закреплено `tests/test_image_generation.py:860`; уточняется только формулировка.
+
+### W. Формулировки
+
+- **W1.** `generation.py:1154-1155` вставляет `fallback_reason` (внутренние коды и свободный текст
+  зрения) в промпт image-модели.
+- **W2.** «Copy Cyrillic, Ukrainian, and Russian text exactly in Unicode.» (`analysis.py:483`) и
+  «1a. Preserve Cyrillic, Ukrainian, and Russian text exactly in Unicode.»
+  (`scene_graph_extraction.txt:58`) — правило, привязанное к языкам, а не к письменности вообще.
+- **W3.** `analysis.extracted_labels[:20]` (`generation.py:1139`) при потолке 12 в анализе
+  (`analysis.py:481`, `:621`).
+- **W4.** «Fill the entire generated canvas completely from edge to edge — no empty outer margins…»
+  (`generation.py:1145`, `:1177`, `:1206`), а загрузка edit — квадрат, добитый белыми полями
+  (`:1053-1057`), при неквадратном запрошенном размере (`:512`).
+- **W5.** `_shorten_prompt_for_limit` режет **хвост** (`generation.py:939-945`), где стоят правило фона,
+  дословный текст и строка возврата, и дописывает «Return a single edited image.» даже для generate.
+- **W6.** «Generate a brand-new clean office-presentation-style diagram from scratch.»
+  (`generation.py:1178`) — и для таблиц, и для графиков; закреплено
+  `tests/test_image_generation.py:333`.
+- **W7.** Промпт валидации (`validation.py:394-410`) не говорит, какое изображение оригинал, не задаёт
+  диапазон оценок, не определяет `added_entities`, не передаёт режим, оставляет `suspicious_reasons`
+  свободным.
+- **W8.** `scene_graph_extraction.txt:9-10` просит «original image width/height in pixels», но размеры в
+  запрос не передаются (`reconstruction.py:146-163`).
+- **W9.** `analysis.py:711`: `if route.startswith("gpt-"):` — ветка, ключённая на имени модели, наследие
+  архивного контракта `recommended_route: "gpt-image-1"`.
+
+**Итог перепроверки:** 27 находок аудита перенесены все; две уточнены (D6 сужен, прогноз M3
+опровергнут данными), ни одна не отброшена. Из отчёта о моделях перенесены R1–R11; опровергнута
+оговорка о двукратном завышении, уточнены форма токенов, запасные размеры и номер строки порога.
+Не перенесено: раздел аудита «вакуумный проход при выключенном зрении» (не нумерованная находка;
+описывает конфигурацию `enable_vision_image_analysis=false`, которой по умолчанию нет,
+`config.toml:50`) и мёртвый код `_select_semantic_api_output_format` (`generation.py:1604-1614`,
+вызывающих нет — подтверждено, но к теме спеки не относится).
+
+## Два варианта
+
+Оба варианта — только OpenAI, без нового провайдерского кода (R2). Обе image-роли переходят на
+семейство 2.5, а не на рекомендованное OpenAI 2.6: у 2.5 на Arena (2026-11-06, по отчёту) десятки
+тысяч голосов и устоявшийся доверительный интервал, фиксированный снимок `-2026-09-08`,
+документированная прозрачность фона и Batch; у 2.6 — около 3 тысяч голосов, измерено только на
+Medium, прозрачность не документирована. Таблица возможностей FR-004 обязана покрывать и 2.6, чтобы
+переход на 2.6 был правкой конфига, если 2.5 отключат раньше.
+
+### Вариант 1 — лучшее за свои деньги
+
+| Роль | `config.toml` (`:117-133`) | `.env.example` (`:70-75`) |
+|---|---|---|
+| `image_analysis` | `default = "gpt-5.4-mini"` (без изменений) | `DOCX_AI_MODELS_IMAGE_ANALYSIS_DEFAULT=gpt-5.4-mini` |
+| `image_validation` | `default = "gpt-5.4-mini"` (без изменений) | `DOCX_AI_MODELS_IMAGE_VALIDATION_DEFAULT=gpt-5.4-mini` |
+| `image_reconstruction` | `default = "gpt-5.4-mini"` (без изменений) | `DOCX_AI_MODELS_IMAGE_RECONSTRUCTION_DEFAULT=gpt-5.4-mini` |
+| `image_generation` | `default = "gpt-image-2.5-flare"` | `DOCX_AI_MODELS_IMAGE_GENERATION_DEFAULT=gpt-image-2.5-flare` |
+| `image_edit` | `default = "gpt-image-2.5-flare"` | `DOCX_AI_MODELS_IMAGE_EDIT_DEFAULT=gpt-image-2.5-flare` |
+| `image_generation_vision` | `default = "gpt-5.4-mini"` (без изменений) | `DOCX_AI_MODELS_IMAGE_GENERATION_VISION_DEFAULT=gpt-5.4-mini` |
+
+| Что | Значение |
+|---|---|
+| Vision-вызов | $0,00155 (R9: 400 вх. + 277 вых. токенов × $0,75/$4,50; совпадает с замером $0,066 / 43) |
+| Image-вызов 1536×1024 high + входы | ≈ $0,175 (прогноз: цена за изображение для 2.5 не опубликована; взят счёт токенов `gpt-image-2` $0,165 плюс ≈ $0,01 на текст промпта и входное изображение) |
+| Одно перерисованное изображение, одна попытка | ≈ $0,18 (анализ оригинала, бриф, image-вызов, анализ кандидата, валидация) |
+| Книга, только анализ (S0) | $0,066 на Money & Sustainability — замер |
+| Книга, все изображения в одном семантическом режиме (S1, верхняя граница) | Money & Sustainability 43 × $0,18 ≈ **$7,7**; Rethinking Money 55 × $0,18 ≈ **$9,9** |
+| Книга, compare_all (S2) | ≈ $15–16 на Money & Sustainability |
+| Что нужно в коде | FR-001…FR-004: id, запасные id, сетка размеров, таблица возможностей вместо разбора текста ошибок (`response_format` не слать, `input_fidelity` — по таблице) |
+| Риски | цена за изображение не опубликована; 2.5 может уйти раньше 2.6; кириллица 2.5 не измерена никем (гейт FR-005); лимит Build-тарифа 20 изображений в минуту, как сегодня |
+
+### Вариант 2 — лучшее из доступного без оглядки на цену
+
+| Роль | `config.toml` (`:117-133`) | `.env.example` (`:70-75`) |
+|---|---|---|
+| `image_analysis` | `default = "gpt-6.1-sol"` | `DOCX_AI_MODELS_IMAGE_ANALYSIS_DEFAULT=gpt-6.1-sol` |
+| `image_validation` | `default = "gpt-6.1-sol"` | `DOCX_AI_MODELS_IMAGE_VALIDATION_DEFAULT=gpt-6.1-sol` |
+| `image_reconstruction` | `default = "gpt-6.1-sol"` | `DOCX_AI_MODELS_IMAGE_RECONSTRUCTION_DEFAULT=gpt-6.1-sol` |
+| `image_generation` | `default = "gpt-image-2.5-sunburst"` | `DOCX_AI_MODELS_IMAGE_GENERATION_DEFAULT=gpt-image-2.5-sunburst` |
+| `image_edit` | `default = "gpt-image-2.5-sunburst"` | `DOCX_AI_MODELS_IMAGE_EDIT_DEFAULT=gpt-image-2.5-sunburst` |
+| `image_generation_vision` | `default = "gpt-6.1-sol"` | `DOCX_AI_MODELS_IMAGE_GENERATION_VISION_DEFAULT=gpt-6.1-sol` |
+
+| Что | Значение |
+|---|---|
+| Vision-вызов | ≈ $0,0036 (пересчёт по замеренной форме R9 по $2/$10 за миллион; отчёт давал $0,00385 по неверной форме); **без reasoning-токенов** — sol по умолчанию рассуждает с effort `medium`, наш код его не задаёт |
+| Image-вызов | ≈ $0,175 **или больше** (цена sunburst за изображение не опубликована) |
+| Одно перерисованное изображение | ≈ $0,19+ |
+| Книга S0 | 43 × $0,0036 ≈ **$0,15** (в 2,3 раза больше сегодняшнего) |
+| Книга S1 | Money & Sustainability ≈ **$8,2+**; Rethinking Money ≈ **$10,5+** |
+| Книга S2 | ≈ $17+ на Money & Sustainability |
+| Что нужно в коде | всё из варианта 1, плюс: `reasoning.effort` в payload зрения, если нужно то, что мерила Arena (`Max`), — правка кода; `quality` `xhigh`/`max` — через таблицу FR-004; `temperature` на сцене (`reconstruction.py:162`) по-прежнему выбрасывается ретраем (`shared.py:183-191`) |
+| Риски | всё из варианта 1, плюс счёт за зрение при долгих рассуждениях; множитель патчей у sol не опубликован; поведение `detail=auto` у 6.1 не документировано |
+
+**Допущения стоимости** (общие): S1 — верхняя граница, часть изображений уйдёт в safe по анализу (фото,
+скриншоты, D2); S1 считает **одну** попытку на изображение, а D7 делает вторую попытку частой (прогноз),
+поэтому реальная цена до FR-016 может приближаться к ×2; OpenAI цену в ответе не сообщает, и
+`cost_accounting_complete` на этом пути остаётся False (`core/model_accounting.py:19-21`) — стоимость
+проверяется только по биллингу OpenAI. Оговорка отчёта «база в 43 вызова может завышать масштаб
+примерно вдвое» записана и опровергнута (R10).
+
+**Вариант 2b (Claude на ролях зрения) не предлагается:** нужен адаптер Messages API, клиент на роль и
+снятие замка R2 — новый контракт, full-cycle tier. См. Non-goals.
+
+**Рекомендация оркестратора: вариант 1, если ручная проверка кириллицы на 5–10 изображениях (FR-005)
+проходит.** Структурная перерисовка таблиц рисует текст локальными шрифтами (R7), а роли зрения стоят
+копейки и узким местом не являются (R9), поэтому платить в 2,3 раза больше за анализ незачем; если
+проверка кириллицы проваливается на flare, следующий шаг — sunburst на тех же изображениях, а не смена
+ролей зрения.
+
+## Requirements *(mandatory)*
+
+### Functional Requirements
+
+> Правило Конституции VII: ни одно требование ниже не вводит список слов, порог «на глаз» или
+> литерал из книги. Таблица возможностей FR-004 ключуется на id модели — это конфигурация продукта,
+> а не содержимое документа; правила промптов ключуются на `image_type`, `requested_mode` и
+> ключе реестра.
+
+**P0 — замена модели до 2026-12-01 (оба варианта)**
+
+- **FR-001**: `[models.image_generation]` и `[models.image_edit]` (`config.toml:126-130`),
+  `.env.example:73-74`, `README.md:309-310`, `:362`, `:407`, `:410`, `:462-463` получают id выбранного
+  варианта; при варианте 2 — ещё четыре роли зрения (`config.toml:117-124`, `:132-133`,
+  `.env.example:70-72`, `:75`). Id допускается закрепить снимком (`gpt-image-2.5-flare-2026-09-08`).
+- **FR-002**: Запасные id `_MIGRATION_DEFAULT_MODEL_ROLES` (`core/config.py:100-101`) совпадают с
+  FR-001. Тестовые константы `tests/conftest.py:67-68`, `tests/test_config.py:1202-1216`,
+  `tests/test_preparation.py:207-208` меняются намеренно, тем же коммитом.
+- **FR-003**: Сетка размеров — та, которую принимает выбранная модель: из `edit_candidate_sizes`
+  (`config.toml:187`), `DEFAULT_EDIT_CANDIDATE_SIZES` (`output_policy.py:8`) и вшитой подстановки
+  `generation.py:958` уходят `512x512`/`256x256`; из `generation.py:976` — `1792x1024`/`1024x1792`.
+  Тест: каждый размер обеих сеток не меньше минимума площади модели из таблицы FR-004.
+- **FR-004**: **Положительная таблица возможностей вместо разбора текста ошибок.** Модуль
+  `image/` держит одну таблицу «семейство id модели → какие необязательные параметры отправлять и
+  с какими значениями» (`response_format`, `input_fidelity`, `background="transparent"`,
+  допустимые `quality`, минимальная площадь размера). Payload'ы `generation.py:450-458`, `:505-514`,
+  `:597-605` строятся из неё. Для 2.5/2.6 `response_format` не отправляется; `input_fidelity` —
+  только если таблица говорит «да» (по документации — нет для `gpt-image-2`, для 2.5/2.6 не
+  установлено: решается живым вызовом FR-006). Id вне таблицы — минимальный набор (`model`,
+  `prompt`, `size`, `quality`, `output_format`) и одно WARNING на прогон. Адаптация по тексту ошибки
+  (`shared.py:60-71`) остаётся страховкой, но её срабатывание логируется на уровне WARNING, а не
+  DEBUG (`generation.py:667-672`, `:711-716`, `:766-771`, `:810-815`): тихая смена маршрута
+  становится видимой.
+- **FR-005**: **Гейт кириллицы до объявления замены сделанной.** Ручная проверка 5–10 изображений с
+  кириллическим текстом формы `diagram`/`infographic`/`chart`/`table` прямым вызовом
+  `generate_image_candidate` с `semantic_redraw_allowed=True` в обоих семантических режимах.
+  Набор: `tests/журналистика факты манипуляции.png`, `tests/кпсс.jpg` (если на нём есть надписи) и
+  изображения из документов владельца на русском — отбор по форме, не по имени; если владелец не даёт
+  хотя бы трёх, гейт стоит, и это говорится, а не заменяется латинскими изображениями. Результат —
+  таблица в Changelog: файл, режим, число кириллических подписей в оригинале, отрисовано верно /
+  искажено / пропущено, замечания. Порог «прошёл» — не число, а суждение владельца по таблице.
+- **FR-006**: До объявления готовности — по одному живому вызову `images.generate` и `images.edit` на
+  выбранной модели; в логе нет ни одного `*_retry_without_optional_param` и `*_retry_with_fallback_size`.
+  Этим же вызовом устанавливается, принимает ли модель `input_fidelity`, и значение записывается в
+  таблицу FR-004 и в Changelog.
+- **FR-007**: Два run-профиля в `corpus_registry.toml` по образцу
+  `ui-parity-translate-benchmark-advisory-image-safe-no-cleanup` (`:207-213`) с
+  `image_mode = "semantic_redraw_structured"` и `"semantic_redraw_direct"` — без них SC-002
+  нечем выполнить.
+
+**P1 — правки, не зависящие от модели (15 пунктов раздела 5A аудита)**
+
+- **FR-008** (D8, W9): Пользовательский текст анализа (`analysis.py:478-483`) заменяется на:
+  > Return one JSON object with exactly these keys. `image_type`: one of "diagram","table","chart",
+  > "infographic","mindmap","screenshot","photo","mixed_or_ambiguous". `image_subtype`: short text or
+  > null. `contains_text`: true/false. `semantic_redraw_allowed`: true only for
+  > diagram/table/chart/infographic/mindmap whose content can be redrawn without losing information.
+  > `confidence`, `structured_parse_confidence`: numbers 0..1. `prompt_key`: one of {registry keys},
+  > matching image_type (photo→photo_safe_fallback, screenshot→screenshot_safe_fallback,
+  > mixed_or_ambiguous→mixed_or_ambiguous_fallback). `recommended_route`: one of "safe_mode",
+  > "semantic_redraw_direct","semantic_redraw_structured","deterministic_reconstruction".
+  > `structure_summary`: one sentence naming the element counts (blocks, rows×columns, series).
+  > `extracted_labels`: up to 12 clearly readable labels, verbatim. `text_node_count`: integer count of
+  > separate text blocks (labels, cells, captions, legend items). `extracted_text`: all readable text
+  > verbatim, in reading order. `fallback_reason`: null or a short reason.
+
+  Список `{registry keys}` строится из `load_image_prompt_registry()`, а не вписывается рукой.
+  Дублирующий ключ `render_strategy` из запроса уходит; ветка `route.startswith("gpt-")`
+  (`analysis.py:711-716`) удаляется. Предложение про плотный текст и кириллицу (`:467`, `:483`) здесь
+  **не трогается** — это P2 (FR-024).
+- **FR-009** (D3): `analysis.py:358` получает **структурный** откат без описания содержимого — строку
+  из уже известных эвристике фактов (тип, подтип, «structure not analysed»), например
+  `"JPEG image with diagram-like visual features; structure not analysed."`. Тест
+  `tests/test_image_analysis.py:362` меняется намеренно. Никакого другого литерала-описания структуры.
+- **FR-010** (W1): `generation.py:1154-1155` удаляется: `fallback_reason` в промпт image-модели не
+  попадает никогда.
+- **FR-011** (D1, D9): обход по плотности остаётся рекомендательным, но **больше не перезаписывает
+  `render_strategy`**: `analysis.py:667-672`, `:680-685` записывают обход только в `fallback_reason`
+  (или новое поле), `render_strategy` сохраняет значение анализа. Детектор `analysis.py:830-832`
+  проверяет письменность по Unicode-имени символа (буква, чьё имя не начинается с `LATIN`), а не
+  `ord > 127`. Тесты `tests/test_image_pipeline_policy.py:12`, `:31`, `tests/test_image_analysis.py:221-227`
+  меняются намеренно.
+- **FR-012** (решение по D1, принято агентом): выбран вариант «рекомендательный без перезаписи», а
+  не «жёсткий обход». Довод: жёсткий обход отправил бы самые плотные таблицы в safe и в семантических
+  режимах, тогда как именно им нужен PIL-маршрут с настоящими шрифтами (R7); рекомендательный без
+  перезаписи возвращает им реконструкцию. Владелец может переиграть.
+- **FR-013** (D4, W6): `generation.py:1207` → «Create a polished, publication-ready version of this
+  {image_type} from scratch instead of tracing the source literally. It must stay the same kind of
+  graphic (a chart stays a chart with the same series and values, a table stays a table with the same
+  rows and columns).»; `:1208` → «You may restyle spacing, typography, colours and shape styling; keep
+  the same blocks, series, rows, columns, connectors and their order.»; `:1178` — «diagram» →
+  `{image_type}`. Тест `tests/test_image_generation.py:333` меняется намеренно.
+- **FR-014** (D5): `_build_image_edit_prompt` (`generation.py:1121-1161`) строит две направляющие:
+  для edit — «use the attached image as reference», для generate — «the source is described below;
+  you do not see it». Строка «Return a single edited image» (`:1160`) не попадает в промпты generate
+  (`:1182`, `:1213`).
+- **FR-015** (W7): промпт валидации (`validation.py:394-410`) заменяется на:
+  > The FIRST image is the original document image; the SECOND is a redrawn candidate made in mode
+  > {mode} ({creative: layout and styling may change, content may not | structured: layout should be
+  > kept}). Return one JSON object with numbers from 0.0 to 1.0: `semantic_match_score` (same
+  > information and relationships), `text_match_score` (every original label present with the same
+  > wording), `structure_match_score` (same blocks, rows, columns, series and connections; ignore
+  > colours and fonts{; ignore placement in creative mode}), `validator_confidence`;
+  > `candidate_contains_text` (bool); `missing_labels` (original labels absent in the candidate);
+  > `added_entities` (labels, blocks or values in the candidate that are not in the original);
+  > `suspicious_reasons` (zero or more of: image_type_changed, labels_missing, values_changed,
+  > entities_added, layout_changed, text_unreadable). Original labels: {labels}.
+
+  Режим берётся из `image_context["image_mode"]` (`pipeline.py:289`).
+- **FR-016** (D7): challenger (`pipeline.py:316-329`) запрашивается только по конкретной причине —
+  пропавшие подписи, добавленные сущности, смена типа, — а не по одному несовпадению структуры;
+  Жаккар структуры остаётся данными в событии, валидатор остаётся рекомендательным.
+- **FR-017** (D6): в `select_best_semantic_asset` после `pipeline.py:841` кандидат, равный
+  `attempt_asset.original_bytes`, получает `fallback_original` с причиной
+  `semantic_redraw_returned_source` без вызова валидатора.
+- **FR-018** (D10): `validation.py:32` → `re.compile(r"\w+", re.UNICODE)` плюс `casefold()`.
+- **FR-019** (M4): в `generate_image_candidate` рядом с `generation.py:100-102` ключ реестра,
+  оканчивающийся на `_safe_fallback`, и `mixed_or_ambiguous_fallback` принудительно ведут в `safe`;
+  три safe-файла **переписываются** как точное описание PIL-шага (автоконтраст, лёгкий контраст,
+  цвет, резкость) с пометкой «не отправляется моделям», без обещаний шумоподавления и апскейла.
+  Проверки `tests/test_image_prompts.py:93-102` (`"safe"`, `"original"`, `"preserve"`, `"do not"`)
+  остаются зелёными.
+- **FR-020** (W2): `analysis.py:483` и `scene_graph_extraction.txt:58` → «Copy all text exactly in its
+  original script and language (any language); never transliterate; write "unreadable" for illegible
+  text.»
+- **FR-021** (W5, W3; решение принято агентом): `_shorten_prompt_for_limit` (`generation.py:939-945`)
+  сокращает сначала `extracted_text` и описание макета, сохраняя ограничения и строку возврата
+  нужного вида; срез подписей `[:20]` (`generation.py:1139`) приводится к потолку анализа 12 —
+  поднимать потолок анализа без измерения незачем.
+- **FR-022** (M5, M6, M7, M8): `docs/WORKFLOW_AND_IMAGE_MODES.md:101-121` перечисляет `no_change` и
+  говорит, что реконструкция идёт первой только для таблиц; комментарий реестра
+  (`image_prompt_registry.toml:1-2`) называет `preferred_strategy` информационным полем;
+  `_VALID_PROMPT_KEYS` (`analysis.py:23-32`) строится из реестра; оценка бюджета compare_all
+  (`pipeline.py:1321`) — `2 × per_image + 1`; M8 записывается в доке как «9 логических операций на
+  семантический вариант, без анализа источника».
+- **FR-023** (M1, только проводка): `processing_operation` и `target_language` добавляются в
+  `ImageProcessingContext` (`pipeline.py:63-88`, `processing/processing_service.py:158-177`,
+  `pipeline/late_phases.py:268-275`); в три сборщика промптов добавляется слот `{text_policy}` с
+  умолчанием, по смыслу равным сегодняшнему («keep all visible text verbatim in its original
+  language»). Поведение не меняется, пока FR-025 не включён.
+
+**P2 — зависят от выбранного варианта (раздел 5B аудита)**
+
+- **FR-024** (D2, 5B-1): **если гейт FR-005 пройден**, из системного текста анализа уходит «especially
+  in Cyrillic or mixed non-Latin text» (`analysis.py:467`), а `non_latin_text_bypass_threshold`
+  (`config.toml:55`) удаляется либо ключуется на объявленной в конфиге возможности выбранной
+  image-модели и письменности **цели**. Живое ожидание `tests/test_real_image_pipeline.py:47-56`
+  (`"expected_live_strategy": "safe_mode"` для кириллической инфографики) меняется намеренно. Если
+  гейт не пройден — оба остаются.
+- **FR-025** (M1, 5B-2): перевод подписей в картинках — **только по отдельному решению владельца** и
+  только при пройденном FR-005: подписи переводятся текстовой моделью, image-модели передаётся
+  карта «источник → цель», валидатор сравнивает с переведённым списком (`validation.py:167-170`).
+  Реконструкция подставляет перевод сама; покрытие CJK шрифтами `reconstruction.py:38-75` не
+  проверено (прогноз: DejaVu и Liberation его не дают).
+- **FR-026** (R8, 5B-4): `detail` на `input_image` задаётся по таблице возможностей FR-004 для
+  каждой роли зрения; для варианта 1 проверяется `original` на изображениях FR-005, для варианта 2
+  остаётся умолчание, пока поведение 6.1 не документировано.
+- **FR-027** (W4, 5B-5): при модели, принимающей произвольный `WxH` (2.x: кратно 16, площадь
+  ≥ 655 360, соотношение ≤ 3:1 — по отчёту), edit отправляет исходные пропорции без квадратной
+  подложки (`generation.py:1045-1073`), и фраза «edge to edge» в промпте edit уходит.
+- **FR-028** (D5, 5B-6): если выбранная модель принимает референсные изображения, креативный путь
+  передаёт исходник вместо одного текстового описания — решается по FR-006, без него не строится.
+- **FR-029** (5B-7, 5B-10): лимит длины промпта и фикстуры на 1000 символов
+  (`tests/test_image_generation.py:1033-1034`, `:1105-1106`, лимит dall-e-2) переутверждаются под
+  выбранную модель; логирование `revised_prompt` (`generation.py:484`, `:540`) удаляется, если модель
+  поле не возвращает.
+- **FR-030** (5B-8, только вариант 2): `reasoning.effort` для ролей зрения задаётся явно, значение
+  записывается в Changelog вместе с измеренной ценой одного вызова.
+- **FR-031** (W8, 5B-9): реальные `{width}x{height}` передаются в промпт сцены
+  (`reconstruction.py:146-163`); переход на нормированную рамку 0–1000 — только если выбранная
+  модель её требует.
+
+**P3 — подписи режимов**
+
+- **FR-032** (M2; рекомендация — подпись плюс одна правка кода): `ru.json:69` → «До 3 вариантов для
+  сравнения», `:74` → «Кладёт в DOCX рядом safe-вариант и, если картинку можно перерисовать,
+  креативный и структурный — для визуального сравнения»; `en.json:68`, `:73` — так же. Код:
+  семантический вариант, чьи байты равны safe-байтам, не вставляется (`pipeline.py:374-376`), чтобы
+  safe-картинка не стояла под подписью «Креативная». Подписи `core/models.py:1088-1092` переезжают в
+  каталог. Код «выбрать лучший» **не строится** (см. Non-goals).
+- **FR-033** (M3; рекомендация — правка кода, подпись остаётся): при `image_mode == "safe"` анализ
+  изображения не вызывает модель (`enable_vision=False` для вызова `pipeline.py:1133-1138`); подпись
+  «Просто улучшить» и описание `ru.json:71` честные и не меняются.
+
+### Key Entities
+
+- **Таблица возможностей image-модели** (FR-004): семейство id → набор необязательных параметров,
+  допустимые `quality`, минимальная площадь, принимает ли `input_fidelity` и референсы, `detail` для
+  ролей зрения.
+
+## Success Criteria *(mandatory)*
+
+### Measurable Outcomes
+
+- **SC-001**: Конфиг с выбранной моделью влит в `main` **до 2026-12-01**; `grep -rn "gpt-image-1.5"`
+  по `src/`, `tests/`, `README.md`, `.env.example` пуст.
+- **SC-002**: Платный прогон двух книг профилями FR-007 — **Money & Sustainability** (43 изображения,
+  единственная книга с `has_images = true` в `corpus_registry.toml:114`) и **Rethinking Money**
+  (55 изображений по сводке прогона; в реестре `has_images = false` — это флаг приёмки, а не факт,
+  R10) — в обоих семантических режимах: **ноль ошибок image-модели** — ни одного
+  `semantic_candidate_attempt_failed`, `structured_edit_fallback_to_generate`,
+  `creative_semantic_generate_fallback_to_direct_edit` или `*_retry_without_optional_param`, вызванного
+  ответом Images API. Решение о расходе (оценка: до ≈ $35 на варианте 1 за четыре прогона без
+  challenger'а) — за владельцем.
+- **SC-003**: Доля исходов валидатора отчитывается **по каждому режиму и книге** — `accept`,
+  `accept_soft`, `fallback_safe`, `fallback_original` из `image_validation_completed` и
+  `semantic_candidate_evaluated`, плюс распределение `structure_match_score`. Это данные, не гейт
+  (Конституция VII): порога доли нет.
+- **SC-004**: Таблица кириллицы FR-005 записана в Changelog; владелец вынес по ней суждение.
+- **SC-005**: Цена одного image-вызова и одного перерисованного изображения по биллингу OpenAI — не
+  выше оценки варианта × 1,5 (вариант 1: $0,26 и $0,27; вариант 2: считается от измеренной цены
+  FR-030). Число попыток на изображение отчитывается рядом, чтобы ×2 от challenger'а не выдавалось за
+  рост цены.
+- **SC-006**: Детерминированные тесты всех FR P0/P1 зелёные без вызова модели; полный прогон
+  `bash scripts/test.sh tests/ -q` в WSL зелёный в главном дереве после переноса на свежий `main`.
+
+## Порядок исполнения
+
+1. Решение владельца по варианту (статус этой спеки).
+2. P0: FR-001…FR-004 и FR-007 одной веткой, детерминированные тесты; затем FR-006 (живые вызовы) и
+   FR-005 (кириллица). **Срок — 2026-12-01.** Если гейт FR-005 не успевает к сроку, P0 вливается всё
+   равно: отказ от замены означает гарантированную деградацию 2 декабря, а провал кириллицы — повод
+   держать FR-024 выключенным, не для отката.
+3. P1 — независимыми ветками по группам (анализ; промпты генерации; валидатор; safe, реестр и доки).
+4. Расширенное внешнее ревью Codex по всем затронутым поверхностям — обязательный шаг приёмки по
+   `AGENTS.md`, до слияния в `main`; отчёт в `docs/reviews/CODEX_REVIEW_062_<дата>.md`.
+5. SC-002…SC-005 — платный прогон после P0 и P1, не раньше: до P1 он измерит уже известные дыры
+   (D7 удвоит число попыток).
+6. P2 и P3 — после прогона, по его данным.
+
+## Non-goals
+
+- **Провайдеры Claude и Gemini на image-ролях.** Нужны адаптер Messages API или Images API
+  OpenRouter, клиент на роль и снятие замка R2 — новый контракт и full-cycle tier. Поднимается
+  только если гейт FR-005 провалится и на flare, и на sunburst.
+- **Валидатор как гейт.** Остаётся рекомендательным (`semantic_validation_policy = "advisory"`,
+  `config.toml:42`; Конституция VII «no verifier as a gate»); FR-015 и FR-016 меняют, что он видит и
+  когда просит второго кандидата, но не делают его блокирующим.
+- **Варианты через `n=3` одним вызовом.** «3 варианта» — три разных маршрута (safe, direct, structured,
+  `pipeline.py:463-483`), а не три сэмпла одного; `n` ничего из обещанного не даёт.
+- **Шумоподавление и апскейл в safe.** Safe-профили их обещают (M4); выбрано **переписать тексты**, а
+  не реализовать: safe-путь — детерминированный PIL и не должен становиться генеративным.
+- **«Выбрать лучший вариант» в UI для compare_all.** Подпись перестаёт это обещать (FR-032); выбор
+  варианта — новая функция UI, отдельная спека, если владелец её захочет.
+- **`complexity`, `xhigh`/`max` для 2.5/2.6 по умолчанию.** Доступны через таблицу FR-004, но
+  включаются только по измерению цены и качества.
+- **Удаление мёртвого кода `_select_semantic_api_output_format`** (`generation.py:1604-1614`) — не тема
+  спеки; мелкая правка вне её.
+- **Всё в `docs/archive/`**, включая архивную спеку image follow-up, которую закрепляет
+  `tests/test_spec_image_followup.py`: исторический документ, не правится.
+
+## Anti-regression
+
+- **`image_mode=no_change` и `safe` побайтно те же.** `no_change` не зовёт ни анализа, ни модели
+  (`pipeline.py:434-442`, `:620-638`, `:1065-1079`); выход `safe` — тот же PIL (`generation.py:170-196`,
+  `:288-292`). Тест: побайтное сравнение выхода обоих режимов на фикстуре до и после; для FR-033 —
+  выход safe побайтно прежний при нуле вызовов модели.
+- **Реконструкция PIL-шрифтами остаётся маршрутом плотных таблиц** — и после FR-011 снова становится
+  им для таблиц с обходом. Анти-вакуум: тест, где таблица с `text_node_count ≥ 18` в
+  `semantic_redraw_structured` идёт в `_generate_reconstructed_candidate`, и тест, где фото с тем же
+  счётчиком туда не идёт.
+- **Бюджет `semantic_redraw_max_model_calls_per_image` действует на каждом месте вызова:**
+  `ensure_available` перед `images.edit`/`images.generate` (`generation.py:657`, `:719`, `:756`,
+  `:818`) и `responses.create` (`shared.py:179`); списание — `generation.py:733`, `:736`, `:832`,
+  `:835`, `shared.py:194`, `:199`; составной бюджет передаётся в генерацию, анализ кандидата и
+  валидацию (`pipeline.py:823-824`, `:839`, `:865`, `:873`), в реконструкцию (`generation.py:240-247`)
+  и в оба vision-брифа (`:1237-1272`, `:1297-1332`). FR-004 строит payload, но не вводит новых мест
+  вызова; `tests/test_image_generation.py:860` и соседние не меняются.
+- **Тесты, закрепляющие промпты и параметры, меняются только намеренно**, каждое изменение — с
+  анти-вакуумным контрдоказательством: `tests/test_image_generation.py:327-330`, `:495-498`,
+  `:1376` (FR-004: тест, что для id вне таблицы минимальный набор всё равно отправляется, и что для
+  id из таблицы, принимающего `input_fidelity`, параметр по-прежнему уходит);
+  `tests/test_image_generation.py:333` (FR-013: тест, что для `image_type="table"` в промпте нет
+  слова «infographic»); `tests/test_image_analysis.py:362` (FR-009: тест, что эвристический
+  `structure_summary` не называет числа и фигуры); `tests/test_image_pipeline_policy.py` (FR-011);
+  `tests/test_image_prompts.py:62-102` остаётся зелёным без правки. Модули, в которых греп
+  `image_prompt_registry|semantic_redraw|image_profiles` по `tests/` находит закрепления
+  (`test_image_analysis.py`, `test_image_generation.py`, `test_image_integration.py`,
+  `test_image_pipeline_compare_helpers.py`, `test_image_pipeline_policy.py`, `test_image_prompts.py`,
+  `test_image_reconstruction.py`, `test_image_reinsertion.py`, `test_image_validation.py`,
+  `test_config.py`, `test_document_pipeline.py`, `test_processing_service.py`, `test_ui.py`,
+  `test_message_formatting.py`, `test_real_image_pipeline.py`, `test_spec_image_followup.py`),
+  прогоняются полностью.
+- **Конституция VII:** литерал `analysis.py:358` заменяется структурным откатом из фактов эвристики
+  (FR-009), никогда другим описанием содержимого; детектор письменности (FR-011) ключуется на
+  Unicode-имени символа, не на списке букв; таблица FR-004 ключуется на id модели.
+- **Hard-провалы валидации по-прежнему блокируют доставку** даже при `advisory`
+  (`pipeline_policy.py:11-14`, `:36-46`).
+- **Кандидат, равный safe, по-прежнему уходит в safe без валидатора** (`pipeline.py:842-856`); FR-017
+  добавляет рядом проверку на равенство оригиналу, не заменяя эту.
+- Контракты runtime, верификации и окончаний строк из `AGENTS.md` не меняются: тесты — через
+  `wsl.exe -d Debian ... bash scripts/test.sh`, LF, `git diff --check`.
+
+## Assumptions
+
+- Цены за изображение для `gpt-image-2.5-*` не опубликованы; оценки взяты по счёту токенов
+  `gpt-image-2` (отчёт исследования, [estimate]). Проверяются биллингом после FR-006.
+- Ошибка, которую вернёт отключённая модель, — 4xx и не ретраится (`shared.py:51-57`); если OpenAI
+  ответит 5xx, будут три попытки с backoff до отката — исход тот же, медленнее.
+- Кириллица ни для одной текущей модели не измерена (единственный независимый замер — MultiTextEdit,
+  май 2026, старые модели; по отчёту). Гейт FR-005 — единственное свидетельство, которое у нас будет.
+- Английские книги корпуса не требуют от image-модели кириллицы, пока FR-025 не включён (M1):
+  подписи остаются на языке источника.
+- `gpt-5.4-mini` не исчезнет до конца работ по этой спеке: в таблице отключений его нет (перечитано
+  2026-11-07); соседи `gpt-5.4-nano` и `gpt-5-mini` уходят 2027-04-01 и 2026-12-11 (по отчёту) —
+  роли зрения на них не стоят.
+- Рейтинги Arena (2026-11-06, по отчёту) — пользовательские предпочтения, не точность извлечения
+  подписей; используются как ориентир выбора, не как доказательство качества.
