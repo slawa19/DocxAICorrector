@@ -177,7 +177,9 @@ def test_analyze_image_normalizes_bypass_route_from_vision_payload():
 
 def test_analyze_image_applies_dense_text_routing_override_for_text_heavy_infographic():
     """When Vision reports ≥ DENSE_TEXT_BYPASS_THRESHOLD text nodes on an infographic,
-    the merged result must be forced to safe_mode even if Vision said semantic_redraw_allowed=True."""
+    the bypass is recorded as ADVISORY (spec 062 FR-011): ``semantic_redraw_allowed`` is
+    cleared and ``fallback_reason`` carries the advisory prefix, but ``render_strategy``
+    keeps the analysis value instead of being overwritten with ``safe_mode``."""
     client = _FakeResponsesClient(
         '{"image_type":"infographic","image_subtype":"editorial_infographic","contains_text":true,'
         '"semantic_redraw_allowed":true,"confidence":0.88,"structured_parse_confidence":0.70,'
@@ -195,13 +197,13 @@ def test_analyze_image_applies_dense_text_routing_override_for_text_heavy_infogr
         enable_vision=True,
     )
 
-    assert result.render_strategy == "safe_mode"
+    assert result.render_strategy == "deterministic_reconstruction"
     assert result.semantic_redraw_allowed is False
     assert result.text_node_count == 22
     assert result.fallback_reason is not None and "dense_text_bypass" in result.fallback_reason
 
 
-def test_analyze_image_routes_dense_non_latin_infographic_to_safe_mode():
+def test_analyze_image_marks_dense_non_latin_infographic_as_advisory_bypass():
     client = _FakeResponsesClient(
         '{"image_type":"infographic","image_subtype":"comparison_chart","contains_text":true,'
         '"semantic_redraw_allowed":true,"confidence":0.9,"structured_parse_confidence":0.8,'
@@ -221,7 +223,7 @@ def test_analyze_image_routes_dense_non_latin_infographic_to_safe_mode():
         non_latin_text_bypass_threshold=12,
     )
 
-    assert result.render_strategy == "safe_mode"
+    assert result.render_strategy == "deterministic_reconstruction"
     assert result.semantic_redraw_allowed is False
     assert result.text_node_count == 15
     assert result.fallback_reason is not None and "dense_non_latin_text_bypass" in result.fallback_reason
@@ -359,7 +361,7 @@ def test_analyze_image_handles_null_or_scalar_vision_fields_without_crashing():
 
     assert result.image_type == "diagram"
     assert result.image_subtype == "jpeg_diagram_like"
-    assert result.structure_summary == "three boxes connected by arrows"
+    assert result.structure_summary == "JPEG image with diagram-like visual features; structure not analysed."
     assert result.extracted_labels == ["Start"]
 
 
@@ -653,3 +655,223 @@ def test_image_budget_rejects_per_image_over_budget(monkeypatch):
     assert budget.admit(_make_diagram_like_jpeg(), stage="doc") is False
     assert budget.skipped_images == 1
     assert budget.used_megapixels == 0.0
+
+
+# --- spec 062 P1: analysis prompt, structural fallback, advisory bypass -------------
+
+
+class _CapturingResponsesClient:
+    def __init__(self, output_text: str):
+        self.output_text = output_text
+        self.requests: list[dict] = []
+        self.responses = self
+
+    def create(self, **kwargs):
+        self.requests.append(kwargs)
+        return SimpleNamespace(output_text=self.output_text)
+
+
+def _vision_user_text(request: dict) -> str:
+    user_message = request["input"][1]
+    return next(part["text"] for part in user_message["content"] if part["type"] == "input_text")
+
+
+def test_vision_analysis_prompt_names_allowed_values_and_registry_keys():
+    """FR-008: the prompt names every value routing keys on, takes prompt keys from the
+    registry, drops the duplicate ``render_strategy`` key and the heuristic baseline.
+    Fails on the old prompt, which listed bare key names without allowed values."""
+    from docxaicorrector.image.prompts import load_image_prompt_registry
+
+    client = _CapturingResponsesClient('{"image_type":"diagram","semantic_redraw_allowed":true}')
+    image_analysis.analyze_image(
+        _make_diagram_like_jpeg(), model="gpt-4.1", mime_type="image/jpeg", client=client, enable_vision=True
+    )
+
+    text = _vision_user_text(client.requests[0])
+    for prompt_key in load_image_prompt_registry()["prompts"]:
+        assert f'"{prompt_key}"' in text
+    for image_type in image_analysis.ANALYSIS_IMAGE_TYPES:
+        assert f'"{image_type}"' in text
+    for route in image_analysis.ANALYSIS_ROUTES:
+        assert f'"{route}"' in text
+    assert "render_strategy" not in text
+    assert "Heuristic baseline" not in text
+    assert "`text_node_count`: integer count of separate text blocks" in text
+    # FR-020: the copy rule is script-agnostic, not tied to three named languages.
+    assert image_analysis.TEXT_COPY_RULE in text
+    assert "Cyrillic, Ukrainian, and Russian" not in text
+    # FR-024 (P2) is not done here: the dense-text sentence stays until the Cyrillic gate.
+    assert "If text is too dense for faithful redraw, set recommended_route to safe_mode." in text
+
+
+def test_valid_prompt_keys_follow_the_registry(monkeypatch):
+    """FR-022: the parser's accepted keys are the registry's keys, not a hand-kept copy."""
+    monkeypatch.setattr(
+        image_analysis,
+        "load_image_prompt_registry",
+        lambda: {"prompts": {"diagram_semantic_redraw": {}, "only_in_registry": {}}},
+    )
+
+    assert image_analysis.valid_prompt_keys() == ("diagram_semantic_redraw", "only_in_registry")
+    heuristic = image_analysis._build_heuristic_analysis("image/jpeg", None)
+    coerced = image_analysis._coerce_vision_analysis_payload({"prompt_key": "only_in_registry"}, heuristic)
+    assert coerced.prompt_key == "only_in_registry"
+    rejected = image_analysis._coerce_vision_analysis_payload({"prompt_key": "chart_semantic_redraw"}, heuristic)
+    assert rejected.prompt_key == heuristic.prompt_key
+
+
+def test_normalize_render_strategy_has_no_model_name_branch_and_rejects_unknown_routes():
+    """FR-008 (W9, D8): ``gpt-…`` no longer means "structured redraw", and an unknown route
+    keeps the heuristic strategy instead of passing through raw."""
+    assert image_analysis._normalize_render_strategy("gpt-image-1", "safe_mode") == ("safe_mode", False)
+    assert image_analysis._normalize_render_strategy("freestyle", "safe_mode") == ("safe_mode", False)
+    # Counter-proof: every route the prompt offers is still honoured.
+    assert image_analysis._normalize_render_strategy("semantic_redraw_direct", "safe_mode") == (
+        "semantic_redraw_direct",
+        False,
+    )
+    assert image_analysis._normalize_render_strategy("semantic_redraw_structured", "safe_mode") == (
+        "semantic_redraw_structured",
+        False,
+    )
+    assert image_analysis._normalize_render_strategy("deterministic_reconstruction", "safe_mode") == (
+        "deterministic_reconstruction",
+        False,
+    )
+    assert image_analysis._normalize_render_strategy("safe_mode", "deterministic_reconstruction") == ("safe_mode", True)
+
+
+def test_diagram_jpeg_with_failed_vision_gets_structural_fallback_and_still_routes():
+    """FR-009 anti-vacuum: the heuristic no longer invents "three boxes connected by arrows"
+    for every diagram-like JPEG, and the image still routes as a redrawable diagram."""
+
+    class FailingClient:
+        class Responses:
+            def create(self, **kwargs):
+                raise RuntimeError("vision boom")
+
+        responses = Responses()
+
+    result = image_analysis.analyze_image(
+        _make_diagram_like_jpeg(), model="gpt-4.1", mime_type="image/jpeg", client=FailingClient(), enable_vision=True
+    )
+
+    assert "three boxes" not in result.structure_summary
+    assert not any(character.isdigit() for character in result.structure_summary)
+    for content_word in ("box", "arrow", "three", "connected"):
+        assert content_word not in result.structure_summary.lower()
+    assert "structure not analysed" in result.structure_summary
+    # Routing is unchanged by the new summary.
+    assert result.image_type == "diagram"
+    assert result.prompt_key == "diagram_semantic_redraw"
+    assert result.render_strategy == "deterministic_reconstruction"
+    assert result.semantic_redraw_allowed is True
+
+
+def test_non_latin_detector_keys_on_script_not_on_code_point():
+    """FR-011 (D9): Latin letters with diacritics are Latin; Cyrillic, Greek and CJK are not.
+    The old ``ord > 127`` check returned True for the first case."""
+    assert image_analysis._contains_non_latin_text("Größe der Straße, école, łódź, niño", []) is False
+    assert image_analysis._contains_non_latin_text("Plain ASCII 123", []) is False
+    assert image_analysis._contains_non_latin_text("", ["Факти"]) is True
+    assert image_analysis._contains_non_latin_text("Ελληνικά", []) is True
+    assert image_analysis._contains_non_latin_text("中文标签", []) is True
+
+
+def test_dense_latin_diacritics_infographic_does_not_trip_non_latin_bypass():
+    client = _FakeResponsesClient(
+        '{"image_type":"infographic","contains_text":true,"semantic_redraw_allowed":true,'
+        '"prompt_key":"infographic_semantic_redraw","recommended_route":"semantic_redraw_direct",'
+        '"structure_summary":"infographic","extracted_labels":["Größe","Straße","Übersicht"],'
+        '"text_node_count":14,"extracted_text":"Größe und Übersicht","fallback_reason":null}'
+    )
+
+    result = image_analysis.analyze_image(
+        _make_infographic_like_png(),
+        model="gpt-4.1",
+        mime_type="image/png",
+        client=client,
+        enable_vision=True,
+        dense_text_bypass_threshold=18,
+        non_latin_text_bypass_threshold=12,
+    )
+
+    assert result.fallback_reason is None
+    assert result.semantic_redraw_allowed is True
+
+
+def _analyze_with_vision_payload(payload: str):
+    return image_analysis.analyze_image(
+        _make_diagram_like_jpeg(),
+        model="gpt-4.1",
+        mime_type="image/jpeg",
+        client=_FakeResponsesClient(payload),
+        enable_vision=True,
+        dense_text_bypass_threshold=18,
+        non_latin_text_bypass_threshold=12,
+    )
+
+
+def test_dense_table_keeps_reconstruction_route_in_structured_mode(monkeypatch):
+    """Anti-regression (spec 062, FR-011/FR-012): a table with ≥ 18 text nodes goes to
+    deterministic reconstruction in ``semantic_redraw_structured``; before the fix the bypass
+    overwrote ``render_strategy`` with ``safe_mode`` and the table lost the PIL route."""
+    from docxaicorrector.image.pipeline_policy import build_generation_analysis
+
+    analysis = _analyze_with_vision_payload(
+        '{"image_type":"table","contains_text":true,"semantic_redraw_allowed":true,'
+        '"prompt_key":"table_semantic_redraw","recommended_route":"deterministic_reconstruction",'
+        '"structure_summary":"table with 6 rows and 4 columns","extracted_labels":["A","B"],'
+        '"text_node_count":22,"extracted_text":"A B","fallback_reason":null}'
+    )
+    assert analysis.fallback_reason == "dense_text_bypass:22_nodes"
+
+    reconstruction_calls = []
+    monkeypatch.setattr(
+        image_generation,
+        "_generate_reconstructed_candidate",
+        lambda image_bytes, analysis, **kwargs: reconstruction_calls.append(analysis) or b"reconstructed",
+    )
+
+    def _no_semantic(*args, **kwargs):
+        raise AssertionError("dense table must not take the generative route")
+
+    monkeypatch.setattr(image_generation, "_generate_semantic_candidate", _no_semantic)
+
+    candidate = image_generation.generate_image_candidate(
+        _make_diagram_like_jpeg(),
+        build_generation_analysis(analysis),
+        mode="semantic_redraw_structured",
+        client=object(),
+    )
+
+    assert candidate == b"reconstructed"
+    assert len(reconstruction_calls) == 1
+
+
+def test_dense_photo_does_not_reach_reconstruction(monkeypatch):
+    """Counter-proof for the test above: the same text-node count on a photo does not
+    send it to reconstruction (nor to a generative redraw)."""
+    from docxaicorrector.image.pipeline_policy import build_generation_analysis
+
+    analysis = _analyze_with_vision_payload(
+        '{"image_type":"photo","contains_text":true,"semantic_redraw_allowed":false,'
+        '"prompt_key":"photo_safe_fallback","recommended_route":"safe_mode",'
+        '"structure_summary":"street photo with signs","extracted_labels":["A"],'
+        '"text_node_count":22,"extracted_text":"A","fallback_reason":null}'
+    )
+
+    def _forbidden(*args, **kwargs):
+        raise AssertionError("photo must stay on the safe route")
+
+    monkeypatch.setattr(image_generation, "_generate_reconstructed_candidate", _forbidden)
+    monkeypatch.setattr(image_generation, "_generate_semantic_candidate", _forbidden)
+
+    candidate = image_generation.generate_image_candidate(
+        _make_diagram_like_jpeg(),
+        build_generation_analysis(analysis),
+        mode="semantic_redraw_structured",
+        client=object(),
+    )
+
+    assert isinstance(candidate, bytes) and candidate
