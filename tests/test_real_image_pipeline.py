@@ -17,6 +17,7 @@ from docxaicorrector.core.config import get_client, load_app_config
 from docxaicorrector.core.constants import ENV_PATH
 from docxaicorrector.image.analysis import analyze_image
 from docxaicorrector.image.model_capabilities import resolve_image_model_capabilities
+from docxaicorrector.image.pipeline_policy import build_generation_analysis
 from docxaicorrector.image.reconstruction import reconstruct_image
 
 
@@ -52,9 +53,16 @@ REAL_IMAGE_CASES = [
         "expected_strategy": "deterministic_reconstruction",
         "expected_mode": "semantic_redraw_structured",
         "semantic_allowed": True,
-        "expected_live_strategy": "safe_mode",
-        "expected_live_mode": "safe",
-        "live_semantic_allowed": False,
+        # Spec 062 FR-024, changed on purpose: this pinned D2 (the analysis prompt sent dense
+        # Cyrillic to safe_mode). The Cyrillic gate FR-005 passed for the structured mode on
+        # 2026-11-07 (C = 5 in all six structured outputs of this image), the prompt no longer
+        # says so, and a model's safe_mode on an infographic is advisory. Whichever route the
+        # model picks (a redraw route, the advisory density bypass at 18+ nodes, or an
+        # advisory safe_mode), the semantic modes redraw it, and the heuristic's
+        # reconstruction strategy is kept.
+        "expected_live_strategy": "deterministic_reconstruction",
+        "expected_live_mode": "semantic_redraw_structured",
+        "live_semantic_allowed": True,
     },
 ]
 
@@ -291,7 +299,9 @@ class TestRedrawRoutingRealInputs:
     @pytest.mark.parametrize("case", [case for case in REAL_IMAGE_CASES if case["expected_live_mode"] != "safe"], ids=lambda case: case["filename"])
     def test_live_redraw_api_smoke_and_timing(self, case):
         image_bytes = _load_image_bytes(case["filename"])
-        analysis_result = analyze_image(image_bytes, model="gpt-4.1", client=_get_live_client())
+        # What the pipeline hands to generation in a semantic mode: advisory bypasses
+        # (density, a model's safe_mode on a redrawable type) are lifted here (spec 062).
+        analysis_result = build_generation_analysis(analyze_image(image_bytes, model="gpt-4.1", client=_get_live_client()))
         requested_mode = _resolve_requested_mode(analysis_result)
 
         assert analysis_result.render_strategy == case["expected_live_strategy"]
@@ -327,7 +337,8 @@ class TestLiveFullImagePipelineArtifacts:
         client = _get_live_client()
 
         analysis_started_at = time.perf_counter()
-        analysis_result = analyze_image(image_bytes, model="gpt-4.1", client=client)
+        # As above: the analysis the pipeline hands to generation in a semantic mode.
+        analysis_result = build_generation_analysis(analyze_image(image_bytes, model="gpt-4.1", client=client))
         analysis_elapsed_seconds = time.perf_counter() - analysis_started_at
 
         requested_mode = _resolve_requested_mode(analysis_result)

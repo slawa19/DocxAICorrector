@@ -178,6 +178,7 @@ bash -c "cd /mnt/d/Work/Projects/DocxAICorrector && python3 scripts/_list_log_ev
 ### 3.5 Image pipeline
 
 - `image_analysis_vision_fallback_after_error`.
+- `image_analysis_image_type_out_of_enum` — `src/docxaicorrector/image/analysis.py` (`_coerce_image_type`), WARNING (спека 062, сравнение изображений 2026-11-07): vision-модель вернула `image_type` вне `ANALYSIS_IMAGE_TYPES` (`gpt-5.4-mini` ответил `"logo"` на 2 из 43 изображений книги); тип заменяется на `mixed_or_ambiguous`, а не проходит дальше непроверенным. Context: `{image_type, replacement, allowed_image_types}`.
 - Image generation attempts: `semantic_image_edit_completed|fallback_to_structured_generate|retry_after_transient_error|retry_with_fallback_size|retry_with_shorter_prompt|retry_without_optional_param`.
 - Structured image generation attempts: `structured_image_generate_completed|retry_after_transient_error|retry_with_fallback_size|retry_with_shorter_prompt|retry_without_optional_param`.
 - Layout retries: `structured_layout_retry_after_transient_error|without_optional_param`.

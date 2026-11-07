@@ -3,9 +3,17 @@ from dataclasses import replace
 from docxaicorrector.core.models import ImageAnalysisResult, ImageMode, ImageValidationResult, SEMANTIC_IMAGE_MODE_VALUES
 
 
+# A vision model's ``recommended_route="safe_mode"`` for an image it typed as redrawable
+# (``image.analysis.REDRAWABLE_IMAGE_TYPES``). Spec 062 image comparison 2026-11-07,
+# finding 5: ``gpt-6.1-terra`` and ``gpt-6.1-sol`` routed the dense infographic and the dense
+# chart to ``safe_mode`` with a free-text reason, which made "no redraw" HARD in the semantic
+# modes the user chose. Recorded with this prefix, it is advisory like the density bypasses.
+MODEL_SAFE_ROUTE_ADVISORY_PREFIX = "model_safe_route:"
+
 _ADVISORY_SAFE_FALLBACK_PREFIXES = (
     "dense_text_bypass:",
     "dense_non_latin_text_bypass:",
+    MODEL_SAFE_ROUTE_ADVISORY_PREFIX,
 )
 
 _HARD_VALIDATION_REASONS = {

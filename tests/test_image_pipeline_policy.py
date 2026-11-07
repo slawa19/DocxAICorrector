@@ -1,3 +1,5 @@
+import dataclasses
+
 from docxaicorrector.core.models import ImageAnalysisResult, ImageAsset, ImageValidationResult
 from docxaicorrector.image.pipeline import score_semantic_candidate
 from docxaicorrector.image.pipeline_policy import (
@@ -59,6 +61,14 @@ def test_is_advisory_safe_fallback_checks_known_prefixes():
 
     assert is_advisory_safe_fallback(advisory_analysis) is True
     assert is_advisory_safe_fallback(non_advisory_analysis) is False
+    # Spec 062 routing guard: a model's safe_mode on a redrawable type is advisory too.
+    model_safe_route = dataclasses.replace(advisory_analysis, fallback_reason="model_safe_route:Dense Cyrillic poster.")
+    assert is_advisory_safe_fallback(model_safe_route) is True
+    assert should_attempt_semantic_redraw(model_safe_route, "semantic_redraw_direct") is True
+    assert should_attempt_semantic_redraw(model_safe_route, "safe") is False
+    # The model's free text alone (the pre-guard shape) is not advisory.
+    free_text = dataclasses.replace(advisory_analysis, fallback_reason="Dense Cyrillic poster.")
+    assert is_advisory_safe_fallback(free_text) is False
 
 
 def test_is_hard_validation_failure_accepts_unreadable_and_validator_exception_only():

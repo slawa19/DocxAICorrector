@@ -19,6 +19,7 @@ from docxaicorrector.image.shared import (
 from docxaicorrector.core.logger import log_event
 from docxaicorrector.core.model_accounting import STAGE_IMAGE_ANALYSIS
 from docxaicorrector.core.models import ImageAnalysisResult
+from docxaicorrector.image.pipeline_policy import MODEL_SAFE_ROUTE_ADVISORY_PREFIX
 
 
 VISION_ANALYSIS_TIMEOUT_SECONDS = 45.0
@@ -36,6 +37,11 @@ ANALYSIS_IMAGE_TYPES: tuple[str, ...] = (
     "photo",
     "mixed_or_ambiguous",
 )
+# The types the prompt calls redrawable ("`semantic_redraw_allowed`: true only for
+# diagram/table/chart/infographic/mindmap ..."). A model's ``safe_mode`` route on one of them
+# is advisory in the semantic modes (spec 062 routing guard); on any other type it stays hard.
+REDRAWABLE_IMAGE_TYPES: frozenset[str] = frozenset({"diagram", "table", "chart", "infographic", "mindmap"})
+FALLBACK_IMAGE_TYPE = "mixed_or_ambiguous"
 ANALYSIS_ROUTES: tuple[str, ...] = (
     "safe_mode",
     "semantic_redraw_direct",
@@ -493,9 +499,11 @@ def build_vision_analysis_user_prompt() -> str:
         "`text_node_count`: integer count of separate text blocks (labels, cells, captions, legend items). "
         "`extracted_text`: all readable text verbatim, in reading order. "
         "`fallback_reason`: null or a short reason. "
-        f"{TEXT_COPY_RULE} "
-        # Untouched until the Cyrillic gate (spec 062 FR-024, P2) passes.
-        "If text is too dense for faithful redraw, set recommended_route to safe_mode."
+        f"{TEXT_COPY_RULE}"
+        # Spec 062 FR-024 (D2): the sentence "If text is too dense for faithful redraw, set
+        # recommended_route to safe_mode." is gone. The Cyrillic gate FR-005 passed for the
+        # structured mode on 2026-11-07, and neither density nor script sends an image to
+        # safe_mode by prose; the numeric bypass thresholds stay advisory (FR-011/FR-012).
     )
 
 
@@ -519,9 +527,10 @@ def _extract_vision_analysis(
                         {
                             "type": "input_text",
                             "text": (
+                                # Spec 062 FR-024 (D2): no sentence here sends dense or
+                                # non-Latin images to safe_mode any more.
                                 "You analyze document images conservatively for a DOCX editing pipeline. Return strict JSON only. "
-                                    "Screenshots and photos should usually stay in safe_mode unless the image is clearly a structured diagram or infographic. "
-                                    "Dense infographics, posters, and comparison charts with many text blocks, especially in Cyrillic or mixed non-Latin text, should prefer safe_mode."
+                                "Screenshots and photos should usually stay in safe_mode unless the image is clearly a structured diagram or infographic."
                             ),
                         }
                     ],
@@ -567,6 +576,7 @@ def _coerce_vision_analysis_payload(
     extracted_labels = _coerce_extracted_labels(payload.get("extracted_labels"))
     extracted_text = _coerce_extracted_text(payload.get("extracted_text"))
     text_node_count = _coerce_non_negative_int(payload.get("text_node_count"))
+    image_type = _coerce_image_type(payload.get("image_type"), heuristic_result.image_type)
     render_strategy, force_safe_mode = _normalize_render_strategy(
         payload.get("recommended_route") or payload.get("render_strategy"),
         heuristic_result.render_strategy,
@@ -575,12 +585,26 @@ def _coerce_vision_analysis_payload(
         payload.get("semantic_redraw_allowed"),
         heuristic_result.semantic_redraw_allowed,
     )
+    fallback_reason = _coerce_optional_string(payload.get("fallback_reason"), heuristic_result.fallback_reason)
     if force_safe_mode:
         semantic_redraw_allowed = False
+        if image_type in REDRAWABLE_IMAGE_TYPES:
+            # Spec 062 routing guard (image comparison 2026-11-07, finding 5): the model's
+            # safe_mode on a redrawable type is ADVISORY, through the same path as the
+            # dense_* bypasses (``pipeline_policy._ADVISORY_SAFE_FALLBACK_PREFIXES``): the
+            # semantic modes restore the redraw in ``build_generation_analysis``; ``safe``
+            # and ``no_change`` are untouched. Keyed on the type and the route only: terra
+            # and sol sent ``semantic_redraw_allowed: false`` together with the route in all
+            # four measured cases, so a guard that also required ``true`` would never fire.
+            # ``render_strategy`` falls back to the heuristic's, as for any route that names
+            # no redraw route, so a table keeps the reconstruction route (FR-012).
+            model_reason = _coerce_optional_string(payload.get("fallback_reason"), None) or "unspecified"
+            fallback_reason = f"{MODEL_SAFE_ROUTE_ADVISORY_PREFIX}{model_reason}"
+            render_strategy = heuristic_result.render_strategy
     contains_text = _coerce_bool(payload.get("contains_text"), heuristic_result.contains_text)
     prompt_key = _coerce_non_empty_string(payload.get("prompt_key"), heuristic_result.prompt_key)
     return ImageAnalysisResult(
-        image_type=_coerce_non_empty_string(payload.get("image_type"), heuristic_result.image_type),
+        image_type=image_type,
         image_subtype=_coerce_optional_string(payload.get("image_subtype"), heuristic_result.image_subtype),
         contains_text=contains_text or bool(extracted_labels) or bool(extracted_text),
         semantic_redraw_allowed=semantic_redraw_allowed,
@@ -592,8 +616,33 @@ def _coerce_vision_analysis_payload(
         extracted_labels=extracted_labels or heuristic_result.extracted_labels,
         text_node_count=text_node_count,
         extracted_text=extracted_text,
-        fallback_reason=_coerce_optional_string(payload.get("fallback_reason"), heuristic_result.fallback_reason),
+        fallback_reason=fallback_reason,
     )
+
+
+def _coerce_image_type(value: object, fallback: str) -> str:
+    """The model's ``image_type`` if the prompt offers it; ``mixed_or_ambiguous`` if not.
+
+    Spec 062 (image comparison 2026-11-07, finding 6): ``gpt-5.4-mini`` answered ``"logo"``
+    for 2 of 43 book images and the value passed through unchecked, while routing keys on
+    exact members of ``ANALYSIS_IMAGE_TYPES``. A missing or empty value keeps the heuristic
+    type, as before.
+    """
+
+    if not isinstance(value, str) or not value.strip():
+        return fallback
+    normalized = value.strip().lower()
+    if normalized in ANALYSIS_IMAGE_TYPES:
+        return normalized
+    log_event(
+        logging.WARNING,
+        "image_analysis_image_type_out_of_enum",
+        "Vision-анализ вернул image_type вне допустимого набора; использую mixed_or_ambiguous.",
+        image_type=value.strip(),
+        replacement=FALLBACK_IMAGE_TYPE,
+        allowed_image_types=list(ANALYSIS_IMAGE_TYPES),
+    )
+    return FALLBACK_IMAGE_TYPE
 
 
 def _merge_analysis_results(

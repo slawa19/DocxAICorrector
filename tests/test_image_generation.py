@@ -1,6 +1,7 @@
 import dataclasses
 import base64
 from io import BytesIO
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 
@@ -525,6 +526,72 @@ def test_generate_image_candidate_direct_normalizes_dark_outer_background_to_whi
         assert isinstance(px23, tuple)
         assert px0[:3] == (255, 255, 255)
         assert px23[:3] == (255, 255, 255)
+
+
+# A real ``images.generate`` answer with ``background="transparent"`` from
+# gpt-image-2.5-sunburst (spec 062 image comparison 2026-11-07, diagram img_023, direct mode,
+# attempt 1), scaled to a quarter with NEAREST so the RGB hidden under alpha 0 is kept
+# byte-exact: the corner pixel is (1, 11, 42, 0). 9 of 11 labels vanished from the delivered
+# file of that cell.
+_TRANSPARENT_GENERATE_RAW = Path(__file__).parent / "fixtures" / "image_restore" / "transparent_generate_raw_diagram.png"
+_DIAGRAM_SOURCE_SIZE = (413, 259)
+
+
+def _count_dark_pixels(image: Image.Image) -> int:
+    return sum(image.convert("L").histogram()[:100])
+
+
+def _composite_on_white(image_bytes: bytes) -> Image.Image:
+    with Image.open(BytesIO(image_bytes)) as opened:
+        rgba = opened.convert("RGBA")
+    return Image.alpha_composite(Image.new("RGBA", rgba.size, (255, 255, 255, 255)), rgba).convert("RGB")
+
+
+def test_restore_generated_output_keeps_dark_text_drawn_on_transparent_background(monkeypatch):
+    raw_bytes = _TRANSPARENT_GENERATE_RAW.read_bytes()
+    with Image.open(BytesIO(raw_bytes)) as raw_image:
+        assert raw_image.mode == "RGBA"
+        corner = raw_image.getpixel((0, 0))
+        assert isinstance(corner, tuple) and corner[3] == 0 and sum(corner[:3]) < 60
+
+    def _restore() -> Image.Image:
+        restored = image_generation._restore_generated_output(
+            raw_bytes,
+            _DIAGRAM_SOURCE_SIZE,
+            prefer_light_background=True,
+        )
+        return _composite_on_white(restored)
+
+    def _reference_for(size: tuple[int, int]) -> int:
+        # What the model drew, as a reader sees it on a white page, at the delivered size.
+        return _count_dark_pixels(_composite_on_white(raw_bytes).resize(size, Image.Resampling.LANCZOS))
+
+    delivered = _restore()
+    delivered_dark = _count_dark_pixels(delivered)
+    assert delivered.mode == "RGB"
+    # Measured 2026-11-07: 3 026 dark pixels delivered against 2 918 in the reference.
+    assert delivered_dark >= 0.9 * _reference_for(delivered.size)
+
+    # Anti-vacuum: without the alpha-aware flatten the clean-up erases the text on this file
+    # (measured 961 against 2 918), so the fixture really carries the defect.
+    monkeypatch.setattr(image_generation, "_flatten_transparency_onto_white", lambda image: image)
+    erased = _restore()
+    assert _count_dark_pixels(erased) <= 0.5 * _reference_for(erased.size)
+
+
+def test_flatten_transparency_leaves_opaque_rasters_untouched():
+    opaque_rgb = Image.new("RGB", (8, 8), (10, 10, 10))
+    opaque_rgba = Image.new("RGBA", (8, 8), (10, 10, 10, 255))
+
+    assert image_generation._flatten_transparency_onto_white(opaque_rgb) is opaque_rgb
+    assert image_generation._flatten_transparency_onto_white(opaque_rgba) is opaque_rgba
+
+    half_transparent = Image.new("RGBA", (2, 1), (0, 0, 0, 0))
+    half_transparent.putpixel((1, 0), (0, 0, 0, 255))
+    flattened = image_generation._flatten_transparency_onto_white(half_transparent)
+    assert flattened.mode == "RGB"
+    assert flattened.getpixel((0, 0)) == (255, 255, 255)
+    assert flattened.getpixel((1, 0)) == (0, 0, 0)
 
 
 def test_trim_generated_outer_padding_skips_trim_when_loss_ratio_is_too_large():
