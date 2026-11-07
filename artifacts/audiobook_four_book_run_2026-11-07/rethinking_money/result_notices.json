@@ -1,0 +1,44 @@
+[
+  {
+    "kind": "narration",
+    "level": "warning",
+    "message_key": "result.narration_source_fallback_excluded",
+    "params": {
+      "count": 1,
+      "chars": 1710
+    },
+    "anchors": [
+      "Jacqui Dunne",
+      "Copyright © 2013 by Bernard Lietaer and Jacqui Dunne All rights reserved.",
+      "Berrett-Koehler Publishers, Inc.",
+      "235 Montgomery Street, Suite 650",
+      "San Francisco, California 94104-2916 Tel: (415) 288-0260, Fax: (415) 362-2512 www.bkconnection.com Ordering information for print editions Quantity sales.",
+      "Individual sales.",
+      "Tel: (800) 929-2929; Fax: (802) 864-7626.",
+      "Orders by U.S."
+    ]
+  },
+  {
+    "kind": "translation",
+    "level": "warning",
+    "message_key": "result.source_text_delivered_all_addresses_in_narration",
+    "params": {
+      "count": 9,
+      "blocks": 1,
+      "chars": 1694,
+      "elsewhere": 9
+    },
+    "anchors": []
+  },
+  {
+    "kind": "acceptance",
+    "level": "warning",
+    "message_key": "result.acceptance_not_passed",
+    "params": {
+      "count": 1
+    },
+    "failed_checks": [
+      "untranslated_prose_not_delivered"
+    ]
+  }
+]

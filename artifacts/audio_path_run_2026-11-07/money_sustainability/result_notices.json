@@ -1,0 +1,40 @@
+[
+  {
+    "kind": "narration",
+    "level": "warning",
+    "message_key": "result.narration_omitted_paragraphs_excluded_with_unanchored",
+    "params": {
+      "count": 8,
+      "chars": 5987,
+      "unanchored": 3
+    },
+    "anchors": [
+      "Reinhart et al.",
+      "Footnotes 1 Lietaer (2001); Lietaer & Kennedy (2008); Greco (2009); Lietaer & Belgin (2011); Hallsmith & Lietaer (2011).",
+      "Economies with Local Currencies (2011).",
+      "Markets and Adverse Selection: A Handbook for Health Economists (1998).",
+      "They have discovered that people participating in a Time Dollar system remain on average healthier because of a better social capital environment."
+    ]
+  },
+  {
+    "kind": "narration",
+    "level": "warning",
+    "message_key": "result.narration_review_data",
+    "params": {
+      "count": 4,
+      "rules": "inline_citation"
+    }
+  },
+  {
+    "kind": "translation",
+    "level": "warning",
+    "message_key": "result.source_text_delivered_all_addresses_in_narration",
+    "params": {
+      "count": 8,
+      "blocks": 3,
+      "chars": 5987,
+      "elsewhere": 8
+    },
+    "anchors": []
+  }
+]
