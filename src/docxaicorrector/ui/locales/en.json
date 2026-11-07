@@ -118,6 +118,8 @@
   "result.narration_postprocess_paragraph_shortfall": "The narration text is ready, but in {count} part(s) the audiobook pass returned {paragraphs} paragraph(s) fewer than it was given. The answer was kept as returned — check it before sending it to ElevenLabs: a paragraph may be missing from the audio.",
   "result.primary_artifacts_not_saved": "The result is available in this session, but its files could not be saved to disk.",
   "result.acceptance_not_passed": "The document did not pass acceptance: {count} check(s) did not hold — {checks}. The files below are available: this is review data, not a block.",
+  "result.run_glossary_built": "Book glossary: {count} terms and names were fixed by one request before translation and passed to every block, so each term is rendered the same way throughout the book.",
+  "result.run_glossary_failed": "The book glossary was not built: the translation ran without it, so term renderings may differ between chapters. Details are in the log (run_glossary_failed).",
   "result.source_text_delivered": "Untranslated source text reached the document: {count} paragraph(s) ({chars} characters) in {blocks} block(s). Find them in the DOCX by searching for: {anchors}",
   "result.source_text_delivered_with_unanchored": "Untranslated source text reached the document: {count} paragraph(s) ({chars} characters) in {blocks} block(s). Find them in the DOCX by searching for: {anchors}. Another {unanchored} paragraph(s) could not be given a searchable fragment.",
   "result.source_text_delivered_without_anchors": "Untranslated source text reached the document: {count} paragraph(s) ({chars} characters) in {blocks} block(s). None of them gives a searchable fragment ({unanchored}).",

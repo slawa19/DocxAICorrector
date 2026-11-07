@@ -485,3 +485,50 @@ def test_request_text_completion_honours_stop_before_paying():
         )
 
     assert client.calls == []
+
+
+# --- T015: the artifact family is bounded ---------------------------------------------------------
+
+
+def test_run_glossary_artifacts_are_pruned_by_count(tmp_path, monkeypatch):
+    from docxaicorrector.core import constants
+    from docxaicorrector.pipeline import glossary_phase
+
+    target = tmp_path / "run_glossaries"
+    monkeypatch.setattr(constants, "RUN_GLOSSARIES_DIR", target)
+    monkeypatch.setattr(glossary_phase, "RUN_GLOSSARIES_MAX_COUNT", 2)
+
+    written = []
+    for index in range(4):
+        context = SimpleNamespace(run_id=f"run{index}", source_token="")
+        written.append(glossary_phase._write_run_glossary_artifact({"index": index}, context=context))
+
+    survivors = sorted(path.name for path in target.glob("*.json"))
+    assert len(survivors) == 2
+    assert all(name.startswith(("run2_", "run3_")) for name in survivors)
+    assert not list(target.glob("*.tmp"))
+
+
+def test_run_glossary_notice_only_when_there_is_something_to_say():
+    from docxaicorrector.pipeline.glossary_phase import build_run_glossary_notice
+
+    assert build_run_glossary_notice(status="built", term_count=5) == {
+        "kind": "glossary",
+        "level": "info",
+        "message_key": "result.run_glossary_built",
+        "params": {"count": 5},
+    }
+    assert build_run_glossary_notice(status="failed", term_count=0)["level"] == "warning"
+    for status in ("not_applicable", "no_candidates", "empty", "stopped"):
+        assert build_run_glossary_notice(status=status, term_count=0) is None
+    assert build_run_glossary_notice(status="built", term_count=0) is None
+
+
+def test_glossary_notice_keys_exist_in_both_locales():
+    from pathlib import Path
+
+    locales = Path(__file__).resolve().parents[1] / "src" / "docxaicorrector" / "ui" / "locales"
+    for language in ("ru", "en"):
+        catalog = json.loads((locales / f"{language}.json").read_text(encoding="utf-8"))
+        assert "{count}" in catalog["result.run_glossary_built"]
+        assert catalog["result.run_glossary_failed"]

@@ -53,6 +53,7 @@ UI_RESULT_ARTIFACTS_DIR = RUN_DIR / "ui_results"
 STRUCTURE_MANIFESTS_DIR = RUN_DIR / "structure_manifests"
 SEGMENT_RESULT_REGISTRY_DIR = RUN_DIR / "segment_results"
 JOB_RESULT_REGISTRY_DIR = RUN_DIR / "job_results"
+RUN_GLOSSARIES_DIR = RUN_DIR / "run_glossaries"
 APP_LOG_PATH = RUN_DIR / "app.log"
 APP_READY_PATH = RUN_DIR / "app.ready"
 

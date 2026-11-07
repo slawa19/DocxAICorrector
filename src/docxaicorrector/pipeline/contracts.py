@@ -257,6 +257,10 @@ class ProcessingContext:
 @dataclass
 class ProcessingState:
     processed_chunks: list[str] = field(default_factory=list)
+    # Spec 063 P2: the run glossary's outcome, for the result-screen notice only; the glossary
+    # itself lives in the block prompt and in its ``.run/run_glossaries/`` artifact.
+    run_glossary_status: str = "not_applicable"
+    run_glossary_term_count: int = 0
     narration_chunks: list[str] = field(default_factory=list)
     excluded_narration_block_count: int = 0
     # Blocks kept OUT of the narration for a reason the document layer could not know:

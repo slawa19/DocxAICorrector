@@ -751,7 +751,8 @@ def render_markdown_preview(
 # and anything else vanished without a trace — a pipeline notice of a new kind reached the
 # user as silence, which is the one outcome a notice exists to prevent (Constitution V).
 _RENDERED_RESULT_NOTICE_KINDS = frozenset(
-    {"", "cleanup", "narration", "persistence", "acceptance", "translation"}
+    # "glossary": spec 063 P2 — the run glossary was built (info) or was not (warning).
+    {"", "cleanup", "narration", "persistence", "acceptance", "translation", "glossary"}
 )
 
 

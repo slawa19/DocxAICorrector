@@ -6,6 +6,7 @@ from typing import Any, Literal, cast
 
 from docxaicorrector.core.model_accounting import snapshot_run_model_accounting
 from docxaicorrector.core.models import ImageMode
+from docxaicorrector.pipeline.glossary_phase import build_run_glossary_notice
 from docxaicorrector.pipeline.output_validation import (
     assemble_final_markdown,
     build_generated_paragraph_registry_from_entries,
@@ -817,6 +818,14 @@ def finalize_processing_success(
         for notice in cast(Sequence[Mapping[str, object]], docx_phase.get("result_notices") or ())
         if isinstance(notice, Mapping)
     ]
+    # Spec 063 P2: the user sees that a run glossary was built (and how big), or that it was
+    # not — DATA on the existing notice channel, never a delivery decision.
+    run_glossary_notice = build_run_glossary_notice(
+        status=str(getattr(state, "run_glossary_status", "") or ""),
+        term_count=int(getattr(state, "run_glossary_term_count", 0) or 0),
+    )
+    if run_glossary_notice is not None:
+        result_notices.append(run_glossary_notice)
     stopped_result = _stop_at_late_boundary("Обработка остановлена перед reader cleanup.")
     if stopped_result is not None:
         return stopped_result
