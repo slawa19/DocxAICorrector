@@ -62,6 +62,10 @@ def build_app_config_payload(
         "audiobook_model": text_runtime_defaults["audiobook_model"],
         "supported_languages": text_runtime_defaults["supported_languages"],
         "enable_paragraph_markers": text_runtime_defaults["enable_paragraph_markers"],
+        "glossary_pass_enabled": text_runtime_defaults["glossary_pass_enabled"],
+        "glossary_max_terms": text_runtime_defaults["glossary_max_terms"],
+        "glossary_prompt_max_chars": text_runtime_defaults["glossary_prompt_max_chars"],
+        "glossary_candidate_limit": text_runtime_defaults["glossary_candidate_limit"],
         "paragraph_boundary_normalization_enabled": paragraph_boundary_settings["paragraph_boundary_normalization_enabled"],
         "paragraph_boundary_normalization_mode": paragraph_boundary_settings["paragraph_boundary_normalization_mode"],
         "paragraph_boundary_normalization_save_debug_artifacts": paragraph_boundary_settings[

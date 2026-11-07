@@ -79,6 +79,65 @@ class GlossaryTerm:
     target_term: str = ""
     confidence: str = "medium"
     source_segment_id: str | None = None
+    # Spec 063 FR-013/FR-015: a run glossary entry is either a term or a proper name, and a
+    # term the source uses in two senses may come back twice, told apart by ``note``.
+    kind: str = "term"
+    note: str = ""
+
+
+GLOSSARY_TERM_KINDS = frozenset({"term", "name"})
+# Spec 063 FR-014: the glossary's ceiling is a budget of prompt characters, not a count of
+# entries. Eight entries was the old count; a run glossary of ~60 short pairs fits here.
+DEFAULT_GLOSSARY_PROMPT_MAX_CHARS = 3000
+DOCUMENT_GLOSSARY_SECTION_HEADER = "ТЕРМИНЫ И КОНСИСТЕНТНЫЕ ЭКВИВАЛЕНТЫ ДЛЯ ЭТОГО ДОКУМЕНТА:"
+
+
+def _render_glossary_line(term: GlossaryTerm) -> str:
+    source_term = str(term.source_term or "").strip()
+    target_term = str(term.target_term or "").strip()
+    if not source_term or not target_term:
+        return ""
+    line = f"- {source_term} -> {target_term}"
+    if str(getattr(term, "kind", "") or "").strip() == "name":
+        line += " (имя)"
+    note = " ".join(str(getattr(term, "note", "") or "").split())
+    if note:
+        line += f" — {note}"
+    return line
+
+
+def render_glossary_prompt_section(
+    terms: Sequence[GlossaryTerm],
+    *,
+    header: str = DOCUMENT_GLOSSARY_SECTION_HEADER,
+    max_chars: int = DEFAULT_GLOSSARY_PROMPT_MAX_CHARS,
+) -> str:
+    """Render glossary entries as one prompt section, cut by a CHARACTER budget.
+
+    Entries are taken in the order given while the section (header included) stays within
+    ``max_chars``; when something did not fit, a ``- ...`` line says so, as the count cap
+    used to. One renderer serves both the document profile's slot and the run glossary
+    (spec 063 FR-014), so the two can never drift apart in format.
+    """
+
+    budget = max(0, int(max_chars or 0))
+    lines = [line for line in (_render_glossary_line(term) for term in terms) if line]
+    if not lines or budget <= 0:
+        return ""
+    full_section = header + "\n" + "\n".join(lines)
+    if len(full_section) <= budget:
+        return full_section
+    ellipsis = "- ..."
+    used = len(header) + 1 + len(ellipsis)
+    kept: list[str] = []
+    for line in lines:
+        if used + 1 + len(line) > budget:
+            break
+        kept.append(line)
+        used += 1 + len(line)
+    if not kept:
+        return ""
+    return header + "\n" + "\n".join([*kept, ellipsis])
 
 
 @dataclass(frozen=True)
@@ -149,7 +208,12 @@ class DocumentContextProfile:
     def outline_entries(self) -> tuple[SegmentOutlineEntry, ...]:
         return self.segment_outline
 
-    def to_prompt_text(self, *, max_outline_entries: int = 10, max_glossary_terms: int = 8) -> str:
+    def to_prompt_text(
+        self,
+        *,
+        max_outline_entries: int = 10,
+        max_glossary_chars: int = DEFAULT_GLOSSARY_PROMPT_MAX_CHARS,
+    ) -> str:
         sections: list[str] = []
 
         header_lines: list[str] = []
@@ -183,15 +247,12 @@ class DocumentContextProfile:
                 sections.append("КРАТКИЙ ПЛАН ДОКУМЕНТА:\n" + "\n".join(outline_lines))
 
         if self.glossary_terms:
-            glossary_lines = [
-                f"- {str(term.source_term or '').strip()} -> {str(term.target_term or '').strip()}"
-                for term in self.glossary_terms[:max_glossary_terms]
-                if str(term.source_term or '').strip() and str(term.target_term or '').strip()
-            ]
-            if glossary_lines:
-                if len(self.glossary_terms) > max_glossary_terms:
-                    glossary_lines.append("- ...")
-                sections.append("ТЕРМИНЫ И КОНСИСТЕНТНЫЕ ЭКВИВАЛЕНТЫ ДЛЯ ЭТОГО ДОКУМЕНТА:\n" + "\n".join(glossary_lines))
+            glossary_section = render_glossary_prompt_section(
+                self.glossary_terms,
+                max_chars=max_glossary_chars,
+            )
+            if glossary_section:
+                sections.append(glossary_section)
 
         if not sections:
             return ""

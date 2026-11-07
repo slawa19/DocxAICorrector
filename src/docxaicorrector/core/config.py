@@ -328,6 +328,13 @@ class AppConfig(Mapping[str, Any]):
         "normalize_heading_boundary",
         "join_fragmented_paragraph",
     )
+    # Spec 063 P2: the per-run glossary of ``translate``. The loader always sets these from
+    # config.toml (enabled there). An AppConfig assembled by hand (tests, tools) gets the pass
+    # OFF: a caller that never heard of it must not silently start paying for a model call.
+    glossary_pass_enabled: bool = False
+    glossary_max_terms: int = 60
+    glossary_prompt_max_chars: int = 3000
+    glossary_candidate_limit: int = 400
 
     def __getitem__(self, key: str) -> object:
         try:

@@ -51,7 +51,8 @@ from docxaicorrector.document.segments import (
 )
 from docxaicorrector.document.provenance import resolve_scan_origin_config
 from docxaicorrector.document.structure_authority import get_effective_structural_role
-from docxaicorrector.text.translation_domains import build_terminology_plan, build_translation_domain_instructions
+from docxaicorrector.text.glossary_pass import domain_glossary_terms
+from docxaicorrector.text.translation_domains import build_translation_domain_instructions
 
 
 _REASON_LABELS: dict[str, str] = {
@@ -517,28 +518,9 @@ def _detect_document_segments_with_optional_phase(*, paragraphs, source_content_
 
 
 def _build_document_context_glossary_terms(*, translation_domain: str, source_text: str) -> tuple[GlossaryTerm, ...]:
-    terminology_plan = build_terminology_plan(source_text=source_text, translation_domain=translation_domain)
-    if not terminology_plan:
-        return ()
-
-    glossary_terms: list[GlossaryTerm] = []
-    for line in terminology_plan.splitlines():
-        normalized_line = str(line or "").strip()
-        if not normalized_line or "->" not in normalized_line:
-            continue
-        source_term, target_term = normalized_line.split("->", 1)
-        source_term = source_term.strip()
-        target_term = target_term.strip()
-        if not source_term or not target_term:
-            continue
-        glossary_terms.append(
-            GlossaryTerm(
-                source_term=source_term,
-                target_term=target_term,
-                confidence="medium",
-            )
-        )
-    return tuple(glossary_terms)
+    # Spec 063 FR-016: the domain list is parsed by the same helper the run glossary pass uses
+    # for its "fixed terms" input; the list itself and its output here are unchanged.
+    return domain_glossary_terms(source_text=source_text, translation_domain=translation_domain)
 
 
 def _extract_docx_detected_author(*, source_bytes: bytes, source_format: str) -> str | None:

@@ -38,6 +38,12 @@ supported_languages = [
   { code = "ja", label = "日本語" },
 ]
 enable_paragraph_markers = true
+# Spec 063 P2: per-run glossary for `translate` — candidates by form, one model call that fixes
+# the renderings, added to every block prompt within a character budget.
+glossary_pass_enabled = true
+glossary_max_terms = 60
+glossary_prompt_max_chars = 3000
+glossary_candidate_limit = 400
 image_mode_default = "no_change"
 semantic_validation_policy = "advisory"
 keep_all_image_variants = false
