@@ -510,9 +510,12 @@ def model_kept_apparatus(*, context: Any, payload: Any, processed_chunk: str) ->
       keeps its own status) and its text equals its own source (``delivered_text_equals_source``);
     * the source reads as a reference by its form (``output_validation.is_citation_form_paragraph``)
       -- an unchanged sentence of commentary stays a fallback, which is the anti-vacuum half;
-    * its structural role is not ``heading``: D1 translates the titles of the apparatus (a block
-      carrying one goes to the model, ``reference_list_block_keeps_source``), so an echoed
-      heading is a heading left untranslated, whatever it looks like.
+    * a ``heading`` is held to the same positive signal as any other paragraph. D1 translates
+      the titles of the apparatus, and a real section title ("Notes", "Chapter 7") carries no
+      year, locator, initials, address or title span, so its echo stays a fallback; a torn
+      reference the importer typed as a heading (VoE: ten blocks such as
+      ``### *Economy: What Should Change?* (Washington DC: Bureau of``) carries one and is
+      relabelled (orchestrator decision 2026-11-07 after the Codex acceptance review).
 
     Decided per PARAGRAPH where the answer carries its per-paragraph record. Without markers
     there is no record to carry a status, so the decision is per BLOCK: the whole answer equals
@@ -533,13 +536,7 @@ def model_kept_apparatus(*, context: Any, payload: Any, processed_chunk: str) ->
         return None
     if not isinstance(paragraph_ids, list) or len(paragraph_ids) != len(regions):
         return None
-    roles = getattr(payload, "structural_roles", None)
-    if not isinstance(roles, list) or len(roles) != len(regions):
-        return None
-    eligible = [
-        region == PARAGRAPH_REGION_BACK_MATTER and str(role or "").strip().casefold() != "heading"
-        for region, role in zip(regions, roles)
-    ]
+    eligible = [region == PARAGRAPH_REGION_BACK_MATTER for region in regions]
     dispositions = marker_paragraph_dispositions(processed_chunk)
     if dispositions is None:
         target_text = str(getattr(payload, "target_text", "") or "")

@@ -481,6 +481,27 @@ FR-010, статусы спек 062/063/064 и `docs/WHERE_WE_ARE.md`.
     реплика в кавычках, CJK, эхо «Notes», заголовок в форме ссылки — все остаются fallback; +1 тест
     разорванной ссылки; списки формы расширены), 85 с обоими корнями реплея; реплей FR-006
     утверждает равенство финального markdown и реестра, а не только счётчики.
+  - **Решение оркестратора 2026-11-07 по развилке выше (не продуктовое): роль `heading` допускается
+    при положительном сигнале.** `eligible` в `block_execution.py:539` — теперь только регион
+    `back_matter`; заголовок проходит тот же `is_citation_form_paragraph`, что и любой абзац, а
+    значит нуждается в положительном сигнале: настоящий заголовок раздела («Notes», «Chapter 7») его
+    не несёт и остаётся fallback (контрпримеры через `process_single_block` сохранены, добавлен
+    «Chapter 7»), обрывок ссылки, типизированный заголовком, несёт год или спан названия и
+    перемечается (новый тест `test_a_heading_typed_torn_reference_with_a_year_is_relabelled`).
+    Правила «без букв с регистром — не ссылка» и снятия обёртки целого абзаца не менялись. Перемер
+    после слияния `main` (`93742d9`), реплей через сборку на четырёх отчётах: VoE **209 → 5**
+    (SC-004 выполнен), перемечено 352 абзаца (302 из бывших fallback); RM 0 → 0, 78; CW 0 → 0, 110;
+    Money 0 → 0, 1; финальный markdown, финальный реестр и проекция озвучки совпадают с базой на
+    всех четырёх, **сдвигов границ 0**, числа и маркеры сносок равны. Оставшиеся пять блоков VoE —
+    без положительного сигнала или проза по доле, ошибка в безопасную сторону: 336 (`p1430`
+    «15. Ibid.» + `p1431`), 371 (`p1489`–`p1491`, из-за `p1490` «Group London School of Economics,
+    special paper 229 (2014).» — остаток 3 из 7), 442 (`p1592` «28. Bank for International
+    Settlements, Basel III phase-in arrangements:»), 455 (`p1608` «1489.» + `p1609`), 533 (`p1740` +
+    `p1741` «economy’.»). Тесты: `test_spec_063_apparatus_policy.py` 78 passed, 8 skipped (86 с
+    обоими корнями реплея), `test_document_pipeline.py` 202, `test_gate_detectors_stage2.py` 54
+    (импортирует `is_citation_form_paragraph` в `quality_gate._is_reference_form_entry`),
+    `test_document_pipeline_output_validation.py` 175 passed, 8 skipped,
+    `test_narration_exclusion_addresses.py` 23, `test_typecheck.py` 1 passed.
 
 - 2026-11-07 (import-glossary) — **FR-007 и FR-009 сделаны** (ветка `064/glossary`). Замеры —
   офлайн по `source_paragraphs.json`/`glossary.json` прогона `2026-11-07-translate-after` (кандидаты

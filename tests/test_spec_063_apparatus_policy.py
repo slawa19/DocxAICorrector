@@ -936,8 +936,7 @@ def test_the_run_summary_prints_the_model_kept_counters() -> None:
             id="a-cjk-paragraph",
         ),
         pytest.param("Notes", "heading", id="a-heading-echo"),
-        # Even a heading that LOOKS like a reference: D1 translates the apparatus headings.
-        pytest.param("### *Economy: What Should Change?* (Washington DC: Bureau of", "heading", id="a-reference-shaped-heading"),
+        pytest.param("Chapter 7", "heading", id="a-chapter-heading-echo"),
     ],
 )
 def test_an_echoed_non_reference_stays_a_controlled_fallback(monkeypatch, text: str, role: str) -> None:
@@ -953,6 +952,24 @@ def test_an_echoed_non_reference_stays_a_controlled_fallback(monkeypatch, text: 
     assert [entry["paragraph_status"] for entry in run.state.generated_paragraph_registry] == [PARAGRAPH_STATUS_ACCEPTED]
     assert [event for event, _ in run.events].count("block_apparatus_kept_by_model") == 0
 
+
+
+def test_a_heading_typed_torn_reference_with_a_year_is_relabelled(monkeypatch) -> None:
+    """Orchestrator decision 2026-11-07: a heading is held to the same POSITIVE reference signal
+    as any paragraph. The importer typed ten torn VoE references as headings; they carry a year
+    or a title span, a real section title does not (see the "Notes"/"Chapter 7" counter-cases)."""
+    written = _fallback_artifacts(monkeypatch)
+    heading_reference = "### *Interest Rate Derivatives Market in the United Kingdom* (London: Bank of England, 2016)."
+    payload = _payload(texts=[heading_reference], roles=["heading"], section=BACK_MATTER_SECTION_NOTES)
+
+    run = _run(payload, model_answer=_echo(payload), classification="source_text_fallback")
+
+    assert written == []
+    assert run.snapshot["controlled_block_fallback_block_count"] == 0
+    assert run.snapshot["back_matter_model_kept_fallback_block_count"] == 1
+    assert [entry["paragraph_status"] for entry in run.state.generated_paragraph_registry] == [
+        PARAGRAPH_STATUS_POLICY_KEPT_SOURCE
+    ]
 
 def test_a_torn_reference_is_relabelled_whole_or_not_at_all() -> None:
     """Finding 3: assembly welds the two halves of a torn entry back together, but never halves
@@ -986,7 +1003,7 @@ def test_a_torn_reference_is_relabelled_whole_or_not_at_all() -> None:
 _RERUN_REPLAY_ROOT_ENV = "DOCXAI_TRANSLATE_RERUN_REPLAY_ROOT"
 _RERUN_REPLAY_ROOT = os.environ.get(_RERUN_REPLAY_ROOT_ENV, "").strip()
 _FR006_REPLAY_BOOKS = [
-    ("value_of_everything", "mazzucato_pdf_full_benchmark_report.json", 209, 15, 331),
+    ("value_of_everything", "mazzucato_pdf_full_benchmark_report.json", 209, 5, 352),
     ("rethinking_money", "lietaer_pdf_full_benchmark_report.json", 0, 0, 78),
     ("creating_wealth", "creatingwealth_pdf_full_benchmark_report.json", 0, 0, 110),
     ("money_sustainability", "money_sustainability_pdf_full_heldout_report.json", 0, 0, 1),
