@@ -15,7 +15,7 @@ from docxaicorrector.image.analysis import (
     encoded_image_within_byte_budget,
     image_within_pixel_budget,
 )
-from docxaicorrector.image.model_capabilities import build_images_request, filter_sizes_for_model
+from docxaicorrector.image.model_capabilities import api_model_id, build_images_request, filter_sizes_for_model
 from docxaicorrector.image.output_policy import (
     DEFAULT_EDIT_CANDIDATE_SIZES,
     DEFAULT_GENERATE_CANDIDATE_SIZES,
@@ -396,12 +396,16 @@ def _generate_semantic_candidate(
             prompt_key=analysis.prompt_key,
         )
         try:
+            # Acceptance review 2026-11-07, finding 7: ``model_config`` was missing here, so
+            # resolving the ``image_edit`` role raised before any request and this fallback
+            # never ran (the structured fallback below then recovered).
             return _generate_direct_semantic_candidate(
                 resolved_client,
                 image_bytes,
                 analysis,
                 prompt=prompt,
                 image_output_policy=image_output_policy,
+                model_config=model_config,
                 budget=budget,
                 pixel_budget=pixel_budget,
             )
@@ -1223,15 +1227,16 @@ def _reference_prompt_parts(
     internal routing codes and free vision text, not instructions (FR-010).
     """
     guidance_by_mode = _EDIT_REFERENCE_GUIDANCE if target == "edit" else _GENERATE_REFERENCE_GUIDANCE
-    parts = [
-        guidance_by_mode[requested_mode],
-        f"Structure summary: {analysis.structure_summary}",
-    ]
+    # Constraints before data (acceptance review 2026-11-07, finding 6): the summary and
+    # labels come from the vision answer and have no length bound, so they go last and a
+    # prompt cut from its tail loses them before any instruction.
+    parts = [guidance_by_mode[requested_mode]]
+    if analysis.contains_text:
+        parts.append("Prioritize legible text and preserve the same count of labeled elements and connectors.")
+    parts.append(f"Structure summary: {analysis.structure_summary}")
     labels = ", ".join(label for label in analysis.extracted_labels[:MAX_PROMPT_LABELS] if label.strip())
     if labels:
         parts.append(f"Preserve these labels exactly when readable: {labels}")
-    if analysis.contains_text:
-        parts.append("Prioritize legible text and preserve the same count of labeled elements and connectors.")
     return parts
 
 
@@ -1252,10 +1257,11 @@ def _build_image_edit_prompt(
         f"Profile: {prompt_profile['description']}",
         f"Detected image type: {analysis.image_type}.",
         f"Original content aspect ratio: {source_size[0]}:{source_size[1]}. Fill the entire generated canvas completely from edge to edge — no empty outer margins, padding, or borders around the artwork.",
-        *content_parts,
         text_policy,
         "Use a white or transparent background only. Never use a black, charcoal, dark, or night-style canvas.",
         "Do not merely upscale, sharpen, or restyle the existing pixels. Rebuild the visual from scratch while keeping the same meaning and layout.",
+        # The unbounded summary and labels follow the constraints (review 2026-11-07, finding 6).
+        *content_parts,
     ]
     if analysis.extracted_text.strip():
         prompt_parts.append("Preserve this extracted source text verbatim when it is readable:")
@@ -1291,9 +1297,10 @@ def _build_structured_generate_prompt(
         "Preserve every readable label, connector, block, lane, table cell, legend item, and hierarchy level from the source structure.",
         "Be conservative in content but not literal in coordinates: improve spacing, alignment, typography, grouping, and visual hierarchy so the result looks like a polished PowerPoint or Office presentation graphic.",
         "Avoid spreadsheet aesthetics, cramped grids, raw Excel-table styling, and mechanical box repetition unless the source is truly a table.",
-        *_reference_prompt_parts(analysis, requested_mode="semantic_redraw_structured", target="generate"),
         text_policy,
         "Use a white or transparent background only. Never use a black, charcoal, dark, or night-style canvas.",
+        # The unbounded summary and labels follow the constraints (review 2026-11-07, finding 6).
+        *_reference_prompt_parts(analysis, requested_mode="semantic_redraw_structured", target="generate"),
         "Structured layout description for conservative redraw:",
         layout_description,
     ]
@@ -1359,7 +1366,7 @@ def _extract_structured_layout_description(
     response = _call_responses_create(
         client,
         {
-            "model": get_model_role_value(model_config, "image_generation_vision"),
+            "model": api_model_id(get_model_role_value(model_config, "image_generation_vision")),
             "input": [
                 {
                     "role": "system",
@@ -1419,7 +1426,7 @@ def _extract_creative_redraw_brief(
     response = _call_responses_create(
         client,
         {
-            "model": get_model_role_value(model_config, "image_generation_vision"),
+            "model": api_model_id(get_model_role_value(model_config, "image_generation_vision")),
             "input": [
                 {
                     "role": "system",
@@ -1427,7 +1434,13 @@ def _extract_creative_redraw_brief(
                         {
                             "type": "input_text",
                             "text": (
-                                "You are an infographic art director. Analyze the source image and produce a concise but production-ready creative redraw brief. "
+                                # Spec 062 acceptance review 2026-11-07, finding 4: this stage
+                                # said "infographic art director" and asked for a "more polished
+                                # infographic composition" for every image type, and its brief
+                                # goes into the final prompt that FR-013 had made genre-keeping.
+                                f"You are a document graphics designer. Analyze the source {analysis.image_type} and produce a concise but production-ready creative redraw brief. "
+                                f"The redraw must stay the same kind of graphic: a {analysis.image_type} stays a {analysis.image_type} "
+                                "(a chart keeps the same series and values, a table keeps the same rows and columns). "
                                 "Preserve all readable text verbatim, preserve meaning and reading order, but suggest a cleaner and more polished composition."
                             ),
                         }
@@ -1440,8 +1453,9 @@ def _extract_creative_redraw_brief(
                             "type": "input_text",
                             "text": (
                                 "Describe the source image for a creative redraw. Include: content hierarchy, grouping, all readable labels verbatim, the structural relationships that must remain intact, "
-                                "and style opportunities for a more polished infographic composition with stronger typography, color hierarchy, spacing, and visual rhythm. "
-                                "Call out how to avoid a spreadsheet-like result. If text is unreadable, say unreadable instead of guessing. "
+                                f"and style opportunities for a more polished {analysis.image_type} with stronger typography, color hierarchy, spacing, and visual rhythm, "
+                                "without changing what kind of graphic it is. "
+                                "Call out how to avoid a raw-spreadsheet look while keeping the same blocks, series, rows, and columns. If text is unreadable, say unreadable instead of guessing. "
                                 f"Detected image type: {analysis.image_type}. Structure summary: {analysis.structure_summary}."
                             ),
                         },
@@ -1598,7 +1612,10 @@ def _flatten_transparency_onto_white(image: Image.Image) -> Image.Image:
     ``images.edit`` path returns (an opaque RGB answer, which passes through unchanged).
     """
 
-    if image.mode == "P" and "transparency" in image.info:
+    if image.mode in {"P", "RGB", "L", "1", "I", "I;16"} and image.info.get("transparency") is not None:
+        # A ``tRNS`` chunk on a palette, RGB or grey PNG marks one colour transparent; PIL keeps
+        # it in ``info`` and applies it on conversion to RGBA. Acceptance review 2026-11-07,
+        # finding 8: only ``P`` was converted, so an RGB/L answer kept its hidden colour.
         image = image.convert("RGBA")
     if image.mode not in {"RGBA", "LA", "PA"}:
         return image

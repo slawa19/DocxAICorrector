@@ -22,8 +22,19 @@ _HARD_VALIDATION_REASONS = {
 }
 
 
+# Image types that are never redrawn, whatever the other analysis fields say. Spec 062
+# acceptance review 2026-11-07: a contradictory vision answer (``photo`` with
+# ``semantic_redraw_allowed=true`` and a redraw prompt key) used to pass, because only the
+# flag and the safe prompt key guarded the route. The heuristic never emits these types
+# with a redraw allowed (``analysis.py`` heuristic branches), so the guard changes nothing
+# for a consistent answer.
+_NEVER_REDRAWN_IMAGE_TYPES = frozenset({"photo", "screenshot"})
+
+
 def should_attempt_semantic_redraw(analysis: ImageAnalysisResult, image_mode: str) -> bool:
     if image_mode not in {*SEMANTIC_IMAGE_MODE_VALUES, ImageMode.COMPARE_ALL.value}:
+        return False
+    if analysis.image_type in _NEVER_REDRAWN_IMAGE_TYPES:
         return False
     if analysis.semantic_redraw_allowed:
         return True

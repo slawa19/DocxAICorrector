@@ -227,6 +227,17 @@ def score_semantic_candidate(asset) -> float:
     return score
 
 
+def _candidate_rank(asset, score: float) -> tuple[bool, float]:
+    """Order of two scored attempts: a deliverable redraw first, then the score.
+
+    A challenger the delivery policy rejected (hard failure, fallback to safe) never
+    displaces a first candidate that is delivered as a redraw, whatever its score; on
+    a tie the earlier attempt stays.
+    """
+
+    return (getattr(asset, "final_variant", None) == "redrawn", score)
+
+
 def _apply_validation_result_to_asset(asset, validation_result, *, image_mode: str, config: dict[str, object], log_event_fn):
     validation_policy = str(config.get("semantic_validation_policy", "advisory")).strip().lower() or "advisory"
     context = {
@@ -425,6 +436,20 @@ def _build_compare_variant_candidate(
         # so the DOCX inserts only the pictures that are actually different.
         candidate_bytes = None
         candidate_mime_type = None
+    # Spec 062 acceptance review 2026-11-07, finding 5: a semantic variant is delivered
+    # only as the redraw it claims to be. A fallback to the original (FR-017: generation
+    # handed the source back after a pixel-budget refusal) reached the DOCX through
+    # ``final_bytes`` under the "creative"/"structural" caption, because only equality
+    # with the safe picture was suppressed.
+    semantic_variant_is_not_a_redraw = (
+        candidate_mode != ImageMode.SAFE.value
+        and not semantic_variant_is_safe_copy
+        and bool(candidate_bytes)
+        and candidate_asset.final_variant != "redrawn"
+    )
+    if semantic_variant_is_not_a_redraw:
+        candidate_bytes = None
+        candidate_mime_type = None
 
     variant = ImageVariantCandidate(
         mode=candidate_mode,
@@ -442,6 +467,11 @@ def _build_compare_variant_candidate(
         variant.final_reason = "compare_all_safe_variant_ready"
     elif semantic_variant_is_safe_copy:
         variant.final_reason = f"compare_all_semantic_variant_equals_safe:{candidate_asset.final_reason or 'unknown'}"
+    elif semantic_variant_is_not_a_redraw:
+        variant.final_reason = (
+            f"compare_all_semantic_variant_not_redrawn:{candidate_asset.final_variant or 'unknown'}:"
+            f"{candidate_asset.final_reason or 'unknown'}"
+        )
 
     return variant
 
@@ -898,6 +928,11 @@ def select_best_semantic_asset(
                     attempt_index=attempt_index,
                     **attempt_asset.to_log_context(),
                 )
+                if best_asset is not None:
+                    # Spec 062 acceptance review 2026-11-07, finding 1: a challenger that
+                    # fell back to the safe picture does not discard the scored first one.
+                    best_asset.update_runtime_attempt_state(attempt_variants=list(attempt_variants))
+                    return best_asset
                 attempt_asset.update_runtime_attempt_state(attempt_variants=list(attempt_variants))
                 return attempt_asset
             if attempt_asset.redrawn_bytes == attempt_asset.original_bytes:
@@ -916,6 +951,11 @@ def select_best_semantic_asset(
                     attempt_index=attempt_index,
                     **attempt_asset.to_log_context(),
                 )
+                if best_asset is not None:
+                    # Same rule as the safe copy above: the source handed back by a
+                    # challenger is no candidate, the scored first one stays.
+                    best_asset.update_runtime_attempt_state(attempt_variants=list(attempt_variants))
+                    return best_asset
                 attempt_asset.update_runtime_attempt_state(attempt_variants=list(attempt_variants))
                 return attempt_asset
             attempt_asset.update_runtime_attempt_state(
@@ -980,7 +1020,7 @@ def select_best_semantic_asset(
             candidate_score=round(score, 4),
             **attempt_asset.to_log_context(),
         )
-        if best_asset is None or score > best_score:
+        if best_asset is None or _candidate_rank(attempt_asset, score) > _candidate_rank(best_asset, best_score):
             best_asset = attempt_asset
             best_score = score
         if attempt_asset.final_variant == "redrawn" and attempt_asset.final_decision == "accept":
@@ -990,7 +1030,13 @@ def select_best_semantic_asset(
             attempt_index=attempt_index,
             attempt_count=attempt_count,
         ):
-            return attempt_asset
+            # Spec 062 acceptance review 2026-11-07, finding 1: on the last attempt the
+            # challenger check is necessarily False, and returning ``attempt_asset`` here
+            # delivered the second candidate even when the first scored higher (7 of 22
+            # two-attempt cells of the 2026-11-07 comparison). The best one is delivered;
+            # both attempts stay in ``attempt_variants``.
+            best_asset.update_runtime_attempt_state(attempt_variants=list(attempt_variants))
+            return best_asset
 
     if best_asset is None:
         asset.update_runtime_attempt_state(attempt_variants=list(attempt_variants))

@@ -6,6 +6,7 @@ import unicodedata
 
 from PIL import Image, ImageFilter, ImageOps
 
+from docxaicorrector.image.model_capabilities import api_model_id
 from docxaicorrector.image.prompts import load_image_prompt_registry
 from docxaicorrector.image.shared import (
     call_responses_create_with_retry,
@@ -48,6 +49,7 @@ ANALYSIS_ROUTES: tuple[str, ...] = (
     "semantic_redraw_structured",
     "deterministic_reconstruction",
 )
+_REDRAW_RENDER_STRATEGIES: frozenset[str] = frozenset(route for route in ANALYSIS_ROUTES if route != "safe_mode")
 # Text-density thresholds from image-pipeline tuning. Crossing them is ADVISORY
 # (spec 062 FR-011/FR-012): the analysis records it in ``fallback_reason`` and the
 # semantic modes still attempt a redraw; ``render_strategy`` is never overwritten,
@@ -519,7 +521,7 @@ def _extract_vision_analysis(
     response = call_responses_create_with_retry(
         client,
         {
-            "model": model,
+            "model": api_model_id(model),
             "input": [
                 {
                     "role": "system",
@@ -596,11 +598,19 @@ def _coerce_vision_analysis_payload(
             # and ``no_change`` are untouched. Keyed on the type and the route only: terra
             # and sol sent ``semantic_redraw_allowed: false`` together with the route in all
             # four measured cases, so a guard that also required ``true`` would never fire.
-            # ``render_strategy`` falls back to the heuristic's, as for any route that names
-            # no redraw route, so a table keeps the reconstruction route (FR-012).
+            # ``render_strategy`` is the one a ``<type>_semantic_redraw`` route would give:
+            # the heuristic's redraw strategy when it has one, otherwise reconstruction,
+            # so a table keeps the PIL route (FR-012). Acceptance review 2026-11-07,
+            # finding 2: taking the heuristic's value as is gave ``safe_mode`` whenever the
+            # heuristic had typed the raster table a screenshot, photo or ambiguous image,
+            # and the restored redraw then skipped reconstruction for the generative path.
             model_reason = _coerce_optional_string(payload.get("fallback_reason"), None) or "unspecified"
             fallback_reason = f"{MODEL_SAFE_ROUTE_ADVISORY_PREFIX}{model_reason}"
-            render_strategy = heuristic_result.render_strategy
+            render_strategy = (
+                heuristic_result.render_strategy
+                if heuristic_result.render_strategy in _REDRAW_RENDER_STRATEGIES
+                else "deterministic_reconstruction"
+            )
     contains_text = _coerce_bool(payload.get("contains_text"), heuristic_result.contains_text)
     prompt_key = _coerce_non_empty_string(payload.get("prompt_key"), heuristic_result.prompt_key)
     return ImageAnalysisResult(

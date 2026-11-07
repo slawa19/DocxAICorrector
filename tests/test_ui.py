@@ -2088,15 +2088,17 @@ def _render_sidebar_for_image_mode(monkeypatch, *, image_mode, extra_config=None
 
 
 def test_render_sidebar_image_model_selectors_follow_the_image_mode(monkeypatch):
-    # no_change calls no image model; safe only READS images; the redraw modes also draw.
+    # no_change and safe call no image model (FR-033: safe analyses without vision); the
+    # redraw modes read and draw. Acceptance review 2026-11-07: this test used to pin a
+    # vision selector in safe, a control that changed nothing.
     no_change, no_change_keys, _ = _render_sidebar_for_image_mode(monkeypatch, image_mode="no_change")
     safe, safe_keys, _ = _render_sidebar_for_image_mode(monkeypatch, image_mode="safe")
     compare, compare_keys, _ = _render_sidebar_for_image_mode(monkeypatch, image_mode="compare_all")
 
     assert "sidebar_image_vision_model" not in no_change_keys and "sidebar_image_draw_model" not in no_change_keys
     assert no_change[10:] == ("", "")
-    assert "sidebar_image_vision_model" in safe_keys and "sidebar_image_draw_model" not in safe_keys
-    assert safe[10:] == ("gpt-5.4-mini", "")
+    assert "sidebar_image_vision_model" not in safe_keys and "sidebar_image_draw_model" not in safe_keys
+    assert safe[10:] == ("", "")
     assert "sidebar_image_vision_model" in compare_keys and "sidebar_image_draw_model" in compare_keys
     assert compare[10:] == ("gpt-5.4-mini", "gpt-image-2.5-flare")
 

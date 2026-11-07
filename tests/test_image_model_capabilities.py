@@ -84,6 +84,25 @@ def test_dated_snapshot_resolves_to_its_family():
     assert capabilities.resolve_image_model_capabilities("gpt-image-9") is None
 
 
+def test_payload_carries_the_api_model_id_for_an_openai_prefixed_selector():
+    """Acceptance review 2026-11-07, finding 3: the prefix was stripped only for the table
+    lookup; the payload went out with ``model="openai:…"``."""
+    for operation in ("generate", "edit"):
+        payload = capabilities.build_images_request(
+            operation=operation,
+            model="openai:gpt-image-2.5-flare",
+            prompt="p",
+            size="1024x1024",
+            quality="high",
+            background="transparent",
+            image=b"x" if operation == "edit" else None,
+        )
+        assert payload["model"] == "gpt-image-2.5-flare", operation
+    assert capabilities.api_model_id("  OpenAI:gpt-5.4-mini ") == "gpt-5.4-mini"
+    # Only the OpenAI prefix is a selector prefix here; a bare id is untouched.
+    assert capabilities.api_model_id("gpt-image-2.5-flare-2026-09-08") == "gpt-image-2.5-flare-2026-09-08"
+
+
 def test_unknown_model_gets_the_minimal_request_and_one_warning_per_model(monkeypatch):
     events = _capture_log_events(monkeypatch, capabilities)
     kwargs = {"operation": "generate", "prompt": "p", "size": "1024x1024", "quality": "high", "background": "transparent"}

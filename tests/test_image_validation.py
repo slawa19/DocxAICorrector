@@ -706,3 +706,73 @@ def test_validation_tokeniser_counter_proof_identical_labels_still_pass():
 
     assert result.missing_labels == []
     assert result.text_match_score == 1.0
+
+
+# --- spec 062 acceptance review 2026-11-07: field types and the API model id ---------
+
+
+def test_validator_string_fields_are_items_not_characters():
+    """Acceptance review 2026-11-07 (note on ``validation.py:538``): a string
+    ``suspicious_reasons`` was iterated character by character, a string ``missing_labels``
+    was dropped and ``"false"`` became True. The concrete defect must still reach FR-016."""
+    from docxaicorrector.image.pipeline import has_concrete_validation_failure
+
+    client = _CapturingValidationClient(
+        '{"semantic_match_score":0.9,"text_match_score":0.9,"structure_match_score":0.9,'
+        '"validator_confidence":0.9,"candidate_contains_text":"false","missing_labels":"Review",'
+        '"added_entities":[],"suspicious_reasons":"labels_missing, values_changed"}'
+    )
+
+    result = image_validation.validate_redraw_result(
+        PNG_BYTES,
+        PNG_BYTES,
+        build_analysis_result(),
+        candidate_analysis=build_analysis_result(),
+        client=client,
+        enable_vision_validation=True,
+        validation_model="gpt-4.1",
+    )
+
+    assert "labels_missing" in result.suspicious_reasons
+    assert "values_changed" in result.suspicious_reasons
+    assert all(len(str(reason)) > 1 for reason in result.suspicious_reasons)
+    assert result.missing_labels == ["review"]
+    assert "text_missing_in_candidate" in result.suspicious_reasons
+    assert has_concrete_validation_failure(result) is True
+
+
+def test_validator_list_fields_are_unchanged():
+    """Counter-proof: the documented JSON arrays and booleans read as before."""
+    client = _CapturingValidationClient(_VISION_OK)
+
+    result = image_validation.validate_redraw_result(
+        PNG_BYTES,
+        PNG_BYTES,
+        build_analysis_result(),
+        candidate_analysis=build_analysis_result(),
+        client=client,
+        enable_vision_validation=True,
+        validation_model="gpt-4.1",
+    )
+
+    assert result.missing_labels == []
+    assert "text_missing_in_candidate" not in result.suspicious_reasons
+    assert result.validation_passed is True
+
+
+def test_validation_request_carries_the_api_model_id_without_provider_prefix():
+    """Acceptance review 2026-11-07, finding 3: ``openai:<id>`` is a valid selector; the
+    request must carry the bare API id."""
+    client = _CapturingValidationClient(_VISION_OK)
+
+    image_validation.validate_redraw_result(
+        PNG_BYTES,
+        PNG_BYTES,
+        build_analysis_result(),
+        candidate_analysis=build_analysis_result(),
+        client=client,
+        enable_vision_validation=True,
+        validation_model="openai:gpt-5.4-mini",
+    )
+
+    assert client.requests[0]["model"] == "gpt-5.4-mini"
