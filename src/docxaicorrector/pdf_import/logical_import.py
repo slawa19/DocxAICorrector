@@ -204,6 +204,18 @@ def build_paragraph_units_from_text_spans(
             next_span=next_content_span,
         )
         if role == "body":
+            # Spec 063 FR-008: the last line of a two-line heading that the per-span
+            # classifier sent to body (a second line that reads like a sentence
+            # continuation, or whose signature drifted into the body cluster) joins the
+            # heading it continues.
+            if _can_continue_heading_with_line(
+                pending_heading_spans,
+                span,
+                next_span=next_content_span,
+                layout_profile=layout_profile,
+            ):
+                pending_heading_spans.append(span)
+                continue
             _flush_heading()
             if pending_list_spans:
                 if _can_merge_list_continuation_span(
@@ -317,6 +329,9 @@ def build_paragraph_units_from_text_spans(
     emitted = _reconcile_structural_headings(
         emitted, body_font_size=layout_profile.body_font_size
     )
+    # After the structural pass: a heading that pass makes keeps the level it gives, and
+    # FR-009 only reads what is still body.
+    emitted = _reconcile_display_titles(emitted, ordered_spans, layout_profile=layout_profile)
 
     _attach_pdf_layout_signals(emitted, ordered_spans, layout_profile=layout_profile)
 
@@ -1641,6 +1656,300 @@ def _resolve_bare_chapter_run(
         demote.update(run)
 
 
+@dataclass(frozen=True)
+class _UnitPlacement:
+    page_number: int
+    top: float
+    bottom: float
+
+
+# Punctuation a title's words may be wrapped in, or that may stand alone between them
+# ("EVENLY . . . YET!", "Crash & Burn").
+_TITLE_TOKEN_EDGE_CHARS = ".,:;!?…'\"“”‘’«»()[]–—-&"
+# One word of a title: letters and digits, optionally joined by an apostrophe, a period or
+# a hyphen ("ISN’T", "U.S.", "Non-linear", "1970s"). A token with any other symbol inside is
+# not a word -- that is what an OCR'd cover ("ri1*\VvrV", "4&A") is made of.
+_TITLE_WORD_PATTERN = re.compile(r"^[^\W_]+(?:['’.\-][^\W_]+)*$")
+
+
+def _text_is_title_words(text: str) -> bool:
+    """Every token is a word or bare punctuation, and at least one word has two letters.
+
+    A shape check on characters, not on vocabulary: it says nothing about WHICH words a
+    title holds, only that the line is made of words at all.
+    """
+    has_word = False
+    for token in _words(text):
+        core = token.strip(_TITLE_TOKEN_EDGE_CHARS)
+        if not core:
+            continue
+        if not _TITLE_WORD_PATTERN.match(core):
+            return False
+        if sum(1 for char in core if char.isalpha()) >= 2:
+            has_word = True
+    return has_word
+
+
+def _unit_placement(
+    unit: ParagraphUnit, spans_by_origin: dict[int, list[PdfTextSpan]]
+) -> _UnitPlacement | None:
+    """Where the unit sits on its page, read back from the spans it was built from.
+
+    ``None`` when the unit's spans cannot be located or the unit crosses a page: such a
+    unit gives no position signal, and FR-009 does not guess one.
+    """
+    spans = [
+        span
+        for origin in (unit.origin_raw_indexes or [])
+        for span in spans_by_origin.get(int(origin), [])
+    ]
+    if not spans:
+        return None
+    pages = {span.page_number for span in spans}
+    if len(pages) != 1:
+        return None
+    return _UnitPlacement(
+        page_number=spans[0].page_number,
+        top=min(float(span.top) for span in spans),
+        bottom=max(float(span.bottom) for span in spans),
+    )
+
+
+def _unit_is_display_line(unit: ParagraphUnit, *, body_font_size: float) -> bool:
+    """A short unit set at display size: what a chapter title is made of."""
+    if unit.role not in {"body", "heading"} or unit.structural_role not in {"body", "heading"}:
+        return False
+    font_size = unit.font_size_pt
+    if not isinstance(font_size, (int, float)) or font_size <= 0:
+        return False
+    if float(font_size) / body_font_size < _DISPLAY_TITLE_FONT_RATIO:
+        return False
+    if len(unit.origin_raw_indexes or []) > _HEADING_MAX_LINES:
+        return False
+    return 0 < len(_words(unit.text or "")) <= _DISPLAY_TITLE_MAX_WORDS
+
+
+def _units_continue_one_title(
+    previous: ParagraphUnit,
+    previous_placement: _UnitPlacement,
+    current: ParagraphUnit,
+    current_placement: _UnitPlacement,
+) -> bool:
+    """Two display units are lines of ONE title: same size, set at the title's own leading,
+    and the line above neither ends a sentence nor reads as a TOC row (the same refusals as
+    ``_can_merge_heading_span``)."""
+    previous_size = float(previous.font_size_pt or 0.0)
+    current_size = float(current.font_size_pt or 0.0)
+    if not _font_sizes_match(previous_size, current_size):
+        return False
+    gap = current_placement.top - previous_placement.bottom
+    if gap > max(previous_size, current_size) * _HEADING_LINE_MAX_GAP_FONT_RATIO:
+        return False
+    previous_text = (previous.text or "").strip()
+    if not previous_text or previous_text[-1] in ".!?:":
+        return False
+    return not _text_looks_like_toc_entry(previous_text)
+
+
+def _unit_numbers_title(
+    number_unit: ParagraphUnit,
+    title_unit: ParagraphUnit,
+    spans_by_origin: dict[int, list[PdfTextSpan]],
+    *,
+    layout_profile: _PdfHeadingLayoutProfile,
+) -> bool:
+    """A chapter number set on its own line above the title ("7" over "Extracting Value
+    ..."): the importer's own number-prefix rule (``_can_prefix_heading_with_standalone_
+    number``) decides, exactly as it does when the title line was classified a heading."""
+    number_spans = [
+        span
+        for origin in (number_unit.origin_raw_indexes or [])
+        for span in spans_by_origin.get(int(origin), [])
+    ]
+    title_spans = [
+        span
+        for origin in (title_unit.origin_raw_indexes or [])
+        for span in spans_by_origin.get(int(origin), [])
+    ]
+    if len(number_spans) != 1 or not title_spans:
+        return False
+    return _can_prefix_heading_with_standalone_number(
+        number_spans[0], title_spans[0], layout_profile=layout_profile
+    )
+
+
+def _display_title_heading_level(font_size: float, *, body_font_size: float) -> int:
+    # The importer's own font tiers (``_infer_font_heading_level``); a display title is
+    # never below the h2 tier by construction.
+    return 1 if font_size / body_font_size >= 1.8 else 2
+
+
+def _display_title_unit(
+    group: list[ParagraphUnit], *, body_font_size: float
+) -> ParagraphUnit:
+    font_sizes = [float(unit.font_size_pt or 0.0) for unit in group]
+    font_size = float(median(font_sizes))
+    heading_level = _display_title_heading_level(font_size, body_font_size=body_font_size)
+    if len(group) == 1:
+        unit = group[0]
+        _promote_unit_to_heading(unit, heading_level=heading_level)
+        unit.boundary_rationale = "promoted_display_title"
+        return unit
+    runs: list[StyleRun] = []
+    for index, unit in enumerate(group):
+        if index:
+            runs.append((" ", False, False))
+        runs.extend(_unit_style_runs(unit))
+    origin_indexes: list[int] = []
+    origin_texts: list[str] = []
+    for unit in group:
+        origin_indexes.extend(unit.origin_raw_indexes or [])
+        origin_texts.extend(unit.origin_raw_texts or [])
+    first = group[0]
+    return ParagraphUnit(
+        text=" ".join((unit.text or "").strip() for unit in group),
+        role="heading",
+        structural_role="heading",
+        role_confidence="heuristic",
+        heading_level=heading_level,
+        heading_source="pdf_text_layer",
+        list_level=0,
+        is_bold=all(unit.is_bold for unit in group),
+        is_italic=all(unit.is_italic for unit in group),
+        font_size_pt=font_size,
+        origin_raw_indexes=origin_indexes,
+        origin_raw_texts=origin_texts,
+        pdf_emphasis_runs=runs,
+        layout_origin="pdf_text_layer",
+        boundary_source="pdf_text_layer",
+        boundary_confidence="heuristic",
+        boundary_rationale="merged_display_title_lines",
+        source_index=first.source_index,
+    )
+
+
+def _reconcile_display_titles(
+    units: list[ParagraphUnit],
+    ordered_spans: list[PdfTextSpan],
+    *,
+    layout_profile: _PdfHeadingLayoutProfile,
+) -> list[ParagraphUnit]:
+    """Spec 063 FR-009: a chapter title that the per-span pass left as body, by form only.
+
+    Where a chapter opens, the page starts with its display block: labels the importer
+    already calls headings ("Chapter One", "PART TWO") and title lines set at display size.
+    The per-span pass judges each line alone and loses some of those lines to checks made
+    for body text -- a title ending in "?", a second line that begins lowercase, a title
+    repeated as a running head, a line aligned with the one above it. Here the block is
+    read as a whole:
+
+    * the block is the PREFIX of a page: units from the top of the page while each is a
+      heading or a display line (``_DISPLAY_TITLE_FONT_RATIO`` and above, at most
+      ``_HEADING_MAX_LINES`` lines and ``_DISPLAY_TITLE_MAX_WORDS`` words). The first
+      unit of any other kind -- body text, a list, a caption -- ends it, so nothing in
+      the middle of a page is touched;
+    * inside the block, consecutive display units are lines of one title when
+      ``_units_continue_one_title`` says so (same size, title leading, no sentence end
+      or TOC row above);
+    * a group that holds at least one body unit becomes ONE heading, if it stays within
+      ``_HEADING_MAX_LINES`` lines and is made of words (``_text_is_title_words``). A
+      group of headings only is left exactly as the importer made it.
+
+    No title word, no "Chapter" literal and no list of section names is read. A page
+    whose title carries no display size or does not open the page yields no signal, and
+    stays as imported (Constitution VII, "no source signal, no repair").
+    """
+    body_font_size = layout_profile.body_font_size
+    if not units or not body_font_size:
+        return units
+    spans_by_origin: dict[int, list[PdfTextSpan]] = {}
+    for span in ordered_spans:
+        spans_by_origin.setdefault(_span_origin_index(span), []).append(span)
+    placements = [_unit_placement(unit, spans_by_origin) for unit in units]
+
+    replacements: dict[int, tuple[int, ParagraphUnit]] = {}
+    index = 0
+    count = len(units)
+    while index < count:
+        placement = placements[index]
+        previous_placement = placements[index - 1] if index else None
+        opens_page = placement is not None and (
+            previous_placement is None or previous_placement.page_number != placement.page_number
+        )
+        if not opens_page:
+            index += 1
+            continue
+        assert placement is not None
+        block: list[int] = []
+        cursor = index
+        while cursor < count:
+            cursor_placement = placements[cursor]
+            if cursor_placement is None or cursor_placement.page_number != placement.page_number:
+                break
+            unit = units[cursor]
+            if not (
+                unit.role == "heading"
+                or _unit_is_display_line(unit, body_font_size=body_font_size)
+            ):
+                break
+            block.append(cursor)
+            cursor += 1
+        group: list[int] = []
+        for member in block + [-1]:
+            if member >= 0 and group:
+                last = group[-1]
+                last_placement = placements[last]
+                member_placement = placements[member]
+                assert last_placement is not None and member_placement is not None
+                if _unit_is_display_line(
+                    units[last], body_font_size=body_font_size
+                ) and _unit_is_display_line(units[member], body_font_size=body_font_size) and (
+                    _units_continue_one_title(
+                        units[last], last_placement, units[member], member_placement
+                    )
+                    or _unit_numbers_title(
+                        units[last], units[member], spans_by_origin, layout_profile=layout_profile
+                    )
+                ):
+                    group.append(member)
+                    continue
+            if group:
+                group_units = [units[item] for item in group]
+                line_count = sum(len(unit.origin_raw_indexes or []) for unit in group_units)
+                text = " ".join((unit.text or "").strip() for unit in group_units)
+                if (
+                    any(unit.role != "heading" for unit in group_units)
+                    and all(
+                        _unit_is_display_line(unit, body_font_size=body_font_size)
+                        for unit in group_units
+                    )
+                    and line_count <= _HEADING_MAX_LINES
+                    and len(_words(text)) <= _DISPLAY_TITLE_MAX_WORDS
+                    and _text_is_title_words(text)
+                ):
+                    replacements[group[0]] = (
+                        group[-1],
+                        _display_title_unit(group_units, body_font_size=body_font_size),
+                    )
+            group = [member] if member >= 0 else []
+        index = max(cursor, index + 1)
+
+    if not replacements:
+        return units
+    result: list[ParagraphUnit] = []
+    index = 0
+    while index < count:
+        replacement = replacements.get(index)
+        if replacement is None:
+            result.append(units[index])
+            index += 1
+            continue
+        last_index, unit = replacement
+        result.append(unit)
+        index = last_index + 1
+    return result
+
+
 def _looks_like_chapter_heading(
     span: PdfTextSpan, *, layout_profile: _PdfHeadingLayoutProfile
 ) -> bool:
@@ -2272,6 +2581,130 @@ def _can_merge_heading_span(previous: PdfTextSpan, current: PdfTextSpan) -> bool
     return vertical_gap <= max_gap
 
 
+# --------------------------------------------------------------------------------------
+# Spec 063 FR-008 / FR-009: a heading the per-span classifier tore in two, or a chapter
+# title it left as body. Both rules key on typesetting only -- face, size, the vertical gap
+# between lines, position on the page, line count -- never on the words of the title
+# (Constitution VII).
+#
+# The line bound is the corpus' own maximum: the longest heading in the four corpus books is
+# a three-line chapter title (Rethinking Money ch. 5, "THE FUTURE HAS ARRIVED / BUT ISN'T
+# DISTRIBUTED / EVENLY . . . YET!", measured 2026-11-07). A longer run is a display
+# paragraph -- a pull quote, a title page -- and is left alone.
+_HEADING_MAX_LINES = 3
+# Two lines of one heading are set at the heading's own leading: the white space between
+# them is a fraction of the line's size. Measured on the corpus' torn titles 2026-11-07:
+# 0.04-0.43 x font size (RM ch. 5 and its bold sub-heads, CW chs. 2, 9-11, the Money
+# advertisement page). Lines a full line apart are separate items -- a TOC (Money p. 2:
+# 1.0) or an author above a title (the VoE title page: 1.27).
+_HEADING_LINE_MAX_GAP_FONT_RATIO = 0.5
+# A display title is set well above body size. 1.35 is the importer's own h2 tier
+# (``_infer_font_heading_level``); the h3 tier (1.12) is where body-sized bold lead-ins and
+# small caps live, which FR-009 must not touch.
+_DISPLAY_TITLE_FONT_RATIO = 1.35
+_DISPLAY_TITLE_MAX_WORDS = 14
+
+
+def _span_font_size(span: PdfTextSpan) -> float | None:
+    if isinstance(span.font_size, (int, float)) and span.font_size > 0:
+        return float(span.font_size)
+    return None
+
+
+def _font_sizes_match(first: float | None, second: float | None) -> bool:
+    """The size tolerance ``_can_merge_heading_span`` already uses for heading lines."""
+    if not first or not second:
+        return False
+    smaller, larger = min(first, second), max(first, second)
+    return larger - smaller <= max(0.5, smaller * 0.1)
+
+
+def _spans_share_heading_face(previous: PdfTextSpan, current: PdfTextSpan) -> bool:
+    """Same typeface, weight and slant -- the style a heading's lines share.
+
+    The font name is the face as the PDF names it; when either side carries none (spans
+    rebuilt from JSON), weight and slant are all that is left to compare.
+    """
+    if previous.is_bold != current.is_bold or previous.is_italic != current.is_italic:
+        return False
+    if previous.font_name and current.font_name:
+        return previous.font_name == current.font_name
+    return True
+
+
+def _heading_line_gap_is_tight(previous: PdfTextSpan, current: PdfTextSpan) -> bool:
+    if previous.page_number != current.page_number:
+        return False
+    font_size = max(_span_font_size(previous) or 0.0, _span_font_size(current) or 0.0) or 10.0
+    gap = float(current.top) - float(previous.bottom)
+    return gap <= font_size * _HEADING_LINE_MAX_GAP_FONT_RATIO
+
+
+def _span_is_fully_bold(span: PdfTextSpan) -> bool:
+    if not span.is_bold:
+        return False
+    return all(is_bold for text, is_bold, _ in span.runs if text.strip())
+
+
+def _span_is_set_above_body(span: PdfTextSpan, *, layout_profile: _PdfHeadingLayoutProfile) -> bool:
+    body_font_size = layout_profile.body_font_size
+    font_size = _span_font_size(span)
+    return bool(
+        body_font_size and font_size and font_size / body_font_size >= _HEADING_PROMINENT_FONT_RATIO
+    )
+
+
+def _can_continue_heading_with_line(
+    pending_heading_spans: list[PdfTextSpan],
+    span: PdfTextSpan,
+    *,
+    next_span: PdfTextSpan | None,
+    layout_profile: _PdfHeadingLayoutProfile,
+) -> bool:
+    """Spec 063 FR-008: is this body-classified line the last line of the pending heading?
+
+    All of these must hold, and none of them reads the words:
+
+    * the line may join the heading under the importer's own heading-line rule
+      (``_can_merge_heading_span``: same page, neither side a TOC row, the heading line
+      above does not end a sentence, same size);
+    * it is set in the heading's face (same font, weight and slant), and that face is a
+      heading face on its own: bold throughout, or a size above body. A plain body line,
+      or a body line with one bold word, never qualifies;
+    * the white space above it is at most ``_HEADING_LINE_MAX_GAP_FONT_RATIO`` of its size;
+    * it is the heading's LAST line: the white space below it is larger than the white
+      space above it (a heading is set off from what follows), and the next line is not
+      another line in the same face and size that could still belong to the same block.
+      A bold body paragraph under a bold heading runs on for several lines and stays body;
+    * the heading stays within ``_HEADING_MAX_LINES``.
+    """
+    if not pending_heading_spans or len(pending_heading_spans) >= _HEADING_MAX_LINES:
+        return False
+    previous = pending_heading_spans[-1]
+    if not _can_merge_heading_span(previous, span):
+        return False
+    if not _spans_share_heading_face(previous, span):
+        return False
+    if not (
+        _span_is_fully_bold(span) or _span_is_set_above_body(span, layout_profile=layout_profile)
+    ):
+        return False
+    if not _heading_line_gap_is_tight(previous, span):
+        return False
+    if next_span is not None and next_span.page_number == span.page_number:
+        gap_above = float(span.top) - float(previous.bottom)
+        gap_below = float(next_span.top) - float(span.bottom)
+        if gap_below <= gap_above:
+            return False
+        if (
+            _spans_share_heading_face(span, next_span)
+            and _font_sizes_match(_span_font_size(span), _span_font_size(next_span))
+            and _can_merge_heading_span(span, next_span)
+        ):
+            return False
+    return True
+
+
 
 def _paragraph_from_body_spans(
     spans: list[PdfTextSpan],
@@ -2602,7 +3035,10 @@ def _assign_docx_style_names(paragraphs: list[ParagraphUnit]) -> None:
 
 
 def _looks_like_toc_entry(span: PdfTextSpan) -> bool:
-    text = _normalize_text(span.text)
+    return _text_looks_like_toc_entry(_normalize_text(span.text))
+
+
+def _text_looks_like_toc_entry(text: str) -> bool:
     if not text:
         return False
     match = _TOC_TRAILING_PAGE_PATTERN.match(text)

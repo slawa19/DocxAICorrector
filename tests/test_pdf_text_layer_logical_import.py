@@ -1528,3 +1528,364 @@ def test_every_imported_paragraph_carries_the_style_its_role_decides() -> None:
             paragraph.structural_role or paragraph.role, paragraph.heading_level
         )
         assert paragraph.style_name == (expected or "")
+
+
+# --------------------------------------------------------------------------------------
+# Spec 063 FR-008: a two-line heading arrives from import as ONE heading.
+# Spec 063 FR-009: a chapter title the per-span pass left as body is a heading by form.
+# Every rule here keys on typesetting -- face, size, gaps, page position, line count -- and
+# the anti-vacuum tests below show what the same shapes must NOT turn into.
+# --------------------------------------------------------------------------------------
+
+
+def _body_page(page: int, *, top: float, count: int = 6) -> list[PdfTextSpan]:
+    """Running prose on ``page`` from ``top``: enough for a realistic body size and leading."""
+    return [
+        _span(
+            page,
+            f"Running prose line number {index} of the body text that fills this page here.",
+            top=top + index * 14,
+            bottom=top + index * 14 + 10,
+        )
+        for index in range(count)
+    ]
+
+
+def test_fr008_two_line_bold_sub_head_is_one_heading() -> None:
+    # Rethinking Money p. 149 in miniature: a body-sized bold sub-head broken over two lines.
+    # The second line starts flush with the body column and the first does not end a
+    # sentence, so the per-span pass reads the second line as a sentence continuation.
+    spans = (
+        _body_page(1, top=40)
+        + [
+            _span(1, "A PROPOSAL FOR A GLOBAL TRADE", top=150, bottom=160, x1=220, bold=True),
+            _span(1, "REFERENCE CURRENCY", top=164, bottom=174, x1=150, bold=True),
+            _span(1, "A new nonnational currency has been designed to provide a safety net.", top=188, bottom=198),
+        ]
+        + _body_page(1, top=202, count=4)
+    )
+
+    result = build_paragraph_units_from_text_spans(spans)
+
+    headings = [p for p in result.paragraphs if p.role == "heading"]
+    assert [p.text for p in headings] == ["A PROPOSAL FOR A GLOBAL TRADE REFERENCE CURRENCY"]
+    assert headings[0].origin_raw_texts == ["A PROPOSAL FOR A GLOBAL TRADE", "REFERENCE CURRENCY"]
+    assert not any(p.text == "REFERENCE CURRENCY" for p in result.paragraphs)
+
+
+def test_fr008_display_title_second_line_that_reads_lowercase_joins_the_title() -> None:
+    # Creating Wealth ch. 9: the title is set large and NOT bold; its second line begins in
+    # lowercase, which the per-span pass reads as a sentence continuation.
+    spans = (
+        _body_page(1, top=40)
+        + [_span(2, "CHAPTER 9", top=40, bottom=52, x0=200, x1=280, bold=True)]
+        + [
+            _span(2, "Minding", top=96, bottom=116, x0=230, x1=300, font_size=20),
+            _span(2, "the Community’s Business", top=120, bottom=140, x0=180, x1=380, font_size=20),
+        ]
+        + _body_page(2, top=200)
+    )
+
+    result = build_paragraph_units_from_text_spans(spans)
+
+    title = next(p for p in result.paragraphs if p.text.startswith("Minding"))
+    assert title.text == "Minding the Community’s Business"
+    assert title.role == "heading"
+
+
+def test_fr008_bold_paragraph_under_a_bold_heading_is_not_glued_to_it() -> None:
+    # ANTI-VACUUM: the same face and the same leading, but the bold text runs on for three
+    # lines -- a paragraph, not the last line of the heading.
+    spans = (
+        _body_page(1, top=40)
+        + [
+            _span(1, "A PROPOSAL FOR A GLOBAL TRADE", top=150, bottom=160, x1=220, bold=True),
+            _span(1, "REFERENCE CURRENCY IS DISCUSSED IN THIS", top=164, bottom=174, bold=True),
+            _span(1, "BOLD PASSAGE THAT KEEPS GOING ON AND ON", top=178, bottom=188, bold=True),
+            _span(1, "FOR A THIRD LINE BEFORE IT STOPS HERE", top=192, bottom=202, bold=True),
+        ]
+        + _body_page(1, top=230, count=4)
+    )
+
+    result = build_paragraph_units_from_text_spans(spans)
+
+    assert not any(
+        p.role == "heading" and "REFERENCE CURRENCY" in p.text for p in result.paragraphs
+    )
+
+
+def test_fr008_plain_body_line_never_joins_a_heading() -> None:
+    # ANTI-VACUUM: the line under the heading is in the body face. Same column, same size,
+    # tight leading -- but nothing typographic says it belongs to the heading.
+    spans = (
+        _body_page(1, top=40)
+        + [
+            _span(1, "A PROPOSAL FOR A GLOBAL TRADE", top=150, bottom=160, x1=220, bold=True),
+            _span(1, "REFERENCE CURRENCY", top=164, bottom=174, x1=150),
+        ]
+        + _body_page(1, top=200, count=4)
+    )
+
+    result = build_paragraph_units_from_text_spans(spans)
+
+    assert [p.text for p in result.paragraphs if p.role == "heading"] == ["A PROPOSAL FOR A GLOBAL TRADE"]
+
+
+def test_fr008_line_with_one_bold_word_is_not_a_heading_line() -> None:
+    # ANTI-VACUUM (Creating Wealth contents page): pdfminer reports the first word of a
+    # contents line as bold. Bold must hold for the whole line.
+    spans = (
+        _body_page(1, top=40)
+        + [
+            _span(1, "A PROPOSAL FOR A GLOBAL TRADE", top=150, bottom=160, x1=220, bold=True),
+            PdfTextSpan(
+                page_number=1,
+                text="REFERENCE CURRENCY",
+                x0=50,
+                top=164,
+                x1=150,
+                bottom=174,
+                page_height=800,
+                font_name="SourceSerif-Bold",
+                font_size=10,
+                is_bold=True,
+                is_italic=False,
+                runs=(("REFERENCE", True, False), (" CURRENCY", False, False)),
+            ),
+        ]
+        + _body_page(1, top=200, count=4)
+    )
+
+    result = build_paragraph_units_from_text_spans(spans)
+
+    assert [p.text for p in result.paragraphs if p.role == "heading"] == ["A PROPOSAL FOR A GLOBAL TRADE"]
+
+
+def test_fr008_line_not_set_off_from_what_follows_is_not_the_heading_last_line() -> None:
+    # ANTI-VACUUM (Money & Sustainability, the advertisement page): a bold title line under
+    # a bold heading, followed at a TIGHTER gap than the one above it. A heading is set off
+    # from what follows; this line opens an entry, it does not end the heading.
+    spans = (
+        _body_page(1, top=40)
+        + [
+            _span(1, "ALSO AVAILABLE FROM THIS PUBLISHER", top=150, bottom=160, x1=260, bold=True),
+            _span(1, "A BOOK TITLE SET IN BOLD", top=164, bottom=174, x1=200, bold=True),
+            _span(1, "Its authors, named on a plain line right below", top=176, bottom=186, x1=300),
+        ]
+        + _body_page(1, top=210, count=4)
+    )
+
+    result = build_paragraph_units_from_text_spans(spans)
+
+    assert not any(
+        p.role == "heading" and "A BOOK TITLE SET IN BOLD" in p.text and "ALSO AVAILABLE" in p.text
+        for p in result.paragraphs
+    )
+
+
+def test_fr008_headings_of_different_size_in_a_row_stay_two() -> None:
+    # ANTI-VACUUM: two heading levels back to back. The second line is bold and sits at the
+    # heading's leading, but it is set at another size: another level.
+    spans = (
+        _body_page(1, top=40)
+        + [
+            _span(1, "PART THREE OF THE BOOK", top=150, bottom=164, x1=260, font_size=14, bold=True),
+            _span(1, "A SECTION IN THE PART", top=168, bottom=178, x1=200, bold=True),
+        ]
+        + _body_page(1, top=200, count=4)
+    )
+
+    result = build_paragraph_units_from_text_spans(spans)
+
+    assert not any(
+        "PART THREE OF THE BOOK" in p.text and "A SECTION IN THE PART" in p.text
+        for p in result.paragraphs
+    )
+
+
+def test_fr008_bold_line_in_another_typeface_is_not_the_heading_last_line() -> None:
+    # ANTI-VACUUM: bold, same size, tight leading, set off below -- but in a different
+    # typeface from the heading line above it. A heading's lines share one face.
+    def bold_span(text: str, *, top: float, font_name: str) -> PdfTextSpan:
+        return PdfTextSpan(
+            page_number=1,
+            text=text,
+            x0=50,
+            top=top,
+            x1=220,
+            bottom=top + 10,
+            page_height=800,
+            font_name=font_name,
+            font_size=10,
+            is_bold=True,
+            is_italic=False,
+        )
+
+    spans = (
+        _body_page(1, top=40)
+        + [
+            bold_span("A PROPOSAL FOR A GLOBAL TRADE", top=150, font_name="FranklinGothic-Demi"),
+            bold_span("REFERENCE CURRENCY", top=164, font_name="SourceSerif-Bold"),
+        ]
+        + _body_page(1, top=200, count=4)
+    )
+
+    result = build_paragraph_units_from_text_spans(spans)
+
+    assert [p.text for p in result.paragraphs if p.role == "heading"] == ["A PROPOSAL FOR A GLOBAL TRADE"]
+
+
+def _chapter_opening(title_spans: list[PdfTextSpan], *, page: int = 2) -> list[PdfTextSpan]:
+    """A chapter opening page: prose ends on the page before, the new page starts with a
+    bold chapter label, then the title lines, then prose."""
+    return (
+        _body_page(page - 1, top=40)
+        + [_span(page, "Chapter Three", top=40, bottom=54, x0=200, x1=300, font_size=12, bold=True)]
+        + title_spans
+        + _body_page(page, top=200)
+    )
+
+
+def test_fr009_display_title_ending_in_a_question_mark_is_a_heading() -> None:
+    # Money & Sustainability ch. I / IX, Creating Wealth ch. 1: the title ends in "?", so the
+    # per-span pass refuses it as a heading (a heading does not end a sentence). Its form --
+    # display size, at the top of the chapter page under the label -- says otherwise.
+    result = build_paragraph_units_from_text_spans(
+        _chapter_opening([_span(2, "Why this Report, Now?", top=80, bottom=104, x0=150, x1=400, font_size=20)])
+    )
+
+    title = next(p for p in result.paragraphs if p.text == "Why this Report, Now?")
+    assert title.role == "heading"
+    assert title.heading_level == 1
+    assert title.boundary_rationale == "promoted_display_title"
+
+
+def test_fr009_title_broken_over_two_display_lines_is_one_heading() -> None:
+    # Creating Wealth ch. 11 and Rethinking Money ch. 5/11: two (or three) display lines of
+    # one title, each left as body.
+    result = build_paragraph_units_from_text_spans(
+        _chapter_opening(
+            [
+                _span(2, "Honoring Our Elders,", top=80, bottom=100, x0=180, x1=380, font_size=20),
+                _span(2, "Caring for Children", top=103, bottom=123, x0=190, x1=370, font_size=20),
+            ]
+        )
+    )
+
+    titles = [p for p in result.paragraphs if "Elders" in p.text or "Caring" in p.text]
+    assert [(p.role, p.text) for p in titles] == [("heading", "Honoring Our Elders, Caring for Children")]
+    assert titles[0].origin_raw_texts == ["Honoring Our Elders,", "Caring for Children"]
+
+
+def test_fr009_title_and_subtitle_set_at_different_sizes_stay_two_headings() -> None:
+    # ANTI-VACUUM (Rethinking Money chapter openings): the title and the subtitle under it
+    # are both display lines at the top of the page, but at different sizes -- two headings,
+    # not one. As in the book, the title also runs as the page head of the chapter's later
+    # pages, which is why the per-span pass refuses it; the subtitle ends in "?".
+    running_heads = [
+        _span(page, "THE FAILURE OF MONEY", top=20, bottom=29, x0=150, x1=300, font_size=8)
+        for page in (3, 4, 5)
+    ]
+    later_pages = [span for page in (3, 4, 5) for span in _body_page(page, top=40, count=3)]
+    result = build_paragraph_units_from_text_spans(
+        _chapter_opening(
+            [
+                _span(2, "THE FAILURE OF MONEY", top=100, bottom=123, x0=150, x1=420, font_size=23),
+                _span(2, "An Ancient Future?", top=126, bottom=146, x0=160, x1=410, font_size=19),
+            ]
+        )
+        + running_heads
+        + later_pages
+    )
+
+    page_two_headings = [
+        p.text for p in result.paragraphs if p.role == "heading" and p.text != "Chapter Three"
+    ]
+    assert page_two_headings == ["THE FAILURE OF MONEY", "An Ancient Future?"]
+
+
+def test_fr009_chapter_number_line_above_the_title_joins_it() -> None:
+    # Value of Everything ch. 7: "7" on its own display line, the title under it. The title
+    # starts within a leading of the body column's left edge and the line above ("7") does
+    # not end a sentence, so the per-span pass reads the title as running prose.
+    result = build_paragraph_units_from_text_spans(
+        _body_page(1, top=40)
+        + [
+            _span(2, "7", top=216, bottom=237, x0=260, x1=271, font_size=21),
+            _span(
+                2,
+                "Extracting Value through the Innovation Economy",
+                top=254,
+                bottom=275,
+                x0=55,
+                x1=480,
+                font_size=21,
+            ),
+        ]
+        + _body_page(2, top=400)
+    )
+
+    headings = [p for p in result.paragraphs if p.role == "heading"]
+    assert [p.text for p in headings] == ["7 Extracting Value through the Innovation Economy"]
+
+
+def test_fr009_display_line_in_the_middle_of_a_page_stays_body() -> None:
+    # ANTI-VACUUM: the same display-size line, but prose precedes it on the page. Only the
+    # opening block of a page is read; nothing mid-page is promoted.
+    spans = (
+        _body_page(1, top=40)
+        + [_span(1, "Why this Report, Now?", top=140, bottom=164, x0=150, x1=400, font_size=20)]
+        + _body_page(1, top=180, count=4)
+    )
+
+    result = build_paragraph_units_from_text_spans(spans)
+
+    line = next(p for p in result.paragraphs if p.text == "Why this Report, Now?")
+    assert line.role == "body"
+
+
+def test_fr009_display_block_longer_than_a_title_stays_body() -> None:
+    # ANTI-VACUUM: four display lines at the top of a page are a display paragraph (a pull
+    # quote, a title page blurb), not a title -- the corpus' longest title has three lines.
+    lines = [
+        "We all suffer",
+        "and before change",
+        "it must first be",
+        "understood by all",
+    ]
+    title_spans = [
+        _span(2, text, top=80 + index * 23, bottom=100 + index * 23, x0=150, x1=420, font_size=20)
+        for index, text in enumerate(lines)
+    ]
+
+    result = build_paragraph_units_from_text_spans(_chapter_opening(title_spans))
+
+    assert not any(p.role == "heading" and "suffer" in p.text for p in result.paragraphs)
+
+
+def test_fr009_cover_scan_noise_at_display_size_stays_body() -> None:
+    # ANTI-VACUUM (Money & Sustainability cover, OCR'd): display-size characters that are
+    # not words. Position and size alone do not make a title.
+    spans = [
+        _span(1, "ri1*\\VvrV", top=60, bottom=84, x0=150, x1=300, font_size=20),
+    ] + _body_page(1, top=200)
+
+    result = build_paragraph_units_from_text_spans(spans)
+
+    noise = next(p for p in result.paragraphs if "VvrV" in p.text)
+    assert noise.role == "body"
+
+
+def test_fr009_body_size_line_at_the_top_of_a_page_stays_body() -> None:
+    # ANTI-VACUUM: a short line opening a page at BODY size -- the tail of a paragraph
+    # carried over, a list head -- is never a display title.
+    spans = (
+        _body_page(1, top=40)
+        + [_span(2, "Why this Report, Now?", top=40, bottom=50, x0=50, x1=200)]
+        + _body_page(2, top=80)
+    )
+
+    result = build_paragraph_units_from_text_spans(spans)
+
+    line = next(p for p in result.paragraphs if p.text == "Why this Report, Now?")
+    assert line.role == "body"
