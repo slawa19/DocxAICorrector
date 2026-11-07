@@ -408,7 +408,9 @@ def test_process_document_images_reuses_single_client_for_image_attempts(monkeyp
             return build_validation_result(
                 validation_passed=False,
                 decision="fallback_safe",
-                suspicious_reasons=["structure_mismatch"],
+                # Spec 062 FR-016: a challenger needs a concrete failure, not a structure Jaccard miss.
+                missing_labels=["finish"],
+                suspicious_reasons=["missing_labels:finish"],
             )
         return build_validation_result()
 

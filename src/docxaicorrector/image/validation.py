@@ -1,5 +1,6 @@
 import logging
 import base64
+import json
 import re
 from typing import Any, Mapping
 
@@ -29,7 +30,22 @@ DEFAULT_VALIDATION_CONFIG: dict[str, Any] = {
 
 VISION_VALIDATION_TIMEOUT_SECONDS = 45.0
 VISION_VALIDATION_MAX_RETRIES = 2
-_TEXT_TOKEN_PATTERN = re.compile(r"[0-9A-Za-zА-Яа-яІіЇїЄєҐґ]+")
+# Spec 062 FR-018 (D10): any Unicode word, compared case-folded. The old pattern knew only
+# Latin and Cyrillic, so zh/ja labels normalised to "" and the text check passed vacuously.
+_TEXT_TOKEN_PATTERN = re.compile(r"\w+", re.UNICODE)
+# What the validator is told about each semantic mode (spec 062 FR-015, W7).
+_VALIDATION_MODE_NOTES: dict[str, tuple[str, str]] = {
+    "semantic_redraw_direct": ("creative", "layout and styling may change, content may not"),
+    "semantic_redraw_structured": ("structured", "layout should be kept"),
+}
+VALIDATION_SUSPICIOUS_REASONS: tuple[str, ...] = (
+    "image_type_changed",
+    "labels_missing",
+    "values_changed",
+    "entities_added",
+    "layout_changed",
+    "text_unreadable",
+)
 
 
 def validate_redraw_result(
@@ -76,6 +92,7 @@ def validate_redraw_result(
                 model=resolved_validation_model or "",
                 enable_vision_validation=enable_vision_validation,
                 budget=budget,
+                image_mode=str(normalized_context.get("image_mode") or ""),
             ),
         )
     except Exception as exc:
@@ -326,14 +343,14 @@ def _structure_match_score(original_summary: str, candidate_summary: str) -> flo
 
 
 def _summary_tokens(summary: str) -> set[str]:
-    return {token for token in _TEXT_TOKEN_PATTERN.findall(summary.lower()) if len(token) > 1}
+    return {token for token in _TEXT_TOKEN_PATTERN.findall(summary.casefold()) if len(token) > 1}
 
 
 def _normalize_labels(labels: list[str]) -> set[str]:
     return {
         normalized
         for normalized in (
-            " ".join(_TEXT_TOKEN_PATTERN.findall(label.lower())).strip()
+            " ".join(_TEXT_TOKEN_PATTERN.findall(label.casefold())).strip()
             for label in labels
         )
         if normalized
@@ -356,6 +373,32 @@ def _safe_image_type(analysis_before: ImageAnalysisResult | dict[str, Any]) -> s
     return "unknown"
 
 
+def build_vision_validation_prompt(*, image_mode: str, original_labels: list[str]) -> str:
+    """User text of the vision validation request (spec 062 FR-015, W7).
+
+    Says which image is the original, the score range, what ``added_entities`` means,
+    which mode made the candidate, and the closed set of ``suspicious_reasons``.
+    """
+    mode_name, mode_note = _VALIDATION_MODE_NOTES.get(image_mode, (image_mode or "unknown", "content may not change"))
+    placement_note = "; ignore placement" if mode_name == "creative" else ""
+    reasons = ", ".join(VALIDATION_SUSPICIOUS_REASONS)
+    labels = json.dumps([str(label) for label in original_labels], ensure_ascii=False)
+    return (
+        "The FIRST image is the original document image; the SECOND is a redrawn candidate made in mode "
+        f"{mode_name} ({mode_note}). "
+        "Return one JSON object with numbers from 0.0 to 1.0: "
+        "`semantic_match_score` (same information and relationships), "
+        "`text_match_score` (every original label present with the same wording), "
+        f"`structure_match_score` (same blocks, rows, columns, series and connections; ignore colours and fonts{placement_note}), "
+        "`validator_confidence`; "
+        "`candidate_contains_text` (bool); "
+        "`missing_labels` (original labels absent in the candidate); "
+        "`added_entities` (labels, blocks or values in the candidate that are not in the original); "
+        f"`suspicious_reasons` (zero or more of: {reasons}). "
+        f"Original labels: {labels}."
+    )
+
+
 def _build_vision_validation_assessment(
     *,
     original_image: bytes,
@@ -365,6 +408,7 @@ def _build_vision_validation_assessment(
     client,
     model: str,
     budget=None,
+    image_mode: str = "",
 ) -> dict[str, Any]:
     original_mime = detect_image_mime_type(original_image)
     candidate_mime = detect_image_mime_type(candidate_image)
@@ -391,8 +435,8 @@ def _build_vision_validation_assessment(
                         {
                             "type": "input_text",
                             "text": (
-                                "You compare original and candidate document images conservatively. "
-                                "Return strict JSON only and prefer fallback when uncertain."
+                                "You compare an original document image with a redrawn candidate of it. "
+                                "Return strict JSON only; when unsure, score lower rather than higher."
                             ),
                         }
                     ],
@@ -402,11 +446,9 @@ def _build_vision_validation_assessment(
                     "content": [
                         {
                             "type": "input_text",
-                            "text": (
-                                "Return JSON with keys: semantic_match_score, text_match_score, structure_match_score, "
-                                "validator_confidence, candidate_contains_text, missing_labels, added_entities, suspicious_reasons. "
-                                f"Original image_type={analysis_before.image_type}; original_labels={analysis_before.extracted_labels}; "
-                                f"candidate_labels={candidate_analysis.extracted_labels if candidate_analysis else []}."
+                            "text": build_vision_validation_prompt(
+                                image_mode=image_mode,
+                                original_labels=list(analysis_before.extracted_labels),
                             ),
                         },
                         {
@@ -449,6 +491,7 @@ def _maybe_build_vision_validation_assessment(
     model: str,
     enable_vision_validation: bool,
     budget=None,
+    image_mode: str = "",
 ) -> dict[str, Any] | None:
     if not enable_vision_validation or not _supports_responses_client(client):
         return None
@@ -461,6 +504,7 @@ def _maybe_build_vision_validation_assessment(
             client=client,
             model=model,
             budget=budget,
+            image_mode=image_mode,
         )
     except Exception as exc:
         log_event(
@@ -547,7 +591,7 @@ def _normalize_labels_list(labels: object) -> list[str]:
         return []
     return sorted(
         {
-            " ".join(_TEXT_TOKEN_PATTERN.findall(str(item).lower())).strip()
+            " ".join(_TEXT_TOKEN_PATTERN.findall(str(item).casefold())).strip()
             for item in labels
             if str(item).strip()
         }

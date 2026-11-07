@@ -330,9 +330,28 @@ def _should_request_challenger_candidate(attempt_asset, *, attempt_index: int, a
         return False
     if is_hard_validation_failure(validation_result):
         return False
-    if getattr(attempt_asset, "final_decision", None) == "accept_soft":
+    if getattr(attempt_asset, "final_decision", None) == "accept":
+        return False
+    return has_concrete_validation_failure(validation_result)
+
+
+# Spec 062 FR-016 (D7): a second candidate is requested only for a concrete content
+# failure — labels or all text missing, entities added, image type changed. A low
+# structure Jaccard alone (two independently worded summaries) no longer triggers it;
+# the score stays in ``image_validation_completed`` as data.
+_CHALLENGER_REASONS = frozenset({"image_type_changed", "text_missing_in_candidate", "labels_missing", "entities_added"})
+_CHALLENGER_REASON_PREFIXES = ("missing_labels:", "added_entities:")
+
+
+def has_concrete_validation_failure(validation_result) -> bool:
+    if list(getattr(validation_result, "missing_labels", []) or []):
         return True
-    return getattr(attempt_asset, "validation_status", None) == "failed"
+    if bool(getattr(validation_result, "added_entities_detected", False)):
+        return True
+    return any(
+        str(reason) in _CHALLENGER_REASONS or str(reason).startswith(_CHALLENGER_REASON_PREFIXES)
+        for reason in getattr(validation_result, "suspicious_reasons", []) or []
+    )
 
 
 def _is_incomplete_compare_variant_result(candidate_mode: str, candidate_asset) -> bool:
@@ -855,6 +874,24 @@ def select_best_semantic_asset(
                     logging.WARNING,
                     "semantic_candidate_resolved_to_safe_fallback",
                     "Semantic redraw candidate совпал с safe candidate; применяю safe fallback без post-check.",
+                    attempt_index=attempt_index,
+                    **attempt_asset.to_log_context(),
+                )
+                attempt_asset.update_runtime_attempt_state(attempt_variants=list(attempt_variants))
+                return attempt_asset
+            if attempt_asset.redrawn_bytes == attempt_asset.original_bytes:
+                # Spec 062 FR-017 (D6): generation hands back the source bytes when it
+                # refuses a provider raster (pixel budget on the output). Validating the
+                # original against itself would score a perfect, meaningless match.
+                _apply_original_fallback_outcome(
+                    attempt_asset,
+                    reason="semantic_redraw_returned_source",
+                    validation_status="skipped",
+                )
+                pipeline_context.log_event_fn(
+                    logging.WARNING,
+                    "semantic_candidate_returned_source",
+                    "Semantic redraw вернул исходные байты; применяю fallback на оригинал без post-check.",
                     attempt_index=attempt_index,
                     **attempt_asset.to_log_context(),
                 )
