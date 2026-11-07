@@ -112,9 +112,9 @@
 
 ## Final Phase
 
-- [ ] T021 Changelog-строка P2 в `specs/063-translation-fidelity/spec.md` (строку Status не
+- [X] T021 Changelog-строка P2 в `specs/063-translation-fidelity/spec.md` (строку Status не
   трогать — её ведёт оркестратор).
-- [ ] T022 `git diff --check`; модули тестов P2; `tests/test_config.py`;
+- [X] T022 `git diff --check`; модули тестов P2; `tests/test_config.py`;
   `tests/test_document_pipeline.py`; `tests/test_script_contract_static.py`;
   `tests/test_spec_status_consistency.py`; pyright `tests/test_typecheck.py`; полный прогон
   `scripts/test.sh tests/ -q` в `wt-063g`.
