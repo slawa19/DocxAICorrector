@@ -8939,6 +8939,13 @@ def test_call_a_renders_the_required_set_and_call_b_chooses_among_the_rest(monke
     assert context["required_count"] == 1
     assert context["term_count"] == 3
     assert context["collisions_found"] == 0
+    assert context["name_entry_count"] == 2
+    artifact = json.loads(Path(context["artifact_path"]).read_text(encoding="utf-8"))
+    # M-4: transliterations are reported as the model gave them; a human reads this list.
+    assert artifact["name_entries"] == [
+        {"source_term": "Zorvane Pettish", "target_term": "Зорвейн Петтиш"},
+        {"source_term": "Kelbrook", "target_term": "Келбрук"},
+    ]
     section = case.prompt_sources[0]
     assert section.index("- quillet bond -> киллетная облигация") < section.index("- Zorvane Pettish")
 
@@ -8995,6 +9002,13 @@ def test_a_collision_the_distinction_call_resolves_leaves_no_collision(monkeypat
     assert context["collisions_found"] == 1
     assert context["collisions_resolved"] == 1
     assert context["collisions"] == []
+    artifact = json.loads(Path(context["artifact_path"]).read_text(encoding="utf-8"))
+    assert artifact["collision_groups_found"] == [
+        [
+            {"source_term": "quillet bond", "target_term": "киллетная облигация"},
+            {"source_term": "Kelbrook", "target_term": "Киллетная облигация"},
+        ]
+    ]
     assert "- Kelbrook -> Келбрук (имя)" in case.prompt_sources[0]
 
 

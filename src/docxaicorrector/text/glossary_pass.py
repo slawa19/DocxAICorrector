@@ -184,6 +184,7 @@ class _Draft:
     chapters: int = 0
     heading_unit: int | None = None
     heading_weight: int = 0
+    in_h1: bool = False
     marked_count: int = 0
     heads_required_member: bool = False
 
@@ -517,10 +518,13 @@ def extract_glossary_candidates(
         for size in (1, 2, 3):
             for start in range(len(heading_words) - size + 1):
                 phrase = heading_words[start : start + size]
-                if _trim_joiners(phrase) != phrase:
-                    continue
-                if size == 1 and len(phrase[0]) <= _MAX_JOINER_LETTERS:
-                    continue
+                # Lowercased before the edge test: a heading in capitals ("STRATEGIES FOR
+                # BUSINESS") must lose its short joiners exactly like a heading in title case.
+                lowered = [word.lower() for word in phrase]
+                if len(lowered[0]) <= _MAX_JOINER_LETTERS or len(lowered[-1]) <= _MAX_JOINER_LETTERS:
+                    continue  # "monetary and", "for business": a joiner at either edge
+                if any(len(word) <= 4 and word.isupper() and _ROMAN_NUMERAL_RE.match(word) for word in phrase):
+                    continue  # "Chapter VII": a chapter number, not a subject
                 key = tuple(_fold_word(word).lower() for word in phrase)
                 body_hits = [hit for hit in hits_folded_case.get(key, []) if hit in body_index_set]
                 if len(body_hits) < _HEADING_MIN_BODY_COUNT:
@@ -532,6 +536,8 @@ def extract_glossary_candidates(
                 # A level-1 heading (chapter, title) weighs twice a level-2 one; the phrase's
                 # weight is what ranks it among heading candidates, ahead of its body frequency.
                 draft.heading_weight += 2 if unit.heading_level == 1 else 1
+                if unit.heading_level == 1:
+                    draft.in_h1 = True
                 if draft.heading_unit is None:
                     draft.heading_unit = unit_index
 
@@ -698,11 +704,18 @@ def _included_by_rule(draft: _Draft) -> bool:
     required only when the term then RECURS — at least ``_REQUIRED_MIN_COUNT`` occurrences in at
     least ``_REQUIRED_MIN_CHAPTERS`` chapters — AND the marking itself is not a one-off stress:
     the author marks it at least twice, or marks it where it first appears in the text. A word
-    stressed once in passing is not promoted to a term (it may stay an optional candidate). A family head stands for at least three
+    stressed once in passing is not promoted to a term (it may stay an optional candidate). A
+    phrase of the title or an h1 heading that the body keeps using is required. A family head stands for at least three
     candidates (``_HEAD_MIN_MEMBERSHIP``) and is required when at least one member is. Quotes
     around ONE word are left to the model.
     """
 
+    if draft.in_h1:
+        # Fourth pass (orchestrator decision): a phrase of the book's title or of a chapter
+        # (h1) heading that the body uses at least ``_HEADING_MIN_BODY_COUNT`` times — the
+        # condition under which it became a candidate at all — is the strongest mark an author
+        # makes. h2 phrases stay optional.
+        return True
     if draft.family == FAMILY_HEAD:
         # A head is required when it heads a family (>= 3 members) one of whose members the
         # author marked; a head of grammatical collocations ("have been", "they have") is not.

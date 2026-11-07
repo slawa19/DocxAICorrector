@@ -292,6 +292,7 @@ def _run_glossary_phase(
         "collisions_found": 0,
         "collisions_resolved": 0,
         "collisions": [],
+        "collision_groups_found": [],
         "calls": [],
         "model_call_count": 0,
         "error_code": None,
@@ -324,6 +325,11 @@ def _run_glossary_phase(
     record["terms"] = [
         {"source_term": term.source_term, "target_term": term.target_term, "kind": term.kind, "note": term.note}
         for term in terms
+    ]
+    # Spec 063 M-4: a transliteration cannot be checked by rule (no dictionary in the
+    # repository), so every name entry is listed as the model gave it, for a human to read.
+    record["name_entries"] = [
+        {"source_term": term.source_term, "target_term": term.target_term} for term in terms if term.kind == "name"
     ]
     record["rendered_term_count"] = _rendered_term_count(section)
     record["prompt_section_chars"] = len(section)
@@ -372,6 +378,7 @@ def _run_glossary_phase(
             reasked_required_count=record["reasked_required_count"],
             unrendered_count=len(record["unrendered_terms"]) if isinstance(record["unrendered_terms"], list) else 0,
             unrendered_terms=record["unrendered_terms"],
+            name_entry_count=len(cast(list[object], record.get("name_entries") or [])),
             collisions_found=record["collisions_found"],
             collisions_resolved=record["collisions_resolved"],
             collisions=record["collisions"],
@@ -563,6 +570,12 @@ def _call_model(
     # Call C: different source terms that ended with one rendering.
     collisions = find_rendering_collisions(terms)
     record["collisions_found"] = len(collisions)
+    # What collided BEFORE the distinction call, with the renderings it was given then; the
+    # outcome is the glossary itself, and what stayed identical is ``collisions`` below.
+    record["collision_groups_found"] = [
+        [{"source_term": term.source_term, "target_term": term.target_term} for term in group]
+        for group in collisions
+    ]
     if collisions and len(calls) < _MAX_GLOSSARY_CALLS and not dependencies.should_stop_processing(context.runtime):
         contexts = {normalize_glossary_key(candidate.source_term): candidate.context for candidate in sent_candidates}
         group_candidates = tuple(

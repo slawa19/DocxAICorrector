@@ -703,7 +703,8 @@ def test_a_heading_word_the_body_keeps_using_is_a_candidate_with_the_heading_as_
 
     assert candidate.family == "heading"
     assert candidate.context == "Money and Durability"
-    assert not candidate.required
+    # Fourth pass: an h1 (title, chapter) phrase the body keeps using is required.
+    assert candidate.required
 
 
 def test_a_heading_phrase_the_body_never_repeats_is_not_a_candidate():
@@ -871,3 +872,65 @@ def test_budget_drops_optional_entries_lowest_rank_first_and_never_a_required_on
     for name in ("Reqa", "Reqb", "Reqc"):
         assert name in tight and name in tiny  # required entries survive any budget
     assert "Opta" not in tiny
+
+
+def _h1_document(title, body_sentence, *, level=1, rounds=4):
+    paragraphs: list[tuple[str, int | None]] = [(title, level)]
+    for _ in range(rounds):
+        paragraphs.append((body_sentence, None))
+        paragraphs.extend((text, None) for text in _FILLER)
+    return _heading_units(paragraphs)
+
+
+def test_an_h2_phrase_the_body_keeps_using_stays_optional():
+    keys = _keys(
+        extract_glossary_candidates(
+            _h1_document("Notes on Durability", "The question of durability returns here, and durability matters.", level=2)
+        )
+    )
+
+    assert keys["durability"].family == "heading"
+    assert not keys["durability"].required
+
+
+def test_an_h1_phrase_the_body_never_repeats_is_not_required():
+    """Anti-vacuum: the title alone does not make a word a term of the book."""
+    keys = _keys(extract_glossary_candidates(_h1_document("Durability Unbound", "Nothing about it here at all, truly.")))
+
+    assert "durability" not in keys and "unbound" not in keys
+
+
+def test_function_words_and_joiner_edges_of_an_h1_are_not_candidates():
+    units = _h1_document(
+        "MONEY AND DURABILITY FOR ALL",
+        "Money and durability, money and durability for all of them, for all.",
+    )
+    keys = _keys(extract_glossary_candidates(units))
+
+    for phrase in ("and", "for", "all", "money and", "and durability", "durability for", "for all"):
+        assert phrase not in keys, phrase
+    assert keys["durability"].required
+
+
+def test_a_chapter_number_in_an_h1_is_not_a_candidate():
+    units = _h1_document("Chapter VII Durability", "Chapter seven speaks of durability, and durability again.")
+    keys = _keys(extract_glossary_candidates(units))
+
+    assert not any("vii" in key for key in keys)
+    assert keys["durability"].required
+
+
+def test_requests_ask_for_standard_transcription_and_the_full_name():
+    for role in ("required", "optional"):
+        request = build_glossary_request(
+            model="m",
+            candidates=(_candidate("Zorvane Pettish"),),
+            fixed_terms=(),
+            source_language="en",
+            target_language="ru",
+            max_terms=5,
+            role=role,
+        )
+        text = cast(list[dict[str, Any]], request["input"])[0]["content"][0]["text"]
+        assert "standard practical transcription of ru" in text
+        assert "first name together with the surname" in text
