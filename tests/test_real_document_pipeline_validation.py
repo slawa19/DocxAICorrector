@@ -6921,6 +6921,66 @@ def test_run_report_keeps_a_failed_glossary_event_without_an_artifact() -> None:
     assert "run_glossary_term_count=0" in lines
 
 
+def test_run_summary_names_the_failed_glossary_call_and_the_prompt_sizes(tmp_path) -> None:
+    """Spec 064, 2026-11-08: the third run's Creating Wealth glossary failed on call A's token
+    cap, and ``run_summary.txt`` said only ``status=failed``. The summary now names the reason,
+    the failed call with its cap and its tokens, and the prompt sizes of FR-003 (event fields,
+    not in the artifact)."""
+    validation = _load_validation_module()
+    artifact_path = tmp_path / "run_glossary.json"
+    artifact_path.write_text(
+        json.dumps(
+            {
+                "schema": "run_glossary/v1",
+                "status": "failed",
+                "terms": [],
+                "model_call_count": 4,
+                "error_code": "IncompleteResponse",
+                "error_message": "Модель не завершила генерацию (incomplete_response).",
+                "failed_calls": [
+                    {
+                        "role": "required",
+                        "candidate_count": 74,
+                        "error_code": "IncompleteResponse",
+                        "max_output_tokens": 4440,
+                        "completion_tokens": 4436,
+                        "prompt_tokens": 5095,
+                    },
+                    {"role": "required", "part": "1/2", "error_code": "IncompleteResponse", "max_output_tokens": 3808},
+                ],
+                "usage": {"prompt_tokens": 9000, "completion_tokens": 9000, "cost_usd": 0.01},
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    event_log = [
+        {
+            "event_id": "run_glossary_failed",
+            "context": {
+                "status": "failed",
+                "artifact_path": str(artifact_path),
+                "system_prompt_chars": 7796,
+                "document_context_prompt_chars": 2140,
+            },
+        }
+    ]
+
+    lines = validation._build_run_glossary_summary_lines(validation._extract_run_glossary_record(event_log))
+
+    assert "run_glossary_status=failed" in lines
+    assert "run_glossary_system_prompt_chars=7796" in lines
+    assert "run_glossary_document_context_prompt_chars=2140" in lines
+    assert "run_glossary_model_call_count=4" in lines
+    assert "run_glossary_error_code=IncompleteResponse" in lines
+    assert "run_glossary_error_message=Модель не завершила генерацию (incomplete_response)." in lines
+    assert (
+        'run_glossary_failed_calls=[{"role": "required", "error_code": "IncompleteResponse", '
+        '"max_output_tokens": 4440, "completion_tokens": 4436}, {"role": "required", "part": "1/2", '
+        '"error_code": "IncompleteResponse", "max_output_tokens": 3808}]'
+    ) in lines
+
+
 def test_run_report_says_not_reported_without_a_glossary_event() -> None:
     validation = _load_validation_module()
 

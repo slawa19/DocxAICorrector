@@ -8850,12 +8850,14 @@ _GLOSSARY_ANSWER = json.dumps(
 )
 
 
-def _run_glossary_case(monkeypatch, tmp_path, *, answer, operation="translate", app_config=None, should_stop=None):
+def _run_glossary_case(
+    monkeypatch, tmp_path, *, answer, operation="translate", app_config=None, should_stop=None, client=None
+):
     import docxaicorrector.core.constants as constants
 
     monkeypatch.setattr(constants, "RUN_GLOSSARIES_DIR", tmp_path / "run_glossaries")
     runtime = _build_runtime_capture()
-    client = _GlossaryResponsesClient(answer)
+    client = client if client is not None else _GlossaryResponsesClient(answer)
     captured, log_event = _capture_log_events()
     jobs, paragraphs = _glossary_jobs_and_paragraphs()
 
@@ -9019,6 +9021,212 @@ def test_glossary_call_is_not_made_after_stop(monkeypatch, tmp_path):
 
     assert case.client.calls == []
     assert not any(str(event["event_id"]).startswith("run_glossary") for event in case.events)
+
+
+# --- spec 064, 2026-11-08: one long call must not leave a book with no glossary ---------------
+
+_REQUIRED_RENDERINGS = {
+    "quillet bond": "киллетная облигация",
+    "harvest ledger": "урожайная книга",
+    "council charter": "хартия совета",
+    "evening tithe": "вечерняя десятина",
+}
+
+
+def _required_candidates():
+    from docxaicorrector.text.glossary_pass import GlossaryCandidate
+
+    return tuple(
+        GlossaryCandidate(
+            source_term=term,
+            key=tuple(term.split()),
+            family="marked",
+            signals=("italic",),
+            occurrence_count=5,
+            unit_count=3,
+            spread=2,
+            first_unit_id="p0001",
+            context=f"... {term} ...",
+            score=1.0,
+            required=True,
+        )
+        for term in _REQUIRED_RENDERINGS
+    )
+
+
+class _TruncatingGlossaryClient:
+    """Glossary calls answered in full or CUT OFF at their own cap, as the provider does.
+
+    A cut-off answer is a Responses ``status="incomplete"`` that spent the request's whole
+    ``max_output_tokens`` but four (Creating Wealth, third run: 4 436 of 4 440). A full answer
+    renders every candidate the request carried.
+    """
+
+    def __init__(self, truncate):
+        self.truncate = truncate
+        self.calls: list[dict[str, Any]] = []
+        self.block_calls: list[dict[str, Any]] = []
+        self.responses = SimpleNamespace(create=self._create)
+
+    def _create(self, **kwargs):
+        if _is_block_request(kwargs):
+            self.block_calls.append(kwargs)
+            return _block_response()
+        payload = json.loads(kwargs["input"][1]["content"][0]["text"])
+        terms = [item["term"] for item in payload["candidates"]]
+        cap = int(kwargs["max_output_tokens"])
+        self.calls.append({"terms": terms, "max_output_tokens": cap, "optional": "max_terms" in payload})
+        if self.truncate(terms, "max_terms" in payload):
+            return SimpleNamespace(
+                status="incomplete",
+                incomplete_details=SimpleNamespace(reason="max_output_tokens"),
+                output_text='{"terms": [{"source_term": "quillet bond", "target_term": "кил',
+                usage=SimpleNamespace(prompt_tokens=500, completion_tokens=cap - 4, cost=0.001),
+            )
+        answer = [{"source_term": term, "target_term": _REQUIRED_RENDERINGS[term], "kind": "term"} for term in terms]
+        return SimpleNamespace(
+            status="completed",
+            output_text=json.dumps({"terms": answer}, ensure_ascii=False),
+            usage=SimpleNamespace(prompt_tokens=300, completion_tokens=31 * len(terms), cost=0.0005),
+        )
+
+
+def _run_truncation_case(monkeypatch, tmp_path, truncate):
+    import docxaicorrector.pipeline.glossary_phase as glossary_phase
+
+    candidates = _required_candidates()
+    monkeypatch.setattr(glossary_phase, "extract_glossary_candidates", lambda _units, limit: candidates)
+    client = _TruncatingGlossaryClient(truncate)
+    return _run_glossary_case(monkeypatch, tmp_path, answer=None, client=client)
+
+
+def _glossary_stage(events):
+    accounted = [event for event in events if event["event_id"] == "model_usage_accounted"]
+    assert len(accounted) == 1
+    return _as_mapping(_as_mapping(accounted[0]["context"]["stages"])["glossary_extraction"])
+
+
+def test_a_cut_off_call_a_is_asked_again_in_halves_and_the_glossary_is_built(monkeypatch, tmp_path):
+    from docxaicorrector.text.glossary_pass import glossary_max_output_tokens
+
+    case = _run_truncation_case(monkeypatch, tmp_path, lambda terms, optional: len(terms) == 4)
+
+    assert case.result == "succeeded"
+    assert [call["terms"] for call in case.client.calls] == [
+        list(_REQUIRED_RENDERINGS),
+        ["quillet bond", "harvest ledger"],
+        ["council charter", "evening tithe"],
+    ]
+    # Each half carries its own budget, computed for its own size.
+    assert [call["max_output_tokens"] for call in case.client.calls] == [
+        glossary_max_output_tokens(4),
+        glossary_max_output_tokens(2),
+        glossary_max_output_tokens(2),
+    ]
+    warned = [event for event in case.events if event["event_id"] == "run_glossary_call_failed"]
+    assert len(warned) == 1 and warned[0]["level"] == logging.WARNING
+    assert {
+        "role": "required",
+        "part": None,
+        "error_code": "IncompleteResponse",
+        "max_output_tokens": glossary_max_output_tokens(4),
+        "completion_tokens": glossary_max_output_tokens(4) - 4,
+        "prompt_tokens": 500,
+        "candidate_count": 4,
+        "next_step": "retry_in_halves",
+    }.items() <= warned[0]["context"].items()
+    built = [event for event in case.events if event["event_id"] == "run_glossary_built"]
+    context = built[0]["context"]
+    assert context["status"] == "built"
+    assert context["term_count"] == 4
+    assert context["unrendered_terms"] == []
+    assert context["model_call_count"] == 3
+    assert context["failed_call_count"] == 1
+    assert context["failed_role"] == "required"
+    assert context["failed_error_code"] == "IncompleteResponse"
+    assert context["failed_completion_tokens"] == glossary_max_output_tokens(4) - 4
+    # The extra calls are paid for and booked under the glossary stage.
+    stage = _glossary_stage(case.events)
+    assert stage["model_call_count"] == 3
+    assert stage["completion_tokens"] == (glossary_max_output_tokens(4) - 4) + 2 * 62
+    assert context["completion_tokens"] == stage["completion_tokens"]
+    artifact = json.loads(Path(context["artifact_path"]).read_text(encoding="utf-8"))
+    assert [(call["role"], call.get("part"), call.get("completion_tokens")) for call in artifact["calls"]] == [
+        ("required", None, glossary_max_output_tokens(4) - 4),
+        ("required", "1/2", 62),
+        ("required", "2/2", 62),
+    ]
+    section = case.block_system_prompts[0]
+    assert "- quillet bond -> киллетная облигация" in section
+    assert "- evening tithe -> вечерняя десятина" in section
+    assert _glossary_notices(case.runtime) == [
+        {"kind": "glossary", "level": "info", "message_key": "result.run_glossary_built", "params": {"count": 4}}
+    ]
+
+
+def test_a_half_cut_off_again_is_re_asked_by_call_b_and_the_other_half_is_kept(monkeypatch, tmp_path):
+    case = _run_truncation_case(
+        monkeypatch,
+        tmp_path,
+        lambda terms, optional: not optional and (len(terms) == 4 or terms[0] == "council charter"),
+    )
+
+    assert case.result == "succeeded"
+    assert [call["terms"] for call in case.client.calls] == [
+        list(_REQUIRED_RENDERINGS),
+        ["quillet bond", "harvest ledger"],
+        ["council charter", "evening tithe"],
+        ["council charter", "evening tithe"],  # call B: the second chance for what is missing
+    ]
+    assert case.client.calls[3]["optional"] is True
+    warned = [event["context"] for event in case.events if event["event_id"] == "run_glossary_call_failed"]
+    assert [(item["part"], item["next_step"]) for item in warned] == [
+        (None, "retry_in_halves"),
+        ("2/2", "continue_to_call_b"),
+    ]
+    context = next(event for event in case.events if event["event_id"] == "run_glossary_built")["context"]
+    assert context["status"] == "built"
+    assert context["term_count"] == 4
+    assert context["reasked_required_count"] == 2
+    assert context["model_call_count"] == 4
+    assert context["failed_call_count"] == 2
+    assert _glossary_stage(case.events)["model_call_count"] == 4
+    assert "- council charter -> хартия совета" in case.block_system_prompts[0]
+
+
+def test_a_glossary_cut_off_on_every_call_ends_with_the_notice_and_the_run_succeeds(monkeypatch, tmp_path):
+    from docxaicorrector.text.glossary_pass import glossary_max_output_tokens
+
+    case = _run_truncation_case(monkeypatch, tmp_path, lambda terms, optional: True)
+
+    assert case.result == "succeeded"
+    assert case.runtime["state"]["latest_markdown"]
+    assert len(case.client.calls) == 4  # A, two halves, B
+    warned = [event for event in case.events if event["event_id"] == "run_glossary_call_failed"]
+    assert all(event["level"] == logging.WARNING for event in warned)
+    assert [(event["context"]["part"], event["context"]["next_step"]) for event in warned] == [
+        (None, "retry_in_halves"),
+        ("1/2", "continue_to_call_b"),
+        ("2/2", "continue_to_call_b"),
+        (None, "give_up"),
+    ]
+    failed = [event for event in case.events if event["event_id"] == "run_glossary_failed"]
+    assert len(failed) == 1 and failed[0]["level"] == logging.WARNING
+    context = failed[0]["context"]
+    assert context["error_code"] == "IncompleteResponse"
+    assert context["model_call_count"] == 4
+    assert context["failed_call_count"] == 4
+    assert context["failed_role"] == "required" and context["failed_part"] is None
+    assert context["failed_max_output_tokens"] == glossary_max_output_tokens(4)
+    assert context["failed_completion_tokens"] == glossary_max_output_tokens(4) - 4
+    assert [call["role"] for call in context["failed_calls"]] == ["required", "required", "required", "optional"]
+    assert context["system_prompt_chars"] > 0
+    assert _glossary_stage(case.events)["model_call_count"] == 4
+    assert not any("ГЛОССАРИЙ ЭТОЙ КНИГИ" in prompt for prompt in case.block_system_prompts)
+    assert _glossary_notices(case.runtime) == [
+        {"kind": "glossary", "level": "warning", "message_key": "result.run_glossary_failed"}
+    ]
+    assert case.runtime["state"]["latest_delivery_disposition"] == {"status": "accepted"}
 
 
 # --- spec 063 P2: calls by role, the inclusion rule, distinct renderings -----------------------
