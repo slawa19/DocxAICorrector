@@ -11,6 +11,7 @@ from types import SimpleNamespace
 import pytest
 from typing import Any, cast
 
+import docxaicorrector.core.config as core_config
 import docxaicorrector.generation._generation as generation
 import docxaicorrector.pipeline._pipeline as document_pipeline
 import docxaicorrector.pipeline.block_execution as block_execution
@@ -548,7 +549,6 @@ def test_full_document_translate_run_preserves_segment_focus_and_document_contex
     """
     runtime = _build_runtime_capture()
     captured_system_prompts: list[str] = []
-    captured_prompt_source_texts: list[str] = []
 
     document_segments = [
         SimpleNamespace(segment_id="seg_0001", title="Chapter 1", level=1, ordinal=1, structural_role="chapter"),
@@ -558,10 +558,6 @@ def test_full_document_translate_run_preserves_segment_focus_and_document_contex
     def capture_generate(**kwargs):
         captured_system_prompts.append(str(kwargs.get("system_prompt", "")))
         return "Обработанный блок"
-
-    def capture_load_system_prompt(**kwargs):
-        captured_prompt_source_texts.append(str(kwargs.get("source_text", "")))
-        return "system"
 
     result = _run_processing(
         runtime,
@@ -579,21 +575,22 @@ def test_full_document_translate_run_preserves_segment_focus_and_document_contex
         source_language="en",
         target_language="ru",
         document_context_prompt="ГЛОССАРИЙ: Great Tribulation -> Великая скорбь",
-        load_system_prompt=capture_load_system_prompt,
+        load_system_prompt=core_config.load_system_prompt,
         generate_markdown_block=capture_generate,
     )
 
     assert result == "succeeded"
+    assert len(captured_system_prompts) == 2
     combined_system_prompt = "\n\n".join(captured_system_prompts)
     # document_segments reached the worker and the per-block segment-focus prompt was built:
     assert "ТЕКУЩИЙ БЛОК ДОКУМЕНТА" in combined_system_prompt
     assert "Chapter 1" in combined_system_prompt
     assert "Chapter 2" in combined_system_prompt
-    # the document-context prompt (build_document_context_prompt output) still flows to blocks:
-    assert any(
-        "ГЛОССАРИЙ: Great Tribulation -> Великая скорбь" in source_text
-        for source_text in captured_prompt_source_texts
-    )
+    # The document-context prompt (build_document_context_prompt output) is RENDERED into the
+    # system prompt of every block. Spec 064 FR-002: this used to be read off the
+    # ``source_text`` kwarg of a loader double, which the real template never renders.
+    for system_prompt in captured_system_prompts:
+        assert "ГЛОССАРИЙ: Great Tribulation -> Великая скорбь" in system_prompt
 
 
 def test_full_document_edit_run_omits_translate_only_segment_focus_prompt():
@@ -3355,51 +3352,191 @@ def test_resolve_system_prompt_falls_back_for_legacy_loader_without_editorial_in
     }
 
 
-def test_run_document_processing_merges_document_context_prompt_into_system_prompt_source():
-    runtime = _build_runtime_capture()
-    prompts = []
+def test_resolve_system_prompt_passes_the_document_context_to_a_loader_that_takes_it():
+    resolved = document_pipeline._resolve_system_prompt(
+        core_config.load_system_prompt,
+        operation="translate",
+        source_language="en",
+        target_language="ru",
+        document_context_prompt="ГЛОССАРИЙ ЭТОЙ КНИГИ:\n- quillet bond -> киллетная облигация",
+    )
 
-    result = document_pipeline.run_document_processing(
-        uploaded_file="report.docx",
-        jobs=[{"target_text": "block", "context_before": "", "context_after": "", "target_chars": 5, "context_chars": 0}],
-        source_paragraphs=[],
-        image_assets=[],
-        image_mode="safe",
-        app_config={
+    assert "- quillet bond -> киллетная облигация" in resolved
+    assert "### КОНТЕКСТ ДОКУМЕНТА И ГЛОССАРИЙ ЗАПУСКА:" in resolved
+
+
+def test_resolve_system_prompt_calls_loaders_as_before_when_there_is_no_document_context():
+    captured: list[dict[str, Any]] = []
+
+    def kwargs_loader(**kwargs):
+        captured.append(dict(kwargs))
+        return "system"
+
+    document_pipeline._resolve_system_prompt(
+        kwargs_loader, operation="translate", source_language="en", target_language="ru", source_text="x"
+    )
+    document_pipeline._resolve_system_prompt(
+        kwargs_loader,
+        operation="translate",
+        source_language="en",
+        target_language="ru",
+        source_text="x",
+        document_context_prompt="КОНТЕКСТ",
+    )
+
+    assert "document_context_prompt" not in captured[0]
+    assert captured[1]["document_context_prompt"] == "КОНТЕКСТ"
+
+
+def test_resolve_system_prompt_keeps_working_for_a_named_loader_without_the_context_parameter():
+    def pre_064_loader(
+        *,
+        operation: str = "edit",
+        source_language: str = "en",
+        target_language: str = "ru",
+        editorial_intensity: str = "literary",
+        prompt_variant: str = "default",
+        translation_domain: str = "general",
+        source_text: str = "",
+    ):
+        return f"system:{operation}:{source_text}"
+
+    resolved = document_pipeline._resolve_system_prompt(
+        pre_064_loader,
+        operation="translate",
+        source_language="en",
+        target_language="ru",
+        source_text="scan",
+        document_context_prompt="КОНТЕКСТ",
+    )
+
+    assert resolved == "system:translate:scan"
+
+
+# --- spec 064 FR-002: what the model receives, not what a loader double was handed ----------
+#
+# Until spec 064 the document context reached ``load_system_prompt`` only as ``source_text``,
+# which the template never renders, and the tests that said otherwise read that kwarg off a
+# capturing double. These tests use the REAL loader and the REAL block generator and read the
+# system message off the requests the fake client received.
+
+_BLOCK_REQUEST_SIGNATURE = "[TARGET BLOCK]"  # only ``system_prompt.txt`` carries it
+_TRANSLATED_BLOCK_TEXT = "Переведённый блок: Келбрук и киллетная облигация."
+
+
+def _request_system_text(request: Mapping[str, Any]) -> str:
+    return str(request["input"][0]["content"][0]["text"])
+
+
+def _is_block_request(request: Mapping[str, Any]) -> bool:
+    return _BLOCK_REQUEST_SIGNATURE in _request_system_text(request)
+
+
+def _block_response():
+    return SimpleNamespace(
+        status="completed",
+        output_text=_TRANSLATED_BLOCK_TEXT,
+        usage=SimpleNamespace(prompt_tokens=50, completion_tokens=20, cost=0.0),
+    )
+
+
+class _BlockRecordingClient:
+    """A text client that answers block requests and records each one."""
+
+    def __init__(self):
+        self.calls: list[dict[str, Any]] = []
+        self.responses = SimpleNamespace(create=self._create)
+
+    def _create(self, **kwargs):
+        self.calls.append(kwargs)
+        assert _is_block_request(kwargs), "only block requests are expected here"
+        return _block_response()
+
+
+def _run_translate_with_real_prompt(*, document_context_prompt, app_config=None, jobs=None):
+    runtime = _build_runtime_capture()
+    client = _BlockRecordingClient()
+    result = _run_processing(
+        runtime,
+        jobs=jobs
+        or [{"target_text": "The Great Tribulation block.", "context_before": "", "context_after": "", "target_chars": 28, "context_chars": 0}],
+        app_config=app_config
+        if app_config is not None
+        else {
             "translation_domain_default": "theology",
             "translation_domain_instructions": "ДОМЕН ПЕРЕВОДА: богословие / эсхатология.",
         },
-        document_context_prompt="КОНТЕКСТ ДОКУМЕНТА: Chapter 1; Great Tribulation -> die grosse Trubsal",
+        document_context_prompt=document_context_prompt,
         model="gpt-5.4-mini",
-        max_retries=1,
         processing_operation="translate",
         source_language="en",
         target_language="de",
-        on_progress=lambda **kwargs: None,
-        runtime=runtime,
-        resolve_uploaded_filename=lambda uploaded_file: str(uploaded_file),
-        get_client=lambda: object(),
-        ensure_pandoc_available=lambda: None,
-        load_system_prompt=lambda **kwargs: prompts.append(dict(kwargs)) or "system",
-        log_event=lambda *args, **kwargs: None,
-        present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
-        emit_state=_emit_state,
-        emit_finalize=_emit_finalize,
-        emit_log=_emit_log,
-        emit_status=_emit_status,
-        should_stop_processing=lambda runtime: False,
-        generate_markdown_block=lambda **kwargs: "translated",
-        process_document_images=lambda **kwargs: [],
-        inspect_placeholder_integrity=_inspect_placeholder_integrity,
-        convert_markdown_to_docx_bytes=_convert_markdown_to_docx_bytes,
-        preserve_source_paragraph_properties=lambda docx_bytes, paragraphs, generated_paragraph_registry=None: docx_bytes,
-        reinsert_inline_images=lambda docx_bytes, image_assets: b"final-docx",
+        get_client=lambda: client,
+        load_system_prompt=core_config.load_system_prompt,
+        generate_markdown_block=generation.generate_markdown_block,
+    )
+    return result, client
+
+
+def test_document_context_prompt_reaches_the_system_message_the_client_receives():
+    context_prompt = "КОНТЕКСТ ДОКУМЕНТА: Chapter 1; Great Tribulation -> die grosse Trubsal"
+
+    result, client = _run_translate_with_real_prompt(document_context_prompt=context_prompt)
+
+    assert result == "succeeded"
+    assert client.calls, "no block request reached the client"
+    for request in client.calls:
+        system_text = _request_system_text(request)
+        assert "ДОМЕН ПЕРЕВОДА: богословие / эсхатология." in system_text
+        assert "### КОНТЕКСТ ДОКУМЕНТА И ГЛОССАРИЙ ЗАПУСКА:" in system_text
+        assert context_prompt in system_text
+        # Its own section, after the domain section and before the context-handling rules.
+        assert (
+            system_text.index("### ДОМЕН И ТЕРМИНОЛОГИЯ:")
+            < system_text.index(context_prompt)
+            < system_text.index("### РАБОТА С КОНТЕКСТОМ:")
+        )
+
+
+def test_a_run_without_document_context_sends_the_system_prompt_it_always_sent():
+    result, client = _run_translate_with_real_prompt(document_context_prompt="")
+
+    assert result == "succeeded"
+    assert client.calls
+    expected = core_config.load_system_prompt(
+        operation="translate",
+        source_language="en",
+        target_language="de",
+        editorial_intensity="literary",
+        translation_domain="theology",
+        source_text="ДОМЕН ПЕРЕВОДА: богословие / эсхатология.",
+    )
+    for request in client.calls:
+        system_text = _request_system_text(request)
+        assert "КОНТЕКСТ ДОКУМЕНТА И ГЛОССАРИЙ ЗАПУСКА" not in system_text
+        # The block may append its own focus sections after the cached prompt, never before.
+        assert system_text.startswith(expected)
+
+
+def test_document_context_prompt_is_not_rendered_outside_translate():
+    runtime = _build_runtime_capture()
+    client = _BlockRecordingClient()
+
+    result = _run_processing(
+        runtime,
+        jobs=[{"target_text": "Обычный абзац для правки.", "context_before": "", "context_after": "", "target_chars": 25, "context_chars": 0}],
+        document_context_prompt="КОНТЕКСТ ДОКУМЕНТА: только для перевода",
+        processing_operation="edit",
+        source_language="ru",
+        target_language="ru",
+        get_client=lambda: client,
+        load_system_prompt=core_config.load_system_prompt,
+        generate_markdown_block=generation.generate_markdown_block,
     )
 
     assert result == "succeeded"
-    assert "ДОМЕН ПЕРЕВОДА" in prompts[0]["source_text"]
-    assert "КОНТЕКСТ ДОКУМЕНТА" in prompts[0]["source_text"]
-    assert "Great Tribulation -> die grosse Trubsal" in prompts[0]["source_text"]
+    assert client.calls
+    assert not any("КОНТЕКСТ ДОКУМЕНТА" in _request_system_text(request) for request in client.calls)
 
 
 def test_run_document_processing_appends_block_segment_focus_to_generation_prompt():
@@ -8642,14 +8779,22 @@ def test_standalone_audiobook_without_an_omitted_paragraph_stays_silent():
 
 
 class _GlossaryResponsesClient:
-    """A text client whose ``responses.create`` answers the one glossary call."""
+    """A text client that answers the glossary calls and, separately, the block calls.
+
+    ``calls`` holds the glossary requests; ``block_calls`` holds the block requests, whose
+    system message is what the model actually received (spec 064 FR-002).
+    """
 
     def __init__(self, answer):
         self.calls = []
+        self.block_calls = []
         self._answer = answer
         self.responses = SimpleNamespace(create=self._create)
 
     def _create(self, **kwargs):
+        if _is_block_request(kwargs):
+            self.block_calls.append(kwargs)
+            return _block_response()
         self.calls.append(kwargs)
         if isinstance(self._answer, Exception):
             raise self._answer
@@ -8711,13 +8856,8 @@ def _run_glossary_case(monkeypatch, tmp_path, *, answer, operation="translate", 
     monkeypatch.setattr(constants, "RUN_GLOSSARIES_DIR", tmp_path / "run_glossaries")
     runtime = _build_runtime_capture()
     client = _GlossaryResponsesClient(answer)
-    prompt_sources: list[str] = []
     captured, log_event = _capture_log_events()
     jobs, paragraphs = _glossary_jobs_and_paragraphs()
-
-    def capture_load_system_prompt(**kwargs):
-        prompt_sources.append(str(kwargs.get("source_text", "")))
-        return "system"
 
     overrides: dict[str, Any] = {}
     if should_stop is not None:
@@ -8732,7 +8872,10 @@ def _run_glossary_case(monkeypatch, tmp_path, *, answer, operation="translate", 
         run_id="run-glossary",
         app_config=app_config if app_config is not None else {"glossary_pass_enabled": True},
         get_client=lambda: client,
-        load_system_prompt=capture_load_system_prompt,
+        # Spec 064 FR-002: the real loader and the real block generator, so the block system
+        # prompts below are the system messages the client received.
+        load_system_prompt=core_config.load_system_prompt,
+        generate_markdown_block=generation.generate_markdown_block,
         log_event=log_event,
         document_context_prompt="КОНТЕКСТ ДОКУМЕНТА: заглушка",
         **overrides,
@@ -8741,7 +8884,7 @@ def _run_glossary_case(monkeypatch, tmp_path, *, answer, operation="translate", 
         result=result,
         runtime=runtime,
         client=client,
-        prompt_sources=prompt_sources,
+        block_system_prompts=[_request_system_text(request) for request in client.block_calls],
         events=captured,
         artifacts=sorted((tmp_path / "run_glossaries").glob("*.json")),
     )
@@ -8760,12 +8903,15 @@ def test_translate_run_builds_the_glossary_once_and_every_block_prompt_carries_i
 
     assert case.result == "succeeded"
     assert len(case.client.calls) == 2  # call A (required) and call B (optional)
-    assert case.prompt_sources, "the system prompt was never built"
-    for source_text in case.prompt_sources:
-        assert "КОНТЕКСТ ДОКУМЕНТА: заглушка" in source_text
-        assert "ГЛОССАРИЙ ЭТОЙ КНИГИ" in source_text
-        assert "- quillet bond -> киллетная облигация" in source_text
-        assert "- Zorvane Pettish -> Зорвейн Петтиш (имя)" in source_text
+    # Spec 064 FR-002: the system message of EVERY block request the client received.
+    assert len(case.block_system_prompts) == 2, "one request per block was expected"
+    for system_prompt in case.block_system_prompts:
+        assert "### КОНТЕКСТ ДОКУМЕНТА И ГЛОССАРИЙ ЗАПУСКА:" in system_prompt
+        assert "КОНТЕКСТ ДОКУМЕНТА: заглушка" in system_prompt
+        assert "ГЛОССАРИЙ ЭТОЙ КНИГИ" in system_prompt
+        assert "- quillet bond -> киллетная облигация" in system_prompt
+        assert "- Zorvane Pettish -> Зорвейн Петтиш (имя)" in system_prompt
+        assert "- Kelbrook -> Келбрук (имя)" in system_prompt
     built = [event for event in case.events if event["event_id"] == "run_glossary_built"]
     assert len(built) == 1
     context = built[0]["context"]
@@ -8773,6 +8919,17 @@ def test_translate_run_builds_the_glossary_once_and_every_block_prompt_carries_i
     assert context["status"] == "built"
     assert context["term_count"] == 3
     assert context["rendered_term_count"] == 3
+    # Spec 064 FR-003: the run's cached system prompt, measured from the same arguments the
+    # block phase renders it from, so its length is the length of what each block call got.
+    # A block request carries that prompt plus, after a blank line, the block's own focus.
+    first_block_prompt = case.block_system_prompts[0]
+    cached_chars = context["system_prompt_chars"]
+    assert cached_chars > context["prompt_section_chars"] > 0
+    assert first_block_prompt[:cached_chars].endswith("просто обрабатывайте текст по правилам выше.")
+    assert first_block_prompt[cached_chars:] == "" or first_block_prompt[cached_chars:].startswith("\n\n")
+    assert context["document_context_prompt_chars"] == len(
+        "КОНТЕКСТ ДОКУМЕНТА: заглушка\n\n"
+    ) + context["prompt_section_chars"]
     assert context["prompt_tokens"] == 1800  # two calls, 900 each
     assert context["cost_usd"] == pytest.approx(0.0008)
     assert len(case.artifacts) == 1
@@ -8808,7 +8965,9 @@ def test_glossary_pass_does_nothing_when_switched_off_or_unconfigured(monkeypatc
 
     assert case.result == "succeeded"
     assert case.client.calls == []
-    assert not any("ГЛОССАРИЙ ЭТОЙ КНИГИ" in source for source in case.prompt_sources)
+    assert case.block_system_prompts, "no block request reached the client"
+    assert all("КОНТЕКСТ ДОКУМЕНТА: заглушка" in prompt for prompt in case.block_system_prompts)
+    assert not any("ГЛОССАРИЙ ЭТОЙ КНИГИ" in prompt for prompt in case.block_system_prompts)
 
 
 @pytest.mark.parametrize(
@@ -8820,10 +8979,16 @@ def test_glossary_failure_never_fails_the_run(monkeypatch, tmp_path, answer, err
 
     assert case.result == "succeeded"
     assert case.runtime["state"]["latest_markdown"]
-    assert not any("ГЛОССАРИЙ ЭТОЙ КНИГИ" in source for source in case.prompt_sources)
+    assert case.block_system_prompts, "no block request reached the client"
+    assert all("КОНТЕКСТ ДОКУМЕНТА: заглушка" in prompt for prompt in case.block_system_prompts)
+    assert not any("ГЛОССАРИЙ ЭТОЙ КНИГИ" in prompt for prompt in case.block_system_prompts)
     failed = [event for event in case.events if event["event_id"] == "run_glossary_failed"]
     assert len(failed) == 1 and failed[0]["level"] == logging.WARNING
     assert failed[0]["context"]["error_code"] == error_code
+    # Spec 064 FR-003: a failed glossary still reports the prompt the blocks receive.
+    cached_chars = failed[0]["context"]["system_prompt_chars"]
+    assert case.block_system_prompts[0][:cached_chars].endswith("просто обрабатывайте текст по правилам выше.")
+    assert failed[0]["context"]["document_context_prompt_chars"] == len("КОНТЕКСТ ДОКУМЕНТА: заглушка")
     assert _glossary_notices(case.runtime) == [
         {"kind": "glossary", "level": "warning", "message_key": "result.run_glossary_failed"}
     ]
@@ -8843,7 +9008,9 @@ def test_glossary_answer_without_a_single_candidate_leaves_the_prompt_alone(monk
     assert built[0]["context"]["rejected_counts"]["not_a_candidate"] == 2
     assert built[0]["context"]["model_call_count"] == 2
     assert "quillet bond" in built[0]["context"]["unrendered_terms"]
-    assert not any("ГЛОССАРИЙ ЭТОЙ КНИГИ" in source for source in case.prompt_sources)
+    assert case.block_system_prompts, "no block request reached the client"
+    assert all("КОНТЕКСТ ДОКУМЕНТА: заглушка" in prompt for prompt in case.block_system_prompts)
+    assert not any("ГЛОССАРИЙ ЭТОЙ КНИГИ" in prompt for prompt in case.block_system_prompts)
     assert _glossary_notices(case.runtime) == []
 
 
@@ -8858,7 +9025,10 @@ def test_glossary_call_is_not_made_after_stop(monkeypatch, tmp_path):
 
 
 class _SequencedGlossaryClient:
-    """Answers the glossary calls in order; records each request's role-relevant payload."""
+    """Answers the glossary calls in order; records each request's role-relevant payload.
+
+    Block requests are answered separately and kept in ``block_calls`` (spec 064 FR-002).
+    """
 
     def __init__(self, answers):
         self.answers = list(answers)
@@ -8866,9 +9036,13 @@ class _SequencedGlossaryClient:
         self.payloads: list[dict[str, Any]] = []
         self.system_texts: list[str] = []
         self.source_languages: list[str] = []
+        self.block_calls: list[dict[str, Any]] = []
         self.responses = SimpleNamespace(create=self._create)
 
     def _create(self, **kwargs):
+        if _is_block_request(kwargs):
+            self.block_calls.append(kwargs)
+            return _block_response()
         payload = json.loads(kwargs["input"][1]["content"][0]["text"])
         self.payloads.append(payload)
         if "groups" in payload:
@@ -8891,13 +9065,8 @@ def _run_rule_case(monkeypatch, tmp_path, answers):
     monkeypatch.setattr(constants, "RUN_GLOSSARIES_DIR", tmp_path / "run_glossaries")
     runtime = _build_runtime_capture()
     client = _SequencedGlossaryClient(answers)
-    prompt_sources: list[str] = []
     captured, log_event = _capture_log_events()
     jobs, paragraphs = _glossary_jobs_and_paragraphs()
-
-    def capture_load_system_prompt(**kwargs):
-        prompt_sources.append(str(kwargs.get("source_text", "")))
-        return "system"
 
     result = _run_processing(
         runtime,
@@ -8909,11 +9078,14 @@ def _run_rule_case(monkeypatch, tmp_path, answers):
         run_id="run-rule",
         app_config={"glossary_pass_enabled": True},
         get_client=lambda: client,
-        load_system_prompt=capture_load_system_prompt,
+        load_system_prompt=core_config.load_system_prompt,
+        generate_markdown_block=generation.generate_markdown_block,
         log_event=log_event,
     )
     built = [event for event in captured if event["event_id"] == "run_glossary_built"]
-    return SimpleNamespace(result=result, client=client, prompt_sources=prompt_sources, built=built)
+    block_system_prompts = [_request_system_text(request) for request in client.block_calls]
+    assert block_system_prompts, "no block request reached the client"
+    return SimpleNamespace(result=result, client=client, block_system_prompts=block_system_prompts, built=built)
 
 
 _QUILLET = {"source_term": "quillet bond", "target_term": "киллетная облигация", "kind": "term"}
@@ -8946,7 +9118,7 @@ def test_call_a_renders_the_required_set_and_call_b_chooses_among_the_rest(monke
         {"source_term": "Zorvane Pettish", "target_term": "Зорвейн Петтиш"},
         {"source_term": "Kelbrook", "target_term": "Келбрук"},
     ]
-    section = case.prompt_sources[0]
+    section = case.block_system_prompts[0]
     assert section.index("- quillet bond -> киллетная облигация") < section.index("- Zorvane Pettish")
 
 
@@ -8974,7 +9146,7 @@ def test_a_required_term_still_left_out_after_call_b_is_recorded_unrendered(monk
     artifact = json.loads(Path(context["artifact_path"]).read_text(encoding="utf-8"))
     assert artifact["unrendered_terms"] == ["quillet bond"]
     assert [call["role"] for call in artifact["calls"]] == ["required", "optional"]
-    assert "quillet bond" not in case.prompt_sources[0]
+    assert "quillet bond" not in case.block_system_prompts[0]
 
 
 def test_anti_vacuum_optional_candidates_the_model_passed_over_are_not_asked_again(monkeypatch, tmp_path):
@@ -9009,7 +9181,7 @@ def test_a_collision_the_distinction_call_resolves_leaves_no_collision(monkeypat
             {"source_term": "Kelbrook", "target_term": "Киллетная облигация"},
         ]
     ]
-    assert "- Kelbrook -> Келбрук (имя)" in case.prompt_sources[0]
+    assert "- Kelbrook -> Келбрук (имя)" in case.block_system_prompts[0]
 
 
 def test_a_collision_the_distinction_call_does_not_resolve_is_recorded_and_both_are_kept(monkeypatch, tmp_path):
@@ -9025,7 +9197,7 @@ def test_a_collision_the_distinction_call_does_not_resolve_is_recorded_and_both_
         {"target_term": "киллетная облигация", "source_terms": ["quillet bond", "Kelbrook"]}
     ]
     assert context["term_count"] == 2
-    section = case.prompt_sources[0]
+    section = case.block_system_prompts[0]
     assert "- quillet bond -> киллетная облигация" in section
     assert "- Kelbrook -> Киллетная облигация (имя)" in section
 
@@ -9044,7 +9216,7 @@ def test_the_distinction_call_changes_only_the_sense_that_collided(monkeypatch, 
     case = _run_rule_case(monkeypatch, tmp_path, [[first_sense, second_sense], [clash], distinguished])
 
     assert case.result == "succeeded"
-    section = case.prompt_sources[0]
+    section = case.block_system_prompts[0]
     assert "- quillet bond -> киллетная облигация" in section
     assert "- quillet bond -> квиллетный инструмент" in section
     assert "- Kelbrook -> Келбрук (имя)" in section

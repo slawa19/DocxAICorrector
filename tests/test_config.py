@@ -635,6 +635,132 @@ def test_load_system_prompt_includes_theology_domain_instructions():
     assert "rapture -> восхищение Церкви / восхищение верующих" in theology_prompt
 
 
+# --- spec 064 FR-001 / Anti-regression 5: the document context has its own section -----------
+
+_DOCUMENT_CONTEXT_HEADING = "### КОНТЕКСТ ДОКУМЕНТА И ГЛОССАРИЙ ЗАПУСКА:"
+_SAMPLE_DOCUMENT_CONTEXT = (
+    "КОНТЕКСТ ДОКУМЕНТА ДЛЯ ТЕКУЩЕГО ЗАПУСКА:\n\n"
+    "КРАТКИЙ ПЛАН ДОКУМЕНТА:\n- L1 | chapter | The Quillet Bond\n\n"
+    "ГЛОССАРИЙ ЭТОЙ КНИГИ (построен по документу для текущего запуска):\n"
+    "- quillet bond -> киллетная облигация\n"
+    "- Kelbrook -> Келбрук (имя)"
+)
+
+# Snapshot of the rendered prompt BEFORE spec 064 added the section, measured on b17473e with
+# the same arguments: (length in characters, sha256 of the UTF-8 bytes). Without a document
+# context the prompt must stay these exact bytes. If a deliberate edit of another prompt file
+# (operation_*, example_*, editorial_intensity_*) changes them, re-pin from the empty-context
+# render and say so in the commit — never re-pin to absorb a change of this section.
+_PRE_064_PROMPT_SNAPSHOTS = [
+    (
+        {"operation": "translate", "source_language": "en", "target_language": "ru"},
+        6977,
+        "8465b6980aa190aee76392171829c041be17fcb11a847e0077804cc7d8610534",
+    ),
+    (
+        {"operation": "edit", "source_language": "ru", "target_language": "ru"},
+        4957,
+        "28609855e1b34753f3213d0875533382973e02d4a4f7420bd374108d5f514f33",
+    ),
+    (
+        {"operation": "translate", "source_language": "en", "target_language": "ru", "prompt_variant": "toc_translate"},
+        5880,
+        "1bfc57f2512b33e85ebd419c1278bf3c4f9916751772b763f445094c4fa4dbc7",
+    ),
+    (
+        {
+            "operation": "translate",
+            "source_language": "en",
+            "target_language": "ru",
+            "translation_domain": "theology",
+            "source_text": "Great Tribulation",
+        },
+        7793,
+        "914a7d783a7b2a3b7ae6fee6566f7739486f8e6e2c6fd318a2d434f13e4678c5",
+    ),
+]
+
+
+@pytest.mark.parametrize(("arguments", "length", "digest"), _PRE_064_PROMPT_SNAPSHOTS)
+@pytest.mark.parametrize("empty_context", [None, "", "  \n "])
+def test_load_system_prompt_without_document_context_is_byte_for_byte_the_pre_064_prompt(
+    arguments, length, digest, empty_context
+):
+    kwargs = dict(arguments)
+    if empty_context is not None:
+        kwargs["document_context_prompt"] = empty_context
+
+    prompt = config.load_system_prompt(**kwargs)
+
+    assert (len(prompt), hashlib.sha256(prompt.encode("utf-8")).hexdigest()) == (length, digest)
+    assert _DOCUMENT_CONTEXT_HEADING not in prompt
+    assert "[[IF " not in prompt and "[[END " not in prompt
+    assert "\n\n\n" not in prompt
+
+
+@pytest.mark.parametrize(("arguments", "length", "digest"), _PRE_064_PROMPT_SNAPSHOTS)
+def test_the_document_context_section_is_the_only_difference_it_makes(arguments, length, digest):
+    without_context = config.load_system_prompt(**arguments)
+    with_context = config.load_system_prompt(**arguments, document_context_prompt=_SAMPLE_DOCUMENT_CONTEXT)
+
+    start = with_context.index(_DOCUMENT_CONTEXT_HEADING)
+    end = with_context.index("### РАБОТА С КОНТЕКСТОМ:")
+    section = with_context[start:end]
+    assert with_context[:start] + with_context[end:] == without_context
+    assert section.endswith(_SAMPLE_DOCUMENT_CONTEXT + "\n\n")
+    assert "\n\n\n" not in with_context
+    assert len(with_context) == length + len(section)
+
+
+def test_load_system_prompt_renders_the_document_context_after_the_domain_section():
+    prompt = config.load_system_prompt(
+        operation="translate",
+        source_language="en",
+        target_language="ru",
+        translation_domain="general",
+        source_text="SCANNER-INPUT-NEVER-RENDERED",
+        document_context_prompt=_SAMPLE_DOCUMENT_CONTEXT,
+    )
+
+    assert _SAMPLE_DOCUMENT_CONTEXT in prompt
+    assert "- quillet bond -> киллетная облигация" in prompt
+    assert "Передачи из глоссария обязательны" in prompt
+    assert (
+        prompt.index("### ДОМЕН И ТЕРМИНОЛОГИЯ:")
+        < prompt.index(_DOCUMENT_CONTEXT_HEADING)
+        < prompt.index(_SAMPLE_DOCUMENT_CONTEXT)
+        < prompt.index("### РАБОТА С КОНТЕКСТОМ:")
+    )
+    # ``source_text`` is the term scanner's input only; it is never rendered by itself.
+    assert "SCANNER-INPUT-NEVER-RENDERED" not in prompt
+
+
+def test_load_system_prompt_keeps_braces_in_the_document_context_literal():
+    context = "ГЛОССАРИЙ ЭТОЙ КНИГИ:\n- {placeholder} -> {заполнитель}"
+
+    prompt = config.load_system_prompt(
+        operation="translate", source_language="en", target_language="ru", document_context_prompt=context
+    )
+
+    assert context in prompt
+
+
+def test_optional_prompt_sections_refuse_unknown_and_missing_markers():
+    template = "a\n[[IF known]]\nbody\n[[END known]]\nb"
+
+    assert config._render_optional_prompt_sections(template, present={"known": True}) == "a\nbody\nb"
+    assert config._render_optional_prompt_sections(template, present={"known": False}) == "a\nb"
+    # A template without a section renders while there is nothing to put in it ...
+    assert config._render_optional_prompt_sections("a\nb", present={"known": False}) == "a\nb"
+    # ... and refuses content it has no place for instead of dropping it.
+    with pytest.raises(RuntimeError, match="unknown_section"):
+        config._render_optional_prompt_sections(template, present={"known": True, "unknown_section": True})
+    with pytest.raises(RuntimeError, match="Неизвестная"):
+        config._render_optional_prompt_sections(template, present={})
+    with pytest.raises(RuntimeError, match="непарный"):
+        config._render_optional_prompt_sections("a\n[[IF known]]\nbody\nb", present={})
+
+
 def test_load_system_prompt_rejects_unsupported_editorial_intensity():
     with pytest.raises(RuntimeError, match="Некорректная editorial_intensity"):
         config.load_system_prompt(

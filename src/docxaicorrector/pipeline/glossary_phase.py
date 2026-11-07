@@ -234,7 +234,47 @@ def _log_failed(
         error_message=" ".join(str(error_message or "").split())[:_ERROR_PREVIEW_CHARS],
         candidate_count=candidate_count,
         artifact_path=artifact_path,
+        **_system_prompt_size_fields(context=context, dependencies=dependencies),
     )
+
+
+def _with_run_glossary_section(context: Any, section: str) -> Any:
+    if not section:
+        return context
+    existing_prompt = str(getattr(context, "document_context_prompt", "") or "").strip()
+    combined_prompt = f"{existing_prompt}\n\n{section}" if existing_prompt else section
+    return replace(context, document_context_prompt=combined_prompt)
+
+
+def _system_prompt_size_fields(*, context: Any, dependencies: Any) -> dict[str, object]:
+    """Spec 064 FR-003: the size of the system prompt every block call of this run receives.
+
+    The prompt is cached once per run, so its document context section (outline, style
+    instructions, glossaries) is paid for on every block call. The length is rendered here
+    from the same arguments the block phase renders it from (``build_system_prompt_arguments``),
+    so a paid run can confirm delivery by this number and by prompt tokens per call. ``None``
+    means the prompt could not be rendered here; the block phase will report why.
+    """
+
+    from docxaicorrector.pipeline.support import (
+        build_system_prompt_arguments,
+        resolve_prompt_document_context,
+        resolve_system_prompt,
+    )
+
+    system_prompt_chars: int | None
+    try:
+        system_prompt = resolve_system_prompt(
+            dependencies.load_system_prompt,
+            **build_system_prompt_arguments(context=context, prompt_variant="default"),
+        )
+        system_prompt_chars = len(str(system_prompt or ""))
+    except Exception:
+        system_prompt_chars = None
+    return {
+        "system_prompt_chars": system_prompt_chars,
+        "document_context_prompt_chars": len(resolve_prompt_document_context(context)),
+    }
 
 
 def _run_glossary_phase(
@@ -388,13 +428,10 @@ def _run_glossary_phase(
             completion_tokens=usage.get("completion_tokens"),
             cost_usd=usage.get("cost_usd"),
             artifact_path=artifact_path,
+            **_system_prompt_size_fields(context=_with_run_glossary_section(context, section), dependencies=dependencies),
         )
 
-    if not section:
-        return context
-    existing_prompt = str(getattr(context, "document_context_prompt", "") or "").strip()
-    combined_prompt = f"{existing_prompt}\n\n{section}" if existing_prompt else section
-    return replace(context, document_context_prompt=combined_prompt)
+    return _with_run_glossary_section(context, section)
 
 
 _ASK_OK = "ok"
