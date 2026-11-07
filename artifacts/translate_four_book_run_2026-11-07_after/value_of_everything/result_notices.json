@@ -1,0 +1,50 @@
+{
+  "latest_result_notices": [
+    {
+      "kind": "glossary",
+      "level": "info",
+      "message_key": "result.run_glossary_built",
+      "params": {
+        "count": 148
+      }
+    },
+    {
+      "kind": "translation",
+      "level": "warning",
+      "message_key": "result.source_text_delivered",
+      "params": {
+        "count": 1,
+        "blocks": 1,
+        "chars": 403
+      },
+      "anchors": [
+        "Umunna, considered a rising star in the Labour Party, argued that the Labour Party needed to embrace business, calling them the wealth creators https://www.theguardian.com/commentisfree/2015/may/09/tony-blair-what-labour-must-do-next-election-ed-miliband and Chuka Umunna https://www.theguardian.com/commentisfree/2015/may/09/labours-first-step-to-regaining-power-is-to-recognise-the-mistakes-we-made 2."
+      ]
+    },
+    {
+      "kind": "acceptance",
+      "level": "warning",
+      "message_key": "result.acceptance_not_passed",
+      "params": {
+        "count": 1
+      },
+      "failed_checks": [
+        "list_fragment_regressions_present"
+      ]
+    }
+  ],
+  "latest_result_notice": {
+    "level": "warning",
+    "message": "Перевод завершён. Документ готов к использованию, но требует ручной проверки оформления: 34 абзаца с замечаниями. Подробности — в отчёте проверки (formatting_review.txt)."
+  },
+  "latest_delivery_disposition": {
+    "status": "accepted_with_advisory"
+  },
+  "latest_controlled_block_fallback_artifact": "/mnt/d/Temp/claude/wt-rerun/.run/block_fallbacks/The_Value_of_Everything__Making_and_Taking_in_the_Global_Economy_by_Mariana_Mazz_block_659_b6578623.json",
+  "acceptance": {
+    "passed": false,
+    "failed_checks": [
+      "list_fragment_regressions_present"
+    ]
+  }
+}

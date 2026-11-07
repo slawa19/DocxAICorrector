@@ -1,0 +1,32 @@
+{
+  "latest_result_notices": [
+    {
+      "kind": "acceptance",
+      "level": "warning",
+      "message_key": "result.acceptance_not_passed",
+      "params": {
+        "count": 1
+      },
+      "failed_checks": [
+        "translation_quality_report_not_failed"
+      ]
+    }
+  ],
+  "latest_result_notice": {
+    "level": "error",
+    "message": "Результат заблокирован document-level quality gate."
+  },
+  "latest_delivery_disposition": {
+    "status": "blocked",
+    "explanation": "Результат заблокирован document-level quality gate.",
+    "message_key": "result.blocked_delivery_notice"
+  },
+  "latest_controlled_block_fallback_artifact": "/mnt/d/Temp/claude/wt-rerun/.run/block_fallbacks/bernardlietaer-moneyandsustainabilitypdffromepub-160516072426_docx_block_2_684e8559.json",
+  "acceptance": {
+    "passed": false,
+    "failed_checks": [
+      "pipeline_succeeded",
+      "translation_quality_report_not_failed"
+    ]
+  }
+}

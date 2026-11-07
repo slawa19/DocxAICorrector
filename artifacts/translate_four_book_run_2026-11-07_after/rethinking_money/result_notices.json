@@ -1,0 +1,51 @@
+{
+  "latest_result_notices": [
+    {
+      "kind": "glossary",
+      "level": "info",
+      "message_key": "result.run_glossary_built",
+      "params": {
+        "count": 160
+      }
+    },
+    {
+      "kind": "translation",
+      "level": "warning",
+      "message_key": "result.source_text_delivered_without_anchors",
+      "params": {
+        "count": 1,
+        "blocks": 1,
+        "chars": 2,
+        "unanchored": 1
+      },
+      "anchors": []
+    },
+    {
+      "kind": "acceptance",
+      "level": "warning",
+      "message_key": "result.acceptance_not_passed",
+      "params": {
+        "count": 2
+      },
+      "failed_checks": [
+        "list_fragment_regressions_present",
+        "untranslated_prose_not_delivered"
+      ]
+    }
+  ],
+  "latest_result_notice": {
+    "level": "warning",
+    "message": "Перевод завершён. Документ готов к использованию, но требует ручной проверки оформления: 7 абзацев с замечаниями. Подробности — в отчёте проверки (formatting_review.txt)."
+  },
+  "latest_delivery_disposition": {
+    "status": "accepted_with_advisory"
+  },
+  "latest_controlled_block_fallback_artifact": "/mnt/d/Temp/claude/wt-rerun/.run/block_fallbacks/Rethinking-money_-How-new-currencies-turn-scarcity-into-prosperity-Bernard-Lieta_block_148_42bc4dd6.json",
+  "acceptance": {
+    "passed": false,
+    "failed_checks": [
+      "list_fragment_regressions_present",
+      "untranslated_prose_not_delivered"
+    ]
+  }
+}
