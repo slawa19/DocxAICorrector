@@ -14,6 +14,7 @@ from docxaicorrector.pdf_import.text_layer_quality import (
     _pdfminer_top_origin_bounds,
     _split_trailing_superscript_marker_chars,
     _style_runs_from_line_items,
+    _trailing_marker_split_left_to_importer,
     build_text_layer_quality_report,
     extract_pdf_text_spans_with_pdfminer,
     load_spans_json,
@@ -251,17 +252,21 @@ def test_pdfminer_line_keeps_number_split_across_a_line_break() -> None:
     assert _extracted_line_text(chars) == "from $5.49 trillion to $16.58"
 
 
-def test_pdfminer_line_keeps_digit_separated_by_a_space() -> None:
-    # A raised, undersized digit that does not touch the previous word is an orphan
-    # marker, not a reference welded to text; the weld is what this rule keys on.
+def test_pdfminer_line_renders_raised_undersized_digit_after_a_space() -> None:
+    # Spec 063 FR-007 reverses what this test pinned until 2026-11-07 ("chapter 2 opens"):
+    # a digit that is smaller than its line AND raised above it is a reference wherever it
+    # stands. The weld was never the signal — the size and the rise are — and requiring it
+    # left Rethinking Money's references set after a closing quote and a space
+    # ("works.” 9") as plain numbers. Only the digit is rewritten; the space stays.
     chars = _pdf_line([("chapter ", 10, 100), ("2", 6.5, 104), (" opens", 10, 100)])
 
-    assert _extracted_line_text(chars) == "chapter 2 opens"
+    assert _extracted_line_text(chars) == "chapter ² opens"
 
 
-def test_pdfminer_line_keeps_digit_separated_by_an_inferred_space() -> None:
+def test_pdfminer_line_renders_reference_after_an_inferred_space() -> None:
     # pdfminer reports the space it INFERS between two words as a separate layout item
-    # with no font and no geometry. It still separates them, so "paper 28" is not welded.
+    # with no font and no geometry. "paper 28" is Money and Sustainability's own case: a
+    # reference set after the word with a space, which FR-007 reads by its form.
     chars: list[object] = list(_pdf_line([("paper", 10, 100)]))
     chars.append(_AnnoChar(" "))
     chars.extend(_pdf_line([("28", 6.5, 104)]))
@@ -269,7 +274,109 @@ def test_pdfminer_line_keeps_digit_separated_by_an_inferred_space() -> None:
 
     assert _line_text_with_char_overrides(
         chars, _inline_superscript_marker_char_ids(chars)
-    ) == "paper 28 gathered"
+    ) == "paper ²⁸ gathered"
+
+
+# --- Spec 063 FR-007: references that do not touch the word before them -------------------
+
+
+def test_pdfminer_line_renders_unattached_reference_between_a_word_and_a_sum() -> None:
+    # The shape of the corpus blocker (VoE idx 592): "…nearly" + a raised, undersized "39"
+    # + "£30,000". Read as plain digits, the model took "39 £30,000" for one sum.
+    chars = _pdf_line(
+        [("equivalent to nearly ", 15, 100), ("39", 9, 106.5), (" £30,000 for each", 15, 100)]
+    )
+
+    assert _extracted_line_text(chars) == "equivalent to nearly ³⁹ £30,000 for each"
+
+
+def test_pdfminer_line_renders_unattached_reference_after_a_number() -> None:
+    # VoE idx 583's shape: the reference follows a sum and a space. Nothing about what
+    # precedes it is required — only the reference's own size and rise.
+    chars = _pdf_line([("($1,300 ", 15, 100), ("36", 9, 106.5), (" billion)", 15, 100)])
+
+    assert _extracted_line_text(chars) == "($1,300 ³⁶ billion)"
+
+
+def test_pdfminer_line_renders_reference_opening_the_line() -> None:
+    # At the line's start there is no text before the run; its rise is measured against
+    # the text after it.
+    chars = _pdf_line([("40", 9, 106.5), (" around the turn of the century.", 15, 100)])
+
+    assert _extracted_line_text(chars) == "⁴⁰ around the turn of the century."
+
+
+def test_pdfminer_line_keeps_full_size_number_after_a_space() -> None:
+    # Anti-vacuum: "nearly 39" with "39" set at text size on the baseline is a number.
+    chars = _pdf_line(
+        [("equivalent to nearly ", 15, 100), ("39", 15, 100), (" million", 15, 100)]
+    )
+
+    assert _extracted_line_text(chars) == "equivalent to nearly 39 million"
+
+
+def test_pdfminer_line_keeps_lowered_digit_after_a_space() -> None:
+    # Anti-vacuum: smaller but LOWERED is a subscript, wherever it stands.
+    chars = _pdf_line([("the CO ", 10, 100), ("2", 7.5, 98), (" level", 10, 100)])
+
+    assert _extracted_line_text(chars) == "the CO 2 level"
+
+
+def test_pdfminer_line_keeps_ordinary_numbers_beside_an_unattached_reference() -> None:
+    # Anti-vacuum: the stand-alone rule touches the reference and nothing else on the line —
+    # "CO2" (lowered), "$16.58" and "0.005" (full size, on the baseline) stay numbers.
+    chars = _pdf_line(
+        [
+            ("CO", 10, 100),
+            ("2", 7.5, 98),
+            (" rose ", 10, 100),
+            ("4", 6.5, 104),
+            (" from $16.58 to 0.005 per unit", 10, 100),
+        ]
+    )
+
+    assert _extracted_line_text(chars) == "CO2 rose ⁴ from $16.58 to 0.005 per unit"
+
+
+def test_pdfminer_line_keeps_digit_inside_a_raised_exponent_group() -> None:
+    # Rethinking Money p. 244: "(1 + i)^(n - 1)". The "1" of the exponent is small, raised
+    # and follows a space — but so are the "(", "n" and "-" around it. A reference is raised
+    # alone; a digit inside a raised group is a formula and stays a digit.
+    chars = _pdf_line(
+        [
+            ("The exact formula is (1 + i) ", 9, 100),
+            ("(n - 1)", 5.8, 103.9),
+            (", where i is the rate", 9, 100),
+        ]
+    )
+
+    assert _extracted_line_text(chars) == "The exact formula is (1 + i) (n - 1), where i is the rate"
+
+
+def test_end_of_line_reference_raised_above_its_line_is_rendered_in_place() -> None:
+    # The Value of Everything sets references at 0.60 of the body and raises them so far
+    # that their top clears the line's. Split off, such a reference was read BEFORE its line
+    # and re-bound to the previous one ("in 2011.36" arrived as "($1,300 36 billion)").
+    # It is rendered where it is set instead.
+    chars = _pdf_line([("less than £300 billion in 2011.", 15, 100), ("36", 9, 106.5)])
+    overrides = _inline_superscript_marker_char_ids(chars)
+
+    assert _split_trailing_superscript_marker_chars(chars) is not None
+    assert _trailing_marker_split_left_to_importer(chars, overrides) is None
+    assert _line_text_with_char_overrides(chars, overrides) == "less than £300 billion in 2011.³⁶"
+
+
+def test_end_of_line_reference_under_its_line_top_keeps_the_importer_path() -> None:
+    # Money and Sustainability's references (0.40 of the body) stay under the line's top;
+    # the split and the importer's re-binding they have used since it was written stay.
+    chars = _pdf_line([("OK.", 10, 100), ("2", 4, 105)])
+    overrides = _inline_superscript_marker_char_ids(chars)
+
+    split = _trailing_marker_split_left_to_importer(chars, overrides)
+
+    assert split is not None
+    assert _line_text_with_char_overrides(split[1], None) == "2"
+
 
 
 def test_pdfminer_line_keeps_year_length_digit_run_welded_to_word() -> None:

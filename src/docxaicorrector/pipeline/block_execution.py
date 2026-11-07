@@ -27,6 +27,7 @@ from docxaicorrector.generation._generation import (
     marker_paragraph_dispositions,
 )
 from docxaicorrector.pipeline.contracts import LatePhaseStopped
+from docxaicorrector.pipeline.footnote_markers import preserve_footnote_markers_for_block
 from docxaicorrector.pipeline.job_results import persist_terminal_job_result
 from docxaicorrector.pipeline.output_validation import (
     delivered_text_equals_source,
@@ -2016,6 +2017,16 @@ def process_single_block(
             rejection_kind=processed_block_status,
         )
 
+    # Spec 063 FR-005: a footnote reference the model dropped is put back before the block
+    # is committed anywhere, so the DOCX, the registry and the preview all carry it.
+    processed_chunk = preserve_footnote_markers_for_block(
+        processed_chunk=processed_chunk,
+        payload=payload,
+        processing_operation=getattr(context, "processing_operation", None),
+        block_index=index,
+        log_event=getattr(dependencies, "log_event", None),
+        filename=getattr(context, "uploaded_filename", None),
+    )
     state.processed_chunks.append(processed_chunk)
     if payload.narration_include:
         # Spec 056 E: the DOCX keeps every paragraph, the narration keeps only the ones the

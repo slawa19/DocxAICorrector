@@ -29,6 +29,7 @@ This inventory is intentionally pragmatic:
 - `tests/test_document_pipeline_output_validation.py`
 - `tests/test_document_structure_blocks.py`
 - `tests/test_document_structure_repair.py`
+- `tests/test_footnote_markers.py`
 - `tests/test_format_restoration.py`
 - `tests/test_gate_detectors_stage2.py`
 - `tests/test_generation.py`

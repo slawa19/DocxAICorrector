@@ -6728,6 +6728,53 @@ def test_run_summary_prints_every_spec_061_counter_the_report_carries() -> None:
     ) in accounting_lines
 
 
+def test_run_summary_prints_the_footnote_marker_counters_and_the_restored_paragraphs() -> None:
+    """Spec 063 FR-006: the run's footnote references — recognised in the source, carried by
+    the model, restored by the pipeline, delivered — are summary lines, and the paragraphs
+    FR-005 repaired are named, read off the ``footnote_markers_restored`` events. Data, not a
+    gate."""
+    validation = _load_validation_module()
+
+    accounting_lines = validation._build_model_accounting_summary_lines(
+        {
+            "footnote_marker_source_count": 252,
+            "footnote_marker_kept_count": 226,
+            "footnote_marker_restored_count": 26,
+            "footnote_marker_delivered_count": 252,
+        }
+    )
+
+    assert "model_accounting_footnote_marker_source_count=252" in accounting_lines
+    assert "model_accounting_footnote_marker_kept_count=226" in accounting_lines
+    assert "model_accounting_footnote_marker_restored_count=26" in accounting_lines
+    assert "model_accounting_footnote_marker_delivered_count=252" in accounting_lines
+
+    records = validation._extract_footnote_marker_restorations(
+        [
+            {"event_id": "block_completed", "context": {"block_index": 3}},
+            {
+                "event_id": "footnote_markers_restored",
+                "context": {
+                    "block_index": 108,
+                    "paragraph_id": "p0604",
+                    "restored_markers": ["³⁹"],
+                    "placement": "sentence",
+                },
+            },
+        ]
+    )
+
+    assert records == [
+        {"block_index": 108, "paragraph_id": "p0604", "restored_markers": ["³⁹"], "placement": "sentence"}
+    ]
+    assert validation._build_footnote_marker_summary_lines(records) == [
+        'footnote_marker_restored_paragraph_ids=["p0604"]'
+    ]
+    assert validation._build_footnote_marker_summary_lines([]) == [
+        "footnote_marker_restored_paragraph_ids=[]"
+    ]
+
+
 _SIDE_WORKTREE_OBJECT_ID = "8a5e5f0" + "1" * 33
 
 
