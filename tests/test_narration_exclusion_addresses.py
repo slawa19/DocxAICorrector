@@ -381,6 +381,24 @@ def test_the_anchor_is_the_first_sentence_not_the_whole_paragraph() -> None:
     assert facts["chars"] == len(records[0]["text"])
 
 
+def test_an_abbreviation_does_not_shorten_the_address() -> None:
+    """The ``20261107T_061_audio_money`` run printed "Reinhart et al." — 15 characters, cut at
+    the abbreviation — as the address of a paragraph whose first sentence runs on to the
+    year. The splitter now reads the abbreviation's FORM (short lowercase token, lowercase or
+    digit after it), so the address is the whole first sentence and is still found in the
+    delivered text, emphasis and all."""
+    text = (
+        "Reinhart *et al.* (2004). 7 Adrian Blundell-Wignall and Paul Atkinson, "
+        "‘Thinking Beyond Basel III’."
+    )
+    records = [{"paragraph_id": "p1", "text": text}]
+
+    facts = quality_gate.build_narration_exclusion_facts(records, delivered_markdown=text)
+
+    assert facts["anchors"] == ["Reinhart et al. (2004)."]
+    assert facts["unanchored_paragraph_count"] == 0
+
+
 def test_recorded_run_anchors_are_each_exactly_one_sentence() -> None:
     """The same rule on the material that forced it. Structural assertion, no length
     literal: every anchor the recorded run would print is one sentence, and the longest
@@ -454,6 +472,69 @@ def test_the_delivered_check_is_applied_to_the_address_that_is_printed() -> None
     )
 
     assert facts["anchors"] == ["Footnotes 1 Lietaer and Kennedy."]
+    assert facts["unanchored_paragraph_count"] == 1
+    assert facts["anchors_dropped_not_in_delivered"] == 1
+
+
+# A delivered document in which an UNPAIRED asterisk in one paragraph (a literal "2*n") sits
+# before an emphasised title in the next. Emphasis never crosses a blank line in markdown,
+# but the stripper, run over the whole document as one string, pairs the first paragraph's
+# asterisk with the title's closing one and leaves the title's opening asterisk behind —
+# the shape of the ``20261107T_061_audio_money`` miss (``*No Logo`` delivered, ``No Logo``
+# in the anchor).
+_STRAY_ASTERISK_DELIVERED = (
+    "A formula with a literal 2*n in it.\n\n"
+    "Footnotes 1 Quoted in Naomi Klein, *No Logo* (2000), p.325. 2 See Appendix A."
+)
+
+
+def test_the_delivered_text_is_normalised_paragraph_by_paragraph() -> None:
+    """The anchor is sanitised one paragraph at a time, so the delivered text it is looked
+    up in must be too — otherwise the stripper pairs asterisks across paragraphs and a
+    perfectly usable first sentence is reported as an address the document no longer has."""
+    records = [
+        {
+            "paragraph_id": "p1",
+            "text": "Footnotes 1 Quoted in Naomi Klein, *No Logo* (2000), p.325. 2 See Appendix A.",
+        }
+    ]
+
+    facts = quality_gate.build_narration_exclusion_facts(
+        records, delivered_markdown=_STRAY_ASTERISK_DELIVERED
+    )
+
+    assert facts["anchors"] == ["Footnotes 1 Quoted in Naomi Klein, No Logo (2000), p.325."]
+    assert facts["unanchored_paragraph_count"] == 0
+    assert facts["anchors_dropped_not_in_delivered"] == 0
+
+
+def test_the_stray_asterisk_fixture_really_breaks_whole_string_normalisation() -> None:
+    """Counter-proof that the test above is not vacuous: normalising the same delivered text
+    as ONE string — the previous behaviour — does leave the stray asterisk, so the anchor is
+    absent from it."""
+    whole = quality_gate._review_anchor_visible_text(" ".join(_STRAY_ASTERISK_DELIVERED.split()))
+
+    assert "*No Logo" in whole
+    assert "Footnotes 1 Quoted in Naomi Klein, No Logo (2000), p.325." not in whole
+
+
+def test_per_paragraph_normalisation_still_withholds_an_address_that_is_gone() -> None:
+    """Anti-vacuum: normalising per paragraph must not turn the delivered check into a
+    pass-everything. An anchor that is genuinely absent from the delivered text is still
+    withheld and still counted."""
+    records = [
+        {
+            "paragraph_id": "p1",
+            "text": "Footnotes 1 Quoted in Naomi Klein, *No Logo* (2000), p.325. 2 See Appendix A.",
+        },
+        {"paragraph_id": "p2", "text": "A *paragraph* reader cleanup removed. Its second sentence."},
+    ]
+
+    facts = quality_gate.build_narration_exclusion_facts(
+        records, delivered_markdown=_STRAY_ASTERISK_DELIVERED
+    )
+
+    assert facts["anchors"] == ["Footnotes 1 Quoted in Naomi Klein, No Logo (2000), p.325."]
     assert facts["unanchored_paragraph_count"] == 1
     assert facts["anchors_dropped_not_in_delivered"] == 1
 
