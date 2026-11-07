@@ -1,0 +1,11 @@
+[
+  {
+    "kind": "narration",
+    "level": "warning",
+    "message_key": "result.narration_review_data",
+    "params": {
+      "count": 1,
+      "rules": "disallowed_tags"
+    }
+  }
+]

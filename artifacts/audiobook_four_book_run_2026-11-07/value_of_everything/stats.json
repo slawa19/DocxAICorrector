@@ -1,0 +1,91 @@
+{
+ "run_id": "20261107T_061_audio_value_of_everything",
+ "duration_s": 754.613,
+ "result": "succeeded",
+ "calls": 219,
+ "cost": 0.441038,
+ "cost_complete": true,
+ "dispositions": {
+  "accepted": 1277,
+  "omitted": 0,
+  "retry_required": 0,
+  "source_restored": 0
+ },
+ "discard_reasons": {},
+ "discarded_par_blk": [
+  0,
+  0
+ ],
+ "merge_retry": 0,
+ "retries": 4,
+ "retry_reasons": {
+  "incomplete_response": 1,
+  "marker_validation": 2,
+  "recovery_after_exhausted_retries": 1
+ },
+ "ladder_blocks": 0,
+ "ladder_calls": 0,
+ "ladder_unrescued": 0,
+ "ladder_triggers": {},
+ "ladder_share_pct": 0.0,
+ "merge_share_pct": 0.0,
+ "controlled_fallback": [
+  0,
+  0
+ ],
+ "api_path_counts": {
+  "responses": 219
+ },
+ "narration": {
+  "char_count": 648544,
+  "excluded_blocks": 491,
+  "excluded_source_fallback_block_count": 0,
+  "excluded_source_fallback_chars": 0,
+  "excluded_omitted_paragraph_count": 0,
+  "excluded_omitted_paragraph_chars": 0,
+  "postprocess_paragraph_shortfall_group_count": 0,
+  "postprocess_paragraph_shortfall_paragraph_count": 0
+ },
+ "acceptance": true,
+ "acceptance_failed": [],
+ "tq_status": "warn",
+ "tq_reasons": [
+  "unmapped_source_paragraphs_above_advisory_threshold",
+  "untranslated_body_text_review_required"
+ ],
+ "delivery": {
+  "status": "accepted_with_advisory"
+ },
+ "notices": [
+  [
+   "result.narration_review_data",
+   {
+    "count": 1,
+    "rules": "disallowed_tags"
+   },
+   0
+  ]
+ ],
+ "sc001": {
+  "tts_lines": 2485,
+  "lines_with_letters": 1242,
+  "zero": [],
+  "low_lt_0_5": [],
+  "spoken": {
+   "source_restored": {
+    "registry": 0,
+    "found_in_tts": []
+   },
+   "omitted": {
+    "registry": 0,
+    "found_in_tts": []
+   }
+  }
+ },
+ "rejected_codes": {
+  "marker_order_or_identity": 3
+ },
+ "merge_events": [],
+ "ladder_events": [],
+ "other_events": []
+}

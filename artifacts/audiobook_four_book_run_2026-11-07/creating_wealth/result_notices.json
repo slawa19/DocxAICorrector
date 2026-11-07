@@ -1,0 +1,46 @@
+[
+  {
+    "kind": "narration",
+    "level": "warning",
+    "message_key": "result.narration_source_fallback_excluded",
+    "params": {
+      "count": 1,
+      "chars": 24
+    },
+    "anchors": [
+      "False Assumption #2:"
+    ]
+  },
+  {
+    "kind": "narration",
+    "level": "warning",
+    "message_key": "result.narration_review_data",
+    "params": {
+      "count": 2,
+      "rules": "inline_citation"
+    }
+  },
+  {
+    "kind": "translation",
+    "level": "warning",
+    "message_key": "result.source_text_delivered_all_addresses_in_narration",
+    "params": {
+      "count": 1,
+      "blocks": 1,
+      "chars": 24,
+      "elsewhere": 1
+    },
+    "anchors": []
+  },
+  {
+    "kind": "acceptance",
+    "level": "warning",
+    "message_key": "result.acceptance_not_passed",
+    "params": {
+      "count": 1
+    },
+    "failed_checks": [
+      "untranslated_prose_not_delivered"
+    ]
+  }
+]

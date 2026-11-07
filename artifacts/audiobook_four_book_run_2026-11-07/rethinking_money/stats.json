@@ -1,0 +1,310 @@
+{
+ "run_id": "20261107T_061_audio_rethinking_money",
+ "duration_s": 606.223,
+ "result": "succeeded",
+ "calls": 246,
+ "cost": 0.422178,
+ "cost_complete": true,
+ "dispositions": {
+  "accepted": 1727,
+  "omitted": 0,
+  "retry_required": 0,
+  "source_restored": 9
+ },
+ "discard_reasons": {
+  "non_completed_response_source_fallback": 1
+ },
+ "discarded_par_blk": [
+  0,
+  1
+ ],
+ "merge_retry": 0,
+ "retries": 17,
+ "retry_reasons": {
+  "incomplete_response": 3,
+  "marker_validation": 10,
+  "non_completed_response": 2,
+  "recovery_after_exhausted_retries": 2
+ },
+ "ladder_blocks": 1,
+ "ladder_calls": 2,
+ "ladder_unrescued": 0,
+ "ladder_triggers": {
+  "incomplete_response": 1
+ },
+ "ladder_share_pct": 0.81,
+ "merge_share_pct": 0.0,
+ "controlled_fallback": [
+  1,
+  1710
+ ],
+ "api_path_counts": {
+  "responses": 246
+ },
+ "narration": {
+  "char_count": 454291,
+  "excluded_blocks": 78,
+  "excluded_source_fallback_block_count": 1,
+  "excluded_source_fallback_chars": 1710,
+  "excluded_omitted_paragraph_count": 0,
+  "excluded_omitted_paragraph_chars": 0,
+  "postprocess_paragraph_shortfall_group_count": 0,
+  "postprocess_paragraph_shortfall_paragraph_count": 0
+ },
+ "acceptance": false,
+ "acceptance_failed": [
+  "untranslated_prose_not_delivered"
+ ],
+ "tq_status": "warn",
+ "tq_reasons": [
+  "unmapped_source_paragraphs_above_advisory_threshold",
+  "false_fragment_headings_review_required",
+  "mixed_script_terms_review_required",
+  "untranslated_structural_text_review_required",
+  "untranslated_body_text_review_required"
+ ],
+ "delivery": {
+  "status": "accepted_with_advisory"
+ },
+ "notices": [
+  [
+   "result.narration_source_fallback_excluded",
+   {
+    "count": 1,
+    "chars": 1710
+   },
+   8
+  ],
+  [
+   "result.source_text_delivered_all_addresses_in_narration",
+   {
+    "count": 9,
+    "blocks": 1,
+    "chars": 1694,
+    "elsewhere": 9
+   },
+   0
+  ],
+  [
+   "result.acceptance_not_passed",
+   {
+    "count": 1
+   },
+   0
+  ]
+ ],
+ "sc001": {
+  "tts_lines": 3453,
+  "lines_with_letters": 1721,
+  "zero": [
+   [
+    1519,
+    "2c"
+   ],
+   [
+    2559,
+    "236n10"
+   ],
+   [
+    2577,
+    "Bell Telephone, 96"
+   ],
+   [
+    2579,
+    "Banco Palmas, 103–109"
+   ],
+   [
+    2581,
+    "BerkShares, 75, 89–91, 90"
+   ],
+   [
+    2861,
+    "Innernet, 223."
+   ],
+   [
+    2865,
+    "InspirePay, 116."
+   ],
+   [
+    2885,
+    "Happy Futures Global Challenge, 131."
+   ],
+   [
+    2905,
+    "Hubbee, 130– 131."
+   ],
+   [
+    2907,
+    "Hub Network, 130– 131."
+   ],
+   [
+    2917,
+    "ICCO, 105."
+   ],
+   [
+    2941,
+    "Ithaca Health Alliance (IHA), 163, 164."
+   ],
+   [
+    2943,
+    "Ithaca Health Fund (IHF), 164."
+   ],
+   [
+    2965,
+    "Madison Gas and Electric Company"
+   ],
+   [
+    2967,
+    "KTA, 157"
+   ],
+   [
+    2969,
+    "(MGE), 84"
+   ],
+   [
+    2997,
+    "MediCash, 165"
+   ],
+   [
+    2999,
+    "Lehman Brothers, 70"
+   ],
+   [
+    3019,
+    "Mile High Business Alliance, 128–130."
+   ],
+   [
+    3113,
+    "Qoin, 93, 123, 150"
+   ],
+   [
+    3197,
+    "227n21"
+   ],
+   [
+    3215,
+    "Saber: 153–155, 207–208."
+   ],
+   [
+    3225,
+    "159–161, 161; Hub, 131; Patch Adams"
+   ],
+   [
+    3227,
+    "Strike, 96–98"
+   ],
+   [
+    3231,
+    "Stripe, 115–116"
+   ],
+   [
+    3341,
+    "WIR, 5, 74–75, 99–102, 235."
+   ]
+  ],
+  "low_lt_0_5": [
+   [
+    1165,
+    0.267,
+    "Банк «Banco Palmas»."
+   ],
+   [
+    2615,
+    0.167,
+    "52; Terra и, 134"
+   ],
+   [
+    2697,
+    0.333,
+    "Creation Development Trust, 160–161 68–69; о вэра, 179; о Вёргле, 176–177"
+   ],
+   [
+    2849,
+    0.471,
+    "Google, 200. Google Wallet, 115–116. Счетная палата США, 170–171."
+   ],
+   [
+    2901,
+    0.444,
+    "ЧАСЫ (HOURS), 162– 165, 163."
+   ],
+   [
+    3023,
+    0.172,
+    "Шахты: Blaengarw, 160; Schwanenkirchen, 179–180."
+   ],
+   [
+    3105,
+    0.286,
+    "Пуuntos, 125"
+   ],
+   [
+    3107,
+    0.105,
+    "Пуuntotransacciones, 125"
+   ]
+  ],
+  "spoken": {
+   "source_restored": {
+    "registry": 9,
+    "found_in_tts": []
+   },
+   "omitted": {
+    "registry": 0,
+    "found_in_tts": []
+   }
+  }
+ },
+ "rejected_codes": {
+  "paragraph_split_detected": 7,
+  "marker_order_or_identity": 3,
+  "unexpected_prefix": 1
+ },
+ "merge_events": [],
+ "ladder_events": [
+  {
+   "event": "degradation_ladder_started",
+   "block_index": 3,
+   "trigger": "incomplete_response",
+   "unit_count": 2,
+   "translated_unit_count": null,
+   "unrescued_unit_count": null,
+   "model_call_count": null
+  },
+  {
+   "event": "degradation_ladder_completed",
+   "block_index": 3,
+   "trigger": "incomplete_response",
+   "unit_count": 2,
+   "translated_unit_count": 2,
+   "unrescued_unit_count": 0,
+   "model_call_count": 2
+  }
+ ],
+ "other_events": [
+  {
+   "event": "markdown_non_completed_response_source_fallback",
+   "context": {
+    "model": "google/gemini-3.1-flash-lite-preview",
+    "target_chars": 1710,
+    "marker_mode": true
+   }
+  },
+  {
+   "event": "marker_chunk_paragraph_break_collapsed",
+   "context": {
+    "paragraph_id": "p0820",
+    "part_count": 2,
+    "collapsed_chars": 166
+   }
+  },
+  {
+   "event": "marker_chunk_paragraph_break_collapsed",
+   "context": {
+    "paragraph_id": "p0821",
+    "part_count": 2,
+    "collapsed_chars": 158
+   }
+  }
+ ]
+}

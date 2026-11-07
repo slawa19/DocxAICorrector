@@ -1,0 +1,189 @@
+{
+ "run_id": "20261107T_061_audio_creating_wealth",
+ "duration_s": 706.201,
+ "result": "succeeded",
+ "calls": 385,
+ "cost": 0.552772,
+ "cost_complete": true,
+ "dispositions": {
+  "accepted": 1518,
+  "omitted": 0,
+  "retry_required": 0,
+  "source_restored": 1
+ },
+ "discard_reasons": {
+  "marker_validation_source_fallback": 1
+ },
+ "discarded_par_blk": [
+  0,
+  1
+ ],
+ "merge_retry": 0,
+ "retries": 7,
+ "retry_reasons": {
+  "marker_validation": 5,
+  "recovery_after_exhausted_retries": 2
+ },
+ "ladder_blocks": 1,
+ "ladder_calls": 1,
+ "ladder_unrescued": 1,
+ "ladder_triggers": {
+  "marker_contract": 1
+ },
+ "ladder_share_pct": 0.26,
+ "merge_share_pct": 0.0,
+ "controlled_fallback": [
+  1,
+  24
+ ],
+ "api_path_counts": {
+  "responses": 385
+ },
+ "narration": {
+  "char_count": 506064,
+  "excluded_blocks": 66,
+  "excluded_source_fallback_block_count": 1,
+  "excluded_source_fallback_chars": 24,
+  "excluded_omitted_paragraph_count": 0,
+  "excluded_omitted_paragraph_chars": 0,
+  "postprocess_paragraph_shortfall_group_count": 0,
+  "postprocess_paragraph_shortfall_paragraph_count": 0
+ },
+ "acceptance": false,
+ "acceptance_failed": [
+  "untranslated_prose_not_delivered"
+ ],
+ "tq_status": "warn",
+ "tq_reasons": [
+  "unmapped_source_paragraphs_above_advisory_threshold",
+  "heading_demotion_review_required",
+  "list_fragment_regressions_review_required",
+  "untranslated_body_text_review_required"
+ ],
+ "delivery": {
+  "status": "accepted_with_advisory"
+ },
+ "notices": [
+  [
+   "result.narration_source_fallback_excluded",
+   {
+    "count": 1,
+    "chars": 24
+   },
+   1
+  ],
+  [
+   "result.narration_review_data",
+   {
+    "count": 2,
+    "rules": "inline_citation"
+   },
+   0
+  ],
+  [
+   "result.source_text_delivered_all_addresses_in_narration",
+   {
+    "count": 1,
+    "blocks": 1,
+    "chars": 24,
+    "elsewhere": 1
+   },
+   0
+  ],
+  [
+   "result.acceptance_not_passed",
+   {
+    "count": 1
+   },
+   0
+  ]
+ ],
+ "sc001": {
+  "tts_lines": 2985,
+  "lines_with_letters": 1492,
+  "zero": [
+   [
+    2505,
+    "B2B"
+   ],
+   [
+    2509,
+    "B2C"
+   ],
+   [
+    2513,
+    "C2C"
+   ],
+   [
+    2517,
+    "C2B"
+   ],
+   [
+    2845,
+    "Barter Systems Inc."
+   ]
+  ],
+  "low_lt_0_5": [
+   [
+    2869,
+    0.231,
+    "Systems Inc., 1991 год)"
+   ],
+   [
+    2879,
+    0.143,
+    "Сайт complementarycurrency.org."
+   ],
+   [
+    2895,
+    0.437,
+    "Адрес сайта сообщества в Сан-Антонио: mc-sa.org/partners/neighborhood/timedollar.asp."
+   ]
+  ],
+  "spoken": {
+   "source_restored": {
+    "registry": 1,
+    "found_in_tts": []
+   },
+   "omitted": {
+    "registry": 0,
+    "found_in_tts": []
+   }
+  }
+ },
+ "rejected_codes": {
+  "paragraph_split_detected": 8
+ },
+ "merge_events": [],
+ "ladder_events": [
+  {
+   "event": "degradation_ladder_started",
+   "block_index": 63,
+   "trigger": "marker_contract",
+   "unit_count": 1,
+   "translated_unit_count": null,
+   "unrescued_unit_count": null,
+   "model_call_count": null
+  },
+  {
+   "event": "degradation_ladder_completed",
+   "block_index": 63,
+   "trigger": "marker_contract",
+   "unit_count": 1,
+   "translated_unit_count": 0,
+   "unrescued_unit_count": 1,
+   "model_call_count": 1
+  }
+ ],
+ "other_events": [
+  {
+   "event": "markdown_marker_validation_source_fallback",
+   "context": {
+    "model": "google/gemini-3.1-flash-lite-preview",
+    "target_chars": 24,
+    "marker_mode": true,
+    "marker_error": "paragraph_marker_validation_failed:paragraph_split_detected"
+   }
+  }
+ ]
+}
