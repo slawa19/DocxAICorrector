@@ -386,6 +386,79 @@ def test_pdfminer_line_keeps_year_length_digit_run_welded_to_word() -> None:
     assert _extracted_line_text(chars) == "year1990 was"
 
 
+# --- Spec 065 FR-007: a reference welded to a clause comma or a closing ’ ------------------
+
+
+def test_fr007_reference_welded_to_a_clause_comma_is_rendered_as_superscript() -> None:
+    # The Value of Everything's shape, measured at (0.60, 0.44): "…through loans," + a small,
+    # raised "30" + " as distinct from". The comma was missing from the anchor set, so the
+    # reference reached the reader welded to the word ("кредитования,30").
+    chars = _pdf_line([("money through loans,", 15, 100), ("30", 9, 106.5), (" as distinct", 15, 100)])
+
+    assert _extracted_line_text(chars) == "money through loans,³⁰ as distinct"
+
+
+def test_fr007_reference_welded_to_a_closing_single_quote_is_rendered_as_superscript() -> None:
+    # "‘marginal revolution’" + "4" mid-line: the closing ’ is a closing quote like ”.
+    chars = _pdf_line([("a ‘marginal revolution’", 15, 100), ("4", 9, 106.5), (" – it was", 15, 100)])
+
+    assert _extracted_line_text(chars) == "a ‘marginal revolution’⁴ – it was"
+
+
+def test_fr007_end_of_line_reference_after_a_closing_quote_is_rendered_in_place() -> None:
+    # "…shall have to reject.’" + "10" at the end of the line, raised above the line's top
+    # (VoE geometry): rendered where it is set, not split off and re-bound elsewhere.
+    chars = _pdf_line([("shall have to reject.’", 15, 100), ("10", 9, 106.5)])
+    overrides = _inline_superscript_marker_char_ids(chars)
+
+    assert _trailing_marker_split_left_to_importer(chars, overrides) is None
+    assert _line_text_with_char_overrides(chars, overrides) == "shall have to reject.’¹⁰"
+
+
+def test_fr007_second_reference_after_a_comma_joins_the_first() -> None:
+    # Rethinking Money: "dating.¹⁸,19" -- the first reference was taken, the second, welded
+    # to the comma between them, was not.
+    chars = _pdf_line([("compensated dating.", 10, 100), ("18", 6.5, 104), (",", 10, 100), ("19", 6.5, 104)])
+
+    assert _extracted_line_text(chars) == "compensated dating.¹⁸,¹⁹"
+
+
+def test_fr007_full_size_numbers_after_a_comma_or_quote_stay_numbers() -> None:
+    # Anti-regression 4: the new anchors precede ordinary numbers far more often than
+    # references (263 + 2 on the corpus) -- a thousands group, a run of years, a decade
+    # abbreviated with ’. Full size on the baseline, every one stays a number.
+    chars = _pdf_line(
+        [
+            ("from $1,", 10, 100),
+            ("300", 10, 100),
+            (" in 2010,", 10, 100),
+            ("2011", 10, 100),
+            (" and the ’", 10, 100),
+            ("90", 10, 100),
+            ("s", 10, 100),
+        ]
+    )
+
+    assert _extracted_line_text(chars) == "from $1,300 in 2010,2011 and the ’90s"
+
+
+def test_fr007_lowered_digit_after_a_comma_stays_a_digit() -> None:
+    # Anti-regression 4: smaller but LOWERED after a comma is a subscript, not a reference.
+    chars = _pdf_line([("water, CO,", 10, 100), ("2", 7.5, 98), (" and air", 10, 100)])
+
+    assert _extracted_line_text(chars) == "water, CO,2 and air"
+
+
+def test_fr007_year_after_a_comma_stays_a_number() -> None:
+    # Anti-regression 4: a year after a comma, full size -- and a raised one is four digits,
+    # past the three a reference may have.
+    flat = _pdf_line([("in the year,", 10, 100), ("2011", 10, 100), (".", 10, 100)])
+    raised = _pdf_line([("in the year,", 10, 100), ("2011", 6.5, 104)])
+
+    assert _extracted_line_text(flat) == "in the year,2011."
+    assert _extracted_line_text(raised) == "in the year,2011"
+
+
 def test_pdfminer_line_preserves_every_reference_it_rewrites() -> None:
     # The marker-preservation invariant: each reference keeps its value and its position,
     # nothing is dropped, nothing is duplicated, and no other character moves.

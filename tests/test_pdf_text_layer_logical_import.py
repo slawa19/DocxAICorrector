@@ -188,6 +188,41 @@ def test_build_paragraph_units_reattaches_boundary_superscript_footnote_marker()
     assert all(paragraph.text.strip() != "2" for paragraph in result.paragraphs)
 
 
+def test_fr007_marker_split_off_a_line_ending_in_a_comma_is_glued_as_superscript() -> None:
+    # Spec 065 FR-007, Money and Sustainability's shape: a reference set after a clause comma
+    # at the end of a line is lifted off the line by the extractor (the comma is now an
+    # anchor) and re-bound here. Glued like one after a full stop -- not "capitalism, 5 the
+    # examples", a number in the middle of the sentence.
+    spans = [
+        _span(1, "Body line establishes the normal document sentence.", top=70, bottom=82, x0=50, x1=430),
+        _span(1, "a basic characteristic of capitalism,", top=100, bottom=112, x0=50, x1=430),
+        _span(1, "5", top=101, bottom=106, x0=431, x1=434, font_size=4),
+        _span(1, "the examples he uses all refer to firms.", top=114, bottom=126, x0=50, x1=300),
+    ]
+
+    result = build_paragraph_units_from_text_spans(spans)
+
+    joined = " ".join(paragraph.text for paragraph in result.paragraphs)
+    assert "capitalism,⁵ the examples" in joined
+    assert all(paragraph.text.strip() != "5" for paragraph in result.paragraphs)
+
+
+def test_fr007_marker_after_a_bare_word_keeps_its_inline_form() -> None:
+    # Anti-vacuum for the glue above: a marker after a bare word keeps the inline,
+    # space-separated form Rule 1 pins (unchanged; no corpus case reaches it).
+    spans = [
+        _span(1, "Body text line one with a body sentence", top=100, bottom=112, x0=50, x1=300, font_size=12),
+        _span(1, "12", top=101, bottom=106, x0=302, x1=309, font_size=6),
+        _span(1, "evolution which is bound to throw up results", top=120, bottom=132, x0=50, x1=300, font_size=12),
+    ]
+
+    result = build_paragraph_units_from_text_spans(spans)
+
+    assert result.paragraphs[0].text == (
+        "Body text line one with a body sentence 12 evolution which is bound to throw up results"
+    )
+
+
 def test_build_paragraph_units_separates_attribution_superscript_footnote_marker() -> None:
     spans = [
         _span(1, "Body line establishes the normal document sentence.", top=70, bottom=82, x0=50, x1=430),

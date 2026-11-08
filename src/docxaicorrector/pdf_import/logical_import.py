@@ -17,6 +17,7 @@ from docxaicorrector.document.semantic_blocks import (
 )
 from docxaicorrector.validation.formatting_coverage import _normalize_structural_text
 from docxaicorrector.pdf_import.text_layer_quality import (
+    _SUPERSCRIPT_MARKER_ANCHOR_CLOSERS,
     PdfTextSpan,
     _can_end_with_superscript_marker,
     _detect_repeated_page_furniture_keys,
@@ -2857,11 +2858,20 @@ def _paragraph_from_body_spans(
             # footnote superscript rather than a stray digit. A marker that
             # interrupts a sentence (preceding half not terminated) keeps its
             # original inline, space-separated form so the prose flows across it.
+            #
+            # Spec 065 FR-007: a clause comma or a closing ’ is where a reference
+            # is welded as much as a full stop is ("capitalism,⁵ the examples");
+            # the extractor lifts such a marker off the line end by the same
+            # anchor set, so it is glued by that set too, not left as "capitalism,
+            # 5 the examples" -- a number in the middle of the sentence.
             previous_runs = piece_runs[-1] if piece_runs else []
             previous_piece = "".join(text for text, _, _ in previous_runs)
             if (
                 previous_piece
-                and previous_piece[-1] in _TERMINAL_SENTENCE_PUNCTUATION
+                and (
+                    previous_piece[-1] in _TERMINAL_SENTENCE_PUNCTUATION
+                    or previous_piece[-1] in _SUPERSCRIPT_MARKER_ANCHOR_CLOSERS
+                )
                 and _SUPERSCRIPT_MARKER_DIGITS_PATTERN.match(marker)
             ):
                 _glue_superscript_marker_to_runs(
