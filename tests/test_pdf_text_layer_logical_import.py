@@ -2284,3 +2284,140 @@ def test_r7_tear_across_a_page_break_is_joined() -> None:
     texts = _texts(spans)
 
     assert f"{_TORN_HEAD} {_TORN_TAIL}" in texts
+
+
+# Spec 065 FR-008 (I-2): roles inside a notes section. A group title -- the line after which
+# the entry numbering starts again, set in another size -- is a heading; a wrapped line of an
+# entry the classifier typed heading is not. Form and geometry only.
+
+
+def _notes_title_unit(top: float = 120) -> ParagraphUnit:
+    return ParagraphUnit(
+        text="Notes",
+        role="heading",
+        structural_role="heading",
+        heading_level=2,
+        font_size_pt=18,
+        origin_raw_indexes=[int(round(top))],
+        origin_raw_texts=["Notes"],
+    )
+
+
+def _line_unit(span: PdfTextSpan, *, role: str, level: int | None = None) -> ParagraphUnit:
+    return ParagraphUnit(
+        text=span.text,
+        role=role,
+        structural_role=role,
+        heading_level=level,
+        font_size_pt=span.font_size,
+        origin_raw_indexes=[(span.page_number - 1) * 10000 + int(round(span.top))],
+        origin_raw_texts=[span.text],
+    )
+
+
+def test_065_fr008_group_title_before_a_numbering_restart_is_a_heading() -> None:
+    # VoE "INTRODUCTION: MAKING VERSUS TAKING": body, one line, in a smaller size than the
+    # note 1 that follows it. It becomes a heading below the section title, never at a
+    # chapter's level.
+    last = _span(1, "14. Forbes, 2017.", top=160, bottom=172, x0=50, x1=150)
+    title = _span(1, "INTRODUCTION: A GROUP OF NOTES", top=190, bottom=198, x0=150, x1=350, font_size=8)
+    first = _span(1, "1. The first note of the introduction ends a sentence.", top=210, bottom=222, x0=50, x1=420)
+    units = [
+        _notes_title_unit(),
+        _line_unit(last, role="list"),
+        _line_unit(title, role="body"),
+        _line_unit(first, role="list"),
+    ]
+
+    logical_import._settle_back_matter_entry_roles(units, _notes_page(last, title, first))
+
+    assert units[2].role == "heading"
+    assert units[2].heading_level == 3
+    assert units[1].role == "list" and units[3].role == "list"
+
+
+def test_065_fr008_numbered_group_title_out_of_sequence_is_a_heading() -> None:
+    # VoE "1. A BRIEF HISTORY OF VALUE" after note 20, before note 1 of its own group.
+    paragraphs = build_paragraph_units_from_text_spans(
+        _notes_page(
+            _span(1, "4. A note of the previous group ends its own sentence.", top=160, bottom=172, x0=50, x1=420),
+            _span(1, "5. The last note of the previous group ends a sentence.", top=174, bottom=186, x0=50, x1=420),
+            _span(1, "2. A GROUP TITLE IN CAPITALS", top=200, bottom=208, x0=150, x1=350, font_size=8),
+            _span(1, "1. The first note of the group ends its own sentence.", top=220, bottom=232, x0=50, x1=420),
+        )
+    ).paragraphs
+    title = next(p for p in paragraphs if p.text == "2. A GROUP TITLE IN CAPITALS")
+
+    assert title.role == "heading"
+
+
+def test_065_fr008_last_note_before_a_restart_stays_a_note() -> None:
+    # Counterexamples: a book without group titles. The last note of a chapter is followed by
+    # note 1 of the next one -- set in the entries' own size, or the next number of its own
+    # sequence; neither is a title.
+    same_size = build_paragraph_units_from_text_spans(
+        _notes_page(
+            _span(1, "1. A first note of the chapter ends its own sentence.", top=160, bottom=172, x0=50, x1=420),
+            _span(1, "Ibid., p. 4", top=174, bottom=186, x0=50, x1=150),
+            _span(1, "1. The first note of the next chapter ends a sentence.", top=188, bottom=200, x0=50, x1=420),
+        )
+    ).paragraphs
+    in_sequence = build_paragraph_units_from_text_spans(
+        _notes_page(
+            _span(1, "1. A first note of the chapter ends its own sentence.", top=160, bottom=172, x0=50, x1=420),
+            _span(1, "2. A SMALL PRINT NOTE", top=180, bottom=188, x0=50, x1=150, font_size=8),
+            _span(1, "1. The first note of the next chapter ends a sentence.", top=200, bottom=212, x0=50, x1=420),
+        )
+    ).paragraphs
+
+    assert next(p for p in same_size if p.text == "Ibid., p. 4").role != "heading"
+    assert next(p for p in in_sequence if p.text == "2. A SMALL PRINT NOTE").role != "heading"
+
+
+def test_065_fr008_wrapped_entry_line_typed_heading_becomes_body_and_joins() -> None:
+    # VoE block 600: "32. T. Atkinson, ... Measurement of" + a wrapped line the classifier typed
+    # h3 + "(Basingstoke ... 2005)." -- the join never crosses a heading, so the entry stayed torn.
+    head = _span(1, "32. T. Atkinson, Atkinson Review: Final Report. Measurement of", top=160, bottom=172, x0=50, x1=446)
+    fragment = _span(1, "Government Output and Productivity for the National Accounts", top=174, bottom=186, x0=70, x1=446)
+    tail = _span(1, "(Basingstoke and New York: Palgrave Macmillan, 2005).", top=188, bottom=200, x0=70, x1=360)
+    spans = _notes_page(head, fragment, tail)
+    units = [
+        _notes_title_unit(),
+        _line_unit(head, role="list"),
+        _line_unit(fragment, role="heading", level=3),
+        _line_unit(tail, role="body"),
+    ]
+
+    settled = logical_import._settle_back_matter_entry_roles(units, spans)
+    profile = logical_import._build_heading_layout_profile(spans, repeated_furniture_keys=set())
+    joined = logical_import._join_torn_back_matter_entries(settled, spans, layout_profile=profile)
+
+    assert units[2].role == "body" and units[2].heading_level is None
+    assert [u.text for u in joined][1] == f"{head.text} {fragment.text} {tail.text}"
+
+
+def test_065_fr008_heading_set_apart_inside_notes_stays_a_heading() -> None:
+    # Counterexamples: a real heading inside the notes -- a blank line above it at the entries'
+    # size, or the very next line but in its own size -- is not an entry fragment.
+    entry = _span(1, "1. A first note of the section ends its own sentence here at the edge", top=160, bottom=172, x0=50, x1=446)
+    apart = _span(1, "A Heading Set Apart By A Blank Line", top=200, bottom=212, x0=50, x1=300)
+    other_size = _span(1, "A Heading In Its Own Size", top=174, bottom=188, x0=50, x1=300, font_size=13)
+    for heading in (apart, other_size):
+        units = [_notes_title_unit(), _line_unit(entry, role="list"), _line_unit(heading, role="heading", level=3)]
+
+        logical_import._settle_back_matter_entry_roles(units, _notes_page(entry, heading))
+
+        assert units[2].role == "heading" and units[2].heading_level == 3
+
+
+def test_065_fr008_heading_outside_a_notes_section_is_not_touched() -> None:
+    entry = _span(1, "1. A numbered paragraph of the body ends at the edge of the column", top=160, bottom=172, x0=50, x1=446)
+    fragment = _span(1, "Government Output and Productivity", top=174, bottom=186, x0=70, x1=300)
+    title = _notes_title_unit()
+    title.text = "Overview"
+    title.origin_raw_texts = ["Overview"]
+    units = [title, _line_unit(entry, role="list"), _line_unit(fragment, role="heading", level=3)]
+
+    logical_import._settle_back_matter_entry_roles(units, _notes_page(entry, fragment, title="Overview"))
+
+    assert units[2].role == "heading"

@@ -358,6 +358,10 @@ def build_paragraph_units_from_text_spans(
     # After the structural pass: a heading that pass makes keeps the level it gives, and
     # FR-009 only reads what is still body.
     emitted = _reconcile_display_titles(emitted, ordered_spans, layout_profile=layout_profile)
+    # Spec 065 FR-008: settle heading roles inside notes / reference sections before the join
+    # reads them -- the join never crosses a heading, so a fragment typed heading kept a torn
+    # entry torn.
+    emitted = _settle_back_matter_entry_roles(emitted, ordered_spans)
     # Spec 064 R-7: after every role is final, because the region is anchored on a heading
     # and the join refuses to touch one.
     emitted = _join_torn_back_matter_entries(
@@ -3341,6 +3345,137 @@ def _merge_torn_back_matter_entry(
         origin_raw_texts=[*(head.origin_raw_texts or []), *(tail.origin_raw_texts or [])],
         boundary_rationale="merged_back_matter_entry_continuation",
     )
+
+
+# ----------------------------------------------------------------------------------------
+# Spec 065 FR-008 (I-2): the roles inside a notes / reference section.
+#
+# The per-span classifier reads typography page by page and knows nothing of the section it
+# is in, so inside the notes it inverts two roles (The Value of Everything, 2026-11-08): a
+# wrapped line of an entry -- a book title, an address tail, a quoted fragment -- comes out a
+# level-3 heading (31 of them), and the title of a chapter's group of notes ("1. A BRIEF
+# HISTORY OF VALUE") comes out a list item or body (10 of 11). The fragment-heading also
+# stops the 064 notes-join, which never joins through a heading (block 600, "(Basingstoke ...
+# 2005)."). Both are settled here, before that join, from form and geometry only:
+#
+#   * a GROUP TITLE is a one-line unit after which the entry numbering starts again -- the
+#     next unit opens with entry number 1 -- set in a different size from that entry, and not
+#     itself the next entry of the running sequence (when it carries a number, that number is
+#     not the previous entry's plus one). It becomes a heading one level below the section
+#     title, and never shallower than level 3: a group of notes is not a chapter.
+#   * an ENTRY FRAGMENT is a heading set at the size of the entry before it that either opens
+#     an entry by form (`_text_opens_back_matter_entry`: a note number, a bullet, a repeated-
+#     author dash, an author form) or whose first line is the very next line after that entry
+#     (`_entry_lines_are_consecutive`: no blank line, or the top of the next page). It becomes
+#     body; the notes-join that follows then reads it like any other torn line.
+#
+# A heading that is set apart -- another size than the entry before it, or a blank line above
+# it -- stays a heading, and so does a group title. Lines the TOC heuristic flagged are not
+# fragments here, and a group title takes them only by the same form as any other line.
+# ----------------------------------------------------------------------------------------
+
+_ENTRY_NUMBER_PATTERN = re.compile(r"^(?P<number>\d{1,3})(?:[.)](?:\s|$)|\s+[^\W\d_])")
+_BACK_MATTER_GROUP_TITLE_MIN_LEVEL = 3
+
+
+def _entry_number(text: str) -> int | None:
+    match = _ENTRY_NUMBER_PATTERN.match((text or "").lstrip())
+    return int(match.group("number")) if match else None
+
+
+def _is_back_matter_group_title(
+    unit: ParagraphUnit,
+    following: ParagraphUnit | None,
+    *,
+    previous_entry_number: int | None,
+) -> bool:
+    if following is None or len(unit.origin_raw_indexes or []) != 1:
+        return False
+    if unit.role not in {"body", "list", "heading"}:
+        return False
+    if following.role not in _BACK_MATTER_ENTRY_ROLES or _entry_number(following.text or "") != 1:
+        return False
+    if _font_sizes_match(unit.font_size_pt, following.font_size_pt):
+        return False
+    own_number = _entry_number(unit.text or "")
+    return not (
+        own_number is not None
+        and previous_entry_number is not None
+        and own_number == previous_entry_number + 1
+    )
+
+
+def _is_back_matter_entry_fragment(
+    unit: ParagraphUnit,
+    previous: ParagraphUnit,
+    *,
+    spans_by_origin: dict[int, list[PdfTextSpan]],
+) -> bool:
+    if unit.role != "heading" or previous.role not in _BACK_MATTER_ENTRY_ROLES:
+        return False
+    if not _font_sizes_match(unit.font_size_pt, previous.font_size_pt):
+        return False
+    if _text_opens_back_matter_entry(unit.text or ""):
+        return True
+    last_line = _unit_line_span(previous, -1, spans_by_origin)
+    first_line = _unit_line_span(unit, 0, spans_by_origin)
+    return (
+        last_line is not None
+        and first_line is not None
+        and _entry_lines_are_consecutive(last_line, first_line)
+    )
+
+
+def _settle_back_matter_entry_roles(
+    units: list[ParagraphUnit],
+    ordered_spans: list[PdfTextSpan],
+) -> list[ParagraphUnit]:
+    """Spec 065 FR-008: group titles of a notes section are headings, wrapped lines of its
+    entries are not. See the block comment above for the form."""
+    flags = _back_matter_entry_region_flags(units)
+    if not any(flags):
+        return units
+    spans_by_origin: dict[int, list[PdfTextSpan]] = {}
+    for span in ordered_spans:
+        spans_by_origin.setdefault(_span_origin_index(span), []).append(span)
+    section_level: int | None = None
+    previous_entry_number: int | None = None
+    for index, unit in enumerate(units):
+        if not flags[index]:
+            if _back_matter_anchor_kind(unit) is not None:
+                section_level = unit.heading_level
+                previous_entry_number = None
+            continue
+        following = units[index + 1] if index + 1 < len(units) and flags[index + 1] else None
+        if _is_back_matter_group_title(
+            unit, following, previous_entry_number=previous_entry_number
+        ):
+            if unit.role != "heading":
+                _promote_unit_to_heading(
+                    unit,
+                    heading_level=max(
+                        _BACK_MATTER_GROUP_TITLE_MIN_LEVEL, (section_level or 0) + 1
+                    ),
+                )
+                unit.boundary_rationale = "promoted_back_matter_group_title"
+            previous_entry_number = None
+            continue
+        if (
+            index > 0
+            and flags[index - 1]
+            and _is_back_matter_entry_fragment(
+                unit, units[index - 1], spans_by_origin=spans_by_origin
+            )
+        ):
+            unit.role = "body"
+            unit.structural_role = "body"
+            unit.heading_level = None
+            unit.heading_source = None
+            unit.boundary_rationale = "demoted_back_matter_entry_fragment"
+        number = _entry_number(unit.text or "")
+        if number is not None and unit.role in _BACK_MATTER_ENTRY_ROLES:
+            previous_entry_number = number
+    return units
 
 
 def _join_torn_back_matter_entries(
