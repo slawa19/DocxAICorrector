@@ -68,6 +68,7 @@ from docxaicorrector.document.shared_xml import (
     build_drawing_forensics,
     build_source_xml_fingerprint,
     extract_num_pr_level,
+    paragraph_has_pdf_table_cell_signal,
     resolve_drawing_extent_emu,
     resolve_num_pr_details,
     resolve_paragraph_num_pr,
@@ -509,7 +510,12 @@ def _build_raw_paragraph(
     explicit_heading_level = extract_explicit_heading_level(paragraph, style_name)
     heading_level = explicit_heading_level
     heading_source = "explicit" if explicit_heading_level is not None else None
-    if heading_level is None and not is_caption_style(normalized_style):
+    # Spec 067 FR-002: a table cell the PDF importer flagged is never made a heading here.
+    # The importer itself refused it a heading (spec 064 FR-007); the bold-line heuristics
+    # below then re-made one from the bridge's DOCX -- Money's Box 7.1 label "NGO
+    # Initiatives:" came back as h2 and the final assembly welded it to the next row.
+    is_pdf_table_cell = paragraph_has_pdf_table_cell_signal(paragraph)
+    if heading_level is None and not is_caption_style(normalized_style) and not is_pdf_table_cell:
         if is_probable_heading(paragraph, text, normalized_style) or _is_markdown_strong_heading_candidate(
             text,
             normalized_style,
@@ -565,6 +571,7 @@ def _build_raw_paragraph(
         layout_origin=layout_origin,
         boundary_source="raw",
         boundary_confidence="explicit" if role_confidence == "explicit" else "high",
+        is_pdf_table_cell=is_pdf_table_cell,
     )
 
 
@@ -644,6 +651,7 @@ def _build_logical_paragraph_units(raw_blocks: list[RawBlock]) -> list[Paragraph
                 boundary_source=block.boundary_source,
                 boundary_confidence=block.boundary_confidence,
                 boundary_rationale=block.boundary_rationale,
+                is_pdf_table_cell=block.is_pdf_table_cell,
             )
         else:
             paragraph = ParagraphUnit(
