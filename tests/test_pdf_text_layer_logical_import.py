@@ -188,7 +188,7 @@ def test_build_paragraph_units_reattaches_boundary_superscript_footnote_marker()
     assert all(paragraph.text.strip() != "2" for paragraph in result.paragraphs)
 
 
-def test_fr007_marker_split_off_a_line_ending_in_a_comma_is_glued_as_superscript() -> None:
+def test_065_fr007_marker_split_off_a_line_ending_in_a_comma_is_glued_as_superscript() -> None:
     # Spec 065 FR-007, Money and Sustainability's shape: a reference set after a clause comma
     # at the end of a line is lifted off the line by the extractor (the comma is now an
     # anchor) and re-bound here. Glued like one after a full stop -- not "capitalism, 5 the
@@ -207,7 +207,7 @@ def test_fr007_marker_split_off_a_line_ending_in_a_comma_is_glued_as_superscript
     assert all(paragraph.text.strip() != "5" for paragraph in result.paragraphs)
 
 
-def test_fr007_marker_after_a_bare_word_keeps_its_inline_form() -> None:
+def test_065_fr007_marker_after_a_bare_word_keeps_its_inline_form() -> None:
     # Anti-vacuum for the glue above: a marker after a bare word keeps the inline,
     # space-separated form Rule 1 pins (unchanged; no corpus case reaches it).
     spans = [
