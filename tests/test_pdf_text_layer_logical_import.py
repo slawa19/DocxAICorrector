@@ -2633,3 +2633,217 @@ def test_065_fr009_next_note_after_an_address_inside_notes_is_not_joined() -> No
     joined = logical_import._join_numbered_body_continuations(units, spans, layout_profile=profile)
 
     assert [u.role for u in joined] == ["heading", "body", "list"]
+
+
+# Spec 067 FR-007 (I-3): a running head that stands on the page-number line is page furniture
+# even when only one or two pages carry it (Rethinking Money's "FOREWORD" on pages 13-14 and
+# "CONTENTS" on page 11 reached the body: glued to a paragraph start, or an extra heading).
+
+_FOLIO_TOP, _FOLIO_BOTTOM = 35.6, 47.9
+
+
+def _foreword_page(page: int, folio: str, *, head: str = "FOREWORD", head_top: float = 37.4) -> list[PdfTextSpan]:
+    return [
+        _span(page, folio, top=_FOLIO_TOP, bottom=_FOLIO_BOTTOM, x0=42, x1=48, font_size=10.5),
+        _span(page, head, top=head_top, bottom=head_top + 10.5, x0=78, x1=125, font_size=10.5),
+    ]
+
+
+def test_067_fr007_running_head_on_the_folio_line_is_dropped_with_the_number() -> None:
+    spans = (
+        _body_lead_spans()
+        + [_span(1, "the ingenuity of the local population of the town can be", top=760, bottom=774, x1=447)]
+        + _foreword_page(2, "xi")
+        + [_span(2, "galvanized; with their own money they are empowered to act.", top=100, bottom=114, x1=420)]
+    )
+
+    result = build_paragraph_units_from_text_spans(spans)
+    texts = [p.text for p in result.paragraphs]
+
+    assert not any("FOREWORD" in text for text in texts)
+    assert any("town can be galvanized; with their own money" in text for text in texts)
+    assert result.report.skipped_repeated_page_furniture_count == 1
+    assert result.report.skipped_page_number_count == 1
+
+
+def test_067_fr007_short_line_off_the_folio_line_is_kept() -> None:
+    # Counterexamples. A short line in the top band that does not stand on the number's line
+    # (set a full line lower), and one on a page that has no page number at all, are text.
+    lower = _foreword_page(2, "xi", head="Preface to the reader", head_top=60)
+    no_number = [_span(3, "Acknowledgements", top=37.4, bottom=47.9, x0=78, x1=170, font_size=10.5)]
+    spans = (
+        _body_lead_spans()
+        + lower
+        + [_span(2, "A body line on the second page that ends its sentence here.", top=100, bottom=114, x1=420)]
+        + no_number
+        + [_span(3, "A body line on the third page that ends its sentence here too.", top=100, bottom=114, x1=420)]
+    )
+
+    texts = [p.text for p in build_paragraph_units_from_text_spans(spans).paragraphs]
+
+    assert any("Preface to the reader" in text for text in texts)
+    assert any("Acknowledgements" in text for text in texts)
+
+
+# Spec 067 FR-005 (I-1): a body paragraph torn at a page break, whose second half opens with a
+# capital, a digit, a quote or a bracket ("...bodies such as the" / "International Monetary
+# Fund ..."), is one paragraph. The text-only soft-wrap merge joins only a lowercase start.
+
+_TEAR_HEAD = "and those of the powerful multilateral bodies such as the"
+_TEAR_TAIL = "International Monetary Fund and the World Bank set the terms of the loans."
+
+
+def _torn_page_spans(
+    *,
+    head_x1: float = 449,
+    tail: str = _TEAR_TAIL,
+    second_page_body: bool = True,
+) -> list[PdfTextSpan]:
+    second_page = (
+        _body_page(2, top=60)
+        if second_page_body
+        else [_span(2, f"Short line {index}.", top=60 + index * 14, bottom=70 + index * 14, x1=140) for index in range(4)]
+    )
+    return [
+        *_body_page(1, top=40),
+        _span(1, _TEAR_HEAD, top=760, bottom=770, x1=head_x1),
+        _span(2, tail, top=40, bottom=50, x1=446),
+        *second_page,
+    ]
+
+
+def test_067_fr005_paragraph_torn_at_a_page_break_is_joined() -> None:
+    result = build_paragraph_units_from_text_spans(_torn_page_spans())
+    texts = [p.text for p in result.paragraphs]
+
+    assert any(f"{_TEAR_HEAD} {_TEAR_TAIL}" in text for text in texts)
+    joined = next(p for p in result.paragraphs if _TEAR_HEAD in p.text)
+    assert joined.boundary_rationale == "merged_page_torn_body_continuation"
+
+
+def test_067_fr005_second_half_opening_with_a_digit_or_a_quote_is_joined() -> None:
+    for tail in (
+        "2008 crisis) to bring over-the-counter derivatives onto exchanges was taken.",
+        "‘de-risking’. And it must not be about levelling the field for the incumbents.",
+    ):
+        texts = _texts(_torn_page_spans(tail=tail))
+
+        assert any(f"{_TEAR_HEAD} {tail}" in text for text in texts), tail
+
+
+def test_067_fr005_line_that_ended_short_of_the_margin_is_not_joined() -> None:
+    # Counterexample: the last line stops well before the right edge -- the next word would
+    # have fit, so the line ended for a reason of its own (a title line, a new section).
+    texts = _texts(_torn_page_spans(head_x1=300))
+
+    assert _TEAR_HEAD in texts
+    assert not any(f"{_TEAR_HEAD} International" in text for text in texts)
+
+
+def test_067_fr005_page_without_running_text_is_not_joined() -> None:
+    # Counterexample: the next page carries no running text (an index column, the end of the
+    # notes, a caption page) -- the top line there is not read as the paragraph's second half.
+    texts = _texts(_torn_page_spans(second_page_body=False))
+
+    assert not any(f"{_TEAR_HEAD} International" in text for text in texts)
+
+
+def test_067_fr005_list_item_at_the_top_of_the_next_page_stays_a_list() -> None:
+    texts = _texts(_torn_page_spans(tail="• International Monetary Fund lending rules."))
+
+    assert not any(_TEAR_HEAD in text and "International" in text for text in texts)
+
+
+def _torn_units(spans: list[PdfTextSpan]) -> tuple[ParagraphUnit, ParagraphUnit]:
+    head_span = next(s for s in spans if s.text == _TEAR_HEAD)
+    tail_span = next(s for s in spans if s.text == _TEAR_TAIL)
+    return _line_unit(head_span, role="body"), _line_unit(tail_span, role="body")
+
+
+def _join_page_tears(units: list[ParagraphUnit], spans: list[PdfTextSpan]) -> list[ParagraphUnit]:
+    profile = logical_import._build_heading_layout_profile(spans, repeated_furniture_keys=set())
+    return logical_import._join_page_torn_body_paragraphs(
+        units, spans, layout_profile=profile, repeated_furniture_keys=set()
+    )
+
+
+def test_067_fr005_units_join_and_a_table_cell_refuses() -> None:
+    spans = _torn_page_spans()
+    head, tail = _torn_units(spans)
+    assert len(_join_page_tears([head, tail], spans)) == 1
+
+    head, tail = _torn_units(spans)
+    tail.is_pdf_table_cell = True
+    assert len(_join_page_tears([head, tail], spans)) == 2
+
+
+def test_067_fr005_notes_section_is_left_to_the_notes_join() -> None:
+    spans = _torn_page_spans()
+    head, tail = _torn_units(spans)
+
+    joined = _join_page_tears([_notes_title_unit(), head, tail], spans)
+
+    assert [u.text for u in joined] == ["Notes", _TEAR_HEAD, _TEAR_TAIL]
+
+
+# Spec 067 FR-006 follow-up: the sentence-end paragraph boundary inside a quotation or a box
+# reads the box's own left edge, not the body margin (Money and Sustainability, Box 4.1: body at
+# x0 5.0, the box at 33.8; "...evenly mixed.” ¹¹" / "Entropy is time’s arrow ...").
+
+_INSET_X0 = 33.8
+_INSET_FULL = "these are words of a quotation set inside a box that runs to its right edge"
+
+
+def _wide_body_lines() -> list[PdfTextSpan]:
+    return [
+        _span(1, f"Body line {index} of running prose that is set across the whole page width here.", top=40 + index * 18, bottom=54 + index * 18, x0=5, x1=607, font_size=14.4)
+        for index in range(8)
+    ]
+
+
+def _inset(*lines: tuple[str, float]) -> list[PdfTextSpan]:
+    return [
+        _span(1, text, top=400 + index * 8.6, bottom=405.8 + index * 8.6, x0=_INSET_X0, x1=x1, font_size=5.76)
+        for index, (text, x1) in enumerate(lines)
+    ]
+
+
+def test_067_inset_sentence_end_at_the_box_edge_is_a_paragraph_boundary() -> None:
+    texts = _texts(
+        _wide_body_lines()
+        + _inset(
+            (_INSET_FULL, 607),
+            ("and cream poured into coffee dissipates until it is evenly mixed.” ¹¹", 267),
+            ("Entropy is time’s arrow. Without entropy there would be no way to tell the past", 607),
+            ("from the future, and the box goes on with its argument here.", 400),
+        )
+    )
+
+    assert any(text.endswith("evenly mixed.” ¹¹") for text in texts)
+    assert any(text.startswith("Entropy is time’s arrow.") for text in texts)
+
+
+def test_067_inset_line_that_does_not_end_a_sentence_still_merges() -> None:
+    texts = _texts(
+        _wide_body_lines()
+        + _inset(
+            (_INSET_FULL, 607),
+            ("and cream poured into coffee dissipates until it is evenly", 267),
+            ("Mixed with milk, the coffee is lighter and the box goes on with its argument here.", 607),
+        )
+    )
+
+    assert any("dissipates until it is evenly Mixed with milk" in text for text in texts)
+
+
+def test_067_body_margin_sentence_end_behaves_as_before() -> None:
+    # At the body margin the boundary is the one `_is_near_body_left` always made; a short
+    # sentence-ending line followed by a new sentence at the margin starts a paragraph.
+    spans = _wide_body_lines() + [
+        _span(1, "The last line of a body paragraph ends here.", top=200, bottom=214, x0=5, x1=300, font_size=14.4),
+        _span(1, "A new paragraph begins at the margin and runs across the page width here.", top=218, bottom=232, x0=5, x1=607, font_size=14.4),
+    ]
+    texts = _texts(spans)
+
+    assert any(text.endswith("The last line of a body paragraph ends here.") for text in texts)
+    assert any(text.startswith("A new paragraph begins at the margin") for text in texts)

@@ -21,6 +21,7 @@ from docxaicorrector.pdf_import.text_layer_quality import (
     PdfTextSpan,
     _can_end_with_superscript_marker,
     _detect_repeated_page_furniture_keys,
+    _detect_running_heads_on_page_number_line,
     _looks_like_page_number,
     _normalize_text,
     _span_furniture_key,
@@ -64,6 +65,7 @@ _BLANK_PAGE_NOTICE_PATTERN = re.compile(
     re.IGNORECASE,
 )
 _TERMINAL_SENTENCE_PUNCTUATION = ".!?;:»”\"'"
+_SUPERSCRIPT_REFERENCE_TAIL_CHARS = "⁰¹²³⁴⁵⁶⁷⁸⁹ "
 # Spec 064 FR-007: two spans are in one table row when their tops differ by at most this share
 # of a line's height and their sizes by less than this many points.
 _TABLE_ROW_BASELINE_TOLERANCE = 0.3
@@ -134,12 +136,29 @@ def build_paragraph_units_from_text_spans(
     spans: list[PdfTextSpan],
 ) -> PdfSourceImportResult:
     normalized_spans = [span for span in spans if _normalize_text(span.text)]
-    dehyphenation_evidence = _build_soft_wrap_dehyphenation_evidence(normalized_spans)
     repeated_furniture_keys = _detect_repeated_page_furniture_keys(tuple(normalized_spans))
+    # Spec 067 FR-007: a running head on the page-number line is furniture even on one or two
+    # pages, where the repeated-key rule above does not reach it. It is dropped here, before
+    # anything reads the page, like the number beside it. Heads the key rule already covers
+    # stay in the list and are skipped where they always were; the repeated-display-text
+    # count still reads every line, running heads included, as before.
+    running_heads = frozenset(
+        span
+        for span in _detect_running_heads_on_page_number_line(normalized_spans)
+        if _span_furniture_key(span) not in repeated_furniture_keys
+    )
+    display_text_spans = normalized_spans
+    skipped_running_head_count = 0
+    if running_heads:
+        kept_spans = [span for span in normalized_spans if span not in running_heads]
+        skipped_running_head_count = len(normalized_spans) - len(kept_spans)
+        normalized_spans = kept_spans
+    dehyphenation_evidence = _build_soft_wrap_dehyphenation_evidence(normalized_spans)
     ordered_spans = sorted(normalized_spans, key=lambda item: (item.page_number, item.top, item.x0))
     layout_profile = _build_heading_layout_profile(
         ordered_spans,
         repeated_furniture_keys=repeated_furniture_keys,
+        display_text_spans=display_text_spans,
     )
     median_font_size = layout_profile.body_font_size
 
@@ -148,7 +167,7 @@ def build_paragraph_units_from_text_spans(
     pending_body_inline_markers: dict[int, list[str]] = {}
     pending_heading_spans: list[PdfTextSpan] = []
     pending_list_spans: list[PdfTextSpan] = []
-    skipped_repeated_page_furniture_count = 0
+    skipped_repeated_page_furniture_count = skipped_running_head_count
     skipped_page_number_count = 0
     skipped_blank_page_notice_count = 0
 
@@ -261,6 +280,7 @@ def build_paragraph_units_from_text_spans(
                     pending_body_spans[-1],
                     span,
                     layout_profile=layout_profile,
+                    paragraph_left_x0=_paragraph_run_left_x0(pending_body_spans),
                 )
                 # Spec 065 FR-008 (I-4): a table cell is a paragraph of its own. Since
                 # spec 064 FR-007 a cell is no longer a heading, and the body merge then
@@ -406,6 +426,15 @@ def build_paragraph_units_from_text_spans(
         emitted,
         ordered_spans,
         layout_profile=layout_profile,
+        dehyphenation_evidence=dehyphenation_evidence,
+    )
+    # Spec 067 FR-005: a body paragraph torn at a page break whose second half opens with a
+    # capital, a digit, a quote or a bracket -- the text-only soft-wrap merge leaves it torn.
+    emitted = _join_page_torn_body_paragraphs(
+        emitted,
+        ordered_spans,
+        layout_profile=layout_profile,
+        repeated_furniture_keys=repeated_furniture_keys,
         dehyphenation_evidence=dehyphenation_evidence,
     )
 
@@ -698,6 +727,7 @@ def _build_heading_layout_profile(
     spans: list[PdfTextSpan],
     *,
     repeated_furniture_keys: set[tuple[str, str]],
+    display_text_spans: list[PdfTextSpan] | None = None,
 ) -> _PdfHeadingLayoutProfile:
     sentence_font_sizes = [
         float(span.font_size)
@@ -766,7 +796,9 @@ def _build_heading_layout_profile(
         body_uppercase_ratio=body_uppercase_ratio,
         body_title_word_ratio=body_title_word_ratio,
     )
-    repeated_display_text_keys = _detect_repeated_display_text_keys(spans)
+    repeated_display_text_keys = _detect_repeated_display_text_keys(
+        spans if display_text_spans is None else display_text_spans
+    )
     signatures: list[_PdfStyleSignature] = []
     for index, span in enumerate(spans):
         if not _is_style_cluster_input(span, repeated_furniture_keys=repeated_furniture_keys):
@@ -2689,11 +2721,189 @@ def _join_numbered_body_continuations(
     return result
 
 
+_PAGE_BODY_TEXT_MIN_LINES = 3
+_PAGE_BODY_TEXT_MIN_WORDS = 7
+
+
+def _pages_carrying_body_text(
+    ordered_spans: list[PdfTextSpan],
+    *,
+    layout_profile: _PdfHeadingLayoutProfile,
+    repeated_furniture_keys: set[tuple[str, str]],
+) -> frozenset[int]:
+    """Pages with running text on them: at least three content lines set at the body size
+    (`_font_sizes_match`) with at least seven words each."""
+    body_font_size = layout_profile.body_font_size
+    if not body_font_size:
+        return frozenset()
+    lines_by_page: dict[int, int] = {}
+    for span in ordered_spans:
+        if _span_furniture_key(span) in repeated_furniture_keys or _looks_like_page_number(span):
+            continue
+        if not _font_sizes_match(_span_font_size(span), body_font_size):
+            continue
+        if len(_words(_normalize_text(span.text))) < _PAGE_BODY_TEXT_MIN_WORDS:
+            continue
+        lines_by_page[span.page_number] = lines_by_page.get(span.page_number, 0) + 1
+    return frozenset(
+        page for page, count in lines_by_page.items() if count >= _PAGE_BODY_TEXT_MIN_LINES
+    )
+
+
+def _page_edge_lines(
+    ordered_spans: list[PdfTextSpan],
+    *,
+    repeated_furniture_keys: set[tuple[str, str]],
+) -> tuple[dict[int, PdfTextSpan], dict[int, PdfTextSpan]]:
+    """The first and the last content line of every page, in reading order (page furniture and
+    page numbers are not content)."""
+    first_by_page: dict[int, PdfTextSpan] = {}
+    last_by_page: dict[int, PdfTextSpan] = {}
+    for span in ordered_spans:
+        if _span_furniture_key(span) in repeated_furniture_keys or _looks_like_page_number(span):
+            continue
+        first_by_page.setdefault(span.page_number, span)
+        last_by_page[span.page_number] = span
+    return first_by_page, last_by_page
+
+
+def _is_page_torn_body_continuation(
+    head: ParagraphUnit,
+    tail: ParagraphUnit,
+    *,
+    spans_by_origin: dict[int, list[PdfTextSpan]],
+    layout_profile: _PdfHeadingLayoutProfile,
+    first_line_by_page: dict[int, PdfTextSpan],
+    last_line_by_page: dict[int, PdfTextSpan],
+    body_text_pages: frozenset[int],
+) -> bool:
+    """Spec 067 FR-005 (I-1): the second half of a body paragraph that a page break tore off.
+
+    The body counterpart of the notes-join geometry (spec 064 R-7), read across one page
+    break. All of it is required:
+      * both units are body, neither is a table cell; headings, list items, captions and
+        TOC entries are never joined, and notes / reference sections are left to the
+        notes-join (the caller skips them);
+      * the paragraph does not close (`_body_text_is_closed`: past closing quotes, brackets
+        and superscript references its last character is none of . ! ? ... : ;);
+      * its last line is the last content line of its page, and the next unit's first line
+        is the first content line of the NEXT page;
+      * the two lines are set in one size (`_font_sizes_match`);
+      * the last line ran out of room: the next line's first word would not have fit before
+        the body column's right edge (`_entry_line_ran_out_of_room`);
+      * both pages carry running text -- at least three lines at the body size with at least
+        seven words each -- so the end of a list of notes, an index column or a caption page
+        does not read as prose.
+    What the second half begins with is not read: a capital, a digit, a quote or a bracket
+    opens the continuation as often as a lowercase letter does ("...such as the" +
+    "International Monetary Fund", "...in" + "2001, said", "...considered you" +
+    "'creditworthy'"). Measured on the four corpus PDFs (2026-11-08) against the 87 page-break
+    candidates of spec 067's sweep, each read: this rule joins 27, all of them real tears, and
+    no false one; two more (Rethinking Money, pp. 12-14) join through the soft-wrap merge once
+    the running head between the halves is dropped (FR-007) -- 29 of 32. Not joined: two
+    chapter-end notes of Money and Sustainability set on pages with no line at the body size,
+    and one bibliography entry inside a references section, which belongs to the notes-join."""
+    if head.role != "body" or head.structural_role != "body":
+        return False
+    if tail.role != "body" or tail.structural_role != "body":
+        return False
+    if head.is_pdf_table_cell or tail.is_pdf_table_cell:
+        return False
+    if _body_text_is_closed(head.text or ""):
+        return False
+    last_line = _unit_line_span(head, -1, spans_by_origin)
+    first_line = _unit_line_span(tail, 0, spans_by_origin)
+    if last_line is None or first_line is None:
+        return False
+    if first_line.page_number != last_line.page_number + 1:
+        return False
+    if (
+        last_line_by_page.get(last_line.page_number) is not last_line
+        or first_line_by_page.get(first_line.page_number) is not first_line
+    ):
+        return False
+    if last_line.page_number not in body_text_pages or first_line.page_number not in body_text_pages:
+        return False
+    if not _font_sizes_match(_span_font_size(last_line), _span_font_size(first_line)):
+        return False
+    return _entry_line_ran_out_of_room(
+        last_line, _normalize_text(first_line.text), layout_profile=layout_profile
+    )
+
+
+def _join_page_torn_body_paragraphs(
+    units: list[ParagraphUnit],
+    ordered_spans: list[PdfTextSpan],
+    *,
+    layout_profile: _PdfHeadingLayoutProfile,
+    repeated_furniture_keys: set[tuple[str, str]],
+    dehyphenation_evidence: _SoftWrapDehyphenationEvidence | None = None,
+) -> list[ParagraphUnit]:
+    """Spec 067 FR-005: join a body paragraph and its second half across a page break. See
+    `_is_page_torn_body_continuation` for the form."""
+    in_back_matter = _back_matter_entry_region_flags(units)
+    spans_by_origin: dict[int, list[PdfTextSpan]] = {}
+    for span in ordered_spans:
+        spans_by_origin.setdefault(_span_origin_index(span), []).append(span)
+    first_line_by_page, last_line_by_page = _page_edge_lines(
+        ordered_spans, repeated_furniture_keys=repeated_furniture_keys
+    )
+    body_text_pages = _pages_carrying_body_text(
+        ordered_spans,
+        layout_profile=layout_profile,
+        repeated_furniture_keys=repeated_furniture_keys,
+    )
+    result: list[ParagraphUnit] = []
+    previous_in_region = False
+    for unit, in_region in zip(units, in_back_matter):
+        if (
+            not in_region
+            and not previous_in_region
+            and result
+            and _is_page_torn_body_continuation(
+                result[-1],
+                unit,
+                spans_by_origin=spans_by_origin,
+                layout_profile=layout_profile,
+                first_line_by_page=first_line_by_page,
+                last_line_by_page=last_line_by_page,
+                body_text_pages=body_text_pages,
+            )
+        ):
+            result[-1] = replace(
+                _merge_torn_back_matter_entry(
+                    result[-1], unit, dehyphenation_evidence=dehyphenation_evidence
+                ),
+                boundary_rationale="merged_page_torn_body_continuation",
+            )
+            continue
+        result.append(unit)
+        previous_in_region = in_region
+    return result
+
+
+def _paragraph_run_left_x0(pending_spans: list[PdfTextSpan]) -> float | None:
+    """Spec 067 FR-006 follow-up: the left edge of the paragraph being built -- the smallest
+    x0 among its lines set in the size of its last line. A quotation or a box set apart from
+    the body has its own left edge, which the document's body margin does not describe."""
+    if not pending_spans:
+        return None
+    size = _span_font_size(pending_spans[-1])
+    edges = [
+        float(span.x0)
+        for span in pending_spans
+        if span.page_number == pending_spans[-1].page_number
+        and _font_sizes_match(_span_font_size(span), size)
+    ]
+    return min(edges) if edges else None
+
+
 def _can_merge_body_span(
     previous: PdfTextSpan,
     current: PdfTextSpan,
     *,
     layout_profile: _PdfHeadingLayoutProfile,
+    paragraph_left_x0: float | None = None,
 ) -> bool:
     previous_text = _normalize_text(previous.text)
     current_text = _normalize_text(current.text)
@@ -2725,16 +2935,48 @@ def _can_merge_body_span(
         max_gap = max(max_gap, body_leading * 1.1)
     if vertical_gap > max_gap:
         return False
+    # A sentence end followed by a footnote reference ("mixed.” ¹¹") is still a sentence end.
+    previous_sentence_text = previous_text.rstrip(_SUPERSCRIPT_REFERENCE_TAIL_CHARS)
     if (
-        previous_text
+        previous_sentence_text
         and current_text
-        and previous_text[-1] in _TERMINAL_SENTENCE_PUNCTUATION
+        and previous_sentence_text[-1] in _TERMINAL_SENTENCE_PUNCTUATION
         and _starts_like_new_body_sentence(current_text)
         and _span_line_fill_ratio(previous, layout_profile) < 0.72
-        and _is_near_body_left(current, layout_profile)
+        and (
+            _is_near_body_left(current, layout_profile)
+            or _is_near_paragraph_left(current, paragraph_left_x0, layout_profile)
+        )
     ):
         return False
     return True
+
+
+def _is_near_paragraph_left(
+    span: PdfTextSpan, paragraph_left_x0: float | None, layout_profile: _PdfHeadingLayoutProfile
+) -> bool:
+    """Spec 067 FR-006 follow-up: the line starts where the paragraph's own lines start
+    (`_paragraph_run_left_x0`), within the tolerance `_is_near_body_left` uses for the body
+    margin.
+
+    The sentence-end boundary in `_can_merge_body_span` -- the previous line ends a sentence
+    (terminal punctuation, optionally followed by a superscript reference: "mixed.” ¹¹"),
+    ends short (fill < 0.72), and the next line starts a new sentence at the left edge --
+    read that left edge only as the document's BODY margin. A quotation or a box set apart
+    from the body has its own margin, so inside it the boundary never fired: Money and
+    Sustainability sets its body at x0 5.0 and Box 4.1 at 33.8, and "...evenly mixed.” ¹¹" /
+    "Entropy is time’s arrow..." survived as two paragraphs only by an accident (the line
+    ending in "11" read as a contents line) that spec 067 FR-006 removed. The paragraph's
+    own edge is the alternative. Measured on the four corpus PDFs (2026-11-08): 38 new
+    boundaries, every one read as a paragraph end inside an inset -- The Value of
+    Everything p. 207 (1); Creating Wealth pp. 23, 72, 93, 155-156 (13: a dialogue, a list
+    of principles, resource entries); Money and Sustainability pp. 9, 54, 57, 73-74, 77, 81,
+    91, 105, 134-135 (24, Box 4.1 among them); Rethinking Money none. Headings, levels 1-2,
+    superscripts and the symbol multiset unchanged."""
+    if paragraph_left_x0 is None:
+        return False
+    body_leading = layout_profile.body_leading or layout_profile.body_font_size or 10.0
+    return abs(float(span.x0) - paragraph_left_x0) <= body_leading * 0.75
 
 
 def _looks_like_body_paragraph_indent_boundary(

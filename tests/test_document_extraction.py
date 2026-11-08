@@ -2321,3 +2321,77 @@ def test_extraction_build_relations_legacy_target_called_once_without_kwarg(tmp_
         extract_document_content_with_normalization_reports(source_file)
 
     assert calls["count"] == 1
+
+
+# Spec 067 FR-007 follow-up: the contents region of Rethinking Money once dropping its running
+# head "CONTENTS" (p. 11) no longer opens a second region there.
+
+
+def _toc_unit(text: str, *, role: str = "body", level: int | None = None) -> ParagraphUnit:
+    return ParagraphUnit(text=text, role=role, structural_role=role, heading_level=level)
+
+
+def test_067_toc_region_runs_through_a_line_holding_two_entries_and_ends_at_the_last_page_number() -> None:
+    paragraphs = [
+        _toc_unit("CONTENTS", role="heading", level=1),
+        _toc_unit("*Foreword* *ix*"),
+        _toc_unit("3 A Fate Worse Than Debt: Interest’s Hidden Consequences *37*"),
+        _toc_unit("PART TWO **PROSPERITY**"),
+        _toc_unit(
+            "4 The Flying Fish: A New Perspective on Money *57* 5 The Future Has Arrived "
+            "But Isn’t Distributed Evenly..."
+        ),
+        _toc_unit("Yet! *73*"),
+        _toc_unit("6 Strategies for Banking *95*"),
+        _toc_unit("*About the Authors 261*"),
+        _toc_unit("FOREWORD", role="heading", level=1),
+        _toc_unit("*John Perkins,* *author of* Confessions of an Economic Hit Man"),
+        _toc_unit("We have entered revolutionary times."),
+    ]
+
+    document_extraction._annotate_toc_region_candidates(paragraphs)
+
+    assert [p.structural_role for p in paragraphs] == [
+        "toc_header",
+        *["toc_entry"] * 7,
+        "heading",
+        "body",
+        "body",
+    ]
+    assert (paragraphs[8].role, paragraphs[8].heading_level) == ("heading", 1)
+
+
+def test_067_toc_region_without_page_numbers_is_left_as_the_candidate_run_found_it() -> None:
+    # Counterexample: a contents list that carries no page numbers (Money and Sustainability,
+    # Creating Wealth, The Value of Everything) is not cut short -- the tail rule needs at least
+    # two numbered lines.
+    paragraphs = [
+        _toc_unit("Contents"),
+        _toc_unit("Chapter I"),
+        _toc_unit("Why this Report, Now?"),
+        _toc_unit("Chapter II"),
+        _toc_unit("Appendices", role="heading", level=3),
+        _toc_unit("**Bibliography**"),
+        _toc_unit("The report opens with a summary of its argument."),
+    ]
+
+    document_extraction._annotate_toc_region_candidates(paragraphs)
+
+    assert [p.structural_role for p in paragraphs] == [
+        "toc_header",
+        *["toc_entry"] * 5,
+        "body",
+    ]
+
+
+def test_067_long_prose_line_with_a_number_inside_does_not_join_a_contents_region() -> None:
+    # Counterexample: a sentence with a number inside is not two entries -- its last piece ends
+    # a sentence.
+    assert not document_extraction._holds_consecutive_toc_entries(
+        "In 2008 the banks of the eurozone held more than 40 percent of the sovereign debt of "
+        "the member states, and the share kept rising for years."
+    )
+    assert document_extraction._holds_consecutive_toc_entries(
+        "4 The Flying Fish: A New Perspective on Money *57* 5 The Future Has Arrived But "
+        "Isn’t Distributed Evenly..."
+    )
