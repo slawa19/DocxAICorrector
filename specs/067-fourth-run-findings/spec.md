@@ -333,6 +333,133 @@ Spec-only tier (Конституция III): каждая правка огра�
 
 ## Changelog
 
+- 2026-11-08 — **P4, глоссарий (`067/glossary`, `b94a6c7..5916567`, влит `70e2c59`): FR-008…FR-011 сделаны; две
+  посылки спеки опровергнуты.** **FR-008** (`plan_run_glossary_section`, `glossary_phase.py:919-944`): защищённый
+  префикс — до последней записи, которая обязательна или имеет собственную форму (`not is_single_lowercase_entry`);
+  в `cut_terms` только одиночные строчные. Рендер артефактов четвёртого прогона: VoE 5858 → 7011 символов, 131 →
+  165 записей, отрезано 36 → 2 (productivity, austerity), +303 токена на блоковый вызов при 3,8 симв./токен (+329 при
+  3,50), ≈ +158 тыс. токенов на книгу, ≈ 5,9 % prompt-токенов этапа; Money/CW/RM без изменений; `unrendered_required`
+  = 0. **Посылка G-1 про `appropriate surplu` неверна:** «surplus» в тексте написан целиком — поверхность коллокации
+  собиралась из свёрнутого ключа; исправлен механизм (`_written_surface`, `glossary_pass.py:1109`: слово поверхности,
+  которого документ не пишет, заменяется самым частым написанным словом той же свёртки), переименованы 11 кандидатов
+  (Money banking crisi, financial crisi; CW preciou metal, thi book, viciou cycle; RM payment of taxe; VoE
+  appropriate surplu, financial crisi, national accountant(s), mathematical calculu, previou chapter); расширение
+  правила хвостов на последнее слово словосочетания ОТВЕРГНУТО — теряло `growth hierarchy`, `blind spot`, `El
+  Salvador`, обязательную `molecular entities`. **FR-010** (`_permutation_key` / `_permutation_groups`,
+  `glossary_pass.py:1070-1081`): кандидаты с одним мультимножеством слов без дефисов — один кандидат с поверхностью
+  большего счёта, остальные — `GlossaryCandidate.spellings` (в payload и артефакте только когда непусто; строка секции
+  «- value added (также: value-added, added value) -> …», `segments.py:88-97`); ответ модели на написание отклоняется
+  как `not_a_candidate`; имена не группируются. Групп: Money 2, VoE 4 (value added/value-added/added value, free
+  markets/free-market, extracting value/value-extracting, financial market/financial-market), CW/RM 0; из секции VoE
+  ушли обе записи «…ценность». **FR-009** (`_contrast_partners`, `glossary_pass.py:1021`, `_CONTRAST_MIN_SHARED_UNITS =
+  2`): пара — ≥ 2 слов каждый без связки ≤ 3 букв внутри, общее последнее слово при разных предыдущих, ни один не
+  оканчивается другим, вместе ≥ 2 абзацев; `GlossaryCandidate.contrasts` → `GlossaryTerm.contrasts`
+  (`_annotate_section_entries`, `glossary_phase.py:971`); пометка «≠ <передачи партнёров>» печатается только при разных
+  передачах (одинаковые — коллизия, вызов C). Промпты: вызовы A и B получают `contrast_with` и просьбу о `note`;
+  `system_prompt.txt:24` — пункт 5 о смысле «≠» и «(также: …)» (секция контекста не запинена). Пар кандидатов Money 13,
+  CW 15, RM 16 (4 служебные), VoE 6 (2 служебные); помеченных строк в секции 15 / 13 / 7 / 4; RM: «cooperative currencies
+  -> кооперативные валюты ≠ местные валюты, комплементарные валюты» и симметричные. **FR-011** (a) абзац целиком
+  заглавными не даёт свидетельства регистра (`_set_in_capitals` `:1274`, `cased_capitalised` `:535`), `_has_inner_capital`
+  требует смешанного регистра (InspirePay, eBay — имена; PROSPERITY — нет); **посылка G-4 про `chapter` неверна:**
+  заголовки «CHAPTER N» в счёт регистра не шли, заглавную форму давали ссылки «described in Chapter 13» — добавлено:
+  заглавное слово прямо перед цифрой — метка нумерованной части, не регистр (`_capitalised_runs(numbered=…)` `:353`;
+  CW 15 «Chapter N» против 14 строчных); (b) «**» между буквами — курсив, разорванный внутри слова
+  (`_EMPHASIS_INSIDE_WORD_RE` `:119`; «thank-yous»; попутно восстановлены семь разорванных курсивов), определяемое
+  выражение сохраняет короткое крайнее слово, если документ пишет его целиком ≥ 3 раз и оно не входит в 20 самых
+  частых слов документа (`_defined_expression_is_whole` `:589`; «cap and trade»); тот же тест частых слов для всех
+  выделенных фрагментов ОТВЕРГНУТ (делал обязательными «Fig ure», «et al», терял `long wave`). Дифф кандидатов: CW
+  chapter обязательная → необязательное слово заголовка, trade → cap and trade (14), ушёл trade-off; RM thank →
+  thank-yous, +diversity, PROSPERITY → необязательная; Money +marginal-productivity theory (обязательная); VoE
+  value-based pricing получил emphasis; demurrage, civic(s), saber, regio, ostraka, value, InspirePay, Regeltante, terra,
+  torekes — без изменений. Итоговая симуляция секций: Money 5962, CW 5293, RM 3840, VoE 6873 символов, отрезано 0 /
+  0 / 0 / 2 одиночных. Побочная находка вне объёма: RM несёт артефакты лигатур («Effi ciency» — обязательная запись,
+  `infl ation`, `offi cial`) — дефект импорта. Тесты: 15 новых в `test_glossary_pass.py` (9 правил проверены
+  отключением), `LOGGING_AND_ARTIFACT_RETENTION.md` — строка `run_glossary_built`.
+- 2026-11-08 — **P2, ячейки (`067/cells`, `6e59044..e29de42`, влит `1a0d136`): FR-002 сделан по всем слоям; ожидание
+  «Box 7.1 — три записи» выполнено для одной группы из трёх.** Хранение: `w:pPr/w:cnfStyle w:val="000000000000"` в
+  промежуточном DOCX (`document/shared_xml.py:14-52`; в четырёх нативных DOCX корпуса `cnfStyle` 0 раз), запись
+  `_carry_pdf_paragraph_layout_signals` (`processing_runtime.py:1100-1109`), чтение `_build_raw_paragraph`
+  (`extraction.py:517`, `:574`) → `RawParagraph.is_pdf_table_cell` (`core/models.py:197-199`) → `ParagraphUnit`
+  (`extraction.py:654`). Границы: `evaluate_paragraph_boundary` (`boundaries.py:235-240`) не склеивает ячейку ни с
+  какой стороны (`table_cell_boundary`). Заголовки: обе жирно-строчные эвристики пропускают ячейку (`extraction.py:513-518`).
+  Сборка: `FinalAssemblyEntry.source_is_table_cell` (`output_validation.py:265-268`, из источника `:2166-2167`, в
+  слиянии `left or right` `:1940`), `_entry_can_override_source_heading_signal` не перекрывает сигнал у ячейки
+  (`:1026-1030`), `_recover_adjacent_entries` отказывает в склейке (`:2031-2046`, причина `source_boundary_table_cell`).
+  **Стр. 102 Money — не ряд:** общую базовую линию делят только «PRIVATE SECTOR | PU BLIC SECTOR»; «NGO Initiative s :»
+  помечен правилом одного шага; все прочие строки Box 7.1 стоят по одной на своей базовой линии (две колонки через
+  разрыв страницы). Кандидат «колонка продолжает ряд» замерен и ОТВЕРГНУТ (Конституция VII): Money +11 строк Box 7.1,
+  CW +1, но RM +51, из них 49 — строки двухколоночного указателя с хвостами переноса. Поэтому группы `p0957+p0958+p0959`
+  и `p0960+p0961` («**Бизнес-инициативы:** C3…») остаются склеенными — SC-001 и FR-002 в этой части НЕ выполнены,
+  сигнала в источнике нет. Реплей сборки восьми отчётов (метод проверен: «до» воспроизводит записанный реестр Money
+  1324/1324): склеенных с ячейкой четвёртый RM 65 → 0 (записей 1772 → 2078: указатель и диаграммы Terra отдельными
+  строками вместо «Google, 200 Революция, 218; ценности, 28 Google Wallet…» из 11 абзацев), CW 3 → 0, Money 3 → 0
+  (подписной блок `p0062…p0068` — семь строк; Box 7.1 группа 1 — четыре записи с ролями источника), VoE побайтно;
+  after-063 RM 68 → 0, CW 7 → 0 (таблицы остаются `###`, как в их источнике), Money 1 → 0; одна каскадная запись RM
+  after-063 (`p1851` прилип к хвосту указателя — прежний текстовый склейщик). Нормализация границ: ячеек склеено CW 28 →
+  0, RM 379 → 0. Документный слой: заголовков изменился один (Money h2 «NGO Initiative s :» → тело, 174 → 173), уровни
+  1–2 поштучно равны, мультимножества цифр и символов идентичны; снимок подготовки — абзацы RM 2203 → 2570, CW 1774 →
+  1798, `toc_entry_count`/readiness/gate без изменений. Тесты: 2 (границы), 2 (мост туда-обратно, контроль без флага),
+  3 (сборка: не понижается/не сливается; без флага — как в прогоне; разорванное предложение без флага склеивается), 1
+  характеризационный (форма стр. 102); мутации M1–M8 убиты; эталон `assemble_final_markdown.json` +9 строк поля.
+  Записанные `source_paragraphs.json` флага не несут (пишет внешний раннер).
+- 2026-11-08 — **P1, аппарат в теле (`067/apparatus`, `c08a73f..08cd7c9`, влит `d271842`): FR-001, FR-003, FR-004
+  сделаны.** Представление — не регион: документный слой (`build_editing_jobs`, `document/semantic_blocks.py`) пишет
+  в задание списки `notes_in_body_paragraph_ids` и `name_heading_paragraph_ids` (`pipeline/contracts.py:385`, `:389`),
+  регион остаётся `prose` (метка `back_matter` заодно вывела бы абзацы из озвучки, источников глоссария и formatting
+  coverage). **FR-001**: форма `output_validation.py:596-686` (`_note_number_chain`, `notes_run_parts`,
+  `is_notes_run_paragraph`, `notes_run_reads_as_citations`): номер 1–3 цифры без точки перед заглавной любого письма /
+  кавычкой / `*` / скобкой; цепочка n, n+1, …; ≥ 2 записи с ≥ половиной сигналов ссылки, либо одна запись с сигналом
+  после метки (одно слово или цитатный хвост порванной сноски); одиночная запись без метки — не форма (на корпусе ловила
+  только строки оглавления). `_resolve_notes_in_body_positions` (`semantic_blocks.py:1019`) — абзацы `prose` с ролью
+  `body`/`list`; `_toc_bracketed_positions` (`:982`) исключает отрезок между строками оглавления без заголовка внутри.
+  Блок: `notes_in_body_paragraph_indexes` (`block_execution.py:365`), раздел «примечания» в «СПРАВОЧНЫЙ АППАРАТ БЛОКА»
+  (`:707`), `model_kept_apparatus` (`:569`) кредитует неизменённый абзац только если КАЖДАЯ запись и метка — цитата по
+  форме (одна запись комментария — вне кредита, анти-вакуум); событие `block_apparatus_kept_by_model` получило
+  `notes_in_body_paragraph_count`. Правило 12 (`operation_translate.txt:15-16`): «Только внутри оставленной ссылки
+  служебные «Ibid.», «p.» и даты не меняйте…» и «Комментарий переводите всегда, и в той же записи тоже…». Замер
+  продуктовым кодом на `source_paragraphs.json`: Money 62 абзаца → 59 записей доставки (= выборка A), третий прогон
+  58, VoE/RM 0, CW 1 (`p1745`); ложных 0, исключённые совпадения формы — RM `p0045` (TOC-рамка), `p0047-50` (одиночные
+  без метки), `p0041-43`/`p0053-55` (регион toc). Реплей кредита: Money четвёртый — перемечена 1 запись (`p0809`),
+  третий 0, CW 0; шлюз Money остаётся 0,0232 и блокирует — все 9 посчитанных абзацев содержат английский комментарий;
+  снимет ли его новый раздел промпта — FR-012. Остаток: примечания CW в приложении с «N.» (с точкой) формой не
+  отмечаются. **FR-003** (`quality_gate_text_detectors.py:92`): условие «любая кириллица → False» снято, доля латиницы
+  ≥ 0,8 — единственный языковой признак; реплей восьми отчётов: Money четвёртый 0,0208 → 0,0232 (блок, +`p0499`), RM
+  0,0016 → 0,0024, третий Money 0 → 0,0017, RM 0,0017 → 0,0024, VoE/CW 0 — новых блокировок нет. **FR-004 — форма
+  спеки ужесточена:** буквальное «≥ 1 слово, которого нет в теле строчными» пропускало 8 / 6 / 12 / 39 обычных
+  заголовков (Money/VoE/RM/CW; «Advantages of the Civics System», через «II» — 13 заголовков «Chapter II…IX» Money);
+  добавлены два условия — слова целиком заглавными не признак имени, и вся фраза заголовка встречается в середине
+  предложения в обычном абзаце (`semantic_blocks.py:1054-1180`: `name_heading_words`, `_lowercase_body_words`,
+  `_phrase_occurs_mid_sentence`, `_resolve_name_heading_positions`); остаётся 1 / 0 / 1 / 5 — все имена (Money Adrienne
+  Rich; RM `p0024` подпись авторов на титуле; CW Fluxus Bucks, Burlington Bread, Calgary Dollars, Plan-It Newburgh, New
+  Society Publishers), заголовков глав 0. `prose_paragraph_indexes` (`block_execution.py:248`) исключает отмеченный
+  заголовок; `POLICY_KEPT_REASON_NAME_KEPT = "name_kept"` (`:393`); `model_kept_apparatus` перемечает неизменённый
+  заголовок-имя в `policy_kept_source`, поле `name_kept_paragraph_count`, событие INFO `block_name_kept_by_model`
+  (`:2123`). Внутри многоабзацного блока заголовок-имя перемечается только вместе со следующим абзацем (правило рваных
+  пар 064) — Fluxus Bucks / Plan-It Newburgh остаются `accepted`, прозой не считаются. Реплей восьми отчётов: CW блок
+  434 → `valid`, `p1764` `name_kept`, приёмка CW `[]`; Money «Xuo» без изменений; RM «2b» объявляется как раньше;
+  `policy_kept_source` получает только `p1764`. `quality_gate.py:578-585` и `acceptance.py` не менялись: шлюз
+  освобождает абзац по статусу, приёмка читает счётчик. Тесты: новый файл `tests/test_spec_067_apparatus_in_body.py`
+  (35), `test_gate_detectors_stage2.py` +2; пины: translate 7143 → 7292 / `c914593b…`, остальные не изменились;
+  `docs/testing/TEST_TIER_INVENTORY.md` — строка нового файла.
+- 2026-11-08 — **P5, лог раннера (`067/runlog`, `6c7d988`, влит `e3696af`): FR-013 — лог прогона пишется в каталог
+  прогона ВМЕСТО общего.** `core/logger.py:92-124` — контекстный менеджер `redirect_log_file(path)`: на время блока
+  файловые handler'ы логгера `docxaicorrector` заменяются одним дозаписывающим `FileHandler` без ротации (лог прогона —
+  доказательство, его размер ограничен прогоном), по выходе — возвращаются (и при `SystemExit`). Раннер
+  (`run_lietaer_validation.py`): `RUN_LOG_FILENAME = "app.log"` (`:106`), тело одиночного прогона вынесено в
+  `_run_single_validation` (`:5612`) под `with app_logger.redirect_log_file(artifact_dir / RUN_LOG_FILENAME)` (`:5598`);
+  повторы — отдельные процессы со своим forced run id; путь в отчёте `output_artifacts.app_log` и в summary `app_log=`;
+  подъём `maxBytes` общего handler'а до 1 ГБ удалён. Почему вместо, а не вдобавок: общий файл на DrvFs терял строки и
+  не считался по прогону, дублирование удвоило бы запись; единица хранения — каталог прогона (`tests/artifacts/…` runtime
+  не чистит, §5). Streamlit-путь и ротация `.run/app.log` не изменились. `config_key_ignored` и `model_registry_resolved`
+  попадают в файл прогона (`load_app_config` вызывается внутри `_run_single_validation`). **Поле `filename` в
+  `marker_*` НЕ добавлено:** события эмитятся листовыми функциями (`marker_attempt_capture.py:141`,
+  `_generation.py:975`, `:1030`, `:1277`) без контекстного объекта; `ContextVar` учёта (`model_accounting.py:804`) несёт
+  `run_id` и `source_token`, не имя файла — потребовалась бы смена сигнатур, вне пакета; записано в §1.1 документа.
+  Для раннера вопрос закрыт файлом прогона; для двух одновременных UI-прогонов книгу по-прежнему определять по
+  `block_index`/`paragraph_id`. Документ: §1.1, §5.1 (строка `runs/<run_id>/app.log`), §6.1–6.3, Changelog; README —
+  строка про лог прогона (оркестратор). Тесты: `test_logger.py` (два блока — два файла, общий не получает записей,
+  восстановление после `SystemExit`), `test_real_document_pipeline_validation.py` (два `main()` с `run-a`/`run-b` — два
+  файла), защитный тест 041 смотрит `_run_single_validation`.
 - 2026-11-08 — спека создана по трём обследованиям остатка спеки 065 на данных четвёртого прогона (`283a690`).
   Поправлена запись FR-012 спеки 065 (английские сноски Money — новое поведение четвёртого прогона, 27 против 3) и
   формулировка «спека 063 оставляет намеренно» о поднятых цифрах (посылка коммита `6cb7a6e`, в корпусе не
