@@ -295,6 +295,65 @@ def test_shipped_config_toml_has_no_ignored_keys(monkeypatch) -> None:
     assert not [event_id for _, event_id, _ in events if event_id == "config_key_ignored"]
 
 
+# Every environment variable that outranks a [models.*] key of config.toml.
+_MODEL_ENV_OVERRIDES = {
+    "DOCX_AI_MODELS_TEXT_DEFAULT": "gpt-5.4-mini",
+    "DOCX_AI_MODELS_TEXT_OPTIONS": "gpt-5.4-mini,gpt-5.4",
+    "DOCX_AI_IMAGE_VISION_MODEL": "gpt-5.4",
+    "DOCX_AI_IMAGE_DRAW_MODEL": "gpt-image-2.5-sunburst",
+}
+
+
+def test_shipped_config_has_no_ignored_keys_when_env_outranks_the_model_keys(monkeypatch) -> None:
+    # The real-document runs of 2026-11-08 logged config_key_ignored for models.text.default
+    # and models.text.options: their .env sets DOCX_AI_MODELS_TEXT_*, and the resolvers
+    # returned on the variable without looking at the table. The test above runs with the
+    # environment cleared (tests/conftest.py), which is why it never saw this. A key an
+    # environment variable outranks is shadowed, not unknown.
+    for env_name, value in _MODEL_ENV_OVERRIDES.items():
+        monkeypatch.setenv(env_name, value)
+
+    app_config, events, loaded = _load_capturing(monkeypatch, constants.CONFIG_PATH)
+
+    assert isinstance(app_config, config.AppConfig)
+    # The environment did win, so the shadowing path is the one under test.
+    assert app_config.models.text.default == "gpt-5.4-mini"
+    assert app_config.models.image_analysis == "gpt-5.4"
+    assert app_config.models.image_generation == "gpt-image-2.5-sunburst"
+    assert loaded[-1].ignored_keys() == []
+    assert _ignored_events(events) == []
+
+
+def test_env_shadowed_role_keys_are_not_ignored_but_a_stray_key_next_to_them_is(monkeypatch, tmp_path) -> None:
+    # The same rule for the per-role sections the shipped config does not carry, and the
+    # anti-vacuum: looking at the table before the environment must not mark the whole table
+    # read — an unknown key in [models.text] is still named while the variables are set.
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        '[models.text]\ndefault = "gpt-5.4"\noptions = ["gpt-5.4"]\nspec_066_stray_key = 1\n\n'
+        '[models.boundary_review]\ndefault = "gpt-5.4"\n\n'
+        '[models.image_analysis]\ndefault = "gpt-5.4"\n',
+        encoding="utf-8",
+    )
+    for env_name, value in _MODEL_ENV_OVERRIDES.items():
+        monkeypatch.setenv(env_name, value)
+    monkeypatch.setenv("DOCX_AI_MODELS_BOUNDARY_REVIEW_DEFAULT", "gpt-5.4-mini")
+    monkeypatch.setenv("DOCX_AI_MODELS_IMAGE_ANALYSIS_DEFAULT", "gpt-5.4-mini")
+
+    app_config, events, loaded = _load_capturing(monkeypatch, config_path)
+
+    assert isinstance(app_config, config.AppConfig)
+    assert app_config.models.boundary_review == "gpt-5.4-mini"
+    assert app_config.models.image_analysis == "gpt-5.4-mini"
+    assert loaded[-1].ignored_keys() == ["models.text.spec_066_stray_key"]
+    assert _ignored_events(events) == [
+        (
+            logging.WARNING,
+            {"config_path": str(config_path), "ignored_keys": ["models.text.spec_066_stray_key"]},
+        )
+    ]
+
+
 def _ignored_events(events: list[tuple[int, str, dict]]) -> list[tuple[int, dict]]:
     return [(level, context) for level, event_id, context in events if event_id == "config_key_ignored"]
 
