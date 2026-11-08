@@ -376,7 +376,9 @@ def test_main_loads_reader_cleanup_evidence_before_building_acceptance_verdict()
     import inspect
 
     validation = _load_validation_module()
-    source = inspect.getsource(validation.main)
+    # Spec 067 FR-013 moved the single-run body out of ``main()`` into
+    # ``_run_single_validation`` so the per-run log file can wrap it; the guard follows it.
+    source = inspect.getsource(validation._run_single_validation)
 
     load_marker = "reader_cleanup_evidence = _load_reader_cleanup_evidence(event_log)"
     attach_marker = 'report["reader_cleanup_evidence"] = reader_cleanup_evidence'
@@ -2954,6 +2956,9 @@ def test_main_uses_processing_service_facade_and_runtime_config_only(tmp_path, m
 
     assert captured["uploaded_filename"] == "legacy.doc"
     assert captured["uploaded_bytes"] == source_bytes
+    # Spec 067 FR-013: the report and the summary point at the run's own log file.
+    assert report["output_artifacts"]["app_log"] == "artifacts/runs/run-123/app.log"
+    assert "app_log=artifacts/runs/run-123/app.log" in summary_text.splitlines()
     assert captured["processing_operation"] == "translate"
     assert captured["source_language"] == "en"
     assert captured["target_language"] == "ru"
@@ -6853,3 +6858,59 @@ def test_run_report_says_not_reported_without_a_glossary_event() -> None:
 
     assert validation._extract_run_glossary_record([{"event_id": "processing_completed"}]) is None
     assert validation._build_run_glossary_summary_lines(None) == ["run_glossary=not_reported"]
+
+
+def test_main_writes_each_runs_log_into_its_own_artifact_directory(monkeypatch, tmp_path) -> None:
+    """Spec 067 FR-013: the runner's structured log lives next to the run's report.
+
+    Four runner processes appending to one shared ``.run/app.log`` on DrvFs lost lines
+    (spec 066 Changelog), so two runs -- here two ``main()`` calls with two run ids in one
+    process -- must write two files, neither must see the other's records, and the shared
+    handler must be back in place once each run ends.
+    """
+    import logging
+
+    import docxaicorrector.core.logger as app_logger
+
+    validation = _load_validation_module()
+    source_path = tmp_path / "book.pdf"
+    document_profile = SimpleNamespace(
+        id="book-profile",
+        artifact_prefix="book_validation",
+        output_basename="book_output",
+        resolved_source_path=lambda project_root=None: source_path,
+    )
+    run_profile = SimpleNamespace(id="ui-parity-default", tier="full", repeat_count=1)
+    registry = SimpleNamespace(
+        get_document_profile=lambda profile_id: document_profile,
+        resolve_run_profile=lambda profile, requested_run_profile_id: run_profile,
+    )
+    seen_runs: list[tuple[str, Path]] = []
+
+    def _fake_single_validation(*, run_id: str, artifact_dir: Path, **kwargs: object) -> None:
+        seen_runs.append((run_id, artifact_dir))
+        app_logger.log_event(logging.WARNING, "marker_paragraph_omitted", "test record", run_marker=run_id)
+
+    monkeypatch.setattr(validation, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(validation, "REAL_DOCUMENT_ARTIFACT_ROOT", tmp_path / "artifacts")
+    monkeypatch.setattr(validation, "load_validation_registry", lambda: registry)
+    monkeypatch.setattr(validation, "_run_single_validation", _fake_single_validation)
+    monkeypatch.setenv("DOCXAI_REAL_DOCUMENT_PROFILE", "book-profile")
+    monkeypatch.delenv("DOCXAI_REAL_DOCUMENT_RUN_PROFILE", raising=False)
+    monkeypatch.delenv("DOCXAI_REAL_DOCUMENT_REPEAT_COUNT_OVERRIDE", raising=False)
+    handlers_before = list(app_logger.get_logger().handlers)
+
+    for run_id in ("run-a", "run-b"):
+        monkeypatch.setenv("DOCXAI_REAL_DOCUMENT_FORCED_RUN_ID", run_id)
+        validation.main()
+
+    runs_dir = tmp_path / "artifacts" / "runs"
+    assert seen_runs == [("run-a", runs_dir / "run-a"), ("run-b", runs_dir / "run-b")]
+    run_a_text = (runs_dir / "run-a" / validation.RUN_LOG_FILENAME).read_text(encoding="utf-8")
+    run_b_text = (runs_dir / "run-b" / validation.RUN_LOG_FILENAME).read_text(encoding="utf-8")
+    assert '"run_marker": "run-a"' in run_a_text and "run-b" not in run_a_text
+    assert '"run_marker": "run-b"' in run_b_text and "run-a" not in run_b_text
+    assert set(app_logger.get_logger().handlers) == set(handlers_before)
+    shared_log = Path(app_logger.APP_LOG_PATH)
+    if shared_log.exists():
+        assert "run_marker" not in shared_log.read_text(encoding="utf-8")

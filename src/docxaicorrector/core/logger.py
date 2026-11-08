@@ -3,6 +3,8 @@ import logging
 import os
 import shutil
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
@@ -10,6 +12,7 @@ from docxaicorrector.core.constants import APP_LOG_PATH, RUN_DIR
 
 
 _LOGGER: logging.Logger | None = None
+_LOG_FORMAT = "%(asctime)s | %(levelname)s | %(message)s"
 _SUPPORTED_LOG_LEVELS = {
     "DEBUG": logging.DEBUG,
     "INFO": logging.INFO,
@@ -70,7 +73,7 @@ def setup_logger() -> logging.Logger:
     resolved_level, warning_message = _resolve_log_level()
     logger.setLevel(resolved_level)
     handler = _WSLSafeRotatingFileHandler(APP_LOG_PATH, maxBytes=1_000_000, backupCount=3, encoding="utf-8")
-    formatter = logging.Formatter("%(asctime)s | %(levelname)s | %(message)s")
+    formatter = logging.Formatter(_LOG_FORMAT)
     handler.setFormatter(formatter)
     logger.addHandler(handler)
     logger.propagate = False
@@ -84,6 +87,41 @@ def get_logger() -> logging.Logger:
     if _LOGGER is None:
         _LOGGER = setup_logger()
     return _LOGGER
+
+
+@contextmanager
+def redirect_log_file(path: Path) -> Iterator[Path]:
+    """Send this process's log records to ``path`` instead of ``.run/app.log`` for the block.
+
+    Spec 067 FR-013. The real-document runner is a separate process per book, and several
+    of them used to append to the one shared ``.run/app.log``; on DrvFs four processes
+    started within 4 ms lost lines there, so the shared file could not be used to count
+    events per run. The runner therefore writes each run's log into the run's own artifact
+    directory, next to its report.
+
+    Only FILE handlers are swapped out; any other handler (a test's capture, a stream) stays
+    attached. The run file is a plain append ``FileHandler`` without rotation: a run log is
+    evidence that must stay whole, and its size is bounded by the run itself. The previous
+    handlers are restored on exit, so a process that runs several validations in turn writes
+    each into its own file. The Streamlit app never calls this and keeps ``.run/app.log``.
+    """
+
+    target_logger = get_logger()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    run_handler = logging.FileHandler(path, encoding="utf-8")
+    run_handler.setFormatter(logging.Formatter(_LOG_FORMAT))
+    detached = [handler for handler in target_logger.handlers if isinstance(handler, logging.FileHandler)]
+    for handler in detached:
+        handler.flush()
+        target_logger.removeHandler(handler)
+    target_logger.addHandler(run_handler)
+    try:
+        yield path
+    finally:
+        target_logger.removeHandler(run_handler)
+        run_handler.close()
+        for handler in detached:
+            target_logger.addHandler(handler)
 
 
 def make_event_id(prefix: str = "evt") -> str:

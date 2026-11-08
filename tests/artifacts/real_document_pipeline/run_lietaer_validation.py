@@ -102,6 +102,8 @@ from docxaicorrector.runtime.events import (
 )
 
 REAL_DOCUMENT_ARTIFACT_ROOT = PROJECT_ROOT / "tests" / "artifacts" / "real_document_pipeline"
+# Spec 067 FR-013: each run's structured log, inside the run's artifact directory.
+RUN_LOG_FILENAME = "app.log"
 HEARTBEAT_INTERVAL_SECONDS = 15.0
 READER_VERIFIER_DEFAULT_SELECTOR = "openrouter:google/gemini-3-flash-preview"
 READER_VERIFIER_TIMEOUT_SECONDS = 180.0
@@ -651,7 +653,7 @@ def _resolve_validation_final_status(
     *,
     result: str,
     acceptance_passed: bool,
-    validation_mode: Mapping[str, object],
+    validation_mode: dict[str, object],
 ) -> str:
     if bool(validation_mode.get("comparison_only_validation")):
         return "completed" if result == "succeeded" else "failed"
@@ -2154,7 +2156,7 @@ def _load_optional_json_artifact(path_value: object) -> tuple[dict[str, object] 
 
 def _resolve_reader_verifier_config(
     *,
-    validation_mode: Mapping[str, object],
+    validation_mode: dict[str, object],
     document_profile_id: str,
     run_profile_id: str,
     app_config: object | None,
@@ -3073,7 +3075,7 @@ def _run_reader_verifier(
     run_profile_id: str,
     app_config: object | None,
     runtime_app_config: Mapping[str, object],
-    validation_mode: Mapping[str, object],
+    validation_mode: dict[str, object],
     evidence_payload: Mapping[str, object],
     evidence_path: Path,
     max_retries: int,
@@ -3308,7 +3310,7 @@ def _write_reader_verifier_artifacts(
     reader_cleanup_evidence: Mapping[str, object],
     app_config: object | None,
     runtime_app_config: Mapping[str, object],
-    validation_mode: Mapping[str, object],
+    validation_mode: dict[str, object],
     max_retries: int,
 ) -> dict[str, object]:
     evidence_path = artifact_dir / f"{artifact_prefix}_reader_quality_evidence.json"
@@ -3526,10 +3528,10 @@ def _run_repeat_validation(
     source_path: Path,
     artifact_root: Path,
     requested_run_profile_id: str | None,
+    parent_run_id: str,
 ) -> None:
     validation_mode = _build_validation_mode_payload(run_profile)
     artifact_root.mkdir(parents=True, exist_ok=True)
-    parent_run_id = _build_run_id(source_path)
     artifact_dir = artifact_root / "runs" / parent_run_id
     artifact_dir.mkdir(parents=True, exist_ok=True)
 
@@ -3730,6 +3732,7 @@ def _run_repeat_validation(
                 "latest_markdown_path": _path_for_report(latest_markdown_path) if last_markdown_artifact is not None else None,
                 "latest_docx_path": _path_for_report(latest_docx_path) if last_docx_artifact is not None else None,
                 "latest_manifest_json": _path_for_report(latest_manifest_path),
+                "app_log": _path_for_report(artifact_dir / RUN_LOG_FILENAME),
                 **repeat_artifact_references,
             },
         }
@@ -5300,7 +5303,7 @@ def _merge_reader_cleanup_artifact_paths(
 
 def _build_validation_completion_detail(
     *,
-    validation_mode: Mapping[str, object],
+    validation_mode: dict[str, object],
     acceptance_passed: bool,
     report_path: Path,
     reader_cleanup_evidence: Mapping[str, object] | None = None,
@@ -5566,13 +5569,18 @@ def main() -> None:
     source_path = document_profile.resolved_source_path(PROJECT_ROOT)
     artifact_root = REAL_DOCUMENT_ARTIFACT_ROOT
     if run_profile.repeat_count > 1 and not repeat_count_override:
-        _run_repeat_validation(
-            document_profile=document_profile,
-            run_profile=run_profile,
-            source_path=source_path,
-            artifact_root=artifact_root,
-            requested_run_profile_id=requested_run_profile_id,
-        )
+        parent_run_id = _build_run_id(source_path)
+        # Each repeat is a child process with its own forced run id, so it writes its own
+        # ``app.log``; the parent's file holds only the orchestration's records.
+        with app_logger.redirect_log_file(artifact_root / "runs" / parent_run_id / RUN_LOG_FILENAME):
+            _run_repeat_validation(
+                document_profile=document_profile,
+                run_profile=run_profile,
+                source_path=source_path,
+                artifact_root=artifact_root,
+                requested_run_profile_id=requested_run_profile_id,
+                parent_run_id=parent_run_id,
+            )
         return
 
     artifact_root.mkdir(parents=True, exist_ok=True)
@@ -5582,10 +5590,37 @@ def main() -> None:
     artifact_prefix = document_profile.artifact_prefix
     output_basename = document_profile.output_basename or f"{source_path.stem}_validated"
 
-    for handler in app_logger.get_logger().handlers:
-        if hasattr(handler, "maxBytes"):
-            setattr(handler, "maxBytes", 1_000_000_000)
+    # Spec 067 FR-013: the run's structured log lives in the run's own directory, next to
+    # its report, not in the shared ``.run/app.log`` -- parallel runner processes appending
+    # to one file on DrvFs lost lines, and a shared file cannot be counted per run. The
+    # per-run handler does not rotate, which is also why the old ``maxBytes`` override of
+    # the shared handler is gone: nothing of this run reaches that handler any more.
+    with app_logger.redirect_log_file(artifact_dir / RUN_LOG_FILENAME):
+        _run_single_validation(
+            document_profile=document_profile,
+            run_profile=run_profile,
+            validation_mode=validation_mode,
+            source_path=source_path,
+            artifact_root=artifact_root,
+            run_id=run_id,
+            artifact_dir=artifact_dir,
+            artifact_prefix=artifact_prefix,
+            output_basename=output_basename,
+        )
 
+
+def _run_single_validation(
+    *,
+    document_profile,
+    run_profile,
+    validation_mode: dict[str, object],
+    source_path: Path,
+    artifact_root: Path,
+    run_id: str,
+    artifact_dir: Path,
+    artifact_prefix: str,
+    output_basename: str,
+) -> None:
     report_path = artifact_dir / f"{artifact_prefix}_report.json"
     summary_path = artifact_dir / f"{artifact_prefix}_summary.txt"
     progress_path = artifact_dir / f"{artifact_prefix}_progress.json"
@@ -6016,6 +6051,7 @@ def main() -> None:
             "latest_docx_path": _path_for_report(latest_docx_path) if docx_artifact_path is not None else None,
             "latest_tts_text_path": _path_for_report(latest_tts_path) if tts_artifact_path is not None else None,
             "latest_manifest_json": _path_for_report(latest_manifest_path),
+            "app_log": _path_for_report(artifact_dir / RUN_LOG_FILENAME),
         },
         "formatting_diagnostics_paths": [_path_for_report(Path(path)) for path in formatting_diagnostics_paths],
         "formatting_diagnostics_discovery": {
@@ -6257,6 +6293,7 @@ def main() -> None:
         f"reader_mvp_status_md={cast(Mapping[str, object], report.get('output_artifacts') or {}).get('reader_mvp_status_md')}",
         f"tts_text_path={report['output_artifacts']['tts_text_path']}",
         f"latest_manifest_json={report['output_artifacts']['latest_manifest_json']}",
+        f"app_log={report['output_artifacts']['app_log']}",
         f"python_executable={report['run']['environment']['python_executable']}",
         f"python_version={report['run']['environment']['python_version']}",
         f"pythonpath={report['run']['environment']['pythonpath']}",
