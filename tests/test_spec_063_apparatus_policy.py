@@ -1008,6 +1008,13 @@ _FR006_REPLAY_BOOKS = [
     ("creating_wealth", "creatingwealth_pdf_full_benchmark_report.json", 0, 0, 110),
     ("money_sustainability", "money_sustainability_pdf_full_heldout_report.json", 0, 0, 1),
 ]
+# Final records the assembly deliberately builds differently since these runs were recorded,
+# by the paragraph ids they hold. Spec 065 (I-4): the contents-listed heading
+# "Acknowledgements" is no longer welded to the dateline after it -- the recorded run has one
+# record ``p1346+p1347``, the replay ``## Благодарности`` and the dateline.
+_FR006_REPLAY_CHANGED_SINCE_RECORDING: dict[str, frozenset[str]] = {
+    "money_sustainability": frozenset({"p1346", "p1347"}),
+}
 
 
 @pytest.mark.skipif(
@@ -1139,8 +1146,19 @@ def test_fr006_replay_on_recorded_translate_runs(book, report_name, recorded_fal
     print(json.dumps({"book": book, "recorded_fallbacks": recorded, "after": after, "relabelled": len(relabel_ids)}))
 
     assert (recorded, after, len(relabel_ids)) == (recorded_fallbacks, fallbacks_after, relabelled)
-    # The replay IS the run: without FR-006 it reproduces the recorded final registry.
-    assert [text for _, text, _ in base_final] == [entry.get("text") for entry in recorded_final]
+    # The replay IS the run: without FR-006 it reproduces the recorded final registry, apart
+    # from the records a later, deliberate assembly change rebuilds (listed above).
+    changed_since = _FR006_REPLAY_CHANGED_SINCE_RECORDING.get(book, frozenset())
+
+    def _untouched(paragraph_id: object, merged_ids: object) -> bool:
+        return not changed_since.intersection({paragraph_id, *cast(list[str], merged_ids or [])})
+
+    assert [text for paragraph_id, text, merged in base_final if _untouched(paragraph_id, merged)] == [
+        entry.get("text")
+        for entry in recorded_final
+        if _untouched(entry.get("paragraph_id"), entry.get("merged_paragraph_ids"))
+    ]
+    assert sum(1 for paragraph_id, _, merged in base_final if not _untouched(paragraph_id, merged)) == len(changed_since)
     # FR-006 changes statuses, never the delivered artifact: same markdown, same paragraphs,
     # same merges, and the 061 invariants (numbers, footnote markers) hold trivially on it.
     assert after_markdown == base_markdown

@@ -259,6 +259,9 @@ class FinalAssemblyEntry:
     # does / does not end in terminal punctuation. None: the source paragraph is unknown
     # (fallback entry, missing paragraph_id, or no source_paragraphs) -- no signal.
     source_ends_sentence: bool | None = None
+    # Spec 065 (I-4): the source paragraph is a heading that the document's own table of
+    # contents lists, and it stands after that listing. See ``_collect_toc_listed_heading_ids``.
+    source_heading_listed_in_toc: bool = False
 
 
 @dataclass(frozen=True)
@@ -1007,6 +1010,15 @@ def _entry_can_override_source_heading_signal(
         return False
     if entry.structural_role in {"toc_header", "toc_entry"}:
         return False
+    # Spec 065 (I-4): a heading the document's own table of contents lists is a section of
+    # that document, and no reading of the TRANSLATION around it outranks that. The context
+    # predicates below judge the shape of neighbouring paragraphs -- a previous block that
+    # does not end in terminal punctuation, a short line after -- and that shape is the
+    # same for a back-matter section heading between an unpunctuated list line and a
+    # dateline as for an index entry the import tagged as a heading; only the contents
+    # listing tells them apart.
+    if entry.source_heading_listed_in_toc:
+        return False
     if _entry_is_source_backed_numbered_citation_heading(entry):
         return False
     if _entry_has_mixed_block_parenthetical_tail_context(entry, previous_entry, next_entry):
@@ -1254,6 +1266,7 @@ def _normalize_final_entry_list_fragments(
             paragraph_status=entry.paragraph_status,
             narration_excluded=entry.narration_excluded,
             source_ends_sentence=entry.source_ends_sentence,
+            source_heading_listed_in_toc=entry.source_heading_listed_in_toc,
         )
 
     # Walk the LIVE list, not a snapshot: an entry that has just received a carried
@@ -1375,6 +1388,7 @@ def _apply_final_entry_post_normalization(
                 paragraph_status=entry.paragraph_status,
                 narration_excluded=entry.narration_excluded,
                 source_ends_sentence=entry.source_ends_sentence,
+                source_heading_listed_in_toc=entry.source_heading_listed_in_toc,
             )
         )
     normalized_entries = list(_normalize_final_entry_list_fragments(tuple(normalized_entries), source_text_by_id))
@@ -1441,6 +1455,67 @@ def _entry_has_source_unit_role(entry: FinalAssemblyEntry) -> bool:
     different ``ParagraphUnit`` fields and either can carry the signal alone.
     """
     return entry.role in _SOURCE_UNIT_ROLES or entry.structural_role in _SOURCE_UNIT_ROLES
+
+
+_TOC_LISTING_EMPHASIS_PATTERN = re.compile(r"[*_`]+")
+# A page reference closing a contents line: "Acknowledgements 249", "Foreword ix",
+# "Index ........ 251". Lower-case roman only -- an upper-case one is part of the title
+# ("Chapter IV").
+_TOC_LISTING_PAGE_SUFFIX_PATTERN = re.compile(r"(?:\s*[.·…]{2,}\s*|\s+)(?:\d+|[ivxlcdm]+)$")
+
+
+def _toc_listing_text(text: str) -> str:
+    return re.sub(r"\s+", " ", _TOC_LISTING_EMPHASIS_PATTERN.sub("", text)).strip()
+
+
+def _toc_listing_key(text: str) -> str:
+    return text.rstrip(":.").strip().casefold()
+
+
+def _collect_toc_listed_heading_ids(source_paragraphs: Sequence[object] | None) -> frozenset[str]:
+    """Spec 065 (I-4): the source headings the document's own table of contents lists.
+
+    A source paragraph is listed when it carries a heading signal (``heading_level``, role
+    or structural role ``heading``), is not itself a contents line, its text equals the text
+    of a ``toc_entry`` paragraph, and it stands AFTER that contents line in the document.
+    Texts are compared without emphasis markers, runs of whitespace, a trailing colon or
+    full stop, and case; a contents line also matches without its closing page reference.
+
+    "After" is what separates a section from front matter that repeats a contents line: a
+    title page's "Preface by Dennis Meadows" credit precedes the contents and is not the
+    preface's heading. The comparison is exact on purpose -- a heading that matches no
+    contents line keeps today's treatment, so a miss costs nothing that was not already
+    lost, while a loose match would shield an index entry the import tagged as a heading.
+    """
+    paragraphs = list(source_paragraphs or ())
+    first_listing_position: dict[str, int] = {}
+    for position, paragraph in enumerate(paragraphs):
+        if _coerce_source_paragraph_str(paragraph, "structural_role") != "toc_entry":
+            continue
+        listing_text = _toc_listing_text(_coerce_source_paragraph_str(paragraph, "text") or "")
+        for variant in (listing_text, _TOC_LISTING_PAGE_SUFFIX_PATTERN.sub("", listing_text)):
+            key = _toc_listing_key(variant)
+            if key:
+                first_listing_position.setdefault(key, position)
+    if not first_listing_position:
+        return frozenset()
+    listed: set[str] = set()
+    for position, paragraph in enumerate(paragraphs):
+        structural_role = _coerce_source_paragraph_str(paragraph, "structural_role")
+        if structural_role in {"toc_header", "toc_entry"}:
+            continue
+        if not (
+            _coerce_source_paragraph_int(paragraph, "heading_level") is not None
+            or _coerce_source_paragraph_str(paragraph, "role") == "heading"
+            or structural_role == "heading"
+        ):
+            continue
+        paragraph_id = _coerce_source_paragraph_id(paragraph)
+        key = _toc_listing_key(_toc_listing_text(_coerce_source_paragraph_str(paragraph, "text") or ""))
+        listing_position = first_listing_position.get(key)
+        if paragraph_id and listing_position is not None and position > listing_position:
+            listed.add(paragraph_id)
+    return frozenset(listed)
 
 
 def _build_source_paragraph_lookup(source_paragraphs: Sequence[object] | None) -> dict[str, object]:
@@ -1562,6 +1637,7 @@ def _build_recovery_entry(
         paragraph_status=entry.paragraph_status,
         narration_excluded=entry.narration_excluded,
         source_ends_sentence=entry.source_ends_sentence,
+        source_heading_listed_in_toc=entry.source_heading_listed_in_toc,
     )
 
 
@@ -1844,6 +1920,9 @@ def _merge_entry_pair(left: FinalAssemblyEntry, right: FinalAssemblyEntry) -> Fi
         # Taking the left's here would judge a three-paragraph chain by the source
         # paragraph two links back.
         source_ends_sentence=right.source_ends_sentence,
+        # Spec 065: like role / heading_level above, the LEFT entry's -- it describes the
+        # source paragraph the merged entry STARTS with.
+        source_heading_listed_in_toc=left.source_heading_listed_in_toc,
     )
 
 
@@ -1986,6 +2065,7 @@ def assemble_final_markdown(
     source_paragraphs: Sequence[object] | None,
 ) -> FinalMarkdownAssemblyResult:
     source_lookup = _build_source_paragraph_lookup(source_paragraphs)
+    toc_listed_heading_ids = _collect_toc_listed_heading_ids(source_paragraphs)
     registry_by_block = _build_registry_by_block(generated_paragraph_registry)
     entries: list[FinalAssemblyEntry] = []
     inconsistent_blocks: list[int] = []
@@ -2050,6 +2130,7 @@ def assemble_final_markdown(
                     source_ends_sentence=_source_text_ends_sentence(
                         _coerce_source_paragraph_str(source_paragraph, "text") if source_paragraph is not None else None
                     ),
+                    source_heading_listed_in_toc=bool(paragraph_id) and paragraph_id in toc_listed_heading_ids,
                 )
             )
 

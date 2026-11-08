@@ -2389,6 +2389,131 @@ def test_assemble_final_markdown_demotes_false_generated_heading_with_previous_b
     assert result.diagnostics.accepted_merges == 2
 
 
+# Spec 065 (I-4). The shape below is the one that lost a section heading on a paid run: an
+# unpunctuated label line closes the previous block; the next block opens with the heading
+# and a short dateline. ``_entry_has_previous_block_and_same_block_tail_context`` reads that
+# shape as a sentence torn across the block boundary, demotes the heading and welds it to
+# the dateline. The same shape is what an index entry the import tagged as a heading looks
+# like, so the shape stays as it is; the document's own contents listing decides.
+_SPEC_065_LONG_BODY = (
+    "Эта работа складывалась в два этапа, и каждый из них оставил в тексте свой след: сначала рабочая "
+    "группа, затем отдельная редакция."
+)
+
+
+def _spec_065_heading_case(*, contents_position: int | None, contents_text: str = "**Afterword** *57*"):
+    paragraphs = [
+        _make_paragraph_stub("label", 10, text="**H**: Annex on tides"),
+        _make_paragraph_stub("heading", 11, role="heading", structural_role="heading", heading_level=2, text="Afterword"),
+        _make_paragraph_stub("dateline", 12, text="*Geneva, March 2010*"),
+        _make_paragraph_stub("body", 13, text="This work took shape in two stages."),
+    ]
+    if contents_position is not None:
+        contents = [
+            _make_paragraph_stub("contents-header", 0, role="heading", structural_role="toc_header", heading_level=2, text="Contents"),
+            _make_paragraph_stub("contents-entry", 1, structural_role="toc_entry", text=contents_text),
+        ]
+        paragraphs[contents_position:contents_position] = contents
+    return document_pipeline_output_validation.assemble_final_markdown(
+        processed_chunks=[
+            "**H**: Приложение о приливах",
+            "## Послесловие\n\n*Женева, март 2010 г.*\n\n" + _SPEC_065_LONG_BODY,
+        ],
+        generated_paragraph_registry=[
+            {"block_index": 1, "paragraph_id": "label", "text": "**H**: Приложение о приливах"},
+            {"block_index": 2, "paragraph_id": "heading", "text": "## Послесловие"},
+            {"block_index": 2, "paragraph_id": "dateline", "text": "*Женева, март 2010 г.*"},
+            {"block_index": 2, "paragraph_id": "body", "text": _SPEC_065_LONG_BODY},
+        ],
+        source_paragraphs=paragraphs,
+    )
+
+
+def test_assemble_final_markdown_keeps_contents_listed_heading_before_dateline():
+    result = _spec_065_heading_case(contents_position=0)
+
+    assert result.final_markdown == (
+        "**H**: Приложение о приливах\n\n## Послесловие\n\n*Женева, март 2010 г.*\n\n" + _SPEC_065_LONG_BODY
+    )
+    assert [entry.paragraph_id for entry in result.entries] == ["label", "heading", "dateline", "body"]
+    assert result.entries[1].generated_heading_kind == "real_heading"
+    assert result.diagnostics.demoted_false_headings == 0
+    assert result.diagnostics.accepted_merges == 0
+
+
+def test_assemble_final_markdown_still_demotes_the_same_shape_when_contents_do_not_list_it():
+    # Counterexample: no contents listing -> today's behaviour, unchanged. This is the path
+    # that keeps an index entry the import tagged as a heading out of the heading outline.
+    result = _spec_065_heading_case(contents_position=None)
+
+    # Here nothing breaks the chain, so the label line joins too (block 1 and block 2 are
+    # adjacent); on the paid run the label had already merged with ITS predecessor.
+    assert result.final_markdown == (
+        "**H**: Приложение о приливах Послесловие *Женева, март 2010 г.*\n\n" + _SPEC_065_LONG_BODY
+    )
+    assert result.entries[0].merged_paragraph_ids == ("label", "heading", "dateline")
+    assert result.diagnostics.demoted_false_headings == 1
+
+
+def test_assemble_final_markdown_contents_listing_after_the_heading_does_not_shield_it():
+    # Counterexample: front matter BEFORE the contents (a title-page credit line) repeats a
+    # contents line without being that section's heading; only a heading standing after its
+    # listing is shielded.
+    result = _spec_065_heading_case(contents_position=4)
+
+    assert result.entries[0].merged_paragraph_ids == ("label", "heading", "dateline")
+    assert result.diagnostics.demoted_false_headings == 1
+
+
+def test_assemble_final_markdown_contents_listing_does_not_stop_a_torn_body_sentence_from_merging():
+    # Counterexample: the shield is for headings only; a body paragraph torn across a block
+    # boundary still rejoins its continuation in a document that has a contents listing.
+    result = document_pipeline_output_validation.assemble_final_markdown(
+        processed_chunks=[
+            "Ряд исследователей наблюдал этот эффект в течение",
+            "нескольких лет подряд.",
+        ],
+        generated_paragraph_registry=[
+            {"block_index": 1, "paragraph_id": "left", "text": "Ряд исследователей наблюдал этот эффект в течение"},
+            {"block_index": 2, "paragraph_id": "right", "text": "нескольких лет подряд."},
+        ],
+        source_paragraphs=[
+            _make_paragraph_stub("contents-header", 0, role="heading", structural_role="toc_header", heading_level=2, text="Contents"),
+            _make_paragraph_stub("contents-entry", 1, structural_role="toc_entry", text="Afterword"),
+            _make_paragraph_stub("left", 2, text="Several researchers observed this effect over"),
+            _make_paragraph_stub("right", 3, text="several years in a row."),
+        ],
+    )
+
+    assert result.final_markdown == "Ряд исследователей наблюдал этот эффект в течение нескольких лет подряд."
+    assert result.entries[0].merged_paragraph_ids == ("left", "right")
+
+
+@pytest.mark.parametrize(
+    ("contents_text", "heading_text", "listed"),
+    [
+        ("**Afterword** *57*", "Afterword", True),
+        ("*Acknowledgements 249*", "ACKNOWLEDGEMENTS", True),
+        ("*Foreword* *ix*", "Foreword", True),
+        ("Notes ........ 225", "Notes", True),
+        ("Chapter IV", "Chapter IV", True),
+        ("Chapter IV", "Chapter", False),
+        ("Afterword and Thanks", "Afterword", False),
+    ],
+)
+def test_collect_toc_listed_heading_ids_compares_whole_lines(contents_text, heading_text, listed):
+    paragraphs = [
+        _make_paragraph_stub("contents-entry", 0, structural_role="toc_entry", text=contents_text),
+        _make_paragraph_stub("heading", 1, role="heading", structural_role="heading", heading_level=2, text=heading_text),
+        _make_paragraph_stub("body", 2, text=heading_text),
+    ]
+
+    result = document_pipeline_output_validation._collect_toc_listed_heading_ids(paragraphs)
+
+    # A body paragraph with the same text is never listed: the shield is for headings.
+    assert result == (frozenset({"heading"}) if listed else frozenset())
+
+
 def test_assemble_final_markdown_preserves_source_backed_numbered_citation_heading():
     result = document_pipeline_output_validation.assemble_final_markdown(
         processed_chunks=[
