@@ -32,7 +32,6 @@ PACKAGE_MODULES = (
     "docxaicorrector.generation.formatting_diagnostics_retention",
     "docxaicorrector.generation.message_formatting",
     "docxaicorrector.generation.openai_response_utils",
-    "docxaicorrector.generation.search",
     "docxaicorrector.real_image.manifest",
     "docxaicorrector.validation.common",
     "docxaicorrector.validation.profiles",

@@ -24,7 +24,6 @@
 /src/docxaicorrector/generation/formatting_diagnostics_retention.py @slawa19
 /src/docxaicorrector/generation/message_formatting.py @slawa19
 /src/docxaicorrector/generation/openai_response_utils.py @slawa19
-/src/docxaicorrector/generation/search.py @slawa19
 /src/docxaicorrector/validation/common.py @slawa19
 /src/docxaicorrector/validation/profiles.py @slawa19
 /src/docxaicorrector/validation/structural.py @slawa19
