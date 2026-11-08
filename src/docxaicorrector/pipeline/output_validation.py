@@ -613,16 +613,48 @@ def is_citation_form_paragraph(text: str) -> bool:
 #   one; "in 2 years" is not one;
 # * the paragraph's CHAIN is the longest sequence of note numbers in text order that counts
 #   n, n+1, n+2, ...; an ENTRY is the text from one number of the chain to the next;
-# * a NOTES RUN is a chain of at least two entries of which at least half carry a reference
-#   signal (``has_reference_signal``: a year, a locator, a title span, ...), or a chain of one
-#   whose entry carries such a signal and is preceded by a LABEL -- a single token
-#   ("Footnotes") or the citation-form tail of a note torn across a page.
+# * a NOTES RUN is a chain of at least two entries of which at least half carry a CITATION
+#   ANCHOR (``has_citation_anchor``), or a chain of one whose entry carries one and is preceded
+#   by a LABEL -- a single token ("Footnotes") or the citation-form tail of a note torn across a
+#   page.
+#
+# A citation anchor is a mark only a reference carries, stronger than a bare year: a title span
+# (``*Title*``, two or more words in quotes), a year in brackets ("(2010)", "(London: Press,
+# 2004)"), a page or volume locator ("p. 85", "pp.4-19", "vol. 3", "с. 12"), an address
+# ("www.", "http", a dotted domain) or an author form "Surname, I.". Codex
+# acceptance review of 2026-11-08 (P0): with ``has_reference_signal`` -- for which any year is
+# enough -- the numbered body steps "1 Collect receipts from 2010. 2 Sort documents from
+# 1999." read as a notes run, and returned unchanged they were credited as kept citations.
 #
 # A chain of one WITHOUT a label ("6 Methods for Sailing *95*") is NOT a notes run: on the
 # four corpus books that shape matched only lines of a table of contents. The numbers are in
 # spec 067's Changelog (FR-001).
 _NOTE_NUMBER_PATTERN = re.compile(r"(?:(?<=\s)|^)(\d{1,3})\s+(?=\S)")
 _NOTE_ENTRY_OPENERS = "‘“\"«*(["
+_ANCHOR_EMPHASIS_PATTERN = re.compile(r"\*[^*\n]*[^\W\d_][^*\n]*\*")
+_ANCHOR_QUOTED_PATTERN = re.compile(r"‘[^’]*’(?![^\W\d_])|“[^”]*”|\"[^\"]*\"|«[^»]*»")
+_ANCHOR_BRACKETED_YEAR_PATTERN = re.compile(r"[(\[][^()\[\]]*(?<!\d)(?:1[5-9]\d\d|20\d\d)(?!\d)[^()\[\]]*[)\]]")
+_ANCHOR_LOCATOR_PATTERN = re.compile(r"(?<![^\W\d_])(?:pp?|vol|no|с|стр|т)\.\s*(?:\d|[ivxlc]+\b)", re.IGNORECASE)
+_ANCHOR_ADDRESS_PATTERN = re.compile(r"https?://|www\.|[^\W\d_]\.[a-z]{2,}(?:\.[a-z]{2,})*\b")
+_ANCHOR_AUTHOR_PATTERN = re.compile(r"(?<![^\W\d_])[A-Z][^\W\d_]+(?:[-'’][^\W\d_]+)*,\s+[A-Z]\.")
+
+
+def has_citation_anchor(text: str) -> bool:
+    """Spec 067 FR-001: does this note entry carry a mark only a reference carries? See above."""
+    body = str(text or "")
+    if _ANCHOR_EMPHASIS_PATTERN.search(body):
+        return True
+    if any(len(match.group(0).split()) >= 2 for match in _ANCHOR_QUOTED_PATTERN.finditer(body)):
+        return True
+    return any(
+        pattern.search(body)
+        for pattern in (
+            _ANCHOR_BRACKETED_YEAR_PATTERN,
+            _ANCHOR_LOCATOR_PATTERN,
+            _ANCHOR_ADDRESS_PATTERN,
+            _ANCHOR_AUTHOR_PATTERN,
+        )
+    )
 
 
 def _note_number_chain(text: str) -> list[tuple[int, int, int]]:
@@ -659,7 +691,7 @@ def notes_run_parts(text: str) -> tuple[str, tuple[str, ...]] | None:
         for order, (_, _, end) in enumerate(chain)
     )
     lead = body[: chain[0][1]].strip()
-    with_signal = sum(1 for entry in entries if has_reference_signal(entry))
+    with_signal = sum(1 for entry in entries if has_citation_anchor(entry))
     if len(chain) >= 2:
         return (lead, entries) if with_signal * 2 >= len(chain) else None
     if not with_signal or not lead:
@@ -682,14 +714,16 @@ def notes_run_reads_as_citations(text: str) -> bool:
     is either a label (a title of the apparatus, translated under D1, so an unchanged label is
     NOT a kept reference) or the tail of a torn note. One entry of commentary left in the
     source language keeps the paragraph out of the credit: that is the defect A-1 names, and
-    the gate must go on seeing it.
+    the gate must go on seeing it. Every piece must also carry a CITATION ANCHOR
+    (``has_citation_anchor``): a short sentence with a year is not a reference (Codex
+    acceptance review 2026-11-08, P0).
     """
     parts = notes_run_parts(text)
     if parts is None:
         return False
     lead, entries = parts
     pieces = ((lead,) if lead else ()) + entries
-    return all(is_citation_form_paragraph(piece) for piece in pieces)
+    return all(is_citation_form_paragraph(piece) and has_citation_anchor(piece) for piece in pieces)
 
 
 # --- Spec 065 FR-006: a parenthetical meta-comment written INSTEAD of a paragraph ----------
