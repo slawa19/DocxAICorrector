@@ -370,6 +370,14 @@ def build_paragraph_units_from_text_spans(
         layout_profile=layout_profile,
         dehyphenation_evidence=dehyphenation_evidence,
     )
+    # Spec 065 FR-009: the body counterpart, outside those sections -- a sentence that wrapped
+    # before a number ("...in" + "1815. He was said ...") is not a list item.
+    emitted = _join_numbered_body_continuations(
+        emitted,
+        ordered_spans,
+        layout_profile=layout_profile,
+        dehyphenation_evidence=dehyphenation_evidence,
+    )
 
     _attach_pdf_layout_signals(emitted, ordered_spans, layout_profile=layout_profile)
 
@@ -2464,6 +2472,111 @@ def _space_joined_style_runs(spans: list[PdfTextSpan]) -> list[StyleRun]:
         if result:
             result.append((" ", False, False))
         result.extend(runs)
+    return result
+
+
+# A body line that ends here has finished its sentence -- or introduces what follows (a colon,
+# a semicolon), which is how a real numbered list is announced.
+_BODY_LINE_CLOSED_CHARS = ".!?…:;"
+
+
+def _unit_ordered_list_number(unit: ParagraphUnit) -> int | None:
+    match = _ORDERED_LIST_PATTERN.match((unit.text or "").strip())
+    return int(match.group("marker")) if match else None
+
+
+def _body_text_is_closed(text: str) -> bool:
+    stripped = text.rstrip()
+    while stripped and (stripped[-1] in _ENTRY_TRAILING_CLOSER_CHARS or stripped[-1].isspace()):
+        stripped = stripped[:-1]
+    return not stripped or stripped[-1] in _BODY_LINE_CLOSED_CHARS
+
+
+def _is_numbered_body_continuation(
+    head: ParagraphUnit,
+    tail: ParagraphUnit,
+    *,
+    spans_by_origin: dict[int, list[PdfTextSpan]],
+    layout_profile: _PdfHeadingLayoutProfile,
+    last_list_item_number: int | None,
+) -> bool:
+    """Spec 065 FR-009: a list item that opens with a number and a period or bracket ("1815. He
+    was said", "2011) argued") right after a body paragraph that broke mid-sentence continues
+    that paragraph; the line break fell before a number.
+
+    The form, all of it required -- the geometry the spec 064 notes-join reads, in the body:
+      * the paragraph does not close: its last character, past closing quotes, brackets and
+        superscript references, is none of . ! ? ... : ;
+      * its last line ran out of room: the number would not have fit before the body column's
+        right edge (`_entry_line_ran_out_of_room`);
+      * the item's first line is the next line: on the same page with less than a blank line
+        above it, or at the top of the next page (`_entry_lines_are_consecutive`);
+      * both lines are set in one size;
+      * the number is not the next one of a running list: not the number of the last list
+        item since the last heading plus one.
+    A real numbered list is announced by a line that closes (usually with a colon) or that
+    ends short of the margin, and its later items follow the item before them in number.
+    Notes and reference sections are left to the notes-join: there an entry number after an
+    address that ran to the margin opens the next entry."""
+    if head.role != "body" or head.structural_role != "body" or tail.role != "list":
+        return False
+    number = _unit_ordered_list_number(tail)
+    if number is None:
+        return False
+    if last_list_item_number is not None and number == last_list_item_number + 1:
+        return False
+    if _body_text_is_closed(head.text or ""):
+        return False
+    last_line = _unit_line_span(head, -1, spans_by_origin)
+    first_line = _unit_line_span(tail, 0, spans_by_origin)
+    if last_line is None or first_line is None:
+        return False
+    if not _font_sizes_match(_span_font_size(last_line), _span_font_size(first_line)):
+        return False
+    return _entry_lines_are_consecutive(last_line, first_line) and _entry_line_ran_out_of_room(
+        last_line, _normalize_text(first_line.text), layout_profile=layout_profile
+    )
+
+
+def _join_numbered_body_continuations(
+    units: list[ParagraphUnit],
+    ordered_spans: list[PdfTextSpan],
+    *,
+    layout_profile: _PdfHeadingLayoutProfile,
+    dehyphenation_evidence: _SoftWrapDehyphenationEvidence | None = None,
+) -> list[ParagraphUnit]:
+    """Spec 065 FR-009: join a body paragraph and the "list item" its own sentence ran into.
+    See `_is_numbered_body_continuation` for the form."""
+    in_back_matter = _back_matter_entry_region_flags(units)
+    spans_by_origin: dict[int, list[PdfTextSpan]] = {}
+    for span in ordered_spans:
+        spans_by_origin.setdefault(_span_origin_index(span), []).append(span)
+    result: list[ParagraphUnit] = []
+    last_list_item_number: int | None = None
+    for unit, in_region in zip(units, in_back_matter):
+        if unit.role == "heading":
+            last_list_item_number = None
+        if (
+            not in_region
+            and result
+            and _is_numbered_body_continuation(
+                result[-1],
+                unit,
+                spans_by_origin=spans_by_origin,
+                layout_profile=layout_profile,
+                last_list_item_number=last_list_item_number,
+            )
+        ):
+            result[-1] = replace(
+                _merge_torn_back_matter_entry(
+                    result[-1], unit, dehyphenation_evidence=dehyphenation_evidence
+                ),
+                boundary_rationale="merged_numbered_body_continuation",
+            )
+            continue
+        if unit.role == "list":
+            last_list_item_number = _unit_ordered_list_number(unit)
+        result.append(unit)
     return result
 
 

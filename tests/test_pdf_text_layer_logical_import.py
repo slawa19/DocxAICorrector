@@ -2421,3 +2421,94 @@ def test_065_fr008_heading_outside_a_notes_section_is_not_touched() -> None:
     logical_import._settle_back_matter_entry_roles(units, _notes_page(entry, fragment, title="Overview"))
 
     assert units[2].role == "heading"
+
+
+# Spec 065 FR-009 (I-3): a sentence that wrapped before a number ("...the Battle of Waterloo in"
+# + "1815. He was said ...") is one paragraph, not a body paragraph and a numbered-list item.
+
+_WRAP_HEAD = "A running body line that establishes the leading tells how the bank, during"
+_WRAP_NUMBER = "1815. He was said to have made a fortune from holding on to the bonds."
+
+
+def _body_lead_spans(page: int = 1) -> list[PdfTextSpan]:
+    return [
+        _span(page, "A first running body line that establishes the document leading here.", top=40, bottom=54, x1=446),
+        _span(page, "A second running body line that establishes the document leading too", top=56, bottom=70, x1=448),
+    ]
+
+
+def test_065_fr009_number_after_a_mid_sentence_wrap_continues_the_paragraph() -> None:
+    texts = _texts(
+        _body_lead_spans()
+        + [
+            _span(1, _WRAP_HEAD, top=72, bottom=86, x1=447),
+            _span(1, _WRAP_NUMBER, top=88, bottom=102, x1=420),
+        ]
+    )
+
+    assert any(f"{_WRAP_HEAD} {_WRAP_NUMBER}" in text for text in texts)
+    assert _WRAP_NUMBER not in texts
+
+
+def test_065_fr009_number_at_the_top_of_the_next_page_continues_the_paragraph() -> None:
+    texts = _texts(
+        _body_lead_spans()
+        + [
+            _span(1, _WRAP_HEAD, top=760, bottom=774, x1=447),
+            _span(2, _WRAP_NUMBER, top=40, bottom=54, x1=420),
+        ]
+    )
+
+    assert any(f"{_WRAP_HEAD} {_WRAP_NUMBER}" in text for text in texts)
+
+
+def test_065_fr009_list_announced_by_a_closed_line_stays_a_list() -> None:
+    # Counterexamples: a real list follows a line that closes (a colon), or one that ends
+    # short of the margin.
+    for head in (
+        "A running body line that establishes the leading names the three steps:",
+        "The three steps are",
+    ):
+        paragraphs = build_paragraph_units_from_text_spans(
+            _body_lead_spans()
+            + [
+                _span(1, head, top=72, bottom=86, x1=447 if head.endswith(":") else 160),
+                _span(1, "1. Collect the data from every branch of the bank.", top=88, bottom=102, x1=380),
+            ]
+        ).paragraphs
+
+        item = next(p for p in paragraphs if p.text.startswith("1. Collect"))
+        assert item.role == "list"
+
+
+def test_065_fr009_next_item_of_a_running_list_stays_a_list() -> None:
+    # Counterexample: the item before a wrapped, open line was number 1; "2." is the next item
+    # of that list, whatever the line above it looks like.
+    first = _span(1, "1. The first item of the list opens the enumeration here.", top=72, bottom=86, x1=400)
+    wrapped = _span(1, "a body line of the first item that runs to the right edge and", top=88, bottom=102, x1=447)
+    second = _span(1, "2. The second item of the list follows its own number.", top=104, bottom=118, x1=380)
+    spans = _body_lead_spans() + [first, wrapped, second]
+    units = [
+        _line_unit(first, role="list"),
+        _line_unit(wrapped, role="body"),
+        _line_unit(second, role="list"),
+    ]
+    profile = logical_import._build_heading_layout_profile(spans, repeated_furniture_keys=set())
+
+    joined = logical_import._join_numbered_body_continuations(units, spans, layout_profile=profile)
+
+    assert [u.role for u in joined] == ["list", "body", "list"]
+
+
+def test_065_fr009_next_note_after_an_address_inside_notes_is_not_joined() -> None:
+    # Counterexample: inside a notes section an entry number after an address that ran to the
+    # margin opens the next entry; that region belongs to the notes-join.
+    address = _span(1, "http://www.example.org/archive/documents/historic/speeches/speech409", top=174, bottom=186, x0=70, x1=447)
+    note = _span(1, "10. Source: a bureau of statistics, own calculations.", top=188, bottom=200, x0=50, x1=380)
+    spans = _notes_page(address, note)
+    units = [_notes_title_unit(), _line_unit(address, role="body"), _line_unit(note, role="list")]
+    profile = logical_import._build_heading_layout_profile(spans, repeated_furniture_keys=set())
+
+    joined = logical_import._join_numbered_body_continuations(units, spans, layout_profile=profile)
+
+    assert [u.role for u in joined] == ["heading", "body", "list"]
