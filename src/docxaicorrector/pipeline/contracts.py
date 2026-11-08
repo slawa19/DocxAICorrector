@@ -57,8 +57,6 @@ class SystemPromptLoader(Protocol):
         target_language: str = "ru",
         editorial_intensity: str = "literary",
         prompt_variant: str = "default",
-        translation_domain: str = "general",
-        source_text: str = "",
     ) -> str: ...
 
 
@@ -241,8 +239,6 @@ class ProcessingContext:
     processing_operation: str
     source_language: str
     target_language: str
-    translation_domain: str
-    translation_domain_instructions: str
     on_progress: ProgressCallback
     runtime: object
     prepared_source_key: str = ""

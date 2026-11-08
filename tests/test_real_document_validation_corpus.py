@@ -132,7 +132,6 @@ def test_run_profile_editorial_intensity_reaches_the_pipeline_prompt_selection(m
             processing_operation="edit",
             source_language="ru",
             target_language="ru",
-            translation_domain="general",
             app_config=runtime_app_config,
         ),
         dependencies=SimpleNamespace(load_system_prompt=_capturing_loader),
@@ -660,7 +659,6 @@ def test_build_structural_checks_enforces_pdf_translation_quality_specific_const
         require_pdf_conversion=True,
         require_no_bullet_headings=True,
         require_no_toc_body_concat=True,
-        require_translation_domain="theology",
     )
     metrics = {
         "formatting_diagnostics_count": 0,
@@ -677,14 +675,12 @@ def test_build_structural_checks_enforces_pdf_translation_quality_specific_const
         "require_pdf_conversion_satisfied": True,
         "bullet_heading_count": 0,
         "false_fragment_heading_count": 0,
-        "scripture_reference_heading_count": 0,
+        "numbered_citation_heading_count": 0,
         "suspicious_heading_repetition_count": 0,
         "residual_bullet_glyph_count": 0,
         "list_fragment_regression_count": 0,
-        "theology_style_deterministic_issue_count": 0,
         "toc_body_concat_detected": False,
         "structure_repair_toc_body_boundary_repairs": 1,
-        "runtime_translation_domain": "theology",
     }
     output_artifacts = {"output_docx_openable": True, "output_visible_text_chars": 100}
 
@@ -700,7 +696,6 @@ def test_build_structural_checks_enforces_pdf_translation_quality_specific_const
     assert by_name["pdf_conversion_required"]["passed"] is True
     assert by_name["no_bullet_headings_required"]["passed"] is True
     assert by_name["no_toc_body_concat_required"]["passed"] is True
-    assert by_name["translation_domain_required"]["passed"] is True
 
 
 def test_build_structural_checks_rejects_effectively_infinite_acceptance_thresholds() -> None:
@@ -717,7 +712,6 @@ def test_build_structural_checks_rejects_effectively_infinite_acceptance_thresho
         require_pdf_conversion=False,
         require_no_bullet_headings=False,
         require_no_toc_body_concat=False,
-        require_translation_domain=None,
     )
     metrics = {
         "formatting_diagnostics_count": 0,
@@ -759,7 +753,6 @@ def test_build_structural_checks_requires_bounded_toc_and_source_boundary_repair
         require_pdf_conversion=False,
         require_no_bullet_headings=False,
         require_no_toc_body_concat=True,
-        require_translation_domain=None,
     )
     metrics = {
         "formatting_diagnostics_count": 0,
@@ -804,7 +797,6 @@ def test_build_structural_checks_accepts_ai_bounded_toc_region_as_boundary_repai
         require_pdf_conversion=False,
         require_no_bullet_headings=False,
         require_no_toc_body_concat=True,
-        require_translation_domain=None,
     )
     metrics = {
         "formatting_diagnostics_count": 0,
@@ -864,7 +856,6 @@ def test_build_structural_checks_prefers_topology_unit_unmapped_counts_when_avai
         require_pdf_conversion=False,
         require_no_bullet_headings=False,
         require_no_toc_body_concat=False,
-        require_translation_domain=None,
     )
     metrics = {
         "formatting_diagnostics_count": 0,
@@ -930,7 +921,6 @@ def test_structural_passthrough_failure_derives_snapshot_block_status_from_prepa
                 keep_all_image_variants=False,
                 model="gpt-5.4",
                 max_retries=1,
-                translation_domain="theology",
             ),
             ui_defaults=_resolution_payload(image_mode="safe"),
         ),
@@ -938,7 +928,7 @@ def test_structural_passthrough_failure_derives_snapshot_block_status_from_prepa
     monkeypatch.setattr(
         real_document_validation_structural,
         "apply_runtime_resolution_to_app_config",
-        lambda app_config, runtime_resolution: {"translation_domain_default": "theology"},
+        lambda app_config, runtime_resolution: {},
     )
     monkeypatch.setattr(
         real_document_validation_structural,
@@ -1027,7 +1017,6 @@ def test_structural_passthrough_failure_derives_detailed_snapshot_reasons_from_p
                 keep_all_image_variants=False,
                 model="gpt-5.4",
                 max_retries=1,
-                translation_domain="theology",
             ),
             ui_defaults=_resolution_payload(image_mode="safe"),
         ),
@@ -1035,7 +1024,7 @@ def test_structural_passthrough_failure_derives_detailed_snapshot_reasons_from_p
     monkeypatch.setattr(
         real_document_validation_structural,
         "apply_runtime_resolution_to_app_config",
-        lambda app_config, runtime_resolution: {"translation_domain_default": "theology"},
+        lambda app_config, runtime_resolution: {},
     )
     monkeypatch.setattr(
         real_document_validation_structural,
@@ -1128,7 +1117,6 @@ def test_markdown_quality_metrics_keep_false_fragment_and_list_fragment_fallback
                 "Поразительно, но все петли следуют одной и той же схеме: 1.\n"
                 "Духовные существа восстают против Бога."
             ),
-            translation_domain="general",
         ),
     )
 
@@ -1138,15 +1126,12 @@ def test_markdown_quality_metrics_keep_false_fragment_and_list_fragment_fallback
     assert metrics["bullet_heading_gate_source"] == "legacy_markdown"
     assert metrics["bullet_heading_classification"] == "markdown_gate"
     assert metrics["raw_bullet_heading_count"] == 0
-    assert metrics["scripture_reference_heading_count"] == 1
+    assert metrics["numbered_citation_heading_count"] == 1
     assert metrics["list_fragment_regression_count"] == 1
     assert metrics["raw_list_fragment_regression_count"] == 1
     assert metrics["mixed_script_term_gate_source"] == "legacy_markdown"
     assert metrics["mixed_script_term_classification"] == "non_structural_hygiene"
     assert metrics["raw_mixed_script_term_count"] == 0
-    assert metrics["theology_style_deterministic_issue_source"] == "legacy_markdown"
-    assert metrics["theology_style_deterministic_issue_classification"] == "domain_style_advisory"
-    assert metrics["raw_theology_style_deterministic_issue_count"] == 0
 
 
 def test_markdown_quality_metrics_do_not_fallback_false_fragment_and_list_fragment_to_latest_markdown() -> None:
@@ -1168,7 +1153,6 @@ def test_markdown_quality_metrics_do_not_fallback_false_fragment_and_list_fragme
                 "Духовные существа восстают против Бога."
             ),
             raw_structural_markdown="",
-            translation_domain="general",
         ),
     )
 
@@ -1178,14 +1162,11 @@ def test_markdown_quality_metrics_do_not_fallback_false_fragment_and_list_fragme
     assert metrics["bullet_heading_gate_source"] == "legacy_markdown"
     assert metrics["bullet_heading_classification"] == "markdown_gate"
     assert metrics["raw_bullet_heading_count"] == 0
-    assert metrics["scripture_reference_heading_count"] == 0
+    assert metrics["numbered_citation_heading_count"] == 0
     assert metrics["list_fragment_regression_count"] == 0
     assert metrics["mixed_script_term_gate_source"] == "legacy_markdown"
     assert metrics["mixed_script_term_classification"] == "non_structural_hygiene"
     assert metrics["raw_mixed_script_term_count"] == 0
-    assert metrics["theology_style_deterministic_issue_source"] == "legacy_markdown"
-    assert metrics["theology_style_deterministic_issue_classification"] == "domain_style_advisory"
-    assert metrics["raw_theology_style_deterministic_issue_count"] == 0
     assert metrics["raw_list_fragment_regression_count"] == 0
 
 
@@ -1205,7 +1186,6 @@ def test_markdown_quality_metrics_keep_residual_bullet_raw_observability_separat
                 "• В 27 начальных школах Чикаго с самым низким рейтингом пяти- и\n\n"
                 "шестиклассники зарабатывали тайм-кредиты."
             ),
-            translation_domain="general",
         ),
     )
 

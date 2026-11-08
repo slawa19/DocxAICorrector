@@ -3,7 +3,6 @@ Every block is translated by a separate call that cannot see the others, so any 
 
 The user message is a JSON object with:
 - "candidates": expressions the AUTHOR introduced — defined, or set in italics or bold where they first appear and then used again — each with how often it occurs, the signals that found it and the context where it was introduced;
-- "fixed_terms": renderings already fixed by a domain glossary — do not repeat or change them.
 
 These expressions are in the glossary already; do not decide whether they belong. Give EVERY candidate one rendering to use everywhere, in the dictionary form of {target_language} (it will be inflected in context):
 - the author's concepts need renderings that keep them apart: when the book contrasts or pairs related concepts, each of them needs its own rendering, and two different candidates must never share one;

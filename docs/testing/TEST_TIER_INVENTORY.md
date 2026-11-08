@@ -63,6 +63,7 @@ This inventory is intentionally pragmatic:
 - `tests/test_preserve_authored_tables.py`
 - `tests/test_processing_runtime.py`
 - `tests/test_processing_service.py`
+- `tests/test_prompts_carry_no_corpus_literals.py`
 - `tests/test_quality_gate_hygiene_channel_operations.py`
 - `tests/test_reader_cleanup_mvp.py`
 - `tests/test_reader_cleanup_service_characterization.py`
@@ -85,7 +86,6 @@ This inventory is intentionally pragmatic:
 - `tests/test_structure_layout_signals.py`
 - `tests/test_structure_validation.py`
 - `tests/test_text_transform_assessment.py`
-- `tests/test_translation_domains.py`
 - `tests/test_validation_formatting_replay.py`
 - `tests/test_ui.py`
 - `tests/test_ui_i18n.py`

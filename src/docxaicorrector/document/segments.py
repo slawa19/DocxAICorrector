@@ -172,7 +172,6 @@ class DocumentContextProfile:
     detected_author: str | None
     source_language: str
     target_language: str
-    translation_domain: str
     style_instructions: str
     glossary_terms: tuple[GlossaryTerm, ...]
     segment_outline: tuple[SegmentOutlineEntry, ...]
@@ -186,7 +185,6 @@ class DocumentContextProfile:
         detected_author: str | None = None,
         source_language: str = "",
         target_language: str = "",
-        translation_domain: str = "general",
         style_instructions: str = "",
         glossary_terms: tuple[GlossaryTerm, ...] = (),
         segment_outline: tuple[SegmentOutlineEntry, ...] = (),
@@ -199,7 +197,6 @@ class DocumentContextProfile:
         object.__setattr__(self, "detected_author", str(detected_author).strip() if isinstance(detected_author, str) and str(detected_author).strip() else None)
         object.__setattr__(self, "source_language", str(source_language or "").strip())
         object.__setattr__(self, "target_language", str(target_language or "").strip())
-        object.__setattr__(self, "translation_domain", str(translation_domain or "general").strip() or "general")
         object.__setattr__(self, "style_instructions", str(style_instructions or "").strip())
         object.__setattr__(self, "glossary_terms", tuple(glossary_terms or ()))
         object.__setattr__(self, "segment_outline", tuple(resolved_outline))
@@ -225,8 +222,6 @@ class DocumentContextProfile:
             header_lines.append(
                 f"- Языки: {self.source_language or 'n/a'} -> {self.target_language or 'n/a'}"
             )
-        if self.translation_domain:
-            header_lines.append(f"- Домен: {self.translation_domain}")
         if self.structure_fingerprint:
             header_lines.append(f"- Структурный отпечаток: {self.structure_fingerprint}")
         if header_lines:

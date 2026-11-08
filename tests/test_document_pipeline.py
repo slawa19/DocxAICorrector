@@ -318,8 +318,6 @@ def test_run_document_processing_passes_text_transform_context_to_system_prompt_
         "target_language": "de",
         "editorial_intensity": "conservative",
         "prompt_variant": "default",
-        "translation_domain": "general",
-        "source_text": "",
     }
 
 
@@ -3308,8 +3306,6 @@ def test_resolve_system_prompt_does_not_mask_internal_type_errors():
         target_language: str = "ru",
         editorial_intensity: str = "literary",
         prompt_variant: str = "default",
-        translation_domain: str = "general",
-        source_text: str = "",
     ):
         raise TypeError("broken template")
 
@@ -3340,8 +3336,6 @@ def test_resolve_system_prompt_falls_back_for_legacy_loader_without_editorial_in
         source_language="en",
         target_language="de",
         editorial_intensity="conservative",
-        translation_domain="theology",
-        source_text="Great Tribulation",
     )
 
     assert resolved == "system"
@@ -3372,20 +3366,19 @@ def test_resolve_system_prompt_calls_loaders_as_before_when_there_is_no_document
         captured.append(dict(kwargs))
         return "system"
 
-    document_pipeline._resolve_system_prompt(
-        kwargs_loader, operation="translate", source_language="en", target_language="ru", source_text="x"
-    )
+    document_pipeline._resolve_system_prompt(kwargs_loader, operation="translate", source_language="en", target_language="ru")
     document_pipeline._resolve_system_prompt(
         kwargs_loader,
         operation="translate",
         source_language="en",
         target_language="ru",
-        source_text="x",
         document_context_prompt="КОНТЕКСТ",
     )
 
     assert "document_context_prompt" not in captured[0]
     assert captured[1]["document_context_prompt"] == "КОНТЕКСТ"
+    # Spec 066 T-1: the domain kwargs are no longer passed to any loader.
+    assert not any(key in call for call in captured for key in ("translation_domain", "source_text"))
 
 
 def test_resolve_system_prompt_keeps_working_for_a_named_loader_without_the_context_parameter():
@@ -3396,21 +3389,18 @@ def test_resolve_system_prompt_keeps_working_for_a_named_loader_without_the_cont
         target_language: str = "ru",
         editorial_intensity: str = "literary",
         prompt_variant: str = "default",
-        translation_domain: str = "general",
-        source_text: str = "",
     ):
-        return f"system:{operation}:{source_text}"
+        return f"system:{operation}:{prompt_variant}"
 
     resolved = document_pipeline._resolve_system_prompt(
         pre_064_loader,
         operation="translate",
         source_language="en",
         target_language="ru",
-        source_text="scan",
         document_context_prompt="КОНТЕКСТ",
     )
 
-    assert resolved == "system:translate:scan"
+    assert resolved == "system:translate:default"
 
 
 # --- spec 064 FR-002: what the model receives, not what a loader double was handed ----------
@@ -3460,12 +3450,7 @@ def _run_translate_with_real_prompt(*, document_context_prompt, app_config=None,
         runtime,
         jobs=jobs
         or [{"target_text": "The Great Tribulation block.", "context_before": "", "context_after": "", "target_chars": 28, "context_chars": 0}],
-        app_config=app_config
-        if app_config is not None
-        else {
-            "translation_domain_default": "theology",
-            "translation_domain_instructions": "ДОМЕН ПЕРЕВОДА: богословие / эсхатология.",
-        },
+        app_config=app_config if app_config is not None else {},
         document_context_prompt=document_context_prompt,
         model="gpt-5.4-mini",
         processing_operation="translate",
@@ -3487,12 +3472,12 @@ def test_document_context_prompt_reaches_the_system_message_the_client_receives(
     assert client.calls, "no block request reached the client"
     for request in client.calls:
         system_text = _request_system_text(request)
-        assert "ДОМЕН ПЕРЕВОДА: богословие / эсхатология." in system_text
         assert "### КОНТЕКСТ ДОКУМЕНТА И ГЛОССАРИЙ ЗАПУСКА:" in system_text
         assert context_prompt in system_text
-        # Its own section, after the domain section and before the context-handling rules.
+        # Its own section, after the intensity section and before the context-handling rules
+        # (spec 066 T-1 removed the domain section that used to stand between them).
         assert (
-            system_text.index("### ДОМЕН И ТЕРМИНОЛОГИЯ:")
+            system_text.index("### СТИЛИСТИЧЕСКАЯ ИНТЕНСИВНОСТЬ:")
             < system_text.index(context_prompt)
             < system_text.index("### РАБОТА С КОНТЕКСТОМ:")
         )
@@ -3508,8 +3493,6 @@ def test_a_run_without_document_context_sends_the_system_prompt_it_always_sent()
         source_language="en",
         target_language="de",
         editorial_intensity="literary",
-        translation_domain="theology",
-        source_text="ДОМЕН ПЕРЕВОДА: богословие / эсхатология.",
     )
     for request in client.calls:
         system_text = _request_system_text(request)
@@ -3699,7 +3682,7 @@ def test_run_document_processing_routes_toc_dominant_translate_block_through_toc
         source_paragraphs=[],
         image_assets=[],
         image_mode="safe",
-        app_config={"translation_domain_default": "theology", "translation_domain_instructions": "ДОМЕН ПЕРЕВОДА: богословие / эсхатология."},
+        app_config={},
         model="gpt-5.4-mini",
         max_retries=1,
         processing_operation="translate",
@@ -3728,7 +3711,6 @@ def test_run_document_processing_routes_toc_dominant_translate_block_through_toc
 
     assert result == "succeeded"
     assert prompts[0]["prompt_variant"] == "toc_translate"
-    assert prompts[0]["translation_domain"] == "theology"
     assert len(generated_calls) == 2
     assert runtime["state"]["latest_markdown"].startswith("Содержание")
     info_events = [event for event in events if event["level"] == logging.INFO]
@@ -4456,7 +4438,7 @@ def test_run_document_processing_keeps_false_fragment_cleanup_display_only_after
     assert payload["quality_status"] == "warn"
     assert payload["gate_reasons"] == ["false_fragment_headings_review_required"]
     assert payload["false_fragment_heading_count"] == 2
-    assert payload["scripture_reference_heading_count"] == 1
+    assert payload["numbered_citation_heading_count"] == 1
 
 
 def test_run_document_processing_quality_report_uses_pre_display_gate_input_for_sentence_split_case(tmp_path, monkeypatch):
@@ -4750,7 +4732,6 @@ def test_build_translation_quality_report_flags_bullet_marker_headings_in_strict
             app_config={"translation_output_quality_gate_policy": "strict"},
             processing_operation="translate",
             uploaded_filename="report.docx",
-            translation_domain="general",
         ),
         final_markdown="## ●\n\nПереведённый абзац",
         formatting_diagnostics_artifacts=[],
@@ -4796,7 +4777,6 @@ def test_build_translation_quality_report_counts_capped_legacy_hygiene_samples(m
             app_config={"translation_output_quality_gate_policy": "strict"},
             processing_operation="translate",
             uploaded_filename="report.docx",
-            translation_domain="general",
             paragraph_count=2000,
         ),
         final_markdown="Bullet headings",
@@ -4838,7 +4818,6 @@ def test_quality_gate_monkeypatch_seam_lands_on_owner_module(monkeypatch):
         app_config={"translation_output_quality_gate_policy": "advisory"},
         processing_operation="translate",
         uploaded_filename="report.docx",
-        translation_domain="general",
     )
 
     # Baseline: the Cyrillic body paragraph is NOT flagged as untranslated.
@@ -4905,7 +4884,6 @@ def test_build_translation_quality_report_flags_untranslated_structural_heading_
             app_config={"translation_output_quality_gate_policy": "strict"},
             processing_operation="translate",
             uploaded_filename="report.docx",
-            translation_domain="general",
         ),
         final_markdown=assembly_result.final_markdown,
         formatting_diagnostics_artifacts=[],
@@ -4973,7 +4951,6 @@ def test_build_translation_quality_report_fails_large_untranslated_body_text():
             app_config={"translation_output_quality_gate_policy": "strict"},
             processing_operation="translate",
             uploaded_filename="report.docx",
-            translation_domain="general",
         ),
         final_markdown=assembly_result.final_markdown,
         formatting_diagnostics_artifacts=[],
@@ -5141,7 +5118,6 @@ def test_build_translation_quality_report_detects_toc_body_concat_across_leader_
             app_config={"translation_output_quality_gate_policy": "strict"},
             processing_operation="translate",
             uploaded_filename="report.docx",
-            translation_domain="general",
         ),
         final_markdown=markdown_text,
         formatting_diagnostics_artifacts=[],
@@ -5160,7 +5136,6 @@ def test_build_translation_quality_report_exposes_quality_gate_audit_classificat
             app_config={"translation_output_quality_gate_policy": "strict"},
             processing_operation="translate",
             uploaded_filename="report.docx",
-            translation_domain="general",
         ),
         final_markdown="## ●\n\nЗаключение ........ 29 Введение",
         formatting_diagnostics_artifacts=[],
@@ -5176,7 +5151,7 @@ def test_build_translation_quality_report_exposes_quality_gate_audit_classificat
     assert _as_mapping(audit["inline_page_furniture_leakage"])["verdict"] == "unit_aware_after_structural_label_exemption"
 
 
-def test_build_translation_quality_report_keeps_source_backed_scripture_heading_out_of_false_fragment_gate():
+def test_build_translation_quality_report_keeps_source_backed_numbered_citation_heading_out_of_false_fragment_gate():
     assembly_result = document_pipeline_output_validation.FinalMarkdownAssemblyResult(
         final_markdown="## (Матфея 24:36)\n\nХристос вернётся как вор в ночи.",
         entries=(
@@ -5209,7 +5184,6 @@ def test_build_translation_quality_report_keeps_source_backed_scripture_heading_
             app_config={"translation_output_quality_gate_policy": "strict"},
             processing_operation="translate",
             uploaded_filename="report.docx",
-            translation_domain="general",
         ),
         final_markdown=assembly_result.final_markdown,
         formatting_diagnostics_artifacts=[],
@@ -5218,10 +5192,10 @@ def test_build_translation_quality_report_keeps_source_backed_scripture_heading_
 
     assert report["quality_status"] == "pass"
     assert report["false_fragment_heading_count"] == 0
-    assert report["scripture_reference_heading_count"] == 0
+    assert report["numbered_citation_heading_count"] == 0
     assert report["raw_false_fragment_heading_count"] == 1
     audit = _as_mapping(report["quality_gate_audit_classifications"])
-    assert _as_mapping(audit["scripture_reference_heading"])["verdict"] == "tolerant"
+    assert _as_mapping(audit["numbered_citation_heading"])["verdict"] == "tolerant"
 
 
 def test_normalize_final_markdown_for_runtime_display_splits_placeholder_from_chapter_heading():
@@ -5256,7 +5230,6 @@ def test_build_translation_quality_report_classifies_placeholder_heading_concat_
             app_config={"translation_output_quality_gate_policy": "strict"},
             processing_operation="translate",
             uploaded_filename="report.docx",
-            translation_domain="general",
         ),
         final_markdown="This page intentionally left blank Chapter Nine STRATEGIES FOR NGO S",
         formatting_diagnostics_artifacts=[],
@@ -5335,10 +5308,9 @@ def test_resolve_runtime_display_markdown_ignores_legacy_final_markdown_alias():
 def test_build_translation_quality_report_exposes_new_residual_quality_metrics_and_gate_reasons():
     report = document_pipeline_late_phases._build_translation_quality_report(
         context=SimpleNamespace(
-            app_config={"translation_output_quality_gate_policy": "strict", "translation_domain": "theology"},
+            app_config={"translation_output_quality_gate_policy": "strict"},
             processing_operation="translate",
             uploaded_filename="report.docx",
-            translation_domain="theology",
         ),
         final_markdown=(
             "Является ли\n\n"
@@ -5364,28 +5336,20 @@ def test_build_translation_quality_report_exposes_new_residual_quality_metrics_a
     ]
     assert report["bullet_heading_count"] == 0
     assert report["false_fragment_heading_count"] == 2
-    assert report["scripture_reference_heading_count"] == 1
+    assert report["numbered_citation_heading_count"] == 1
     assert report["residual_bullet_glyph_count"] == 0
     assert report["residual_bullet_glyph_classification"] == "display_hygiene"
     assert report["raw_residual_bullet_glyph_count"] == 1
     assert report["list_fragment_regression_count"] == 1
     mixed_script_term_count = report["mixed_script_term_count"]
-    theology_style_issue_count = report["theology_style_deterministic_issue_count"]
     assert isinstance(mixed_script_term_count, int)
-    assert isinstance(theology_style_issue_count, int)
     assert mixed_script_term_count >= 1
-    # Spec 036 F2: the glossary/awkward-heading detector is config-driven with empty
-    # defaults and the production report builder passes no book-specific terms, so this
-    # domain-style-advisory axis no longer fires on hardcoded strings — the schema fields
-    # stay present but the deterministic count is 0.
-    assert theology_style_issue_count == 0
     assert report["mixed_script_term_gate_source"] == "legacy_markdown"
     assert report["mixed_script_term_classification"] == "non_structural_hygiene"
     assert report["raw_mixed_script_term_count"] == mixed_script_term_count
-    assert report["theology_style_deterministic_issue_source"] == "legacy_markdown"
-    assert report["theology_style_deterministic_issue_classification"] == "domain_style_advisory"
-    assert report["raw_theology_style_deterministic_issue_count"] == theology_style_issue_count
-    assert report["translation_domain"] == "theology"
+    # Spec 066 T-2: the inert domain-style counters are gone from the report.
+    assert not any("theology" in key for key in report)
+    assert "translation_domain" not in report
     assert report["worst_unmapped_source_count"] == 0
     assert report["suspicious_heading_repetition_count"] == 0
 
@@ -5410,7 +5374,6 @@ def test_build_translation_quality_report_measures_delivered_markdown_for_hygien
         app_config={"translation_output_quality_gate_policy": "strict"},
         processing_operation="translate",
         uploaded_filename="report.docx",
-        translation_domain="general",
     )
 
     report = document_pipeline_late_phases._build_translation_quality_report(
@@ -5476,7 +5439,6 @@ def test_build_translation_quality_report_delivered_markdown_leaves_structural_g
         app_config={"translation_output_quality_gate_policy": "strict"},
         processing_operation="translate",
         uploaded_filename="report.docx",
-        translation_domain="general",
     )
 
     baseline = document_pipeline_late_phases._build_translation_quality_report(
@@ -5532,7 +5494,6 @@ def test_build_translation_quality_report_prefers_entry_aware_false_heading_dete
             app_config={"translation_output_quality_gate_policy": "strict"},
             processing_operation="translate",
             uploaded_filename="report.docx",
-            translation_domain="general",
         ),
         final_markdown="## Введение\n\nТекст раздела.",
         formatting_diagnostics_artifacts=[],
@@ -5600,7 +5561,6 @@ def test_build_translation_quality_report_reports_entry_aware_false_heading_samp
             app_config={"translation_output_quality_gate_policy": "strict"},
             processing_operation="translate",
             uploaded_filename="report.docx",
-            translation_domain="general",
         ),
         final_markdown="На людей, получивших начертание зверя и поклонявшихся его образу.",
         formatting_diagnostics_artifacts=[],
@@ -5619,7 +5579,6 @@ def test_build_translation_quality_report_flags_raw_false_fragment_without_entry
             app_config={"translation_output_quality_gate_policy": "strict"},
             processing_operation="translate",
             uploaded_filename="report.docx",
-            translation_domain="general",
         ),
         final_markdown=(
             "Иисус постоянно говорит о том, как важно распознавать знамения, чтобы, если им будет даровано пережить\n\n"
@@ -5665,7 +5624,6 @@ def test_build_translation_quality_report_fails_large_false_fragment_heading_set
             app_config={"translation_output_quality_gate_policy": "strict"},
             processing_operation="translate",
             uploaded_filename="report.docx",
-            translation_domain="general",
             paragraph_count=1000,
         ),
         final_markdown="Fragments",
@@ -5686,7 +5644,6 @@ def test_build_translation_quality_report_allows_opening_chapter_marker_followed
             app_config={"translation_output_quality_gate_policy": "strict"},
             processing_operation="translate",
             uploaded_filename="report.docx",
-            translation_domain="general",
         ),
         final_markdown=(
             "ГЛАВА 1\n\n"
@@ -5703,13 +5660,12 @@ def test_build_translation_quality_report_allows_opening_chapter_marker_followed
     assert report["false_fragment_heading_samples"] == []
 
 
-def test_build_translation_quality_report_flags_scripture_reference_false_heading_without_normalizer_override():
+def test_build_translation_quality_report_flags_numbered_citation_false_heading_without_normalizer_override():
     report = document_pipeline_late_phases._build_translation_quality_report(
         context=SimpleNamespace(
             app_config={"translation_output_quality_gate_policy": "strict"},
             processing_operation="translate",
             uploaded_filename="report.docx",
-            translation_domain="general",
         ),
         final_markdown="Наблюдайте внимательно.\n\n## (Матфея 24:36)\n\nЭто продолжение абзаца.",
         formatting_diagnostics_artifacts=[],
@@ -5718,12 +5674,12 @@ def test_build_translation_quality_report_flags_scripture_reference_false_headin
     assert report["quality_status"] == "warn"
     assert report["gate_reasons"] == ["false_fragment_headings_review_required"]
     assert report["false_fragment_heading_count"] == 1
-    assert report["scripture_reference_heading_count"] == 1
-    assert report["scripture_reference_heading_samples"] == [
+    assert report["numbered_citation_heading_count"] == 1
+    assert report["numbered_citation_heading_samples"] == [
         {
             "line": 3,
             "text": "## (Матфея 24:36)",
-            "reason": "scripture_reference_heading_present",
+            "reason": "numbered_citation_heading_present",
         }
     ]
 
@@ -5768,7 +5724,6 @@ def test_build_translation_quality_report_prefers_entry_authority_over_raw_false
             app_config={"translation_output_quality_gate_policy": "strict"},
             processing_operation="translate",
             uploaded_filename="report.docx",
-            translation_domain="general",
         ),
         final_markdown=(
             "Иисус постоянно говорит о том, как важно распознавать знамения, чтобы, если им будет даровано пережить\n\n"
@@ -5829,7 +5784,6 @@ def test_build_translation_quality_report_keeps_entry_authority_with_mixed_fallb
             app_config={"translation_output_quality_gate_policy": "strict"},
             processing_operation="translate",
             uploaded_filename="report.docx",
-            translation_domain="general",
         ),
         final_markdown=(
             "Иисус постоянно говорит о том, как важно распознавать знамения, чтобы, если им будет даровано пережить\n\n"
@@ -6042,7 +5996,6 @@ def test_build_translation_quality_report_flags_suspicious_heading_repetition_wi
             app_config={"translation_output_quality_gate_policy": "strict"},
             processing_operation="translate",
             uploaded_filename="report.docx",
-            translation_domain="general",
         ),
         final_markdown=(
             "## Начертание зверя\n\n"
@@ -6077,7 +6030,6 @@ def test_build_translation_quality_report_keeps_list_fragment_runtime_cleanup_di
             app_config={"translation_output_quality_gate_policy": "strict"},
             processing_operation="translate",
             uploaded_filename="report.docx",
-            translation_domain="general",
         ),
         final_markdown=final_markdown,
         formatting_diagnostics_artifacts=[],
@@ -6134,7 +6086,6 @@ def test_build_translation_quality_report_credits_source_backed_numbered_referen
             app_config={"translation_output_quality_gate_policy": "strict"},
             processing_operation="translate",
             uploaded_filename="report.docx",
-            translation_domain="general",
         ),
         final_markdown=final_markdown,
         formatting_diagnostics_artifacts=[],
@@ -6196,7 +6147,6 @@ def test_build_translation_quality_report_keeps_standalone_numeric_continuation_
             app_config={"translation_output_quality_gate_policy": "strict"},
             processing_operation="translate",
             uploaded_filename="report.docx",
-            translation_domain="general",
         ),
         final_markdown=final_markdown,
         formatting_diagnostics_artifacts=[],
@@ -6334,7 +6284,6 @@ def test_build_translation_quality_report_routes_four_standalone_numeric_backmat
             app_config={"translation_output_quality_gate_policy": "strict"},
             processing_operation="translate",
             uploaded_filename="report.docx",
-            translation_domain="general",
         ),
         final_markdown=final_markdown,
         formatting_diagnostics_artifacts=[],
@@ -6409,7 +6358,6 @@ def test_build_translation_quality_report_hard_fails_non_numeric_body_list_fragm
             app_config={"translation_output_quality_gate_policy": "strict"},
             processing_operation="translate",
             uploaded_filename="report.docx",
-            translation_domain="general",
         ),
         final_markdown=final_markdown,
         formatting_diagnostics_artifacts=[],
@@ -6467,7 +6415,6 @@ def test_build_translation_quality_report_credits_source_backed_reference_by_exa
             app_config={"translation_output_quality_gate_policy": "strict"},
             processing_operation="translate",
             uploaded_filename="report.docx",
-            translation_domain="general",
         ),
         final_markdown=final_markdown,
         formatting_diagnostics_artifacts=[],

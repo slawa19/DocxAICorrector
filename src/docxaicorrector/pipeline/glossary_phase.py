@@ -56,7 +56,6 @@ from docxaicorrector.text.glossary_pass import (
     build_glossary_request,
     collision_keepers,
     declared_spellings,
-    domain_glossary_terms,
     extract_glossary_candidates,
     find_rendering_collisions,
     inherit_name_renderings,
@@ -65,7 +64,6 @@ from docxaicorrector.text.glossary_pass import (
     order_collision_group,
     order_required_first,
     parse_glossary_response,
-    request_candidates,
     select_glossary_source_units,
     split_candidates_in_halves,
     split_name_families,
@@ -337,11 +335,7 @@ def _run_glossary_phase(
 
     units = select_glossary_source_units(list(getattr(context, "jobs", ()) or ()), getattr(context, "source_paragraphs", None))
     candidates = extract_glossary_candidates(units, limit=candidate_limit)
-    fixed_terms = domain_glossary_terms(
-        source_text="\n\n".join(unit.text for unit in units),
-        translation_domain=str(getattr(context, "translation_domain", "general") or "general"),
-    )
-    sent_candidates = request_candidates(candidates, fixed_terms)
+    sent_candidates = tuple(candidates)
 
     record: dict[str, object] = {
         "schema": RUN_GLOSSARY_SCHEMA,
@@ -355,7 +349,6 @@ def _run_glossary_phase(
         "source_unit_count": len(units),
         "candidate_count": len(candidates),
         "request_candidate_count": len(sent_candidates),
-        "domain_term_count": len(fixed_terms),
         "max_terms": max_terms,
         "prompt_max_chars": prompt_max_chars,
         "terms": [],
@@ -365,9 +358,6 @@ def _run_glossary_phase(
         "usage": {"prompt_tokens": None, "completion_tokens": None, "cost_usd": None},
         "request_chars": 0,
         "candidates": [candidate.to_payload() for candidate in candidates],
-        "domain_terms": [
-            {"source_term": term.source_term, "target_term": term.target_term} for term in fixed_terms
-        ],
         "required_count": sum(1 for candidate in sent_candidates if candidate.required),
         "reasked_required_count": 0,
         "unrendered_terms": [],
@@ -395,7 +385,6 @@ def _run_glossary_phase(
             initialization=initialization,
             model=model,
             sent_candidates=sent_candidates,
-            fixed_terms=fixed_terms,
             max_terms=max_terms,
             sample_text="\n\n".join(unit.text for unit in units)[:_LANGUAGE_SAMPLE_CHARS],
             record=record,
@@ -455,7 +444,6 @@ def _run_glossary_phase(
             model=model,
             candidate_count=len(candidates),
             request_candidate_count=len(sent_candidates),
-            domain_term_count=len(fixed_terms),
             term_count=len(terms),
             rendered_term_count=record["rendered_term_count"],
             prompt_section_chars=record["prompt_section_chars"],
@@ -650,7 +638,6 @@ def _call_model(
     initialization: Any,
     model: str,
     sent_candidates: tuple[GlossaryCandidate, ...],
-    fixed_terms: tuple[GlossaryTerm, ...],
     max_terms: int,
     sample_text: str,
     record: dict[str, object],
@@ -747,7 +734,6 @@ def _call_model(
         return build_glossary_request(
             model=model,
             candidates=candidates,
-            fixed_terms=fixed_terms,
             source_language=source_language,
             target_language=target_language,
             max_terms=limit,

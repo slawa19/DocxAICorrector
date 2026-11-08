@@ -64,7 +64,6 @@ from docxaicorrector.core.models import (
     RELATION_NORMALIZATION_PROFILE_VALUES,
     ImageMode,
 )
-from docxaicorrector.text.translation_domains import build_translation_domain_instructions
 
 OpenAI = None
 Anthropic = None
@@ -267,7 +266,6 @@ class AppConfig(Mapping[str, Any]):
     source_language_default: str
     target_language_default: str
     editorial_intensity_default: str
-    translation_domain_default: str
     audiobook_postprocess_default: bool
     audiobook_model: str
     supported_languages: tuple[LanguageOption, ...]
@@ -1652,25 +1650,20 @@ def load_system_prompt(
     target_language: str = "ru",
     editorial_intensity: str = "literary",
     prompt_variant: str = "default",
-    translation_domain: str = "general",
-    source_text: str = "",
     document_context_prompt: str = "",
 ) -> str:
     """Render ``system_prompt.txt`` for one run.
 
-    ``source_text`` is only the input of the domain term scanner
-    (``build_translation_domain_instructions``); none of it is rendered by itself.
-    ``document_context_prompt`` — the book's metadata, style instructions, outline and
-    glossaries, the run glossary of spec 063 included — is rendered in its own section after
-    the domain section (spec 064 FR-001). Without it the prompt is byte-for-byte what it was
-    before that section existed: the optional block is cut out of the template whole.
+    ``document_context_prompt`` — the book's metadata, outline and glossaries, the run
+    glossary of spec 063 included — is rendered in its own section after the stylistic
+    intensity section (spec 064 FR-001). Without it the optional block is cut out of the
+    template whole. The translation domain and its term scanner were removed by spec 066 T-1.
     """
     normalized_operation = operation.strip().lower() or "edit"
     normalized_source_language = source_language.strip().lower() or "en"
     normalized_target_language = target_language.strip().lower() or "ru"
     normalized_editorial_intensity = _resolve_editorial_intensity(editorial_intensity)
     normalized_prompt_variant = prompt_variant.strip().lower() or "default"
-    normalized_translation_domain = str(translation_domain or "general").strip().lower() or "general"
     _validate_text_transform_context(
         operation=normalized_operation,
         source_language=normalized_source_language,
@@ -1717,13 +1710,6 @@ def load_system_prompt(
         target_language=_resolve_language_label(normalized_target_language),
         operation_instructions=operation_instructions,
         editorial_intensity_instructions=editorial_intensity_instructions,
-        translation_domain_instructions=(
-            build_translation_domain_instructions(
-                translation_domain=normalized_translation_domain,
-                source_text=source_text,
-            )
-            or "Специальные доменные инструкции не заданы."
-        ),
         example_block=example_block,
     )
 

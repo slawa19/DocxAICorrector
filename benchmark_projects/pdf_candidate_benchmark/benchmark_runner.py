@@ -286,7 +286,6 @@ def _docx_profile_for_artifact(candidate_id: str, artifact_path: Path) -> Docume
         require_pdf_conversion=False,
         require_no_bullet_headings=False,
         require_no_toc_body_concat=False,
-        require_translation_domain="theology",
         structural_run_profile=None,
         default_run_profile=None,
         tags=("benchmark", candidate_id),

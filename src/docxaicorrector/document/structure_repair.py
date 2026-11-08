@@ -19,7 +19,7 @@ _COMPOUND_TOC_ENTRY_PATTERN = re.compile(
     r"^(?P<toc>.+?(?:\.{2,}|[\u2024\u2025\u2026\u2027\u2219\u22c5\u00b7]{2,}|\u2026)\s*\d+)\s+(?P<rest>.+)$"
 )
 _LIST_LEAD_FRAGMENT_TERMINATOR_PATTERN = re.compile(r"[,;:]$")
-_SCRIPTURE_REFERENCE_PATTERN = re.compile(r"\b(?:[A-Za-zА-Яа-яЁё]+)\s+\d+:\d+(?:-\d+)?\b")
+_NUMBERED_CITATION_PATTERN = re.compile(r"\b(?:[A-Za-zА-Яа-яЁё]+)\s+\d+:\d+(?:-\d+)?\b")
 _INLINE_CONTINUATION_ENDING_PATTERN = re.compile(
     r"\b(?:is|are|was|were|the|a|an|and|or|of|to|for|with|in|on|at|by|from|about|regarding|called|named|что|относительно|с|в|на|к|по|для|о|у|при|об|под|над|между|является)$",
     re.IGNORECASE,
@@ -527,7 +527,7 @@ def _looks_like_epigraph_prefix(text: str) -> bool:
         return False
     if any(quote in stripped for quote in ('"', "“", "”", "«", "»", "'")):
         return True
-    if _SCRIPTURE_REFERENCE_PATTERN.search(stripped):
+    if _NUMBERED_CITATION_PATTERN.search(stripped):
         return True
     return stripped.startswith(("—", "-"))
 

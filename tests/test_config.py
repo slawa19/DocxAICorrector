@@ -80,7 +80,7 @@ def test_load_app_config_applies_env_overrides_and_clamps(monkeypatch):
     assert app_config["source_language_default"] == "en"
     assert app_config["target_language_default"] == "ru"
     assert app_config["editorial_intensity_default"] == "literary"
-    assert app_config["translation_domain_default"] == "general"
+    assert "translation_domain_default" not in app_config
     supported_languages = cast(list[config.LanguageOption], app_config["supported_languages"])
     assert supported_languages[0].code == "ru"
     assert app_config["enable_paragraph_markers"] is False
@@ -126,7 +126,6 @@ def test_load_app_config_exposes_image_validation_defaults(monkeypatch):
     assert app_config["source_language_default"] == "en"
     assert app_config["target_language_default"] == "ru"
     assert app_config["editorial_intensity_default"] == "literary"
-    assert app_config["translation_domain_default"] == "general"
     supported_languages = cast(list[config.LanguageOption], app_config["supported_languages"])
     assert [language.code for language in supported_languages] == ["ru", "en", "de", "fr", "es", "it", "pl", "zh", "ja"]
     assert app_config["paragraph_boundary_normalization_enabled"] is True
@@ -259,13 +258,14 @@ def test_editorial_intensity_default_is_unchanged_and_still_selects_the_literary
     assert default_prompt != conservative_prompt
 
 
-def test_load_app_config_applies_translation_domain_env_override(monkeypatch):
+def test_load_app_config_has_no_translation_domain_axis(monkeypatch):
+    # Spec 066 T-1: the domain axis is removed; its former env variable produces nothing.
     monkeypatch.setattr(config, "CONFIG_PATH", config.CONFIG_PATH.parent / "__missing_config__.toml")
     monkeypatch.setenv("DOCX_AI_TRANSLATION_DOMAIN_DEFAULT", "theology")
 
     app_config = config.load_app_config()
 
-    assert app_config["translation_domain_default"] == "theology"
+    assert not any("translation_domain" in key for key in app_config)
 
 
 def test_load_app_config_applies_reader_cleanup_env_overrides(monkeypatch):
@@ -402,7 +402,6 @@ def test_describe_provider_availability_reports_missing_key(monkeypatch):
         source_language_default="en",
         target_language_default="ru",
         editorial_intensity_default="literary",
-        translation_domain_default="general",
         audiobook_postprocess_default=False,
         audiobook_model="gpt-5.4-mini",
         supported_languages=tuple(),
@@ -502,7 +501,6 @@ def test_describe_provider_availability_loads_project_dotenv(monkeypatch):
         source_language_default="en",
         target_language_default="ru",
         editorial_intensity_default="literary",
-        translation_domain_default="general",
         audiobook_postprocess_default=False,
         audiobook_model="gpt-5.4-mini",
         supported_languages=tuple(),
@@ -610,21 +608,6 @@ def test_load_system_prompt_varies_by_editorial_intensity():
     assert "Preserve every marker [[DOCX_PARA_...]] exactly as it appears" not in literary_prompt
 
 
-def test_load_system_prompt_includes_theology_domain_instructions():
-    theology_prompt = config.load_system_prompt(
-        operation="translate",
-        source_language="en",
-        target_language="ru",
-        editorial_intensity="literary",
-        translation_domain="theology",
-        source_text="The Great Tribulation and the rapture precede the rise of the Antichrist.",
-    )
-
-    assert "ДОМЕН ПЕРЕВОДА: богословие / эсхатология." in theology_prompt
-    assert "Great Tribulation -> Великая скорбь" in theology_prompt
-    assert "rapture -> восхищение Церкви / восхищение верующих" in theology_prompt
-
-
 # --- spec 064 FR-001 / Anti-regression 5: the document context has its own section -----------
 
 _DOCUMENT_CONTEXT_HEADING = "### КОНТЕКСТ ДОКУМЕНТА И ГЛОССАРИЙ ЗАПУСКА:"
@@ -641,32 +624,29 @@ _SAMPLE_DOCUMENT_CONTEXT = (
 # context the prompt must stay these exact bytes. If a deliberate edit of another prompt file
 # (operation_*, example_*, editorial_intensity_*) changes them, re-pin from the empty-context
 # render and say so in the commit — never re-pin to absorb a change of this section.
+# Re-pinned by spec 066 T-1: the "### ДОМЕН И ТЕРМИНОЛОГИЯ:" section (70 characters, always
+# "Специальные доменные инструкции не заданы.") is gone; each render is the previous one minus
+# exactly that section. The fourth row, a theology-domain render, became the audiobook prompt.
 _PRE_064_PROMPT_SNAPSHOTS = [
     (
         {"operation": "translate", "source_language": "en", "target_language": "ru"},
-        6977,
-        "8465b6980aa190aee76392171829c041be17fcb11a847e0077804cc7d8610534",
+        6907,
+        "fa3afff940c9c4134dcc3c99ed4121762306587ac7f73181536c1abff7439de0",
     ),
     (
         {"operation": "edit", "source_language": "ru", "target_language": "ru"},
-        4957,
-        "28609855e1b34753f3213d0875533382973e02d4a4f7420bd374108d5f514f33",
+        4887,
+        "41c6552c71380ea52074cd564fe3f71e925648e2413cc15f22cf5121bba10ce6",
     ),
     (
         {"operation": "translate", "source_language": "en", "target_language": "ru", "prompt_variant": "toc_translate"},
-        5880,
-        "1bfc57f2512b33e85ebd419c1278bf3c4f9916751772b763f445094c4fa4dbc7",
+        5805,
+        "6da3dbf8f940eea020b21939f3a188f54a289f87d0cc4c9685e1ba47de61af65",
     ),
     (
-        {
-            "operation": "translate",
-            "source_language": "en",
-            "target_language": "ru",
-            "translation_domain": "theology",
-            "source_text": "Great Tribulation",
-        },
-        7793,
-        "914a7d783a7b2a3b7ae6fee6566f7739486f8e6e2c6fd318a2d434f13e4678c5",
+        {"operation": "audiobook", "source_language": "en", "target_language": "ru"},
+        9982,
+        "792cfe7e9182148e1cb425e8acf3118b1f8b6750815ca959a0ff9fed2dffb493",
     ),
 ]
 
@@ -702,13 +682,11 @@ def test_the_document_context_section_is_the_only_difference_it_makes(arguments,
     assert len(with_context) == length + len(section)
 
 
-def test_load_system_prompt_renders_the_document_context_after_the_domain_section():
+def test_load_system_prompt_renders_the_document_context_after_the_intensity_section():
     prompt = config.load_system_prompt(
         operation="translate",
         source_language="en",
         target_language="ru",
-        translation_domain="general",
-        source_text="SCANNER-INPUT-NEVER-RENDERED",
         document_context_prompt=_SAMPLE_DOCUMENT_CONTEXT,
     )
 
@@ -716,13 +694,15 @@ def test_load_system_prompt_renders_the_document_context_after_the_domain_sectio
     assert "- quillet bond -> киллетная облигация" in prompt
     assert "Передачи из глоссария обязательны" in prompt
     assert (
-        prompt.index("### ДОМЕН И ТЕРМИНОЛОГИЯ:")
+        prompt.index("### СТИЛИСТИЧЕСКАЯ ИНТЕНСИВНОСТЬ:")
         < prompt.index(_DOCUMENT_CONTEXT_HEADING)
         < prompt.index(_SAMPLE_DOCUMENT_CONTEXT)
         < prompt.index("### РАБОТА С КОНТЕКСТОМ:")
     )
-    # ``source_text`` is the term scanner's input only; it is never rendered by itself.
-    assert "SCANNER-INPUT-NEVER-RENDERED" not in prompt
+    # Spec 066 T-1: no domain section and no domain kwargs any more.
+    assert "ДОМЕН" not in prompt
+    with pytest.raises(TypeError):
+        config.load_system_prompt(operation="translate", translation_domain="general")  # type: ignore[call-arg]
 
 
 def test_load_system_prompt_keeps_braces_in_the_document_context_literal():
@@ -995,8 +975,8 @@ def test_load_system_prompt_audiobook_examples_include_sentence_splitting_and_ne
     finally:
         config.load_system_prompt.cache_clear()
 
-    assert "Финансовые операции и порождаемая ими ментальность" in prompt
-    assert "Это видно по решениям менеджеров." in prompt
+    assert "Привычка к спешке и порождаемая ею логика отчётов" in prompt
+    assert "Это видно по решениям служб." in prompt
     assert "Некорректно" in prompt
     assert "потеряны qualifier `может`" in prompt
 
@@ -1100,7 +1080,7 @@ def test_load_system_prompt_supports_toc_translate_variant():
 
     assert "Переведите блок как оглавление" in prompt
     assert "Содержание" in prompt
-    assert "Part II: The Dynamics of Extraction ........ 83" in prompt
+    assert "Part II: The Weight of Small Harbours ........ 83" in prompt
 
 
 def test_load_app_config_accepts_audiobook_processing_operation_default(monkeypatch, tmp_path):

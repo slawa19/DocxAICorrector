@@ -29,13 +29,11 @@ from docxaicorrector.text.glossary_pass import (
     GlossarySourceUnit,
     build_glossary_request,
     describe_source_language,
-    domain_glossary_terms,
     extract_glossary_candidates,
     missing_required_candidates,
     normalize_glossary_key,
     order_required_first,
     parse_glossary_response,
-    request_candidates,
     select_glossary_source_units,
 )
 
@@ -97,21 +95,6 @@ def test_profile_slot_is_capped_by_characters_not_by_eight_entries():
     assert DEFAULT_GLOSSARY_PROMPT_MAX_CHARS == 3000
 
 
-def test_theology_slot_is_unchanged_by_the_shared_helper():
-    """FR-016: the domain list is not extended; preparation's output is what it was."""
-
-    source_text = "The Great Tribulation and the rapture, then the Antichrist."
-    via_preparation = preparation._build_document_context_glossary_terms(
-        translation_domain="theology",
-        source_text=source_text,
-    )
-    via_helper = domain_glossary_terms(source_text=source_text, translation_domain="theology")
-
-    assert via_preparation == via_helper
-    assert [term.source_term for term in via_preparation] == ["Great Tribulation", "rapture", "Antichrist"]
-    assert via_preparation[0].target_term == "Великая скорбь"
-    assert all(term.kind == "term" and term.note == "" for term in via_preparation)
-    assert domain_glossary_terms(source_text=source_text, translation_domain="general") == ()
 
 
 # --- T004: extraction by form --------------------------------------------------------------------
@@ -355,11 +338,10 @@ def _candidate(term, family="name"):
     )
 
 
-def test_request_carries_languages_limit_candidates_and_fixed_terms():
+def test_request_carries_languages_limit_and_candidates():
     request = build_glossary_request(
         model="model-x",
         candidates=(_candidate("Zorvane Pettish"), _candidate("quillet bond", "marked")),
-        fixed_terms=(GlossaryTerm(source_term="Great Tribulation", target_term="Великая скорбь"),),
         source_language="en",
         target_language="ru",
         max_terms=12,
@@ -376,16 +358,8 @@ def test_request_carries_languages_limit_candidates_and_fixed_terms():
     assert [item["term"] for item in user_payload["candidates"]] == ["Zorvane Pettish", "quillet bond"]
     assert user_payload["candidates"][0]["signals"] == ["capitalised"]
     assert user_payload["candidates"][0]["context"] == "... Zorvane Pettish ..."
-    assert user_payload["fixed_terms"] == [{"source_term": "Great Tribulation", "target_term": "Великая скорбь"}]
-
-
-def test_fixed_domain_terms_are_taken_out_of_the_request():
-    left = request_candidates(
-        (_candidate("Great Tribulations"), _candidate("Zorvane")),
-        (GlossaryTerm(source_term="Great Tribulation", target_term="Великая скорбь"),),
-    )
-
-    assert [candidate.source_term for candidate in left] == ["Zorvane"]
+    # Spec 066 T-1: the domain glossary is gone, and with it the request's "fixed_terms" slot.
+    assert "fixed_terms" not in user_payload
 
 
 def test_parse_accepts_only_candidates_and_counts_every_refusal():
@@ -880,7 +854,6 @@ def test_request_marks_required_candidates_for_the_model():
     request = build_glossary_request(
         model="m",
         candidates=(replace(_candidate("quillet bond", "marked"), required=True), _candidate("Alpha")),
-        fixed_terms=(),
         source_language="en",
         target_language="ru",
         max_terms=5,
@@ -902,7 +875,6 @@ def test_role_requests_and_collision_helpers():
     required_request = build_glossary_request(
         model="m",
         candidates=(replace(_candidate("quillet bond", "marked"), required=True),),
-        fixed_terms=(),
         source_language="en",
         target_language="ru",
         max_terms=0,
@@ -957,7 +929,6 @@ def test_auto_is_resolved_or_described_never_passed_through(setting, sample, exp
     request = build_glossary_request(
         model="m",
         candidates=(_candidate("Alpha"),),
-        fixed_terms=(),
         source_language=setting,
         target_language="ru",
         max_terms=5,
@@ -1051,7 +1022,6 @@ def test_requests_ask_for_standard_transcription_and_the_full_name():
         request = build_glossary_request(
             model="m",
             candidates=(_candidate("Zorvane Pettish"),),
-            fixed_terms=(),
             source_language="en",
             target_language="ru",
             max_terms=5,
@@ -1371,7 +1341,6 @@ def test_fr009_call_sequence_never_sends_a_surname_and_keeps_the_frequent_render
         initialization=SimpleNamespace(text_client=object(), job_count=0),
         model="m",
         sent_candidates=sent,
-        fixed_terms=(),
         max_terms=10,
         sample_text="",
         record=record,
@@ -1451,7 +1420,6 @@ def _run_call_sequence(sent, answers):
         initialization=SimpleNamespace(text_client=object(), job_count=0),
         model="m",
         sent_candidates=tuple(sent),
-        fixed_terms=(),
         max_terms=10,
         sample_text="",
         record=record,
@@ -1633,7 +1601,6 @@ def _recovery_sequence(sent, answers):
         initialization=SimpleNamespace(text_client=object(), job_count=0),
         model="m",
         sent_candidates=tuple(sent),
-        fixed_terms=(),
         max_terms=10,
         sample_text="",
         record=record,

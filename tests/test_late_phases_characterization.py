@@ -63,7 +63,6 @@ def _ctx(**over: object) -> SimpleNamespace:
         app_config={"translation_output_quality_gate_policy": "strict"},
         processing_operation="translate",
         uploaded_filename="report.docx",
-        translation_domain="general",
     )
     base.update(over)
     return SimpleNamespace(**base)

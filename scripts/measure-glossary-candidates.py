@@ -239,7 +239,6 @@ def _live_call(
             initialization=SimpleNamespace(text_client=client, job_count=0),
             model=model_id,
             sent_candidates=tuple(candidates),
-            fixed_terms=(),
             max_terms=max_terms,
             sample_text="\n\n".join(unit.text for unit in units)[:2000],
             record=record,

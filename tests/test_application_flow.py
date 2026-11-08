@@ -1313,14 +1313,14 @@ def test_prepare_run_context_for_background_uses_frozen_upload_payload(monkeypat
         image_mode="safe",
         keep_all_image_variants=True,
         processing_operation="audiobook",
-        app_config={"translation_domain_default": "general", "reader_cleanup_default": True},
+        app_config={"editorial_intensity_default": "literary", "reader_cleanup_default": True},
         prepare_document_for_processing_fn=lambda **kwargs: (captured.setdefault("prepare", kwargs), prepared_document)[1],
     )
 
     assert result.uploaded_filename == "report.docx"
     assert result.uploaded_file_bytes == b"abc"
     assert result.uploaded_file_token == payload.file_token
-    assert captured["prepare"]["app_config"] == {"translation_domain_default": "general", "reader_cleanup_default": True}
+    assert captured["prepare"]["app_config"] == {"editorial_intensity_default": "literary", "reader_cleanup_default": True}
     assert captured["prepare"]["processing_operation"] == "audiobook"
 
 
@@ -1567,7 +1567,7 @@ def test_prepare_run_context_for_background_uses_real_cache(monkeypatch):
     assert calls["extract"] == 1
     assert second.prepared_source_key.endswith(
         ":6000:high_only:off:phase2_default:epigraph_attribution,image_caption,table_caption,toc_region:lc=1:3:80:flag:pv=2"
-        ":pk=4:sl=en:tl=ru:td=general:so=10:0.1:1.5:ar=off"
+        ":pk=4:sl=en:tl=ru:so=10:0.1:1.5:ar=off"
     )
     assert second.preparation_cached is True
     assert second.preparation_stage == "Документ подготовлен"

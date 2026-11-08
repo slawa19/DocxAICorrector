@@ -9,14 +9,14 @@
   "collect_false_fragment_heading_samples": [
     {
       "line": 1,
-      "reason": "scripture_reference_heading_present",
+      "reason": "numbered_citation_heading_present",
       "text": "### (Откровение 1:1)"
     }
   ],
   "collect_false_fragment_heading_samples_from_entries": [
     {
       "line": 1,
-      "reason": "scripture_reference_heading_present",
+      "reason": "numbered_citation_heading_present",
       "text": "### (Откровение 1:1)"
     },
     {

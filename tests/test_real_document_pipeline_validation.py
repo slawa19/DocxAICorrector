@@ -422,10 +422,6 @@ def test_evaluate_lietaer_acceptance_fails_on_translation_quality_report_residua
             "mixed_script_term_gate_source": "legacy_markdown",
             "mixed_script_term_classification": "non_structural_hygiene",
             "raw_mixed_script_term_count": 1,
-            "theology_style_deterministic_issue_count": 3,
-            "theology_style_deterministic_issue_source": "legacy_markdown",
-            "theology_style_deterministic_issue_classification": "domain_style_advisory",
-            "raw_theology_style_deterministic_issue_count": 3,
             "toc_body_concat_detected": True,
             "toc_body_concat_markdown_detected": True,
             "toc_body_concat_structure_detected": False,
@@ -454,12 +450,6 @@ def test_evaluate_lietaer_acceptance_fails_on_translation_quality_report_residua
     assert by_name["mixed_script_terms_present"]["mixed_script_term_gate_source"] == "legacy_markdown"
     assert by_name["mixed_script_terms_present"]["mixed_script_term_classification"] == "non_structural_hygiene"
     assert by_name["mixed_script_terms_present"]["raw_mixed_script_term_count"] == 1
-    assert by_name["theology_style_deterministic_issues_present"]["theology_style_deterministic_issue_source"] == "legacy_markdown"
-    assert (
-        by_name["theology_style_deterministic_issues_present"]["theology_style_deterministic_issue_classification"]
-        == "domain_style_advisory"
-    )
-    assert by_name["theology_style_deterministic_issues_present"]["raw_theology_style_deterministic_issue_count"] == 3
     assert "toc_body_concatenation_detected" not in by_name
 
 
@@ -541,7 +531,6 @@ def test_evaluate_lietaer_acceptance_uses_authoritative_structural_markdown_coun
             "list_fragment_regression_gate_source": "topology_projection",
             "raw_list_fragment_regression_count": 1,
             "mixed_script_term_count": 0,
-            "theology_style_deterministic_issue_count": 0,
             "toc_body_concat_detected": False,
         },
     }
@@ -580,7 +569,6 @@ def test_evaluate_lietaer_acceptance_tolerates_review_only_list_fragment_residue
             "list_fragment_regression_gate_source": "entry_assembly",
             "raw_list_fragment_regression_count": 47,
             "mixed_script_term_count": 0,
-            "theology_style_deterministic_issue_count": 0,
             "toc_body_concat_detected": False,
             "quality_status": "warn",
             "gate_reasons": ["list_fragment_regressions_review_required"],
@@ -633,7 +621,6 @@ def test_evaluate_lietaer_acceptance_tolerates_review_only_legacy_hygiene_residu
             "mixed_script_term_gate_source": "legacy_markdown",
             "mixed_script_term_classification": "non_structural_hygiene",
             "raw_mixed_script_term_count": 1,
-            "theology_style_deterministic_issue_count": 0,
             "toc_body_concat_detected": False,
         },
     }
@@ -662,7 +649,6 @@ def test_evaluate_lietaer_acceptance_fails_failed_translation_quality_report() -
             "residual_bullet_glyph_count": 0,
             "list_fragment_regression_count": 0,
             "mixed_script_term_count": 0,
-            "theology_style_deterministic_issue_count": 0,
             "toc_body_concat_detected": False,
         },
     }
@@ -699,7 +685,6 @@ def test_production_acceptance_context_passes_with_not_applicable_threshold_and_
         "residual_bullet_glyph_count": 0,
         "list_fragment_regression_count": 0,
         "mixed_script_term_count": 0,
-        "theology_style_deterministic_issue_count": 0,
     }
     report_context = document_pipeline_late_phases._build_report_context_for_acceptance(
         context=context,
@@ -2864,10 +2849,6 @@ def test_main_uses_processing_service_facade_and_runtime_config_only(tmp_path, m
                 "mixed_script_term_gate_source": "legacy_markdown",
                 "mixed_script_term_classification": "non_structural_hygiene",
                 "raw_mixed_script_term_count": 2,
-                "theology_style_deterministic_issue_count": 0,
-                "theology_style_deterministic_issue_source": "legacy_markdown",
-                "theology_style_deterministic_issue_classification": "domain_style_advisory",
-                "raw_theology_style_deterministic_issue_count": 0,
                 "toc_body_concat_detected": False,
                 "toc_body_concat_markdown_detected": False,
                 "toc_body_concat_structure_detected": False,
@@ -3102,9 +3083,6 @@ def test_main_uses_processing_service_facade_and_runtime_config_only(tmp_path, m
     assert "translation_quality_mixed_script_term_gate_source=legacy_markdown" in summary_text
     assert "translation_quality_mixed_script_term_classification=non_structural_hygiene" in summary_text
     assert "translation_quality_raw_mixed_script_term_count=2" in summary_text
-    assert "translation_quality_theology_style_deterministic_issue_source=legacy_markdown" in summary_text
-    assert "translation_quality_theology_style_deterministic_issue_classification=domain_style_advisory" in summary_text
-    assert "translation_quality_raw_theology_style_deterministic_issue_count=0" in summary_text
     assert "translation_quality_toc_body_concat_gate_source=legacy_markdown" in summary_text
     assert "source_file" not in report
     assert "runtime_configuration" not in report
@@ -6337,7 +6315,6 @@ def test_main_falls_back_to_prepared_snapshot_statuses_when_event_log_lacks_stru
                 processing_operation="translate",
                 source_language="auto",
                 target_language="ru",
-                translation_domain="theology",
             ),
             ui_defaults=_resolution_payload(
                 chunk_size=6000,
@@ -6348,7 +6325,6 @@ def test_main_falls_back_to_prepared_snapshot_statuses_when_event_log_lacks_stru
                 processing_operation="edit",
                 source_language="auto",
                 target_language="ru",
-                translation_domain="general",
             ),
             overrides={},
         ),

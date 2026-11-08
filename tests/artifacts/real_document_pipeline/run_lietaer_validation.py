@@ -692,10 +692,6 @@ def _build_translation_quality_summary_lines(
         "mixed_script_term_gate_source",
         "mixed_script_term_classification",
         "raw_mixed_script_term_count",
-        "theology_style_deterministic_issue_count",
-        "theology_style_deterministic_issue_source",
-        "theology_style_deterministic_issue_classification",
-        "raw_theology_style_deterministic_issue_count",
     ):
         if key in report:
             lines.append(f"translation_quality_{key}={report.get(key)}")
@@ -1286,18 +1282,6 @@ def _print_terminal_completion_summary(*, report: Mapping[str, object], final_st
                     else "",
                     f"raw_mixed_script_term_count={translation_quality_report.get('raw_mixed_script_term_count')}"
                     if "raw_mixed_script_term_count" in translation_quality_report
-                    else "",
-                    f"theology_style_deterministic_issue_count={translation_quality_report.get('theology_style_deterministic_issue_count')}"
-                    if "theology_style_deterministic_issue_count" in translation_quality_report
-                    else "",
-                    f"theology_style_deterministic_issue_source={translation_quality_report.get('theology_style_deterministic_issue_source')}"
-                    if "theology_style_deterministic_issue_source" in translation_quality_report
-                    else "",
-                    f"theology_style_deterministic_issue_classification={translation_quality_report.get('theology_style_deterministic_issue_classification')}"
-                    if "theology_style_deterministic_issue_classification" in translation_quality_report
-                    else "",
-                    f"raw_theology_style_deterministic_issue_count={translation_quality_report.get('raw_theology_style_deterministic_issue_count')}"
-                    if "raw_theology_style_deterministic_issue_count" in translation_quality_report
                     else "",
                 )
                 if part

@@ -347,8 +347,6 @@ def test_run_prepared_background_document_uses_preparation_and_job_mutator(monke
             "jobs": [{"target_text": "one"}],
             "paragraphs": ["p1"],
             "image_assets": ["img1"],
-            "translation_domain": "theology",
-            "translation_domain_instructions": "TERM PLAN",
             "document_context_profile": DocumentContextProfile(
                 glossary_terms=(GlossaryTerm(source_term="Great Tribulation", target_term="Великая скорбь"),),
             ),
@@ -428,8 +426,6 @@ def test_run_prepared_background_document_uses_model_aware_client_factory_for_pr
             "jobs": [{"target_text": "one"}],
             "paragraphs": ["p1"],
             "image_assets": ["img1"],
-            "translation_domain": "general",
-            "translation_domain_instructions": "",
             "document_context_profile": DocumentContextProfile(),
         },
     )()
@@ -582,8 +578,6 @@ def test_run_prepared_background_document_model_factory_uses_default_when_select
             "jobs": [{"target_text": "one"}],
             "paragraphs": ["p1"],
             "image_assets": ["img1"],
-            "translation_domain": "general",
-            "translation_domain_instructions": "",
             "document_context_profile": DocumentContextProfile(),
         },
     )()
@@ -647,8 +641,6 @@ def test_run_prepared_background_document_passes_prepared_payload_into_processin
             ],
             "paragraphs": ["p1"],
             "image_assets": ["img1"],
-            "translation_domain": "theology",
-            "translation_domain_instructions": "TERM PLAN",
             "document_context_profile": DocumentContextProfile(
                 glossary_terms=(GlossaryTerm(source_term="Great Tribulation", target_term="Великая скорбь"),),
             ),
@@ -680,8 +672,6 @@ def test_run_prepared_background_document_passes_prepared_payload_into_processin
     assert captured["run"]["source_paragraphs"] == ["p1"]
     assert captured["run"]["image_assets"] == ["img1"]
     assert captured["run"]["app_config"]["x"] == 1
-    assert captured["run"]["app_config"]["translation_domain_default"] == "theology"
-    assert captured["run"]["app_config"]["translation_domain_instructions"] == "TERM PLAN"
     # Full-document run: build_document_context_prompt still emits the base document
     # context (glossary) but no partial selected-segment focus block.
     assert "Great Tribulation" in captured["run"]["document_context_prompt"]
@@ -722,8 +712,6 @@ def test_run_prepared_background_document_passes_selected_segment_ids_none_when_
             "jobs": [{"target_text": "one"}],
             "paragraphs": ["p1"],
             "image_assets": ["img1"],
-            "translation_domain": "general",
-            "translation_domain_instructions": "",
         },
     )()
 
@@ -803,8 +791,6 @@ def test_initialize_processing_run_builds_segment_runtime_metadata():
         processing_operation="edit",
         source_language="en",
         target_language="ru",
-        translation_domain="general",
-        translation_domain_instructions="",
         on_progress=lambda **kwargs: None,
         runtime=None,
     )
@@ -943,8 +929,6 @@ def test_run_prepared_background_document_mints_non_empty_run_id_for_processing(
             "jobs": [{"target_text": "one"}],
             "paragraphs": ["p1"],
             "image_assets": [],
-            "translation_domain": "general",
-            "translation_domain_instructions": "",
         },
     )()
 
@@ -1079,8 +1063,6 @@ def _build_prepared_run_context_stub():
             "paragraphs": ["p1"],
             "image_assets": ["img1"],
             "segments": [],
-            "translation_domain": "general",
-            "translation_domain_instructions": "",
             "prepared_source_key": "",
             "structure_fingerprint": "",
             "document_context_profile": DocumentContextProfile(),

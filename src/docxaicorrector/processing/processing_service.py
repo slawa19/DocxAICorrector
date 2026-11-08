@@ -468,8 +468,6 @@ class ProcessingService:
             raise
         jobs = _mutate_processing_jobs(prepared.jobs, job_mutator=job_mutator)
         processing_app_config = dict(app_config)
-        processing_app_config["translation_domain_default"] = str(getattr(prepared, "translation_domain", "general") or "general")
-        processing_app_config["translation_domain_instructions"] = str(getattr(prepared, "translation_domain_instructions", "") or "")
         document_context_profile = getattr(prepared, "document_context_profile", None)
         document_context_prompt = build_chapter_workflow_document_context_prompt(
             prepared_run_context=prepared,

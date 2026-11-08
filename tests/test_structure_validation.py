@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 
 import docxaicorrector.validation.structural as structural_validation_runtime
+from docxaicorrector.validation.quality_gate_audit import quality_gate_audit_classifications_payload
 from docxaicorrector.core.models import ParagraphUnit
 from docxaicorrector.structure.validation import validate_structure_quality
 
@@ -325,7 +326,6 @@ def test_build_structural_checks_exposes_explicit_unmapped_count_basis() -> None
         require_pdf_conversion=False,
         require_no_bullet_headings=False,
         require_no_toc_body_concat=False,
-        require_translation_domain=None,
     )
     checks = structural_validation_runtime._build_structural_checks(
         document_profile=document_profile,
@@ -370,7 +370,6 @@ def test_build_markdown_quality_metrics_collects_detector_advisories_without_fai
         ),
         raw_markdown="",
         raw_structural_markdown="",
-        translation_domain="general",
     )
 
     assert metrics["pdf_blank_page_marker_leakage_count"] == 1
@@ -382,9 +381,13 @@ def test_build_markdown_quality_metrics_collects_detector_advisories_without_fai
     assert audit["pdf_blank_page_marker_leakage"]["verdict"] == "unit_aware"
     assert audit["inline_page_furniture_leakage"]["verdict"] == "unit_aware_after_structural_label_exemption"
     assert audit["heading_body_concat_detected"]["verdict"] == "tolerant"
-    assert audit["residual_bullet_glyph"]["heldout_money_sustainability_class"] == "c_observability_source_bullets"
+    assert audit["residual_bullet_glyph"]["verdict"] == "tolerant"
     assert audit["toc_body_concat"]["verdict"] == "tolerant"
-    assert audit["list_fragment_regression"]["heldout_money_sustainability_class"] == "b_extraction_noise_or_citation_tail"
+    assert audit["list_fragment_regression"]["verdict"] == "tolerant"
+    # Spec 066 A-2: the audit table carries neutral fields only, no per-book class column.
+    payload = quality_gate_audit_classifications_payload()
+    assert audit == payload
+    assert all(set(entry) == {"verdict", "evidence", "severity_model"} for entry in payload.values())
 
 
 def test_inline_page_furniture_detector_exempts_numbered_structural_labels() -> None:
@@ -405,13 +408,12 @@ def test_inline_page_furniture_detector_exempts_numbered_structural_labels() -> 
         ),
         raw_markdown="",
         raw_structural_markdown="",
-        translation_domain="general",
     )
 
     assert metrics["inline_page_furniture_leakage_count"] == 0
     assert metrics["quality_gate_audit_classifications"]["inline_page_furniture_leakage"][
-        "heldout_money_sustainability_class"
-    ] == "a_gate_misclass_fixed"
+        "verdict"
+    ] == "unit_aware_after_structural_label_exemption"
 
 
 def test_inline_page_furniture_detector_still_flags_repeated_running_header_with_page_number() -> None:
@@ -426,7 +428,6 @@ def test_inline_page_furniture_detector_still_flags_repeated_running_header_with
         ),
         raw_markdown="",
         raw_structural_markdown="",
-        translation_domain="general",
     )
 
     assert metrics["inline_page_furniture_leakage_count"] == 3
@@ -449,7 +450,6 @@ def test_build_structural_checks_serializes_strict_detector_threshold_fields_whe
         require_pdf_conversion=False,
         require_no_bullet_headings=False,
         require_no_toc_body_concat=False,
-        require_translation_domain=None,
         max_pdf_blank_page_marker_leakage=0,
         max_inline_page_furniture_leakage=1,
         max_adjacent_h1_without_body=0,

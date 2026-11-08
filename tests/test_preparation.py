@@ -1043,7 +1043,6 @@ def test_build_prepared_source_key_distinguishes_target_language():
         paragraph_boundary_normalization_mode="high_only",
         paragraph_boundary_ai_review_mode="off",
         source_language="en",
-        translation_domain="general",
     )
     key_de = preparation.build_prepared_source_key(
         "token",
@@ -1053,20 +1052,10 @@ def test_build_prepared_source_key_distinguishes_target_language():
         paragraph_boundary_normalization_mode="high_only",
         paragraph_boundary_ai_review_mode="off",
         source_language="en",
-        translation_domain="general",
     )
     assert key_ru != key_de
 
 
-def test_build_prepared_source_key_distinguishes_translation_domain():
-    # F14: keys differing ONLY by translation_domain must be distinct.
-    key_general = preparation.build_prepared_source_key(
-        "token", 6000, translation_domain="general", source_language="en", target_language="ru"
-    )
-    key_legal = preparation.build_prepared_source_key(
-        "token", 6000, translation_domain="legal", source_language="en", target_language="ru"
-    )
-    assert key_general != key_legal
 
 
 def test_build_prepared_source_key_identical_settings_collide():
@@ -1076,14 +1065,12 @@ def test_build_prepared_source_key_identical_settings_collide():
         6000,
         target_language="ru",
         source_language="en",
-        translation_domain="general",
     )
     key_b = preparation.build_prepared_source_key(
         "token",
         6000,
         target_language="ru",
         source_language="en",
-        translation_domain="general",
     )
     assert key_a == key_b
 
@@ -1291,11 +1278,11 @@ def test_detect_segments_adapter_propagates_internal_type_error_without_retry():
 # Byte-for-byte snapshot of ``build_prepared_source_key('tok123', 1200)`` captured from the
 # pre-040 implementation. The client-identity axis MUST be a no-op when empty: an empty
 # identity may never change this string (no cache invalidation, single-tenant unchanged).
-# Spec 066 C-1 removed the dead structure-recovery tokens from the layout.
+# Spec 066 C-1 and T-1 removed the structure-recovery and translation-domain tokens.
 _PRE_040_REPRESENTATIVE_KEY = (
     "tok123:1200:high_only:off:phase2_default:"
     "epigraph_attribution,image_caption,table_caption,toc_region:lc=1:3:80:pv=2:pk=4:"
-    "sl=en:tl=ru:td=general:so=10:0.1:1.5:ar=off"
+    "sl=en:tl=ru:so=10:0.1:1.5:ar=off"
 )
 
 

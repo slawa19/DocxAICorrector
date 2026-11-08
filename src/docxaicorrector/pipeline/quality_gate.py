@@ -1518,7 +1518,6 @@ def _build_translation_quality_report(
         if untranslated_body_char_count > 0
         else 0.0
     )
-    translation_domain = str(getattr(context, "translation_domain", "") or context.app_config.get("translation_domain", "general") or "general")
     authority_fields = _derive_translation_quality_authority_fields(
         context=context,
         final_markdown=final_markdown,
@@ -1566,8 +1565,8 @@ def _build_translation_quality_report(
     suspicious_heading_repetition_samples = [
         sample for sample in false_fragment_heading_samples if getattr(sample, "reason", "") == "suspicious_heading_repetition_present"
     ]
-    scripture_reference_heading_samples = [
-        sample for sample in false_fragment_heading_samples if getattr(sample, "reason", "") == "scripture_reference_heading_present"
+    numbered_citation_heading_samples = [
+        sample for sample in false_fragment_heading_samples if getattr(sample, "reason", "") == "numbered_citation_heading_present"
     ]
     toc_body_concat_detected = bool(authority_fields.get("toc_body_concat_detected", False))
     source_paragraph_count = latest_payload.get("source_count") if isinstance(latest_payload, Mapping) else None
@@ -2029,7 +2028,6 @@ def _build_translation_quality_report(
         "source_name": context.uploaded_filename,
         "processing_operation": context.processing_operation,
         "quality_gate_policy": policy,
-        "translation_domain": translation_domain,
         "source_paragraph_count": source_paragraph_count,
         "target_paragraph_count": output_paragraph_count,
         "output_paragraph_count": output_paragraph_count,
@@ -2100,8 +2098,8 @@ def _build_translation_quality_report(
         "raw_false_fragment_heading_samples": _serialize_quality_samples(raw_false_fragment_heading_samples),
         "suspicious_heading_repetition_count": len(suspicious_heading_repetition_samples),
         "suspicious_heading_repetition_samples": _serialize_quality_samples(suspicious_heading_repetition_samples),
-        "scripture_reference_heading_count": len(scripture_reference_heading_samples),
-        "scripture_reference_heading_samples": _serialize_quality_samples(scripture_reference_heading_samples),
+        "numbered_citation_heading_count": len(numbered_citation_heading_samples),
+        "numbered_citation_heading_samples": _serialize_quality_samples(numbered_citation_heading_samples),
         "residual_bullet_glyph_count": len(residual_bullet_glyph_samples),
         "residual_bullet_glyph_gate_source": "legacy_markdown",
         "residual_bullet_glyph_classification": "display_hygiene",
@@ -2140,17 +2138,6 @@ def _build_translation_quality_report(
             for sample in untranslated_body_samples[:8]
         ],
         "untranslated_body_text_classification": "body_translation_completeness",
-        # Round-4 F6: the former config-driven glossary/awkward-heading detector was
-        # PRODUCTION-DEAD (every caller passed no glossary/markers, so the axis could
-        # never fire). The detector and its ``awkward_judgment_heading_present`` /
-        # ``unresolved_glossary_term_present`` sample reasons are removed. These four
-        # count/source/classification keys are a broad output contract (the acceptance
-        # advisory check, ``structural`` metric copy, and the corpus goldens all read
-        # them), so they are kept as INERT constants rather than firing a dead metric.
-        "theology_style_deterministic_issue_count": 0,
-        "theology_style_deterministic_issue_source": "legacy_markdown",
-        "theology_style_deterministic_issue_classification": "domain_style_advisory",
-        "raw_theology_style_deterministic_issue_count": 0,
         "emphasis_coverage": dict(emphasis_coverage_payload),
         "toc_body_concat_detected": toc_body_concat_detected,
         "toc_body_concat_markdown_detected": authority_fields.get("toc_body_concat_markdown_detected", False),

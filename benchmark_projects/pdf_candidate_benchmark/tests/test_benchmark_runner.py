@@ -224,7 +224,6 @@ def test_docx_profile_for_artifact_disables_pdf_conversion_requirement(tmp_path:
         repo_artifact.unlink(missing_ok=True)
 
     assert profile.require_pdf_conversion is False
-    assert profile.require_translation_domain == "theology"
     assert profile.source_path.endswith("benchmark_projects/pdf_candidate_benchmark/artifacts/tmp/normalized.docx")
 
 

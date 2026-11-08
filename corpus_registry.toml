@@ -335,7 +335,6 @@ mode = "regression"
 processing_operation = "translate"
 source_language = "auto"
 target_language = "ru"
-translation_domain = "theology"
 audiobook_postprocess_enabled = false
 enable_paragraph_markers = true
 repeat_count = 1
