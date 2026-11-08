@@ -17,7 +17,6 @@ Two behaviors are pinned here:
 import re
 import zipfile
 from io import BytesIO
-from pathlib import Path
 
 import pytest
 
@@ -37,11 +36,14 @@ from docxaicorrector.document.provenance import (
     classify_scan_origin_from_document_xml,
     table_has_authored_signals,
 )
+from docxaicorrector.validation.profiles import load_validation_registry
 
 
-BOOK_SOURCES = Path(__file__).resolve().parent / "sources" / "book"
-MAZZUCATO = BOOK_SOURCES / "The Value of Everything. Making and Taking in the Global Economy by Mariana Mazzucato (z-lib.org).docx"
-LIETAER = BOOK_SOURCES / "Rethinking-money_-How-new-currencies-turn-scarcity-into-prosperity-Bernard-Lietaer-Jacqui-Dunne.docx"
+# The DOCX twins of two registry documents, resolved by profile id: their file names carry the
+# books' titles and authors, which stay out of the tests (spec 068 FR-004).
+_REGISTRY = load_validation_registry()
+MAZZUCATO = _REGISTRY.get_document_profile("mazzucato-pdf-full-benchmark").resolved_source_path().with_suffix(".docx")
+LIETAER = _REGISTRY.get_document_profile("lietaer-pdf-full-benchmark").resolved_source_path().with_suffix(".docx")
 
 
 def _pandoc_available() -> bool:

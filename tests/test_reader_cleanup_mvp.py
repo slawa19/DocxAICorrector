@@ -2212,7 +2212,7 @@ def test_reader_cleanup_system_prompt_forbids_title_subtitle_as_heading_body() -
 
 def test_run_reader_cleanup_ignores_removed_reclassify_role_without_failing_the_chunk() -> None:
     """A model that still remembers the old contract must not cost us the chunk."""
-    markdown = "Intro paragraph\n\nTHE MERCANTILISTS: TRADE AND TREASURE\n\nBody paragraph\n\nOutro paragraph"
+    markdown = "Intro paragraph\n\nTHE LAMPLIGHTERS: WICK AND LANTERN\n\nBody paragraph\n\nOutro paragraph"
     repair_calls: list[int] = []
 
     def repair_provider(payload: dict[str, Any], chunk_index: int, chunk_count: int) -> str:
@@ -2228,12 +2228,12 @@ def test_run_reader_cleanup_ignores_removed_reclassify_role_without_failing_the_
                     _unknown_operation_item(
                         block,
                         operation="reclassify_role",
-                        expected_after_preview="## THE MERCANTILISTS: TRADE AND TREASURE",
+                        expected_after_preview="## THE LAMPLIGHTERS: WICK AND LANTERN",
                         reason="semantic_heading",
                         extra={"target_role": "heading"},
                     )
                     for block in payload["blocks"]
-                    if block["text"] == "THE MERCANTILISTS: TRADE AND TREASURE"
+                    if block["text"] == "THE LAMPLIGHTERS: WICK AND LANTERN"
                 ],
                 "warnings": [],
             },
@@ -5863,8 +5863,8 @@ def test_run_reader_cleanup_removes_numeric_uppercase_running_header_prefix() ->
 
 def test_run_reader_cleanup_removes_two_number_numeric_uppercase_running_header_prefix() -> None:
     target = (
-        "187 188 ПЕРЕОСМЫСЛИВАЯ ДЕНЬГИ Джон Стивен Лансинг, профессор Института Санта-Фе, "
-        "исследует связь между экологией и общественной собственностью."
+        "187 188 ПЕРЕОСМЫСЛИВАЯ ДЕНЬГИ Тобиас Эдвин Марлоу, смотритель Маяка Сен-Клер, "
+        "изучает связь между приливами и береговой собственностью."
     )
     markdown = f"Intro\n\n{target}\n\nOutro"
 
@@ -5880,7 +5880,7 @@ def test_run_reader_cleanup_removes_two_number_numeric_uppercase_running_header_
                         "reason": "page_number",
                         "confidence": "high",
                         "evidence_before": "Two page numbers and an uppercase running header are fused to the paragraph start.",
-                        "expected_after_preview": "Джон Стивен Лансинг, профессор Института Санта-Фе, исследует связь между экологией и общественной собственностью.",
+                        "expected_after_preview": "Тобиас Эдвин Марлоу, смотритель Маяка Сен-Клер, изучает связь между приливами и береговой собственностью.",
                         "safety_note": "Only the exact two-number running-header prefix should be removed.",
                         "noise_substring": "187 188 ПЕРЕОСМЫСЛИВАЯ ДЕНЬГИ ",
                     }
@@ -5895,7 +5895,7 @@ def test_run_reader_cleanup_removes_two_number_numeric_uppercase_running_header_
     assert result.changed is True
     assert result.cleaned_markdown == (
         "Intro\n\n"
-        "Джон Стивен Лансинг, профессор Института Санта-Фе, исследует связь между экологией и общественной собственностью.\n\n"
+        "Тобиас Эдвин Марлоу, смотритель Маяка Сен-Клер, изучает связь между приливами и береговой собственностью.\n\n"
         "Outro"
     )
 
@@ -5940,7 +5940,7 @@ def test_run_reader_cleanup_removes_numeric_uppercase_running_header_prefix_with
 
 def test_run_reader_cleanup_removes_two_number_numeric_uppercase_running_header_prefix_with_terminal_punctuation() -> None:
     target = (
-        "187 188 ПЕРЕОСМЫСЛИВАЯ ДЕНЬГИ. Джон Стивен Лансинг, профессор Института Санта-Фе, исследует связь между экологией и общественной собственностью."
+        "187 188 ПЕРЕОСМЫСЛИВАЯ ДЕНЬГИ. Тобиас Эдвин Марлоу, смотритель Маяка Сен-Клер, изучает связь между приливами и береговой собственностью."
     )
     markdown = f"Intro\n\n{target}\n\nOutro"
 
@@ -5956,7 +5956,7 @@ def test_run_reader_cleanup_removes_two_number_numeric_uppercase_running_header_
                         "reason": "page_number",
                         "confidence": "high",
                         "evidence_before": "Two page numbers and a punctuated uppercase running header precede the paragraph.",
-                        "expected_after_preview": "Джон Стивен Лансинг, профессор Института Санта-Фе, исследует связь между экологией и общественной собственностью.",
+                        "expected_after_preview": "Тобиас Эдвин Марлоу, смотритель Маяка Сен-Клер, изучает связь между приливами и береговой собственностью.",
                         "safety_note": "Remove only the exact punctuated two-number prefix proposed by the model.",
                         "noise_substring": "187 188 ПЕРЕОСМЫСЛИВАЯ ДЕНЬГИ. ",
                     }
@@ -5971,7 +5971,7 @@ def test_run_reader_cleanup_removes_two_number_numeric_uppercase_running_header_
     assert result.changed is True
     assert result.cleaned_markdown == (
         "Intro\n\n"
-        "Джон Стивен Лансинг, профессор Института Санта-Фе, исследует связь между экологией и общественной собственностью.\n\n"
+        "Тобиас Эдвин Марлоу, смотритель Маяка Сен-Клер, изучает связь между приливами и береговой собственностью.\n\n"
         "Outro"
     )
 
@@ -6882,7 +6882,7 @@ def test_run_reader_cleanup_removes_title_case_running_header_in_middle_of_parag
 
 
 def test_run_reader_cleanup_rejects_title_case_running_header_inside_longer_number() -> None:
-    target = "Analysis of the United States 2024 report continued after the hearing."
+    target = "Analysis of the Northern Provinces 2024 report continued after the hearing."
     markdown = f"Intro\n\n{target}\n\nOutro"
 
     def provider(payload: dict[str, Any], chunk_index: int, chunk_count: int) -> str:
@@ -6899,7 +6899,7 @@ def test_run_reader_cleanup_rejects_title_case_running_header_inside_longer_numb
                         "evidence_before": "A short title-case header plus page number was proposed from inside the sentence.",
                         "expected_after_preview": "Analysis of the 24 report continued after the hearing.",
                         "safety_note": "This should be rejected because the substring ends inside a longer year token.",
-                        "noise_substring": "United States 20",
+                        "noise_substring": "Northern Provinces 20",
                     }
                 ],
                 "warnings": [],
@@ -7578,7 +7578,7 @@ def test_reconcile_docx_image_placeholders_discards_cleanup_instead_of_appending
         # ...and the long shapes the previous test did cover, kept so the fix cannot be
         # rolled back to "long is prose, short is contents".
         (
-            "Джеффри Фрид, автор бестселлера и классического труда в области образования, "
+            "Тобиас Марлоу, автор бестселлера и классического труда в области образования, "
             "определил особенности стиля обучения современных студентов и показал, почему "
             "школьная система перестала отвечать их потребностям уже к 2000"
         ),
@@ -7594,10 +7594,10 @@ def test_toc_like_no_longer_captures_prose_containing_an_ellipsis() -> None:
     # The other leaking branch: ``\.{3,}`` fired on an ellipsis typed as three periods, so
     # lietaer b_000006 -- 3 481 characters of jacket endorsements -- was "TOC-like" too.
     prose = (
-        "«Лиетар и Данн объясняют, как и почему наша денежная система не может "
-        "сбалансировать спрос и предложение, подрывает демократию и вознаграждает "
-        "неустойчивый, разрушительный рост... Не умаляя того, что деньги дают нам "
-        "сегодня, они проводят экскурсию по целому ряду реальных альтернатив»."
+        "«Марлоу и Кесвик объясняют, как и почему наша приливная система не может "
+        "сбалансировать прилив и отлив, подтапливает гавани и вознаграждает "
+        "неустойчивый, разрушительный шторм... Не умаляя того, что маяки дают нам "
+        "сегодня, они проводят экскурсию по целому ряду настоящих бухт»."
     )
 
     assert _detect_block_kind(prose) == "paragraph"
@@ -7606,49 +7606,51 @@ def test_toc_like_no_longer_captures_prose_containing_an_ellipsis() -> None:
 @pytest.mark.parametrize(
     ("block_id", "contents_line"),
     [
-        # lietaer's real table of contents, verbatim — including the line that crosses the
+        # the shapes of lietaer's table of contents (block ids of the recorded run; the words
+        # are synthetic, spec 068 FR-004) — including the line that crosses the
         # roman→arabic pagination seam and so carries only two page references.
-        ("b_000020", "Предисловие ix Введение: от дефицита к процветанию в рамках одного поколения 1"),
+        ("b_000020", "Предисловие ix Введение: от отлива к приливу в течение одного сезона 1"),
         (
             "b_000022",
-            "1 Крах денег: конкурентное общество 11 2 Миф о деньгах: что это такое на самом деле 23 "
-            "3 Судьба хуже долга: скрытые последствия процентов 37",
+            "1 Крах маяка: штормовое побережье 11 2 Миф о приливах: что это такое на самом деле 23 "
+            "3 Туман гуще дыма: тихие последствия штилей 37",
         ),
-        ("b_000024", "4 Летучие рыбы: новый взгляд на деньги 57 5 Будущее уже наступило, но распределено неравномерно..."),
+        ("b_000024", "4 Ночные чайки: новый взгляд на гавани 57 5 Маяк уже зажжён, но освещает неравномерно..."),
         (
             "b_000025",
-            "Пока что! 73 6 Стратегии для банковской сферы 95 7 Стратегии для бизнеса и предпринимателей 119 "
-            "8 Стратегии для государственных органов 141 9 Стратегии для НКО 159",
+            "Ещё раз! 73 6 Способы для портовой службы 95 7 Способы для лоцманов и перевозчиков 119 "
+            "8 Способы для городских советов 141 9 Способы для ГЛС 159",
         ),
         # ...and its subject index: the head, a bare page-reference column continued across
         # a page break, and the dense multi-entry runs — including the three blocks the
         # recorded lietaer run proposed operations on, which must stay refused.
-        ("b_001723", "**ПРЕДМЕТНЫЙ УКАЗАТЕЛЬ** Изобилие: в Куритибе, 142; устойчивое, 5–6, 55, 224; и ценность, 80"),
+        ("b_001723", "**ПРЕДМЕТНЫЙ УКАЗАТЕЛЬ** Прилив: в Келбруке, 142; северный, 5–6, 55, 224; и отмель, 80"),
         ("b_001789", "99, 102"),
         ("b_001809", "179– 180"),
         (
             "b_001763",
-            "Демократия: на Бали, 187–188, 190–191; гражданское общество и, 147–148; концентрация богатства "
-            "и, 21–22, 52–53; в принципиальном обществе, 193–194; регио и, 191; социальный капитал и, 46.",
+            "Лоцманство: на Мальве, 187–188, 190–191; портовое сообщество и, 147–148; концентрация улова "
+            "и, 21–22, 52–53; в приливном сообществе, 193–194; регио и, 191; береговой капитал и, 46.",
         ),
         (
             "b_001828",
-            "Рационализм, 217; эпоха Просвещения, 15, 29–30; рынки как проявление, 4; "
-            "сберегательно-кредитная система, 112; сберегательные баллы, 110 Реализм, 30 Саваяка Фукуси, 166–167",
+            "Навигация, 217; эпоха Парусов, 15, 29–30; гавани как убежище, 4; "
+            "приливно-отливная система, 112; портовые баллы, 110 Рулевой, 30 Келвина Марлоу, 166–167",
         ),
         (
             "b_001792",
-            "Экологически чистые продукты, 152, 186; Гринвошинг, 198; Валовой внутренний продукт "
-            "(ВВП), 34–35, 131, 146; Валовое национальное счастье, 131",
+            "Солёные северные ветры, 152, 186; Штормогон, 198; Валовой портовый улов "
+            "(ВПУ), 34–35, 131, 146; Валовое прибрежное спокойствие, 131",
         ),
         # A dotted leader terminated by a page number — the classic contents entry.
-        ("synthetic", "Введение: от дефицита к процветанию ......... 12"),
+        ("synthetic", "Введение: от отлива к приливу ......... 12"),
     ],
 )
 def test_toc_like_still_captures_genuine_contents_and_index_lines(block_id: str, contents_line: str) -> None:
     # The rule must keep contents/index material out of the model's hands: every line here
-    # is taken verbatim from lietaer's contents and subject index (the one exception is
-    # labelled synthetic), and each one is measured ``toc_like``.
+    # has the shape of a line of lietaer's contents and subject index (block id kept as
+    # provenance, words synthetic; one line is a plain synthetic entry), and each one is
+    # measured ``toc_like``.
     assert _detect_block_kind(contents_line) == "toc_like", block_id
 
 
@@ -7657,7 +7659,7 @@ def test_toc_like_still_captures_genuine_contents_and_index_lines(block_id: str,
     [
         # The four leader spellings the pattern has to keep, including the two the
         # per-branch lookbehind exists for.
-        ("dots", "Введение: от дефицита к процветанию ......... 12"),
+        ("dots", "Введение: от отлива к приливу ......... 12"),
         ("three dots, the minimum", "Глава 1 ... 7"),
         ("ellipsis characters", "Введение …… 12"),
         # A dot run beginning immediately after an ellipsis CHARACTER. A single shared
@@ -7747,7 +7749,7 @@ def test_toc_like_blocks_are_sent_to_the_model_and_protected_only_at_validation(
     blind spot", naming a saving that is not made. This pins the real behaviour so the
     wording cannot drift back.
     """
-    contents_line = "Введение: от дефицита к процветанию ......... 12"
+    contents_line = "Введение: от отлива к приливу ......... 12"
     assert _detect_block_kind(contents_line) == "toc_like"
 
     captured, result = _run_with_delete_of_the_contents_line(
@@ -7767,7 +7769,7 @@ def test_toc_like_blocks_are_sent_to_the_model_and_protected_only_at_validation(
 
 def test_keep_toc_false_is_what_actually_withholds_toc_blocks_from_the_model() -> None:
     """The other half of the contract, so the test above cannot pass for a trivial reason."""
-    contents_line = "Введение: от дефицита к процветанию ......... 12"
+    contents_line = "Введение: от отлива к приливу ......... 12"
 
     captured, result = _run_with_delete_of_the_contents_line(
         keep_toc=False, contents_line=contents_line
@@ -7785,28 +7787,29 @@ def test_keep_toc_false_is_what_actually_withholds_toc_blocks_from_the_model() -
         # in almost the right place, and one specific narrowing in the rule is the only
         # thing keeping it out. Loosen that spelling and the block silently goes immune.
         ("a notes-section chapter header", "Глава 1"),
-        ("a publisher address", "235 Montgomery Street, Suite 650"),
-        ("an endnote continued mid-sentence", "3. “$22,350 a Year for a Family of Four or $10,890 for an Individual in the 48"),
-        ("a citation ending in a date", "52. Дж. Сакс, «Лекарство, которое разоряет Америку», Huffington Post, 16"),
-        ("a citation ending in a page", "29. Р. Райх, «Экономист Джон Мейнард Кейнс», журнал TIME, 29"),
-        ("an ellipsis followed by a number mid-sentence", "Нужно всего три вещи... 50 долларов, пульс и умение поставить свою подпись"),
-        ("a bibliography year after a comma", "14. Forbes, 2017."),
-        ("a journal volume and page range", "Business Review, 89 (2011), стр. 62–77."),
-        ("Russian decimal commas", "0,72 в 1990 г.; 1,11 в 2000 г. и 0,39 в 2001 г. В США он составлял 0 в 1999 г."),
-        ("endnote superscripts glued to a full stop", "Первая версия появилась в 1953 году.12 СНС позиционирует себя как база.13 Она определяет счетоводство.14 ВВП это мера.15"),
-        ("currency amounts before a capitalised unit", "Таким образом, на счет Лизы зачисляется 10 L15, а со счета Энн списывается 10 L15. Ей нужно 30 L15."),
+        ("a publisher address", "235 Harbourview Street, Suite 650"),
+        ("an endnote continued mid-sentence", "3. “$22,350 a Berth for a Crew of Nine or $10,890 for an Oarsman in the 48"),
+        ("a citation ending in a date", "52. Дж. Марлоу, «Лоция, которая разоряет гавань», Harbour Gazette, 16"),
+        ("a citation ending in a page", "29. Р. Кесвик, «Картограф Тобиас Эдвин Марлоу», журнал TIDE, 29"),
+        ("an ellipsis followed by a number mid-sentence", "Нужно всего три вещи... 50 монет, фонарь и умение завязать морской узел"),
+        ("a bibliography year after a comma", "14. Tidings, 2017."),
+        ("a journal volume and page range", "Harbour Review, 89 (2011), стр. 62–77."),
+        ("Russian decimal commas", "0,72 в 1990 г.; 1,11 в 2000 г. и 0,39 в 2001 г. В ГЛС он составлял 0 в 1999 г."),
+        ("endnote superscripts glued to a full stop", "Первая лоция появилась в 1953 году.12 ЛСС позиционирует себя как база.13 Она определяет навигацию.14 ГПП это мера.15"),
+        ("currency amounts before a capitalised unit", "Таким образом, на счет Марты зачисляется 10 L15, а со счета Эльзы списывается 10 L15. Ей нужно 30 L15."),
         (
-            # lietaer b_000091, trimmed: three comma-introduced numbers, but 26 words —
+            # the shape of lietaer b_000091, trimmed (synthetic words): three comma-introduced
+            # numbers, but 26 words —
             # the density ratio is the only thing keeping this paragraph out.
             "a statistics-heavy paragraph",
-            "Половина живет в семьях, возглавляемых супружеской парой; 49 процентов живут в пригородах. "
-            "Почти половина — белые нелатиноамериканского происхождения, 18 процентов — чернокожие, "
-            "26 процентов — латиноамериканцы.",
+            "Половина живет в домах, возглавляемых старшим лоцманом; 49 процентов живут в гаванях. "
+            "Почти половина — потомственные рыбаки побережья, 18 процентов — паромщики, "
+            "26 процентов — смотрители.",
         ),
-        ("a title in an italian bibliography entry", "Rivoluzione francese,” Rivista di Storia Economica 1, no. 1 (Турин, 1936)."),
-        ("a figure-step list", "(на этапах 1d, 2a, 2b, 2c и 4a) обозначают операционный жизненный цикл обращения Terra."),
-        ("a dateline", "ДУБЛИН, ИРЛАНДИЯ, 5 АВГУСТА 2020 Г."),
-        ("a URL ending in digits", "BBC, 10 апреля 2017 г.: http://www.bbc.co.uk/news/business-39548313"),
+        ("a title in an italian bibliography entry", "Navigazione costiera,” Bollettino di Storia Marittima 1, no. 1 (Генуя, 1936)."),
+        ("a figure-step list", "(на этапах 1d, 2a, 2b, 2c и 4a) обозначают операционный жизненный цикл обращения Marea."),
+        ("a dateline", "КЕЛБРУК, МАРРОУШИР, 5 АВГУСТА 2020 Г."),
+        ("a URL ending in digits", "Tidings, 10 апреля 2017 г.: http://www.tidings.co.uk/news/harbour-39548313"),
     ],
 )
 def test_toc_like_rejects_the_measured_near_misses(what_it_would_have_been: str, not_contents: str) -> None:
@@ -7840,7 +7843,7 @@ def test_toc_like_reads_a_roman_page_number_by_its_form_and_position_only() -> N
     # lietaer b_000020 is the contents line that crosses the front-matter pagination seam:
     # it carries exactly two page references, one roman and one arabic, so it is one short
     # of the bare-number count and is recognised only if the roman one reads as a page.
-    seam_line = "Предисловие ix Введение: от дефицита к процветанию в рамках одного поколения 1"
+    seam_line = "Предисловие ix Введение: от отлива к приливу в течение одного сезона 1"
     assert _detect_block_kind(seam_line) == "toc_like"
     assert _TOC_MIN_CONTENTS_ENTRY_TOKENS_WITH_ROMAN < _TOC_MIN_CONTENTS_ENTRY_TOKENS
 
@@ -7849,10 +7852,10 @@ def test_toc_like_reads_a_roman_page_number_by_its_form_and_position_only() -> N
     # spelled with the hundreds or thousands symbols is not a front-matter page number at
     # all. That is what keeps lietaer b_001398's Italian title out ("di" is 501), where the
     # previous spelling of this rule needed a hand-kept list of look-alike words.
-    assert _detect_block_kind("Rivoluzione francese,” Rivista di Storia Economica 1, no. 1 (Турин, 1936).") == "paragraph"
-    assert _detect_block_kind("Предисловие mix Введение: от дефицита 1") == "paragraph"  # mix = 1009
-    assert _detect_block_kind("Предисловие ci Введение: от дефицита 1") == "paragraph"  # ci = 101
-    assert _detect_block_kind("Предисловие i Введение: от дефицита 1") == "paragraph"  # one letter is no shape
+    assert _detect_block_kind("Navigazione costiera,” Bollettino di Storia Marittima 1, no. 1 (Генуя, 1936).") == "paragraph"
+    assert _detect_block_kind("Предисловие mix Введение: от отлива 1") == "paragraph"  # mix = 1009
+    assert _detect_block_kind("Предисловие ci Введение: от отлива 1") == "paragraph"  # ci = 101
+    assert _detect_block_kind("Предисловие i Введение: от отлива 1") == "paragraph"  # one letter is no shape
 
     # ...and POSITION does the rest: the numeral counts only where an arabic page number
     # would count — at an entry boundary — and only in a block an arabic page number already

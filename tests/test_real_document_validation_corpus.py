@@ -314,29 +314,29 @@ def _torn_list_item_profile(*, max_torn_list_items: int | None) -> Any:
 def test_build_structural_metrics_counts_list_items_the_importer_cut_mid_phrase() -> None:
     """The class the 2026-08-02 live run measured 305 of and could not repair.
 
-    Both pairs below are verbatim from the corpus as the 2026-06-18 importer emitted
-    them: a bullet whose first line became its own unit, and a numbered endnote whose
-    URL was split at the line wrap. The whole population had this one shape, so the
+    Both pairs below have the form of corpus units as the 2026-06-18 importer emitted
+    them (the words are synthetic): a bullet whose first line became its own unit, and a
+    numbered endnote whose URL was split at the line wrap. The whole population had this one shape, so the
     metric is written for it and nothing else.
     """
     metrics = real_document_validation_structural._build_structural_metrics(
         paragraphs=[
             ParagraphUnit(
-                text="• In Oakland, California, the Alameda County Department of Public Health",
+                text="• In Kelbrook, Marrowshire, the Saltmere County Department of Harbour Pilots",
                 role="list",
                 structural_role="list",
             ),
             ParagraphUnit(
-                text="funded a TimeBank in a neighborhood beset by racial violence.",
+                text="funded a TideBank in a harbourside beset by winter flooding.",
                 role="body",
                 structural_role="body",
             ),
             ParagraphUnit(
-                text="3. http://www.forbes.com/sites/mikecollins/2015/07/14/the-big-bank-",
+                text="3. http://www.tidings.com/sites/annamarlow/2015/07/14/the-big-tide-",
                 role="list",
                 structural_role="list",
             ),
-            ParagraphUnit(text="bailout/#66d600ee3723", role="body", structural_role="body"),
+            ParagraphUnit(text="turning/#66d600ee3723", role="body", structural_role="body"),
         ],
         image_assets=[],
         cleanup_report=_cleanup_report(),
@@ -345,8 +345,8 @@ def test_build_structural_metrics_counts_list_items_the_importer_cut_mid_phrase(
     assert metrics["torn_list_item_count"] == 2
     samples = cast(list[dict[str, str]], metrics["torn_list_item_samples"])
     assert [sample["continuation_head"] for sample in samples] == [
-        "funded a TimeBank in a neighborhood beset by racial violence.",
-        "bailout/#66d600ee3723",
+        "funded a TideBank in a harbourside beset by winter flooding.",
+        "turning/#66d600ee3723",
     ]
 
 
@@ -371,9 +371,9 @@ def test_build_structural_metrics_does_not_count_intact_or_uppercase_bounded_lis
             ),
             ParagraphUnit(text="• Economic needs such as unemployment", role="list", structural_role="list"),
             ParagraphUnit(text="• Commercial needs such as local shops", role="list", structural_role="list"),
-            ParagraphUnit(text="2. A Brief History of Value", role="list", structural_role="list"),
+            ParagraphUnit(text="2. A Short History of Tides", role="list", structural_role="list"),
             ParagraphUnit(
-                text="The Mercantilists: Trade and Treasure",
+                text="The Lamplighters: Wick and Lantern",
                 role="body",
                 structural_role="body",
             ),

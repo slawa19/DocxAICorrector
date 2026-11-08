@@ -20,6 +20,7 @@ from docxaicorrector.core.models import ParagraphUnit
 import docxaicorrector.pipeline._pipeline as document_pipeline
 import docxaicorrector.pipeline.late_phases as document_pipeline_late_phases
 import docxaicorrector.pipeline.quality_report_retention as document_pipeline_quality_report_retention
+from docxaicorrector.validation import profiles as validation_profiles
 
 
 PNG_BYTES = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aK3cAAAAASUVORK5CYII=")
@@ -1297,12 +1298,12 @@ def test_key_headings_preserved_survives_a_change_of_language() -> None:
     report = _structural_report(
         _registry_diagnostics(
             [
-                _source_entry(0, "heading", heading_level=2, mapped_target_index=0, text_preview="3 measuring the wealth of nations"),
-                _source_entry(1, "heading", heading_level=3, mapped_target_index=1, text_preview="a scarcity of care"),
+                _source_entry(0, "heading", heading_level=2, mapped_target_index=0, text_preview="3 measuring the depth of harbours"),
+                _source_entry(1, "heading", heading_level=3, mapped_target_index=1, text_preview="a shortage of rope"),
             ],
             [
-                _target_entry(0, style_name="Heading 2", heading_level=2, text_preview="3 Измерение богатства народов"),
-                _target_entry(1, style_name="Heading 3", heading_level=3, text_preview="Дефицит заботы"),
+                _target_entry(0, style_name="Heading 2", heading_level=2, text_preview="3 Измерение глубины гаваней"),
+                _target_entry(1, style_name="Heading 3", heading_level=3, text_preview="Нехватка каната"),
             ],
         )
     )
@@ -1341,10 +1342,10 @@ def test_key_headings_preserved_fails_when_a_mapped_heading_is_delivered_as_body
         _registry_diagnostics(
             [
                 _source_entry(
-                    0, "heading", heading_level=1, mapped_target_index=0, text_preview="the creative economy"
+                    0, "heading", heading_level=1, mapped_target_index=0, text_preview="the tidal workshop"
                 )
             ],
-            [_target_entry(0, style_name="Body Text", text_preview="the creative economy")],
+            [_target_entry(0, style_name="Body Text", text_preview="the tidal workshop")],
         )
     )
     report["preparation_diagnostic_snapshot"] = {"first_block_has_body_start": True}
@@ -1606,12 +1607,13 @@ def test_word_numbering_preserved_is_not_applicable_when_the_source_carries_only
     assert "word_numbering_preserved" not in acceptance["failed_checks"]
 
 
+# The DOCX twin of the registry document, resolved by profile id (the file name carries the
+# book's authors, which stay out of the tests -- spec 068 FR-004).
 _LIETAER_SOURCE_DOCX = (
-    Path(__file__).resolve().parents[1]
-    / "tests"
-    / "sources"
-    / "book"
-    / "Rethinking-money_-How-new-currencies-turn-scarcity-into-prosperity-Bernard-Lietaer-Jacqui-Dunne.docx"
+    validation_profiles.load_validation_registry()
+    .get_document_profile("lietaer-pdf-full-benchmark")
+    .resolved_source_path()
+    .with_suffix(".docx")
 )
 
 # The specific per-book false split this fixture guards: a mid-sentence paragraph break that
@@ -1660,8 +1662,8 @@ def test_evaluate_lietaer_acceptance_classifies_placeholder_heading_concat_as_di
         "formatting_diagnostics": [],
         "runtime": {
             "state": {
-                "latest_markdown": "This page intentionally left blank\n\nChapter Nine STRATEGIES FOR NGO S",
-                "processed_block_markdowns": ["This page intentionally left blank Chapter Nine STRATEGIES FOR NGO S"],
+                "latest_markdown": "This page intentionally left blank\n\nChapter Nine METHODS FOR PILOT S",
+                "processed_block_markdowns": ["This page intentionally left blank Chapter Nine METHODS FOR PILOT S"],
             }
         },
         "translation_quality_report": {
