@@ -116,9 +116,6 @@ def _build_markdown_quality_metrics(
 
 def _apply_metric_snapshot_fields(snapshot: dict[str, object], metrics: Mapping[str, object]) -> None:
     for key in (
-        "document_map_toc_detected",
-        "document_map_toc_region_count",
-        "topology_toc_entry_count",
         "bullet_heading_count",
         "bullet_heading_gate_source",
         "bullet_heading_classification",
@@ -149,9 +146,6 @@ def _apply_metric_snapshot_fields(snapshot: dict[str, object], metrics: Mapping[
         "toc_body_concat_markdown_detected",
         "toc_body_concat_structure_detected",
         "toc_body_concat_gate_source",
-        "topology_split_compound_toc_operation_count",
-        "topology_merge_heading_operation_count",
-        "document_map_compound_toc_split_hint_count",
         "raw_unmapped_source_paragraph_count",
         "raw_unmapped_target_paragraph_count",
         "structure_unit_unmapped_source_count",
@@ -369,7 +363,7 @@ def _build_structural_checks(
     ).strip().lower()
     unmapped_source_actual = (
         _as_int(metrics, "structure_unit_unmapped_source_count")
-        if unmapped_source_gate_source in {"topology_unit", "accepted_aggregation_legacy"}
+        if unmapped_source_gate_source == "accepted_aggregation_legacy"
         else _as_int(metrics, "effective_unmapped_source_count")
         if unmapped_source_gate_source == "role_aware_formatting_coverage"
         else _as_int(metrics, "max_unmapped_source_paragraphs")
@@ -381,7 +375,7 @@ def _build_structural_checks(
     ).strip().lower()
     unmapped_target_actual = (
         _as_int(metrics, "structure_unit_unmapped_target_count")
-        if unmapped_target_gate_source in {"topology_unit", "accepted_aggregation_legacy"}
+        if unmapped_target_gate_source == "accepted_aggregation_legacy"
         else _as_int(metrics, "max_unmapped_target_paragraphs")
     )
     checks = [
@@ -510,9 +504,6 @@ def _build_structural_checks(
             or _as_int(metrics, "structure_repair_bounded_toc_regions") > 0
             or _as_int(metrics, "source_toc_region_count") > 0
             or _as_int(metrics, "effective_source_toc_region_count") > 0
-            or bool(metrics.get("document_map_toc_detected"))
-            or _as_int(metrics, "document_map_toc_region_count") > 0
-            or _as_int(metrics, "topology_toc_entry_count") > 0
         )
         checks.append(
             {
@@ -523,9 +514,6 @@ def _build_structural_checks(
                 "structure_repair_bounded_toc_regions": metrics.get("structure_repair_bounded_toc_regions"),
                 "source_toc_region_count": metrics.get("source_toc_region_count"),
                 "effective_source_toc_region_count": metrics.get("effective_source_toc_region_count"),
-                "document_map_toc_detected": metrics.get("document_map_toc_detected"),
-                "document_map_toc_region_count": metrics.get("document_map_toc_region_count"),
-                "topology_toc_entry_count": metrics.get("topology_toc_entry_count"),
             }
         )
     if document_profile.require_pdf_conversion:
@@ -545,27 +533,12 @@ def _build_structural_checks(
             }
         )
     if document_profile.require_no_toc_body_concat:
-        gate_source = str(metrics.get("toc_body_concat_gate_source") or "legacy_markdown").strip().lower() or "legacy_markdown"
-        structure_toc_boundary_resolved = bool(
-            _as_int(metrics, "document_map_toc_region_count") > 0
-            and (
-                _as_int(metrics, "topology_toc_entry_count") > 0
-                or _as_int(metrics, "topology_split_compound_toc_operation_count") > 0
-                or _as_int(metrics, "document_map_compound_toc_split_hint_count") == 0
-            )
-        )
         source_toc_boundary_repaired = (
             _as_int(metrics, "structure_repair_toc_body_boundary_repairs") > 0
             or _as_int(metrics, "effective_source_toc_region_count") > 0
-            or (gate_source == "topology_projection" and structure_toc_boundary_resolved)
         )
         gate_detected = bool(
-            metrics.get(
-                "toc_body_concat_structure_detected"
-                if gate_source == "topology_projection"
-                else "toc_body_concat_markdown_detected",
-                metrics.get("toc_body_concat_detected"),
-            )
+            metrics.get("toc_body_concat_markdown_detected", metrics.get("toc_body_concat_detected"))
         )
         checks.append(
             {
@@ -577,11 +550,6 @@ def _build_structural_checks(
                 "toc_body_concat_gate_source": metrics.get("toc_body_concat_gate_source"),
                 "structure_repair_toc_body_boundary_repairs": metrics.get("structure_repair_toc_body_boundary_repairs"),
                 "effective_source_toc_region_count": metrics.get("effective_source_toc_region_count"),
-                "document_map_toc_region_count": metrics.get("document_map_toc_region_count"),
-                "topology_toc_entry_count": metrics.get("topology_toc_entry_count"),
-                "topology_split_compound_toc_operation_count": metrics.get(
-                    "topology_split_compound_toc_operation_count"
-                ),
             }
         )
     if document_profile.require_translation_domain:

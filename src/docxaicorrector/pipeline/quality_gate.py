@@ -62,7 +62,6 @@ from docxaicorrector.validation.formatting_coverage import (
 )
 from docxaicorrector.validation.quality_gate_audit import quality_gate_audit_classifications_payload
 from docxaicorrector.pipeline.output_validation import (
-    build_generated_paragraph_registry_from_entries,
     collect_bullet_heading_samples,
     collect_recovered_heading_entries,
     collect_false_fragment_heading_samples,
@@ -2210,13 +2209,6 @@ def _derive_translation_quality_authority_fields(
         "toc_body_concat_markdown_detected": markdown_detected,
         "toc_body_concat_structure_detected": False,
         "toc_body_concat_gate_source": "legacy_markdown",
-        "topology_projection_supported": False,
-        "document_map_toc_detected": False,
-        "document_map_toc_region_count": 0,
-        "topology_toc_entry_count": 0,
-        "topology_split_compound_toc_operation_count": 0,
-        "topology_merge_heading_operation_count": 0,
-        "document_map_compound_toc_split_hint_count": 0,
         "raw_unmapped_source_paragraph_count": raw_unmapped_source_count,
         "raw_unmapped_target_paragraph_count": raw_unmapped_target_count,
         "structure_unit_unmapped_source_count": raw_unmapped_source_count,
@@ -2226,43 +2218,17 @@ def _derive_translation_quality_authority_fields(
         "unit_unmapped_source_gate_source": "legacy_paragraph",
         "unit_unmapped_target_gate_source": "legacy_paragraph",
     }
-    # Structure recognition (#2) removed: no document map / topology projection is produced,
-    # so the structure-side TOC/topology gate fields keep their neutral defaults above and only
-    # the markdown-derived toc_body_concat detection and unit-aware unmapped fields run.
-    source_paragraphs = cast(Sequence[object], getattr(context, "source_paragraphs", None) or ())
+    # The TOC/body-concat gate is the markdown signal above: no structure-side TOC signal has a
+    # producer (spec 066 C-2). Every source paragraph is its own unit, so the only adjustment
+    # left is the accepted-aggregation credit on the unmapped counts.
     if formatting_payload is None:
         return fields
     try:
         from docxaicorrector.validation import structural as structural_validation_runtime
     except Exception:
         return fields
-    fields.update(
-        {
-            key: value
-            for key, value in structural_validation_runtime._derive_toc_body_concat_gate_fields(
-                document_map=None,
-                topology_projection=None,
-                markdown_detected=markdown_detected,
-            ).items()
-            if key
-            in {
-                "toc_body_concat_detected",
-                "toc_body_concat_markdown_detected",
-                "toc_body_concat_structure_detected",
-                "toc_body_concat_gate_source",
-            }
-        }
-    )
-    generated_paragraph_registry = None
-    if assembly_result is not None:
-        assembly_entries = tuple(getattr(assembly_result, "entries", ()) or ())
-        if assembly_entries:
-            generated_paragraph_registry = build_generated_paragraph_registry_from_entries(assembly_entries)
     unmapped_fields = structural_validation_runtime._derive_unit_aware_unmapped_fields(
-        source_paragraphs=source_paragraphs,
-        topology_projection=None,
         formatting_payload=formatting_payload,
-        generated_paragraph_registry=generated_paragraph_registry,
     )
     fields.update(
         {
@@ -2272,7 +2238,6 @@ def _derive_translation_quality_authority_fields(
             in {
                 "raw_unmapped_source_paragraph_count",
                 "raw_unmapped_target_paragraph_count",
-                "structure_unit_total_count",
                 "structure_unit_unmapped_source_count",
                 "structure_unit_unmapped_target_count",
                 "accepted_aggregated_source_unit_count",

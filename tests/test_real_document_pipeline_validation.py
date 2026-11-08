@@ -1928,11 +1928,11 @@ def test_evaluate_lietaer_acceptance_prefers_structure_unit_unmapped_basis_over_
             "unmapped_source_count": 1,
             "raw_unmapped_source_paragraph_count": 2,
             "structure_unit_unmapped_source_count": 1,
-            "unmapped_source_count_basis": "topology_unit",
+            "unmapped_source_count_basis": "accepted_aggregation_legacy",
             "unmapped_target_count": 1,
             "raw_unmapped_target_paragraph_count": 2,
             "structure_unit_unmapped_target_count": 1,
-            "unmapped_target_count_basis": "topology_unit",
+            "unmapped_target_count_basis": "accepted_aggregation_legacy",
             "toc_body_concat_detected": False,
         },
     }
@@ -1949,7 +1949,7 @@ def test_evaluate_lietaer_acceptance_prefers_structure_unit_unmapped_basis_over_
     assert by_name["formatting_diagnostics_threshold"]["passed"] is True
     assert by_name["formatting_diagnostics_threshold"]["actual"] == 1
     assert by_name["formatting_diagnostics_threshold"]["raw_worst_unmapped_source_count"] == 2
-    assert by_name["formatting_diagnostics_threshold"]["unmapped_source_count_basis"] == "topology_unit"
+    assert by_name["formatting_diagnostics_threshold"]["unmapped_source_count_basis"] == "accepted_aggregation_legacy"
     assert by_name["unmapped_source_threshold"]["passed"] is True
     assert by_name["unmapped_source_threshold"]["actual"] == 1
     assert by_name["unmapped_target_threshold"]["passed"] is True
@@ -2146,7 +2146,6 @@ def test_evaluate_lietaer_acceptance_emits_required_no_toc_body_concat_check() -
             "toc_body_concat_markdown_detected": False,
             "toc_body_concat_gate_source": "legacy_markdown",
             "effective_source_toc_region_count": 1,
-            "document_map_toc_region_count": 1,
         },
     }
 
@@ -2160,52 +2159,6 @@ def test_evaluate_lietaer_acceptance_emits_required_no_toc_body_concat_check() -
     by_name = {check["name"]: check for check in acceptance["checks"]}
     assert by_name["no_toc_body_concat_required"]["passed"] is True
     assert by_name["no_toc_body_concat_required"]["toc_body_concat_gate_source"] == "legacy_markdown"
-
-
-def test_evaluate_lietaer_acceptance_prefers_topology_toc_body_signal_for_required_gate() -> None:
-    validation = _load_validation_module()
-
-    source_doc = Document()
-    source_doc.add_paragraph("Содержание")
-    output_doc = Document()
-    output_doc.add_paragraph("Содержание")
-
-    report = {
-        "result": "succeeded",
-        "output_artifacts": {
-            "output_docx_openable": True,
-            "output_contains_placeholder_markup": False,
-        },
-        "formatting_diagnostics": [],
-        "translation_quality_report": {
-            "toc_body_concat_detected": False,
-        },
-        "preparation_diagnostic_snapshot": {
-            "toc_body_concat_detected": False,
-            "toc_body_concat_markdown_detected": True,
-            "toc_body_concat_structure_detected": False,
-            "toc_body_concat_gate_source": "topology_projection",
-            "structure_repair_toc_body_boundary_repairs": 0,
-            "effective_source_toc_region_count": 0,
-            "document_map_toc_region_count": 1,
-            "topology_toc_entry_count": 2,
-            "topology_split_compound_toc_operation_count": 1,
-            "document_map_compound_toc_split_hint_count": 1,
-        },
-    }
-
-    acceptance = validation.evaluate_lietaer_acceptance(
-        report,
-        source_docx_bytes=_docx_bytes(source_doc),
-        output_docx_bytes=_docx_bytes(output_doc),
-        require_no_toc_body_concat=True,
-    )
-
-    by_name = {check["name"]: check for check in acceptance["checks"]}
-    assert by_name["no_toc_body_concat_required"]["passed"] is True
-    assert by_name["no_toc_body_concat_required"]["toc_body_concat_gate_source"] == "topology_projection"
-    assert by_name["no_toc_body_concat_required"]["toc_body_concat_markdown_detected"] is True
-    assert by_name["no_toc_body_concat_required"]["toc_body_concat_structure_detected"] is False
 
 
 def test_evaluate_lietaer_acceptance_uses_explicit_report_markdown_field_for_legacy_toc_gate_fallback() -> None:
@@ -2232,7 +2185,6 @@ def test_evaluate_lietaer_acceptance_uses_explicit_report_markdown_field_for_leg
         "preparation_diagnostic_snapshot": {
             "toc_body_concat_detected": False,
             "effective_source_toc_region_count": 1,
-            "document_map_toc_region_count": 1,
         },
     }
 
@@ -2930,18 +2882,6 @@ def test_main_uses_processing_service_facade_and_runtime_config_only(tmp_path, m
             captured["target_language"] = kwargs["target_language"]
             self.log_event_fn(
                 20,
-                "structure_processing_outcome",
-                "structure outcome",
-                structure_ai_attempted=True,
-                quality_gate_status="blocked",
-                quality_gate_reasons=["structure_readiness_blocked_unsafe_best_effort_only"],
-                readiness_status="blocked_unsafe_best_effort_only",
-                readiness_reasons=["heading_count_far_below_toc_expectation"],
-                ai_classified_count=7,
-                ai_heading_count=3,
-            )
-            self.log_event_fn(
-                20,
                 "block_plan_summary",
                 "block summary",
                 block_count=3,
@@ -2975,6 +2915,8 @@ def test_main_uses_processing_service_facade_and_runtime_config_only(tmp_path, m
                 source_text="source text",
                 preparation_cached=False,
                 preparation_elapsed_seconds=0.1,
+                quality_gate_status="blocked",
+                quality_gate_reasons=("heading_count_far_below_toc_expectation",),
                 ai_classified_count=7,
                 ai_heading_count=3,
                 ai_role_change_count=2,
@@ -3068,12 +3010,8 @@ def test_main_uses_processing_service_facade_and_runtime_config_only(tmp_path, m
     assert snapshot["toc_body_boundary_repairs"] == 1
     assert snapshot["remaining_isolated_marker_count"] == 0
     assert snapshot["readiness_status"] == "blocked_unsafe_best_effort_only"
-    assert snapshot["readiness_reasons"] == ["heading_count_far_below_toc_expectation"]
     assert snapshot["quality_gate_status"] == "blocked"
-    assert snapshot["quality_gate_reasons"] == ["structure_readiness_blocked_unsafe_best_effort_only"]
-    assert snapshot["structure_ai_attempted"] is True
-    assert snapshot["ai_classified_count"] == 7
-    assert snapshot["ai_heading_count"] == 3
+    assert snapshot["quality_gate_reasons"] == ["heading_count_far_below_toc_expectation"]
     assert snapshot["semantic_block_count"] >= 1
     assert snapshot["first_block_target_chars"] == 3891
     assert report["image_forensics"]["prepared_assets"][0]["source"]["source_forensics"]["drawing_container"] == "inline"
@@ -3082,7 +3020,7 @@ def test_main_uses_processing_service_facade_and_runtime_config_only(tmp_path, m
     assert report["translation_quality_report_path"] == ".run/quality_reports/prepared_quality_report.json"
     assert report["translation_quality_report"]["quality_status"] == "fail"
     assert report["translation_quality_report"]["false_fragment_heading_count"] == 2
-    assert 'preparation_diagnostic_snapshot={"ai_classified_count": 7' in summary_text
+    assert 'preparation_diagnostic_snapshot={"bounded_toc_region_count": 1' in summary_text
     assert '"readiness_status": "blocked_unsafe_best_effort_only"' in summary_text
     assert "translation_quality_status=fail" in summary_text
     assert "translation_quality_gate_reasons=false_fragment_headings_present,residual_bullet_glyphs_present" in summary_text

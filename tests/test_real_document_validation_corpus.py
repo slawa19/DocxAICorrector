@@ -850,7 +850,7 @@ def test_apply_prepared_metric_fields_uses_explicit_unknown_when_statuses_missin
     assert metrics["readiness_status"] == "unknown"
 
 
-def test_build_structural_checks_prefers_topology_unit_unmapped_counts_when_available() -> None:
+def test_build_structural_checks_prefers_accepted_aggregation_unit_counts_when_available() -> None:
     document_profile = SimpleNamespace(
         max_formatting_diagnostics=5,
         max_unmapped_source_paragraphs=1,
@@ -872,8 +872,8 @@ def test_build_structural_checks_prefers_topology_unit_unmapped_counts_when_avai
         "max_unmapped_target_paragraphs": 2,
         "structure_unit_unmapped_source_count": 1,
         "structure_unit_unmapped_target_count": 1,
-        "unit_unmapped_source_gate_source": "topology_unit",
-        "unit_unmapped_target_gate_source": "topology_unit",
+        "unit_unmapped_source_gate_source": "accepted_aggregation_legacy",
+        "unit_unmapped_target_gate_source": "accepted_aggregation_legacy",
         "heading_level_drift": 0,
         "text_similarity": 0.99,
         "heading_only_output_detected": False,
@@ -890,11 +890,11 @@ def test_build_structural_checks_prefers_topology_unit_unmapped_counts_when_avai
     assert by_name["unmapped_source_threshold"]["passed"] is True
     assert by_name["unmapped_source_threshold"]["actual"] == 1
     assert by_name["unmapped_source_threshold"]["paragraph_actual"] == 2
-    assert by_name["unmapped_source_threshold"]["unmapped_gate_source"] == "topology_unit"
+    assert by_name["unmapped_source_threshold"]["unmapped_gate_source"] == "accepted_aggregation_legacy"
     assert by_name["unmapped_target_threshold"]["passed"] is True
     assert by_name["unmapped_target_threshold"]["actual"] == 1
     assert by_name["unmapped_target_threshold"]["paragraph_actual"] == 2
-    assert by_name["unmapped_target_threshold"]["unmapped_gate_source"] == "topology_unit"
+    assert by_name["unmapped_target_threshold"]["unmapped_gate_source"] == "accepted_aggregation_legacy"
 
 
 def test_structural_passthrough_failure_derives_snapshot_block_status_from_preparation_error(tmp_path, monkeypatch) -> None:

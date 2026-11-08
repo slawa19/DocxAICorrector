@@ -2,7 +2,7 @@
   "diagnostics": {
     "aligned_target_unit_keys_snapshot": {
       "5": [
-        "u3"
+        "paragraph:p0003"
       ]
     },
     "alignment_coverage_summary": {
@@ -19,7 +19,7 @@
         "target_index": 5,
         "target_preview": "body paragraph three",
         "unit_keys": [
-          "u3"
+          "paragraph:p0003"
         ]
       }
     ],

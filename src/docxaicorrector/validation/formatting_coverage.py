@@ -435,13 +435,10 @@ def _resolve_bounded_toc_region(
     front_matter_boundary: int | None,
 ) -> tuple[int, int] | None:
     """Inclusive (start, end) source_index range of the bounded TOC region, or None.
-    Gated by `bounded_toc_region_count`/`document_map_toc_detected`. The region starts at
-    a "Contents"-style heading and runs up to the front-matter boundary (the TOC always
-    sits inside the front matter)."""
+    Gated by `bounded_toc_region_count`. The region starts at a "Contents"-style heading
+    and runs up to the front-matter boundary (the TOC always sits inside the front matter)."""
     snapshot = preparation_diagnostic_snapshot or {}
-    has_toc = _coerce_int(snapshot.get("bounded_toc_region_count")) > 0 or bool(
-        snapshot.get("document_map_toc_detected")
-    )
+    has_toc = _coerce_int(snapshot.get("bounded_toc_region_count")) > 0
     if not has_toc or not source_registry:
         return None
     start_index: int | None = None

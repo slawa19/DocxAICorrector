@@ -62,24 +62,9 @@ from docxaicorrector.validation.structural_text_metrics import (  # noqa: F401
     _relation_count,
 )
 from docxaicorrector.validation.structural_toc_signals import (  # noqa: F401
-    _count_authoritative_topology_operations,
-    _count_authoritative_topology_toc_entry_units,
-    _count_document_map_anchor_roles,
     _count_effective_toc_regions_from_source,
-    _count_high_confidence_compound_toc_split_hints,
-    _count_topology_operations,
-    _count_topology_toc_entry_units,
     _derive_toc_body_concat_gate_fields,
-    _document_map_has_high_confidence_outline_inside_toc_region,
-    _has_high_confidence_bounded_document_map_toc_region,
-    _is_authoritative_topology_signal,
     _normalized_structural_role,
-    _projection_has_heading_inside_toc_region,
-    _projection_has_toc_entry_outside_toc_region,
-    _projection_has_units_or_operations,
-    _projection_supports_toc_body_concat_gate,
-    _resolve_bounded_toc_region_range,
-    has_toc_body_concat_structure,
 )
 from docxaicorrector.validation.structural_unit_alignment import (  # noqa: F401
     _align_target_indexes_from_generated_registry,
@@ -91,12 +76,10 @@ from docxaicorrector.validation.structural_unit_alignment import (  # noqa: F401
     _derive_unit_aware_unmapped_fields,
     _generated_paragraph_spans_empty_body_interval_target,
     _infer_target_alignment_unit_keys_from_source_intervals,
-    _logical_index_for_unit_accounting,
     _merge_target_alignment_unit_keys,
     _normalize_registry_preview_for_unit_alignment,
     _normalize_registry_text_for_unit_alignment,
     _paragraph_id_for_unit_accounting,
-    _projection_units_for_logical_index,
     _registry_entry_relation_ids,
     _registry_entry_unit_keys,
     _registry_text_matches_target_preview,
@@ -119,18 +102,15 @@ from docxaicorrector.validation.structural_prep_snapshot_helpers import (  # noq
     _apply_prepared_snapshot_fields,
     _apply_preparation_error_snapshot_fallback,
     _apply_quality_gate_readiness_fallback,
-    _apply_structure_summary_snapshot_fields,
     _apply_structure_validation_snapshot_fields,
     _block_has_body_start,
     _block_has_epigraph,
     _block_has_isolated_marker,
     _block_has_toc,
-    _build_layout_signals_snapshot_context,
     _extract_first_block_target_chars,
     _extract_quality_gate_reasons_from_error,
     _infer_readiness_status_from_quality_gate_reasons,
     _is_isolated_marker_text,
-    _maybe_backfill_layout_signals_snapshot,
     _normalize_snapshot_or_metric_statuses,
 )
 from docxaicorrector.structure.validation import validate_structure_quality
@@ -215,7 +195,6 @@ def _merge_translation_quality_report_metrics(
 def _emit_target_alignment_trace_artifact(
     *,
     source_paragraphs: Sequence[object],
-    topology_projection: object | None,
     formatting_payload: Mapping[str, object] | None,
     generated_paragraph_registry: Sequence[Mapping[str, object]] | None,
 ) -> str | None:
@@ -235,7 +214,7 @@ def _emit_target_alignment_trace_artifact(
     if not unmapped_target_indexes:
         return None
 
-    paragraph_unit_keys, _ = _build_source_paragraph_unit_membership(source_paragraphs, topology_projection)
+    paragraph_unit_keys = _build_source_paragraph_unit_membership(source_paragraphs)
     generated_registry_alignments, _ = _align_target_indexes_from_generated_registry(
         formatting_payload,
         generated_paragraph_registry=generated_paragraph_registry,
@@ -459,11 +438,7 @@ def run_structural_passthrough_validation(
         chunk_size=int(runtime_resolution.effective.chunk_size),
         event_log=event_log,
     )
-    _apply_prepared_snapshot_fields(
-        preparation_diagnostic_snapshot,
-        prepared,
-        app_config=runtime_config,
-    )
+    _apply_prepared_snapshot_fields(preparation_diagnostic_snapshot, prepared)
     output_paragraphs = []
     output_image_assets = []
     if output_artifacts["output_docx_openable"]:
@@ -518,9 +493,9 @@ def run_structural_passthrough_validation(
             "toc_body_concat_markdown_detected": _has_toc_body_concat_markdown(latest_markdown),
             "require_pdf_conversion_satisfied": source_path.suffix.lower() == ".pdf",
             "runtime_translation_domain": str(runtime_resolution.effective.translation_domain),
-            "quality_gate_status": _extract_event_context_value(event_log, "structure_processing_outcome", "quality_gate_status"),
-            "quality_gate_reasons": _extract_event_context_list(event_log, "structure_processing_outcome", "quality_gate_reasons"),
-            "readiness_status": _extract_event_context_value(event_log, "structure_processing_outcome", "readiness_status"),
+            "quality_gate_status": "",
+            "quality_gate_reasons": [],
+            "readiness_status": "",
             "block_count": _extract_event_context_int(event_log, "block_plan_summary", "block_count"),
             "llm_block_count": _extract_event_context_int(event_log, "block_plan_summary", "llm_block_count"),
             "passthrough_block_count": _extract_event_context_int(event_log, "block_plan_summary", "passthrough_block_count"),
@@ -558,13 +533,10 @@ def run_structural_passthrough_validation(
     _apply_prepared_metric_fields(
         metrics,
         prepared,
-        source_paragraphs=source_paragraphs,
         formatting_payload=canonical_formatting_diagnostics,
-        generated_paragraph_registry=cast(Sequence[Mapping[str, object]] | None, generated_paragraph_registry),
     )
     target_alignment_trace_path = _emit_target_alignment_trace_artifact(
         source_paragraphs=source_paragraphs,
-        topology_projection=getattr(prepared, "document_topology_projection", None),
         formatting_payload=canonical_formatting_diagnostics,
         generated_paragraph_registry=cast(Sequence[Mapping[str, object]] | None, generated_paragraph_registry),
     )
@@ -754,49 +726,6 @@ def build_preparation_diagnostic_snapshot(
 
 
 def _build_preparation_diagnostic_defaults(event_log: Sequence[Mapping[str, object]]) -> dict[str, object]:
-    outline_coverage_ratio = _extract_event_context_float(event_log, "structure_processing_outcome", "outline_coverage_ratio")
-    if outline_coverage_ratio is None:
-        outline_coverage_ratio = _extract_event_context_float(event_log, "reconciliation_report_saved", "outline_coverage_ratio")
-    document_map_status = str(
-        _extract_event_context_value(event_log, "structure_processing_outcome", "document_map_status") or ""
-    ).strip()
-    document_map_status_reason = str(
-        _extract_event_context_value(event_log, "structure_processing_outcome", "document_map_status_reason") or ""
-    ).strip()
-    topology_status = str(
-        _extract_event_context_value(event_log, "structure_processing_outcome", "document_topology_projection_status") or ""
-    ).strip()
-    topology_status_reason = str(
-        _extract_event_context_value(event_log, "structure_processing_outcome", "document_topology_projection_status_reason") or ""
-    ).strip()
-    topology_artifact_path = ""
-    for event in reversed(list(event_log)):
-        event_id = str(event.get("event_id") or "").strip()
-        if event_id not in {"document_topology_projection_built", "document_topology_projection_skipped"}:
-            continue
-        context = cast(Mapping[str, object], event.get("context") or {})
-        if not topology_status:
-            if event_id == "document_topology_projection_built":
-                topology_status = "built"
-            else:
-                reason = str(context.get("reason") or "").strip()
-                topology_status = "no_operations" if reason == "no_operations" else "skipped"
-                if not topology_status_reason:
-                    topology_status_reason = reason
-        topology_artifact_path = str(context.get("artifact_path") or "").strip()
-        if topology_artifact_path:
-            break
-    topology_projection = None
-    if topology_artifact_path:
-        artifact_path = Path(topology_artifact_path)
-        if not artifact_path.is_absolute():
-            artifact_path = (PROJECT_ROOT / artifact_path).resolve()
-        if artifact_path.exists():
-            try:
-                topology_projection = json.loads(artifact_path.read_text(encoding="utf-8"))
-            except (OSError, ValueError, json.JSONDecodeError):
-                topology_projection = None
-    layout_signals_context = dict(_extract_event_context(event_log, "document_topology_layout_signals_built"))
     snapshot = {
         "paragraph_count": 0,
         "heading_count": 0,
@@ -807,14 +736,13 @@ def _build_preparation_diagnostic_defaults(event_log: Sequence[Mapping[str, obje
         "repaired_numbered_items": 0,
         "toc_body_boundary_repairs": 0,
         "remaining_isolated_marker_count": 0,
-        "readiness_status": _extract_event_context_value(event_log, "structure_processing_outcome", "readiness_status"),
-        "readiness_reasons": _extract_event_context_list(event_log, "structure_processing_outcome", "readiness_reasons"),
-        "document_map_present": _extract_event_context_bool(event_log, "structure_processing_outcome", "document_map_present"),
-        "outline_coverage_ratio": outline_coverage_ratio,
-        "document_topology_projection_status": topology_status or "not_requested",
-        "document_topology_projection_status_reason": topology_status_reason,
-        "document_topology_projection": topology_projection,
-        "document_topology_layout_signals": None if not layout_signals_context else layout_signals_context,
+        "readiness_status": "",
+        "readiness_reasons": [],
+        "outline_coverage_ratio": _extract_event_context_float(
+            event_log,
+            "reconciliation_report_saved",
+            "outline_coverage_ratio",
+        ),
         "front_matter_leaks": _extract_event_context_int_list(event_log, "reconciliation_report_saved", "front_matter_leaks"),
         "front_matter_body_advisories": _extract_event_context_int_list(
             event_log,
@@ -822,51 +750,8 @@ def _build_preparation_diagnostic_defaults(event_log: Sequence[Mapping[str, obje
             "front_matter_body_advisories",
         ),
         "targeted_recall_invoked": _extract_event_context_bool(event_log, "reconciliation_report_saved", "targeted_recall_invoked"),
-        "quality_gate_status": _extract_event_context_value(event_log, "structure_processing_outcome", "quality_gate_status"),
-        "quality_gate_reasons": _extract_event_context_list(event_log, "structure_processing_outcome", "quality_gate_reasons"),
-        "structure_ai_attempted": _extract_event_context_bool(event_log, "structure_processing_outcome", "structure_ai_attempted"),
-        "ai_first_degraded": _extract_event_context_bool(event_log, "structure_processing_outcome", "ai_first_degraded"),
-        "fallback_stage": _extract_event_context_value(event_log, "structure_processing_outcome", "fallback_stage"),
-        "fallback_reason": _extract_event_context_value(event_log, "structure_processing_outcome", "fallback_reason"),
-        "document_map_status": document_map_status or "not_requested",
-        "document_map_status_reason": document_map_status_reason,
-        "ai_classified_count": _extract_event_context_int(event_log, "structure_processing_outcome", "ai_classified_count"),
-        "ai_heading_count": _extract_event_context_int(event_log, "structure_processing_outcome", "ai_heading_count"),
-        "structure_window_split_count": _extract_event_context_int(
-            event_log,
-            "structure_processing_outcome",
-            "structure_window_split_count",
-        ),
-        "structure_max_fallback_depth": _extract_event_context_int(
-            event_log,
-            "structure_processing_outcome",
-            "structure_max_fallback_depth",
-        ),
-        "structure_split_fallback_descriptor_count": _extract_event_context_int(
-            event_log,
-            "structure_processing_outcome",
-            "structure_split_fallback_descriptor_count",
-        ),
-        "structure_timeout_retry_count": _extract_event_context_int(
-            event_log,
-            "structure_processing_outcome",
-            "structure_timeout_retry_count",
-        ),
-        "structure_timeout_retry_succeeded_count": _extract_event_context_int(
-            event_log,
-            "structure_processing_outcome",
-            "structure_timeout_retry_succeeded_count",
-        ),
-        "structure_timeout_retry_failed_count": _extract_event_context_int(
-            event_log,
-            "structure_processing_outcome",
-            "structure_timeout_retry_failed_count",
-        ),
-        "structure_split_fallback_capped_descriptor_count": _extract_event_context_int(
-            event_log,
-            "structure_processing_outcome",
-            "structure_split_fallback_capped_descriptor_count",
-        ),
+        "quality_gate_status": "",
+        "quality_gate_reasons": [],
         "semantic_block_count": 0,
         "first_block_target_chars": 0,
         "first_block_has_toc": False,

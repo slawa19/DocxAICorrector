@@ -208,7 +208,7 @@ def resolve_acceptance_unmapped_source_summary(
     preparation_diagnostic_snapshot: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     count_basis = str(translation_quality_report.get("unmapped_source_count_basis") or "").strip().lower()
-    if count_basis in {"topology_unit", "accepted_aggregation_legacy"}:
+    if count_basis == "accepted_aggregation_legacy":
         actual = _coerce_int(
             translation_quality_report.get(
                 "structure_unit_unmapped_source_count",
@@ -316,7 +316,7 @@ def resolve_acceptance_unmapped_target_summary(
             ),
         }
     count_basis = str(translation_quality_report.get("unmapped_target_count_basis") or "").strip().lower()
-    if count_basis in {"topology_unit", "accepted_aggregation_legacy"}:
+    if count_basis == "accepted_aggregation_legacy":
         actual = _coerce_int(
             translation_quality_report.get(
                 "structure_unit_unmapped_target_count",
@@ -396,22 +396,11 @@ def build_acceptance_toc_body_concat_check(
     effective_gate_detected = provenance["toc_body_concat_detected"]
     markdown_gate_detected = provenance["toc_body_concat_markdown_detected"]
     structure_gate_detected = provenance["toc_body_concat_structure_detected"]
-    structure_toc_boundary_resolved = bool(
-        _coerce_int(preparation_diagnostic_snapshot.get("document_map_toc_region_count")) > 0
-        and (
-            _coerce_int(preparation_diagnostic_snapshot.get("topology_toc_entry_count")) > 0
-            or _coerce_int(preparation_diagnostic_snapshot.get("topology_split_compound_toc_operation_count")) > 0
-            or _coerce_int(preparation_diagnostic_snapshot.get("document_map_compound_toc_split_hint_count")) == 0
-        )
-    )
     source_toc_boundary_repaired = bool(
         _coerce_int(preparation_diagnostic_snapshot.get("structure_repair_toc_body_boundary_repairs")) > 0
         or _coerce_int(preparation_diagnostic_snapshot.get("effective_source_toc_region_count")) > 0
-        or (gate_source == "topology_projection" and structure_toc_boundary_resolved)
     )
-    gate_detected = bool(
-        structure_gate_detected if gate_source == "topology_projection" else markdown_gate_detected
-    )
+    gate_detected = bool(markdown_gate_detected)
     return {
         "name": "no_toc_body_concat_required",
         "passed": not gate_detected and source_toc_boundary_repaired,
@@ -423,11 +412,6 @@ def build_acceptance_toc_body_concat_check(
             "structure_repair_toc_body_boundary_repairs"
         ),
         "effective_source_toc_region_count": preparation_diagnostic_snapshot.get("effective_source_toc_region_count"),
-        "document_map_toc_region_count": preparation_diagnostic_snapshot.get("document_map_toc_region_count"),
-        "topology_toc_entry_count": preparation_diagnostic_snapshot.get("topology_toc_entry_count"),
-        "topology_split_compound_toc_operation_count": preparation_diagnostic_snapshot.get(
-            "topology_split_compound_toc_operation_count"
-        ),
     }
 
 
@@ -962,14 +946,6 @@ def build_acceptance_verdict(
                 "structure_repair_toc_body_boundary_repairs"
             ),
             effective_source_toc_region_count=toc_body_concat_check.get("effective_source_toc_region_count"),
-            document_map_toc_region_count=toc_body_concat_check.get("document_map_toc_region_count"),
-            topology_toc_entry_count=toc_body_concat_check.get("topology_toc_entry_count"),
-            topology_split_compound_toc_operation_count=toc_body_concat_check.get(
-                "topology_split_compound_toc_operation_count"
-            ),
-            document_map_compound_toc_split_hint_count=toc_body_concat_check.get(
-                "document_map_compound_toc_split_hint_count"
-            ),
         )
 
     # spec 059 FR-A8, revised 2026-08-09. The invariant stopped being a gate on the run, so
