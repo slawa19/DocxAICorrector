@@ -3,6 +3,8 @@ import base64
 import json
 from pathlib import Path
 
+import pytest
+
 import docxaicorrector.core.config as config
 import docxaicorrector.document.extraction as document_module
 import docxaicorrector.document.boundary_review as boundary_review_module
@@ -741,12 +743,60 @@ def _add_paragraph(document, text: str, *, cell: bool):
     return paragraph
 
 
+def _bridge_document():
+    # The PDF bridge marks its intermediate DOCX (`_convert_pdf_text_layer_to_docx`); only in such
+    # a document is the per-paragraph cell signal honoured.
+    from docxaicorrector.document.shared_xml import mark_document_as_pdf_bridge_output
+
+    document = make_document()
+    mark_document_as_pdf_bridge_output(document)
+    return document
+
+
+def _add_native_cnf_style(paragraph, value: str) -> None:
+    # What Word writes for conditional table formatting -- a standard property, not provenance.
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+
+    cnf_style = OxmlElement("w:cnfStyle")
+    cnf_style.set(qn("w:val"), value)
+    paragraph._element.get_or_add_pPr().append(cnf_style)
+
+
+@pytest.mark.parametrize("value", ["100000000000", "000000000000"])
+def test_native_docx_cnf_style_is_not_a_pdf_table_cell(value):
+    # Codex acceptance review of spec 067 (P1): a native DOCX carrying `w:cnfStyle` -- of any
+    # value, the bridge's own included -- is not the bridge's document, so no paragraph of it
+    # becomes a cell and a torn sentence is joined as before.
+    document = make_document()
+    for text in ("The vessel carried", "the supplies to the next port."):
+        _add_native_cnf_style(document.add_paragraph(text), value)
+
+    paragraphs, _, report = extract_document_content_with_boundary_report(_save_document(document))
+
+    assert [paragraph.text for paragraph in paragraphs] == ["The vessel carried the supplies to the next port."]
+    assert paragraphs[0].is_pdf_table_cell is False
+    assert not any("table_cell_boundary" in decision.reasons for decision in report.decisions)
+
+
+def test_bridge_marked_document_honours_only_the_bridge_value():
+    # In the bridge's own document a `w:cnfStyle` with another value is still no cell signal.
+    document = _bridge_document()
+    _add_native_cnf_style(document.add_paragraph("The vessel carried"), "100000000000")
+    document.add_paragraph("the supplies to the next port.")
+
+    paragraphs, _, _ = extract_document_content_with_boundary_report(_save_document(document))
+
+    assert [paragraph.text for paragraph in paragraphs] == ["The vessel carried the supplies to the next port."]
+    assert paragraphs[0].is_pdf_table_cell is False
+
+
 def test_pdf_table_cell_is_never_merged_with_either_neighbour():
     # Spec 067 FR-002: a cell the PDF bridge marked (``w:cnfStyle``) is a paragraph of its own.
     # Each pair below reads as a torn sentence by text -- no full stop on the left, a
     # lower-case start on the right -- which is how 379 of Rethinking Money's 616 cells were
     # joined again before the flag crossed the bridge.
-    document = make_document()
+    document = _bridge_document()
     _add_paragraph(document, "NORTH WING", cell=True)
     _add_paragraph(document, "south wing", cell=True)  # cell + cell
     _add_paragraph(document, "and the harbour.", cell=False)  # cell -> plain

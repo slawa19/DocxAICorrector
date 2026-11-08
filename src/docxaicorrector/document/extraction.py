@@ -68,6 +68,7 @@ from docxaicorrector.document.shared_xml import (
     build_drawing_forensics,
     build_source_xml_fingerprint,
     extract_num_pr_level,
+    document_is_pdf_bridge_output,
     paragraph_has_pdf_table_cell_signal,
     resolve_drawing_extent_emu,
     resolve_num_pr_details,
@@ -388,10 +389,19 @@ def _build_raw_document_blocks(
     image_assets: list[ImageAsset] = []
     table_count = 0
     uniform_grid_max_ratio = (scan_origin_config or resolve_scan_origin_config(None)).authored_uniform_grid_max_ratio
+    # Spec 067 FR-002: the table-cell signal is the PDF bridge's own, honoured only in a
+    # document the bridge marked. A native DOCX may carry the same OOXML property for its
+    # own reasons, and must never yield `is_pdf_table_cell` (Codex acceptance review, P1).
+    pdf_bridge_document = document_is_pdf_bridge_output(document)
 
     for block_kind, block in _iter_document_block_items(document):
         if block_kind == "paragraph":
-            for raw_block in _build_raw_paragraph_blocks(cast(Paragraph, block), image_assets, raw_index=len(raw_blocks)):
+            for raw_block in _build_raw_paragraph_blocks(
+                cast(Paragraph, block),
+                image_assets,
+                raw_index=len(raw_blocks),
+                pdf_bridge_document=pdf_bridge_document,
+            ):
                 raw_blocks.append(raw_block)
             continue
         table_count += 1
@@ -447,7 +457,13 @@ def _build_flattened_table_blocks(
     return blocks
 
 
-def _build_raw_paragraph_blocks(paragraph, image_assets: list[ImageAsset], *, raw_index: int) -> list[RawParagraph]:
+def _build_raw_paragraph_blocks(
+    paragraph,
+    image_assets: list[ImageAsset],
+    *,
+    raw_index: int,
+    pdf_bridge_document: bool = False,
+) -> list[RawParagraph]:
     raw_blocks: list[RawParagraph] = []
     # The host paragraph owns only its DIRECT (non-textbox) drawing images —
     # dropping the whole paragraph's images would lose a real inline image that
@@ -468,6 +484,7 @@ def _build_raw_paragraph_blocks(paragraph, image_assets: list[ImageAsset], *, ra
             raw_index=raw_index,
             text_override=direct_text,
             layout_origin="paragraph",
+            pdf_bridge_document=pdf_bridge_document,
         )
         if raw_block is not None:
             raw_blocks.append(raw_block)
@@ -479,6 +496,7 @@ def _build_raw_paragraph_blocks(paragraph, image_assets: list[ImageAsset], *, ra
             raw_index=raw_index + len(raw_blocks),
             allow_run_markdown=False,
             layout_origin="textbox",
+            pdf_bridge_document=pdf_bridge_document,
         )
         if raw_block is not None:
             if raw_blocks and raw_blocks[-1].text == raw_block.text:
@@ -496,6 +514,7 @@ def _build_raw_paragraph(
     text_override: str | None = None,
     allow_run_markdown: bool = True,
     layout_origin: str = "paragraph",
+    pdf_bridge_document: bool = False,
 ) -> RawParagraph | None:
     text = (
         text_override
@@ -515,7 +534,7 @@ def _build_raw_paragraph(
     # below then re-made one from the bridge's DOCX -- the bold label cell of Money and
     # Sustainability's Box 7.1 (a short phrase ending in a colon) came back as h2 and the final
     # assembly welded it to the next row.
-    is_pdf_table_cell = paragraph_has_pdf_table_cell_signal(paragraph)
+    is_pdf_table_cell = pdf_bridge_document and paragraph_has_pdf_table_cell_signal(paragraph)
     if heading_level is None and not is_caption_style(normalized_style) and not is_pdf_table_cell:
         if is_probable_heading(paragraph, text, normalized_style) or _is_markdown_strong_heading_candidate(
             text,

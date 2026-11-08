@@ -933,6 +933,7 @@ def _run_pdf_parse_stages_in_process_guarded(
 def _convert_pdf_text_layer_to_docx(*, filename: str, source_bytes: bytes) -> tuple[bytes, str]:
     from docx import Document
 
+    from docxaicorrector.document.shared_xml import mark_document_as_pdf_bridge_output
     from docxaicorrector.pdf_import.logical_import import build_paragraph_units_from_text_spans
 
     _enforce_pdf_import_file_size_budget(filename=filename, source_bytes=source_bytes)
@@ -969,6 +970,10 @@ def _convert_pdf_text_layer_to_docx(*, filename: str, source_bytes: bytes) -> tu
             raise RuntimeError("pdf_text_layer_import_empty_document")
 
         document = Document()
+        # Spec 067 FR-002 (Codex P1): name this DOCX as the bridge's output, so `extraction.py`
+        # honours the bridge's per-paragraph signals (the table-cell `w:cnfStyle`) here and
+        # never in a native DOCX that carries the same property.
+        mark_document_as_pdf_bridge_output(document)
         content_items = [
             ("paragraph", int(getattr(paragraph, "source_index", 0)), index, paragraph)
             for index, paragraph in enumerate(import_result.paragraphs)
@@ -1105,7 +1110,8 @@ def _carry_pdf_paragraph_layout_signals(docx_paragraph, paragraph) -> None:
         # paragraph property OOXML has for "this paragraph carries table-cell formatting";
         # all-zero bits name a body cell with no conditional (first-row, banded...) format.
         # Outside a table Word ignores it, so the intermediate DOCX looks as before;
-        # `document/extraction.py` reads it back into `RawParagraph.is_pdf_table_cell`.
+        # `document/extraction.py` reads it back into `RawParagraph.is_pdf_table_cell` -- only in
+        # a document `_convert_pdf_text_layer_to_docx` marked as the bridge's output.
         set_paragraph_pdf_table_cell_signal(docx_paragraph)
 
 

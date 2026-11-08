@@ -3663,8 +3663,12 @@ def _bridge_round_trip(units):
     from docx import Document
 
     from docxaicorrector.document.extraction import extract_document_content_from_docx
+    from docxaicorrector.document.shared_xml import mark_document_as_pdf_bridge_output
 
     document = Document()
+    # As `_convert_pdf_text_layer_to_docx` does (asserted in
+    # `test_pdf_bridge_converter_marks_its_docx_and_a_native_docx_is_not_marked`).
+    mark_document_as_pdf_bridge_output(document)
     for unit in units:
         processing_runtime._append_pdf_text_paragraph_to_docx(document, unit)
     buffer = BytesIO()
@@ -3731,4 +3735,55 @@ def test_pdf_bridge_round_trip_without_the_flag_keeps_todays_behaviour() -> None
         "Lanternfield p.142",
     ]
     assert not any(paragraph.is_pdf_table_cell for paragraph in paragraphs)
+    assert paragraphs[1].role == "heading"
+
+
+def test_pdf_bridge_converter_marks_its_docx_and_a_native_docx_is_not_marked(monkeypatch) -> None:
+    # Spec 067 FR-002, Codex acceptance review P1: the cell signal is honoured only in a DOCX the
+    # bridge itself wrote. `_convert_pdf_text_layer_to_docx` stamps that provenance; a document
+    # made anywhere else carries none.
+    from io import BytesIO
+
+    from docx import Document
+
+    from docxaicorrector.document.shared_xml import document_is_pdf_bridge_output
+    from docxaicorrector.pdf_import import text_layer_quality
+
+    spans = [
+        PdfTextSpan(page_number=1, text="Plain body line", x0=50, top=100, x1=450, bottom=112, page_height=800, font_size=10)
+    ]
+    monkeypatch.setattr(text_layer_quality, "extract_pdf_text_spans_with_pdfminer", lambda path: spans)
+    monkeypatch.setattr(
+        text_layer_quality,
+        "build_text_layer_quality_report",
+        lambda spans: SimpleNamespace(decision="promising", decision_reasons=(), body_text_ratio=1.0),
+    )
+
+    docx_bytes, _ = processing_runtime._convert_pdf_text_layer_to_docx(filename="plain.pdf", source_bytes=b"%PDF-1.4\n")
+
+    assert document_is_pdf_bridge_output(Document(BytesIO(docx_bytes))) is True
+    assert document_is_pdf_bridge_output(Document()) is False
+
+
+def test_native_docx_with_the_bridge_cnf_style_value_yields_no_cell() -> None:
+    # The same paragraphs the bridge would write, in a document the bridge did not mark: the
+    # property is OOXML's own and a Word document may carry it, so no paragraph becomes a cell,
+    # the pair is joined and the bold label is a heading as in any native DOCX.
+    from io import BytesIO
+
+    from docx import Document
+
+    from docxaicorrector.document.extraction import extract_document_content_from_docx
+
+    document = Document()
+    for unit in _box_units(cells=True):
+        processing_runtime._append_pdf_text_paragraph_to_docx(document, unit)
+    buffer = BytesIO()
+    document.save(buffer)
+    buffer.seek(0)
+
+    paragraphs = extract_document_content_from_docx(buffer)[0]
+
+    assert not any(paragraph.is_pdf_table_cell for paragraph in paragraphs)
+    assert paragraphs[0].text == "NORTH WING south wing"
     assert paragraphs[1].role == "heading"
