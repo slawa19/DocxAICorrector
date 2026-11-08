@@ -262,6 +262,10 @@ class FinalAssemblyEntry:
     # Spec 065 (I-4): the source paragraph is a heading that the document's own table of
     # contents lists, and it stands after that listing. See ``_collect_toc_listed_heading_ids``.
     source_heading_listed_in_toc: bool = False
+    # Spec 067 FR-002: the source paragraph is a table cell the PDF importer flagged
+    # (``ParagraphUnit.is_pdf_table_cell``, carried across the PDF->DOCX bridge). The final
+    # assembly neither demotes nor merges such an entry.
+    source_is_table_cell: bool = False
 
 
 @dataclass(frozen=True)
@@ -1019,6 +1023,11 @@ def _entry_can_override_source_heading_signal(
     # listing tells them apart.
     if entry.source_heading_listed_in_toc:
         return False
+    # Spec 067 FR-002: a table cell is a unit of the source's own layout. The context
+    # predicates below read it as a torn line -- a label without a full stop between an
+    # unpunctuated row and a short one -- which is the shape of every cell of a table.
+    if entry.source_is_table_cell:
+        return False
     if _entry_is_source_backed_numbered_citation_heading(entry):
         return False
     if _entry_has_mixed_block_parenthetical_tail_context(entry, previous_entry, next_entry):
@@ -1267,6 +1276,7 @@ def _normalize_final_entry_list_fragments(
             narration_excluded=entry.narration_excluded,
             source_ends_sentence=entry.source_ends_sentence,
             source_heading_listed_in_toc=entry.source_heading_listed_in_toc,
+            source_is_table_cell=entry.source_is_table_cell,
         )
 
     # Walk the LIVE list, not a snapshot: an entry that has just received a carried
@@ -1389,6 +1399,7 @@ def _apply_final_entry_post_normalization(
                 narration_excluded=entry.narration_excluded,
                 source_ends_sentence=entry.source_ends_sentence,
                 source_heading_listed_in_toc=entry.source_heading_listed_in_toc,
+                source_is_table_cell=entry.source_is_table_cell,
             )
         )
     normalized_entries = list(_normalize_final_entry_list_fragments(tuple(normalized_entries), source_text_by_id))
@@ -1638,6 +1649,7 @@ def _build_recovery_entry(
         narration_excluded=entry.narration_excluded,
         source_ends_sentence=entry.source_ends_sentence,
         source_heading_listed_in_toc=entry.source_heading_listed_in_toc,
+        source_is_table_cell=entry.source_is_table_cell,
     )
 
 
@@ -1923,6 +1935,9 @@ def _merge_entry_pair(left: FinalAssemblyEntry, right: FinalAssemblyEntry) -> Fi
         # Spec 065: like role / heading_level above, the LEFT entry's -- it describes the
         # source paragraph the merged entry STARTS with.
         source_heading_listed_in_toc=left.source_heading_listed_in_toc,
+        # Spec 067: a cell is never merged (``_recover_adjacent_entries``); if a future path
+        # does merge one, the record still contains a cell.
+        source_is_table_cell=left.source_is_table_cell or right.source_is_table_cell,
     )
 
 
@@ -2008,6 +2023,23 @@ def _recover_adjacent_entries(
                         block_index=normalized_entry.block_index,
                         paragraph_ids=_entry_paragraph_ids(previous) + _entry_paragraph_ids(normalized_entry),
                         reason="source_boundary_unit_role",
+                    )
+                )
+                recovered.append(normalized_entry)
+                continue
+
+            # Spec 067 FR-002: a table cell the PDF importer flagged is likewise a unit of its
+            # own -- a label without a full stop beside a short row reads as a torn sentence
+            # in any language. Counted with the source-role refusals (the source draws this
+            # boundary, not the translation), under its own reason.
+            if previous.source_is_table_cell or normalized_entry.source_is_table_cell:
+                source_role_denials += 1
+                recovery_decisions.append(
+                    FinalAssemblyDecision(
+                        action="deny_merge",
+                        block_index=normalized_entry.block_index,
+                        paragraph_ids=_entry_paragraph_ids(previous) + _entry_paragraph_ids(normalized_entry),
+                        reason="source_boundary_table_cell",
                     )
                 )
                 recovered.append(normalized_entry)
@@ -2131,6 +2163,8 @@ def assemble_final_markdown(
                         _coerce_source_paragraph_str(source_paragraph, "text") if source_paragraph is not None else None
                     ),
                     source_heading_listed_in_toc=bool(paragraph_id) and paragraph_id in toc_listed_heading_ids,
+                    source_is_table_cell=source_paragraph is not None
+                    and getattr(source_paragraph, "is_pdf_table_cell", False) is True,
                 )
             )
 
