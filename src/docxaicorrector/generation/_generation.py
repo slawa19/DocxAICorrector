@@ -145,7 +145,27 @@ _ABSORBING_NEIGHBOUR_RATIO = 0.5
 # absorptions duplicated by the next paragraph, out of 314 torn numbered entries. The highest
 # genuine translation among those 314 sits at 1.89x (a quoted title kept with its translation
 # added), the lowest absorption at 2.14x. Spec 065's Changelog has the lists.
+#
+# Two floors under BOTH bounds (Codex acceptance review of spec 065, P0). The ratios were
+# calibrated on space-separated prose translated EN -> RU, and the product also accepts
+# ``source_language = auto``: a correct short translation ("你好。" -> "Здравствуйте.", 3 -> 13
+# characters) would read as an absorption, be refused on every retry and by the ladder, and
+# ship its source. So a source is measured only when it carries enough to measure:
+#
+# * at least ``_COLLAPSED_MARKER_CHUNK_MIN_SOURCE_CHARS`` visible characters -- the floor the
+#   collapse above already uses, for the same reason ("a fragment where a length ratio
+#   carries no signal");
+# * at least ``_SHORT_SOURCE_ABSORPTION_MIN_SOURCE_TOKENS`` whitespace-separated tokens. In
+#   space-separated text 40 characters are six or seven words, so the two floors agree there;
+#   a script written without word spaces (Chinese, Japanese) yields one or two tokens per
+#   sentence and is skipped whole, which is right, since a character ratio across such
+#   scripts means nothing. Tokens are counted, no language or script is detected.
+#
+# Cost on the third run: 3 of the 21 hits fall under the floors -- VoE p1621 "2014), p. 1860."
+# (15 characters, 3 tokens) and two index lines of RM, p1845 "52– 53" and p1847 "Charity, 150"
+# (6 and 12 characters, 2 tokens each). The lowest surviving hit has 49 characters and 9 tokens.
 _SHORT_SOURCE_ABSORPTION_MAX_SOURCE_CHARS = 200
+_SHORT_SOURCE_ABSORPTION_MIN_SOURCE_TOKENS = 6
 _SHORT_SOURCE_ABSORPTION_RATIO = 3.0
 _TORN_ENTRY_ABSORPTION_RATIO = 2.0
 _MARKDOWN_HEADING_LINE_PATTERN = re.compile(r"^\s{0,3}#{1,6}\s")
@@ -1151,7 +1171,10 @@ def _is_short_source_absorption(source_chunk: str, answer_chunk: str) -> bool:
     """Spec 065 FR-005: did a SHORT paragraph's answer take in text that belongs elsewhere?
 
     The source paragraph must be shorter than ``_SHORT_SOURCE_ABSORPTION_MAX_SOURCE_CHARS``
-    visible characters and not a markdown heading. Then the answer is an absorption when it
+    visible characters and not a markdown heading, and it must be long enough to measure: at
+    least ``_COLLAPSED_MARKER_CHUNK_MIN_SOURCE_CHARS`` visible characters AND at least
+    ``_SHORT_SOURCE_ABSORPTION_MIN_SOURCE_TOKENS`` whitespace-separated tokens (a script
+    without word spaces has too few and is never measured). Then the answer is an absorption when it
     is more than ``_SHORT_SOURCE_ABSORPTION_RATIO`` times the source's length -- or more than
     ``_TORN_ENTRY_ABSORPTION_RATIO`` times when the source is a torn numbered entry
     (``_is_torn_numbered_entry``). Length, markdown form and punctuation only -- no word of
@@ -1162,16 +1185,16 @@ def _is_short_source_absorption(source_chunk: str, answer_chunk: str) -> bool:
     source_length = len(source)
     if source_length == 0 or source_length >= _SHORT_SOURCE_ABSORPTION_MAX_SOURCE_CHARS:
         return False
+    if source_length < _COLLAPSED_MARKER_CHUNK_MIN_SOURCE_CHARS:
+        return False
+    if len(source.split()) < _SHORT_SOURCE_ABSORPTION_MIN_SOURCE_TOKENS:
+        return False
     if _MARKDOWN_HEADING_LINE_PATTERN.match(source):
         return False
     answer_length = _visible_marker_chunk_length(answer_chunk)
     if answer_length > source_length * _SHORT_SOURCE_ABSORPTION_RATIO:
         return True
-    return (
-        source_length >= _COLLAPSED_MARKER_CHUNK_MIN_SOURCE_CHARS
-        and _is_torn_numbered_entry(source)
-        and answer_length > source_length * _TORN_ENTRY_ABSORPTION_RATIO
-    )
+    return _is_torn_numbered_entry(source) and answer_length > source_length * _TORN_ENTRY_ABSORPTION_RATIO
 
 
 def _is_torn_numbered_entry(source: str) -> bool:
