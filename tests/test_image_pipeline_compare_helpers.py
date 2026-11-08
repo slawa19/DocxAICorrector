@@ -698,12 +698,14 @@ def test_compare_all_document_budget_covers_two_semantic_variants():
         image_pipeline._resolve_document_model_call_budget(config, total_images=3, image_mode="semantic_redraw_direct")
         == 3 * 10
     )
-    # An explicit document limit still wins.
+    # Without the per-image key the budget follows `semantic_redraw_max_attempts` (the key
+    # `resources/config.toml` ships): 2 attempts × 3 calls = 6 per variant. Spec 066 C-12
+    # removed the per-document override, which no config layer produced.
     assert (
         image_pipeline._resolve_document_model_call_budget(
-            {**config, "image_model_call_budget_per_document": 4}, total_images=3, image_mode="compare_all"
+            {"semantic_redraw_max_attempts": 2}, total_images=3, image_mode="compare_all"
         )
-        == 4
+        == 3 * 13
     )
 
 

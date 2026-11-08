@@ -3,6 +3,7 @@ from io import BytesIO
 import pytest
 from PIL import Image, ImageDraw
 import docxaicorrector.processing.processing_service as processing_service
+import docxaicorrector.image.pipeline as image_pipeline
 import docxaicorrector.runtime.state as state
 from docxaicorrector.core.models import ImageAnalysisResult, ImageAsset, ImageValidationResult
 from conftest import SessionState as SessionState  # noqa: F811
@@ -731,8 +732,15 @@ def test_process_document_images_uses_safe_variant_when_semantic_candidate_colla
 
 
 def test_process_document_images_stops_future_images_when_document_budget_is_exhausted(monkeypatch, resolved_test_model_registry):
+    """The document budget is derived from the per-image one (spec 066 C-12 removed the
+    ``image_model_call_budget_per_document`` override nobody produced): two images at
+    ``semantic_redraw_max_model_calls_per_image = 3`` reserve 2 × (3 + 1) = 8 calls. An image
+    that costs more than its reserved share — here a source analysis charged five calls instead
+    of one — spends the document budget, and the next image is not analysed at all."""
+
     _, service = _prepare_state(monkeypatch)
     budgeted_analyses = []
+    source_analysis_calls = 5
 
     def budgeted_analyze_image(
         image_bytes,
@@ -746,8 +754,12 @@ def test_process_document_images_stops_future_images_when_document_budget_is_exh
         budget=None,
     ):
         if budget is not None:
-            budget.consume("test.analyze")
-            if hasattr(budget, "used_calls"):
+            # Only the source analysis gets the bare document budget (``used_calls``);
+            # the candidate analysis gets the per-image composite and costs one call.
+            is_source_analysis = hasattr(budget, "used_calls")
+            for _ in range(source_analysis_calls if is_source_analysis else 1):
+                budget.consume("test.analyze")
+            if is_source_analysis:
                 budgeted_analyses.append(budget.used_calls)
         return build_analysis_result()
 
@@ -791,15 +803,20 @@ def test_process_document_images_stops_future_images_when_document_budget_is_exh
     monkeypatch.setattr(processing_service, "validate_redraw_result", budgeted_validate_redraw_result)
     service = processing_service.build_processing_service()
 
+    config = {
+        "models": resolved_test_model_registry,
+        "keep_all_image_variants": True,
+        "semantic_redraw_max_attempts": 1,
+        "semantic_redraw_max_model_calls_per_image": 3,
+    }
+    assert image_pipeline._resolve_document_model_call_budget(
+        config, total_images=2, image_mode="semantic_redraw_direct"
+    ) == 8
+
     result = service.process_document_images(
         image_assets=[build_asset(), build_asset()],
         image_mode="semantic_redraw_direct",
-        config={
-            "models": resolved_test_model_registry,
-            "keep_all_image_variants": True,
-            "semantic_redraw_max_attempts": 1,
-            "image_model_call_budget_per_document": 4,
-        },
+        config=config,
         on_progress=lambda **kwargs: None,
         client=object(),
     )
@@ -808,7 +825,9 @@ def test_process_document_images_stops_future_images_when_document_budget_is_exh
     assert result[0].final_decision == "accept"
     assert result[1].final_decision == "fallback_original"
     assert result[1].final_reason == "document_model_call_budget_exhausted"
-    assert budgeted_analyses == [1]
+    # Image 1: five source-analysis calls, then generate + candidate analysis + validate = 8.
+    # Image 2 is refused before its analysis is charged.
+    assert budgeted_analyses == [source_analysis_calls]
 
 
 def test_process_document_images_skips_further_images_when_document_pixel_budget_exceeded(monkeypatch, resolved_test_model_registry):

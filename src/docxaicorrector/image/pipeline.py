@@ -1418,12 +1418,8 @@ def _resolve_document_model_call_budget(
     total_images: int,
     image_mode: str,
 ) -> int:
-    explicit_limit = _coerce_positive_int(
-        config.get("image_model_call_budget_per_document", config.get("semantic_redraw_max_model_calls_per_document"))
-    )
-    if explicit_limit is not None:
-        return explicit_limit
-
+    # Spec 066 C-12: the document budget is derived from the per-image one; the explicit
+    # per-document override read here before was produced by no config layer.
     per_image_attempt_budget = max(
         1,
         _config_int(
@@ -1459,23 +1455,6 @@ def _is_budget_exhausted(budget) -> bool:
     max_calls = getattr(budget, "max_calls", None)
     used_calls = getattr(budget, "used_calls", None)
     return isinstance(max_calls, int) and isinstance(used_calls, int) and used_calls >= max_calls
-
-
-def _coerce_positive_int(value: object) -> int | None:
-    if isinstance(value, bool):
-        parsed_value = int(value)
-    elif isinstance(value, int):
-        parsed_value = value
-    elif isinstance(value, float):
-        parsed_value = int(value)
-    elif isinstance(value, str):
-        try:
-            parsed_value = int(value.strip())
-        except ValueError:
-            return None
-    else:
-        return None
-    return parsed_value if parsed_value > 0 else None
 
 
 def _config_int(config: Mapping[str, object], key: str, default: int) -> int:
