@@ -1482,8 +1482,8 @@ def _collect_toc_listed_heading_ids(source_paragraphs: Sequence[object] | None) 
     full stop, and case; a contents line also matches without its closing page reference.
 
     "After" is what separates a section from front matter that repeats a contents line: a
-    title page's "Preface by Dennis Meadows" credit precedes the contents and is not the
-    preface's heading. The comparison is exact on purpose -- a heading that matches no
+    title page's credit for a preface ("Preface by <name>") precedes the contents and is
+    not the preface's heading (measured on the corpus, 2026-11-08: one such line). The comparison is exact on purpose -- a heading that matches no
     contents line keeps today's treatment, so a miss costs nothing that was not already
     lost, while a loose match would shield an index entry the import tagged as a heading.
     """
