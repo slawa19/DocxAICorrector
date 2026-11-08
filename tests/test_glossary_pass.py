@@ -957,7 +957,8 @@ def test_budget_drops_optional_entries_lowest_rank_first_and_never_a_required_on
     from docxaicorrector.pipeline.glossary_phase import render_run_glossary_section
 
     required = tuple(replace(_candidate(f"Req{chr(97 + i)}", "marked"), required=True) for i in range(3))
-    optional = tuple(_candidate(f"Opt{chr(97 + i)}") for i in range(3))
+    # Spec 067 FR-008: only single lowercase optional entries are the budget's to cut.
+    optional = tuple(_candidate(f"opt{chr(97 + i)}", "marked") for i in range(3))
     terms = tuple(
         GlossaryTerm(source_term=candidate.source_term, target_term="перевод-" + candidate.source_term.lower())
         for candidate in (*required, *optional)
@@ -966,10 +967,10 @@ def test_budget_drops_optional_entries_lowest_rank_first_and_never_a_required_on
     tight = render_run_glossary_section(terms, (*required, *optional), max_chars=len(full) - 10)
     tiny = render_run_glossary_section(terms, (*required, *optional), max_chars=10)
 
-    assert "Optc" in full and "Optc" not in tight and "Optb" in tight  # last-ranked optional goes first
+    assert "optc" in full and "optc" not in tight and "optb" in tight  # last-ranked optional goes first
     for name in ("Reqa", "Reqb", "Reqc"):
         assert name in tight and name in tiny  # required entries survive any budget
-    assert "Opta" not in tiny
+    assert "opta" not in tiny
 
 
 def _h1_document(title, body_sentence, *, level=1, rounds=4):
@@ -1900,9 +1901,67 @@ def test_fr001_entries_are_ordered_by_tier_then_form_then_use_and_the_budget_cut
 
     assert full.cut == () and full.unrendered_required == ()
     assert [term.source_term for term in tight.cut] == ["tallow"]
-    assert [term.source_term for term in tiny.rendered] == ["quillet bond", "quillet"]
+    # Spec 067 FR-008: a phrase and a name extend the budget like a required entry.
+    assert [term.source_term for term in tiny.rendered] == ["quillet bond", "quillet", "marrow ledger", "Zorvane Pettish"]
     assert tiny.unrendered_required == ()
-    assert [term.source_term for term in tiny.cut] == ["marrow ledger", "Zorvane Pettish", "harbour", "tallow"]
+    assert [term.source_term for term in tiny.cut] == ["harbour", "tallow"]
+
+
+def test_fr008_the_budget_cuts_only_optional_single_lowercase_entries():
+    # Spec 067 FR-008 (G-1): a fixed budget cut 34 names, phrases and hyphenated entries of The
+    # Value of Everything. Every optional entry of a form of its own reaches the section however
+    # small the budget; only the optional single lowercase words are left out.
+    from docxaicorrector.pipeline.glossary_phase import plan_run_glossary_section
+
+    candidates = (
+        _counted_candidate("quillet", 50, required=True),
+        _counted_candidate("Zorvane Pettish", 30, family="name"),
+        _counted_candidate("marrow ledger", 20, family="collocation"),
+        _counted_candidate("short-tallow", 15),
+        _counted_candidate("QLB", 12, family="name"),
+        _counted_candidate("harbour", 90),
+        _counted_candidate("drevage", 60),
+        _counted_candidate("tallow", 3),
+    )
+    terms = (
+        _entry("quillet", "киллет"),
+        _entry("Zorvane Pettish", "Зорвейн Петтиш", kind="name"),
+        _entry("marrow ledger", "мозговая книга"),
+        _entry("short-tallow", "краткосальный"),
+        _entry("QLB", "КЛБ"),
+        _entry("drevage", "древаж", note="the toll on a held coin"),
+        _entry("harbour", "гавань"),
+        _entry("tallow", "сало"),
+    )
+    ordered = order_glossary_entries(candidates, terms)
+    full = plan_run_glossary_section(ordered, candidates, max_chars=100_000)
+    for budget in (10, len(full.text) - 5, len(full.text) // 2):
+        plan = plan_run_glossary_section(ordered, candidates, max_chars=budget)
+        assert plan.unrendered_required == ()
+        assert all(glossary_pass.is_single_lowercase_entry(term) for term in plan.cut), (budget, plan.cut)
+        rendered = {term.source_term for term in plan.rendered}
+        assert {"quillet", "Zorvane Pettish", "marrow ledger", "short-tallow", "QLB", "drevage"} <= rendered
+    tiny = plan_run_glossary_section(ordered, candidates, max_chars=10)
+    assert [term.source_term for term in tiny.cut] == ["harbour", "tallow"]
+    assert "- drevage -> древаж — the toll on a held coin" in tiny.text and tiny.text.endswith("- ...")
+    # Counter-test: with room for everything nothing is cut.
+    assert full.cut == () and not full.text.endswith("- ...")
+
+
+def test_fr008_a_collocation_is_named_as_the_document_writes_it_not_by_its_folded_key():
+    # Spec 067 FR-008: "appropriate surplus" was asked for and printed as "appropriate surplu"
+    # -- the surface of a collocation was built from its folded key. The key stays folded (it
+    # matches "surpluses" too); the name is the written word.
+    paragraphs = []
+    for _ in range(4):
+        paragraphs.append("Owners appropriate surplus from the quillet trade, and they appropriate surplus again.")
+        paragraphs.extend(_FILLER)
+    keys = {candidate.key: candidate for candidate in extract_glossary_candidates(_units(paragraphs))}
+
+    assert ("appropriate", "surplu") in keys
+    assert keys[("appropriate", "surplu")].source_term == "appropriate surplus"
+    assert normalize_glossary_key("appropriate surplus") == ("appropriate", "surplu")
+    assert not any(word == "surplu" for candidate in keys.values() for word in candidate.source_term.split())
 
 
 def test_fr001_a_noted_or_capitalised_single_word_ranks_with_the_phrases():

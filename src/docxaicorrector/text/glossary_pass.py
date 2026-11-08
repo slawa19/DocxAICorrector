@@ -896,6 +896,10 @@ def extract_glossary_candidates(
         word for unit_index in body_indexes for word in _WORD_RE.findall(plains[unit_index]) if word.islower()
     )
     name_heads = _name_family_heads(kept, lowercase_words=body_lowercase_words)
+    written_forms: dict[str, Counter[str]] = defaultdict(Counter)
+    for unit_index in body_indexes:
+        for word in _WORD_RE.findall(plains[unit_index]):
+            written_forms[_fold_word(word.lower())][word.lower()] += 1
     candidates: list[GlossaryCandidate] = []
     for draft in kept:
         first_unit = min(draft.units)
@@ -907,7 +911,7 @@ def extract_glossary_candidates(
             context_unit = first_unit
         candidates.append(
             GlossaryCandidate(
-                source_term=draft.surface,
+                source_term=draft.surface if draft.proper else _written_surface(draft.surface, written_forms),
                 key=draft.key,
                 family=draft.family,
                 signals=tuple(sorted(draft.signals)),
@@ -922,6 +926,27 @@ def extract_glossary_candidates(
             )
         )
     return tuple(candidates)
+
+
+def _written_surface(surface: str, written_forms: Mapping[str, Counter[str]]) -> str:
+    """``surface`` with every word the document never writes replaced by the word it does write.
+
+    Spec 067 FR-008 (the clause about *appropriate surplu*). A collocation, a phrase and a
+    family head are keyed by FOLDED words (``_fold_word``: the plural ``s`` off), and their
+    surface was built from the key -- "surplus" became "surplu", "crisis" "crisi", "this"
+    "thi". Measured on the fourth run's books: 11 candidates (Money *financial crisi*, CW *thi
+    book*, VoE *appropriate surplu*, *previou chapter* ...). The spec took *appropriate surplu*
+    for a split-word tail; it is not one -- "surplus" is written whole three times. A word of
+    the surface that the body writes (in any case) stays; one it never writes becomes the
+    commonest written word that folds to it. The key, and so every match, is unchanged.
+    """
+
+    words = surface.split(" ")
+    for index, word in enumerate(words):
+        forms = written_forms.get(word)
+        if forms and word not in forms:
+            words[index] = forms.most_common(1)[0][0]
+    return " ".join(words)
 
 
 def _name_words(draft: _Draft) -> list[str] | None:
@@ -1713,6 +1738,7 @@ def is_single_lowercase_entry(term: GlossaryTerm) -> bool:
 
     Spec 065 FR-001. A hyphenated word ("value-based"), a capital ("Terra", "GDP"), a name and
     an entry with a note on its sense are each a form of their own and rank with the phrases.
+    Spec 067 FR-008: an optional entry of this class is the only one the section budget cuts.
     """
 
     source = str(term.source_term or "").strip()
@@ -1740,7 +1766,8 @@ def order_glossary_entries(
     before single lowercase words (``is_single_lowercase_entry``); within a class, the
     candidate's occurrence count, highest first; ties keep the order the entries came in, so a
     term's two senses stay together. The budget cut then takes the tail: rare single words of
-    the model's own choice first.
+    the model's own choice first, and nothing else (spec 067 FR-008: an optional entry of a
+    form of its own extends the budget like a required one).
 
     Finally an entry that CONTAINS a single-word entry ("public value" and "value", "value-based"
     and "value") is moved right before that word when it came after it -- the longer entry
