@@ -365,6 +365,74 @@ def test_coverage_reads_the_section_from_rendered_terms_when_the_artifact_has_it
     assert coverage["unrendered_required_from_artifact"] == ["varrow note"]
 
 
+def test_rendered_terms_is_a_multiset_read_by_position(tmp_path):
+    """Two senses of one source term, the budget rendered one: the second sense is cut.
+
+    A set of keys would mark both rendered and the cut sense would vanish from coverage.
+    """
+    glossary = {
+        "status": "built",
+        "terms": [
+            {"source_term": "quill", "target_term": "перо", "kind": "term", "note": "инструмент письма"},
+            {"source_term": "varrow note", "target_term": "варрова записка", "kind": "term"},
+            {"source_term": "quill", "target_term": "игла", "kind": "term", "note": "шип животного"},
+        ],
+        "candidates": [{"term": "quill", "required": True}],
+        "rendered_terms": ["quill", "varrow note"],
+        "cut_terms": ["quill"],
+    }
+    entries, info = m.load_entries(_write(tmp_path / "g.json", glossary))
+
+    assert [entry.rendered for entry in entries] == [True, True, False]
+    coverage = m.coverage(m.measure([], entries)["rows"], info)
+    assert [(row["source_term"], row["target_term"]) for row in coverage["required_cut"]] == [("quill", "игла")]
+
+    glossary["rendered_terms"] = ["quill", "varrow note", "quill"]
+    entries, _ = m.load_entries(_write(tmp_path / "g.json", glossary))
+    assert [entry.rendered for entry in entries] == [True, True, True]
+
+
+def test_required_coverage_is_unknown_without_candidates(tmp_path, capsys):
+    glossary: dict[str, Any] = {
+        "status": "built",
+        "terms": [{"source_term": "varrow note", "target_term": "варрова записка", "kind": "term"}],
+        "rendered_terms": [],
+        "required_count": 4,
+    }
+    entries, info = m.load_entries(_write(tmp_path / "g.json", glossary))
+    coverage = m.coverage(m.measure([], entries)["rows"], info)
+
+    assert coverage["required_known"] is False
+    assert coverage["required_entries"] == "unknown"
+    assert coverage["required_cut"] == "unknown"
+    assert [row["source_term"] for row in coverage["form_selected_cut"]] == ["varrow note"]
+
+    pairs = _write_jsonl(tmp_path / "pairs.jsonl", [_pair(1, "A varrow note.", "Варрова записка.")])
+    out = tmp_path / "out.json"
+    assert m.main(["--pairs", str(pairs), "--glossary", str(tmp_path / "g.json"), "--json", str(out)]) == 0
+    assert "required entries cut: unknown" in capsys.readouterr().out
+    assert json.loads(out.read_text(encoding="utf-8"))["coverage"]["required_entries"] == "unknown"
+
+    glossary["candidates"] = []
+    entries, info = m.load_entries(_write(tmp_path / "g.json", glossary))
+    coverage = m.coverage(m.measure([], entries)["rows"], info)
+    assert (coverage["required_entries"], coverage["required_cut"]) == (0, [])  # measured: none required
+
+
+def test_the_live_glossary_file_carries_what_the_measurer_reads():
+    """``measure-glossary-candidates.py --live --glossary-out`` spends money; its file must be
+    readable here without ``unknown`` coverage, so it writes the product artifact's fields."""
+    text = (SCRIPT.parent / "measure-glossary-candidates.py").read_text(encoding="utf-8")
+
+    for field in (
+        '"candidates": [candidate.to_payload() for candidate in candidates]',
+        '"rendered_terms": [term.source_term for term in plan.rendered]',
+        '"cut_terms": [term.source_term for term in plan.cut]',
+        '"unrendered_required": list(plan.unrendered_required)',
+    ):
+        assert field in text, field
+
+
 def test_cli_writes_json_and_prints_the_headline(tmp_path, capsys):
     pairs = _write_jsonl(
         tmp_path / "pairs.jsonl",

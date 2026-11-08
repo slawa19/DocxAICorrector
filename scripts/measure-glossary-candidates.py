@@ -252,10 +252,11 @@ def _live_call(
         stage = model_accounting.snapshot_run_model_accounting()["stages"].get("glossary_extraction", {})
     if prompt_max_chars is None:
         prompt_max_chars = glossary_phase.RUN_GLOSSARY_PROMPT_MAX_CHARS
-    section = glossary_phase.render_run_glossary_section(terms, tuple(candidates), max_chars=prompt_max_chars)
+    plan = glossary_phase.plan_run_glossary_section(terms, tuple(candidates), max_chars=prompt_max_chars)
+    section = plan.text
     prompt_tokens = int(stage.get("prompt_tokens") or 0)
     request_chars = int(record.get("request_chars") or 0)
-    rendered = sum(1 for line in section.splitlines() if line.startswith("- ") and line != "- ...")
+    rendered = len(plan.rendered)
     print(
         f"live: model={selector} status={status} calls={record.get('model_call_count')} entries={len(terms)} "
         f"required={record.get('required_count')} reasked={record.get('reasked_required_count')} "
@@ -288,6 +289,13 @@ def _live_call(
                     "required_count": record.get("required_count"),
                     "reasked_required_count": record.get("reasked_required_count"),
                     "unrendered_terms": record.get("unrendered_terms"),
+                    # Spec 065: the same section and candidate fields the product artifact
+                    # writes, so ``measure-glossary-adherence.py`` reads required-ness and the
+                    # cut from this file instead of reporting them as zero.
+                    "candidates": [candidate.to_payload() for candidate in candidates],
+                    "rendered_terms": [term.source_term for term in plan.rendered],
+                    "cut_terms": [term.source_term for term in plan.cut],
+                    "unrendered_required": list(plan.unrendered_required),
                     "model_call_count": record.get("model_call_count"),
                     "calls": record.get("calls"),
                     "collisions_found": record.get("collisions_found"),
@@ -299,6 +307,7 @@ def _live_call(
                     ],
                     "rendered_term_count": rendered,
                     "prompt_section_chars": len(section),
+                    "prompt_max_chars": prompt_max_chars,
                     "request_chars": request_chars,
                     "usage": {
                         "prompt_tokens": stage.get("prompt_tokens"),
