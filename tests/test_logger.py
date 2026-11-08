@@ -308,3 +308,58 @@ def test_redirect_log_file_sends_each_block_to_its_own_file_and_restores_the_sha
     # A failing run (SystemExit) still gives the shared handler back.
     assert set(configured_logger.handlers) == set(handlers_before)
     configured_logger.removeHandler(capture_handler)
+
+
+def _spawn_child_log_event(run_marker: str) -> None:
+    """Run ``log_event`` in a REAL ``spawn``ed child, as the PDF parse child runs."""
+    import multiprocessing
+
+    context = multiprocessing.get_context("spawn")
+    process = context.Process(
+        target=logger.log_event,
+        args=(logging.WARNING, "pdf_image_extraction_summary", "child record"),
+        kwargs={"run_marker": run_marker},
+    )
+    process.start()
+    process.join(timeout=60)
+    assert process.exitcode == 0
+
+
+def test_redirect_log_file_reaches_a_spawned_child_process(monkeypatch, tmp_path):
+    """Spec 067 FR-013 (Codex acceptance P1): the PDF parse runs in a ``spawn``ed child
+    (``processing_runtime._run_pdf_parse_stages_with_deadline``); its records must land in the
+    run's file, and without a redirect the child keeps writing where it did before."""
+    _reset_named_logger(monkeypatch)
+    shared_dir = tmp_path / "shared"
+    shared_log = shared_dir / "app.log"
+    # The child resolves its run dir from the environment at import, like production.
+    monkeypatch.setenv("DOCX_AI_RUN_DIR", str(shared_dir))
+    monkeypatch.delenv(logger.RUN_LOG_FILE_ENV_VAR, raising=False)
+    monkeypatch.setattr(logger, "RUN_DIR", shared_dir)
+    monkeypatch.setattr(logger, "APP_LOG_PATH", shared_log)
+    logger.get_logger()
+    run_log = tmp_path / "runs" / "run-a" / "app.log"
+
+    with logger.redirect_log_file(run_log):
+        assert logger.os.environ[logger.RUN_LOG_FILE_ENV_VAR] == str(run_log.absolute())
+        _spawn_child_log_event("child-inside-run")
+    assert logger.RUN_LOG_FILE_ENV_VAR not in logger.os.environ
+    _spawn_child_log_event("child-outside-run")
+
+    run_text = run_log.read_text(encoding="utf-8")
+    shared_text = shared_log.read_text(encoding="utf-8")
+    assert '"run_marker": "child-inside-run"' in run_text
+    assert "child-inside-run" not in shared_text
+    assert '"run_marker": "child-outside-run"' in shared_text
+    assert "child-outside-run" not in run_text
+
+
+def test_redirect_log_file_restores_an_outer_run_log_variable(monkeypatch, tmp_path):
+    _reset_named_logger(monkeypatch)
+    monkeypatch.setattr(logger, "RUN_DIR", tmp_path)
+    monkeypatch.setattr(logger, "APP_LOG_PATH", tmp_path / "app.log")
+    monkeypatch.setenv(logger.RUN_LOG_FILE_ENV_VAR, str(tmp_path / "outer.log"))
+
+    with logger.redirect_log_file(tmp_path / "inner" / "app.log"):
+        assert logger.os.environ[logger.RUN_LOG_FILE_ENV_VAR] == str((tmp_path / "inner" / "app.log").absolute())
+    assert logger.os.environ[logger.RUN_LOG_FILE_ENV_VAR] == str(tmp_path / "outer.log")
