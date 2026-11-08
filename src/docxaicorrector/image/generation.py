@@ -667,7 +667,6 @@ def _call_images_edit(
         "input_fidelity",
         "quality",
         "output_format",
-        "response_format",
         "size",
         "timeout",
     }
@@ -777,7 +776,7 @@ def _call_images_generate(
     fallback_sizes: tuple[str, ...] | None = None,
     budget: ImageModelCallBudget | None = None,
 ):
-    retryable_optional_params = {"background", "output_format", "quality", "response_format", "size", "timeout"}
+    retryable_optional_params = {"background", "output_format", "quality", "size", "timeout"}
     current_payload = _with_timeout(dict(request_payload))
     attempt = 1
     adaptation_attempts = 0
