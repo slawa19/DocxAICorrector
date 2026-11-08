@@ -156,7 +156,6 @@
   "result.acceptance_check.residual_bullet_glyphs_present": "в тексте остались символы маркеров списка",
   "result.acceptance_check.list_fragment_regressions_present": "элементы списка распались на обрывки",
   "result.acceptance_check.mixed_script_terms_present": "слова со смешанными латиницей и кириллицей",
-  "result.acceptance_check.theology_style_deterministic_issues_present": "стилевые замечания (рекомендательно)",
   "result.acceptance_check.emphasis_coverage_advisory": "перенос выделений (рекомендательно)",
   "result.acceptance_check.paragraph_break_advisory": "разрывы абзацев в середине предложения (рекомендательно)",
   "result.acceptance_check.no_toc_body_concat_required": "оглавление слиплось с основным текстом",

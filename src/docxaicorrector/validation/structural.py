@@ -203,10 +203,6 @@ def _merge_translation_quality_report_metrics(
         "mixed_script_term_gate_source",
         "mixed_script_term_classification",
         "raw_mixed_script_term_count",
-        "theology_style_deterministic_issue_count",
-        "theology_style_deterministic_issue_source",
-        "theology_style_deterministic_issue_classification",
-        "raw_theology_style_deterministic_issue_count",
     ):
         if key in translation_quality_report:
             metrics[key] = translation_quality_report[key]

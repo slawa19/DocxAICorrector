@@ -2140,17 +2140,6 @@ def _build_translation_quality_report(
             for sample in untranslated_body_samples[:8]
         ],
         "untranslated_body_text_classification": "body_translation_completeness",
-        # Round-4 F6: the former config-driven glossary/awkward-heading detector was
-        # PRODUCTION-DEAD (every caller passed no glossary/markers, so the axis could
-        # never fire). The detector and its ``awkward_judgment_heading_present`` /
-        # ``unresolved_glossary_term_present`` sample reasons are removed. These four
-        # count/source/classification keys are a broad output contract (the acceptance
-        # advisory check, ``structural`` metric copy, and the corpus goldens all read
-        # them), so they are kept as INERT constants rather than firing a dead metric.
-        "theology_style_deterministic_issue_count": 0,
-        "theology_style_deterministic_issue_source": "legacy_markdown",
-        "theology_style_deterministic_issue_classification": "domain_style_advisory",
-        "raw_theology_style_deterministic_issue_count": 0,
         "emphasis_coverage": dict(emphasis_coverage_payload),
         "toc_body_concat_detected": toc_body_concat_detected,
         "toc_body_concat_markdown_detected": authority_fields.get("toc_body_concat_markdown_detected", False),

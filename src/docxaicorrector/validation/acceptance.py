@@ -54,7 +54,6 @@ PRODUCTION_ACCEPTANCE_CHECK_NAMES: Final[tuple[str, ...]] = (
     "residual_bullet_glyphs_present",
     "list_fragment_regressions_present",
     "mixed_script_terms_present",
-    "theology_style_deterministic_issues_present",
     "emphasis_coverage_advisory",
     "paragraph_break_advisory",
     "no_toc_body_concat_required",
@@ -900,19 +899,6 @@ def build_acceptance_verdict(
             mixed_script_term_gate_source=translation_quality_report.get("mixed_script_term_gate_source"),
             mixed_script_term_classification=translation_quality_report.get("mixed_script_term_classification"),
             raw_mixed_script_term_count=translation_quality_report.get("raw_mixed_script_term_count"),
-        )
-        add_check(
-            "theology_style_deterministic_issues_present",
-            True,
-            theology_style_deterministic_issue_count=translation_quality_report.get("theology_style_deterministic_issue_count"),
-            theology_style_deterministic_issue_source=translation_quality_report.get("theology_style_deterministic_issue_source"),
-            theology_style_deterministic_issue_classification=translation_quality_report.get(
-                "theology_style_deterministic_issue_classification"
-            ),
-            raw_theology_style_deterministic_issue_count=translation_quality_report.get(
-                "raw_theology_style_deterministic_issue_count"
-            ),
-            failed_reason="advisory_only",
         )
         emphasis_coverage = translation_quality_report.get("emphasis_coverage")
         emphasis_coverage_map = emphasis_coverage if isinstance(emphasis_coverage, Mapping) else {}

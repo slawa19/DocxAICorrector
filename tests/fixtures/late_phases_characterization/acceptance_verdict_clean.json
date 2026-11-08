@@ -191,16 +191,6 @@
     },
     {
       "applicable": true,
-      "failed_reason": "advisory_only",
-      "name": "theology_style_deterministic_issues_present",
-      "passed": true,
-      "raw_theology_style_deterministic_issue_count": 0,
-      "theology_style_deterministic_issue_classification": "domain_style_advisory",
-      "theology_style_deterministic_issue_count": 0,
-      "theology_style_deterministic_issue_source": "legacy_markdown"
-    },
-    {
-      "applicable": true,
       "bold_retention_ratio": null,
       "emphasis_coverage_reason": "emphasis_coverage_unavailable",
       "emphasis_measured": false,

@@ -5370,21 +5370,13 @@ def test_build_translation_quality_report_exposes_new_residual_quality_metrics_a
     assert report["raw_residual_bullet_glyph_count"] == 1
     assert report["list_fragment_regression_count"] == 1
     mixed_script_term_count = report["mixed_script_term_count"]
-    theology_style_issue_count = report["theology_style_deterministic_issue_count"]
     assert isinstance(mixed_script_term_count, int)
-    assert isinstance(theology_style_issue_count, int)
     assert mixed_script_term_count >= 1
-    # Spec 036 F2: the glossary/awkward-heading detector is config-driven with empty
-    # defaults and the production report builder passes no book-specific terms, so this
-    # domain-style-advisory axis no longer fires on hardcoded strings — the schema fields
-    # stay present but the deterministic count is 0.
-    assert theology_style_issue_count == 0
     assert report["mixed_script_term_gate_source"] == "legacy_markdown"
     assert report["mixed_script_term_classification"] == "non_structural_hygiene"
     assert report["raw_mixed_script_term_count"] == mixed_script_term_count
-    assert report["theology_style_deterministic_issue_source"] == "legacy_markdown"
-    assert report["theology_style_deterministic_issue_classification"] == "domain_style_advisory"
-    assert report["raw_theology_style_deterministic_issue_count"] == theology_style_issue_count
+    # Spec 066 T-2: the inert domain-style counters are gone from the report.
+    assert not any("theology" in key for key in report)
     assert report["translation_domain"] == "theology"
     assert report["worst_unmapped_source_count"] == 0
     assert report["suspicious_heading_repetition_count"] == 0
