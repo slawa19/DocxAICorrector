@@ -470,3 +470,47 @@ def test_the_script_stays_standard_library_only():
 
     assert "docxaicorrector" not in text.split('"""', 2)[2]
     assert "sys.path" not in text
+
+
+# --- spec 067 FR-010: an entry's spellings are searched too ----------------------------------------
+
+
+def test_an_entry_is_searched_under_every_spelling_the_artifact_names(tmp_path, capsys):
+    # Codex acceptance review of spec 067 (P1): "tallow ledger" with spellings "ledger tallow"
+    # and "tallow-ledger" did not match "The ledger tallow rose."
+    glossary = {
+        "status": "built",
+        "terms": [{"source_term": "tallow ledger", "target_term": "сальная книга", "kind": "term"}],
+        "candidates": [
+            {"term": "tallow ledger", "required": True, "spellings": ["ledger tallow", "tallow-ledger"]}
+        ],
+        "rendered_terms": ["tallow ledger"],
+    }
+    entries, _ = m.load_entries(_write(tmp_path / "g.json", glossary))
+    assert entries[0].spellings == ("ledger tallow", "tallow-ledger")
+    pairs = [
+        _pair(1, "The tallow ledger rose.", "Сальная книга выросла."),
+        _pair(2, "The ledger tallow rose.", "Сальная книга выросла."),
+        _pair(3, "Their tallow-ledger rules held.", "Правила сальной книги держались."),
+        _pair(4, "The ledger tallows fell.", "Свечные счета упали."),
+    ]
+    row = _row(m.measure(pairs, entries, min_occurrences=1), "tallow ledger")
+
+    assert (row["adherent"], row["occurrences"]) == (3, 4)
+    assert row["spelling_matches"] == {"ledger tallow": 2}
+    pairs_path = _write_jsonl(tmp_path / "pairs.jsonl", pairs)
+    assert m.main(["--pairs", str(pairs_path), "--glossary", str(tmp_path / "g.json")]) == 0
+    assert "matched as: ledger tallow x2" in capsys.readouterr().out
+
+
+def test_without_spellings_the_entry_matches_only_its_own_words_in_order():
+    # Counter-test: an artifact from before spec 067 (no spellings) measures what it did.
+    row = _row(
+        m.measure(
+            [_pair(1, "The ledger tallow rose.", "Сальная книга выросла.")],
+            [_entry("tallow ledger", "сальная книга")],
+            min_occurrences=1,
+        ),
+        "tallow ledger",
+    )
+    assert row["occurrences"] == 0 and row["spelling_matches"] == {}
