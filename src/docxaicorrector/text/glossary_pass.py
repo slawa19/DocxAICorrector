@@ -947,9 +947,9 @@ def extract_glossary_candidates(
             )
         )
         candidate_units.append(group_units)
-    partners = _contrast_partners(candidates, candidate_units)
+    contrasted = _contrast_partners(candidates, candidate_units)
     return tuple(
-        replace(candidate, contrasts=partners[index]) if index in partners else candidate
+        replace(candidate, contrasts=contrasted[index]) if index in contrasted else candidate
         for index, candidate in enumerate(candidates)
     )
 
