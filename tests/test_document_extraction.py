@@ -381,9 +381,9 @@ def test_extract_document_content_from_docx_merges_false_body_boundary_in_public
 def test_extract_document_content_from_docx_flattens_inline_break_wrapped_prose():
     doc = Document()
     paragraph = doc.add_paragraph()
-    paragraph.add_run("For centuries, economists and policymakers")
+    paragraph.add_run("For decades, navigators and harbourmasters")
     paragraph.add_run().add_break()
-    paragraph.add_run("divided activities by whether they created value.")
+    paragraph.add_run("sorted vessels by whether they carried cargo.")
     buffer = BytesIO()
     doc.save(buffer)
     buffer.seek(0)
@@ -392,7 +392,7 @@ def test_extract_document_content_from_docx_flattens_inline_break_wrapped_prose(
 
     assert len(paragraphs) == 1
     assert paragraphs[0].text == (
-        "For centuries, economists and policymakers divided activities by whether they created value."
+        "For decades, navigators and harbourmasters sorted vessels by whether they carried cargo."
     )
 
 
@@ -448,11 +448,11 @@ def test_extract_document_content_from_docx_preserves_source_index_as_provenance
     doc = Document()
     doc.add_paragraph("Contents")
     paragraph = doc.add_paragraph()
-    paragraph.add_run("Common Critiques of Value Extraction")
+    paragraph.add_run("Common Lessons of Lantern Keeping")
     paragraph.add_run().add_break()
-    paragraph.add_run("What is Value?")
+    paragraph.add_run("What is Tide?")
     paragraph.add_run().add_break()
-    paragraph.add_run("Meet the Production Boundary")
+    paragraph.add_run("Meet the Northern Breakwater")
     buffer = BytesIO()
     doc.save(buffer)
     buffer.seek(0)
@@ -498,9 +498,9 @@ def test_extract_document_content_from_docx_does_not_invent_a_break_between_run_
     doc = Document()
     doc.add_paragraph("Contents")
     paragraph = doc.add_paragraph()
-    paragraph.add_run("Banks and Financial Markets Become Allies")
+    paragraph.add_run("Pilots and Harbour Masters Become Partners")
     paragraph.add_run(" ")
-    paragraph.add_run("The Banking Problem")
+    paragraph.add_run("The Mooring Problem")
     buffer = BytesIO()
     doc.save(buffer)
     buffer.seek(0)
@@ -511,7 +511,7 @@ def test_extract_document_content_from_docx_does_not_invent_a_break_between_run_
 
     assert [paragraph.text for paragraph in paragraphs] == [
         "Contents",
-        "Banks and Financial Markets Become Allies The Banking Problem",
+        "Pilots and Harbour Masters Become Partners The Mooring Problem",
     ]
     assert [paragraph.structural_role for paragraph in paragraphs] == ["body", "body"]
     # No region either: `_annotate_toc_region_candidates` needs the header plus >= 2 candidate
@@ -531,9 +531,9 @@ def test_extract_document_content_from_docx_does_not_invent_a_break_for_long_two
     doc = Document()
     doc.add_paragraph("Contents")
     paragraph = doc.add_paragraph()
-    paragraph.add_run("Something Odd About the National Accounts: GDP Facit Saltus!")
+    paragraph.add_run("Something Strange Within the Harbour Ledgers: Mare Facit Portus!")
     paragraph.add_run(" ")
-    paragraph.add_run("Patching Up the National Accounts isn't Enough")
+    paragraph.add_run("Mending Up the Harbour Ledgers isn't Enough")
     buffer = BytesIO()
     doc.save(buffer)
     buffer.seek(0)
@@ -544,7 +544,7 @@ def test_extract_document_content_from_docx_does_not_invent_a_break_for_long_two
 
     assert [paragraph.text for paragraph in paragraphs] == [
         "Contents",
-        "Something Odd About the National Accounts: GDP Facit Saltus! Patching Up the National Accounts isn't Enough",
+        "Something Strange Within the Harbour Ledgers: Mare Facit Portus! Mending Up the Harbour Ledgers isn't Enough",
     ]
     assert [paragraph.structural_role for paragraph in paragraphs] == ["body", "body"]
     assert [paragraph.heuristic_structural_role_hint for paragraph in paragraphs] == [None, None]
@@ -561,9 +561,9 @@ def test_extract_document_content_from_docx_still_splits_a_real_inline_break_int
     doc = Document()
     doc.add_paragraph("Contents")
     paragraph = doc.add_paragraph()
-    paragraph.add_run("Banks and Financial Markets Become Allies")
+    paragraph.add_run("Pilots and Harbour Masters Become Partners")
     paragraph.add_run().add_break()
-    paragraph.add_run("The Banking Problem")
+    paragraph.add_run("The Mooring Problem")
     buffer = BytesIO()
     doc.save(buffer)
     buffer.seek(0)
@@ -574,8 +574,8 @@ def test_extract_document_content_from_docx_still_splits_a_real_inline_break_int
 
     assert [paragraph.text for paragraph in paragraphs] == [
         "Contents",
-        "Banks and Financial Markets Become Allies",
-        "The Banking Problem",
+        "Pilots and Harbour Masters Become Partners",
+        "The Mooring Problem",
     ]
     assert [paragraph.heuristic_structural_role_hint for paragraph in paragraphs] == [
         "toc_header",
@@ -588,11 +588,11 @@ def test_extract_document_content_with_normalization_reports_legacy_projects_toc
     doc = Document()
     doc.add_paragraph("Contents")
     paragraph = doc.add_paragraph()
-    paragraph.add_run("Common Critiques of Value Extraction")
+    paragraph.add_run("Common Lessons of Lantern Keeping")
     paragraph.add_run().add_break()
-    paragraph.add_run("What is Value?")
+    paragraph.add_run("What is Tide?")
     paragraph.add_run().add_break()
-    paragraph.add_run("Meet the Production Boundary")
+    paragraph.add_run("Meet the Northern Breakwater")
 
     source_path = tmp_path / "legacy-inline-break-toc.docx"
     doc.save(source_path)
@@ -618,14 +618,15 @@ def test_extract_document_content_from_docx_splits_inline_break_prose_without_in
     Constitution VII forbids. Measured on the four-book corpus, that path produced all 17
     mis-classified prose blocks and 11 of the 12 mis-classified epigraphs, while the
     region-anchored pass produced 16 of the 19 genuine tables of contents. The sentence below
-    is Rethinking Money block 28, quoted from the live corpus dump.
+    has the form of Rethinking Money block 28 (a short line, then a sentence wrapped by a real
+    break that ends in a quoted phrase and a superscript note number); its words are synthetic.
     """
     doc = Document()
-    doc.add_paragraph("Money is the most powerful secular force")
+    doc.add_paragraph("Water is the most patient silent force")
     paragraph = doc.add_paragraph()
-    paragraph.add_run("Jungian psychologist Bernice Hill has categorized four levels of")
+    paragraph.add_run("Coastal cartographer Edwina Marsh has catalogued four kinds of")
     paragraph.add_run().add_break()
-    paragraph.add_run("what she calls “sacred wounds of money.”¹⁶")
+    paragraph.add_run("what she calls “quiet scars of water.”¹⁶")
     buffer = BytesIO()
     doc.save(buffer)
     buffer.seek(0)
@@ -633,9 +634,9 @@ def test_extract_document_content_from_docx_splits_inline_break_prose_without_in
     paragraphs, _ = extract_document_content_from_docx(buffer)
 
     assert [paragraph.text for paragraph in paragraphs] == [
-        "Money is the most powerful secular force",
-        "Jungian psychologist Bernice Hill has categorized four levels of",
-        "what she calls “sacred wounds of money.”¹⁶",
+        "Water is the most patient silent force",
+        "Coastal cartographer Edwina Marsh has catalogued four kinds of",
+        "what she calls “quiet scars of water.”¹⁶",
     ]
     assert [paragraph.structural_role for paragraph in paragraphs] == ["body", "body", "body"]
     assert [paragraph.heuristic_structural_role_hint for paragraph in paragraphs] == [None, None, None]
@@ -651,17 +652,18 @@ def test_extract_document_content_from_docx_keeps_a_heading_with_a_real_inline_b
     structural boundary, and whether a given break inside a heading was "really" structural is
     not knowable from the source — so the reader delivers exactly what the source has.
 
-    The fixture is Creating Wealth's real heading, verified in its `word/document.xml`
-    (paragraph 249 carries the break). On the DOCX corpus this removes 2/16/5/2/4 heading
+    The fixture has the form of Creating Wealth's heading at paragraph 249 of its
+    `word/document.xml` (a numbered label, a real break, a six-word title); its words are
+    synthetic. On the DOCX corpus this removes 2/16/5/2/4 heading
     splits (Money & Sustainability, Creating Wealth, Rethinking Money, The Value of Everything,
     Ukraine) and no split of any other role.
     """
     doc = Document()
     doc.add_paragraph("Body text that comes before the subheading.")
     paragraph = doc.add_paragraph(style="Heading 2")
-    paragraph.add_run("False Assumption #1:")
+    paragraph.add_run("Common Mistake #1:")
     paragraph.add_run().add_break()
-    paragraph.add_run("The Economy is Beyond Our Control")
+    paragraph.add_run("The Weather is Beyond Our Reach")
     buffer = BytesIO()
     doc.save(buffer)
     buffer.seek(0)
@@ -670,7 +672,7 @@ def test_extract_document_content_from_docx_keeps_a_heading_with_a_real_inline_b
 
     assert [paragraph.text for paragraph in paragraphs] == [
         "Body text that comes before the subheading.",
-        "False Assumption #1: The Economy is Beyond Our Control",
+        "Common Mistake #1: The Weather is Beyond Our Reach",
     ]
     assert [paragraph.role for paragraph in paragraphs] == ["body", "heading"]
     assert [paragraph.structural_role for paragraph in paragraphs] == ["body", "heading"]
@@ -678,25 +680,26 @@ def test_extract_document_content_from_docx_keeps_a_heading_with_a_real_inline_b
 
 
 def test_extract_document_content_from_docx_keeps_a_three_line_heading_as_one_paragraph():
-    """The same rule at three lines — Creating Wealth's "Demand for / Profitable / Investments".
+    """The same rule at three lines — a heading of Creating Wealth set as
+    two words / one word / one word.
 
     Verified in `word/document.xml` (paragraphs 342 and 343 both carry two real breaks). Before
     this change the golden fixture showed it as three consecutive `Heading 2` paragraphs.
     """
     doc = Document()
     paragraph = doc.add_paragraph(style="Heading 2")
-    paragraph.add_run("Demand for")
+    paragraph.add_run("Harbour for")
     paragraph.add_run().add_break()
-    paragraph.add_run("Profitable")
+    paragraph.add_run("Northbound")
     paragraph.add_run().add_break()
-    paragraph.add_run("Investments")
+    paragraph.add_run("Schooners")
     buffer = BytesIO()
     doc.save(buffer)
     buffer.seek(0)
 
     paragraphs, _ = extract_document_content_from_docx(buffer)
 
-    assert [paragraph.text for paragraph in paragraphs] == ["Demand for Profitable Investments"]
+    assert [paragraph.text for paragraph in paragraphs] == ["Harbour for Northbound Schooners"]
     assert paragraphs[0].role == "heading"
 
 
@@ -1454,7 +1457,7 @@ def test_extract_document_content_from_docx_detects_heading_from_inherited_style
 
 def test_extract_document_content_from_docx_preserves_numbered_section_heading_with_list_metadata():
     doc = Document()
-    paragraph = doc.add_paragraph("2. Systemic crises: frequency, types and geographical spread", style="List Bullet")
+    paragraph = doc.add_paragraph("2. Northern storms: frequency, kinds and seasonal spread", style="List Bullet")
     paragraph.runs[0].bold = True
     buffer = BytesIO()
     doc.save(buffer)
@@ -1467,7 +1470,7 @@ def test_extract_document_content_from_docx_preserves_numbered_section_heading_w
     assert paragraphs[0].heading_source == "heuristic"
     assert paragraphs[0].heading_level == 2
     assert paragraphs[0].list_kind is not None
-    assert build_document_text(paragraphs) == "## **2. Systemic crises: frequency, types and geographical spread**"
+    assert build_document_text(paragraphs) == "## **2. Northern storms: frequency, kinds and seasonal spread**"
 
 
 def test_extract_document_content_from_docx_recovers_markdown_bold_numbered_heading_with_list_metadata():
@@ -1529,14 +1532,14 @@ def test_extract_document_content_from_docx_detects_heading_from_base_style_chai
 
 def test_extract_document_content_from_docx_promotes_front_matter_display_title_to_h1():
     doc = Document()
-    author = doc.add_paragraph("Mariana Mazzucato", style="Heading 1")
+    author = doc.add_paragraph("Marisol Whitcombe", style="Heading 1")
     author.runs[0].font.size = Pt(28)
 
-    title = doc.add_paragraph("T H E VALUE O F E V E RY T H I NG")
+    title = doc.add_paragraph("T H E TIDES O F H A R BO U R I NG")
     title.runs[0].font.size = Pt(28)
 
     subtitle = doc.add_paragraph()
-    subtitle_run = subtitle.add_run("Making and Taking in the Global Economy")
+    subtitle_run = subtitle.add_run("Lighting and Keeping in the Coastal Harbours")
     subtitle_run.italic = True
     subtitle_run.font.size = Pt(18)
 
@@ -1546,10 +1549,10 @@ def test_extract_document_content_from_docx_promotes_front_matter_display_title_
 
     paragraphs, _ = extract_document_content_from_docx(buffer)
 
-    assert paragraphs[0].text == "Mariana Mazzucato"
+    assert paragraphs[0].text == "Marisol Whitcombe"
     assert paragraphs[0].role == "body"
     assert paragraphs[0].heading_level is None
-    assert paragraphs[1].text == "T H E VALUE O F E V E RY T H I NG"
+    assert paragraphs[1].text == "T H E TIDES O F H A R BO U R I NG"
     assert paragraphs[1].role == "heading"
     assert paragraphs[1].heading_source == "heuristic"
     assert paragraphs[1].heading_level == 1
