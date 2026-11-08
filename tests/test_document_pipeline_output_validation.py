@@ -323,7 +323,7 @@ def test_run_document_processing_accepts_heading_only_output_for_colon_section_t
     assert runtime["finalize"][-1][0] == "Обработка завершена"
 
 
-def test_collect_false_fragment_heading_samples_detects_inline_heading_and_scripture_reference():
+def test_collect_false_fragment_heading_samples_detects_inline_heading_and_numbered_citation():
     markdown = (
         "Является ли\n\n"
         "## начертание зверя\n\n"
@@ -336,7 +336,7 @@ def test_collect_false_fragment_heading_samples_detects_inline_heading_and_scrip
 
     assert [sample.reason for sample in samples] == [
         "inline_term_heading_present",
-        "scripture_reference_heading_present",
+        "numbered_citation_heading_present",
     ]
     assert [sample.line for sample in samples] == [3, 7]
 
@@ -2389,7 +2389,7 @@ def test_assemble_final_markdown_demotes_false_generated_heading_with_previous_b
     assert result.diagnostics.accepted_merges == 2
 
 
-def test_assemble_final_markdown_preserves_source_backed_scripture_heading():
+def test_assemble_final_markdown_preserves_source_backed_numbered_citation_heading():
     result = document_pipeline_output_validation.assemble_final_markdown(
         processed_chunks=[
             "## (Матфея 24:36)",
@@ -2466,7 +2466,7 @@ def test_collect_false_fragment_heading_samples_flags_parenthetical_question_tai
     assert samples[0].text == "## Спутники? Ракеты?)"
 
 
-def test_collect_false_fragment_heading_samples_from_entries_preserves_source_backed_scripture_heading():
+def test_collect_false_fragment_heading_samples_from_entries_preserves_source_backed_numbered_citation_heading():
     entries = (
         document_pipeline_output_validation.FinalAssemblyEntry(
             text="## (Матфея 24:36)",

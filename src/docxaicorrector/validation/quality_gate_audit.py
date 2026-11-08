@@ -14,7 +14,7 @@ QUALITY_GATE_AUDIT_CLASSIFICATIONS: Mapping[str, Mapping[str, str]] = {
         "evidence": "entry_assembly_when_available_else_markdown_continuation_context",
         "severity_model": "legacy_hygiene_fix_review_threshold",
     },
-    "scripture_reference_heading": {
+    "numbered_citation_heading": {
         "verdict": "tolerant",
         "evidence": "source_backed_entry_headings_are_exempt; markdown_only_hits_require_manual_review_not_hard_fail_within_threshold",
         "severity_model": "legacy_hygiene_fix_review_threshold",

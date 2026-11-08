@@ -675,7 +675,7 @@ def test_build_structural_checks_enforces_pdf_translation_quality_specific_const
         "require_pdf_conversion_satisfied": True,
         "bullet_heading_count": 0,
         "false_fragment_heading_count": 0,
-        "scripture_reference_heading_count": 0,
+        "numbered_citation_heading_count": 0,
         "suspicious_heading_repetition_count": 0,
         "residual_bullet_glyph_count": 0,
         "list_fragment_regression_count": 0,
@@ -1126,7 +1126,7 @@ def test_markdown_quality_metrics_keep_false_fragment_and_list_fragment_fallback
     assert metrics["bullet_heading_gate_source"] == "legacy_markdown"
     assert metrics["bullet_heading_classification"] == "markdown_gate"
     assert metrics["raw_bullet_heading_count"] == 0
-    assert metrics["scripture_reference_heading_count"] == 1
+    assert metrics["numbered_citation_heading_count"] == 1
     assert metrics["list_fragment_regression_count"] == 1
     assert metrics["raw_list_fragment_regression_count"] == 1
     assert metrics["mixed_script_term_gate_source"] == "legacy_markdown"
@@ -1162,7 +1162,7 @@ def test_markdown_quality_metrics_do_not_fallback_false_fragment_and_list_fragme
     assert metrics["bullet_heading_gate_source"] == "legacy_markdown"
     assert metrics["bullet_heading_classification"] == "markdown_gate"
     assert metrics["raw_bullet_heading_count"] == 0
-    assert metrics["scripture_reference_heading_count"] == 0
+    assert metrics["numbered_citation_heading_count"] == 0
     assert metrics["list_fragment_regression_count"] == 0
     assert metrics["mixed_script_term_gate_source"] == "legacy_markdown"
     assert metrics["mixed_script_term_classification"] == "non_structural_hygiene"

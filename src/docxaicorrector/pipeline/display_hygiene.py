@@ -15,7 +15,7 @@ _DOTTED_PAGE_RANGE_PATTERN = re.compile(r"\.{2,}\s*\d{1,4}\s*$")
 _BIBLIOGRAPHY_CITATION_PATTERN = re.compile(r"(?:\[[0-9]{1,3}\]|\([0-9]{1,3}\))(?:\s*[;,]\s*(?:\[[0-9]{1,3}\]|\([0-9]{1,3}\))){1,}")
 _SENTENCE_CONTINUATION_PATTERN = re.compile(r"[.!?]\s+[a-zа-яё]")
 _SENTENCE_CLAUSE_PATTERN = re.compile(r"[.!?]\s+[A-ZА-ЯЁa-zа-яё]")
-_SCRIPTURE_REFERENCE_PATTERN = re.compile(r"\b(?:[1-3]\s*)?[A-ZА-ЯЁ][A-Za-zА-Яа-яЁё]+\s+\d{1,3}:\d{1,3}(?:[-–]\d{1,3})?\b")
+_NUMBERED_CITATION_PATTERN = re.compile(r"\b(?:[1-3]\s*)?[A-ZА-ЯЁ][A-Za-zА-Яа-яЁё]+\s+\d{1,3}:\d{1,3}(?:[-–]\d{1,3})?\b")
 _NUMBERED_APPENDIX_OR_INDEX_PATTERN = re.compile(r"^(?:appendix|index)\b(?:\s+[A-Z0-9IVXLCDM]+)?", re.IGNORECASE)
 _TITLE_CASE_OR_ALL_CAPS_WORD_PATTERN = re.compile(r"[A-Za-zА-Яа-яЁё]+")
 _CHAPTER_TOKEN_PATTERN = re.compile(r"\b(?:chapter|глава|part|section)\b", re.IGNORECASE)
@@ -345,7 +345,7 @@ def _is_accepted_long_title_shape(text: str) -> bool:
         return True
     if _NUMBERED_APPENDIX_OR_INDEX_PATTERN.match(text):
         return True
-    if _SCRIPTURE_REFERENCE_PATTERN.search(text):
+    if _NUMBERED_CITATION_PATTERN.search(text):
         return True
     if any(symbol in text for symbol in ".!?"):
         return False

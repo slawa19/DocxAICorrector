@@ -4438,7 +4438,7 @@ def test_run_document_processing_keeps_false_fragment_cleanup_display_only_after
     assert payload["quality_status"] == "warn"
     assert payload["gate_reasons"] == ["false_fragment_headings_review_required"]
     assert payload["false_fragment_heading_count"] == 2
-    assert payload["scripture_reference_heading_count"] == 1
+    assert payload["numbered_citation_heading_count"] == 1
 
 
 def test_run_document_processing_quality_report_uses_pre_display_gate_input_for_sentence_split_case(tmp_path, monkeypatch):
@@ -5151,7 +5151,7 @@ def test_build_translation_quality_report_exposes_quality_gate_audit_classificat
     assert _as_mapping(audit["inline_page_furniture_leakage"])["verdict"] == "unit_aware_after_structural_label_exemption"
 
 
-def test_build_translation_quality_report_keeps_source_backed_scripture_heading_out_of_false_fragment_gate():
+def test_build_translation_quality_report_keeps_source_backed_numbered_citation_heading_out_of_false_fragment_gate():
     assembly_result = document_pipeline_output_validation.FinalMarkdownAssemblyResult(
         final_markdown="## (Матфея 24:36)\n\nХристос вернётся как вор в ночи.",
         entries=(
@@ -5192,10 +5192,10 @@ def test_build_translation_quality_report_keeps_source_backed_scripture_heading_
 
     assert report["quality_status"] == "pass"
     assert report["false_fragment_heading_count"] == 0
-    assert report["scripture_reference_heading_count"] == 0
+    assert report["numbered_citation_heading_count"] == 0
     assert report["raw_false_fragment_heading_count"] == 1
     audit = _as_mapping(report["quality_gate_audit_classifications"])
-    assert _as_mapping(audit["scripture_reference_heading"])["verdict"] == "tolerant"
+    assert _as_mapping(audit["numbered_citation_heading"])["verdict"] == "tolerant"
 
 
 def test_normalize_final_markdown_for_runtime_display_splits_placeholder_from_chapter_heading():
@@ -5336,7 +5336,7 @@ def test_build_translation_quality_report_exposes_new_residual_quality_metrics_a
     ]
     assert report["bullet_heading_count"] == 0
     assert report["false_fragment_heading_count"] == 2
-    assert report["scripture_reference_heading_count"] == 1
+    assert report["numbered_citation_heading_count"] == 1
     assert report["residual_bullet_glyph_count"] == 0
     assert report["residual_bullet_glyph_classification"] == "display_hygiene"
     assert report["raw_residual_bullet_glyph_count"] == 1
@@ -5660,7 +5660,7 @@ def test_build_translation_quality_report_allows_opening_chapter_marker_followed
     assert report["false_fragment_heading_samples"] == []
 
 
-def test_build_translation_quality_report_flags_scripture_reference_false_heading_without_normalizer_override():
+def test_build_translation_quality_report_flags_numbered_citation_false_heading_without_normalizer_override():
     report = document_pipeline_late_phases._build_translation_quality_report(
         context=SimpleNamespace(
             app_config={"translation_output_quality_gate_policy": "strict"},
@@ -5674,12 +5674,12 @@ def test_build_translation_quality_report_flags_scripture_reference_false_headin
     assert report["quality_status"] == "warn"
     assert report["gate_reasons"] == ["false_fragment_headings_review_required"]
     assert report["false_fragment_heading_count"] == 1
-    assert report["scripture_reference_heading_count"] == 1
-    assert report["scripture_reference_heading_samples"] == [
+    assert report["numbered_citation_heading_count"] == 1
+    assert report["numbered_citation_heading_samples"] == [
         {
             "line": 3,
             "text": "## (Матфея 24:36)",
-            "reason": "scripture_reference_heading_present",
+            "reason": "numbered_citation_heading_present",
         }
     ]
 

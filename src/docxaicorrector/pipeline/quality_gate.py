@@ -1565,8 +1565,8 @@ def _build_translation_quality_report(
     suspicious_heading_repetition_samples = [
         sample for sample in false_fragment_heading_samples if getattr(sample, "reason", "") == "suspicious_heading_repetition_present"
     ]
-    scripture_reference_heading_samples = [
-        sample for sample in false_fragment_heading_samples if getattr(sample, "reason", "") == "scripture_reference_heading_present"
+    numbered_citation_heading_samples = [
+        sample for sample in false_fragment_heading_samples if getattr(sample, "reason", "") == "numbered_citation_heading_present"
     ]
     toc_body_concat_detected = bool(authority_fields.get("toc_body_concat_detected", False))
     source_paragraph_count = latest_payload.get("source_count") if isinstance(latest_payload, Mapping) else None
@@ -2098,8 +2098,8 @@ def _build_translation_quality_report(
         "raw_false_fragment_heading_samples": _serialize_quality_samples(raw_false_fragment_heading_samples),
         "suspicious_heading_repetition_count": len(suspicious_heading_repetition_samples),
         "suspicious_heading_repetition_samples": _serialize_quality_samples(suspicious_heading_repetition_samples),
-        "scripture_reference_heading_count": len(scripture_reference_heading_samples),
-        "scripture_reference_heading_samples": _serialize_quality_samples(scripture_reference_heading_samples),
+        "numbered_citation_heading_count": len(numbered_citation_heading_samples),
+        "numbered_citation_heading_samples": _serialize_quality_samples(numbered_citation_heading_samples),
         "residual_bullet_glyph_count": len(residual_bullet_glyph_samples),
         "residual_bullet_glyph_gate_source": "legacy_markdown",
         "residual_bullet_glyph_classification": "display_hygiene",

@@ -194,7 +194,7 @@ def _merge_translation_quality_report_metrics(
         "residual_bullet_glyph_gate_source",
         "residual_bullet_glyph_classification",
         "raw_residual_bullet_glyph_count",
-        "scripture_reference_heading_count",
+        "numbered_citation_heading_count",
         "suspicious_heading_repetition_count",
         "list_fragment_regression_count",
         "list_fragment_regression_gate_source",

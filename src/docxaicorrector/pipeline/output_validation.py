@@ -82,7 +82,7 @@ _ANY_LETTER_PATTERN = re.compile(r"[^\W\d_]", re.UNICODE)
 # ``document`` from ``pipeline.output_validation`` to save one line would buy a dependency.
 _INTERNAL_PLACEHOLDER_PATTERN = re.compile(r"\[\[DOCX_[A-Za-z0-9_]+\]\]")
 _BULLET_GLYPH_PATTERN = re.compile(r"[●•◦‣]")
-_SCRIPTURE_REFERENCE_HEADING_PATTERN = re.compile(
+_NUMBERED_CITATION_HEADING_PATTERN = re.compile(
     r"^#{1,6}\s+\((?:[1-3]\s*)?[A-ZА-ЯЁ][^()]{0,40}\s+\d{1,3}:\d{1,3}(?:[-–]\d{1,3})?\)$"
 )
 _PARENTHETICAL_ONLY_HEADING_PATTERN = re.compile(r"^#{1,6}\s+\([^\n]+\)$")
@@ -850,8 +850,8 @@ def _entry_looks_major_section_heading(entry: FinalAssemblyEntry) -> bool:
     return _looks_title_like_heading_text(body_text)
 
 
-def _entry_looks_scripture_reference_fragment(entry: FinalAssemblyEntry) -> bool:
-    return bool(_SCRIPTURE_REFERENCE_HEADING_PATTERN.match(entry.text.strip()))
+def _entry_looks_numbered_citation_fragment(entry: FinalAssemblyEntry) -> bool:
+    return bool(_NUMBERED_CITATION_HEADING_PATTERN.match(entry.text.strip()))
 
 
 def _entry_looks_parenthetical_heading_fragment(entry: FinalAssemblyEntry) -> bool:
@@ -862,7 +862,7 @@ def _entry_looks_sentence_fragment_heading(entry: FinalAssemblyEntry) -> bool:
     body_text = _entry_body_text(entry)
     if not body_text:
         return False
-    if _entry_looks_scripture_reference_fragment(entry) or _entry_looks_parenthetical_heading_fragment(entry):
+    if _entry_looks_numbered_citation_fragment(entry) or _entry_looks_parenthetical_heading_fragment(entry):
         return True
     if _is_parenthetical_question_tail(body_text):
         return True
@@ -887,9 +887,9 @@ def _entry_has_explicit_source_heading_signal(entry: FinalAssemblyEntry) -> bool
     return entry.role == "heading" or entry.structural_role in {"heading", "toc_header", "toc_entry"}
 
 
-def _entry_is_source_backed_scripture_heading(entry: FinalAssemblyEntry) -> bool:
+def _entry_is_source_backed_numbered_citation_heading(entry: FinalAssemblyEntry) -> bool:
     return (
-        _entry_looks_scripture_reference_fragment(entry)
+        _entry_looks_numbered_citation_fragment(entry)
         and _entry_has_source_heading_signal(entry)
         and entry.from_registry
         and not entry.used_fallback
@@ -913,7 +913,7 @@ def _entry_has_mixed_block_parenthetical_tail_context(
         return False
     if not _entry_looks_parenthetical_question_tail_fragment(entry):
         return False
-    if _entry_is_source_backed_scripture_heading(entry):
+    if _entry_is_source_backed_numbered_citation_heading(entry):
         return False
     if not _entry_allows_continuation_context(previous_entry):
         return False
@@ -932,7 +932,7 @@ def _entry_can_override_source_heading_signal(
         return False
     if entry.structural_role in {"toc_header", "toc_entry"}:
         return False
-    if _entry_is_source_backed_scripture_heading(entry):
+    if _entry_is_source_backed_numbered_citation_heading(entry):
         return False
     if _entry_has_mixed_block_parenthetical_tail_context(entry, previous_entry, next_entry):
         return True
@@ -2057,12 +2057,12 @@ def collect_false_fragment_heading_samples_from_entries(entries: Sequence[FinalA
             heading_occurrences.append((position_index, line_number, heading_text, normalized_heading))
             continue
 
-        if _entry_is_source_backed_scripture_heading(entry):
+        if _entry_is_source_backed_numbered_citation_heading(entry):
             heading_occurrences.append((position_index, line_number, heading_text, normalized_heading))
             continue
 
-        if _entry_looks_scripture_reference_fragment(entry):
-            samples.append(_build_quality_sample(line=line_number, text=stripped, reason="scripture_reference_heading_present"))
+        if _entry_looks_numbered_citation_fragment(entry):
+            samples.append(_build_quality_sample(line=line_number, text=stripped, reason="numbered_citation_heading_present"))
             heading_occurrences.append((position_index, line_number, heading_text, normalized_heading))
             continue
 
@@ -2231,8 +2231,8 @@ def collect_false_fragment_heading_samples(text: str) -> list[QualityIssueSample
         continuation_prev = _is_continuation_like_previous_line(previous_line)
         continuation_next = _is_continuation_like_next_line(next_line)
 
-        if _SCRIPTURE_REFERENCE_HEADING_PATTERN.match(stripped):
-            samples.append(_build_quality_sample(line=line_number, text=stripped, reason="scripture_reference_heading_present"))
+        if _NUMBERED_CITATION_HEADING_PATTERN.match(stripped):
+            samples.append(_build_quality_sample(line=line_number, text=stripped, reason="numbered_citation_heading_present"))
             heading_occurrences.append((line_number, heading_text, normalized_heading))
             continue
 
@@ -2363,7 +2363,7 @@ def normalize_false_fragment_headings_markdown(
             continue
 
         should_demote = False
-        if _SCRIPTURE_REFERENCE_HEADING_PATTERN.match(stripped):
+        if _NUMBERED_CITATION_HEADING_PATTERN.match(stripped):
             should_demote = True
         elif _PARENTHETICAL_ONLY_HEADING_PATTERN.match(stripped):
             should_demote = True

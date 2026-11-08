@@ -56,10 +56,10 @@ def _build_markdown_quality_metrics(
         for sample in false_fragment_heading_samples
         if str(getattr(sample, "reason", "") or "") == "suspicious_heading_repetition_present"
     )
-    scripture_reference_heading_count = sum(
+    numbered_citation_heading_count = sum(
         1
         for sample in false_fragment_heading_samples
-        if str(getattr(sample, "reason", "") or "") == "scripture_reference_heading_present"
+        if str(getattr(sample, "reason", "") or "") == "numbered_citation_heading_present"
     )
     return {
         "bullet_heading_count": len(bullet_heading_samples),
@@ -85,7 +85,7 @@ def _build_markdown_quality_metrics(
         "mixed_script_term_classification": "non_structural_hygiene",
         "raw_mixed_script_term_count": len(mixed_script_samples),
         "suspicious_heading_repetition_count": suspicious_heading_repetition_count,
-        "scripture_reference_heading_count": scripture_reference_heading_count,
+        "numbered_citation_heading_count": numbered_citation_heading_count,
         "pdf_blank_page_marker_leakage_count": detector_counts.get("pdf_blank_page_marker_leakage", 0),
         "pdf_blank_page_marker_leakage_threshold": None,
         "pdf_blank_page_marker_leakage_samples": detector_samples.get("pdf_blank_page_marker_leakage", []),

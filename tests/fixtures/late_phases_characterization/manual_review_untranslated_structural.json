@@ -86,6 +86,8 @@
   "mixed_script_term_count": 0,
   "mixed_script_term_gate_source": "legacy_markdown",
   "mixed_script_term_samples": [],
+  "numbered_citation_heading_count": 0,
+  "numbered_citation_heading_samples": [],
   "output_paragraph_count": null,
   "page_placeholder_heading_concat_classification": "display_hygiene",
   "page_placeholder_heading_concat_count": 0,
@@ -132,6 +134,11 @@
       "severity_model": "legacy_hygiene_review_threshold",
       "verdict": "tolerant"
     },
+    "numbered_citation_heading": {
+      "evidence": "source_backed_entry_headings_are_exempt; markdown_only_hits_require_manual_review_not_hard_fail_within_threshold",
+      "severity_model": "legacy_hygiene_fix_review_threshold",
+      "verdict": "tolerant"
+    },
     "pdf_blank_page_marker_leakage": {
       "evidence": "standalone_page_furniture_detector_excluding_headings_blockquotes_and_code",
       "severity_model": "profile_threshold",
@@ -140,11 +147,6 @@
     "residual_bullet_glyph": {
       "evidence": "source_import_bullet_glyphs_are_observability_not_hard_fail; raw_count_kept_for_review",
       "severity_model": "legacy_hygiene_review_threshold",
-      "verdict": "tolerant"
-    },
-    "scripture_reference_heading": {
-      "evidence": "source_backed_entry_headings_are_exempt; markdown_only_hits_require_manual_review_not_hard_fail_within_threshold",
-      "severity_model": "legacy_hygiene_fix_review_threshold",
       "verdict": "tolerant"
     },
     "suspicious_heading_repetition": {
@@ -185,8 +187,6 @@
   "residual_bullet_glyph_gate_source": "legacy_markdown",
   "residual_bullet_glyph_samples": [],
   "role_aware_formatting_coverage_note": null,
-  "scripture_reference_heading_count": 0,
-  "scripture_reference_heading_samples": [],
   "source_name": "report.docx",
   "source_paragraph_count": null,
   "structure_unit_total_count": null,
