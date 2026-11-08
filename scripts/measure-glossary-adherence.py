@@ -260,8 +260,12 @@ class Entry:
         position: int = 0,
         rendered: bool = True,
         required: bool = False,
+        spellings: tuple[str, ...] = (),
     ) -> None:
         self.source_term = source_term
+        # Spec 067 FR-010: the other surfaces of the same term (word order, hyphen), from the
+        # artifact's ``candidates``; the entry is searched for under every one of them.
+        self.spellings = tuple(spelling for spelling in spellings if spelling and spelling != source_term)
         self.target_term = target_term
         self.kind = kind
         self.note = note
@@ -272,7 +276,19 @@ class Entry:
         self.unmeasurable = unmeasurable_reason(source_term, target_term)
         self.case_sensitive = any(char.isupper() for char in source_term)
         self.stems = target_stems(target_term)
-        self.pattern = source_pattern(source_term, case_sensitive=self.case_sensitive)
+        self.surface_patterns = [
+            (surface, source_pattern(surface, case_sensitive=self.case_sensitive))
+            for surface in (source_term, *self.spellings)
+        ]
+        self.pattern = source_pattern(source_term, *self.spellings, case_sensitive=self.case_sensitive)
+
+    def surface_of(self, matched: str) -> str:
+        """Which surface (the source term or one of its spellings) a matched text is."""
+
+        for surface, pattern in self.surface_patterns:
+            if pattern.fullmatch(matched):
+                return surface
+        return self.source_term
 
 
 def entry_form(source_term: str, kind: str, note: str) -> str:
@@ -295,11 +311,20 @@ def headline_form(form: str) -> bool:
     return form != "single_lowercase"
 
 
-def source_pattern(source_term: str, *, case_sensitive: bool) -> re.Pattern[str]:
-    words = [re.escape(word) for word in re.findall(_WORD, source_term)]
-    if not words:
+def source_pattern(source_term: str, *spellings: str, case_sensitive: bool) -> re.Pattern[str]:
+    """Whole-word occurrences of ``source_term`` -- and of each of its ``spellings`` (spec 067
+    FR-010: "added value" and "value-added" are the entry "value added" written otherwise),
+    under the same rules: a space or hyphen between words, a plural or possessive ending, never
+    inside a longer hyphenated word."""
+
+    bodies = []
+    for surface in (source_term, *spellings):
+        words = [re.escape(word) for word in re.findall(_WORD, surface)]
+        if words:
+            bodies.append(r"[\s\-]+".join(words))
+    if not bodies:
         return re.compile(r"(?!x)x")
-    body = r"[\s\-]+".join(words)
+    body = "(?:" + "|".join(sorted(set(bodies), key=lambda item: (-len(item), item))) + ")"
     flags = 0 if case_sensitive else re.IGNORECASE
     return re.compile(r"(?<![^\W_])(?<!-)" + body + r"(?:e?s)?(?:['’]s)?(?![^\W_])(?!-[^\W_])", flags)
 
@@ -381,8 +406,20 @@ def load_entries(glossary_path: Path) -> tuple[list[Entry], dict[str, Any]]:
         for candidate in (candidates if isinstance(candidates, list) else [])
         if isinstance(candidate, dict) and candidate.get("required")
     }
-    for entry in entries:
+    spellings_by_key: dict[str, tuple[str, ...]] = {}
+    for candidate in candidates if isinstance(candidates, list) else []:
+        if isinstance(candidate, dict) and isinstance(candidate.get("spellings"), list):
+            spellings_by_key.setdefault(
+                _norm_key(str(candidate.get("term") or "")), tuple(str(item) for item in candidate["spellings"])
+            )
+    for index, entry in enumerate(entries):
         entry.required = _norm_key(entry.source_term) in required_keys
+        spellings = spellings_by_key.get(_norm_key(entry.source_term))
+        if spellings:
+            entries[index] = Entry(
+                source_term=entry.source_term, target_term=entry.target_term, kind=entry.kind, note=entry.note,
+                position=entry.position, rendered=entry.rendered, required=entry.required, spellings=spellings,
+            )
     info = {
         "required_known": required_known,
         "status": meta.get("status"),
@@ -536,12 +573,19 @@ def measure(
             rows.append(row)
             continue
         groups: dict[str, list[int]] = defaultdict(list)
+        spelling_hits: Counter[str] = Counter()
         kept_in_latin: list[int] = []
         readings: list[dict[str, Any]] = []
         for pair, spans, words in measured_pairs:
             own = spans.get(index)
             if not own:
                 continue
+            if entry.spellings:
+                source_plain = _strip_markup(str(pair.get("source_text") or ""))
+                for start, end in own:
+                    surface = entry.surface_of(source_plain[start:end])
+                    if surface != entry.source_term:
+                        spelling_hits[surface] += 1
             target_text = str(pair.get("target_text") or "")
             kept = len(entry.pattern.findall(_strip_markup(target_text)))
             idx = int(pair.get("idx", -1))
@@ -581,6 +625,8 @@ def measure(
                 "groups": {label: ids for label, ids in groups.items()},
                 "kept_in_latin": kept_in_latin,
                 "reading_list": readings,
+                "spellings": list(entry.spellings),
+                "spelling_matches": dict(spelling_hits),
             }
         )
         rows.append(row)
@@ -796,6 +842,11 @@ def print_report(result: dict[str, Any], show: int) -> None:
                 f"{mark} {_share(row['adherence']):>6} {row['adherent']:>4}/{row['occurrences']:<4} "
                 f"[{row['form']}] {row['source_term']} -> {row['target_term']}  dominant: {row['dominant']} "
                 f"{_share(row['dominant_share'])}" + (f"  other: {others}" if others else "")
+                + (
+                    "  matched as: " + ", ".join(f"{surface} x{count}" for surface, count in row["spelling_matches"].items())
+                    if row.get("spelling_matches")
+                    else ""
+                )
             )
 
     table("headline entries", [row for row in rows if row["bucket"] == "headline"])
