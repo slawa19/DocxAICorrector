@@ -500,6 +500,24 @@ VIII). «Пин» — тесты, которые сейчас закрепляю
   "legacy_markdown"` живых детекторов (`bullet_heading`, `page_placeholder`, `residual_bullet_glyph`,
   `mixed_script`) — провенанс, не остаток фичи; `tests/fixtures/money_gemini_passthrough_fixture.json` —
   записанный прогон-вход, не эталон вывода.
+- 2026-11-08 — **ложное `config_key_ignored` при переопределении ключа переменной окружения** (`ba10261`,
+  ветка `066/config-key-false-positive`). Четыре реальных прогона 2026-11-08 (`D:\Temp\claude\wt-065-run\.run\app.log`)
+  трижды предупредили `ignored_keys: ["models.text.default", "models.text.options"]` на поставочном `config.toml`,
+  хотя оба ключа читаются. Причина — не трекер и не порядок вызова лога: `.env` прогона задаёт
+  `DOCX_AI_MODELS_TEXT_DEFAULT` / `_OPTIONS`, а резолверы моделей (`config_model_registry.py` `resolve_text_model_options`
+  `:286-289`, `resolve_text_default_model` `:305-308`, `resolve_model_role_assignment` `:328-331`,
+  `resolve_image_model_groups` `:70-73`) при заданной переменной возвращались, не спрашивая таблицу TOML, —
+  `ReadTrackingConfigData` чтения не видел. Тест `test_shipped_config_toml_has_no_ignored_keys` этого не ловил: autouse-фикстура
+  `tests/conftest.py:75-79` удаляет все `DOCX_AI_*`. Правка: хелпер `toml_table_has_key` — резолверы спрашивают таблицу о
+  наличии ключа ДО переменной окружения; значение, перекрытое переменной, по-прежнему не разбирается (кто победил —
+  в `model_registry_resolved`); `config_key_ignored` остаётся для ключей, которых не спрашивает ни один резолвер.
+  Воспроизведено без модели (`load_app_config()` + перехват `log_event`: до правки `[["models.text.default",
+  "models.text.options"]]` и `[["models.image_vision.default"]]` под `DOCX_AI_IMAGE_VISION_MODEL`, после — пусто). Тесты:
+  поставочный конфиг под переменными окружения — без предупреждений, значения из окружения применены; лишний ключ
+  `models.text.spec_066_stray_key` под теми же переменными по-прежнему в WARNING (анти-вакуум). Побочная находка вне
+  scope: параллельные прогоны раннера пишут в один `.run/app.log` на DrvFs с дозаписью и теряют строки (три
+  `config_key_ignored` и три `model_registry_resolved` на четыре процесса, стартовавших за 4 мс; длины строк равны,
+  одна пара затёрта) — этот лог при параллельных запусках не годится для подсчёта событий.
 - 2026-11-08 — **приёмочное ревью Codex `gpt-6-astra` на `966cfae`** (`docs/reviews/CODEX_REVIEW_066_2026-11-08.md`,
   419 тыс. токенов): удаления живого пути не найдено, вердикт «ЗАКРЫВАТЬ ПОСЛЕ ПРАВОК», две находки, обе
   подтверждены оркестратором по коду и приземлены в P6 (`066/codexfix`, `db43004`, влит `93b3756`).
