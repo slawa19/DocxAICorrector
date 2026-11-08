@@ -836,6 +836,7 @@ def _annotate_toc_region_candidates(paragraphs: list[ParagraphUnit]) -> None:
         look_ahead = index + 1
         while look_ahead < len(paragraphs) and _is_toc_candidate_paragraph(paragraphs[look_ahead]):
             look_ahead += 1
+        look_ahead = _toc_region_end_at_last_page_number(paragraphs, start=index + 1, end=look_ahead)
 
         # `index` is the header itself, so this is "header + at least 2 candidate entries",
         # not "at least 3 candidates" as this rule was described until spec 054.
@@ -855,7 +856,55 @@ def _is_toc_candidate_paragraph(paragraph: ParagraphUnit) -> bool:
         return False
     if paragraph.attached_to_asset_id is not None:
         return False
-    return _is_toc_candidate_text(paragraph.text)
+    return _is_toc_candidate_text(paragraph.text) or _holds_consecutive_toc_entries(paragraph.text)
+
+
+# Spec 067 FR-007 follow-up: a page number that a contents line carries -- 1-4 digits, as the
+# PDF bridge renders it (optionally in emphasis markers) -- at the end of the line, or inside
+# it with another entry after it.
+_TOC_TRAILING_PAGE_NUMBER_PATTERN = re.compile(r"\s[*_]*\d{1,4}[*_]*\s*$")
+_TOC_TRAILING_ELLIPSIS_PATTERN = re.compile(r"(?:\.\.\.|…)\s*$")
+_TOC_INNER_PAGE_NUMBER_PATTERN = re.compile(r"(?<=\S)\s+[*_]*\d{1,4}[*_]*(?=\s+\S)")
+
+
+def _holds_consecutive_toc_entries(text: str) -> bool:
+    """Spec 067 FR-007 follow-up: one line that carries two contents entries, run together by
+    the extractor -- "4 The Flying Fish: A New Perspective on Money *57* 5 The Future Has
+    Arrived But Isn't Distributed Evenly..." (Rethinking Money, p. 10). By form: the line splits
+    after a page number into pieces that are each a contents line by `_is_toc_candidate_text`.
+    Too long as a whole (more than 16 words), it broke the region in two until 2026-11-08, and the
+    second half survived only because a running head "CONTENTS" on the next page opened a new
+    region; spec 067 FR-007 drops that running head as page furniture."""
+    pieces: list[str] = []
+    start = 0
+    for match in _TOC_INNER_PAGE_NUMBER_PATTERN.finditer(text):
+        pieces.append(text[start : match.end()])
+        start = match.end()
+    if not pieces:
+        return False
+    pieces.append(text[start:])
+    # The last title may wrap onto the next line; an ellipsis there is part of the title
+    # ("...Distributed Evenly..." + "Yet! *73*"), not a sentence end.
+    pieces[-1] = _TOC_TRAILING_ELLIPSIS_PATTERN.sub("", pieces[-1])
+    return all(_is_toc_candidate_text(piece) for piece in pieces)
+
+
+def _toc_region_end_at_last_page_number(
+    paragraphs: list[ParagraphUnit], *, start: int, end: int
+) -> int:
+    """Spec 067 FR-007 follow-up: where a contents region carries page numbers, it ends with
+    the last line that carries one. A line after it that still has the short contents shape --
+    the title of the first section after the contents ("FOREWORD"), its byline -- is not an
+    entry. A region whose entries carry no page numbers at all (fewer than two) is left as the
+    candidate run found it."""
+    numbered = [
+        position
+        for position in range(start, end)
+        if _TOC_TRAILING_PAGE_NUMBER_PATTERN.search(paragraphs[position].text or "")
+    ]
+    if len(numbered) < 2:
+        return end
+    return numbered[-1] + 1
 
 
 def _apply_or_hint_stage0_toc_role(paragraph: ParagraphUnit, *, structural_role: str) -> None:
