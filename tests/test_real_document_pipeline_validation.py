@@ -528,7 +528,7 @@ def test_evaluate_lietaer_acceptance_uses_authoritative_structural_markdown_coun
             "residual_bullet_glyph_gate_source": "legacy_markdown",
             "raw_residual_bullet_glyph_count": 0,
             "list_fragment_regression_count": 0,
-            "list_fragment_regression_gate_source": "topology_projection",
+            "list_fragment_regression_gate_source": "entry_assembly",
             "raw_list_fragment_regression_count": 1,
             "mixed_script_term_count": 0,
             "toc_body_concat_detected": False,
@@ -547,7 +547,7 @@ def test_evaluate_lietaer_acceptance_uses_authoritative_structural_markdown_coun
     assert by_name["residual_bullet_glyphs_present"]["residual_bullet_glyph_gate_source"] == "legacy_markdown"
     assert by_name["residual_bullet_glyphs_present"]["raw_residual_bullet_glyph_count"] == 0
     assert by_name["list_fragment_regressions_present"]["list_fragment_regression_count"] == 0
-    assert by_name["list_fragment_regressions_present"]["list_fragment_regression_gate_source"] == "topology_projection"
+    assert by_name["list_fragment_regressions_present"]["list_fragment_regression_gate_source"] == "entry_assembly"
     assert by_name["list_fragment_regressions_present"]["raw_list_fragment_regression_count"] == 1
 
 
@@ -2795,7 +2795,7 @@ def test_main_uses_processing_service_facade_and_runtime_config_only(tmp_path, m
                 "residual_bullet_glyph_classification": "display_hygiene",
                 "raw_residual_bullet_glyph_count": 1,
                 "list_fragment_regression_count": 0,
-                "list_fragment_regression_gate_source": "topology_projection",
+                "list_fragment_regression_gate_source": "entry_assembly",
                 "raw_list_fragment_regression_count": 1,
                 "mixed_script_term_count": 2,
                 "mixed_script_term_gate_source": "legacy_markdown",
@@ -3016,7 +3016,7 @@ def test_main_uses_processing_service_facade_and_runtime_config_only(tmp_path, m
     assert "translation_quality_residual_bullet_glyph_gate_source=legacy_markdown" in summary_text
     assert "translation_quality_residual_bullet_glyph_classification=display_hygiene" in summary_text
     assert "translation_quality_raw_residual_bullet_glyph_count=1" in summary_text
-    assert "translation_quality_list_fragment_regression_gate_source=topology_projection" in summary_text
+    assert "translation_quality_list_fragment_regression_gate_source=entry_assembly" in summary_text
     assert "translation_quality_raw_list_fragment_regression_count=1" in summary_text
     assert "translation_quality_mixed_script_term_gate_source=legacy_markdown" in summary_text
     assert "translation_quality_mixed_script_term_classification=non_structural_hygiene" in summary_text
@@ -6429,7 +6429,7 @@ def test_print_terminal_completion_summary_is_concise() -> None:
                     "residual_bullet_glyph_gate_source": "legacy_markdown",
                     "raw_residual_bullet_glyph_count": 1,
                     "list_fragment_regression_count": 0,
-                    "list_fragment_regression_gate_source": "topology_projection",
+                    "list_fragment_regression_gate_source": "entry_assembly",
                     "raw_list_fragment_regression_count": 1,
                 },
             },

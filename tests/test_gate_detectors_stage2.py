@@ -322,7 +322,6 @@ def test_resolve_list_fragment_drops_prose_ending_in_number_without_list_context
         final_markdown=final_markdown,
         assembly_entries=entries,
         source_backed_entry_authority=True,
-        topology_projection_supported=False,
     )
     assert source == "entry_assembly"
     assert resolved == []
@@ -343,7 +342,6 @@ def test_resolve_list_fragment_keeps_fragment_adjacent_to_ordered_list_entry():
         final_markdown=final_markdown,
         assembly_entries=entries,
         source_backed_entry_authority=True,
-        topology_projection_supported=False,
     )
     assert source == "entry_assembly"
     assert [getattr(item, "text") for item in resolved] == ["продолжение оборванной мысли 7."]
@@ -363,7 +361,6 @@ def test_resolve_list_fragment_still_drops_sample_matching_real_list_entry():
         final_markdown=final_markdown,
         assembly_entries=entries,
         source_backed_entry_authority=True,
-        topology_projection_supported=False,
     )
     assert source == "entry_assembly"
     assert resolved == []
@@ -377,7 +374,6 @@ def test_resolve_list_fragment_legacy_path_returns_raw_samples_unchanged():
         final_markdown="что угодно 7.",
         assembly_entries=[],
         source_backed_entry_authority=False,
-        topology_projection_supported=False,
     )
     assert source == "legacy_markdown"
     assert resolved == [sample]
@@ -393,7 +389,6 @@ def test_resolve_list_fragment_drops_sample_with_unresolvable_line():
         final_markdown="Единственный абзац.",
         assembly_entries=entries,
         source_backed_entry_authority=True,
-        topology_projection_supported=False,
     )
     assert source == "entry_assembly"
     assert resolved == []
