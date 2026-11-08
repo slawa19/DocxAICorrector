@@ -437,3 +437,25 @@ def test_a_name_heading_followed_by_its_section_is_left_accepted() -> None:
     answer = _answer(payload, ["### Harbour Lane Press", "Деньги — не вещь, а договорённость."])
     assert block_execution.model_kept_apparatus(context=_TRANSLATE, payload=payload, processed_chunk=answer) is None
     assert block_execution.prose_paragraph_indexes(payload) == (1,)
+
+
+# --- FR-001: the wording of rule 12's sub-bullets ---------------------------------------------
+
+
+def test_rule_12_keeps_as_is_only_inside_a_citation_and_says_commentary_is_translated_beside_it() -> None:
+    """Spec 067 FR-001 (A-1): the FR-011 sub-bullets of spec 065 said "leave as is" without
+    saying WHERE, and on the fourth run 27 notes-run paragraphs of Money came back English whole.
+    The link is a hypothesis measured by FR-012, not a fact; the wording is fixed either way:
+    "as is" applies only inside a kept citation, and "translate the commentary" is the next line."""
+    from pathlib import Path
+
+    prompt = (
+        Path(block_execution.__file__).resolve().parents[1] / "resources" / "prompts" / "operation_translate.txt"
+    ).read_text(encoding="utf-8")
+    lines = prompt.splitlines()
+    rule = next(index for index, line in enumerate(lines) if line.startswith("12. "))
+    inside, commentary = lines[rule + 1], lines[rule + 2]
+    assert inside.lstrip().startswith("- Только внутри оставленной ссылки")
+    assert "Ibid." in inside and "3 March 1998" in inside
+    assert commentary.lstrip().startswith("- Комментарий переводите всегда")
+    assert lines[rule + 3].startswith("13. ")
