@@ -2454,7 +2454,7 @@ def test_glossary_pass_keys_come_from_config_toml(monkeypatch):
 
     assert app_config["glossary_pass_enabled"] is True
     assert app_config["glossary_max_terms"] == 60
-    assert app_config["glossary_prompt_max_chars"] == 4000
+    assert app_config["glossary_prompt_max_chars"] == 5900
     assert app_config["glossary_candidate_limit"] == 400
 
 

@@ -4,7 +4,7 @@ Every block is translated by a separate call that cannot see the others, so any 
 The glossary already holds the expressions the author introduced, listed in "already_fixed" with their renderings — do not repeat them, and do not give any other candidate a rendering that one of them already has.
 
 The user message is a JSON object with:
-- "candidates": expressions found in the book by their form, each with how often it occurs, the signals that found it and one short context. Signals: "capitalised" (a name), "heading" (a word or phrase of a chapter title that the text keeps using), "collocation" (a recurring word combination), "family_head" (a word shared by several candidates), "emphasis" or "quoted" (marked once by the author);
+- "candidates": expressions found in the book by their form, each with how often it occurs, the signals that found it and one short context. Signals: "capitalised" (a name), "heading" (a word or phrase of a chapter title that the text keeps using), "collocation" (a recurring word combination), "family_head" (a word shared by several candidates), "emphasis" or "quoted" (marked once by the author), "phrase" (a recurring expression built on a term of the glossary: it needs its own rendering, not one assembled from the word it contains);
 - "already_fixed": the renderings already in the glossary;
 - "max_terms": the largest number of entries you may return.
 

@@ -30,7 +30,7 @@ from docxaicorrector.text.glossary_pass import (
     extract_glossary_candidates,
     missing_required_candidates,
     normalize_glossary_key,
-    order_required_first,
+    order_glossary_entries,
     parse_glossary_response,
     select_glossary_source_units,
 )
@@ -234,7 +234,10 @@ def test_family_head_collects_a_word_shared_by_several_multiword_candidates():
         paragraphs.extend(_FILLER)
     keys = _keys(extract_glossary_candidates(_units(paragraphs)))
 
-    assert "worth" in keys and keys["worth"].family == "head"
+    assert "worth creation" in keys and "worth extraction" in keys
+    # Spec 065 FR-002: a head of collocations none of which the author marked is ONE lowercase
+    # word on no form of its own -- not a candidate (the head with marked members: below).
+    assert "worth" not in keys
 
 
 def test_extraction_is_deterministic_and_respects_the_limit():
@@ -595,7 +598,7 @@ def test_required_flag_follows_the_authors_marking_not_the_family_score():
 
 
 def test_a_family_of_unmarked_collocations_has_an_optional_head():
-    """Anti-vacuum: a head is required only when the author marked one of its members."""
+    """Anti-vacuum: a head stands only when the author marked its members (spec 065 FR-002)."""
     paragraphs = []
     for _ in range(6):
         paragraphs.append("The worth creation and the worth extraction were measured.")
@@ -604,7 +607,7 @@ def test_a_family_of_unmarked_collocations_has_an_optional_head():
         paragraphs.extend(_FILLER)
     keys = _keys(extract_glossary_candidates(_units(paragraphs)))
 
-    assert keys["worth"].family == "head" and not keys["worth"].required
+    assert "worth" not in keys
     assert keys["worth creation"].family == "collocation" and not keys["worth creation"].required
 
 
@@ -785,17 +788,21 @@ def _heading_units(paragraphs):
 
 
 def test_a_heading_word_the_body_keeps_using_is_a_candidate_with_the_heading_as_context():
-    paragraphs: list[tuple[str, int | None]] = [("Money and Durability", 1)]
+    paragraphs: list[tuple[str, int | None]] = [("Money and Durable Growth", 1)]
     for chapter in range(4):
         paragraphs.append((f"Chapter {chapter} Notes", 2))
-        paragraphs.append(("The question of durability returns here, and durability matters.", None))
+        paragraphs.append(("The question of durable growth returns here, and durable growth matters.", None))
         paragraphs.extend((text, None) for text in _FILLER)
-    candidate = _keys(extract_glossary_candidates(_heading_units(paragraphs)))["durability"]
+    keys = _keys(extract_glossary_candidates(_heading_units(paragraphs)))
+    candidate = keys["durable growth"]
 
     assert candidate.family == "heading"
-    assert candidate.context == "Money and Durability"
+    assert candidate.context == "Money and Durable Growth"
     # Fourth pass: an h1 (title, chapter) phrase the body keeps using is required.
     assert candidate.required
+    # Spec 065 FR-002: its single words are optional candidates at most -- never required.
+    for word in ("durable", "growth"):
+        assert word not in keys or not keys[word].required, word
 
 
 def test_a_heading_phrase_the_body_never_repeats_is_not_a_candidate():
@@ -838,7 +845,7 @@ def test_required_candidates_ignore_the_limit_on_the_models_own_choices():
 
     assert [term.source_term for term in result.terms] == ["Alpha", "quillet bond"]
     assert result.rejected_counts["over_limit"] == 1
-    ordered = order_required_first(candidates, result.terms)
+    ordered = order_glossary_entries(candidates, result.terms)
     assert [term.source_term for term in ordered] == ["quillet bond", "Alpha"]
     assert missing_required_candidates(candidates, result.terms) == ()
     assert missing_required_candidates(candidates, result.terms[:1]) == (candidates[0],)
@@ -976,12 +983,12 @@ def _h1_document(title, body_sentence, *, level=1, rounds=4):
 def test_an_h2_phrase_the_body_keeps_using_stays_optional():
     keys = _keys(
         extract_glossary_candidates(
-            _h1_document("Notes on Durability", "The question of durability returns here, and durability matters.", level=2)
+            _h1_document("Notes on Durable Growth", "The question of durable growth returns here, and durable growth matters.", level=2)
         )
     )
 
-    assert keys["durability"].family == "heading"
-    assert not keys["durability"].required
+    assert keys["durable growth"].family == "heading"
+    assert not keys["durable growth"].required
 
 
 def test_an_h1_phrase_the_body_never_repeats_is_not_required():
@@ -993,22 +1000,22 @@ def test_an_h1_phrase_the_body_never_repeats_is_not_required():
 
 def test_function_words_and_joiner_edges_of_an_h1_are_not_candidates():
     units = _h1_document(
-        "MONEY AND DURABILITY FOR ALL",
-        "Money and durability, money and durability for all of them, for all.",
+        "MONEY AND DURABLE GROWTH FOR ALL",
+        "Money and durable growth, money and durable growth for all of them, for all.",
     )
     keys = _keys(extract_glossary_candidates(units))
 
-    for phrase in ("and", "for", "all", "money and", "and durability", "durability for", "for all"):
+    for phrase in ("and", "for", "all", "money and", "and durable", "growth for", "for all"):
         assert phrase not in keys, phrase
-    assert keys["durability"].required
+    assert keys["durable growth"].required
 
 
 def test_a_chapter_number_in_an_h1_is_not_a_candidate():
-    units = _h1_document("Chapter VII Durability", "Chapter seven speaks of durability, and durability again.")
+    units = _h1_document("Chapter VII Durable Growth", "Chapter seven speaks of durable growth, and durable growth again.")
     keys = _keys(extract_glossary_candidates(units))
 
     assert not any("vii" in key for key in keys)
-    assert keys["durability"].required
+    assert keys["durable growth"].required
 
 
 def test_requests_ask_for_standard_transcription_and_the_full_name():
@@ -1043,13 +1050,13 @@ def _load_candidates_script():
 
 def test_measurer_dump_round_trip_keeps_heading_levels_and_the_required_set(tmp_path):
     script = _load_candidates_script()
-    paragraphs = [SimpleNamespace(paragraph_id="p0000", text="Money and Durability", role="heading", heading_level=1)]
+    paragraphs = [SimpleNamespace(paragraph_id="p0000", text="Money and Durable Growth", role="heading", heading_level=1)]
     for chapter in range(4):
         paragraphs.append(
             SimpleNamespace(paragraph_id=f"p1{chapter:03d}", text=f"Chapter {chapter} Notes", role="heading", heading_level=1)
         )
         for line, text in enumerate(
-            ("The question of durability returns here, and durability matters.", *_FILLER)
+            ("The question of durable growth returns here, and durable growth matters.", *_FILLER)
         ):
             paragraphs.append(
                 SimpleNamespace(paragraph_id=f"p2{chapter:02d}{line}", text=text, role="body", heading_level=None)
@@ -1062,7 +1069,7 @@ def test_measurer_dump_round_trip_keeps_heading_levels_and_the_required_set(tmp_
         }
     ]
     produced = extract_glossary_candidates(select_glossary_source_units(jobs, paragraphs))
-    assert _keys(produced)["durability"].required  # an h1 phrase: the field decides it
+    assert _keys(produced)["durable growth"].required  # an h1 phrase: the field decides it
 
     dump = tmp_path / "dump.json"
     script._dump(jobs, paragraphs, dump)
@@ -1685,3 +1692,276 @@ def test_anti_vacuum_a_good_call_a_makes_no_extra_call_and_no_warning():
     assert len(requested) == 1 and len(terms) == 4
     assert record["failed_calls"] == []
     assert events == []
+
+
+# --- Spec 065: the glossary reaches the reader (FR-001 order and budget, FR-002 single words,
+# FR-003 phrases above the word). Synthetic text only; no phrase of a corpus book. -------------
+
+
+def _worth_document(*, public_rounds: int = 4, hyphenated: bool = True) -> list[str]:
+    """A head word ("worth") with TWO author-marked members, a "public worth" expression whose
+    other word heads a defined term ("public tallow"), and a hyphenated compound."""
+
+    paragraphs = [
+        "This we will call *worth creation* from here on.",
+        "The *surplus worth* is introduced.",
+        "What the town shared we call *public tallow* in this book.",
+    ]
+    for index in range(6):
+        paragraphs.append("The worth creation and the worth extraction were measured.")
+        paragraphs.append("Their worth creation exceeded worth extraction, and surplus worth grew.")
+        paragraphs.append("Surplus worth and worth creation, again; the public tallow once more.")
+        if index < public_rounds:
+            paragraphs.append("The public worth of the commons was larger than anyone said.")
+        if hyphenated and index < 3:
+            paragraphs.append("A worth-based reckoning followed the harvest.")
+        paragraphs.extend(_FILLER)
+    return paragraphs
+
+
+def test_fr002_a_neologism_defined_with_quotes_and_recurring_stays_a_required_candidate():
+    # Anti-regression 2 of spec 065: a demurrage-like coined word, introduced in quotes by a
+    # definition and used again, is the author's term.
+    paragraphs = ["A charge on idle notes is technically called a ‘drevage’ fee in the valley."]
+    for _ in range(4):
+        paragraphs.append("The drevage made people spend, and drevage kept the notes moving.")
+        paragraphs.extend(_FILLER)
+    keys = _keys(extract_glossary_candidates(_units(paragraphs)))
+
+    assert "drevage" in keys
+    assert keys["drevage"].required
+    assert "defined" in keys["drevage"].signals
+
+
+def test_fr002_an_ordinary_word_in_italics_is_never_a_required_entry_and_ranks_last():
+    # Anti-regression 2 of spec 065: the ordinary word "harvest", used throughout and set in
+    # italics, is not an entry by rule: at most an optional candidate the model may choose,
+    # placed after every phrase and name, where the budget cuts first (FR-001).
+    paragraphs = []
+    for index in range(8):
+        paragraphs.append("The harvest was late and the harvest was small, as harvests often are.")
+        paragraphs.extend(_FILLER)
+        if index in (2, 4):
+            paragraphs.append("But the *harvest* mattered more than anything.")
+    keys = _keys(extract_glossary_candidates(_units(paragraphs)))
+
+    assert "harvest" not in keys or not keys["harvest"].required
+    ordered = order_glossary_entries(
+        tuple(keys.values()),
+        (_entry("harvest", "урожай"), _entry("marrow ledger", "мозговая книга"), _entry("Kelbrook", "Келбрук", kind="name")),
+    )
+    assert ordered[-1].source_term == "harvest"
+
+
+def test_fr002_a_word_defined_in_passing_once_is_not_a_candidate_but_three_uses_are():
+    once = ["Back then you would have called him a quibbler, like most of his friends.", *(_FILLER * 6)]
+    recurring = [*once, "The quibbler came back.", "Another quibbler spoke.", *_FILLER]
+
+    assert "quibbler" not in _keys(extract_glossary_candidates(_units(once)))
+    # Anti-vacuum: the same definition with the word used three times is a candidate.
+    assert "quibbler" in _keys(extract_glossary_candidates(_units(recurring)))
+
+
+def test_fr002_a_heading_word_alone_is_an_optional_candidate_a_head_of_two_required_members_is_required():
+    title_only: list[tuple[str, int | None]] = [("Making Worth", 1)]
+    for chapter in range(4):
+        title_only.append((f"Part {chapter}", 1))
+        title_only.append(("Making things was hard, and making worth was harder still.", None))
+        title_only.extend((text, None) for text in _FILLER)
+    keys = _keys(extract_glossary_candidates(_heading_units(title_only)))
+
+    # An h1 word the body keeps using: the model may choose it, the rule never forces it.
+    assert keys["making"].family == "heading" and not keys["making"].required
+    assert keys["worth"].family == "heading" and not keys["worth"].required
+    ordered = order_glossary_entries(
+        tuple(keys.values()), (_entry("making", "созидание"), _entry("Kelbrook", "Келбрук", kind="name"))
+    )
+    assert ordered[-1].source_term == "making"  # last: the budget cuts it first
+
+    # Anti-vacuum: "worth" heads two author-marked members here -- it stays, and is required.
+    keys = _keys(extract_glossary_candidates(_units(_worth_document())))
+    assert keys["worth"].required
+    assert "family_head" in keys["worth"].signals
+
+
+def test_fr002_a_head_with_one_required_member_is_not_a_candidate():
+    paragraphs = ["This we will call *worth creation* from here on."]
+    for _ in range(6):
+        paragraphs.append("The worth creation and the worth extraction were measured.")
+        paragraphs.append("Their worth creation exceeded worth extraction, and surplus worth grew.")
+        paragraphs.append("Surplus worth and worth creation, again; surplus worth once more.")
+        paragraphs.extend(_FILLER)
+    keys = _keys(extract_glossary_candidates(_units(paragraphs)))
+
+    assert keys["worth creation"].required
+    assert "worth" not in keys
+
+
+def test_fr002_an_article_between_the_object_and_the_marked_name_is_not_part_of_the_term():
+    paragraphs = ["The old masters called them the ‘tallow class’. Others did not."]
+    for _ in range(6):
+        paragraphs.append("The tallow class worked, and the tallow class paid them the rent.")
+        paragraphs.extend(_FILLER)
+    keys = _keys(extract_glossary_candidates(_units(paragraphs)))
+
+    assert "tallow class" in keys and "defined" in keys["tallow class"].signals
+    assert "them the" not in keys
+
+
+def test_fr002_a_quoted_name_inside_a_longer_expression_defines_nothing_before_it():
+    # "called it 'real' money": the object before the quotes is not a defined term either.
+    paragraphs = ["Some called it ‘quillet’ money, and others did not."]
+    for _ in range(6):
+        paragraphs.append("It was quillet money, and it was spent; it went around again.")
+        paragraphs.extend(_FILLER)
+    keys = _keys(extract_glossary_candidates(_units(paragraphs)))
+
+    assert "it" not in keys
+
+
+def test_fr002_the_tail_of_a_split_word_is_found_by_form():
+    plains: list[str] = list(_FILLER * 25)
+    for _ in range(4):
+        plains.append("Praise for effi ciency and for suffi ciency came from the miller.")
+        plains.append("An effi cient mill is a suffi cient mill, said the miller.")
+        plains.append("Coal and fossil fuels burned while fossil fuels lasted.")
+        plains.append("The town grew and the town paid.")
+    tails = glossary_pass._split_word_tails(plains)
+
+    assert "ciency" in tails
+    # Anti-vacuum: the second word of a fixed pair follows one word only; whole words are not tails.
+    assert "fuels" not in tails
+    assert "town" not in tails and "mill" not in tails
+
+
+def test_fr003_a_phrase_on_a_required_word_is_its_own_required_candidate_before_the_word():
+    candidates = extract_glossary_candidates(_units(_worth_document()))
+    keys = _keys(candidates)
+    order = [candidate.source_term.lower() for candidate in candidates]
+
+    assert keys["public worth"].required and "phrase" in keys["public worth"].signals
+    assert keys["worth-based"].required and "phrase" in keys["worth-based"].signals
+    assert order.index("public worth") < order.index("worth")
+    assert order.index("worth-based") < order.index("worth")
+
+
+def test_fr003_a_phrase_needs_three_uses_and_a_partner_of_the_books_terms():
+    keys = _keys(extract_glossary_candidates(_units(_worth_document(public_rounds=2, hyphenated=False))))
+
+    assert "public worth" not in keys  # twice is not recurring
+    assert "worth-based" not in keys
+    keys = _keys(extract_glossary_candidates(_units(_worth_document())))
+    # "worth extraction": its other word heads no required candidate -- the phrase rule adds
+    # nothing; the expression stays whatever the collocation family made of it.
+    assert "phrase" not in keys["worth extraction"].signals
+
+
+def _entry(source, target, *, kind="term", note=""):
+    return GlossaryTerm(source_term=source, target_term=target, kind=kind, note=note)
+
+
+def _counted_candidate(term, count, *, required=False, family="marked"):
+    return replace(_candidate(term, family), key=tuple(term.lower().split()), occurrence_count=count, required=required)
+
+
+def test_fr001_entries_are_ordered_by_tier_then_form_then_use_and_the_budget_cuts_the_tail():
+    from docxaicorrector.pipeline.glossary_phase import plan_run_glossary_section
+
+    candidates = (
+        _counted_candidate("quillet", 50, required=True),
+        _counted_candidate("quillet bond", 10, required=True),
+        _counted_candidate("harbour", 90),
+        _counted_candidate("Zorvane Pettish", 5, family="name"),
+        _counted_candidate("marrow ledger", 40, family="collocation"),
+        _counted_candidate("tallow", 3),
+    )
+    # The model's answer order: single words first, as in the third run.
+    terms = (
+        _entry("harbour", "гавань"),
+        _entry("tallow", "сало"),
+        _entry("quillet", "киллет"),
+        _entry("Zorvane Pettish", "Зорвейн Петтиш", kind="name"),
+        _entry("quillet bond", "киллетная облигация"),
+        _entry("marrow ledger", "мозговая книга"),
+    )
+    ordered = order_glossary_entries(candidates, terms)
+
+    assert [term.source_term for term in ordered] == [
+        "quillet bond",  # required, a phrase containing "quillet": moved before it
+        "quillet",
+        "marrow ledger",  # optional phrases and names by use
+        "Zorvane Pettish",
+        "harbour",  # optional single words last, by use
+        "tallow",
+    ]
+    full = plan_run_glossary_section(ordered, candidates, max_chars=100_000)
+    tight = plan_run_glossary_section(ordered, candidates, max_chars=len(full.text) - 5)
+    tiny = plan_run_glossary_section(ordered, candidates, max_chars=10)
+
+    assert full.cut == () and full.unrendered_required == ()
+    assert [term.source_term for term in tight.cut] == ["tallow"]
+    assert [term.source_term for term in tiny.rendered] == ["quillet bond", "quillet"]
+    assert tiny.unrendered_required == ()
+    assert [term.source_term for term in tiny.cut] == ["marrow ledger", "Zorvane Pettish", "harbour", "tallow"]
+
+
+def test_fr001_a_noted_or_capitalised_single_word_ranks_with_the_phrases():
+    assert glossary_pass.is_single_lowercase_entry(_entry("harbour", "гавань"))
+    for entry in (
+        _entry("harbour", "гавань", note="the town's own"),
+        _entry("Harbour", "Гавань"),
+        _entry("worth-based", "основанный на ценности"),
+        _entry("Kelbrook", "Келбрук", kind="name"),
+        _entry("quillet bond", "киллетная облигация"),
+    ):
+        assert not glossary_pass.is_single_lowercase_entry(entry), entry
+
+
+def test_fr003_counter_test_word_and_phrase_both_reach_the_section_the_longer_first():
+    from docxaicorrector.core.config import load_system_prompt
+    from docxaicorrector.pipeline.glossary_phase import plan_run_glossary_section
+
+    candidates = (_counted_candidate("worth", 90, required=True), _counted_candidate("public worth", 20))
+    terms = (
+        _entry("worth", "стоимость", note="the sum a thing fetches"),
+        _entry("public worth", "общественная ценность"),
+    )
+    plan = plan_run_glossary_section(order_glossary_entries(candidates, terms), candidates, max_chars=10)
+
+    assert plan.unrendered_required == () and plan.cut == ()
+    text = plan.text
+    assert "- public worth -> общественная ценность" in text
+    assert "- worth -> стоимость — the sum a thing fetches" in text
+    assert text.index("- public worth ->") < text.index("- worth ->")
+    prompt = load_system_prompt(
+        operation="translate", source_language="en", target_language="ru", document_context_prompt=text
+    )
+    assert text in prompt
+    assert "Более длинная запись глоссария имеет приоритет над входящим в неё словом" in prompt
+    assert "не распространяйте на словосочетания, которых нет в глоссарии" in prompt
+    assert "и в коротких повторных упоминаниях" in prompt  # FR-004
+
+
+def test_fr003_a_phrase_does_not_displace_a_name():
+    # Anti-regression 2 of spec 065: phrases ride over the candidate limit, so the names stay
+    # exactly the same whether or not the text carries the phrase.
+    paragraphs = _worth_document()
+    for _ in range(4):
+        paragraphs.append("In those years Zorvane Pettish kept the books of Kelbrook.")
+    keys = _keys(extract_glossary_candidates(_units(paragraphs)))
+    without_phrase = _keys(
+        extract_glossary_candidates(_units([text for text in paragraphs if "public worth" not in text]))
+    )
+
+    assert "zorvane pettish" in keys and "public worth" in keys
+    assert {key for key, c in keys.items() if c.family == "name"} == {
+        key for key, c in without_phrase.items() if c.family == "name"
+    }
+
+
+def test_fr003_the_glossary_prompts_ask_for_a_note_and_name_the_phrase_signal():
+    required = glossary_pass._load_glossary_instructions(glossary_pass.GLOSSARY_ROLE_REQUIRED)
+    optional = glossary_pass._load_glossary_instructions(glossary_pass.GLOSSARY_ROLE_OPTIONAL)
+
+    assert 'when a general word is used in a special sense of this book, say that sense in "note"' in required
+    assert '"phrase"' in required and '"phrase"' in optional

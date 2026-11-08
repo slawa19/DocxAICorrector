@@ -117,6 +117,11 @@ def _prepare(document_profile_id: str, run_profile_id: str) -> tuple[list[dict[s
 def _load_dump(path: Path) -> tuple[list[dict[str, Any]], list[Any]]:
     data = json.loads(path.read_text(encoding="utf-8"))
     paragraphs = [SimpleNamespace(**record) for record in data["paragraphs"]]
+    if isinstance(data.get("jobs"), list):
+        # The reviewers' dump shape (the 2026-11-07 runs): the run's own jobs, with their
+        # regions, at the top level and no region on the paragraph records. Read per record,
+        # every paragraph -- notes and bibliography too -- would count as prose (spec 065).
+        return [dict(job) for job in data["jobs"]], paragraphs
     jobs = [
         {
             "job_kind": "llm" if record.get("in_llm_job", True) else "passthrough",
@@ -214,7 +219,7 @@ def _live_call(
     *,
     model: str | None,
     max_terms: int,
-    prompt_max_chars: int,
+    prompt_max_chars: int | None,
     source_language: str,
     glossary_out: Path | None,
 ) -> None:
@@ -245,6 +250,8 @@ def _live_call(
             request_text_completion_fn=None,
         )
         stage = model_accounting.snapshot_run_model_accounting()["stages"].get("glossary_extraction", {})
+    if prompt_max_chars is None:
+        prompt_max_chars = glossary_phase.RUN_GLOSSARY_PROMPT_MAX_CHARS
     section = glossary_phase.render_run_glossary_section(terms, tuple(candidates), max_chars=prompt_max_chars)
     prompt_tokens = int(stage.get("prompt_tokens") or 0)
     request_chars = int(record.get("request_chars") or 0)
@@ -321,7 +328,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--live", action="store_true", help="SPENDS MONEY: one glossary call")
     parser.add_argument("--model")
     parser.add_argument("--max-terms", type=int, default=DEFAULT_GLOSSARY_MAX_TERMS)
-    parser.add_argument("--prompt-max-chars", type=int, default=4000)
+    parser.add_argument("--prompt-max-chars", type=int, help="default: the product's glossary_prompt_max_chars")
     parser.add_argument("--glossary-out", type=Path)
     parser.add_argument("--source-language", default="auto", help="as the run profile sets it; 'auto' is resolved like the product does")
     args = parser.parse_args(argv)
@@ -353,7 +360,10 @@ def main(argv: list[str] | None = None) -> int:
             else "marked"
         )
         routes[route] = routes.get(route, 0) + 1
-    single_lowercase = [c.source_term for c in required if len(c.key) == 1 and c.source_term == c.source_term.lower()]
+    # Spec 065 FR-002: one lowercase word with no hyphen ("value-based" is a compound).
+    single_lowercase = [
+        c.source_term for c in required if len(c.key) == 1 and "-" not in c.source_term and c.source_term == c.source_term.lower()
+    ]
     _, name_members = split_name_families(candidates)
     print(f"required={len(required)} by_route={routes} single_lowercase={len(single_lowercase)} {single_lowercase}")
     print(

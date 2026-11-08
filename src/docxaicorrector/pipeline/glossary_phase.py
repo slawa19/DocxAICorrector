@@ -26,7 +26,7 @@ import logging
 import re
 import time
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, cast
 
@@ -62,7 +62,7 @@ from docxaicorrector.text.glossary_pass import (
     missing_required_candidates,
     normalize_glossary_key,
     order_collision_group,
-    order_required_first,
+    order_glossary_entries,
     parse_glossary_response,
     select_glossary_source_units,
     split_candidates_in_halves,
@@ -84,10 +84,16 @@ _ERROR_PREVIEW_CHARS = 120
 _LANGUAGE_SAMPLE_CHARS = 2000
 # A, A retried as two halves (spec 064, 2026-11-08), B and C.
 _MAX_GLOSSARY_CALLS = 5
-# The run glossary's default budget: the rule-included terms (56–89 per corpus book) plus the
-# model's own choices, names first among them. Measured on Money 2026-11-07: 72 rule-included
-# entries render in 2 250 characters.
-RUN_GLOSSARY_PROMPT_MAX_CHARS = 4000
+# The run glossary's default budget (spec 065 FR-001): the smallest at which every required
+# entry AND every entry of a form of its own (a name, several words, a hyphen, a capital, a
+# note -- not ``is_single_lowercase_entry``) of the four corpus books reaches the section.
+# Measured 2026-11-08 offline on the third run's artifacts, the entries in the order of
+# ``order_glossary_entries`` and the candidates of spec 065 (renderings of new required phrases
+# estimated at each book's own target/source length ratio): Money 4 900, The Value of Everything
+# 5 900, Rethinking Money 4 000, Creating Wealth (required entries only: its call A failed)
+# 3 500. Against 4 000 it adds +1 897 characters, ~550 prompt tokens per block call, on The
+# Value of Everything; the required entries are never cut whatever the budget.
+RUN_GLOSSARY_PROMPT_MAX_CHARS = 5900
 _UNSAFE_STEM_CHARS_RE = re.compile(r"[^A-Za-z0-9_.-]+")
 
 
@@ -361,6 +367,9 @@ def _run_glossary_phase(
         "required_count": sum(1 for candidate in sent_candidates if candidate.required),
         "reasked_required_count": 0,
         "unrendered_terms": [],
+        "unrendered_required": [],
+        "rendered_terms": [],
+        "cut_terms": [],
         "optional_candidate_count": 0,
         "collisions_found": 0,
         "collisions_resolved": 0,
@@ -393,7 +402,13 @@ def _run_glossary_phase(
 
     section = ""
     if status == RUN_GLOSSARY_STATUS_BUILT:
-        section = render_run_glossary_section(terms, sent_candidates, max_chars=prompt_max_chars)
+        plan = plan_run_glossary_section(terms, sent_candidates, max_chars=prompt_max_chars)
+        section = plan.text
+        # Spec 065 FR-001: what the budget left out, so the next run can be read without the
+        # model; ``unrendered_required`` must stay empty (required entries are never cut).
+        record["rendered_terms"] = [term.source_term for term in plan.rendered]
+        record["cut_terms"] = [term.source_term for term in plan.cut]
+        record["unrendered_required"] = list(plan.unrendered_required)
     record["status"] = status
     record["terms"] = [
         {"source_term": term.source_term, "target_term": term.target_term, "kind": term.kind, "note": term.note}
@@ -451,6 +466,10 @@ def _run_glossary_phase(
             reasked_required_count=record["reasked_required_count"],
             unrendered_count=len(record["unrendered_terms"]) if isinstance(record["unrendered_terms"], list) else 0,
             unrendered_terms=record["unrendered_terms"],
+            unrendered_required_count=len(cast(list[object], record["unrendered_required"])),
+            unrendered_required=record["unrendered_required"],
+            # The lists of rendered and cut terms stay in the artifact (LOGGING §1.5).
+            cut_count=len(cast(list[object], record["cut_terms"])),
             name_entry_count=len(cast(list[object], record.get("name_entries") or [])),
             collisions_found=record["collisions_found"],
             collisions_resolved=record["collisions_resolved"],
@@ -875,7 +894,60 @@ def _call_model(
     record["unrendered_terms"] = [candidate.source_term for candidate in missing_required_candidates(required, terms)]
     if not terms:
         return RUN_GLOSSARY_STATUS_EMPTY, ()
-    return RUN_GLOSSARY_STATUS_BUILT, order_required_first(sent_candidates, terms)
+    return RUN_GLOSSARY_STATUS_BUILT, order_glossary_entries(sent_candidates, terms)
+
+
+@dataclass(frozen=True)
+class RunGlossarySection:
+    """The rendered prompt section and what it holds (spec 065 FR-001)."""
+
+    text: str
+    rendered: tuple[GlossaryTerm, ...]
+    cut: tuple[GlossaryTerm, ...]
+    # Required entries that did not reach the section: by construction none; a non-empty
+    # list in the artifact or the event is a defect to read, not a budget decision.
+    unrendered_required: tuple[str, ...]
+
+
+def plan_run_glossary_section(
+    terms: tuple[GlossaryTerm, ...],
+    candidates: tuple[GlossaryCandidate, ...],
+    *,
+    max_chars: int,
+) -> RunGlossarySection:
+    """The prompt section: the entries in their order, the tail cut at ``max_chars``.
+
+    ``terms`` come in the order of ``order_glossary_entries``: every required entry (and any
+    phrase moved ahead of a required word it contains) before the first optional one. The
+    budget never cuts that part: when it alone exceeds ``max_chars``, the budget grows to
+    hold it and every entry after it is left out.
+    """
+
+    required_keys = {normalize_glossary_key(candidate.source_term) for candidate in candidates if candidate.required}
+    renderable = tuple(
+        term for term in terms if str(term.source_term or "").strip() and str(term.target_term or "").strip()
+    )
+    last_required = max(
+        (index for index, term in enumerate(renderable) if normalize_glossary_key(term.source_term) in required_keys),
+        default=-1,
+    )
+    budget = int(max_chars)
+    if last_required >= 0:
+        protected = render_glossary_prompt_section(
+            renderable[: last_required + 1], header=RUN_GLOSSARY_SECTION_HEADER, max_chars=10**9
+        )
+        budget = max(budget, len(protected) + len("\n- ..."))
+    text = render_glossary_prompt_section(renderable, header=RUN_GLOSSARY_SECTION_HEADER, max_chars=budget)
+    rendered_count = _rendered_term_count(text)
+    cut = renderable[rendered_count:]
+    return RunGlossarySection(
+        text=text,
+        rendered=renderable[:rendered_count],
+        cut=cut,
+        unrendered_required=tuple(
+            term.source_term for term in cut if normalize_glossary_key(term.source_term) in required_keys
+        ),
+    )
 
 
 def render_run_glossary_section(
@@ -884,27 +956,20 @@ def render_run_glossary_section(
     *,
     max_chars: int,
 ) -> str:
-    """The prompt section: required entries never cut, optional ones dropped lowest rank first.
+    """The text of ``plan_run_glossary_section``."""
 
-    ``terms`` come ordered required-first; when the required entries alone exceed the budget,
-    the budget grows to hold them and every optional entry is left out.
-    """
-
-    required_keys = {normalize_glossary_key(candidate.source_term) for candidate in candidates if candidate.required}
-    required_terms = tuple(term for term in terms if normalize_glossary_key(term.source_term) in required_keys)
-    required_section = render_glossary_prompt_section(
-        required_terms, header=RUN_GLOSSARY_SECTION_HEADER, max_chars=10**9
-    )
-    budget = max(int(max_chars), len(required_section) + len("\n- ...")) if required_terms else int(max_chars)
-    return render_glossary_prompt_section(terms, header=RUN_GLOSSARY_SECTION_HEADER, max_chars=budget)
+    return plan_run_glossary_section(terms, candidates, max_chars=max_chars).text
 
 
 __all__ = [
     "RUN_GLOSSARY_BUILT_MESSAGE_KEY",
     "RUN_GLOSSARY_FAILED_MESSAGE_KEY",
     "RUN_GLOSSARY_NOTICE_KIND",
+    "RunGlossarySection",
     "build_run_glossary_notice",
     "glossary_pass_applies",
+    "plan_run_glossary_section",
+    "render_run_glossary_section",
     "resolve_run_glossaries_dir",
     "run_glossary_phase",
 ]

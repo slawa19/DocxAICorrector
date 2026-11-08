@@ -42,7 +42,7 @@ enable_paragraph_markers = true
 # the renderings, added to every block prompt within a character budget.
 glossary_pass_enabled = true
 glossary_max_terms = 60
-glossary_prompt_max_chars = 4000
+glossary_prompt_max_chars = 5900
 glossary_candidate_limit = 400
 image_mode_default = "no_change"
 semantic_validation_policy = "advisory"
