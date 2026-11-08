@@ -29,7 +29,7 @@ from docxaicorrector.core.model_accounting import (
     record_retry_attempt,
     record_text_removal,
 )
-from docxaicorrector.image.shared import call_responses_create_with_retry, extract_unsupported_parameter_name, is_retryable_error
+from docxaicorrector.image.shared import call_responses_create_with_retry, drop_rejected_optional_param, is_retryable_error
 from docxaicorrector.generation.marker_attempt_capture import capture_rejected_marker_attempt
 from docxaicorrector.generation.openai_response_utils import collect_response_text_traversal, read_response_field
 from collections.abc import Callable, Mapping
@@ -1654,15 +1654,24 @@ def _canonicalize_model_selector_for_client(*, client: object, model: str) -> st
     return f"{provider_name}:{stripped_model}"
 
 
+_DOTTED_VERSION_SEPARATOR_PATTERN = re.compile(r"(?<=\d)\.(?=\d)")
+
+
 def _normalize_anthropic_model_id(model: str) -> str:
+    """The id the Anthropic Messages API accepts, by form rather than by a table of models.
+
+    Spec 066 B-3: the provider prefix (``anthropic:`` selector or ``anthropic/`` OpenRouter
+    form) is dropped, and a dotted version number (``…-N.M``, ``claude-N.M-…``) is written
+    with a dash (``…-N-M``), as Anthropic spells its ids. An id that is already canonical
+    passes through unchanged.
+    """
+
     model_id = str(model).strip()
-    if model_id.startswith("anthropic:"):
-        model_id = model_id.split(":", 1)[1].strip()
-    aliases = {
-        "claude-sonnet-4.6": "claude-sonnet-4-6",
-        "anthropic/claude-sonnet-4.6": "claude-sonnet-4-6",
-    }
-    return aliases.get(model_id, model_id)
+    for prefix in ("anthropic:", "anthropic/"):
+        if model_id.startswith(prefix):
+            model_id = model_id[len(prefix) :].strip()
+            break
+    return _DOTTED_VERSION_SEPARATOR_PATTERN.sub("-", model_id)
 
 
 def _extract_chat_messages_from_request(request_kwargs: dict[str, object]) -> list[dict[str, str]]:
@@ -1720,15 +1729,11 @@ def _call_chat_completions_create(
         try:
             response = create(**payload)
         except TypeError as exc:
-            unsupported_param = extract_unsupported_parameter_name(str(exc))
-            if unsupported_param in removable_optional_params and unsupported_param in payload:
-                payload.pop(unsupported_param, None)
+            if drop_rejected_optional_param(exc, payload, removable_optional_params, stage=usage_stage):
                 continue
             raise
         except Exception as exc:
-            unsupported_param = extract_unsupported_parameter_name(str(exc))
-            if unsupported_param in removable_optional_params and unsupported_param in payload:
-                payload.pop(unsupported_param, None)
+            if drop_rejected_optional_param(exc, payload, removable_optional_params, stage=usage_stage):
                 continue
             raise
         else:
@@ -1855,15 +1860,11 @@ def _call_anthropic_messages_create(
         try:
             response = create(**payload)
         except TypeError as exc:
-            unsupported_param = extract_unsupported_parameter_name(str(exc))
-            if unsupported_param in removable_optional_params and unsupported_param in payload:
-                payload.pop(unsupported_param, None)
+            if drop_rejected_optional_param(exc, payload, removable_optional_params, stage=usage_stage):
                 continue
             raise
         except Exception as exc:
-            unsupported_param = extract_unsupported_parameter_name(str(exc))
-            if unsupported_param in removable_optional_params and unsupported_param in payload:
-                payload.pop(unsupported_param, None)
+            if drop_rejected_optional_param(exc, payload, removable_optional_params, stage=usage_stage):
                 continue
             raise
         else:

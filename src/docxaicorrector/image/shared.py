@@ -1,6 +1,8 @@
 import json
+import logging
 import time
 
+from docxaicorrector.core.logger import log_event
 from docxaicorrector.core.model_accounting import (
     STAGE_IMAGE_ANALYSIS,
     STAGE_IMAGE_GENERATION,
@@ -91,6 +93,52 @@ def extract_unsupported_parameter_name(error_message: str) -> str | None:
         tail = error_message.split(marker, 1)[1]
         return tail.split("'", 1)[0]
     return None
+
+
+def provider_error_code(exc: BaseException) -> str:
+    """The provider's own error code when the SDK carries one, else the exception class name.
+
+    Same rule as ``pipeline/glossary_phase.py::_error_code``: a typed code when there is
+    one, the class name otherwise. OpenAI-compatible SDK errors expose ``code`` (for a
+    rejected parameter, ``"unsupported_parameter"``); a ``TypeError`` from an SDK that does
+    not know the keyword has none.
+    """
+
+    code = getattr(exc, "code", None)
+    if isinstance(code, str) and code.strip():
+        return code.strip()
+    return type(exc).__name__
+
+
+def drop_rejected_optional_param(
+    exc: BaseException,
+    payload: dict[str, object],
+    removable_params: set[str],
+    *,
+    stage: str,
+) -> bool:
+    """Remove the optional parameter the provider rejected and say so; ``False`` if none.
+
+    Spec 066 FR-007: the drop used to be silent, so the absence of a log line proved nothing
+    about whether the current model rejects ``temperature``. The drop stays per call: the
+    next call sends the parameter again (no memory between calls until a run shows the
+    rejection is real).
+    """
+
+    param = extract_unsupported_parameter_name(str(exc))
+    if param is None or param not in removable_params or param not in payload:
+        return False
+    payload.pop(param, None)
+    log_event(
+        logging.WARNING,
+        "model_call_param_dropped",
+        "Провайдер отклонил необязательный параметр запроса; вызов повторяется без него.",
+        param=param,
+        model=str(payload.get("model") or ""),
+        stage=stage,
+        error_code=provider_error_code(exc),
+    )
+    return True
 
 
 def parse_json_object(raw_text: str, *, empty_message: str, no_json_message: str) -> dict[str, object]:
@@ -201,15 +249,11 @@ def call_responses_create_with_retry(
                 ensure_budget_available()
                 response = client.responses.create(**current_payload)
             except TypeError as exc:
-                unsupported_param = extract_unsupported_parameter_name(str(exc))
-                if unsupported_param in removable_optional_params and unsupported_param in current_payload:
-                    current_payload.pop(unsupported_param, None)
+                if drop_rejected_optional_param(exc, current_payload, removable_optional_params, stage=usage_stage):
                     continue
                 raise
             except Exception as exc:
-                unsupported_param = extract_unsupported_parameter_name(str(exc))
-                if unsupported_param in removable_optional_params and unsupported_param in current_payload:
-                    current_payload.pop(unsupported_param, None)
+                if drop_rejected_optional_param(exc, current_payload, removable_optional_params, stage=usage_stage):
                     continue
                 should_retry = attempt < max_retries and retryable_error_predicate(exc)
                 if not should_retry:

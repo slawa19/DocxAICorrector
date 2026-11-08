@@ -489,7 +489,6 @@ def test_codeowners_protects_moved_production_implementation_paths() -> None:
     assert "/src/docxaicorrector/generation/formatting_diagnostics_retention.py @slawa19" in codeowners_text
     assert "/src/docxaicorrector/generation/message_formatting.py @slawa19" in codeowners_text
     assert "/src/docxaicorrector/generation/openai_response_utils.py @slawa19" in codeowners_text
-    assert "/src/docxaicorrector/generation/search.py @slawa19" in codeowners_text
     assert "/src/docxaicorrector/validation/common.py @slawa19" in codeowners_text
     assert "/src/docxaicorrector/validation/profiles.py @slawa19" in codeowners_text
     assert "/src/docxaicorrector/validation/structural.py @slawa19" in codeowners_text
@@ -497,6 +496,21 @@ def test_codeowners_protects_moved_production_implementation_paths() -> None:
     assert "/src/docxaicorrector/ui/_ui.py @slawa19" in codeowners_text
     assert "/src/docxaicorrector/ui/app_runtime.py @slawa19" in codeowners_text
     assert "/src/docxaicorrector/ui/application_flow.py @slawa19" in codeowners_text
+
+
+def test_codeowners_names_only_paths_that_exist() -> None:
+    """Spec 066 C-11: a deleted file's CODEOWNERS line protects nothing and reads as live."""
+
+    codeowners_lines = (REPO_ROOT / ".github" / "CODEOWNERS").read_text(encoding="utf-8").splitlines()
+    owned_paths = [
+        line.split()[0]
+        for line in codeowners_lines
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+
+    assert owned_paths
+    missing = [path for path in owned_paths if "*" not in path and not (REPO_ROOT / path.lstrip("/")).exists()]
+    assert missing == []
 
 
 # Spec 036 F2/F6: shared production validation must stay book-agnostic. The detectors are

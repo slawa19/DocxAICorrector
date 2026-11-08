@@ -64,7 +64,6 @@ class ImageModelCapabilities:
     quality_values: frozenset[str]
     background_values: frozenset[str]
     accepts_input_fidelity: bool
-    accepts_response_format: bool
     standard_sizes: tuple[str, ...]
     arbitrary_sizes: bool
     size_multiple: int
@@ -88,7 +87,6 @@ def _gpt_image_2x(
         quality_values=frozenset(quality_values),
         background_values=frozenset(background_values),
         accepts_input_fidelity=accepts_input_fidelity,
-        accepts_response_format=False,
         standard_sizes=STANDARD_GPT_IMAGE_SIZES,
         arbitrary_sizes=arbitrary_sizes,
         size_multiple=16,
@@ -108,7 +106,6 @@ IMAGE_MODEL_CAPABILITIES: dict[str, ImageModelCapabilities] = {
         quality_values=frozenset({"low", "medium", "high", "auto"}),
         background_values=frozenset({"transparent", "opaque", "auto"}),
         accepts_input_fidelity=True,
-        accepts_response_format=False,
         standard_sizes=STANDARD_GPT_IMAGE_SIZES,
         arbitrary_sizes=False,
         size_multiple=1,
@@ -290,6 +287,4 @@ def build_images_request(
         payload["background"] = background
     if operation == "edit" and input_fidelity is not None and capabilities.accepts_input_fidelity:
         payload["input_fidelity"] = input_fidelity
-    if capabilities.accepts_response_format:
-        payload["response_format"] = "b64_json"
     return payload
