@@ -525,7 +525,6 @@ def resolve_text_runtime_defaults(
         "literary",
         set(editorial_intensity_values),
     )
-    translation_domain_default = parse_config_str_fn(config_data, "translation_domain_default", "general").strip().lower()
     audiobook_postprocess_default = parse_config_bool_fn(config_data, "audiobook_postprocess_default", False)
     audiobook_model = _resolve_audiobook_model_default(
         config_data=config_data,
@@ -572,10 +571,6 @@ def resolve_text_runtime_defaults(
         default=editorial_intensity_default,
         allowed_values=set(editorial_intensity_values),
     )
-    translation_domain_default = (
-        os.getenv("DOCX_AI_TRANSLATION_DOMAIN_DEFAULT", translation_domain_default).strip().lower()
-        or translation_domain_default
-    )
     audiobook_postprocess_default = parse_bool_env_fn(
         "DOCX_AI_AUDIOBOOK_POSTPROCESS_DEFAULT",
         audiobook_postprocess_default,
@@ -605,7 +600,6 @@ def resolve_text_runtime_defaults(
         "source_language_default": source_language_default,
         "target_language_default": target_language_default,
         "editorial_intensity_default": editorial_intensity_default,
-        "translation_domain_default": translation_domain_default,
         "audiobook_postprocess_default": audiobook_postprocess_default,
         "audiobook_model": audiobook_model,
         "enable_paragraph_markers": enable_paragraph_markers,

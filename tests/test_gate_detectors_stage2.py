@@ -697,7 +697,6 @@ class _Context:
     def __init__(self, operation: str = "translate", *, policy: str = "strict") -> None:
         self.processing_operation = operation
         self.uploaded_filename = "book.docx"
-        self.translation_domain = "general"
         self.app_config = {"translation_output_quality_gate_policy": policy}
 
 

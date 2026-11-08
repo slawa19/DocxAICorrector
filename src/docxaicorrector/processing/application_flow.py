@@ -125,8 +125,6 @@ class PreparedRunContext:
     structure_repair_report: object | None = None
     quality_gate_status: str = "pass"
     quality_gate_reasons: tuple[str, ...] = ()
-    translation_domain: str = "general"
-    translation_domain_instructions: str = ""
     document_context_profile: DocumentContextProfile = field(default_factory=DocumentContextProfile)
     exported_structure_manifest_path: str = ""
 
@@ -417,10 +415,6 @@ def _build_prepared_run_context(*, uploaded_filename: str, uploaded_file_bytes: 
         structure_repair_report=getattr(prepared_document, "structure_repair_report", None),
         quality_gate_status=quality_gate_status,
         quality_gate_reasons=tuple(getattr(prepared_document, "quality_gate_reasons", ()) or ()),
-        translation_domain=str(getattr(prepared_document, "translation_domain", "general") or "general"),
-        translation_domain_instructions=str(
-            getattr(prepared_document, "translation_domain_instructions", "") or ""
-        ),
         document_context_profile=getattr(prepared_document, "document_context_profile", DocumentContextProfile()),
         exported_structure_manifest_path=str(getattr(prepared_document, "exported_structure_manifest_path", "") or ""),
     )

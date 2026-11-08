@@ -41,7 +41,6 @@ def _profile(*, min_text_similarity: float = 0.95, max_heading_level_drift: int 
         require_pdf_conversion=False,
         require_no_bullet_headings=False,
         require_no_toc_body_concat=False,
-        require_translation_domain=None,
         ),
     )
 

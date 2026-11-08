@@ -1518,7 +1518,6 @@ def _build_translation_quality_report(
         if untranslated_body_char_count > 0
         else 0.0
     )
-    translation_domain = str(getattr(context, "translation_domain", "") or context.app_config.get("translation_domain", "general") or "general")
     authority_fields = _derive_translation_quality_authority_fields(
         context=context,
         final_markdown=final_markdown,
@@ -2029,7 +2028,6 @@ def _build_translation_quality_report(
         "source_name": context.uploaded_filename,
         "processing_operation": context.processing_operation,
         "quality_gate_policy": policy,
-        "translation_domain": translation_domain,
         "source_paragraph_count": source_paragraph_count,
         "target_paragraph_count": output_paragraph_count,
         "output_paragraph_count": output_paragraph_count,

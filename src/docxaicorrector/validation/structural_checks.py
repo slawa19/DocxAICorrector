@@ -40,7 +40,6 @@ def _build_markdown_quality_metrics(
     latest_markdown: str,
     raw_markdown: str,
     raw_structural_markdown: str,
-    translation_domain: str,
 ) -> dict[str, object]:
     detector_counts, detector_samples = summarize_structure_quality_detectors(latest_markdown)
     bullet_heading_samples = collect_bullet_heading_samples(latest_markdown)
@@ -570,15 +569,6 @@ def _build_structural_checks(
                 "topology_split_compound_toc_operation_count": metrics.get(
                     "topology_split_compound_toc_operation_count"
                 ),
-            }
-        )
-    if document_profile.require_translation_domain:
-        checks.append(
-            {
-                "name": "translation_domain_required",
-                "passed": str(metrics.get("runtime_translation_domain", "")) == document_profile.require_translation_domain,
-                "actual": metrics.get("runtime_translation_domain"),
-                "required": document_profile.require_translation_domain,
             }
         )
     for check_name, metric_key, threshold in (

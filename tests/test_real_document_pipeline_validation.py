@@ -6315,7 +6315,6 @@ def test_main_falls_back_to_prepared_snapshot_statuses_when_event_log_lacks_stru
                 processing_operation="translate",
                 source_language="auto",
                 target_language="ru",
-                translation_domain="theology",
             ),
             ui_defaults=_resolution_payload(
                 chunk_size=6000,
@@ -6326,7 +6325,6 @@ def test_main_falls_back_to_prepared_snapshot_statuses_when_event_log_lacks_stru
                 processing_operation="edit",
                 source_language="auto",
                 target_language="ru",
-                translation_domain="general",
             ),
             overrides={},
         ),

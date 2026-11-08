@@ -63,7 +63,6 @@ class DocumentProfile:
     # ``None`` leaves the corpus profile unguarded, which is the default for sources
     # that carry no lists.
     max_torn_list_items: int | None = None
-    require_translation_domain: str | None = None
     structural_run_profile: str | None = None
     structural_expected_result: str = "pass"
     structural_expected_failed_checks: tuple[str, ...] = ()
@@ -95,7 +94,6 @@ class RunProfile:
     processing_operation: str | None = None
     source_language: str | None = None
     target_language: str | None = None
-    translation_domain: str | None = None
     editorial_intensity: str | None = None
     audiobook_postprocess_enabled: bool | None = None
     reader_cleanup_enabled: bool | None = None
@@ -155,7 +153,6 @@ class ResolvedRuntimeConfig:
     processing_operation: str
     source_language: str
     target_language: str
-    translation_domain: str
     editorial_intensity: str
     audiobook_postprocess_enabled: bool
     reader_cleanup_enabled: bool
@@ -176,7 +173,6 @@ class ResolvedRuntimeConfig:
             "processing_operation": self.processing_operation,
             "source_language": self.source_language,
             "target_language": self.target_language,
-            "translation_domain": self.translation_domain,
             "editorial_intensity": self.editorial_intensity,
             "audiobook_postprocess_enabled": self.audiobook_postprocess_enabled,
             "reader_cleanup_enabled": self.reader_cleanup_enabled,
@@ -242,7 +238,6 @@ def resolve_runtime_resolution(app_config, run_profile: RunProfile) -> RuntimeRe
         processing_operation=str(getattr(app_config, "processing_operation_default", "edit") or "edit"),
         source_language=str(getattr(app_config, "source_language_default", "en") or "en"),
         target_language=str(getattr(app_config, "target_language_default", "ru") or "ru"),
-        translation_domain=str(getattr(app_config, "translation_domain_default", "general") or "general"),
         editorial_intensity=str(getattr(app_config, "editorial_intensity_default", "literary") or "literary"),
         audiobook_postprocess_enabled=bool(getattr(app_config, "audiobook_postprocess_default", False)),
         reader_cleanup_enabled=bool(getattr(app_config, "reader_cleanup_default", False)),
@@ -260,7 +255,6 @@ def resolve_runtime_resolution(app_config, run_profile: RunProfile) -> RuntimeRe
         processing_operation=str(_resolve_run_profile_field(run_profile.processing_operation, ui_defaults.processing_operation)),
         source_language=str(_resolve_run_profile_field(run_profile.source_language, ui_defaults.source_language)),
         target_language=str(_resolve_run_profile_field(run_profile.target_language, ui_defaults.target_language)),
-        translation_domain=str(_resolve_run_profile_field(run_profile.translation_domain, ui_defaults.translation_domain)),
         editorial_intensity=str(_resolve_run_profile_field(run_profile.editorial_intensity, ui_defaults.editorial_intensity)),
         audiobook_postprocess_enabled=bool(
             _resolve_run_profile_field(
@@ -302,7 +296,6 @@ def resolve_runtime_resolution(app_config, run_profile: RunProfile) -> RuntimeRe
         "processing_operation": run_profile.processing_operation,
         "source_language": run_profile.source_language,
         "target_language": run_profile.target_language,
-        "translation_domain": run_profile.translation_domain,
         "editorial_intensity": run_profile.editorial_intensity,
         "audiobook_postprocess_enabled": run_profile.audiobook_postprocess_enabled,
         "reader_cleanup_enabled": run_profile.reader_cleanup_enabled,
@@ -383,7 +376,6 @@ def resolve_runtime_resolution(app_config, run_profile: RunProfile) -> RuntimeRe
 def apply_runtime_resolution_to_app_config(app_config, resolution: RuntimeResolution) -> dict[str, object]:
     app_config_dict = app_config.to_dict()
     app_config_dict.update(resolution.effective.to_dict())
-    app_config_dict["translation_domain_default"] = resolution.effective.translation_domain
     # The pipeline reads `editorial_intensity_default`, so the run-profile value has to
     # land on that key (the plain `editorial_intensity` copy is only for reporting).
     app_config_dict["editorial_intensity_default"] = resolution.effective.editorial_intensity
@@ -452,7 +444,6 @@ def _build_document_profile(payload: Any) -> DocumentProfile:
         max_heading_body_concat_detected=_optional_int(payload, "max_heading_body_concat_detected"),
         max_h1_epigraph_attribution_pattern=_optional_int(payload, "max_h1_epigraph_attribution_pattern"),
         max_torn_list_items=_optional_int(payload, "max_torn_list_items"),
-        require_translation_domain=_optional_str(payload, "require_translation_domain"),
         structural_run_profile=_optional_str(payload, "structural_run_profile"),
         structural_expected_result=structural_expected_result,
         structural_expected_failed_checks=tuple(_coerce_str_list(payload, "structural_expected_failed_checks")),
@@ -517,7 +508,6 @@ def _build_run_profile(payload: Any) -> RunProfile:
         processing_operation=_optional_processing_operation(payload, "processing_operation"),
         source_language=_optional_str(payload, "source_language"),
         target_language=_optional_str(payload, "target_language"),
-        translation_domain=_optional_str(payload, "translation_domain"),
         editorial_intensity=_optional_editorial_intensity(payload, "editorial_intensity"),
         audiobook_postprocess_enabled=_optional_bool(payload, "audiobook_postprocess_enabled"),
         reader_cleanup_enabled=_optional_bool(payload, "reader_cleanup_enabled"),

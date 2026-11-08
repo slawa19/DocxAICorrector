@@ -25,19 +25,6 @@ def resolve_prompt_document_context(context: Any) -> str:
     return str(getattr(context, "document_context_prompt", "") or fallback or "").strip()
 
 
-def resolve_prompt_source_text(context: Any) -> str:
-    """The input of the domain term scanner (``build_terminology_plan``), and nothing else.
-
-    It is the run's domain instructions, as it was from the scanner's introduction
-    (``3750218``) until ``892dc07`` folded the document context into it. The scanner only
-    looks for the theology domain's own term patterns, and the domain instructions already
-    carry that glossary, so adding the context to the scanner's input changed nothing it
-    found; the context now has its own slot (spec 064 FR-001).
-    """
-
-    return str(getattr(context, "translation_domain_instructions", "") or "").strip()
-
-
 def build_system_prompt_arguments(*, context: Any, prompt_variant: str = "default") -> dict[str, Any]:
     """The one set of loader arguments for a run's system prompt.
 
@@ -56,8 +43,6 @@ def build_system_prompt_arguments(*, context: Any, prompt_variant: str = "defaul
     }
     if prompt_variant != "default":
         arguments["prompt_variant"] = prompt_variant
-    arguments["translation_domain"] = context.translation_domain
-    arguments["source_text"] = resolve_prompt_source_text(context)
     arguments["document_context_prompt"] = resolve_prompt_document_context(context)
     return arguments
 
@@ -70,8 +55,6 @@ def resolve_system_prompt(
     target_language: str,
     editorial_intensity: str = "literary",
     prompt_variant: str = "default",
-    translation_domain: str = "general",
-    source_text: str = "",
     document_context_prompt: str = "",
 ) -> str:
     """Call ``load_system_prompt`` with the arguments it accepts.
@@ -97,8 +80,6 @@ def resolve_system_prompt(
             target_language=target_language,
             editorial_intensity=editorial_intensity,
             prompt_variant=prompt_variant,
-            translation_domain=translation_domain,
-            source_text=source_text,
             **context_arguments,
         )
 
@@ -110,24 +91,10 @@ def resolve_system_prompt(
             target_language=target_language,
             editorial_intensity=editorial_intensity,
             prompt_variant=prompt_variant,
-            translation_domain=translation_domain,
-            source_text=source_text,
             **context_arguments,
         )
 
     parameter_names = {parameter.name for parameter in parameters}
-    if {"operation", "source_language", "target_language", "editorial_intensity", "prompt_variant", "translation_domain", "source_text"}.issubset(parameter_names):
-        return load_system_prompt(
-            operation=operation,
-            source_language=source_language,
-            target_language=target_language,
-            editorial_intensity=editorial_intensity,
-            prompt_variant=prompt_variant,
-            translation_domain=translation_domain,
-            source_text=source_text,
-            **(context_arguments if "document_context_prompt" in parameter_names else {}),
-        )
-
     if {"operation", "source_language", "target_language", "editorial_intensity", "prompt_variant"}.issubset(parameter_names):
         return load_system_prompt(
             operation=operation,
@@ -135,6 +102,7 @@ def resolve_system_prompt(
             target_language=target_language,
             editorial_intensity=editorial_intensity,
             prompt_variant=prompt_variant,
+            **(context_arguments if "document_context_prompt" in parameter_names else {}),
         )
 
     if {"operation", "source_language", "target_language"}.issubset(parameter_names):

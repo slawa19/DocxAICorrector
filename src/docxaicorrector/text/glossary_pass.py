@@ -36,7 +36,6 @@ from functools import lru_cache
 
 from docxaicorrector.core.constants import PROMPTS_DIR
 from docxaicorrector.document.segments import GLOSSARY_TERM_KINDS, GlossaryTerm
-from docxaicorrector.text.translation_domains import build_terminology_plan
 
 
 GLOSSARY_SOURCE_REGIONS = frozenset({"prose", "front_matter"})
@@ -911,34 +910,6 @@ def _context_snippet(plain: str, surface: str) -> str:
     return flat[start : start + GLOSSARY_CONTEXT_CHARS]
 
 
-# --- the domain glossary as one input among others (FR-016) ------------------------------------
-
-
-def glossary_terms_from_plan(plan_text: str) -> tuple[GlossaryTerm, ...]:
-    """``A -> B`` lines of a terminology plan as glossary entries; anything else is skipped."""
-
-    terms: list[GlossaryTerm] = []
-    for line in str(plan_text or "").splitlines():
-        normalized_line = line.strip()
-        if not normalized_line or "->" not in normalized_line:
-            continue
-        source_term, target_term = normalized_line.split("->", 1)
-        source_term = source_term.strip()
-        target_term = target_term.strip()
-        if not source_term or not target_term:
-            continue
-        terms.append(GlossaryTerm(source_term=source_term, target_term=target_term, confidence="medium"))
-    return tuple(terms)
-
-
-def domain_glossary_terms(*, source_text: str, translation_domain: str) -> tuple[GlossaryTerm, ...]:
-    """The translation domain's fixed terms for this text — unchanged by spec 063 (FR-016)."""
-
-    return glossary_terms_from_plan(
-        build_terminology_plan(source_text=source_text, translation_domain=translation_domain)
-    )
-
-
 # --- the model call's contract ---------------------------------------------------------------
 
 
@@ -960,16 +931,6 @@ def _request_envelope(*, model: str, instructions: str, payload: Mapping[str, ob
         "temperature": 0.2,
         "max_output_tokens": max_output_tokens,
     }
-
-
-def request_candidates(
-    candidates: Sequence[GlossaryCandidate],
-    fixed_terms: Sequence[GlossaryTerm],
-) -> tuple[GlossaryCandidate, ...]:
-    """Candidates left for the model once the domain's fixed terms are taken out."""
-
-    fixed_keys = {normalize_glossary_key(term.source_term) for term in fixed_terms}
-    return tuple(candidate for candidate in candidates if normalize_glossary_key(candidate.source_term) not in fixed_keys)
 
 
 # The completion budget of one glossary call (spec 064, 2026-11-08). The old flat 60 tokens per
@@ -1011,7 +972,6 @@ def build_glossary_request(
     *,
     model: str,
     candidates: Sequence[GlossaryCandidate],
-    fixed_terms: Sequence[GlossaryTerm],
     source_language: str,
     target_language: str,
     max_terms: int,
@@ -1035,9 +995,6 @@ def build_glossary_request(
     payload: dict[str, object] = {
         "source_language": source_label,
         "target_language": str(target_language or ""),
-        "fixed_terms": [
-            {"source_term": term.source_term, "target_term": term.target_term} for term in fixed_terms
-        ],
         "candidates": [
             {
                 "id": index + 1,
@@ -1607,20 +1564,17 @@ __all__ = [
     "order_collision_group",
     "same_spelling_family",
     "split_name_families",
-    "domain_glossary_terms",
     "extract_glossary_candidates",
     "GLOSSARY_OUTPUT_TOKENS_CEILING",
     "GLOSSARY_OUTPUT_TOKENS_ENVELOPE",
     "GLOSSARY_OUTPUT_TOKENS_MIN",
     "GLOSSARY_OUTPUT_TOKENS_PER_ENTRY",
     "glossary_max_output_tokens",
-    "glossary_terms_from_plan",
     "missing_required_candidates",
     "normalize_glossary_key",
     "normalize_rendering",
     "order_required_first",
     "parse_glossary_response",
-    "request_candidates",
     "select_glossary_source_units",
     "split_candidates_in_halves",
 ]

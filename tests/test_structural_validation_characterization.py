@@ -364,7 +364,6 @@ def _structural_checks(metrics: dict[str, object]) -> list[dict[str, object]]:
         require_pdf_conversion=False,
         require_no_bullet_headings=False,
         require_no_toc_body_concat=False,
-        require_translation_domain=None,
     )
     return structural._build_structural_checks(
         document_profile=profile,

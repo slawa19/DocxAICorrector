@@ -513,7 +513,6 @@ def run_structural_passthrough_validation(
             "toc_body_concat_detected": _has_toc_body_concat_markdown(latest_markdown),
             "toc_body_concat_markdown_detected": _has_toc_body_concat_markdown(latest_markdown),
             "require_pdf_conversion_satisfied": source_path.suffix.lower() == ".pdf",
-            "runtime_translation_domain": str(runtime_resolution.effective.translation_domain),
             "quality_gate_status": _extract_event_context_value(event_log, "structure_processing_outcome", "quality_gate_status"),
             "quality_gate_reasons": _extract_event_context_list(event_log, "structure_processing_outcome", "quality_gate_reasons"),
             "readiness_status": _extract_event_context_value(event_log, "structure_processing_outcome", "readiness_status"),
@@ -535,7 +534,6 @@ def run_structural_passthrough_validation(
             latest_markdown=latest_markdown,
             raw_markdown=raw_markdown,
             raw_structural_markdown=raw_structural_markdown,
-            translation_domain=str(runtime_resolution.effective.translation_domain),
         )
     )
     translation_quality_report, translation_quality_report_path = _load_translation_quality_report(event_log)

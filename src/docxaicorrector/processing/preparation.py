@@ -41,7 +41,6 @@ from docxaicorrector.document.segments import (
     CHAPTER_SEGMENTS_DETECTOR_VERSION,
     DocumentContextProfile,
     DocumentSegment,
-    GlossaryTerm,
     SegmentDetectionReport,
     SegmentOutlineEntry,
     build_segment_to_job_mapping,
@@ -51,8 +50,6 @@ from docxaicorrector.document.segments import (
 )
 from docxaicorrector.document.provenance import resolve_scan_origin_config
 from docxaicorrector.document.structure_authority import get_effective_structural_role
-from docxaicorrector.text.glossary_pass import domain_glossary_terms
-from docxaicorrector.text.translation_domains import build_translation_domain_instructions
 
 
 _REASON_LABELS: dict[str, str] = {
@@ -98,8 +95,6 @@ class PreparedDocumentData:
     structure_repair_report: StructureRepairReport | None = None
     quality_gate_status: str = "pass"
     quality_gate_reasons: tuple[str, ...] = ()
-    translation_domain: str = "general"
-    translation_domain_instructions: str = ""
     document_context_profile: DocumentContextProfile = field(default_factory=DocumentContextProfile)
     cached: bool = False
 
@@ -325,7 +320,6 @@ def build_prepared_source_key(
     layout_artifact_cleanup_key: str = "1:3:80",
     source_language: str = "en",
     target_language: str = "ru",
-    translation_domain: str = "general",
     structure_recovery_enabled: bool = False,
     structure_recovery_mode: str = "legacy",
     scan_origin_key: str = _DEFAULT_SCAN_ORIGIN_CACHE_KEY,
@@ -335,7 +329,6 @@ def build_prepared_source_key(
     operation_suffix = "" if resolved_operation == "edit" else f":op={resolved_operation}"
     normalized_source_language = str(source_language or "en").strip().lower() or "en"
     normalized_target_language = str(target_language or "ru").strip().lower() or "ru"
-    normalized_translation_domain = str(translation_domain or "general").strip().lower() or "general"
     normalized_structure_recovery_mode = str(structure_recovery_mode or "legacy").strip().lower() or "legacy"
     structure_recovery_flag = "1" if bool(structure_recovery_enabled) else "0"
     # F10: the boundary AI-review artifact is shaped by MORE than its mode — the
@@ -357,7 +350,7 @@ def build_prepared_source_key(
             f":armt={int(paragraph_boundary_ai_review_max_tokens_per_candidate or 0)}"
         )
     # F14: fold every setting that influences the prepared/cached result (languages,
-    # translation domain, structure-recovery knobs) into the key so run B cannot serve
+    # structure-recovery knobs) into the key so run B cannot serve
     # run A's glossary/context. `pk` is an explicit key-format version tag: bumping it
     # invalidates stale entries whenever this fingerprint layout changes.
     normalized_scan_origin_key = str(scan_origin_key or "").strip() or _DEFAULT_SCAN_ORIGIN_CACHE_KEY
@@ -365,7 +358,6 @@ def build_prepared_source_key(
         f":pk=4"
         f":sl={normalized_source_language}"
         f":tl={normalized_target_language}"
-        f":td={normalized_translation_domain}"
         f":sr={structure_recovery_flag}"
         f":srm={normalized_structure_recovery_mode}"
         f":so={normalized_scan_origin_key}"
@@ -517,12 +509,6 @@ def _detect_document_segments_with_optional_phase(*, paragraphs, source_content_
     return detect_document_segments(paragraphs, **kwargs)
 
 
-def _build_document_context_glossary_terms(*, translation_domain: str, source_text: str) -> tuple[GlossaryTerm, ...]:
-    # Spec 063 FR-016: the domain list is parsed by the same helper the run glossary pass uses
-    # for its "fixed terms" input; the list itself and its output here are unchanged.
-    return domain_glossary_terms(source_text=source_text, translation_domain=translation_domain)
-
-
 def _extract_docx_detected_author(*, source_bytes: bytes, source_format: str) -> str | None:
     if str(source_format or "").strip().lower() != "docx" or not source_bytes:
         return None
@@ -537,9 +523,6 @@ def _extract_docx_detected_author(*, source_bytes: bytes, source_format: str) ->
 def _build_document_context_profile(
     *,
     segments: Sequence[DocumentSegment],
-    translation_domain: str,
-    translation_domain_instructions: str,
-    source_text: str,
     source_token: str,
     source_title: str,
     detected_author: str | None,
@@ -557,10 +540,6 @@ def _build_document_context_profile(
         for segment in segments
         if str(getattr(segment, "segment_id", "") or "").strip() and str(getattr(segment, "title", "") or "").strip()
     )
-    glossary_terms = _build_document_context_glossary_terms(
-        translation_domain=translation_domain,
-        source_text=source_text,
-    )
     return DocumentContextProfile(
         source_token=source_token,
         structure_fingerprint=structure_fingerprint,
@@ -568,10 +547,7 @@ def _build_document_context_profile(
         detected_author=detected_author,
         source_language=source_language,
         target_language=target_language,
-        translation_domain=translation_domain,
-        style_instructions=translation_domain_instructions,
         outline_entries=outline_entries,
-        glossary_terms=glossary_terms,
     )
 
 
@@ -687,17 +663,9 @@ def _prepare_document_for_processing(
         segment_diagnostics = SegmentDetectionReport()
         structure_fingerprint = ""
     source_text = build_document_text(paragraphs)
-    translation_domain = str(app_config.get("translation_domain_default", "general") or "general").strip().lower() or "general"
-    translation_domain_instructions = build_translation_domain_instructions(
-        translation_domain=translation_domain,
-        source_text=source_text,
-    )
     detected_author = _extract_docx_detected_author(source_bytes=source_bytes, source_format=source_format)
     document_context_profile = _build_document_context_profile(
         segments=segments,
-        translation_domain=translation_domain,
-        translation_domain_instructions=translation_domain_instructions,
-        source_text=source_text,
         source_token=str(source_token or "").strip(),
         source_title=Path(str(source_name or "")).stem,
         detected_author=detected_author,
@@ -855,8 +823,6 @@ def _prepare_document_for_processing(
         structure_repair_report=structure_repair_report,
         quality_gate_status=quality_gate_status,
         quality_gate_reasons=quality_gate_reasons,
-        translation_domain=translation_domain,
-        translation_domain_instructions=translation_domain_instructions,
         document_context_profile=document_context_profile,
         cached=False,
     )
@@ -918,8 +884,6 @@ def _clone_prepared_document(data: PreparedDocumentData, prepared_source_key: st
         quality_gate_reasons=tuple(data.quality_gate_reasons),
         source_format=data.source_format,
         conversion_backend=data.conversion_backend,
-        translation_domain=data.translation_domain,
-        translation_domain_instructions=data.translation_domain_instructions,
         document_context_profile=data.document_context_profile,
         cached=cached,
     )
@@ -1046,9 +1010,6 @@ def prepare_document_for_processing(
     key_target_language = str(
         resolved_config.get("target_language", resolved_config.get("target_language_default", "ru")) or "ru"
     ).strip().lower() or "ru"
-    key_translation_domain = str(
-        resolved_config.get("translation_domain_default", "general") or "general"
-    ).strip().lower() or "general"
     key_structure_recovery_enabled = bool(resolved_config.get("structure_recovery_enabled", False))
     key_structure_recovery_mode = str(
         resolved_config.get("structure_recovery_mode", "legacy") or "legacy"
@@ -1105,7 +1066,6 @@ def prepare_document_for_processing(
         layout_artifact_cleanup_key=layout_cleanup_key,
         source_language=key_source_language,
         target_language=key_target_language,
-        translation_domain=key_translation_domain,
         structure_recovery_enabled=key_structure_recovery_enabled,
         structure_recovery_mode=key_structure_recovery_mode,
         scan_origin_key=key_scan_origin,
