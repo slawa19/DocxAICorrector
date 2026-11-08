@@ -243,14 +243,14 @@ def test_pdfminer_line_keeps_body_size_raised_digit_welded_to_word() -> None:
     # (spec 067 FR-006 rewords what this test meant): neither smaller than its line nor at
     # the document's reference size, so it stays a number -- with the reference size known
     # and without it.
-    chars = _pdf_line([("the GDP.", 10, 100), ("9", 10, 104)])
+    chars = _pdf_line([("the toll.", 10, 100), ("9", 10, 104)])
 
-    assert _extracted_line_text(chars) == "the GDP.9"
+    assert _extracted_line_text(chars) == "the toll.9"
     assert (
         _line_text_with_char_overrides(
             chars, _inline_superscript_marker_char_ids(chars, reference_font_size=6.5)
         )
-        == "the GDP.9"
+        == "the toll.9"
     )
 
 
@@ -400,19 +400,19 @@ def test_pdfminer_line_keeps_year_length_digit_run_welded_to_word() -> None:
 
 
 def test_065_fr007_reference_welded_to_a_clause_comma_is_rendered_as_superscript() -> None:
-    # The Value of Everything's shape, measured at (0.60, 0.44): "…through loans," + a small,
-    # raised "30" + " as distinct from". The comma was missing from the anchor set, so the
-    # reference reached the reader welded to the word ("кредитования,30").
-    chars = _pdf_line([("money through loans,", 15, 100), ("30", 9, 106.5), (" as distinct", 15, 100)])
+    # The Value of Everything's shape, measured at (0.60, 0.44): a word and a clause comma, a
+    # small, raised number, the clause going on. The comma was missing from the anchor set, so
+    # the reference reached the reader welded to the word. Synthetic text of that form.
+    chars = _pdf_line([("money through tolls,", 15, 100), ("30", 9, 106.5), (" as distinct", 15, 100)])
 
-    assert _extracted_line_text(chars) == "money through loans,³⁰ as distinct"
+    assert _extracted_line_text(chars) == "money through tolls,³⁰ as distinct"
 
 
 def test_065_fr007_reference_welded_to_a_closing_single_quote_is_rendered_as_superscript() -> None:
-    # "‘marginal revolution’" + "4" mid-line: the closing ’ is a closing quote like ”.
-    chars = _pdf_line([("a ‘marginal revolution’", 15, 100), ("4", 9, 106.5), (" – it was", 15, 100)])
+    # "‘quiet revolution’" + "4" mid-line: the closing ’ is a closing quote like ”.
+    chars = _pdf_line([("a ‘quiet revolution’", 15, 100), ("4", 9, 106.5), (" – it was", 15, 100)])
 
-    assert _extracted_line_text(chars) == "a ‘marginal revolution’⁴ – it was"
+    assert _extracted_line_text(chars) == "a ‘quiet revolution’⁴ – it was"
 
 
 def test_065_fr007_end_of_line_reference_after_a_closing_quote_is_rendered_in_place() -> None:
@@ -743,7 +743,7 @@ def _folio_line_span(text: str, *, x0: float, x1: float, top: float = 37.4, bott
 
 def test_067_fr007_running_head_beside_the_folio_is_furniture() -> None:
     number = _folio_line_span("xi", x0=344, x1=350, top=35.5, bottom=46.0)
-    head = _folio_line_span("FOREWORD", x0=266, x1=317)
+    head = _folio_line_span("PRELUDE", x0=266, x1=317)
 
     assert _detect_running_heads_on_page_number_line([number, head]) == frozenset({head})
 
@@ -756,7 +756,7 @@ def test_067_fr007_lines_that_are_not_running_heads_are_kept() -> None:
         # longer than a running head
         _folio_line_span("one two three four five six seven eight nine", x0=60, x1=300),
         # welded to the number: a reference split off a short line, not a head beside a folio
-        _folio_line_span("the Club of Rome", x0=250, x1=343),
+        _folio_line_span("the Order of Lamps", x0=250, x1=343),
         # a full line below the number's line
         _folio_line_span("Preface", x0=60, x1=120, top=60, bottom=70.5),
     ]
@@ -778,25 +778,25 @@ def _with_reference_size(chars: list[_FakePdfMinerChar], reference_font_size: fl
 
 
 def test_067_fr006_reference_in_a_notes_size_inset_is_a_superscript() -> None:
-    welded = _pdf_line([("include Mitchell Innes,", 5.76, 100), ("46", 5.76, 102.16), (" Georg Knapp", 5.76, 100)])
-    after_a_space = _pdf_line([("until it is evenly mixed.” ", 5.76, 100), ("11", 5.76, 102.16)])
+    welded = _pdf_line([("include Tobias Marlow,", 5.76, 100), ("46", 5.76, 102.16), (" Ansel Keswick", 5.76, 100)])
+    after_a_space = _pdf_line([("until it is finally settled.” ", 5.76, 100), ("11", 5.76, 102.16)])
 
-    assert _with_reference_size(welded, 5.8) == "include Mitchell Innes,⁴⁶ Georg Knapp"
-    assert _with_reference_size(after_a_space, 5.8) == "until it is evenly mixed.” ¹¹"
+    assert _with_reference_size(welded, 5.8) == "include Tobias Marlow,⁴⁶ Ansel Keswick"
+    assert _with_reference_size(after_a_space, 5.8) == "until it is finally settled.” ¹¹"
     # Without the document's reference size the line's own size decides, as before.
-    assert _with_reference_size(welded, None) == "include Mitchell Innes,46 Georg Knapp"
+    assert _with_reference_size(welded, None) == "include Tobias Marlow,46 Ansel Keswick"
 
 
 def test_067_fr006_digits_that_are_not_references_stay_numbers() -> None:
     # A contents line: a chapter number at the start, at body size, raised 0.30 of its size
     # (Rethinking Money p. 10) -- neither raised enough nor at the reference size 7.1.
-    contents = _pdf_line([("1", 10.97, 103.33), ("  The Failure of Money", 10.97, 100)])
+    contents = _pdf_line([("1", 10.97, 103.33), ("  The Weight of Water", 10.97, 100)])
     # Full-size digits on the baseline after a comma or a quote (spec 065 FR-007, 265 cases).
     flat = _pdf_line([("from $1,", 5.76, 100), ("300", 5.76, 100), (" in the ’", 5.76, 100), ("90", 5.76, 100), ("s", 5.76, 100)])
     # Set at the reference size but LOWERED below the line: a subscript, not a reference.
     lowered = _pdf_line([("more CO", 5.76, 100), ("2", 5.76, 98), (" means", 5.76, 100)])
 
-    assert _with_reference_size(contents, 7.1) == "1  The Failure of Money"
+    assert _with_reference_size(contents, 7.1) == "1  The Weight of Water"
     assert _with_reference_size(flat, 5.8) == "from $1,300 in the ’90s"
     assert _with_reference_size(lowered, 5.8) == "more CO2 means"
 
@@ -834,7 +834,7 @@ def test_067_fr006_extraction_reads_the_inset_again_with_the_document_reference_
     body = [
         _FakeTextLine(_pdf_line([("The bank plunged.", 10, 700), ("2", 6.5, 704), (" Then it rose", 10, 700)])),
         _FakeTextLine(_pdf_line([("again in the spring.", 10, 686), ("3", 6.5, 690)])),
-        _FakeTextLine(_pdf_line([("as a share of the GDP.", 10, 672), ("9", 10, 676)])),
+        _FakeTextLine(_pdf_line([("as a share of the toll.", 10, 672), ("9", 10, 676)])),
     ]
     inset = [_FakeTextLine(_pdf_line([("quoted in the box,", 6.5, 640), ("4", 6.5, 642.4), (" said he", 6.5, 640)]))]
     page = _FakePage([_FakeTextBox(body), _FakeTextBox(inset)])
@@ -848,6 +848,6 @@ def test_067_fr006_extraction_reads_the_inset_again_with_the_document_reference_
     assert texts == [
         "The bank plunged.² Then it rose",
         "again in the spring.³",
-        "as a share of the GDP.9",
+        "as a share of the toll.9",
         "quoted in the box,⁴ said he",
     ]

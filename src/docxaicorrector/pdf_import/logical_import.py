@@ -421,7 +421,7 @@ def build_paragraph_units_from_text_spans(
         dehyphenation_evidence=dehyphenation_evidence,
     )
     # Spec 065 FR-009: the body counterpart, outside those sections -- a sentence that wrapped
-    # before a number ("...in" + "1815. He was said ...") is not a list item.
+    # before a number ("...during" + "1702. She was known ...") is not a list item.
     emitted = _join_numbered_body_continuations(
         emitted,
         ordered_spans,
@@ -1663,7 +1663,7 @@ _PART_MARKER_ALT = "|".join(_PART_MARKER_WORDS)
 
 # A chapter heading line: a chapter marker word followed by a roman numeral or an
 # arabic number, either standing alone ("Chapter VI") or carrying an inline title
-# after a dash/colon ("Chapter I — Why this report, now?"). Roman numerals are
+# after a dash/colon ("Chapter I — Where the tide turns"). Roman numerals are
 # restricted to a sane chapter range (I…XXXIX worth of letters) and uppercase to
 # avoid matching prose words; the title tail, when present, must be introduced by
 # a dash or colon (never by a bare space, which would swallow running prose that
@@ -1684,7 +1684,7 @@ _CHAPTER_NUMBER_ONLY_PATTERN = re.compile(
 # A part divider ("PART II", "Part 3", "PART I: LOCAL ECONOMICS"). The number is a
 # roman numeral or an arabic number; a title tail, when present, must be introduced
 # by a separator (colon/dash), never by a bare space — a body line that merely opens
-# "Part I of the book describes…" must not be swallowed (the lowercase continuation
+# "Part I of this survey sets out…" must not be swallowed (the lowercase continuation
 # after the number is neither empty nor a separator, so it never matches). Roman
 # numerals are uppercase to avoid matching lowercase prose ("part i think").
 _PART_DIVIDER_PATTERN = re.compile(
@@ -1703,7 +1703,7 @@ _STRUCTURAL_TAIL_SEPARATORS = ":—–‒-"
 # see the _CHAPTER_MARKER_WORDS / _PART_MARKER_WORDS block). A line that IS exactly
 # one of these words (optionally followed by a separator + short title) is a
 # structural section heading, not prose. A mid-sentence use ("Conclusion In
-# addition to the specific examples…") is excluded: the marker is followed by a
+# the light of these cases…") is excluded: the marker is followed by a
 # space and more words rather than by end-of-line or a separator, so it stays body.
 _SECTION_MARKER_WORDS = frozenset(
     {
@@ -2796,8 +2796,8 @@ def _is_page_torn_body_continuation(
         does not read as prose.
     What the second half begins with is not read: a capital, a digit, a quote or a bracket
     opens the continuation as often as a lowercase letter does ("...such as the" +
-    "International Monetary Fund", "...in" + "2001, said", "...considered you" +
-    "'creditworthy'"). Measured on the four corpus PDFs (2026-11-08) against the 87 page-break
+    "Harbour Board", "...in" + "1702, said", "...considered you" + "'seaworthy'").
+    Measured on the four corpus PDFs (2026-11-08) against the 87 page-break
     candidates of spec 067's sweep, each read: this rule joins 27, all of them real tears, and
     no false one; two more (Rethinking Money, pp. 12-14) join through the soft-wrap merge once
     the running head between the halves is dropped (FR-007) -- 29 of 32. Not joined: two
@@ -2935,7 +2935,7 @@ def _can_merge_body_span(
         max_gap = max(max_gap, body_leading * 1.1)
     if vertical_gap > max_gap:
         return False
-    # A sentence end followed by a footnote reference ("mixed.” ¹¹") is still a sentence end.
+    # A sentence end followed by a footnote reference ("settled.” ¹¹") is still a sentence end.
     previous_sentence_text = previous_text.rstrip(_SUPERSCRIPT_REFERENCE_TAIL_CHARS)
     if (
         previous_sentence_text
@@ -2960,13 +2960,14 @@ def _is_near_paragraph_left(
     margin.
 
     The sentence-end boundary in `_can_merge_body_span` -- the previous line ends a sentence
-    (terminal punctuation, optionally followed by a superscript reference: "mixed.” ¹¹"),
+    (terminal punctuation, optionally followed by a superscript reference: "settled.” ¹¹"),
     ends short (fill < 0.72), and the next line starts a new sentence at the left edge --
     read that left edge only as the document's BODY margin. A quotation or a box set apart
     from the body has its own margin, so inside it the boundary never fired: Money and
-    Sustainability sets its body at x0 5.0 and Box 4.1 at 33.8, and "...evenly mixed.” ¹¹" /
-    "Entropy is time’s arrow..." survived as two paragraphs only by an accident (the line
-    ending in "11" read as a contents line) that spec 067 FR-006 removed. The paragraph's
+    Sustainability sets its body at x0 5.0 and Box 4.1 at 33.8, and a quotation's last line
+    there (a closing quote and a reference) and the box's next sentence survived as two
+    paragraphs only by an accident (the line ending in the reference's digits read as a
+    contents line) that spec 067 FR-006 removed. The paragraph's
     own edge is the alternative. Measured on the four corpus PDFs (2026-11-08): 38 new
     boundaries, every one read as a paragraph end inside an inset -- The Value of
     Everything p. 207 (1); Creating Wealth pp. 23, 72, 93, 155-156 (13: a dialogue, a list
@@ -3197,8 +3198,8 @@ def _can_merge_heading_span(previous: PdfTextSpan, current: PdfTextSpan) -> bool
 # (Constitution VII).
 #
 # The line bound is the corpus' own maximum: the longest heading in the four corpus books is
-# a three-line chapter title (Rethinking Money ch. 5, "THE FUTURE HAS ARRIVED / BUT ISN'T
-# DISTRIBUTED / EVENLY . . . YET!", measured 2026-11-07). A longer run is a display
+# a three-line chapter title (Rethinking Money ch. 5, set in capitals and ending in a spaced
+# ellipsis, measured 2026-11-07). A longer run is a display
 # paragraph -- a pull quote, a title page -- and is left alone.
 _HEADING_MAX_LINES = 3
 # Two lines of one heading are set at the heading's own leading: the white space between
@@ -3726,8 +3727,8 @@ def _entry_continuation_keeps_the_wrap_indent(
     """On one page, a wrapped line never steps back out to where entries begin. When the
     predecessor already has a wrapped line, its last line sits at the wrap indent; a line that
     starts half a font size or more to the LEFT of it starts a new entry, whatever the line
-    above looks like -- VoE's bibliography, "...file/228786/7529.pdf" (an address that overran
-    the column, so it reads as full) then "'Fiscal policy as a countercyclical tool', ..." back
+    above looks like -- VoE's bibliography, an entry ending in a web address that overran the
+    column (so it reads as full), then the next entry, opening with a quoted title, back
     at the entry margin. Across a page break the margins of facing pages differ, so the test
     is not made there."""
     if len(head.origin_raw_indexes or []) < 2 or first_line.page_number != last_line.page_number:

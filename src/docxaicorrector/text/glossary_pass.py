@@ -115,7 +115,7 @@ _EMPHASIS_MARKS_RE = re.compile(r"\*+")
 _ADJACENT_BOLD_RE = re.compile(r"(?<=[^\s*])\*\*(\s+)\*\*(?=[^\s*])")
 _ADJACENT_ITALIC_RE = re.compile(r"(?<=[^\s*])\*(\s+)\*(?=[^\s*])")
 # Spec 067 FR-011 (b): "**" between a letter (or a word's hyphen) and a letter -- an italic run
-# closed and reopened inside one word, as the importer writes "*thank-**yous*".
+# closed and reopened inside one word, as the importer writes "*wink-**nods*".
 _EMPHASIS_INSIDE_WORD_RE = re.compile(r"(?<=[^\W\d_]|-)\*\*(?=[^\W\d_])")
 _URL_RE = re.compile(r"(?:https?://|www\.)\S+|\S*[A-Za-z0-9]\.[A-Za-z]{2,}/\S*")
 _ROMAN_NUMERAL_RE = re.compile(r"^[IVXLCDM]+$")
@@ -130,7 +130,7 @@ _LEADING_MARKED_SPAN_RE = (
 )
 # Spec 064 FR-009: "call X 'Y'" -- one unmarked word (the object of the verb: "itself",
 # "landlords") and then the marked name the author gives it. The marking says which is the term.
-# Spec 065 FR-002: an article may stand between them ("called them the 'productive class'"); it
+# Spec 065 FR-002: an article may stand between them ("called them the 'tidal class'"); it
 # used to end the unmarked fallback, and "them the" became a required entry. ``_WORD`` is an
 # alternation and must be grouped: ungrouped, its first branch matched any word with no
 # lookahead at all.
@@ -185,11 +185,11 @@ class GlossaryCandidate:
     # family of at least three candidates), so it enters the glossary by rule — the model is
     # asked only for its rendering, never whether to include it.
     required: bool = False
-    # Spec 064 FR-009: the full form of the name this short form belongs to ("Bernard Lietaer"
-    # for "Lietaer"), decided by form in ``extract_glossary_candidates``; empty otherwise.
+    # Spec 064 FR-009: the full form of the name this short form belongs to ("Zorvane Pettish"
+    # for "Pettish"), decided by form in ``extract_glossary_candidates``; empty otherwise.
     name_head: str = ""
     # Spec 067 FR-010: the other surfaces of this candidate -- the same words in another order
-    # or with a hyphen ("added value", "value-added" for "value added"). They are not asked for
+    # or with a hyphen ("added yield", "yield-added" for "yield added"). They are not asked for
     # on their own; the rendering of ``source_term`` covers them.
     spellings: tuple[str, ...] = ()
     # Spec 067 FR-009: the candidates the book sets against this one -- the same last word,
@@ -342,8 +342,8 @@ def _plain(text: str) -> str:
 
 def _join_adjacent_emphasis(text: str) -> str:
     joined = _ADJACENT_ITALIC_RE.sub(r"\1", _ADJACENT_BOLD_RE.sub(r"\1", text))
-    # Spec 067 FR-011 (b): emphasis closed and reopened INSIDE one word ("called *thank-**yous*")
-    # cut the defined word in two, and "thank" became a required entry; the word is one.
+    # Spec 067 FR-011 (b): emphasis closed and reopened INSIDE one word ("called *wink-**nods*")
+    # cut the defined word in two, and "wink" became a required entry; the word is one.
     return _EMPHASIS_INSIDE_WORD_RE.sub("", joined)
 
 
@@ -525,8 +525,8 @@ def extract_glossary_candidates(
     defined_units: dict[tuple[str, ...], set[int]] = defaultdict(set)
     capitalised_noninitial: Counter[tuple[str, ...]] = Counter()
     # Spec 067 FR-011 (a): two capitals that say nothing about how the document writes a word.
-    # A paragraph whose letters are ALL capitals ("PROSPERITY", "WORK VERSUS JOBS"): every word
-    # in it is a capital. A word directly before a number ("described in Chapter 13", "see
+    # A paragraph whose letters are ALL capitals (a part title, a heading set in capitals): every
+    # word in it is a capital. A word directly before a number ("in Chapter 13", "see
     # Figure 2"): the capital of a numbered label is the label's convention -- Creating Wealth
     # writes "Chapter N" 15 times mid-sentence and "chapter" 14 times, and *chapter* became a
     # capitalised form, then a required h1 entry. Such runs still count as names for the name
@@ -589,13 +589,13 @@ def extract_glossary_candidates(
     def _defined_expression_is_whole(words: Sequence[str], trimmed: Sequence[str]) -> bool:
         """Spec 067 FR-011 (b): the defined expression keeps a short edge word it is written with.
 
-        "known as cap and trade" lost "cap" (three letters) and then "and" to ``_trim_joiners``,
-        and the candidate became the one word "trade". By form, a definition's untrimmed
+        "known as ebb and flow" lost "ebb" (three letters) and then "and" to ``_trim_joiners``,
+        and the candidate became the one word "flow". By form, a definition's untrimmed
         expression of several words is the term when the document writes it whole at least
         ``_SINGLE_WORD_MIN_COUNT`` times AND the outermost word the trim took at each trimmed
         edge is not one of the document's ``_COMMONEST_WORDS`` commonest words (counted, not
-        listed: "the", "as", "of" are; "cap" is not -- the "and" after it went only because
-        "cap" had gone). "called him a loser" -- written once -- is trimmed as before.
+        listed: "the", "as", "of" are; "ebb" is not -- the "and" after it went only because
+        "ebb" had gone). "called him a lostling" -- written once -- is trimmed as before.
         """
 
         if len(words) < 2 or not trimmed:
@@ -803,8 +803,8 @@ def extract_glossary_candidates(
         if existing is not None and existing.family:
             # Spec 064 FR-009: a word another route already found (an h2 heading word, a
             # one-word marked term) still heads its family. Before, finding it elsewhere
-            # skipped the head rule, and The Value of Everything's *value* -- head of
-            # "value added", "surplus value", "theory of value" -- stayed optional.
+            # skipped the head rule, and The Value of Everything's head word of three required
+            # phrases (spec 064 FR-009) stayed optional.
             if word in required_membership and existing.family != FAMILY_HEAD:
                 existing.signals.add("family_head")
                 existing.heads_required_member = True
@@ -1009,8 +1009,8 @@ def extract_glossary_candidates(
 
 
 # Spec 067 FR-009: two candidates the author sets against each other stand side by side in at
-# least this many paragraphs. Measured on the fourth run's books (2026-11-08): Rethinking
-# Money's *cooperative currencies* / *complementary currencies* share 5 paragraphs. Over the
+# least this many paragraphs. Measured on the fourth run's books (2026-11-08): the contrasted
+# pair of Rethinking Money (spec 067 G-2) shares 5 paragraphs. Over the
 # glossary entries of the four books (a survey of all paragraphs, before the joiner and
 # narrowing exclusions) pairs sharing >= 1 paragraph number 22 / 31 / 9 / 18 (Money / CW / RM /
 # VoE) and >= 2 -- 13 / 15 / 5 / 6: one shared paragraph is mostly a passing mention, and the
@@ -1024,15 +1024,15 @@ def _contrast_partners(
 ) -> dict[int, tuple[str, ...]]:
     """Candidates the book contrasts with each candidate, by form (spec 067 FR-009, G-2).
 
-    Rethinking Money fixed *complementary currencies* as «комплементарные валюты», and in 12 of
-    93 paragraphs about its own *cooperative currencies* the translation then said
-    «комплементарные» -- the rendering of one entry leaked into its neighbour. Two candidates
+    Rethinking Money fixed a rendering for one entry of a contrasted pair (spec 067 G-2), and in
+    12 of 93 paragraphs about the other entry the translation then used that rendering -- the
+    rendering of one entry leaked into its neighbour. Two candidates
     are a contrasted pair when, by form:
       - each has at least two words and no joiner inside (a word of up to
-        ``_MAX_JOINER_LETTERS`` letters between the first and the last: in "theory of value"
+        ``_MAX_JOINER_LETTERS`` letters between the first and the last: in "theory of quills"
         the last word is not the head);
       - they share the LAST word and differ before it, and neither ends with the other
-        ("exchange capital" in "potential exchange capital" is the same thing narrowed, which
+        ("tallow quills" in "red tallow quills" is the same thing narrowed, which
         spec 065 FR-003 already orders);
       - they stand together in at least ``_CONTRAST_MIN_SHARED_UNITS`` paragraphs.
     No list of words: the head word, the paragraphs and the counts are the document's own.
@@ -1070,8 +1070,8 @@ def _contrast_partners(
 def _permutation_key(key: Sequence[str]) -> tuple[str, ...] | None:
     """The words of ``key`` in sorted order, hyphens split; ``None`` for a single plain word.
 
-    Spec 067 FR-010: "value added", "added value" and "value-added" all give ``("added",
-    "value")``.
+    Spec 067 FR-010: "yield added", "added yield" and "yield-added" all give ``("added",
+    "yield")``.
     """
 
     parts = sorted(part for word in key for part in word.lower().split("-") if part)
@@ -1081,9 +1081,10 @@ def _permutation_key(key: Sequence[str]) -> tuple[str, ...] | None:
 def _permutation_groups(drafts: Sequence[_Draft]) -> list[list[_Draft]]:
     """The drafts in order, those with one multiset of words collapsed into one group.
 
-    Spec 067 FR-010 (G-3): The Value of Everything had *value added* (34 of 34 rendered as
-    fixed), *added value* and *value-added* as three entries, and the model gave the last two
-    renderings it then never used (0 of 9) -- three entries for one term, two of them wrong.
+    Spec 067 FR-010 (G-3): The Value of Everything had one term as three entries -- its words,
+    the same words in the other order, and the hyphenated form (34 of 34 of the first rendered
+    as fixed) -- and the model gave the last two renderings it then never used (0 of 9) --
+    three entries for one term, two of them wrong.
     Candidates whose words form the same multiset once hyphens are split (``_permutation_key``)
     are one term. A name keeps its own case-sensitive identity and is never grouped here: its
     spellings are the name family's business (spec 064 FR-009). A group stands where its first
@@ -1109,12 +1110,12 @@ def _permutation_groups(drafts: Sequence[_Draft]) -> list[list[_Draft]]:
 def _written_surface(surface: str, written_forms: Mapping[str, Counter[str]]) -> str:
     """``surface`` with every word the document never writes replaced by the word it does write.
 
-    Spec 067 FR-008 (the clause about *appropriate surplu*). A collocation, a phrase and a
-    family head are keyed by FOLDED words (``_fold_word``: the plural ``s`` off), and their
-    surface was built from the key -- "surplus" became "surplu", "crisis" "crisi", "this"
-    "thi". Measured on the fourth run's books: 11 candidates (Money *financial crisi*, CW *thi
-    book*, VoE *appropriate surplu*, *previou chapter* ...). The spec took *appropriate surplu*
-    for a split-word tail; it is not one -- "surplus" is written whole three times. A word of
+    Spec 067 FR-008 (the clause about a word with its final ``s`` cut off). A collocation, a
+    phrase and a family head are keyed by FOLDED words (``_fold_word``: the plural ``s`` off),
+    and their surface was built from the key -- "census" became "censu", "crisis" "crisi",
+    "this" "thi". Measured on the fourth run's books: 11 candidates, one to four per book
+    (spec 067 FR-008). The spec took one of them for a split-word tail; it is not one -- the
+    word is written whole three times. A word of
     the surface that the body writes (in any case) stays; one it never writes becomes the
     commonest written word that folds to it. The key, and so every match, is unchanged.
     """
@@ -1150,15 +1151,15 @@ def _name_words(draft: _Draft) -> list[str] | None:
 def _name_family_heads(drafts: Sequence[_Draft], *, lowercase_words: Counter[str]) -> dict[int, _Draft]:
     """Short forms of a name and the full form each belongs to (spec 064 FR-009, R-9).
 
-    Money rendered "Lietaer" as one transliteration while Creating Wealth rendered "Bernard
-    Lietaer" as another: a surname asked for on its own is transliterated on its own. By form,
-    a name candidate whose words END a longer name candidate ("Lietaer" in "Bernard Lietaer",
-    "Maynard Keynes" in "John Maynard Keynes") is a member of its family; the longest form is
-    the head. The words the head adds must be names themselves -- the body never writes them in
-    lowercase: "Central Vermont", "Great Depression", "New England" add ordinary words
-    ("central", "great", "new") and are other entities, not a fuller form of "Vermont".
-    A short form that ends two different longer names ("Smith" in "Adam Smith" and "John
-    Smith"; "America" in "North America" and "South America", whichever of them qualifies) is
+    Money rendered a co-author's surname as one transliteration while Creating Wealth rendered
+    his full name as another: a surname asked for on its own is transliterated on its own. By
+    form, a name candidate whose words END a longer name candidate ("Pettish" in "Zorvane
+    Pettish", "Marlow Keswick" in "Tobias Marlow Keswick") is a member of its family; the
+    longest form is the head. The words the head adds must be names themselves -- the body
+    never writes them in lowercase: "Central Kelbrook", "Great Thaw", "New Marrow" add ordinary
+    words ("central", "great", "new") and are other entities, not a fuller form of "Kelbrook".
+    A short form that ends two different longer names ("Wren" in "Tobias Wren" and "Ansel
+    Wren"; "Marrow" in "North Marrow" and "South Marrow", whichever of them qualifies) is
     ambiguous; it, and a REQUIRED short form, stay candidates of their own.
     """
 
@@ -1260,7 +1261,7 @@ def _has_inner_capital(surface: str) -> bool:
     """A word of ``surface`` has an upper-case letter after its first one ("InspirePay", "eBay").
 
     Spec 065: such a spelling is a name's form whatever the document's case counts say.
-    Spec 067 FR-011 (a): a word set entirely in capitals ("PROSPERITY", taken from a line in
+    Spec 067 FR-011 (a): a word set entirely in capitals ("HARBOURAGE", taken from a line in
     capitals) is not such a spelling -- its case is the typesetting's, not the word's. The rule
     is for mixed case: some letter after the first is upper-case AND some letter is lower-case.
     """
@@ -1300,7 +1301,7 @@ def _single_word_admitted(draft: _Draft, *, split_tails: Collection[str]) -> boo
 
     1. PART OF THE AUTHOR'S TERMS: it heads a family (``_HEAD_MIN_MEMBERSHIP`` candidates
        sharing it at an edge) of which at least ``_HEAD_MIN_REQUIRED_MEMBERS`` are required --
-       *value* of "surplus value", "value added".
+       *yield* of "surplus yield", "yield added".
     2. MARKED AND RECURRING: the author defined it, or set it in italics or quotes where it
        first appears (the marked family), and it occurs at least ``_SINGLE_WORD_MIN_COUNT``
        times. A borrowing or a coined word ("demurrage") is introduced exactly this way.
@@ -1318,10 +1319,10 @@ def _single_word_admitted(draft: _Draft, *, split_tails: Collection[str]) -> boo
     ``_split_word_tails``) is never a candidate.
 
     Measured on the four corpus books (2026-11-08) and recorded in spec 065: no form the
-    document gives tells *home* ("the planet we call home", 20 and 45 occurrences) from
-    *demurrage* ("known as demurrage", 15) -- the share of marked occurrences, the chapter the
+    document gives tells an everyday word the author marks once (20 and 45 occurrences) from
+    a term the author defines (15) -- the share of marked occurrences, the chapter the
     word lives in, the first use and the derived word forms each lose a real term of another
-    book -- so *home* stays a candidate; the model decides its rendering.
+    book -- so the everyday word stays a candidate; the model decides its rendering.
     """
 
     if not _is_single_lowercase_word(draft):
@@ -1759,7 +1760,7 @@ def describe_source_language(source_language: str, *, sample_text: str = "") -> 
 
 @dataclass(frozen=True)
 class NameFamilyMember:
-    """A short form of a name ("Lietaer") and the full form it inherits from ("Bernard Lietaer")."""
+    """A short form of a name ("Pettish") and the full form it inherits from ("Zorvane Pettish")."""
 
     member: GlossaryCandidate
     head: GlossaryCandidate
@@ -1858,7 +1859,7 @@ def inherit_name_renderings(
 ) -> tuple[tuple[GlossaryTerm, ...], list[dict[str, str]]]:
     """Give each short form the matching end of its head's rendering, right after the head.
 
-    "Bernard Lietaer -> Бернар Лиетар" gives "Lietaer -> Лиетар". Only when the rendering is a
+    "Zorvane Pettish -> Зорвейн Петтиш" gives "Pettish -> Петтиш". Only when the rendering is a
     word-for-word name rendering (``_is_word_for_word_name_rendering``); otherwise the short
     form gets no entry and the head's entry stands for the family (the phase records it in
     ``uninherited_name_members`` -- the calls are spent, so it cannot be asked for any more);

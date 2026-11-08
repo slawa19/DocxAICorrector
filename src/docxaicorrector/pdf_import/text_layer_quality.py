@@ -68,9 +68,9 @@ _DECISION_THRESHOLDS = {
 # the size of their line (Creating Wealth 9, Money and Sustainability 45) sit in quotations
 # and boxes the book sets ENTIRELY in its notes size -- 10.8 pt in Creating Wealth, 5.76 pt
 # in Money and Sustainability, the modal size of the references already recognised there
-# (157 of 157, 270 of 270) -- and every one is a reference with a note behind it ("OECD
-# Health Data 2006.5" -> note 5, "Innes,46" -> note 46). So "smaller than its line" has one
-# alternative: set at the document's own reference size (`_document_reference_font_size`,
+# (157 of 157, 270 of 270) -- and every one is a reference with a note behind it (a source
+# title ending in a year -> note 5, a name and its comma -> note 46). So "smaller than its
+# line" has one alternative: set at the document's own reference size (`_document_reference_font_size`,
 # within ``_REFERENCE_FONT_SIZE_TOLERANCE_PT``), still raised. A raised digit at the size of
 # the body, where the book's references are smaller, stays a number, as do the 265 full-size
 # digits on the baseline after a comma or a quote (spec 065 FR-007) and Rethinking Money's
@@ -493,9 +493,9 @@ def _inline_superscript_marker_char_ids(
     ``_REFERENCE_FONT_SIZE_TOLERANCE_PT``. A quotation or a box that the book sets in
     its notes size carries its references at the size of its own line; they are still
     raised, and still at the size of every other reference in the book. Everything else
-    is required as before. A raised digit at the size of the BODY ("the GDP.9" where the
-    references are smaller) stays a number, and so does a raised digit in a document
-    that has no recognised references at all.
+    is required as before. A raised digit at the size of the BODY (a full stop and a
+    body-size digit, where the references are smaller) stays a number, and so does a raised
+    digit in a document that has no recognised references at all.
     """
     return _reference_digit_overrides(
         chars, _raised_digit_runs(chars), reference_font_size=reference_font_size
@@ -699,16 +699,16 @@ def _trailing_marker_split_left_to_importer(
     its own line, it has the smaller ``top`` and is read BEFORE that line — after the
     previous one — and re-bound there. On The Value of Everything, which sets references
     at 0.60 of the body and raises them by 0.43 of it, every one of the 130 end-of-line
-    references took this path: "…less than £300 billion in 2011.³⁶" arrived as
-    "($1,300 36 billion)", and "…well above average earnings.³⁹" as "equivalent to nearly
-    / 39 / £30,000 for each adult", which the pipeline later re-joined into "nearly 39
+    references took this path: a reference after a sentence-end full stop arrived inside a
+    sum on a neighbouring line ("($1,300 36 billion)"), and another stood as a line of its
+    own between two lines of a sum, which the pipeline later re-joined into "nearly 39
     £30,000" — the corpus's only blocker, where the model read the two as one sum. The
     stray span also cut 11 paragraphs in two and, by ending the line before it with a full
     stop, let the importer's boundary rule break 12 more in the middle (the next line was
     not indented; that book indents every paragraph start).
 
     Such a reference, when the in-line rule claims it (welded, at most three digits,
-    smaller, raised), is rendered where it is set — "earnings.³⁹" — on its own line, and
+    smaller, raised), is rendered where it is set — "word.³⁹" — on its own line, and
     needs no re-binding. Every other split is left exactly as it was: Money and
     Sustainability sets its references at 0.40, their box mostly stays under the line's
     top, and the re-binding path has worked there since it was written. Keeping the split
@@ -905,8 +905,8 @@ def _detect_running_heads_on_page_number_line(
     however few pages repeat it.
 
     `_detect_repeated_page_furniture_keys` needs a (zone, text) key on at least three pages.
-    A running head that changes with the section is on fewer: Rethinking Money's "FOREWORD"
-    is on two pages (13 and 14) and "CONTENTS" on one (11), and all three reached the body --
+    A running head that changes with the section is on fewer: Rethinking Money's foreword head
+    is on two pages (13 and 14) and its contents head on one (11), and all three reached the body --
     two glued to the start of a paragraph, one as an extra heading. What marks them is not
     repetition but the line they stand on: the folio's.
 

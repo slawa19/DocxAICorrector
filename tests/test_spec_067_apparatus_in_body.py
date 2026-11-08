@@ -41,7 +41,7 @@ _TRANSLATE = SimpleNamespace(processing_operation="translate")
 
 # A run of notes as a PDF text layer delivers it: numbers without a full stop, entries run on.
 _NOTES_CITATIONS = (
-    "1 R. Hall, *The Wealth of Cities* (London: Harbour Press, 2004), p. 85. "
+    "1 R. Hall, *The Tides of Cities* (London: Harbour Press, 2004), p. 85. "
     "2 J. Smith and K. Lee, ‘Money and Debt’, *Journal of Economic Studies* 12(3), 1999, pp. 4-19."
 )
 _NOTES_WITH_COMMENTARY = (
@@ -49,13 +49,13 @@ _NOTES_WITH_COMMENTARY = (
     "it shaping every exchange and every debt in the economy they described. "
     "4 R. Brown, *Credit and Trust* (Oxford: Clarendon, 2001), p. 12."
 )
-_LABELLED_SINGLE_NOTE = "Footnotes 1 *The Wealth of Cities* (London: Harbour Press, 2004), p. 85."
+_LABELLED_SINGLE_NOTE = "Footnotes 1 *The Tides of Cities* (London: Harbour Press, 2004), p. 85."
 _TORN_TAIL_AND_NOTE = (
     "*Studies in Exchange* (2008). 26 M. Ortega, *The Second Ledger* (Madrid: Prensa, 2011), p. 40."
 )
 _PROSE = (
-    "Money is not a thing but an agreement within a community to use something standardised "
-    "as a means of payment, and that agreement is what this chapter is about."
+    "A harbour is not a place but an arrangement among its pilots to treat one stretch of water "
+    "as a shelter from the storm, and that arrangement is what this chapter is about."
 )
 
 
@@ -80,7 +80,7 @@ def test_a_notes_run_is_recognised_by_its_form(text: str) -> None:
     [
         pytest.param("1. Collect the receipts (2010). 2. Sort them by date, as in 1999.", id="numbered-list-with-full-stops"),
         pytest.param("Chapter 2 The Market and Chapter 3 The State are discussed below.", id="running-text-without-references"),
-        pytest.param("6 Strategies for Banking *95*", id="toc-line-a-single-number-without-label"),
+        pytest.param("6 Methods for Sailing *95*", id="toc-line-a-single-number-without-label"),
         pytest.param("It took 3 years and 4 months to repay the loan of 1998.", id="lowercase-after-the-numbers"),
         pytest.param(_PROSE, id="prose"),
     ],
@@ -245,7 +245,7 @@ def test_counter_rule_no_section_without_the_mark_or_outside_translation() -> No
 
 def test_an_unchanged_notes_run_of_references_is_policy_kept_beside_translated_prose() -> None:
     payload = _payload([_PROSE, _NOTES_CITATIONS], notes=[1])
-    answer = _answer(payload, ["Деньги — не вещь, а договорённость внутри сообщества.", _NOTES_CITATIONS])
+    answer = _answer(payload, ["Гавань — не место, а договорённость между лоцманами.", _NOTES_CITATIONS])
 
     kept = block_execution.model_kept_apparatus(context=_TRANSLATE, payload=payload, processed_chunk=answer)
 
@@ -297,7 +297,7 @@ def test_the_back_matter_branch_is_unchanged_by_the_body_mark() -> None:
 # FR-004 (A-4) -- a heading that is a bare name, returned unchanged, is the name, not a loss
 # =============================================================================================
 #
-# Creating Wealth, fourth run, block 434: ``### New Society Publishers`` came back as it was, the
+# Creating Wealth, fourth run, block 434: a heading that is a publisher's name came back as it was, the
 # pair rule read ``source_text_fallback`` and the acceptance check ``untranslated_prose_not_delivered``
 # failed the book on 26 characters. The document layer now marks such a heading by role and form
 # (shape + the document's own case count + the phrase written mid-sentence in running text), and
@@ -434,7 +434,7 @@ def test_a_name_heading_followed_by_its_section_is_left_accepted() -> None:
     so with a paragraph after it in the block it is relabelled only together with that one --
     and a translated paragraph is not kept. The heading stays ``accepted``; it is still not prose."""
     payload = _name_payload(["### Harbour Lane Press", _PROSE], roles=["heading", "body"], names=[0])
-    answer = _answer(payload, ["### Harbour Lane Press", "Деньги — не вещь, а договорённость."])
+    answer = _answer(payload, ["### Harbour Lane Press", "Гавань — не место, а договорённость."])
     assert block_execution.model_kept_apparatus(context=_TRANSLATE, payload=payload, processed_chunk=answer) is None
     assert block_execution.prose_paragraph_indexes(payload) == (1,)
 

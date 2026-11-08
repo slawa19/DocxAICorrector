@@ -3679,12 +3679,12 @@ def _box_units(*, cells: bool):
     from docxaicorrector.core.models import ParagraphUnit
 
     return [
-        ParagraphUnit(text="PRIVATE SECTOR", role="body", structural_role="body", is_pdf_table_cell=cells),
-        ParagraphUnit(text="public sector", role="body", structural_role="body", is_pdf_table_cell=cells),
+        ParagraphUnit(text="NORTH WING", role="body", structural_role="body", is_pdf_table_cell=cells),
+        ParagraphUnit(text="south wing", role="body", structural_role="body", is_pdf_table_cell=cells),
         ParagraphUnit(
-            text="NGO Initiatives:", role="body", structural_role="body", is_bold=True, is_pdf_table_cell=cells
+            text="Harbour Projects:", role="body", structural_role="body", is_bold=True, is_pdf_table_cell=cells
         ),
-        ParagraphUnit(text="Doraland p.142", role="body", structural_role="body", is_pdf_table_cell=cells),
+        ParagraphUnit(text="Lanternfield p.142", role="body", structural_role="body", is_pdf_table_cell=cells),
     ]
 
 
@@ -3703,10 +3703,10 @@ def test_pdf_bridge_round_trip_carries_the_table_cell_flag() -> None:
     cnf_styles = [None if pPr is None else pPr.find(qn("w:cnfStyle")) for pPr in properties]
     assert all(element is not None and element.get(qn("w:val")) == "000000000000" for element in cnf_styles)
     assert [paragraph.text for paragraph in paragraphs] == [
-        "PRIVATE SECTOR",
-        "public sector",
-        "**NGO Initiatives:**",
-        "Doraland p.142",
+        "NORTH WING",
+        "south wing",
+        "**Harbour Projects:**",
+        "Lanternfield p.142",
     ]
     assert all(paragraph.is_pdf_table_cell for paragraph in paragraphs)
     assert [paragraph.role for paragraph in paragraphs] == ["body", "body", "body", "body"]
@@ -3726,9 +3726,9 @@ def test_pdf_bridge_round_trip_without_the_flag_keeps_todays_behaviour() -> None
         for paragraph in document.paragraphs
     )
     assert [paragraph.text for paragraph in paragraphs] == [
-        "PRIVATE SECTOR public sector",
-        "**NGO Initiatives:**",
-        "Doraland p.142",
+        "NORTH WING south wing",
+        "**Harbour Projects:**",
+        "Lanternfield p.142",
     ]
     assert not any(paragraph.is_pdf_table_cell for paragraph in paragraphs)
     assert paragraphs[1].role == "heading"

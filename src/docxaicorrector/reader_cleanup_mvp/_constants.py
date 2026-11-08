@@ -161,8 +161,8 @@ _TOC_ENTRY_BOUNDARY_TRIM_CHARS = "«»\"'“”„‟()[]{}.,;:!?—–-*_"
 #     the grammar. That is the same species of cap as the three-digit limit on an arabic
 #     page reference above, and it is what stops "mix", "ci", "di" and "mi" (1009, 101, 501
 #     and 1001) from being page numbers at all — by arithmetic, not by vocabulary. Measured:
-#     lift the cap and lietaer b_001398 ("Rivista di Storia Economica 1, no. 1 (Турин,
-#     1936)") reads as a contents line. A single letter is excluded for the same formal
+#     lift the cap and lietaer b_001398 (a periodical title, then volume, issue and a
+#     bracketed place and year) reads as a contents line. A single letter is excluded for the same formal
 #     reason a bare "1" is not an index entry: one character carries no shape ("i", "v" and
 #     "x" stand alone in prose as words and list markers).
 #   * POSITION. A roman token is counted only where an arabic page number would be counted

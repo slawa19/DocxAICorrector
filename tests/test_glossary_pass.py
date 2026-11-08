@@ -1755,7 +1755,7 @@ def test_fr002_an_ordinary_word_in_italics_is_never_a_required_entry_and_ranks_l
 
 
 def test_fr002_a_word_defined_in_passing_once_is_not_a_candidate_but_three_uses_are():
-    once = ["Back then you would have called him a quibbler, like most of his friends.", *(_FILLER * 6)]
+    once = ["Back then the sailors had called him a quibbler, like most of his crew.", *(_FILLER * 6)]
     recurring = [*once, "The quibbler came back.", "Another quibbler spoke.", *_FILLER]
 
     assert "quibbler" not in _keys(extract_glossary_candidates(_units(once)))
@@ -1949,19 +1949,19 @@ def test_fr008_the_budget_cuts_only_optional_single_lowercase_entries():
 
 
 def test_fr008_a_collocation_is_named_as_the_document_writes_it_not_by_its_folded_key():
-    # Spec 067 FR-008: "appropriate surplus" was asked for and printed as "appropriate surplu"
-    # -- the surface of a collocation was built from its folded key. The key stays folded (it
-    # matches "surpluses" too); the name is the written word.
+    # Spec 067 FR-008: a collocation whose last word ends in an "s" that is not a plural was
+    # asked for and printed with that "s" cut off -- the surface was built from its folded key.
+    # The key stays folded; the name is the written word.
     paragraphs = []
     for _ in range(4):
-        paragraphs.append("Owners appropriate surplus from the quillet trade, and they appropriate surplus again.")
+        paragraphs.append("Clerks tally census from the quillet trade, and they tally census again.")
         paragraphs.extend(_FILLER)
     keys = {candidate.key: candidate for candidate in extract_glossary_candidates(_units(paragraphs))}
 
-    assert ("appropriate", "surplu") in keys
-    assert keys[("appropriate", "surplu")].source_term == "appropriate surplus"
-    assert normalize_glossary_key("appropriate surplus") == ("appropriate", "surplu")
-    assert not any(word == "surplu" for candidate in keys.values() for word in candidate.source_term.split())
+    assert ("tally", "censu") in keys
+    assert keys[("tally", "censu")].source_term == "tally census"
+    assert normalize_glossary_key("tally census") == ("tally", "censu")
+    assert not any(word == "censu" for candidate in keys.values() for word in candidate.source_term.split())
 
 
 def test_fr001_a_noted_or_capitalised_single_word_ranks_with_the_phrases():
@@ -2229,7 +2229,8 @@ def test_fr009_the_calls_carry_the_contrast_and_the_prompts_explain_it():
 
 
 def test_fr011_a_paragraph_set_in_capitals_is_no_evidence_of_a_capitalised_form():
-    # RM "PROSPERITY": a paragraph in capitals gave the word a capital "form" (inner capitals,
+    # Rethinking Money, a part title in capitals: a paragraph in capitals gave the word a capital
+    # "form" (inner capitals,
     # and a capitalised run), and the marked word became required.
     paragraphs = ["**HARBOURAGE**"]
     for _ in range(4):
@@ -2254,8 +2255,9 @@ def _chapter_document(mention):
 
 
 def test_fr011_a_capital_before_a_number_is_a_label_not_the_words_case():
-    # CW *chapter*: "described in Chapter 13" (15 times mid-sentence) against "this chapter"
-    # (14) made it a capitalised form, and its all-capitals h1 headings made it required.
+    # Creating Wealth: a word written with a capital before a number 15 times mid-sentence,
+    # against 14 lowercase uses, made it a capitalised form, and its all-capitals h1 headings
+    # made it required.
     keys = _keys(extract_glossary_candidates(_chapter_document(lambda number: f"Partition {number}")))
     assert "partition" in keys and not keys["partition"].required
 
@@ -2266,26 +2268,26 @@ def test_fr011_a_capital_before_a_number_is_a_label_not_the_words_case():
 
 def test_fr011_a_defined_hyphenated_word_split_by_emphasis_is_one_candidate():
     paragraphs = [
-        "Its own currency is perhaps the network's best feature. The currency is called *thank-**yous* or Ts.",
+        "Its own token is perhaps the guild's oddest habit. The token is called *wink-**nods* or Ws.",
         *(_FILLER * 6),
     ]
     keys = _keys(extract_glossary_candidates(_units(paragraphs)))
 
-    assert "thank-yous" in keys and "defined" in keys["thank-yous"].signals and keys["thank-yous"].required
-    assert "thank" not in keys
+    assert "wink-nods" in keys and "defined" in keys["wink-nods"].signals and keys["wink-nods"].required
+    assert "wink" not in keys
 
 
 def test_fr011_a_defined_expression_the_document_writes_whole_keeps_its_short_first_word():
-    # Enough ordinary text that "cap" is not among the document's 20 commonest words.
-    paragraphs = ["The two strategies are a trading system known as cap and trade, and the levy."]
+    # Enough ordinary text that "ebb" is not among the document's 20 commonest words.
+    paragraphs = ["The two methods are a tidal scheme known as ebb and flow, and the toll."]
     for round_index in range(12):
         paragraphs.extend(_FILLER)
         if round_index % 3 == 0:
-            paragraphs.append("Under cap and trade the permits are sold, and the trade in permits grows.")
+            paragraphs.append("Under ebb and flow the berths are sold, and the flow in berths grows.")
     keys = _keys(extract_glossary_candidates(_units(paragraphs)))
 
-    assert "cap and trade" in keys and keys["cap and trade"].required
-    assert "trade" not in keys
-    # Counter-test: a definition written once is trimmed as before ("called him a loser").
+    assert "ebb and flow" in keys and keys["ebb and flow"].required
+    assert "flow" not in keys
+    # Counter-test: a definition written once is trimmed as before ("called him a lostling").
     once = ["The neighbours called him a lostling, and it stuck.", *(_FILLER * 6)]
     assert "him a lostling" not in _keys(extract_glossary_candidates(_units(once)))

@@ -930,7 +930,7 @@ def plan_run_glossary_section(
     words. The budget cuts only OPTIONAL SINGLE LOWERCASE entries (``is_single_lowercase_entry``):
     a required entry, and an entry with a form of its own -- a name, several words, a hyphen, a
     capital, a note -- extend the budget alike (spec 067 FR-008). On The Value of Everything
-    (fourth run) a fixed 5 900 cut 34 such entries -- 21 names, *interest rate*, *short-term* --
+    (fourth run) a fixed 5 900 cut 34 such entries -- 21 names, phrases, hyphenated words --
     while they were the ones the section exists for. When the protected part alone exceeds
     ``max_chars``, the budget grows to hold it, and only single lowercase words after it are
     left out; ``cut`` holds nothing else.

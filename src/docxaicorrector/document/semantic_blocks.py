@@ -987,9 +987,9 @@ def _toc_bracketed_positions(paragraphs: list[ParagraphUnit], *, structure_phase
     part of that table of contents: a contents list is contiguous, and what interrupts it
     without a heading of its own is a stretch of its lines the detector did not type. Read off
     the ROLES around the stretch, never off its text (Constitution VII). Measured: Rethinking
-    Money ``p0045``-``p0050`` ("4 The Flying Fish: ... *57* 5 The Future Has Arrived ...",
-    "6 Strategies for Banking *95*"), between ``p0044`` (``toc_entry``) and ``p0051``
-    (``toc_header``) -- the only such stretch on the four books.
+    Money ``p0045``-``p0050`` (a contents line holding two entries, then single entries --
+    number, title, page number; spec 067 I-3), between ``p0044`` (``toc_entry``) and
+    ``p0051`` (``toc_header``) -- the only such stretch on the four books.
     """
     toc_flags = [_is_toc_structural_role(paragraph, structure_phase=structure_phase) for paragraph in paragraphs]
     bracketed: set[int] = set()
@@ -1051,7 +1051,7 @@ def _resolve_notes_in_body_positions(
     )
 
 
-# Spec 067 FR-004 (A-4): a heading that is a bare NAME ("New Society Publishers") is right when
+# Spec 067 FR-004 (A-4): a heading that is a bare NAME (a publisher's name) is right when
 # the model returns it unchanged, and until now the pair rule called that untranslated prose and
 # failed the book's acceptance (Creating Wealth, fourth run, block 434). The form, read off the
 # heading and the document, never off a word list (Constitution VII):
@@ -1059,7 +1059,7 @@ def _resolve_notes_in_body_positions(
 # * SHAPE: 1-6 words with a letter, at least one of two letters or more; no sentence punctuation
 #   anywhere (``. ! ? ;`` and the ellipsis) and no trailing ``:`` or ``,``; every word starts
 #   with an uppercase letter, except a connector of at most three lowercase letters that is not
-#   the first word ("Bank of England");
+#   the first word ("Port of Kelbrook");
 # * NAME, by the document's own count, two halves:
 #   - at least one capitalised word of two letters or more, not written all in capitals, never
 #     occurs LOWERCASE in the document's body (the prose region's body and list paragraphs) --
@@ -1067,15 +1067,14 @@ def _resolve_notes_in_body_positions(
 #     An all-capitals word is not evidence either way: a roman numeral ("Chapter II") and an
 #     acronym never occur lowercase in any book;
 #   - the heading's whole phrase occurs, with the same capitals, in the MIDDLE of a sentence of
-#     a non-heading paragraph ("The staff at New Society Publishers have been ...") -- the author
+#     a non-heading paragraph ("The staff at Harbourline Press have been ...") -- the author
 #     writes it as a name in running text.
-#   "Introduction", "Chapter Five", "Advantages of the Civics System" fail one half or the other.
+#   "Introduction", "Chapter Five", "Benefits of the Fenwick System" fail one half or the other.
 #
 # Measured on the fourth run (2026-11-08), prose-region headings of the four books: the first
 # half alone admits 8 / 6 / 12 / 39 headings (Money / VoE / RM / CW) -- ordinary titles with one
-# name in them ("Advantages of a Biwa Kippu System"); with the second half, 1 / 0 / 1 / 5, every
-# one a name ("Adrienne Rich", "Bernard Lietaer and Jacqui Dunne", "Calgary Dollars",
-# "New Society Publishers", ...), no chapter title.
+# name in them; with the second half, 1 / 0 / 1 / 5, every one a name (a person, a pair of
+# authors, a local currency, a publisher), no chapter title.
 _NAME_HEADING_MAX_WORDS = 6
 _NAME_HEADING_CONNECTOR_MAX_LETTERS = 3
 _NAME_HEADING_SENTENCE_PUNCTUATION = re.compile(r"[.!?;…]")

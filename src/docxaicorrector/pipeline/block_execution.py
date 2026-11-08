@@ -260,7 +260,7 @@ def prose_paragraph_indexes(payload: Any) -> tuple[int, ...]:
     signal, no repair"). A paragraph carries a structural role only where the document layer
     had a signal to give it one. These classes have none, and they stay inside prose:
 
-    * a bare proper name standing alone as a BODY paragraph (``Barter Systems Inc.``). A
+    * a bare proper name standing alone as a BODY paragraph (``Harbourline Trading Co.``). A
       HEADING that is a bare name is closed since spec 067 FR-004: the document layer marks it
       by role and form (``semantic_blocks._resolve_name_heading_positions``,
       ``name_heading_paragraph_indexes``) and it is not prose -- returned unchanged it is the
@@ -584,7 +584,7 @@ def model_kept_apparatus(*, context: Any, payload: Any, processed_chunk: str) ->
       the titles of the apparatus, and a real section title ("Notes", "Chapter 7") carries no
       year, locator, initials, address or title span, so its echo stays a fallback; a torn
       reference the importer typed as a heading (VoE: ten blocks such as
-      ``### *Economy: What Should Change?* (Washington DC: Bureau of``) carries one and is
+      ``### *Tides: What Should Turn?* (Kelbrook: Bureau of``) carries one and is
       relabelled (orchestrator decision 2026-11-07 after the Codex acceptance review).
 
     Spec 067 FR-001 extends the same disposition to a run of notes the import left in the
