@@ -1079,7 +1079,7 @@ def test_structural_passthrough_failure_derives_detailed_snapshot_reasons_from_p
             run_prepared_background_document=lambda **kwargs: (_ for _ in ()).throw(
                 ValueError(
                     "Подготовка заблокирована quality gate: документ требует structural repair перед обработкой. "
-                    "Причины: обнаружен TOC-подобный фрагмент без надёжно выделенной границы, AI-распознавание структуры не внесло изменений для документа с высоким структурным риском"
+                    "Причины: первый блок смешивает элементы оглавления и эпиграфа, первый блок смешивает элементы оглавления и начало основного текста"
                 )
             )
         ),
@@ -1090,17 +1090,14 @@ def test_structural_passthrough_failure_derives_detailed_snapshot_reasons_from_p
     snapshot = result["preparation_diagnostic_snapshot"]
     assert snapshot["quality_gate_status"] == "blocked"
     assert snapshot["quality_gate_reasons"] == [
-        "toc_like_sequence_without_bounded_region",
-        "structure_recognition_noop_on_high_risk",
+        "first_block_mixed_toc_and_epigraph",
+        "first_block_mixed_toc_and_body_start",
     ]
-    assert snapshot["readiness_status"] == "blocked_unsafe_best_effort_only"
+    assert snapshot["readiness_status"] == "blocked_needs_structure_repair"
     assert snapshot["readiness_reasons"] == [
-        "toc_like_sequence_without_bounded_region",
-        "structure_recognition_noop_on_high_risk",
+        "first_block_mixed_toc_and_epigraph",
+        "first_block_mixed_toc_and_body_start",
     ]
-    assert snapshot["structure_ai_attempted"] is True
-    assert snapshot["ai_classified_count"] == 0
-    assert snapshot["ai_heading_count"] == 0
 
 
 def test_markdown_quality_metrics_keep_false_fragment_and_list_fragment_fallback_raw_only() -> None:

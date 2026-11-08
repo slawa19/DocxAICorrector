@@ -37,22 +37,12 @@ from docxaicorrector.validation.structural_toc_signals import (
 from docxaicorrector.validation.structural_unit_alignment import _derive_unit_aware_unmapped_fields
 
 
+# Reverse of the humanized reasons that ``processing/preparation.py`` (``_REASON_LABELS``)
+# actually puts into a "Причины: ..." preparation error. Only produced strings belong here:
+# an entry nobody produces is a dead branch with a live test (spec 066 C-10).
 _HUMANIZED_QUALITY_GATE_REASON_TO_CODE: dict[str, str] = {
-    "обнаружен TOC-подобный фрагмент без надёжно выделенной границы": "toc_like_sequence_without_bounded_region",
-    "AI-распознавание структуры не внесло изменений для документа с высоким структурным риском": "structure_recognition_noop_on_high_risk",
-    "перед обработкой требуется structural repair документа": "structural_repair_required_before_processing",
-    "после подготовки остались изолированные маркеры списка": "isolated_list_markers_remaining",
     "первый блок смешивает элементы оглавления и эпиграфа": "first_block_mixed_toc_and_epigraph",
     "первый блок смешивает элементы оглавления и начало основного текста": "first_block_mixed_toc_and_body_start",
-    "мало явных заголовков": "low_explicit_heading_density",
-    "много коротких body-абзацев": "high_suspicious_short_body_ratio",
-    "обнаружен TOC-подобный фрагмент": "toc_like_sequence_detected",
-    "слишком много body-абзацев в ВЕРХНЕМ РЕГИСТРЕ или по центру": "high_all_caps_or_centered_body_ratio",
-    "есть риск потери заголовочной структуры": "heading_only_collapse_risk",
-    "остались изолированные маркеры списков": "isolated_list_marker_fragments",
-    "обнаружен риск крупного фронт-маттер блока без безопасной границы": "large_front_matter_block_risk",
-    "заголовков значительно меньше, чем ожидается по оглавлению": "heading_count_far_below_toc_expectation",
-    "документ высокого риска не прошёл structural repair": "high_risk_without_structure_repair",
 }
 
 
@@ -417,12 +407,6 @@ def _apply_preparation_error_snapshot_fallback(snapshot: dict[str, object], prep
             snapshot["readiness_reasons"] = ["structural_repair_required_before_processing"]
         if not list(cast(list[str], snapshot.get("quality_gate_reasons") or [])):
             snapshot["quality_gate_reasons"] = ["structural_repair_required_before_processing"]
-    if "structure_recognition_noop_on_high_risk" in detailed_reasons:
-        snapshot["structure_ai_attempted"] = True
-        if _as_int(snapshot, "ai_classified_count") == 0:
-            snapshot["ai_classified_count"] = 0
-        if _as_int(snapshot, "ai_heading_count") == 0:
-            snapshot["ai_heading_count"] = 0
 
 
 def _extract_quality_gate_reasons_from_error(preparation_error: str) -> list[str]:
