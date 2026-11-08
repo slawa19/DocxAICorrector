@@ -20,9 +20,7 @@ def resolve_prompt_document_context(context: Any) -> str:
 
     if getattr(context, "processing_operation", "") != "translate":
         return ""
-    app_config = getattr(context, "app_config", None)
-    fallback = app_config.get("document_context_prompt", "") if isinstance(app_config, Mapping) else ""
-    return str(getattr(context, "document_context_prompt", "") or fallback or "").strip()
+    return str(getattr(context, "document_context_prompt", "") or "").strip()
 
 
 def build_system_prompt_arguments(*, context: Any, prompt_variant: str = "default") -> dict[str, Any]:
