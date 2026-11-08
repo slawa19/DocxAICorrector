@@ -1965,3 +1965,36 @@ def test_fr003_the_glossary_prompts_ask_for_a_note_and_name_the_phrase_signal():
 
     assert 'when a general word is used in a special sense of this book, say that sense in "note"' in required
     assert '"phrase"' in required and '"phrase"' in optional
+
+
+def test_fr002_a_camelcase_name_the_author_defines_once_stays_a_candidate():
+    # Codex acceptance review of spec 065 (P1): "QuillPay" is a name by its inner capital; the
+    # case test used to look only for "Quillpay" and "QUILLPAY", call it a lowercase word, and
+    # the FR-002 count rule dropped it.
+    paragraphs = ["The town built an app for it. This solution, called QuillPay, is free to use.", *(_FILLER * 6)]
+    keys = _keys(extract_glossary_candidates(_units(paragraphs)))
+
+    assert "quillpay" in keys
+    assert keys["quillpay"].required and "defined" in keys["quillpay"].signals
+
+
+def test_fr002_a_case_tie_is_a_capitalised_form_not_a_single_lowercase_word():
+    # Spec 065 tie rule: a word the document capitalises mid-sentence as often as it writes it
+    # lowercase is not "a word the document writes in lowercase", so the single-word count
+    # rule does not apply to it. "Brennaby" -- once "Brennaby", once "brennaby" -- stays.
+    paragraphs = [
+        "The organisation involved is called Brennaby, as the valley knows.",
+        "Later the brennaby site listed its members.",
+        *(_FILLER * 6),
+    ]
+    keys = _keys(extract_glossary_candidates(_units(paragraphs)))
+
+    assert "brennaby" in keys and keys["brennaby"].required
+    # Anti-vacuum: written lowercase twice and capitalised never, the same word defined in
+    # passing is a single lowercase word used twice -- not a candidate (FR-002, N = 3).
+    lowercase = [
+        "The organisation involved is called brennaby, as the valley knows.",
+        "Later the brennaby site listed its members.",
+        *(_FILLER * 6),
+    ]
+    assert "brennaby" not in _keys(extract_glossary_candidates(_units(lowercase)))
