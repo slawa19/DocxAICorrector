@@ -52,6 +52,19 @@ def coerce_back_matter_section(job: Any) -> str | None:
     return value
 
 
+def coerce_paragraph_id_subset(job: Any, field_name: str, *, paragraph_ids: list[str] | None) -> list[str] | None:
+    """A per-paragraph mark carried as ids (spec 067 FR-001): every id must name a paragraph of
+    THIS block. An id the block does not have would mark nothing on one side of the contract
+    while the other side counted it, so it raises rather than being dropped."""
+    values = coerce_optional_string_list(job, field_name)
+    if values is None:
+        return None
+    unknown = sorted(set(values) - set(paragraph_ids or ()))
+    if unknown:
+        raise ValueError(f"{field_name} names paragraphs outside the block: {unknown}")
+    return values
+
+
 def coerce_optional_bool(job: Any, field_name: str) -> bool | None:
     value = job.get(field_name)
     if value is None:
@@ -135,6 +148,12 @@ def parse_processing_job(*, job: Any, payload_factory: Any) -> Any:
     structural_roles = coerce_optional_string_list(job, "structural_roles")
     paragraph_regions = coerce_paragraph_regions(job)
     back_matter_section = coerce_back_matter_section(job)
+    notes_in_body_paragraph_ids = coerce_paragraph_id_subset(
+        job, "notes_in_body_paragraph_ids", paragraph_ids=paragraph_ids
+    )
+    name_heading_paragraph_ids = coerce_paragraph_id_subset(
+        job, "name_heading_paragraph_ids", paragraph_ids=paragraph_ids
+    )
     _require_parallel_to_paragraph_ids(
         paragraph_ids,
         structural_roles=structural_roles,
@@ -158,6 +177,8 @@ def parse_processing_job(*, job: Any, payload_factory: Any) -> Any:
         structural_roles=structural_roles,
         paragraph_regions=paragraph_regions,
         back_matter_section=back_matter_section,
+        notes_in_body_paragraph_ids=notes_in_body_paragraph_ids,
+        name_heading_paragraph_ids=name_heading_paragraph_ids,
         narration_include=True if narration_include is None else narration_include,
         toc_dominant=bool(toc_dominant),
         toc_paragraph_count=toc_paragraph_count,

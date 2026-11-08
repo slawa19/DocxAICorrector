@@ -18,6 +18,7 @@ from docxaicorrector.core.models import (
     ParagraphRelation,
     ParagraphUnit,
 )
+from docxaicorrector.pipeline.output_validation import is_notes_run_paragraph
 from docxaicorrector.validation.formatting_coverage import (
     _BACKMATTER_SECTION_TITLES,
     _normalize_structural_text,
@@ -293,6 +294,18 @@ def build_editing_jobs(
         reference_region_indexes=reference_region_indexes,
         structure_phase=structure_phase,
     )
+    # Spec 067 FR-001: notes runs the import left in the prose region, by document POSITION
+    # (the same position space as the regions above).
+    flat_paragraphs = [paragraph for block in blocks for paragraph in block.paragraphs]
+    flat_regions = [region for block_regions in paragraph_regions_by_block for region in block_regions]
+    notes_in_body_positions = _resolve_notes_in_body_positions(
+        flat_paragraphs, flat_regions, structure_phase=structure_phase
+    )
+    # Spec 067 FR-004: short headings of the prose region that are NAMES by the document's own
+    # case count, same position space.
+    name_heading_positions = _resolve_name_heading_positions(
+        flat_paragraphs, flat_regions, structure_phase=structure_phase
+    )
     structure_source = _semantic_block_structure_source(structure_phase)
 
     for index, block in enumerate(blocks):
@@ -342,6 +355,19 @@ def build_editing_jobs(
                 "paragraph_regions": paragraph_regions_by_block[index],
                 # Spec 063 FR-011: ``None`` outside the back-matter region.
                 "back_matter_section": back_matter_sections.get(index),
+                # Spec 067 FR-001: the paragraphs of this block that are a run of notes left
+                # in the body -- a per-PARAGRAPH apparatus mark; the region stays ``prose``.
+                "notes_in_body_paragraph_ids": [
+                    paragraph_id
+                    for paragraph_index, paragraph_id in enumerate(paragraph_ids)
+                    if fallback_paragraph_index + paragraph_index in notes_in_body_positions
+                ],
+                # Spec 067 FR-004: the heading paragraphs of this block that are a bare name.
+                "name_heading_paragraph_ids": [
+                    paragraph_id
+                    for paragraph_index, paragraph_id in enumerate(paragraph_ids)
+                    if fallback_paragraph_index + paragraph_index in name_heading_positions
+                ],
                 "narration_include": narration_include,
                 "toc_dominant": toc_dominant,
                 "toc_paragraph_count": toc_only_paragraph_count,
@@ -945,6 +971,217 @@ def _resolve_paragraph_regions(
             position += 1
         regions.append(block_regions)
     return regions
+
+
+# Spec 067 FR-001: the structural roles a notes-run paragraph arrives with from import. On the
+# four corpus books every one of them is ``body`` or ``list`` (Money 61 + 1); a heading, a
+# caption, an image or a TOC line is never a run of notes, whatever its text looks like.
+_NOTES_IN_BODY_STRUCTURAL_ROLES = frozenset({"body", "list"})
+
+
+def _toc_bracketed_positions(paragraphs: list[ParagraphUnit], *, structure_phase: str) -> frozenset[int]:
+    """Positions of a stretch the role detector left untyped INSIDE a table of contents.
+
+    A stretch of consecutive paragraphs without a TOC role, holding no heading, with a TOC
+    paragraph (``toc_header``/``toc_entry``) immediately before AND immediately after it, is
+    part of that table of contents: a contents list is contiguous, and what interrupts it
+    without a heading of its own is a stretch of its lines the detector did not type. Read off
+    the ROLES around the stretch, never off its text (Constitution VII). Measured: Rethinking
+    Money ``p0045``-``p0050`` ("4 The Flying Fish: ... *57* 5 The Future Has Arrived ...",
+    "6 Strategies for Banking *95*"), between ``p0044`` (``toc_entry``) and ``p0051``
+    (``toc_header``) -- the only such stretch on the four books.
+    """
+    toc_flags = [_is_toc_structural_role(paragraph, structure_phase=structure_phase) for paragraph in paragraphs]
+    bracketed: set[int] = set()
+    position = 0
+    while position < len(paragraphs):
+        if toc_flags[position]:
+            position += 1
+            continue
+        end = position
+        while end < len(paragraphs) and not toc_flags[end]:
+            end += 1
+        stretch = range(position, end)
+        if (
+            position > 0
+            and end < len(paragraphs)
+            and not any(
+                _paragraph_structural_kind(paragraphs[member], structure_phase=structure_phase) == "heading"
+                or str(paragraphs[member].role or "").strip().casefold() == "heading"
+                for member in stretch
+            )
+        ):
+            bracketed.update(stretch)
+        position = end
+    return frozenset(bracketed)
+
+
+def _resolve_notes_in_body_positions(
+    paragraphs: list[ParagraphUnit],
+    regions: list[str],
+    *,
+    structure_phase: str = "post_ai_final",
+) -> frozenset[int]:
+    """Spec 067 FR-001: which paragraphs of the PROSE region are a run of notes by their form.
+
+    Three conditions, all of them read off the document, none off a word list:
+
+    * the paragraph lies in the prose region -- the back-matter region already carries the
+      apparatus policy, and front matter and the TOC are not body;
+    * its structural role is an entry role (``_NOTES_IN_BODY_STRUCTURAL_ROLES``) and it does not
+      sit inside a table of contents the role detector left untyped
+      (``_toc_bracketed_positions``);
+    * its text is a notes run by form (``output_validation.is_notes_run_paragraph``).
+
+    The answer marks the PARAGRAPH, not the book's regions: relabelling these paragraphs
+    ``back_matter`` would also move them out of the narration, the glossary's source units and
+    the formatting-coverage regions, none of which spec 067 asks for. The apparatus consumers
+    read the mark (``block_execution.notes_in_body_paragraph_indexes``).
+    """
+    if len(regions) != len(paragraphs):
+        return frozenset()
+    bracketed = _toc_bracketed_positions(paragraphs, structure_phase=structure_phase)
+    return frozenset(
+        position
+        for position, paragraph in enumerate(paragraphs)
+        if regions[position] == PARAGRAPH_REGION_PROSE
+        and position not in bracketed
+        and _paragraph_structural_kind(paragraph, structure_phase=structure_phase) in _NOTES_IN_BODY_STRUCTURAL_ROLES
+        and is_notes_run_paragraph(paragraph.text)
+    )
+
+
+# Spec 067 FR-004 (A-4): a heading that is a bare NAME ("New Society Publishers") is right when
+# the model returns it unchanged, and until now the pair rule called that untranslated prose and
+# failed the book's acceptance (Creating Wealth, fourth run, block 434). The form, read off the
+# heading and the document, never off a word list (Constitution VII):
+#
+# * SHAPE: 1-6 words with a letter, at least one of two letters or more; no sentence punctuation
+#   anywhere (``. ! ? ;`` and the ellipsis) and no trailing ``:`` or ``,``; every word starts
+#   with an uppercase letter, except a connector of at most three lowercase letters that is not
+#   the first word ("Bank of England");
+# * NAME, by the document's own count, two halves:
+#   - at least one capitalised word of two letters or more, not written all in capitals, never
+#     occurs LOWERCASE in the document's body (the prose region's body and list paragraphs) --
+#     the case test ``text.glossary_pass`` applies to ``capitalised_form``, at its strict end.
+#     An all-capitals word is not evidence either way: a roman numeral ("Chapter II") and an
+#     acronym never occur lowercase in any book;
+#   - the heading's whole phrase occurs, with the same capitals, in the MIDDLE of a sentence of
+#     a non-heading paragraph ("The staff at New Society Publishers have been ...") -- the author
+#     writes it as a name in running text.
+#   "Introduction", "Chapter Five", "Advantages of the Civics System" fail one half or the other.
+#
+# Measured on the fourth run (2026-11-08), prose-region headings of the four books: the first
+# half alone admits 8 / 6 / 12 / 39 headings (Money / VoE / RM / CW) -- ordinary titles with one
+# name in them ("Advantages of a Biwa Kippu System"); with the second half, 1 / 0 / 1 / 5, every
+# one a name ("Adrienne Rich", "Bernard Lietaer and Jacqui Dunne", "Calgary Dollars",
+# "New Society Publishers", ...), no chapter title.
+_NAME_HEADING_MAX_WORDS = 6
+_NAME_HEADING_CONNECTOR_MAX_LETTERS = 3
+_NAME_HEADING_SENTENCE_PUNCTUATION = re.compile(r"[.!?;…]")
+_NAME_HEADING_MARKUP = re.compile(r"^\s*#{1,6}\s+|[*_`]+")
+_WORD_PATTERN = re.compile(r"[^\W\d_]+(?:['’-][^\W\d_]+)*")
+_NAME_HEADING_BODY_ROLES = frozenset({"body", "list"})
+_SENTENCE_BOUNDARY_CHARACTERS = ".!?:;"
+
+
+def _plain_text(text: str) -> str:
+    return " ".join(_NAME_HEADING_MARKUP.sub("", str(text or "")).split())
+
+
+def _lowercase_body_words(
+    paragraphs: list[ParagraphUnit], regions: list[str], *, structure_phase: str
+) -> frozenset[str]:
+    """Every word the document's body writes with a lowercase first letter, as written."""
+    words: set[str] = set()
+    for position, paragraph in enumerate(paragraphs):
+        if regions[position] != PARAGRAPH_REGION_PROSE:
+            continue
+        if _paragraph_structural_kind(paragraph, structure_phase=structure_phase) not in _NAME_HEADING_BODY_ROLES:
+            continue
+        words.update(word for word in _WORD_PATTERN.findall(str(paragraph.text or "")) if word[0].islower())
+    return frozenset(words)
+
+
+def name_heading_words(text: str) -> tuple[str, ...] | None:
+    """The words of a heading of the name SHAPE that can carry the name signal -- capitalised,
+    two letters or more, not all in capitals -- or ``None`` when the heading has another shape or
+    no such word (see the note above). The NAME halves need the document; the caller applies them.
+    """
+    cleaned = _plain_text(text)
+    if not cleaned or _NAME_HEADING_SENTENCE_PUNCTUATION.search(cleaned) or cleaned[-1] in ":,":
+        return None
+    tokens = [token for token in cleaned.split() if any(char.isalpha() for char in token)]
+    if not 1 <= len(tokens) <= _NAME_HEADING_MAX_WORDS:
+        return None
+    candidates: list[str] = []
+    for order, token in enumerate(tokens):
+        letters = "".join(char for char in token if char.isalpha())
+        if letters[0].isupper():
+            candidates.extend(
+                word
+                for word in _WORD_PATTERN.findall(token)
+                if len(word) >= 2 and word[0].isupper() and not word.isupper()
+            )
+            continue
+        if order > 0 and len(letters) <= _NAME_HEADING_CONNECTOR_MAX_LETTERS and letters.islower():
+            continue
+        return None
+    return tuple(candidates) if candidates else None
+
+
+def _phrase_occurs_mid_sentence(phrase: str, texts: list[str]) -> bool:
+    """Does ``phrase`` occur, same capitals, after a word of the same sentence in one of ``texts``?"""
+    for text in texts:
+        start = text.find(phrase)
+        while start >= 0:
+            before = text[:start].rstrip()
+            if any(char.isalpha() for char in before) and before[-1] not in _SENTENCE_BOUNDARY_CHARACTERS:
+                return True
+            start = text.find(phrase, start + 1)
+    return False
+
+
+def _resolve_name_heading_positions(
+    paragraphs: list[ParagraphUnit],
+    regions: list[str],
+    *,
+    structure_phase: str = "post_ai_final",
+) -> frozenset[int]:
+    """Spec 067 FR-004: which HEADING paragraphs of the prose region are a bare name.
+
+    Role and form, both: the paragraph's structural role is ``heading``, it lies in the prose
+    region (front matter, the TOC and the back matter are not prose and are never announced as
+    untranslated prose), its text has the name shape (``name_heading_words``), at least one of
+    its name-signal words never occurs lowercase in the document's body, and the whole heading
+    occurs mid-sentence in a non-heading paragraph (see the note above).
+    """
+    if len(regions) != len(paragraphs):
+        return frozenset()
+    lowercase_words: frozenset[str] | None = None
+    running_texts: list[str] | None = None
+    positions: set[int] = set()
+    for position, paragraph in enumerate(paragraphs):
+        if regions[position] != PARAGRAPH_REGION_PROSE:
+            continue
+        if _paragraph_structural_kind(paragraph, structure_phase=structure_phase) != "heading":
+            continue
+        words = name_heading_words(paragraph.text)
+        if words is None:
+            continue
+        if lowercase_words is None or running_texts is None:
+            lowercase_words = _lowercase_body_words(paragraphs, regions, structure_phase=structure_phase)
+            running_texts = [
+                _plain_text(other.text)
+                for other in paragraphs
+                if _paragraph_structural_kind(other, structure_phase=structure_phase) != "heading"
+                and str(other.role or "").strip().casefold() != "heading"
+            ]
+        if not any(word.lower() not in lowercase_words for word in words):
+            continue
+        if _phrase_occurs_mid_sentence(_plain_text(paragraph.text), running_texts):
+            positions.add(position)
+    return frozenset(positions)
 
 
 def _resolve_narration_include(

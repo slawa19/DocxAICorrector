@@ -631,11 +631,15 @@ _SAMPLE_DOCUMENT_CONTEXT = (
 # примечания 10)" (+31 characters in every render), and rule 12 of operation_translate.txt
 # gains two lines on Ibid./p. and dates in kept citations (+205 in the translate render;
 # the TOC variant renders operation_toc_translate.txt instead).
+# Re-pinned by spec 067 FR-001: the two sub-bullets of rule 12 are rewritten -- "leave as is"
+# now covers only the service words and dates INSIDE a kept citation, and "commentary is
+# translated, in the same entry too" stands beside them (+149 characters in the translate
+# render; edit, the TOC variant and audiobook do not render operation_translate.txt).
 _PRE_064_PROMPT_SNAPSHOTS = [
     (
         {"operation": "translate", "source_language": "en", "target_language": "ru"},
-        7143,
-        "3ae6fa624fd650d31ba85a948831413ba57cb29bdeb4ccbe4f018e8408d318c8",
+        7292,
+        "c914593b4ce93ac9e2fe5c3bfdfc7fc355ed232e57d2482395372148ad2a757a",
     ),
     (
         {"operation": "edit", "source_language": "ru", "target_language": "ru"},

@@ -1196,3 +1196,38 @@ def test_one_anchor_floor_in_the_repository():
         and any(isinstance(comparator, ast.Constant) for comparator in node.comparators)
     ]
     assert literal_floor_comparisons == []
+
+
+# =========================================================================== #
+# Spec 067 FR-003 (A-3) — the body detector judges by SHARES, not by presence  #
+# =========================================================================== #
+#
+# ``_is_untranslated_body_text`` returned False on the first Cyrillic letter. On the fourth
+# run (2026-11-08) that hid English paragraphs of 280+ characters with a single translated word
+# or a Cyrillic letter in them -- Money 8; the gate replay of the eight recorded reports without
+# the shortcut: Money fourth 0.0208 -> 0.0232, every other report <= 0.0024 (no new block).
+
+
+def test_english_paragraph_with_one_cyrillic_letter_is_untranslated_body():
+    """The shortcut is gone: one Cyrillic letter does not hide an English paragraph."""
+    paragraph = _ENGLISH_BODY.replace("the meeting ended", "the meeting ended (см)", 1)
+    assert quality_gate_text_detectors._latin_letter_ratio(paragraph) >= 0.8
+    assert quality_gate_text_detectors._is_untranslated_body_text(paragraph) is True
+
+    report = _report(_assembly([_entry(_LONG_ENGLISH_BODY + " Итог.", 0)]))
+    assert report["untranslated_body_text_count"] == 1
+    assert "untranslated_body_text_above_threshold" in report["gate_reasons"]
+
+
+def test_mostly_cyrillic_paragraph_is_still_not_untranslated_body():
+    """Counter-proof: the Latin share stays the test. A translated paragraph that keeps an
+    English title or two is mostly Cyrillic and is not counted."""
+    translated = (
+        "Компания сохранила ту же политику ещё на год, и никто в офисе не хотел объяснять, почему "
+        "цифры так далеко ушли от плана, который все подписали весной; встреча закончилась без "
+        "решения, а команда вернулась к тем частям продукта, которые ещё двигались вперёд. "
+        "Об этом писали в книге *The Company Kept the Same Policy* и в статье The Plan Everyone Signed."
+    )
+    assert len(translated) >= quality_gate_text_detectors._UNTRANSLATED_BODY_MIN_CHARS
+    assert quality_gate_text_detectors._latin_letter_ratio(translated) < 0.8
+    assert quality_gate_text_detectors._is_untranslated_body_text(translated) is False
