@@ -1144,7 +1144,7 @@ NARRATION_PROSE_MISREAD_AS_A_REFERENCE = (
 # delivered text was byte-identical to its own source -- exactly what the pair rule now
 # classifies as ``source_text_fallback``. The helper controls the model's OUTPUT; the input
 # has to be a different string for the run to model a translation at all.
-_STANDALONE_AUDIOBOOK_SOURCE_BLOCK = "Once upon a time, in a small village, people bartered."
+_STANDALONE_AUDIOBOOK_SOURCE_BLOCK = "Many tides ago, in a small hamlet, sailors bartered."
 
 
 def _run_standalone_audiobook(narration_text, *, runtime, log_event=None, write_ui_result_artifacts=None):
@@ -1300,10 +1300,10 @@ def test_standalone_audiobook_clean_narration_publishes_no_review_notice():
 # ``source_text_fallback`` classifier (>=120 chars, no Cyrillic, >=12 English words), because
 # the point of this test is that the PRODUCTION classifier routes it, not a stub.
 _UNTRANSLATED_SOURCE_BLOCK = (
-    "Once upon a time, in a small village in the Outback, people used barter for all their "
-    "transactions, and on every market day they walked around with chickens, eggs and breads."
+    "Many tides ago, in a small hamlet by the old Saltmarsh, sailors used tallies for all their "
+    "cargoes, and on every harbour day they walked around with nets, ropes and barrels."
 )
-_NARRATED_RUSSIAN_BLOCK = "[thoughtful] Однажды в маленькой деревне люди обменивались товарами."
+_NARRATED_RUSSIAN_BLOCK = "[thoughtful] Однажды в маленькой гавани моряки обменивались снастями."
 
 
 def _run_standalone_audiobook_with_source_fallback_block(*, runtime, log_event):
@@ -1344,7 +1344,7 @@ def _run_standalone_audiobook_with_source_fallback_block(*, runtime, log_event):
     return document_pipeline.run_document_processing(
         uploaded_file="report.docx",
         jobs=[
-            _job("Однажды в маленькой деревне.", "p0001"),
+            _job("Однажды в маленькой гавани.", "p0001"),
             _job(_UNTRANSLATED_SOURCE_BLOCK, "p0002"),
         ],
         source_paragraphs=[],
@@ -1399,8 +1399,8 @@ def test_standalone_audiobook_excludes_a_source_fallback_block_and_reports_the_l
     assert result == "succeeded"
     narration_text = runtime["state"]["latest_narration_text"]
     # The narrated block is there; not one word of the rejected block's English is.
-    assert "Однажды в маленькой деревне люди обменивались товарами." in narration_text
-    assert "Once upon a time" not in narration_text
+    assert "Однажды в маленькой гавани моряки обменивались снастями." in narration_text
+    assert "Many tides ago" not in narration_text
     # ...while the DOCX branch still carries it, verbatim.
     assert _UNTRANSLATED_SOURCE_BLOCK in runtime["state"]["latest_markdown"]
 
@@ -2037,8 +2037,8 @@ def test_translation_narration_projection_drops_a_source_text_fallback_paragraph
     It used to be a list of hand-written dicts carrying the flag, which kept this test green
     while the production builder dropped the flag and the projection never saw it.
     """
-    source_text = "Once upon a time, in a small village in the Outback."
-    kept_model_output = "Однажды в маленькой деревне."
+    source_text = "Many tides ago, in a small hamlet by the old Saltmarsh."
+    kept_model_output = "Однажды в маленькой гавани."
     state = SimpleNamespace(generated_paragraph_registry=[])
 
     def _append_marker_registry_entries(**kwargs):
@@ -4611,7 +4611,7 @@ def test_run_document_processing_flags_untranslated_structural_heading_for_revie
         processing_operation="translate",
         source_paragraphs=[
             ParagraphUnit(
-                text="The Competitive Society",
+                text="The Lanternkeeper Guild",
                 role="heading",
                 structural_role="heading",
                 heading_level=2,
@@ -4620,8 +4620,8 @@ def test_run_document_processing_flags_untranslated_structural_heading_for_revie
         ],
         jobs=[
             {
-                "target_text": "The Competitive Society",
-                "target_text_with_markers": "[[DOCX_PARA_p0001]]\nThe Competitive Society",
+                "target_text": "The Lanternkeeper Guild",
+                "target_text_with_markers": "[[DOCX_PARA_p0001]]\nThe Lanternkeeper Guild",
                 "context_before": "",
                 "context_after": "",
                 "target_chars": 23,
@@ -4629,7 +4629,7 @@ def test_run_document_processing_flags_untranslated_structural_heading_for_revie
                 "paragraph_ids": ["p0001"],
             }
         ],
-        generate_markdown_block=lambda **kwargs: "## The Competitive Society",
+        generate_markdown_block=lambda **kwargs: "## The Lanternkeeper Guild",
         write_ui_result_artifacts=lambda **kwargs: {
             "markdown_path": "/tmp/final.result.md",
             "docx_path": "/tmp/final.result.docx",
@@ -4662,7 +4662,7 @@ def test_run_document_processing_flags_untranslated_structural_heading_for_revie
             "sample": {
                 "line": 1,
                 # FR-004: the leaked markdown heading marker is stripped from the anchor.
-                "text": "The Competitive Society",
+                "text": "The Lanternkeeper Guild",
                 "reason": "untranslated_structural_text",
                 "role": "heading",
                 "structural_role": "heading",
@@ -4679,8 +4679,8 @@ def test_run_document_processing_fails_large_untranslated_body_text(tmp_path, mo
     monkeypatch.setattr(document_pipeline_late_phases, "collect_owned_formatting_diagnostics_artifacts", lambda run_id, source_token, diagnostics_dir: [])
     monkeypatch.setattr(document_pipeline_quality_report_retention, "QUALITY_REPORTS_DIR", quality_dir)
     untranslated_body = (
-        "This framework has been tested using years of quantitative data collected about how biomass "
-        "flows through natural ecosystems. Natural ecosystems are large complex flow networks that "
+        "This approach has been checked using years of numerical readings gathered about how sediment "
+        "drifts through coastal estuaries. Coastal estuaries are large complex flow networks that "
         "show how resilience and efficiency interact across many scales. "
     ) * 12
 
@@ -4844,10 +4844,10 @@ def test_quality_gate_monkeypatch_seam_lands_on_owner_module(monkeypatch):
 
 def test_build_translation_quality_report_flags_untranslated_structural_heading_but_not_proper_name():
     assembly_result = document_pipeline_output_validation.FinalMarkdownAssemblyResult(
-        final_markdown="## The Competitive Society\n\n## Terra\n\nПереведённый текст.",
+        final_markdown="## The Lanternkeeper Guild\n\n## Terra\n\nПереведённый текст.",
         entries=(
             document_pipeline_output_validation.FinalAssemblyEntry(
-                text="## The Competitive Society",
+                text="## The Lanternkeeper Guild",
                 block_index=1,
                 paragraph_id="p1",
                 source_index=0,
@@ -4896,7 +4896,7 @@ def test_build_translation_quality_report_flags_untranslated_structural_heading_
     assert report["untranslated_structural_text_samples"] == [
         {
             "line": 1,
-            "text": "## The Competitive Society",
+            "text": "## The Lanternkeeper Guild",
             "reason": "untranslated_structural_text",
             "role": "heading",
             "structural_role": "heading",
@@ -4913,7 +4913,7 @@ def test_build_translation_quality_report_flags_untranslated_structural_heading_
             "sample": {
                 "line": 1,
                 # FR-004: the leaked markdown heading marker is stripped from the anchor.
-                "text": "The Competitive Society",
+                "text": "The Lanternkeeper Guild",
                 "reason": "untranslated_structural_text",
                 "role": "heading",
                 "structural_role": "heading",
@@ -4926,8 +4926,8 @@ def test_build_translation_quality_report_flags_untranslated_structural_heading_
 
 def test_build_translation_quality_report_fails_large_untranslated_body_text():
     untranslated_body = (
-        "This framework has been tested using years of quantitative data collected about how biomass "
-        "flows through natural ecosystems. Natural ecosystems are large complex flow networks that "
+        "This approach has been checked using years of numerical readings gathered about how sediment "
+        "drifts through coastal estuaries. Coastal estuaries are large complex flow networks that "
         "show how resilience and efficiency interact across many scales. "
     ) * 12
     assembly_result = document_pipeline_output_validation.FinalMarkdownAssemblyResult(
@@ -5408,12 +5408,12 @@ def test_build_translation_quality_report_delivered_markdown_leaves_structural_g
     # Spec 006 FR-004: threading runtime_display_markdown must NOT repoint the
     # entry-based structural gates (specs 001/003). Passing the delivered markdown
     # leaves false_fragment / list_fragment gate sources and counts unchanged.
-    final_markdown = "2. Goldman Sachs Annual Report, 2010.\n\n14. Forbes, 2017."
+    final_markdown = "2. Harrowgate Lines Annual Report, 2010.\n\n14. Tidings, 2017."
     assembly_result = document_pipeline_output_validation.FinalMarkdownAssemblyResult(
         final_markdown=final_markdown,
         entries=(
             document_pipeline_output_validation.FinalAssemblyEntry(
-                text="2. Goldman Sachs Annual Report, 2010.",
+                text="2. Harrowgate Lines Annual Report, 2010.",
                 block_index=1,
                 paragraph_id="p1",
                 source_index=0,
@@ -5423,7 +5423,7 @@ def test_build_translation_quality_report_delivered_markdown_leaves_structural_g
                 from_registry=True,
             ),
             document_pipeline_output_validation.FinalAssemblyEntry(
-                text="14. Forbes, 2017.",
+                text="14. Tidings, 2017.",
                 block_index=1,
                 paragraph_id="p2",
                 source_index=1,
@@ -6051,14 +6051,14 @@ def test_build_translation_quality_report_keeps_list_fragment_runtime_cleanup_di
 
 def test_build_translation_quality_report_credits_source_backed_numbered_references_without_topology():
     final_markdown = (
-        "2. Goldman Sachs Annual Report, 2010.\n\n"
-        "14. Forbes, 2017."
+        "2. Harrowgate Lines Annual Report, 2010.\n\n"
+        "14. Tidings, 2017."
     )
     assembly_result = document_pipeline_output_validation.FinalMarkdownAssemblyResult(
         final_markdown=final_markdown,
         entries=(
             document_pipeline_output_validation.FinalAssemblyEntry(
-                text="2. Goldman Sachs Annual Report, 2010.",
+                text="2. Harrowgate Lines Annual Report, 2010.",
                 block_index=1,
                 paragraph_id="p1",
                 source_index=0,
@@ -6068,7 +6068,7 @@ def test_build_translation_quality_report_credits_source_backed_numbered_referen
                 from_registry=True,
             ),
             document_pipeline_output_validation.FinalAssemblyEntry(
-                text="14. Forbes, 2017.",
+                text="14. Tidings, 2017.",
                 block_index=1,
                 paragraph_id="p2",
                 source_index=1,
@@ -6187,9 +6187,9 @@ def test_build_translation_quality_report_routes_four_standalone_numeric_backmat
     # must route to soft review, not the acceptance hard-fail. The old count cap
     # (<= 3) wrongly tipped an otherwise-good book into failure at 4 such numbers.
     final_markdown = (
-        "2. Goldman Sachs Annual Report, 2010.\n\n"
+        "2. Harrowgate Lines Annual Report, 2010.\n\n"
         "18.\n\n"
-        "14. Forbes, 2017.\n\n"
+        "14. Tidings, 2017.\n\n"
         "1491.\n\n"
         "24. Kaldor, Essays on Value and Distribution, 1960.\n\n"
         "1489.\n\n"
@@ -6200,7 +6200,7 @@ def test_build_translation_quality_report_routes_four_standalone_numeric_backmat
         final_markdown=final_markdown,
         entries=(
             document_pipeline_output_validation.FinalAssemblyEntry(
-                text="2. Goldman Sachs Annual Report, 2010.",
+                text="2. Harrowgate Lines Annual Report, 2010.",
                 block_index=1,
                 paragraph_id="p1",
                 source_index=0,
@@ -6219,7 +6219,7 @@ def test_build_translation_quality_report_routes_four_standalone_numeric_backmat
                 from_registry=True,
             ),
             document_pipeline_output_validation.FinalAssemblyEntry(
-                text="14. Forbes, 2017.",
+                text="14. Tidings, 2017.",
                 block_index=1,
                 paragraph_id="p3",
                 source_index=2,
@@ -6314,7 +6314,7 @@ def test_build_translation_quality_report_hard_fails_non_numeric_body_list_fragm
     # acceptance hard-fail, regardless of count. Softening the cap for numeric
     # back-matter must never silence genuine body-list fragmentation.
     final_markdown = (
-        "2. Goldman Sachs Annual Report, 2010.\n\n"
+        "2. Harrowgate Lines Annual Report, 2010.\n\n"
         "- разорванный\n"
         "- пункт"
     )
@@ -6322,7 +6322,7 @@ def test_build_translation_quality_report_hard_fails_non_numeric_body_list_fragm
         final_markdown=final_markdown,
         entries=(
             document_pipeline_output_validation.FinalAssemblyEntry(
-                text="2. Goldman Sachs Annual Report, 2010.",
+                text="2. Harrowgate Lines Annual Report, 2010.",
                 block_index=1,
                 paragraph_id="p1",
                 source_index=0,
@@ -6381,14 +6381,14 @@ def test_build_translation_quality_report_hard_fails_non_numeric_body_list_fragm
 def test_build_translation_quality_report_credits_source_backed_reference_by_exact_text_when_line_offsets_drift():
     final_markdown = (
         "Intro paragraph that shifts assembly offsets.\n\n"
-        "2. Goldman Sachs Annual Report, 2010.\n\n"
+        "2. Harrowgate Lines Annual Report, 2010.\n\n"
         "1491."
     )
     assembly_result = document_pipeline_output_validation.FinalMarkdownAssemblyResult(
         final_markdown=final_markdown,
         entries=(
             document_pipeline_output_validation.FinalAssemblyEntry(
-                text="2. Goldman Sachs Annual Report, 2010.",
+                text="2. Harrowgate Lines Annual Report, 2010.",
                 block_index=1,
                 paragraph_id="p1",
                 source_index=0,
@@ -6421,7 +6421,7 @@ def test_build_translation_quality_report_credits_source_backed_reference_by_exa
         assembly_result=assembly_result,
     )
 
-    # The "2. Goldman Sachs…" reference is still credited by EXACT TEXT even though the
+    # The "2. Harrowgate Lines…" reference is still credited by EXACT TEXT even though the
     # intro paragraph drifts the line→entry offsets (that is the original point of this test).
     # The bare footnote number "1491." now drops too: with only two entries its line 5 falls
     # off the entry sequence, so it has no resolvable list context (003 FR-002, User Story 1
@@ -8457,7 +8457,7 @@ def test_ui_result_meta_json_carries_the_run_accounting(tmp_path):
 # notice, so the remedy that makes the loss smaller also made it less visible.
 
 _OMITTED_ENGLISH_PARAGRAPH = (
-    "Footnotes 1 Quoted in Naomi Klein, No Logo, page 214, and see Reinhart et al. (2004), "
+    "Footnotes 1 Quoted in Ilsa Varrow, No Anchor, page 214, and see Marchetti et al. (2004), "
     "Appendix A, for the full dataset behind this table."
 )
 
@@ -8469,7 +8469,7 @@ def _run_standalone_audiobook_with_an_omitted_paragraph(*, runtime, log_event):
         ParagraphDisposition,
     )
 
-    spoken = "[thoughtful] Однажды в маленькой деревне люди обменивались товарами."
+    spoken = "[thoughtful] Однажды в маленькой гавани моряки обменивались снастями."
 
     def _writer(**_kwargs):
         return _persist_primary_artifacts_on_disk(
@@ -8480,7 +8480,7 @@ def _run_standalone_audiobook_with_an_omitted_paragraph(*, runtime, log_event):
             }
         )
 
-    target_text = f"Once upon a time in a small village.\n\n{_OMITTED_ENGLISH_PARAGRAPH}"
+    target_text = f"Many tides ago in a small hamlet.\n\n{_OMITTED_ENGLISH_PARAGRAPH}"
 
     def generate_markdown_block(**_kwargs):
         dispositions = [
@@ -8499,7 +8499,7 @@ def _run_standalone_audiobook_with_an_omitted_paragraph(*, runtime, log_event):
             {
                 "target_text": target_text,
                 "target_text_with_markers": (
-                    "[[DOCX_PARA_p0001]]\nOnce upon a time in a small village.\n\n"
+                    "[[DOCX_PARA_p0001]]\nMany tides ago in a small hamlet.\n\n"
                     f"[[DOCX_PARA_p0002]]\n{_OMITTED_ENGLISH_PARAGRAPH}"
                 ),
                 "paragraph_ids": ["p0001", "p0002"],
@@ -8551,8 +8551,8 @@ def test_standalone_audiobook_reports_omitted_paragraph_characters_and_notifies(
     assert result == "succeeded"
     narration_text = runtime["state"]["latest_narration_text"]
     # ANTI-VACUUM: the paragraph the model DID answer for is still narrated.
-    assert "Однажды в маленькой деревне" in narration_text
-    assert "Footnotes 1 Quoted in Naomi Klein" not in narration_text
+    assert "Однажды в маленькой гавани" in narration_text
+    assert "Footnotes 1 Quoted in Ilsa Varrow" not in narration_text
     # ...while the DOCX branch still carries the source of the omitted paragraph.
     assert _OMITTED_ENGLISH_PARAGRAPH in runtime["state"]["latest_markdown"]
 
@@ -8754,7 +8754,7 @@ class _GlossaryResponsesClient:
 
 _GLOSSARY_SOURCE_TEXTS = (
     "In the town of Kelbrook the council debated the quillet bond for a long time.",
-    "For the rest of the book we will refer to this paper as *quillet bond*.",
+    "From here to the last page we will refer to this paper as *quillet bond*.",
     "Zorvane Pettish argued that Kelbrook needed the quillet bond more than gold.",
     "The weather changed and the harvest came in late that year, as it often did.",
     "Later, Zorvane Pettish wrote to Kelbrook about the quillet bond once more.",

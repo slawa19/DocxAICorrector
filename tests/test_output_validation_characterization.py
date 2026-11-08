@@ -144,7 +144,7 @@ def test_collect_samples_golden() -> None:
         {
             "source_index": 219,
             "origin_raw_indexes": [220],
-            "text_preview": "this scenario has been repeated for every one of the large-scale banking crises and monetary",
+            "text_preview": "this pattern has turned up again in each of the large-scale harbour closures and coastal",
             "role": "body",
             "structural_role": "toc_entry",
             "heading_level": None,
@@ -153,7 +153,7 @@ def test_collect_samples_golden() -> None:
         {
             "source_index": 219,
             "origin_raw_indexes": [220],
-            "text_preview": "meltdowns of our times.",
+            "text_preview": "floodings of our tides.",
             "role": "body",
             "structural_role": "toc_entry",
             "heading_level": None,
