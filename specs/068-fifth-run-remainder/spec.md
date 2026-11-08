@@ -78,8 +78,9 @@
   `app.log` Money и RM отсутствуют при `back_matter_model_kept_paragraph_count` Money 1 / RM 71: раннер подменяет
   `log_event` пайплайна на `build_validation_event_logger` (`validation/common.py:19-34`, вызов
   `run_lietaer_validation.py:5810`), пишущий в список в памяти, в отчёт попадают последние 25 событий; FR-013 067
-  (лог прогона в каталоге прогона) этого канала не касается; `config_key_ignored` в логе прогона 0 — причина
-  устанавливается (обследование B).
+  (лог прогона в каталоге прогона) этого канала не касается; обследование B: событий пайплайна ≈ 981 / ≈ 820 на прогон, в отчёте 25, `classify_failure` читал обрезанный
+  список; `config_key_ignored` = 0 — ПРАВИЛЬНО, игнорируемых ключей после `ba10261` (066) нет, канал тот же, что у
+  `model_registry_resolved` (строка 1 логов).
 - **X-3 (P2). Записи примечаний в конце главы, разорванные страницей, не склеены.** Money `p0389`, `p0810`: FR-005
   067 требует, чтобы обе страницы несли текст тела (≥ 3 строки кеглем тела по ≥ 7 слов), а страницы с примечаниями в
   конце главы набраны кеглем 10,8 при теле 14,4; FR-001 067 эти абзацы теперь распознаёт как серию примечаний в теле
@@ -160,4 +161,47 @@
 
 ## Changelog
 
+- 2026-11-08 — **FR-002, лог раннера (`068/runlog`, `84b5ee6`, влит `c3649af`); механизм — обследование B
+  (`D:\\Temp\\docxai-research\\068-sweep-b\\`).** У раннера два канала событий: внедрённый `log_event_fn` пайплайна
+  (`dependencies.log_event` 67 мест, `pipeline_context.log_event_fn` 9, параметры `log_event=`) подменяется
+  `build_validation_event_logger` (`validation/common.py:19-34`, вызов `run_lietaer_validation.py:5845-5846`) — только список
+  в памяти, в отчёт `event_log[-25:]` (`:6065`), `classify_failure` читал ОБРЕЗАННЫЙ список (`:3863-3871`); модульный
+  `core.logger.log_event` (108 мест в 27 модулях) доходит до файла прогона через `redirect_log_file`. Итог пятого прогона:
+  ≈ 981 (Money) / ≈ 820 (RM) событий пайплайна, в отчёте 25; `block_apparatus_kept_by_model` (2 / 11 блоков),
+  `block_apparatus_policy_kept_source` (7 / 3), `block_controlled_fallback`, `run_glossary_built`, `processing_started` в
+  `app.log` не попадали; фраза §6.3 документа о «том же потоке событий» была ложной. **`config_key_ignored` = 0 —
+  правильно:** тот же канал, что `model_registry_resolved` (строка 1 обоих логов), набор игнорируемых ключей пуст после
+  `ba10261` (066); проверено без модели на `3fa747c` с тем же `.env`. Спаун-ребёнок разбора PDF в файл прогона попадает
+  (ровно одно `pdf_image_extraction_*` на прогон). **Правка:** `build_validation_event_logger(forward_event=…)`
+  (`validation/common.py:23,43-44`) — событие кладётся в список и пересылается в `app_logger.log_event`
+  (`run_lietaer_validation.py:5857`; та же форма, что у UI-пути `processing_service._log_event`), уровень общий с
+  приложением (DEBUG `block_started`/`block_completed` в файл не идут; объём по обследованию +23 строки ≈ 24 КБ Money, +29 ≈
+  30 КБ RM); полный список — `<artifact_dir>/events.jsonl` (`write_event_log_sidecar` `:3868`, та же очистка
+  `sanitize_for_json`, пишется до сборки отчёта и при исключении; объём ≈ 0,55–0,6 МБ на книгу — оценка), в отчёте
+  `output_artifacts.events_jsonl`, `event_log_total_count`, `event_log` остаётся хвостом 25 (`REPORT_EVENT_LOG_TAIL`);
+  `classify_failure(report, event_log=…)` читает полный список (`:3887`, вызов `:6127`),
+  `scripts/run-reader-cleanup-lineage-rebuild-harness.py:59` читает `events.jsonl` с откатом на хвост;
+  `image_candidate_generated` → DEBUG (`image/generation.py:151`; 72 % строк лога прогона при safe-режиме; §2 документа
+  уже называл DEBUG, 062 уровень не обсуждала). Документ §1.1 (два канала, `events.jsonl`, `config_key_ignored`), §1.4
+  («перехват с пересылкой, не stub»), §5.1 (строка `runs/<run_id>/events.jsonl`), §6.1, §6.2, §6.3 (фраза стала правдой,
+  записано, что до 068 была ложной). Тесты: стаб-прогон `main()` — число `block_apparatus_kept_by_model` в `app.log`
+  равно отправленным (3), DEBUG-событий нет, `events.jsonl` = все события по порядку, отчёт = хвост файла; раннее
+  `block_rejected` вне хвоста даёт `failure_classification`; `image_candidate_generated` на DEBUG; харнесс читает
+  `events.jsonl`; мутация «без пересылки» роняет тест. Отвергнуто: снимать кап 25 в самом отчёте (форма ключа у
+  читателей), дублировать прямые `log_event` в `events.jsonl` (второй источник), метка времени в событиях (формат
+  `event_log`).
+- 2026-11-08 — **FR-003, рваные записи примечаний на границе страницы (`068/import`, `94292ee`, влит `cbcb2f9`).**
+  `logical_import.py:2778` `_halves_continue_an_in_body_notes_run` — альтернатива условию «обе страницы несут текст тела»:
+  строка набрана меньше кегля тела (`_font_sizes_match` с кеглем тела отвергает), B не начинается с номера примечания
+  (`output_validation.opens_with_note_number` `:678` — форма номера FR-001 067, тот же `_NOTE_NUMBER_PATTERN` и
+  открыватели), обе половины после склейки читаются как серия примечаний (`is_notes_run_paragraph`); остальные условия
+  FR-005 067 в силе; `_is_page_torn_body_continuation` → `_page_torn_continuation_rationale` (`:2812`) возвращает
+  rationale `merged_page_torn_notes_run_continuation` (`:2887`). Второй вариант постановки («номер на A, продолжение на B»)
+  не строился: на корпусе до альтернативы доходят ровно 2 пары, обе ловятся формой склеенного текста
+  (`probe_alt.txt`). Размеченный набор 067 B: **31/32 при 0 ложных** (было 29/32): Money 3/0/2 → 5/0/0 (`p0389` стр. 35→36
+  запись 34, `p0823` стр. 84→85 запись 6 — швы прочитаны), VoE 14/0/1 (`p1867` внутри региона references — notes-join, вне
+  scope), RM 3/0/0, CW 9/0/0. Инварианты: абзацы Money 1454 → 1452, остальное (заголовки 112/171/259/169, уровни 1–2,
+  надстрочные 448/243/166/295, списки, мультимножество символов) без изменений; в Money юнитов серии примечаний 74 → 73,
+  строк 681 → 683. Попутно вне FR-003: внутри тех же серий остаются разрывы на одной странице («…Financial» | «Markets
+  Trends…») — другой класс. 4 синтетических теста, мутации ловятся по одной.
 - 2026-11-08 — спека создана по остатку 067 (`3fa747c`); обследования A и B запущены, их находки дописываются.
