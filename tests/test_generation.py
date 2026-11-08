@@ -5586,3 +5586,31 @@ def test_spec065_the_merge_ladder_scope_does_not_keep_a_meta_comment():
     asked, kept = scope
     assert asked == [0]
     assert (kept[1].status, kept[1].text) == ("omitted", _SPEC065_SHORT_SOURCE)
+
+
+# --- Spec 065 FR-005, Codex acceptance review P0: the floors under both ratio bounds ------------
+
+
+def test_spec065_a_source_under_40_chars_is_never_measured_so_a_correct_cjk_translation_stands():
+    source = "你好。"
+    answer = "Здравствуйте."
+    assert (len(source), len(answer)) == (3, 13)  # 4.3x: past the 3x bound without the floors
+
+    assert generation._is_short_source_absorption(source, answer) is False
+
+
+def test_spec065_a_source_of_fewer_than_6_whitespace_tokens_is_never_measured():
+    five_tokens = "Harbourmasters' Associations: Proceedings, Volume Seventeen"
+    six_tokens = "Harbourmasters' Associations: Proceedings, Volume Seventeen, Part"
+    assert len(five_tokens.split()) == 5 and len(five_tokens) >= 40
+    assert len(six_tokens.split()) == 6
+
+    assert generation._is_short_source_absorption(five_tokens, _answer_of_length(4 * len(five_tokens))) is False
+    assert generation._is_short_source_absorption(six_tokens, _answer_of_length(4 * len(six_tokens))) is True
+
+
+def test_spec065_a_script_without_word_spaces_is_never_measured_even_when_long():
+    source = "这是一个没有空格的较长句子，用来说明按空格计数的词数下限会跳过这种文字，无论它有多长。"
+    assert len(source) >= 40 and len(source.split()) < 6
+
+    assert generation._is_short_source_absorption(source, _answer_of_length(5 * len(source))) is False
