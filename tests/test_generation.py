@@ -5266,3 +5266,323 @@ def test_the_abbreviation_rule_needs_both_halves_of_its_form():
     assert generation._ladder_sentences("Quoted at p.325 and e.g.here.") == [
         "Quoted at p.325 and e.g.here."
     ]
+
+
+# --- Spec 065 FR-005: a SHORT paragraph that outgrew its source took in a neighbour's text ------
+#
+# Synthetic texts (Constitution VII). The rule is length, markdown form and punctuation only, so
+# the answers are built to a stated length and every case asserts the ratio it relies on.
+
+_SPEC065_NEIGHBOUR_SOURCE = "11. A long enough note that the model translates faithfully and nothing more than that."
+_SPEC065_NEIGHBOUR_TRANSLATION = "11. Достаточно длинное примечание, которое модель переводит точно и ничего сверх того."
+_SPEC065_SHORT_SOURCE = "Grant (Oxford: Harbour Press, 1971), p. 42."
+_SPEC065_SHORT_TRANSLATION = "Грант (Оксфорд: Harbour Press, 1971), с. 42."
+# The note restored in full under its first piece, the next notes pulled in after it.
+_SPEC065_SHORT_OVERGROWN = (
+    "Грант (Оксфорд: Harbour Press, 1971), с. 42. 12. Другой автор, «Статья о налогах и сборах», "
+    "Journal of Examples, 3(2) (1980), pp. 1–20. 13. Третий автор, «Ещё одна работа» (1990)."
+)
+_SPEC065_BLOCK = (
+    f"[[DOCX_PARA_p0001]]\n{_SPEC065_NEIGHBOUR_SOURCE}\n\n[[DOCX_PARA_p0002]]\n{_SPEC065_SHORT_SOURCE}"
+)
+_SPEC065_OVERGROWN_ANSWER = (
+    f"[[DOCX_PARA_p0001]]\n{_SPEC065_NEIGHBOUR_TRANSLATION}\n\n[[DOCX_PARA_p0002]]\n{_SPEC065_SHORT_OVERGROWN}"
+)
+_SPEC065_CORRECT_ANSWER = (
+    f"[[DOCX_PARA_p0001]]\n{_SPEC065_NEIGHBOUR_TRANSLATION}\n\n[[DOCX_PARA_p0002]]\n{_SPEC065_SHORT_TRANSLATION}"
+)
+_SPEC065_TORN_ENTRY = "22. A. Writer, ‘Fees tucked away in the small print of contracts’,"
+
+
+def _answer_of_length(length: int) -> str:
+    return ("перевод " * (length // 8 + 1))[:length]
+
+
+def test_spec065_short_source_overgrowth_is_reported_only_when_the_caller_asks():
+    answers = [_SPEC065_NEIGHBOUR_TRANSLATION, _SPEC065_SHORT_OVERGROWN]
+    sources = [_SPEC065_NEIGHBOUR_SOURCE, _SPEC065_SHORT_SOURCE]
+    assert len(_SPEC065_SHORT_OVERGROWN) > 3 * len(_SPEC065_SHORT_SOURCE)
+
+    merges = generation._find_marker_chunk_merges(
+        answers, sources, expected_paragraph_ids=["p0001", "p0002"], detect_short_source_absorption=True
+    )
+
+    # An absorber with no collapsed partner: what it absorbed may be in the next block.
+    assert merges == [generation._MarkerChunkMerge(collapsed_index=None, absorbing_indexes=(1,))]
+    # Anti-vacuum: off by default, so the audiobook and the post-processing passes are unchanged.
+    assert generation._find_marker_chunk_merges(answers, sources, expected_paragraph_ids=["p0001", "p0002"]) == []
+
+
+@pytest.mark.parametrize(
+    ("source", "answer_ratio", "flagged"),
+    [
+        pytest.param(_SPEC065_SHORT_SOURCE, 3.2, True, id="short-source-past-3x"),
+        pytest.param(_SPEC065_SHORT_SOURCE, 3.0, False, id="exactly-3x-is-not-past-it"),
+        pytest.param("### Q&A on the project", 3.5, False, id="a-heading-is-a-label-and-may-grow"),
+        pytest.param("Bank (" + "x" * 196 + ")", 3.5, False, id="a-source-of-200-chars-is-not-short"),
+        # The torn numbered entry: its continuation is the neighbour by construction.
+        pytest.param(_SPEC065_TORN_ENTRY, 2.5, True, id="torn-entry-past-2x"),
+        pytest.param("70. J. M. Writer, ‘Capital and taxes’, in L. H.", 2.5, True, id="torn-entry-ending-on-an-initial"),
+        pytest.param(
+            _SPEC065_TORN_ENTRY[:-1] + ".", 2.5, False, id="finished-entry-with-its-title-translated-alongside"
+        ),
+        pytest.param(_SPEC065_TORN_ENTRY[4:], 2.5, False, id="unnumbered-torn"),
+        pytest.param("22. A. Writer, ‘Short fees’,", 2.5, False, id="torn-entry-under-40-chars"),
+        pytest.param(_SPEC065_TORN_ENTRY, 2.0, False, id="torn-entry-at-2x"),
+    ],
+)
+def test_spec065_the_form_of_a_short_source_absorption(source: str, answer_ratio: float, flagged: bool):
+    answer = _answer_of_length(int(len(source) * answer_ratio))
+    assert generation._is_short_source_absorption(source, answer) is flagged
+
+
+def test_spec065_an_overgrown_short_paragraph_with_budget_left_is_asked_again():
+    model_accounting.reset_run_model_accounting()
+    dispositions = generation.split_marker_preserved_paragraph_dispositions(
+        _SPEC065_OVERGROWN_ANSWER, ["p0001", "p0002"]
+    )
+
+    with pytest.raises(generation.MarkerValidationError) as exc_info:
+        generation.resolve_marker_paragraph_dispositions(
+            dispositions,
+            source_paragraph_chunks=[_SPEC065_NEIGHBOUR_SOURCE, _SPEC065_SHORT_SOURCE],
+            allow_unresolved_paragraphs=False,
+            raw_markdown=_SPEC065_OVERGROWN_ANSWER,
+            detect_short_source_absorption=True,
+        )
+
+    exc = exc_info.value
+    assert exc.error_code == generation.MERGED_MARKER_CHUNK_ERROR_CODE
+    assert exc.collapsed_paragraph_ids == ()
+    assert exc.absorbing_paragraph_ids == ("p0002",)
+    assert model_accounting.snapshot_run_model_accounting()["marker_chunk_merge_retry_count"] == 1
+
+
+def test_spec065_on_repair_only_the_overgrown_paragraph_ships_its_source():
+    model_accounting.reset_run_model_accounting()
+
+    resolved = generation.resolve_marker_paragraph_dispositions(
+        generation.split_marker_preserved_paragraph_dispositions(_SPEC065_OVERGROWN_ANSWER, ["p0001", "p0002"]),
+        source_paragraph_chunks=[_SPEC065_NEIGHBOUR_SOURCE, _SPEC065_SHORT_SOURCE],
+        allow_unresolved_paragraphs=True,
+        raw_markdown=_SPEC065_OVERGROWN_ANSWER,
+        detect_short_source_absorption=True,
+    )
+
+    assert [(item.paragraph_id, item.status, item.text) for item in resolved] == [
+        ("p0001", "accepted", _SPEC065_NEIGHBOUR_TRANSLATION),
+        ("p0002", "source_restored", _SPEC065_SHORT_SOURCE),
+    ]
+    snapshot = model_accounting.snapshot_run_model_accounting()
+    assert snapshot["model_output_discarded_reason_counts"] == {"marker_chunk_collapse": 1}
+    assert snapshot["model_output_discarded_paragraph_count"] == 1
+
+
+@pytest.mark.parametrize(("detect", "expected_calls"), [(True, 2), (False, 1)])
+def test_spec065_end_to_end_the_overgrown_answer_is_retried_only_for_a_translation(monkeypatch, detect, expected_calls):
+    monkeypatch.setattr(generation.time, "sleep", lambda _seconds: None)
+    model_accounting.reset_run_model_accounting()
+    requests: list[dict[str, Any]] = []
+
+    result = generation.generate_markdown_block(
+        client=_scripted_client([_SPEC065_OVERGROWN_ANSWER, _SPEC065_CORRECT_ANSWER], requests=requests),
+        model="gpt-5.4",
+        system_prompt="system",
+        target_text=_SPEC065_BLOCK,
+        context_before="",
+        context_after="",
+        max_retries=3,
+        expected_paragraph_ids=["p0001", "p0002"],
+        marker_mode=True,
+        detect_short_source_absorption=detect,
+    )
+
+    assert len(requests) == expected_calls
+    dispositions = generation.marker_paragraph_dispositions(result)
+    assert dispositions is not None
+    assert [item.status for item in dispositions] == ["accepted", "accepted"]
+    assert dispositions[1].text == (_SPEC065_SHORT_TRANSLATION if detect else _SPEC065_SHORT_OVERGROWN)
+
+
+@pytest.mark.parametrize("detect", [True, False])
+def test_spec065_a_ladder_answer_that_outgrew_its_paragraph_is_not_rescued(monkeypatch, detect):
+    monkeypatch.setattr(generation.time, "sleep", lambda _seconds: None)
+    requests: list[dict[str, Any]] = []
+
+    def ask() -> str:
+        return generation._ladder_model_answer(
+            client=_scripted_client([_SPEC065_SHORT_OVERGROWN], requests=requests),
+            model="gpt-5.4",
+            system_prompt="system",
+            target_text=_SPEC065_SHORT_SOURCE,
+            context_before="",
+            context_after="",
+            max_retries=1,
+            block_index=None,
+            unit_label="p0002",
+            detect_short_source_absorption=detect,
+        )
+
+    if detect:
+        with pytest.raises(RuntimeError, match="ladder_answer_short_source_absorption:p0002"):
+            ask()
+    else:
+        assert ask() == _SPEC065_SHORT_OVERGROWN
+
+
+@pytest.mark.parametrize(("operation", "expected"), [("translate", True), ("audiobook", False), ("edit", False)])
+def test_spec065_only_a_translate_block_asks_for_the_absorption_check(operation, expected):
+    import docxaicorrector.pipeline.block_execution as block_execution
+
+    captured: dict[str, Any] = {}
+    payload = SimpleNamespace(
+        job_kind="llm",
+        toc_dominant=False,
+        target_text=_SPEC065_SHORT_SOURCE,
+        target_text_with_markers=f"[[DOCX_PARA_p0001]]\n{_SPEC065_SHORT_SOURCE}",
+        paragraph_ids=["p0001"],
+        structural_roles=["body"],
+        paragraph_regions=["prose"],
+        back_matter_section=None,
+        narration_include=True,
+        target_chars=len(_SPEC065_SHORT_SOURCE),
+        context_chars=0,
+        context_before="",
+        context_after="",
+    )
+    block_execution._generate_block_chunk(
+        context=SimpleNamespace(
+            processing_operation=operation,
+            model_id="model",
+            model="model",
+            max_retries=1,
+            runtime=None,
+            document_segments=(),
+        ),
+        dependencies=SimpleNamespace(
+            generate_markdown_block=lambda **kwargs: captured.update(kwargs) or "ok",
+            should_stop_processing=lambda _runtime: False,
+        ),
+        state=SimpleNamespace(completed_segment_ids=set(), segment_outputs={}),
+        initialization=SimpleNamespace(text_client=None, client=object(), text_model_id="model", segment_ids_by_job=()),
+        index=1,
+        payload=payload,
+        marker_mode_enabled=True,
+        system_prompt="SYSTEM",
+    )
+
+    assert captured["detect_short_source_absorption"] is expected
+
+
+# --- Spec 065 FR-006: a parenthetical meta-comment is an EMPTY answer ----------------------------
+
+_SPEC065_META_COMMENT = "(Продолжение примечания 10)"
+_SPEC065_META_ANSWER = (
+    f"[[DOCX_PARA_p0001]]\n{_SPEC065_NEIGHBOUR_TRANSLATION}\n\n[[DOCX_PARA_p0002]]\n{_SPEC065_META_COMMENT}"
+)
+
+
+def _capture_events(monkeypatch) -> list[tuple[str, dict[str, Any]]]:
+    events: list[tuple[str, dict[str, Any]]] = []
+    monkeypatch.setattr(
+        generation, "log_event", lambda _level, name, _message, **fields: events.append((name, fields))
+    )
+    return events
+
+
+def test_spec065_a_meta_comment_with_budget_left_is_asked_again_like_an_empty_answer(monkeypatch):
+    events = _capture_events(monkeypatch)
+
+    with pytest.raises(generation.MarkerValidationError) as exc_info:
+        generation.resolve_marker_paragraph_dispositions(
+            generation.split_marker_preserved_paragraph_dispositions(_SPEC065_META_ANSWER, ["p0001", "p0002"]),
+            source_paragraph_chunks=[_SPEC065_NEIGHBOUR_SOURCE, _SPEC065_SHORT_SOURCE],
+            allow_unresolved_paragraphs=False,
+            raw_markdown=_SPEC065_META_ANSWER,
+        )
+
+    assert exc_info.value.error_code == "empty_marker_chunk"
+    assert (
+        "marker_chunk_meta_comment_rejected",
+        {"paragraph_id": "p0002", "comment_text": _SPEC065_META_COMMENT, "answer_chars": len(_SPEC065_META_COMMENT)},
+    ) in events
+
+
+def test_spec065_a_meta_comment_on_the_last_attempt_is_omitted_with_its_source(monkeypatch):
+    _capture_events(monkeypatch)
+
+    resolved = generation.resolve_marker_paragraph_dispositions(
+        generation.split_marker_preserved_paragraph_dispositions(_SPEC065_META_ANSWER, ["p0001", "p0002"]),
+        source_paragraph_chunks=[_SPEC065_NEIGHBOUR_SOURCE, _SPEC065_SHORT_SOURCE],
+        allow_unresolved_paragraphs=True,
+        raw_markdown=_SPEC065_META_ANSWER,
+    )
+
+    assert [(item.paragraph_id, item.status, item.text) for item in resolved] == [
+        ("p0001", "accepted", _SPEC065_NEIGHBOUR_TRANSLATION),
+        ("p0002", "omitted", _SPEC065_SHORT_SOURCE),
+    ]
+
+
+def test_spec065_an_authors_parenthetical_inside_a_paragraph_is_accepted(monkeypatch):
+    """Anti-regression 3 at the resolver: the form is anchored at the paragraph's start."""
+
+    events = _capture_events(monkeypatch)
+    source = "He went back to the manuscript (see chapter 10) and finished it by morning."
+    answer = "Он вернулся к рукописи (Продолжение следует в главе 10) и закончил её к утру."
+    markdown = f"[[DOCX_PARA_p0001]]\n{answer}"
+
+    resolved = generation.resolve_marker_paragraph_dispositions(
+        generation.split_marker_preserved_paragraph_dispositions(markdown, ["p0001"]),
+        source_paragraph_chunks=[source],
+        allow_unresolved_paragraphs=False,
+        raw_markdown=markdown,
+    )
+
+    assert [(item.status, item.text) for item in resolved] == [("accepted", answer)]
+    assert not [name for name, _fields in events if name == "marker_chunk_meta_comment_rejected"]
+
+
+def test_spec065_a_ladder_answer_that_is_a_meta_comment_is_an_empty_answer(monkeypatch):
+    monkeypatch.setattr(generation.time, "sleep", lambda _seconds: None)
+    events = _capture_events(monkeypatch)
+    requests: list[dict[str, Any]] = []
+
+    with pytest.raises(generation.EmptyResponse):
+        generation._ladder_model_answer(
+            client=_scripted_client([_SPEC065_META_COMMENT], requests=requests),
+            model="gpt-5.4",
+            system_prompt="system",
+            target_text=_SPEC065_SHORT_SOURCE,
+            context_before="",
+            context_after="",
+            max_retries=1,
+            block_index=None,
+            unit_label="p0002",
+        )
+
+    assert any(
+        name == "marker_chunk_meta_comment_rejected" and fields["paragraph_id"] == "p0002" for name, fields in events
+    )
+
+
+def test_spec065_the_merge_ladder_scope_does_not_keep_a_meta_comment():
+    merge = generation.MarkerValidationError(
+        generation.MERGED_MARKER_CHUNK_ERROR_CODE,
+        raw_markdown=_SPEC065_META_ANSWER,
+        expected_paragraph_ids=["p0001", "p0002"],
+        found_paragraph_ids=["p0001", "p0002"],
+        collapsed_paragraph_ids=[],
+        absorbing_paragraph_ids=["p0001"],
+    )
+
+    scope = generation._merge_ladder_scope(
+        merge,
+        expected_paragraph_ids=["p0001", "p0002"],
+        source_paragraph_chunks=[_SPEC065_NEIGHBOUR_SOURCE, _SPEC065_SHORT_SOURCE],
+    )
+
+    assert scope is not None
+    asked, kept = scope
+    assert asked == [0]
+    assert (kept[1].status, kept[1].text) == ("omitted", _SPEC065_SHORT_SOURCE)

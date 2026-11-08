@@ -627,26 +627,30 @@ _SAMPLE_DOCUMENT_CONTEXT = (
 # Re-pinned by spec 066 T-1: the "### ДОМЕН И ТЕРМИНОЛОГИЯ:" section (70 characters, always
 # "Специальные доменные инструкции не заданы.") is gone; each render is the previous one minus
 # exactly that section. The fourth row, a theology-domain render, became the audiobook prompt.
+# Re-pinned by spec 065: rule 10 of system_prompt.txt names one more stub, "(Продолжение
+# примечания 10)" (+31 characters in every render), and rule 12 of operation_translate.txt
+# gains two lines on Ibid./p. and dates in kept citations (+205 in the translate render;
+# the TOC variant renders operation_toc_translate.txt instead).
 _PRE_064_PROMPT_SNAPSHOTS = [
     (
         {"operation": "translate", "source_language": "en", "target_language": "ru"},
-        6907,
-        "fa3afff940c9c4134dcc3c99ed4121762306587ac7f73181536c1abff7439de0",
+        7143,
+        "3ae6fa624fd650d31ba85a948831413ba57cb29bdeb4ccbe4f018e8408d318c8",
     ),
     (
         {"operation": "edit", "source_language": "ru", "target_language": "ru"},
-        4887,
-        "41c6552c71380ea52074cd564fe3f71e925648e2413cc15f22cf5121bba10ce6",
+        4918,
+        "ff9a5ca3e3850fa2f374c0f2b32f79f18f1f77979014a00dfba71381c9a7b599",
     ),
     (
         {"operation": "translate", "source_language": "en", "target_language": "ru", "prompt_variant": "toc_translate"},
-        5805,
-        "6da3dbf8f940eea020b21939f3a188f54a289f87d0cc4c9685e1ba47de61af65",
+        5836,
+        "546387aa435e5e3134f7d99f951d1d9b1a8ff782d20f9e5909d1283261ade8ba",
     ),
     (
         {"operation": "audiobook", "source_language": "en", "target_language": "ru"},
-        9982,
-        "792cfe7e9182148e1cb425e8acf3118b1f8b6750815ca959a0ff9fed2dffb493",
+        10013,
+        "2eea29532e1dc585a14cc77457c3a55fa8deee9fc8b7f4814158881376bca083",
     ),
 ]
 
