@@ -188,6 +188,9 @@ class GlossaryCandidate:
     # or with a hyphen ("added value", "value-added" for "value added"). They are not asked for
     # on their own; the rendering of ``source_term`` covers them.
     spellings: tuple[str, ...] = ()
+    # Spec 067 FR-009: the candidates the book sets against this one -- the same last word,
+    # other words before it, side by side in the same paragraphs (``_contrast_partners``).
+    contrasts: tuple[str, ...] = ()
 
     def to_payload(self) -> dict[str, object]:
         payload: dict[str, object] = {
@@ -205,6 +208,8 @@ class GlossaryCandidate:
             payload["name_head"] = self.name_head
         if self.spellings:
             payload["spellings"] = list(self.spellings)
+        if self.contrasts:
+            payload["contrasts"] = list(self.contrasts)
         return payload
 
 
@@ -910,6 +915,7 @@ def extract_glossary_candidates(
         return draft.surface if draft.proper else _written_surface(draft.surface, written_forms)
 
     candidates: list[GlossaryCandidate] = []
+    candidate_units: list[set[int]] = []
     for group in _permutation_groups(kept):
         # Spec 067 FR-010: one candidate per group, named by its most used surface (the first
         # on a tie); the others are its spellings. The group's uses and units add up, and it
@@ -940,7 +946,71 @@ def extract_glossary_candidates(
                 spellings=tuple(surface_of(member) for member in group if member is not draft),
             )
         )
-    return tuple(candidates)
+        candidate_units.append(group_units)
+    partners = _contrast_partners(candidates, candidate_units)
+    return tuple(
+        replace(candidate, contrasts=partners[index]) if index in partners else candidate
+        for index, candidate in enumerate(candidates)
+    )
+
+
+# Spec 067 FR-009: two candidates the author sets against each other stand side by side in at
+# least this many paragraphs. Measured on the fourth run's books (2026-11-08): Rethinking
+# Money's *cooperative currencies* / *complementary currencies* share 5 paragraphs. Over the
+# glossary entries of the four books (a survey of all paragraphs, before the joiner and
+# narrowing exclusions) pairs sharing >= 1 paragraph number 22 / 31 / 9 / 18 (Money / CW / RM /
+# VoE) and >= 2 -- 13 / 15 / 5 / 6: one shared paragraph is mostly a passing mention, and the
+# mark costs prompt characters on every block call.
+_CONTRAST_MIN_SHARED_UNITS = 2
+
+
+def _contrast_partners(
+    candidates: Sequence[GlossaryCandidate],
+    units_of: Sequence[set[int]],
+) -> dict[int, tuple[str, ...]]:
+    """Candidates the book contrasts with each candidate, by form (spec 067 FR-009, G-2).
+
+    Rethinking Money fixed *complementary currencies* as «комплементарные валюты», and in 12 of
+    93 paragraphs about its own *cooperative currencies* the translation then said
+    «комплементарные» -- the rendering of one entry leaked into its neighbour. Two candidates
+    are a contrasted pair when, by form:
+      - each has at least two words and no joiner inside (a word of up to
+        ``_MAX_JOINER_LETTERS`` letters between the first and the last: in "theory of value"
+        the last word is not the head);
+      - they share the LAST word and differ before it, and neither ends with the other
+        ("exchange capital" in "potential exchange capital" is the same thing narrowed, which
+        spec 065 FR-003 already orders);
+      - they stand together in at least ``_CONTRAST_MIN_SHARED_UNITS`` paragraphs.
+    No list of words: the head word, the paragraphs and the counts are the document's own.
+    Partners come most shared paragraphs first, then by use.
+    """
+
+    shapes: dict[int, tuple[str, ...]] = {}
+    for index, candidate in enumerate(candidates):
+        words = tuple(word.lower() for word in candidate.key)
+        if len(words) < 2 or any(len(word) <= _MAX_JOINER_LETTERS for word in words[1:-1]):
+            continue
+        shapes[index] = words
+    by_last: dict[str, list[int]] = defaultdict(list)
+    for index, words in shapes.items():
+        by_last[words[-1]].append(index)
+    found: dict[int, list[tuple[int, int, str]]] = defaultdict(list)
+    for members in by_last.values():
+        for position, first in enumerate(members):
+            for second in members[position + 1 :]:
+                a, b = shapes[first], shapes[second]
+                shorter, longer = (a, b) if len(a) <= len(b) else (b, a)
+                if longer[-len(shorter) :] == shorter:
+                    continue
+                shared = len(units_of[first] & units_of[second])
+                if shared < _CONTRAST_MIN_SHARED_UNITS:
+                    continue
+                found[first].append((shared, candidates[second].occurrence_count, candidates[second].source_term))
+                found[second].append((shared, candidates[first].occurrence_count, candidates[first].source_term))
+    return {
+        index: tuple(term for _, _, term in sorted(pairs, key=lambda item: (-item[0], -item[1], item[2])))
+        for index, pairs in found.items()
+    }
 
 
 def _permutation_key(key: Sequence[str]) -> tuple[str, ...] | None:
@@ -1363,6 +1433,8 @@ def build_glossary_request(
                 "context": candidate.context,
                 # Spec 067 FR-010: the same expression written otherwise; one rendering covers all.
                 **({"spellings": list(candidate.spellings)} if candidate.spellings else {}),
+                # Spec 067 FR-009: expressions the book sets against this one.
+                **({"contrast_with": list(candidate.contrasts)} if candidate.contrasts else {}),
             }
             for index, candidate in enumerate(candidates)
         ],

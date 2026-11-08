@@ -13,6 +13,7 @@ From the other candidates, choose the entries whose rendering must stay the same
 - the book's own concepts and terms of art, especially the subjects named in its chapter titles, and those a translator could plausibly render in more than one way;
 - proper names of people, places, organisations, currencies, programmes and publications — one spelling or transliteration each, following established {target_language} usage where one exists;
 - skip ordinary vocabulary that has one obvious translation, fragments that are not expressions of their own, and artefacts of text extraction (split words, stray letters).
+A candidate with "contrast_with" shares its last word with those expressions and stands beside them in the book: they are contrasted concepts. Give it a rendering that cannot be confused with theirs (including those in "already_fixed") and say in "note", in a few words, what sets it apart from them.
 Return as many as the candidates justify, at most {max_terms} besides the required ones.
 
 Give each entry the single rendering to use everywhere, in the dictionary form of {target_language} (it will be inflected in context). If the book clearly uses one candidate in two distinct senses, you may return it twice with a different "note" each time.

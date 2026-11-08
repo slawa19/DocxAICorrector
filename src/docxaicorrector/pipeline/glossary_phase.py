@@ -62,6 +62,7 @@ from docxaicorrector.text.glossary_pass import (
     is_single_lowercase_entry,
     missing_required_candidates,
     normalize_glossary_key,
+    normalize_rendering,
     order_collision_group,
     order_glossary_entries,
     parse_glossary_response,
@@ -936,17 +937,9 @@ def plan_run_glossary_section(
     """
 
     required_keys = {normalize_glossary_key(candidate.source_term) for candidate in candidates if candidate.required}
-    spellings_by_key: dict[tuple[str, ...], tuple[str, ...]] = {}
-    for candidate in candidates:
-        if candidate.spellings:
-            spellings_by_key.setdefault(normalize_glossary_key(candidate.source_term), tuple(candidate.spellings))
-    renderable = tuple(
-        # Spec 067 FR-010: the entry names the other surfaces its rendering covers.
-        replace(term, spellings=spellings_by_key[key])
-        if (key := normalize_glossary_key(term.source_term)) in spellings_by_key
-        else term
-        for term in terms
-        if str(term.source_term or "").strip() and str(term.target_term or "").strip()
+    renderable = _annotate_section_entries(
+        tuple(term for term in terms if str(term.source_term or "").strip() and str(term.target_term or "").strip()),
+        candidates,
     )
     last_protected = max(
         (
@@ -973,6 +966,47 @@ def plan_run_glossary_section(
             term.source_term for term in cut if normalize_glossary_key(term.source_term) in required_keys
         ),
     )
+
+
+def _annotate_section_entries(
+    terms: tuple[GlossaryTerm, ...],
+    candidates: tuple[GlossaryCandidate, ...],
+) -> tuple[GlossaryTerm, ...]:
+    """The entries with what the section prints beside them, by form.
+
+    Spec 067 FR-010: an entry names the other surfaces its rendering covers (``spellings``).
+    Spec 067 FR-009: an entry carries the renderings of the entries the book sets against it
+    (``GlossaryCandidate.contrasts``), printed "≠ ...", when those entries are in the glossary
+    with a DIFFERENT rendering -- one rendering shared by both is a collision, call C's.
+    """
+
+    spellings_by_key: dict[tuple[str, ...], tuple[str, ...]] = {}
+    contrasts_by_key: dict[tuple[str, ...], tuple[tuple[str, ...], ...]] = {}
+    for candidate in candidates:
+        key = normalize_glossary_key(candidate.source_term)
+        if candidate.spellings:
+            spellings_by_key.setdefault(key, tuple(candidate.spellings))
+        if candidate.contrasts:
+            contrasts_by_key.setdefault(key, tuple(normalize_glossary_key(other) for other in candidate.contrasts))
+    renderings_by_key: dict[tuple[str, ...], list[str]] = {}
+    for term in terms:
+        renderings = renderings_by_key.setdefault(normalize_glossary_key(term.source_term), [])
+        target = " ".join(str(term.target_term or "").split())
+        if target and target not in renderings:
+            renderings.append(target)
+    annotated: list[GlossaryTerm] = []
+    for term in terms:
+        key = normalize_glossary_key(term.source_term)
+        own = normalize_rendering(term.target_term)
+        contrasts: list[str] = []
+        for other in contrasts_by_key.get(key, ()):
+            for rendering in renderings_by_key.get(other, ()):
+                if normalize_rendering(rendering) != own and rendering not in contrasts:
+                    contrasts.append(rendering)
+        if key in spellings_by_key or contrasts:
+            term = replace(term, spellings=spellings_by_key.get(key, term.spellings), contrasts=tuple(contrasts))
+        annotated.append(term)
+    return tuple(annotated)
 
 
 def render_run_glossary_section(

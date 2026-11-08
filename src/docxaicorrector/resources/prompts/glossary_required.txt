@@ -6,6 +6,7 @@ The user message is a JSON object with:
 
 These expressions are in the glossary already; do not decide whether they belong. Give EVERY candidate one rendering to use everywhere, in the dictionary form of {target_language} (it will be inflected in context):
 - the author's concepts need renderings that keep them apart: when the book contrasts or pairs related concepts, each of them needs its own rendering, and two different candidates must never share one;
+- a candidate with "contrast_with" shares its last word with those expressions and stands beside them in the book: they are contrasted concepts. Give it a rendering that cannot be confused with theirs — not one of their renderings, not a word of theirs in place of its own distinguishing word — and say in "note", in a few words, what sets it apart from them;
 - proper names — one spelling or transliteration each, following established {target_language} usage where one exists;
 - if a candidate is an ordinary word, give its ordinary rendering in the sense of its context;
 - when a general word is used in a special sense of this book, say that sense in "note";

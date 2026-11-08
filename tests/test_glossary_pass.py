@@ -2136,3 +2136,90 @@ def test_fr010_both_glossary_prompts_explain_spellings():
     for role in (glossary_pass.GLOSSARY_ROLE_REQUIRED, glossary_pass.GLOSSARY_ROLE_OPTIONAL):
         text = glossary_pass._load_glossary_instructions(role)
         assert '"spellings", when present, are the same expression written otherwise in the book' in text
+
+
+# --- Spec 067 FR-009: entries the book sets against each other carry a mutual mark ---------------
+
+
+def _contrast_document():
+    paragraphs = []
+    for _ in range(6):
+        paragraphs.extend(_FILLER)
+        paragraphs.append("The drovish ledgers were kept apart from the brannick ledgers in every town.")
+        paragraphs.append("Merchants trusted drovish ledgers more; the clerks preferred drovish ledgers too.")
+        paragraphs.append("Brannick ledgers came later, and brannick ledgers are still read.")
+        paragraphs.append("The harbour kept salted herring, and salted herring sold well.")
+        paragraphs.append("The smoked herring did not sell, though smoked herring was cheap.")
+    paragraphs.append("Salted herring and smoked herring met only once, at the fair.")
+    return paragraphs
+
+
+def test_fr009_two_candidates_sharing_the_last_word_side_by_side_are_contrasted():
+    by_term = {candidate.source_term: candidate for candidate in extract_glossary_candidates(_units(_contrast_document()))}
+
+    assert by_term["drovish ledgers"].contrasts == ("brannick ledgers",)
+    assert by_term["brannick ledgers"].contrasts == ("drovish ledgers",)
+    assert by_term["drovish ledgers"].to_payload()["contrasts"] == ["brannick ledgers"]
+    # Counter-test: one shared paragraph is not the author setting them against each other.
+    assert "salted herring" in by_term and "smoked herring" in by_term
+    assert by_term["salted herring"].contrasts == () and by_term["smoked herring"].contrasts == ()
+
+
+def test_fr009_a_narrower_form_or_an_of_phrase_is_not_a_contrast():
+    def candidate(term):
+        return replace(_candidate(term, "collocation"), key=normalize_glossary_key(term))
+
+    candidates = (
+        candidate("tallow quills"),
+        candidate("red tallow quills"),  # ends with "tallow quills": the same thing narrowed
+        candidate("theory of quills"),  # a joiner inside: "quills" is not its head
+        candidate("brannick quills"),
+    )
+    shared = {0, 1, 2, 3}
+    partners = glossary_pass._contrast_partners(candidates, [set(shared) for _ in candidates])
+
+    assert partners[0] == ("brannick quills",)
+    assert partners[1] == ("brannick quills",)
+    assert 2 not in partners
+    assert set(partners[3]) == {"tallow quills", "red tallow quills"}
+
+
+def test_fr009_the_section_marks_both_entries_with_the_other_rendering():
+    from docxaicorrector.pipeline.glossary_phase import plan_run_glossary_section
+
+    drovish = replace(_counted_candidate("drovish ledgers", 18, required=True), contrasts=("brannick ledgers",))
+    brannick = replace(_counted_candidate("brannick ledgers", 12), contrasts=("drovish ledgers",))
+    terms = (
+        _entry("drovish ledgers", "дровишские книги", note="older, kept by merchants"),
+        _entry("brannick ledgers", "бранницкие книги"),
+    )
+    lines = plan_run_glossary_section(terms, (drovish, brannick), max_chars=10).text.splitlines()
+
+    assert lines[1] == "- drovish ledgers -> дровишские книги ≠ бранницкие книги — older, kept by merchants"
+    assert lines[2] == "- brannick ledgers -> бранницкие книги ≠ дровишские книги"
+    # Counter-tests: no mark when the partner has no entry, or shares the rendering (a
+    # collision -- call C's business, not a contrast to print).
+    alone = plan_run_glossary_section(terms[:1], (drovish, brannick), max_chars=10).text
+    assert "≠" not in alone
+    shared = (terms[0], _entry("brannick ledgers", "дровишские книги"))
+    assert "≠" not in plan_run_glossary_section(shared, (drovish, brannick), max_chars=10).text
+
+
+def test_fr009_the_calls_carry_the_contrast_and_the_prompts_explain_it():
+    from docxaicorrector.core.config import load_system_prompt
+
+    drovish = replace(_candidate("drovish ledgers", "marked"), required=True, contrasts=("brannick ledgers",))
+    for role in (glossary_pass.GLOSSARY_ROLE_REQUIRED, glossary_pass.GLOSSARY_ROLE_OPTIONAL):
+        request = build_glossary_request(
+            model="m", candidates=(drovish,), source_language="en", target_language="ru", max_terms=5, role=role
+        )
+        payload = json.loads(cast(Any, request["input"])[1]["content"][0]["text"])
+        assert payload["candidates"][0]["contrast_with"] == ["brannick ledgers"]
+        text = glossary_pass._load_glossary_instructions(role)
+        assert '"contrast_with"' in text and "contrasted concepts" in text
+        assert 'say in "note", in a few words, what sets it apart from them' in text
+    prompt = load_system_prompt(
+        operation="translate", source_language="en", target_language="ru",
+        document_context_prompt="ГЛОССАРИЙ:\n- drovish ledgers -> дровишские книги ≠ бранницкие книги",
+    )
+    assert "Пометка «≠ …» после передачи называет передачи терминов, которые автор противопоставляет этому" in prompt

@@ -86,13 +86,16 @@ class GlossaryTerm:
     # Spec 067 FR-010: other surfaces of the same source term (the same words in another order
     # or with a hyphen); set only for the prompt section, never asked of the model.
     spellings: tuple[str, ...] = ()
+    # Spec 067 FR-009: the renderings of the entries the book sets against this one; set only
+    # for the prompt section and printed as "≠ ..." so the two cannot be confused.
+    contrasts: tuple[str, ...] = ()
 
 
 GLOSSARY_TERM_KINDS = frozenset({"term", "name"})
 
 
 def _render_glossary_line(term: GlossaryTerm) -> str:
-    """One entry on ONE line: ``- source (также: spellings) -> target (имя) — note``."""
+    """One entry on ONE line: ``- source (также: spellings) -> target (имя) ≠ contrasts — note``."""
 
     source_term = str(term.source_term or "").strip()
     target_term = str(term.target_term or "").strip()
@@ -105,6 +108,10 @@ def _render_glossary_line(term: GlossaryTerm) -> str:
     line = f"- {source_term} -> {target_term}"
     if str(getattr(term, "kind", "") or "").strip() == "name":
         line += " (имя)"
+    contrasts = [" ".join(str(contrast).split()) for contrast in getattr(term, "contrasts", ()) or ()]
+    contrasts = [contrast for contrast in contrasts if contrast]
+    if contrasts:
+        line += f" ≠ {', '.join(contrasts)}"
     note = " ".join(str(getattr(term, "note", "") or "").split())
     if note:
         line += f" — {note}"
