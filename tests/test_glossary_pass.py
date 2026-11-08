@@ -2223,3 +2223,69 @@ def test_fr009_the_calls_carry_the_contrast_and_the_prompts_explain_it():
         document_context_prompt="ГЛОССАРИЙ:\n- drovish ledgers -> дровишские книги ≠ бранницкие книги",
     )
     assert "Пометка «≠ …» после передачи называет передачи терминов, которые автор противопоставляет этому" in prompt
+
+
+# --- Spec 067 FR-011: two form defects of single words -------------------------------------------
+
+
+def test_fr011_a_paragraph_set_in_capitals_is_no_evidence_of_a_capitalised_form():
+    # RM "PROSPERITY": a paragraph in capitals gave the word a capital "form" (inner capitals,
+    # and a capitalised run), and the marked word became required.
+    paragraphs = ["**HARBOURAGE**"]
+    for _ in range(4):
+        paragraphs.extend(_FILLER)
+        paragraphs.append("The harbourage of the town was paid twice, and the harbourage rose.")
+    keys = _keys(extract_glossary_candidates(_units(paragraphs)))
+
+    assert "harbourage" in keys
+    assert not keys["harbourage"].required
+    # Counter-test: mixed case is still a name's form (spec 065, Codex finding 2).
+    assert glossary_pass._has_inner_capital("QuillPay") and glossary_pass._has_inner_capital("eBay")
+    assert not glossary_pass._has_inner_capital("HARBOURAGE")
+
+
+def _chapter_document(mention):
+    paragraphs: list[tuple[str, int | None]] = []
+    for number in range(1, 5):
+        paragraphs.append((f"PARTITION {number}", 1))
+        paragraphs.extend((text, None) for text in _FILLER)
+        paragraphs.append((f"As shown in {mention(number)}, this partition matters.", None))
+    return _heading_units(paragraphs)
+
+
+def test_fr011_a_capital_before_a_number_is_a_label_not_the_words_case():
+    # CW *chapter*: "described in Chapter 13" (15 times mid-sentence) against "this chapter"
+    # (14) made it a capitalised form, and its all-capitals h1 headings made it required.
+    keys = _keys(extract_glossary_candidates(_chapter_document(lambda number: f"Partition {number}")))
+    assert "partition" in keys and not keys["partition"].required
+
+    # Counter-test: the same capital NOT before a number is the document's case of the word.
+    keys = _keys(extract_glossary_candidates(_chapter_document(lambda number: "the Partition office")))
+    assert "partition" in keys and keys["partition"].required
+
+
+def test_fr011_a_defined_hyphenated_word_split_by_emphasis_is_one_candidate():
+    paragraphs = [
+        "Its own currency is perhaps the network's best feature. The currency is called *thank-**yous* or Ts.",
+        *(_FILLER * 6),
+    ]
+    keys = _keys(extract_glossary_candidates(_units(paragraphs)))
+
+    assert "thank-yous" in keys and "defined" in keys["thank-yous"].signals and keys["thank-yous"].required
+    assert "thank" not in keys
+
+
+def test_fr011_a_defined_expression_the_document_writes_whole_keeps_its_short_first_word():
+    # Enough ordinary text that "cap" is not among the document's 20 commonest words.
+    paragraphs = ["The two strategies are a trading system known as cap and trade, and the levy."]
+    for round_index in range(12):
+        paragraphs.extend(_FILLER)
+        if round_index % 3 == 0:
+            paragraphs.append("Under cap and trade the permits are sold, and the trade in permits grows.")
+    keys = _keys(extract_glossary_candidates(_units(paragraphs)))
+
+    assert "cap and trade" in keys and keys["cap and trade"].required
+    assert "trade" not in keys
+    # Counter-test: a definition written once is trimmed as before ("called him a loser").
+    once = ["The neighbours called him a lostling, and it stuck.", *(_FILLER * 6)]
+    assert "him a lostling" not in _keys(extract_glossary_candidates(_units(once)))

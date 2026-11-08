@@ -114,8 +114,12 @@ _EMPHASIS_MARKS_RE = re.compile(r"\*+")
 # marked expression. Bold first, so "**a** **b**" is not read as two italics.
 _ADJACENT_BOLD_RE = re.compile(r"(?<=[^\s*])\*\*(\s+)\*\*(?=[^\s*])")
 _ADJACENT_ITALIC_RE = re.compile(r"(?<=[^\s*])\*(\s+)\*(?=[^\s*])")
+# Spec 067 FR-011 (b): "**" between a letter (or a word's hyphen) and a letter -- an italic run
+# closed and reopened inside one word, as the importer writes "*thank-**yous*".
+_EMPHASIS_INSIDE_WORD_RE = re.compile(r"(?<=[^\W\d_]|-)\*\*(?=[^\W\d_])")
 _URL_RE = re.compile(r"(?:https?://|www\.)\S+|\S*[A-Za-z0-9]\.[A-Za-z]{2,}/\S*")
 _ROMAN_NUMERAL_RE = re.compile(r"^[IVXLCDM]+$")
+_DIGIT_AFTER_RE = re.compile(r"[ \t ]*\d")
 _POSSESSIVE_RE = re.compile(r"[’']s$")
 _SENTENCE_BREAKS = frozenset(".!?:;\"“”‘(—–[•")
 _CLAUSE_SPLIT_RE = re.compile(r"[.!?:;,()\[\]—–\"“”‘’•]")
@@ -337,20 +341,26 @@ def _plain(text: str) -> str:
 
 
 def _join_adjacent_emphasis(text: str) -> str:
-    return _ADJACENT_ITALIC_RE.sub(r"\1", _ADJACENT_BOLD_RE.sub(r"\1", text))
+    joined = _ADJACENT_ITALIC_RE.sub(r"\1", _ADJACENT_BOLD_RE.sub(r"\1", text))
+    # Spec 067 FR-011 (b): emphasis closed and reopened INSIDE one word ("called *thank-**yous*")
+    # cut the defined word in two, and "thank" became a required entry; the word is one.
+    return _EMPHASIS_INSIDE_WORD_RE.sub("", joined)
 
 
 # --- extraction ------------------------------------------------------------------------------
 
 
-def _capitalised_runs(plain: str) -> list[list[str]]:
+def _capitalised_runs(plain: str, numbered: list[bool] | None = None) -> list[list[str]]:
     """Runs of capitalised words; a run that opens a sentence is marked with a leading ``None``.
 
     Short lowercase joiners (``of``, ``for``) are kept inside a run when a capitalised word
-    follows them, so an institution's name stays one candidate.
+    follows them, so an institution's name stays one candidate. ``numbered``, when given,
+    receives one flag per returned run: the run is directly followed by a digit ("Chapter 13",
+    "Figure 2" -- spec 067 FR-011).
     """
 
-    tokens = [match.group(0) for match in _TOKEN_RE.finditer(plain)]
+    matches = list(_TOKEN_RE.finditer(plain))
+    tokens = [match.group(0) for match in matches]
     runs: list[list[str]] = []
     index = 0
     sentence_start = True
@@ -385,6 +395,7 @@ def _capitalised_runs(plain: str) -> list[list[str]]:
                 cursor += 1
                 continue
             break
+        before = len(runs)
         if not sentence_start:
             if len(run) <= _MAX_TERM_WORDS:
                 runs.append(run)
@@ -393,6 +404,9 @@ def _capitalised_runs(plain: str) -> list[list[str]]:
                 runs.append(run[1:])
             if len(run) <= _MAX_TERM_WORDS:
                 runs.append([""] + run)  # the whole run, admitted later only by its first word
+        if numbered is not None:
+            followed_by_digit = bool(_DIGIT_AFTER_RE.match(plain, matches[cursor - 1].end()))
+            numbered.extend([followed_by_digit] * (len(runs) - before))
         index = cursor
         sentence_start = False
     return runs
@@ -510,8 +524,19 @@ def extract_glossary_candidates(
     marked_units: dict[tuple[str, ...], set[int]] = defaultdict(set)
     defined_units: dict[tuple[str, ...], set[int]] = defaultdict(set)
     capitalised_noninitial: Counter[tuple[str, ...]] = Counter()
+    # Spec 067 FR-011 (a): two capitals that say nothing about how the document writes a word.
+    # A paragraph whose letters are ALL capitals ("PROSPERITY", "WORK VERSUS JOBS"): every word
+    # in it is a capital. A word directly before a number ("described in Chapter 13", "see
+    # Figure 2"): the capital of a numbered label is the label's convention -- Creating Wealth
+    # writes "Chapter N" 15 times mid-sentence and "chapter" 14 times, and *chapter* became a
+    # capitalised form, then a required h1 entry. Such runs still count as names for the name
+    # test, but not as the case evidence ``_Draft.capitalised_form`` reads (``cased_capitalised``).
+    set_in_capitals = {index for index in body_indexes if _set_in_capitals(plains[index])}
+    cased_capitalised: Counter[tuple[str, ...]] = Counter()
 
-    def admit(raw_words: Sequence[str], signal: str, unit_index: int, *, proper: bool) -> None:
+    def admit(
+        raw_words: Sequence[str], signal: str, unit_index: int, *, proper: bool, numbered_label: bool = False
+    ) -> None:
         words = [_fold_word(word) for word in raw_words]
         if not words or len(words) > _MAX_TERM_WORDS:
             return
@@ -524,6 +549,8 @@ def extract_glossary_candidates(
             defined_units[key].add(unit_index)
         if signal == "capitalised":
             capitalised_noninitial[key] += 1
+            if unit_index not in set_in_capitals and not numbered_label:
+                cased_capitalised[key] += 1
         draft = drafts.get(key)
         if draft is None:
             draft = drafts[key] = _Draft(key=key, surface=" ".join(raw_words), proper=proper)
@@ -549,23 +576,50 @@ def extract_glossary_candidates(
         else:
             chapter_of.append(unit_index * _SPREAD_BINS // unit_count)
 
+    commonest_words = {word for word, _ in word_counts.most_common(_COMMONEST_WORDS)}
+
     def admit_marked(words: Sequence[str], signal: str, unit_index: int) -> None:
         trimmed = _trim_joiners(words)
+        if signal == "defined" and trimmed != list(words) and _defined_expression_is_whole(words, trimmed):
+            trimmed = list(words)
         if not trimmed:
             return
         admit(trimmed, signal, unit_index, proper=False)
 
+    def _defined_expression_is_whole(words: Sequence[str], trimmed: Sequence[str]) -> bool:
+        """Spec 067 FR-011 (b): the defined expression keeps a short edge word it is written with.
+
+        "known as cap and trade" lost "cap" (three letters) and then "and" to ``_trim_joiners``,
+        and the candidate became the one word "trade". By form, a definition's untrimmed
+        expression of several words is the term when the document writes it whole at least
+        ``_SINGLE_WORD_MIN_COUNT`` times AND the outermost word the trim took at each trimmed
+        edge is not one of the document's ``_COMMONEST_WORDS`` commonest words (counted, not
+        listed: "the", "as", "of" are; "cap" is not -- the "and" after it went only because
+        "cap" had gone). "called him a loser" -- written once -- is trimmed as before.
+        """
+
+        if len(words) < 2 or not trimmed:
+            return False
+        key = tuple(_fold_word(word).lower() for word in words)
+        if len(hits_folded_case.get(key, ())) < _SINGLE_WORD_MIN_COUNT:
+            return False
+        trimmed_start = list(words[: len(trimmed)]) != list(trimmed)
+        trimmed_end = list(words[-len(trimmed) :]) != list(trimmed)
+        edges = [words[0]] * trimmed_start + [words[-1]] * trimmed_end
+        return not any(word.lower() in commonest_words for word in edges)
+
     for unit_index in body_indexes:
         plain = plains[unit_index]
         source = marked_sources[unit_index]
-        for run in _capitalised_runs(plain):
+        numbered: list[bool] = []
+        for run, followed_by_digit in zip(_capitalised_runs(plain, numbered), numbered):
             if run[0] == "":
                 run = run[1:]
                 first = run[0]
                 first_is_name = raw_case_counts[first] > raw_case_counts[first.lower()]
                 if not (first.isupper() and len(first) >= 2) and not first_is_name:
                     continue
-            admit(run, "capitalised", unit_index, proper=True)
+            admit(run, "capitalised", unit_index, proper=True, numbered_label=followed_by_digit and len(run) == 1)
         emphasis_free = _EMPHASIS_MARKS_RE.sub("", source)
         for pattern, signal, text in (
             (_ITALIC_RE, "emphasis", source),
@@ -648,7 +702,7 @@ def extract_glossary_candidates(
 
     families: dict[str, list[_Draft]] = defaultdict(list)
     capitalised_by_lower: Counter[str] = Counter()
-    for capitalised_key, capitalised_times in capitalised_noninitial.items():
+    for capitalised_key, capitalised_times in cased_capitalised.items():
         if len(capitalised_key) == 1:
             capitalised_by_lower[capitalised_key[0].lower()] += capitalised_times
     for key, draft in drafts.items():
@@ -1206,9 +1260,22 @@ def _has_inner_capital(surface: str) -> bool:
     """A word of ``surface`` has an upper-case letter after its first one ("InspirePay", "eBay").
 
     Spec 065: such a spelling is a name's form whatever the document's case counts say.
+    Spec 067 FR-011 (a): a word set entirely in capitals ("PROSPERITY", taken from a line in
+    capitals) is not such a spelling -- its case is the typesetting's, not the word's. The rule
+    is for mixed case: some letter after the first is upper-case AND some letter is lower-case.
     """
 
-    return any(char.isupper() for word in _WORD_RE.findall(surface) for char in word[1:])
+    return any(
+        any(char.isupper() for char in word[1:]) and any(char.islower() for char in word)
+        for word in _WORD_RE.findall(surface)
+    )
+
+
+def _set_in_capitals(text: str) -> bool:
+    """Every letter of ``text`` is upper-case (and it has at least two): a line set in capitals."""
+
+    letters = [char for char in text if char.isalpha()]
+    return len(letters) >= 2 and all(char.isupper() for char in letters)
 
 
 def _is_single_lowercase_word(draft: _Draft) -> bool:
