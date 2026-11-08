@@ -664,8 +664,8 @@ _PRE_064_PROMPT_SNAPSHOTS = [
     ),
     (
         {"operation": "translate", "source_language": "en", "target_language": "ru", "prompt_variant": "toc_translate"},
-        5880,
-        "1bfc57f2512b33e85ebd419c1278bf3c4f9916751772b763f445094c4fa4dbc7",
+        5875,
+        "9955157810ce91a563573de559fb21b30a0aaa7d8f58aed494a8976557ba83ff",
     ),
     (
         {
@@ -1005,8 +1005,8 @@ def test_load_system_prompt_audiobook_examples_include_sentence_splitting_and_ne
     finally:
         config.load_system_prompt.cache_clear()
 
-    assert "Финансовые операции и порождаемая ими ментальность" in prompt
-    assert "Это видно по решениям менеджеров." in prompt
+    assert "Привычка к спешке и порождаемая ею логика отчётов" in prompt
+    assert "Это видно по решениям служб." in prompt
     assert "Некорректно" in prompt
     assert "потеряны qualifier `может`" in prompt
 
@@ -1110,7 +1110,7 @@ def test_load_system_prompt_supports_toc_translate_variant():
 
     assert "Переведите блок как оглавление" in prompt
     assert "Содержание" in prompt
-    assert "Part II: The Dynamics of Extraction ........ 83" in prompt
+    assert "Part II: The Weight of Small Harbours ........ 83" in prompt
 
 
 def test_load_app_config_accepts_audiobook_processing_operation_default(monkeypatch, tmp_path):

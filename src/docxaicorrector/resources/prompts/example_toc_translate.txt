@@ -7,16 +7,16 @@ Contents
 Содержание
 
 Источник ({source_language}):
-Introduction: Making Versus Taking ........ 1
+Introduction: Rivers Without Maps ........ 1
 
 Предпочтительный вариант ({target_language}):
-Введение: создание и извлечение ........ 1
+Введение: реки без карт ........ 1
 
 Источник ({source_language}):
-Part II: The Dynamics of Extraction ........ 83
+Part II: The Weight of Small Harbours ........ 83
 
 Предпочтительный вариант ({target_language}):
-Часть II: динамика извлечения ........ 83
+Часть II: тяжесть малых гаваней ........ 83
 
 Источник ({source_language}):
 Prologue ........ xi
