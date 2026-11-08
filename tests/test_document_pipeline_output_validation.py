@@ -2457,14 +2457,6 @@ def test_collect_false_fragment_heading_samples_skips_legitimate_major_section_h
     assert samples == []
 
 
-def test_collect_false_fragment_heading_samples_skips_canonical_judgment_heading():
-    samples = document_pipeline_output_validation.collect_false_fragment_heading_samples(
-        "2/3.) Семь трубных судов\n\n## Суд над трубой #1 (Откровение 8:7):\n\nГрад и огонь падают на землю."
-    )
-
-    assert samples == []
-
-
 def test_collect_false_fragment_heading_samples_flags_parenthetical_question_tail_heading():
     samples = document_pipeline_output_validation.collect_false_fragment_heading_samples(
         "Кометы? Астероиды?\n\n## Спутники? Ракеты?)\n\nТреть земли будет сожжена."

@@ -87,7 +87,6 @@ _SCRIPTURE_REFERENCE_HEADING_PATTERN = re.compile(
 )
 _PARENTHETICAL_ONLY_HEADING_PATTERN = re.compile(r"^#{1,6}\s+\([^\n]+\)$")
 _HEADING_PREFIX_PATTERN = re.compile(r"^#{1,6}\s+")
-_CANONICAL_JUDGMENT_HEADING_PATTERN = re.compile(r"^суд\b.+\(откровение\s+\d{1,3}:\d{1,3}", re.IGNORECASE)
 _CYRILLIC_LATIN_MIXED_TOKEN_PATTERN = re.compile(r"(?=\w*[A-Za-z])(?=\w*[А-Яа-яЁё])[A-Za-zА-Яа-яЁё]+")
 _HOMOGLYPH_TABLE = str.maketrans({
     "a": "а",
@@ -114,12 +113,7 @@ _INLINE_CODE_SPAN_PATTERN = re.compile(r"(`[^`]+`)")
 # an address, not prose: its Latin/Cyrillic look-alikes are intentional.
 _URL_OR_EMAIL_TOKEN_PATTERN = re.compile(r"://|www\.|@|[\w-]+\.[\w-]{2,}")
 _DANGLING_NUMBER_PATTERN = re.compile(r"(?:^|\s)\d+\.$")
-_RUSSIAN_CONTINUATION_ENDING_PATTERN = re.compile(r"\b(?:ли|что|относительно|с|в|на|к|по|для|о|у|при|об|под|над|между|является)$", re.IGNORECASE)
 _RUSSIAN_HEADING_CONTINUATION_START_PATTERN = re.compile(r"^(?:[а-яё]|[)\],.;:!?-])")
-_RUSSIAN_PRONOUN_CONTINUATION_START_PATTERN = re.compile(
-    r"^(?:Я|Мы|Ты|Вы|Он|Она|Они)\s+(?:смог\w+|буд\w+|хот\w+|мож\w+|долж\w+|стан\w+|готов\w+|суме\w+)",
-    re.IGNORECASE,
-)
 _LOWERCASE_START_PATTERN = re.compile(r"^[a-zа-яё]")
 # Spec 063 (Codex acceptance finding 1): a footnote reference the import rendered as Unicode
 # superscript digits ("…store.²⁰", "…cutting.”¹⁷", "…year.¹²,¹³") stands AFTER the
@@ -722,9 +716,7 @@ def _is_continuation_like_previous_line(line: str) -> bool:
         return False
     if stripped[-1] in {"(", "[", "{", "-", "—", "–", ":", ","}:
         return True
-    if _SENTENCE_TERMINAL_PATTERN.search(stripped) is None:
-        return True
-    return _RUSSIAN_CONTINUATION_ENDING_PATTERN.search(stripped) is not None
+    return _SENTENCE_TERMINAL_PATTERN.search(stripped) is None
 
 
 def _is_continuation_like_next_line(line: str) -> bool:
@@ -845,10 +837,6 @@ def _is_parenthetical_question_tail(text: str) -> bool:
     return stripped.endswith("?)") or (stripped.endswith(")") and "?" in stripped)
 
 
-def _is_canonical_judgment_heading_text(text: str) -> bool:
-    return bool(_CANONICAL_JUDGMENT_HEADING_PATTERN.match(text.strip()))
-
-
 def _entry_looks_major_section_heading(entry: FinalAssemblyEntry) -> bool:
     body_text = _entry_body_text(entry)
     if is_markdown_heading_line(body_text):
@@ -856,8 +844,6 @@ def _entry_looks_major_section_heading(entry: FinalAssemblyEntry) -> bool:
     if not body_text:
         return False
     if body_text[0].islower():
-        return False
-    if _is_canonical_judgment_heading_text(body_text):
         return False
     if _is_parenthetical_question_tail(body_text):
         return False
@@ -1721,9 +1707,7 @@ def _left_entry_looks_incomplete(entry: FinalAssemblyEntry) -> bool:
         return True
     if body_text[-1] in {"(", "[", "{", "-", "—", "–", ":", ","}:
         return True
-    if _SENTENCE_TERMINAL_PATTERN.search(body_text) is None:
-        return True
-    return _RUSSIAN_CONTINUATION_ENDING_PATTERN.search(body_text) is not None
+    return _SENTENCE_TERMINAL_PATTERN.search(body_text) is None
 
 
 def _right_entry_looks_like_continuation(entry: FinalAssemblyEntry) -> bool:
@@ -1733,8 +1717,6 @@ def _right_entry_looks_like_continuation(entry: FinalAssemblyEntry) -> bool:
     if re.fullmatch(r"[.?!…,:;]+", body_text):
         return True
     if _RUSSIAN_HEADING_CONTINUATION_START_PATTERN.match(body_text):
-        return True
-    if _RUSSIAN_PRONOUN_CONTINUATION_START_PATTERN.match(body_text):
         return True
     if _looks_inline_fragment_line(body_text):
         return True
@@ -2104,10 +2086,6 @@ def collect_false_fragment_heading_samples_from_entries(entries: Sequence[FinalA
             heading_occurrences.append((position_index, line_number, heading_text, normalized_heading))
             continue
 
-        if _is_canonical_judgment_heading_text(heading_text):
-            heading_occurrences.append((position_index, line_number, heading_text, normalized_heading))
-            continue
-
         if _is_opening_chapter_heading_pair(
             previous_line=previous_line,
             heading_text=heading_text,
@@ -2264,10 +2242,6 @@ def collect_false_fragment_heading_samples(text: str) -> list[QualityIssueSample
             continue
 
         if normalized_heading in toc_heading_registry and _looks_title_like_heading_text(heading_text):
-            heading_occurrences.append((line_number, heading_text, normalized_heading))
-            continue
-
-        if _is_canonical_judgment_heading_text(heading_text):
             heading_occurrences.append((line_number, heading_text, normalized_heading))
             continue
 
