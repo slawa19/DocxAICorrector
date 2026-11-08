@@ -114,19 +114,19 @@ def test_merged_text_spacing_is_normalized_conservatively():
 def test_dash_led_continuation_after_superscript_note_is_merged():
     document = make_document()
     first = document.add_paragraph()
-    first.add_run("Apple held cash worth $187 billion")
+    first.add_run("Marrow held tolls worth $187 billion")
     note = first.add_run("4")
     note.font.superscript = True
     document.add_paragraph(
-        "— about the same size as the Czech economy that year, which made the tax arrangement especially visible in public debate."
+        "— roughly the same size as the Keswick harbour that year, which made the toll arrangement especially visible in public debate."
     )
 
     paragraphs, _, report = extract_document_content_with_boundary_report(_save_document(document))
 
     assert len(paragraphs) == 1
     assert paragraphs[0].text == (
-        "Apple held cash worth $187 billion<sup>4</sup> — about the same size as the Czech economy "
-        "that year, which made the tax arrangement especially visible in public debate."
+        "Marrow held tolls worth $187 billion<sup>4</sup> — roughly the same size as the Keswick harbour "
+        "that year, which made the toll arrangement especially visible in public debate."
     )
     assert paragraphs[0].origin_raw_indexes == [0, 1]
     assert paragraphs[0].boundary_source == "normalized_merge"
@@ -174,12 +174,12 @@ def test_high_only_promotes_medium_chain_lead_when_followed_by_mergeable_continu
     document = make_document()
     document.add_paragraph("Почему она")
     document.add_paragraph("Чаще всего просто считается")
-    document.add_paragraph("менее эффективной версией частного сектора?")
+    document.add_paragraph("менее надёжной версией северной гавани?")
 
     paragraphs, _, report = extract_document_content_with_boundary_report(_save_document(document))
 
     assert len(paragraphs) == 1
-    assert paragraphs[0].text == "Почему она Чаще всего просто считается менее эффективной версией частного сектора?"
+    assert paragraphs[0].text == "Почему она Чаще всего просто считается менее надёжной версией северной гавани?"
     assert paragraphs[0].origin_raw_indexes == [0, 1, 2]
     assert paragraphs[0].boundary_source == "normalized_merge"
     assert paragraphs[0].boundary_confidence == "medium"
@@ -193,17 +193,17 @@ def test_high_only_promotes_medium_chain_lead_when_followed_by_mergeable_continu
 def test_toc_like_entries_are_not_merged_by_boundary_normalization():
     document = make_document()
     document.add_paragraph("Contents")
-    document.add_paragraph("Meet the Production Boundary")
-    document.add_paragraph("Why Value Theory Matters")
-    document.add_paragraph("The Structure of the Book")
+    document.add_paragraph("Meet the Lantern Boundary")
+    document.add_paragraph("Why Tide Theory Matters")
+    document.add_paragraph("The Structure of the Ledger")
 
     paragraphs, _, report = extract_document_content_with_boundary_report(_save_document(document))
 
     assert [paragraph.text for paragraph in paragraphs] == [
         "Contents",
-        "Meet the Production Boundary",
-        "Why Value Theory Matters",
-        "The Structure of the Book",
+        "Meet the Lantern Boundary",
+        "Why Tide Theory Matters",
+        "The Structure of the Ledger",
     ]
     assert [paragraph.structural_role for paragraph in paragraphs] == [
         "toc_header",

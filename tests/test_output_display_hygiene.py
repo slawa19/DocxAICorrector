@@ -76,27 +76,27 @@ def test_collect_structure_quality_detector_samples_preserves_d4_and_d5_exclusio
 
 def test_collect_structure_quality_detector_samples_exempts_structural_numbered_labels_from_inline_furniture() -> None:
     markdown = """Chapter I
-Why this Report, Now?
+Why this Ledger, Now?
 
 Chapter II
-Making Economic Paradigms Explicit
+Keeping Coastal Lanterns Visible
 
 Chapter III
-Monetary and Banking Instability
+Tidal and Harbour Instability
 
 Глава 1
-Почему этот отчёт сейчас?
+Почему этот реестр сейчас?
 
 Глава 2
-Экономические парадигмы
+Береговые маяки
 
 Глава 3
-Денежная и банковская нестабильность
+Приливная и портовая нестабильность
 
-Figure 2.5: Ideological polarisation between communism and capitalism.
-Fig ure 5.3: U S money supply, in trillions of U S dollars.
+Figure 2.5: Navigational polarisation between lighthouses and lanterns.
+Fig ure 5.3: U S harbour supply, in trillions of U S gallons.
 Figure 8.4.
-Box 4.1 — Eric Beinhocker and the Misclassification of Economics
+Box 4.1 — Tobias Wren and the Misclassification of Lanterns
 5. Conclusion
 """
 

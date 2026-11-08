@@ -452,12 +452,12 @@ def test_collect_paragraph_break_samples_flags_shared_source_mid_sentence_split(
         _paragraph_break_entry(
             source_index=219,
             origin_raw_indexes=[220],
-            text_preview="this scenario has been repeated for every one of the large-scale banking crises and monetary",
+            text_preview="this pattern has been observed for every one of the large-scale harbour floods and coastal",
         ),
         _paragraph_break_entry(
             source_index=219,
             origin_raw_indexes=[220],
-            text_preview="meltdowns of our times.",
+            text_preview="storms of our times.",
         ),
     ]
 
@@ -465,8 +465,8 @@ def test_collect_paragraph_break_samples_flags_shared_source_mid_sentence_split(
 
     assert len(samples) == 1
     assert samples[0].source_index == 219
-    assert samples[0].text.endswith("monetary")
-    assert samples[0].next_text.startswith("meltdowns")
+    assert samples[0].text.endswith("coastal")
+    assert samples[0].next_text.startswith("storms")
 
 
 def test_collect_paragraph_break_samples_ignores_boundary_without_shared_source_signal():
@@ -476,12 +476,12 @@ def test_collect_paragraph_break_samples_ignores_boundary_without_shared_source_
         _paragraph_break_entry(
             source_index=1381,
             origin_raw_indexes=[1431],
-            text_preview="edward abbey: the second rape of the west (chicago",
+            text_preview="tobias marlow: the second taming of the coast (kelbrook",
         ),
         _paragraph_break_entry(
             source_index=1382,
             origin_raw_indexes=[1432],
-            text_preview="mani arnarson, atli bjarnason",
+            text_preview="ansel vardenson, peter kesvik",
         ),
     ]
 
@@ -496,7 +496,7 @@ def test_collect_paragraph_break_samples_ignores_heading_boundary():
         _paragraph_break_entry(
             source_index=220,
             origin_raw_indexes=[221],
-            text_preview="identifying structural issues",
+            text_preview="identifying harbour hazards",
             role="heading",
             structural_role="heading",
             heading_level=2,
@@ -521,7 +521,7 @@ def test_collect_paragraph_break_samples_ignores_list_boundary():
         _paragraph_break_entry(
             source_index=119,
             origin_raw_indexes=[119],
-            text_preview="proposals for nine different pragmatic monetary complements",
+            text_preview="proposals for nine different practical harbour lanterns",
             role="list",
             structural_role="list",
             list_kind="unordered",
@@ -529,7 +529,7 @@ def test_collect_paragraph_break_samples_ignores_list_boundary():
         _paragraph_break_entry(
             source_index=119,
             origin_raw_indexes=[119],
-            text_preview="to the current financial system",
+            text_preview="to the current coastal network",
             role="list",
             structural_role="list",
             list_kind="unordered",
@@ -808,7 +808,7 @@ def test_normalize_list_fragment_regressions_markdown_keeps_protected_heading_ou
     # into list item "24. Глава IV". da6789b guarded the entry-level twin of this pass;
     # the markdown-level pass that builds the delivered DOCX was left unguarded.
     markdown = (
-        "23. (*http://chicagoinspectorgeneral.org*). 42* www.bloomberg.com 24.\n\n"
+        "23. (*http://kelbrookharbourwarden.org*). 42* www.tidegazette.com 24.\n\n"
         "# Глава IV\n\n"
         "## Объяснение нестабильности:"
     )
@@ -881,11 +881,11 @@ def test_normalize_inline_fragment_paragraphs_markdown_preserves_structural_phas
 
 
 def test_normalize_page_placeholder_heading_concats_markdown_splits_placeholder_from_chapter_heading():
-    markdown = "This page intentionally left blank Chapter Nine STRATEGIES FOR NGO S"
+    markdown = "This page intentionally left blank Chapter Nine METHODS FOR PORT S"
 
     normalized = document_pipeline_output_validation.normalize_page_placeholder_heading_concats_markdown(markdown)
 
-    assert normalized == "This page intentionally left blank\n\nChapter Nine STRATEGIES FOR NGO S"
+    assert normalized == "This page intentionally left blank\n\nChapter Nine METHODS FOR PORT S"
 
 
 def test_normalize_residual_bullet_glyphs_markdown_rewrites_inline_and_leading_glyphs():
@@ -982,24 +982,24 @@ def test_normalize_list_fragment_regressions_markdown_keeps_prose_ending_in_a_nu
     # number was rewritten into list item "64. …" and its own last token "65." was moved
     # into the NEXT paragraph, cutting a sentence in half mid-phrase.
     markdown = (
-        "Бывший лаборант, он подрабатывает здесь уже 18 лет — с тех пор как вышел на пенсию в 65.\n\n"
-        "Он гордый человек и говорит, что устроился на эту работу по настоянию жены."
+        "Бывший смотритель, он гребёт здесь уже 18 лет — с тех пор как вышел на пенсию в 65.\n\n"
+        "Он тихий человек и говорит, что сел на эти вёсла по просьбе дочери."
     )
 
     normalized = document_pipeline_output_validation.normalize_list_fragment_regressions_markdown(markdown)
 
     assert normalized == markdown
     assert "вышел на пенсию в 65." in normalized
-    assert "64. Бывший лаборант" not in normalized
-    assert "65. Он гордый человек" not in normalized
+    assert "64. Бывший смотритель" not in normalized
+    assert "65. Он тихий человек" not in normalized
 
 
 def test_normalize_list_fragment_regressions_markdown_keeps_index_entry_ending_in_a_page_number():
     # Same defect in the back-of-book index (p1715 region): the trailing page number is
     # part of the entry, not the ordinal of the next one.
     markdown = (
-        "Carebank, 84–85; НКО, 162; Кимгауэр (Chiemgauer), 74–75, 87–89, 88.\n\n"
-        "Conjunto Palmeira, 103–108; консьюмеризм, 20; сокращение (экономическое), 51–52."
+        "Tidebank, 84–85; ПКО, 162; Марровер (Marrower), 63–64, 91–93, 92.\n\n"
+        "Puerto Lanterna, 103–108; мореплавание, 20; отлив (приливный), 51–52."
     )
 
     normalized = document_pipeline_output_validation.normalize_list_fragment_regressions_markdown(markdown)
@@ -1305,30 +1305,30 @@ def test_assemble_final_markdown_refuses_second_link_of_chain_on_merged_right_so
     # link must be judged by the SECOND source paragraph, not by the first.
     result = document_pipeline_output_validation.assemble_final_markdown(
         processed_chunks=[
-            "Член Римского клуба, президент отделения Римского клуба в ЕС\n\nФеликс УНГЕР\n\nИво ШЛАУС"
+            "Член Ордена фонарей, президент Северного отделения Ордена фонарей\n\nТобиас МАРЛОУ\n\nУле ШТРАНД"
         ],
         generated_paragraph_registry=[
             {
                 "block_index": 1,
                 "paragraph_id": "sign-1",
-                "text": "Член Римского клуба, президент отделения Римского клуба в ЕС",
+                "text": "Член Ордена фонарей, президент Северного отделения Ордена фонарей",
             },
-            {"block_index": 1, "paragraph_id": "sign-2", "text": "Феликс УНГЕР"},
-            {"block_index": 1, "paragraph_id": "sign-3", "text": "Иво ШЛАУС"},
+            {"block_index": 1, "paragraph_id": "sign-2", "text": "Тобиас МАРЛОУ"},
+            {"block_index": 1, "paragraph_id": "sign-3", "text": "Уле ШТРАНД"},
         ],
         source_paragraphs=[
             _make_paragraph_stub(
                 "sign-1",
                 0,
-                text="Member of the Club of Rome, President of the EU Chapter of the Club of Rome",
+                text="Member of the Order of Lamps, President of the North Chapter of the Order of Lamps",
             ),
-            _make_paragraph_stub("sign-2", 1, text="Felix UNGER."),
-            _make_paragraph_stub("sign-3", 2, text="Ivo ŠLAUS"),
+            _make_paragraph_stub("sign-2", 1, text="Tobias MARLOW."),
+            _make_paragraph_stub("sign-3", 2, text="Ole ŠTRAND"),
         ],
     )
 
     assert result.final_markdown == (
-        "Член Римского клуба, президент отделения Римского клуба в ЕС Феликс УНГЕР\n\nИво ШЛАУС"
+        "Член Ордена фонарей, президент Северного отделения Ордена фонарей Тобиас МАРЛОУ\n\nУле ШТРАНД"
     )
     assert result.diagnostics.accepted_merges == 1
     assert result.diagnostics.source_terminal_denials == 1
@@ -1360,31 +1360,31 @@ def test_assemble_final_markdown_refuses_merge_when_source_terminal_mark_is_behi
 def test_assemble_final_markdown_refuses_merge_when_source_terminal_mark_is_wrapped_in_emphasis_markers():
     # ANTI-NO-OP (spec 057). The importer bakes emphasis into ParagraphUnit.text
     # (document/extraction.py:1383-1387), so the real subheading arrives as
-    # "**Why this Report, Now?**" -- its LAST character is "*", not "?". Reading the raw
+    # "**Why this Ledger, Now?**" -- its LAST character is "*", not "?". Reading the raw
     # last character refuses 0 of the 80 measured merges; this test fails on any
     # implementation that does not unwrap the importer's own markup first.
     # Real pair from the run: docx#205 = p0212+p0213, a chapter subheading welded to its
     # epigraph.
     result = document_pipeline_output_validation.assemble_final_markdown(
         processed_chunks=[
-            "**Почему этот отчет выходит именно сейчас?**\n\n«Сердце болит обо всем, что мне не спасти.»"
+            "**Почему этот реестр выходит именно сейчас?**\n\n«Фонарь горит для всех, кого мне не достичь.»"
         ],
         generated_paragraph_registry=[
             {
                 "block_index": 1,
                 "paragraph_id": "p0212",
-                "text": "**Почему этот отчет выходит именно сейчас?**",
+                "text": "**Почему этот реестр выходит именно сейчас?**",
             },
-            {"block_index": 1, "paragraph_id": "p0213", "text": "«Сердце болит обо всем, что мне не спасти.»"},
+            {"block_index": 1, "paragraph_id": "p0213", "text": "«Фонарь горит для всех, кого мне не достичь.»"},
         ],
         source_paragraphs=[
-            _make_paragraph_stub("p0212", 0, text="**Why this Report, Now?**"),
-            _make_paragraph_stub("p0213", 1, text="“My heart aches for all that I cannot save.”"),
+            _make_paragraph_stub("p0212", 0, text="**Why this Ledger, Now?**"),
+            _make_paragraph_stub("p0213", 1, text="“My lamp burns for all that I cannot reach.”"),
         ],
     )
 
     assert result.final_markdown == (
-        "**Почему этот отчет выходит именно сейчас?**\n\n«Сердце болит обо всем, что мне не спасти.»"
+        "**Почему этот реестр выходит именно сейчас?**\n\n«Фонарь горит для всех, кого мне не достичь.»"
     )
     assert result.diagnostics.accepted_merges == 0
     assert result.diagnostics.source_terminal_denials == 1
@@ -1396,24 +1396,24 @@ def test_assemble_final_markdown_refuses_merge_when_source_tail_is_quote_then_em
     # before the closing quote, which is why the unwrap runs to a fixed point.
     result = document_pipeline_output_validation.assemble_final_markdown(
         processed_chunks=[
-            "*хорошее управление и хорошие долгосрочные прогнозы.”*\n\nи ничего сверх того"
+            "*хорошие гавани и хорошие дальние прогнозы.”*\n\nи ничего сверх того"
         ],
         generated_paragraph_registry=[
             {
                 "block_index": 1,
                 "paragraph_id": "emph-left",
-                "text": "*хорошее управление и хорошие долгосрочные прогнозы.”*",
+                "text": "*хорошие гавани и хорошие дальние прогнозы.”*",
             },
             {"block_index": 1, "paragraph_id": "emph-right", "text": "и ничего сверх того"},
         ],
         source_paragraphs=[
-            _make_paragraph_stub("emph-left", 0, text="*good management and good long-term prospects.”*"),
+            _make_paragraph_stub("emph-left", 0, text="*good harbours and good long-range forecasts.”*"),
             _make_paragraph_stub("emph-right", 1, text="and nothing beyond that"),
         ],
     )
 
     assert result.final_markdown == (
-        "*хорошее управление и хорошие долгосрочные прогнозы.”*\n\nи ничего сверх того"
+        "*хорошие гавани и хорошие дальние прогнозы.”*\n\nи ничего сверх того"
     )
     assert result.diagnostics.accepted_merges == 0
     assert result.diagnostics.source_terminal_denials == 1
@@ -1426,8 +1426,8 @@ def test_assemble_final_markdown_source_terminal_refusal_does_not_deny_every_mer
         processed_chunks=[
             "Для христиан жизненно важно помнить знамения, чтобы, если им будет даровано пережить\n\n"
             "Великую скорбь.\n\n"
-            "Член Римского клуба, президент отделения Римского клуба в ЕС\n\n"
-            "Феликс УНГЕР"
+            "Член Ордена фонарей, президент Северного отделения Ордена фонарей\n\n"
+            "Тобиас МАРЛОУ"
         ],
         generated_paragraph_registry=[
             {
@@ -1439,9 +1439,9 @@ def test_assemble_final_markdown_source_terminal_refusal_does_not_deny_every_mer
             {
                 "block_index": 1,
                 "paragraph_id": "sign-1",
-                "text": "Член Римского клуба, президент отделения Римского клуба в ЕС",
+                "text": "Член Ордена фонарей, президент Северного отделения Ордена фонарей",
             },
-            {"block_index": 1, "paragraph_id": "sign-2", "text": "Феликс УНГЕР"},
+            {"block_index": 1, "paragraph_id": "sign-2", "text": "Тобиас МАРЛОУ"},
         ],
         source_paragraphs=[
             _make_paragraph_stub(
@@ -1453,9 +1453,9 @@ def test_assemble_final_markdown_source_terminal_refusal_does_not_deny_every_mer
             _make_paragraph_stub(
                 "sign-1",
                 2,
-                text="Member of the Club of Rome, President of the EU Chapter of the Club of Rome.",
+                text="Member of the Order of Lamps, President of the North Chapter of the Order of Lamps.",
             ),
-            _make_paragraph_stub("sign-2", 3, text="Felix UNGER"),
+            _make_paragraph_stub("sign-2", 3, text="Tobias MARLOW"),
         ],
     )
 
@@ -1463,8 +1463,8 @@ def test_assemble_final_markdown_source_terminal_refusal_does_not_deny_every_mer
     assert result.diagnostics.source_terminal_denials == 1
     assert result.final_markdown == (
         "Для христиан жизненно важно помнить знамения, чтобы, если им будет даровано пережить Великую скорбь.\n\n"
-        "Член Римского клуба, президент отделения Римского клуба в ЕС\n\n"
-        "Феликс УНГЕР"
+        "Член Ордена фонарей, президент Северного отделения Ордена фонарей\n\n"
+        "Тобиас МАРЛОУ"
     )
 
 
@@ -1537,13 +1537,13 @@ def test_assemble_final_markdown_refuses_merge_when_the_image_is_the_right_half(
     # colon, and the placeholder welded onto it. The colon means spec 057 does NOT catch
     # this one, so it is the role and only the role that saves the boundary.
     result = document_pipeline_output_validation.assemble_final_markdown(
-        processed_chunks=["схема этого взаимодействия выглядела бы так:\n\n[[DOCX_IMAGE_img_015]]"],
+        processed_chunks=["карта этого перехода выглядела бы так:\n\n[[DOCX_IMAGE_img_015]]"],
         generated_paragraph_registry=[
-            {"block_index": 1, "paragraph_id": "body-1", "text": "схема этого взаимодействия выглядела бы так:"},
+            {"block_index": 1, "paragraph_id": "body-1", "text": "карта этого перехода выглядела бы так:"},
             {"block_index": 1, "paragraph_id": "img-2", "text": "[[DOCX_IMAGE_img_015]]"},
         ],
         source_paragraphs=[
-            _make_paragraph_stub("body-1", 0, text="A system diagram of this interaction would be as follows:"),
+            _make_paragraph_stub("body-1", 0, text="A harbour chart of this crossing would be as follows:"),
             _make_paragraph_stub("img-2", 1, role="image", structural_role="image", text="[[DOCX_IMAGE_img_015]]"),
         ],
     )
@@ -1681,9 +1681,9 @@ def test_assemble_final_markdown_refuses_merge_when_source_tail_is_non_ascii_whi
 
 def test_assemble_final_markdown_preserves_index_page_reference_fragment_boundary():
     result = document_pipeline_output_validation.assemble_final_markdown(
-        processed_chunks=["Local Capital Project, 128– 130\n\n179– 180"],
+        processed_chunks=["Harbour Lantern Project, 128– 130\n\n179– 180"],
         generated_paragraph_registry=[
-            {"block_index": 1, "paragraph_id": "index-left", "text": "Local Capital Project, 128– 130"},
+            {"block_index": 1, "paragraph_id": "index-left", "text": "Harbour Lantern Project, 128– 130"},
             {"block_index": 1, "paragraph_id": "index-right", "text": "179– 180"},
         ],
         source_paragraphs=[
@@ -1692,7 +1692,7 @@ def test_assemble_final_markdown_preserves_index_page_reference_fragment_boundar
         ],
     )
 
-    assert result.final_markdown == "Local Capital Project, 128– 130\n\n179– 180"
+    assert result.final_markdown == "Harbour Lantern Project, 128– 130\n\n179– 180"
     assert result.diagnostics.accepted_merges == 0
     assert result.diagnostics.protected_boundary_denials >= 1
     assert [entry.merged_paragraph_ids for entry in result.entries] == [("index-left",), ("index-right",)]
@@ -2007,15 +2007,15 @@ def test_assemble_final_markdown_keeps_a_trailing_year_the_source_owns():
     paragraphs = [
         (
             "p1676",
-            "“Gallery of States in Debt.” Daily Beast Business Section, June 14, 2010.",
-            "“Gallery of States in Debt.” Daily Beast Business Section, June 14, 2010.",
+            "“Gallery of Ports in Flood.” Harbour Herald Tides Section, July 19, 2011.",
+            "“Gallery of Ports in Flood.” Harbour Herald Tides Section, July 19, 2011.",
             "body",
             None,
         ),
         (
             "p1677",
-            "www .thedailybeast .com /galleries /2010 /06 /14 /50 -states -in -debt -html .",
-            "www .thedailybeast .com /galleries /2010 /06 /14 /50 -states -in -debt -html .",
+            "www .theharbourherald .com /galleries /2011 /07 /19 /50 -ports -in -flood -html .",
+            "www .theharbourherald .com /galleries /2011 /07 /19 /50 -ports -in -flood -html .",
             "body",
             None,
         ),
@@ -2034,26 +2034,26 @@ def test_assemble_final_markdown_keeps_every_number_of_a_year_chain(source_known
     paragraphs = [
         (
             "a",
-            "Brands, H. W. *Traitor to His Class.* New York: Doubleday, 2008.",
-            "Brands, H. W. *Traitor to His Class.* New York: Doubleday, 2008.",
+            "Marrow, H. W. *Keeper of His Light.* Port Kelby: Tideway, 2008.",
+            "Marrow, H. W. *Keeper of His Light.* Port Kelby: Tideway, 2008.",
             "body",
             None,
         ),
         (
             "b",
-            "Braudel, Fernand. *La dinamica del capitalismo.* Bologna: Il Mulino, 1981.",
-            "Braudel, Fernand. *La dinamica del capitalismo.* Bologna: Il Mulino, 1981.",
+            "Varden, Ferrand. *La dinamica del faro.* Kelbra: Il Molo, 1981.",
+            "Varden, Ferrand. *La dinamica del faro.* Kelbra: Il Molo, 1981.",
             "body",
             None,
         ),
         (
             "c",
-            "Brzezinski, Zbigniew. *The Choice.* New York: Basic Books, 2004.",
-            "Brzezinski, Zbigniew. *The Choice.* New York: Basic Books, 2004.",
+            "Brzostowski, Zbyszek. *The Tide.* Port Kelby: Harbour Books, 2004.",
+            "Brzostowski, Zbyszek. *The Tide.* Port Kelby: Harbour Books, 2004.",
             "body",
             None,
         ),
-        ("d", "Кассий Дион. *Римская история*, кн. 66.", "Cassius Dio. *Roman History*, book 66.", "body", None),
+        ("d", "Кассий Марлоу. *Морская история*, кн. 66.", "Cassius Marlow. *Sea History*, book 66.", "body", None),
     ]
     if not source_known:
         paragraphs = [(pid, text, "", role, level) for pid, text, _source, role, level in paragraphs]
@@ -2087,21 +2087,21 @@ def test_assemble_final_markdown_never_deletes_a_carried_number_in_a_chain():
 
 def test_assemble_final_markdown_keeps_a_split_endnote_page_number():
     # Value of Everything p1340-p1342: the PDF import split note 4, and its continuation ends
-    # in a page number. "7" was carried onto note 5 ("7. 5. П. Студенски…") and "6." was
+    # in a page number. "7" was carried onto note 5 ("7. 5. П. Марчетти…") and "6." was
     # invented for the continuation.
     paragraphs = [
         (
             "a",
-            "4. Т. Ман, «Богатство Англии во внешней торговле» (1664; Лондон:",
-            "4. T. Mun, England's Treasure by Forraign Trade (1664; London:",
+            "4. Т. Марн, «Богатство гавани во внешнем плавании» (1664; Кельбрук:",
+            "4. T. Marn, Harbour's Treasure by Forraign Sailing (1664; Kelbrook:",
             "body",
             None,
         ),
-        ("c", "Macmillan, 1865), с. 7.", "Macmillan, 1865), p. 7.", "body", None),
+        ("c", "Tideway, 1865), с. 7.", "Tideway, 1865), p. 7.", "body", None),
         (
             "b",
-            "5. П. Студенски, *Доход наций* (Нью-Йорк: University Press, 1958), с. 27.",
-            "5. P. Studenski, The Income of Nations (New York: University Press, 1958), p. 27.",
+            "5. П. Марчетти, *Доход гаваней* (Порт-Келби: University Press, 1957), с. 29.",
+            "5. P. Marchetti, The Income of Harbours (Port Kelby: University Press, 1957), p. 29.",
             "body",
             None,
         ),
@@ -2131,19 +2131,19 @@ def test_assemble_final_markdown_keeps_a_chapter_reference_and_the_heading_after
 def test_assemble_final_markdown_keeps_prose_ending_in_a_number_intact(source_known):
     # 6bc8ff9's own example (2026-08-03 literary-edit p0106), through the production
     # assembly. Its anti-regression test calls only the markdown twin, which runs second:
-    # this text still delivered "64. …на пенсию в" + "65. Он гордый человек…".
+    # this text still delivered "64. …на пенсию в" + "65. Он тихий человек…".
     paragraphs = [
         (
             "p0106",
-            "Бывший лаборант, он подрабатывает здесь уже 18 лет — с тех пор как вышел на пенсию в 65.",
-            "A former lab technician, he has worked here for 18 years, since he retired at 65." if source_known else "",
+            "Бывший смотритель, он гребёт здесь уже 18 лет — с тех пор как вышел на пенсию в 65.",
+            "A former lighthouse keeper, he has rowed here for 18 years, since he retired at 65." if source_known else "",
             "body",
             None,
         ),
         (
             "p0107",
-            "Он гордый человек и говорит, что устроился на эту работу по настоянию жены.",
-            "He is a proud man and says he took the job at his wife's insistence." if source_known else "",
+            "Он тихий человек и говорит, что сел на эти вёсла по просьбе дочери.",
+            "He is a quiet man and says he took up the oars at his daughter's urging." if source_known else "",
             "body",
             None,
         ),
@@ -2157,8 +2157,8 @@ def test_assemble_final_markdown_keeps_prose_ending_in_a_number_intact(source_kn
 def test_assemble_final_markdown_keeps_index_entry_ending_in_a_page_number():
     # Registry-pass sibling of the markdown twin's index-entry test: same input.
     paragraphs = [
-        ("i1", "Carebank, 84–85; НКО, 162; Кимгауэр (Chiemgauer), 74–75, 87–89, 88.", "", "body", None),
-        ("i2", "Conjunto Palmeira, 103–108; консьюмеризм, 20; сокращение (экономическое), 51–52.", "", "body", None),
+        ("i1", "Tidebank, 84–85; ПКО, 162; Марровер (Marrower), 63–64, 91–93, 92.", "", "body", None),
+        ("i2", "Puerto Lanterna, 103–108; мореплавание, 20; отлив (приливный), 51–52.", "", "body", None),
     ]
 
     result = _assemble_single_block(paragraphs)
@@ -2186,8 +2186,8 @@ def test_assemble_final_markdown_never_stacks_an_ordinal_on_a_numbered_follower(
         "Сатана пытается воспроизвести Троицу: 1.\n\nОбвинитель 2.\n\nЗверь 3.\n\nВторая сущность.",
         "Представьте, если этим лидером окажется Дональд Трамп.\n\n😂 2.\n\nВ первой половине",
         "5. Держитесь подальше от зла. 6.\n\nПримите срочные меры.",
-        "Бывший лаборант вышел на пенсию в 65.\n\nОн гордый человек.",
-        "Daily Beast Business Section, June 14, 2010.\n\nwww .thedailybeast .com .",
+        "Бывший смотритель вышел на пенсию в 65.\n\nОн тихий человек.",
+        "Harbour Herald Tides Section, July 19, 2011.\n\nwww .theharbourherald .com .",
         "6. См. главу 7.\n\n7. Следующая заметка.",
         "Схема: 1.\n\n1. Уже пронумерованный пункт.",
     ],
@@ -2778,7 +2778,7 @@ def test_assemble_final_markdown_dedupes_repeated_short_heading_inside_title_clu
             "# ПЕРЕОСМЫСЛЕНИЕ",
             "# ДЕНЬГИ",
             "# КАК НОВЫЕ ВАЛЮТЫ ПРЕВРАЩАЮТ ДЕФИЦИТ В ПРОЦВЕТАНИЕ",
-            "# Бернар Лиетар и Джеки Данн",
+            "# Тобиас Марлоу и Эльза Бранд",
         ],
         generated_paragraph_registry=[
             {"block_index": 1, "paragraph_id": "title-1", "text": "## ПЕРЕОСМЫСЛИВАЯ"},
@@ -2790,7 +2790,7 @@ def test_assemble_final_markdown_dedupes_repeated_short_heading_inside_title_clu
                 "paragraph_id": "subtitle",
                 "text": "# КАК НОВЫЕ ВАЛЮТЫ ПРЕВРАЩАЮТ ДЕФИЦИТ В ПРОЦВЕТАНИЕ",
             },
-            {"block_index": 6, "paragraph_id": "authors", "text": "# Бернар Лиетар и Джеки Данн"},
+            {"block_index": 6, "paragraph_id": "authors", "text": "# Тобиас Марлоу и Эльза Бранд"},
         ],
         source_paragraphs=[
             _make_paragraph_stub("title-1", 0, role="heading", structural_role="heading", heading_level=2),
@@ -3742,32 +3742,34 @@ def test_has_toc_body_concat_signal_requires_source_toc_markers():
 # --- Spec 063, Codex acceptance finding 1: a trailing footnote reference ends a sentence --------
 #
 # FR-005 puts a lost reference back AFTER the sentence's terminal punctuation. Boundary
-# recovery read "магазина.²⁰" as an unfinished sentence and welded it to the next paragraph;
-# `_source_text_ends_sentence` read "store.²⁰" the same way, so the spec 057 refusal could not
+# recovery read "лавки.²⁰" as an unfinished sentence and welded it to the next paragraph;
+# `_source_text_ends_sentence` read "chandlery.²⁰" the same way, so the spec 057 refusal could not
 # step in. Replayed on the recorded Rethinking Money run, restoration created four new merges.
 
-# Rethinking Money p0526 / p0527, block 73 of the 2026-11-07 run, verbatim.
+# The form of Rethinking Money p0526 / p0527 (block 73 of the 2026-11-07 run) in synthetic
+# text: the PDF tears ("in de pen dent", the "fi" ligature split off a word), money
+# amounts, two sentences, the reference after the last one.
 _RM_P0526_SOURCE = (
-    "A case in point: A study designed to evaluate the economic role played by in de pen dent "
-    "businesses in the busy Chicago North Side found that every $100 spent with a local fi rm "
-    "leaves $68 in the Chicago economy, while $100 spent at a chain store leaves only $43 in "
-    "Chicago. And for every square foot occupied by a local fi rm, the local economic impact is "
-    "$179, versus $105 for a chain store.²⁰"
+    "A case in point: A survey designed to measure the harbour role played by in de pen dent "
+    "boatmen on the busy Kelbrook North Quay showed that each $100 paid to a local fi sher "
+    "keeps $71 in the Kelbrook harbour, whereas $100 paid at a chain chandlery keeps only $39 in "
+    "Kelbrook. And for each square yard used by a local fi sher, the local harbour gain is "
+    "$184, against $112 for a chain chandlery.²⁰"
 )
 _RM_P0526_TRANSLATION = (
-    "Показательный пример: исследование, призванное оценить экономическую роль независимого "
-    "бизнеса в оживленном районе Чикаго Норт-Сайд, показало, что каждые 100 долларов, "
-    "потраченные в местной фирме, оставляют 68 долларов в экономике Чикаго, тогда как 100 "
-    "долларов, потраченные в сетевом магазине, оставляют в городе лишь 43 доллара. Кроме того, "
-    "на каждый квадратный фут площади, занимаемой местной фирмой, приходится 179 долларов "
-    "экономического эффекта, по сравнению со 105 долларами у сетевого магазина."
+    "Показательный пример: обследование, призванное измерить портовую роль независимых "
+    "лодочников на оживлённой Северной пристани Келбрука, показало, что каждые 100 долларов, "
+    "потраченные у местного рыбака, оставляют 71 доллар в гавани Келбрука, тогда как 100 "
+    "долларов, потраченные в сетевой лавке, оставляют в городе лишь 39 долларов. Кроме того, "
+    "на каждый квадратный ярд площади, занимаемой местным рыбаком, приходится 184 доллара "
+    "портового эффекта, по сравнению со 112 долларами у сетевой лавки."
 )
 _RM_P0527_SOURCE = (
-    "Regios, by contrast, support regionally based commerce, adding to the uniqueness and "
-    "strength of each area."
+    "Tidals, by contrast, support coastally based trading, adding to the character and "
+    "strength of each harbour."
 )
 _RM_P0527_TRANSLATION = (
-    "Регио, напротив, поддерживают региональную торговлю, добавляя уникальности и силы каждому району."
+    "Тайдалы, напротив, поддерживают прибрежную торговлю, добавляя своеобразия и силы каждой гавани."
 )
 
 
@@ -3775,7 +3777,7 @@ def test_restored_footnote_reference_does_not_merge_rm_p0526_into_p0527():
     from docxaicorrector.pipeline.footnote_markers import restore_lost_footnote_markers
 
     restored = restore_lost_footnote_markers(_RM_P0526_SOURCE, _RM_P0526_TRANSLATION)
-    assert restored.text.endswith("у сетевого магазина.²⁰")
+    assert restored.text.endswith("у сетевой лавки.²⁰")
 
     result = document_pipeline_output_validation.assemble_final_markdown(
         processed_chunks=[f"{restored.text}\n\n{_RM_P0527_TRANSLATION}"],
@@ -3798,34 +3800,34 @@ def test_restored_footnote_reference_does_not_merge_rm_p0526_into_p0527():
 def test_heading_after_a_paragraph_ending_in_a_footnote_reference_is_not_demoted():
     # Money and Sustainability p1342 / p1343 / p1344 (blocks 311 / 312 / 312 of the
     # 2026-11-07 run): "Appendices" was demoted and welded to its neighbours because
-    # "…посади его».¹⁷" read as an unfinished sentence across the block boundary.
+    # "…зажги его».¹⁷" read as an unfinished sentence across the block boundary.
     result = document_pipeline_output_validation.assemble_final_markdown(
         processed_chunks=[
-            "В исламе есть похожее учение: если в Судный день у тебя в руке саженец пальмы, посади его».¹⁷",
-            "## Приложения\n\nСледующие приложения доступны онлайн по адресу *bit.ly/TPmissinglink*",
+            "У моряков есть похожая поговорка: если в День бури у тебя в руке фитиль фонаря, зажги его».¹⁷",
+            "## Приложения\n\nДальнейшие приложения размещены онлайн по адресу *tid.ly/HBharbourlink*",
         ],
         generated_paragraph_registry=[
             {
                 "block_index": 1,
                 "paragraph_id": "p1342",
-                "text": "В исламе есть похожее учение: если в Судный день у тебя в руке саженец пальмы, посади его».¹⁷",
+                "text": "У моряков есть похожая поговорка: если в День бури у тебя в руке фитиль фонаря, зажги его».¹⁷",
             },
             {"block_index": 2, "paragraph_id": "p1343", "text": "## Приложения"},
             {
                 "block_index": 2,
                 "paragraph_id": "p1344",
-                "text": "Следующие приложения доступны онлайн по адресу *bit.ly/TPmissinglink*",
+                "text": "Дальнейшие приложения размещены онлайн по адресу *tid.ly/HBharbourlink*",
             },
         ],
         source_paragraphs=[
             _make_paragraph_stub(
                 "p1342",
                 0,
-                text="Islam has a similar teaching: if you have a palm cutting in your hand on Judgement Day, plant the cutting.”¹⁷",
+                text="Sailors have a similar saying: if you have a lantern wick in your hand on Storm Day, light the wick.”¹⁷",
             ),
             _make_paragraph_stub("p1343", 1, role="heading", structural_role="heading", heading_level=2, text="Appendices"),
             _make_paragraph_stub(
-                "p1344", 2, text="The following appendices are available online at *bit.ly/TPmissinglink*"
+                "p1344", 2, text="The further appendices are posted online at *tid.ly/HBharbourlink*"
             ),
         ],
     )
@@ -3838,13 +3840,13 @@ def test_heading_after_a_paragraph_ending_in_a_footnote_reference_is_not_demoted
 @pytest.mark.parametrize(
     ("source_text", "expected"),
     [
-        ("…versus $105 for a chain store.²⁰", True),
-        ("…plant the cutting.”¹⁷", True),
+        ("…against $112 for a chain chandlery.²⁰", True),
+        ("…light the wick.”¹⁷", True),
         ("…for the first time.¹²,¹³", True),
         ("**…the end of the chapter.³⁴**", True),
         # Anti-vacuum: a trailing PLAIN number is not a reference by form.
-        ("…versus $105 for a chain store.20", False),
-        ("…founded in a Californian garage in 1976", False),
+        ("…against $112 for a chain chandlery.20", False),
+        ("…founded in a Kelbrook boathouse in 1976", False),
         ("The area is 40 m²", False),
     ],
 )
@@ -3856,17 +3858,17 @@ def test_translation_ending_in_a_bare_number_still_reads_as_unfinished():
     # Anti-vacuum for the translation side: only superscript GLYPHS after terminal
     # punctuation close a sentence; "в 1976" and "магазина.20" do not.
     result = document_pipeline_output_validation.assemble_final_markdown(
-        processed_chunks=["Компания была основана в калифорнийском гараже в 1976\n\nи быстро выросла"],
+        processed_chunks=["Компания была основана в келбрукском эллинге в 1976\n\nи быстро выросла"],
         generated_paragraph_registry=[
-            {"block_index": 1, "paragraph_id": "left", "text": "Компания была основана в калифорнийском гараже в 1976"},
+            {"block_index": 1, "paragraph_id": "left", "text": "Компания была основана в келбрукском эллинге в 1976"},
             {"block_index": 1, "paragraph_id": "right", "text": "и быстро выросла"},
         ],
         source_paragraphs=None,
     )
 
-    assert result.final_markdown == "Компания была основана в калифорнийском гараже в 1976 и быстро выросла"
-    assert document_pipeline_output_validation._SENTENCE_TERMINAL_PATTERN.search("у сетевого магазина.20") is None
-    assert document_pipeline_output_validation._SENTENCE_TERMINAL_PATTERN.search("у сетевого магазина.²⁰") is not None
+    assert result.final_markdown == "Компания была основана в келбрукском эллинге в 1976 и быстро выросла"
+    assert document_pipeline_output_validation._SENTENCE_TERMINAL_PATTERN.search("у сетевой лавки.20") is None
+    assert document_pipeline_output_validation._SENTENCE_TERMINAL_PATTERN.search("у сетевой лавки.²⁰") is not None
 
 
 # --- Spec 063 P0: replay of the list-fragment carry on recorded translate runs ---------------

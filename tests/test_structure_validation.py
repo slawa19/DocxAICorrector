@@ -348,17 +348,17 @@ def test_inline_page_furniture_detector_exempts_numbered_structural_labels() -> 
     metrics = structural_validation_runtime._build_markdown_quality_metrics(
         latest_markdown=(
             "Chapter I\n"
-            "Why this Report, Now?\n\n"
+            "Why this Ledger, Now?\n\n"
             "Chapter II\n"
-            "Making Economic Paradigms Explicit\n\n"
+            "Keeping Coastal Lanterns Visible\n\n"
             "Chapter III\n"
-            "Monetary and Banking Instability\n\n"
+            "Tidal and Harbour Instability\n\n"
             "Глава 1\n"
-            "Почему этот отчёт сейчас?\n\n"
+            "Почему этот реестр сейчас?\n\n"
             "Глава 2\n"
-            "Экономические парадигмы\n\n"
+            "Береговые маяки\n\n"
             "Глава 3\n"
-            "Денежная и банковская нестабильность\n"
+            "Приливная и портовая нестабильность\n"
         ),
         raw_markdown="",
         raw_structural_markdown="",
