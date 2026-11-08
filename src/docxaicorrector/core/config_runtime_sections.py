@@ -543,7 +543,7 @@ def resolve_text_runtime_defaults(
     glossary_int_settings: dict[str, int] = {}
     for glossary_key, glossary_default in (
         ("glossary_max_terms", 60),
-        ("glossary_prompt_max_chars", 4000),
+        ("glossary_prompt_max_chars", 5900),
         ("glossary_candidate_limit", 400),
     ):
         glossary_value = config_data.get(glossary_key, glossary_default)
