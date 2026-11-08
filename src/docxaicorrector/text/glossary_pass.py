@@ -30,7 +30,7 @@ import math
 import re
 import unicodedata
 from collections import Counter, defaultdict
-from collections.abc import Collection, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from functools import lru_cache
 
@@ -970,7 +970,22 @@ def extract_glossary_candidates(
 
     candidates: list[GlossaryCandidate] = []
     candidate_units: list[set[int]] = []
-    for group in _permutation_groups(kept):
+    name_family_ids = {id(member) for member in name_heads} | {id(head) for head in name_heads.values()}
+
+    def written_as_name(draft: _Draft) -> bool:
+        if id(draft) in name_family_ids:
+            return True
+        if len(draft.key) == 1:
+            return draft.capitalised_form
+        words = draft.surface.split()
+        if _has_inner_capital(draft.surface):
+            return True
+        capital_key = tuple(_fold_word(word[:1].upper() + word[1:]) for word in words)
+        lower_key = tuple(_fold_word(word.lower()) for word in words)
+        capitalised = capitalised_noninitial.get(capital_key, 0)
+        return capitalised > 0 and capitalised >= len(hits_exact.get(lower_key, ()))
+
+    for group in _permutation_groups(kept, written_as_name=written_as_name):
         # Spec 067 FR-010: one candidate per group, named by its most used surface (the first
         # on a tie); the others are its spellings. The group's uses and units add up, and it
         # is required when any of its surfaces is.
@@ -1078,7 +1093,11 @@ def _permutation_key(key: Sequence[str]) -> tuple[str, ...] | None:
     return tuple(parts) if len(parts) >= 2 else None
 
 
-def _permutation_groups(drafts: Sequence[_Draft]) -> list[list[_Draft]]:
+def _permutation_groups(
+    drafts: Sequence[_Draft],
+    *,
+    written_as_name: Callable[[_Draft], bool] = lambda draft: False,
+) -> list[list[_Draft]]:
     """The drafts in order, those with one multiset of words collapsed into one group.
 
     Spec 067 FR-010 (G-3): The Value of Everything had one term as three entries -- its words,
@@ -1086,24 +1105,43 @@ def _permutation_groups(drafts: Sequence[_Draft]) -> list[list[_Draft]]:
     as fixed) -- and the model gave the last two renderings it then never used (0 of 9) --
     three entries for one term, two of them wrong.
     Candidates whose words form the same multiset once hyphens are split (``_permutation_key``)
-    are one term. A name keeps its own case-sensitive identity and is never grouped here: its
-    spellings are the name family's business (spec 064 FR-009). A group stands where its first
-    member stood, so a phrase still comes before the word it contains.
+    are one term -- but only when, by form (Codex acceptance review of spec 067, P0):
+      - at most ONE of them is the author's own (marked or defined: the marked family); the
+        others are unmarked collocations or phrases of it. Two expressions the author marked
+        or defined each ("house boat" and "boat house") are two concepts and stay two
+        candidates; an identical rendering of the two is call C's collision (spec 064 FR-009);
+      - none of them is written as a name: a capitalised form by the document's own case
+        count (``_Draft.capitalised_form``; for several words, the capitalised expression
+        mid-sentence at least as often as the lowercase one), a mixed-case spelling, or a
+        member or head of a name family. "North Harbour" and "Harbour North" are two places.
+    A name keeps its own case-sensitive identity and is never grouped here: its spellings are
+    the name family's business (spec 064 FR-009). A group that fails the form falls apart into
+    its members, each where it stood; a group that holds stands where its first member stood,
+    so a phrase still comes before the word it contains.
     """
 
-    groups: list[list[_Draft]] = []
-    by_permutation: dict[tuple[str, ...], list[_Draft]] = {}
+    by_permutation: dict[tuple[str, ...], list[_Draft]] = defaultdict(list)
     for draft in drafts:
         permutation = None if draft.proper else _permutation_key(draft.key)
-        if permutation is None:
-            groups.append([draft])
-            continue
-        group = by_permutation.get(permutation)
+        if permutation is not None:
+            by_permutation[permutation].append(draft)
+
+    def holds(group: Sequence[_Draft]) -> bool:
+        authored = sum(1 for member in group if member.family == FAMILY_MARKED)
+        return authored <= 1 and not any(written_as_name(member) for member in group)
+
+    group_of: dict[int, list[_Draft]] = {}
+    for group in by_permutation.values():
+        if len(group) >= 2 and holds(group):
+            for member in group:
+                group_of[id(member)] = group
+    groups: list[list[_Draft]] = []
+    for draft in drafts:
+        group = group_of.get(id(draft))
         if group is None:
-            group = by_permutation[permutation] = [draft]
+            groups.append([draft])
+        elif group[0] is draft:
             groups.append(group)
-        else:
-            group.append(draft)
     return groups
 
 

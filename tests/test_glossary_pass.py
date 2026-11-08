@@ -2291,3 +2291,34 @@ def test_fr011_a_defined_expression_the_document_writes_whole_keeps_its_short_fi
     # Counter-test: a definition written once is trimmed as before ("called him a lostling").
     once = ["The neighbours called him a lostling, and it stuck.", *(_FILLER * 6)]
     assert "him a lostling" not in _keys(extract_glossary_candidates(_units(once)))
+
+
+def test_fr010_two_expressions_the_author_defines_each_stay_two_candidates():
+    # Codex acceptance review of spec 067 (P0): the author defines both orders as concepts of
+    # their own; collapsing them would answer one and reject the other as not_a_candidate.
+    paragraphs = [
+        "On the river we call this a *house boat*, a home that floats.",
+        "On the bank we call that a *boat house*, a shed for the hull.",
+    ]
+    for _ in range(6):
+        paragraphs.extend(_FILLER)
+        paragraphs.append("The house boat drifted; the boat house stayed, and the house boat came back.")
+    by_term = {candidate.source_term: candidate for candidate in extract_glossary_candidates(_units(paragraphs))}
+
+    assert "house boat" in by_term and "boat house" in by_term
+    assert by_term["house boat"].spellings == () and by_term["boat house"].spellings == ()
+    assert by_term["house boat"].required and by_term["boat house"].required
+
+
+def test_fr010_two_place_names_in_either_order_stay_two_candidates():
+    # Codex acceptance review of spec 067 (P0): italicised place names are marked drafts with a
+    # lowercase key; written capitalised by the document's own count, they are names.
+    paragraphs = []
+    for _ in range(6):
+        paragraphs.extend(_FILLER)
+        paragraphs.append("Ships left *North Harbour* at dawn, and later North Harbour was quiet again.")
+        paragraphs.append("Boats from *Harbour North* came in, though Harbour North lay further out.")
+    by_term = {candidate.source_term: candidate for candidate in extract_glossary_candidates(_units(paragraphs))}
+
+    assert "North Harbour" in by_term and "Harbour North" in by_term
+    assert by_term["North Harbour"].spellings == () and by_term["Harbour North"].spellings == ()
