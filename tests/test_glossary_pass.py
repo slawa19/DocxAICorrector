@@ -121,7 +121,7 @@ def _document():
             "Many people in Kelbrook still preferred the quillet bond to gold, said Zorvane Pettish."
         )
         paragraphs.append("The marrow ledger was opened, and the marrow ledger was closed once more.")
-    paragraphs.insert(2, "For the rest of the book we will refer to this kind of paper as *quillet bond*.")
+    paragraphs.insert(2, "From here to the last page we will refer to this kind of paper as *quillet bond*.")
     paragraphs.insert(3, "This practice is known as drevage, and drevage is older than any bank.")
     paragraphs.append("Later chapters return to drevage once more, briefly.")
     paragraphs.append("1 This note opens with a capital. 2 There is another note. 3 See the appendix.")
@@ -417,7 +417,7 @@ def test_parse_raises_a_coded_error_on_unusable_answers(raw, code):
 
 
 def test_normalized_key_folds_case_plural_and_possessive():
-    assert normalize_glossary_key("Wellness Tokens") == normalize_glossary_key("wellness token")
+    assert normalize_glossary_key("Harbour Tokens") == normalize_glossary_key("harbour token")
     assert normalize_glossary_key("Zorvane’s") == normalize_glossary_key("zorvane")
     assert normalize_glossary_key("currencies") == ("currency",)
     assert normalize_glossary_key("GLIMS") == ("glims",)

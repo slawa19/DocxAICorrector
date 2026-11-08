@@ -331,15 +331,15 @@ def _pdf_shaped_bibliography_entry_paragraphs(start: int) -> list[ParagraphUnit]
     a line-ratio region test can never recognise it and the region must be found structurally.
     """
     lines = [
-        "Aghion, P., Van Reenen, J. and Zingales, L., ‘Innovation and",
-        "institutional ownership’, *American Economic Review*, 103(1)",
+        "Brandle, P., Van Oosten, J. and Marchetti, L., ‘Tidewater and",
+        "harbour stewardship’, *Northern Maritime Review*, 103(1)",
         "(2013), pp. 277–304.",
-        "Clark, J. B., *The Distribution of Wealth: A Theory of Wages,*",
-        "*Interest and Profits* (New York: Macmillan, 1899).",
-        "Gaus, G. F., *Value and Justification: The Foundations of Liberal*",
-        "*Theory* (New York: Cambridge University Press, 1990).",
-        "Keynes, J. M., *The General Theory of Employment, Interest and*",
-        "*Money* (London: Macmillan, 1936).",
+        "Hollin, J. B., *The Allocation of Berths: A Theory of Tides,*",
+        "*Ballast and Cargo* (Port Ellery: Hallowmere, 1899).",
+        "Vant, G. F., *Light and Navigation: The Foundations of Coastal*",
+        "*Pilotage* (Port Ellery: Kelbrook University Press, 1990).",
+        "Morrow, J. M., *The General Survey of Moorings, Ballast and*",
+        "*Rope* (Kelbrook: Hallowmere, 1936).",
     ]
     return [
         ParagraphUnit(text=line, role="body", paragraph_id=f"p{start + offset:04d}")
@@ -351,12 +351,12 @@ def test_build_editing_jobs_excludes_pdf_shaped_bibliography_region_and_keeps_th
     blocks = [
         DocumentBlock(
             paragraphs=[
-                ParagraphUnit(text="9. The Economics of Hope", role="heading", paragraph_id="p0000", heading_level=2),
+                ParagraphUnit(text="9. The Grammar of Tides", role="heading", paragraph_id="p0000", heading_level=2),
                 ParagraphUnit(
                     text=(
-                        "What if it stemmed purely from a set of deeply ingrained ideas? "
-                        "The point is not that value is subjective, but that the story we tell "
-                        "about where it comes from decides who gets paid."
+                        "What if it rose simply from a set of long forgotten customs? "
+                        "The point is not that the tide is fickle, but that the chart we draw "
+                        "of where it runs decides who gets ashore."
                     ),
                     role="body",
                     paragraph_id="p0001",
@@ -370,9 +370,9 @@ def test_build_editing_jobs_excludes_pdf_shaped_bibliography_region_and_keeps_th
                 ParagraphUnit(text="Acknowledgements", role="heading", paragraph_id="p0020", heading_level=2),
                 ParagraphUnit(
                     text=(
-                        "In 2013 I wrote a book called The Entrepreneurial State. In it I debunked "
-                        "how myths about lone entrepreneurs have hidden the collective effort behind "
-                        "innovation, and many people helped me say so."
+                        "In 2013 I finished a volume called The Patient Harbour. In it I described "
+                        "how tales about lone navigators have hidden the collective effort behind "
+                        "seafaring, and many people helped me say so."
                     ),
                     role="body",
                     paragraph_id="p0021",
@@ -395,7 +395,7 @@ def test_build_editing_jobs_keeps_notes_region_together_across_its_deeper_sub_he
     blocks = [
         DocumentBlock(
             paragraphs=[
-                ParagraphUnit(text="9. The Economics of Hope", role="heading", paragraph_id="p0000", heading_level=2),
+                ParagraphUnit(text="9. The Grammar of Tides", role="heading", paragraph_id="p0000", heading_level=2),
                 ParagraphUnit(text="Closing narrative paragraph of the last chapter.", role="body", paragraph_id="p0001"),
             ]
         ),
@@ -403,12 +403,12 @@ def test_build_editing_jobs_keeps_notes_region_together_across_its_deeper_sub_he
         DocumentBlock(
             paragraphs=[
                 ParagraphUnit(text="PREFACE", role="heading", paragraph_id="p0003", heading_level=3),
-                ParagraphUnit(text="1. Goldman Sachs Annual Report, 2010.", role="list", paragraph_id="p0004"),
+                ParagraphUnit(text="1. Harrowgate Lines Annual Ledger, 2010.", role="list", paragraph_id="p0004"),
             ]
         ),
         DocumentBlock(
             paragraphs=[
-                ParagraphUnit(text="2. THE VALUE OF EVERYTHING", role="heading", paragraph_id="p0005", heading_level=3),
+                ParagraphUnit(text="2. THE PRICE OF LANTERNS", role="heading", paragraph_id="p0005", heading_level=3),
                 ParagraphUnit(text="4. Ibid., p. 115.", role="list", paragraph_id="p0006"),
             ]
         ),
@@ -431,11 +431,11 @@ def test_build_editing_jobs_stops_the_reference_region_at_a_heading_with_no_leve
     SHORT — it can never widen it over the section that follows."""
     blocks = [
         DocumentBlock(paragraphs=[ParagraphUnit(text="Notes", role="heading", paragraph_id="p0000", heading_level=2)]),
-        DocumentBlock(paragraphs=[ParagraphUnit(text="1. Goldman Sachs Annual Report, 2010.", role="list", paragraph_id="p0001")]),
+        DocumentBlock(paragraphs=[ParagraphUnit(text="1. Harrowgate Lines Annual Ledger, 2010.", role="list", paragraph_id="p0001")]),
         DocumentBlock(
             paragraphs=[
-                ParagraphUnit(text="About the Authors", role="heading", paragraph_id="p0002"),
-                ParagraphUnit(text="Bernard Lietaer has been active in money systems for 35 years.", role="body", paragraph_id="p0003"),
+                ParagraphUnit(text="About the Writers", role="heading", paragraph_id="p0002"),
+                ParagraphUnit(text="Tobias Wrenfield has been active in harbour systems for 35 years.", role="body", paragraph_id="p0003"),
             ]
         ),
     ]
@@ -449,13 +449,13 @@ def test_build_editing_jobs_drops_the_index_from_the_narration():
     """The index used to be kept: the owner's first framing named the table of contents, the
     notes and the sources, and said nothing about an index. **Reversed by the owner on
     2026-08-06**, once the price was measured — on Rethinking Money the index is 463 paragraphs
-    of "Short- termism, 44– 46, 217" read out loud."""
+    of "Over- fishing, 44– 46, 217" read out loud."""
     blocks = [
         DocumentBlock(paragraphs=[ParagraphUnit(text="Index", role="heading", paragraph_id="p0000", heading_level=2)]),
         DocumentBlock(
             paragraphs=[
-                ParagraphUnit(text="Short- termism, 44– 46, 217", role="body", paragraph_id="p0001"),
-                ParagraphUnit(text="Trust, 19– 20, 46", role="body", paragraph_id="p0002"),
+                ParagraphUnit(text="Over- fishing, 44– 46, 217", role="body", paragraph_id="p0001"),
+                ParagraphUnit(text="Ballast, 19– 20, 46", role="body", paragraph_id="p0002"),
             ]
         ),
     ]
@@ -477,20 +477,20 @@ def test_build_editing_jobs_anchors_a_reference_region_on_a_title_that_lost_its_
     blocks = [
         DocumentBlock(
             paragraphs=[
-                ParagraphUnit(text="From Scarcity to Sustainable Abundance", role="heading", paragraph_id="p0000", heading_level=1),
+                ParagraphUnit(text="From Shallows to Sheltered Harbours", role="heading", paragraph_id="p0000", heading_level=1),
                 ParagraphUnit(text="The closing narrative paragraph of the final chapter.", role="body", paragraph_id="p0001"),
             ]
         ),
         DocumentBlock(
             paragraphs=[
                 ParagraphUnit(text="**BIBLIOGRAPHY**", role="body", paragraph_id="p0002"),
-                ParagraphUnit(text="Amato, M. *Complementary Currency Systems.* Milan: Bocconi, 2003.", role="body", paragraph_id="p0003"),
+                ParagraphUnit(text="Varro, M. *Auxiliary Mooring Systems.* Ferrent: Calloway, 2003.", role="body", paragraph_id="p0003"),
             ]
         ),
         DocumentBlock(
             paragraphs=[
                 ParagraphUnit(text="ACKNOWLEDGEMENTS", role="heading", paragraph_id="p0004", heading_level=1),
-                ParagraphUnit(text="Special thanks to Ed and Deb Shapiro, and to Frank Bailin.", role="body", paragraph_id="p0005"),
+                ParagraphUnit(text="Special thanks to Al and Mae Corwen, and to Hugh Danner.", role="body", paragraph_id="p0005"),
             ]
         ),
     ]
@@ -510,21 +510,21 @@ def test_build_editing_jobs_starts_the_region_after_a_title_that_closes_its_bloc
     blocks = [
         DocumentBlock(
             paragraphs=[
-                ParagraphUnit(text="She continues: “Take the fact that the Arab Spring became the story of 2011.”", role="body", paragraph_id="p0000"),
-                ParagraphUnit(text="Rethinking money, we can enjoy an era of genuine and sustainable abundance.", role="body", paragraph_id="p0001"),
+                ParagraphUnit(text="She adds: “Take the case where the Long Thaw became the story of 2011.”", role="body", paragraph_id="p0000"),
+                ParagraphUnit(text="Charting tides, we can enjoy an era of genuine and sustainable calm.", role="body", paragraph_id="p0001"),
                 ParagraphUnit(text="**NOTES**", role="body", paragraph_id="p0002"),
             ]
         ),
         DocumentBlock(
             paragraphs=[
                 ParagraphUnit(text="Introduction", role="body", paragraph_id="p0003"),
-                ParagraphUnit(text="1. Alan Wilson Watts, “From Time to Eternity.” Rutland, VT: C. E. Tuttle, 1999.", role="list", paragraph_id="p0004"),
+                ParagraphUnit(text="1. Owen Pryce Hollis, “From Dusk to Morning.” Easton, VT: C. E. Marlow, 1999.", role="list", paragraph_id="p0004"),
             ]
         ),
         DocumentBlock(
             paragraphs=[
                 ParagraphUnit(text="ACKNOWLEDGEMENTS", role="heading", paragraph_id="p0005", heading_level=1),
-                ParagraphUnit(text="Special thanks to Ed and Deb Shapiro, and to Frank Bailin.", role="body", paragraph_id="p0006"),
+                ParagraphUnit(text="Special thanks to Al and Mae Corwen, and to Hugh Danner.", role="body", paragraph_id="p0006"),
             ]
         ),
     ]
@@ -543,20 +543,20 @@ def _rethinking_money_notes_entry_paragraphs(start: int) -> list[ParagraphUnit]:
     exactly how the region-end defect stayed invisible behind a green anchor test."""
     return [
         ParagraphUnit(text="Chapter 2", role="heading", paragraph_id=f"p{start:04d}", heading_level=3, heading_source="explicit"),
-        ParagraphUnit(text="1. Aristotle, *Nichomachean Ethics* (350 bc), 1133.", role="list", paragraph_id=f"p{start + 1:04d}"),
+        ParagraphUnit(text="1. Theodric, *Harbourage Customs* (350 bc), 1133.", role="list", paragraph_id=f"p{start + 1:04d}"),
         ParagraphUnit(
-            text="4. A governor of the Bank of En gland was being questioned by the Bank Commission.",
+            text="4. A warden of the Port of Ash ford was being questioned by the Toll Commission.",
             role="body",
             paragraph_id=f"p{start + 2:04d}",
         ),
         ParagraphUnit(
-            text="“In ample suffi ciency, Sir.”",
+            text="“In fair propor tion, Sir.”",
             role="heading",
             paragraph_id=f"p{start + 3:04d}",
             heading_level=3,
             heading_source="explicit",
         ),
-        ParagraphUnit(text="“Can you be more precise?”", role="body", paragraph_id=f"p{start + 4:04d}"),
+        ParagraphUnit(text="“Can you be more exact?”", role="body", paragraph_id=f"p{start + 4:04d}"),
     ]
 
 
@@ -569,7 +569,7 @@ def test_build_editing_jobs_carries_a_level_less_notes_region_to_the_next_refere
     blocks = [
         DocumentBlock(
             paragraphs=[
-                ParagraphUnit(text="Rethinking money, we can enjoy an era of sustainable abundance.", role="body", paragraph_id="p0000"),
+                ParagraphUnit(text="Charting tides, we can enjoy an era of sustainable calm.", role="body", paragraph_id="p0000"),
                 ParagraphUnit(text="**NOTES**", role="body", paragraph_id="p0001"),
             ]
         ),
@@ -577,19 +577,19 @@ def test_build_editing_jobs_carries_a_level_less_notes_region_to_the_next_refere
         DocumentBlock(
             paragraphs=[
                 ParagraphUnit(text="Chapter 3", role="heading", paragraph_id="p0007", heading_level=3, heading_source="explicit"),
-                ParagraphUnit(text="7. See M. Amato, *Complementary Currency Systems.* Milan: Bocconi, 2003.", role="list", paragraph_id="p0008"),
+                ParagraphUnit(text="7. See M. Varro, *Auxiliary Mooring Systems.* Ferrent: Calloway, 2003.", role="list", paragraph_id="p0008"),
             ]
         ),
         DocumentBlock(
             paragraphs=[
                 ParagraphUnit(text="**BIBLIOGRAPHY**", role="body", paragraph_id="p0009"),
-                ParagraphUnit(text="Needleman, Jacob. *Money and the Meaning of Life.* New York: Doubleday, 1991.", role="body", paragraph_id="p0010"),
+                ParagraphUnit(text="Hallam, Jacob. *Rope and the Meaning of Knots.* Port Ellery: Dunmore, 1991.", role="body", paragraph_id="p0010"),
             ]
         ),
         DocumentBlock(
             paragraphs=[
                 ParagraphUnit(text="ACKNOWLEDGEMENTS", role="heading", paragraph_id="p0011", heading_level=1, heading_source="explicit"),
-                ParagraphUnit(text="Special thanks to Ed and Deb Shapiro, and to Frank Bailin.", role="body", paragraph_id="p0012"),
+                ParagraphUnit(text="Special thanks to Al and Mae Corwen, and to Hugh Danner.", role="body", paragraph_id="p0012"),
             ]
         ),
     ]
@@ -603,33 +603,33 @@ def test_build_editing_jobs_carries_a_level_less_notes_region_to_the_next_refere
 def test_build_editing_jobs_stops_a_level_less_reference_region_at_an_author_section_before_the_next_one():
     """Rethinking Money's `ACKNOWLEDGEMENTS` sits BETWEEN its bibliography and its index, so the
     "next reference section" bound alone would swallow it. Nothing in this repository knows the
-    words "acknowledgements" or "about the authors" and Constitution VII forbids adding them, so
+    words "acknowledgements" or "about the writers" and Constitution VII forbids adding them, so
     the outline is the whole of the defence: the region also ends at the next section opening at
     the DOCUMENT's own top depth, which is what that heading is (level 1, one of the book's 23).
     """
     blocks = [
         DocumentBlock(
             paragraphs=[
-                ParagraphUnit(text="From Scarcity to Sustainable Abundance", role="heading", paragraph_id="p0000", heading_level=1),
+                ParagraphUnit(text="From Shallows to Sheltered Harbours", role="heading", paragraph_id="p0000", heading_level=1),
                 ParagraphUnit(text="The closing narrative paragraph of the final chapter.", role="body", paragraph_id="p0001"),
             ]
         ),
         DocumentBlock(
             paragraphs=[
                 ParagraphUnit(text="**BIBLIOGRAPHY**", role="body", paragraph_id="p0002"),
-                ParagraphUnit(text="Amato, M. *Complementary Currency Systems.* Milan: Bocconi, 2003.", role="body", paragraph_id="p0003"),
+                ParagraphUnit(text="Varro, M. *Auxiliary Mooring Systems.* Ferrent: Calloway, 2003.", role="body", paragraph_id="p0003"),
             ]
         ),
         DocumentBlock(
             paragraphs=[
                 ParagraphUnit(text="ACKNOWLEDGEMENTS", role="heading", paragraph_id="p0004", heading_level=1, heading_source="explicit"),
-                ParagraphUnit(text="Special thanks to Ed and Deb Shapiro, and to Frank Bailin.", role="body", paragraph_id="p0005"),
+                ParagraphUnit(text="Special thanks to Al and Mae Corwen, and to Hugh Danner.", role="body", paragraph_id="p0005"),
             ]
         ),
         DocumentBlock(
             paragraphs=[
                 ParagraphUnit(text="**INDEX**", role="heading", paragraph_id="p0006", heading_level=2, heading_source="heuristic"),
-                ParagraphUnit(text="Bank of En gland, 25– 26, 228n4", role="body", paragraph_id="p0007"),
+                ParagraphUnit(text="Port of Ash ford, 25– 26, 228n4", role="body", paragraph_id="p0007"),
             ]
         ),
     ]
@@ -642,7 +642,7 @@ def test_build_editing_jobs_stops_a_level_less_reference_region_at_an_author_sec
 def test_build_editing_jobs_does_not_run_the_last_reference_region_to_the_end_of_the_document():
     """The accepted residual, asserted so it cannot be widened by accident.
 
-    Rethinking Money's index is followed by `**ABOUT THE AUTHORS**` — a body paragraph with no
+    Rethinking Money's index is followed by its author-biography title in bold capitals — a body paragraph with no
     heading role and no level, swept onto the tail of the last index block — and then by the
     publisher's advertising. The end of the document is a legitimate bound for a last reference
     section, but this book shows it is not distinguishable from "the author's biography is behind
@@ -653,19 +653,19 @@ def test_build_editing_jobs_does_not_run_the_last_reference_region_to_the_end_of
         DocumentBlock(
             paragraphs=[
                 ParagraphUnit(text="**INDEX**", role="heading", paragraph_id="p0000", heading_level=2, heading_source="heuristic"),
-                ParagraphUnit(text="Bank of En gland, 25– 26, 228n4", role="body", paragraph_id="p0001"),
+                ParagraphUnit(text="Port of Ash ford, 25– 26, 228n4", role="body", paragraph_id="p0001"),
             ]
         ),
         DocumentBlock(
             paragraphs=[
-                ParagraphUnit(text="Zumbara, 82 Voucher currency, 170", role="heading", paragraph_id="p0002", heading_level=3, heading_source="explicit"),
-                ParagraphUnit(text="**ABOUT THE AUTHORS**", role="body", paragraph_id="p0003"),
+                ParagraphUnit(text="Quillmere, 82 Voucher tokens, 170", role="heading", paragraph_id="p0002", heading_level=3, heading_source="explicit"),
+                ParagraphUnit(text="**ABOUT THE WRITERS**", role="body", paragraph_id="p0003"),
             ]
         ),
         DocumentBlock(
             paragraphs=[
                 ParagraphUnit(
-                    text="Bernard Lietaer is one of the most knowledgeable people in the world about money.",
+                    text="Tobias Wrenfield is one of the most seasoned pilots along the coast for tides.",
                     role="body",
                     paragraph_id="p0004",
                 ),
@@ -692,7 +692,7 @@ def test_build_editing_jobs_does_not_let_an_untagged_contents_list_anchor_a_refe
         DocumentBlock(
             paragraphs=[
                 ParagraphUnit(text="Contents", role="body", paragraph_id="p0000"),
-                ParagraphUnit(text="Introduction: Making versus Taking", role="body", paragraph_id="p0001"),
+                ParagraphUnit(text="Introduction: Mending versus Breaking", role="body", paragraph_id="p0001"),
                 ParagraphUnit(text="*Acknowledgements*", role="body", paragraph_id="p0002"),
                 ParagraphUnit(text="*Notes*", role="body", paragraph_id="p0003"),
                 ParagraphUnit(text="*Bibliography*", role="body", paragraph_id="p0004"),
