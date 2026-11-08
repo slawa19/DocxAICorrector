@@ -131,8 +131,6 @@ def _apply_metric_snapshot_fields(snapshot: dict[str, object], metrics: Mapping[
         "raw_mixed_script_term_count",
         "toc_body_concat_detected",
         "toc_body_concat_markdown_detected",
-        "toc_body_concat_structure_detected",
-        "toc_body_concat_gate_source",
         "raw_unmapped_source_paragraph_count",
         "raw_unmapped_target_paragraph_count",
         "structure_unit_unmapped_source_count",
@@ -533,8 +531,6 @@ def _build_structural_checks(
                 "passed": not gate_detected and source_toc_boundary_repaired,
                 "toc_body_concat_detected": metrics.get("toc_body_concat_detected"),
                 "toc_body_concat_markdown_detected": metrics.get("toc_body_concat_markdown_detected"),
-                "toc_body_concat_structure_detected": metrics.get("toc_body_concat_structure_detected"),
-                "toc_body_concat_gate_source": metrics.get("toc_body_concat_gate_source"),
                 "structure_repair_toc_body_boundary_repairs": metrics.get("structure_repair_toc_body_boundary_repairs"),
                 "effective_source_toc_region_count": metrics.get("effective_source_toc_region_count"),
             }

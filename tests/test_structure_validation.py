@@ -266,52 +266,6 @@ def test_validate_structure_quality_heading_only_collapse_boundary_120_and_2():
     assert "heading_only_collapse_risk" in report.escalation_reasons
 
 
-def test_validate_structure_quality_preserves_advisory_post_ai_fields():
-    paragraphs = [
-        _paragraph(0, "Chapter 1", role="heading", heading_source="explicit"),
-        _paragraph(1, "Regular paragraph with enough words to avoid short-body risk escalation."),
-    ]
-
-    report = validate_structure_quality(
-        paragraphs=paragraphs,
-        app_config=_config(),
-        document_map_present=True,
-        outline_coverage_ratio=0.5,
-    )
-
-    assert report.document_map_present is True
-    assert report.outline_coverage_ratio == 0.5
-
-
-def test_validate_structure_quality_keeps_outline_coverage_ratio_advisory_only_for_gating():
-    paragraphs = [
-        _paragraph(0, "Chapter 1", role="heading", heading_source="explicit"),
-        _paragraph(1, "Regular paragraph with enough words to avoid short-body risk escalation."),
-        _paragraph(2, "Another ordinary body paragraph with stable narrative structure and additional detail here."),
-    ]
-
-    baseline = validate_structure_quality(
-        paragraphs=paragraphs,
-        app_config=_config(),
-        document_map_present=False,
-        outline_coverage_ratio=None,
-    )
-    low_coverage = validate_structure_quality(
-        paragraphs=paragraphs,
-        app_config=_config(),
-        document_map_present=True,
-        outline_coverage_ratio=0.0,
-    )
-
-    assert baseline.escalation_recommended is False
-    assert low_coverage.escalation_recommended is False
-    assert baseline.escalation_reasons == low_coverage.escalation_reasons
-    assert baseline.readiness_status == low_coverage.readiness_status == "ready"
-    assert baseline.readiness_reasons == low_coverage.readiness_reasons == ()
-    assert low_coverage.document_map_present is True
-    assert low_coverage.outline_coverage_ratio == 0.0
-
-
 def test_build_structural_checks_exposes_explicit_unmapped_count_basis() -> None:
     document_profile = SimpleNamespace(
         max_formatting_diagnostics=5,

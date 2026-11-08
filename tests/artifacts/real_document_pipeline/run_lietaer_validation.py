@@ -667,9 +667,7 @@ def _build_translation_quality_summary_lines(
         f"translation_quality_gate_reasons={','.join(_as_string_list(report.get('gate_reasons')))}",
     ]
     for key in (
-        "toc_body_concat_gate_source",
         "toc_body_concat_markdown_detected",
-        "toc_body_concat_structure_detected",
         "bullet_heading_count",
         "bullet_heading_gate_source",
         "bullet_heading_classification",
@@ -1214,9 +1212,6 @@ def _print_terminal_completion_summary(*, report: Mapping[str, object], final_st
                 for part in (
                     f"status={translation_quality_report.get('quality_status')}",
                     f"gate_reasons={','.join(_as_string_list(translation_quality_report.get('gate_reasons')))}",
-                    f"toc_body_concat_gate_source={translation_quality_report.get('toc_body_concat_gate_source')}"
-                    if "toc_body_concat_gate_source" in translation_quality_report
-                    else "",
                     f"bullet_heading_count={translation_quality_report.get('bullet_heading_count')}"
                     if "bullet_heading_count" in translation_quality_report
                     else "",

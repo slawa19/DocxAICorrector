@@ -352,16 +352,6 @@ def _build_toc_body_concat_provenance_details(
 ) -> dict[str, object]:
     snapshot = preparation_diagnostic_snapshot or {}
     report = translation_quality_report or {}
-    gate_source = (
-        str(
-            snapshot.get("toc_body_concat_gate_source")
-            or report.get("toc_body_concat_gate_source")
-            or "legacy_markdown"
-        )
-        .strip()
-        .lower()
-        or "legacy_markdown"
-    )
     effective_gate_detected = snapshot.get(
         "toc_body_concat_detected",
         report.get("toc_body_concat_detected"),
@@ -370,15 +360,9 @@ def _build_toc_body_concat_provenance_details(
         "toc_body_concat_markdown_detected",
         report.get("toc_body_concat_markdown_detected", effective_gate_detected),
     )
-    structure_gate_detected = snapshot.get(
-        "toc_body_concat_structure_detected",
-        report.get("toc_body_concat_structure_detected"),
-    )
     return {
         "toc_body_concat_detected": effective_gate_detected,
         "toc_body_concat_markdown_detected": markdown_gate_detected,
-        "toc_body_concat_structure_detected": structure_gate_detected,
-        "toc_body_concat_gate_source": gate_source,
     }
 
 
@@ -391,10 +375,8 @@ def build_acceptance_toc_body_concat_check(
         preparation_diagnostic_snapshot=preparation_diagnostic_snapshot,
         translation_quality_report=translation_quality_report,
     )
-    gate_source = str(provenance["toc_body_concat_gate_source"] or "legacy_markdown")
     effective_gate_detected = provenance["toc_body_concat_detected"]
     markdown_gate_detected = provenance["toc_body_concat_markdown_detected"]
-    structure_gate_detected = provenance["toc_body_concat_structure_detected"]
     source_toc_boundary_repaired = bool(
         _coerce_int(preparation_diagnostic_snapshot.get("structure_repair_toc_body_boundary_repairs")) > 0
         or _coerce_int(preparation_diagnostic_snapshot.get("effective_source_toc_region_count")) > 0
@@ -405,8 +387,6 @@ def build_acceptance_toc_body_concat_check(
         "passed": not gate_detected and source_toc_boundary_repaired,
         "toc_body_concat_detected": effective_gate_detected,
         "toc_body_concat_markdown_detected": markdown_gate_detected,
-        "toc_body_concat_structure_detected": structure_gate_detected,
-        "toc_body_concat_gate_source": gate_source,
         "structure_repair_toc_body_boundary_repairs": preparation_diagnostic_snapshot.get(
             "structure_repair_toc_body_boundary_repairs"
         ),
@@ -926,8 +906,6 @@ def build_acceptance_verdict(
             bool(toc_body_concat_check["passed"]),
             toc_body_concat_detected=toc_body_concat_check.get("toc_body_concat_detected"),
             toc_body_concat_markdown_detected=toc_body_concat_check.get("toc_body_concat_markdown_detected"),
-            toc_body_concat_structure_detected=toc_body_concat_check.get("toc_body_concat_structure_detected"),
-            toc_body_concat_gate_source=toc_body_concat_check.get("toc_body_concat_gate_source"),
             structure_repair_toc_body_boundary_repairs=toc_body_concat_check.get(
                 "structure_repair_toc_body_boundary_repairs"
             ),

@@ -5,10 +5,7 @@
   "first_block_has_isolated_marker": false,
   "first_block_has_toc": true,
   "first_block_target_chars": 0,
-  "front_matter_body_advisories": [],
-  "front_matter_leaks": [],
   "heading_count": 1,
-  "outline_coverage_ratio": null,
   "paragraph_count": 4,
   "quality_gate_reasons": [],
   "quality_gate_status": "",
@@ -18,7 +15,6 @@
   "repaired_bullet_items": 2,
   "repaired_numbered_items": 3,
   "semantic_block_count": 1,
-  "targeted_recall_invoked": false,
   "toc_body_boundary_repairs": 1,
   "toc_entry_count": 1,
   "toc_header_count": 1

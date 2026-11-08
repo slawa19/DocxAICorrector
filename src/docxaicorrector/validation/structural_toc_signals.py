@@ -42,6 +42,4 @@ def _derive_toc_body_concat_gate_fields(*, markdown_detected: bool) -> dict[str,
     return {
         "toc_body_concat_detected": bool(markdown_detected),
         "toc_body_concat_markdown_detected": bool(markdown_detected),
-        "toc_body_concat_structure_detected": False,
-        "toc_body_concat_gate_source": "legacy_markdown",
     }

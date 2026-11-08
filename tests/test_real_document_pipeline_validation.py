@@ -424,8 +424,6 @@ def test_evaluate_lietaer_acceptance_fails_on_translation_quality_report_residua
             "raw_mixed_script_term_count": 1,
             "toc_body_concat_detected": True,
             "toc_body_concat_markdown_detected": True,
-            "toc_body_concat_structure_detected": False,
-            "toc_body_concat_gate_source": "legacy_markdown",
         },
     }
 
@@ -2129,7 +2127,6 @@ def test_evaluate_lietaer_acceptance_emits_required_no_toc_body_concat_check() -
         "preparation_diagnostic_snapshot": {
             "toc_body_concat_detected": False,
             "toc_body_concat_markdown_detected": False,
-            "toc_body_concat_gate_source": "legacy_markdown",
             "effective_source_toc_region_count": 1,
         },
     }
@@ -2143,7 +2140,6 @@ def test_evaluate_lietaer_acceptance_emits_required_no_toc_body_concat_check() -
 
     by_name = {check["name"]: check for check in acceptance["checks"]}
     assert by_name["no_toc_body_concat_required"]["passed"] is True
-    assert by_name["no_toc_body_concat_required"]["toc_body_concat_gate_source"] == "legacy_markdown"
 
 
 def test_evaluate_lietaer_acceptance_uses_explicit_report_markdown_field_for_legacy_toc_gate_fallback() -> None:
@@ -2164,8 +2160,6 @@ def test_evaluate_lietaer_acceptance_uses_explicit_report_markdown_field_for_leg
         "translation_quality_report": {
             "toc_body_concat_detected": False,
             "toc_body_concat_markdown_detected": True,
-            "toc_body_concat_structure_detected": False,
-            "toc_body_concat_gate_source": "legacy_markdown",
         },
         "preparation_diagnostic_snapshot": {
             "toc_body_concat_detected": False,
@@ -2182,10 +2176,8 @@ def test_evaluate_lietaer_acceptance_uses_explicit_report_markdown_field_for_leg
 
     by_name = {check["name"]: check for check in acceptance["checks"]}
     assert by_name["no_toc_body_concat_required"]["passed"] is False
-    assert by_name["no_toc_body_concat_required"]["toc_body_concat_gate_source"] == "legacy_markdown"
     assert by_name["no_toc_body_concat_required"]["toc_body_concat_detected"] is False
     assert by_name["no_toc_body_concat_required"]["toc_body_concat_markdown_detected"] is True
-    assert by_name["no_toc_body_concat_required"]["toc_body_concat_structure_detected"] is False
 
 
 def test_evaluate_lietaer_acceptance_allows_centered_text_edits_when_alignment_is_preserved() -> None:
@@ -2803,8 +2795,6 @@ def test_main_uses_processing_service_facade_and_runtime_config_only(tmp_path, m
                 "raw_mixed_script_term_count": 2,
                 "toc_body_concat_detected": False,
                 "toc_body_concat_markdown_detected": False,
-                "toc_body_concat_structure_detected": False,
-                "toc_body_concat_gate_source": "legacy_markdown",
             },
             ensure_ascii=False,
         ),
@@ -3021,7 +3011,6 @@ def test_main_uses_processing_service_facade_and_runtime_config_only(tmp_path, m
     assert "translation_quality_mixed_script_term_gate_source=legacy_markdown" in summary_text
     assert "translation_quality_mixed_script_term_classification=non_structural_hygiene" in summary_text
     assert "translation_quality_raw_mixed_script_term_count=2" in summary_text
-    assert "translation_quality_toc_body_concat_gate_source=legacy_markdown" in summary_text
     assert "source_file" not in report
     assert "runtime_configuration" not in report
 

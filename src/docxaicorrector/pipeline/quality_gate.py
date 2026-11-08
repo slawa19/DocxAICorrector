@@ -1775,31 +1775,23 @@ def _build_translation_quality_report(
             samples=bullet_heading_samples,
         )
     if toc_body_concat_detected:
-        if bool(authority_fields.get("toc_body_concat_structure_detected", False)):
-            quality_status = _apply_quality_gate_reason(
-                quality_status=quality_status,
-                gate_reasons=gate_reasons,
-                policy=policy,
-                reason="toc_body_concatenation_detected",
-            )
-        else:
-            quality_status = _apply_quality_review_reason(
-                quality_status=quality_status,
-                gate_reasons=gate_reasons,
+        quality_status = _apply_quality_review_reason(
+            quality_status=quality_status,
+            gate_reasons=gate_reasons,
+            reason="toc_body_concatenation_review_required",
+        )
+        formatting_review_items.append(
+            _build_formatting_review_item(
                 reason="toc_body_concatenation_review_required",
+                label="Возможная строка оглавления склеилась с текстом",
+                sample={
+                    "line": None,
+                    "text": final_markdown,
+                    "reason": "toc_body_concatenation_detected",
+                },
+                severity="fix",
             )
-            formatting_review_items.append(
-                _build_formatting_review_item(
-                    reason="toc_body_concatenation_review_required",
-                    label="Возможная строка оглавления склеилась с текстом",
-                    sample={
-                        "line": None,
-                        "text": final_markdown,
-                        "reason": "toc_body_concatenation_detected",
-                    },
-                    severity="fix",
-                )
-            )
+        )
     if false_fragment_heading_samples:
         quality_status, _ = _emit_hygiene_gate(
             quality_status=quality_status,
@@ -2117,8 +2109,6 @@ def _build_translation_quality_report(
         "emphasis_coverage": dict(emphasis_coverage_payload),
         "toc_body_concat_detected": toc_body_concat_detected,
         "toc_body_concat_markdown_detected": authority_fields.get("toc_body_concat_markdown_detected", False),
-        "toc_body_concat_structure_detected": authority_fields.get("toc_body_concat_structure_detected", False),
-        "toc_body_concat_gate_source": authority_fields.get("toc_body_concat_gate_source", "legacy_markdown"),
         "quality_gate_audit_classifications": quality_gate_audit_classifications_payload(),
         "formatting_diagnostics_artifact_count": len(formatting_diagnostics_artifacts),
         "role_aware_formatting_coverage_note": (
@@ -2169,8 +2159,6 @@ def _derive_translation_quality_authority_fields(
     fields: dict[str, object] = {
         "toc_body_concat_detected": markdown_detected,
         "toc_body_concat_markdown_detected": markdown_detected,
-        "toc_body_concat_structure_detected": False,
-        "toc_body_concat_gate_source": "legacy_markdown",
         "raw_unmapped_source_paragraph_count": raw_unmapped_source_count,
         "raw_unmapped_target_paragraph_count": raw_unmapped_target_count,
         "structure_unit_unmapped_source_count": raw_unmapped_source_count,

@@ -36,8 +36,6 @@ class StructureValidationReport:
     structure_quality_risk_level: str = "low"
     readiness_status: str = "ready"
     readiness_reasons: tuple[str, ...] = ()
-    document_map_present: bool = False
-    outline_coverage_ratio: float | None = None
     structure_repair_report: StructureRepairReport | None = None
 
 
@@ -298,8 +296,6 @@ def validate_structure_quality(
     paragraphs: Sequence[ParagraphLike],
     app_config: Mapping[str, Any],
     structure_repair_report: StructureRepairReport | None = None,
-    document_map_present: bool = False,
-    outline_coverage_ratio: float | None = None,
     phase: str = "post_ai_readiness",
 ) -> StructureValidationReport:
     normalized_phase = normalize_structure_phase(phase, default="post_ai_readiness")
@@ -408,7 +404,5 @@ def validate_structure_quality(
         structure_quality_risk_level=structure_quality_risk_level,
         readiness_status=readiness_status,
         readiness_reasons=readiness_reasons,
-        document_map_present=bool(document_map_present),
-        outline_coverage_ratio=None if outline_coverage_ratio is None else float(outline_coverage_ratio),
         structure_repair_report=structure_repair_report,
     )
