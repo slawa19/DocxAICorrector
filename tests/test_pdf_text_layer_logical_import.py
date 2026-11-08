@@ -2026,6 +2026,39 @@ def test_fr007_display_size_line_beside_a_short_span_stays_a_heading() -> None:
     assert any(p.role == "heading" and "PART ONE" in p.text for p in result.paragraphs)
 
 
+def test_065_fr008_a_table_cell_is_a_paragraph_of_its_own() -> None:
+    # Spec 065 FR-008 (I-4), Money's Box 7.1: two column labels on one baseline, a label of
+    # the left column one line below. Since 064 FR-007 the right label is no longer a heading,
+    # and the body merge ran it into the left column's next line ("PU BLIC SECTOR NGO
+    # Initiative s :"); the model then joined the labels with an invented conjunction.
+    spans = _subheading_page(
+        _span(1, "Left Sector", top=128, bottom=134, x0=50, x1=100, font_size=5),
+        _span(1, "Right Sector", top=128, bottom=134, x0=150, x1=200, font_size=5),
+        _span(1, "Sub Label :", top=135, bottom=141, x0=50, x1=90, font_size=5, bold=True),
+    )
+
+    result = build_paragraph_units_from_text_spans(spans)
+    texts = [p.text for p in result.paragraphs]
+
+    assert "Left Sector" in texts
+    assert "Right Sector" in texts
+    assert not any("Right Sector" in t and "Sub Label" in t for t in texts)
+
+
+def test_065_fr008_short_lines_that_are_not_table_cells_still_merge() -> None:
+    # ANTI-VACUUM: a wrapped body line with nothing beside it is not a table cell; the body
+    # merge treats it as before.
+    spans = [
+        _span(1, "A first running body line that establishes the document leading here.", top=40, bottom=54),
+        _span(1, "A second running body line that establishes the document leading", top=56, bottom=70),
+        _span(1, "and a wrapped third line continues the same sentence here.", top=72, bottom=86),
+    ]
+
+    result = build_paragraph_units_from_text_spans(spans)
+
+    assert any("leading and a wrapped third line" in p.text for p in result.paragraphs)
+
+
 def test_fr007_second_pass_does_not_reach_a_heading_beside_the_table():
     # Codex review 2026-11-07: a short heading of the cells' size, one line above a table row
     # but horizontally outside every cell of the table (the other column of the page), is not

@@ -244,10 +244,18 @@ def build_paragraph_units_from_text_spans(
                     pending_list_spans.append(span)
                     continue
                 _flush_list()
-            if pending_body_spans and not _can_merge_body_span(
-                pending_body_spans[-1],
-                span,
-                layout_profile=layout_profile,
+            if pending_body_spans and (
+                not _can_merge_body_span(
+                    pending_body_spans[-1],
+                    span,
+                    layout_profile=layout_profile,
+                )
+                # Spec 065 FR-008 (I-4): a table cell is a paragraph of its own. Since
+                # spec 064 FR-007 a cell is no longer a heading, and the body merge then
+                # ran it into the next line of ANOTHER column ("PU BLIC SECTOR" + "NGO
+                # Initiative s :", Money's Box 7.1).
+                or _is_table_row_cell(pending_body_spans[-1], layout_profile=layout_profile)
+                or _is_table_row_cell(span, layout_profile=layout_profile)
             ):
                 _flush_body()
             pending_body_spans.append(span)
