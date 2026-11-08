@@ -1,7 +1,7 @@
 # Logging and Artifact Retention Contract
 
 Статус: каноническая документация.
-Последняя ревизия: 2026-08-04.
+Последняя ревизия: 2026-11-08.
 Связанные документы: `README.md` (раздел «Логи»), `docs/AI_AGENT_DEVELOPMENT_RULES.md`, `docs/archive/specs/LOGGING_AND_DISK_RETENTION_SPEC_2026-03-27.md` (исходная спецификация).
 
 Назначение документа: зафиксировать единый источник правды по логированию и retention runtime-артефактов, чтобы ИИ-агент при добавлении новых фич:
@@ -21,6 +21,8 @@
 
 - Logger name: `docxaicorrector`.
 - Destination: `.run/app.log` через `_WSLSafeRotatingFileHandler` (max `1_000_000` байт, `backupCount=3`, UTF-8).
+- Исключение — real-document раннер (`tests/artifacts/real_document_pipeline/run_lietaer_validation.py`, спека 067 FR-013): на время прогона он переключает файловое назначение логгера на `<artifact_dir>/app.log` — каталог прогона `tests/artifacts/real_document_pipeline/runs/<run_id>/`, рядом с `*_report.json` — через `logger.redirect_log_file(path)`. Это ВМЕСТО `.run/app.log`, а не в дополнение: параллельные процессы раннера, дописывавшие в один общий файл на DrvFs, теряли строки (четыре процесса, стартовавшие за 4 мс, — три `config_key_ignored` и три `model_registry_resolved` на четыре старта; спека 066, Changelog), и подсчёт событий по такому файлу невозможен, а дубль в общий файл сохранил бы ровно этот дефект и удвоил запись. Подменяются только файловые handler'ы (`logging.FileHandler` и подклассы); прочие handler'ы остаются. Файл прогона — простой `FileHandler` в режиме дозаписи, без ротации: лог прогона — доказательство, он должен остаться целым, и его размер ограничен самим прогоном (раньше раннер ради того же поднимал `maxBytes` общего handler'а до 1 ГБ). По выходе из блока, в том числе по `SystemExit` неуспешного прогона, прежние handler'ы возвращаются, поэтому несколько прогонов в одном процессе пишут каждый в свой файл. Repeat/soak-профиль: каждый повтор — дочерний процесс со своим `run_id` и своим `app.log`, файл родителя содержит только записи оркестрации. Путь лежит в отчёте (`output_artifacts.app_log`) и в summary (`app_log=`). Записи, сделанные процессом раннера ДО того, как известен каталог прогона, по-прежнему идут в `.run/app.log`. Streamlit-приложение `redirect_log_file` не вызывает и пишет в `.run/app.log` как прежде.
+- События генерации `marker_attempt_rejected`, `marker_chunk_merge_retry_requested`, `marker_paragraph_omitted`, `marker_chunk_shrunk_without_absorber_kept` поля `filename` НЕ несут (в отличие от `run_glossary_built`): они эмитятся листовыми функциями `src/docxaicorrector/generation/_generation.py` и `src/docxaicorrector/generation/marker_attempt_capture.py`, до которых имя файла не доходит без смены их сигнатур (или нового контекстного канала). Для прогонов раннера отнесение записи к книге даёт файл прогона; для двух одновременных UI-прогонов в общем `.run/app.log` оно по-прежнему делается по `block_index`/`paragraph_id`.
 - Формат записи: `"%(asctime)s | %(levelname)s | %(message)s"` — где `message` сериализуется как JSON-payload вида
   `{"event_id": ..., "event": ..., "message": ..., "context": {...}}`.
 - Уровень: читается один раз из env-переменной `DOCX_AI_LOG_LEVEL` (DEBUG/INFO/WARNING/ERROR/CRITICAL, case-insensitive). Неизвестное значение даёт fallback `INFO` и одну WARNING-запись на старте.
@@ -303,6 +305,7 @@ context-ключей добавляется для события, когда е
 | Артефакт | Политика | Владелец |
 |----------|---------|----------|
 | `.run/app.log` | `RotatingFileHandler`, maxBytes=1_000_000, backupCount=3 | `logger._WSLSafeRotatingFileHandler` |
+| `tests/artifacts/real_document_pipeline/runs/<run_id>/app.log` | Лог одного прогона раннера (спека 067 FR-013, §1.1). Без ротации; живёт и удаляется вместе с каталогом прогона — runtime-механики `tests/artifacts/...` не чистят (§5), каталог в `.gitignore` и не переезжает с чекаутом (`AGENTS.md`, Runtime Contract). Отдельного TTL/count-cap нет намеренно: единица хранения — каталог прогона целиком, лог без отчёта и отчёт без лога неполны | `logger.redirect_log_file()`, вызов из `run_lietaer_validation.main()` |
 | `.run/app.ready` | Throttle window = 15s (не переписывается чаще на render-цикл) | `runtime_artifacts.AppReadyMarkerWriter` |
 | `.run/formatting_diagnostics/*.json` | TTL 7 дней, max 100 файлов, pruning при каждой записи. Retention family-wide и НЕ зависит от ownership envelope | `formatting_diagnostics_retention.prune_formatting_diagnostics()` |
 | `.run/paragraph_boundary_reports/*.json` | TTL 7 дней, max 300 файлов, pruning при каждой записи | `document._write_paragraph_boundary_report_artifact()` → `runtime_artifact_retention.prune_artifact_dir()` |
@@ -382,12 +385,15 @@ Root workspace is not an artifact drop zone. Runtime/debug/manual investigation 
 - Временная отладка на DEBUG:
   установить в `.env` `DOCX_AI_LOG_LEVEL=DEBUG`, перезапустить приложение, после диагностики вернуть на `INFO`.
 - Список всех событий, используемых в коде: `python3 scripts/_list_log_events.py`.
+- Лог прогона real-document раннера — не в `.run/app.log`, а в каталоге прогона (§1.1):
+  `wsl.exe -d Debian bash -c "grep -c marker_paragraph_omitted tests/artifacts/real_document_pipeline/runs/<run_id>/app.log"`.
 
 ### 6.2 Тесты
 
 - `tests/test_logger.py` — парсинг `DOCX_AI_LOG_LEVEL`, fallback, `log_event`/`log_exception`/`present_error`/`fail_critical` контракты.
 - `tests/test_format_restoration.py` — retention по age/count (`test_prune_formatting_diagnostics_*`).
 - `tests/test_app.py::test_mark_app_ready_uses_shared_throttled_writer` — throttle для `app.ready`.
+- `tests/test_logger.py::test_redirect_log_file_sends_each_block_to_its_own_file_and_restores_the_shared_one` и `tests/test_real_document_pipeline_validation.py::test_main_writes_each_runs_log_into_its_own_artifact_directory` — два прогона в одном процессе пишут два файла, общий лог их записей не получает, handler'ы восстанавливаются (спека 067 FR-013).
 - Для любого нового artifact family'и обязательно unit-тест на retention.
 
 ### 6.3 Не путать
@@ -396,12 +402,13 @@ Root workspace is not an artifact drop zone. Runtime/debug/manual investigation 
 - `.run/project.log` — shell control-plane (start/stop/status), PowerShell-сторона.
 - `.run/streamlit.log` — stdout/stderr Streamlit-процесса (`nohup`-redirect).
 
-Три файла имеют три независимых owner'а и три независимых retention-политики. Новые записи из Python-кода идут только в `.run/app.log`.
+Три файла имеют три независимых owner'а и три независимых retention-политики. Новые записи из Python-кода идут только в `.run/app.log` — кроме процесса real-document раннера, который на время прогона пишет тот же поток событий в `runs/<run_id>/app.log` своего каталога (§1.1).
 
 ---
 
 ## 7. Changelog этого документа
 
+- 2026-11-08: спека 067 FR-013 — лог прогона real-document раннера переехал из общего `.run/app.log` в каталог прогона `tests/artifacts/real_document_pipeline/runs/<run_id>/app.log` (§1.1, §5.1, §6): новый `logger.redirect_log_file()`, ключ отчёта `output_artifacts.app_log` и строка summary `app_log=`; снят подъём `maxBytes` общего handler'а до 1 ГБ. Поле `filename` у событий генерации `marker_*` не добавлено — имя файла до эмитирующих их листовых функций не доходит без смены сигнатур (§1.1); для раннера отнесение даёт файл прогона. Приложение и ротация `.run/app.log` не изменились.
 - 2026-11-08: спека 066 FR-007 — добавлено WARNING-событие `model_call_param_dropped` (§3.4): снятие необязательного параметра запроса после отказа провайдера больше не молчаливое. `src/docxaicorrector/image/shared.py` добавлен в `TARGETS` `scripts/_list_log_events.py`.
 - 2026-11-08: спека 065 FR-001 — `run_glossary_built` получил счётчики `cut_count` и `unrendered_required_count` и короткий список `unrendered_required` (по построению пуст); списки `rendered_terms` и `cut_terms` — только в артефакте `.run/run_glossaries/` (§1.5), записи там хранятся в порядке секции промпта.
 - 2026-11-07: спека 063 P2 — глоссарий прогона. Добавлены события `run_glossary_built` (INFO), `run_glossary_failed` и `run_glossary_artifact_write_failed` (WARNING) в §3.3 и семья `.run/run_glossaries/` в §5.1 (`RUN_GLOSSARIES_MAX_AGE_SECONDS` / `RUN_GLOSSARIES_MAX_COUNT` в `src/docxaicorrector/runtime/artifact_retention.py`). Стадия учёта `glossary_extraction` появляется в `stages` события `model_usage_accounted`; `api_path_counts` вызов глоссария не трогает. Отчёт real-document прогона получил секцию `run_glossary` и строки `run_glossary_*` в summary — тем же маршрутом, что `model_accounting`.

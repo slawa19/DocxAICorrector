@@ -269,3 +269,42 @@ def test_setup_logger_does_not_reconfigure_existing_logger(monkeypatch, tmp_path
 
     named_logger.removeHandler(existing_handler)
     existing_handler.close()
+
+
+def test_redirect_log_file_sends_each_block_to_its_own_file_and_restores_the_shared_one(monkeypatch, tmp_path):
+    """Spec 067 FR-013: two runs in one process write two files; the shared log keeps neither."""
+    _reset_named_logger(monkeypatch)
+    shared_log = tmp_path / "shared" / "app.log"
+    monkeypatch.setattr(logger, "RUN_DIR", shared_log.parent)
+    monkeypatch.setattr(logger, "APP_LOG_PATH", shared_log)
+    configured_logger = logger.get_logger()
+    capture_handler = logging.StreamHandler()
+    configured_logger.addHandler(capture_handler)
+    handlers_before = list(configured_logger.handlers)
+
+    run_a_log = tmp_path / "runs" / "run-a" / "app.log"
+    run_b_log = tmp_path / "runs" / "run-b" / "app.log"
+    with logger.redirect_log_file(run_a_log) as returned_path:
+        assert returned_path == run_a_log
+        # The non-file handler stays attached; only the file destination is swapped.
+        assert capture_handler in configured_logger.handlers
+        logger.log_event(logging.WARNING, "marker_paragraph_omitted", "run a", run_marker="run-a")
+    with pytest.raises(SystemExit):
+        with logger.redirect_log_file(run_b_log):
+            logger.log_event(logging.WARNING, "marker_paragraph_omitted", "run b", run_marker="run-b")
+            raise SystemExit(1)
+    logger.log_event(logging.INFO, "after_runs", "back to the shared log")
+    for handler in configured_logger.handlers:
+        handler.flush()
+
+    run_a_text = run_a_log.read_text(encoding="utf-8")
+    run_b_text = run_b_log.read_text(encoding="utf-8")
+    shared_text = shared_log.read_text(encoding="utf-8")
+    assert '"run_marker": "run-a"' in run_a_text and "run-b" not in run_a_text
+    assert '"run_marker": "run-b"' in run_b_text and "run-a" not in run_b_text
+    assert "run_marker" not in shared_text
+    assert "after_runs" in shared_text and "after_runs" not in run_a_text + run_b_text
+    assert "| WARNING |" in run_a_text
+    # A failing run (SystemExit) still gives the shared handler back.
+    assert set(configured_logger.handlers) == set(handlers_before)
+    configured_logger.removeHandler(capture_handler)
