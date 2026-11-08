@@ -512,8 +512,9 @@ def _build_raw_paragraph(
     heading_source = "explicit" if explicit_heading_level is not None else None
     # Spec 067 FR-002: a table cell the PDF importer flagged is never made a heading here.
     # The importer itself refused it a heading (spec 064 FR-007); the bold-line heuristics
-    # below then re-made one from the bridge's DOCX -- Money's Box 7.1 label "NGO
-    # Initiatives:" came back as h2 and the final assembly welded it to the next row.
+    # below then re-made one from the bridge's DOCX -- the bold label cell of Money and
+    # Sustainability's Box 7.1 (a short phrase ending in a colon) came back as h2 and the final
+    # assembly welded it to the next row.
     is_pdf_table_cell = paragraph_has_pdf_table_cell_signal(paragraph)
     if heading_level is None and not is_caption_style(normalized_style) and not is_pdf_table_cell:
         if is_probable_heading(paragraph, text, normalized_style) or _is_markdown_strong_heading_candidate(
@@ -877,12 +878,12 @@ _TOC_INNER_PAGE_NUMBER_PATTERN = re.compile(r"(?<=\S)\s+[*_]*\d{1,4}[*_]*(?=\s+\
 
 def _holds_consecutive_toc_entries(text: str) -> bool:
     """Spec 067 FR-007 follow-up: one line that carries two contents entries, run together by
-    the extractor -- "4 The Flying Fish: A New Perspective on Money *57* 5 The Future Has
-    Arrived But Isn't Distributed Evenly..." (Rethinking Money, p. 10). By form: the line splits
-    after a page number into pieces that are each a contents line by `_is_toc_candidate_text`.
-    Too long as a whole (more than 16 words), it broke the region in two until 2026-11-08, and the
-    second half survived only because a running head "CONTENTS" on the next page opened a new
-    region; spec 067 FR-007 drops that running head as page furniture."""
+    the extractor -- number, title, page number, then the next number and title (Rethinking
+    Money p. 10, spec 067 I-3). By form: the line splits after a page number into pieces that
+    are each a contents line by `_is_toc_candidate_text`. Too long as a whole (more than 16
+    words), it broke the region in two until 2026-11-08, and the second half survived only
+    because the contents' own running head on the next page opened a new region; spec 067
+    FR-007 drops that running head as page furniture."""
     pieces: list[str] = []
     start = 0
     for match in _TOC_INNER_PAGE_NUMBER_PATTERN.finditer(text):
@@ -891,8 +892,8 @@ def _holds_consecutive_toc_entries(text: str) -> bool:
     if not pieces:
         return False
     pieces.append(text[start:])
-    # The last title may wrap onto the next line; an ellipsis there is part of the title
-    # ("...Distributed Evenly..." + "Yet! *73*"), not a sentence end.
+    # The last title may wrap onto the next line; an ellipsis there is part of the title (the
+    # title goes on, with its page number, on the next line), not a sentence end.
     pieces[-1] = _TOC_TRAILING_ELLIPSIS_PATTERN.sub("", pieces[-1])
     return all(_is_toc_candidate_text(piece) for piece in pieces)
 
@@ -902,7 +903,7 @@ def _toc_region_end_at_last_page_number(
 ) -> int:
     """Spec 067 FR-007 follow-up: where a contents region carries page numbers, it ends with
     the last line that carries one. A line after it that still has the short contents shape --
-    the title of the first section after the contents ("FOREWORD"), its byline -- is not an
+    the title of the first section after the contents, its byline -- is not an
     entry. A region whose entries carry no page numbers at all (fewer than two) is left as the
     candidate run found it."""
     numbered = [

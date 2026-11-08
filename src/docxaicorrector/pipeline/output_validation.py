@@ -600,8 +600,9 @@ def is_citation_form_paragraph(text: str) -> bool:
 # --- Spec 067 FR-001: a run of NOTES the import left in the body ---------------------------
 #
 # Money & Sustainability sets its chapter notes at the foot of the chapter, and the PDF import
-# delivers them as ordinary body paragraphs of the prose region: "Footnotes 1 *Euromoney*,
-# April 2010, p.85. 2 Jared Diamond, ...". The back-matter apparatus policy (spec 063 D1, spec
+# delivers them as ordinary body paragraphs of the prose region: a label ("Footnotes"), then
+# numbered references run together ("1 *Title*, April 2010, p.85. 2 A. Author, ..."). The
+# back-matter apparatus policy (spec 063 D1, spec
 # 064 FR-006) never saw them, because it keys on the back-matter REGION. This is the form that
 # lets the document layer name such a paragraph, read off the paragraph alone (Constitution
 # VII: no word list, no book literal):
@@ -617,7 +618,7 @@ def is_citation_form_paragraph(text: str) -> bool:
 #   whose entry carries such a signal and is preceded by a LABEL -- a single token
 #   ("Footnotes") or the citation-form tail of a note torn across a page.
 #
-# A chain of one WITHOUT a label ("6 Strategies for Banking *95*") is NOT a notes run: on the
+# A chain of one WITHOUT a label ("6 Methods for Sailing *95*") is NOT a notes run: on the
 # four corpus books that shape matched only lines of a table of contents. The numbers are in
 # spec 067's Changelog (FR-001).
 _NOTE_NUMBER_PATTERN = re.compile(r"(?:(?<=\s)|^)(\d{1,3})\s+(?=\S)")

@@ -703,7 +703,7 @@ def split_marker_preserved_paragraph_dispositions(
     - ``markers_missing`` — no marker at all;
     - ``marker_order_or_identity`` — a marker missing, duplicated or reordered. On the same
       run this caught the model deleting a paragraph TOGETHER with its marker, losing the
-      heading ``## NGO Initiative s :`` outright;
+      heading (a bold label ending in a spaced colon) outright;
     - ``unexpected_prefix`` — text before the first marker, which has no owner.
 
     What changes: an EMPTY chunk under an exact marker sequence is no longer a block

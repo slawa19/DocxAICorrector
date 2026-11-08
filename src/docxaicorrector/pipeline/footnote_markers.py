@@ -2,7 +2,7 @@
 
 Since ``6cb7a6e`` the PDF import renders a footnote reference as Unicode superscript digits
 (``pdf_import/text_layer_quality.py``), so the reference reaches the model inside the
-prose — "…for the first time in history.¹²". Measured on the four translated corpus books
+prose — "…for the first time in years.¹²". Measured on the four translated corpus books
 of 2026-11-07, the model dropped 8/5/22/26 of them, and nothing in the pipeline noticed: no
 prompt mentioned them and no check compared them.
 

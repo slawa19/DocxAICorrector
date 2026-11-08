@@ -110,7 +110,7 @@ _INDEX_PAGE_RUN_PATTERN = re.compile(r"\d+\s*[–—-]\s*\d+|\d+\s*;\s*\d+|,\s*\
 _INDEX_SEMICOLON_PAGE_PATTERN = re.compile(r";\s*(?:pp?\.?\s*)?\d")
 _MAX_INDEX_ROW_LEN = 400
 # Attribution: an epigraph/dedication author credit. Either an explicit structural role,
-# or a short dash-led credit ("— Adrienne Rich") that does NOT end in sentence-terminal
+# or a short dash-led credit ("— Ansel Keswick") that does NOT end in sentence-terminal
 # punctuation — a short dash-led line ending in "."/"!"/"?" is dialogue / an em-dash-led
 # clause, not an author credit.
 _ATTRIBUTION_STRUCTURAL_ROLES = frozenset({"attribution", "epigraph", "dedication"})
@@ -212,7 +212,7 @@ def _is_index_row_text(text: str) -> bool:
 
 def _is_attribution_text(text: str, role: str, structural_role: str) -> bool:
     """An epigraph/dedication attribution credit. True for an explicit structural role,
-    or a short dash-led author credit ("— Adrienne Rich"). A dash-led line that ends in
+    or a short dash-led author credit ("— Ansel Keswick"). A dash-led line that ends in
     sentence-terminal punctuation ("."/"!"/"?") is dialogue / an em-dash-led clause, not a
     credit, and is rejected. Length-bounded and never matches a real body paragraph —
     anti-vacuum safe."""
