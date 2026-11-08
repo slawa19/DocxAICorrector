@@ -188,6 +188,41 @@ def test_build_paragraph_units_reattaches_boundary_superscript_footnote_marker()
     assert all(paragraph.text.strip() != "2" for paragraph in result.paragraphs)
 
 
+def test_065_fr007_marker_split_off_a_line_ending_in_a_comma_is_glued_as_superscript() -> None:
+    # Spec 065 FR-007, Money and Sustainability's shape: a reference set after a clause comma
+    # at the end of a line is lifted off the line by the extractor (the comma is now an
+    # anchor) and re-bound here. Glued like one after a full stop -- not "capitalism, 5 the
+    # examples", a number in the middle of the sentence.
+    spans = [
+        _span(1, "Body line establishes the normal document sentence.", top=70, bottom=82, x0=50, x1=430),
+        _span(1, "a basic characteristic of capitalism,", top=100, bottom=112, x0=50, x1=430),
+        _span(1, "5", top=101, bottom=106, x0=431, x1=434, font_size=4),
+        _span(1, "the examples he uses all refer to firms.", top=114, bottom=126, x0=50, x1=300),
+    ]
+
+    result = build_paragraph_units_from_text_spans(spans)
+
+    joined = " ".join(paragraph.text for paragraph in result.paragraphs)
+    assert "capitalism,⁵ the examples" in joined
+    assert all(paragraph.text.strip() != "5" for paragraph in result.paragraphs)
+
+
+def test_065_fr007_marker_after_a_bare_word_keeps_its_inline_form() -> None:
+    # Anti-vacuum for the glue above: a marker after a bare word keeps the inline,
+    # space-separated form Rule 1 pins (unchanged; no corpus case reaches it).
+    spans = [
+        _span(1, "Body text line one with a body sentence", top=100, bottom=112, x0=50, x1=300, font_size=12),
+        _span(1, "12", top=101, bottom=106, x0=302, x1=309, font_size=6),
+        _span(1, "evolution which is bound to throw up results", top=120, bottom=132, x0=50, x1=300, font_size=12),
+    ]
+
+    result = build_paragraph_units_from_text_spans(spans)
+
+    assert result.paragraphs[0].text == (
+        "Body text line one with a body sentence 12 evolution which is bound to throw up results"
+    )
+
+
 def test_build_paragraph_units_separates_attribution_superscript_footnote_marker() -> None:
     spans = [
         _span(1, "Body line establishes the normal document sentence.", top=70, bottom=82, x0=50, x1=430),
@@ -1991,6 +2026,39 @@ def test_fr007_display_size_line_beside_a_short_span_stays_a_heading() -> None:
     assert any(p.role == "heading" and "PART ONE" in p.text for p in result.paragraphs)
 
 
+def test_065_fr008_a_table_cell_is_a_paragraph_of_its_own() -> None:
+    # Spec 065 FR-008 (I-4), Money's Box 7.1: two column labels on one baseline, a label of
+    # the left column one line below. Since 064 FR-007 the right label is no longer a heading,
+    # and the body merge ran it into the left column's next line ("PU BLIC SECTOR NGO
+    # Initiative s :"); the model then joined the labels with an invented conjunction.
+    spans = _subheading_page(
+        _span(1, "Left Sector", top=128, bottom=134, x0=50, x1=100, font_size=5),
+        _span(1, "Right Sector", top=128, bottom=134, x0=150, x1=200, font_size=5),
+        _span(1, "Sub Label :", top=135, bottom=141, x0=50, x1=90, font_size=5, bold=True),
+    )
+
+    result = build_paragraph_units_from_text_spans(spans)
+    texts = [p.text for p in result.paragraphs]
+
+    assert "Left Sector" in texts
+    assert "Right Sector" in texts
+    assert not any("Right Sector" in t and "Sub Label" in t for t in texts)
+
+
+def test_065_fr008_short_lines_that_are_not_table_cells_still_merge() -> None:
+    # ANTI-VACUUM: a wrapped body line with nothing beside it is not a table cell; the body
+    # merge treats it as before.
+    spans = [
+        _span(1, "A first running body line that establishes the document leading here.", top=40, bottom=54),
+        _span(1, "A second running body line that establishes the document leading", top=56, bottom=70),
+        _span(1, "and a wrapped third line continues the same sentence here.", top=72, bottom=86),
+    ]
+
+    result = build_paragraph_units_from_text_spans(spans)
+
+    assert any("leading and a wrapped third line" in p.text for p in result.paragraphs)
+
+
 def test_fr007_second_pass_does_not_reach_a_heading_beside_the_table():
     # Codex review 2026-11-07: a short heading of the cells' size, one line above a table row
     # but horizontally outside every cell of the table (the other column of the page), is not
@@ -2216,3 +2284,231 @@ def test_r7_tear_across_a_page_break_is_joined() -> None:
     texts = _texts(spans)
 
     assert f"{_TORN_HEAD} {_TORN_TAIL}" in texts
+
+
+# Spec 065 FR-008 (I-2): roles inside a notes section. A group title -- the line after which
+# the entry numbering starts again, set in another size -- is a heading; a wrapped line of an
+# entry the classifier typed heading is not. Form and geometry only.
+
+
+def _notes_title_unit(top: float = 120) -> ParagraphUnit:
+    return ParagraphUnit(
+        text="Notes",
+        role="heading",
+        structural_role="heading",
+        heading_level=2,
+        font_size_pt=18,
+        origin_raw_indexes=[int(round(top))],
+        origin_raw_texts=["Notes"],
+    )
+
+
+def _line_unit(span: PdfTextSpan, *, role: str, level: int | None = None) -> ParagraphUnit:
+    return ParagraphUnit(
+        text=span.text,
+        role=role,
+        structural_role=role,
+        heading_level=level,
+        font_size_pt=span.font_size,
+        origin_raw_indexes=[(span.page_number - 1) * 10000 + int(round(span.top))],
+        origin_raw_texts=[span.text],
+    )
+
+
+def test_065_fr008_group_title_before_a_numbering_restart_is_a_heading() -> None:
+    # VoE "INTRODUCTION: MAKING VERSUS TAKING": body, one line, in a smaller size than the
+    # note 1 that follows it. It becomes a heading below the section title, never at a
+    # chapter's level.
+    last = _span(1, "14. Forbes, 2017.", top=160, bottom=172, x0=50, x1=150)
+    title = _span(1, "INTRODUCTION: A GROUP OF NOTES", top=190, bottom=198, x0=150, x1=350, font_size=8)
+    first = _span(1, "1. The first note of the introduction ends a sentence.", top=210, bottom=222, x0=50, x1=420)
+    units = [
+        _notes_title_unit(),
+        _line_unit(last, role="list"),
+        _line_unit(title, role="body"),
+        _line_unit(first, role="list"),
+    ]
+
+    logical_import._settle_back_matter_entry_roles(units, _notes_page(last, title, first))
+
+    assert units[2].role == "heading"
+    assert units[2].heading_level == 3
+    assert units[1].role == "list" and units[3].role == "list"
+
+
+def test_065_fr008_numbered_group_title_out_of_sequence_is_a_heading() -> None:
+    # VoE "1. A BRIEF HISTORY OF VALUE" after note 20, before note 1 of its own group.
+    paragraphs = build_paragraph_units_from_text_spans(
+        _notes_page(
+            _span(1, "4. A note of the previous group ends its own sentence.", top=160, bottom=172, x0=50, x1=420),
+            _span(1, "5. The last note of the previous group ends a sentence.", top=174, bottom=186, x0=50, x1=420),
+            _span(1, "2. A GROUP TITLE IN CAPITALS", top=200, bottom=208, x0=150, x1=350, font_size=8),
+            _span(1, "1. The first note of the group ends its own sentence.", top=220, bottom=232, x0=50, x1=420),
+        )
+    ).paragraphs
+    title = next(p for p in paragraphs if p.text == "2. A GROUP TITLE IN CAPITALS")
+
+    assert title.role == "heading"
+
+
+def test_065_fr008_last_note_before_a_restart_stays_a_note() -> None:
+    # Counterexamples: a book without group titles. The last note of a chapter is followed by
+    # note 1 of the next one -- set in the entries' own size, or the next number of its own
+    # sequence; neither is a title.
+    same_size = build_paragraph_units_from_text_spans(
+        _notes_page(
+            _span(1, "1. A first note of the chapter ends its own sentence.", top=160, bottom=172, x0=50, x1=420),
+            _span(1, "Ibid., p. 4", top=174, bottom=186, x0=50, x1=150),
+            _span(1, "1. The first note of the next chapter ends a sentence.", top=188, bottom=200, x0=50, x1=420),
+        )
+    ).paragraphs
+    in_sequence = build_paragraph_units_from_text_spans(
+        _notes_page(
+            _span(1, "1. A first note of the chapter ends its own sentence.", top=160, bottom=172, x0=50, x1=420),
+            _span(1, "2. A SMALL PRINT NOTE", top=180, bottom=188, x0=50, x1=150, font_size=8),
+            _span(1, "1. The first note of the next chapter ends a sentence.", top=200, bottom=212, x0=50, x1=420),
+        )
+    ).paragraphs
+
+    assert next(p for p in same_size if p.text == "Ibid., p. 4").role != "heading"
+    assert next(p for p in in_sequence if p.text == "2. A SMALL PRINT NOTE").role != "heading"
+
+
+def test_065_fr008_wrapped_entry_line_typed_heading_becomes_body_and_joins() -> None:
+    # VoE block 600: "32. T. Atkinson, ... Measurement of" + a wrapped line the classifier typed
+    # h3 + "(Basingstoke ... 2005)." -- the join never crosses a heading, so the entry stayed torn.
+    head = _span(1, "32. T. Atkinson, Atkinson Review: Final Report. Measurement of", top=160, bottom=172, x0=50, x1=446)
+    fragment = _span(1, "Government Output and Productivity for the National Accounts", top=174, bottom=186, x0=70, x1=446)
+    tail = _span(1, "(Basingstoke and New York: Palgrave Macmillan, 2005).", top=188, bottom=200, x0=70, x1=360)
+    spans = _notes_page(head, fragment, tail)
+    units = [
+        _notes_title_unit(),
+        _line_unit(head, role="list"),
+        _line_unit(fragment, role="heading", level=3),
+        _line_unit(tail, role="body"),
+    ]
+
+    settled = logical_import._settle_back_matter_entry_roles(units, spans)
+    profile = logical_import._build_heading_layout_profile(spans, repeated_furniture_keys=set())
+    joined = logical_import._join_torn_back_matter_entries(settled, spans, layout_profile=profile)
+
+    assert units[2].role == "body" and units[2].heading_level is None
+    assert [u.text for u in joined][1] == f"{head.text} {fragment.text} {tail.text}"
+
+
+def test_065_fr008_heading_set_apart_inside_notes_stays_a_heading() -> None:
+    # Counterexamples: a real heading inside the notes -- a blank line above it at the entries'
+    # size, or the very next line but in its own size -- is not an entry fragment.
+    entry = _span(1, "1. A first note of the section ends its own sentence here at the edge", top=160, bottom=172, x0=50, x1=446)
+    apart = _span(1, "A Heading Set Apart By A Blank Line", top=200, bottom=212, x0=50, x1=300)
+    other_size = _span(1, "A Heading In Its Own Size", top=174, bottom=188, x0=50, x1=300, font_size=13)
+    for heading in (apart, other_size):
+        units = [_notes_title_unit(), _line_unit(entry, role="list"), _line_unit(heading, role="heading", level=3)]
+
+        logical_import._settle_back_matter_entry_roles(units, _notes_page(entry, heading))
+
+        assert units[2].role == "heading" and units[2].heading_level == 3
+
+
+def test_065_fr008_heading_outside_a_notes_section_is_not_touched() -> None:
+    entry = _span(1, "1. A numbered paragraph of the body ends at the edge of the column", top=160, bottom=172, x0=50, x1=446)
+    fragment = _span(1, "Government Output and Productivity", top=174, bottom=186, x0=70, x1=300)
+    title = _notes_title_unit()
+    title.text = "Overview"
+    title.origin_raw_texts = ["Overview"]
+    units = [title, _line_unit(entry, role="list"), _line_unit(fragment, role="heading", level=3)]
+
+    logical_import._settle_back_matter_entry_roles(units, _notes_page(entry, fragment, title="Overview"))
+
+    assert units[2].role == "heading"
+
+
+# Spec 065 FR-009 (I-3): a sentence that wrapped before a number ("...the Battle of Waterloo in"
+# + "1815. He was said ...") is one paragraph, not a body paragraph and a numbered-list item.
+
+_WRAP_HEAD = "A running body line that establishes the leading tells how the bank, during"
+_WRAP_NUMBER = "1815. He was said to have made a fortune from holding on to the bonds."
+
+
+def _body_lead_spans(page: int = 1) -> list[PdfTextSpan]:
+    return [
+        _span(page, "A first running body line that establishes the document leading here.", top=40, bottom=54, x1=446),
+        _span(page, "A second running body line that establishes the document leading too", top=56, bottom=70, x1=448),
+    ]
+
+
+def test_065_fr009_number_after_a_mid_sentence_wrap_continues_the_paragraph() -> None:
+    texts = _texts(
+        _body_lead_spans()
+        + [
+            _span(1, _WRAP_HEAD, top=72, bottom=86, x1=447),
+            _span(1, _WRAP_NUMBER, top=88, bottom=102, x1=420),
+        ]
+    )
+
+    assert any(f"{_WRAP_HEAD} {_WRAP_NUMBER}" in text for text in texts)
+    assert _WRAP_NUMBER not in texts
+
+
+def test_065_fr009_number_at_the_top_of_the_next_page_continues_the_paragraph() -> None:
+    texts = _texts(
+        _body_lead_spans()
+        + [
+            _span(1, _WRAP_HEAD, top=760, bottom=774, x1=447),
+            _span(2, _WRAP_NUMBER, top=40, bottom=54, x1=420),
+        ]
+    )
+
+    assert any(f"{_WRAP_HEAD} {_WRAP_NUMBER}" in text for text in texts)
+
+
+def test_065_fr009_list_announced_by_a_closed_line_stays_a_list() -> None:
+    # Counterexamples: a real list follows a line that closes (a colon), or one that ends
+    # short of the margin.
+    for head in (
+        "A running body line that establishes the leading names the three steps:",
+        "The three steps are",
+    ):
+        paragraphs = build_paragraph_units_from_text_spans(
+            _body_lead_spans()
+            + [
+                _span(1, head, top=72, bottom=86, x1=447 if head.endswith(":") else 160),
+                _span(1, "1. Collect the data from every branch of the bank.", top=88, bottom=102, x1=380),
+            ]
+        ).paragraphs
+
+        item = next(p for p in paragraphs if p.text.startswith("1. Collect"))
+        assert item.role == "list"
+
+
+def test_065_fr009_next_item_of_a_running_list_stays_a_list() -> None:
+    # Counterexample: the item before a wrapped, open line was number 1; "2." is the next item
+    # of that list, whatever the line above it looks like.
+    first = _span(1, "1. The first item of the list opens the enumeration here.", top=72, bottom=86, x1=400)
+    wrapped = _span(1, "a body line of the first item that runs to the right edge and", top=88, bottom=102, x1=447)
+    second = _span(1, "2. The second item of the list follows its own number.", top=104, bottom=118, x1=380)
+    spans = _body_lead_spans() + [first, wrapped, second]
+    units = [
+        _line_unit(first, role="list"),
+        _line_unit(wrapped, role="body"),
+        _line_unit(second, role="list"),
+    ]
+    profile = logical_import._build_heading_layout_profile(spans, repeated_furniture_keys=set())
+
+    joined = logical_import._join_numbered_body_continuations(units, spans, layout_profile=profile)
+
+    assert [u.role for u in joined] == ["list", "body", "list"]
+
+
+def test_065_fr009_next_note_after_an_address_inside_notes_is_not_joined() -> None:
+    # Counterexample: inside a notes section an entry number after an address that ran to the
+    # margin opens the next entry; that region belongs to the notes-join.
+    address = _span(1, "http://www.example.org/archive/documents/historic/speeches/speech409", top=174, bottom=186, x0=70, x1=447)
+    note = _span(1, "10. Source: a bureau of statistics, own calculations.", top=188, bottom=200, x0=50, x1=380)
+    spans = _notes_page(address, note)
+    units = [_notes_title_unit(), _line_unit(address, role="body"), _line_unit(note, role="list")]
+    profile = logical_import._build_heading_layout_profile(spans, repeated_furniture_keys=set())
+
+    joined = logical_import._join_numbered_body_continuations(units, spans, layout_profile=profile)
+
+    assert [u.role for u in joined] == ["heading", "body", "list"]

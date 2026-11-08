@@ -68,9 +68,23 @@ _SUPERSCRIPT_MARKER_MAX_SIZE_RATIO = 0.85
 _SUPERSCRIPT_MARKER_MIN_BASELINE_RISE_RATIO = 0.35
 _SUPERSCRIPT_MARKER_MAX_DIGITS = 3
 _SUPERSCRIPT_DIGIT_TABLE = str.maketrans("0123456789", "⁰¹²³⁴⁵⁶⁷⁸⁹")
-# What a reference may be welded to: the end of a word, or the end of a sentence. Same
-# set as ``_can_end_with_superscript_marker`` uses for the end-of-line case.
-_SUPERSCRIPT_MARKER_ANCHOR_CLOSERS = ".!?:;)]}»”\"'"
+# What a reference may be welded to: the end of a word, or the punctuation that follows the
+# word it annotates -- a sentence end, a clause comma, a closing bracket or a closing quote,
+# typographic (” ’) or straight. Same set as ``_can_end_with_superscript_marker`` uses for
+# the end-of-line case.
+#
+# Spec 065 FR-007: until 2026-11-08 the set had no comma and no right single quote (which is
+# also the typographic apostrophe). A reference set after either -- "lending,³⁰ as",
+# "reject.’¹⁰", "‘marginal revolution’⁴ –" -- reached the model as plain digits welded to the
+# word, outside the marker count, although the book had set it smaller and raised like any
+# other reference. Measured on the four corpus PDFs, every digit run of at most three digits
+# welded to a comma or a ’ that passes the size-and-rise pair sits in its own book's
+# reference cluster (size ratio, rise): The Value of Everything 67 at (0.60, 0.44) -- 42
+# after a comma, 25 after ’ --, Rethinking Money 14 at (0.65, 0.44), Creating Wealth 5 at
+# (0.75, 0.40), Money and Sustainability 14 at (0.40, 0.48); all 100 were read and all are
+# references. The same two anchors precede 263 + 2 digit runs set at full size on the
+# baseline ("1,300", "2,000", "’90s"), and the size-and-rise pair leaves every one a number.
+_SUPERSCRIPT_MARKER_ANCHOR_CLOSERS = ".!?:;,)]}»”’\"'"
 
 
 @dataclass(frozen=True)

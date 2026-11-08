@@ -17,6 +17,7 @@ from docxaicorrector.document.semantic_blocks import (
 )
 from docxaicorrector.validation.formatting_coverage import _normalize_structural_text
 from docxaicorrector.pdf_import.text_layer_quality import (
+    _SUPERSCRIPT_MARKER_ANCHOR_CLOSERS,
     PdfTextSpan,
     _can_end_with_superscript_marker,
     _detect_repeated_page_furniture_keys,
@@ -243,10 +244,18 @@ def build_paragraph_units_from_text_spans(
                     pending_list_spans.append(span)
                     continue
                 _flush_list()
-            if pending_body_spans and not _can_merge_body_span(
-                pending_body_spans[-1],
-                span,
-                layout_profile=layout_profile,
+            if pending_body_spans and (
+                not _can_merge_body_span(
+                    pending_body_spans[-1],
+                    span,
+                    layout_profile=layout_profile,
+                )
+                # Spec 065 FR-008 (I-4): a table cell is a paragraph of its own. Since
+                # spec 064 FR-007 a cell is no longer a heading, and the body merge then
+                # ran it into the next line of ANOTHER column ("PU BLIC SECTOR" + "NGO
+                # Initiative s :", Money's Box 7.1).
+                or _is_table_row_cell(pending_body_spans[-1], layout_profile=layout_profile)
+                or _is_table_row_cell(span, layout_profile=layout_profile)
             ):
                 _flush_body()
             pending_body_spans.append(span)
@@ -349,9 +358,21 @@ def build_paragraph_units_from_text_spans(
     # After the structural pass: a heading that pass makes keeps the level it gives, and
     # FR-009 only reads what is still body.
     emitted = _reconcile_display_titles(emitted, ordered_spans, layout_profile=layout_profile)
+    # Spec 065 FR-008: settle heading roles inside notes / reference sections before the join
+    # reads them -- the join never crosses a heading, so a fragment typed heading kept a torn
+    # entry torn.
+    emitted = _settle_back_matter_entry_roles(emitted, ordered_spans)
     # Spec 064 R-7: after every role is final, because the region is anchored on a heading
     # and the join refuses to touch one.
     emitted = _join_torn_back_matter_entries(
+        emitted,
+        ordered_spans,
+        layout_profile=layout_profile,
+        dehyphenation_evidence=dehyphenation_evidence,
+    )
+    # Spec 065 FR-009: the body counterpart, outside those sections -- a sentence that wrapped
+    # before a number ("...in" + "1815. He was said ...") is not a list item.
+    emitted = _join_numbered_body_continuations(
         emitted,
         ordered_spans,
         layout_profile=layout_profile,
@@ -2454,6 +2475,111 @@ def _space_joined_style_runs(spans: list[PdfTextSpan]) -> list[StyleRun]:
     return result
 
 
+# A body line that ends here has finished its sentence -- or introduces what follows (a colon,
+# a semicolon), which is how a real numbered list is announced.
+_BODY_LINE_CLOSED_CHARS = ".!?…:;"
+
+
+def _unit_ordered_list_number(unit: ParagraphUnit) -> int | None:
+    match = _ORDERED_LIST_PATTERN.match((unit.text or "").strip())
+    return int(match.group("marker")) if match else None
+
+
+def _body_text_is_closed(text: str) -> bool:
+    stripped = text.rstrip()
+    while stripped and (stripped[-1] in _ENTRY_TRAILING_CLOSER_CHARS or stripped[-1].isspace()):
+        stripped = stripped[:-1]
+    return not stripped or stripped[-1] in _BODY_LINE_CLOSED_CHARS
+
+
+def _is_numbered_body_continuation(
+    head: ParagraphUnit,
+    tail: ParagraphUnit,
+    *,
+    spans_by_origin: dict[int, list[PdfTextSpan]],
+    layout_profile: _PdfHeadingLayoutProfile,
+    last_list_item_number: int | None,
+) -> bool:
+    """Spec 065 FR-009: a list item that opens with a number and a period or bracket ("1815. He
+    was said", "2011) argued") right after a body paragraph that broke mid-sentence continues
+    that paragraph; the line break fell before a number.
+
+    The form, all of it required -- the geometry the spec 064 notes-join reads, in the body:
+      * the paragraph does not close: its last character, past closing quotes, brackets and
+        superscript references, is none of . ! ? ... : ;
+      * its last line ran out of room: the number would not have fit before the body column's
+        right edge (`_entry_line_ran_out_of_room`);
+      * the item's first line is the next line: on the same page with less than a blank line
+        above it, or at the top of the next page (`_entry_lines_are_consecutive`);
+      * both lines are set in one size;
+      * the number is not the next one of a running list: not the number of the last list
+        item since the last heading plus one.
+    A real numbered list is announced by a line that closes (usually with a colon) or that
+    ends short of the margin, and its later items follow the item before them in number.
+    Notes and reference sections are left to the notes-join: there an entry number after an
+    address that ran to the margin opens the next entry."""
+    if head.role != "body" or head.structural_role != "body" or tail.role != "list":
+        return False
+    number = _unit_ordered_list_number(tail)
+    if number is None:
+        return False
+    if last_list_item_number is not None and number == last_list_item_number + 1:
+        return False
+    if _body_text_is_closed(head.text or ""):
+        return False
+    last_line = _unit_line_span(head, -1, spans_by_origin)
+    first_line = _unit_line_span(tail, 0, spans_by_origin)
+    if last_line is None or first_line is None:
+        return False
+    if not _font_sizes_match(_span_font_size(last_line), _span_font_size(first_line)):
+        return False
+    return _entry_lines_are_consecutive(last_line, first_line) and _entry_line_ran_out_of_room(
+        last_line, _normalize_text(first_line.text), layout_profile=layout_profile
+    )
+
+
+def _join_numbered_body_continuations(
+    units: list[ParagraphUnit],
+    ordered_spans: list[PdfTextSpan],
+    *,
+    layout_profile: _PdfHeadingLayoutProfile,
+    dehyphenation_evidence: _SoftWrapDehyphenationEvidence | None = None,
+) -> list[ParagraphUnit]:
+    """Spec 065 FR-009: join a body paragraph and the "list item" its own sentence ran into.
+    See `_is_numbered_body_continuation` for the form."""
+    in_back_matter = _back_matter_entry_region_flags(units)
+    spans_by_origin: dict[int, list[PdfTextSpan]] = {}
+    for span in ordered_spans:
+        spans_by_origin.setdefault(_span_origin_index(span), []).append(span)
+    result: list[ParagraphUnit] = []
+    last_list_item_number: int | None = None
+    for unit, in_region in zip(units, in_back_matter):
+        if unit.role == "heading":
+            last_list_item_number = None
+        if (
+            not in_region
+            and result
+            and _is_numbered_body_continuation(
+                result[-1],
+                unit,
+                spans_by_origin=spans_by_origin,
+                layout_profile=layout_profile,
+                last_list_item_number=last_list_item_number,
+            )
+        ):
+            result[-1] = replace(
+                _merge_torn_back_matter_entry(
+                    result[-1], unit, dehyphenation_evidence=dehyphenation_evidence
+                ),
+                boundary_rationale="merged_numbered_body_continuation",
+            )
+            continue
+        if unit.role == "list":
+            last_list_item_number = _unit_ordered_list_number(unit)
+        result.append(unit)
+    return result
+
+
 def _can_merge_body_span(
     previous: PdfTextSpan,
     current: PdfTextSpan,
@@ -2857,11 +2983,20 @@ def _paragraph_from_body_spans(
             # footnote superscript rather than a stray digit. A marker that
             # interrupts a sentence (preceding half not terminated) keeps its
             # original inline, space-separated form so the prose flows across it.
+            #
+            # Spec 065 FR-007: a clause comma or a closing ’ is where a reference
+            # is welded as much as a full stop is ("capitalism,⁵ the examples");
+            # the extractor lifts such a marker off the line end by the same
+            # anchor set, so it is glued by that set too, not left as "capitalism,
+            # 5 the examples" -- a number in the middle of the sentence.
             previous_runs = piece_runs[-1] if piece_runs else []
             previous_piece = "".join(text for text, _, _ in previous_runs)
             if (
                 previous_piece
-                and previous_piece[-1] in _TERMINAL_SENTENCE_PUNCTUATION
+                and (
+                    previous_piece[-1] in _TERMINAL_SENTENCE_PUNCTUATION
+                    or previous_piece[-1] in _SUPERSCRIPT_MARKER_ANCHOR_CLOSERS
+                )
                 and _SUPERSCRIPT_MARKER_DIGITS_PATTERN.match(marker)
             ):
                 _glue_superscript_marker_to_runs(
@@ -3323,6 +3458,137 @@ def _merge_torn_back_matter_entry(
         origin_raw_texts=[*(head.origin_raw_texts or []), *(tail.origin_raw_texts or [])],
         boundary_rationale="merged_back_matter_entry_continuation",
     )
+
+
+# ----------------------------------------------------------------------------------------
+# Spec 065 FR-008 (I-2): the roles inside a notes / reference section.
+#
+# The per-span classifier reads typography page by page and knows nothing of the section it
+# is in, so inside the notes it inverts two roles (The Value of Everything, 2026-11-08): a
+# wrapped line of an entry -- a book title, an address tail, a quoted fragment -- comes out a
+# level-3 heading (31 of them), and the title of a chapter's group of notes ("1. A BRIEF
+# HISTORY OF VALUE") comes out a list item or body (10 of 11). The fragment-heading also
+# stops the 064 notes-join, which never joins through a heading (block 600, "(Basingstoke ...
+# 2005)."). Both are settled here, before that join, from form and geometry only:
+#
+#   * a GROUP TITLE is a one-line unit after which the entry numbering starts again -- the
+#     next unit opens with entry number 1 -- set in a different size from that entry, and not
+#     itself the next entry of the running sequence (when it carries a number, that number is
+#     not the previous entry's plus one). It becomes a heading one level below the section
+#     title, and never shallower than level 3: a group of notes is not a chapter.
+#   * an ENTRY FRAGMENT is a heading set at the size of the entry before it that either opens
+#     an entry by form (`_text_opens_back_matter_entry`: a note number, a bullet, a repeated-
+#     author dash, an author form) or whose first line is the very next line after that entry
+#     (`_entry_lines_are_consecutive`: no blank line, or the top of the next page). It becomes
+#     body; the notes-join that follows then reads it like any other torn line.
+#
+# A heading that is set apart -- another size than the entry before it, or a blank line above
+# it -- stays a heading, and so does a group title. Lines the TOC heuristic flagged are not
+# fragments here, and a group title takes them only by the same form as any other line.
+# ----------------------------------------------------------------------------------------
+
+_ENTRY_NUMBER_PATTERN = re.compile(r"^(?P<number>\d{1,3})(?:[.)](?:\s|$)|\s+[^\W\d_])")
+_BACK_MATTER_GROUP_TITLE_MIN_LEVEL = 3
+
+
+def _entry_number(text: str) -> int | None:
+    match = _ENTRY_NUMBER_PATTERN.match((text or "").lstrip())
+    return int(match.group("number")) if match else None
+
+
+def _is_back_matter_group_title(
+    unit: ParagraphUnit,
+    following: ParagraphUnit | None,
+    *,
+    previous_entry_number: int | None,
+) -> bool:
+    if following is None or len(unit.origin_raw_indexes or []) != 1:
+        return False
+    if unit.role not in {"body", "list", "heading"}:
+        return False
+    if following.role not in _BACK_MATTER_ENTRY_ROLES or _entry_number(following.text or "") != 1:
+        return False
+    if _font_sizes_match(unit.font_size_pt, following.font_size_pt):
+        return False
+    own_number = _entry_number(unit.text or "")
+    return not (
+        own_number is not None
+        and previous_entry_number is not None
+        and own_number == previous_entry_number + 1
+    )
+
+
+def _is_back_matter_entry_fragment(
+    unit: ParagraphUnit,
+    previous: ParagraphUnit,
+    *,
+    spans_by_origin: dict[int, list[PdfTextSpan]],
+) -> bool:
+    if unit.role != "heading" or previous.role not in _BACK_MATTER_ENTRY_ROLES:
+        return False
+    if not _font_sizes_match(unit.font_size_pt, previous.font_size_pt):
+        return False
+    if _text_opens_back_matter_entry(unit.text or ""):
+        return True
+    last_line = _unit_line_span(previous, -1, spans_by_origin)
+    first_line = _unit_line_span(unit, 0, spans_by_origin)
+    return (
+        last_line is not None
+        and first_line is not None
+        and _entry_lines_are_consecutive(last_line, first_line)
+    )
+
+
+def _settle_back_matter_entry_roles(
+    units: list[ParagraphUnit],
+    ordered_spans: list[PdfTextSpan],
+) -> list[ParagraphUnit]:
+    """Spec 065 FR-008: group titles of a notes section are headings, wrapped lines of its
+    entries are not. See the block comment above for the form."""
+    flags = _back_matter_entry_region_flags(units)
+    if not any(flags):
+        return units
+    spans_by_origin: dict[int, list[PdfTextSpan]] = {}
+    for span in ordered_spans:
+        spans_by_origin.setdefault(_span_origin_index(span), []).append(span)
+    section_level: int | None = None
+    previous_entry_number: int | None = None
+    for index, unit in enumerate(units):
+        if not flags[index]:
+            if _back_matter_anchor_kind(unit) is not None:
+                section_level = unit.heading_level
+                previous_entry_number = None
+            continue
+        following = units[index + 1] if index + 1 < len(units) and flags[index + 1] else None
+        if _is_back_matter_group_title(
+            unit, following, previous_entry_number=previous_entry_number
+        ):
+            if unit.role != "heading":
+                _promote_unit_to_heading(
+                    unit,
+                    heading_level=max(
+                        _BACK_MATTER_GROUP_TITLE_MIN_LEVEL, (section_level or 0) + 1
+                    ),
+                )
+                unit.boundary_rationale = "promoted_back_matter_group_title"
+            previous_entry_number = None
+            continue
+        if (
+            index > 0
+            and flags[index - 1]
+            and _is_back_matter_entry_fragment(
+                unit, units[index - 1], spans_by_origin=spans_by_origin
+            )
+        ):
+            unit.role = "body"
+            unit.structural_role = "body"
+            unit.heading_level = None
+            unit.heading_source = None
+            unit.boundary_rationale = "demoted_back_matter_entry_fragment"
+        number = _entry_number(unit.text or "")
+        if number is not None and unit.role in _BACK_MATTER_ENTRY_ROLES:
+            previous_entry_number = number
+    return units
 
 
 def _join_torn_back_matter_entries(
