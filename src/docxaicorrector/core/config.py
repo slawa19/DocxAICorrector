@@ -125,18 +125,16 @@ _LEGACY_TOML_MODEL_KEY_REPLACEMENTS = {
     "model_options": "models.text.options",
     "validation_model": "models.image_validation.default",
     "reconstruction_model": "models.image_reconstruction.default",
-    # Spec 066 C-9: the role was renamed to boundary_review; the old section is not read.
-    "structure_recognition": "models.boundary_review.default",
 }
+# Keys removed by spec 066 (e.g. [models.structure_recognition], [structure_recognition],
+# [structure_validation] enabled) are not listed here: config_key_ignored names every key
+# no resolver read, at any depth (ReadTrackingConfigData), with no list to keep in step.
 # Removed legacy ENV alias -> canonical ENV variable that is actually read now.
 _LEGACY_ENV_MODEL_KEY_REPLACEMENTS = {
     "DOCX_AI_DEFAULT_MODEL": "DOCX_AI_MODELS_TEXT_DEFAULT",
     "DOCX_AI_MODEL_OPTIONS": "DOCX_AI_MODELS_TEXT_OPTIONS",
     "DOCX_AI_VALIDATION_MODEL": "DOCX_AI_MODELS_IMAGE_VALIDATION_DEFAULT",
     "DOCX_AI_RECONSTRUCTION_MODEL": "DOCX_AI_MODELS_IMAGE_RECONSTRUCTION_DEFAULT",
-    # Spec 066 C-9: the role was renamed to boundary_review; these are not read.
-    "DOCX_AI_STRUCTURE_RECOGNITION_MODEL": "DOCX_AI_MODELS_BOUNDARY_REVIEW_DEFAULT",
-    "DOCX_AI_MODELS_STRUCTURE_RECOGNITION_DEFAULT": "DOCX_AI_MODELS_BOUNDARY_REVIEW_DEFAULT",
 }
 _EMITTED_MODEL_REGISTRY_LOG_KEYS: set[str] = set()
 _APP_CONFIG_CACHE_FINGERPRINT: tuple[object, ...] | None = None
@@ -1068,11 +1066,12 @@ def _emit_legacy_model_config_warnings(config_data: Mapping[str, object], model_
 
 
 def _log_ignored_config_keys(config_data: Mapping[str, object]) -> None:
-    """Spec 066 FR-012: name the top-level config.toml keys no resolver read, once per set.
+    """Spec 066 FR-012: name the config.toml keys no resolver read, once per set.
 
     A removed setting left in a user's config.toml must not look as if it still worked.
     The loader keeps no list of known keys: ``ReadTrackingConfigData`` records what the
-    resolvers asked for, and everything else was ignored.
+    resolvers asked for at every depth, and everything else was ignored. Keys come as
+    dotted paths (``models.structure_recognition``, ``structure_validation.enabled``).
     """
 
     ignored_keys_fn = getattr(config_data, "ignored_keys", None)
