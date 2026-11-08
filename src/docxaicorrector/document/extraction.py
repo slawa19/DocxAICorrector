@@ -1,10 +1,8 @@
 import inspect
 import re
 import zipfile
-from collections import Counter
 from dataclasses import replace
 from io import BytesIO
-from math import isclose
 from pathlib import Path
 from collections.abc import Callable, Mapping
 from typing import cast
@@ -171,10 +169,6 @@ _TYPOGRAPHIC_BULLET_CHARS = {"\u2014", "\u2013"}
 _INLINE_BREAK_PATTERN = re.compile(r"<br\s*/?>", re.IGNORECASE)
 _TOC_HEADER_LINE_VALUES = {"contents", "содержание"}
 _TOC_CANDIDATE_WORD_PATTERN = re.compile(r"\w+(?:[-']\w+)*", re.UNICODE)
-_STAGE0_TOC_HEADER_VALUES = {"contents", "table of contents", "содержание"}
-_STAGE0_TOC_SUFFIX_PATTERN = re.compile(r"\.{2,}\s*\d+\s*$")
-_STAGE0_ISOLATED_MARKER_PATTERN = re.compile(r"^(?:\s*[•●\-*]\s*|\s*\d+[\.)]\s*)$")
-_STAGE0_SCRIPTURE_REFERENCE_PATTERN = re.compile(r"\b(?:[A-Za-zА-Яа-яЁё]+)\s+\d+:\d+(?:-\d+)?\b")
 _STAGE0_SPACING_BEFORE_PATTERN = re.compile(r"<(?:\w+:)?spacing\b[^>]*\b(?:\w+:)?before=\"(?P<before>\d+)\"")
 _STAGE0_SPACING_BEFORE_AUTOSPACING_PATTERN = re.compile(
     r"<(?:\w+:)?spacing\b[^>]*\b(?:\w+:)?beforeAutospacing=\"(?P<flag>[^\"]+)\""
@@ -754,72 +748,11 @@ def _copy_paragraph_unit(paragraph: ParagraphUnit, *, text: str) -> ParagraphUni
 
 
 def _annotate_stage0_structure_signals(paragraphs: list[ParagraphUnit]) -> None:
-    style_cluster_ids = _build_stage0_style_cluster_ids(paragraphs)
-    font_size_z_scores = _build_stage0_font_size_z_scores(paragraphs)
-    last_index = max(len(paragraphs) - 1, 1)
-
-    for position, paragraph in enumerate(paragraphs):
+    for paragraph in paragraphs:
         text = str(getattr(paragraph, "text", "") or "").strip()
-        hint_texts = [str(getattr(hint, "text", "") or "").strip() for hint in (paragraph.heuristic_embedded_structure_hints or [])]
-        hint_structural_roles = [
-            str(getattr(hint, "structural_role", "body") or "body")
-            for hint in (paragraph.heuristic_embedded_structure_hints or [])
-        ]
-        paragraph.style_cluster_id = style_cluster_ids[position]
-        paragraph.font_size_z_score = font_size_z_scores[position]
-        paragraph.position_fraction = round(position / last_index, 3)
         paragraph.page_number = _extract_stage0_page_number_hint(text, paragraph)
         paragraph.vertical_gap_before_pt = _extract_stage0_vertical_gap_before_pt(paragraph)
-        paragraph.is_isolated_marker = _is_stage0_isolated_marker_text(text) or any(
-            _is_stage0_isolated_marker_text(hint_text) for hint_text in hint_texts
-        )
-        paragraph.toc_pattern_hint = _is_stage0_toc_pattern_hint(text, paragraph) or any(
-            role in {"toc_header", "toc_entry"} for role in hint_structural_roles
-        )
-        paragraph.scripture_reference_hint = _is_stage0_scripture_reference_text(text) or any(
-            _is_stage0_scripture_reference_text(hint_text) for hint_text in hint_texts
-        )
         paragraph.boundary_normalization_applied = str(getattr(paragraph, "boundary_source", "raw") or "raw") != "raw"
-
-
-def _build_stage0_style_cluster_ids(paragraphs: list[ParagraphUnit]) -> list[int | None]:
-    normalized_styles = [str(getattr(paragraph, "style_name", "") or "").strip().lower() for paragraph in paragraphs]
-    nonempty_styles = [style for style in normalized_styles if style]
-    if not nonempty_styles:
-        return [None for _ in paragraphs]
-    default_style = Counter(nonempty_styles).most_common(1)[0][0]
-    cluster_map: dict[str, int] = {}
-    next_cluster_id = 1
-    cluster_ids: list[int | None] = []
-    for style in normalized_styles:
-        if not style or style == default_style:
-            cluster_ids.append(None)
-            continue
-        if style not in cluster_map:
-            cluster_map[style] = next_cluster_id
-            next_cluster_id += 1
-        cluster_ids.append(cluster_map[style])
-    return cluster_ids
-
-
-def _build_stage0_font_size_z_scores(paragraphs: list[ParagraphUnit]) -> list[float | None]:
-    sizes = [getattr(paragraph, "font_size_pt", None) for paragraph in paragraphs]
-    numeric_sizes = [float(size) for size in sizes if isinstance(size, (int, float))]
-    if not numeric_sizes:
-        return [None for _ in paragraphs]
-    mean = sum(numeric_sizes) / len(numeric_sizes)
-    variance = sum((size - mean) ** 2 for size in numeric_sizes) / len(numeric_sizes)
-    stddev = variance ** 0.5
-    z_scores: list[float | None] = []
-    for size in sizes:
-        if not isinstance(size, (int, float)):
-            z_scores.append(None)
-            continue
-        if isclose(stddev, 0.0):
-            z_scores.append(0.0)
-            continue
-        z_scores.append(round((float(size) - mean) / stddev, 1))
-    return z_scores
 
 
 def _extract_stage0_page_number_hint(text: str, paragraph: ParagraphUnit) -> int | None:
@@ -857,25 +790,6 @@ def _extract_stage0_vertical_gap_before_pt(paragraph: ParagraphUnit) -> float | 
 
 def _round_stage0_vertical_gap_before_pt(value: float) -> float:
     return round(value * 2.0) / 2.0
-
-
-def _is_stage0_isolated_marker_text(text: str) -> bool:
-    return bool(_STAGE0_ISOLATED_MARKER_PATTERN.fullmatch(str(text or "").strip()))
-
-
-def _is_stage0_toc_pattern_hint(text: str, paragraph: ParagraphUnit) -> bool:
-    if normalize_heuristic_structural_role_hint(getattr(paragraph, "heuristic_structural_role_hint", None)) in {"toc_header", "toc_entry"}:
-        return True
-    if getattr(paragraph, "structural_role", None) in {"toc_header", "toc_entry"}:
-        return True
-    normalized = str(text or "").strip().casefold()
-    if normalized in _STAGE0_TOC_HEADER_VALUES:
-        return True
-    return bool(_STAGE0_TOC_SUFFIX_PATTERN.search(str(text or "").strip()))
-
-
-def _is_stage0_scripture_reference_text(text: str) -> bool:
-    return bool(_STAGE0_SCRIPTURE_REFERENCE_PATTERN.search(str(text or "").strip()))
 
 
 def _extract_paragraph_properties_xml(paragraph) -> str | None:

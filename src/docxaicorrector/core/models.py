@@ -358,16 +358,10 @@ class ParagraphUnit:
     heuristic_list_kind_hint: str | None = None
     heuristic_heading_level_hint: int | None = None
     heuristic_embedded_structure_hints: list["EmbeddedStructureHint"] = field(default_factory=list)
-    font_size_z_score: float | None = None
-    style_cluster_id: int | None = None
-    position_fraction: float | None = None
     page_number: int | None = None
     vertical_gap_before_pt: float | None = None
     is_repeated_across_pages: bool = False
     is_likely_page_number: bool = False
-    is_isolated_marker: bool = False
-    toc_pattern_hint: bool = False
-    scripture_reference_hint: bool = False
     boundary_normalization_applied: bool = False
 
     @property
@@ -388,68 +382,6 @@ class ParagraphUnit:
         indent = "  " * max(0, self.list_level)
         marker = "1." if self.list_kind == "ordered" else "-"
         return f"{indent}{marker} {self.text}"
-
-
-@dataclass(frozen=True)
-class ParagraphDescriptor:
-    index: int
-    text_preview: str
-    text_length: int
-    style_name: str
-    is_bold: bool
-    is_centered: bool
-    is_all_caps: bool
-    font_size_pt: float | None
-    has_numbering: bool
-    explicit_heading_level: int | None
-    context_before_preview: str = ""
-    context_after_preview: str = ""
-    isolated_marker: bool = False
-    toc_candidate: bool = False
-    scripture_reference_candidate: bool = False
-    embedded_structure_hints: tuple[dict[str, object], ...] = ()
-    anchor_role: str | None = None
-    anchor_heading_level: int | None = None
-    anchor_confidence: str | None = None
-    unit_id: str | None = None
-    unit_type: str | None = None
-    unit_role: str | None = None
-    unit_heading_level: int | None = None
-    unit_canonical_text: str | None = None
-    unit_member_count: int | None = None
-
-    def to_prompt_dict(self) -> dict[str, object]:
-        payload = {
-            "i": self.index,
-            "t": self.text_preview,
-            "len": self.text_length,
-            "s": self.style_name,
-            "b": self.is_bold,
-            "ctr": self.is_centered,
-            "caps": self.is_all_caps,
-            "pt": self.font_size_pt,
-            "num": self.has_numbering,
-            "hl": self.explicit_heading_level,
-            "prev": self.context_before_preview,
-            "next": self.context_after_preview,
-            "iso": self.isolated_marker,
-            "toc": self.toc_candidate,
-            "scr": self.scripture_reference_candidate,
-        }
-        if self.embedded_structure_hints:
-            payload["emb"] = [dict(hint) for hint in self.embedded_structure_hints]
-        if self.anchor_role is not None or self.anchor_heading_level is not None or self.anchor_confidence is not None:
-            payload["anchor_r"] = self.anchor_role
-            payload["anchor_l"] = self.anchor_heading_level
-            payload["anchor_c"] = self.anchor_confidence
-        if self.unit_id is not None:
-            payload["unit_id"] = self.unit_id
-            payload["unit_type"] = self.unit_type
-            payload["unit_role"] = self.unit_role
-            payload["unit_heading_level"] = self.unit_heading_level
-            payload["unit_canonical_text"] = self.unit_canonical_text
-            payload["unit_member_count"] = self.unit_member_count
-        return payload
 
 
 @dataclass(frozen=True)

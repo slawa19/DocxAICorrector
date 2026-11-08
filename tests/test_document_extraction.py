@@ -595,7 +595,6 @@ def test_extract_document_content_from_docx_preserves_source_index_as_provenance
     assert [paragraph.source_index for paragraph in paragraphs] == [0, 1, 1, 1]
     assert [paragraph.logical_index for paragraph in paragraphs] == [0, 1, 2, 3]
     assert [paragraph.paragraph_id for paragraph in paragraphs] == ["p0000", "p0001", "p0002", "p0003"]
-    assert [paragraph.toc_pattern_hint for paragraph in paragraphs] == [True, True, True, True]
 
 
 def test_extract_document_content_with_normalization_reports_populates_page_number_stage0_signals(tmp_path, monkeypatch):
@@ -615,7 +614,6 @@ def test_extract_document_content_with_normalization_reports_populates_page_numb
     assert cleanup_report.flagged_page_number_count == 1
     assert page_number_paragraph.is_likely_page_number is True
     assert page_number_paragraph.page_number == 12
-    assert page_number_paragraph.position_fraction == 1.0
 
 
 def test_extract_document_content_from_docx_does_not_invent_a_break_between_run_clusters():
