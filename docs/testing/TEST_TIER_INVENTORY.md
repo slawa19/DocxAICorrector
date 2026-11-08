@@ -21,6 +21,7 @@ This inventory is intentionally pragmatic:
 - `tests/test_application_flow.py`
 - `tests/test_block_execution_passthrough_bypass.py`
 - `tests/test_config.py`
+- `tests/test_config_keys_are_read.py`
 - `tests/test_docxaicorrector_bootstrap_package.py`
 - `tests/test_document_extraction.py`
 - `tests/test_document_layout_cleanup.py`
