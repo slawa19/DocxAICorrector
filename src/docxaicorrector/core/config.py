@@ -1075,6 +1075,31 @@ def _emit_legacy_model_config_warnings(config_data: Mapping[str, object], model_
     )
 
 
+def _log_ignored_config_keys(config_data: Mapping[str, object]) -> None:
+    """Spec 066 FR-012: name the top-level config.toml keys no resolver read, once per set.
+
+    A removed setting left in a user's config.toml must not look as if it still worked.
+    The loader keeps no list of known keys: ``ReadTrackingConfigData`` records what the
+    resolvers asked for, and everything else was ignored.
+    """
+
+    ignored_keys_fn = getattr(config_data, "ignored_keys", None)
+    ignored_keys = list(ignored_keys_fn()) if callable(ignored_keys_fn) else []
+    if not ignored_keys:
+        return
+    dedupe_key = f"config-key-ignored:{CONFIG_PATH}:{ignored_keys!r}"
+    if dedupe_key in _EMITTED_MODEL_REGISTRY_LOG_KEYS:
+        return
+    _EMITTED_MODEL_REGISTRY_LOG_KEYS.add(dedupe_key)
+    log_event(
+        logging.WARNING,
+        "config_key_ignored",
+        "Ключи config.toml не читаются приложением и игнорируются.",
+        config_path=str(CONFIG_PATH),
+        ignored_keys=ignored_keys,
+    )
+
+
 def _reject_legacy_manual_review_aliases(config_data: dict[str, object]) -> None:
     if "enable_post_redraw_validation" in config_data:
         raise RuntimeError(
@@ -1575,6 +1600,7 @@ def _load_app_config_uncached() -> AppConfig:
         text_runtime_defaults=resolved_sections.text_runtime_defaults,
         paragraph_boundary_settings=resolved_sections.paragraph_boundary_settings,
     )
+    _log_ignored_config_keys(config_data)
 
     return _build_app_config(
         provider_registry=provider_registry,
