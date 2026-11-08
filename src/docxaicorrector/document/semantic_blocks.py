@@ -1130,14 +1130,19 @@ def name_heading_words(text: str) -> tuple[str, ...] | None:
 
 
 def _phrase_occurs_mid_sentence(phrase: str, texts: list[str]) -> bool:
-    """Does ``phrase`` occur, same capitals, after a word of the same sentence in one of ``texts``?"""
+    """Does ``phrase`` occur, same capitals, after a word of the same sentence in one of ``texts``?
+
+    As a WHOLE phrase: no letter or digit touches it on either side. A substring is not an
+    occurrence -- "Trade" inside "TradeLink" is a different word (Codex acceptance review
+    2026-11-08, P0). The lowercase half (``_lowercase_body_words``) is already whole-word: it
+    compares tokens of ``_WORD_PATTERN``, never substrings.
+    """
+    pattern = re.compile(rf"(?<![^\W_]){re.escape(phrase)}(?![^\W_])")
     for text in texts:
-        start = text.find(phrase)
-        while start >= 0:
-            before = text[:start].rstrip()
+        for match in pattern.finditer(text):
+            before = text[: match.start()].rstrip()
             if any(char.isalpha() for char in before) and before[-1] not in _SENTENCE_BOUNDARY_CHARACTERS:
                 return True
-            start = text.find(phrase, start + 1)
     return False
 
 

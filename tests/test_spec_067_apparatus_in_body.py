@@ -117,7 +117,7 @@ def _book() -> list[DocumentBlock]:
             ]
         ),
         # A stretch of contents lines the role detector left untyped, between two TOC lines.
-        DocumentBlock(paragraphs=[_unit("2 The Second Chapter *23* 3 The Third Chapter, 2004 *37*", "p0002")]),
+        DocumentBlock(paragraphs=[_unit("2 The Second Chapter: *Ports and Tides* 23 3 The Third Chapter: *Debt* (2004) 37", "p0002")]),
         DocumentBlock(paragraphs=[_unit("4 The Fourth Chapter *51*", "p0003", structural_role="toc_entry")]),
         DocumentBlock(paragraphs=[_unit("Chapter One", "p0004", role="heading", level=1), _unit(_PROSE, "p0005")]),
         DocumentBlock(paragraphs=[_unit(_PROSE, "p0006"), _unit(_NOTES_CITATIONS, "p0007")]),
@@ -162,7 +162,7 @@ def test_the_toc_bracket_needs_contents_on_both_sides_and_no_heading_between() -
     # The rule itself: untyped lines between two contents lines, no heading among them.
     gap = [
         _unit("1 The First Chapter *11*", "a", structural_role="toc_entry"),
-        _unit("2 The Second Chapter *23* 3 The Third Chapter, 2004 *37*", "b"),
+        _unit("2 The Second Chapter: *Ports and Tides* 23 3 The Third Chapter: *Debt* (2004) 37", "b"),
         _unit("Yet! *41*", "c"),
         _unit("CONTENTS", "d", role="heading", level=3, structural_role="toc_header"),
         _unit(_NOTES_CITATIONS, "e"),
@@ -459,3 +459,73 @@ def test_rule_12_keeps_as_is_only_inside_a_citation_and_says_commentary_is_trans
     assert "Ibid." in inside and "3 March 1998" in inside
     assert commentary.lstrip().startswith("- Комментарий переводите всегда")
     assert lines[rule + 3].startswith("13. ")
+
+
+# =============================================================================================
+# Codex acceptance review 2026-11-08, two P0 on P1 -- counter-rules that must hold
+# =============================================================================================
+
+_NUMBERED_STEPS_WITH_YEARS = "1 Collect receipts from 2010. 2 Sort documents from 1999."
+_STEPS_WITH_YEARS_LONGER = (
+    "1 Open the ledger kept since 1987 and copy the totals. 2 Compare them with the figures of 1994. "
+    "3 Mark every gap found in 2003 before the audit."
+)
+_SHORT_SENTENCES_WITHOUT_PERIODS = "1 Wash the bowls 2 Dry the cups 3 Stack the plates in 2011"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        pytest.param(_NUMBERED_STEPS_WITH_YEARS, id="codex-counterexample-steps-with-years"),
+        pytest.param(_STEPS_WITH_YEARS_LONGER, id="numbered-steps-each-with-a-year"),
+        pytest.param(_SHORT_SENTENCES_WITHOUT_PERIODS, id="short-sentences-without-periods"),
+    ],
+)
+def test_a_bare_year_is_not_a_citation_anchor_numbered_body_steps_are_no_notes_run(text: str) -> None:
+    assert output_validation.is_notes_run_paragraph(text) is False
+    assert output_validation.notes_run_reads_as_citations(text) is False
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [
+        "R. Hall, *The Tides of Cities*, 2004.",
+        "‘Money and Debt in Two Ports’, 1999.",
+        "Hall (2004), on the ports.",
+        "Hall, ports and debt, 2004, p. 85.",
+        "See www.example.org for the series.",
+        "Hall, R. Ports and debt.",
+    ],
+)
+def test_each_citation_anchor_is_recognised(entry: str) -> None:
+    assert output_validation.has_citation_anchor(entry) is True
+
+
+def test_counter_rule_a_sentence_with_a_year_has_no_citation_anchor() -> None:
+    assert output_validation.has_citation_anchor("Collect receipts from 2010.") is False
+    assert output_validation.has_citation_anchor("Sort the documents, then file them.") is False
+
+
+def test_codex_counterexample_end_to_end_is_not_marked_and_not_credited() -> None:
+    blocks = [
+        DocumentBlock(paragraphs=[_unit("Chapter One", "p0000", role="heading", level=1), _unit(_PROSE, "p0001")]),
+        DocumentBlock(paragraphs=[_unit(_NUMBERED_STEPS_WITH_YEARS, "p0002")]),
+    ]
+    jobs = semantic_blocks.build_editing_jobs(blocks, max_chars=3000, processing_operation="translate")
+    assert all(job["notes_in_body_paragraph_ids"] == [] for job in jobs)
+    # Even with the mark forced on, the unchanged echo is not credited as kept citations.
+    payload = _payload([_NUMBERED_STEPS_WITH_YEARS], notes=[0])
+    assert block_execution.model_kept_apparatus(context=_TRANSLATE, payload=payload, processed_chunk=_answer(payload)) is None
+
+
+def test_a_heading_inside_a_longer_word_is_not_a_name_occurrence() -> None:
+    """Codex P0: heading «Trade» and the sentence «Our team uses TradeLink ...» -- a substring is
+    not an occurrence of the phrase, so the heading is not a name."""
+    book = [
+        _unit("Trade", "h", role="heading", level=3),
+        _unit("Our team uses TradeLink to connect all suppliers.", "b"),
+    ]
+    assert semantic_blocks._resolve_name_heading_positions(book, ["prose", "prose"]) == frozenset()
+    # Counter-proof: the same heading written as a whole word mid-sentence is a name.
+    book[1] = _unit("Our team uses Trade to connect all suppliers.", "b")
+    assert semantic_blocks._resolve_name_heading_positions(book, ["prose", "prose"]) == frozenset({0})
