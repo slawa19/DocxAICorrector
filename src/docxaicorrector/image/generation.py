@@ -148,7 +148,7 @@ def generate_image_candidate(
         )
 
     log_event(
-        logging.INFO,
+        logging.DEBUG,
         "image_candidate_generated",
         "Подготовлен candidate image для текущей стратегии",
         requested_mode=requested_mode,

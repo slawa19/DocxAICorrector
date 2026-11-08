@@ -151,6 +151,28 @@ def test_generate_image_candidate_safe_enhances_image_bytes():
     assert candidate != original_bytes
 
 
+def test_image_candidate_generated_is_a_debug_event(monkeypatch):
+    """Spec 068: one record per image is a per-item event, DEBUG by the level policy.
+
+    ``docs/LOGGING_AND_ARTIFACT_RETENTION.md`` section 2 lists ``image_candidate_generated``
+    under DEBUG, but it was emitted at INFO and made up 43 of 60 (Money) and 55 of 76 (RM)
+    lines of the fifth run's per-run logs even in safe image mode.
+    """
+    import logging
+
+    logged_events = []
+    monkeypatch.setattr(
+        image_generation,
+        "log_event",
+        lambda level, event, message, **context: logged_events.append((level, event)),
+    )
+
+    image_generation.generate_image_candidate(build_detailed_png_bytes(), build_analysis_result(), mode="safe")
+
+    assert (logging.DEBUG, "image_candidate_generated") in logged_events
+    assert all(level == logging.DEBUG for level, event in logged_events if event == "image_candidate_generated")
+
+
 def test_generate_image_candidate_over_budget_returns_original_without_decode(monkeypatch):
     """An oversized image is not decoded or sent to any vision / image-gen API;
     generate_image_candidate returns the original bytes unchanged (finding F8)."""

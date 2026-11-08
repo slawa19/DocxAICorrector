@@ -20,7 +20,18 @@ def build_validation_event_logger(
     event_log: MutableSequence[ValidationEventPayload],
     *,
     on_event: ValidationEventHook | None = None,
+    forward_event: Callable[..., object] | None = None,
 ) -> Callable[..., None]:
+    """Build the ``log_event_fn`` a validation run injects into the pipeline.
+
+    Every event is appended to ``event_log``, the in-memory list the run's report is built
+    from. ``forward_event``, when given, receives the same call
+    ``(level, event_id, message, **context)`` as well: the real-document runner passes
+    ``docxaicorrector.core.logger.log_event`` there, so the pipeline's injected events reach
+    the run's log file the way they reach ``.run/app.log`` in the app (spec 068 FR-002).
+    Without it the list is the only sink and the events reach no log at all.
+    """
+
     def _log_event(level: int, event_id: str, message: str, **context: object) -> None:
         payload: ValidationEventPayload = {
             "level": level,
@@ -29,6 +40,8 @@ def build_validation_event_logger(
             "context": dict(context),
         }
         event_log.append(payload)
+        if forward_event is not None:
+            forward_event(level, event_id, message, **context)
         if on_event is not None:
             on_event(payload)
 
