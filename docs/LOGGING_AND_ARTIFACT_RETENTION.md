@@ -100,7 +100,7 @@ bash -c "cd /mnt/d/Work/Projects/DocxAICorrector && python3 scripts/_list_log_ev
 ### 3.2 Preparation
 
 - `preparation_cache_hit`, `preparation_cache_miss` — `preparation.py`, INFO.
-- `structure_recognition_debug_artifact_saved`, `structure_recognition_fallback`, `structure_validation_debug_artifact_saved`, `structure_processing_outcome` — `preparation.py`.
+- `structure_recognition_debug_artifact_saved`, `structure_recognition_fallback`, `structure_validation_debug_artifact_saved` — `preparation.py`.
 - `restart_source_store_failed` — `processing_runtime.py`.
 - `persisted_source_validation_failed` — `restart_store.py`, WARNING: persisted restart/completed source отклонён и не может быть восстановлен. Context: `{reason, filename, source_token, storage_kind}`, где `reason` ∈ `{invalid_metadata, unconfined_path, unreadable_payload, integrity_mismatch}`.
 
@@ -310,7 +310,6 @@ context-ключей добавляется для события, когда е
 | `.run/run_glossaries/*.json` | TTL 14 дней, max 200 файлов, pruning при каждой записи (спека 063 P2: глоссарий прогона `translate`, его кандидаты и учёт вызова) | `pipeline/glossary_phase._write_run_glossary_artifact()` → `prune_artifact_dir()` |
 | `.run/structure_maps/*.json` | TTL 30 дней, max 200 файлов, pruning при каждой записи | `preparation._write_structure_map_debug_artifact()` → `prune_artifact_dir()` |
 | `.run/structure_validation/*.json` | TTL 30 дней, max 200 файлов, pruning при каждой записи | `structure_validation.write_structure_validation_debug_artifact()` → `prune_artifact_dir()` |
-| `.run/document_topology/*.json` | TTL 30 дней, max 200 файлов, pruning при каждой записи | `preparation._write_document_topology_debug_artifact()` → `prune_artifact_dir()` |
 | `.run/marker_attempts/*.json` | TTL 7 дней, max 400 файлов, pruning при каждой записи | `src/docxaicorrector/generation/marker_attempt_capture.py :: write_marker_attempt_artifact()` → `prune_artifact_dir()` |
 | `.run/ui_results/*` | TTL 7 дней, max 80 result stems, pruning grouped by stem при каждой записи | `runtime_artifacts.write_ui_result_artifacts()` → `prune_ui_result_artifact_groups()` |
 | `.run/restart_*`, `.run/completed_*` | TTL 12 часов, cleanup при старте приложения | `restart_store.cleanup_stale_persisted_sources`, вызов из `app._schedule_stale_persisted_sources_cleanup` |
