@@ -423,7 +423,7 @@ class ProcessingService:
 
         def _prepare_client_factory(selector: str | None = None, required_capability: str = "responses_text", *, config_like=None) -> object:
             resolved_config = app_config if config_like is None else config_like
-            resolved_selector = str(selector or app_config.get("structure_recognition_model", "") or "").strip()
+            resolved_selector = str(selector or "").strip()
             if resolved_selector and deps.get_client_for_model_selector_fn is not None:
                 return deps.get_client_for_model_selector_fn(
                     resolved_selector,
