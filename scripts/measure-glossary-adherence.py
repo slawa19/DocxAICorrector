@@ -33,8 +33,10 @@ vocabulary whose correct rendering depends on part of speech and sense; it is me
 printed APART and never enters the headline. Not measured at all: an entry whose rendering
 equals its source or is written in Latin script only (a kept occurrence cannot be told from an
 adherent one). Only entries the prompt section carried enter the headline — the section's
-list (``rendered_terms`` when the artifact has it, else the first ``rendered_term_count``
-entries in stored order); a cut entry is coverage, not adherence, and is listed there with its
+list (``rendered_terms`` when the artifact has it — read as a multiset by position: ``terms``
+are stored in section order, so a source term named k times there marks its first k entries
+rendered and any further sense cut — else the first ``rendered_term_count`` entries in stored
+order); a cut entry is coverage, not adherence, and is listed there with its
 occurrences. An entry with fewer than ``--min-occurrences`` (3) measured occurrences is listed,
 not counted.
 
@@ -64,8 +66,9 @@ Per entry: occurrences measured, adherent, adherence; the dominant rendering and
 rendering it carries — ``partial: устойчивость`` — or ``none``; the script cannot name a word the
 glossary does not contain); PASS when the dominant rendering is the glossary's and its share is
 >= 90 % for an entry with >= 5 occurrences. Headline: adherent occurrences / measured
-occurrences over the headline entries. Coverage: required entries (``candidates[].required``)
-and form-selected entries the section cut, with their occurrences; required candidates the
+occurrences over the headline entries. Coverage: required entries (``candidates[].required``;
+``unknown``, not zero, when the file has no ``candidates``) and form-selected entries the
+section cut, with their occurrences; required candidates the
 glossary lacks (``unrendered_terms``); ``unrendered_required`` printed as the artifact states it
 when present. Harm is a READING metric: the non-adherent pairs are printed (``--show N`` per
 entry) so a reader counts the errors the glossary caused; no rule here can tell a wrong
@@ -352,29 +355,42 @@ def load_entries(glossary_path: Path) -> tuple[list[Entry], dict[str, Any]]:
     rendered_source = "all entries (no section data in the glossary file)"
     rendered_list = meta.get("rendered_terms")
     if isinstance(rendered_list, list):
-        rendered_keys = {_norm_key(str(item.get("source_term") if isinstance(item, dict) else item)) for item in rendered_list}
+        # A multiset, read by position: the artifact stores ``terms`` in section order, so when
+        # one source term has two entries (two senses) and ``rendered_terms`` names it once, the
+        # first entry reached the prompt and the second was cut.
+        remaining = Counter(
+            _norm_key(str(item.get("source_term") if isinstance(item, dict) else item)) for item in rendered_list
+        )
         for entry in entries:
-            entry.rendered = _norm_key(entry.source_term) in rendered_keys
+            key = _norm_key(entry.source_term)
+            entry.rendered = remaining[key] > 0
+            if entry.rendered:
+                remaining[key] -= 1
         rendered_source = "rendered_terms"
     elif isinstance(meta.get("rendered_term_count"), int):
         count = int(meta["rendered_term_count"])
         for entry in entries:
             entry.rendered = entry.position < count
         rendered_source = "rendered_term_count (prefix of the stored order)"
+    # Required-ness lives only in ``candidates``; a file without them (an older diagnostic dump)
+    # says nothing about it, which is reported as unknown, not as zero required entries.
+    candidates = meta.get("candidates")
+    required_known = isinstance(candidates, list)
     required_keys = {
         _norm_key(str(candidate.get("term") or ""))
-        for candidate in meta.get("candidates") or []
+        for candidate in (candidates if isinstance(candidates, list) else [])
         if isinstance(candidate, dict) and candidate.get("required")
     }
     for entry in entries:
         entry.required = _norm_key(entry.source_term) in required_keys
     info = {
+        "required_known": required_known,
         "status": meta.get("status"),
         "rendered_source": rendered_source,
         "rendered_term_count": meta.get("rendered_term_count"),
         "prompt_section_chars": meta.get("prompt_section_chars"),
         "prompt_max_chars": meta.get("prompt_max_chars"),
-        "required_candidates": len(required_keys),
+        "required_candidates": len(required_keys) if required_known else "unknown",
         "required_absent_from_glossary": list(meta.get("unrendered_terms") or []),
         "unrendered_required": meta.get("unrendered_required"),
     }
@@ -737,8 +753,9 @@ def coverage(rows: list[dict[str, Any]], info: dict[str, Any]) -> dict[str, Any]
         "rendered_source": info["rendered_source"],
         "prompt_section_chars": info["prompt_section_chars"],
         "prompt_max_chars": info["prompt_max_chars"],
-        "required_entries": sum(1 for row in rows if row["required"]),
-        "required_cut": [brief(row) for row in cut if row["required"]],
+        "required_known": info["required_known"],
+        "required_entries": sum(1 for row in rows if row["required"]) if info["required_known"] else "unknown",
+        "required_cut": [brief(row) for row in cut if row["required"]] if info["required_known"] else "unknown",
         "form_selected_cut": [brief(row) for row in cut if headline_form(row["form"]) and not row["required"]],
         "single_lowercase_cut": [brief(row) for row in cut if not headline_form(row["form"]) and not row["required"]],
         "required_candidates": info["required_candidates"],
@@ -790,7 +807,13 @@ def print_report(result: dict[str, Any], show: int) -> None:
         f"\n## coverage: rendered {cov['rendered']}/{cov['entries']} ({cov['rendered_source']}), section "
         f"{cov['prompt_section_chars']}/{cov['prompt_max_chars']} chars"
     )
-    print(f"required entries cut: {len(cov['required_cut'])}/{cov['required_entries']} {[r['source_term'] for r in cov['required_cut']]}")
+    if cov["required_known"]:
+        print(
+            f"required entries cut: {len(cov['required_cut'])}/{cov['required_entries']} "
+            f"{[r['source_term'] for r in cov['required_cut']]}"
+        )
+    else:
+        print("required entries cut: unknown (the glossary file has no candidates list)")
     print(
         "form-selected entries cut: "
         + str(len(cov["form_selected_cut"]))
