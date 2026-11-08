@@ -1570,6 +1570,25 @@ def test_spec_066_fr007_anthropic_messages_param_drop_is_logged(monkeypatch):
     ]
 
 
+@pytest.mark.parametrize(
+    ("selector", "expected"),
+    [
+        ("claude-sonnet-4.6", "claude-sonnet-4-6"),
+        ("anthropic:claude-sonnet-4.6", "claude-sonnet-4-6"),
+        ("anthropic/claude-sonnet-4.6", "claude-sonnet-4-6"),
+        ("claude-opus-4.1", "claude-opus-4-1"),
+        ("claude-3.5-haiku-20241022", "claude-3-5-haiku-20241022"),
+        ("claude-sonnet-4-6", "claude-sonnet-4-6"),
+        ("anthropic:claude-sonnet-4-5-20250929", "claude-sonnet-4-5-20250929"),
+        ("claude-haiku", "claude-haiku"),
+    ],
+)
+def test_spec_066_b3_anthropic_model_id_is_normalized_by_form(selector, expected):
+    """Spec 066 B-3: a rule by form, not a one-model alias table."""
+
+    assert generation._normalize_anthropic_model_id(selector) == expected
+
+
 def test_normalize_generated_document_background_whitens_dark_border_only():
     image = Image.new("RGBA", (12, 12), (0, 0, 0, 255))
     for x_coord in range(3, 9):

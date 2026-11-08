@@ -1654,15 +1654,24 @@ def _canonicalize_model_selector_for_client(*, client: object, model: str) -> st
     return f"{provider_name}:{stripped_model}"
 
 
+_DOTTED_VERSION_SEPARATOR_PATTERN = re.compile(r"(?<=\d)\.(?=\d)")
+
+
 def _normalize_anthropic_model_id(model: str) -> str:
+    """The id the Anthropic Messages API accepts, by form rather than by a table of models.
+
+    Spec 066 B-3: the provider prefix (``anthropic:`` selector or ``anthropic/`` OpenRouter
+    form) is dropped, and a dotted version number (``…-N.M``, ``claude-N.M-…``) is written
+    with a dash (``…-N-M``), as Anthropic spells its ids. An id that is already canonical
+    passes through unchanged.
+    """
+
     model_id = str(model).strip()
-    if model_id.startswith("anthropic:"):
-        model_id = model_id.split(":", 1)[1].strip()
-    aliases = {
-        "claude-sonnet-4.6": "claude-sonnet-4-6",
-        "anthropic/claude-sonnet-4.6": "claude-sonnet-4-6",
-    }
-    return aliases.get(model_id, model_id)
+    for prefix in ("anthropic:", "anthropic/"):
+        if model_id.startswith(prefix):
+            model_id = model_id[len(prefix) :].strip()
+            break
+    return _DOTTED_VERSION_SEPARATOR_PATTERN.sub("-", model_id)
 
 
 def _extract_chat_messages_from_request(request_kwargs: dict[str, object]) -> list[dict[str, str]]:
