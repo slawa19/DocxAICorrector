@@ -265,7 +265,8 @@ def prose_paragraph_indexes(payload: Any) -> tuple[int, ...]:
       by role and form (``semantic_blocks._resolve_name_heading_positions``,
       ``name_heading_paragraph_indexes``) and it is not prose -- returned unchanged it is the
       name, not a loss. "Introduction" or "Chapter Five" never carry the mark;
-    * a web address or a bare domain (``complementarycurrency.org.``);
+    * a web address or a bare domain (an address-like token: word characters with a dot
+      between them, standing alone, often with a trailing full stop);
     * an index or bibliography row that fell OUTSIDE the back-matter region the importer
       resolved;
     * — measured, and the reason the run must not die on this — a DIAGRAM step label such as

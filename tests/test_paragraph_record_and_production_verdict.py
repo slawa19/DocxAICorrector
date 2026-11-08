@@ -106,10 +106,10 @@ def _project(
     )
 
 
-_SOURCE_FALLBACK_TEXT = "Once upon a time, in a small village in the Outback."
+_SOURCE_FALLBACK_TEXT = "Many tides ago, in a small hamlet by the old Saltmarsh."
 _ACCEPTED_TEXT = "Почему бы не задействовать фонд?"
 _OMITTED_SOURCE_TEXT = "Footnote 14, see Appendix A for the full dataset."
-_PLAIN_TEXT = "Однажды в маленькой деревне люди обменивались товарами."
+_PLAIN_TEXT = "Однажды в маленькой гавани моряки обменивались снастями."
 
 
 def test_production_registry_carries_both_dispositions_and_the_projection_honours_them() -> None:

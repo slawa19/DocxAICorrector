@@ -120,8 +120,9 @@ def test_no_prompt_resource_reproduces_a_corpus_title_or_heading() -> None:
 # * ``_CODE_SCAN_EXEMPT``, each with its reason.
 #
 # What this does NOT see: a body word or a body sentence of a book (a coined place name, a note,
-# a definition) -- the phrase set is headings, titles and authors only. Those are caught by
-# review, as the P6 inventory was.
+# a definition), nor a Russian rendering of a heading or an author -- the phrase set is the
+# English headings, titles and authors only. Those are caught by review and by the research
+# n-gram scan, as the P6 inventory and spec 068 FR-004 were.
 
 _CODE_ROOTS = (_ROOT / "src", _ROOT / "tests")
 _CODE_SCAN_EXEMPT = {
@@ -133,107 +134,9 @@ _CODE_SCAN_EXEMPT = {
 # Recorded-run inputs (a run's JSON, a golden DOCX) are data a run produced, not code; nothing
 # under it is a ``.py`` file today, and the scan keeps it out should one appear.
 _CODE_SCAN_EXEMPT_DIRS = ("tests/fixtures/",)
-
-# Test fixtures written before spec 064 (2026-04-22 .. spec 063) that quote corpus headings or
-# authors, found when this scan was first run (2026-11-08, spec 067 P6). They are NOT
-# accepted: the owner decides per file whether it is
-# rewritten in synthetic text of the same form or kept as a recorded characterization. Until then
-# a file listed here may hold the listed phrases and no other; an entry that no longer occurs
-# fails ``test_pending_corpus_phrases_are_not_stale``, so the list only shrinks.
-_PENDING_OWNER_DECISION: dict[str, frozenset[tuple[str, ...]]] = {
-    "tests/test_document_extraction.py": frozenset({
-        ("banks", "and", "financial", "markets", "become", "allies"),
-        ("common", "critiques", "of", "value", "extraction"),
-        ("gdp", "facit", "saltus"),
-        ("mariana", "mazzucato"),
-        ("meet", "the", "production", "boundary"),
-        ("patching", "up", "the", "national", "accounts", "isn", "t", "enough"),
-        ("something", "odd", "about", "the", "national", "accounts"),
-        ("the", "banking", "problem"),
-        ("what", "is", "value"),
-    }),
-    "tests/test_document_pipeline.py": frozenset({
-        ("the", "competitive", "society"),
-    }),
-    "tests/test_document_pipeline_output_validation.py": frozenset({
-        ("why", "this", "report", "now"),
-    }),
-    "tests/test_document_structure_blocks.py": frozenset({
-        ("about", "the", "authors"),
-        ("bernard", "lietaer"),
-        ("making", "versus", "taking"),
-        ("the", "economics", "of", "hope"),
-    }),
-    "tests/test_format_restoration.py": frozenset({
-        ("a", "brief", "history", "of", "value"),
-        ("how", "it", "really", "works"),
-        ("making", "versus", "taking"),
-        ("our", "available", "future"),
-        ("the", "cooperative", "society"),
-        ("truth", "and", "consequences", "lessons", "learned"),
-        ("what", "is", "value"),
-    }),
-    "tests/test_generation.py": frozenset({
-        ("bernard", "lietaer"),
-        ("sally", "goerner"),
-    }),
-    "tests/test_late_phases_characterization.py": frozenset({
-        ("the", "competitive", "society"),
-    }),
-    "tests/test_output_display_hygiene.py": frozenset({
-        ("making", "economic", "paradigms", "explicit"),
-        ("monetary", "and", "banking", "instability"),
-        ("why", "this", "report", "now"),
-    }),
-    "tests/test_paragraph_boundary_normalization.py": frozenset({
-        ("meet", "the", "production", "boundary"),
-        ("the", "structure", "of", "the", "book"),
-        ("why", "value", "theory", "matters"),
-    }),
-    "tests/test_pdf_text_layer_logical_import.py": frozenset({
-        ("a", "brief", "history", "of", "value"),
-        ("a", "proposal", "for", "a", "global", "trade"),
-        ("extracting", "value", "through", "the", "innovation", "economy"),
-        ("honoring", "our", "elders", "caring", "for", "children"),
-        ("measuring", "the", "wealth", "of", "nations"),
-        ("minding", "the", "community", "s", "business"),
-        ("part", "one", "scarcity"),
-        ("strategies", "for", "governments"),
-        ("the", "community", "currency", "how", "to", "manual"),
-        ("the", "competitive", "society"),
-        ("the", "failure", "of", "money"),
-        ("trade", "and", "treasure"),
-        ("why", "this", "report", "now"),
-    }),
-    "tests/test_pdf_text_layer_quality.py": frozenset({
-        ("national", "currency", "crisis", "solution"),
-    }),
-    "tests/test_preserve_authored_tables.py": frozenset({
-        ("bernard", "lietaer"),
-        ("mariana", "mazzucato"),
-    }),
-    "tests/test_quality_gate_hygiene_channel_operations.py": frozenset({
-        ("the", "competitive", "society"),
-    }),
-    "tests/test_reader_cleanup_mvp.py": frozenset({
-        ("the", "united", "states"),
-        ("trade", "and", "treasure"),
-    }),
-    "tests/test_real_document_pipeline_validation.py": frozenset({
-        ("bernard", "lietaer"),
-        ("measuring", "the", "wealth", "of", "nations"),
-        ("the", "creative", "economy"),
-    }),
-    "tests/test_real_document_validation_corpus.py": frozenset({
-        ("a", "brief", "history", "of", "value"),
-        ("trade", "and", "treasure"),
-    }),
-    "tests/test_structure_validation.py": frozenset({
-        ("making", "economic", "paradigms", "explicit"),
-        ("monetary", "and", "banking", "instability"),
-        ("why", "this", "report", "now"),
-    }),
-}
+# No per-file allowance: the 127 hits in 17 test files written before spec 064, which spec 067
+# P6 held in a shrink-only list, were rewritten in synthetic text of the same form by spec 068
+# FR-004 with every assertion unchanged, and the list is gone.
 
 
 def _title_phrases() -> frozenset[tuple[str, ...]]:
@@ -288,21 +191,6 @@ def test_no_code_or_test_file_reproduces_a_corpus_heading_or_author() -> None:
     found = [
         f"{relative}:{line_number}: {' '.join(phrase)!r} <- {origin}"
         for relative, line_number, phrase, origin in _code_hits()
-        if phrase not in _PENDING_OWNER_DECISION.get(relative, frozenset())
     ]
 
     assert not found, "code or tests quote corpus books (write synthetic text of the same form):\n" + "\n".join(found)
-
-
-def test_pending_corpus_phrases_are_not_stale() -> None:
-    present: dict[str, set[tuple[str, ...]]] = {}
-    for relative, _, phrase, _ in _code_hits():
-        present.setdefault(relative, set()).add(phrase)
-    stale = [
-        f"{relative}: {' '.join(phrase)!r}"
-        for relative, phrases in _PENDING_OWNER_DECISION.items()
-        for phrase in phrases
-        if phrase not in present.get(relative, set())
-    ]
-
-    assert not stale, "remove from _PENDING_OWNER_DECISION, no longer quoted:\n" + "\n".join(stale)

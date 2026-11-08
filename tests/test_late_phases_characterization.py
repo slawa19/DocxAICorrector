@@ -96,10 +96,10 @@ def test_quality_report_hygiene_bullet_marker_heading_golden():
 
 def test_quality_report_manual_review_untranslated_structural_golden():
     assembly_result = output_validation.FinalMarkdownAssemblyResult(
-        final_markdown="## The Competitive Society\n\n## Terra\n\nПереведённый текст.",
+        final_markdown="## The Lanternkeeper Guild\n\n## Terra\n\nПереведённый текст.",
         entries=(
             output_validation.FinalAssemblyEntry(
-                text="## The Competitive Society",
+                text="## The Lanternkeeper Guild",
                 block_index=1, paragraph_id="p1", source_index=0,
                 role="heading", structural_role="heading", heading_level=2, from_registry=True,
             ),
@@ -129,8 +129,8 @@ def test_quality_report_manual_review_untranslated_structural_golden():
 
 def test_quality_report_untranslated_body_fail_golden():
     untranslated_body = (
-        "This framework has been tested using years of quantitative data collected about how biomass "
-        "flows through natural ecosystems. Natural ecosystems are large complex flow networks that "
+        "This approach has been checked using years of numerical readings gathered about how sediment "
+        "drifts through coastal estuaries. Coastal estuaries are large complex flow networks that "
         "show how resilience and efficiency interact across many scales. "
     ) * 12
     assembly_result = output_validation.FinalMarkdownAssemblyResult(

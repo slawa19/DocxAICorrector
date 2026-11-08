@@ -36,20 +36,21 @@ from docxaicorrector.pipeline.footnote_markers import (
     superscript_markers,
 )
 
-# Rethinking Money p0163 (pair idx 137 of the 2026-11-07 run), shortened to the sentences
-# that carry the references. The model dropped both.
+# The form of Rethinking Money p0163 (pair idx 137 of the 2026-11-07 run), in synthetic text:
+# four sentences, references after the second and the third, an abbreviation "U.S." and
+# money amounts inside them. The model dropped both references.
 _RM_P0163_SOURCE = (
-    "Americans owe more on student loans than on credit cards. The total of outstanding "
-    "student loans has exceeded $1 trillion for the first time in history.¹² The average "
-    "U.S. college student is now more than $25,000 in debt by graduation.¹³ With this debt "
-    "load, a young person is forced into finding higher-paying work."
+    "Sailors owe more on harbour tolls than on lantern oil. The sum of unpaid "
+    "harbour tolls has passed $1 trillion, a first in living memory.¹² The average "
+    "U.S. river pilot now carries over $25,000 of debt at retirement.¹³ With this toll "
+    "load, a young sailor is forced into finding longer-distance work."
 )
 _RM_P0163_TRANSLATION = (
-    "Американцы должны по студенческим кредитам больше, чем по кредитным картам. Общая "
-    "сумма непогашенных студенческих кредитов впервые в истории превысила 1 триллион "
-    "долларов. Среднестатистический американский студент к моменту получения диплома имеет "
-    "долг более 25 000 долларов. С такой долговой нагрузкой молодой человек вынужден искать "
-    "более высокооплачиваемую работу."
+    "Моряки должны по портовым сборам больше, чем по лампадному маслу. Общая "
+    "сумма непогашенных портовых сборов впервые на памяти превысила 1 триллион "
+    "долларов. Среднестатистический американский речной лоцман к моменту выхода на пенсию имеет "
+    "долг более 25 000 долларов. С такой нагрузкой по сборам молодой моряк вынужден искать "
+    "работу на дальних рейсах."
 )
 
 
@@ -120,12 +121,12 @@ def test_reference_kept_in_plain_digits_is_turned_back_into_the_glyph() -> None:
     # Money and Sustainability p0458: the model KEPT the reference but wrote "»34.".
     # Inserting a glyph would print the reference twice.
     outcome = restore_lost_footnote_markers(
-        "…renegotiations of their social contracts.”³⁴ There are no historical precedents.",
-        "…пересмотреть свои социальные контракты»34. В истории нет прецедентов.",
+        "…renegotiations of their harbour charters.”³⁴ There are no historical precedents.",
+        "…пересмотреть свои портовые уставы»34. В истории нет прецедентов.",
     )
 
     assert outcome.placement == PLACEMENT_CONVERTED
-    assert outcome.text == "…пересмотреть свои социальные контракты»³⁴. В истории нет прецедентов."
+    assert outcome.text == "…пересмотреть свои портовые уставы»³⁴. В истории нет прецедентов."
     assert outcome.restored_markers == ("³⁴",)
 
 
@@ -178,14 +179,14 @@ def test_reference_welded_to_a_period_after_a_word_is_still_converted() -> None:
 
 
 def test_abbreviation_does_not_count_as_a_sentence_end() -> None:
-    # "U.S. college" stays one sentence; otherwise the counts differ and the reference
+    # "U.S. river" stays one sentence; otherwise the counts differ and the reference
     # would fall to the paragraph end.
     outcome = restore_lost_footnote_markers(
-        "The average U.S. college student owes money.¹³ This is new.",
-        "Средний студент в США должен деньги. Это новое явление.",
+        "The average U.S. river pilot owes money.¹³ This is new.",
+        "Средний лоцман в США должен деньги. Это новое явление.",
     )
 
-    assert outcome.text == "Средний студент в США должен деньги.¹³ Это новое явление."
+    assert outcome.text == "Средний лоцман в США должен деньги.¹³ Это новое явление."
 
 
 def test_restored_reference_next_to_a_kept_one_stays_a_separate_reference() -> None:

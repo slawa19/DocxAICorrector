@@ -51,11 +51,11 @@ from docxaicorrector.pipeline.job_parsing import parse_processing_job
 from docxaicorrector.validation.formatting_coverage import _BACKMATTER_SECTION_TITLES
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
-_ENTRY_A = "Aghion, P. and Howitt, P., *Endogenous Growth Theory* (Cambridge, MA: MIT Press, 1998)."
-_ENTRY_B = "Akerlof, G. A., 'The market for lemons', *Quarterly Journal of Economics* 84(3), 1970, pp. 488-500."
+_ENTRY_A = "Marchant, P. and Keswick, P., *Coastal Lantern Theory* (Harbourton, MA: Tide Press, 1998)."
+_ENTRY_B = "Varnham, G. A., 'The market for lanterns', *Quarterly Journal of Navigation* 84(3), 1970, pp. 488-500."
 _PROSE = (
-    "Money is not a thing but an agreement within a community to use something standardised "
-    "as a means of payment, and that agreement is what this chapter is about."
+    "A harbour is not a place but an arrangement among pilots to treat a stretch of water "
+    "as a shelter, and that arrangement is what this chapter is about."
 )
 
 
@@ -372,7 +372,7 @@ def test_a_reference_list_block_whose_entries_came_out_mixed_needs_review(monkey
     monkeypatch.setattr(block_execution, "_write_controlled_block_fallback_artifact", lambda **_kwargs: None)
     texts = ["Bibliography", _ENTRY_A, _ENTRY_B]
     payload = _payload(texts=texts, roles=["heading", "body", "body"])
-    translated_entry = "Акерлоф Дж., «Рынок лимонов», 1970."
+    translated_entry = "Варнхэм Дж., «Рынок фонарей», 1970."
     answer = MarkerPreservedBlockText(
         "\n\n".join(["Библиография", _ENTRY_A, translated_entry]),
         (
@@ -645,17 +645,17 @@ def test_the_run_summary_prints_the_back_matter_policy_counters() -> None:
 # predicate is untouched (``delivered_text_equals_source`` stays the only comparison); what
 # changes is the DISPOSITION of such a paragraph in a ``notes``/``references`` section.
 
-_NOTE_URL = "3. https://www.ft.com/content/cc58c190-6ec3-11e6-a0c9-1365ce54b926"
-_NOTE_REPORT = "2. Goldman Sachs Annual Report, 2010."
+_NOTE_URL = "3. https://www.hx.com/content/d47e2a91-3bc8-42f1-b7e2-9a4c61f0d3e8"
+_NOTE_REPORT = "2. Marrow Wharves Annual Report, 2010."
 _NOTE_ARTICLE = (
-    "7. W. Lazonick, M. Mazzucato and Ö. Tulum, ‘Apple’s changing business model: What should "
-    "the world’s richest company do with its profits?’, *Accounting Forum* 37 (2103), pp. 249–67."
+    "7. T. Marchant, A. Keswick and Ö. Varden, ‘Lantern’s changing harbour model: What should "
+    "the coast’s oldest guild do with its tolls?’, *Navigation Forum* 41 (2107), pp. 318–36."
 )
-_NOTE_TORN_TITLE = "13. P. Steiner, ‘Wealth and power: Quesnay’s political economy of the"
-_NOTE_TORN_TAIL = "*Private Sector Myths* (London: Anthem Press, 2013)."
+_NOTE_TORN_TITLE = "13. P. Varden, ‘Tides and lanterns: Marchant’s coastal history of the"
+_NOTE_TORN_TAIL = "*Harbour Pilot Myths* (Kelbrook: Lantern Press, 2013)."
 _NOTE_COMMENTARY = (
-    "6. GDP (Gross domestic product) superseded GNP as the standard measure of output in the "
-    "1980s. The difference is not relevant to value creation."
+    "6. HTR (Harbour toll rate) replaced BTR as the usual gauge of traffic in the "
+    "1970s. The change is not material to lantern upkeep."
 )
 
 
@@ -667,11 +667,11 @@ _NOTE_COMMENTARY = (
         _NOTE_ARTICLE,
         _NOTE_TORN_TITLE,
         _NOTE_TORN_TAIL,
-        "### *Economy: What Should Change?* (Washington DC: Bureau of",
-        "1. R. Sahay, M. Cihak, P. N\u2019Diaye, A. Barajas, R. Bi, D. Ayala, Y. Gao,",
-        "3. Studenski, *Income of Nations*, p. 127.",
-        "16. C. A. E. Goodhart, ‘Competition and credit control’, Financial Markets",
-        "title=Economia+non+osservata+-+04%2Fdic%2F2015+- +Testo+integrale+con+nota+metodologica.pdf",
+        "### *Harbour: What Should Change?* (Kelbrook KT: Office of",
+        "1. R. Varden, M. Odell, P. N\u2019Dalo, A. Marrow, R. Lo, D. Ferra, Y. Tan,",
+        "3. Marchetti, *Tides of Harbours*, p. 127.",
+        "16. C. A. E. Varnham, ‘Navigation and lantern control’, Harbour Markets",
+        "title=Marea+non+osservata+-+07%2Fnov%2F2016+- +Testo+ridotto+con+nota+tecnica.pdf",
     ],
 )
 def test_a_reference_reads_as_a_citation_by_its_form(text: str) -> None:
@@ -684,26 +684,26 @@ def test_a_reference_reads_as_a_citation_by_its_form(text: str) -> None:
     "text",
     [
         _NOTE_COMMENTARY,
-        "2. See Figure 1 in Chapter 7 for details.",
-        "11. There was only one test so far.",
+        "2. See Figure 4 in Chapter 9 for details.",
+        "11. There was only one tide so far.",
         # A quotation is commentary however it is enclosed: a span longer than a title is not
         # taken out, so its running words count.
-        "25. The full quote is: ‘The labour of some of the most respectable orders in the society "
-        "is, like that of menial servants, unproductive of any value, and does not fix or realize "
-        "itself in any permanent subject, or vendible commodity, which endures after that labour is past.’",
+        "25. The whole line reads: ‘The watch of some of the most diligent keepers in the harbour "
+        "is, like that of hired deckhands, unproductive of any toll, and does not bind or settle "
+        "itself in any lasting cargo, or saleable lantern, which endures after that watch is over.’",
         # Codex acceptance review 2026-11-07, finding 1: few running words is not a reference.
         "See Figure 1 for details.",
         "(This argument assumes that all prices remain constant over time.)",
-        "\u201cCan you be more precise?\u201d",
+        "\u201cCan you be more exact?\u201d",
         "\u8fd9\u4e00\u8bba\u70b9\u5047\u8bbe\u6240\u6709\u4ef7\u683c\u968f\u65f6\u95f4\u4fdd\u6301\u4e0d\u53d8\u3002",
         "Notes",
         # No positive mark of a reference at all: such a line stays on the diagnostic path.
         "15. Ibid.",
         "1489.",
         # The R-7 note of Creating Wealth: commentary that happens to name works and years.
-        "Maynard Keynes — Knapp and Chartalism are cited approvingly in its opening pages. "
-        "Chartalism experienced a revival under Abba P. Lerner in *The* *Economics of Control* (1944) "
-        "and later in *The Economics of Employment* (1951).",
+        "Tobias Marlow — Keswick and Tidalism are cited warmly in its first pages. "
+        "Tidalism experienced a revival under Ansel P. Varden in *The* *Navigation of Harbours* (1944) "
+        "and later in *The Navigation of Rivers* (1951).",
     ],
 )
 def test_anti_vacuum_commentary_does_not_read_as_a_citation(text: str) -> None:
@@ -785,7 +785,7 @@ def test_a_translated_note_beside_a_kept_reference_relabels_only_the_reference(m
     payload = _payload(
         texts=[_NOTE_COMMENTARY, _NOTE_ARTICLE], roles=["list", "list"], section=BACK_MATTER_SECTION_NOTES
     )
-    translated = "6. ВВП пришёл на смену ВНП."
+    translated = "6. ПСТ пришёл на смену БСТ."
     answer = MarkerPreservedBlockText(
         "\n\n".join([translated, _NOTE_ARTICLE]),
         (
@@ -929,7 +929,7 @@ def test_the_run_summary_prints_the_model_kept_counters() -> None:
     [
         pytest.param("See Figure 1 for details.", "body", id="a-short-sentence"),
         pytest.param("(This argument assumes that all prices remain constant over time.)", "body", id="a-whole-parenthetical"),
-        pytest.param("“Can you be more precise?”", "body", id="a-quoted-dialogue-line"),
+        pytest.param("“Can you be more exact?”", "body", id="a-quoted-dialogue-line"),
         pytest.param(
             "这一论点假设所有价格随时间保持不变。",
             "body",
@@ -959,7 +959,7 @@ def test_a_heading_typed_torn_reference_with_a_year_is_relabelled(monkeypatch) -
     as any paragraph. The importer typed ten torn VoE references as headings; they carry a year
     or a title span, a real section title does not (see the "Notes"/"Chapter 7" counter-cases)."""
     written = _fallback_artifacts(monkeypatch)
-    heading_reference = "### *Interest Rate Derivatives Market in the United Kingdom* (London: Bank of England, 2016)."
+    heading_reference = "### *Tidal Lantern Licences Market in the Northern Harbours* (Kelbrook: Board of Wardens, 2016)."
     payload = _payload(texts=[heading_reference], roles=["heading"], section=BACK_MATTER_SECTION_NOTES)
 
     run = _run(payload, model_answer=_echo(payload), classification="source_text_fallback")
@@ -975,10 +975,10 @@ def test_a_torn_reference_is_relabelled_whole_or_not_at_all() -> None:
     """Finding 3: assembly welds the two halves of a torn entry back together, but never halves
     of different narration admissibility. A translated head with an echoed tail therefore keeps
     the tail ``accepted`` -- the CW p1623/p1624 case -- and an echoed pair is relabelled together."""
-    head = "Complementary Currency.” Paper presented for publication in the *International Journal for Community Currency*"
-    tail = "Vol. 10 (2006). [online]. [cited November 2, 2010]. www.uea.ac.uk/env/ijccr/abstracts/vol10(3)lietaer.html."
+    head = "Harbour Lantern.” Paper presented for publication in the *Coastal Review for Harbour Lanterns*"
+    tail = "Vol. 12 (2008). [online]. [cited October 5, 2011]. www.hbr.ex.uk/sea/crhlr/abstracts/vol12(3)marchant.html."
     payload = _payload(texts=[head, tail], roles=["body", "body"], section=BACK_MATTER_SECTION_NOTES)
-    translated_head = "Complementary Currency.” Статья, представленная в *International Journal for Community Currency*"
+    translated_head = "Harbour Lantern.” Статья, представленная в *Coastal Review for Harbour Lanterns*"
     answer = MarkerPreservedBlockText(
         "\n\n".join([translated_head, tail]),
         (

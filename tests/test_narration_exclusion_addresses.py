@@ -367,35 +367,35 @@ def test_the_anchor_is_the_first_sentence_not_the_whole_paragraph() -> None:
         {
             "paragraph_id": "p1",
             "text": (
-                "Footnotes 1 Lietaer and Kennedy on complementary currencies. "
-                "2 For applications at a city level, see in particular the later volume. "
-                "3 Arrow and Reinhardt on the same question."
+                "Footnotes 1 Marchant and Keswick on coastal lanterns. "
+                "2 For examples at a harbour scale, see in particular the later volume. "
+                "3 Odell and Varnham on the same question."
             ),
         }
     ]
 
     facts = quality_gate.build_narration_exclusion_facts(records)
 
-    assert facts["anchors"] == ["Footnotes 1 Lietaer and Kennedy on complementary currencies."]
+    assert facts["anchors"] == ["Footnotes 1 Marchant and Keswick on coastal lanterns."]
     # ...and the paragraph is still counted in full: what was shortened is the ADDRESS.
     assert facts["chars"] == len(records[0]["text"])
 
 
 def test_an_abbreviation_does_not_shorten_the_address() -> None:
-    """The ``20261107T_061_audio_money`` run printed "Reinhart et al." — 15 characters, cut at
-    the abbreviation — as the address of a paragraph whose first sentence runs on to the
+    """The ``20261107T_061_audio_money`` run printed an eight-letter surname and "et al." —
+    15 characters, cut at the abbreviation — as the address of a paragraph whose first sentence runs on to the
     year. The splitter now reads the abbreviation's FORM (short lowercase token, lowercase or
     digit after it), so the address is the whole first sentence and is still found in the
     delivered text, emphasis and all."""
     text = (
-        "Reinhart *et al.* (2004). 7 Adrian Blundell-Wignall and Paul Atkinson, "
-        "‘Thinking Beyond Basel III’."
+        "Marchant *et al.* (2004). 7 Ansel Varden-Keswick and Peter Odell, "
+        "‘Sailing Beyond Harbour III’."
     )
     records = [{"paragraph_id": "p1", "text": text}]
 
     facts = quality_gate.build_narration_exclusion_facts(records, delivered_markdown=text)
 
-    assert facts["anchors"] == ["Reinhart et al. (2004)."]
+    assert facts["anchors"] == ["Marchant et al. (2004)."]
     assert facts["unanchored_paragraph_count"] == 0
 
 
@@ -462,16 +462,16 @@ def test_the_delivered_check_is_applied_to_the_address_that_is_printed() -> None
     paragraph whose first sentence is gone is not offered at all."""
     tail_rewritten = {
         "paragraph_id": "p1",
-        "text": "Footnotes 1 Lietaer and Kennedy. A tail that cleanup rewrote entirely.",
+        "text": "Footnotes 1 Marchant and Keswick. A tail that cleanup rewrote entirely.",
     }
     deleted = {"paragraph_id": "p2", "text": "A paragraph cleanup deleted. With two sentences."}
 
     facts = quality_gate.build_narration_exclusion_facts(
         [tail_rewritten, deleted],
-        delivered_markdown="Footnotes 1 Lietaer and Kennedy. Кое-что ещё.",
+        delivered_markdown="Footnotes 1 Marchant and Keswick. Кое-что ещё.",
     )
 
-    assert facts["anchors"] == ["Footnotes 1 Lietaer and Kennedy."]
+    assert facts["anchors"] == ["Footnotes 1 Marchant and Keswick."]
     assert facts["unanchored_paragraph_count"] == 1
     assert facts["anchors_dropped_not_in_delivered"] == 1
 
@@ -480,11 +480,11 @@ def test_the_delivered_check_is_applied_to_the_address_that_is_printed() -> None
 # before an emphasised title in the next. Emphasis never crosses a blank line in markdown,
 # but the stripper, run over the whole document as one string, pairs the first paragraph's
 # asterisk with the title's closing one and leaves the title's opening asterisk behind —
-# the shape of the ``20261107T_061_audio_money`` miss (``*No Logo`` delivered, ``No Logo``
-# in the anchor).
+# the shape of the ``20261107T_061_audio_money`` miss (a two-word title delivered with its
+# opening asterisk, bare in the anchor; the title here is synthetic).
 _STRAY_ASTERISK_DELIVERED = (
     "A formula with a literal 2*n in it.\n\n"
-    "Footnotes 1 Quoted in Naomi Klein, *No Logo* (2000), p.325. 2 See Appendix A."
+    "Footnotes 1 Quoted in Mara Keswick, *No Tide* (2000), p.325. 2 See Appendix A."
 )
 
 
@@ -495,7 +495,7 @@ def test_the_delivered_text_is_normalised_paragraph_by_paragraph() -> None:
     records = [
         {
             "paragraph_id": "p1",
-            "text": "Footnotes 1 Quoted in Naomi Klein, *No Logo* (2000), p.325. 2 See Appendix A.",
+            "text": "Footnotes 1 Quoted in Mara Keswick, *No Tide* (2000), p.325. 2 See Appendix A.",
         }
     ]
 
@@ -503,7 +503,7 @@ def test_the_delivered_text_is_normalised_paragraph_by_paragraph() -> None:
         records, delivered_markdown=_STRAY_ASTERISK_DELIVERED
     )
 
-    assert facts["anchors"] == ["Footnotes 1 Quoted in Naomi Klein, No Logo (2000), p.325."]
+    assert facts["anchors"] == ["Footnotes 1 Quoted in Mara Keswick, No Tide (2000), p.325."]
     assert facts["unanchored_paragraph_count"] == 0
     assert facts["anchors_dropped_not_in_delivered"] == 0
 
@@ -514,8 +514,8 @@ def test_the_stray_asterisk_fixture_really_breaks_whole_string_normalisation() -
     absent from it."""
     whole = quality_gate._review_anchor_visible_text(" ".join(_STRAY_ASTERISK_DELIVERED.split()))
 
-    assert "*No Logo" in whole
-    assert "Footnotes 1 Quoted in Naomi Klein, No Logo (2000), p.325." not in whole
+    assert "*No Tide" in whole
+    assert "Footnotes 1 Quoted in Mara Keswick, No Tide (2000), p.325." not in whole
 
 
 def test_per_paragraph_normalisation_still_withholds_an_address_that_is_gone() -> None:
@@ -525,7 +525,7 @@ def test_per_paragraph_normalisation_still_withholds_an_address_that_is_gone() -
     records = [
         {
             "paragraph_id": "p1",
-            "text": "Footnotes 1 Quoted in Naomi Klein, *No Logo* (2000), p.325. 2 See Appendix A.",
+            "text": "Footnotes 1 Quoted in Mara Keswick, *No Tide* (2000), p.325. 2 See Appendix A.",
         },
         {"paragraph_id": "p2", "text": "A *paragraph* reader cleanup removed. Its second sentence."},
     ]
@@ -534,7 +534,7 @@ def test_per_paragraph_normalisation_still_withholds_an_address_that_is_gone() -
         records, delivered_markdown=_STRAY_ASTERISK_DELIVERED
     )
 
-    assert facts["anchors"] == ["Footnotes 1 Quoted in Naomi Klein, No Logo (2000), p.325."]
+    assert facts["anchors"] == ["Footnotes 1 Quoted in Mara Keswick, No Tide (2000), p.325."]
     assert facts["unanchored_paragraph_count"] == 1
     assert facts["anchors_dropped_not_in_delivered"] == 1
 
@@ -544,7 +544,7 @@ def test_an_address_the_delivered_document_no_longer_contains_is_withheld() -> N
     cleanup deleted or rewrote is a WRONG address — worse than none, because the reader
     spends the trip. The paragraph is still counted; only its address is withheld."""
     records = [
-        {"paragraph_id": "p1", "text": "Footnotes 1 Lietaer and Kennedy on complementary currencies."},
+        {"paragraph_id": "p1", "text": "Footnotes 1 Marchant and Keswick on coastal lanterns."},
         {"paragraph_id": "p2", "text": "A paragraph reader cleanup removed from the document."},
     ]
 
@@ -563,8 +563,8 @@ def test_a_fully_narrated_run_leaves_the_document_message_untouched() -> None:
     document message keeps every anchor and its existing key."""
     blocks = [
         MarkerPreservedBlockText(
-            "Once upon a time in a small village.",
-            (_disposition("p1", "Once upon a time in a small village.", "source_restored"),),
+            "Long ago and far off in a village.",
+            (_disposition("p1", "Long ago and far off in a village.", "source_restored"),),
         )
     ]
 

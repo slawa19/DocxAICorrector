@@ -143,10 +143,10 @@ def test_toc_block_routed_through_llm_still_invokes_classifier() -> None:
 # into a Russian audiobook, 4.47% of the artifact.
 
 _ENGLISH_SOURCE_BLOCK = (
-    "Once upon a time, in a small village in the Outback, people used barter for all their "
-    "transactions. On every market day, people walked around with chickens, eggs, hams and "
-    "breads, and engaged in prolonged negotiations among themselves to exchange what they "
-    "needed for the coming week."
+    "Many tides ago, in a small hamlet by the old Saltmarsh, sailors used tallies for all their "
+    "cargoes. On every harbour day, sailors walked around with nets, ropes, lamps and "
+    "barrels, and engaged in prolonged bargaining among themselves to exchange what they "
+    "needed for the coming voyage."
 )
 
 
@@ -613,7 +613,7 @@ def test_the_happy_path_counts_the_characters_it_withholds(monkeypatch) -> None:
 # on ``edit`` it is a real paragraph of the book and is spoken.
 
 _ENGLISH_RESTORED_PARAGRAPH = (
-    "See, for example, the white paper on options for managing a systemic bank crisis."
+    "See, for example, the grey ledger on options for steering a systemic port crisis."
 )
 
 

@@ -1866,12 +1866,12 @@ def test_split_marker_preserved_markdown_raises_structured_marker_diagnostics():
 # filled it with the invented word "(Пусто)", which shipped to the reader 7 times.
 
 _STUB_SOURCE_ABSORBED = (
-    "4. Подробнее см.: Bernard Lietaer, Robert Ulanowicz, and Sally Goerner, «White Paper»"
+    "4. Подробнее см.: Barnaby Keswell, Harald Ostrander, and Mira Calloway, «Grey Ledger»"
 )
 _STUB_SOURCE_COLLAPSED = (
-    "«О всех вариантах управления системным банковским кризисом»: доклад, в котором авторы "
-    "разбирают устойчивость денежных систем и показывают, почему монокультура валют делает "
-    "экономику хрупкой, а разнообразие — устойчивой."
+    "«О всех вариантах управления системным портовым кризисом»: доклад, в котором авторы "
+    "разбирают устойчивость портовых систем и показывают, почему монокультура судов делает "
+    "гавань хрупкой, а разнообразие — устойчивой."
 )
 
 
@@ -1952,11 +1952,11 @@ def test_restore_collapsed_marker_paragraphs_keeps_an_audiobook_reference_paragr
     bibliography the model was told to delete straight back into the text read aloud.
     """
     reference_source = (
-        "12. Bernard Lietaer, Robert Ulanowicz, Sally Goerner, «Options for Managing a "
-        "Systemic Bank Crisis», S.A.P.I.EN.S 2, no. 1 (2009): 1–15, doi:10.5194/sapiens-2-1."
+        "12. Barnaby Keswell, Harald Ostrander, Mira Calloway, «Options for Steering a "
+        "Systemic Port Crisis», T.I.D.E.WA.Y 2, no. 1 (2009): 1–15, doi:10.5194/tideway-2-1."
     )
-    body_source = "Устойчивость денежной системы держится не на эффективности, а на разнообразии."
-    body_narrated = "Устойчивость денежной системы держится на разнообразии, а не на эффективности."
+    body_source = "Устойчивость портовой системы держится не на эффективности, а на разнообразии."
+    body_narrated = "Устойчивость портовой системы держится на разнообразии, а не на эффективности."
     returned = [body_narrated, "."]
 
     restored = generation.restore_collapsed_marker_paragraphs(
@@ -1985,12 +1985,12 @@ def test_restore_collapsed_marker_paragraphs_leaves_a_translation_untouched():
     # The check is length-only, so it must stay quiet on `translate`, where the answer
     # shares no characters with its source but keeps its size.
     source = [
-        "Деньги для людей — то же, что вода для рыб: среда, которую замечают, только когда её нет.",
-        "Современные деньги были придуманы в совершенно иную эпоху, для совершенно иных задач.",
+        "Приливы для моряков — то же, что воздух для птиц: среда, которую замечают, только когда её нет.",
+        "Современные карты были начерчены в совершенно иную эпоху, для совершенно иных задач.",
     ]
     returned = [
-        "Money is to people what water is to fish: a medium noticed only in its absence.",
-        "Modern money was invented in a wholly different era, for wholly different purposes.",
+        "Tides are to sailors what air is to birds: a medium noticed only in its absence.",
+        "Modern charts were drawn in a wholly different era, for wholly different purposes.",
     ]
 
     assert generation.restore_collapsed_marker_paragraphs(returned, source) == returned
@@ -2042,10 +2042,10 @@ _MERGED_ANSWER = (
     f"[[DOCX_PARA_p1344]]\n{_STUB_SOURCE_ABSORBED} {_STUB_SOURCE_COLLAPSED}\n\n"
     "[[DOCX_PARA_p1345]]\n(Пусто)"
 )
-_FIRST_TRANSLATION = "4. Подробнее см. «Белую книгу» Бернара Лиетара, Роберта Улановича и Салли Гёрнер."
+_FIRST_TRANSLATION = "4. Подробнее см. «Серую книгу» Барнаби Кесвелла, Гаральда Острандера и Миры Кэллоуэй."
 _SECOND_TRANSLATION = (
-    "«Обо всех вариантах управления системным банковским кризисом» — доклад о том, почему "
-    "денежная монокультура делает экономику хрупкой, а разнообразие валют — устойчивой."
+    "«Обо всех вариантах управления системным портовым кризисом» — доклад о том, почему "
+    "судовая монокультура делает гавань хрупкой, а разнообразие судов — устойчивой."
 )
 _CORRECT_ANSWER = (
     f"[[DOCX_PARA_p1344]]\n{_FIRST_TRANSLATION}\n\n[[DOCX_PARA_p1345]]\n{_SECOND_TRANSLATION}"
@@ -2741,13 +2741,13 @@ def test_missing_markers_still_fail_the_block():
 def test_a_dropped_marker_still_fails_the_block():
     """Calls 199/200/201 of the 2026-08-04 run: the model deleted a paragraph WITH its marker.
 
-    The lost ``p0957`` is a heading (``## NGO Initiative s :``) and it is
+    The lost ``p0957`` is a heading (``## Harbour Project s :``) and it is
     ``absent_from_artifact`` — this is the one mechanism of the three where content is
     genuinely lost rather than reverted to source, so it must never become a status.
     """
     with pytest.raises(generation.MarkerValidationError) as exc_info:
         generation.split_marker_preserved_paragraph_dispositions(
-            "[[DOCX_PARA_p0958]]\nАльянс токенов здоровья.",
+            "[[DOCX_PARA_p0958]]\nАльянс портовых жетонов.",
             ["p0957", "p0958"],
         )
     assert exc_info.value.error_code == "marker_order_or_identity"
@@ -3065,10 +3065,10 @@ def test_controlled_source_fallback_still_writes_every_rejected_answer(monkeypat
 
     logged = _capture_marker_attempts(monkeypatch, tmp_path)
     monkeypatch.setattr(generation.time, "sleep", lambda _seconds: None)
-    target_text = "[[DOCX_PARA_p0957]]\n## NGO Initiatives:\n\n[[DOCX_PARA_p0958]]\nThe Wellness Token Alliance."
+    target_text = "[[DOCX_PARA_p0957]]\n## Harbour Projects:\n\n[[DOCX_PARA_p0958]]\nThe Harbour Token Alliance."
     # Call 199/200/201 of the 2026-08-04 run: expected ['p0957','p0958'], got ['p0958'] —
     # the model deleted a paragraph TOGETHER with its marker, and the heading was lost.
-    rejected_answer = "[[DOCX_PARA_p0958]]\nАльянс токенов здоровья."
+    rejected_answer = "[[DOCX_PARA_p0958]]\nАльянс портовых жетонов."
 
     # The per-paragraph re-ask must fail too, or the block gets translated by the ladder and
     # there is no controlled fallback left whose evidence this test can check.
@@ -3088,7 +3088,7 @@ def test_controlled_source_fallback_still_writes_every_rejected_answer(monkeypat
     )
 
     # A dropped marker is real loss and stays block-fatal: the source stands.
-    assert result == "## NGO Initiatives:\n\nThe Wellness Token Alliance."
+    assert result == "## Harbour Projects:\n\nThe Harbour Token Alliance."
 
     payloads = _read_marker_attempt_artifacts(tmp_path)
     # 2 loop attempts + the informed recovery call.
@@ -5226,14 +5226,14 @@ def test_the_sentence_split_keeps_a_short_lowercase_abbreviation_inside_its_sent
     of at most three letters, followed — past an opening bracket or quote — by a lowercase
     letter or a digit, shortens a word rather than ends a sentence.
 
-    Measured cause: the ``20261107T_061_audio_money`` run cut "Reinhart et al. (2004)." at
+    Measured cause: the ``20261107T_061_audio_money`` run cut "Marchetti et al. (2004)." at
     "al." and printed a 15-character address. The same splitter divides ladder units, so the
     rule also stops "т. д." from cutting a ladder unit in half.
     """
 
     assert generation._ladder_sentences(
-        "Reinhart et al. (2004). 7 Adrian Blundell-Wignall and Paul Atkinson."
-    ) == ["Reinhart et al. (2004).", "7 Adrian Blundell-Wignall and Paul Atkinson."]
+        "Marchetti et al. (2004). 7 Adrian Holloway-Brenner and Paul Ostrander."
+    ) == ["Marchetti et al. (2004).", "7 Adrian Holloway-Brenner and Paul Ostrander."]
     assert generation._ladder_sentences("See p. 325 of the report. Then more.") == [
         "See p. 325 of the report.",
         "Then more.",

@@ -203,10 +203,10 @@ def test_attribution_detection_form():
     # A short dash-led author credit is attribution; the "Name, <role>" appositive form is
     # NOT credited BY DESIGN (the English occupation word list was removed as a per-book
     # heuristic), and a plain heading / body prose never match.
-    assert _is_attribution_text("— gwendolyn and bernard", "body", "body")
-    assert not _is_attribution_text("sir mervyn king, governor of the bank of england", "heading", "heading")
-    assert not _is_attribution_text("richard timberlake, former professor emeritus of", "heading", "heading")
-    assert not _is_attribution_text("households: consumers, employees, savers, investors", "heading", "heading")
+    assert _is_attribution_text("— rosalind and tobias", "body", "body")
+    assert not _is_attribution_text("sir alder marsh, warden of the board of lanterns", "heading", "heading")
+    assert not _is_attribution_text("tobias wrenfield, former harbourmaster emeritus of", "heading", "heading")
+    assert not _is_attribution_text("harbours: pilots, keepers, sailors, traders", "heading", "heading")
     assert not _is_attribution_text(
         "The economy grew rapidly during this decade, and the effects were felt widely across the sector.",
         "body",
@@ -221,8 +221,8 @@ def test_attribution_does_not_credit_dialogue_line():
 
 
 def test_index_row_detection_form():
-    assert _is_index_row_text("chicago plan, 3, 69– 71, 231n15, 231n16")
-    assert _is_index_row_text("local currency, 5, 58– 59; berkshare, 75, 88")
+    assert _is_index_row_text("kelbrook plan, 4, 57– 62, 214n12, 214n13")
+    assert _is_index_row_text("tidal lantern, 6, 46– 47; marrowshare, 81, 93")
     # A body sentence that merely ends in a year is NOT an index row.
     assert not _is_index_row_text("The reform finally arrived in 2010.")
     assert not _is_index_row_text("a plain heading")
@@ -231,8 +231,8 @@ def test_index_row_detection_form():
 def test_passthrough_credits_index_and_attribution_after_references():
     src = _base_source_rows() + [
         _src(20, "heading", 1, None, "notes"),
-        _src(21, "heading", 1, None, "chicago plan, 3, 69– 71, 231n15, 231n16"),  # index
-        _src(22, "heading", 1, None, "— gwendolyn and bernard"),  # dash-led attribution credit
+        _src(21, "heading", 1, None, "kelbrook plan, 4, 57– 62, 214n12, 214n13"),  # index
+        _src(22, "heading", 1, None, "— rosalind and tobias"),  # dash-led attribution credit
         _src(23, "body", None, None,
              "A genuine notes-region body paragraph that is long real running prose spanning well past the "
              "substantial-body-prose length threshold, opening with a capital letter and ending with a period."),
@@ -267,8 +267,8 @@ def test_list_fragment_standalone_numeric_credited_as_review():
 def test_list_fragment_bibliography_notes_line_credited_as_review():
     # A Money-style notes/bibliography residue line (quoted titles, years, "стр.").
     bib = (
-        "*Journal of Public Health*, том 87 (1997), № 9, стр. 1491–1498. 56 Джеймс Бьюкен, "
-        "«Застывшее желание: смысл денег» (1997). 57 Кеннеди и Литер, «Региональные валюты» (2004), стр. 30."
+        "*Journal of Harbour Health*, том 87 (1997), № 9, стр. 1491–1498. 56 Тобиас Марлоу, "
+        "«Застывший прилив: смысл гаваней» (1997). 57 Кесвик и Варден, «Прибрежные фонари» (2004), стр. 30."
     )
     assert late_phases._is_citation_form_list_fragment_sample(_sample(bib))
     assert late_phases._is_reviewable_list_fragment_residue(samples=[_sample(bib)], gate_source="entry_assembly")
@@ -839,8 +839,8 @@ def _failed_checks(verdict: dict[str, object]) -> list[str]:
 # The Creating Wealth shape: a notes entry wrapped by the PDF layer, its tail a separate
 # body paragraph ending in a year. One citation signal (the year) — the form credit alone
 # does NOT take it, which is exactly why it hard-failed acceptance.
-_NOTE_HEAD = "- 13. Dennis and Donella Meadows, Jorgen Randers and William Behrens. *The Limits to Growth*. Universe Books, 1972; Donella"
-_NOTE_TAIL = "Meadows, Jorgen Randers and Dennis L. Meadows. *Limits to Growth: The 30-Year Update*. Chelsea Green, 2004."
+_NOTE_HEAD = "- 13. Tobias and Rosalind Marchant, Ansel Varden and Peter Keswick. *The Bounds of Tides*. Harbour Books, 1972; Rosalind"
+_NOTE_TAIL = "Marchant, Ansel Varden and Tobias L. Marchant. *Bounds of Tides: The 30-Year Update*. Lantern House, 2004."
 _NOTE_NEXT = "- 14. Расчёт предоставлен автором на основе его собственных данных."
 
 
@@ -870,8 +870,8 @@ def _notes_document(tmp_path: Path, *, notes_title: bool, tail_status: str = "ac
     registry = [
         _registry_row(0, "body", "chapter text"),
         _registry_row(1, "heading", "notes" if notes_title else "a chapter heading", 1),
-        _registry_row(2, "list", "13. dennis and donella meadows"),
-        _registry_row(3, "body", "meadows, jorgen randers"),
+        _registry_row(2, "list", "13. tobias and rosalind marchant"),
+        _registry_row(3, "body", "marchant, ansel varden"),
         _registry_row(4, "list", "14. calculation"),
     ]
     artifact = tmp_path / "formatting_diagnostics.json"
@@ -966,7 +966,7 @@ def test_multi_line_entry_does_not_shift_later_lines_onto_another_entry(tmp_path
         _entry(continuation, 2),
         _entry("- 2. Второй пункт списка.", 3, role="list", list_kind="ordered"),
         _entry(
-            "Lietaer, B. *The Future of Money*. London: Century, 2001.",
+            "Marchant, B. *The Course of Tides*. Kelbrook: Lantern, 2001.",
             4,
             status=PARAGRAPH_STATUS_POLICY_KEPT_SOURCE,
         ),
@@ -1018,7 +1018,7 @@ def _appendix_after_notes_document(tmp_path: Path):
         _entry("Основной текст главы, переведённый полностью и без замечаний.", 0),
         _entry("## Примечания", 1, role="heading", heading_level=2),
         _entry(
-            "- 1. J. M. Keynes, *The General Theory* (London: Macmillan, 1936), p. 59.",
+            "- 1. J. M. Varden, *The Tidal Theory* (Kelbrook: Harbourside, 1936), p. 59.",
             2,
             role="list",
             list_kind="ordered",
@@ -1070,9 +1070,9 @@ def test_apparatus_credit_needs_a_source_backed_resolved_entry():
     samples = [type("S", (), {"text": _NOTE_TAIL, "line": line})() for line in (1, 3, 5, 99)]
     # Three reference-shaped entries, so the only difference between them is the signal
     # under test: region (line 1), a fallback entry (line 3), before the region (line 5).
-    reference_x = "Keynes, *The General Theory* (London: Macmillan, 1936), p. 59."
-    reference_y = "Polanyi, *The Great Transformation* (Boston: Beacon Press, 2001), p. 144."
-    reference_z = "Minsky, *Stabilizing an Unstable Economy* (New Haven: Yale, 1986), p. 369."
+    reference_x = "Varden, *The Tidal Theory* (Kelbrook: Harbourside, 1936), p. 59."
+    reference_y = "Keswick, *The Great Lantern* (Marrowby: Signal Press, 2001), p. 144."
+    reference_z = "Odell, *Mooring an Unsteady Harbour* (Port Marrow: Tide, 1986), p. 369."
     entries = (
         _entry(reference_x, 10),
         _entry(reference_y, 11, from_registry=False, used_fallback=True),

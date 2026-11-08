@@ -211,7 +211,7 @@ def test_preserve_source_paragraph_properties_restores_epigraph_italics_and_alig
 
 
 def test_is_heading_like_source_paragraph_accepts_heuristically_promoted_heading_metadata():
-    paragraph = ParagraphUnit(text="WHAT IS VALUE?", role="body", heading_source="heuristic", heading_level=2)
+    paragraph = ParagraphUnit(text="WHAT IS TIDE?", role="body", heading_source="heuristic", heading_level=2)
 
     assert _is_heading_like_source_paragraph(paragraph) is True
 
@@ -425,8 +425,8 @@ def test_formatting_diagnostics_credit_adjacent_generated_target_tail_as_split_a
         ParagraphUnit(
             paragraph_id="p0083",
             text=(
-                "How it really works For each deposit that any bank receives, it is entitled "
-                "to create new money by making a loan."
+                "How it truly floats For each cargo that any port receives, it is entitled "
+                "to print new tickets by granting a berth."
             ),
             role="heading",
             structural_role="heading",
@@ -438,17 +438,17 @@ def test_formatting_diagnostics_credit_adjacent_generated_target_tail_as_split_a
         {
             "paragraph_id": "p0083",
             "text": (
-                "# Как это работает на самом деле\n"
-                "С каждого полученного депозита банк имеет право создавать новые деньги, "
-                "выдавая клиенту кредит."
+                "# Как это плавает на самом деле\n"
+                "С каждого полученного груза порт имеет право печатать новые билеты, "
+                "выдавая судну причал."
             ),
         }
     ]
 
     target_doc = Document()
-    target_doc.add_paragraph("Как это работает на самом деле", style="Heading 1")
+    target_doc.add_paragraph("Как это плавает на самом деле", style="Heading 1")
     target_doc.add_paragraph(
-        "С каждого полученного депозита банк имеет право создавать новые деньги, выдавая клиенту кредит."
+        "С каждого полученного груза порт имеет право печатать новые билеты, выдавая судну причал."
     )
 
     diagnostics = _build_output_formatting_diagnostics(
@@ -503,7 +503,7 @@ def test_unmapped_target_residual_credits_controlled_fallback_covered_text_witho
     source_paragraphs = [
         ParagraphUnit(
             paragraph_id="p1129",
-            text="Evans, Embedded Autonomy bibliography entry.",
+            text="Marlow, Drifting Lanterns bibliography entry.",
             role="body",
             structural_role="body",
             role_confidence="heuristic",
@@ -511,8 +511,8 @@ def test_unmapped_target_residual_credits_controlled_fallback_covered_text_witho
     ]
     target_doc = Document()
     target_doc.add_paragraph(
-        "Evans, P., Embedded Autonomy: States and Industrial Transformation "
-        "(Princeton, NJ: University Press, 1995)."
+        "Marlow, T., Drifting Lanterns: Ports and Coastal Navigation "
+        "(Kelbrook, NH: Harbour Press, 1995)."
     )
 
     diagnostics = _build_unmapped_target_residual_diagnostics(
@@ -522,8 +522,8 @@ def test_unmapped_target_residual_credits_controlled_fallback_covered_text_witho
         generated_registry_by_id={
             "p1129": {
                 "text": (
-                    "Evans, P., Embedded Autonomy: States and Industrial Transformation "
-                    "(Princeton, NJ: University Press, 1995)."
+                    "Marlow, T., Drifting Lanterns: Ports and Coastal Navigation "
+                    "(Kelbrook, NH: Harbour Press, 1995)."
                 ),
                 "controlled_fallback": True,
                 "controlled_fallback_kind": "english_residual_output",
@@ -930,7 +930,7 @@ def test_formatting_diagnostics_credit_split_body_line_in_mapped_anchor_target()
         ),
         ParagraphUnit(
             paragraph_id="p0002",
-            text="education the cost of education is a burden",
+            text="pilotage the price of pilotage is a toll",
             role="body",
             structural_role="body",
             role_confidence="heuristic",
@@ -938,7 +938,7 @@ def test_formatting_diagnostics_credit_split_body_line_in_mapped_anchor_target()
     ]
     target_doc = Document()
     target_doc.add_paragraph(
-        "Расходы на образование обычно ложатся бременем на федеральный бюджет, создавая давление."
+        "Расходы на лоцманство обычно ложатся бременем на портовый бюджет, создавая давление."
     )
 
     diagnostics = _build_output_formatting_diagnostics(
@@ -948,14 +948,14 @@ def test_formatting_diagnostics_credit_split_body_line_in_mapped_anchor_target()
         generated_paragraph_registry=[
             {
                 "paragraph_id": "p0001",
-                "text": "Расходы на образование обычно ложатся бременем на федеральный бюджет, создавая давление.",
+                "text": "Расходы на лоцманство обычно ложатся бременем на портовый бюджет, создавая давление.",
                 "target_paragraph_indexes": [0],
             },
             {
                 "paragraph_id": "p0002",
                 "text": (
-                    "### ОБРАЗОВАНИЕ.\n"
-                    "Расходы на образование обычно ложатся бременем на федеральный бюджет и создают давление."
+                    "### ЛОЦМАНСТВО.\n"
+                    "Расходы на лоцманство обычно ложатся бременем на портовый бюджет и создают давление."
                 ),
             },
         ],
@@ -1435,14 +1435,14 @@ def test_mapping_treats_toc_entries_aggregated_into_mapped_target_as_covered():
     source_paragraphs = [
         ParagraphUnit(
             paragraph_id="p0001",
-            text="10 truth and consequences",
+            text="10 tides and soundings",
             role="body",
             structural_role="toc_entry",
             role_confidence="heuristic",
         ),
         ParagraphUnit(
             paragraph_id="p0002",
-            text="11 governance and we, the citizens",
+            text="11 lanterns and we, the keepers",
             role="body",
             structural_role="toc_entry",
             role_confidence="heuristic",
@@ -1450,7 +1450,7 @@ def test_mapping_treats_toc_entries_aggregated_into_mapped_target_as_covered():
     ]
 
     target_doc = Document()
-    target_doc.add_paragraph("10 истина и последствия 11 управление и мы, граждане")
+    target_doc.add_paragraph("10 приливы и промеры 11 фонари и мы, смотрители")
 
     _, diagnostics = _map_source_target_paragraphs(
         source_paragraphs,
@@ -1458,11 +1458,11 @@ def test_mapping_treats_toc_entries_aggregated_into_mapped_target_as_covered():
         generated_paragraph_registry=[
             {
                 "paragraph_id": "p0001",
-                "text": "10 истина и последствия 11 управление и мы, граждане",
+                "text": "10 приливы и промеры 11 фонари и мы, смотрители",
             },
             {
                 "paragraph_id": "p0002",
-                "text": "11 управление и мы, граждане",
+                "text": "11 фонари и мы, смотрители",
             },
         ],
     )
@@ -1478,8 +1478,8 @@ def test_mapping_treats_toc_entries_aggregated_into_mapped_target_as_covered():
             "target_index": 0,
             "kind": "toc_entry_target_aggregation",
             "anchor_source_index": 0,
-            "target_text_preview": "10 истина и последствия 11 управление и мы, граждане",
-            "source_text_preview": "11 governance and we, the citizens",
+            "target_text_preview": "10 приливы и промеры 11 фонари и мы, смотрители",
+            "source_text_preview": "11 lanterns and we, the keepers",
         }
     ]
 
@@ -1499,21 +1499,21 @@ def test_mapping_accepts_registry_aggregate_anchor_when_target_has_extra_context
         [
             ParagraphUnit(
                 paragraph_id="p0004",
-                text="10 truth and consequences: lessons learned 175",
+                text="10 tides and soundings: charts compared 175",
                 role="body",
                 structural_role="toc_entry",
                 role_confidence="heuristic",
             ),
             ParagraphUnit(
                 paragraph_id="p0005",
-                text="11 governance and we, the citizens: an ancient future? 187",
+                text="11 lanterns and we, the keepers: an older harbour? 187",
                 role="body",
                 structural_role="toc_entry",
                 role_confidence="heuristic",
             ),
             ParagraphUnit(
                 paragraph_id="p0006",
-                text="12 our available future: the cooperative society 203",
+                text="12 our northern harbour: the patient fleet 203",
                 role="body",
                 structural_role="toc_entry",
                 role_confidence="heuristic",
@@ -1523,9 +1523,9 @@ def test_mapping_accepts_registry_aggregate_anchor_when_target_has_extra_context
 
     target_doc = Document()
     target_doc.add_paragraph(
-        "10 истина и последствия: извлеченные уроки 175 "
-        "11 управление и мы, граждане: будущее из древности? 187 "
-        "12 наше доступное будущее: общество сотрудничества 203 "
+        "10 приливы и промеры: сравнённые карты 175 "
+        "11 фонари и мы, смотрители: гавань из прошлого? 187 "
+        "12 наша северная гавань: терпеливый флот 203 "
         "примечания 225"
     )
 
@@ -1536,9 +1536,9 @@ def test_mapping_accepts_registry_aggregate_anchor_when_target_has_extra_context
             {
                 "paragraph_id": "p0004",
                 "text": (
-                    "10 истина и последствия: извлеченные уроки 175 "
-                    "11 управление и мы, граждане: будущее из древности? 187 "
-                    "12 наше доступное будущее: общество сотрудничества 203"
+                    "10 приливы и промеры: сравнённые карты 175 "
+                    "11 фонари и мы, смотрители: гавань из прошлого? 187 "
+                    "12 наша северная гавань: терпеливый флот 203"
                 ),
                 "merged_paragraph_ids": ["p0004", "p0005", "p0006"],
             },
@@ -1781,7 +1781,7 @@ def test_mapping_uses_bounded_registry_fuzzy_pass_for_translated_body_target():
     source_paragraphs.append(
         ParagraphUnit(
             paragraph_id="p0012",
-            text="education the cost of education is a burden usually carried at the federal level",
+            text="pilotage the price of pilotage is a toll usually carried at the regional level",
             role="body",
             structural_role="body",
             role_confidence="heuristic",
@@ -1791,9 +1791,9 @@ def test_mapping_uses_bounded_registry_fuzzy_pass_for_translated_body_target():
     target_doc = Document()
     for index in range(4):
         target_doc.add_paragraph(f"Нерелевантная цель {index}")
-    target_doc.add_paragraph("ОБРАЗОВАНИЕ.", style="Heading 3")
+    target_doc.add_paragraph("ЛОЦМАНСТВО.", style="Heading 3")
     target_doc.add_paragraph(
-        "Расходы на образование обычно ложатся бременем на федеральный бюджет, создавая давление."
+        "Расходы на лоцманство обычно ложатся бременем на портовый бюджет, создавая давление."
     )
 
     _, diagnostics = _map_source_target_paragraphs(
@@ -1803,8 +1803,8 @@ def test_mapping_uses_bounded_registry_fuzzy_pass_for_translated_body_target():
             {
                 "paragraph_id": "p0012",
                 "text": (
-                    "### ОБРАЗОВАНИЕ.\n"
-                    "Расходы на образование обычно ложатся бременем на федеральный бюджет и создают давление."
+                    "### ЛОЦМАНСТВО.\n"
+                    "Расходы на лоцманство обычно ложатся бременем на портовый бюджет и создают давление."
                 ),
             },
         ],
@@ -1969,7 +1969,7 @@ def test_unique_registry_text_floor_maps_long_free_target_outside_bounded_window
     )
     source_paragraphs[70] = ParagraphUnit(
         paragraph_id="p0070",
-        text="6. Henk Van Arkel, interview with Jacqui Dunne, December 16, 2011",
+        text="6. Tobin Van Marle, interview with Elsie Brand, December 16, 2011",
         role="list",
         structural_role="list_item",
         role_confidence="heuristic",
@@ -1977,10 +1977,10 @@ def test_unique_registry_text_floor_maps_long_free_target_outside_bounded_window
     )
 
     target_doc = Document()
-    target_doc.add_paragraph("Хенк Ван Аркель, интервью с Джеки Данн, 16 декабря 2011 года.")
+    target_doc.add_paragraph("Тобин Ван Марле, интервью с Элси Брэнд, 16 декабря 2011 года.")
     for index in range(1, 40):
         target_doc.add_paragraph(f"Нерелевантная цель {index}")
-    target_doc.add_paragraph("Хенк Ван Аркель, интервью с Джеки Данн, 16 декабря 2011 года.")
+    target_doc.add_paragraph("Тобин Ван Марле, интервью с Элси Брэнд, 16 декабря 2011 года.")
 
     _, diagnostics = _map_source_target_paragraphs(
         source_paragraphs,
@@ -1988,11 +1988,11 @@ def test_unique_registry_text_floor_maps_long_free_target_outside_bounded_window
         generated_paragraph_registry=[
             {
                 "paragraph_id": "p0039",
-                "text": "Хенк Ван Аркель, интервью с Джеки Данн, 16 декабря 2011 г.",
+                "text": "Тобин Ван Марле, интервью с Элси Брэнд, 16 декабря 2011 г.",
             },
             {
                 "paragraph_id": "p0070",
-                "text": "6. Хенк Ван Аркель, интервью с Джеки Данн, 16 декабря 2011 года.",
+                "text": "6. Тобин Ван Марле, интервью с Элси Брэнд, 16 декабря 2011 года.",
             },
         ],
     )
@@ -2338,7 +2338,7 @@ def test_apply_output_formatting_restores_toc_paragraph_properties_from_source_m
         ),
         ParagraphUnit(
             paragraph_id="p0001",
-            text="Введение: создание и извлечение",
+            text="Введение: зажигание и хранение",
             role="body",
             structural_role="toc_entry",
             role_confidence="heuristic",
@@ -2358,12 +2358,12 @@ def test_apply_output_formatting_restores_toc_paragraph_properties_from_source_m
     ]
     generated_registry = [
         {"paragraph_id": "p0000", "text": "Содержание"},
-        {"paragraph_id": "p0001", "text": "Введение: создание и извлечение"},
+        {"paragraph_id": "p0001", "text": "Введение: зажигание и хранение"},
     ]
 
     target_doc = Document()
     target_doc.add_paragraph("Содержание", style="Body Text")
-    target_doc.add_paragraph("Введение: создание и извлечение", style="Body Text")
+    target_doc.add_paragraph("Введение: зажигание и хранение", style="Body Text")
     output = BytesIO()
     target_doc.save(output)
 
@@ -2425,7 +2425,7 @@ def test_apply_output_formatting_restores_toc_paragraph_properties_via_positiona
         ),
         ParagraphUnit(
             paragraph_id="p0001",
-            text="Introduction: Making versus Taking",
+            text="Introduction: Lighting versus Keeping",
             role="body",
             structural_role="toc_entry",
             role_confidence="heuristic",
@@ -2447,7 +2447,7 @@ def test_apply_output_formatting_restores_toc_paragraph_properties_via_positiona
 
     target_doc = Document()
     target_doc.add_paragraph("Содержание", style="Body Text")
-    target_doc.add_paragraph("Введение: создание и извлечение", style="Body Text")
+    target_doc.add_paragraph("Введение: зажигание и хранение", style="Body Text")
     output = BytesIO()
     target_doc.save(output)
 
@@ -2490,7 +2490,7 @@ def test_apply_output_formatting_restores_safe_toc_run_formatting_without_geomet
     source_paragraphs = [
         ParagraphUnit(
             paragraph_id="p0000",
-            text="1. A Brief History of Value",
+            text="1. A Short History of Tides",
             role="body",
             structural_role="toc_entry",
             role_confidence="heuristic",
@@ -2522,7 +2522,7 @@ def test_apply_output_formatting_restores_safe_toc_run_formatting_without_geomet
     ]
 
     target_doc = Document()
-    first = target_doc.add_paragraph("1. Краткая история стоимости", style="Body Text")
+    first = target_doc.add_paragraph("1. Краткая история приливов", style="Body Text")
     second = target_doc.add_paragraph("Предисловие: истории о создании богатства", style="Body Text")
     first.runs[0].font.size = Pt(12)
     second.runs[0].font.size = Pt(12)
@@ -2533,7 +2533,7 @@ def test_apply_output_formatting_restores_safe_toc_run_formatting_without_geomet
         output.getvalue(),
         source_paragraphs,
         generated_paragraph_registry=[
-            {"paragraph_id": "p0000", "text": "1. Краткая история стоимости"},
+            {"paragraph_id": "p0000", "text": "1. Краткая история приливов"},
             {"paragraph_id": "p0001", "text": "Предисловие: истории о создании богатства"},
         ],
         mismatch_event_name="test_mismatch",
@@ -2975,7 +2975,7 @@ def test_preserve_source_paragraph_properties_artifact_records_restored_list_dec
 def test_preserve_source_paragraph_properties_artifact_records_skipped_alignment_decisions_during_mismatch(tmp_path, monkeypatch):
     source_paragraphs = [
         ParagraphUnit(
-            text="WHAT IS VALUE?",
+            text="WHAT IS TIDE?",
             role="heading",
             heading_level=2,
             paragraph_id="p0001",
@@ -2984,7 +2984,7 @@ def test_preserve_source_paragraph_properties_artifact_records_skipped_alignment
     ]
 
     target_doc = Document()
-    target_doc.add_paragraph("WHAT IS VALUE?", style="Heading 2")
+    target_doc.add_paragraph("WHAT IS TIDE?", style="Heading 2")
     target_doc.add_paragraph("Лишний абзац")
     target_buffer = BytesIO()
     target_doc.save(target_buffer)
@@ -3756,10 +3756,10 @@ def test_mapping_maps_adjacent_attribution_after_mapped_epigraph_relation() -> N
 
 def test_preserve_source_paragraph_properties_does_not_restore_right_alignment_for_heading():
     source_paragraphs = [
-        ParagraphUnit(text="WHAT IS VALUE?", role="heading", heading_level=2, paragraph_alignment="end", paragraph_id="p0000"),
+        ParagraphUnit(text="WHAT IS TIDE?", role="heading", heading_level=2, paragraph_alignment="end", paragraph_id="p0000"),
     ]
     target_doc = Document()
-    paragraph = target_doc.add_paragraph("WHAT IS VALUE?")
+    paragraph = target_doc.add_paragraph("WHAT IS TIDE?")
     paragraph.style = "Heading 2"
     target_buffer = BytesIO()
     target_doc.save(target_buffer)

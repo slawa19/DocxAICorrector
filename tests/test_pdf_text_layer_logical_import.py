@@ -226,7 +226,7 @@ def test_065_fr007_marker_after_a_bare_word_keeps_its_inline_form() -> None:
 def test_build_paragraph_units_separates_attribution_superscript_footnote_marker() -> None:
     spans = [
         _span(1, "Body line establishes the normal document sentence.", top=70, bottom=82, x0=50, x1=430),
-        _span(1, "Kofi Annan, former UN Secretary-General", top=100, bottom=112, x0=50, x1=270),
+        _span(1, "Tobi Ashen, former HB Lighthouse-Keeper", top=100, bottom=112, x0=50, x1=270),
         _span(1, "28", top=101, bottom=106, x0=268, x1=274, font_size=4),
         _span(1, "The following sentence starts a new paragraph.", top=130, bottom=142, x0=50, x1=420),
     ]
@@ -234,7 +234,7 @@ def test_build_paragraph_units_separates_attribution_superscript_footnote_marker
     result = build_paragraph_units_from_text_spans(spans)
 
     assert [paragraph.role for paragraph in result.paragraphs] == ["body", "body", "footnote", "body"]
-    assert result.paragraphs[1].text == "Kofi Annan, former UN Secretary-General"
+    assert result.paragraphs[1].text == "Tobi Ashen, former HB Lighthouse-Keeper"
     assert result.paragraphs[2].text == "28"
     assert result.paragraphs[2].structural_role == "footnote"
 
@@ -242,14 +242,14 @@ def test_build_paragraph_units_separates_attribution_superscript_footnote_marker
 def test_build_paragraph_units_keeps_non_superscript_trailing_number_in_body() -> None:
     spans = [
         _span(1, "Body line establishes the normal document sentence.", top=70, bottom=82, x0=50, x1=430),
-        _span(1, "Hyman Minsky, 19921", top=100, bottom=112, x0=50, x1=180),
+        _span(1, "Ewald Brisky, 19921", top=100, bottom=112, x0=50, x1=180),
         _span(1, "A real body paragraph resumes here.", top=130, bottom=142, x0=50, x1=350),
     ]
 
     result = build_paragraph_units_from_text_spans(spans)
 
     assert [paragraph.role for paragraph in result.paragraphs] == ["body", "body", "body"]
-    assert result.paragraphs[1].text == "Hyman Minsky, 19921"
+    assert result.paragraphs[1].text == "Ewald Brisky, 19921"
 
 
 def test_build_paragraph_units_merges_ordered_list_continuation_lines() -> None:
@@ -290,28 +290,28 @@ def test_build_paragraph_units_splits_short_terminal_body_line_at_left_return() 
 def test_build_paragraph_units_keeps_leading_chapter_number_with_heading() -> None:
     spans = [
         _span(1, "Prior body sentence closes the previous chapter.", top=70, bottom=82, x0=50, x1=420),
-        _span(1, "3 Measuring the Wealth of Nations", top=120, bottom=138, x0=50, x1=360, font_size=16, bold=True),
-        _span(1, "What we measure affects what we do.", top=150, bottom=162, x0=50, x1=390),
+        _span(1, "3 Measuring the Height of Beacons", top=120, bottom=138, x0=50, x1=360, font_size=16, bold=True),
+        _span(1, "What we chart governs how we steer.", top=150, bottom=162, x0=50, x1=390),
     ]
 
     result = build_paragraph_units_from_text_spans(spans)
 
     assert [paragraph.role for paragraph in result.paragraphs] == ["body", "heading", "body"]
-    assert result.paragraphs[1].rendered_text == "## 3 Measuring the Wealth of Nations"
+    assert result.paragraphs[1].rendered_text == "## 3 Measuring the Height of Beacons"
 
 
 def test_build_paragraph_units_merges_standalone_leading_chapter_number_with_heading() -> None:
     spans = [
         _span(1, "Prior body sentence closes the previous chapter.", top=70, bottom=82, x0=50, x1=420),
         _span(1, "3", top=110, bottom=126, x0=290, x1=301, font_size=16),
-        _span(1, "Measuring the Wealth of Nations", top=140, bottom=156, x0=157, x1=437, font_size=16),
-        _span(1, "What we measure affects what we do.", top=190, bottom=202, x0=50, x1=390),
+        _span(1, "Measuring the Height of Beacons", top=140, bottom=156, x0=157, x1=437, font_size=16),
+        _span(1, "What we chart governs how we steer.", top=190, bottom=202, x0=50, x1=390),
     ]
 
     result = build_paragraph_units_from_text_spans(spans)
 
     assert [paragraph.role for paragraph in result.paragraphs] == ["body", "heading", "body"]
-    assert result.paragraphs[1].rendered_text == "## 3 Measuring the Wealth of Nations"
+    assert result.paragraphs[1].rendered_text == "## 3 Measuring the Height of Beacons"
 
 
 def test_build_paragraph_units_does_not_promote_small_digit_note_to_heading() -> None:
@@ -329,18 +329,18 @@ def test_build_paragraph_units_does_not_promote_small_digit_note_to_heading() ->
 
 def test_build_paragraph_units_detects_body_sized_small_caps_subheading() -> None:
     spans = [
-        _span(1, "the subjective nature of the preferences in the", top=100, bottom=112, x0=72),
-        _span(1, "economy.", top=114, bottom=126, x0=72),
+        _span(1, "the changeable nature of the lighthouses in the", top=100, bottom=112, x0=72),
+        _span(1, "harbour.", top=114, bottom=126, x0=72),
         _span(
             1,
-            "THE MERCANTILISTS: TRADE AND TREASURE",
+            "THE CARTOGRAPHERS: CHART AND SOUNDING",
             top=150,
             bottom=162,
             x0=175,
             font_size=8,
         ),
-        _span(1, "Since ancient times, humanity has divided its economic", top=180, bottom=192, x0=72),
-        _span(1, "activity into productive and unproductive types.", top=194, bottom=206, x0=72),
+        _span(1, "Since distant tides, shipping has divided its seaborne", top=180, bottom=192, x0=72),
+        _span(1, "commerce into profitable and unprofitable types.", top=194, bottom=206, x0=72),
     ]
 
     result = build_paragraph_units_from_text_spans(spans)
@@ -350,7 +350,7 @@ def test_build_paragraph_units_detects_body_sized_small_caps_subheading() -> Non
         "heading",
         "body",
     ]
-    assert result.paragraphs[1].text == "THE MERCANTILISTS: TRADE AND TREASURE"
+    assert result.paragraphs[1].text == "THE CARTOGRAPHERS: CHART AND SOUNDING"
 
 
 def test_build_paragraph_units_separates_heading_levels_by_style_clusters() -> None:
@@ -416,14 +416,14 @@ def test_infer_heading_level_ranks_numbered_section_above_bare_same_font() -> No
 def test_build_paragraph_units_is_conservative_for_ambiguous_caps_line() -> None:
     spans = [
         _span(1, "The quotation continues across the current line", top=100, bottom=112, x0=50),
-        _span(1, "ALDO LEOPOLD", top=114, bottom=126, x0=50),
+        _span(1, "ODIN MARLOWE", top=114, bottom=126, x0=50),
         _span(1, "without enough layout separation to prove a heading.", top=128, bottom=140, x0=50),
     ]
 
     result = build_paragraph_units_from_text_spans(spans)
 
     assert [paragraph.role for paragraph in result.paragraphs] == ["body"]
-    assert "ALDO LEOPOLD" in result.paragraphs[0].text
+    assert "ODIN MARLOWE" in result.paragraphs[0].text
 
 
 def test_build_paragraph_units_rejects_long_body_like_heading_candidate() -> None:
@@ -461,37 +461,37 @@ def test_build_paragraph_units_rejects_mid_sentence_heading_candidate() -> None:
 
 def test_build_paragraph_units_rejects_epigraph_credit_year_line() -> None:
     spans = [
-        _span(1, "Instability is part of the system.", top=100, bottom=112, x0=50),
-        _span(1, "Hyman Minsky, 19921", top=150, bottom=162, x0=180),
+        _span(1, "Uncertainty is part of the voyage.", top=100, bottom=112, x0=50),
+        _span(1, "Ewald Brisky, 19921", top=150, bottom=162, x0=180),
         _span(1, "A real body paragraph resumes here.", top=190, bottom=202, x0=50),
     ]
 
     result = build_paragraph_units_from_text_spans(spans)
 
     assert [paragraph.role for paragraph in result.paragraphs] == ["body", "body", "body"]
-    assert result.paragraphs[1].text == "Hyman Minsky, 19921"
+    assert result.paragraphs[1].text == "Ewald Brisky, 19921"
 
 
 def test_build_paragraph_units_rejects_footnote_citation_tail_candidate() -> None:
     spans = [
         _span(1, "The citation begins in the previous line", top=100, bottom=112, x0=50),
-        _span(1, "[online]. cited October 23, 2010]. federalreserve.gov/releases", top=150, bottom=162, x0=130),
+        _span(1, "[online]. cited October 19, 2011]. lanternkeepers.org/releases", top=150, bottom=162, x0=130),
         _span(1, "The next paragraph starts normally.", top=190, bottom=202, x0=50),
     ]
 
     result = build_paragraph_units_from_text_spans(spans)
 
     assert all(paragraph.role == "body" for paragraph in result.paragraphs)
-    assert "federalreserve" in " ".join(paragraph.text for paragraph in result.paragraphs)
+    assert "lanternkeepers" in " ".join(paragraph.text for paragraph in result.paragraphs)
 
 
 def test_build_paragraph_units_detects_short_inline_subheading_between_body_lines() -> None:
     spans = [
-        _span(1, "The time currency also created stronger", top=100, bottom=112, x0=50),
-        _span(1, "community ties.", top=114, bottom=126, x0=50),
-        _span(1, "Employment", top=128, bottom=140, x0=50),
-        _span(1, "The first LETS systems originated in Canada in northern regions", top=142, bottom=154, x0=50),
-        _span(1, "aiming specifically at currency scarcity in areas.", top=156, bottom=168, x0=50),
+        _span(1, "The tide calendar also created stronger", top=100, bottom=112, x0=50),
+        _span(1, "anchorage ties.", top=114, bottom=126, x0=50),
+        _span(1, "Provisions", top=128, bottom=140, x0=50),
+        _span(1, "The first TIDE ledgers originated in Norvia in southern regions", top=142, bottom=154, x0=50),
+        _span(1, "aiming specifically at pilotage shortage in areas.", top=156, bottom=168, x0=50),
     ]
 
     result = build_paragraph_units_from_text_spans(spans)
@@ -502,9 +502,9 @@ def test_build_paragraph_units_detects_short_inline_subheading_between_body_line
         "body",
     ]
     assert [paragraph.text for paragraph in result.paragraphs] == [
-        "The time currency also created stronger community ties.",
-        "Employment",
-        "The first LETS systems originated in Canada in northern regions aiming specifically at currency scarcity in areas.",
+        "The tide calendar also created stronger anchorage ties.",
+        "Provisions",
+        "The first TIDE ledgers originated in Norvia in southern regions aiming specifically at pilotage shortage in areas.",
     ]
 
 
@@ -554,24 +554,24 @@ def test_build_paragraph_units_classifies_figure_line_as_caption_not_heading() -
 def test_build_paragraph_units_keeps_location_signature_line_out_of_headings() -> None:
     spans = [
         _span(1, "The foreword ends with a short sign-off.", top=100, bottom=112, x0=50),
-        _span(1, "Northcote, Australia", top=140, bottom=152, x0=180),
+        _span(1, "Harbourne, Lanthoria", top=140, bottom=152, x0=180),
         _span(1, "A regular paragraph starts on the following line.", top=180, bottom=192, x0=50),
     ]
 
     result = build_paragraph_units_from_text_spans(spans)
 
     assert [paragraph.role for paragraph in result.paragraphs] == ["body", "body", "body"]
-    assert result.paragraphs[1].text == "Northcote, Australia"
+    assert result.paragraphs[1].text == "Harbourne, Lanthoria"
 
 
 def test_build_paragraph_units_does_not_keep_glued_toc_heading_as_heading() -> None:
     spans = [
-        _span(1, "Preface by Dennis Meadows", top=100, bottom=112, x0=95),
-        _span(1, "Foreword by Hunter Lovins", top=114, bottom=126, x0=95),
+        _span(1, "Preface by Tobias Marlowe", top=100, bottom=112, x0=95),
+        _span(1, "Foreword by Ansel Keswick", top=114, bottom=126, x0=95),
         _span(
             1,
-            "Acknowledgments Introduction: Cities And Economies Conclusion: Toward A Monetary Democracy "
-            "Appendix: The Community Currency How-To Manual",
+            "Acknowledgments Introduction: Shores And Anchorage Conclusion: Toward A Maritime Concordat "
+            "Appendix: The Lightship Registry How-To Manual",
             top=128,
             bottom=140,
             x0=95,
@@ -582,15 +582,15 @@ def test_build_paragraph_units_does_not_keep_glued_toc_heading_as_heading() -> N
     result = build_paragraph_units_from_text_spans(spans)
 
     assert all(paragraph.role == "body" for paragraph in result.paragraphs)
-    assert result.paragraphs[0].text.startswith("Preface by Dennis Meadows")
+    assert result.paragraphs[0].text.startswith("Preface by Tobias Marlowe")
 
 
 def test_build_paragraph_units_merges_multiline_heading_into_single_heading() -> None:
     spans = [
         _span(1, "Глава восьмая", top=80, bottom=98, font_size=16, bold=True),
-        _span(1, "STRATEGIES FOR", top=110, bottom=140, font_size=28, bold=True),
-        _span(1, "GOVERNMENTS", top=142, bottom=172, font_size=28, bold=True),
-        _span(1, "Money is the lever of power.", top=210, bottom=222, font_size=10),
+        _span(1, "SIGNALLERS FOR", top=110, bottom=140, font_size=28, bold=True),
+        _span(1, "LIGHTHOUSES", top=142, bottom=172, font_size=28, bold=True),
+        _span(1, "Light is the lever of tides.", top=210, bottom=222, font_size=10),
     ]
 
     result = build_paragraph_units_from_text_spans(spans)
@@ -603,17 +603,17 @@ def test_build_paragraph_units_merges_multiline_heading_into_single_heading() ->
     chapter_label = result.paragraphs[0]
     merged_heading = result.paragraphs[1]
     assert chapter_label.text == "Глава восьмая"
-    assert merged_heading.text == "STRATEGIES FOR GOVERNMENTS"
+    assert merged_heading.text == "SIGNALLERS FOR LIGHTHOUSES"
     assert merged_heading.boundary_rationale == "merged_adjacent_pdf_heading_spans"
     assert merged_heading.heading_level is not None
     assert merged_heading.heading_source == "pdf_text_layer"
-    assert merged_heading.origin_raw_texts == ["STRATEGIES FOR", "GOVERNMENTS"]
+    assert merged_heading.origin_raw_texts == ["SIGNALLERS FOR", "LIGHTHOUSES"]
 
 
 def test_build_paragraph_units_keeps_separate_headings_with_different_font_size() -> None:
     spans = [
         _span(1, "PART THREE", top=80, bottom=98, font_size=14, bold=True),
-        _span(1, "RETHINKING MONEY", top=110, bottom=140, font_size=26, bold=True),
+        _span(1, "RECHARTING TIDES", top=110, bottom=140, font_size=26, bold=True),
         _span(1, "Body paragraph follows.", top=200, bottom=212, font_size=10),
     ]
 
@@ -621,7 +621,7 @@ def test_build_paragraph_units_keeps_separate_headings_with_different_font_size(
 
     assert [paragraph.text for paragraph in result.paragraphs] == [
         "PART THREE",
-        "RETHINKING MONEY",
+        "RECHARTING TIDES",
         "Body paragraph follows.",
     ]
 
@@ -630,9 +630,9 @@ def test_build_paragraph_units_does_not_merge_toc_entries_into_large_body_blob()
     spans = [
         _span(1, "CONTENTS", top=100, bottom=120, font_size=18, bold=True),
         _span(1, "Foreword ix", top=150, bottom=162, font_size=10),
-        _span(1, "Introduction: From Scarcity to Prosperity 1", top=164, bottom=176, font_size=10),
-        _span(1, "PART ONE SCARCITY", top=190, bottom=202, font_size=10),
-        _span(1, "1 The Failure of Money: The Competitive Society 11", top=204, bottom=216, font_size=10),
+        _span(1, "Introduction: From Moorings to Lighthouse 1", top=164, bottom=176, font_size=10),
+        _span(1, "PART ONE MOORINGS", top=190, bottom=202, font_size=10),
+        _span(1, "1 The Silence of Bells: The Shipwrecked Harbour 11", top=204, bottom=216, font_size=10),
         _span(2, "First normal body line", top=150, bottom=162, font_size=10),
         _span(2, "continues as one paragraph.", top=164, bottom=176, font_size=10),
     ]
@@ -642,9 +642,9 @@ def test_build_paragraph_units_does_not_merge_toc_entries_into_large_body_blob()
     assert [paragraph.text for paragraph in result.paragraphs[:5]] == [
         "CONTENTS",
         "Foreword ix",
-        "Introduction: From Scarcity to Prosperity 1",
-        "PART ONE SCARCITY",
-        "1 The Failure of Money: The Competitive Society 11",
+        "Introduction: From Moorings to Lighthouse 1",
+        "PART ONE MOORINGS",
+        "1 The Silence of Bells: The Shipwrecked Harbour 11",
     ]
     assert result.paragraphs[1].structural_role == "toc_entry"
     assert result.paragraphs[2].structural_role == "toc_entry"
@@ -687,14 +687,14 @@ def test_build_paragraph_units_merges_indented_soft_wrap_continuation() -> None:
     # punctuation) and the continuation starts lowercase, so it must merge even
     # though it is indented far to the right of the line it continues.
     spans = [
-        _span(1, "It makes clear that awareness of this Missing Link", top=100, bottom=112, x0=5),
-        _span(1, "is an absolute imperative for", top=114, bottom=126, x0=178),
+        _span(1, "It shows plain that knowledge of this Silting Pier", top=100, bottom=112, x0=5),
+        _span(1, "is an enduring obligation for", top=114, bottom=126, x0=178),
     ]
 
     result = build_paragraph_units_from_text_spans(spans)
 
     assert [paragraph.text for paragraph in result.paragraphs] == [
-        "It makes clear that awareness of this Missing Link is an absolute imperative for",
+        "It shows plain that knowledge of this Silting Pier is an enduring obligation for",
     ]
 
 
@@ -702,15 +702,15 @@ def test_build_paragraph_units_merges_same_line_split_word_groups() -> None:
     # Justified text can be emitted as several spans on the same visual line
     # (identical top/bottom, increasing x0). They must collapse into one line.
     spans = [
-        _span(1, "clear", top=100, bottom=112, x0=5, x1=38),
-        _span(1, "that awareness of", top=100, bottom=112, x0=47, x1=169),
-        _span(1, "this Missing Link", top=100, bottom=112, x0=178, x1=311),
+        _span(1, "plain", top=100, bottom=112, x0=5, x1=38),
+        _span(1, "that knowledge of", top=100, bottom=112, x0=47, x1=169),
+        _span(1, "this Silting Pier", top=100, bottom=112, x0=178, x1=311),
     ]
 
     result = build_paragraph_units_from_text_spans(spans)
 
     assert [paragraph.text for paragraph in result.paragraphs] == [
-        "clear that awareness of this Missing Link",
+        "plain that knowledge of this Silting Pier",
     ]
 
 
@@ -718,14 +718,14 @@ def test_build_paragraph_units_merges_soft_wrap_across_page_break() -> None:
     # A sentence that does not finish at the bottom of one page and continues
     # lowercase at the top of the next must merge across the page boundary.
     spans = [
-        _span(1, "the gap between money", top=760, bottom=772, x0=20),
-        _span(2, "and sustainability lies elsewhere.", top=6, bottom=18, x0=5),
+        _span(1, "the gap between tides", top=760, bottom=772, x0=20),
+        _span(2, "and harbourmastery lies elsewhere.", top=6, bottom=18, x0=5),
     ]
 
     result = build_paragraph_units_from_text_spans(spans)
 
     assert [paragraph.text for paragraph in result.paragraphs] == [
-        "the gap between money and sustainability lies elsewhere.",
+        "the gap between tides and harbourmastery lies elsewhere.",
     ]
 
 
@@ -734,15 +734,15 @@ def test_build_paragraph_units_merges_hanging_indent_list_continuation() -> None
     # right than the bullet line and continues it lowercase. It must stay part of
     # the same list item, not split into a separate paragraph.
     spans = [
-        _span(1, "- a description of the many problems we may expect from", top=100, bottom=112, x0=5),
-        _span(1, "financial systems", top=114, bottom=126, x0=25),
+        _span(1, "- a forecasting of the many troubles we may expect from", top=100, bottom=112, x0=5),
+        _span(1, "harbour anchorage", top=114, bottom=126, x0=25),
     ]
 
     result = build_paragraph_units_from_text_spans(spans)
 
     assert [paragraph.role for paragraph in result.paragraphs] == ["list"]
     assert result.paragraphs[0].text == (
-        "- a description of the many problems we may expect from financial systems"
+        "- a forecasting of the many troubles we may expect from harbour anchorage"
     )
 
 
@@ -884,14 +884,14 @@ def test_build_paragraph_units_merges_cross_role_soft_wrap_continuation() -> Non
     spans = [
         # Looks like a figure caption (matches caption pattern) but is running prose
         # that does not terminate: it must not block the lowercase continuation.
-        _span(1, "Figure 2.2 shows the impact of banking crises on government", top=100, bottom=112, x0=50, x1=300, font_size=10),
-        _span(1, "finances over the relevant decade.", top=114, bottom=126, x0=50, x1=300, font_size=10),
+        _span(1, "Figure 2.2 shows the impact of coastal storms on lighthouse", top=100, bottom=112, x0=50, x1=300, font_size=10),
+        _span(1, "logbooks over the relevant decade.", top=114, bottom=126, x0=50, x1=300, font_size=10),
     ]
 
     result = build_paragraph_units_from_text_spans(spans)
 
     assert [paragraph.text for paragraph in result.paragraphs] == [
-        "Figure 2.2 shows the impact of banking crises on government finances over the relevant decade.",
+        "Figure 2.2 shows the impact of coastal storms on lighthouse logbooks over the relevant decade.",
     ]
     assert result.paragraphs[0].role == "body"
 
@@ -904,14 +904,14 @@ def test_build_paragraph_units_promotes_numbered_section_heading() -> None:
     # body prose (not part of a numbered run), is a numbered section heading.
     spans = [
         _span(1, "The previous section ends with a full stop.", top=100, bottom=112, x0=50, font_size=10),
-        _span(1, "2. Dealing with the Monetary System", top=150, bottom=168, x0=50, font_size=16, bold=True),
-        _span(1, "In order to spell out the economic paradigm we operate in.", top=200, bottom=212, x0=50, font_size=10),
+        _span(1, "2. Dealing with the Tideward Charts", top=150, bottom=168, x0=50, font_size=16, bold=True),
+        _span(1, "In a bid to spell out the nautical paradigm we harbour in.", top=200, bottom=212, x0=50, font_size=10),
     ]
 
     result = build_paragraph_units_from_text_spans(spans)
 
     by_text = {paragraph.text: paragraph for paragraph in result.paragraphs}
-    heading = by_text["2. Dealing with the Monetary System"]
+    heading = by_text["2. Dealing with the Tideward Charts"]
     assert heading.role == "heading"
     # A promoted numbered heading must not be tagged as an unordered/bullet list.
     assert heading.list_kind is None
@@ -922,12 +922,12 @@ def test_build_paragraph_units_does_not_promote_body_font_numbered_list() -> Non
     # when each item is short and followed by body prose. It must stay an ordered
     # list (never promoted to headings, never tagged unordered).
     spans = [
-        _span(1, "The four key categories are as follows:", top=100, bottom=112, x0=50, font_size=10),
-        _span(1, "1. Respect and care for the community of life", top=120, bottom=132, x0=50, font_size=10),
-        _span(1, "2. Ecological integrity", top=134, bottom=146, x0=50, font_size=10),
-        _span(1, "3. Social and economic justice", top=148, bottom=160, x0=50, font_size=10),
-        _span(1, "4. Democracy, non-violence and peace", top=162, bottom=174, x0=50, font_size=10),
-        _span(1, "The reference material for our analysis follows.", top=190, bottom=202, x0=50, font_size=10),
+        _span(1, "The four key principles are as follows:", top=100, bottom=112, x0=50, font_size=10),
+        _span(1, "1. Respect and heed for the seafarers of port", top=120, bottom=132, x0=50, font_size=10),
+        _span(1, "2. Lighthouse readiness", top=134, bottom=146, x0=50, font_size=10),
+        _span(1, "3. Signal and seasonal balance", top=148, bottom=160, x0=50, font_size=10),
+        _span(1, "4. Stewardry, non-drifting and quiet", top=162, bottom=174, x0=50, font_size=10),
+        _span(1, "The collected logbooks for our crossing follows.", top=190, bottom=202, x0=50, font_size=10),
     ]
 
     result = build_paragraph_units_from_text_spans(spans)
@@ -948,9 +948,9 @@ def test_build_paragraph_units_does_not_promote_numbered_run_at_heading_font() -
     # ordered list (e.g. a table of contents chapter list), not a set of section
     # headings. The consecutive-sibling guard must keep them as ordered list items.
     spans = [
-        _span(1, "1. A Brief History of Value", top=100, bottom=118, x0=50, font_size=15, bold=True),
-        _span(1, "2. The Rise of the Marginalists", top=122, bottom=140, x0=50, font_size=15, bold=True),
-        _span(1, "3. Measuring the Wealth of Nations", top=144, bottom=162, x0=50, font_size=15, bold=True),
+        _span(1, "1. A Short History of Tides", top=100, bottom=118, x0=50, font_size=15, bold=True),
+        _span(1, "2. The Rise of the Lamplighters", top=122, bottom=140, x0=50, font_size=15, bold=True),
+        _span(1, "3. Measuring the Height of Beacons", top=144, bottom=162, x0=50, font_size=15, bold=True),
     ]
 
     result = build_paragraph_units_from_text_spans(spans)
@@ -1017,10 +1017,10 @@ def test_build_paragraph_units_promotes_standalone_roman_chapter_number() -> Non
 
 
 def test_build_paragraph_units_promotes_chapter_number_with_inline_title() -> None:
-    # "Chapter I — Why this report, now?" (number + dash + title) carrying a heading
+    # "Chapter I — Why this ledger, now?" (number + dash + title) carrying a heading
     # typography signal (bold) is a heading.
     spans = _body_context_spans() + [
-        _span(1, "Chapter I — Why this report, now?", top=140, bottom=158, x0=50, x1=300, font_size=10, bold=True),
+        _span(1, "Chapter I — Why this ledger, now?", top=140, bottom=158, x0=50, x1=300, font_size=10, bold=True),
         _span(1, "Body prose that follows the chapter heading.", top=190, bottom=204),
     ]
 
@@ -1231,10 +1231,10 @@ def test_build_paragraph_units_does_not_promote_plain_body_part_divider() -> Non
 
 
 def test_build_paragraph_units_does_not_promote_part_number_in_running_prose() -> None:
-    # "Part I of the book describes…" opens with "Part I" but continues as prose (a
+    # "Part I of the book documents…" opens with "Part I" but continues as prose (a
     # bare-space lowercase continuation, no separator), so it stays body.
     spans = _body_context_spans() + [
-        _span(1, "Part I of the book describes the process by which wealth is created.", top=140, bottom=154),
+        _span(1, "Part I of the book documents the routine by which beacon is trimmed.", top=140, bottom=154),
     ]
 
     result = build_paragraph_units_from_text_spans(spans)
@@ -1313,10 +1313,10 @@ def test_reconcile_does_not_promote_section_marker_in_backmatter() -> None:
 
 
 def test_build_paragraph_units_does_not_promote_midsentence_conclusion_word() -> None:
-    # "Conclusion In addition to the specific examples…" uses the word mid-sentence
+    # "Conclusion In addition to the particular cases…" uses the word mid-sentence
     # (a bare-space capitalized continuation, not a separator), so it stays body.
     spans = _body_context_spans() + [
-        _span(1, "Conclusion In addition to the specific examples of currency reform we saw.", top=140, bottom=154),
+        _span(1, "Conclusion In addition to the particular cases of beacon refitting we saw.", top=140, bottom=154),
     ]
 
     result = build_paragraph_units_from_text_spans(spans)
@@ -1593,9 +1593,9 @@ def test_fr008_two_line_bold_sub_head_is_one_heading() -> None:
     spans = (
         _body_page(1, top=40)
         + [
-            _span(1, "A PROPOSAL FOR A GLOBAL TRADE", top=150, bottom=160, x1=220, bold=True),
-            _span(1, "REFERENCE CURRENCY", top=164, bottom=174, x1=150, bold=True),
-            _span(1, "A new nonnational currency has been designed to provide a safety net.", top=188, bottom=198),
+            _span(1, "A COVENANT FOR A SHARED LIGHT", top=150, bottom=160, x1=220, bold=True),
+            _span(1, "SIGNALING LANTERNS", top=164, bottom=174, x1=150, bold=True),
+            _span(1, "A new transharbor lighting has been arranged to furnish a beacon net.", top=188, bottom=198),
         ]
         + _body_page(1, top=202, count=4)
     )
@@ -1603,9 +1603,9 @@ def test_fr008_two_line_bold_sub_head_is_one_heading() -> None:
     result = build_paragraph_units_from_text_spans(spans)
 
     headings = [p for p in result.paragraphs if p.role == "heading"]
-    assert [p.text for p in headings] == ["A PROPOSAL FOR A GLOBAL TRADE REFERENCE CURRENCY"]
-    assert headings[0].origin_raw_texts == ["A PROPOSAL FOR A GLOBAL TRADE", "REFERENCE CURRENCY"]
-    assert not any(p.text == "REFERENCE CURRENCY" for p in result.paragraphs)
+    assert [p.text for p in headings] == ["A COVENANT FOR A SHARED LIGHT SIGNALING LANTERNS"]
+    assert headings[0].origin_raw_texts == ["A COVENANT FOR A SHARED LIGHT", "SIGNALING LANTERNS"]
+    assert not any(p.text == "SIGNALING LANTERNS" for p in result.paragraphs)
 
 
 def test_fr008_display_title_second_line_that_reads_lowercase_joins_the_title() -> None:
@@ -1615,16 +1615,16 @@ def test_fr008_display_title_second_line_that_reads_lowercase_joins_the_title() 
         _body_page(1, top=40)
         + [_span(2, "CHAPTER 9", top=40, bottom=52, x0=200, x1=280, bold=True)]
         + [
-            _span(2, "Minding", top=96, bottom=116, x0=230, x1=300, font_size=20),
-            _span(2, "the Community’s Business", top=120, bottom=140, x0=180, x1=380, font_size=20),
+            _span(2, "Keeping", top=96, bottom=116, x0=230, x1=300, font_size=20),
+            _span(2, "the Fisherman’s Almanacs", top=120, bottom=140, x0=180, x1=380, font_size=20),
         ]
         + _body_page(2, top=200)
     )
 
     result = build_paragraph_units_from_text_spans(spans)
 
-    title = next(p for p in result.paragraphs if p.text.startswith("Minding"))
-    assert title.text == "Minding the Community’s Business"
+    title = next(p for p in result.paragraphs if p.text.startswith("Keeping"))
+    assert title.text == "Keeping the Fisherman’s Almanacs"
     assert title.role == "heading"
 
 
@@ -1634,8 +1634,8 @@ def test_fr008_bold_paragraph_under_a_bold_heading_is_not_glued_to_it() -> None:
     spans = (
         _body_page(1, top=40)
         + [
-            _span(1, "A PROPOSAL FOR A GLOBAL TRADE", top=150, bottom=160, x1=220, bold=True),
-            _span(1, "REFERENCE CURRENCY IS DISCUSSED IN THIS", top=164, bottom=174, bold=True),
+            _span(1, "A COVENANT FOR A SHARED LIGHT", top=150, bottom=160, x1=220, bold=True),
+            _span(1, "SIGNALING LANTERNS IS DISCUSSED IN THIS", top=164, bottom=174, bold=True),
             _span(1, "BOLD PASSAGE THAT KEEPS GOING ON AND ON", top=178, bottom=188, bold=True),
             _span(1, "FOR A THIRD LINE BEFORE IT STOPS HERE", top=192, bottom=202, bold=True),
         ]
@@ -1645,7 +1645,7 @@ def test_fr008_bold_paragraph_under_a_bold_heading_is_not_glued_to_it() -> None:
     result = build_paragraph_units_from_text_spans(spans)
 
     assert not any(
-        p.role == "heading" and "REFERENCE CURRENCY" in p.text for p in result.paragraphs
+        p.role == "heading" and "SIGNALING LANTERNS" in p.text for p in result.paragraphs
     )
 
 
@@ -1655,15 +1655,15 @@ def test_fr008_plain_body_line_never_joins_a_heading() -> None:
     spans = (
         _body_page(1, top=40)
         + [
-            _span(1, "A PROPOSAL FOR A GLOBAL TRADE", top=150, bottom=160, x1=220, bold=True),
-            _span(1, "REFERENCE CURRENCY", top=164, bottom=174, x1=150),
+            _span(1, "A COVENANT FOR A SHARED LIGHT", top=150, bottom=160, x1=220, bold=True),
+            _span(1, "SIGNALING LANTERNS", top=164, bottom=174, x1=150),
         ]
         + _body_page(1, top=200, count=4)
     )
 
     result = build_paragraph_units_from_text_spans(spans)
 
-    assert [p.text for p in result.paragraphs if p.role == "heading"] == ["A PROPOSAL FOR A GLOBAL TRADE"]
+    assert [p.text for p in result.paragraphs if p.role == "heading"] == ["A COVENANT FOR A SHARED LIGHT"]
 
 
 def test_fr008_line_with_one_bold_word_is_not_a_heading_line() -> None:
@@ -1672,10 +1672,10 @@ def test_fr008_line_with_one_bold_word_is_not_a_heading_line() -> None:
     spans = (
         _body_page(1, top=40)
         + [
-            _span(1, "A PROPOSAL FOR A GLOBAL TRADE", top=150, bottom=160, x1=220, bold=True),
+            _span(1, "A COVENANT FOR A SHARED LIGHT", top=150, bottom=160, x1=220, bold=True),
             PdfTextSpan(
                 page_number=1,
-                text="REFERENCE CURRENCY",
+                text="SIGNALING LANTERNS",
                 x0=50,
                 top=164,
                 x1=150,
@@ -1685,7 +1685,7 @@ def test_fr008_line_with_one_bold_word_is_not_a_heading_line() -> None:
                 font_size=10,
                 is_bold=True,
                 is_italic=False,
-                runs=(("REFERENCE", True, False), (" CURRENCY", False, False)),
+                runs=(("SIGNALING", True, False), (" LANTERNS", False, False)),
             ),
         ]
         + _body_page(1, top=200, count=4)
@@ -1693,7 +1693,7 @@ def test_fr008_line_with_one_bold_word_is_not_a_heading_line() -> None:
 
     result = build_paragraph_units_from_text_spans(spans)
 
-    assert [p.text for p in result.paragraphs if p.role == "heading"] == ["A PROPOSAL FOR A GLOBAL TRADE"]
+    assert [p.text for p in result.paragraphs if p.role == "heading"] == ["A COVENANT FOR A SHARED LIGHT"]
 
 
 def test_fr008_line_not_set_off_from_what_follows_is_not_the_heading_last_line() -> None:
@@ -1759,15 +1759,15 @@ def test_fr008_bold_line_in_another_typeface_is_not_the_heading_last_line() -> N
     spans = (
         _body_page(1, top=40)
         + [
-            bold_span("A PROPOSAL FOR A GLOBAL TRADE", top=150, font_name="FranklinGothic-Demi"),
-            bold_span("REFERENCE CURRENCY", top=164, font_name="SourceSerif-Bold"),
+            bold_span("A COVENANT FOR A SHARED LIGHT", top=150, font_name="FranklinGothic-Demi"),
+            bold_span("SIGNALING LANTERNS", top=164, font_name="SourceSerif-Bold"),
         ]
         + _body_page(1, top=200, count=4)
     )
 
     result = build_paragraph_units_from_text_spans(spans)
 
-    assert [p.text for p in result.paragraphs if p.role == "heading"] == ["A PROPOSAL FOR A GLOBAL TRADE"]
+    assert [p.text for p in result.paragraphs if p.role == "heading"] == ["A COVENANT FOR A SHARED LIGHT"]
 
 
 def _chapter_opening(title_spans: list[PdfTextSpan], *, page: int = 2) -> list[PdfTextSpan]:
@@ -1786,10 +1786,10 @@ def test_fr009_display_title_ending_in_a_question_mark_is_a_heading() -> None:
     # per-span pass refuses it as a heading (a heading does not end a sentence). Its form --
     # display size, at the top of the chapter page under the label -- says otherwise.
     result = build_paragraph_units_from_text_spans(
-        _chapter_opening([_span(2, "Why this Report, Now?", top=80, bottom=104, x0=150, x1=400, font_size=20)])
+        _chapter_opening([_span(2, "Why this Ledger, Now?", top=80, bottom=104, x0=150, x1=400, font_size=20)])
     )
 
-    title = next(p for p in result.paragraphs if p.text == "Why this Report, Now?")
+    title = next(p for p in result.paragraphs if p.text == "Why this Ledger, Now?")
     assert title.role == "heading"
     assert title.heading_level == 1
     assert title.boundary_rationale == "promoted_display_title"
@@ -1801,15 +1801,15 @@ def test_fr009_title_broken_over_two_display_lines_is_one_heading() -> None:
     result = build_paragraph_units_from_text_spans(
         _chapter_opening(
             [
-                _span(2, "Honoring Our Elders,", top=80, bottom=100, x0=180, x1=380, font_size=20),
-                _span(2, "Caring for Children", top=103, bottom=123, x0=190, x1=370, font_size=20),
+                _span(2, "Guarding Our Lights,", top=80, bottom=100, x0=180, x1=380, font_size=20),
+                _span(2, "Saving for Mariners", top=103, bottom=123, x0=190, x1=370, font_size=20),
             ]
         )
     )
 
-    titles = [p for p in result.paragraphs if "Elders" in p.text or "Caring" in p.text]
-    assert [(p.role, p.text) for p in titles] == [("heading", "Honoring Our Elders, Caring for Children")]
-    assert titles[0].origin_raw_texts == ["Honoring Our Elders,", "Caring for Children"]
+    titles = [p for p in result.paragraphs if "Lights" in p.text or "Saving" in p.text]
+    assert [(p.role, p.text) for p in titles] == [("heading", "Guarding Our Lights, Saving for Mariners")]
+    assert titles[0].origin_raw_texts == ["Guarding Our Lights,", "Saving for Mariners"]
 
 
 def test_fr009_title_and_subtitle_set_at_different_sizes_stay_two_headings() -> None:
@@ -1818,15 +1818,15 @@ def test_fr009_title_and_subtitle_set_at_different_sizes_stay_two_headings() -> 
     # not one. As in the book, the title also runs as the page head of the chapter's later
     # pages, which is why the per-span pass refuses it; the subtitle ends in "?".
     running_heads = [
-        _span(page, "THE FAILURE OF MONEY", top=20, bottom=29, x0=150, x1=300, font_size=8)
+        _span(page, "THE SILENCE OF BELLS", top=20, bottom=29, x0=150, x1=300, font_size=8)
         for page in (3, 4, 5)
     ]
     later_pages = [span for page in (3, 4, 5) for span in _body_page(page, top=40, count=3)]
     result = build_paragraph_units_from_text_spans(
         _chapter_opening(
             [
-                _span(2, "THE FAILURE OF MONEY", top=100, bottom=123, x0=150, x1=420, font_size=23),
-                _span(2, "An Ancient Future?", top=126, bottom=146, x0=160, x1=410, font_size=19),
+                _span(2, "THE SILENCE OF BELLS", top=100, bottom=123, x0=150, x1=420, font_size=23),
+                _span(2, "An Endless Voyage?", top=126, bottom=146, x0=160, x1=410, font_size=19),
             ]
         )
         + running_heads
@@ -1836,7 +1836,7 @@ def test_fr009_title_and_subtitle_set_at_different_sizes_stay_two_headings() -> 
     page_two_headings = [
         p.text for p in result.paragraphs if p.role == "heading" and p.text != "Chapter Three"
     ]
-    assert page_two_headings == ["THE FAILURE OF MONEY", "An Ancient Future?"]
+    assert page_two_headings == ["THE SILENCE OF BELLS", "An Endless Voyage?"]
 
 
 def test_fr009_chapter_number_line_above_the_title_joins_it() -> None:
@@ -1849,7 +1849,7 @@ def test_fr009_chapter_number_line_above_the_title_joins_it() -> None:
             _span(2, "7", top=216, bottom=237, x0=260, x1=271, font_size=21),
             _span(
                 2,
-                "Extracting Value through the Innovation Economy",
+                "Harvesting Light through the Lighthouse Harbour",
                 top=254,
                 bottom=275,
                 x0=55,
@@ -1861,7 +1861,7 @@ def test_fr009_chapter_number_line_above_the_title_joins_it() -> None:
     )
 
     headings = [p for p in result.paragraphs if p.role == "heading"]
-    assert [p.text for p in headings] == ["7 Extracting Value through the Innovation Economy"]
+    assert [p.text for p in headings] == ["7 Harvesting Light through the Lighthouse Harbour"]
 
 
 def test_fr009_display_line_in_the_middle_of_a_page_stays_body() -> None:
@@ -1869,13 +1869,13 @@ def test_fr009_display_line_in_the_middle_of_a_page_stays_body() -> None:
     # opening block of a page is read; nothing mid-page is promoted.
     spans = (
         _body_page(1, top=40)
-        + [_span(1, "Why this Report, Now?", top=140, bottom=164, x0=150, x1=400, font_size=20)]
+        + [_span(1, "Why this Ledger, Now?", top=140, bottom=164, x0=150, x1=400, font_size=20)]
         + _body_page(1, top=180, count=4)
     )
 
     result = build_paragraph_units_from_text_spans(spans)
 
-    line = next(p for p in result.paragraphs if p.text == "Why this Report, Now?")
+    line = next(p for p in result.paragraphs if p.text == "Why this Ledger, Now?")
     assert line.role == "body"
 
 
@@ -1916,36 +1916,36 @@ def test_fr009_body_size_line_at_the_top_of_a_page_stays_body() -> None:
     # carried over, a list head -- is never a display title.
     spans = (
         _body_page(1, top=40)
-        + [_span(2, "Why this Report, Now?", top=40, bottom=50, x0=50, x1=200)]
+        + [_span(2, "Why this Ledger, Now?", top=40, bottom=50, x0=50, x1=200)]
         + _body_page(2, top=80)
     )
 
     result = build_paragraph_units_from_text_spans(spans)
 
-    line = next(p for p in result.paragraphs if p.text == "Why this Report, Now?")
+    line = next(p for p in result.paragraphs if p.text == "Why this Ledger, Now?")
     assert line.role == "body"
 
 
-# Spec 064 FR-007 (R-5): a cell of a table or diagram is not a heading. Creating Wealth's figure
-# "Competition and Cooperation" came through as a run of level-3 headings ("Peak Experience" |
-# "Endurance-Sus tainability" on one baseline); the model merged one into the body and
-# ``key_headings_preserved`` failed. The form: two short spans of one size on one baseline.
+# Spec 064 FR-007 (R-5): a cell of a table or diagram is not a heading. A two-column comparison
+# figure of Creating Wealth came through as a run of level-3 headings (two short cell labels on
+# one baseline, one of them broken inside a word at its hyphen); the model merged one into the
+# body and ``key_headings_preserved`` failed. The form: two short spans of one size on one baseline.
 
 
 def _subheading_page(*middle: PdfTextSpan) -> list[PdfTextSpan]:
     return [
-        _span(1, "The time currency also created stronger", top=100, bottom=112, x0=50),
-        _span(1, "community ties.", top=114, bottom=126, x0=50),
+        _span(1, "The tide calendar also created stronger", top=100, bottom=112, x0=50),
+        _span(1, "anchorage ties.", top=114, bottom=126, x0=50),
         *middle,
-        _span(1, "The first LETS systems originated in Canada in northern regions", top=142, bottom=154, x0=50),
-        _span(1, "aiming specifically at currency scarcity in areas.", top=156, bottom=168, x0=50),
+        _span(1, "The first TIDE ledgers originated in Norvia in southern regions", top=142, bottom=154, x0=50),
+        _span(1, "aiming specifically at pilotage shortage in areas.", top=156, bottom=168, x0=50),
     ]
 
 
 def test_fr007_short_line_alone_on_its_baseline_is_a_heading() -> None:
     # ANTI-VACUUM for the next test: the same line, alone on its row, is a heading today.
     result = build_paragraph_units_from_text_spans(
-        _subheading_page(_span(1, "Employment", top=128, bottom=140, x0=50, x1=120))
+        _subheading_page(_span(1, "Provisions", top=128, bottom=140, x0=50, x1=120))
     )
 
     assert [p.role for p in result.paragraphs] == ["body", "heading", "body"]
@@ -1954,8 +1954,8 @@ def test_fr007_short_line_alone_on_its_baseline_is_a_heading() -> None:
 def test_fr007_two_short_cells_on_one_baseline_are_not_headings() -> None:
     result = build_paragraph_units_from_text_spans(
         _subheading_page(
-            _span(1, "Employment", top=128, bottom=140, x0=50, x1=120),
-            _span(1, "Endurance", top=128, bottom=140, x0=200, x1=270),
+            _span(1, "Provisions", top=128, bottom=140, x0=50, x1=120),
+            _span(1, "Steadfast", top=128, bottom=140, x0=200, x1=270),
         )
     )
 
@@ -1964,13 +1964,13 @@ def test_fr007_two_short_cells_on_one_baseline_are_not_headings() -> None:
 
 def test_fr007_cell_one_line_off_its_row_belongs_to_the_table() -> None:
     # A header cell set a little above its row, or two cells the extractor read as one line
-    # (Creating Wealth: "Command and Control Mutual Trust and Action"), sits within one line
+    # (Creating Wealth: two three-word cell labels read as one line), sits within one line
     # of a row cell of the same size: it is part of the table too. A line of the same size
     # further away than one line is not reached.
     spans = _subheading_page(
-        _span(1, "Characteristics", top=126, bottom=132, x0=110, x1=160, font_size=5),
-        _span(1, "Competition", top=134, bottom=140, x0=120, x1=170, font_size=5),
-        _span(1, "Cooperation", top=134, bottom=140, x0=200, x1=250, font_size=5),
+        _span(1, "Particularities", top=126, bottom=132, x0=110, x1=160, font_size=5),
+        _span(1, "Coastguards", top=134, bottom=140, x0=120, x1=170, font_size=5),
+        _span(1, "Copperworks", top=134, bottom=140, x0=200, x1=250, font_size=5),
         _span(1, "Far Away Label", top=60, bottom=66, x0=50, x1=90, font_size=5),
     )
 
@@ -1990,7 +1990,7 @@ def test_fr007_line_beside_a_full_body_line_of_another_column_is_not_a_table_cel
     # two-column page by baseline and has no column model, so this is checked on the row
     # detector itself, the one place the bound lives.
     spans = _subheading_page(
-        _span(1, "Employment", top=128, bottom=140, x0=50, x1=120),
+        _span(1, "Provisions", top=128, bottom=140, x0=50, x1=120),
         _span(1, "a whole line of the second column of a body set in two", top=128, bottom=140, x0=300, x1=560),
     )
     keys = logical_import._detect_table_row_span_keys(
@@ -2000,8 +2000,8 @@ def test_fr007_line_beside_a_full_body_line_of_another_column_is_not_a_table_cel
     assert keys == frozenset()
     short_row = logical_import._detect_table_row_span_keys(
         _subheading_page(
-            _span(1, "Employment", top=128, bottom=140, x0=50, x1=120),
-            _span(1, "Endurance", top=128, bottom=140, x0=200, x1=270),
+            _span(1, "Provisions", top=128, bottom=140, x0=50, x1=120),
+            _span(1, "Steadfast", top=128, bottom=140, x0=200, x1=270),
         ),
         repeated_furniture_keys=set(),
         body_line_length_p75=64.0,
@@ -2186,8 +2186,8 @@ def test_fr007_second_pass_does_not_reach_a_heading_beside_the_table():
     # part of the table.
     spans = _subheading_page(
         _span(1, "Side Heading", top=121, bottom=127, x0=300, x1=360, font_size=5),
-        _span(1, "Competition", top=128, bottom=134, x0=50, x1=100, font_size=5),
-        _span(1, "Cooperation", top=128, bottom=134, x0=150, x1=200, font_size=5),
+        _span(1, "Coastguards", top=128, bottom=134, x0=50, x1=100, font_size=5),
+        _span(1, "Copperworks", top=128, bottom=134, x0=150, x1=200, font_size=5),
     )
     keys = logical_import._detect_table_row_span_keys(
         spans, repeated_furniture_keys=set(), body_line_length_p75=64.0
@@ -2217,8 +2217,8 @@ def _texts(spans: list[PdfTextSpan]) -> list[str]:
     return [paragraph.text for paragraph in build_paragraph_units_from_text_spans(spans).paragraphs]
 
 
-_TORN_HEAD = "1. Both Tony Blair, the former British Prime Minister, and Chuka"
-_TORN_TAIL = "Umunna, considered a rising star in the Labour Party, argued so."
+_TORN_HEAD = "1. Both Tobin Ashe, the former Harbour Pilot Overseer, and Corin"
+_TORN_TAIL = "Ostrin, considered a bright hope of the Pilots Guild, argued so."
 _NEXT_NOTE = "2. Next note opens with its own number and ends a sentence."
 
 
@@ -2256,7 +2256,7 @@ def test_r7_tear_is_real_without_the_join() -> None:
 
 
 def test_r7_numbered_next_note_is_not_joined() -> None:
-    next_note = "2. Umunna, considered a rising star in the Labour Party."
+    next_note = "2. Ostrin, considered a bright hope of the Pilots Guild."
     texts = _texts(
         _notes_page(
             _span(1, _TORN_HEAD, top=160, bottom=172, x0=50, x1=446),
@@ -2269,7 +2269,7 @@ def test_r7_numbered_next_note_is_not_joined() -> None:
 
 
 def test_r7_predecessor_ending_with_a_period_is_not_joined() -> None:
-    head = "1. Both Tony Blair, the former British Prime Minister, said that."
+    head = "1. Both Tobin Ashe, the former Harbour Pilot Overseer, said that."
     texts = _texts(
         _notes_page(
             _span(1, head, top=160, bottom=172, x0=50, x1=446),
@@ -2316,8 +2316,8 @@ def test_r7_second_paragraph_of_a_note_after_a_sentence_end_is_not_joined() -> N
 def test_r7_short_last_line_is_an_entry_end_even_without_punctuation() -> None:
     # Money & Sustainability's bibliography: entries carry no final period. The line ended
     # well before the column edge, so the next word would have fit -- a new entry, not a wrap.
-    first = "1. Georg Friedrich Knapp, The State Theory of Money [1924]"
-    second = "Anthony B. Atkinson and S. Morelli and others, An Inequality Database"
+    first = "1. Aurel Valentine Drost, The Tidal Theory of Boats [1924]"
+    second = "Ambrose C. Hartwell and T. Varenni and others, An Anchorages Database"
     texts = _texts(
         _notes_page(
             _span(1, first, top=160, bottom=172, x0=50, x1=330),
@@ -2356,9 +2356,9 @@ def test_r7_same_tear_outside_a_notes_section_is_left_alone() -> None:
 
 
 def test_r7_locator_abbreviation_waits_for_its_number() -> None:
-    # VoE "33. Barba and de Vivo, ..., pp." + "1490-91.": a period after a short lowercase
+    # VoE shape, an entry ending "pp." + a line "1490-91.": a period after a short lowercase
     # token, before a line that opens with a digit, is a locator, not a sentence end.
-    head = "33. Barba and de Vivo, An unproductive labour view of finance, pp."
+    head = "33. Marsh and de Lune, An unbridgeable pilots view of ballast, pp."
     texts = _texts(
         _notes_page(
             _span(1, head, top=160, bottom=172, x0=50, x1=445),
@@ -2370,25 +2370,25 @@ def test_r7_locator_abbreviation_waits_for_its_number() -> None:
 
 
 def test_r7_compound_broken_at_its_hyphen_keeps_the_hyphen_without_a_space() -> None:
-    head = "20. B. Christophers, Banking Across Boundaries (Chichester: Wiley-"
+    head = "20. B. Hallowmeadow, Sailing Across Shorelines (Wendlemoor: Tolly-"
     texts = _texts(
         _notes_page(
             _span(1, head, top=160, bottom=172, x0=50, x1=420),
-            _span(1, "Blackwell, 2013), p. 38.", top=174, bottom=186, x0=70, x1=200),
+            _span(1, "Pennywise, 2013), p. 38.", top=174, bottom=186, x0=70, x1=200),
         )
     )
 
-    assert f"{head}Blackwell, 2013), p. 38." in texts
+    assert f"{head}Pennywise, 2013), p. 38." in texts
 
 
 def test_r7_line_back_at_the_entry_margin_starts_a_new_entry() -> None:
     # VoE bibliography shape: an address that overran the column reads as a full line, and the
-    # next entry has no author ("'Fiscal policy ...', World Economic Outlook"). It starts back at
+    # next entry has no author (a quoted title, then a periodical). It starts back at
     # the entry margin, left of the wrapped line above it, so it is a new entry.
-    url = "https://www.gov.uk/government/uploads/system/uploads/attachment_data/file/228786/7529.pdf"
-    entry = "‘Fiscal policy as a countercyclical tool’, World Economic Outlook (2008)."
+    url = "https://www.bay.zz/lighthouse/uploads/lights/records/lanternlog_data/file/228786/7529.pdf"
+    entry = "‘Signal policy as a counterseasonal tool’, Coast Lanterns Outlook (2008)."
     spans = _notes_page(
-        _span(1, "1. Hutton, D., Smith, I. R. and Hooper, R., Modernise or Decline: Policies to", top=160, bottom=172, x0=50, x1=446),
+        _span(1, "1. Hollin, D., Smeed, I. R. and Fenwer, R., Refashion or Founder: Measures to", top=160, bottom=172, x0=50, x1=446),
         _span(1, url, top=174, bottom=186, x0=70, x1=600),
         _span(1, entry, top=188, bottom=200, x0=50, x1=430),
     )
@@ -2440,7 +2440,7 @@ def test_065_fr008_group_title_before_a_numbering_restart_is_a_heading() -> None
     # VoE: a group title of the notes set in capitals, body, one line, in a smaller size than the
     # note 1 that follows it. It becomes a heading below the section title, never at a
     # chapter's level.
-    last = _span(1, "14. Forbes, 2017.", top=160, bottom=172, x0=50, x1=150)
+    last = _span(1, "14. Harlow, 2017.", top=160, bottom=172, x0=50, x1=150)
     title = _span(1, "INTRODUCTION: A GROUP OF NOTES", top=190, bottom=198, x0=150, x1=350, font_size=8)
     first = _span(1, "1. The first note of the introduction ends a sentence.", top=210, bottom=222, x0=50, x1=420)
     units = [

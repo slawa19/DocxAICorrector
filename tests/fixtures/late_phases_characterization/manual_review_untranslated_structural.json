@@ -18,7 +18,7 @@
         "role": "heading",
         "source_index": 0,
         "structural_role": "heading",
-        "text": "## The Competitive Society"
+        "text": "## The Lanternkeeper Guild"
       },
       {
         "generated_heading_kind": null,
@@ -64,7 +64,7 @@
         "reason": "untranslated_structural_text",
         "role": "heading",
         "structural_role": "heading",
-        "text": "The Competitive Society"
+        "text": "The Lanternkeeper Guild"
       },
       "severity": "review"
     }
@@ -215,7 +215,7 @@
       "reason": "untranslated_structural_text",
       "role": "heading",
       "structural_role": "heading",
-      "text": "## The Competitive Society"
+      "text": "## The Lanternkeeper Guild"
     }
   ],
   "version": 2,

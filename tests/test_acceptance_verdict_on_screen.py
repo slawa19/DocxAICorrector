@@ -320,7 +320,7 @@ def test_source_text_delivery_counts_blocks_paragraphs_and_chars_with_anchors() 
         [
             _block(_accepted("p1", "Первый абзац.")),
             _block(
-                _restored("p2", "Once upon a time in a small village."),
+                _restored("p2", "Long ago, and far away in a harbour."),
                 _accepted("p3", "Третий абзац."),
             ),
         ]
@@ -328,8 +328,8 @@ def test_source_text_delivery_counts_blocks_paragraphs_and_chars_with_anchors() 
 
     assert facts["block_count"] == 1
     assert facts["paragraph_count"] == 1
-    assert facts["chars"] == len("Once upon a time in a small village.")
-    assert facts["anchors"] == ["Once upon a time in a small village."]
+    assert facts["chars"] == len("Long ago, and far away in a harbour.")
+    assert facts["anchors"] == ["Long ago, and far away in a harbour."]
     assert facts["unanchored_paragraph_count"] == 0
 
     notice = quality_gate.build_source_text_delivery_notice(facts, processing_operation="translate")
@@ -337,7 +337,7 @@ def test_source_text_delivery_counts_blocks_paragraphs_and_chars_with_anchors() 
     assert notice["kind"] == "translation"
     assert notice["level"] == "warning"
     assert notice["message_key"] == "result.source_text_delivered"
-    assert notice["anchors"] == ["Once upon a time in a small village."]
+    assert notice["anchors"] == ["Long ago, and far away in a harbour."]
 
 
 def test_source_text_delivery_covers_omitted_paragraphs_too() -> None:
@@ -367,14 +367,14 @@ def test_source_text_delivery_never_invents_an_anchor() -> None:
         [
             _block(
                 _restored("p1", "### "),
-                _restored("p2", "[[DOCX_PARA_p2]] Barter Systems Inc."),
+                _restored("p2", "[[DOCX_PARA_p2]] Harbour Tokens Inc."),
             )
         ]
     )
 
     assert facts["paragraph_count"] == 2
     assert facts["unanchored_paragraph_count"] == 1
-    assert facts["anchors"] == ["Barter Systems Inc."]
+    assert facts["anchors"] == ["Harbour Tokens Inc."]
     assert all("DOCX_PARA" not in anchor for anchor in facts["anchors"])  # type: ignore[union-attr]
 
     notice = quality_gate.build_source_text_delivery_notice(facts, processing_operation="translate")
@@ -547,12 +547,12 @@ _COLLAPSE_SOURCE_RU_B = (
     "Второй абзац, поглотивший текст первого целиком и потому заметно выросший в ответе модели."
 )
 _COLLAPSE_SOURCE_EN_A = (
-    "Once upon a time, in a small village in the Outback, people used barter for all of their "
-    "everyday transactions with one another."
+    "Long ago, in a quiet little harbour on the Northern Reach, sailors used tokens for all of their "
+    "everyday dealings with one another."
 )
 _COLLAPSE_SOURCE_EN_B = (
-    "On every market day they walked around the square with chickens, eggs and freshly baked "
-    "breads to trade for whatever they needed."
+    "On every tide day they walked along the quay with nets, ropes and freshly tarred "
+    "planks to trade for whatever they needed."
 )
 
 
@@ -702,8 +702,8 @@ def test_recorded_green_run_still_has_one_discarded_block() -> None:
         [
             _block(_accepted("p1", "Переведённый абзац.")),
             _block(
-                _restored("p2", "Once upon a time, in a small village in the Outback."),
-                _restored("p3", "People used barter for all their transactions."),
+                _restored("p2", "Long ago, in a quiet little harbour on the Northern Reach."),
+                _restored("p3", "Sailors used tokens for all their dealings."),
             ),
         ]
     )
@@ -932,14 +932,14 @@ def test_source_text_notice_prints_its_anchors(monkeypatch) -> None:
                 "level": "warning",
                 "message_key": "result.source_text_delivered",
                 "params": {"count": 1, "blocks": 1, "chars": 36},
-                "anchors": ["Once upon a time in a small village."],
+                "anchors": ["Long ago, and far away in a harbour."],
             }
         ],
     )
 
     assert len(rendered) == 1
     assert "{" not in rendered[0]
-    assert "Once upon a time in a small village." in rendered[0]
+    assert "Long ago, and far away in a harbour." in rendered[0]
 
 
 # --------------------------------------------------------------------------------------
@@ -973,7 +973,7 @@ def test_controlled_block_fallback_artifact_is_rendered_beside_the_alarm(monkeyp
                 "level": "warning",
                 "message_key": "result.source_text_delivered",
                 "params": {"count": 1, "blocks": 1, "chars": 36},
-                "anchors": ["Once upon a time."],
+                "anchors": ["Long ago, and far away."],
             }
         ],
     )
@@ -1044,8 +1044,8 @@ def _run_pipeline(
         uploaded_file="report.docx",
         jobs=[
             {
-                "target_text": "Once upon a time in a small village.",
-                "target_text_with_markers": "Once upon a time in a small village.",
+                "target_text": "Long ago, and far away in a harbour.",
+                "target_text_with_markers": "Long ago, and far away in a harbour.",
                 "paragraph_ids": ["p0001"],
                 "context_before": "",
                 "context_after": "",
@@ -1179,7 +1179,7 @@ def test_edit_run_publishes_the_docx_source_text_notice_without_any_narration(mo
     events, log_event = _capture_log_events()
 
     def generate(**kwargs):
-        return _block(_restored("p0001", "Once upon a time in a small village."))
+        return _block(_restored("p0001", "Long ago, and far away in a harbour."))
 
     result = _run_pipeline(
         runtime=runtime, log_event=log_event, generate=generate, processing_operation="edit"
@@ -1194,7 +1194,7 @@ def test_edit_run_publishes_the_docx_source_text_notice_without_any_narration(mo
     # This run is ``edit``, so the truthful wording is the unedited one (review finding 4).
     assert delivered[0]["message_key"] == "result.unedited_text_delivered"
     assert dict(delivered[0]["params"])["count"] == 1  # type: ignore[arg-type]
-    assert list(delivered[0]["anchors"]) == ["Once upon a time in a small village."]  # type: ignore[arg-type]
+    assert list(delivered[0]["anchors"]) == ["Long ago, and far away in a harbour."]  # type: ignore[arg-type]
     assert [
         event for event in events if event["event_id"] == "source_text_delivered_to_document"
     ]
@@ -1223,7 +1223,7 @@ def test_the_pipeline_hands_the_DELIVERED_markdown_to_the_facts_builder(monkeypa
     result = _run_pipeline(
         runtime=runtime,
         log_event=log_event,
-        generate=lambda **kwargs: _block(_restored("p0001", "Once upon a time in a small village.")),
+        generate=lambda **kwargs: _block(_restored("p0001", "Long ago, and far away in a harbour.")),
         processing_operation="edit",
     )
 
@@ -1237,7 +1237,7 @@ def test_clean_edit_run_publishes_no_source_text_notice() -> None:
     events, log_event = _capture_log_events()
 
     def generate(**kwargs):
-        return _block(_accepted("p0001", "Однажды в маленькой деревне."))
+        return _block(_accepted("p0001", "Однажды в тихой гавани."))
 
     result = _run_pipeline(
         runtime=runtime, log_event=log_event, generate=generate, processing_operation="edit"
@@ -1266,7 +1266,7 @@ def test_edit_run_publishes_the_acceptance_verdict_notice(monkeypatch) -> None:
     result = _run_pipeline(
         runtime=runtime,
         log_event=log_event,
-        generate=lambda **kwargs: _block(_accepted("p0001", "Однажды в маленькой деревне.")),
+        generate=lambda **kwargs: _block(_accepted("p0001", "Однажды в тихой гавани.")),
         processing_operation="edit",
     )
 
@@ -1293,7 +1293,7 @@ def test_green_verdict_publishes_no_acceptance_notice(monkeypatch) -> None:
     result = _run_pipeline(
         runtime=runtime,
         log_event=log_event,
-        generate=lambda **kwargs: _block(_accepted("p0001", "Однажды в маленькой деревне.")),
+        generate=lambda **kwargs: _block(_accepted("p0001", "Однажды в тихой гавани.")),
         processing_operation="edit",
     )
 
@@ -1353,16 +1353,16 @@ def test_the_same_paragraph_is_never_reported_twice_through_two_channels() -> No
     neighbour swallowed it) and part of a block re-delivered as its own source. Two true
     records, one reader, one line."""
     restored_block = _block(
-        _restored("p1", "Once upon a time, in a small village in the Outback."),
-        _restored("p2", "People used barter for all their transactions."),
+        _restored("p1", "Long ago, in a quiet little harbour on the Northern Reach."),
+        _restored("p2", "Sailors used tokens for all their dealings."),
     )
 
     facts = quality_gate.build_source_text_delivery_facts(
         [restored_block],
         untranslated_prose_blocks=[
             _prose_records(
-                ("p1", "Once upon a time, in a small village in the Outback."),
-                ("p2", "People used barter for all their transactions."),
+                ("p1", "Long ago, in a quiet little harbour on the Northern Reach."),
+                ("p2", "Sailors used tokens for all their dealings."),
             )
         ],
     )
@@ -1580,7 +1580,7 @@ def test_an_all_accepted_block_delivered_as_its_source_still_reaches_the_screen(
     result = _run_pipeline(
         runtime=runtime,
         log_event=log_event,
-        generate=lambda **kwargs: _block(_accepted("p0001", "Once upon a time in a small village.")),
+        generate=lambda **kwargs: _block(_accepted("p0001", "Long ago, and far away in a harbour.")),
         processing_operation="translate",
         paragraph_regions=["prose"],
         structural_roles=["body"],
@@ -1588,13 +1588,13 @@ def test_an_all_accepted_block_delivered_as_its_source_still_reaches_the_screen(
     )
 
     assert result == "succeeded"
-    assert "Once upon a time in a small village." in str(runtime["state"]["latest_markdown"])
+    assert "Long ago, and far away in a harbour." in str(runtime["state"]["latest_markdown"])
     assert [
         event for event in events if event["event_id"] == "block_untranslated_prose_delivered"
     ]
     delivered = [n for n in _notices(runtime) if n.get("kind") == "translation"]
     assert len(delivered) == 1
-    assert list(delivered[0]["anchors"]) == ["Once upon a time in a small village."]  # type: ignore[arg-type]
+    assert list(delivered[0]["anchors"]) == ["Long ago, and far away in a harbour."]  # type: ignore[arg-type]
     published = [
         event for event in events if event["event_id"] == "source_text_delivered_to_document"
     ]
@@ -1616,7 +1616,7 @@ def test_the_same_block_on_an_apparatus_region_reaches_nobody() -> None:
     result = _run_pipeline(
         runtime=runtime,
         log_event=log_event,
-        generate=lambda **kwargs: _block(_accepted("p0001", "Once upon a time in a small village.")),
+        generate=lambda **kwargs: _block(_accepted("p0001", "Long ago, and far away in a harbour.")),
         processing_operation="translate",
         paragraph_regions=["front_matter"],
         structural_roles=["body"],
@@ -1624,7 +1624,7 @@ def test_the_same_block_on_an_apparatus_region_reaches_nobody() -> None:
     )
 
     assert result == "succeeded"
-    assert "Once upon a time in a small village." in str(runtime["state"]["latest_markdown"])
+    assert "Long ago, and far away in a harbour." in str(runtime["state"]["latest_markdown"])
     assert not [
         event for event in events if event["event_id"] == "block_untranslated_prose_delivered"
     ]

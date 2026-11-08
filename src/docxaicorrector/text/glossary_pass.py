@@ -1872,10 +1872,10 @@ def _is_word_for_word_name_rendering(source_words: Sequence[str], rendering_word
     """A rendering whose words stand for the source's words one by one, in order (finding 4).
 
     By form: as many words as the source, and EVERY rendered word capitalised -- a rendered
-    proper name («Бернар Лиетар»); «Женевское озеро» for "Lake Geneva" fails on «озеро», whose
+    proper name («Тобиас Марлоу»); «Женевское озеро» for "Lake Geneva" fails on «озеро», whose
     last word is not the name. Where a rendered word is in the source's (Latin) script, it
-    must begin with its source word's letter, which catches a swapped order ("Lietaer
-    Bernard"). Across scripts the order cannot be checked without a transliteration table,
+    must begin with its source word's letter, which catches a swapped order ("Marlow
+    Tobias"). Across scripts the order cannot be checked without a transliteration table,
     which the repository does not keep (Constitution VII): there the rule trusts the order.
     """
 

@@ -90,7 +90,7 @@ def _hygiene_document():
 
 def _language_document(body_text: str = _ENGLISH_BODY):
     return _assembly(
-        ("## The Competitive Society", "heading"),
+        ("## The Lanternkeeper Guild", "heading"),
         (body_text, "body"),
     )
 
