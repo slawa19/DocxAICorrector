@@ -283,8 +283,8 @@ def _payload(
 # text (Constitution VII).
 
 _LONG_BODY = (
-    "Money is not a thing but an agreement within a community to use something standardised "
-    "as a means of payment, and that agreement is what this chapter is about."
+    "A harbour is not a place but an arrangement among pilots to treat a stretch of water "
+    "as a shelter, and that arrangement is what this chapter is about."
 )
 
 
@@ -294,8 +294,8 @@ def _front_matter_to_back_matter_document():
     return [
         DocumentBlock(
             paragraphs=[
-                ParagraphUnit(text="Rethinking Money", role="heading", paragraph_id="p0000", heading_level=1),
-                ParagraphUnit(text="A Berrett-Koehler book", role="body", paragraph_id="p0001"),
+                ParagraphUnit(text="Charting Tides", role="heading", paragraph_id="p0000", heading_level=1),
+                ParagraphUnit(text="A Harbour-Keeper book", role="body", paragraph_id="p0001"),
             ]
         ),
         DocumentBlock(
@@ -615,21 +615,22 @@ def test_a_mixed_block_is_decided_by_the_prose_paragraph_it_carries() -> None:
     assert mixed["decision"] == apparatus_only["decision"] == "fallback_continue"
 
 
-# The measured control group, named one by one rather than invented. These are the pair
-# rule's false alarms from ``measurement-translation-signal.md`` section 5: 26 of 7 103
-# delivered records, 21 of them shorter than 20 letters, 2 URLs, 1 title-case name. A rule
+# The measured control group, one record at a time, each as a synthetic twin of the same
+# form (length, casing, digits, punctuation; spec 068 FR-004 keeps book strings out of the
+# tests). These are the pair rule's false alarms from ``measurement-translation-signal.md``
+# section 5: 26 of 7 103 delivered records, 21 of them shorter than 20 letters, 2 URLs, 1 title-case name. A rule
 # that fails a run on "### B2B" or on a bare domain is broken (anti-regression 7b) -- and
 # what tells them from lost prose is the REGION, never the feature.
 _MEASURED_FALSE_ALARMS = (
     "### B2B",
-    "### WISPOS",
-    "MediCash, 165",
-    "Lehman Brothers, 70",
-    "Stripe, 115- 116",
-    "Barter Systems Inc.",
-    "**www.triarchypress.com/peoplemoney**",
-    "complementarycurrency.org.",
-    "*Finanzmaerkte* (2005).",
+    "### TIDLOS",
+    "TideCash, 165",
+    "Marrow Brothers, 70",
+    "Beacon, 115- 116",
+    "Harbour Tokens Inc.",
+    "**www.harbourlane.com/lanternmoney**",
+    "coastallanternguild.org.",
+    "*Hafenmaerkte* (2005).",
 )
 
 
