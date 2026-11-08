@@ -235,8 +235,6 @@ def _make_ai_first_config(
         "structure_recognition_min_confidence": "medium",
         "structure_recognition_cache_enabled": False,
         "structure_recognition_save_debug_artifacts": False,
-        "structure_validation_enabled": True,
-        "structure_validation_save_debug_artifacts": False,
         "structure_recovery_enabled": True,
         "structure_recovery_mode": "ai_first",
         "structure_recovery_document_map_enabled": True,

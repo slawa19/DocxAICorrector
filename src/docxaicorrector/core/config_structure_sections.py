@@ -202,11 +202,6 @@ def resolve_structure_validation_settings(
     clamp_int_fn: Any,
     clamp_float_fn: Any,
 ) -> dict[str, Any]:
-    structure_validation_enabled = parse_config_bool_fn(
-        structure_validation_config,
-        "enabled",
-        True,
-    )
     structure_validation_min_paragraphs_for_auto_gate = parse_config_int_fn(
         structure_validation_config,
         "min_paragraphs_for_auto_gate",
@@ -237,21 +232,7 @@ def resolve_structure_validation_settings(
         "forbid_heading_only_collapse",
         True,
     )
-    structure_validation_save_debug_artifacts = parse_config_bool_fn(
-        structure_validation_config,
-        "save_debug_artifacts",
-        True,
-    )
-    structure_validation_block_on_high_risk_noop = parse_config_bool_fn(
-        structure_validation_config,
-        "block_on_high_risk_noop",
-        True,
-    )
 
-    structure_validation_enabled = parse_bool_env_fn(
-        "DOCX_AI_STRUCTURE_VALIDATION_ENABLED",
-        structure_validation_enabled,
-    )
     structure_validation_min_paragraphs_for_auto_gate = parse_int_env_fn(
         "DOCX_AI_STRUCTURE_VALIDATION_MIN_PARAGRAPHS_FOR_AUTO_GATE",
         structure_validation_min_paragraphs_for_auto_gate,
@@ -276,17 +257,8 @@ def resolve_structure_validation_settings(
         "DOCX_AI_STRUCTURE_VALIDATION_FORBID_HEADING_ONLY_COLLAPSE",
         structure_validation_forbid_heading_only_collapse,
     )
-    structure_validation_save_debug_artifacts = parse_bool_env_fn(
-        "DOCX_AI_STRUCTURE_VALIDATION_SAVE_DEBUG_ARTIFACTS",
-        structure_validation_save_debug_artifacts,
-    )
-    structure_validation_block_on_high_risk_noop = parse_bool_env_fn(
-        "DOCX_AI_STRUCTURE_VALIDATION_BLOCK_ON_HIGH_RISK_NOOP",
-        structure_validation_block_on_high_risk_noop,
-    )
 
     return {
-        "structure_validation_enabled": structure_validation_enabled,
         "structure_validation_min_paragraphs_for_auto_gate": clamp_int_fn(
             structure_validation_min_paragraphs_for_auto_gate,
             minimum=1,
@@ -313,6 +285,4 @@ def resolve_structure_validation_settings(
             maximum=100,
         ),
         "structure_validation_forbid_heading_only_collapse": structure_validation_forbid_heading_only_collapse,
-        "structure_validation_save_debug_artifacts": structure_validation_save_debug_artifacts,
-        "structure_validation_block_on_high_risk_noop": structure_validation_block_on_high_risk_noop,
     }

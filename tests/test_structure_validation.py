@@ -1,11 +1,8 @@
-import json
-from pathlib import Path
 from types import SimpleNamespace
 
-import docxaicorrector.structure.validation as structure_validation
 import docxaicorrector.validation.structural as structural_validation_runtime
 from docxaicorrector.core.models import ParagraphUnit
-from docxaicorrector.structure.validation import StructureValidationReport, validate_structure_quality
+from docxaicorrector.structure.validation import validate_structure_quality
 
 
 def _paragraph(
@@ -266,84 +263,6 @@ def test_validate_structure_quality_heading_only_collapse_boundary_120_and_2():
 
     assert report.escalation_recommended is True
     assert "heading_only_collapse_risk" in report.escalation_reasons
-
-
-def test_write_structure_validation_debug_artifact_writes_json_payload(tmp_path, monkeypatch):
-    diagnostics_dir = tmp_path / ".run" / "structure_validation"
-    monkeypatch.setattr(structure_validation, "_STRUCTURE_VALIDATION_DEBUG_DIR", diagnostics_dir)
-    report = StructureValidationReport(
-        paragraph_count=120,
-        nonempty_paragraph_count=118,
-        explicit_heading_count=2,
-        heuristic_heading_count=5,
-        suspicious_short_body_count=9,
-        all_caps_body_count=3,
-        centered_body_count=1,
-        toc_like_sequence_count=1,
-        ambiguous_paragraph_count=13,
-        explicit_heading_density=0.0169,
-        suspicious_short_body_ratio=0.0763,
-        all_caps_or_centered_body_ratio=0.0339,
-        escalation_recommended=True,
-        escalation_reasons=(
-            "high_suspicious_short_body_ratio",
-            "toc_like_sequence_detected",
-        ),
-        isolated_marker_paragraph_count=2,
-        large_front_matter_block_risk=False,
-        toc_region_bounded_count=0,
-        expected_heading_candidates_from_toc=4,
-        structure_quality_risk_level="high",
-        readiness_status="blocked_unsafe_best_effort_only",
-        readiness_reasons=("toc_like_sequence_without_bounded_region",),
-        document_map_present=True,
-        outline_coverage_ratio=0.75,
-    )
-
-    artifact_path = structure_validation.write_structure_validation_debug_artifact(
-        report=report,
-        app_config={
-            "structure_recognition_mode": "always",
-            "structure_recognition_model": "gpt-5.4",
-        },
-    )
-
-    artifact_file = Path(artifact_path)
-    assert artifact_file.exists()
-    assert artifact_file.parent == diagnostics_dir
-    assert artifact_file.name.startswith("gate_report_")
-    payload = json.loads(artifact_file.read_text(encoding="utf-8"))
-    assert payload == {
-        "mode": "always",
-        "model": "gpt-5.4",
-        "paragraph_count": 120,
-        "nonempty_paragraph_count": 118,
-        "explicit_heading_count": 2,
-        "heuristic_heading_count": 5,
-        "suspicious_short_body_count": 9,
-        "all_caps_body_count": 3,
-        "centered_body_count": 1,
-        "toc_like_sequence_count": 1,
-        "ambiguous_paragraph_count": 13,
-        "explicit_heading_density": 0.0169,
-        "suspicious_short_body_ratio": 0.0763,
-        "all_caps_or_centered_body_ratio": 0.0339,
-        "escalation_recommended": True,
-        "escalation_reasons": [
-            "high_suspicious_short_body_ratio",
-            "toc_like_sequence_detected",
-        ],
-        "isolated_marker_paragraph_count": 2,
-        "large_front_matter_block_risk": False,
-        "toc_region_bounded_count": 0,
-        "expected_heading_candidates_from_toc": 4,
-        "structure_quality_risk_level": "high",
-        "readiness_status": "blocked_unsafe_best_effort_only",
-        "readiness_reasons": ["toc_like_sequence_without_bounded_region"],
-        "document_map_present": True,
-        "outline_coverage_ratio": 0.75,
-        "structure_repair_report": None,
-    }
 
 
 def test_validate_structure_quality_preserves_advisory_post_ai_fields():

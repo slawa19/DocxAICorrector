@@ -88,15 +88,12 @@ def test_load_app_config_applies_env_overrides_and_clamps(monkeypatch):
     assert app_config["paragraph_boundary_normalization_mode"] == "high_only"
     assert app_config["paragraph_boundary_normalization_save_debug_artifacts"] is True
     assert models.structure_recognition == app_config["default_model"]
-    assert app_config["structure_validation_enabled"] is True
     assert app_config["structure_validation_min_paragraphs_for_auto_gate"] == 40
     assert app_config["structure_validation_min_explicit_heading_density"] == 0.003
     assert app_config["structure_validation_max_suspicious_short_body_ratio_without_escalation"] == 0.05
     assert app_config["structure_validation_max_all_caps_or_centered_body_ratio_without_escalation"] == 0.03
     assert app_config["structure_validation_toc_like_sequence_min_length"] == 4
     assert app_config["structure_validation_forbid_heading_only_collapse"] is True
-    assert app_config["structure_validation_save_debug_artifacts"] is True
-    assert app_config["structure_validation_block_on_high_risk_noop"] is True
     assert app_config["relation_normalization_enabled"] is True
     assert app_config["relation_normalization_profile"] == "phase2_default"
     assert app_config["relation_normalization_enabled_relation_kinds"] == (
@@ -147,7 +144,6 @@ def test_load_app_config_exposes_image_validation_defaults(monkeypatch):
         "openrouter:google/gemini-3.1-flash-lite-preview",
     )
     assert models.structure_recognition == TEST_TEXT_MODEL_DEFAULT
-    assert app_config["structure_validation_block_on_high_risk_noop"] is True
     assert app_config["relation_normalization_enabled"] is True
     assert app_config["relation_normalization_profile"] == "phase2_default"
     assert app_config["relation_normalization_enabled_relation_kinds"] == (
@@ -427,15 +423,12 @@ def test_describe_provider_availability_reports_missing_key(monkeypatch):
         relation_normalization_profile="phase2_default",
         relation_normalization_enabled_relation_kinds=("image_caption",),
         relation_normalization_save_debug_artifacts=True,
-        structure_validation_enabled=True,
         structure_validation_min_paragraphs_for_auto_gate=40,
         structure_validation_min_explicit_heading_density=0.003,
         structure_validation_max_suspicious_short_body_ratio_without_escalation=0.05,
         structure_validation_max_all_caps_or_centered_body_ratio_without_escalation=0.03,
         structure_validation_toc_like_sequence_min_length=4,
         structure_validation_forbid_heading_only_collapse=True,
-        structure_validation_save_debug_artifacts=True,
-        structure_validation_block_on_high_risk_noop=True,
         output_body_font=None,
         output_heading_font=None,
         image_mode_default="no_change",
@@ -530,15 +523,12 @@ def test_describe_provider_availability_loads_project_dotenv(monkeypatch):
         relation_normalization_profile="phase2_default",
         relation_normalization_enabled_relation_kinds=("image_caption",),
         relation_normalization_save_debug_artifacts=True,
-        structure_validation_enabled=True,
         structure_validation_min_paragraphs_for_auto_gate=40,
         structure_validation_min_explicit_heading_density=0.003,
         structure_validation_max_suspicious_short_body_ratio_without_escalation=0.05,
         structure_validation_max_all_caps_or_centered_body_ratio_without_escalation=0.03,
         structure_validation_toc_like_sequence_min_length=4,
         structure_validation_forbid_heading_only_collapse=True,
-        structure_validation_save_debug_artifacts=True,
-        structure_validation_block_on_high_risk_noop=True,
         output_body_font=None,
         output_heading_font=None,
         image_mode_default="no_change",
@@ -2373,7 +2363,6 @@ def test_run_dir_copies_captured_at_import_follow_the_redirected_root() -> None:
     import docxaicorrector.processing.restart_store as restart_store
     import docxaicorrector.runtime.artifacts as runtime_artifacts
     import docxaicorrector.runtime.state as runtime_state
-    import docxaicorrector.structure.validation as structure_validation
     from tests.conftest import TEST_RUN_DIR
 
     captured = {
@@ -2381,7 +2370,6 @@ def test_run_dir_copies_captured_at_import_follow_the_redirected_root() -> None:
         "logger.APP_LOG_PATH": logger.APP_LOG_PATH,
         "runtime.state.APP_LOG_PATH": runtime_state.APP_LOG_PATH,
         "restart_store.RUN_DIR": restart_store.RUN_DIR,
-        "structure.validation debug dir": structure_validation._STRUCTURE_VALIDATION_DEBUG_DIR,
         "extraction.PARAGRAPH_BOUNDARY_REPORTS_DIR": extraction.PARAGRAPH_BOUNDARY_REPORTS_DIR,
         "extraction.RELATION_NORMALIZATION_REPORTS_DIR": extraction.RELATION_NORMALIZATION_REPORTS_DIR,
         "extraction.LAYOUT_CLEANUP_REPORTS_DIR": extraction.LAYOUT_CLEANUP_REPORTS_DIR,

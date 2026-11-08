@@ -283,15 +283,12 @@ class AppConfig(Mapping[str, Any]):
     relation_normalization_profile: str
     relation_normalization_enabled_relation_kinds: tuple[str, ...]
     relation_normalization_save_debug_artifacts: bool
-    structure_validation_enabled: bool
     structure_validation_min_paragraphs_for_auto_gate: int
     structure_validation_min_explicit_heading_density: float
     structure_validation_max_suspicious_short_body_ratio_without_escalation: float
     structure_validation_max_all_caps_or_centered_body_ratio_without_escalation: float
     structure_validation_toc_like_sequence_min_length: int
     structure_validation_forbid_heading_only_collapse: bool
-    structure_validation_save_debug_artifacts: bool
-    structure_validation_block_on_high_risk_noop: bool
     output_body_font: str | None
     output_heading_font: str | None
     image_mode_default: str

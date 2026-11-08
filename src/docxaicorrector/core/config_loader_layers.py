@@ -108,7 +108,6 @@ def build_app_config_payload(
         "relation_normalization_save_debug_artifacts": relation_normalization_settings[
             "relation_normalization_save_debug_artifacts"
         ],
-        "structure_validation_enabled": structure_validation_settings["structure_validation_enabled"],
         "structure_validation_min_paragraphs_for_auto_gate": structure_validation_settings[
             "structure_validation_min_paragraphs_for_auto_gate"
         ],
@@ -126,12 +125,6 @@ def build_app_config_payload(
         ],
         "structure_validation_forbid_heading_only_collapse": structure_validation_settings[
             "structure_validation_forbid_heading_only_collapse"
-        ],
-        "structure_validation_save_debug_artifacts": structure_validation_settings[
-            "structure_validation_save_debug_artifacts"
-        ],
-        "structure_validation_block_on_high_risk_noop": structure_validation_settings[
-            "structure_validation_block_on_high_risk_noop"
         ],
         "output_body_font": output_font_settings["output_body_font"],
         "output_heading_font": output_font_settings["output_heading_font"],
