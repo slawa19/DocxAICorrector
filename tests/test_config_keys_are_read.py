@@ -44,6 +44,7 @@ from collections.abc import Iterator
 import logging
 from pathlib import Path
 import re
+import tomllib
 
 import pytest
 
@@ -292,3 +293,130 @@ def test_shipped_config_toml_has_no_ignored_keys(monkeypatch) -> None:
     assert loaded and len(loaded[-1]) > 5
     assert loaded[-1].ignored_keys() == []
     assert not [event_id for _, event_id, _ in events if event_id == "config_key_ignored"]
+
+
+def _ignored_events(events: list[tuple[int, str, dict]]) -> list[tuple[int, dict]]:
+    return [(level, context) for level, event_id, context in events if event_id == "config_key_ignored"]
+
+
+def test_removed_nested_model_role_is_reported_as_ignored_by_dotted_path(monkeypatch, tmp_path) -> None:
+    # Codex acceptance review of spec 066, finding 1: tracking stopped at the top level, so
+    # the former canonical [models.structure_recognition] — renamed to boundary_review by
+    # this spec — was swallowed while the role silently fell back to the text model.
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        '[models.text]\ndefault = "gpt-5.4-mini"\noptions = ["gpt-5.4-mini", "gpt-5.4"]\n\n'
+        '[models.structure_recognition]\ndefault = "gpt-5.4"\n\n'
+        '[structure_recognition]\nmodel = "gpt-5.4"\n',
+        encoding="utf-8",
+    )
+
+    app_config, events, loaded = _load_capturing(monkeypatch, config_path)
+
+    assert isinstance(app_config, config.AppConfig)
+    models = app_config.models
+    assert models.boundary_review == models.text.default == "gpt-5.4-mini"
+    assert _ignored_events(events) == [
+        (
+            logging.WARNING,
+            {
+                "config_path": str(config_path),
+                "ignored_keys": ["models.structure_recognition", "structure_recognition"],
+            },
+        )
+    ]
+    # A live nested key next to the dead one is never reported.
+    assert "models.text.default" not in loaded[-1].ignored_keys()
+    assert "models.text" not in loaded[-1].ignored_keys()
+
+
+def test_removed_keys_inside_a_live_table_are_reported_as_ignored(monkeypatch, tmp_path) -> None:
+    # The same finding one level down: [structure_validation] is a live table, but the three
+    # keys spec 066 removed from it (C-6) were accepted without a word.
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        "[structure_validation]\n"
+        "enabled = true\n"
+        "save_debug_artifacts = true\n"
+        "block_on_high_risk_noop = true\n"
+        "min_paragraphs_for_auto_gate = 17\n",
+        encoding="utf-8",
+    )
+
+    app_config, events, _ = _load_capturing(monkeypatch, config_path)
+
+    assert isinstance(app_config, config.AppConfig)
+    assert app_config["structure_validation_min_paragraphs_for_auto_gate"] == 17
+    assert _ignored_events(events) == [
+        (
+            logging.WARNING,
+            {
+                "config_path": str(config_path),
+                "ignored_keys": [
+                    "structure_validation.block_on_high_risk_noop",
+                    "structure_validation.enabled",
+                    "structure_validation.save_debug_artifacts",
+                ],
+            },
+        )
+    ]
+
+
+def test_a_stray_key_in_every_shipped_table_is_reported(monkeypatch) -> None:
+    # Anti-vacuum for the nested tracking: a resolver that walks or copies a table would mark
+    # all of it read and hide a removed key there. Plant one unknown key in every table of the
+    # shipped config (except [providers] itself, whose unknown sub-tables are already a hard
+    # error) and require each one back by its dotted path.
+    data = tomllib.loads(constants.CONFIG_PATH.read_text(encoding="utf-8"))
+    planted: list[str] = []
+
+    def _plant(table: dict, path: str) -> None:
+        for key, value in list(table.items()):
+            if isinstance(value, dict):
+                _plant(value, f"{path}{key}.")
+        if path != "providers.":
+            table["spec_066_stray_key"] = 1
+            planted.append(f"{path}spec_066_stray_key")
+
+    _plant(data, "")
+    loaded: list[ReadTrackingConfigData] = []
+
+    def _planted_load_config_data(**kwargs):
+        kwargs["load_project_dotenv_fn"]()
+        tracked = ReadTrackingConfigData(data)
+        kwargs["reject_legacy_manual_review_aliases_fn"](tracked)
+        loaded.append(tracked)
+        return tracked
+
+    monkeypatch.setattr(config, "load_config_data", _planted_load_config_data)
+    monkeypatch.setattr(config, "log_event", lambda *args, **kwargs: None)
+    config.reset_app_config_cache()
+    try:
+        config.load_app_config()
+    finally:
+        config.reset_app_config_cache()
+
+    assert len(planted) > 10
+    assert loaded[-1].ignored_keys() == sorted(planted)
+
+
+def test_read_tracking_rules_for_nested_tables() -> None:
+    # The documented meaning of "read" (ReadTrackingConfigData docstring), pinned.
+    tracked = ReadTrackingConfigData({"a": {"x": 1, "y": {"z": 2}}, "b": {"x": 1}, "c": [{"x": 1}], "d": 1})
+
+    first = tracked["a"]
+    assert isinstance(first, ReadTrackingConfigData)  # a table comes back tracked...
+    assert tracked.get("a") is first  # ...one child per table, shared by repeated reads
+    assert first == {"x": 1, "y": {"z": 2}}
+    second = tracked["b"]
+    assert isinstance(second, ReadTrackingConfigData)
+    assert len(second) == 1 and bool(second)  # size and truthiness are not reads
+    assert "c" in tracked  # a list is a value: reading the key reads it whole
+
+    assert tracked.ignored_keys() == ["a.x", "a.y", "b.x", "d"]
+
+    copied = dict(first)  # a wholesale copy walks the table: every key of it is read...
+    assert tracked.ignored_keys() == ["a.y.z", "b.x", "d"]
+    assert isinstance(copied["y"], ReadTrackingConfigData)  # ...but a nested table stays tracked
+    list(second.items())
+    assert tracked.ignored_keys() == ["a.y.z", "d"]

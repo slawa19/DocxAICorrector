@@ -1196,9 +1196,13 @@ def test_load_app_config_emits_legacy_model_warnings_only_once(monkeypatch, tmp_
     assert first_legacy_keys == [
         "default_model",
         "model_options",
-        "structure_recognition",
         "validation_model",
     ]
+    # Spec 066: the removed [structure_recognition] section is named by the one generic
+    # mechanism for unread keys, not by the legacy-model table.
+    assert [
+        context["ignored_keys"] for event, context in log_calls if event == "config_key_ignored"
+    ] == [["structure_recognition"]]
     assert len(log_calls) == first_call_count
     assert (
         sorted(context["legacy_key"] for event, context in log_calls if event == "legacy_model_config_key_detected")
@@ -1974,9 +1978,6 @@ def test_load_app_config_warns_about_removed_legacy_model_env_aliases(monkeypatc
     monkeypatch.setenv("DOCX_AI_MODEL_OPTIONS", "legacy-model,legacy-alt")
     monkeypatch.setenv("DOCX_AI_VALIDATION_MODEL", "legacy-validation")
     monkeypatch.setenv("DOCX_AI_RECONSTRUCTION_MODEL", "legacy-reconstruction")
-    # Spec 066 C-9: the boundary-review role lost its old structure-recognition names.
-    monkeypatch.setenv("DOCX_AI_STRUCTURE_RECOGNITION_MODEL", "legacy-structure")
-    monkeypatch.setenv("DOCX_AI_MODELS_STRUCTURE_RECOGNITION_DEFAULT", "legacy-structure-canonical")
     log_calls = []
     monkeypatch.setattr(config, "log_event", lambda level, event, message, **context: log_calls.append((event, context)))
     config.reset_app_config_cache()
@@ -2002,8 +2003,6 @@ def test_load_app_config_warns_about_removed_legacy_model_env_aliases(monkeypatc
         "DOCX_AI_MODEL_OPTIONS": "DOCX_AI_MODELS_TEXT_OPTIONS",
         "DOCX_AI_VALIDATION_MODEL": "DOCX_AI_MODELS_IMAGE_VALIDATION_DEFAULT",
         "DOCX_AI_RECONSTRUCTION_MODEL": "DOCX_AI_MODELS_IMAGE_RECONSTRUCTION_DEFAULT",
-        "DOCX_AI_STRUCTURE_RECOGNITION_MODEL": "DOCX_AI_MODELS_BOUNDARY_REVIEW_DEFAULT",
-        "DOCX_AI_MODELS_STRUCTURE_RECOGNITION_DEFAULT": "DOCX_AI_MODELS_BOUNDARY_REVIEW_DEFAULT",
     }
 
 
@@ -2090,7 +2089,6 @@ def test_legacy_model_key_warning_replacements_point_at_existing_registry_roles(
         "model_options": "models.text.options",
         "validation_model": "models.image_validation.default",
         "reconstruction_model": "models.image_reconstruction.default",
-        "structure_recognition": "models.boundary_review.default",
     }
 
 

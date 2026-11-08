@@ -6,33 +6,108 @@ from typing import Any
 
 
 class ReadTrackingConfigData(dict[str, object]):
-    """The parsed ``config.toml`` that remembers which top-level keys the loader asked for.
+    """The parsed ``config.toml`` that remembers which keys, at any depth, the loader asked for.
 
-    Spec 066 FR-012: a top-level key no resolver reads is ignored, and the operator is told
-    so (``config_key_ignored``) instead of believing it took effect. The set of known keys is
+    Spec 066 FR-012: a key no resolver reads is ignored, and the operator is told so
+    (``config_key_ignored``) instead of believing it took effect. The set of known keys is
     written down nowhere: it is whatever the resolvers read, so a key removed from the code
-    becomes "ignored" by itself, with no list to keep in step.
+    becomes "ignored" by itself, with no list to keep in step. That holds for nested tables
+    too (``[models.structure_recognition]``, ``[structure_validation] enabled``): a table
+    value handed out by the tracker is itself a tracker, created on first access and stored
+    in place of the plain table, so every later read sees the same child.
+
+    What counts as reading a key of a table:
+
+    - ``table[key]``, ``table.get(key)``, ``key in table``, ``table.pop(key)`` — that key;
+    - ``keys()``, ``items()``, ``values()``, iteration, ``table.copy()`` and therefore
+      ``dict(table)`` / ``{**table}`` — every key of that table: a resolver that walks a
+      table has looked at all of it. A nested table reached this way is still a tracker,
+      so its own keys count only when they are read in turn.
+
+    ``len(table)`` and truthiness do NOT count: ``table or {}`` asks whether the table is
+    empty, not what is in it, and counting it would hide every key below. Arrays of tables
+    (``[[x]]``) and other lists are values: reading the key reads the whole list, the
+    tracker does not descend into list items.
+
+    ``ignored_keys()`` returns dotted paths (``models.structure_recognition``,
+    ``structure_validation.enabled``). An unread table is reported once by its own path,
+    not key by key.
     """
 
-    def __init__(self, data: Mapping[str, object] | None = None) -> None:
+    def __init__(self, data: Mapping[str, object] | None = None, *, path: str = "") -> None:
         super().__init__(data or {})
         self.read_keys: set[str] = set()
+        self._path = path
+
+    def _child(self, key: str, value: object) -> object:
+        if isinstance(value, Mapping) and not isinstance(value, ReadTrackingConfigData):
+            value = ReadTrackingConfigData(value, path=f"{self._path}{key}.")
+            dict.__setitem__(self, key, value)
+        return value
+
+    def _mark_all_read(self) -> None:
+        self.read_keys.update(key for key in dict.keys(self) if isinstance(key, str))
 
     def __getitem__(self, key: str) -> object:
         self.read_keys.add(key)
-        return super().__getitem__(key)
+        return self._child(key, super().__getitem__(key))
 
     def get(self, key: str, default: object = None) -> object:  # type: ignore[override]
         self.read_keys.add(key)
-        return super().get(key, default)
+        if not dict.__contains__(self, key):
+            return default
+        return self._child(key, dict.__getitem__(self, key))
 
     def __contains__(self, key: object) -> bool:
         if isinstance(key, str):
             self.read_keys.add(key)
         return super().__contains__(key)
 
+    def pop(self, key: str, *default: object) -> object:  # type: ignore[override]
+        self.read_keys.add(key)
+        if dict.__contains__(self, key):
+            self._child(key, dict.__getitem__(self, key))
+        return super().pop(key, *default)
+
+    def _wrap_all_children(self) -> None:
+        for key in list(dict.keys(self)):
+            self._child(key, dict.__getitem__(self, key))
+
+    def keys(self):  # type: ignore[override]
+        self._mark_all_read()
+        return super().keys()
+
+    def items(self):  # type: ignore[override]
+        self._mark_all_read()
+        self._wrap_all_children()
+        return super().items()
+
+    def values(self):  # type: ignore[override]
+        self._mark_all_read()
+        self._wrap_all_children()
+        return super().values()
+
+    def __iter__(self):  # type: ignore[override]
+        # Overriding __iter__ also takes ``dict(table)`` / ``{**table}`` off CPython's
+        # fast copy path: they then go through keys() and __getitem__, which are tracked.
+        self._mark_all_read()
+        return super().__iter__()
+
+    def copy(self) -> dict[str, object]:  # type: ignore[override]
+        self._mark_all_read()
+        self._wrap_all_children()
+        return dict(dict.items(self))
+
     def ignored_keys(self) -> list[str]:
-        return sorted(key for key in self.keys() if key not in self.read_keys)
+        ignored: list[str] = []
+        for key in dict.keys(self):
+            if key not in self.read_keys:
+                ignored.append(f"{self._path}{key}")
+                continue
+            value = dict.__getitem__(self, key)
+            if isinstance(value, ReadTrackingConfigData):
+                ignored.extend(value.ignored_keys())
+        return sorted(ignored)
 
 
 @dataclass(frozen=True)
