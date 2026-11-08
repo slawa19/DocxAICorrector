@@ -2795,9 +2795,12 @@ def _is_page_torn_body_continuation(
     What the second half begins with is not read: a capital, a digit, a quote or a bracket
     opens the continuation as often as a lowercase letter does ("...such as the" +
     "International Monetary Fund", "...in" + "2001, said", "...considered you" +
-    "'creditworthy'"). Measured on the four corpus PDFs (2026-11-08) against 87 page-break
-    candidates read one by one: 29 of the 30 real tears outside notes sections joined, no
-    false join."""
+    "'creditworthy'"). Measured on the four corpus PDFs (2026-11-08) against the 87 page-break
+    candidates of spec 067's sweep, each read: this rule joins 27, all of them real tears, and
+    no false one; two more (Rethinking Money, pp. 12-14) join through the soft-wrap merge once
+    the running head between the halves is dropped (FR-007) -- 29 of 32. Not joined: two
+    chapter-end notes of Money and Sustainability set on pages with no line at the body size,
+    and one bibliography entry inside a references section, which belongs to the notes-join."""
     if head.role != "body" or head.structural_role != "body":
         return False
     if tail.role != "body" or tail.structural_role != "body":
