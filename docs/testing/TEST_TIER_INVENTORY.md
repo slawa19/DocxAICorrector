@@ -21,6 +21,7 @@ This inventory is intentionally pragmatic:
 - `tests/test_application_flow.py`
 - `tests/test_block_execution_passthrough_bypass.py`
 - `tests/test_config.py`
+- `tests/test_config_keys_are_read.py`
 - `tests/test_docxaicorrector_bootstrap_package.py`
 - `tests/test_document_extraction.py`
 - `tests/test_document_layout_cleanup.py`
@@ -83,7 +84,6 @@ This inventory is intentionally pragmatic:
 - `tests/test_state.py`
 - `tests/test_structural_checks_coverage_review_data.py`
 - `tests/test_structural_validation_characterization.py`
-- `tests/test_structure_layout_signals.py`
 - `tests/test_structure_validation.py`
 - `tests/test_text_transform_assessment.py`
 - `tests/test_validation_formatting_replay.py`

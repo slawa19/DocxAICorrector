@@ -5,6 +5,36 @@ from pathlib import Path
 from typing import Any
 
 
+class ReadTrackingConfigData(dict[str, object]):
+    """The parsed ``config.toml`` that remembers which top-level keys the loader asked for.
+
+    Spec 066 FR-012: a top-level key no resolver reads is ignored, and the operator is told
+    so (``config_key_ignored``) instead of believing it took effect. The set of known keys is
+    written down nowhere: it is whatever the resolvers read, so a key removed from the code
+    becomes "ignored" by itself, with no list to keep in step.
+    """
+
+    def __init__(self, data: Mapping[str, object] | None = None) -> None:
+        super().__init__(data or {})
+        self.read_keys: set[str] = set()
+
+    def __getitem__(self, key: str) -> object:
+        self.read_keys.add(key)
+        return super().__getitem__(key)
+
+    def get(self, key: str, default: object = None) -> object:  # type: ignore[override]
+        self.read_keys.add(key)
+        return super().get(key, default)
+
+    def __contains__(self, key: object) -> bool:
+        if isinstance(key, str):
+            self.read_keys.add(key)
+        return super().__contains__(key)
+
+    def ignored_keys(self) -> list[str]:
+        return sorted(key for key in self.keys() if key not in self.read_keys)
+
+
 @dataclass(frozen=True)
 class OptionalSectionConfigs:
     image_output_config: dict[str, object]
@@ -207,10 +237,10 @@ def load_config_data(
     reject_legacy_manual_review_aliases_fn: Callable[[dict[str, object]], None],
 ) -> dict[str, object]:
     load_project_dotenv_fn()
-    config_data: dict[str, object] = {}
+    config_data = ReadTrackingConfigData()
     if config_path.exists():
         with config_path.open("rb") as file_handle:
-            config_data = tomllib.load(file_handle)
+            config_data = ReadTrackingConfigData(tomllib.load(file_handle))
     reject_legacy_manual_review_aliases_fn(config_data)
     return config_data
 

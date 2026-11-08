@@ -2,12 +2,12 @@
 (spec 034, Step 4, Cluster E -- the largest cluster).
 
 Source-paragraph unit membership, registry-text normalization, target-index alignment,
-and the unit-aware unmapped-field derivation. Depends only on stdlib / typing and on
-``_projection_has_units_or_operations`` from the lower ``structural_toc_signals`` leaf --
-never on the ``structural`` orchestration module -- so no import cycle is introduced. Bodies
-are byte-identical to their former in-module definitions; ``structural`` re-exports them so
-the qualified names keep resolving. (``_emit_target_alignment_trace_artifact`` stays resident
-in ``structural`` because a characterization golden monkeypatches
+and the unit-aware unmapped-field derivation. Depends only on stdlib / typing -- never on
+the ``structural`` orchestration module -- so no import cycle is introduced; ``structural``
+re-exports them so the qualified names keep resolving. Every source paragraph is its own
+unit (``paragraph:<id>``): the structure-recognition units that used to group paragraphs
+had no producer and were removed by spec 066 (C-2). (``_emit_target_alignment_trace_artifact``
+stays resident in ``structural`` because a characterization golden monkeypatches
 ``structural.write_formatting_diagnostics_artifact``, which its body calls.)
 """
 
@@ -16,8 +16,6 @@ from __future__ import annotations
 from collections.abc import Collection, Mapping, Sequence
 import re
 from typing import Any, cast
-
-from docxaicorrector.validation.structural_toc_signals import _projection_has_units_or_operations
 
 
 def _paragraph_id_for_unit_accounting(paragraph: object, fallback_index: int) -> str:
@@ -28,50 +26,14 @@ def _paragraph_id_for_unit_accounting(paragraph: object, fallback_index: int) ->
     return f"p{source_index:04d}"
 
 
-def _logical_index_for_unit_accounting(paragraph: object, fallback_index: int) -> int:
-    logical_index = getattr(paragraph, "logical_index", None)
-    if logical_index is not None:
-        return int(logical_index)
-    source_index = getattr(paragraph, "source_index", fallback_index)
-    return int(source_index if source_index is not None else fallback_index)
-
-
-def _projection_units_for_logical_index(projection: object | None, logical_index: int) -> tuple[object, ...]:
-    if projection is None:
-        return ()
-    get_units = getattr(projection, "get_units", None)
-    if callable(get_units):
-        try:
-            resolved = get_units(int(logical_index))
-        except Exception:
-            resolved = ()
-        return tuple(cast(Sequence[object], resolved or ()))
-    return tuple(
-        unit
-        for unit in tuple(getattr(projection, "projected_units", ()) or ())
-        if int(logical_index) in tuple(int(index) for index in tuple(getattr(unit, "logical_indexes", ()) or ()))
-    )
-
-
 def _build_source_paragraph_unit_membership(
     source_paragraphs: Sequence[object],
-    topology_projection: object | None,
-) -> tuple[dict[str, frozenset[str]], set[str]]:
+) -> dict[str, frozenset[str]]:
     paragraph_unit_keys: dict[str, frozenset[str]] = {}
-    all_unit_keys: set[str] = set()
     for fallback_index, paragraph in enumerate(source_paragraphs):
         paragraph_id = _paragraph_id_for_unit_accounting(paragraph, fallback_index)
-        logical_index = _logical_index_for_unit_accounting(paragraph, fallback_index)
-        unit_keys = {
-            str(getattr(unit, "unit_id", "") or "").strip()
-            for unit in _projection_units_for_logical_index(topology_projection, logical_index)
-            if str(getattr(unit, "unit_id", "") or "").strip()
-        }
-        if not unit_keys:
-            unit_keys = {f"paragraph:{paragraph_id}"}
-        paragraph_unit_keys[paragraph_id] = frozenset(unit_keys)
-        all_unit_keys.update(unit_keys)
-    return paragraph_unit_keys, all_unit_keys
+        paragraph_unit_keys[paragraph_id] = frozenset({f"paragraph:{paragraph_id}"})
+    return paragraph_unit_keys
 
 
 def _normalize_registry_text_for_unit_alignment(value: object) -> str:
@@ -487,10 +449,7 @@ def _serialize_compact_target_alignment_trace_entry(entry: Mapping[str, object])
 
 def _derive_unit_aware_unmapped_fields(
     *,
-    source_paragraphs: Sequence[object],
-    topology_projection: object | None,
     formatting_payload: Mapping[str, object] | None,
-    generated_paragraph_registry: Sequence[Mapping[str, object]] | None,
 ) -> dict[str, object]:
     unmapped_source_ids = []
     unmapped_target_indexes = []
@@ -548,136 +507,4 @@ def _derive_unit_aware_unmapped_fields(
         "unit_unmapped_source_gate_source": "accepted_aggregation_legacy" if legacy_aggregation_adjusted else "legacy_paragraph",
         "unit_unmapped_target_gate_source": "accepted_aggregation_legacy" if legacy_aggregation_adjusted else "legacy_paragraph",
     }
-    if formatting_payload is None or not _projection_has_units_or_operations(topology_projection):
-        return fields
-    paragraph_unit_keys, all_unit_keys = _build_source_paragraph_unit_membership(source_paragraphs, topology_projection)
-    if not paragraph_unit_keys:
-        return fields
-    unmapped_source_unit_keys: set[str] = set()
-    for paragraph_id in unmapped_source_ids:
-        unmapped_source_unit_keys.update(paragraph_unit_keys.get(paragraph_id, frozenset({f"paragraph:{paragraph_id}"})))
-    accepted_aggregated_source_unit_keys: set[str] = set()
-    accepted_aggregated_target_unit_keys_by_index: dict[int, set[str]] = {}
-    accepted_aggregated_sources = formatting_payload.get("accepted_aggregated_sources")
-    if isinstance(accepted_aggregated_sources, list):
-        for raw_entry in accepted_aggregated_sources:
-            if not isinstance(raw_entry, Mapping):
-                continue
-            paragraph_id = str(raw_entry.get("paragraph_id") or "").strip()
-            if not paragraph_id:
-                continue
-            unit_keys = set(paragraph_unit_keys.get(paragraph_id, frozenset({f"paragraph:{paragraph_id}"})))
-            accepted_aggregated_source_unit_keys.update(unit_keys)
-            try:
-                target_index = int(cast(Any, raw_entry.get("target_index", -1)))
-            except (TypeError, ValueError):
-                continue
-            if target_index >= 0:
-                accepted_aggregated_target_unit_keys_by_index.setdefault(target_index, set()).update(unit_keys)
-    aligned_target_unit_keys = _align_target_indexes_to_unit_keys(
-        formatting_payload,
-        generated_paragraph_registry=generated_paragraph_registry,
-        paragraph_unit_keys=paragraph_unit_keys,
-    )
-    if accepted_aggregated_target_unit_keys_by_index:
-        merged_alignments: dict[int, frozenset[str]] = dict(aligned_target_unit_keys or {})
-        for target_index, unit_keys in accepted_aggregated_target_unit_keys_by_index.items():
-            _merge_target_alignment_unit_keys(merged_alignments, target_index=target_index, unit_keys=unit_keys)
-        aligned_target_unit_keys = merged_alignments
-    generated_registry_aligned_target_indexes: set[int] = set()
-    if generated_paragraph_registry:
-        generated_registry_aligned_target_indexes = set(
-            _align_target_indexes_from_generated_registry(
-                formatting_payload,
-                generated_paragraph_registry=generated_paragraph_registry,
-                paragraph_unit_keys=paragraph_unit_keys,
-            )[0]
-        )
-    target_registry = formatting_payload.get("target_registry")
-    covered_target_unit_keys: set[str] = set()
-    if aligned_target_unit_keys is not None and isinstance(target_registry, list):
-        for target_entry in target_registry:
-            if not isinstance(target_entry, Mapping):
-                continue
-            if not bool(target_entry.get("mapped")):
-                continue
-            try:
-                raw_target_index = target_entry.get("target_index", -1)
-                target_index = int(cast(Any, raw_target_index if raw_target_index is not None else -1))
-            except (TypeError, ValueError):
-                continue
-            if target_index < 0:
-                continue
-            covered_target_unit_keys.update(aligned_target_unit_keys.get(target_index, frozenset()))
-    for unit_keys in accepted_aggregated_target_unit_keys_by_index.values():
-        covered_target_unit_keys.update(unit_keys)
-    effective_unmapped_source_unit_keys = set(unmapped_source_unit_keys)
-    if accepted_aggregated_source_unit_keys:
-        effective_unmapped_source_unit_keys.difference_update(accepted_aggregated_source_unit_keys)
-    if covered_target_unit_keys:
-        effective_unmapped_source_unit_keys.difference_update(covered_target_unit_keys)
-    fields.update(
-        {
-            "structure_unit_total_count": len(all_unit_keys),
-            "structure_unit_unmapped_source_count": len(effective_unmapped_source_unit_keys),
-            "unit_covered_source_fragment_count": max(0, len(all_unit_keys) - len(effective_unmapped_source_unit_keys)),
-            "accepted_aggregated_source_unit_count": len(accepted_aggregated_source_unit_keys),
-            "accepted_aggregated_target_index_count": len(accepted_aggregated_target_unit_keys_by_index),
-            "unmapped_source_count_basis": "topology_unit",
-            "unit_unmapped_source_gate_source": "topology_unit",
-        }
-    )
-    if not unmapped_target_indexes:
-        fields.update(
-            {
-                "structure_unit_unmapped_target_count": 0,
-                "unit_covered_target_fragment_count": len(covered_target_unit_keys),
-                "unmapped_target_count_basis": "topology_unit",
-                "unit_unmapped_target_gate_source": "topology_unit",
-            }
-        )
-        return fields
-    if aligned_target_unit_keys is None:
-        return fields
-    aligned_unmapped_target_indexes = [
-        target_index for target_index in unmapped_target_indexes if aligned_target_unit_keys.get(target_index)
-    ]
-    if not aligned_unmapped_target_indexes:
-        return fields
-    unmapped_target_unit_keys: set[str] = set()
-    preserved_interval_topology_unit_keys: set[str] = set()
-    for target_index in aligned_unmapped_target_indexes:
-        target_unit_keys = aligned_target_unit_keys.get(target_index, frozenset())
-        unmapped_target_unit_keys.update(target_unit_keys)
-        if target_index in generated_registry_aligned_target_indexes:
-            continue
-        if unmapped_source_ids:
-            preserved_interval_topology_unit_keys.update(
-                key for key in target_unit_keys if isinstance(key, str) and not key.startswith("paragraph:")
-            )
-    if covered_target_unit_keys:
-        unmapped_target_unit_keys.difference_update(covered_target_unit_keys)
-        unmapped_target_unit_keys.update(preserved_interval_topology_unit_keys)
-    shared_unmapped_unit_keys = effective_unmapped_source_unit_keys & unmapped_target_unit_keys
-    if shared_unmapped_unit_keys:
-        effective_unmapped_source_unit_keys.difference_update(shared_unmapped_unit_keys)
-        unmapped_target_unit_keys.difference_update(shared_unmapped_unit_keys)
-        fields.update(
-            {
-                "structure_unit_unmapped_source_count": len(effective_unmapped_source_unit_keys),
-                "unit_covered_source_fragment_count": max(0, len(all_unit_keys) - len(effective_unmapped_source_unit_keys)),
-            }
-        )
-    if len(aligned_unmapped_target_indexes) != len(unmapped_target_indexes):
-        return fields
-    fields.update(
-        {
-            "structure_unit_unmapped_source_count": len(effective_unmapped_source_unit_keys),
-            "unit_covered_source_fragment_count": max(0, len(all_unit_keys) - len(effective_unmapped_source_unit_keys)),
-            "structure_unit_unmapped_target_count": len(unmapped_target_unit_keys),
-            "unit_covered_target_fragment_count": len(covered_target_unit_keys | shared_unmapped_unit_keys),
-            "unmapped_target_count_basis": "topology_unit",
-            "unit_unmapped_target_gate_source": "topology_unit",
-        }
-    )
     return fields

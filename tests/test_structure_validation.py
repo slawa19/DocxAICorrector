@@ -338,8 +338,8 @@ def test_build_structural_checks_exposes_explicit_unmapped_count_basis() -> None
             "raw_unmapped_target_paragraph_count": 2,
             "structure_unit_unmapped_source_count": 1,
             "structure_unit_unmapped_target_count": 1,
-            "unmapped_source_count_basis": "topology_unit",
-            "unmapped_target_count_basis": "topology_unit",
+            "unmapped_source_count_basis": "accepted_aggregation_legacy",
+            "unmapped_target_count_basis": "accepted_aggregation_legacy",
             "heading_level_drift": 0,
             "text_similarity": 0.99,
             "heading_only_output_detected": False,
@@ -349,13 +349,13 @@ def test_build_structural_checks_exposes_explicit_unmapped_count_basis() -> None
 
     by_name = {check["name"]: check for check in checks}
     assert by_name["unmapped_source_threshold"]["actual"] == 1
-    assert by_name["unmapped_source_threshold"]["count_basis"] == "topology_unit"
+    assert by_name["unmapped_source_threshold"]["count_basis"] == "accepted_aggregation_legacy"
     assert by_name["unmapped_source_threshold"]["raw_paragraph_actual"] == 2
-    assert by_name["unmapped_source_threshold"]["unmapped_gate_source"] == "topology_unit"
+    assert by_name["unmapped_source_threshold"]["unmapped_gate_source"] == "accepted_aggregation_legacy"
     assert by_name["unmapped_target_threshold"]["actual"] == 1
-    assert by_name["unmapped_target_threshold"]["count_basis"] == "topology_unit"
+    assert by_name["unmapped_target_threshold"]["count_basis"] == "accepted_aggregation_legacy"
     assert by_name["unmapped_target_threshold"]["raw_paragraph_actual"] == 2
-    assert by_name["unmapped_target_threshold"]["unmapped_gate_source"] == "topology_unit"
+    assert by_name["unmapped_target_threshold"]["unmapped_gate_source"] == "accepted_aggregation_legacy"
 
 
 def test_build_markdown_quality_metrics_collects_detector_advisories_without_failing() -> None:

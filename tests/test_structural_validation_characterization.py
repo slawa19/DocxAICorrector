@@ -9,11 +9,11 @@ across every behaviour-preserving decomposition step of spec 034.
 Coverage:
 
 * **Cluster E (unit alignment, untested in isolation):** ``_derive_unit_aware_unmapped_fields``
-  over legacy + topology-unit payloads, plus the compact trace captured from
+  over a legacy payload, plus the compact trace captured from
   ``_emit_target_alignment_trace_artifact`` (``write_formatting_diagnostics_artifact`` is
   stubbed to capture the diagnostics payload instead of writing an artifact to disk).
-* **Cluster D (TOC/body-concat signals):** ``_derive_toc_body_concat_gate_fields`` and
-  ``has_toc_body_concat_structure`` over legacy-markdown and topology-projection fixtures.
+* **Cluster D (TOC/body-concat signals):** ``_derive_toc_body_concat_gate_fields`` (markdown
+  signal only; the topology-projection / document-map inputs were removed by spec 066 C-2).
 * **Orchestrator prep snapshot:** ``build_preparation_diagnostic_snapshot`` over a fixed
   paragraph set with ``build_semantic_blocks`` stubbed (the lighter of the two spec-034
   orchestrator-golden variants -- reproducing the full ``run_structural_passthrough_validation``
@@ -69,28 +69,6 @@ def _source_paragraphs() -> list[SimpleNamespace]:
     ]
 
 
-def _unit(unit_id: str, logical_indexes: tuple[int, ...]) -> SimpleNamespace:
-    return SimpleNamespace(
-        unit_id=unit_id,
-        logical_indexes=logical_indexes,
-        role="body",
-        unit_type="body",
-        authority="document_map_v2",
-        confidence="high",
-    )
-
-
-def _unit_alignment_projection() -> SimpleNamespace:
-    return SimpleNamespace(
-        projected_units=[
-            _unit("u1", (0,)),
-            _unit("u2", (1,)),
-            _unit("u3", (2,)),
-        ],
-        operations=[SimpleNamespace(op="split_compound_toc_entries", authority="document_map_v2", confidence="high")],
-    )
-
-
 def _unit_alignment_payload() -> dict[str, object]:
     return {
         "unmapped_source_ids": ["p0002"],
@@ -121,33 +99,13 @@ def _generated_registry() -> list[dict[str, object]]:
 
 
 def test_derive_unit_aware_unmapped_fields_legacy_golden():
-    fields = structural._derive_unit_aware_unmapped_fields(
-        source_paragraphs=_source_paragraphs(),
-        topology_projection=None,
-        formatting_payload=_unit_alignment_payload(),
-        generated_paragraph_registry=None,
-    )
+    fields = structural._derive_unit_aware_unmapped_fields(formatting_payload=_unit_alignment_payload())
     _assert_golden("cluster_e_unmapped_fields_legacy", fields)
 
 
 def test_derive_unit_aware_unmapped_fields_none_payload_golden():
-    fields = structural._derive_unit_aware_unmapped_fields(
-        source_paragraphs=_source_paragraphs(),
-        topology_projection=_unit_alignment_projection(),
-        formatting_payload=None,
-        generated_paragraph_registry=None,
-    )
+    fields = structural._derive_unit_aware_unmapped_fields(formatting_payload=None)
     _assert_golden("cluster_e_unmapped_fields_none_payload", fields)
-
-
-def test_derive_unit_aware_unmapped_fields_topology_golden():
-    fields = structural._derive_unit_aware_unmapped_fields(
-        source_paragraphs=_source_paragraphs(),
-        topology_projection=_unit_alignment_projection(),
-        formatting_payload=_unit_alignment_payload(),
-        generated_paragraph_registry=_generated_registry(),
-    )
-    _assert_golden("cluster_e_unmapped_fields_topology", fields)
 
 
 # --------------------------------------------------------------------------- #
@@ -169,7 +127,6 @@ def test_emit_target_alignment_trace_artifact_golden(monkeypatch):
 
     artifact_path = structural._emit_target_alignment_trace_artifact(
         source_paragraphs=_source_paragraphs(),
-        topology_projection=_unit_alignment_projection(),
         formatting_payload=_unit_alignment_payload(),
         generated_paragraph_registry=_generated_registry(),
     )
@@ -181,71 +138,13 @@ def test_emit_target_alignment_trace_artifact_golden(monkeypatch):
 
 
 # --------------------------------------------------------------------------- #
-# Cluster D: _derive_toc_body_concat_gate_fields + has_toc_body_concat_structure
+# Cluster D: _derive_toc_body_concat_gate_fields
 # --------------------------------------------------------------------------- #
 
 
-def _toc_body_concat_projection() -> SimpleNamespace:
-    return SimpleNamespace(
-        projected_units=[
-            SimpleNamespace(
-                unit_id="t1", role="toc_entry", unit_type="toc_entry", logical_indexes=(4,),
-                authority="document_map_v2", confidence="high",
-            ),
-            SimpleNamespace(
-                unit_id="h1", role="heading", unit_type="chapter_heading", logical_indexes=(4,),
-                authority="document_map_v2", confidence="high",
-            ),
-            SimpleNamespace(
-                unit_id="t2", role="toc_entry", unit_type="toc_entry", logical_indexes=(2,),
-                authority="document_map_v2", confidence="high",
-            ),
-        ],
-        operations=[
-            SimpleNamespace(op="split_compound_toc_entries", authority="document_map_v2", confidence="high"),
-            SimpleNamespace(op="merge_heading_continuation", authority="document_map_v2", confidence="high"),
-        ],
-    )
-
-
-def _bounded_document_map() -> SimpleNamespace:
-    return SimpleNamespace(
-        toc_region=SimpleNamespace(confidence="high", start_logical_index=0, end_logical_index=6),
-        split_hints=[
-            SimpleNamespace(
-                split_kind="compound_toc_entries", confidence="high", logical_index=2,
-                expected_parts=["Part A", "Part B"],
-            )
-        ],
-    )
-
-
-def test_derive_toc_body_concat_gate_fields_topology_golden():
-    fields = structural._derive_toc_body_concat_gate_fields(
-        document_map=_bounded_document_map(),
-        topology_projection=_toc_body_concat_projection(),
-        markdown_detected=False,
-    )
-    _assert_golden("cluster_d_gate_fields_topology", fields)
-
-
 def test_derive_toc_body_concat_gate_fields_legacy_markdown_golden():
-    # No document map -> projection unsupported -> legacy-markdown gate source.
-    fields = structural._derive_toc_body_concat_gate_fields(
-        document_map=None,
-        topology_projection=_toc_body_concat_projection(),
-        markdown_detected=True,
-    )
+    fields = structural._derive_toc_body_concat_gate_fields(markdown_detected=True)
     _assert_golden("cluster_d_gate_fields_legacy_markdown", fields)
-
-
-def test_has_toc_body_concat_structure_golden():
-    results = {
-        "concat_present": structural.has_toc_body_concat_structure(_toc_body_concat_projection()),
-        "none_projection": structural.has_toc_body_concat_structure(None),
-        "empty_units": structural.has_toc_body_concat_structure(SimpleNamespace(projected_units=[])),
-    }
-    _assert_golden("cluster_d_has_toc_body_concat_structure", results)
 
 
 # --------------------------------------------------------------------------- #
@@ -259,27 +158,6 @@ def _snapshot_paragraphs() -> list[SimpleNamespace]:
         SimpleNamespace(text="Chapter 1 ........ 12", role="body", structural_role="toc_entry"),
         SimpleNamespace(text="Introduction", role="heading", structural_role="body", heading_level=1),
         SimpleNamespace(text="Body paragraph.", role="body", structural_role="body"),
-    ]
-
-
-def _snapshot_event_log() -> list[dict[str, object]]:
-    return [
-        {
-            "event_id": "structure_processing_outcome",
-            "context": {
-                "readiness_status": "ready",
-                "readiness_reasons": ["structure_recognized"],
-                "document_map_present": True,
-                "outline_coverage_ratio": 0.75,
-                "quality_gate_status": "passed",
-                "quality_gate_reasons": [],
-                "structure_ai_attempted": True,
-                "ai_classified_count": 4,
-                "ai_heading_count": 1,
-                "document_map_status": "built",
-                "document_topology_projection_status": "built",
-            },
-        }
     ]
 
 
@@ -303,7 +181,7 @@ def test_build_preparation_diagnostic_snapshot_golden(monkeypatch):
         relations=None,
         structure_repair_report=structure_repair_report,
         chunk_size=6000,
-        event_log=_snapshot_event_log(),
+        event_log=[],
     )
     _assert_golden("orchestrator_prep_snapshot", snapshot)
 

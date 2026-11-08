@@ -46,7 +46,7 @@ def _profile(*, min_text_similarity: float = 0.95, max_heading_level_drift: int 
 
 
 def test_coverage_axes_exceeding_threshold_are_advisory_review_data_not_gated() -> None:
-    # Source actual (role_aware branch) = 50 > allowed 5; target actual (topology_unit) = 40 > 5.
+    # Source actual (role_aware branch) = 50 > allowed 5; target actual (accepted_aggregation_legacy) = 40 > 5.
     checks = structural_validation_runtime._build_structural_checks(
         document_profile=_profile(),
         result="succeeded",
@@ -60,7 +60,7 @@ def test_coverage_axes_exceeding_threshold_are_advisory_review_data_not_gated() 
             "structure_unit_unmapped_source_count": 33,
             "structure_unit_unmapped_target_count": 40,
             "unmapped_source_count_basis": "role_aware_formatting_coverage",
-            "unmapped_target_count_basis": "topology_unit",
+            "unmapped_target_count_basis": "accepted_aggregation_legacy",
             "heading_level_drift": 0,
             "text_similarity": 0.99,
             "heading_only_output_detected": False,
@@ -101,8 +101,8 @@ def test_coverage_within_threshold_still_marks_advisory_and_not_exceeds() -> Non
             "raw_unmapped_target_paragraph_count": 1,
             "structure_unit_unmapped_source_count": 1,
             "structure_unit_unmapped_target_count": 1,
-            "unmapped_source_count_basis": "topology_unit",
-            "unmapped_target_count_basis": "topology_unit",
+            "unmapped_source_count_basis": "accepted_aggregation_legacy",
+            "unmapped_target_count_basis": "accepted_aggregation_legacy",
             "heading_level_drift": 0,
             "text_similarity": 0.99,
             "heading_only_output_detected": False,
@@ -133,7 +133,7 @@ def test_genuine_gates_still_bite_when_coverage_is_advisory() -> None:
             "structure_unit_unmapped_source_count": 99,
             "structure_unit_unmapped_target_count": 99,
             "unmapped_source_count_basis": "role_aware_formatting_coverage",
-            "unmapped_target_count_basis": "topology_unit",
+            "unmapped_target_count_basis": "accepted_aggregation_legacy",
             "heading_level_drift": 7,
             "text_similarity": 0.10,
             "heading_only_output_detected": False,

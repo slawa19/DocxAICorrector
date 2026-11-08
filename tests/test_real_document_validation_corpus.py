@@ -842,7 +842,7 @@ def test_apply_prepared_metric_fields_uses_explicit_unknown_when_statuses_missin
     assert metrics["readiness_status"] == "unknown"
 
 
-def test_build_structural_checks_prefers_topology_unit_unmapped_counts_when_available() -> None:
+def test_build_structural_checks_prefers_accepted_aggregation_unit_counts_when_available() -> None:
     document_profile = SimpleNamespace(
         max_formatting_diagnostics=5,
         max_unmapped_source_paragraphs=1,
@@ -863,8 +863,8 @@ def test_build_structural_checks_prefers_topology_unit_unmapped_counts_when_avai
         "max_unmapped_target_paragraphs": 2,
         "structure_unit_unmapped_source_count": 1,
         "structure_unit_unmapped_target_count": 1,
-        "unit_unmapped_source_gate_source": "topology_unit",
-        "unit_unmapped_target_gate_source": "topology_unit",
+        "unit_unmapped_source_gate_source": "accepted_aggregation_legacy",
+        "unit_unmapped_target_gate_source": "accepted_aggregation_legacy",
         "heading_level_drift": 0,
         "text_similarity": 0.99,
         "heading_only_output_detected": False,
@@ -881,11 +881,11 @@ def test_build_structural_checks_prefers_topology_unit_unmapped_counts_when_avai
     assert by_name["unmapped_source_threshold"]["passed"] is True
     assert by_name["unmapped_source_threshold"]["actual"] == 1
     assert by_name["unmapped_source_threshold"]["paragraph_actual"] == 2
-    assert by_name["unmapped_source_threshold"]["unmapped_gate_source"] == "topology_unit"
+    assert by_name["unmapped_source_threshold"]["unmapped_gate_source"] == "accepted_aggregation_legacy"
     assert by_name["unmapped_target_threshold"]["passed"] is True
     assert by_name["unmapped_target_threshold"]["actual"] == 1
     assert by_name["unmapped_target_threshold"]["paragraph_actual"] == 2
-    assert by_name["unmapped_target_threshold"]["unmapped_gate_source"] == "topology_unit"
+    assert by_name["unmapped_target_threshold"]["unmapped_gate_source"] == "accepted_aggregation_legacy"
 
 
 def test_structural_passthrough_failure_derives_snapshot_block_status_from_preparation_error(tmp_path, monkeypatch) -> None:
@@ -1068,7 +1068,7 @@ def test_structural_passthrough_failure_derives_detailed_snapshot_reasons_from_p
             run_prepared_background_document=lambda **kwargs: (_ for _ in ()).throw(
                 ValueError(
                     "Подготовка заблокирована quality gate: документ требует structural repair перед обработкой. "
-                    "Причины: обнаружен TOC-подобный фрагмент без надёжно выделенной границы, AI-распознавание структуры не внесло изменений для документа с высоким структурным риском"
+                    "Причины: первый блок смешивает элементы оглавления и эпиграфа, первый блок смешивает элементы оглавления и начало основного текста"
                 )
             )
         ),
@@ -1079,17 +1079,14 @@ def test_structural_passthrough_failure_derives_detailed_snapshot_reasons_from_p
     snapshot = result["preparation_diagnostic_snapshot"]
     assert snapshot["quality_gate_status"] == "blocked"
     assert snapshot["quality_gate_reasons"] == [
-        "toc_like_sequence_without_bounded_region",
-        "structure_recognition_noop_on_high_risk",
+        "first_block_mixed_toc_and_epigraph",
+        "first_block_mixed_toc_and_body_start",
     ]
-    assert snapshot["readiness_status"] == "blocked_unsafe_best_effort_only"
+    assert snapshot["readiness_status"] == "blocked_needs_structure_repair"
     assert snapshot["readiness_reasons"] == [
-        "toc_like_sequence_without_bounded_region",
-        "structure_recognition_noop_on_high_risk",
+        "first_block_mixed_toc_and_epigraph",
+        "first_block_mixed_toc_and_body_start",
     ]
-    assert snapshot["structure_ai_attempted"] is True
-    assert snapshot["ai_classified_count"] == 0
-    assert snapshot["ai_heading_count"] == 0
 
 
 def test_markdown_quality_metrics_keep_false_fragment_and_list_fragment_fallback_raw_only() -> None:
