@@ -381,8 +381,8 @@ def test_relation_normalization_artifact_persists_decision_provenance_variants(m
                 decision="reject",
                 member_paragraph_ids=("p0003",),
                 reasons=("toc_header_without_entries",),
-                structure_phase="ai_first_degraded_fallback",
-                structure_source="ai_first_degraded_fallback",
+                structure_phase="post_ai_readiness",
+                structure_source="post_ai_final_binding",
             ),
         ],
     )
@@ -403,12 +403,12 @@ def test_relation_normalization_artifact_persists_decision_provenance_variants(m
     assert [decision["structure_source"] for decision in payload["decisions"]] == [
         "pre_ai_diagnostic_hint",
         "post_ai_final_binding",
-        "ai_first_degraded_fallback",
+        "post_ai_final_binding",
     ]
     assert [decision["structure_phase"] for decision in payload["decisions"]] == [
         "pre_ai_diagnostic",
         "post_ai_final",
-        "ai_first_degraded_fallback",
+        "post_ai_readiness",
     ]
 
 

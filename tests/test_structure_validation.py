@@ -176,12 +176,12 @@ def test_validate_structure_quality_post_ai_readiness_does_not_count_heuristic_h
     assert "heading_only_collapse_risk" in report.escalation_reasons
 
 
-def test_validate_structure_quality_post_ai_readiness_counts_ai_headings_for_toc_expectation():
+def test_validate_structure_quality_post_ai_readiness_counts_binding_headings_for_toc_expectation():
     paragraphs = [
         _paragraph(0, "Contents", structural_role="toc_header"),
         *[_paragraph(index, f"Chapter {index}........ {index * 10}", structural_role="toc_entry") for index in range(1, 7)],
         *[
-            _paragraph(100 + index, f"Chapter {index}", role="heading", structural_role="heading", heading_source="ai")
+            _paragraph(100 + index, f"Chapter {index}", role="heading", structural_role="heading", heading_source="explicit")
             for index in range(1, 7)
         ],
         _paragraph(200, "Regular body paragraph with enough words to avoid short-body risk escalation."),
@@ -195,9 +195,9 @@ def test_validate_structure_quality_post_ai_readiness_counts_ai_headings_for_toc
     assert "heading_only_collapse_risk" not in report.escalation_reasons
 
 
-def test_validate_structure_quality_post_ai_readiness_ignores_ai_list_marker_classifications():
+def test_validate_structure_quality_post_ai_readiness_ignores_list_role_marker_classifications():
     paragraphs = [
-        _paragraph(0, "1.", role="list", structural_role="list", heading_source="ai"),
+        _paragraph(0, "1.", role="list", structural_role="list"),
         _paragraph(1, "Regular body paragraph with enough words to avoid short-body risk escalation."),
     ]
 
@@ -267,7 +267,7 @@ def test_validate_structure_quality_heading_only_collapse_boundary_120_and_2():
 
 def test_validate_structure_quality_preserves_advisory_post_ai_fields():
     paragraphs = [
-        _paragraph(0, "Chapter 1", role="heading", heading_source="ai"),
+        _paragraph(0, "Chapter 1", role="heading", heading_source="explicit"),
         _paragraph(1, "Regular paragraph with enough words to avoid short-body risk escalation."),
     ]
 
@@ -284,7 +284,7 @@ def test_validate_structure_quality_preserves_advisory_post_ai_fields():
 
 def test_validate_structure_quality_keeps_outline_coverage_ratio_advisory_only_for_gating():
     paragraphs = [
-        _paragraph(0, "Chapter 1", role="heading", heading_source="ai"),
+        _paragraph(0, "Chapter 1", role="heading", heading_source="explicit"),
         _paragraph(1, "Regular paragraph with enough words to avoid short-body risk escalation."),
         _paragraph(2, "Another ordinary body paragraph with stable narrative structure and additional detail here."),
     ]

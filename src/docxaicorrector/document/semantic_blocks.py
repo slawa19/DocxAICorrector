@@ -489,7 +489,7 @@ def _is_toc_only_paragraph(paragraph: ParagraphUnit, *, structure_phase: str = "
 
 def _phase_uses_embedded_toc_only_fallback(structure_phase: str) -> bool:
     normalized_phase = normalize_structure_phase(structure_phase)
-    return phase_uses_advisory_hints(normalized_phase) or normalized_phase == "ai_first_degraded_fallback"
+    return phase_uses_advisory_hints(normalized_phase)
 
 
 def _embedded_hint_boundary_kinds(paragraph: ParagraphUnit) -> tuple[str, ...]:
@@ -530,8 +530,6 @@ def _iter_block_text_lines(block: DocumentBlock) -> list[str]:
 
 
 def _semantic_block_structure_source(structure_phase: str) -> str:
-    if str(structure_phase or "").strip().lower() == "ai_first_degraded_fallback":
-        return "ai_first_degraded_fallback"
     return "pre_ai_diagnostic_hint" if phase_uses_advisory_hints(structure_phase) else "post_ai_final_binding"
 
 

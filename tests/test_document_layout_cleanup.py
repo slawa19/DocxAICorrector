@@ -89,18 +89,14 @@ def test_removes_standalone_page_numbers_and_keeps_guardrails():
     assert {decision.reason for decision in report.decisions if decision.action == "flag"} == {"page_number_pattern"}
 
 
-def test_ai_first_signal_mode_flags_page_numbers_without_removing_paragraphs():
+def test_flag_mode_flags_page_numbers_without_removing_paragraphs():
     paragraphs = [
         _paragraph("1", source_index=0),
         _paragraph("Page 4", source_index=1),
         _paragraph("Chapter 12", source_index=2),
     ]
 
-    cleaned, report = clean_paragraph_layout_artifacts(
-        paragraphs,
-        structure_recovery_enabled=True,
-        structure_recovery_mode="ai_first",
-    )
+    cleaned, report = clean_paragraph_layout_artifacts(paragraphs)
 
     assert [paragraph.text for paragraph in cleaned] == ["1", "Page 4", "Chapter 12"]
     assert report.cleanup_mode == "flag"
@@ -151,7 +147,7 @@ def test_removes_repeated_safe_artifacts_but_keeps_prose_and_low_repeat():
     }
 
 
-def test_ai_first_signal_mode_flags_repeated_artifacts_without_removal():
+def test_flag_mode_flags_repeated_artifacts_without_removal():
     paragraphs = [
         _paragraph("Are We In the End Times?", role="heading", structural_role="heading", source_index=0),
         _paragraph("www.example.com", source_index=1),
@@ -159,11 +155,7 @@ def test_ai_first_signal_mode_flags_repeated_artifacts_without_removal():
         _paragraph("www.example.com", source_index=3),
     ]
 
-    cleaned, report = clean_paragraph_layout_artifacts(
-        paragraphs,
-        structure_recovery_enabled=True,
-        structure_recovery_mode="ai_first",
-    )
+    cleaned, report = clean_paragraph_layout_artifacts(paragraphs)
 
     assert [paragraph.text for paragraph in cleaned] == [
         "Are We In the End Times?",

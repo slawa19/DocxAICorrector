@@ -225,19 +225,6 @@ def test_build_editing_jobs_marks_advisory_pre_ai_structure_source():
     assert jobs[0]["structure_source"] == "pre_ai_diagnostic_hint"
 
 
-def test_build_editing_jobs_marks_degraded_ai_first_structure_source():
-    paragraphs = [
-        ParagraphUnit(text="Глава 1", role="heading", structural_role="heading", paragraph_id="p0000", heading_level=1),
-        ParagraphUnit(text="Обычный абзац.", role="body", structural_role="body", paragraph_id="p0001"),
-    ]
-
-    blocks = build_semantic_blocks(paragraphs, max_chars=80, relations=[], structure_phase="ai_first_degraded_fallback")
-    jobs = build_editing_jobs(blocks, max_chars=3000, structure_phase="ai_first_degraded_fallback")
-
-    assert jobs[0]["structure_phase"] == "ai_first_degraded_fallback"
-    assert jobs[0]["structure_source"] == "ai_first_degraded_fallback"
-
-
 def test_build_editing_jobs_routes_toc_only_blocks_through_llm_in_translate_mode():
     paragraphs = [
         ParagraphUnit(text="Contents", role="body", structural_role="toc_header", paragraph_id="p0000"),
@@ -892,25 +879,6 @@ def test_build_editing_jobs_pre_ai_diagnostic_uses_toc_only_embedded_hints_for_d
     assert jobs[0]["toc_dominant"] is True
     assert jobs[0]["toc_paragraph_count"] == 1
     assert jobs[0]["structure_source"] == "pre_ai_diagnostic_hint"
-
-
-def test_build_editing_jobs_degraded_fallback_keeps_toc_only_embedded_hints_as_explicit_fallback():
-    compound = ParagraphUnit(text="Contents Chapter 1........ 12", role="body", structural_role="body", paragraph_id="p0000")
-    compound.heuristic_embedded_structure_hints = [
-        EmbeddedStructureHint(text="Contents", role="body", structural_role="toc_header"),
-        EmbeddedStructureHint(text="Chapter 1........ 12", role="body", structural_role="toc_entry"),
-    ]
-
-    jobs = build_editing_jobs(
-        [DocumentBlock(paragraphs=[compound])],
-        max_chars=3000,
-        structure_phase="ai_first_degraded_fallback",
-    )
-
-    assert jobs[0]["job_kind"] == "passthrough"
-    assert jobs[0]["toc_dominant"] is True
-    assert jobs[0]["toc_paragraph_count"] == 1
-    assert jobs[0]["structure_source"] == "ai_first_degraded_fallback"
 
 
 def test_build_paragraph_relations_detects_caption_epigraph_and_toc_groups():

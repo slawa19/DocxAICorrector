@@ -216,26 +216,10 @@ def extract_document_content_with_normalization_reports(
     )
     normalization_mode, save_boundary_debug_artifacts = _resolve_paragraph_boundary_normalization_settings(app_config)
     normalized_blocks, boundary_report = _normalize_paragraph_boundaries(raw_blocks, mode=normalization_mode)
-    structure_recovery_enabled, structure_recovery_mode = _resolve_structure_recovery_runtime(app_config=app_config)
-    paragraphs = _build_logical_paragraph_units(
-        normalized_blocks,
-        structure_recovery_enabled=structure_recovery_enabled,
-        structure_recovery_mode=structure_recovery_mode,
-    )
-    paragraphs = _normalize_inline_break_paragraphs(
-        paragraphs,
-        signal_only=structure_recovery_enabled and structure_recovery_mode == "ai_first",
-    )
-    promote_short_standalone_headings(
-        paragraphs,
-        structure_recovery_enabled=structure_recovery_enabled,
-        structure_recovery_mode=structure_recovery_mode,
-    )
-    normalize_front_matter_display_title(
-        paragraphs,
-        structure_recovery_enabled=structure_recovery_enabled,
-        structure_recovery_mode=structure_recovery_mode,
-    )
+    paragraphs = _build_logical_paragraph_units(normalized_blocks)
+    paragraphs = _normalize_inline_break_paragraphs(paragraphs)
+    promote_short_standalone_headings(paragraphs)
+    normalize_front_matter_display_title(paragraphs)
     (
         cleanup_enabled,
         cleanup_min_repeat_count,
@@ -249,8 +233,6 @@ def extract_document_content_with_normalization_reports(
         min_repeat_count=cleanup_min_repeat_count,
         max_repeated_text_chars=cleanup_max_repeated_text_chars,
         cleanup_mode=cleanup_mode,
-        structure_recovery_enabled=structure_recovery_enabled,
-        structure_recovery_mode=structure_recovery_mode,
         # Page furniture can only reach the body paragraph stream when a page image was
         # flattened into text. Classified above from the document's own layout, before any
         # paragraph is inspected.
@@ -259,8 +241,6 @@ def extract_document_content_with_normalization_reports(
     paragraphs, structure_repair_report = repair_pdf_derived_structure(
         paragraphs,
         app_config=app_config,
-        structure_recovery_enabled=structure_recovery_enabled,
-        structure_recovery_mode=structure_recovery_mode,
     )
     _reassign_paragraph_identities(paragraphs)
     (
@@ -298,11 +278,7 @@ def extract_document_content_with_normalization_reports(
             enabled_relation_kinds=enabled_relation_kinds if relation_enabled else (),
         )
     apply_relation_side_effects(paragraphs, relations)
-    reclassify_adjacent_captions(
-        paragraphs,
-        structure_recovery_enabled=structure_recovery_enabled,
-        structure_recovery_mode=structure_recovery_mode,
-    )
+    reclassify_adjacent_captions(paragraphs)
     _annotate_stage0_structure_signals(paragraphs)
 
     if ai_review_enabled and ai_review_mode != "off":
@@ -627,29 +603,14 @@ def _build_raw_table(table: Table, image_assets: list[ImageAsset], *, raw_index:
     )
 
 
-def _build_logical_paragraph_units(
-    raw_blocks: list[RawBlock],
-    *,
-    structure_recovery_enabled: bool = False,
-    structure_recovery_mode: str = "legacy",
-) -> list[ParagraphUnit]:
+def _build_logical_paragraph_units(raw_blocks: list[RawBlock]) -> list[ParagraphUnit]:
     paragraphs: list[ParagraphUnit] = []
-    signal_only = structure_recovery_enabled and structure_recovery_mode == "ai_first"
     for block in raw_blocks:
         if isinstance(block, RawParagraph):
             role = block.role_hint
             structural_role = block.role_hint
             heading_level = block.heading_level
             heading_source = block.heading_source
-            heuristic_role_hint = None
-            heuristic_heading_level_hint = None
-            if signal_only and block.role_hint == "heading" and block.heading_source == "heuristic":
-                role = "body"
-                structural_role = "body"
-                heuristic_role_hint = "heading"
-                heuristic_heading_level_hint = block.heading_level or 2
-                heading_level = None
-                heading_source = None
             paragraph = ParagraphUnit(
                 text=block.text,
                 role=role,
@@ -673,8 +634,6 @@ def _build_logical_paragraph_units(
                     explicit_heading_level=block.explicit_heading_level,
                     heading_source=heading_source,
                 ),
-                heuristic_role_hint=heuristic_role_hint,
-                heuristic_heading_level_hint=heuristic_heading_level_hint,
                 style_name=block.style_name,
                 is_bold=block.is_bold,
                 is_italic=block.is_italic,
@@ -701,7 +660,7 @@ def _build_logical_paragraph_units(
     return paragraphs
 
 
-def _normalize_inline_break_paragraphs(paragraphs: list[ParagraphUnit], *, signal_only: bool = False) -> list[ParagraphUnit]:
+def _normalize_inline_break_paragraphs(paragraphs: list[ParagraphUnit]) -> list[ParagraphUnit]:
     normalized: list[ParagraphUnit] = []
     for paragraph in paragraphs:
         if paragraph.role in {"image", "table"} or not _INLINE_BREAK_PATTERN.search(paragraph.text):
@@ -721,7 +680,7 @@ def _normalize_inline_break_paragraphs(paragraphs: list[ParagraphUnit], *, signa
 
         normalized.append(_copy_paragraph_unit(paragraph, text=_join_inline_break_lines(lines)))
 
-    _annotate_toc_region_candidates(normalized, signal_only=signal_only)
+    _annotate_toc_region_candidates(normalized)
     for index, paragraph in enumerate(normalized):
         _assign_paragraph_identity(paragraph, index)
     return normalized
@@ -866,7 +825,7 @@ def _expand_inline_break_paragraph(paragraph: ParagraphUnit, lines: list[str]) -
     return [_copy_paragraph_unit(paragraph, text=line) for line in lines]
 
 
-def _annotate_toc_region_candidates(paragraphs: list[ParagraphUnit], *, signal_only: bool) -> None:
+def _annotate_toc_region_candidates(paragraphs: list[ParagraphUnit]) -> None:
     index = 0
     while index < len(paragraphs):
         paragraph = paragraphs[index]
@@ -881,10 +840,10 @@ def _annotate_toc_region_candidates(paragraphs: list[ParagraphUnit], *, signal_o
         # `index` is the header itself, so this is "header + at least 2 candidate entries",
         # not "at least 3 candidates" as this rule was described until spec 054.
         if look_ahead - index >= 3:
-            _apply_or_hint_stage0_toc_role(paragraph, structural_role="toc_header", signal_only=signal_only)
+            _apply_or_hint_stage0_toc_role(paragraph, structural_role="toc_header")
             for toc_index in range(index + 1, look_ahead):
                 toc_paragraph = paragraphs[toc_index]
-                _apply_or_hint_stage0_toc_role(toc_paragraph, structural_role="toc_entry", signal_only=signal_only)
+                _apply_or_hint_stage0_toc_role(toc_paragraph, structural_role="toc_entry")
             index = look_ahead
             continue
 
@@ -899,10 +858,8 @@ def _is_toc_candidate_paragraph(paragraph: ParagraphUnit) -> bool:
     return _is_toc_candidate_text(paragraph.text)
 
 
-def _apply_or_hint_stage0_toc_role(paragraph: ParagraphUnit, *, structural_role: str, signal_only: bool) -> None:
+def _apply_or_hint_stage0_toc_role(paragraph: ParagraphUnit, *, structural_role: str) -> None:
     paragraph.heuristic_structural_role_hint = normalize_heuristic_structural_role_hint(structural_role)
-    if signal_only:
-        return
     if paragraph.role == "heading" and paragraph.heading_source != "explicit":
         paragraph.role = "body"
         paragraph.heading_level = None
@@ -939,18 +896,6 @@ def _resolve_layout_artifact_cleanup_settings(*, app_config: Mapping[str, object
         bool(app_config.get("layout_artifact_cleanup_save_debug_artifacts", True)),
         str(app_config.get("layout_artifact_cleanup_mode", "flag") or "flag").strip().lower() or "flag",
     )
-
-
-def _resolve_structure_recovery_runtime(*, app_config: Mapping[str, object] | None) -> tuple[bool, str]:
-    if app_config is None:
-        return False, "legacy"
-    structure_recovery_enabled = bool(app_config.get("structure_recovery_enabled", False))
-    structure_recovery_mode = str(app_config.get("structure_recovery_mode", "ai_first") or "ai_first").strip().lower()
-    if not structure_recovery_enabled:
-        return False, "legacy"
-    if structure_recovery_mode not in {"legacy", "ai_first"}:
-        return structure_recovery_enabled, "ai_first"
-    return structure_recovery_enabled, structure_recovery_mode
 
 
 def _resolve_paragraph_boundary_ai_review_settings(

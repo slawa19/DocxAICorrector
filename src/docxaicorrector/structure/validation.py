@@ -77,7 +77,7 @@ def _is_heading_for_phase(paragraph: ParagraphLike, *, phase: str) -> bool:
         return False
     heading_source = str(_paragraph_value(paragraph, "heading_source", "") or "").strip().lower()
     role_confidence = str(_paragraph_value(paragraph, "role_confidence", "") or "").strip().lower()
-    return heading_source in {"explicit", "ai"} or role_confidence in {"explicit", "adjacent", "ai"}
+    return heading_source == "explicit" or role_confidence in {"explicit", "adjacent"}
 
 
 def _heuristic_heading_count_for_phase(paragraphs: Sequence[ParagraphLike], *, phase: str) -> int:
