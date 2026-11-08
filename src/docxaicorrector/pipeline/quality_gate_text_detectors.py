@@ -90,10 +90,16 @@ def _is_bibliography_or_url_dominant_text(text: str) -> bool:
 
 
 def _is_untranslated_body_text(text: str) -> bool:
+    """A delivered body paragraph that is still in the source language, judged by SHARES.
+
+    Spec 067 FR-003 (A-3): this used to return False on the first Cyrillic letter, so one
+    translated word -- or a Cyrillic letter the model left in a kept English note -- hid a
+    whole English paragraph from the gate (fourth run: Money 8 such paragraphs of 280+
+    characters). The language test is the Latin share of the letters (>= 0.8) and nothing
+    else; a paragraph that is mostly Cyrillic still fails that share and is not counted.
+    """
     stripped = _strip_structural_markdown_prefix(text)
     if len(stripped) < _UNTRANSLATED_BODY_MIN_CHARS:
-        return False
-    if _CYRILLIC_LETTER_PATTERN.search(stripped):
         return False
     if _is_bibliography_or_url_dominant_text(stripped):
         return False
