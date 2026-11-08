@@ -800,8 +800,9 @@ def test_a_heading_word_the_body_keeps_using_is_a_candidate_with_the_heading_as_
     assert candidate.context == "Money and Durable Growth"
     # Fourth pass: an h1 (title, chapter) phrase the body keeps using is required.
     assert candidate.required
-    # Spec 065 FR-002: its single words, in the title and in the body, are not entries.
-    assert "durable" not in keys and "growth" not in keys
+    # Spec 065 FR-002: its single words are optional candidates at most -- never required.
+    for word in ("durable", "growth"):
+        assert word not in keys or not keys[word].required, word
 
 
 def test_a_heading_phrase_the_body_never_repeats_is_not_a_candidate():
@@ -1761,7 +1762,7 @@ def test_fr002_a_word_defined_in_passing_once_is_not_a_candidate_but_three_uses_
     assert "quibbler" in _keys(extract_glossary_candidates(_units(recurring)))
 
 
-def test_fr002_a_heading_word_alone_is_not_a_candidate_but_a_head_of_two_required_members_is():
+def test_fr002_a_heading_word_alone_is_an_optional_candidate_a_head_of_two_required_members_is_required():
     title_only: list[tuple[str, int | None]] = [("Making Worth", 1)]
     for chapter in range(4):
         title_only.append((f"Part {chapter}", 1))
@@ -1769,8 +1770,13 @@ def test_fr002_a_heading_word_alone_is_not_a_candidate_but_a_head_of_two_require
         title_only.extend((text, None) for text in _FILLER)
     keys = _keys(extract_glossary_candidates(_heading_units(title_only)))
 
-    assert "making" not in keys
-    assert "worth" not in keys
+    # An h1 word the body keeps using: the model may choose it, the rule never forces it.
+    assert keys["making"].family == "heading" and not keys["making"].required
+    assert keys["worth"].family == "heading" and not keys["worth"].required
+    ordered = order_glossary_entries(
+        tuple(keys.values()), (_entry("making", "созидание"), _entry("Kelbrook", "Келбрук", kind="name"))
+    )
+    assert ordered[-1].source_term == "making"  # last: the budget cuts it first
 
     # Anti-vacuum: "worth" heads two author-marked members here -- it stays, and is required.
     keys = _keys(extract_glossary_candidates(_units(_worth_document())))

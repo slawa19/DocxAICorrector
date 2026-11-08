@@ -768,6 +768,16 @@ def extract_glossary_candidates(
                 continue
             seen_keys.add(identity)
             selected.append(draft)
+    # Spec 065 FR-002: a word of a heading alone stays an OPTIONAL candidate (rule 3 of
+    # ``_single_word_admitted``) -- the ones its family quota admitted before spec 065 -- but
+    # outside the quota and ``limit``: measured on the four books (2026-11-08), letting them
+    # back into the quota pushed out required h1 phrases ("money and sustainability") and,
+    # through ``limit``, optional terms ("monetary system", "financial system").
+    heading_words = [
+        draft
+        for draft in ranked(FAMILY_HEADING)[: quotas[FAMILY_HEADING]]
+        if _heading_word_only(draft) and draft.key[0] not in split_tails
+    ]
     # ``limit`` then cuts optional candidates only: a defined term riding over its quota must
     # not push out a required family head that its quota admitted (measured: it did, five
     # heads on CW / RM / VoE, while the bypass covered only defined terms here).
@@ -778,6 +788,10 @@ def extract_glossary_candidates(
             kept.append(draft)
         elif optional_room > 0:
             optional_room -= 1
+            kept.append(draft)
+    for draft in heading_words:
+        if draft.key not in seen_keys:
+            seen_keys.add(draft.key)
             kept.append(draft)
 
     # Spec 065 FR-003: an expression built on a term the glossary keeps -- a word the author
@@ -1057,11 +1071,18 @@ def _single_word_admitted(draft: _Draft, *, split_tails: Collection[str]) -> boo
     2. MARKED AND RECURRING: the author defined it, or set it in italics or quotes where it
        first appears (the marked family), and it occurs at least ``_SINGLE_WORD_MIN_COUNT``
        times. A borrowing or a coined word ("demurrage") is introduced exactly this way.
-    Nothing else: a word of a heading alone ("making", "today", "versus"), a head of
-    unmarked collocations ("have" of "have been"), a word marked once or twice. A name is a
-    capitalised form and a phrase is several words; neither is decided here. The tail of a
-    word the extraction split ("effi ciency" -> ``ciency``; ``_split_word_tails``) is never a
-    candidate.
+    3. A WORD OF A HEADING the body keeps using (``_heading_word_only``) -- but only as an
+       OPTIONAL candidate, added outside the family quota and ``limit`` by
+       ``extract_glossary_candidates`` (this function says no to it, so it takes no room):
+       ``_included_by_rule`` never makes it required ("making", "today", "versus" were
+       required through an h1 and forced wrong renderings, spec 065 G-2), and
+       ``order_glossary_entries`` puts it last, where the budget cuts first. Removing it
+       would decide for the model; Money's *sustainability* (its title word, 114 uses) is the
+       term its *resilience* is contrasted with (G-4).
+    Nothing else: a head of unmarked collocations ("have" of "have been"), a word marked once
+    or twice. A name is a capitalised form and a phrase is several words; neither is decided
+    here. The tail of a word the extraction split ("effi ciency" -> ``ciency``;
+    ``_split_word_tails``) is never a candidate.
 
     Measured on the four corpus books (2026-11-08) and recorded in spec 065: no form the
     document gives tells *home* ("the planet we call home", 20 and 45 occurrences) from
@@ -1077,6 +1098,12 @@ def _single_word_admitted(draft: _Draft, *, split_tails: Collection[str]) -> boo
     if draft.heads_required_member:
         return True
     return draft.family == FAMILY_MARKED and draft.count >= _SINGLE_WORD_MIN_COUNT
+
+
+def _heading_word_only(draft: _Draft) -> bool:
+    """One lowercase word that is a candidate through a heading alone (spec 065 FR-002, rule 3)."""
+
+    return draft.family == FAMILY_HEADING and _is_single_lowercase_word(draft) and not draft.heads_required_member
 
 
 def _split_word_tails(plains: Sequence[str]) -> frozenset[str]:
