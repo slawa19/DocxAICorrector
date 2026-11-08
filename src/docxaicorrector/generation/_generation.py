@@ -197,7 +197,9 @@ _NUMBER_LEAK_TORN_RANGE_PATTERN = re.compile(r"([‐‑‒–—―-]\s?\d{1,3})
 _NUMBER_LEAK_THOUSANDS_PATTERN = re.compile(r"(?<=\d)[,\u00a0\u202f\u2009 ](?=\d{3}(?!\d))")
 _NUMBER_LEAK_RANGE_PATTERN = re.compile(r"(\d+)\s?[‐‑‒–—―-]\s?(\d+)")
 _NUMBER_LEAK_DIGITS_PATTERN = re.compile(r"\d+")
-_NUMBER_LEAK_FREE_STANDING_DIGITS_PATTERN = re.compile(r"(?<![^\W\d_])\d+(?![^\W\d_])")
+# Bounded by a non-alphanumeric on both sides: a lookbehind that forbade only a LETTER let the
+# match start INSIDE a digit run glued to a letter ("ISO9001" -> "001"; Codex review 2026-11-08).
+_NUMBER_LEAK_FREE_STANDING_DIGITS_PATTERN = re.compile(r"(?<![^\W_])\d+(?![^\W_])")
 _INCOMPLETE_RESPONSE_RETRY_MIN_OUTPUT_TOKENS = 1024
 _INCOMPLETE_RESPONSE_RECOVERY_MIN_OUTPUT_TOKENS = 1536
 # The hard upper bound on ``max_output_tokens`` this generator will ever ask for. Named
@@ -1038,15 +1040,32 @@ def resolve_marker_paragraph_dispositions(
                 statuses[index] = PARAGRAPH_STATUS_SOURCE_RESTORED
         texts = restored_texts
 
-    if detect_short_source_absorption and source_paragraph_chunks is not None:
-        leaks = _find_number_leaks(
-            [
-                "" if statuses[index] == PARAGRAPH_STATUS_SOURCE_RESTORED else text
-                for index, text in enumerate(texts)
-            ],
-            source_paragraph_chunks,
-            context_texts=context_texts,
+    unresolved_indexes = [
+        index
+        for index, text in enumerate(texts)
+        if not text and statuses[index] != PARAGRAPH_STATUS_SOURCE_RESTORED
+    ]
+    if unresolved_indexes and not allow_unresolved_paragraphs:
+        raise MarkerValidationError(
+            "empty_marker_chunk",
+            raw_markdown=_answer_as_received(),
+            expected_paragraph_ids=paragraph_ids,
+            found_paragraph_ids=paragraph_ids,
         )
+
+    for index in unresolved_indexes:
+        statuses[index] = PARAGRAPH_STATUS_OMITTED
+        if source_paragraph_chunks is not None and index < len(source_paragraph_chunks):
+            texts[index] = source_paragraph_chunks[index]
+
+    # The detector reads what the block DELIVERS: a neighbour whose answer was empty or thrown
+    # away ships its source, so its numbers are delivered -- a leak of them is a duplicate, not
+    # a move. Read on the raw answers, an empty neighbour made every number of its source look
+    # moved, and the duplicate left without a word (Codex review 2026-11-08). Hence this runs
+    # after the omitted paragraphs took their source; a source checked against itself has no
+    # foreign number, so the restored paragraphs are never flagged themselves.
+    if detect_short_source_absorption and source_paragraph_chunks is not None:
+        leaks = _find_number_leaks(texts, source_paragraph_chunks, context_texts=context_texts)
         if leaks:
             leak_paragraph_ids = [paragraph_ids[index] for index in leaks]
             leaked_numbers = {paragraph_ids[index]: list(numbers) for index, numbers in leaks.items()}
@@ -1074,24 +1093,6 @@ def resolve_marker_paragraph_dispositions(
                 leaked_numbers=leaked_numbers,
                 paragraph_count=len(dispositions),
             )
-
-    unresolved_indexes = [
-        index
-        for index, text in enumerate(texts)
-        if not text and statuses[index] != PARAGRAPH_STATUS_SOURCE_RESTORED
-    ]
-    if unresolved_indexes and not allow_unresolved_paragraphs:
-        raise MarkerValidationError(
-            "empty_marker_chunk",
-            raw_markdown=_answer_as_received(),
-            expected_paragraph_ids=paragraph_ids,
-            found_paragraph_ids=paragraph_ids,
-        )
-
-    for index in unresolved_indexes:
-        statuses[index] = PARAGRAPH_STATUS_OMITTED
-        if source_paragraph_chunks is not None and index < len(source_paragraph_chunks):
-            texts[index] = source_paragraph_chunks[index]
 
     resolved = [
         ParagraphDisposition(paragraph_id=disposition.paragraph_id, text=text, status=status)

@@ -1,7 +1,9 @@
 import io
 import logging
+import re
 import threading
 import zipfile
+from collections import Counter
 from types import SimpleNamespace
 from typing import Any, cast
 
@@ -5673,7 +5675,7 @@ def test_spec068_a_number_moved_from_a_torn_neighbour_is_delivered_once():
         pytest.param("Entry, 113–1 14", "Запись, 113–114", id="range-torn-by-the-extractor"),
         pytest.param("a levy of some £2,500 million", "сбор около 2,5 млрд фунтов", id="reformatted-magnitude"),
         pytest.param("a levy of 1,250 pounds", "сбор в 1250 фунтов", id="thousands-separator-dropped"),
-        pytest.param("a levy of 12,500 pounds", "сбор в 12 500 фунтов", id="thousands-with-a-space"),
+        pytest.param("a levy of 12500 pounds", "сбор в 12 500 фунтов", id="thousands-with-a-space"),
         pytest.param("tonnage, 1961-197018. The", "тоннаж, 1961–1970 гг.¹⁸ Далее", id="footnote-reference-glued"),
         pytest.param("a 40% share", "доля 40/40", id="a-number-repeated-is-not-counted-twice"),
         pytest.param("a ferry tolls network", "сеть B2B для паромов", id="digits-glued-to-letters"),
@@ -5681,9 +5683,51 @@ def test_spec068_a_number_moved_from_a_torn_neighbour_is_delivered_once():
 )
 def test_spec068_a_reformatted_number_of_the_own_source_is_not_foreign(source, answer):
     # Every number of the answer sits in the context too, so only the normalisation decides.
-    context = "1998 1999 223 224 1307 1309 113 114 2 5 1250 12 500 1961 1970 18 40 2"
+    # The context numbers are separated by ";" -- a plain space between a number and a group of
+    # three digits IS a thousands separator to the detector, and a context "1999 223 224" lost
+    # the very numbers these cases rely on (Codex review 2026-11-08).
+    context = "1998; 1999; 223; 224; 1307; 1309; 113; 114; 2; 5; 1250; 12; 500; 1961; 1970; 18; 40"
+    # ANTI-VACUUM: without the normalisation the answer carries a number its source does not
+    # (by a naive digit-run tokenizer), and the context carries that number -- so the detector
+    # WOULD flag it.
+    naive_foreign = Counter(re.findall(r"\d+", answer)) - Counter(re.findall(r"\d+", source))
+    assert naive_foreign
+    assert set(naive_foreign) <= set(generation._number_leak_tokens(context))
 
     assert generation._find_number_leaks([answer], [source], context_texts=(context,)) == {}
+
+
+def test_spec068_digits_glued_to_a_letter_are_never_a_free_standing_number():
+    # A lookbehind that forbade only a letter let the match start inside the run: "ISO9001" -> "001".
+    assert generation._number_leak_tokens("ISO9001 and B123B", free_standing=True) == Counter()
+    assert generation._number_leak_tokens("ISO9001 and B123B") == Counter({"9001": 1, "123": 1})
+    assert generation._number_leak_tokens("page 9001, item 123.", free_standing=True) == Counter(
+        {"9001": 1, "123": 1}
+    )
+    # The leak therefore does not fire on a name whose digit tail the context happens to carry.
+    assert generation._find_number_leaks(["Standard ISO9001"], ["The standard"], context_texts=("Page 001",)) == {}
+
+
+def test_spec068_a_neighbour_that_ships_its_source_delivers_its_numbers(monkeypatch):
+    # The neighbour's answer is empty; on the last attempt it ships its source, 42 included --
+    # so the 42 the first paragraph took from it is delivered twice, not moved.
+    events = _capture_events(monkeypatch)
+
+    resolved = generation.resolve_marker_paragraph_dispositions(
+        generation.split_marker_preserved_paragraph_dispositions(
+            _spec068_answer("Запись, 42", ""), _SPEC068_IDS
+        ),
+        source_paragraph_chunks=["Entry", "Other, 42"],
+        allow_unresolved_paragraphs=True,
+        detect_short_source_absorption=True,
+    )
+
+    assert [(item.status, item.text) for item in resolved] == [
+        ("accepted", "Запись, 42"),
+        ("omitted", "Other, 42"),
+    ]
+    assert [name for name, _ in events] == ["marker_chunk_number_leak_kept", "marker_paragraph_omitted"]
+    assert events[0][1]["leaked_numbers"] == {"p0001": ["42"]}
 
 
 def test_spec068_a_leak_with_attempts_left_asks_again(monkeypatch):
