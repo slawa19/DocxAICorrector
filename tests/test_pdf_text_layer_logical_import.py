@@ -2602,3 +2602,53 @@ def test_065_fr009_next_note_after_an_address_inside_notes_is_not_joined() -> No
     joined = logical_import._join_numbered_body_continuations(units, spans, layout_profile=profile)
 
     assert [u.role for u in joined] == ["heading", "body", "list"]
+
+
+# Spec 067 FR-007 (I-3): a running head that stands on the page-number line is page furniture
+# even when only one or two pages carry it (Rethinking Money's "FOREWORD" on pages 13-14 and
+# "CONTENTS" on page 11 reached the body: glued to a paragraph start, or an extra heading).
+
+_FOLIO_TOP, _FOLIO_BOTTOM = 35.6, 47.9
+
+
+def _foreword_page(page: int, folio: str, *, head: str = "FOREWORD", head_top: float = 37.4) -> list[PdfTextSpan]:
+    return [
+        _span(page, folio, top=_FOLIO_TOP, bottom=_FOLIO_BOTTOM, x0=42, x1=48, font_size=10.5),
+        _span(page, head, top=head_top, bottom=head_top + 10.5, x0=78, x1=125, font_size=10.5),
+    ]
+
+
+def test_067_fr007_running_head_on_the_folio_line_is_dropped_with_the_number() -> None:
+    spans = (
+        _body_lead_spans()
+        + [_span(1, "the ingenuity of the local population of the town can be", top=760, bottom=774, x1=447)]
+        + _foreword_page(2, "xi")
+        + [_span(2, "galvanized; with their own money they are empowered to act.", top=100, bottom=114, x1=420)]
+    )
+
+    result = build_paragraph_units_from_text_spans(spans)
+    texts = [p.text for p in result.paragraphs]
+
+    assert not any("FOREWORD" in text for text in texts)
+    assert any("town can be galvanized; with their own money" in text for text in texts)
+    assert result.report.skipped_repeated_page_furniture_count == 1
+    assert result.report.skipped_page_number_count == 1
+
+
+def test_067_fr007_short_line_off_the_folio_line_is_kept() -> None:
+    # Counterexamples. A short line in the top band that does not stand on the number's line
+    # (set a full line lower), and one on a page that has no page number at all, are text.
+    lower = _foreword_page(2, "xi", head="Preface to the reader", head_top=60)
+    no_number = [_span(3, "Acknowledgements", top=37.4, bottom=47.9, x0=78, x1=170, font_size=10.5)]
+    spans = (
+        _body_lead_spans()
+        + lower
+        + [_span(2, "A body line on the second page that ends its sentence here.", top=100, bottom=114, x1=420)]
+        + no_number
+        + [_span(3, "A body line on the third page that ends its sentence here too.", top=100, bottom=114, x1=420)]
+    )
+
+    texts = [p.text for p in build_paragraph_units_from_text_spans(spans).paragraphs]
+
+    assert any("Preface to the reader" in text for text in texts)
+    assert any("Acknowledgements" in text for text in texts)

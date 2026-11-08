@@ -140,12 +140,14 @@ def build_text_layer_quality_report(spans: Sequence[PdfTextSpan]) -> TextLayerQu
     normalized_spans = tuple(span for span in spans if _normalize_text(span.text))
     page_count = len({span.page_number for span in normalized_spans})
     repeated_furniture_keys = _detect_repeated_page_furniture_keys(normalized_spans)
+    running_heads = _detect_running_heads_on_page_number_line(normalized_spans)
     font_sizes = [
         span.font_size
         for span in normalized_spans
         if isinstance(span.font_size, (int, float))
         and span.font_size > 0
         and _span_furniture_key(span) not in repeated_furniture_keys
+        and span not in running_heads
         and not _looks_like_page_number(span)
     ]
     median_font_size = float(median(font_sizes)) if font_sizes else None
@@ -167,7 +169,9 @@ def build_text_layer_quality_report(spans: Sequence[PdfTextSpan]) -> TextLayerQu
         normalized_text = _normalize_text(span.text)
         text_chars = _text_char_count(normalized_text)
         visible_text_chars += text_chars
-        is_page_furniture = _span_furniture_key(span) in repeated_furniture_keys
+        is_page_furniture = (
+            _span_furniture_key(span) in repeated_furniture_keys or span in running_heads
+        )
         is_page_number = _looks_like_page_number(span)
         if is_page_furniture:
             repeated_page_furniture_span_count += 1
@@ -753,6 +757,71 @@ def _detect_repeated_page_furniture_keys(spans: Sequence[PdfTextSpan]) -> set[tu
         for key, page_numbers in pages_by_key.items()
         if len(page_numbers) >= min(3, len(pages)) and counts[key] >= len(page_numbers)
     }
+
+
+_RUNNING_HEAD_MAX_WORDS = 8
+_RUNNING_HEAD_SENTENCE_END_CHARS = ".!?;:"
+_RUNNING_HEAD_MIN_VERTICAL_OVERLAP_RATIO = 0.5
+
+
+def _detect_running_heads_on_page_number_line(
+    spans: Sequence[PdfTextSpan],
+) -> frozenset[PdfTextSpan]:
+    """Spec 067 FR-007 (I-3): a running head set on the page-number line is page furniture,
+    however few pages repeat it.
+
+    `_detect_repeated_page_furniture_keys` needs a (zone, text) key on at least three pages.
+    A running head that changes with the section is on fewer: Rethinking Money's "FOREWORD"
+    is on two pages (13 and 14) and "CONTENTS" on one (11), and all three reached the body --
+    two glued to the start of a paragraph, one as an extra heading. What marks them is not
+    repetition but the line they stand on: the folio's.
+
+    The form, all of it required:
+      * the span is in the top or bottom band of its page (`_page_zone`);
+      * on the same page a page number (`_looks_like_page_number`) stands on the same line:
+        the two boxes overlap vertically by at least half of the shorter one;
+      * it stands apart from that number -- a gap of at least its own font size between
+        them -- so a footnote reference split off the end of a short line is not a folio;
+      * it is short and does not end a sentence: at most eight words, last character none
+        of . ! ? ; :
+    The number itself is dropped by `_looks_like_page_number` as before. A book without
+    page numbers in its text layer gets nothing from this rule. Measured on the four corpus
+    PDFs (2026-11-08): the three Rethinking Money spans above, nothing else."""
+    numbers_by_page: dict[int, list[PdfTextSpan]] = {}
+    for span in spans:
+        if _looks_like_page_number(span):
+            numbers_by_page.setdefault(span.page_number, []).append(span)
+    if not numbers_by_page:
+        return frozenset()
+    running_heads: set[PdfTextSpan] = set()
+    for span in spans:
+        numbers = numbers_by_page.get(span.page_number)
+        if not numbers or _looks_like_page_number(span) or _page_zone(span) == "body":
+            continue
+        text = _normalize_text(span.text)
+        if (
+            not text
+            or len(text.split()) > _RUNNING_HEAD_MAX_WORDS
+            or text[-1] in _RUNNING_HEAD_SENTENCE_END_CHARS
+        ):
+            continue
+        if any(_span_stands_on_folio_line(span, number) for number in numbers):
+            running_heads.add(span)
+    return frozenset(running_heads)
+
+
+def _span_stands_on_folio_line(span: PdfTextSpan, number: PdfTextSpan) -> bool:
+    overlap = min(float(span.bottom), float(number.bottom)) - max(float(span.top), float(number.top))
+    shorter = min(float(span.bottom) - float(span.top), float(number.bottom) - float(number.top))
+    if shorter <= 0 or overlap < shorter * _RUNNING_HEAD_MIN_VERTICAL_OVERLAP_RATIO:
+        return False
+    font_size = (
+        float(span.font_size)
+        if isinstance(span.font_size, (int, float)) and span.font_size > 0
+        else shorter
+    )
+    gap = max(float(number.x0) - float(span.x1), float(span.x0) - float(number.x1))
+    return gap >= font_size
 
 
 def _span_furniture_key(span: PdfTextSpan) -> tuple[str, str]:

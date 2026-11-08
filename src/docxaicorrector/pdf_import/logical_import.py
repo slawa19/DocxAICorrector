@@ -21,6 +21,7 @@ from docxaicorrector.pdf_import.text_layer_quality import (
     PdfTextSpan,
     _can_end_with_superscript_marker,
     _detect_repeated_page_furniture_keys,
+    _detect_running_heads_on_page_number_line,
     _looks_like_page_number,
     _normalize_text,
     _span_furniture_key,
@@ -134,12 +135,29 @@ def build_paragraph_units_from_text_spans(
     spans: list[PdfTextSpan],
 ) -> PdfSourceImportResult:
     normalized_spans = [span for span in spans if _normalize_text(span.text)]
-    dehyphenation_evidence = _build_soft_wrap_dehyphenation_evidence(normalized_spans)
     repeated_furniture_keys = _detect_repeated_page_furniture_keys(tuple(normalized_spans))
+    # Spec 067 FR-007: a running head on the page-number line is furniture even on one or two
+    # pages, where the repeated-key rule above does not reach it. It is dropped here, before
+    # anything reads the page, like the number beside it. Heads the key rule already covers
+    # stay in the list and are skipped where they always were; the repeated-display-text
+    # count still reads every line, running heads included, as before.
+    running_heads = frozenset(
+        span
+        for span in _detect_running_heads_on_page_number_line(normalized_spans)
+        if _span_furniture_key(span) not in repeated_furniture_keys
+    )
+    display_text_spans = normalized_spans
+    skipped_running_head_count = 0
+    if running_heads:
+        kept_spans = [span for span in normalized_spans if span not in running_heads]
+        skipped_running_head_count = len(normalized_spans) - len(kept_spans)
+        normalized_spans = kept_spans
+    dehyphenation_evidence = _build_soft_wrap_dehyphenation_evidence(normalized_spans)
     ordered_spans = sorted(normalized_spans, key=lambda item: (item.page_number, item.top, item.x0))
     layout_profile = _build_heading_layout_profile(
         ordered_spans,
         repeated_furniture_keys=repeated_furniture_keys,
+        display_text_spans=display_text_spans,
     )
     median_font_size = layout_profile.body_font_size
 
@@ -148,7 +166,7 @@ def build_paragraph_units_from_text_spans(
     pending_body_inline_markers: dict[int, list[str]] = {}
     pending_heading_spans: list[PdfTextSpan] = []
     pending_list_spans: list[PdfTextSpan] = []
-    skipped_repeated_page_furniture_count = 0
+    skipped_repeated_page_furniture_count = skipped_running_head_count
     skipped_page_number_count = 0
     skipped_blank_page_notice_count = 0
 
@@ -698,6 +716,7 @@ def _build_heading_layout_profile(
     spans: list[PdfTextSpan],
     *,
     repeated_furniture_keys: set[tuple[str, str]],
+    display_text_spans: list[PdfTextSpan] | None = None,
 ) -> _PdfHeadingLayoutProfile:
     sentence_font_sizes = [
         float(span.font_size)
@@ -766,7 +785,9 @@ def _build_heading_layout_profile(
         body_uppercase_ratio=body_uppercase_ratio,
         body_title_word_ratio=body_title_word_ratio,
     )
-    repeated_display_text_keys = _detect_repeated_display_text_keys(spans)
+    repeated_display_text_keys = _detect_repeated_display_text_keys(
+        spans if display_text_spans is None else display_text_spans
+    )
     signatures: list[_PdfStyleSignature] = []
     for index, span in enumerate(spans):
         if not _is_style_cluster_input(span, repeated_furniture_keys=repeated_furniture_keys):

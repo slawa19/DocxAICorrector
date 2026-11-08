@@ -6,6 +6,7 @@ from pathlib import Path
 
 from docxaicorrector.pdf_import.text_layer_quality import (
     PdfTextSpan,
+    _detect_running_heads_on_page_number_line,
     _font_style_flags,
     _inline_superscript_marker_char_ids,
     _line_text_with_char_overrides,
@@ -712,3 +713,45 @@ def test_quality_probe_cli_reports_unsupported_without_raising(monkeypatch, caps
 
     assert module.main(["--input-pdf", "unused.pdf"]) == 0
     assert "unsupported" in capsys.readouterr().out
+
+
+# Spec 067 FR-007 (I-3): running heads on the page-number line.
+
+
+def _folio_line_span(text: str, *, x0: float, x1: float, top: float = 37.4, bottom: float = 47.9) -> PdfTextSpan:
+    return PdfTextSpan(
+        page_number=14,
+        text=text,
+        x0=x0,
+        top=top,
+        x1=x1,
+        bottom=bottom,
+        page_height=652,
+        font_name="SourceSerif",
+        font_size=10.5,
+    )
+
+
+def test_067_fr007_running_head_beside_the_folio_is_furniture() -> None:
+    number = _folio_line_span("xi", x0=344, x1=350, top=35.5, bottom=46.0)
+    head = _folio_line_span("FOREWORD", x0=266, x1=317)
+
+    assert _detect_running_heads_on_page_number_line([number, head]) == frozenset({head})
+
+
+def test_067_fr007_lines_that_are_not_running_heads_are_kept() -> None:
+    number = _folio_line_span("xi", x0=344, x1=350, top=35.5, bottom=46.0)
+    candidates = [
+        # ends a sentence
+        _folio_line_span("This is the end.", x0=150, x1=300),
+        # longer than a running head
+        _folio_line_span("one two three four five six seven eight nine", x0=60, x1=300),
+        # welded to the number: a reference split off a short line, not a head beside a folio
+        _folio_line_span("the Club of Rome", x0=250, x1=343),
+        # a full line below the number's line
+        _folio_line_span("Preface", x0=60, x1=120, top=60, bottom=70.5),
+    ]
+
+    assert _detect_running_heads_on_page_number_line([number, *candidates]) == frozenset()
+    # ...and on a page without a page number nothing is furniture by this rule.
+    assert _detect_running_heads_on_page_number_line(candidates) == frozenset()
