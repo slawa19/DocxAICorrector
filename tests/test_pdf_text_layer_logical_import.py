@@ -2077,7 +2077,7 @@ def test_068_fr001_index_region_runs_across_pages_to_the_next_title_of_its_rank(
         _span(1, "Index", top=40, bottom=60, x0=50, x1=120, font_size=20),
         *_index_row(1, 100),
         *_index_row(2, 40),
-        _span(3, "About the Authors", top=40, bottom=60, x0=50, x1=220, font_size=20),
+        _span(3, "Picture Credits", top=40, bottom=60, x0=50, x1=220, font_size=20),
         *_index_row(3, 100),
     ]
     keys = logical_import._detect_table_row_span_keys(
