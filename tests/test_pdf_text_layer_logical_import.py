@@ -191,19 +191,19 @@ def test_build_paragraph_units_reattaches_boundary_superscript_footnote_marker()
 def test_065_fr007_marker_split_off_a_line_ending_in_a_comma_is_glued_as_superscript() -> None:
     # Spec 065 FR-007, Money and Sustainability's shape: a reference set after a clause comma
     # at the end of a line is lifted off the line by the extractor (the comma is now an
-    # anchor) and re-bound here. Glued like one after a full stop -- not "capitalism, 5 the
-    # examples", a number in the middle of the sentence.
+    # anchor) and re-bound here. Glued like one after a full stop -- not "navigation, 5 the
+    # vessels", a number in the middle of the sentence.
     spans = [
         _span(1, "Body line establishes the normal document sentence.", top=70, bottom=82, x0=50, x1=430),
-        _span(1, "a basic characteristic of capitalism,", top=100, bottom=112, x0=50, x1=430),
+        _span(1, "a basic characteristic of navigation,", top=100, bottom=112, x0=50, x1=430),
         _span(1, "5", top=101, bottom=106, x0=431, x1=434, font_size=4),
-        _span(1, "the examples he uses all refer to firms.", top=114, bottom=126, x0=50, x1=300),
+        _span(1, "the vessels she names all sail to ports.", top=114, bottom=126, x0=50, x1=300),
     ]
 
     result = build_paragraph_units_from_text_spans(spans)
 
     joined = " ".join(paragraph.text for paragraph in result.paragraphs)
-    assert "capitalism,⁵ the examples" in joined
+    assert "navigation,⁵ the vessels" in joined
     assert all(paragraph.text.strip() != "5" for paragraph in result.paragraphs)
 
 
@@ -213,13 +213,13 @@ def test_065_fr007_marker_after_a_bare_word_keeps_its_inline_form() -> None:
     spans = [
         _span(1, "Body text line one with a body sentence", top=100, bottom=112, x0=50, x1=300, font_size=12),
         _span(1, "12", top=101, bottom=106, x0=302, x1=309, font_size=6),
-        _span(1, "evolution which is bound to throw up results", top=120, bottom=132, x0=50, x1=300, font_size=12),
+        _span(1, "navigation that is likely to turn up results", top=120, bottom=132, x0=50, x1=300, font_size=12),
     ]
 
     result = build_paragraph_units_from_text_spans(spans)
 
     assert result.paragraphs[0].text == (
-        "Body text line one with a body sentence 12 evolution which is bound to throw up results"
+        "Body text line one with a body sentence 12 navigation that is likely to turn up results"
     )
 
 
@@ -787,7 +787,7 @@ def test_build_paragraph_units_merges_prose_across_standalone_footnote_marker() 
         # superscript marker: small font, raised within the line (sorts after the
         # body line it tail-attaches to), tucked at the right edge of the line.
         _span(1, "12", top=101, bottom=106, x0=302, x1=309, font_size=6),
-        _span(1, "evolution which is bound to throw up results", top=120, bottom=132, x0=50, x1=300, font_size=12),
+        _span(1, "navigation that is likely to turn up results", top=120, bottom=132, x0=50, x1=300, font_size=12),
     ]
 
     result = build_paragraph_units_from_text_spans(spans)
@@ -795,7 +795,7 @@ def test_build_paragraph_units_merges_prose_across_standalone_footnote_marker() 
     texts = [paragraph.text for paragraph in result.paragraphs]
     # Single fused body unit, marker kept inline, no standalone "12" paragraph.
     assert texts == [
-        "Body text line one with a body sentence 12 evolution which is bound to throw up results",
+        "Body text line one with a body sentence 12 navigation that is likely to turn up results",
     ]
     assert all(paragraph.text.strip() != "12" for paragraph in result.paragraphs)
     assert result.paragraphs[0].role == "body"
@@ -2029,8 +2029,9 @@ def test_fr007_display_size_line_beside_a_short_span_stays_a_heading() -> None:
 def test_065_fr008_a_table_cell_is_a_paragraph_of_its_own() -> None:
     # Spec 065 FR-008 (I-4), Money's Box 7.1: two column labels on one baseline, a label of
     # the left column one line below. Since 064 FR-007 the right label is no longer a heading,
-    # and the body merge ran it into the left column's next line ("PU BLIC SECTOR NGO
-    # Initiative s :"); the model then joined the labels with an invented conjunction.
+    # and the body merge ran it into the left column's next line (the right column's label and
+    # the bold label under the left one, as one line); the model then joined the labels with an
+    # invented conjunction.
     spans = _subheading_page(
         _span(1, "Left Sector", top=128, bottom=134, x0=50, x1=100, font_size=5),
         _span(1, "Right Sector", top=128, bottom=134, x0=150, x1=200, font_size=5),
@@ -2108,16 +2109,15 @@ def test_067_fr002_a_column_of_lines_each_alone_on_its_baseline_is_not_a_row() -
     assert keys == frozenset(
         {(1, 726.28, left), (1, 726.28, right), (1, 735.64, left)}
     )
-    # Money and Sustainability p. 71: the extractor cut one justified line into "to an" |
-    # "inflationary boom period. Conversely, when" | "the business horizon darkens, banks", a
+    # Money and Sustainability p. 71: the extractor cut one justified line into three pieces, a
     # word space apart. Read as table cells they split the paragraph mid-sentence once cells
     # stopped being re-joined. A word-space gap and a right piece that starts no column: one line.
     spans = [
         _span(1, "A first running body line that establishes the document leading here.", top=40, bottom=54),
         _span(1, "A second running body line that establishes the document leading too.", top=56, bottom=70),
         _span(1, "to an", top=72, bottom=86, x0=50, x1=80),
-        _span(1, "inflationary period, when", top=72, bottom=86, x0=86, x1=230),
-        _span(1, "the horizon darkens", top=72, bottom=86, x0=236, x1=340),
+        _span(1, "unseasonable period, when", top=72, bottom=86, x0=86, x1=230),
+        _span(1, "the evening darkens", top=72, bottom=86, x0=236, x1=340),
     ]
     keys = logical_import._detect_table_row_span_keys(
         spans, repeated_furniture_keys=set(), body_line_length_p75=64.0
@@ -2144,8 +2144,8 @@ def test_065_fr008_close_columns_that_start_a_column_stay_a_table() -> None:
 
 def test_065_fr008_a_table_cell_unit_refuses_the_later_joins() -> None:
     # The two joins that run after the consolidation read the same flag.
-    head = _span(1, "32. T. Atkinson, Atkinson Review: Final Report. Measurement of", top=160, bottom=172, x0=50, x1=446)
-    tail = _span(1, "Government Output and Productivity for the National Accounts.", top=174, bottom=186, x0=70, x1=440)
+    head = _span(1, "32. T. Marchant, Marchant Survey: Final Ledger. Measurement of", top=160, bottom=172, x0=50, x1=446)
+    tail = _span(1, "Lighthouse Output and Tonnage Kept for the Regional Accounts.", top=174, bottom=186, x0=70, x1=440)
     spans = _notes_page(head, tail)
     profile = logical_import._build_heading_layout_profile(spans, repeated_furniture_keys=set())
     units = [_notes_title_unit(), _line_unit(head, role="list"), _line_unit(tail, role="body")]
@@ -2437,7 +2437,7 @@ def _line_unit(span: PdfTextSpan, *, role: str, level: int | None = None) -> Par
 
 
 def test_065_fr008_group_title_before_a_numbering_restart_is_a_heading() -> None:
-    # VoE "INTRODUCTION: MAKING VERSUS TAKING": body, one line, in a smaller size than the
+    # VoE: a group title of the notes set in capitals, body, one line, in a smaller size than the
     # note 1 that follows it. It becomes a heading below the section title, never at a
     # chapter's level.
     last = _span(1, "14. Forbes, 2017.", top=160, bottom=172, x0=50, x1=150)
@@ -2458,7 +2458,7 @@ def test_065_fr008_group_title_before_a_numbering_restart_is_a_heading() -> None
 
 
 def test_065_fr008_numbered_group_title_out_of_sequence_is_a_heading() -> None:
-    # VoE "1. A BRIEF HISTORY OF VALUE" after note 20, before note 1 of its own group.
+    # VoE: a numbered group title in capitals after note 20, before note 1 of its own group.
     paragraphs = build_paragraph_units_from_text_spans(
         _notes_page(
             _span(1, "4. A note of the previous group ends its own sentence.", top=160, bottom=172, x0=50, x1=420),
@@ -2496,11 +2496,11 @@ def test_065_fr008_last_note_before_a_restart_stays_a_note() -> None:
 
 
 def test_065_fr008_wrapped_entry_line_typed_heading_becomes_body_and_joins() -> None:
-    # VoE block 600: "32. T. Atkinson, ... Measurement of" + a wrapped line the classifier typed
-    # h3 + "(Basingstoke ... 2005)." -- the join never crosses a heading, so the entry stayed torn.
-    head = _span(1, "32. T. Atkinson, Atkinson Review: Final Report. Measurement of", top=160, bottom=172, x0=50, x1=446)
-    fragment = _span(1, "Government Output and Productivity for the National Accounts", top=174, bottom=186, x0=70, x1=446)
-    tail = _span(1, "(Basingstoke and New York: Palgrave Macmillan, 2005).", top=188, bottom=200, x0=70, x1=360)
+    # VoE block 600: a numbered reference entry wrapped over three lines, the middle one typed h3
+    # by the classifier -- the join never crosses a heading, so the entry stayed torn.
+    head = _span(1, "32. T. Marchant, Marchant Survey: Final Ledger. Measurement of", top=160, bottom=172, x0=50, x1=446)
+    fragment = _span(1, "Lighthouse Output and Tonnage Kept for the Regional Accounts", top=174, bottom=186, x0=70, x1=446)
+    tail = _span(1, "(Kelbrookton and Marrowby: Lantern House Press, 2005).", top=188, bottom=200, x0=70, x1=360)
     spans = _notes_page(head, fragment, tail)
     units = [
         _notes_title_unit(),
@@ -2533,7 +2533,7 @@ def test_065_fr008_heading_set_apart_inside_notes_stays_a_heading() -> None:
 
 def test_065_fr008_heading_outside_a_notes_section_is_not_touched() -> None:
     entry = _span(1, "1. A numbered paragraph of the body ends at the edge of the column", top=160, bottom=172, x0=50, x1=446)
-    fragment = _span(1, "Government Output and Productivity", top=174, bottom=186, x0=70, x1=300)
+    fragment = _span(1, "Lighthouse Output and Tonnage Kept", top=174, bottom=186, x0=70, x1=300)
     title = _notes_title_unit()
     title.text = "Overview"
     title.origin_raw_texts = ["Overview"]
@@ -2544,11 +2544,11 @@ def test_065_fr008_heading_outside_a_notes_section_is_not_touched() -> None:
     assert units[2].role == "heading"
 
 
-# Spec 065 FR-009 (I-3): a sentence that wrapped before a number ("...the Battle of Waterloo in"
-# + "1815. He was said ...") is one paragraph, not a body paragraph and a numbered-list item.
+# Spec 065 FR-009 (I-3): a sentence that wrapped before a number ("...the bank, during"
+# + "1702. She was known ...") is one paragraph, not a body paragraph and a numbered-list item.
 
 _WRAP_HEAD = "A running body line that establishes the leading tells how the bank, during"
-_WRAP_NUMBER = "1815. He was said to have made a fortune from holding on to the bonds."
+_WRAP_NUMBER = "1702. She was known to have made a fortune from holding on to the ships."
 
 
 def _body_lead_spans(page: int = 1) -> list[PdfTextSpan]:
@@ -2636,13 +2636,13 @@ def test_065_fr009_next_note_after_an_address_inside_notes_is_not_joined() -> No
 
 
 # Spec 067 FR-007 (I-3): a running head that stands on the page-number line is page furniture
-# even when only one or two pages carry it (Rethinking Money's "FOREWORD" on pages 13-14 and
-# "CONTENTS" on page 11 reached the body: glued to a paragraph start, or an extra heading).
+# even when only one or two pages carry it (Rethinking Money pages 11 and 13-14: the heads
+# reached the body, glued to a paragraph start or as an extra heading). Synthetic text.
 
 _FOLIO_TOP, _FOLIO_BOTTOM = 35.6, 47.9
 
 
-def _foreword_page(page: int, folio: str, *, head: str = "FOREWORD", head_top: float = 37.4) -> list[PdfTextSpan]:
+def _running_head_page(page: int, folio: str, *, head: str = "PRELUDE", head_top: float = 37.4) -> list[PdfTextSpan]:
     return [
         _span(page, folio, top=_FOLIO_TOP, bottom=_FOLIO_BOTTOM, x0=42, x1=48, font_size=10.5),
         _span(page, head, top=head_top, bottom=head_top + 10.5, x0=78, x1=125, font_size=10.5),
@@ -2652,16 +2652,16 @@ def _foreword_page(page: int, folio: str, *, head: str = "FOREWORD", head_top: f
 def test_067_fr007_running_head_on_the_folio_line_is_dropped_with_the_number() -> None:
     spans = (
         _body_lead_spans()
-        + [_span(1, "the ingenuity of the local population of the town can be", top=760, bottom=774, x1=447)]
-        + _foreword_page(2, "xi")
-        + [_span(2, "galvanized; with their own money they are empowered to act.", top=100, bottom=114, x1=420)]
+        + [_span(1, "the patience of the river pilots of the old ports can be", top=760, bottom=774, x1=447)]
+        + _running_head_page(2, "xi")
+        + [_span(2, "rewarded; with their own boats they are able to cross over.", top=100, bottom=114, x1=420)]
     )
 
     result = build_paragraph_units_from_text_spans(spans)
     texts = [p.text for p in result.paragraphs]
 
-    assert not any("FOREWORD" in text for text in texts)
-    assert any("town can be galvanized; with their own money" in text for text in texts)
+    assert not any("PRELUDE" in text for text in texts)
+    assert any("old ports can be rewarded; with their own boats" in text for text in texts)
     assert result.report.skipped_repeated_page_furniture_count == 1
     assert result.report.skipped_page_number_count == 1
 
@@ -2669,7 +2669,7 @@ def test_067_fr007_running_head_on_the_folio_line_is_dropped_with_the_number() -
 def test_067_fr007_short_line_off_the_folio_line_is_kept() -> None:
     # Counterexamples. A short line in the top band that does not stand on the number's line
     # (set a full line lower), and one on a page that has no page number at all, are text.
-    lower = _foreword_page(2, "xi", head="Preface to the reader", head_top=60)
+    lower = _running_head_page(2, "xi", head="Preface to the reader", head_top=60)
     no_number = [_span(3, "Acknowledgements", top=37.4, bottom=47.9, x0=78, x1=170, font_size=10.5)]
     spans = (
         _body_lead_spans()
@@ -2686,11 +2686,12 @@ def test_067_fr007_short_line_off_the_folio_line_is_kept() -> None:
 
 
 # Spec 067 FR-005 (I-1): a body paragraph torn at a page break, whose second half opens with a
-# capital, a digit, a quote or a bracket ("...bodies such as the" / "International Monetary
-# Fund ..."), is one paragraph. The text-only soft-wrap merge joins only a lowercase start.
+# capital, a digit, a quote or a bracket ("...councils such as the" / "Lanternkeeper Guild
+# ..."), is one paragraph. The text-only soft-wrap merge joins only a lowercase start.
+# Synthetic text; the line and the first word of the next keep the lengths the geometry reads.
 
-_TEAR_HEAD = "and those of the powerful multilateral bodies such as the"
-_TEAR_TAIL = "International Monetary Fund and the World Bank set the terms of the loans."
+_TEAR_HEAD = "and those of the influential harbour councils such as the"
+_TEAR_TAIL = "Lanternkeeper Guild and the Harbour Board set the terms of the tolls."
 
 
 def _torn_page_spans(
@@ -2723,8 +2724,8 @@ def test_067_fr005_paragraph_torn_at_a_page_break_is_joined() -> None:
 
 def test_067_fr005_second_half_opening_with_a_digit_or_a_quote_is_joined() -> None:
     for tail in (
-        "2008 crisis) to bring over-the-counter derivatives onto exchanges was taken.",
-        "‘de-risking’. And it must not be about levelling the field for the incumbents.",
+        "1987 storm) to bring the flat-bottomed barges into the harbour was taken.",
+        "‘re-rigging’. And it should never be about smoothing the sea for the captains.",
     ):
         texts = _texts(_torn_page_spans(tail=tail))
 
@@ -2737,7 +2738,7 @@ def test_067_fr005_line_that_ended_short_of_the_margin_is_not_joined() -> None:
     texts = _texts(_torn_page_spans(head_x1=300))
 
     assert _TEAR_HEAD in texts
-    assert not any(f"{_TEAR_HEAD} International" in text for text in texts)
+    assert not any(f"{_TEAR_HEAD} Lanternkeeper" in text for text in texts)
 
 
 def test_067_fr005_page_without_running_text_is_not_joined() -> None:
@@ -2745,13 +2746,13 @@ def test_067_fr005_page_without_running_text_is_not_joined() -> None:
     # notes, a caption page) -- the top line there is not read as the paragraph's second half.
     texts = _texts(_torn_page_spans(second_page_body=False))
 
-    assert not any(f"{_TEAR_HEAD} International" in text for text in texts)
+    assert not any(f"{_TEAR_HEAD} Lanternkeeper" in text for text in texts)
 
 
 def test_067_fr005_list_item_at_the_top_of_the_next_page_stays_a_list() -> None:
-    texts = _texts(_torn_page_spans(tail="• International Monetary Fund lending rules."))
+    texts = _texts(_torn_page_spans(tail="• Lanternkeeper Guild toll rules."))
 
-    assert not any(_TEAR_HEAD in text and "International" in text for text in texts)
+    assert not any(_TEAR_HEAD in text and "Lanternkeeper" in text for text in texts)
 
 
 def _torn_units(spans: list[PdfTextSpan]) -> tuple[ParagraphUnit, ParagraphUnit]:
@@ -2788,7 +2789,8 @@ def test_067_fr005_notes_section_is_left_to_the_notes_join() -> None:
 
 # Spec 067 FR-006 follow-up: the sentence-end paragraph boundary inside a quotation or a box
 # reads the box's own left edge, not the body margin (Money and Sustainability, Box 4.1: body at
-# x0 5.0, the box at 33.8; "...evenly mixed.” ¹¹" / "Entropy is time’s arrow ...").
+# x0 5.0, the box at 33.8; a quotation's last line, a closing quote and a reference, then the
+# box's next sentence). Synthetic text of that form.
 
 _INSET_X0 = 33.8
 _INSET_FULL = "these are words of a quotation set inside a box that runs to its right edge"
@@ -2813,14 +2815,14 @@ def test_067_inset_sentence_end_at_the_box_edge_is_a_paragraph_boundary() -> Non
         _wide_body_lines()
         + _inset(
             (_INSET_FULL, 607),
-            ("and cream poured into coffee dissipates until it is evenly mixed.” ¹¹", 267),
-            ("Entropy is time’s arrow. Without entropy there would be no way to tell the past", 607),
-            ("from the future, and the box goes on with its argument here.", 400),
+            ("and ink dropped into a basin slowly spreads until it has settled.” ¹¹", 267),
+            ("Drift is the tide’s clock. Without drift there would be no way to read the hour", 607),
+            ("from the next, and the box goes on with its argument here.", 400),
         )
     )
 
-    assert any(text.endswith("evenly mixed.” ¹¹") for text in texts)
-    assert any(text.startswith("Entropy is time’s arrow.") for text in texts)
+    assert any(text.endswith("has settled.” ¹¹") for text in texts)
+    assert any(text.startswith("Drift is the tide’s clock.") for text in texts)
 
 
 def test_067_inset_line_that_does_not_end_a_sentence_still_merges() -> None:
@@ -2828,12 +2830,12 @@ def test_067_inset_line_that_does_not_end_a_sentence_still_merges() -> None:
         _wide_body_lines()
         + _inset(
             (_INSET_FULL, 607),
-            ("and cream poured into coffee dissipates until it is evenly", 267),
-            ("Mixed with milk, the coffee is lighter and the box goes on with its argument here.", 607),
+            ("and ink dropped into a basin slowly spreads until it is", 267),
+            ("Settled in the basin, the water is darker and the box goes on with its argument here.", 607),
         )
     )
 
-    assert any("dissipates until it is evenly Mixed with milk" in text for text in texts)
+    assert any("slowly spreads until it is Settled in the basin" in text for text in texts)
 
 
 def test_067_body_margin_sentence_end_behaves_as_before() -> None:

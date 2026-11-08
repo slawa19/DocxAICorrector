@@ -2323,8 +2323,10 @@ def test_extraction_build_relations_legacy_target_called_once_without_kwarg(tmp_
     assert calls["count"] == 1
 
 
-# Spec 067 FR-007 follow-up: the contents region of Rethinking Money once dropping its running
-# head "CONTENTS" (p. 11) no longer opens a second region there.
+# Spec 067 FR-007 follow-up: a contents region whose running head on its second page is now
+# dropped as page furniture (Rethinking Money p. 11, spec 067 I-3) no longer splits in two.
+# The lines are synthetic, of the same form: a part line in capitals, a line holding two
+# entries run together whose second title wraps onto the next line after an ellipsis, a byline.
 
 
 def _toc_unit(text: str, *, role: str = "body", level: int | None = None) -> ParagraphUnit:
@@ -2334,19 +2336,19 @@ def _toc_unit(text: str, *, role: str = "body", level: int | None = None) -> Par
 def test_067_toc_region_runs_through_a_line_holding_two_entries_and_ends_at_the_last_page_number() -> None:
     paragraphs = [
         _toc_unit("CONTENTS", role="heading", level=1),
-        _toc_unit("*Foreword* *ix*"),
-        _toc_unit("3 A Fate Worse Than Debt: Interest’s Hidden Consequences *37*"),
-        _toc_unit("PART TWO **PROSPERITY**"),
+        _toc_unit("*Prelude* *ix*"),
+        _toc_unit("3 A Tide Colder Than Ice: Winter’s Hidden Currents *37*"),
+        _toc_unit("PART TWO **HARBOURS**"),
         _toc_unit(
-            "4 The Flying Fish: A New Perspective on Money *57* 5 The Future Has Arrived "
-            "But Isn’t Distributed Evenly..."
+            "4 Tides Without Charts: A New Map of the Sea *57* 5 The Lantern Has Arrived "
+            "But Isn’t Lit Evenly..."
         ),
-        _toc_unit("Yet! *73*"),
-        _toc_unit("6 Strategies for Banking *95*"),
-        _toc_unit("*About the Authors 261*"),
-        _toc_unit("FOREWORD", role="heading", level=1),
-        _toc_unit("*John Perkins,* *author of* Confessions of an Economic Hit Man"),
-        _toc_unit("We have entered revolutionary times."),
+        _toc_unit("Again! *73*"),
+        _toc_unit("6 Methods for Sailing *95*"),
+        _toc_unit("*About the Writers 261*"),
+        _toc_unit("PRELUDE", role="heading", level=1),
+        _toc_unit("*Tobias Wren,* *author of* Ledgers of an Itinerant Lamp Maker"),
+        _toc_unit("We have reached uncertain waters."),
     ]
 
     document_extraction._annotate_toc_region_candidates(paragraphs)
@@ -2368,7 +2370,7 @@ def test_067_toc_region_without_page_numbers_is_left_as_the_candidate_run_found_
     paragraphs = [
         _toc_unit("Contents"),
         _toc_unit("Chapter I"),
-        _toc_unit("Why this Report, Now?"),
+        _toc_unit("Why this Ledger, Now?"),
         _toc_unit("Chapter II"),
         _toc_unit("Appendices", role="heading", level=3),
         _toc_unit("**Bibliography**"),
@@ -2392,6 +2394,6 @@ def test_067_long_prose_line_with_a_number_inside_does_not_join_a_contents_regio
         "the member states, and the share kept rising for years."
     )
     assert document_extraction._holds_consecutive_toc_entries(
-        "4 The Flying Fish: A New Perspective on Money *57* 5 The Future Has Arrived But "
-        "Isn’t Distributed Evenly..."
+        "4 Tides Without Charts: A New Map of the Sea *57* 5 The Lantern Has Arrived But "
+        "Isn’t Lit Evenly..."
     )
