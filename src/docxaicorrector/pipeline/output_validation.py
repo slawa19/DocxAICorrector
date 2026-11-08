@@ -590,6 +590,81 @@ def is_citation_form_paragraph(text: str) -> bool:
     return True
 
 
+# --- Spec 065 FR-006: a parenthetical meta-comment written INSTEAD of a paragraph ----------
+#
+# Rule 10 of the system prompt forbids a placeholder or a comment in place of a paragraph's
+# text, and the model still writes one where the importer tore a note in two and the whole
+# note has already been delivered under its first piece: "(Продолжение примечания 10)" in
+# place of a note's tail, "(Продолжение названия книги): …" in front of one (third translate
+# run of 2026-11-07, VoE p1264 and p1698). Nothing downstream recognised it, so the reader got
+# the model talking about the book's layout.
+#
+# Recognised by FORM and by what the answer does NOT share with its own source paragraph
+# (Constitution VII: no word list, no string taken from a book). All four are required:
+#
+# * the parenthetical spans the whole paragraph, or opens it and is followed by a colon;
+# * inside it, a capitalised first word and at most ``META_COMMENT_MAX_WORDS`` words; one that
+#   spans the paragraph also carries a number or a colon -- it points at a place in the book;
+# * the SOURCE paragraph does not open with a parenthetical itself: an author's parenthetical
+#   is translated into one, and that is the author speaking, not the model;
+# * no content token of the parenthetical -- a number, or a word of two or more letters,
+#   compared case-insensitively -- occurs in the source. A translation keeps the source's
+#   numbers and its untranslated names ("(See chapter 3.)" -> "(См. главу 3.)" shares "3");
+#   a remark about where a paragraph continues shares nothing with the paragraph.
+#
+# A parenthetical INSIDE a paragraph is never read: the form is anchored at the paragraph's
+# first character. Measured on the four books of that run; the numbers are in spec 065's
+# Changelog.
+META_COMMENT_MAX_WORDS = 6
+_META_COMMENT_SPANNING_PATTERN = re.compile(r"^(?P<comment>\((?P<inner>[^()\n]+)\))[.:]?$")
+_META_COMMENT_OPENING_PATTERN = re.compile(r"^(?P<comment>\((?P<inner>[^()\n]+)\))\s*:")
+_META_COMMENT_EMPHASIS_EDGE = "*_ "
+_META_COMMENT_TOKEN_PATTERN = re.compile(r"\w+", re.UNICODE)
+
+
+def _meta_comment_form_body(text: str) -> str:
+    """The paragraph without placeholders, a heading prefix and the emphasis wrapping it."""
+    body = _INTERNAL_PLACEHOLDER_PATTERN.sub(" ", str(text or "")).strip()
+    body = _HEADING_PREFIX_PATTERN.sub("", body).strip()
+    return body.strip(_META_COMMENT_EMPHASIS_EDGE)
+
+
+def _meta_comment_content_tokens(text: str) -> set[str]:
+    return {
+        token
+        for token in (match.group(0).casefold() for match in _META_COMMENT_TOKEN_PATTERN.finditer(text))
+        if token.isdigit() or (len(token) >= 2 and any(char.isalpha() for char in token))
+    }
+
+
+def structural_meta_comment(answer: str, source: str) -> str | None:
+    """The parenthetical meta-comment ``answer`` consists of or opens with, or ``None``.
+
+    ``answer`` is one paragraph of a model answer and ``source`` the paragraph it answers. See
+    the note above for the four conditions; a ``None`` means the answer is the model's
+    rendering of the paragraph as far as this rule can tell.
+    """
+    body = _meta_comment_form_body(answer)
+    spanning = _META_COMMENT_SPANNING_PATTERN.match(body)
+    match = spanning or _META_COMMENT_OPENING_PATTERN.match(body)
+    if match is None:
+        return None
+    inner = match.group("inner").strip()
+    words = inner.split()
+    if not words or len(words) > META_COMMENT_MAX_WORDS:
+        return None
+    first = words[0]
+    if not (first[0].isalpha() and first[0].isupper()):
+        return None
+    if spanning is not None and ":" not in inner and not any(char.isdigit() for char in inner):
+        return None
+    if _meta_comment_form_body(source).startswith("("):
+        return None
+    if _meta_comment_content_tokens(inner) & _meta_comment_content_tokens(str(source or "")):
+        return None
+    return match.group("comment")
+
+
 def has_bullet_heading_output(text: str) -> bool:
     return any(_BULLET_HEADING_PATTERN.match(line) for line in iter_nonempty_markdown_lines(text))
 

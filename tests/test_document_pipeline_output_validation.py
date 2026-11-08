@@ -3870,3 +3870,61 @@ def test_footnote_restoration_then_assembly_replay_moves_no_boundary(book, repor
     restored_numbers = Counter(_NUMBER_TOKEN_PATTERN.findall(restored.final_markdown))
     assert not restored_numbers - plain_numbers
     assert not (plain_numbers - restored_numbers) - converted_digits
+
+
+# --- Spec 065 FR-006: a parenthetical meta-comment about structure, by form -------------------
+#
+# Synthetic texts only (Constitution VII): the rule reads the form of the answer and what it
+# shares with its own source, so no sentence of a corpus book is needed to exercise it.
+
+_META_SOURCE_TAIL = "Grant (Oxford: Harbour Press, 1971), p. 42."
+
+
+@pytest.mark.parametrize(
+    ("answer", "source", "comment"),
+    [
+        pytest.param(
+            "(Продолжение примечания 10)", _META_SOURCE_TAIL, "(Продолжение примечания 10)", id="spans-with-a-number"
+        ),
+        pytest.param(
+            "(Продолжение названия книги): *Harbour Studies* (Oxford: Harbour Press, 1971), с. 42.",
+            "*Studies* (Oxford: Harbour Press, 1971), p. 42.",
+            "(Продолжение названия книги)",
+            id="opens-and-is-followed-by-a-colon",
+        ),
+        pytest.param(
+            "### (Окончание записи 7)", "### Harbour Press, 1971", "(Окончание записи 7)", id="behind-a-heading-prefix"
+        ),
+        pytest.param("*(См.: запись выше)*", _META_SOURCE_TAIL, "(См.: запись выше)", id="emphasised-with-a-colon"),
+    ],
+)
+def test_structural_meta_comment_is_recognised_by_form(answer: str, source: str, comment: str) -> None:
+    assert document_pipeline_output_validation.structural_meta_comment(answer, source) == comment
+
+
+@pytest.mark.parametrize(
+    ("answer", "source"),
+    [
+        # Anti-regression 3 (spec 065): an author's parenthetical INSIDE a paragraph is prose.
+        pytest.param(
+            "Он вернулся к рукописи (Продолжение следует в главе 10) и закончил её к утру.",
+            "He went back to the manuscript (to be continued in chapter 10) and finished it by morning.",
+            id="authors-parenthetical-inside-a-paragraph",
+        ),
+        # Anti-regression 3: a short parenthetical paragraph that TRANSLATES its source shares
+        # the source's number, so it is the author's, not the model's.
+        pytest.param("(См. главу 3.)", "See chapter 3.", id="translation-shares-the-number"),
+        pytest.param("(Источник: Harbour Press)", "Source: Harbour Press", id="translation-shares-a-name"),
+        # The author's own parenthetical paragraph is translated into one.
+        pytest.param("(Источник: Всемирный банк.)", "(Source: World Bank.)", id="source-opens-with-a-parenthetical"),
+        pytest.param("(Смех.)", "Laughter.", id="no-number-and-no-colon"),
+        pytest.param("(продолжение примечания 10)", _META_SOURCE_TAIL, id="lowercase-first-word"),
+        pytest.param(
+            "(Это замечание автора о совсем другой и долгой истории 10)", _META_SOURCE_TAIL, id="longer-than-a-label"
+        ),
+        pytest.param("(Продолжение примечания 10) и далее по тексту.", _META_SOURCE_TAIL, id="no-colon-after-an-opener"),
+        pytest.param("Грант (Оксфорд: Harbour Press, 1971), с. 42.", _META_SOURCE_TAIL, id="an-ordinary-translation"),
+    ],
+)
+def test_structural_meta_comment_keeps_what_is_not_one(answer: str, source: str) -> None:
+    assert document_pipeline_output_validation.structural_meta_comment(answer, source) is None
