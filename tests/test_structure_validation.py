@@ -463,9 +463,11 @@ def test_build_markdown_quality_metrics_collects_detector_advisories_without_fai
     assert audit["pdf_blank_page_marker_leakage"]["verdict"] == "unit_aware"
     assert audit["inline_page_furniture_leakage"]["verdict"] == "unit_aware_after_structural_label_exemption"
     assert audit["heading_body_concat_detected"]["verdict"] == "tolerant"
-    assert audit["residual_bullet_glyph"]["heldout_money_sustainability_class"] == "c_observability_source_bullets"
+    assert audit["residual_bullet_glyph"]["verdict"] == "tolerant"
     assert audit["toc_body_concat"]["verdict"] == "tolerant"
-    assert audit["list_fragment_regression"]["heldout_money_sustainability_class"] == "b_extraction_noise_or_citation_tail"
+    assert audit["list_fragment_regression"]["verdict"] == "tolerant"
+    # Spec 066 A-2: the audit table carries neutral fields only, no per-book class column.
+    assert all(set(entry) == {"verdict", "evidence", "severity_model"} for entry in audit.values())
 
 
 def test_inline_page_furniture_detector_exempts_numbered_structural_labels() -> None:
@@ -491,8 +493,8 @@ def test_inline_page_furniture_detector_exempts_numbered_structural_labels() -> 
 
     assert metrics["inline_page_furniture_leakage_count"] == 0
     assert metrics["quality_gate_audit_classifications"]["inline_page_furniture_leakage"][
-        "heldout_money_sustainability_class"
-    ] == "a_gate_misclass_fixed"
+        "verdict"
+    ] == "unit_aware_after_structural_label_exemption"
 
 
 def test_inline_page_furniture_detector_still_flags_repeated_running_header_with_page_number() -> None:
