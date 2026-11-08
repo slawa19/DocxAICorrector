@@ -8868,6 +8868,11 @@ def test_translate_run_builds_the_glossary_once_and_every_block_prompt_carries_i
     assert context["status"] == "built"
     assert context["term_count"] == 3
     assert context["rendered_term_count"] == 3
+    # Spec 065 FR-001: what reached the section, in section order, and what the budget cut.
+    assert len(context["rendered_terms"]) == 3
+    assert set(context["rendered_terms"]) == {"quillet bond", "Zorvane Pettish", "Kelbrook"}
+    assert context["cut_terms"] == [] and context["cut_count"] == 0
+    assert context["unrendered_required"] == [] and context["unrendered_required_count"] == 0
     # Spec 064 FR-003: the run's cached system prompt, measured from the same arguments the
     # block phase renders it from, so its length is the length of what each block call got.
     # A block request carries that prompt plus, after a blank line, the block's own focus.
@@ -8885,12 +8890,16 @@ def test_translate_run_builds_the_glossary_once_and_every_block_prompt_carries_i
     artifact = json.loads(case.artifacts[0].read_text(encoding="utf-8"))
     assert artifact["schema"] == "run_glossary/v1"
     assert artifact["run_id"] == "run-glossary"
+    # Spec 065 FR-001: the required entry first, then the names by how often the book uses them.
     assert [term["target_term"] for term in artifact["terms"]] == [
         "киллетная облигация",
-        "Зорвейн Петтиш",
         "Келбрук",
+        "Зорвейн Петтиш",
     ]
     assert artifact["candidate_count"] >= 3
+    # Spec 065 FR-001: the stored order IS the section order, and the record says so.
+    assert artifact["rendered_terms"] == [term["source_term"] for term in artifact["terms"]]
+    assert artifact["cut_terms"] == [] and artifact["unrendered_required"] == []
     assert context["artifact_path"] == str(case.artifacts[0])
     assert _glossary_notices(case.runtime) == [
         {"kind": "glossary", "level": "info", "message_key": "result.run_glossary_built", "params": {"count": 3}}
@@ -9268,10 +9277,11 @@ def test_call_a_renders_the_required_set_and_call_b_chooses_among_the_rest(monke
     assert context["collisions_found"] == 0
     assert context["name_entry_count"] == 2
     artifact = json.loads(Path(context["artifact_path"]).read_text(encoding="utf-8"))
-    # M-4: transliterations are reported as the model gave them; a human reads this list.
-    assert artifact["name_entries"] == [
-        {"source_term": "Zorvane Pettish", "target_term": "Зорвейн Петтиш"},
+    # M-4: transliterations are reported as the model gave them; a human reads this list
+    # (spec 065 FR-001: in section order -- the more frequent name first).
+    assert sorted(artifact["name_entries"], key=lambda entry: entry["source_term"]) == [
         {"source_term": "Kelbrook", "target_term": "Келбрук"},
+        {"source_term": "Zorvane Pettish", "target_term": "Зорвейн Петтиш"},
     ]
     section = case.block_system_prompts[0]
     assert section.index("- quillet bond -> киллетная облигация") < section.index("- Zorvane Pettish")

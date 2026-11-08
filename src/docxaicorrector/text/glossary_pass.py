@@ -77,6 +77,23 @@ _REQUIRED_MIN_CHAPTERS = 2
 _HEAD_SHARE_DIVISOR = 25
 _HEAD_MAX = 16
 _HEAD_MIN_MEMBERSHIP = 3
+# Spec 065 FR-002: a word heads the author's terms -- and is a candidate as one lowercase word --
+# only when at least this many of its members are required. Measured on the four corpus books
+# (2026-11-08): with one, *public* and *economics* (The Value of Everything) and *monetary* and
+# *system* (Money) stood as required entries on a single marked member each; with two, *value*,
+# *economy*, *economic* and *growth* stay.
+_HEAD_MIN_REQUIRED_MEMBERS = 2
+# Spec 065 FR-002: one lowercase word the author marked (defined, or set in italics or quotes
+# where it first appears) is a candidate only when it occurs at least this often -- the same
+# "recurring" as ``_REQUIRED_MIN_COUNT``. A word used once or twice cannot be rendered two ways
+# across the book; "called him a loser" in a quotation is not a term.
+_SINGLE_WORD_MIN_COUNT = 3
+# Spec 065 FR-002, the split-word tail ("effi ciency", ``_split_word_tails``): a whole word opens
+# a clause somewhere or follows one of the document's own this-many commonest words.
+_COMMONEST_WORDS = 20
+# Spec 065 FR-003: an expression built on a term of the glossary is its own candidate from this
+# many occurrences on.
+_PHRASE_MIN_COUNT = 3
 
 _MAX_TERM_WORDS = 4
 _SPREAD_BINS = 10
@@ -109,7 +126,14 @@ _LEADING_MARKED_SPAN_RE = (
 )
 # Spec 064 FR-009: "call X 'Y'" -- one unmarked word (the object of the verb: "itself",
 # "landlords") and then the marked name the author gives it. The marking says which is the term.
-_OBJECT_THEN_MARKED_SPAN_RE = re.compile(r"\s*" + _WORD + r"(?=\s+[*“\"‘])")
+# Spec 065 FR-002: an article may stand between them ("called them the 'productive class'"); it
+# used to end the unmarked fallback, and "them the" became a required entry. ``_WORD`` is an
+# alternation and must be grouped: ungrouped, its first branch matched any word with no
+# lookahead at all.
+_OBJECT_THEN_MARKED_SPAN_RE = re.compile(
+    r"\s*(?:" + _WORD + r")(?:\s+(?:a|an|the))?(?=\s+[*“\"‘])", re.IGNORECASE
+)
+_OPENING_QUOTES = frozenset("“\"‘")
 _CONTINUING_WORD_RE = re.compile(r"\s*\*?" + _LETTER)
 # The grammar of an English definition — six verbs, no term. The constitution's acknowledged
 # class of language resource ("general across books and extensible per language, NOT a per-book
@@ -203,6 +227,8 @@ class _Draft:
     in_h1: bool = False
     marked_count: int = 0
     heads_required_member: bool = False
+    # Spec 065 FR-003: an expression built on a required word inherits its requiredness.
+    phrase_of_required: bool = False
     # The document writes this one-word term capitalised more often than lowercase (the same
     # case test the name family uses); spec 064 FR-009 rule "capital letter".
     capitalised_form: bool = False
@@ -379,6 +405,10 @@ def _defined_term_words(tail: str) -> list[str]:
     words: list[str] = []
     for match in _TOKEN_RE.finditer(_EMPHASIS_MARKS_RE.sub("", tail)):
         token = match.group(0)
+        if token in _OPENING_QUOTES:
+            # Spec 065 FR-002: the definition goes on to a quoted name ("called them the 'tallow
+            # class' and ..."); the unmarked words before it are the verb's object, not a term.
+            return []
         if not _WORD_RE.fullmatch(token):
             return words
         words.append(token)
@@ -680,7 +710,7 @@ def extract_glossary_candidates(
         return sorted(families[family], key=lambda draft: (-draft.score, draft.key))
 
     membership: Counter[str] = Counter()
-    required_membership: set[str] = set()
+    required_members: Counter[str] = Counter()
     for family in (FAMILY_MARKED, FAMILY_NAME, FAMILY_HEADING, FAMILY_COLLOCATION):
         for draft in ranked(family)[: quotas[family]]:
             if len(draft.key) >= 2:
@@ -690,7 +720,8 @@ def extract_glossary_candidates(
                     if len(word) >= _MIN_COLLOCATION_EDGE_LETTERS:
                         membership[word] += 1
                         if _included_by_rule(draft):
-                            required_membership.add(word)
+                            required_members[word] += 1
+    required_membership = {word for word, count in required_members.items() if count >= _HEAD_MIN_REQUIRED_MEMBERS}
     for word, members in membership.items():
         if members < _HEAD_MIN_MEMBERSHIP:
             continue
@@ -722,10 +753,14 @@ def extract_glossary_candidates(
     # "however rare", and a rare term ranks low. Other required candidates (marked and
     # recurring, h1 phrases, heads) still compete inside their family's quota -- a narrowing
     # recorded in the spec with its counts, because lifting it doubles the required set.
+    split_tails = _split_word_tails([plains[index] for index in body_indexes])
     selected: list[_Draft] = []
     seen_keys: set[tuple[str, ...]] = set()
     for family in _FAMILY_ORDER:
-        for rank, draft in enumerate(ranked(family)):
+        # Spec 065 FR-002: a one-word lowercase draft that fails the form rule takes no place
+        # in its family's quota; the room goes to the next candidate.
+        admitted = [draft for draft in ranked(family) if _single_word_admitted(draft, split_tails=split_tails)]
+        for rank, draft in enumerate(admitted):
             if rank >= quotas[family] and not _is_defined(draft):
                 continue
             identity = tuple(word.lower() for word in draft.key)
@@ -744,6 +779,96 @@ def extract_glossary_candidates(
         elif optional_room > 0:
             optional_room -= 1
             kept.append(draft)
+
+    # Spec 065 FR-003: an expression built on a term the glossary keeps -- a word the author
+    # marked, or a required word (the ANCHOR) -- is a candidate of its own, placed right before
+    # that word: "public value" and "value-based" have senses of their own, and the word's
+    # rendering must not leak into them. It contains the anchor as a word or as a part of a
+    # hyphenated word, occurs at least ``_PHRASE_MIN_COUNT`` times in two units, and is one of
+    # what the document itself sets apart:
+    #   - an expression the author marked or put in a heading (the marked and heading drafts
+    #     the family quota cut: "rent extraction", "value-based pricing"), unless one of its
+    #     other words is GLUE -- the edge of ``_HEAD_MIN_MEMBERSHIP`` or more candidates none of
+    #     which is required (a span the author quoted can start at "from");
+    #   - a hyphenated word ("value-based", "non-market");
+    #   - a recurring lowercase collocation of TWO words whose other word is the edge of a
+    #     REQUIRED candidate -- a word of the book's own vocabulary of terms ("public" of
+    #     "public goods"), not a word that stands next to everything. Measured on The Value of
+    #     Everything (2026-11-08): neither the Dunning score ("about value" 77.6, "public
+    #     value" 34.4) nor the word's frequency rank ("public" 42nd) separates them; this test
+    #     keeps "public value" and drops "that value", "about value", "value from". Three-word
+    #     collocations here were coordinations of two terms ("productive and unproductive",
+    #     "income and wealth"), rendered by their parts.
+    # Neither the family quota nor ``limit`` cuts them: the room was the defect (spec 065 G-1,
+    # G-3); an expression already a candidate just gets the "phrase" signal. An
+    # expression of a REQUIRED anchor is required too, so the longer entry reaches the prompt
+    # section ahead of the word it contains.
+    kept_by_key = {tuple(word.lower() for word in draft.key): draft for draft in kept if not draft.proper}
+    kept_identities = {tuple(word.lower() for word in draft.key) for draft in kept}
+    anchors = [
+        draft
+        for draft in kept
+        if _is_single_lowercase_word(draft) and (draft.family == FAMILY_MARKED or _included_by_rule(draft))
+    ]
+    phrases_before: dict[int, list[_Draft]] = defaultdict(list)
+    if anchors:
+        by_score = sorted(drafts.items(), key=lambda item: (-item[1].score, item[0]))
+        authored = [
+            key
+            for key, draft in by_score
+            if draft.family in (FAMILY_MARKED, FAMILY_HEADING) and not draft.proper and (len(key) > 1 or "-" in "".join(key))
+        ]
+        compounds = sorted((word,) for word, count in word_counts.items() if "-" in word and count >= _PHRASE_MIN_COUNT)
+        collocations = sorted(collocation_scores, key=lambda gram: (-collocation_scores[gram], gram))
+
+        def holds(key: tuple[str, ...], anchor_word: str) -> bool:
+            return any(anchor_word == part or anchor_word in part.split("-") for part in key)
+
+        def partners(key: tuple[str, ...], anchor_word: str) -> list[str]:
+            return [word for word in key if word != anchor_word and len(word) > _MAX_JOINER_LETTERS]
+
+        def of_terms(gram: tuple[str, ...], anchor_word: str) -> bool:
+            # At least one partner: a folded "this" ("thi") is as short as a joiner.
+            others = partners(gram, anchor_word)
+            return bool(others) and all(required_members[word] >= 1 for word in others)
+
+        def glue(word: str) -> bool:
+            return membership[word] >= _HEAD_MIN_MEMBERSHIP and required_members[word] == 0
+
+        for anchor in anchors:
+            anchor_word = anchor.key[0].lower()
+            pool = [
+                *(key for key in authored if holds(key, anchor_word) and not any(glue(word) for word in partners(key, anchor_word))),
+                *(key for key in compounds if holds(key, anchor_word)),
+                *(gram for gram in collocations if len(gram) == 2 and anchor_word in gram and of_terms(gram, anchor_word)),
+            ]
+            for key in pool:
+                if key in kept_identities:
+                    # Already a candidate on its own (a collocation within its quota, a marked
+                    # expression): it is still an expression of this anchor.
+                    present = kept_by_key.get(key)
+                    if present is not None and present is not anchor:
+                        present.signals.add("phrase")
+                        present.phrase_of_required = present.phrase_of_required or _included_by_rule(anchor)
+                    continue
+                hits = hits_folded_case.get(key, [])
+                units_hit = set(hits)
+                if len(hits) < _PHRASE_MIN_COUNT or len(units_hit) < 2:
+                    continue
+                phrase = drafts.setdefault(key, _Draft(key=key, surface=" ".join(key), proper=False))
+                if not phrase.family:
+                    phrase.family = FAMILY_COLLOCATION
+                    phrase.count = len(hits)
+                    phrase.units = units_hit
+                    phrase.chapters = len({chapter_of[unit] for unit in units_hit})
+                    phrase.score = collocation_scores.get(key, 0.0)
+                phrase.signals.add("phrase")
+                phrase.phrase_of_required = _included_by_rule(anchor)
+                kept_identities.add(key)
+                kept_by_key[key] = phrase
+                phrases_before[id(anchor)].append(phrase)
+    if phrases_before:
+        kept = [phrase for draft in kept for phrase in (*phrases_before.get(id(draft), ()), draft)]
 
     body_lowercase_words = Counter(
         word for unit_index in body_indexes for word in _WORD_RE.findall(plains[unit_index]) if word.islower()
@@ -857,11 +982,16 @@ def _included_by_rule(draft: _Draft) -> bool:
     around ONE word are left to the model.
     """
 
-    if draft.in_h1:
+    if draft.phrase_of_required:
+        # Spec 065 FR-003: an expression built on a required word ("public value" on *value*).
+        return True
+    if draft.in_h1 and not _is_single_lowercase_word(draft):
         # Fourth pass (orchestrator decision): a phrase of the book's title or of a chapter
         # (h1) heading that the body uses at least ``_HEADING_MIN_BODY_COUNT`` times — the
         # condition under which it became a candidate at all — is the strongest mark an author
-        # makes. h2 phrases stay optional.
+        # makes. h2 phrases stay optional. Spec 065 FR-002: ONE lowercase word of a heading
+        # ("making", "today", "versus") is not such a mark -- titles are written in ordinary
+        # words.
         return True
     if draft.heads_required_member:
         # A head is required when it heads a family (>= 3 members) one of whose members the
@@ -898,6 +1028,110 @@ def _is_lowercase_single_marked(draft: _Draft) -> bool:
         and len(draft.key) == 1
         and not draft.capitalised_form
         and not _is_defined(draft)
+    )
+
+
+def _is_single_lowercase_word(draft: _Draft) -> bool:
+    """ONE word that the document writes in lowercase: no hyphen, no capital by its own counts.
+
+    A hyphenated word ("value-based", "rent-seeking") is a compound -- an expression -- and a
+    word the document capitalises mid-sentence more often than not is written as a name
+    (``_Draft.capitalised_form``); neither is a single lowercase word.
+    """
+
+    return (
+        len(draft.key) == 1
+        and not draft.proper
+        and not draft.capitalised_form
+        and "-" not in draft.key[0]
+        and draft.key[0].lower() == draft.key[0]
+    )
+
+
+def _single_word_admitted(draft: _Draft, *, split_tails: Collection[str]) -> bool:
+    """Spec 065 FR-002: ONE lowercase word is a candidate only by one of these forms.
+
+    1. PART OF THE AUTHOR'S TERMS: it heads a family (``_HEAD_MIN_MEMBERSHIP`` candidates
+       sharing it at an edge) of which at least ``_HEAD_MIN_REQUIRED_MEMBERS`` are required --
+       *value* of "surplus value", "value added".
+    2. MARKED AND RECURRING: the author defined it, or set it in italics or quotes where it
+       first appears (the marked family), and it occurs at least ``_SINGLE_WORD_MIN_COUNT``
+       times. A borrowing or a coined word ("demurrage") is introduced exactly this way.
+    Nothing else: a word of a heading alone ("making", "today", "versus"), a head of
+    unmarked collocations ("have" of "have been"), a word marked once or twice. A name is a
+    capitalised form and a phrase is several words; neither is decided here. The tail of a
+    word the extraction split ("effi ciency" -> ``ciency``; ``_split_word_tails``) is never a
+    candidate.
+
+    Measured on the four corpus books (2026-11-08) and recorded in spec 065: no form the
+    document gives tells *home* ("the planet we call home", 20 and 45 occurrences) from
+    *demurrage* ("known as demurrage", 15) -- the share of marked occurrences, the chapter the
+    word lives in, the first use and the derived word forms each lose a real term of another
+    book -- so *home* stays a candidate; the model decides its rendering.
+    """
+
+    if not _is_single_lowercase_word(draft):
+        return True
+    if draft.key[0] in split_tails:
+        return False
+    if draft.heads_required_member:
+        return True
+    return draft.family == FAMILY_MARKED and draft.count >= _SINGLE_WORD_MIN_COUNT
+
+
+def _split_word_tails(plains: Sequence[str]) -> frozenset[str]:
+    """Lowercase tokens that are the second half of a word the extraction split, by form.
+
+    A WHOLE word opens a clause somewhere, or follows one of the document's own
+    ``_COMMONEST_WORDS`` commonest words ("the", "of", "a" -- counted, not listed). A FRAGMENT
+    ("effi", "suffi") never ends a clause, and every word that follows it is not whole
+    ("ciency", "cient"). A TAIL is a word that is not whole, occurs at least
+    ``_SINGLE_WORD_MIN_COUNT`` times, at least half of the time right after a fragment, and
+    after at least two different fragments: a word ending that several split words share
+    ("effi ciency", "suffi ciency"). The second word of a fixed pair ("fossil fuels") follows
+    one word only and is not a tail. Spec 065 FR-002; no list of fragments or ligatures.
+    """
+
+    seen: Counter[str] = Counter()
+    followers: dict[str, set[str]] = defaultdict(set)
+    clause_ends: set[str] = set()
+    clauses: list[list[str]] = []
+    for plain in plains:
+        for clause in _CLAUSE_SPLIT_RE.split(plain):
+            words = [word.lower() for word in _WORD_RE.findall(clause)]
+            if not words:
+                continue
+            clauses.append(words)
+            clause_ends.add(words[-1])
+            for index, word in enumerate(words):
+                seen[word] += 1
+                if index + 1 < len(words):
+                    followers[word].add(words[index + 1])
+    commonest = {word for word, _ in seen.most_common(_COMMONEST_WORDS)}
+    whole: set[str] = set()
+    for words in clauses:
+        whole.add(words[0])
+        whole.update(words[index] for index in range(1, len(words)) if words[index - 1] in commonest)
+    fragments = {
+        word
+        for word, following in followers.items()
+        if word not in clause_ends and following and not (following & whole)
+    }
+    after_fragment: Counter[str] = Counter()
+    fragments_before: dict[str, set[str]] = defaultdict(set)
+    for words in clauses:
+        for index in range(1, len(words)):
+            if words[index - 1] in fragments:
+                after_fragment[words[index]] += 1
+                fragments_before[words[index]].add(words[index - 1])
+    return frozenset(
+        word
+        for word, count in after_fragment.items()
+        if word.islower()
+        and word not in whole
+        and seen[word] >= _SINGLE_WORD_MIN_COUNT
+        and 2 * count >= seen[word]
+        and len(fragments_before[word]) >= 2
     )
 
 
@@ -1430,27 +1664,81 @@ def missing_required_candidates(
     )
 
 
-def order_required_first(
+def is_single_lowercase_entry(term: GlossaryTerm) -> bool:
+    """An entry of ONE lowercase word with no note: the last class of the prompt section.
+
+    Spec 065 FR-001. A hyphenated word ("value-based"), a capital ("Terra", "GDP"), a name and
+    an entry with a note on its sense are each a form of their own and rank with the phrases.
+    """
+
+    source = str(term.source_term or "").strip()
+    words = _WORD_RE.findall(source)
+    return (
+        len(words) == 1
+        and "-" not in source
+        and source == source.lower()
+        and term.kind != "name"
+        and not str(term.note or "").strip()
+    )
+
+
+def order_glossary_entries(
     candidates: Sequence[GlossaryCandidate],
     terms: Sequence[GlossaryTerm],
 ) -> tuple[GlossaryTerm, ...]:
-    """Rule-included entries first (in candidate order), then the model's own choices.
+    """The glossary in the order of its value to the reader, not the order it was built in.
 
-    The prompt budget cuts from the END, so a rule-included term is never the one dropped
-    to make room for an optional one.
+    Spec 065 FR-001 (G-1: the budget cut The Value of Everything's "production boundary",
+    "value extraction" and "national accounts" while "public", "market" and "them the" kept
+    their room). Two tiers: every entry of a REQUIRED candidate first -- the budget never cuts
+    them (``pipeline/glossary_phase.render_run_glossary_section``) -- then the model's own
+    choices. Within a tier, by form: names, phrases, hyphenated, capitalised and noted entries
+    before single lowercase words (``is_single_lowercase_entry``); within a class, the
+    candidate's occurrence count, highest first; ties keep the order the entries came in, so a
+    term's two senses stay together. The budget cut then takes the tail: rare single words of
+    the model's own choice first.
+
+    Finally an entry that CONTAINS a single-word entry ("public value" and "value", "value-based"
+    and "value") is moved right before that word when it came after it -- the longer entry
+    wins (spec 065 FR-003) and is read first; moved ahead of a required word, it rides inside
+    the part the budget never cuts.
     """
 
-    by_key: dict[tuple[str, ...], list[GlossaryTerm]] = defaultdict(list)
-    for term in terms:
-        by_key[normalize_glossary_key(term.source_term)].append(term)
-    ordered: list[GlossaryTerm] = []
+    required_keys = {normalize_glossary_key(candidate.source_term) for candidate in candidates if candidate.required}
+    counts: dict[tuple[str, ...], int] = {}
     for candidate in candidates:
-        if candidate.required:
-            ordered.extend(by_key.pop(normalize_glossary_key(candidate.source_term), []))
-    for term in terms:
-        if normalize_glossary_key(term.source_term) in by_key:
-            ordered.append(term)
+        counts.setdefault(normalize_glossary_key(candidate.source_term), int(candidate.occurrence_count))
+
+    def rank(item: tuple[int, GlossaryTerm]) -> tuple[bool, bool, int, int]:
+        index, term = item
+        key = normalize_glossary_key(term.source_term)
+        return (key not in required_keys, is_single_lowercase_entry(term), -counts.get(key, 0), index)
+
+    ordered = [term for _, term in sorted(enumerate(terms), key=rank)]
+    for word_term in [term for term in ordered if len(normalize_glossary_key(term.source_term)) == 1]:
+        word = normalize_glossary_key(word_term.source_term)[0]
+        if "-" in word:
+            continue
+        position = next(index for index, term in enumerate(ordered) if term is word_term)
+        later = [
+            term
+            for term in ordered[position + 1 :]
+            if term is not word_term and _contains_word(normalize_glossary_key(term.source_term), word)
+        ]
+        if not later:
+            continue
+        rest = [term for term in ordered if not any(term is moved for moved in later)]
+        position = next(index for index, term in enumerate(rest) if term is word_term)
+        ordered = [*rest[:position], *later, *rest[position:]]
     return tuple(ordered)
+
+
+def _contains_word(key: Sequence[str], word: str) -> bool:
+    """``key`` is longer than one word, or hyphenated, and holds ``word`` as a word or a part."""
+
+    if len(key) == 1 and "-" not in key[0]:
+        return False
+    return any(part == word or word in part.split("-") for part in key)
 
 
 def _load_json_object(raw_text: str) -> dict[str, object]:
@@ -1573,7 +1861,8 @@ __all__ = [
     "missing_required_candidates",
     "normalize_glossary_key",
     "normalize_rendering",
-    "order_required_first",
+    "is_single_lowercase_entry",
+    "order_glossary_entries",
     "parse_glossary_response",
     "select_glossary_source_units",
     "split_candidates_in_halves",
