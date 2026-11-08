@@ -67,10 +67,11 @@ def resolve_image_model_groups(
             )
         else:
             options = tuple(builtin_options)
+        has_toml_default = toml_table_has_key(section, "default")
         env_value = os.getenv(env_name, "").strip()
         if env_value:
             default, default_source = env_value, f"env:{env_name}"
-        elif "default" in section:
+        elif has_toml_default:
             default = coerce_model_name(section.get("default"), source_name=f"{source_prefix}.default")
             default_source = f"toml:models.{section_name}.default"
         else:
@@ -80,6 +81,23 @@ def resolve_image_model_groups(
             options = (default, *options)
         resolved[group_id] = {"default": default, "options": options, "default_source": default_source}
     return resolved
+
+
+def toml_table_has_key(table: Mapping[str, object], key: str) -> bool:
+    """Whether a ``config.toml`` table sets ``key`` — asked BEFORE the environment is.
+
+    The model resolvers below let an environment variable outrank the TOML key, and used
+    to return on the variable without looking at the table at all. ``ReadTrackingConfigData``
+    then saw no read of the key, and spec 066's ``config_key_ignored`` reported a key the
+    application does read — ``models.text.default`` / ``models.text.options`` on every run
+    whose ``.env`` sets ``DOCX_AI_MODELS_TEXT_*`` (real-document runs of 2026-11-08). A key an
+    environment variable outranks is shadowed, not unknown: which source won is reported by
+    ``model_registry_resolved`` (``model_sources``), and ``config_key_ignored`` stays for keys
+    no resolver asks for. Only presence is checked here, so a shadowed value is still not
+    parsed or validated, exactly as before.
+    """
+
+    return key in table
 
 
 def coerce_model_name(value: object, *, source_name: str) -> str:
@@ -265,10 +283,11 @@ def resolve_text_model_options(
     config_path: Any,
     migration_default_text_model_options: tuple[str, ...],
 ) -> tuple[tuple[str, ...], str]:
+    has_toml_options = toml_table_has_key(models_text_config, "options")
     new_env_options = parse_csv_env_fn("DOCX_AI_MODELS_TEXT_OPTIONS")
     if new_env_options is not None:
         return tuple(new_env_options), "env:canonical:DOCX_AI_MODELS_TEXT_OPTIONS"
-    if "options" in models_text_config:
+    if has_toml_options:
         return parse_model_options_value_fn(
             models_text_config.get("options"),
             source_name=f"{config_path}: models.text.options",
@@ -284,10 +303,11 @@ def resolve_text_default_model(
     config_path: Any,
     migration_default_text_model: str,
 ) -> tuple[str, str]:
+    has_toml_default = toml_table_has_key(models_text_config, "default")
     new_env_value = os.getenv("DOCX_AI_MODELS_TEXT_DEFAULT", "").strip()
     if new_env_value:
         return new_env_value, "env:canonical:DOCX_AI_MODELS_TEXT_DEFAULT"
-    if "default" in models_text_config:
+    if has_toml_default:
         return coerce_model_name_fn(
             models_text_config.get("default"),
             source_name=f"{config_path}: models.text.default",
@@ -307,10 +327,11 @@ def resolve_model_role_assignment(
     config_path: Any,
     fallback_source: str | None = None,
 ) -> tuple[str, str]:
+    has_toml_default = toml_table_has_key(new_role_config, "default")
     new_env_value = os.getenv(new_env_name, "").strip()
     if new_env_value:
         return new_env_value, f"env:canonical:{new_env_name}"
-    if "default" in new_role_config:
+    if has_toml_default:
         return coerce_model_name_fn(
             new_role_config.get("default"),
             source_name=f"{config_path}: {config_path_suffix}.default",
