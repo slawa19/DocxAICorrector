@@ -60,7 +60,7 @@ if _constants.RUN_DIR != TEST_RUN_DIR:  # pragma: no cover - fails loudly, never
 
 TEST_TEXT_MODEL_DEFAULT = "openrouter:google/gemini-3.1-flash-lite-preview"
 TEST_TEXT_MODEL_OPTIONS = ("gpt-5.4", "gpt-5.4-mini")
-TEST_STRUCTURE_RECOGNITION_MODEL = "gpt-5-mini"
+TEST_BOUNDARY_REVIEW_MODEL = "gpt-5-mini"
 TEST_IMAGE_ANALYSIS_MODEL = "gpt-5.4-mini"
 TEST_IMAGE_VALIDATION_MODEL = "gpt-5.4-mini"
 TEST_IMAGE_RECONSTRUCTION_MODEL = "gpt-5.4-mini"
@@ -107,7 +107,7 @@ def make_session_state():
 def resolved_test_model_registry() -> ModelRegistry:
     return ModelRegistry(
         text=TextModelConfig(default=TEST_TEXT_MODEL_DEFAULT, options=TEST_TEXT_MODEL_OPTIONS),
-        structure_recognition=TEST_STRUCTURE_RECOGNITION_MODEL,
+        boundary_review=TEST_BOUNDARY_REVIEW_MODEL,
         image_analysis=TEST_IMAGE_ANALYSIS_MODEL,
         image_validation=TEST_IMAGE_VALIDATION_MODEL,
         image_reconstruction=TEST_IMAGE_RECONSTRUCTION_MODEL,

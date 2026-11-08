@@ -335,7 +335,7 @@ def build_prepared_source_key(
     normalized_target_language = str(target_language or "ru").strip().lower() or "ru"
     normalized_translation_domain = str(translation_domain or "general").strip().lower() or "general"
     # F10: the boundary AI-review artifact is shaped by MORE than its mode — the
-    # structure-recognition MODEL, the candidate limit, the per-candidate timeout, and the
+    # boundary-review MODEL, the candidate limit, the per-candidate timeout, and the
     # per-candidate token budget all change what recommendations get cached (see
     # ``resolve_paragraph_boundary_ai_review_settings``). Fold them into the key so two runs
     # that differ only by AI-review model (or any limit) do not share a prepared entry. They

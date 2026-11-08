@@ -197,10 +197,10 @@ def _build_paragraph(*, source_index: int, text: str, role: str = "body", **kwar
     return ParagraphUnit(text=text, role=role, source_index=source_index, logical_index=source_index, **kwargs)
 
 
-def _build_runtime_model_registry(*, structure_recognition_model: str = "gpt-4o-mini") -> ModelRegistry:
+def _build_runtime_model_registry(*, boundary_review_model: str = "gpt-4o-mini") -> ModelRegistry:
     return ModelRegistry(
         text=TextModelConfig(default="gpt-5.4-mini", options=("gpt-5.4-mini",)),
-        structure_recognition=structure_recognition_model,
+        boundary_review=boundary_review_model,
         image_analysis="gpt-5.4-mini",
         image_validation="gpt-5.4-mini",
         image_reconstruction="gpt-5.4-mini",
@@ -224,7 +224,7 @@ def _make_review_config(
         "relation_normalization_enabled": True,
         "relation_normalization_profile": "phase2_default",
         "relation_normalization_enabled_relation_kinds": relation_kinds,
-        "models": _build_runtime_model_registry(structure_recognition_model=review_model),
+        "models": _build_runtime_model_registry(boundary_review_model=review_model),
     }
     config.update(overrides)
     return config

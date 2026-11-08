@@ -315,7 +315,7 @@ def test_main_applies_the_sidebar_image_model_choices_to_the_run_config(monkeypa
 
     registry = config_module.ModelRegistry(
         text=config_module.TextModelConfig(default="gpt-5.4", options=("gpt-5.4",)),
-        structure_recognition="gpt-5.4",
+        boundary_review="gpt-5.4",
         image_analysis="gpt-5.4-mini",
         image_validation="gpt-5.4-mini",
         image_reconstruction="gpt-5.4-mini",

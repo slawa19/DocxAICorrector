@@ -93,7 +93,7 @@ bash -c "cd /mnt/d/Work/Projects/DocxAICorrector && python3 scripts/_list_log_ev
 
 - `app_start` — `app.py`, INFO.
 - `config_load_failed`, `document_read_failed` — `app.py`, через `present_error`/`fail_critical`.
-- `legacy_model_config_key_detected`, `legacy_model_config_source_used`, `model_registry_resolved` — `config.py`, INFO/WARNING при устаревших ключах.
+- `legacy_model_config_key_detected`, `model_registry_resolved` — `config.py`, INFO/WARNING при устаревших ключах. (`legacy_model_config_source_used` удалено в спеке 066 C-9: legacy-источников модели больше нет.)
 - `image_model_role_override_active` — `config.py`, WARNING, один раз на набор закреплений: per-role переменная `DOCX_AI_MODELS_IMAGE_<ROLE>_DEFAULT` или `[models.image_<role>].default` действует поверх выбора «модели разбора» / «модели рисования» (спека 062). Context: `{role_overrides, role_sources}`.
 - `image_model_capabilities_unknown` — `src/docxaicorrector/image/model_capabilities.py`, WARNING, один раз на id модели за процесс: image-модель вне таблицы возможностей, запрос уходит с минимальным набором параметров (спека 062 FR-004). Context: `{model, operation, known_families}`. События `*_retry_without_optional_param` и `*_retry_with_fallback_size` из `src/docxaicorrector/image/generation.py` подняты с DEBUG до WARNING и несут `model`: адаптация по тексту ошибки осталась только страховкой.
 
