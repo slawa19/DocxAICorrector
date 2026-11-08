@@ -18,6 +18,7 @@ from docxaicorrector.core.models import (
     ParagraphRelation,
     ParagraphUnit,
 )
+from docxaicorrector.pipeline.output_validation import is_notes_run_paragraph
 from docxaicorrector.validation.formatting_coverage import (
     _BACKMATTER_SECTION_TITLES,
     _normalize_structural_text,
@@ -293,6 +294,13 @@ def build_editing_jobs(
         reference_region_indexes=reference_region_indexes,
         structure_phase=structure_phase,
     )
+    # Spec 067 FR-001: notes runs the import left in the prose region, by document POSITION
+    # (the same position space as the regions above).
+    notes_in_body_positions = _resolve_notes_in_body_positions(
+        [paragraph for block in blocks for paragraph in block.paragraphs],
+        [region for block_regions in paragraph_regions_by_block for region in block_regions],
+        structure_phase=structure_phase,
+    )
     structure_source = _semantic_block_structure_source(structure_phase)
 
     for index, block in enumerate(blocks):
@@ -342,6 +350,13 @@ def build_editing_jobs(
                 "paragraph_regions": paragraph_regions_by_block[index],
                 # Spec 063 FR-011: ``None`` outside the back-matter region.
                 "back_matter_section": back_matter_sections.get(index),
+                # Spec 067 FR-001: the paragraphs of this block that are a run of notes left
+                # in the body -- a per-PARAGRAPH apparatus mark; the region stays ``prose``.
+                "notes_in_body_paragraph_ids": [
+                    paragraph_id
+                    for paragraph_index, paragraph_id in enumerate(paragraph_ids)
+                    if fallback_paragraph_index + paragraph_index in notes_in_body_positions
+                ],
                 "narration_include": narration_include,
                 "toc_dominant": toc_dominant,
                 "toc_paragraph_count": toc_only_paragraph_count,
@@ -945,6 +960,84 @@ def _resolve_paragraph_regions(
             position += 1
         regions.append(block_regions)
     return regions
+
+
+# Spec 067 FR-001: the structural roles a notes-run paragraph arrives with from import. On the
+# four corpus books every one of them is ``body`` or ``list`` (Money 61 + 1); a heading, a
+# caption, an image or a TOC line is never a run of notes, whatever its text looks like.
+_NOTES_IN_BODY_STRUCTURAL_ROLES = frozenset({"body", "list"})
+
+
+def _toc_bracketed_positions(paragraphs: list[ParagraphUnit], *, structure_phase: str) -> frozenset[int]:
+    """Positions of a stretch the role detector left untyped INSIDE a table of contents.
+
+    A stretch of consecutive paragraphs without a TOC role, holding no heading, with a TOC
+    paragraph (``toc_header``/``toc_entry``) immediately before AND immediately after it, is
+    part of that table of contents: a contents list is contiguous, and what interrupts it
+    without a heading of its own is a stretch of its lines the detector did not type. Read off
+    the ROLES around the stretch, never off its text (Constitution VII). Measured: Rethinking
+    Money ``p0045``-``p0050`` ("4 The Flying Fish: ... *57* 5 The Future Has Arrived ...",
+    "6 Strategies for Banking *95*"), between ``p0044`` (``toc_entry``) and ``p0051``
+    (``toc_header``) -- the only such stretch on the four books.
+    """
+    toc_flags = [_is_toc_structural_role(paragraph, structure_phase=structure_phase) for paragraph in paragraphs]
+    bracketed: set[int] = set()
+    position = 0
+    while position < len(paragraphs):
+        if toc_flags[position]:
+            position += 1
+            continue
+        end = position
+        while end < len(paragraphs) and not toc_flags[end]:
+            end += 1
+        stretch = range(position, end)
+        if (
+            position > 0
+            and end < len(paragraphs)
+            and not any(
+                _paragraph_structural_kind(paragraphs[member], structure_phase=structure_phase) == "heading"
+                or str(paragraphs[member].role or "").strip().casefold() == "heading"
+                for member in stretch
+            )
+        ):
+            bracketed.update(stretch)
+        position = end
+    return frozenset(bracketed)
+
+
+def _resolve_notes_in_body_positions(
+    paragraphs: list[ParagraphUnit],
+    regions: list[str],
+    *,
+    structure_phase: str = "post_ai_final",
+) -> frozenset[int]:
+    """Spec 067 FR-001: which paragraphs of the PROSE region are a run of notes by their form.
+
+    Three conditions, all of them read off the document, none off a word list:
+
+    * the paragraph lies in the prose region -- the back-matter region already carries the
+      apparatus policy, and front matter and the TOC are not body;
+    * its structural role is an entry role (``_NOTES_IN_BODY_STRUCTURAL_ROLES``) and it does not
+      sit inside a table of contents the role detector left untyped
+      (``_toc_bracketed_positions``);
+    * its text is a notes run by form (``output_validation.is_notes_run_paragraph``).
+
+    The answer marks the PARAGRAPH, not the book's regions: relabelling these paragraphs
+    ``back_matter`` would also move them out of the narration, the glossary's source units and
+    the formatting-coverage regions, none of which spec 067 asks for. The apparatus consumers
+    read the mark (``block_execution.notes_in_body_paragraph_indexes``).
+    """
+    if len(regions) != len(paragraphs):
+        return frozenset()
+    bracketed = _toc_bracketed_positions(paragraphs, structure_phase=structure_phase)
+    return frozenset(
+        position
+        for position, paragraph in enumerate(paragraphs)
+        if regions[position] == PARAGRAPH_REGION_PROSE
+        and position not in bracketed
+        and _paragraph_structural_kind(paragraph, structure_phase=structure_phase) in _NOTES_IN_BODY_STRUCTURAL_ROLES
+        and is_notes_run_paragraph(paragraph.text)
+    )
 
 
 def _resolve_narration_include(

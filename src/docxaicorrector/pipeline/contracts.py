@@ -378,6 +378,11 @@ class BlockExecutionPayload:
     # outside the back-matter region. One value per block, not per paragraph, because the
     # region it qualifies is resolved per block (``semantic_blocks._resolve_reference_sections``).
     back_matter_section: str | None = None
+    # Spec 067 FR-001: the ids of this block's paragraphs that are a run of notes the import
+    # left in the PROSE region (``semantic_blocks._resolve_notes_in_body_positions``) -- a
+    # per-paragraph apparatus mark beside the region, which stays ``prose``. A subset of
+    # ``paragraph_ids``; ``None`` means the producer did not resolve it, read as "none".
+    notes_in_body_paragraph_ids: list[str] | None = None
     narration_include: bool = True
     toc_dominant: bool = False
     toc_paragraph_count: int = 0

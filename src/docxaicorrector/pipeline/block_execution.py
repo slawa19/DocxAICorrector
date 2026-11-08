@@ -35,6 +35,7 @@ from docxaicorrector.pipeline.job_results import persist_terminal_job_result
 from docxaicorrector.pipeline.output_validation import (
     delivered_text_equals_source,
     is_citation_form_paragraph,
+    notes_run_reads_as_citations,
     validate_translated_toc_block,
 )
 from docxaicorrector.runtime.artifact_retention import prune_artifact_dir
@@ -355,6 +356,30 @@ def back_matter_paragraph_indexes(payload: Any) -> tuple[int, ...]:
     return tuple(index for index, region in enumerate(regions) if region == PARAGRAPH_REGION_BACK_MATTER)
 
 
+def notes_in_body_paragraph_indexes(payload: Any) -> tuple[int, ...]:
+    """Spec 067 FR-001: which paragraphs of this block are a run of notes the import left in
+    the PROSE region, by the document layer's per-paragraph mark
+    (``BlockExecutionPayload.notes_in_body_paragraph_ids``).
+
+    Read together with the region: a marked paragraph outside the prose region is not one (the
+    back-matter region has its own section policy). Empty when the producer resolved no mark,
+    no regions or no ids -- absence is never read as apparatus.
+    """
+    marked = getattr(payload, "notes_in_body_paragraph_ids", None)
+    regions = getattr(payload, "paragraph_regions", None)
+    paragraph_ids = getattr(payload, "paragraph_ids", None)
+    if not isinstance(marked, list) or not marked:
+        return ()
+    if not isinstance(regions, list) or not isinstance(paragraph_ids, list) or len(regions) != len(paragraph_ids):
+        return ()
+    marked_ids = {str(paragraph_id) for paragraph_id in marked}
+    return tuple(
+        index
+        for index, paragraph_id in enumerate(paragraph_ids)
+        if str(paragraph_id) in marked_ids and regions[index] == PARAGRAPH_REGION_PROSE
+    )
+
+
 def reference_list_block_keeps_source(*, context: Any, payload: Any) -> bool:
     """Is this a block the pipeline delivers in the source language WITHOUT a model call?
     (spec 063 FR-011.)
@@ -472,11 +497,14 @@ class ModelKeptApparatus:
     record relabelled in marker mode; ``paragraph_count`` is how many paragraphs now carry
     ``policy_kept_source``; ``whole_block`` says that every paragraph of the block is such a
     reference, which is the only case in which a ``source_text_fallback`` stops being one.
+    ``notes_in_body_paragraph_count`` is how many of them are notes left in the body (spec 067
+    FR-001), so the log line can tell the two apparatus sources apart.
     """
 
     processed_chunk: str
     paragraph_count: int
     whole_block: bool
+    notes_in_body_paragraph_count: int = 0
 
 
 # How a paragraph ENDS when it ends a sentence: a full stop, a question or exclamation mark or
@@ -517,6 +545,13 @@ def model_kept_apparatus(*, context: Any, payload: Any, processed_chunk: str) ->
       ``### *Economy: What Should Change?* (Washington DC: Bureau of``) carries one and is
       relabelled (orchestrator decision 2026-11-07 after the Codex acceptance review).
 
+    Spec 067 FR-001 extends the same disposition to a run of notes the import left in the
+    PROSE region (``notes_in_body_paragraph_indexes``), in any block: such a paragraph is
+    eligible like a back-matter one, and its citation test is taken per ENTRY
+    (``output_validation.notes_run_reads_as_citations``) -- a notes run holds several entries,
+    and one entry of commentary left in the source language keeps the paragraph out. Only in
+    marker mode: without a per-paragraph record a prose block is never relabelled.
+
     Decided per PARAGRAPH where the answer carries its per-paragraph record. Without markers
     there is no record to carry a status, so the decision is per BLOCK: the whole answer equals
     the whole source, every paragraph is in the back-matter region and reads as a reference,
@@ -528,7 +563,9 @@ def model_kept_apparatus(*, context: Any, payload: Any, processed_chunk: str) ->
         return None
     if getattr(payload, "job_kind", None) != "llm" or bool(getattr(payload, "toc_dominant", False)):
         return None
-    if getattr(payload, "back_matter_section", None) not in _APPARATUS_POLICY_SECTIONS:
+    in_apparatus_section = getattr(payload, "back_matter_section", None) in _APPARATUS_POLICY_SECTIONS
+    notes_in_body = set(notes_in_body_paragraph_indexes(payload))
+    if not in_apparatus_section and not notes_in_body:
         return None
     regions = getattr(payload, "paragraph_regions", None)
     paragraph_ids = getattr(payload, "paragraph_ids", None)
@@ -536,9 +573,14 @@ def model_kept_apparatus(*, context: Any, payload: Any, processed_chunk: str) ->
         return None
     if not isinstance(paragraph_ids, list) or len(paragraph_ids) != len(regions):
         return None
-    eligible = [region == PARAGRAPH_REGION_BACK_MATTER for region in regions]
+    eligible = [
+        (in_apparatus_section and region == PARAGRAPH_REGION_BACK_MATTER) or position in notes_in_body
+        for position, region in enumerate(regions)
+    ]
     dispositions = marker_paragraph_dispositions(processed_chunk)
     if dispositions is None:
+        if not in_apparatus_section:
+            return None
         target_text = str(getattr(payload, "target_text", "") or "")
         if bool(getattr(payload, "narration_include", True)):
             return None
@@ -563,7 +605,11 @@ def model_kept_apparatus(*, context: Any, payload: Any, processed_chunk: str) ->
         if eligible[position]
         and disposition.status == PARAGRAPH_STATUS_ACCEPTED
         and delivered_text_equals_source(target_text=source_texts[position], processed_chunk=disposition.text)
-        and is_citation_form_paragraph(source_texts[position])
+        and (
+            notes_run_reads_as_citations(source_texts[position])
+            if position in notes_in_body
+            else is_citation_form_paragraph(source_texts[position])
+        )
     }
     # A reference torn across two paragraphs is ONE entry: assembly welds the halves back
     # together, but never two halves of different narration admissibility
@@ -594,6 +640,7 @@ def model_kept_apparatus(*, context: Any, payload: Any, processed_chunk: str) ->
         ),
         paragraph_count=len(kept_positions),
         whole_block=len(kept_positions) == len(dispositions),
+        notes_in_body_paragraph_count=len(kept_positions & notes_in_body),
     )
 
 
@@ -604,13 +651,20 @@ def _build_block_apparatus_prompt(*, context: Any, payload: Any, marker_mode_ena
     block; the region is per paragraph. So the rule in ``operation_translate.txt`` names this
     section, and this section names the paragraphs. Only notes and reference lists carry it --
     the two D1 speaks about.
+
+    Spec 067 FR-001: a block of the body that holds a run of notes the import left there
+    (``notes_in_body_paragraph_indexes``) carries the section too, as notes, naming exactly
+    those paragraphs -- the region of the book is not relabelled, the paragraph is named.
     """
     if not _is_translate_job(context):
         return ""
     section_name = _BACK_MATTER_POLICY_SECTION_NAMES.get(str(getattr(payload, "back_matter_section", "") or ""))
-    if section_name is None:
-        return ""
-    indexes = back_matter_paragraph_indexes(payload)
+    indexes = back_matter_paragraph_indexes(payload) if section_name is not None else ()
+    unmarked_scope = "абзацы этого раздела в блоке"
+    if not indexes:
+        indexes = notes_in_body_paragraph_indexes(payload)
+        section_name = _BACK_MATTER_POLICY_SECTION_NAMES[BACK_MATTER_SECTION_NOTES]
+        unmarked_scope = "абзацы с нумерованными примечаниями в блоке"
     if not indexes:
         return ""
     regions = getattr(payload, "paragraph_regions", None) or []
@@ -620,7 +674,7 @@ def _build_block_apparatus_prompt(*, context: Any, payload: Any, marker_mode_ena
     elif marker_mode_enabled and isinstance(paragraph_ids, list) and len(paragraph_ids) == len(regions):
         scope = ", ".join(f"[[DOCX_PARA_{paragraph_ids[index]}]]" for index in indexes)
     else:
-        scope = "абзацы этого раздела в блоке"
+        scope = unmarked_scope
     return "\n".join(
         (
             _APPARATUS_PROMPT_HEADER,
@@ -2033,6 +2087,7 @@ def _announce_model_kept_apparatus(
         back_matter_section=str(getattr(payload, "back_matter_section", "") or ""),
         paragraph_count=len(getattr(payload, "paragraph_ids", None) or ()),
         kept_paragraph_count=model_kept.paragraph_count,
+        notes_in_body_paragraph_count=model_kept.notes_in_body_paragraph_count,
         whole_block=model_kept.whole_block,
         replaced_fallback=replaced_fallback,
     )

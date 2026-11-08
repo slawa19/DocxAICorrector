@@ -593,6 +593,100 @@ def is_citation_form_paragraph(text: str) -> bool:
     return True
 
 
+# --- Spec 067 FR-001: a run of NOTES the import left in the body ---------------------------
+#
+# Money & Sustainability sets its chapter notes at the foot of the chapter, and the PDF import
+# delivers them as ordinary body paragraphs of the prose region: "Footnotes 1 *Euromoney*,
+# April 2010, p.85. 2 Jared Diamond, ...". The back-matter apparatus policy (spec 063 D1, spec
+# 064 FR-006) never saw them, because it keys on the back-matter REGION. This is the form that
+# lets the document layer name such a paragraph, read off the paragraph alone (Constitution
+# VII: no word list, no book literal):
+#
+# * a NOTE NUMBER is a 1-3 digit integer standing as a token, WITHOUT a full stop, followed by
+#   whitespace and an entry opener -- an uppercase letter of any cased script, an opening
+#   quote, ``*`` or an opening bracket. "1. Introduction" (a numbered list, a heading) is not
+#   one; "in 2 years" is not one;
+# * the paragraph's CHAIN is the longest sequence of note numbers in text order that counts
+#   n, n+1, n+2, ...; an ENTRY is the text from one number of the chain to the next;
+# * a NOTES RUN is a chain of at least two entries of which at least half carry a reference
+#   signal (``has_reference_signal``: a year, a locator, a title span, ...), or a chain of one
+#   whose entry carries such a signal and is preceded by a LABEL -- a single token
+#   ("Footnotes") or the citation-form tail of a note torn across a page.
+#
+# A chain of one WITHOUT a label ("6 Strategies for Banking *95*") is NOT a notes run: on the
+# four corpus books that shape matched only lines of a table of contents. The numbers are in
+# spec 067's Changelog (FR-001).
+_NOTE_NUMBER_PATTERN = re.compile(r"(?:(?<=\s)|^)(\d{1,3})\s+(?=\S)")
+_NOTE_ENTRY_OPENERS = "‘“\"«*(["
+
+
+def _note_number_chain(text: str) -> list[tuple[int, int, int]]:
+    """``(number, start, end)`` of the longest n, n+1, ... chain of note numbers in ``text``."""
+    numbers = [
+        (int(match.group(1)), match.start(), match.end())
+        for match in _NOTE_NUMBER_PATTERN.finditer(text)
+        if text[match.end()].isupper() or text[match.end()] in _NOTE_ENTRY_OPENERS
+    ]
+    best: list[tuple[int, int, int]] = []
+    for position, first in enumerate(numbers):
+        chain = [first]
+        for candidate in numbers[position + 1 :]:
+            if candidate[0] == chain[-1][0] + 1:
+                chain.append(candidate)
+        if len(chain) > len(best):
+            best = chain
+    return best
+
+
+def notes_run_parts(text: str) -> tuple[str, tuple[str, ...]] | None:
+    """``(lead, entries)`` when the paragraph is a notes run by its form, else ``None``.
+
+    ``lead`` is the text in front of the first note number (a label, the tail of a note torn
+    across a page, or empty); ``entries`` are the texts of the chain's entries, numbers
+    removed. See the note above for the form.
+    """
+    body = _INTERNAL_PLACEHOLDER_PATTERN.sub(" ", str(text or "")).strip()
+    chain = _note_number_chain(body)
+    if not chain:
+        return None
+    entries = tuple(
+        body[end : (chain[order + 1][1] if order + 1 < len(chain) else len(body))].strip()
+        for order, (_, _, end) in enumerate(chain)
+    )
+    lead = body[: chain[0][1]].strip()
+    with_signal = sum(1 for entry in entries if has_reference_signal(entry))
+    if len(chain) >= 2:
+        return (lead, entries) if with_signal * 2 >= len(chain) else None
+    if not with_signal or not lead:
+        return None
+    if len(lead.split()) == 1 or is_citation_form_paragraph(lead):
+        return lead, entries
+    return None
+
+
+def is_notes_run_paragraph(text: str) -> bool:
+    """Spec 067 FR-001: does this paragraph read as a run of numbered notes by its form?"""
+    return notes_run_parts(text) is not None
+
+
+def notes_run_reads_as_citations(text: str) -> bool:
+    """Spec 067 FR-001: an in-body notes run whose EVERY part is a reference by its form.
+
+    The in-body counterpart of ``is_citation_form_paragraph`` for spec 064 FR-006: a notes run
+    carries several entries, so the citation test is taken per entry -- and on the lead, which
+    is either a label (a title of the apparatus, translated under D1, so an unchanged label is
+    NOT a kept reference) or the tail of a torn note. One entry of commentary left in the
+    source language keeps the paragraph out of the credit: that is the defect A-1 names, and
+    the gate must go on seeing it.
+    """
+    parts = notes_run_parts(text)
+    if parts is None:
+        return False
+    lead, entries = parts
+    pieces = ((lead,) if lead else ()) + entries
+    return all(is_citation_form_paragraph(piece) for piece in pieces)
+
+
 # --- Spec 065 FR-006: a parenthetical meta-comment written INSTEAD of a paragraph ----------
 #
 # Rule 10 of the system prompt forbids a placeholder or a comment in place of a paragraph's
