@@ -2753,3 +2753,66 @@ def test_067_fr005_notes_section_is_left_to_the_notes_join() -> None:
     joined = _join_page_tears([_notes_title_unit(), head, tail], spans)
 
     assert [u.text for u in joined] == ["Notes", _TEAR_HEAD, _TEAR_TAIL]
+
+
+# Spec 067 FR-006 follow-up: the sentence-end paragraph boundary inside a quotation or a box
+# reads the box's own left edge, not the body margin (Money and Sustainability, Box 4.1: body at
+# x0 5.0, the box at 33.8; "...evenly mixed.” ¹¹" / "Entropy is time’s arrow ...").
+
+_INSET_X0 = 33.8
+_INSET_FULL = "these are words of a quotation set inside a box that runs to its right edge"
+
+
+def _wide_body_lines() -> list[PdfTextSpan]:
+    return [
+        _span(1, f"Body line {index} of running prose that is set across the whole page width here.", top=40 + index * 18, bottom=54 + index * 18, x0=5, x1=607, font_size=14.4)
+        for index in range(8)
+    ]
+
+
+def _inset(*lines: tuple[str, float]) -> list[PdfTextSpan]:
+    return [
+        _span(1, text, top=400 + index * 8.6, bottom=405.8 + index * 8.6, x0=_INSET_X0, x1=x1, font_size=5.76)
+        for index, (text, x1) in enumerate(lines)
+    ]
+
+
+def test_067_inset_sentence_end_at_the_box_edge_is_a_paragraph_boundary() -> None:
+    texts = _texts(
+        _wide_body_lines()
+        + _inset(
+            (_INSET_FULL, 607),
+            ("and cream poured into coffee dissipates until it is evenly mixed.” ¹¹", 267),
+            ("Entropy is time’s arrow. Without entropy there would be no way to tell the past", 607),
+            ("from the future, and the box goes on with its argument here.", 400),
+        )
+    )
+
+    assert any(text.endswith("evenly mixed.” ¹¹") for text in texts)
+    assert any(text.startswith("Entropy is time’s arrow.") for text in texts)
+
+
+def test_067_inset_line_that_does_not_end_a_sentence_still_merges() -> None:
+    texts = _texts(
+        _wide_body_lines()
+        + _inset(
+            (_INSET_FULL, 607),
+            ("and cream poured into coffee dissipates until it is evenly", 267),
+            ("Mixed with milk, the coffee is lighter and the box goes on with its argument here.", 607),
+        )
+    )
+
+    assert any("dissipates until it is evenly Mixed with milk" in text for text in texts)
+
+
+def test_067_body_margin_sentence_end_behaves_as_before() -> None:
+    # At the body margin the boundary is the one `_is_near_body_left` always made; a short
+    # sentence-ending line followed by a new sentence at the margin starts a paragraph.
+    spans = _wide_body_lines() + [
+        _span(1, "The last line of a body paragraph ends here.", top=200, bottom=214, x0=5, x1=300, font_size=14.4),
+        _span(1, "A new paragraph begins at the margin and runs across the page width here.", top=218, bottom=232, x0=5, x1=607, font_size=14.4),
+    ]
+    texts = _texts(spans)
+
+    assert any(text.endswith("The last line of a body paragraph ends here.") for text in texts)
+    assert any(text.startswith("A new paragraph begins at the margin") for text in texts)

@@ -65,6 +65,7 @@ _BLANK_PAGE_NOTICE_PATTERN = re.compile(
     re.IGNORECASE,
 )
 _TERMINAL_SENTENCE_PUNCTUATION = ".!?;:»”\"'"
+_SUPERSCRIPT_REFERENCE_TAIL_CHARS = "⁰¹²³⁴⁵⁶⁷⁸⁹ "
 # Spec 064 FR-007: two spans are in one table row when their tops differ by at most this share
 # of a line's height and their sizes by less than this many points.
 _TABLE_ROW_BASELINE_TOLERANCE = 0.3
@@ -279,6 +280,7 @@ def build_paragraph_units_from_text_spans(
                     pending_body_spans[-1],
                     span,
                     layout_profile=layout_profile,
+                    paragraph_left_x0=_paragraph_run_left_x0(pending_body_spans),
                 )
                 # Spec 065 FR-008 (I-4): a table cell is a paragraph of its own. Since
                 # spec 064 FR-007 a cell is no longer a heading, and the body merge then
@@ -2880,11 +2882,28 @@ def _join_page_torn_body_paragraphs(
     return result
 
 
+def _paragraph_run_left_x0(pending_spans: list[PdfTextSpan]) -> float | None:
+    """Spec 067 FR-006 follow-up: the left edge of the paragraph being built -- the smallest
+    x0 among its lines set in the size of its last line. A quotation or a box set apart from
+    the body has its own left edge, which the document's body margin does not describe."""
+    if not pending_spans:
+        return None
+    size = _span_font_size(pending_spans[-1])
+    edges = [
+        float(span.x0)
+        for span in pending_spans
+        if span.page_number == pending_spans[-1].page_number
+        and _font_sizes_match(_span_font_size(span), size)
+    ]
+    return min(edges) if edges else None
+
+
 def _can_merge_body_span(
     previous: PdfTextSpan,
     current: PdfTextSpan,
     *,
     layout_profile: _PdfHeadingLayoutProfile,
+    paragraph_left_x0: float | None = None,
 ) -> bool:
     previous_text = _normalize_text(previous.text)
     current_text = _normalize_text(current.text)
@@ -2916,16 +2935,48 @@ def _can_merge_body_span(
         max_gap = max(max_gap, body_leading * 1.1)
     if vertical_gap > max_gap:
         return False
+    # A sentence end followed by a footnote reference ("mixed.” ¹¹") is still a sentence end.
+    previous_sentence_text = previous_text.rstrip(_SUPERSCRIPT_REFERENCE_TAIL_CHARS)
     if (
-        previous_text
+        previous_sentence_text
         and current_text
-        and previous_text[-1] in _TERMINAL_SENTENCE_PUNCTUATION
+        and previous_sentence_text[-1] in _TERMINAL_SENTENCE_PUNCTUATION
         and _starts_like_new_body_sentence(current_text)
         and _span_line_fill_ratio(previous, layout_profile) < 0.72
-        and _is_near_body_left(current, layout_profile)
+        and (
+            _is_near_body_left(current, layout_profile)
+            or _is_near_paragraph_left(current, paragraph_left_x0, layout_profile)
+        )
     ):
         return False
     return True
+
+
+def _is_near_paragraph_left(
+    span: PdfTextSpan, paragraph_left_x0: float | None, layout_profile: _PdfHeadingLayoutProfile
+) -> bool:
+    """Spec 067 FR-006 follow-up: the line starts where the paragraph's own lines start
+    (`_paragraph_run_left_x0`), within the tolerance `_is_near_body_left` uses for the body
+    margin.
+
+    The sentence-end boundary in `_can_merge_body_span` -- the previous line ends a sentence
+    (terminal punctuation, optionally followed by a superscript reference: "mixed.” ¹¹"),
+    ends short (fill < 0.72), and the next line starts a new sentence at the left edge --
+    read that left edge only as the document's BODY margin. A quotation or a box set apart
+    from the body has its own margin, so inside it the boundary never fired: Money and
+    Sustainability sets its body at x0 5.0 and Box 4.1 at 33.8, and "...evenly mixed.” ¹¹" /
+    "Entropy is time’s arrow..." survived as two paragraphs only by an accident (the line
+    ending in "11" read as a contents line) that spec 067 FR-006 removed. The paragraph's
+    own edge is the alternative. Measured on the four corpus PDFs (2026-11-08): 38 new
+    boundaries, every one read as a paragraph end inside an inset -- The Value of
+    Everything p. 207 (1); Creating Wealth pp. 23, 72, 93, 155-156 (13: a dialogue, a list
+    of principles, resource entries); Money and Sustainability pp. 9, 54, 57, 73-74, 77, 81,
+    91, 105, 134-135 (24, Box 4.1 among them); Rethinking Money none. Headings, levels 1-2,
+    superscripts and the symbol multiset unchanged."""
+    if paragraph_left_x0 is None:
+        return False
+    body_leading = layout_profile.body_leading or layout_profile.body_font_size or 10.0
+    return abs(float(span.x0) - paragraph_left_x0) <= body_leading * 0.75
 
 
 def _looks_like_body_paragraph_indent_boundary(
