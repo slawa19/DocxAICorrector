@@ -5614,3 +5614,173 @@ def test_spec065_a_script_without_word_spaces_is_never_measured_even_when_long()
     assert len(source) >= 40 and len(source.split()) < 6
 
     assert generation._is_short_source_absorption(source, _answer_of_length(5 * len(source))) is False
+
+
+# --- Spec 068 FR-001: a number taken from a neighbour or the context is a leak ------------------
+
+# Two lines of a two-column index; the first is torn, its continuation is the next line.
+_SPEC068_TORN = "Harbour levy, 41; tide tables and,"
+_SPEC068_TORN_TRANSLATION = "Портовый сбор, 41; таблицы приливов и,"
+_SPEC068_CONTINUATION = "47; ferry tolls, 213"
+_SPEC068_CONTINUATION_TRANSLATION = "47; паромные сборы, 213"
+# The torn line completed from its continuation, which is still delivered under its own marker.
+_SPEC068_LEAKED = "Портовый сбор, 41; таблицы приливов и, 47; паромные сборы, 213"
+_SPEC068_IDS = ["p0001", "p0002"]
+_SPEC068_BLOCK = f"[[DOCX_PARA_p0001]]\n{_SPEC068_TORN}\n\n[[DOCX_PARA_p0002]]\n{_SPEC068_CONTINUATION}"
+
+
+def _spec068_answer(first: str, second: str) -> str:
+    return f"[[DOCX_PARA_p0001]]\n{first}\n\n[[DOCX_PARA_p0002]]\n{second}"
+
+
+def test_spec068_a_number_of_the_next_paragraph_delivered_twice_is_a_leak():
+    leaks = generation._find_number_leaks(
+        [_SPEC068_LEAKED, _SPEC068_CONTINUATION_TRANSLATION], [_SPEC068_TORN, _SPEC068_CONTINUATION]
+    )
+
+    assert leaks == {0: ("47", "213")}
+    # ANTI-VACUUM: the honest answer carries only its own numbers.
+    assert generation._find_number_leaks(
+        [_SPEC068_TORN_TRANSLATION, _SPEC068_CONTINUATION_TRANSLATION], [_SPEC068_TORN, _SPEC068_CONTINUATION]
+    ) == {}
+
+
+def test_spec068_a_number_from_the_context_after_is_a_leak():
+    # The continuation sits in the NEXT block; this block only saw it as [CONTEXT AFTER].
+    leaks = generation._find_number_leaks(
+        [_SPEC068_LEAKED], [_SPEC068_TORN], context_texts=("", _SPEC068_CONTINUATION + "\n\nQuay dues, 88")
+    )
+
+    assert leaks == {0: ("47", "213")}
+    # A foreign number found nowhere else is the model's own, not a leak.
+    assert generation._find_number_leaks([_SPEC068_LEAKED], [_SPEC068_TORN]) == {}
+
+
+def test_spec068_a_number_moved_from_a_torn_neighbour_is_delivered_once():
+    # "... in March," + "1874. Then ..." answered as "... в марте 1874 г." + "Затем ...": the year
+    # changed paragraphs, it is not delivered twice.
+    sources = ["The harbour board met for the last time in March,", "1874. Then the quay was sold off."]
+    answers = ["Портовый совет собрался в последний раз в марте 1874 г.", "Затем причал продали."]
+
+    assert generation._find_number_leaks(answers, sources, context_texts=("Dues rose in 1874.", "")) == {}
+
+
+@pytest.mark.parametrize(
+    ("source", "answer"),
+    [
+        pytest.param("Tolls in 1998-9 were raised twice.", "Сборы в 1998–1999 годах повышали дважды.", id="range-expansion"),
+        pytest.param("Pages 223-24 and 1307-9.", "Страницы 223–224 и 1307–1309.", id="abbreviated-ranges"),
+        pytest.param("Entry, 113–1 14", "Запись, 113–114", id="range-torn-by-the-extractor"),
+        pytest.param("a levy of some £2,500 million", "сбор около 2,5 млрд фунтов", id="reformatted-magnitude"),
+        pytest.param("a levy of 1,250 pounds", "сбор в 1250 фунтов", id="thousands-separator-dropped"),
+        pytest.param("a levy of 12,500 pounds", "сбор в 12 500 фунтов", id="thousands-with-a-space"),
+        pytest.param("tonnage, 1961-197018. The", "тоннаж, 1961–1970 гг.¹⁸ Далее", id="footnote-reference-glued"),
+        pytest.param("a 40% share", "доля 40/40", id="a-number-repeated-is-not-counted-twice"),
+        pytest.param("a ferry tolls network", "сеть B2B для паромов", id="digits-glued-to-letters"),
+    ],
+)
+def test_spec068_a_reformatted_number_of_the_own_source_is_not_foreign(source, answer):
+    # Every number of the answer sits in the context too, so only the normalisation decides.
+    context = "1998 1999 223 224 1307 1309 113 114 2 5 1250 12 500 1961 1970 18 40 2"
+
+    assert generation._find_number_leaks([answer], [source], context_texts=(context,)) == {}
+
+
+def test_spec068_a_leak_with_attempts_left_asks_again(monkeypatch):
+    events = _capture_events(monkeypatch)
+
+    with pytest.raises(generation.MarkerValidationError) as exc_info:
+        generation.resolve_marker_paragraph_dispositions(
+            generation.split_marker_preserved_paragraph_dispositions(
+                _spec068_answer(_SPEC068_LEAKED, _SPEC068_CONTINUATION_TRANSLATION), _SPEC068_IDS
+            ),
+            source_paragraph_chunks=[_SPEC068_TORN, _SPEC068_CONTINUATION],
+            allow_unresolved_paragraphs=False,
+            detect_short_source_absorption=True,
+        )
+
+    assert exc_info.value.error_code == generation.NUMBER_LEAK_MARKER_CHUNK_ERROR_CODE
+    assert exc_info.value.absorbing_paragraph_ids == ("p0001",)
+    assert [name for name, _ in events] == ["marker_chunk_number_leak_retry_requested"]
+    assert events[0][1]["leaked_numbers"] == {"p0001": ["47", "213"]}
+
+
+def test_spec068_a_leak_on_the_last_attempt_stands_translated_with_a_warning(monkeypatch):
+    events = _capture_events(monkeypatch)
+
+    resolved = generation.resolve_marker_paragraph_dispositions(
+        generation.split_marker_preserved_paragraph_dispositions(
+            _spec068_answer(_SPEC068_LEAKED, _SPEC068_CONTINUATION_TRANSLATION), _SPEC068_IDS
+        ),
+        source_paragraph_chunks=[_SPEC068_TORN, _SPEC068_CONTINUATION],
+        allow_unresolved_paragraphs=True,
+        detect_short_source_absorption=True,
+    )
+
+    # The source does NOT ship: the answer is translated, the duplicate is the lesser harm.
+    assert [(item.status, item.text) for item in resolved] == [
+        ("accepted", _SPEC068_LEAKED),
+        ("accepted", _SPEC068_CONTINUATION_TRANSLATION),
+    ]
+    assert [name for name, _ in events] == ["marker_chunk_number_leak_kept"]
+    assert events[0][1]["leak_paragraph_ids"] == ["p0001"]
+
+
+@pytest.mark.parametrize(
+    ("detect", "expected_calls"),
+    [pytest.param(True, 2, id="translate"), pytest.param(False, 1, id="audiobook-or-edit")],
+)
+def test_spec068_end_to_end_a_leak_from_the_context_after_is_retried_only_for_a_translation(
+    monkeypatch, detect, expected_calls
+):
+    monkeypatch.setattr(generation.time, "sleep", lambda _seconds: None)
+    requests: list[dict[str, Any]] = []
+    block = f"[[DOCX_PARA_p0001]]\nQuay dues, 88\n\n[[DOCX_PARA_p0002]]\n{_SPEC068_TORN}"
+    leaked = _spec068_answer("Портовые пошлины, 88", _SPEC068_LEAKED)
+    clean = _spec068_answer("Портовые пошлины, 88", _SPEC068_TORN_TRANSLATION)
+
+    result = generation.generate_markdown_block(
+        client=_scripted_client([leaked, clean], requests=requests),
+        model="gpt-5.4",
+        system_prompt="system",
+        target_text=block,
+        context_before="",
+        context_after=_SPEC068_CONTINUATION,
+        max_retries=3,
+        expected_paragraph_ids=_SPEC068_IDS,
+        marker_mode=True,
+        detect_short_source_absorption=detect,
+    )
+
+    assert len(requests) == expected_calls
+    dispositions = generation.marker_paragraph_dispositions(result)
+    assert dispositions is not None
+    assert dispositions[1].text == (_SPEC068_TORN_TRANSLATION if detect else _SPEC068_LEAKED)
+
+
+def test_spec068_end_to_end_a_persistent_leak_is_kept_after_the_last_attempt(monkeypatch):
+    monkeypatch.setattr(generation.time, "sleep", lambda _seconds: None)
+    requests: list[dict[str, Any]] = []
+    leaked = _spec068_answer(_SPEC068_LEAKED, _SPEC068_CONTINUATION_TRANSLATION)
+
+    result = generation.generate_markdown_block(
+        client=_scripted_client([leaked], requests=requests),
+        model="gpt-5.4",
+        system_prompt="system",
+        target_text=_SPEC068_BLOCK,
+        context_before="",
+        context_after="",
+        max_retries=2,
+        expected_paragraph_ids=_SPEC068_IDS,
+        marker_mode=True,
+        detect_short_source_absorption=True,
+    )
+
+    # One retry, then the answer stands: no recovery call, no ladder, no source.
+    assert len(requests) == 2
+    dispositions = generation.marker_paragraph_dispositions(result)
+    assert dispositions is not None
+    assert [(item.status, item.text) for item in dispositions] == [
+        ("accepted", _SPEC068_LEAKED),
+        ("accepted", _SPEC068_CONTINUATION_TRANSLATION),
+    ]

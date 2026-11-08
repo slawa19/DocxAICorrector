@@ -2,6 +2,8 @@ import logging
 import re
 import tempfile
 import time
+import unicodedata
+from collections import Counter
 from collections.abc import Iterable, Sequence, Sized
 from dataclasses import dataclass
 from functools import lru_cache
@@ -173,6 +175,29 @@ _NUMBERED_ENTRY_PATTERN = re.compile(r"^\s{0,3}(?:[-*+]\s+)?\d{1,4}[.)]\s")
 _ENTRY_CLOSERS = r"\"”’»)\]*_"
 _SENTENCE_END_PATTERN = re.compile(rf"[.!?…][{_ENTRY_CLOSERS}]*\s*$")
 _TRAILING_INITIAL_PATTERN = re.compile(rf"(?<![^\W\d_])[^\W\d_]\.[{_ENTRY_CLOSERS}]*\s*$")
+# Spec 068 FR-001: a NUMBER in a paragraph's answer that its own source paragraph does not carry,
+# but a neighbouring paragraph of the block or the context around the block does, is text taken
+# from elsewhere -- the model completed a torn line from the paragraph after it (an index entry
+# whose continuation it saw in [CONTEXT AFTER]), and that continuation is delivered again under
+# its own marker. A number is read as a run of digits after these normalisations, applied to
+# both sides alike: superscript digits are folded to plain digits and stand apart from the word
+# they touch (a footnote reference); a range torn by the extractor ("113-1 14") is rejoined; a
+# thousands group joined to its number ("1,500", "4 000"); an abbreviated range ("2007-8",
+# "223-24") expanded ("2007-2008", "223-224"). In the ANSWER only a free-standing number counts
+# -- digits glued to a letter are part of a name ("B2B", "CO2"); every source side keeps all
+# its digits, so a footnote reference the source glued to a word still belongs to it. A number
+# of the answer that is a substring of a number of its source is not foreign either: "1,5" for
+# "1,500" (a reformatted magnitude), "2009" and "19" for "200919" (a footnote reference the
+# source glued to a year). A number a neighbour of the same block carries counts only when that
+# neighbour's own answer carries it too -- delivered twice; a number the model MOVED from a
+# torn neighbour into the sentence it belongs to ("in January," + "1999. During ...") is
+# delivered once.
+_NUMBER_LEAK_SUPERSCRIPT_RUN_PATTERN = re.compile(r"[⁰¹²³⁴⁵⁶⁷⁸⁹]+")
+_NUMBER_LEAK_TORN_RANGE_PATTERN = re.compile(r"([‐‑‒–—―-]\s?\d{1,3}) (\d{1,3})(?!\d)")
+_NUMBER_LEAK_THOUSANDS_PATTERN = re.compile(r"(?<=\d)[,\u00a0\u202f\u2009 ](?=\d{3}(?!\d))")
+_NUMBER_LEAK_RANGE_PATTERN = re.compile(r"(\d+)\s?[‐‑‒–—―-]\s?(\d+)")
+_NUMBER_LEAK_DIGITS_PATTERN = re.compile(r"\d+")
+_NUMBER_LEAK_FREE_STANDING_DIGITS_PATTERN = re.compile(r"(?<![^\W\d_])\d+(?![^\W\d_])")
 _INCOMPLETE_RESPONSE_RETRY_MIN_OUTPUT_TOKENS = 1024
 _INCOMPLETE_RESPONSE_RECOVERY_MIN_OUTPUT_TOKENS = 1536
 # The hard upper bound on ``max_output_tokens`` this generator will ever ask for. Named
@@ -351,8 +376,10 @@ class MarkerValidationError(RuntimeError):
         self.found_paragraph_ids = tuple(found_paragraph_ids or ())
         self.leading_text = leading_text or ""
         self.leading_text_preview = (leading_text or "")[:400]
-        # ``merged_marker_chunk`` only (spec 061 FR-001): WHICH paragraph collapsed and
-        # which neighbour visibly took its text. Empty for every other code.
+        # ``merged_marker_chunk`` (spec 061 FR-001): WHICH paragraph collapsed and which
+        # neighbour visibly took its text; ``number_leak_marker_chunk`` (spec 068 FR-001): the
+        # paragraphs whose answers carry a number taken from elsewhere, as absorbers. Empty for
+        # every other code.
         self.collapsed_paragraph_ids = tuple(collapsed_paragraph_ids or ())
         self.absorbing_paragraph_ids = tuple(absorbing_paragraph_ids or ())
 
@@ -365,6 +392,12 @@ class MarkerValidationError(RuntimeError):
 # last attempt and the recovery call of a block with NO ladder, and — when the ladder rescued
 # nothing — by ``_merged_pair_repair_fallback`` from the recovery call's own answer.
 MERGED_MARKER_CHUNK_ERROR_CODE = "merged_marker_chunk"
+# Spec 068 FR-001: a paragraph's answer carries a number taken from a neighbour or from the
+# context around the block (``_find_number_leaks``). A ``MarkerValidationError`` too, so the
+# attempt loop retries it and spec 056 D' captures its answer; raised only while attempts
+# remain. When nothing is left the answer stands -- it is translated, and shipping the source
+# would trade a duplicated number for a paragraph in the wrong language.
+NUMBER_LEAK_MARKER_CHUNK_ERROR_CODE = "number_leak_marker_chunk"
 
 
 @lru_cache(maxsize=1)
@@ -867,6 +900,7 @@ def resolve_marker_paragraph_dispositions(
     raw_markdown: str | None = None,
     allow_merge_repair: bool | None = None,
     detect_short_source_absorption: bool = False,
+    context_texts: Sequence[str] = (),
 ) -> list[ParagraphDisposition]:
     """Turn ``retry_required`` paragraphs into a final status, or ask for another attempt.
 
@@ -912,6 +946,13 @@ def resolve_marker_paragraph_dispositions(
     Spec 065 FR-005: ``detect_short_source_absorption`` (translate jobs) adds the overgrown
     short paragraph to the merges ``_find_marker_chunk_merges`` reports, so it takes the same
     road a visible merge takes: a retry while anything is left to ask, its source on repair.
+
+    Spec 068 FR-001: under the same flag (translate jobs) a paragraph whose answer carries a
+    number taken from a neighbour or from ``context_texts`` (the block's [CONTEXT BEFORE] and
+    [CONTEXT AFTER]; ``_find_number_leaks`` holds the form) raises
+    ``number_leak_marker_chunk`` while attempts remain (``allow_unresolved_paragraphs`` is
+    False). On the last attempt the answer stands, with a WARNING naming the paragraphs and the
+    numbers: the text is translated, and its source would be worse than the duplicate.
     """
 
     if allow_merge_repair is None:
@@ -996,6 +1037,43 @@ def resolve_marker_paragraph_dispositions(
             if before != after:
                 statuses[index] = PARAGRAPH_STATUS_SOURCE_RESTORED
         texts = restored_texts
+
+    if detect_short_source_absorption and source_paragraph_chunks is not None:
+        leaks = _find_number_leaks(
+            [
+                "" if statuses[index] == PARAGRAPH_STATUS_SOURCE_RESTORED else text
+                for index, text in enumerate(texts)
+            ],
+            source_paragraph_chunks,
+            context_texts=context_texts,
+        )
+        if leaks:
+            leak_paragraph_ids = [paragraph_ids[index] for index in leaks]
+            leaked_numbers = {paragraph_ids[index]: list(numbers) for index, numbers in leaks.items()}
+            if not allow_unresolved_paragraphs:
+                log_event(
+                    logging.WARNING,
+                    "marker_chunk_number_leak_retry_requested",
+                    "В ответе абзаца есть число соседнего абзаца или контекста; блок будет запрошен снова.",
+                    leak_paragraph_ids=leak_paragraph_ids,
+                    leaked_numbers=leaked_numbers,
+                    paragraph_count=len(dispositions),
+                )
+                raise MarkerValidationError(
+                    NUMBER_LEAK_MARKER_CHUNK_ERROR_CODE,
+                    raw_markdown=_answer_as_received(),
+                    expected_paragraph_ids=paragraph_ids,
+                    found_paragraph_ids=paragraph_ids,
+                    absorbing_paragraph_ids=leak_paragraph_ids,
+                )
+            log_event(
+                logging.WARNING,
+                "marker_chunk_number_leak_kept",
+                "Повторы исчерпаны: в ответе абзаца осталось число соседнего абзаца или контекста; перевод оставлен как есть.",
+                leak_paragraph_ids=leak_paragraph_ids,
+                leaked_numbers=leaked_numbers,
+                paragraph_count=len(dispositions),
+            )
 
     unresolved_indexes = [
         index
@@ -1205,6 +1283,85 @@ def _is_torn_numbered_entry(source: str) -> bool:
     return _SENTENCE_END_PATTERN.search(source) is None or _TRAILING_INITIAL_PATTERN.search(source) is not None
 
 
+def _number_leak_tokens(text: str, *, free_standing: bool = False) -> Counter[str]:
+    """Spec 068 FR-001: the numbers of a text with their counts, normalised the same way on both
+    sides of a comparison (see ``_NUMBER_LEAK_SUPERSCRIPT_RUN_PATTERN`` and its neighbours); with
+    ``free_standing`` (an answer) digits glued to a letter are left out. Digits and letter
+    classes only -- no word of the text is read (Constitution VII)."""
+
+    text = _strip_prompt_internal_tokens(text)
+    text = _NUMBER_LEAK_SUPERSCRIPT_RUN_PATTERN.sub(
+        lambda match: f" {unicodedata.normalize('NFKC', match.group(0))} ", text
+    )
+    text = unicodedata.normalize("NFKC", text)
+    text = _NUMBER_LEAK_TORN_RANGE_PATTERN.sub(r"\1\2", text)
+    text = _NUMBER_LEAK_THOUSANDS_PATTERN.sub("", text)
+    pattern = _NUMBER_LEAK_FREE_STANDING_DIGITS_PATTERN if free_standing else _NUMBER_LEAK_DIGITS_PATTERN
+    tokens: Counter[str] = Counter(pattern.findall(text))
+    for match in _NUMBER_LEAK_RANGE_PATTERN.finditer(text):
+        start, end = match.group(1), match.group(2)
+        if len(end) < len(start) and tokens[end] > 0:
+            expanded = start[: len(start) - len(end)] + end
+            if int(expanded) > int(start):
+                tokens[end] -= 1
+                tokens[expanded] += 1
+    return +tokens
+
+
+def _find_number_leaks(
+    paragraph_chunks: Sequence[str],
+    source_paragraph_chunks: Sequence[str],
+    *,
+    context_texts: Sequence[str] = (),
+) -> dict[int, tuple[str, ...]]:
+    """Spec 068 FR-001: per paragraph index, the numbers its answer took from elsewhere.
+
+    A number of the answer is foreign when its own source paragraph does not carry it, not even
+    as a part of a longer number. A foreign number that a neighbouring paragraph of the same
+    block carries in its source more often than in its answer was MOVED, not copied ("in
+    January," + "1999. During ..." answered as "in January 1999" + "During ..."): it is
+    delivered once and is no leak, whatever the context holds. Otherwise it is a LEAK when the
+    context around the block (``context_texts``: [CONTEXT BEFORE] and [CONTEXT AFTER], which the
+    block's answer never delivers) carries it, or when a neighbour of the same block carries it
+    in its source and keeps it in its answer -- the number is then delivered twice. A foreign
+    number found nowhere else is the model's own (a year it supplied, a number the source wrote
+    out in words) and is not read as a leak. Paragraphs with an empty answer are skipped --
+    emptiness has its own road."""
+
+    if not source_paragraph_chunks or len(source_paragraph_chunks) != len(paragraph_chunks):
+        return {}
+    source_tokens = [_number_leak_tokens(chunk) for chunk in source_paragraph_chunks]
+    answer_tokens = [_number_leak_tokens(chunk, free_standing=True) for chunk in paragraph_chunks]
+    context_tokens = {token for text in context_texts for token in _number_leak_tokens(text)}
+    leaks: dict[int, tuple[str, ...]] = {}
+    for index, answer in enumerate(paragraph_chunks):
+        if not answer:
+            continue
+        own = source_tokens[index]
+        foreign = [
+            token
+            for token in answer_tokens[index]
+            if token not in own and not any(token in source_token for source_token in own)
+        ]
+        if not foreign:
+            continue
+        neighbours = [other for other in range(len(paragraph_chunks)) if other != index]
+        moved = {
+            token
+            for other in neighbours
+            for token, count in source_tokens[other].items()
+            if answer_tokens[other][token] < count
+        }
+        delivered_twice = {
+            token for other in neighbours for token in source_tokens[other] if answer_tokens[other][token]
+        }
+        elsewhere = (context_tokens | delivered_twice) - moved
+        leaked = tuple(sorted((token for token in foreign if token in elsewhere), key=lambda t: (len(t), t)))
+        if leaked:
+            leaks[index] = leaked
+    return leaks
+
+
 def _overgrown_paragraph_ids(
     merges: Sequence["_MarkerChunkMerge"], paragraph_ids: Sequence[str] | None
 ) -> list[str]:
@@ -1366,6 +1523,7 @@ def _strip_and_validate_paragraph_markers(
     allow_unresolved_paragraphs: bool = False,
     allow_merge_repair: bool | None = None,
     detect_short_source_absorption: bool = False,
+    context_texts: Sequence[str] = (),
 ) -> str:
     if not marker_mode:
         return markdown
@@ -1378,6 +1536,7 @@ def _strip_and_validate_paragraph_markers(
         raw_markdown=markdown,
         allow_merge_repair=allow_merge_repair,
         detect_short_source_absorption=detect_short_source_absorption,
+        context_texts=context_texts,
     )
     # The joined string still carries exactly one paragraph per marker — an ``omitted``
     # paragraph contributes its own source text — so everything downstream that counts
@@ -1596,6 +1755,7 @@ def _finalize_generated_markdown(
         allow_unresolved_paragraphs=allow_unresolved_paragraphs,
         allow_merge_repair=allow_merge_repair,
         detect_short_source_absorption=detect_short_source_absorption,
+        context_texts=(context_before, context_after),
     )
     return _deliver_after_context_leakage_check(
         cleaned_markdown,
@@ -2378,6 +2538,7 @@ def _merged_pair_repair_fallback(
             allow_merge_repair=True,
             # The same detection that raised, so the repair restores the paragraph it named.
             detect_short_source_absorption=detect_short_source_absorption,
+            context_texts=(context_before, context_after),
         ),
         target_text=target_text_for_leakage,
         context_before=context_before,
