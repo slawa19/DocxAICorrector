@@ -6,8 +6,11 @@
 
 **Date**: 2026-11-08 (строки кода проверены на `88a5fa8`, последнем коммите `main` на эту дату)
 
-**Status**: **READY (2026-11-08) — спека написана по сплошному обходу `src/docxaicorrector/` (агент,
-95 обращений к файлам) и выборочной перепроверке оркестратором; код не начат.** Spec-only tier
+**Status**: **IN PROGRESS (2026-11-08) — четыре пакета работ реализованы агентами и влиты в
+`066/integration` (P4 `8efa348`, P2 `0ae4286`, P1 `b157942`, P3 `fc7fd36`; C-4 отозвана), хвосты
+после слияния (P5), полный прогон в главном дереве и приёмочное ревью Codex — до слияния в `main`.**
+Спека написана по сплошному обходу `src/docxaicorrector/` (агент, 95 обращений к файлам) и
+выборочной перепроверке оркестратором. Spec-only tier
 (Конституция III): каждая правка — удаление или переименование по форме, ограниченное названной
 находкой; проверка — детерминированная: полный прогон, офлайн-replay сборки четырёх книг третьего
 прогона и structural-preparation snapshot без модели. `plan.md` и `tasks.md` не пишутся. Решений
@@ -62,6 +65,9 @@ topology-проекции, — которые тянутся примерно ч
 (`core/config*.py`), ни `resources/config.toml`, ни UI, ни профилями валидации — только тесты
 подкладывают его напрямую. Такой ключ в продукте недостижим, и его ветки — мёртвый код с живыми
 тестами.
+Читателей надо искать и в каноническом раннере
+`tests/artifacts/real_document_pipeline/run_lietaer_validation.py`, не только в `src/`: на этом
+споткнулась C-4.
 
 ## Verified findings
 
@@ -197,12 +203,16 @@ VIII). «Пин» — тесты, которые сейчас закрепляю
 - **C-3 (P0) ✔. Три файла промптов-сирот.** `resources/prompts/structure_recognition_system.txt`,
   `document_map_system.txt`, `reconciliation_targeted_system.txt` — не загружает никто в `src/`,
   `tests/`, `scripts/`; первый несёт пример `Mark 13:13 / Марк 13:13` (:53-54). **Удалить.**
-- **C-4 (P0) ✔. Reader-verifier удалён, конфиг остался.** `resources/config.toml:81`
-  `reader_verifier_model = "anthropic:claude-sonnet-4-6"`, парсится с env-override
-  (`core/config_runtime_sections.py:127-133`, `core/config.py:332`, `core/config_loader_layers.py:191`);
-  `validation/profiles.py:102,309,339-340,524` кладут `reader_verifier_enabled` в app config. Читателей
-  нет. Пин: `test_config.py`, `test_real_document_pipeline_validation.py`, `run_lietaer_validation.py`.
-  **Удалить.**
+- **C-4 — ОТОЗВАНА 2026-11-08 (исполнитель P3, проверено оркестратором).** Reader-verifier не удалён, а
+  выключен по умолчанию (`bb24e49`): его читает канонический раннер валидации
+  `tests/artifacts/real_document_pipeline/run_lietaer_validation.py:2176-2198`
+  (`_resolve_reader_verifier_config` читает `reader_verifier_enabled` и `reader_verifier_model`,
+  вызовы `:3102`, `:6086`), а десять run-профилей `corpus_registry.toml` ставят
+  `reader_verifier_enabled = false`. По критерию этой спеки (производят профили, читает раннер) это
+  opt-in фича оценки, не мёртвый ключ. Обход агента искал читателей только в `src/` и раннер не
+  увидел. Удаление подсистемы (~258 ссылок в раннере) — решение владельца, здесь не делается.
+  Первоначальная формулировка: `resources/config.toml:81` `reader_verifier_model`, парсинг
+  `core/config_runtime_sections.py:127-133`, `validation/profiles.py:102,309,339-340,524`.
 - **C-5 (P0) ✔. Поля Stage-0 и класс-дескриптор для удалённого AI.**
   `document/extraction.py:312,756-880` (`_annotate_stage0_structure_signals`) пишет `style_cluster_id`,
   `font_size_z_score`, `position_fraction`, `is_isolated_marker`, `toc_pattern_hint`,
@@ -312,8 +322,8 @@ VIII). «Пин» — тесты, которые сейчас закрепляю
   `preparation_diagnostic_snapshot`. Контракт snapshot в документации — вслед.
 - **FR-010 (C-2, C-3, C-4, C-10)**: ветки `topology_unit` / `topology_*` / `document_map`, чтение
   неэмитируемых событий, `structure/layout_signals.py`, константы `DOCUMENT_TOPOLOGY_MAX_*`, три
-  файла промптов, `reader_verifier_model` / `reader_verifier_enabled`, непроизводимые записи
-  `_HUMANIZED_QUALITY_GATE_REASON_TO_CODE` удалены; фикстуры `*_topology.json` удалены, если
+  файла промптов, непроизводимые записи `_HUMANIZED_QUALITY_GATE_REASON_TO_CODE` удалены
+  (`reader_verifier_*` остаётся — C-4 отозвана); фикстуры `*_topology.json` удалены, если
   проверяют только удалённые ветки, иначе урезаны.
 - **FR-011 (C-11, C-12)**: `generation/search.py` удалён (CODEOWNERS, тест identity-aliases и
   статический контракт скриптов обновлены); мёртвый override бюджета в `image/pipeline.py:1422`
@@ -402,5 +412,68 @@ VIII). «Пин» — тесты, которые сейчас закрепляю
 
 ## Changelog
 
+- 2026-11-08 — **реализация четырьмя агентами в боковых worktree, слияние в `066/integration`**
+  (P4 `8efa348`, P2 `0ae4286`, P1 `b157942`, P3 `fc7fd36`); конфликты в `processing/preparation.py`,
+  `tests/test_preparation.py`, `tests/test_application_flow.py` (P1 и P2 убирали соседние токены ключа
+  подготовки: оба удаления оставлены, `pk=4` не поднят — старые ключи содержали удалённые токены и
+  отдаться не могут), `validation/structural.py` и `docs/LOGGING_AND_ARTIFACT_RETENTION.md` сведены
+  оркестратором. Поправки к спеке по ходу: **C-4 отозвана** (см. находку); A-1 имела не одну, а три
+  точки освобождения (`:849` и оба сборщика сэмплов); гард FR-005 строится не по заголовкам книг из
+  профилей, а по заголовкам, title и авторам из DOCX корпуса (они в git) — «Making Versus Taking» в
+  названии книги не встречается; поле `pdf_import/text_layer_quality.py:387` называет две книги в
+  docstring как источник замера (Конституция VIII), это не правило — исключение SC-004.
+- 2026-11-08 — P1 (`066/domain`, 6 коммитов `d5ac0a4..b613f68`): удалены C-7, A-1 (с двумя неучтёнными в
+  спеке освобождениями в сборщиках сэмплов), A-4; ключ `heldout_money_sustainability_class` (A-2);
+  оглавление и абзац *The Value of Everything* в промпт-примерах заменены вымышленными (A-3, A-6); гард
+  FR-005 `tests/test_prompts_carry_no_corpus_literals.py` читает заголовки, title и авторов DOCX книг
+  корпуса (падает на `b402b2d`); поля и проверка `theology_style_*` (T-2); ось `translation_domain`
+  целиком вместе с `fixed_terms` запроса глоссария (поле всегда было пустым), `domain_terms` артефакта и
+  `:td=` ключа подготовки (T-1); `scripture_reference*` → `numbered_citation*` (A-5). Промпты — прежние
+  минус ровно 70 знаков секции домена: translate 6907/`fa3afff9…`, edit 4887/`41c6552c…`, toc
+  5805/`6da3dbf8…`, audiobook 9982/`792cfe7e…` (вместо theology-строки). **SC-002: replay сборки четырёх
+  книг третьего прогона до/после побайтно равен** (markdown, реестр, display, сэмплы); на корпусе A-1 —
+  0 совпадений из 1358 проверок, A-4 — 0/1601, C-7 — 0/5839. Эталоны и скрипты —
+  `D:\Temp\docxai-research\066-baseline\domain\`. Оставлено: `DocumentContextProfile.style_instructions`
+  / `.glossary_terms` без производителя — хвост P5.
+- 2026-11-08 — P2 (`066/structure`, 6 коммитов `85a3040..1761d03`): C-3 — удалены три промпта-сироты.
+  C-8 — фабрики клиентов подготовки больше не читают `structure_recognition_model`. C-6 — удалены ключи
+  `structure_validation_enabled` / `_save_debug_artifacts` / `_block_on_high_risk_noop` (с env и строками
+  `config.toml`) и `write_structure_validation_debug_artifact`. C-5 — удалены шесть полей Stage-0 и
+  `ParagraphDescriptor`. C-1 — удалена ось `structure_recovery` (`ai_first`/`signal_only`, фаза
+  `ai_first_degraded_fallback`, `role_confidence == "ai"`, токены `sr`/`srm` ключа подготовки);
+  `layout_cleanup.py:85` — спека ошиблась: локальный `signal_only` там живой переключатель flag/remove,
+  переименован в `flag_only`. C-9 — роль переименована в `boundary_review`, legacy-ключ
+  `[structure_recognition].model` и env `DOCX_AI_STRUCTURE_RECOGNITION_MODEL` не читаются (старые имена —
+  в уже существующих таблицах удалённых ключей, WARNING `legacy_model_config_key_detected`; событие
+  `legacy_model_config_source_used` удалено — у него не осталось производителя). **SC-003: snapshot
+  четырёх профилей до/после побайтово равны**; полный дамп продуктовой подготовки (абзацы, отношения,
+  отчёты, сегменты, задания) отличается только шестью удалёнными полями C-5 (2034/2187/1770/1417
+  абзацев), 0 прочих расхождений — `D:\Temp\docxai-research\066-baseline\structure\<profile>.deep.*`.
+- 2026-11-08 — P3 (`066/validation`, 6 коммитов `d6b96c7..445502a`): C-2 — удалены ветки
+  topology/document_map в `validation/` (чтение четырёх неэмитируемых событий, `topology_unit`,
+  детекторы проекции, `structure/layout_signals.py`, `DOCUMENT_TOPOLOGY_MAX_*`) и мёртвые аргументы
+  `document_map=None, topology_projection=None` на вызове шлюза; из `preparation_diagnostic_snapshot`
+  ушли 26 ключей (`ai_*`, `ai_first_degraded`, `structure_ai_attempted`, `fallback_*`, `document_map_*`,
+  `document_topology_*`, счётчики `structure_*` фолбэка, `topology_*`) — на четырёх профилях все держали
+  нейтральные значения, эталоны `D:\Temp\docxai-research\066-baseline\validation\`. C-10 — из 15
+  записей оставлены 2, которые производит `preparation._REASON_LABELS`. **C-4 не выполнена — находка
+  отозвана.** FR-012 — `tests/test_config_keys_are_read.py` (AST по полям `AppConfig`, два направления,
+  третий тест ловит устаревшие записи allow-list): на `b402b2d` с пустым allow-list ловит C-1, C-2, C-6,
+  C-8, C-12 и новые находки `default_model`, `model_options`, `validation_model`, `reconstruction_model`
+  (нечитаемые плоские копии `models.*`, вне scope) и `document_context_prompt` (мёртвый fallback в
+  `pipeline/setup.py`/`support.py` — хвост P5). Введён WARNING `config_key_ignored`: ключи верхнего
+  уровня `config.toml`, которые не прочитал ни один резолвер (раньше принимались молча).
+- 2026-11-08 — P4 (`066/generation`, 5 коммитов `f7d6017..36d21d5`): B-1 — снятие необязательного
+  параметра после отказа провайдера идёт через один помощник `image/shared.py::drop_rejected_optional_param`
+  и пишет WARNING `model_call_param_dropped` `{param, model, stage, error_code}` на всех трёх текстовых
+  путях (Responses, Chat Completions, Anthropic Messages); памяти между вызовами нет. B-2 —
+  `accepts_response_format`, ветка `response_format` и два retryable-входа удалены. B-3 — таблица
+  алиасов Anthropic заменена правилом формы (префикс `anthropic:`/`anthropic/` снимается, точка между
+  цифрами → дефис). C-11 — `generation/search.py` удалён с CODEOWNERS; новый гард — CODEOWNERS не
+  называет несуществующих путей. C-12 — override удалён; **наблюдение:** бюджет документа по картинкам
+  всегда выводится как n × (per_image + 1) и потому срабатывает только при перерасходе сверх доли
+  одной картинки — тест остановки следующих картинок переписан на живой ключ с перерасходом анализа
+  (это территория спеки 062, здесь записано). Исключения SC-004: docstring `model_capabilities.py:4,20,38`,
+  OpenRouter-id `config.toml:109`.
 - 2026-11-08 — спека создана по сплошному обходу `src/` после вопроса владельца о «доменном
   глоссарии». Решения владельца того же дня: ручного входа в глоссарий не будет; домен удаляется.
