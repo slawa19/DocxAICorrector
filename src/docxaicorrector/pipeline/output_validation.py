@@ -675,6 +675,17 @@ def _note_number_chain(text: str) -> list[tuple[int, int, int]]:
     return best
 
 
+def opens_with_note_number(text: str) -> bool:
+    """Spec 068 FR-003: does ``text`` open with a NOTE NUMBER of the form above -- a 1-3 digit
+    token without a full stop, then whitespace and an entry opener ("7 A. Author, ...")? Such
+    a text begins a new note entry; it does not continue the one before it."""
+    body = _INTERNAL_PLACEHOLDER_PATTERN.sub(" ", str(text or "")).strip()
+    match = _NOTE_NUMBER_PATTERN.match(body)
+    if match is None or match.end() >= len(body):
+        return False
+    return body[match.end()].isupper() or body[match.end()] in _NOTE_ENTRY_OPENERS
+
+
 def notes_run_parts(text: str) -> tuple[str, tuple[str, ...]] | None:
     """``(lead, entries)`` when the paragraph is a notes run by its form, else ``None``.
 
