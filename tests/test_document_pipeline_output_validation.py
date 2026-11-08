@@ -2514,6 +2514,96 @@ def test_collect_toc_listed_heading_ids_compares_whole_lines(contents_text, head
     assert result == (frozenset({"heading"}) if listed else frozenset())
 
 
+# Spec 067 FR-002 (A-2). Money and Sustainability's Box 7.1 on the fourth paid run: two header
+# cells close one block, the next block opens with a bold label cell the document layer had
+# made a heading and a row of page references. ``_entry_has_previous_block_and_same_block_tail
+# _context`` read the label as a sentence torn across the block boundary, demoted it, and
+# ``adjacent_continuation_recovery`` welded all four into "ЧАСТНЫЙ СЕКТОР ГОСУДАРСТВЕННЫЙ СЕКТОР
+# **Инициативы НПО:** Дораленд…" (``delivered.md:1861``). The import flags all three cells.
+def _spec_067_box_case(*, cells: bool):
+    paragraphs = [
+        _make_paragraph_stub("private", 10, text="PRIVATE SECTOR"),
+        _make_paragraph_stub("public", 11, text="PU BLIC SECTOR"),
+        _make_paragraph_stub("ngo", 12, role="heading", structural_role="heading", heading_level=2, text="**NGO Initiative s :**"),
+        _make_paragraph_stub("row", 13, text="Doraland p.142 Wellness Tok ens p.144 Natural Savings p.151"),
+    ]
+    for paragraph in paragraphs[:3]:
+        setattr(paragraph, "is_pdf_table_cell", cells)
+    return document_pipeline_output_validation.assemble_final_markdown(
+        processed_chunks=[
+            "ЧАСТНЫЙ СЕКТОР\n\nГОСУДАРСТВЕННЫЙ СЕКТОР",
+            "## **Инициативы НПО:**\n\nДораленд, с. 142; велнес-токены, с. 144",
+        ],
+        generated_paragraph_registry=[
+            {"block_index": 1, "paragraph_id": "private", "text": "ЧАСТНЫЙ СЕКТОР"},
+            {"block_index": 1, "paragraph_id": "public", "text": "ГОСУДАРСТВЕННЫЙ СЕКТОР"},
+            {"block_index": 2, "paragraph_id": "ngo", "text": "## **Инициативы НПО:**"},
+            {"block_index": 2, "paragraph_id": "row", "text": "Дораленд, с. 142; велнес-токены, с. 144"},
+        ],
+        source_paragraphs=paragraphs,
+    )
+
+
+def test_assemble_final_markdown_neither_demotes_nor_merges_a_table_cell():
+    result = _spec_067_box_case(cells=True)
+
+    assert [entry.paragraph_id for entry in result.entries] == ["private", "public", "ngo", "row"]
+    assert result.final_markdown == (
+        "ЧАСТНЫЙ СЕКТОР\n\nГОСУДАРСТВЕННЫЙ СЕКТОР\n\n## **Инициативы НПО:**\n\nДораленд, с. 142; велнес-токены, с. 144"
+    )
+    assert [entry.source_is_table_cell for entry in result.entries] == [True, True, True, False]
+    assert result.entries[2].generated_heading_kind == "real_heading"
+    assert result.diagnostics.demoted_false_headings == 0
+    assert result.diagnostics.accepted_merges == 0
+    denials = [d for d in result.diagnostics.merge_decisions if d.reason == "source_boundary_table_cell"]
+    # The two header cells are the one pair the text predicates would join; once the label is
+    # not demoted it is a heading again, and a heading boundary is never a merge candidate.
+    assert [d.paragraph_ids for d in denials] == [("private", "public")]
+    assert result.diagnostics.source_role_denials == 1
+
+
+def test_assemble_final_markdown_same_box_without_cell_flags_is_welded_as_before():
+    # ANTI-VACUUM: without the flag the shape is demoted and welded exactly as the fourth run
+    # delivered it, so the refusal above is the flag's doing.
+    result = _spec_067_box_case(cells=False)
+
+    assert result.final_markdown == (
+        "ЧАСТНЫЙ СЕКТОР ГОСУДАРСТВЕННЫЙ СЕКТОР **Инициативы НПО:** Дораленд, с. 142; велнес-токены, с. 144"
+    )
+    assert result.entries[0].merged_paragraph_ids == ("private", "public", "ngo", "row")
+    assert result.diagnostics.demoted_false_headings == 1
+
+
+def test_assemble_final_markdown_cell_flag_does_not_stop_a_torn_body_sentence_from_merging():
+    # Anti-regression 3 of spec 067: a body paragraph torn across a block boundary still rejoins
+    # its continuation in a document whose other paragraphs are table cells.
+    cell = _make_paragraph_stub("cell", 1, text="PRIVATE SECTOR")
+    setattr(cell, "is_pdf_table_cell", True)
+    result = document_pipeline_output_validation.assemble_final_markdown(
+        processed_chunks=[
+            "ЧАСТНЫЙ СЕКТОР",
+            "Ряд исследователей наблюдал этот эффект в течение",
+            "нескольких лет подряд.",
+        ],
+        generated_paragraph_registry=[
+            {"block_index": 1, "paragraph_id": "cell", "text": "ЧАСТНЫЙ СЕКТОР"},
+            {"block_index": 2, "paragraph_id": "left", "text": "Ряд исследователей наблюдал этот эффект в течение"},
+            {"block_index": 3, "paragraph_id": "right", "text": "нескольких лет подряд."},
+        ],
+        source_paragraphs=[
+            cell,
+            _make_paragraph_stub("left", 2, text="Several researchers observed this effect over"),
+            _make_paragraph_stub("right", 3, text="several years in a row."),
+        ],
+    )
+
+    assert result.final_markdown == (
+        "ЧАСТНЫЙ СЕКТОР\n\nРяд исследователей наблюдал этот эффект в течение нескольких лет подряд."
+    )
+    assert result.entries[1].merged_paragraph_ids == ("left", "right")
+    assert result.entries[1].source_is_table_cell is False
+
+
 def test_assemble_final_markdown_preserves_source_backed_numbered_citation_heading():
     result = document_pipeline_output_validation.assemble_final_markdown(
         processed_chunks=[

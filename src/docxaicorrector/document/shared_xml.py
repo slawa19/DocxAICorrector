@@ -11,6 +11,47 @@ def build_source_xml_fingerprint(paragraph) -> str | None:
     return hashlib.sha1(xml_text).hexdigest()[:12]
 
 
+# Spec 067 FR-002: the one paragraph property that carries "this paragraph is a table cell"
+# across the PDF->DOCX bridge. `w:cnfStyle` is OOXML's table conditional-formatting marker
+# of a paragraph; twelve zero bits name a body cell (no first-row, banded or corner format).
+# The writer and the reader live side by side so the contract has one home.
+_TABLE_CELL_CNF_STYLE_VALUE = "000000000000"
+
+
+def set_paragraph_pdf_table_cell_signal(paragraph) -> None:
+    """Mark a python-docx paragraph as a table cell (``w:pPr/w:cnfStyle``)."""
+
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+
+    paragraph_properties = paragraph._element.get_or_add_pPr()
+    if paragraph_properties.find(qn("w:cnfStyle")) is not None:
+        return
+    cnf_style = OxmlElement("w:cnfStyle")
+    cnf_style.set(qn("w:val"), _TABLE_CELL_CNF_STYLE_VALUE)
+    paragraph_properties.insert_element_before(cnf_style, "w:rPr", "w:sectPr", "w:pPrChange")
+
+
+def paragraph_has_pdf_table_cell_signal(paragraph) -> bool:
+    """Does the paragraph's OWN ``w:pPr`` carry ``w:cnfStyle``? A paragraph inside a real
+    table is read by the table path, never through here; a body paragraph carries the
+    property only when the PDF bridge wrote it."""
+
+    element = getattr(paragraph, "_element", None)
+    if element is None:
+        return False
+    for child in element:
+        if _local_tag_name(child) != "pPr":
+            continue
+        return any(_local_tag_name(grandchild) == "cnfStyle" for grandchild in child)
+    return False
+
+
+def _local_tag_name(element) -> str:
+    tag = getattr(element, "tag", None)
+    return tag.rsplit("}", 1)[-1] if isinstance(tag, str) else ""
+
+
 def extract_run_element_images(
     run_element,
     part,

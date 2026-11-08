@@ -194,6 +194,9 @@ class RawParagraph:
     boundary_source: str = "raw"
     boundary_confidence: str = "explicit"
     boundary_rationale: str | None = None
+    # Spec 067 FR-002: the PDF bridge marked this paragraph a table cell (``w:cnfStyle`` in
+    # its ``w:pPr``, written by ``processing_runtime._carry_pdf_paragraph_layout_signals``).
+    is_pdf_table_cell: bool = False
 
 
 @dataclass(frozen=True)
@@ -363,7 +366,8 @@ class ParagraphUnit:
     is_repeated_across_pages: bool = False
     is_likely_page_number: bool = False
     # Spec 065 FR-008: the PDF importer built this unit from a table-row cell; nothing joins
-    # it to a neighbour afterwards.
+    # it to a neighbour afterwards. Spec 067 FR-002: the flag crosses the PDF->DOCX bridge
+    # and is restored on re-extraction, so the document layer and the final assembly see it.
     is_pdf_table_cell: bool = False
     boundary_normalization_applied: bool = False
 

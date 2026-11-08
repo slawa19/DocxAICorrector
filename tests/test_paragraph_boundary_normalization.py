@@ -732,6 +732,62 @@ def test_table_boundary_is_never_merged():
     assert report.merged_group_count == 0
 
 
+def _add_paragraph(document, text: str, *, cell: bool):
+    from docxaicorrector.document.shared_xml import set_paragraph_pdf_table_cell_signal
+
+    paragraph = document.add_paragraph(text)
+    if cell:
+        set_paragraph_pdf_table_cell_signal(paragraph)
+    return paragraph
+
+
+def test_pdf_table_cell_is_never_merged_with_either_neighbour():
+    # Spec 067 FR-002: a cell the PDF bridge marked (``w:cnfStyle``) is a paragraph of its own.
+    # Each pair below reads as a torn sentence by text -- no full stop on the left, a
+    # lower-case start on the right -- which is how 379 of Rethinking Money's 616 cells were
+    # joined again before the flag crossed the bridge.
+    document = make_document()
+    _add_paragraph(document, "PRIVATE SECTOR", cell=True)
+    _add_paragraph(document, "public sector", cell=True)  # cell + cell
+    _add_paragraph(document, "and the commons.", cell=False)  # cell -> plain
+    _add_paragraph(document, "Doraland p.142 and", cell=False)
+    _add_paragraph(document, "wellness tokens p.144", cell=True)  # plain -> cell
+
+    paragraphs, _, report = extract_document_content_with_boundary_report(_save_document(document))
+
+    assert [paragraph.text for paragraph in paragraphs] == [
+        "PRIVATE SECTOR",
+        "public sector",
+        "and the commons.",
+        "Doraland p.142 and",
+        "wellness tokens p.144",
+    ]
+    assert [paragraph.is_pdf_table_cell for paragraph in paragraphs] == [True, True, False, False, True]
+    assert report.merged_group_count == 0
+    blocked = [decision for decision in report.decisions if "table_cell_boundary" in decision.reasons]
+    assert [(decision.left_raw_index, decision.right_raw_index) for decision in blocked] == [(0, 1), (1, 2), (3, 4)]
+    assert all(decision.confidence == "blocked" for decision in blocked)
+
+
+def test_same_pairs_without_the_cell_flag_still_merge():
+    # Anti-regression 3 of spec 067: a real continuation of body text -- the same shapes with no
+    # cell flag -- is still joined, so the refusal above is the flag's doing, not the text's.
+    document = make_document()
+    _add_paragraph(document, "PRIVATE SECTOR", cell=False)
+    _add_paragraph(document, "public sector.", cell=False)
+    _add_paragraph(document, "The bank lends money and", cell=False)
+    _add_paragraph(document, "creates a deposit at the same time.", cell=False)
+
+    paragraphs, _, report = extract_document_content_with_boundary_report(_save_document(document))
+
+    assert [paragraph.text for paragraph in paragraphs] == [
+        "PRIVATE SECTOR public sector.",
+        "The bank lends money and creates a deposit at the same time.",
+    ]
+    assert paragraphs[0].is_pdf_table_cell is False
+    assert not any("table_cell_boundary" in decision.reasons for decision in report.decisions)
+
+
 def test_ai_review_candidates_include_medium_boundaries_and_rejected_relations():
     candidates = boundary_review_module.build_ai_review_candidates(
         raw_blocks=[

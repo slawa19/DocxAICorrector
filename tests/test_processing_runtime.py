@@ -3655,3 +3655,80 @@ def test_pdf_bridge_round_trip_carries_heading_list_and_caption_styles() -> None
     ]
     assert paragraphs[0].heading_level == 1
     assert paragraphs[2].role_confidence == "explicit"
+
+
+def _bridge_round_trip(units):
+    from io import BytesIO
+
+    from docx import Document
+
+    from docxaicorrector.document.extraction import extract_document_content_from_docx
+
+    document = Document()
+    for unit in units:
+        processing_runtime._append_pdf_text_paragraph_to_docx(document, unit)
+    buffer = BytesIO()
+    document.save(buffer)
+    buffer.seek(0)
+    return document, extract_document_content_from_docx(buffer)[0]
+
+
+def _box_units(*, cells: bool):
+    # Money and Sustainability's Box 7.1 by form: a header row of two cells, a bold label cell
+    # without a full stop, a row of the next line -- every boundary reads as a torn sentence.
+    from docxaicorrector.core.models import ParagraphUnit
+
+    return [
+        ParagraphUnit(text="PRIVATE SECTOR", role="body", structural_role="body", is_pdf_table_cell=cells),
+        ParagraphUnit(text="public sector", role="body", structural_role="body", is_pdf_table_cell=cells),
+        ParagraphUnit(
+            text="NGO Initiatives:", role="body", structural_role="body", is_bold=True, is_pdf_table_cell=cells
+        ),
+        ParagraphUnit(text="Doraland p.142", role="body", structural_role="body", is_pdf_table_cell=cells),
+    ]
+
+
+def test_pdf_bridge_round_trip_carries_the_table_cell_flag() -> None:
+    """Spec 067 FR-002: importer -> intermediate DOCX -> `extraction.py` keeps the cell flag.
+
+    The bridge writes it as `w:cnfStyle` next to `space_before`; re-extraction restores
+    `ParagraphUnit.is_pdf_table_cell`, boundary normalisation joins no cell, and the bold-line
+    heading heuristics make no heading of the bold label cell.
+    """
+    from docx.oxml.ns import qn
+
+    document, paragraphs = _bridge_round_trip(_box_units(cells=True))
+
+    properties = [paragraph._element.pPr for paragraph in document.paragraphs]
+    cnf_styles = [None if pPr is None else pPr.find(qn("w:cnfStyle")) for pPr in properties]
+    assert all(element is not None and element.get(qn("w:val")) == "000000000000" for element in cnf_styles)
+    assert [paragraph.text for paragraph in paragraphs] == [
+        "PRIVATE SECTOR",
+        "public sector",
+        "**NGO Initiatives:**",
+        "Doraland p.142",
+    ]
+    assert all(paragraph.is_pdf_table_cell for paragraph in paragraphs)
+    assert [paragraph.role for paragraph in paragraphs] == ["body", "body", "body", "body"]
+    assert all(paragraph.heading_level is None for paragraph in paragraphs)
+
+
+def test_pdf_bridge_round_trip_without_the_flag_keeps_todays_behaviour() -> None:
+    # ANTI-VACUUM for the test above: the same units without the flag are joined and the bold
+    # label becomes a heading -- the fourth run's Box 7.1 -- and the bridge writes no
+    # `w:cnfStyle`, so a plain paragraph never reads back as a cell.
+    from docx.oxml.ns import qn
+
+    document, paragraphs = _bridge_round_trip(_box_units(cells=False))
+
+    assert all(
+        paragraph._element.pPr is None or paragraph._element.pPr.find(qn("w:cnfStyle")) is None
+        for paragraph in document.paragraphs
+    )
+    assert [paragraph.text for paragraph in paragraphs] == [
+        "PRIVATE SECTOR public sector",
+        "**NGO Initiatives:**",
+        "Doraland p.142",
+    ]
+    assert not any(paragraph.is_pdf_table_cell for paragraph in paragraphs)
+    assert paragraphs[1].role == "heading"

@@ -1088,12 +1088,25 @@ def _carry_pdf_paragraph_layout_signals(docx_paragraph, paragraph) -> None:
 
     from docx.shared import Pt
 
+    from docxaicorrector.document.shared_xml import set_paragraph_pdf_table_cell_signal
+
     gap_before_pt = getattr(paragraph, "vertical_gap_before_pt", None)
     if isinstance(gap_before_pt, (int, float)) and float(gap_before_pt) >= 0.0:
         # `w:spacing w:before` is stored in twips and `extraction.py` reads it back as
         # points; cap at a page height so a corrupt coordinate cannot produce a document
         # Word refuses to open.
         docx_paragraph.paragraph_format.space_before = Pt(min(float(gap_before_pt), 720.0))
+
+    if bool(getattr(paragraph, "is_pdf_table_cell", False)):
+        # Spec 067 FR-002: the importer built this paragraph from a table-row cell (spec 065
+        # FR-008). Until now the fact stopped here, and the document layer joined the cells
+        # again (`boundaries.normalize_paragraph_boundaries`: Rethinking Money 379 of 616) and
+        # the final assembly demoted and welded them (Money's Box 7.1). `w:cnfStyle` is the
+        # paragraph property OOXML has for "this paragraph carries table-cell formatting";
+        # all-zero bits name a body cell with no conditional (first-row, banded...) format.
+        # Outside a table Word ignores it, so the intermediate DOCX looks as before;
+        # `document/extraction.py` reads it back into `RawParagraph.is_pdf_table_cell`.
+        set_paragraph_pdf_table_cell_signal(docx_paragraph)
 
 
 def _pdf_paragraph_run_font_size(paragraph) -> float | None:

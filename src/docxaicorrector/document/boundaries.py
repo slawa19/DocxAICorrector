@@ -232,6 +232,12 @@ def evaluate_paragraph_boundary(
         blocked_reasons.append("heading_boundary")
     if left.role_hint != "body" or right.role_hint != "body":
         blocked_reasons.append("non_body_role")
+    # Spec 067 FR-002: a table cell the PDF importer flagged is a paragraph of its own (spec
+    # 065 FR-008). Its text reads as an unfinished sentence -- a label without a full stop --
+    # so the text predicates below joined the cells again: Rethinking Money 379 of 616,
+    # Creating Wealth 28 of 39 (the import counted, 2026-11-08).
+    if left.is_pdf_table_cell or right.is_pdf_table_cell:
+        blocked_reasons.append("table_cell_boundary")
     if left.list_kind is not None or right.list_kind is not None:
         blocked_reasons.append("list_metadata")
     if detect_explicit_list_kind(right.text) is not None:
