@@ -461,6 +461,7 @@ Prompt registry для изображений хранится в `src/docxaicor
 Проект пишет три основных файла логов:
 
 - `.run/app.log` — лог приложения, обработки блоков и ошибок OpenAI.
+- `tests/artifacts/real_document_pipeline/runs/<run_id>/app.log` — лог одного прогона real-document раннера: с 2026-11-08 (спека 067 FR-013) раннер пишет его в каталог прогона вместо общего `.run/app.log`, чтобы параллельные прогоны не делили файл; путь продублирован в отчёте (`output_artifacts.app_log`) и в summary (`app_log=`).
 - `.run/project.log` — лог PowerShell-скриптов запуска, остановки и status-проверок; теперь это rotating log с ограниченным числом backup-файлов, текущая реализация по умолчанию использует порог `256 KiB` и `5` backup-ов.
 - `.run/streamlit.log` — stdout/stderr Streamlit runtime; файл по-прежнему очищается на старте процесса, а во время долгого uptime дополнительно ограничивается WSL control script через периодическую size-check ротацию, текущие дефолты `256 KiB`, `5` backup-ов и проверка каждые `30` секунд, при этом активный путь остаётся `.run/streamlit.log`.
 
