@@ -2045,6 +2045,96 @@ def test_065_fr008_a_table_cell_is_a_paragraph_of_its_own() -> None:
     assert not any("Right Sector" in t and "Sub Label" in t for t in texts)
 
 
+def test_065_fr008_a_lowercase_table_cell_is_not_rejoined_after_the_span_loop() -> None:
+    # Codex acceptance review 2026-11-08: the boundary set at the body flush did not survive
+    # `_consolidate_cross_role_continuations`, which re-joined the two cells as a soft wrap when
+    # the second began lowercase ("Left Sector right sector"). A unit built from a cell carries
+    # the fact, and no later join crosses it.
+    spans = _subheading_page(
+        _span(1, "Left Sector", top=128, bottom=134, x0=50, x1=100, font_size=5),
+        _span(1, "right sector", top=128, bottom=134, x0=150, x1=200, font_size=5),
+        _span(1, "Sub Label :", top=135, bottom=141, x0=50, x1=90, font_size=5, bold=True),
+    )
+
+    paragraphs = build_paragraph_units_from_text_spans(spans).paragraphs
+    texts = [p.text for p in paragraphs]
+
+    assert "Left Sector" in texts
+    assert "right sector" in texts
+    assert all(p.is_pdf_table_cell for p in paragraphs if p.text in {"Left Sector", "right sector"})
+
+
+def test_065_fr008_consolidation_neither_leads_from_nor_continues_into_a_cell() -> None:
+    def units(cell_index: int) -> list[ParagraphUnit]:
+        pair = [_body_unit("A body sentence that does not end and"), _body_unit("continues lowercase here.")]
+        pair[cell_index].is_pdf_table_cell = True
+        return pair
+
+    plain = [_body_unit("A body sentence that does not end and"), _body_unit("continues lowercase here.")]
+    assert len(logical_import._consolidate_cross_role_continuations(plain)) == 1  # anti-vacuum
+    assert len(logical_import._consolidate_cross_role_continuations(units(0))) == 2
+    assert len(logical_import._consolidate_cross_role_continuations(units(1))) == 2
+
+
+def test_065_fr008_a_prose_line_cut_at_a_word_space_is_not_a_table_row() -> None:
+    # Money and Sustainability p. 71: the extractor cut one justified line into "to an" |
+    # "inflationary boom period. Conversely, when" | "the business horizon darkens, banks", a
+    # word space apart. Read as table cells they split the paragraph mid-sentence once cells
+    # stopped being re-joined. A word-space gap and a right piece that starts no column: one line.
+    spans = [
+        _span(1, "A first running body line that establishes the document leading here.", top=40, bottom=54),
+        _span(1, "A second running body line that establishes the document leading too.", top=56, bottom=70),
+        _span(1, "to an", top=72, bottom=86, x0=50, x1=80),
+        _span(1, "inflationary period, when", top=72, bottom=86, x0=86, x1=230),
+        _span(1, "the horizon darkens", top=72, bottom=86, x0=236, x1=340),
+    ]
+    keys = logical_import._detect_table_row_span_keys(
+        spans, repeated_furniture_keys=set(), body_line_length_p75=64.0
+    )
+
+    assert keys == frozenset()
+
+
+def test_065_fr008_close_columns_that_start_a_column_stay_a_table() -> None:
+    # Counterexample, Money p. 4: two signature columns a word space apart; the right column
+    # starts at the same x on the next row, so the rows are a table.
+    spans = [
+        _span(1, "Felix Name", top=100, bottom=106, x0=7, x1=43, font_size=5),
+        _span(1, "Ivo Name", top=100, bottom=106, x0=46, x1=70, font_size=5),
+        _span(1, "President of one", top=110, bottom=116, x0=7, x1=43, font_size=5),
+        _span(1, "President of two", top=110, bottom=116, x0=46, x1=80, font_size=5),
+    ]
+    keys = logical_import._detect_table_row_span_keys(
+        spans, repeated_furniture_keys=set(), body_line_length_p75=64.0
+    )
+
+    assert {(1, 100.0, 46.0), (1, 110.0, 46.0)} <= keys
+
+
+def test_065_fr008_a_table_cell_unit_refuses_the_later_joins() -> None:
+    # The two joins that run after the consolidation read the same flag.
+    head = _span(1, "32. T. Atkinson, Atkinson Review: Final Report. Measurement of", top=160, bottom=172, x0=50, x1=446)
+    tail = _span(1, "Government Output and Productivity for the National Accounts.", top=174, bottom=186, x0=70, x1=440)
+    spans = _notes_page(head, tail)
+    profile = logical_import._build_heading_layout_profile(spans, repeated_furniture_keys=set())
+    units = [_notes_title_unit(), _line_unit(head, role="list"), _line_unit(tail, role="body")]
+    assert len(logical_import._join_torn_back_matter_entries(units, spans, layout_profile=profile)) == 2
+
+    units = [_notes_title_unit(), _line_unit(head, role="list"), _line_unit(tail, role="body")]
+    units[2].is_pdf_table_cell = True
+    assert len(logical_import._join_torn_back_matter_entries(units, spans, layout_profile=profile)) == 3
+
+    wrap_head = _span(1, _WRAP_HEAD, top=72, bottom=86, x1=447)
+    wrap_number = _span(1, _WRAP_NUMBER, top=88, bottom=102, x1=420)
+    body_spans = _body_lead_spans() + [wrap_head, wrap_number]
+    body_profile = logical_import._build_heading_layout_profile(body_spans, repeated_furniture_keys=set())
+    pair = [_line_unit(wrap_head, role="body"), _line_unit(wrap_number, role="list")]
+    assert len(logical_import._join_numbered_body_continuations(pair, body_spans, layout_profile=body_profile)) == 1
+    pair = [_line_unit(wrap_head, role="body"), _line_unit(wrap_number, role="list")]
+    pair[0].is_pdf_table_cell = True
+    assert len(logical_import._join_numbered_body_continuations(pair, body_spans, layout_profile=body_profile)) == 2
+
+
 def test_065_fr008_short_lines_that_are_not_table_cells_still_merge() -> None:
     # ANTI-VACUUM: a wrapped body line with nothing beside it is not a table cell; the body
     # merge treats it as before.

@@ -362,6 +362,9 @@ class ParagraphUnit:
     vertical_gap_before_pt: float | None = None
     is_repeated_across_pages: bool = False
     is_likely_page_number: bool = False
+    # Spec 065 FR-008: the PDF importer built this unit from a table-row cell; nothing joins
+    # it to a neighbour afterwards.
+    is_pdf_table_cell: bool = False
     boundary_normalization_applied: bool = False
 
     @property

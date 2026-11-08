@@ -156,10 +156,14 @@ def build_paragraph_units_from_text_spans(
         nonlocal pending_body_spans, pending_body_inline_markers
         if pending_body_spans:
             emitted.append(
-                _paragraph_from_body_spans(
+                _mark_table_cell_unit(
+                    _paragraph_from_body_spans(
+                        pending_body_spans,
+                        inline_markers=pending_body_inline_markers,
+                        dehyphenation_evidence=dehyphenation_evidence,
+                    ),
                     pending_body_spans,
-                    inline_markers=pending_body_inline_markers,
-                    dehyphenation_evidence=dehyphenation_evidence,
+                    layout_profile=layout_profile,
                 )
             )
             pending_body_spans = []
@@ -169,8 +173,12 @@ def build_paragraph_units_from_text_spans(
         nonlocal pending_heading_spans
         if pending_heading_spans:
             emitted.append(
-                _paragraph_from_heading_spans(
-                    pending_heading_spans, median_font_size=median_font_size
+                _mark_table_cell_unit(
+                    _paragraph_from_heading_spans(
+                        pending_heading_spans, median_font_size=median_font_size
+                    ),
+                    pending_heading_spans,
+                    layout_profile=layout_profile,
                 )
             )
             pending_heading_spans = []
@@ -179,8 +187,12 @@ def build_paragraph_units_from_text_spans(
         nonlocal pending_list_spans
         if pending_list_spans:
             emitted.append(
-                _paragraph_from_list_spans(
-                    pending_list_spans, median_font_size=median_font_size
+                _mark_table_cell_unit(
+                    _paragraph_from_list_spans(
+                        pending_list_spans, median_font_size=median_font_size
+                    ),
+                    pending_list_spans,
+                    layout_profile=layout_profile,
                 )
             )
             pending_list_spans = []
@@ -332,18 +344,36 @@ def build_paragraph_units_from_text_spans(
             _flush_body()
             _flush_heading()
             _flush_list()
-            emitted.append(_paragraph_from_span(span, role=role, median_font_size=median_font_size))
+            emitted.append(
+                _mark_table_cell_unit(
+                    _paragraph_from_span(span, role=role, median_font_size=median_font_size),
+                    [span],
+                    layout_profile=layout_profile,
+                )
+            )
             continue
         if role == "toc_entry":
             _flush_body()
             _flush_heading()
             _flush_list()
-            emitted.append(_paragraph_from_span(span, role=role, median_font_size=median_font_size))
+            emitted.append(
+                _mark_table_cell_unit(
+                    _paragraph_from_span(span, role=role, median_font_size=median_font_size),
+                    [span],
+                    layout_profile=layout_profile,
+                )
+            )
             continue
         _flush_body()
         _flush_heading()
         _flush_list()
-        emitted.append(_paragraph_from_span(span, role=role, median_font_size=median_font_size))
+        emitted.append(
+            _mark_table_cell_unit(
+                _paragraph_from_span(span, role=role, median_font_size=median_font_size),
+                [span],
+                layout_profile=layout_profile,
+            )
+        )
 
     _flush_body()
     _flush_heading()
@@ -440,6 +470,8 @@ def _unit_can_lead_continuation(unit: ParagraphUnit) -> bool:
     that pass. Mis-clustered running prose (no explicit marker) still leads."""
     if unit.structural_role == "toc_entry":
         return False
+    if unit.is_pdf_table_cell:
+        return False
     if _unit_is_standalone_footnote_marker(unit):
         return False
     head_text = (unit.text or "").strip()
@@ -452,8 +484,11 @@ def _unit_can_continue_run(unit: ParagraphUnit) -> bool:
     """A unit that may be appended as a soft-wrap continuation.
 
     The continuation half must not be a real TOC / index entry nor a standalone
-    footnote marker (handled inline separately)."""
+    footnote marker (handled inline separately). Nor a table cell (spec 065 FR-008): a
+    cell is a paragraph of its own, whatever case its text begins with."""
     if unit.structural_role == "toc_entry":
+        return False
+    if unit.is_pdf_table_cell:
         return False
     if _unit_is_standalone_footnote_marker(unit):
         return False
@@ -508,6 +543,21 @@ def _merge_continuation_units(
         source_index=first.source_index,
         page_number=first.page_number,
     )
+
+
+def _mark_table_cell_unit(
+    unit: ParagraphUnit,
+    spans: list[PdfTextSpan],
+    *,
+    layout_profile: _PdfHeadingLayoutProfile,
+) -> ParagraphUnit:
+    """Spec 065 FR-008 (I-4): a unit built from a table-row cell carries that fact, so the
+    passes that join units after the span loop -- which no longer see the table geometry --
+    refuse to join across it (`_consolidate_cross_role_continuations`,
+    `_join_torn_back_matter_entries`, `_join_numbered_body_continuations`)."""
+    if any(_is_table_row_cell(span, layout_profile=layout_profile) for span in spans):
+        unit.is_pdf_table_cell = True
+    return unit
 
 
 def _consolidate_cross_role_continuations(
@@ -774,6 +824,54 @@ def _table_row_span_key(span: PdfTextSpan) -> tuple[int, float, float]:
     return (span.page_number, round(float(span.top), 2), round(float(span.x0), 2))
 
 
+def _row_pieces_are_one_cut_line(
+    first: PdfTextSpan,
+    second: PdfTextSpan,
+    page_spans: list[PdfTextSpan],
+) -> bool:
+    """Spec 065 FR-008: two spans of one baseline that are one line of text the extractor cut
+    in pieces, not two cells.
+
+    The pieces stand a word space apart -- the gap between them is less than one font size
+    -- and the right one starts no column: no span of its size on another row of the page
+    starts where it starts. Measured 2026-11-08 on the four corpus PDFs: the extractor cuts
+    justified prose lines of Money and Sustainability (pp. 10, 71, 118, 135), a line of
+    Creating Wealth around a fraction glyph (p. 51) and a contents row of Rethinking Money
+    ("Foreword" | "ix") at 0.56-0.72 of the font size; every real row of a table or an index
+    has a wider gap, except Money's signature block (p. 4, 0.56), whose second column starts
+    at the same x on three rows."""
+    left, right = (first, second) if float(first.x0) <= float(second.x0) else (second, first)
+    font_size = float(left.font_size or right.font_size or 0)
+    if font_size <= 0 or float(right.x0) - float(left.x1) >= font_size:
+        return False
+    line_height = float(right.bottom) - float(right.top) or font_size
+    return not any(
+        other is not right
+        and abs(float(other.top) - float(right.top)) > _TABLE_ROW_BASELINE_TOLERANCE * line_height
+        and abs(float(other.font_size or 0) - float(right.font_size or 0)) < _TABLE_ROW_SIZE_TOLERANCE_PT
+        and abs(float(other.x0) - float(right.x0)) <= 1.0
+        for other in page_spans
+    )
+
+
+def _span_stands_between(
+    first: PdfTextSpan,
+    second: PdfTextSpan,
+    page_spans: list[PdfTextSpan],
+) -> bool:
+    """Is there a span of the same baseline horizontally between the two?"""
+    left, right = (first, second) if float(first.x0) <= float(second.x0) else (second, first)
+    line_height = float(left.bottom) - float(left.top) or float(left.font_size or 0)
+    return any(
+        other is not left
+        and other is not right
+        and abs(float(other.top) - float(left.top)) <= _TABLE_ROW_BASELINE_TOLERANCE * line_height
+        and float(other.x0) >= float(left.x1)
+        and float(other.x1) <= float(right.x0)
+        for other in page_spans
+    )
+
+
 def _detect_table_row_span_keys(
     spans: list[PdfTextSpan],
     *,
@@ -801,8 +899,12 @@ def _detect_table_row_span_keys(
         if _span_furniture_key(span) in repeated_furniture_keys or _looks_like_page_number(span):
             continue
         by_page.setdefault(span.page_number, []).append(span)
+    all_by_page: dict[int, list[PdfTextSpan]] = {}
+    for span in spans:
+        if _normalize_text(span.text) and span.font_size:
+            all_by_page.setdefault(span.page_number, []).append(span)
     keys: set[tuple[int, float, float]] = set()
-    for page_spans in by_page.values():
+    for page_number, page_spans in by_page.items():
         for index, span in enumerate(page_spans):
             line_height = float(span.bottom) - float(span.top) or float(span.font_size or 0)
             for other in page_spans[index + 1 :]:
@@ -811,6 +913,11 @@ def _detect_table_row_span_keys(
                 if not (other.x1 <= span.x0 or other.x0 >= span.x1):
                     continue
                 if abs(float(other.font_size or 0) - float(span.font_size or 0)) >= _TABLE_ROW_SIZE_TOLERANCE_PT:
+                    continue
+                if _row_pieces_are_one_cut_line(span, other, all_by_page.get(page_number, [])):
+                    continue
+                if _span_stands_between(span, other, all_by_page.get(page_number, [])):
+                    # Not neighbours: the pair of each with the piece between them decides.
                     continue
                 keys.add(_table_row_span_key(span))
                 keys.add(_table_row_span_key(other))
@@ -2520,6 +2627,8 @@ def _is_numbered_body_continuation(
     address that ran to the margin opens the next entry."""
     if head.role != "body" or head.structural_role != "body" or tail.role != "list":
         return False
+    if head.is_pdf_table_cell or tail.is_pdf_table_cell:
+        return False
     number = _unit_ordered_list_number(tail)
     if number is None:
         return False
@@ -3395,6 +3504,8 @@ def _is_torn_back_matter_entry_continuation(
     layout_profile: _PdfHeadingLayoutProfile,
 ) -> bool:
     if head.role not in _BACK_MATTER_ENTRY_ROLES or tail.role not in _BACK_MATTER_ENTRY_ROLES:
+        return False
+    if head.is_pdf_table_cell or tail.is_pdf_table_cell:
         return False
     if head.structural_role not in _BACK_MATTER_ENTRY_ROLES or tail.structural_role not in _BACK_MATTER_ENTRY_ROLES:
         return False
