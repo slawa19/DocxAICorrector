@@ -2076,7 +2076,38 @@ def test_065_fr008_consolidation_neither_leads_from_nor_continues_into_a_cell() 
     assert len(logical_import._consolidate_cross_role_continuations(units(1))) == 2
 
 
-def test_065_fr008_a_prose_line_cut_at_a_word_space_is_not_a_table_row() -> None:
+def test_067_fr002_a_column_of_lines_each_alone_on_its_baseline_is_not_a_row() -> None:
+    # Spec 067 FR-002, the geometry of Money's Box 7.1 (pp. 101-102, cached spans, 2026-11-08):
+    # one header row of two cells, then each column's lines stacked one per baseline -- the
+    # left column's label and entries, the right column's label and entries, carried over the
+    # page break, then the left column again. Only the header row shares a baseline; the
+    # label under it is reached by the one-hop rule. Every other line stands alone on its
+    # baseline, so by the detector's form (two short spans on one baseline) it is not a row,
+    # and the next page has no row at all. A column-continuation rule reaching these lines
+    # was measured and not built (Rethinking Money: 49 wrapped index lines would be cut from
+    # their entries); this test pins the detector's answer on that form.
+    def box_span(page: int, text: str, top: float, x0: float, *, bold: bool = False) -> PdfTextSpan:
+        return _span(page, text, top=top, bottom=top + 5.76, x0=x0, x1=x0 + 5 * len(text) / 2, font_size=5.76, bold=bold)
+
+    left, right = 7.16, 97.89
+    spans = [
+        box_span(1, "LEFT SECTOR", 726.28, left),
+        box_span(1, "RIGHT SECTOR", 726.28, right),
+        box_span(1, "First label :", 735.64, left, bold=True),
+        box_span(1, "Alpha p.142", 742.12, left),
+        box_span(1, "Beta entries p.144", 748.60, left),
+        box_span(1, "Second label :", 764.44, right, bold=True),
+        box_span(1, "Gamma at city level p.168", 770.92, right),
+        box_span(2, "Delta at regional level p.173", 4.89, right),
+        box_span(2, "Third label :", 20.68, left, bold=True),
+        box_span(2, "Epsilon on a national scale p.155", 27.16, left),
+    ]
+
+    keys = logical_import._detect_table_row_span_keys(spans, repeated_furniture_keys=set(), body_line_length_p75=99.0)
+
+    assert keys == frozenset(
+        {(1, 726.28, left), (1, 726.28, right), (1, 735.64, left)}
+    )
     # Money and Sustainability p. 71: the extractor cut one justified line into "to an" |
     # "inflationary boom period. Conversely, when" | "the business horizon darkens, banks", a
     # word space apart. Read as table cells they split the paragraph mid-sentence once cells
