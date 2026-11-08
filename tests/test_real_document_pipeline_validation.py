@@ -2888,12 +2888,6 @@ def test_main_uses_processing_service_facade_and_runtime_config_only(tmp_path, m
                 preparation_elapsed_seconds=0.1,
                 quality_gate_status="blocked",
                 quality_gate_reasons=("heading_count_far_below_toc_expectation",),
-                ai_classified_count=7,
-                ai_heading_count=3,
-                ai_role_change_count=2,
-                ai_heading_promotion_count=1,
-                ai_heading_demotion_count=1,
-                ai_structural_role_change_count=1,
                 structure_repair_report=structure_repair_report,
                 uploaded_file_token="token-1",
             )
@@ -2964,12 +2958,6 @@ def test_main_uses_processing_service_facade_and_runtime_config_only(tmp_path, m
     assert captured["source_language"] == "en"
     assert captured["target_language"] == "ru"
     assert report["runtime_config"]["effective"]["image_mode"] == "safe"
-    assert report["preparation"]["ai_classified_count"] == 7
-    assert report["preparation"]["ai_heading_count"] == 3
-    assert report["preparation"]["ai_role_change_count"] == 2
-    assert report["preparation"]["ai_heading_promotion_count"] == 1
-    assert report["preparation"]["ai_heading_demotion_count"] == 1
-    assert report["preparation"]["ai_structural_role_change_count"] == 1
     snapshot = report["preparation_diagnostic_snapshot"]
     assert snapshot["paragraph_count"] == 5
     assert snapshot["heading_count"] == 1
@@ -3128,12 +3116,6 @@ def test_main_comparison_only_reader_cleanup_reports_non_acceptance_artifacts_fo
                 source_text="Source chapter region text",
                 preparation_cached=False,
                 preparation_elapsed_seconds=0.1,
-                ai_classified_count=0,
-                ai_heading_count=0,
-                ai_role_change_count=0,
-                ai_heading_promotion_count=0,
-                ai_heading_demotion_count=0,
-                ai_structural_role_change_count=0,
                 structure_repair_report=None,
                 uploaded_file_token="token-1",
             )
@@ -4816,12 +4798,6 @@ def test_main_comparison_only_reader_verifier_writes_artifacts_and_metadata(tmp_
                 source_text="Source chapter region text.",
                 preparation_cached=False,
                 preparation_elapsed_seconds=0.1,
-                ai_classified_count=0,
-                ai_heading_count=0,
-                ai_role_change_count=0,
-                ai_heading_promotion_count=0,
-                ai_heading_demotion_count=0,
-                ai_structural_role_change_count=0,
                 structure_repair_report=None,
                 uploaded_file_token="token-1",
             )
@@ -6033,12 +6009,6 @@ def test_main_comparison_only_reader_verifier_failure_is_non_blocking(tmp_path, 
                 source_text="Source chapter region text.",
                 preparation_cached=False,
                 preparation_elapsed_seconds=0.1,
-                ai_classified_count=0,
-                ai_heading_count=0,
-                ai_role_change_count=0,
-                ai_heading_promotion_count=0,
-                ai_heading_demotion_count=0,
-                ai_structural_role_change_count=0,
                 structure_repair_report=None,
                 uploaded_file_token="token-1",
             )
@@ -6204,12 +6174,6 @@ def test_main_falls_back_to_prepared_snapshot_statuses_when_event_log_lacks_stru
                 source_text="source text",
                 preparation_cached=False,
                 preparation_elapsed_seconds=0.1,
-                ai_classified_count=0,
-                ai_heading_count=0,
-                ai_role_change_count=0,
-                ai_heading_promotion_count=0,
-                ai_heading_demotion_count=0,
-                ai_structural_role_change_count=0,
                 structure_repair_report=SimpleNamespace(
                     repaired_bullet_items=0,
                     repaired_numbered_items=0,
