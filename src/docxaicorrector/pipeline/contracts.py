@@ -383,6 +383,10 @@ class BlockExecutionPayload:
     # per-paragraph apparatus mark beside the region, which stays ``prose``. A subset of
     # ``paragraph_ids``; ``None`` means the producer did not resolve it, read as "none".
     notes_in_body_paragraph_ids: list[str] | None = None
+    # Spec 067 FR-004: the ids of this block's HEADING paragraphs that are a bare name by role
+    # and form (``semantic_blocks._resolve_name_heading_positions``). A subset of
+    # ``paragraph_ids``; ``None`` means the producer did not resolve it, read as "none".
+    name_heading_paragraph_ids: list[str] | None = None
     narration_include: bool = True
     toc_dominant: bool = False
     toc_paragraph_count: int = 0

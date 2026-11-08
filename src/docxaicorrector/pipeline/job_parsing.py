@@ -151,6 +151,9 @@ def parse_processing_job(*, job: Any, payload_factory: Any) -> Any:
     notes_in_body_paragraph_ids = coerce_paragraph_id_subset(
         job, "notes_in_body_paragraph_ids", paragraph_ids=paragraph_ids
     )
+    name_heading_paragraph_ids = coerce_paragraph_id_subset(
+        job, "name_heading_paragraph_ids", paragraph_ids=paragraph_ids
+    )
     _require_parallel_to_paragraph_ids(
         paragraph_ids,
         structural_roles=structural_roles,
@@ -175,6 +178,7 @@ def parse_processing_job(*, job: Any, payload_factory: Any) -> Any:
         paragraph_regions=paragraph_regions,
         back_matter_section=back_matter_section,
         notes_in_body_paragraph_ids=notes_in_body_paragraph_ids,
+        name_heading_paragraph_ids=name_heading_paragraph_ids,
         narration_include=True if narration_include is None else narration_include,
         toc_dominant=bool(toc_dominant),
         toc_paragraph_count=toc_paragraph_count,

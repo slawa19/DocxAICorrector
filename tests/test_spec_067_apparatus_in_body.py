@@ -35,6 +35,7 @@ from docxaicorrector.generation._generation import (
 from docxaicorrector.pipeline import output_validation
 from docxaicorrector.pipeline.contracts import BlockExecutionPayload
 from docxaicorrector.pipeline.job_parsing import parse_processing_job
+from tests.test_spec_063_apparatus_policy import _run  # the 063 block harness (process_single_block)
 
 _TRANSLATE = SimpleNamespace(processing_operation="translate")
 
@@ -290,3 +291,149 @@ def test_the_back_matter_branch_is_unchanged_by_the_body_mark() -> None:
     kept = block_execution.model_kept_apparatus(context=_TRANSLATE, payload=payload, processed_chunk=_answer(payload))
     expected = output_validation.is_citation_form_paragraph(_NOTES_CITATIONS)
     assert (kept is not None) is expected
+
+
+# =============================================================================================
+# FR-004 (A-4) -- a heading that is a bare name, returned unchanged, is the name, not a loss
+# =============================================================================================
+#
+# Creating Wealth, fourth run, block 434: ``### New Society Publishers`` came back as it was, the
+# pair rule read ``source_text_fallback`` and the acceptance check ``untranslated_prose_not_delivered``
+# failed the book on 26 characters. The document layer now marks such a heading by role and form
+# (shape + the document's own case count + the phrase written mid-sentence in running text), and
+# the block keeps it as ``policy_kept_source`` with the reason ``name_kept``. Measured on the
+# fourth run: 1 / 0 / 1 / 5 marked headings (Money / VoE / RM / CW), all names, no chapter title;
+# replay: CW block 434 -> valid, acceptance passes; nothing else changes.
+
+_NAME_BODY = (
+    "The book was printed by Harbour Lane Press in a small run, and the press itself kept a lane "
+    "of its own for such work; see Chapter II for the history of the chapter and its five parts."
+)
+_INTRODUCTION_BODY = "This introduction explains the market, and the introduction is short."
+
+
+def _name_book() -> list[ParagraphUnit]:
+    return [
+        _unit("Chapter II", "h0", role="heading", level=1),
+        _unit(_NAME_BODY, "b0"),
+        _unit(_INTRODUCTION_BODY, "b1"),
+        _unit("Harbour Lane Press", "h1", role="heading", level=3),
+        _unit("Introduction", "h2", role="heading", level=2),
+        _unit("Benefits of the Fenwick System", "h3", role="heading", level=3),
+        _unit("Harbour Lane Press", "b2"),  # the same text as BODY is never a name heading
+    ]
+
+
+def test_a_heading_that_is_a_name_by_the_documents_own_count_is_marked() -> None:
+    book = _name_book()
+    positions = semantic_blocks._resolve_name_heading_positions(book, ["prose"] * len(book))
+    assert positions == frozenset({3})
+
+
+@pytest.mark.parametrize(
+    ("heading", "why"),
+    [
+        ("Introduction", "the word occurs lowercase in the body"),
+        ("Chapter II", "a roman numeral is not a name signal and the word chapter occurs lowercase"),
+        ("Benefits of the Fenwick System", "the phrase never occurs in running text"),
+        ("Harbour Lane Press.", "sentence punctuation"),
+        ("A Short History of the Harbour Lane Press Company Today", "more than six words"),
+    ],
+)
+def test_counter_rule_ordinary_headings_are_not_names(heading: str, why: str) -> None:
+    book = [_unit(_NAME_BODY, "b0"), _unit(_INTRODUCTION_BODY, "b1"), _unit(heading, "h", role="heading", level=2)]
+    assert semantic_blocks._resolve_name_heading_positions(book, ["prose"] * len(book)) == frozenset(), why
+
+
+def test_a_name_heading_outside_the_prose_region_is_not_marked() -> None:
+    book = _name_book()
+    regions = ["prose"] * len(book)
+    regions[3] = "front_matter"
+    assert semantic_blocks._resolve_name_heading_positions(book, regions) == frozenset()
+
+
+def test_editing_jobs_carry_the_name_mark_and_parsing_checks_it() -> None:
+    blocks = [DocumentBlock(paragraphs=[paragraph]) for paragraph in _name_book()]
+    jobs = semantic_blocks.build_editing_jobs(blocks, max_chars=3000, processing_operation="translate")
+    marked = {pid for job in jobs for pid in cast(list[str], job["name_heading_paragraph_ids"])}
+    assert marked == {"h1"}
+    job = next(job for job in jobs if job["paragraph_ids"] == ["h1"])
+    payload = parse_processing_job(job=job, payload_factory=BlockExecutionPayload)
+    assert payload.name_heading_paragraph_ids == ["h1"]
+    with pytest.raises(ValueError, match="outside the block"):
+        parse_processing_job(job={**job, "name_heading_paragraph_ids": ["h9"]}, payload_factory=BlockExecutionPayload)
+
+
+def _name_payload(texts: list[str], *, roles: list[str], names: list[int]) -> SimpleNamespace:
+    payload = _payload(texts, notes=[])
+    payload.structural_roles = roles
+    payload.name_heading_paragraph_ids = [payload.paragraph_ids[index] for index in names]
+    payload.target_chars = len(payload.target_text)
+    payload.context_chars = 0
+    payload.context_before = ""
+    payload.context_after = ""
+    return payload
+
+
+def test_a_name_heading_is_not_prose_and_its_echo_is_not_announced() -> None:
+    payload = _name_payload(["### Harbour Lane Press"], roles=["heading"], names=[0])
+    assert block_execution.prose_paragraph_indexes(payload) == ()
+    assert block_execution.payload_contains_prose(payload) is False
+    assert (
+        block_execution.untranslated_prose_would_be_delivered(
+            payload=payload, fallback_markdown=payload.target_text, languages_differ=True
+        )
+        is False
+    )
+
+
+def test_counter_rule_an_unmarked_heading_or_a_marked_body_paragraph_stays_prose() -> None:
+    unmarked = _name_payload(["### Introduction"], roles=["heading"], names=[])
+    assert block_execution.prose_paragraph_indexes(unmarked) == (0,)
+    # The mark is read together with the role: a body paragraph is never a name heading.
+    body = _name_payload(["Harbour Lane Press"], roles=["body"], names=[0])
+    assert block_execution.prose_paragraph_indexes(body) == (0,)
+    assert (
+        block_execution.untranslated_prose_would_be_delivered(
+            payload=unmarked, fallback_markdown=unmarked.target_text, languages_differ=True
+        )
+        is True
+    )
+
+
+def test_an_unchanged_name_heading_block_is_policy_kept_with_the_reason_name_kept(monkeypatch) -> None:
+    written: list[object] = []
+    monkeypatch.setattr(block_execution, "_write_controlled_block_fallback_artifact", lambda **kwargs: written.append(kwargs))
+    payload = _name_payload(["### Harbour Lane Press"], roles=["heading"], names=[0])
+
+    run = _run(payload, model_answer=_answer(payload), classification="source_text_fallback")
+
+    assert run.outcome is None
+    assert written == []
+    assert [entry["paragraph_status"] for entry in run.state.generated_paragraph_registry] == [
+        PARAGRAPH_STATUS_POLICY_KEPT_SOURCE
+    ]
+    events = dict(run.events)
+    assert "block_controlled_fallback" not in events
+    assert "block_apparatus_kept_by_model" not in events
+    assert events["block_name_kept_by_model"]["reason"] == block_execution.POLICY_KEPT_REASON_NAME_KEPT == "name_kept"
+    assert run.snapshot["controlled_block_fallback_block_count"] == 0
+    assert run.snapshot["untranslated_prose_block_delivery_count"] == 0
+
+
+def test_counter_rule_a_translated_or_unmarked_heading_is_not_relabelled() -> None:
+    payload = _name_payload(["### Harbour Lane Press"], roles=["heading"], names=[0])
+    translated = _answer(payload, ["### Издательство Harbour Lane Press"])
+    assert block_execution.model_kept_apparatus(context=_TRANSLATE, payload=payload, processed_chunk=translated) is None
+    unmarked = _name_payload(["### Introduction"], roles=["heading"], names=[])
+    assert block_execution.model_kept_apparatus(context=_TRANSLATE, payload=unmarked, processed_chunk=_answer(unmarked)) is None
+
+
+def test_a_name_heading_followed_by_its_section_is_left_accepted() -> None:
+    """The torn-run rule holds for a name as for a reference: a heading never ends a sentence,
+    so with a paragraph after it in the block it is relabelled only together with that one --
+    and a translated paragraph is not kept. The heading stays ``accepted``; it is still not prose."""
+    payload = _name_payload(["### Harbour Lane Press", _PROSE], roles=["heading", "body"], names=[0])
+    answer = _answer(payload, ["### Harbour Lane Press", "Деньги — не вещь, а договорённость."])
+    assert block_execution.model_kept_apparatus(context=_TRANSLATE, payload=payload, processed_chunk=answer) is None
+    assert block_execution.prose_paragraph_indexes(payload) == (1,)
