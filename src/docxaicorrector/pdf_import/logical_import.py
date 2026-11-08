@@ -15,6 +15,10 @@ from docxaicorrector.document.semantic_blocks import (
     _BACK_MATTER_SECTION_KIND_BY_TITLE,
     _unwrap_inline_emphasis,
 )
+from docxaicorrector.pipeline.output_validation import (
+    is_notes_run_paragraph,
+    opens_with_note_number,
+)
 from docxaicorrector.validation.formatting_coverage import _normalize_structural_text
 from docxaicorrector.pdf_import.text_layer_quality import (
     _SUPERSCRIPT_MARKER_ANCHOR_CLOSERS,
@@ -2767,7 +2771,45 @@ def _page_edge_lines(
     return first_by_page, last_by_page
 
 
-def _is_page_torn_body_continuation(
+_PAGE_TORN_BODY_RATIONALE = "merged_page_torn_body_continuation"
+_PAGE_TORN_NOTES_RUN_RATIONALE = "merged_page_torn_notes_run_continuation"
+
+
+def _halves_continue_an_in_body_notes_run(
+    head: ParagraphUnit,
+    tail: ParagraphUnit,
+    last_line: PdfTextSpan,
+    *,
+    layout_profile: _PdfHeadingLayoutProfile,
+    dehyphenation_evidence: _SoftWrapDehyphenationEvidence | None,
+) -> bool:
+    """Spec 068 FR-003 (X-3): the two halves are one run of numbered notes left in the body,
+    set apart from the running text in a size of its own.
+
+    A chapter's notes set at its end in a smaller size fill pages on which no line is set at
+    the body size, so the running-text condition of the page-tear join never holds there. This
+    is the alternative to it, read off the halves alone (Constitution VII: no word list):
+      * the torn line is set SMALLER than the body (`_font_sizes_match` refuses the body size);
+        the caller has already required both lines to share that size;
+      * the second half does not open with a note number (`opens_with_note_number`: a 1-3
+        digit token without a full stop before an entry opener) -- that is the next note,
+        not the rest of this one;
+      * the two halves joined read as a notes run by the spec 067 FR-001 form
+        (`is_notes_run_paragraph`: a chain of numbered entries counting n, n+1, ... carrying
+        citation anchors, or one anchored entry behind a label)."""
+    body_font_size = layout_profile.body_font_size
+    size = _span_font_size(last_line)
+    if body_font_size is None or size is None:
+        return False
+    if size >= body_font_size or _font_sizes_match(size, body_font_size):
+        return False
+    if opens_with_note_number(tail.text or ""):
+        return False
+    joined = _merge_torn_back_matter_entry(head, tail, dehyphenation_evidence=dehyphenation_evidence)
+    return is_notes_run_paragraph(joined.text or "")
+
+
+def _page_torn_continuation_rationale(
     head: ParagraphUnit,
     tail: ParagraphUnit,
     *,
@@ -2776,8 +2818,10 @@ def _is_page_torn_body_continuation(
     first_line_by_page: dict[int, PdfTextSpan],
     last_line_by_page: dict[int, PdfTextSpan],
     body_text_pages: frozenset[int],
-) -> bool:
+    dehyphenation_evidence: _SoftWrapDehyphenationEvidence | None = None,
+) -> str | None:
     """Spec 067 FR-005 (I-1): the second half of a body paragraph that a page break tore off.
+    Returns the boundary rationale of the join, or None when `tail` is not that half.
 
     The body counterpart of the notes-join geometry (spec 064 R-7), read across one page
     break. All of it is required:
@@ -2793,42 +2837,55 @@ def _is_page_torn_body_continuation(
         the body column's right edge (`_entry_line_ran_out_of_room`);
       * both pages carry running text -- at least three lines at the body size with at least
         seven words each -- so the end of a list of notes, an index column or a caption page
-        does not read as prose.
-    What the second half begins with is not read: a capital, a digit, a quote or a bracket
-    opens the continuation as often as a lowercase letter does ("...such as the" +
+        does not read as prose; OR (spec 068 FR-003) the two halves continue one run of
+        numbered notes set smaller than the body (`_halves_continue_an_in_body_notes_run`),
+        whatever the pages carry.
+    What the second half of running text begins with is not read: a capital, a digit, a quote
+    or a bracket opens the continuation as often as a lowercase letter does ("...such as the" +
     "Harbour Board", "...in" + "1702, said", "...considered you" + "'seaworthy'").
     Measured on the four corpus PDFs (2026-11-08) against the 87 page-break
     candidates of spec 067's sweep, each read: this rule joins 27, all of them real tears, and
     no false one; two more (Rethinking Money, pp. 12-14) join through the soft-wrap merge once
-    the running head between the halves is dropped (FR-007) -- 29 of 32. Not joined: two
-    chapter-end notes of Money and Sustainability set on pages with no line at the body size,
-    and one bibliography entry inside a references section, which belongs to the notes-join."""
+    the running head between the halves is dropped (FR-007) -- 29 of 32. The notes-run
+    alternative (spec 068 FR-003) joins the two chapter-end notes of Money and Sustainability
+    set on pages with no line at the body size -- 31 of 32, still no false one. Not joined:
+    one bibliography entry inside a references section, which belongs to the notes-join."""
     if head.role != "body" or head.structural_role != "body":
-        return False
+        return None
     if tail.role != "body" or tail.structural_role != "body":
-        return False
+        return None
     if head.is_pdf_table_cell or tail.is_pdf_table_cell:
-        return False
+        return None
     if _body_text_is_closed(head.text or ""):
-        return False
+        return None
     last_line = _unit_line_span(head, -1, spans_by_origin)
     first_line = _unit_line_span(tail, 0, spans_by_origin)
     if last_line is None or first_line is None:
-        return False
+        return None
     if first_line.page_number != last_line.page_number + 1:
-        return False
+        return None
     if (
         last_line_by_page.get(last_line.page_number) is not last_line
         or first_line_by_page.get(first_line.page_number) is not first_line
     ):
-        return False
-    if last_line.page_number not in body_text_pages or first_line.page_number not in body_text_pages:
-        return False
+        return None
     if not _font_sizes_match(_span_font_size(last_line), _span_font_size(first_line)):
-        return False
-    return _entry_line_ran_out_of_room(
+        return None
+    if not _entry_line_ran_out_of_room(
         last_line, _normalize_text(first_line.text), layout_profile=layout_profile
-    )
+    ):
+        return None
+    if last_line.page_number in body_text_pages and first_line.page_number in body_text_pages:
+        return _PAGE_TORN_BODY_RATIONALE
+    if _halves_continue_an_in_body_notes_run(
+        head,
+        tail,
+        last_line,
+        layout_profile=layout_profile,
+        dehyphenation_evidence=dehyphenation_evidence,
+    ):
+        return _PAGE_TORN_NOTES_RUN_RATIONALE
+    return None
 
 
 def _join_page_torn_body_paragraphs(
@@ -2839,8 +2896,8 @@ def _join_page_torn_body_paragraphs(
     repeated_furniture_keys: set[tuple[str, str]],
     dehyphenation_evidence: _SoftWrapDehyphenationEvidence | None = None,
 ) -> list[ParagraphUnit]:
-    """Spec 067 FR-005: join a body paragraph and its second half across a page break. See
-    `_is_page_torn_body_continuation` for the form."""
+    """Spec 067 FR-005: join a body paragraph and its second half across a page break (spec 068
+    FR-003: also a run of in-body notes). See `_page_torn_continuation_rationale` for the form."""
     in_back_matter = _back_matter_entry_region_flags(units)
     spans_by_origin: dict[int, list[PdfTextSpan]] = {}
     for span in ordered_spans:
@@ -2856,11 +2913,8 @@ def _join_page_torn_body_paragraphs(
     result: list[ParagraphUnit] = []
     previous_in_region = False
     for unit, in_region in zip(units, in_back_matter):
-        if (
-            not in_region
-            and not previous_in_region
-            and result
-            and _is_page_torn_body_continuation(
+        rationale = (
+            _page_torn_continuation_rationale(
                 result[-1],
                 unit,
                 spans_by_origin=spans_by_origin,
@@ -2868,13 +2922,17 @@ def _join_page_torn_body_paragraphs(
                 first_line_by_page=first_line_by_page,
                 last_line_by_page=last_line_by_page,
                 body_text_pages=body_text_pages,
+                dehyphenation_evidence=dehyphenation_evidence,
             )
-        ):
+            if not in_region and not previous_in_region and result
+            else None
+        )
+        if rationale is not None:
             result[-1] = replace(
                 _merge_torn_back_matter_entry(
                     result[-1], unit, dehyphenation_evidence=dehyphenation_evidence
                 ),
-                boundary_rationale="merged_page_torn_body_continuation",
+                boundary_rationale=rationale,
             )
             continue
         result.append(unit)

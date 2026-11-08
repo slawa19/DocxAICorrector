@@ -2787,6 +2787,69 @@ def test_067_fr005_notes_section_is_left_to_the_notes_join() -> None:
     assert [u.text for u in joined] == ["Notes", _TEAR_HEAD, _TEAR_TAIL]
 
 
+# Spec 068 FR-003 (X-3): a chapter's notes set at its end in a smaller size than the body, left
+# in the body by the import, torn by a page break. The next page carries no line at the body
+# size, so the running-text condition of FR-005 never holds; the two halves joined read as a
+# notes run by the spec 067 FR-001 form. Synthetic text; the body is set at 10, the notes at 7.
+
+_NOTES_SIZE = 7.0
+_NOTES_HEAD = "Notes 1 Ferry Ledger (1998), p. 12. 2 See Ada Tidewell, The Lantern Ledger of the Northern"
+_NOTES_TAIL = "Harbour (2004), pp. 3-9; and Owen Marsh, Tolls and Tides (2011)."
+_NOTES_NEXT_ENTRY = "3 Owen Marsh, Tolls and Tides (2011), p. 40, on the winter tariff."
+_NOTES_PROSE_HEAD = "a plain line of prose set in the small size that runs on to the right edge of the"
+_NOTES_PROSE_TAIL = "Harbour Board, which set the terms of the tolls for the whole season."
+
+
+def _notes_torn_page_spans(head: str, tail: str) -> list[PdfTextSpan]:
+    """Page 1: running prose at the body size, then the head line in the notes size at its foot,
+    run to the right edge. Page 2: the tail and a short line, both in the notes size only."""
+    return [
+        *_body_page(1, top=40),
+        _span(1, head, top=760, bottom=767, x1=449, font_size=_NOTES_SIZE),
+        _span(2, tail, top=40, bottom=47, x1=330, font_size=_NOTES_SIZE),
+        _span(2, "4 A. Quay, Ledgers (1990), p. 2.", top=60, bottom=67, x1=200, font_size=_NOTES_SIZE),
+    ]
+
+
+def test_068_fr003_notes_entry_torn_at_a_page_break_is_joined() -> None:
+    result = build_paragraph_units_from_text_spans(_notes_torn_page_spans(_NOTES_HEAD, _NOTES_TAIL))
+
+    joined = next(p for p in result.paragraphs if _NOTES_HEAD in p.text)
+    assert f"{_NOTES_HEAD} {_NOTES_TAIL}" in joined.text
+    assert joined.boundary_rationale == "merged_page_torn_notes_run_continuation"
+
+
+def test_068_fr003_new_notes_entry_at_the_top_of_the_next_page_is_not_joined() -> None:
+    # Counterexample: the next page opens with the next note's own number -- a new entry, not
+    # the rest of the one above, however full the line above ran.
+    texts = _texts(_notes_torn_page_spans(_NOTES_HEAD, _NOTES_NEXT_ENTRY))
+
+    assert not any(_NOTES_HEAD in text and _NOTES_NEXT_ENTRY in text for text in texts)
+
+
+def test_068_fr003_torn_prose_on_a_notes_size_page_is_not_joined() -> None:
+    # Counterexample: the same geometry in the notes size, but the halves are plain prose, not
+    # a run of numbered notes -- a page without running text keeps its top line apart.
+    texts = _texts(_notes_torn_page_spans(_NOTES_PROSE_HEAD, _NOTES_PROSE_TAIL))
+
+    assert not any(_NOTES_PROSE_HEAD in text and "Harbour Board" in text for text in texts)
+
+
+def test_068_fr003_notes_halves_at_the_body_size_are_not_the_notes_alternative() -> None:
+    # The alternative is for notes set apart from the running text in a size of their own; at
+    # the body size on a page without running text the halves stay apart.
+    spans = [
+        *_body_page(1, top=40),
+        _span(1, _NOTES_HEAD, top=760, bottom=770, x1=449),
+        _span(2, _NOTES_TAIL, top=40, bottom=50, x1=330),
+        _span(2, "4 A. Quay, Ledgers (1990), p. 2.", top=60, bottom=70, x1=200),
+    ]
+
+    texts = _texts(spans)
+
+    assert not any(_NOTES_HEAD in text and _NOTES_TAIL in text for text in texts)
+
+
 # Spec 067 FR-006 follow-up: the sentence-end paragraph boundary inside a quotation or a box
 # reads the box's own left edge, not the body margin (Money and Sustainability, Box 4.1: body at
 # x0 5.0, the box at 33.8; a quotation's last line, a closing quote and a reference, then the
