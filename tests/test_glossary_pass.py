@@ -2057,3 +2057,82 @@ def test_fr002_a_case_tie_is_a_capitalised_form_not_a_single_lowercase_word():
         *(_FILLER * 6),
     ]
     assert "brennaby" not in _keys(extract_glossary_candidates(_units(lowercase)))
+
+
+# --- Spec 067 FR-010: permutations and hyphen variants are one candidate ------------------------
+
+
+def _ledger_document():
+    paragraphs = ["What the town kept we call *tallow* here, and the *tallow ledger* opens the book."]
+    for _ in range(6):
+        paragraphs.extend(_FILLER)
+        paragraphs.append("The tallow ledger grew, and the tallow ledger was read; tallow was weighed.")
+        paragraphs.append("Their ledger tallow was counted apart under tallow-ledger rules; the tallow ledger stayed shut.")
+    return paragraphs
+
+
+def test_fr010_word_order_and_hyphen_variants_collapse_into_the_most_used_surface():
+    candidates = extract_glossary_candidates(_units(_ledger_document()))
+    by_term = {candidate.source_term: candidate for candidate in candidates}
+
+    assert "ledger tallow" not in by_term and "tallow-ledger" not in by_term
+    ledger = by_term["tallow ledger"]
+    assert set(ledger.spellings) == {"ledger tallow", "tallow-ledger"}
+    assert ledger.occurrence_count == 19 + 6 + 6  # every surface's uses
+    assert ledger.required
+    assert ledger.to_payload()["spellings"] == list(ledger.spellings)
+    # The other candidates of the document are untouched.
+    assert "tallow" in by_term and by_term["tallow"].spellings == ()
+    assert "tallow-ledger rules" in by_term
+
+
+def test_fr010_an_answer_for_a_spelling_is_not_an_entry_and_the_kept_rendering_stands():
+    ledger = replace(
+        _candidate("tallow ledger", "marked"), required=True, spellings=("ledger tallow", "tallow-ledger")
+    )
+    request = build_glossary_request(
+        model="m", candidates=(ledger,), source_language="en", target_language="ru", max_terms=5,
+        role=glossary_pass.GLOSSARY_ROLE_REQUIRED,
+    )
+    payload = json.loads(cast(Any, request["input"])[1]["content"][0]["text"])
+    assert payload["candidates"][0]["spellings"] == ["ledger tallow", "tallow-ledger"]
+    raw = json.dumps(
+        {
+            "terms": [
+                {"source_term": "ledger tallow", "target_term": "прибавочная книга"},
+                {"source_term": "tallow ledger", "target_term": "сальная книга"},
+                {"source_term": "tallow-ledger", "target_term": "сально-книжный"},
+            ]
+        }
+    )
+    result = parse_glossary_response(raw, candidates=(ledger,), max_terms=5)
+
+    assert [(term.source_term, term.target_term) for term in result.terms] == [("tallow ledger", "сальная книга")]
+    assert result.rejected_counts["not_a_candidate"] == 2
+
+
+def test_fr010_the_section_names_the_spellings_on_the_entry_line():
+    from docxaicorrector.pipeline.glossary_phase import plan_run_glossary_section
+
+    ledger = replace(_counted_candidate("tallow ledger", 31, required=True), spellings=("ledger tallow", "tallow-ledger"))
+    plan = plan_run_glossary_section((_entry("tallow ledger", "сальная книга"),), (ledger,), max_chars=100_000)
+
+    assert plan.text.splitlines()[1] == "- tallow ledger (также: ledger tallow, tallow-ledger) -> сальная книга"
+    assert [term.source_term for term in plan.rendered] == ["tallow ledger"]
+
+
+def test_fr010_names_are_not_collapsed_by_word_order():
+    # Anti-regression: a name keeps its case-sensitive identity (spec 064 FR-009 name families).
+    paragraphs = list(_document())
+    for _ in range(3):
+        paragraphs.append("Later Pettish Zorvane wrote back to the town of Kelbrook about it.")
+    by_term = {candidate.source_term: candidate for candidate in extract_glossary_candidates(_units(paragraphs))}
+
+    assert "Zorvane Pettish" in by_term and by_term["Zorvane Pettish"].spellings == ()
+    assert "Pettish Zorvane" in by_term
+
+
+def test_fr010_both_glossary_prompts_explain_spellings():
+    for role in (glossary_pass.GLOSSARY_ROLE_REQUIRED, glossary_pass.GLOSSARY_ROLE_OPTIONAL):
+        text = glossary_pass._load_glossary_instructions(role)
+        assert '"spellings", when present, are the same expression written otherwise in the book' in text

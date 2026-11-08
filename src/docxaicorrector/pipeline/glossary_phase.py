@@ -936,8 +936,17 @@ def plan_run_glossary_section(
     """
 
     required_keys = {normalize_glossary_key(candidate.source_term) for candidate in candidates if candidate.required}
+    spellings_by_key: dict[tuple[str, ...], tuple[str, ...]] = {}
+    for candidate in candidates:
+        if candidate.spellings:
+            spellings_by_key.setdefault(normalize_glossary_key(candidate.source_term), tuple(candidate.spellings))
     renderable = tuple(
-        term for term in terms if str(term.source_term or "").strip() and str(term.target_term or "").strip()
+        # Spec 067 FR-010: the entry names the other surfaces its rendering covers.
+        replace(term, spellings=spellings_by_key[key])
+        if (key := normalize_glossary_key(term.source_term)) in spellings_by_key
+        else term
+        for term in terms
+        if str(term.source_term or "").strip() and str(term.target_term or "").strip()
     )
     last_protected = max(
         (

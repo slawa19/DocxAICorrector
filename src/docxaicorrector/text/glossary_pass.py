@@ -184,6 +184,10 @@ class GlossaryCandidate:
     # Spec 064 FR-009: the full form of the name this short form belongs to ("Bernard Lietaer"
     # for "Lietaer"), decided by form in ``extract_glossary_candidates``; empty otherwise.
     name_head: str = ""
+    # Spec 067 FR-010: the other surfaces of this candidate -- the same words in another order
+    # or with a hyphen ("added value", "value-added" for "value added"). They are not asked for
+    # on their own; the rendering of ``source_term`` covers them.
+    spellings: tuple[str, ...] = ()
 
     def to_payload(self) -> dict[str, object]:
         payload: dict[str, object] = {
@@ -199,6 +203,8 @@ class GlossaryCandidate:
         }
         if self.name_head:
             payload["name_head"] = self.name_head
+        if self.spellings:
+            payload["spellings"] = list(self.spellings)
         return payload
 
 
@@ -900,32 +906,80 @@ def extract_glossary_candidates(
     for unit_index in body_indexes:
         for word in _WORD_RE.findall(plains[unit_index]):
             written_forms[_fold_word(word.lower())][word.lower()] += 1
+    def surface_of(draft: _Draft) -> str:
+        return draft.surface if draft.proper else _written_surface(draft.surface, written_forms)
+
     candidates: list[GlossaryCandidate] = []
-    for draft in kept:
-        first_unit = min(draft.units)
+    for group in _permutation_groups(kept):
+        # Spec 067 FR-010: one candidate per group, named by its most used surface (the first
+        # on a tie); the others are its spellings. The group's uses and units add up, and it
+        # is required when any of its surfaces is.
+        draft = max(enumerate(group), key=lambda item: (item[1].count, -item[0]))[1]
+        group_units = set().union(*(member.units for member in group))
+        first_unit = min(group_units)
         if draft.family == FAMILY_MARKED and draft.signal_unit is not None:
             context_unit = draft.signal_unit
         elif draft.family == FAMILY_HEADING and draft.heading_unit is not None:
             context_unit = draft.heading_unit
         else:
-            context_unit = first_unit
+            context_unit = min(draft.units)
         candidates.append(
             GlossaryCandidate(
-                source_term=draft.surface if draft.proper else _written_surface(draft.surface, written_forms),
+                source_term=surface_of(draft),
                 key=draft.key,
                 family=draft.family,
-                signals=tuple(sorted(draft.signals)),
-                occurrence_count=draft.count,
-                unit_count=len(draft.units),
-                spread=len({bin_of(unit) for unit in draft.units}),
+                signals=tuple(sorted(set().union(*(member.signals for member in group)))),
+                occurrence_count=sum(member.count for member in group),
+                unit_count=len(group_units),
+                spread=len({bin_of(unit) for unit in group_units}),
                 first_unit_id=units[first_unit].unit_id,
                 context=_context_snippet(plains[context_unit], draft.surface),
                 score=round(draft.score, 4),
-                required=_included_by_rule(draft),
+                required=any(_included_by_rule(member) for member in group),
                 name_head=name_heads[id(draft)].surface if id(draft) in name_heads else "",
+                spellings=tuple(surface_of(member) for member in group if member is not draft),
             )
         )
     return tuple(candidates)
+
+
+def _permutation_key(key: Sequence[str]) -> tuple[str, ...] | None:
+    """The words of ``key`` in sorted order, hyphens split; ``None`` for a single plain word.
+
+    Spec 067 FR-010: "value added", "added value" and "value-added" all give ``("added",
+    "value")``.
+    """
+
+    parts = sorted(part for word in key for part in word.lower().split("-") if part)
+    return tuple(parts) if len(parts) >= 2 else None
+
+
+def _permutation_groups(drafts: Sequence[_Draft]) -> list[list[_Draft]]:
+    """The drafts in order, those with one multiset of words collapsed into one group.
+
+    Spec 067 FR-010 (G-3): The Value of Everything had *value added* (34 of 34 rendered as
+    fixed), *added value* and *value-added* as three entries, and the model gave the last two
+    renderings it then never used (0 of 9) -- three entries for one term, two of them wrong.
+    Candidates whose words form the same multiset once hyphens are split (``_permutation_key``)
+    are one term. A name keeps its own case-sensitive identity and is never grouped here: its
+    spellings are the name family's business (spec 064 FR-009). A group stands where its first
+    member stood, so a phrase still comes before the word it contains.
+    """
+
+    groups: list[list[_Draft]] = []
+    by_permutation: dict[tuple[str, ...], list[_Draft]] = {}
+    for draft in drafts:
+        permutation = None if draft.proper else _permutation_key(draft.key)
+        if permutation is None:
+            groups.append([draft])
+            continue
+        group = by_permutation.get(permutation)
+        if group is None:
+            group = by_permutation[permutation] = [draft]
+            groups.append(group)
+        else:
+            group.append(draft)
+    return groups
 
 
 def _written_surface(surface: str, written_forms: Mapping[str, Counter[str]]) -> str:
@@ -1307,6 +1361,8 @@ def build_glossary_request(
                 "signals": list(candidate.signals),
                 "count": candidate.occurrence_count,
                 "context": candidate.context,
+                # Spec 067 FR-010: the same expression written otherwise; one rendering covers all.
+                **({"spellings": list(candidate.spellings)} if candidate.spellings else {}),
             }
             for index, candidate in enumerate(candidates)
         ],
