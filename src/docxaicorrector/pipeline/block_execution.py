@@ -1112,6 +1112,10 @@ def _generate_block_chunk(
         # Spec 061 FR-022: the same Stop the block loop checks between blocks, asked before
         # every model call inside this block's retries and ladder as well.
         should_stop=lambda: bool(dependencies.should_stop_processing(context.runtime)),
+        # Spec 065 FR-005: a translation of a short paragraph has a bounded length, so an
+        # answer many times longer took in a neighbour's text. Only the translate job says
+        # so; an audiobook answer is told to spell abbreviations out.
+        detect_short_source_absorption=_is_translate_job(context),
     )
 
 

@@ -51,6 +51,10 @@ from docxaicorrector.generation.model_response import (
 # inventing a second one (spec 061 FR-022). ``pipeline.contracts`` imports nothing from the
 # pipeline itself, so this edge cannot form an import cycle.
 from docxaicorrector.pipeline.contracts import LatePhaseStopped
+# Spec 065 FR-006: the answer-form rule lives with the other answer-form rules. Like
+# ``pipeline.contracts`` above, ``pipeline.output_validation`` reaches nothing in the
+# generation layer, so the edge cannot close a cycle.
+from docxaicorrector.pipeline.output_validation import structural_meta_comment
 
 if TYPE_CHECKING:
     from docx.document import Document as DocxDocument
@@ -120,6 +124,35 @@ _COLLAPSED_MARKER_CHUNK_MIN_SOURCE_CHARS = 40
 # A neighbour — on EITHER side — counts as the one that swallowed the collapsed paragraph
 # when it grew by at least this share of what the collapsed paragraph lost.
 _ABSORBING_NEIGHBOUR_RATIO = 0.5
+# Spec 065 FR-005: the mirror of the collapse above. A SHORT source paragraph whose answer
+# came back more than ``_SHORT_SOURCE_ABSORPTION_RATIO`` times its length took in text that
+# belongs to a neighbour -- typically a note the importer tore in two, which the model
+# restores in full under the first piece while the next piece (often in the NEXT block, seen
+# only as context) is delivered again. Only translate jobs ask for it (the caller decides;
+# an audiobook answer is told to expand abbreviations and has no such bound). A source
+# that is a markdown heading is exempt: a title is a label with no sentence to run on, and
+# its translation legitimately grows ("Scope" -> "Сфера применения", an acronym spelled out).
+#
+# A second, lower bound for the shape that defect actually has: a NUMBERED entry ("22. G.
+# Morgenson, 'Challenging …',") torn before its end -- no sentence end, or a sentence that
+# stops on a single-letter initial ("in L. H.") -- of at least
+# ``_COLLAPSED_MARKER_CHUNK_MIN_SOURCE_CHARS``. Its continuation is the neighbour by
+# construction, so an answer past ``_TORN_ENTRY_ABSORPTION_RATIO`` holds it.
+#
+# Measured on the four books of the third translate run (2026-11-07, 6 981 answered pairs,
+# every flag read by eye): the 3x bound flags 11 answers outside headings, all absorptions
+# (the 3 above it among headings are genuine translations); the torn-entry bound adds 10, all
+# absorptions duplicated by the next paragraph, out of 314 torn numbered entries. The highest
+# genuine translation among those 314 sits at 1.89x (a quoted title kept with its translation
+# added), the lowest absorption at 2.14x. Spec 065's Changelog has the lists.
+_SHORT_SOURCE_ABSORPTION_MAX_SOURCE_CHARS = 200
+_SHORT_SOURCE_ABSORPTION_RATIO = 3.0
+_TORN_ENTRY_ABSORPTION_RATIO = 2.0
+_MARKDOWN_HEADING_LINE_PATTERN = re.compile(r"^\s{0,3}#{1,6}\s")
+_NUMBERED_ENTRY_PATTERN = re.compile(r"^\s{0,3}(?:[-*+]\s+)?\d{1,4}[.)]\s")
+_ENTRY_CLOSERS = r"\"”’»)\]*_"
+_SENTENCE_END_PATTERN = re.compile(rf"[.!?…][{_ENTRY_CLOSERS}]*\s*$")
+_TRAILING_INITIAL_PATTERN = re.compile(rf"(?<![^\W\d_])[^\W\d_]\.[{_ENTRY_CLOSERS}]*\s*$")
 _INCOMPLETE_RESPONSE_RETRY_MIN_OUTPUT_TOKENS = 1024
 _INCOMPLETE_RESPONSE_RECOVERY_MIN_OUTPUT_TOKENS = 1536
 # The hard upper bound on ``max_output_tokens`` this generator will ever ask for. Named
@@ -813,6 +846,7 @@ def resolve_marker_paragraph_dispositions(
     allow_unresolved_paragraphs: bool,
     raw_markdown: str | None = None,
     allow_merge_repair: bool | None = None,
+    detect_short_source_absorption: bool = False,
 ) -> list[ParagraphDisposition]:
     """Turn ``retry_required`` paragraphs into a final status, or ask for another attempt.
 
@@ -848,6 +882,16 @@ def resolve_marker_paragraph_dispositions(
     impossible by construction. ``allow_merge_repair`` therefore stays ``False`` through the
     last attempt and the recovery call whenever the ladder is available, and defaults to
     ``allow_unresolved_paragraphs`` for every caller that has no ladder to hand the block to.
+
+    Spec 065 FR-006: a paragraph answered with a parenthetical meta-comment about the book's
+    structure (``output_validation.structural_meta_comment``) is an answer that says nothing
+    about the paragraph, so it is treated exactly as an EMPTY one -- asked again while budget
+    remains, ``omitted`` with its source on the last attempt -- and the rejection is logged
+    with the paragraph id and the comment.
+
+    Spec 065 FR-005: ``detect_short_source_absorption`` (translate jobs) adds the overgrown
+    short paragraph to the merges ``_find_marker_chunk_merges`` reports, so it takes the same
+    road a visible merge takes: a retry while anything is left to ask, its source on repair.
     """
 
     if allow_merge_repair is None:
@@ -856,6 +900,23 @@ def resolve_marker_paragraph_dispositions(
     texts = [disposition.text for disposition in dispositions]
     statuses = list(disposition.status for disposition in dispositions)
     paragraph_ids = [disposition.paragraph_id for disposition in dispositions]
+
+    if source_paragraph_chunks is not None and len(source_paragraph_chunks) == len(texts):
+        for index, text in enumerate(texts):
+            if not text:
+                continue
+            comment = structural_meta_comment(text, source_paragraph_chunks[index])
+            if comment is None:
+                continue
+            log_event(
+                logging.WARNING,
+                "marker_chunk_meta_comment_rejected",
+                "Модель вернула вместо абзаца скобочный комментарий о структуре книги; ответ отклонён как пустой.",
+                paragraph_id=paragraph_ids[index],
+                comment_text=comment,
+                answer_chars=len(text),
+            )
+            texts[index] = ""
 
     def _answer_as_received() -> str:
         # The model's ACTUAL answer when the caller has it (spec 056 D' captures the
@@ -869,10 +930,15 @@ def resolve_marker_paragraph_dispositions(
 
     if source_paragraph_chunks is not None:
         merges = _find_marker_chunk_merges(
-            texts, source_paragraph_chunks, expected_paragraph_ids=paragraph_ids
+            texts,
+            source_paragraph_chunks,
+            expected_paragraph_ids=paragraph_ids,
+            detect_short_source_absorption=detect_short_source_absorption,
         )
         if merges and not allow_merge_repair:
-            collapsed_ids = [paragraph_ids[merge.collapsed_index] for merge in merges]
+            collapsed_ids = [
+                paragraph_ids[merge.collapsed_index] for merge in merges if merge.collapsed_index is not None
+            ]
             absorbing_ids = list(
                 dict.fromkeys(
                     paragraph_ids[index] for merge in merges for index in merge.absorbing_indexes
@@ -890,6 +956,9 @@ def resolve_marker_paragraph_dispositions(
                 "Модель слила абзац с соседним; исходник не подставляется, блок будет запрошен снова.",
                 collapsed_paragraph_ids=collapsed_ids,
                 absorbing_paragraph_ids=absorbing_ids,
+                # Spec 065 FR-005: absorbers with no collapsed partner in this block -- a
+                # short paragraph that grew past the ratio.
+                overgrown_paragraph_ids=_overgrown_paragraph_ids(merges, paragraph_ids),
                 paragraph_count=len(dispositions),
             )
             raise MarkerValidationError(
@@ -981,9 +1050,13 @@ def _visible_marker_chunk_length(chunk: str) -> int:
 
 @dataclass(frozen=True)
 class _MarkerChunkMerge:
-    """One VISIBLE merge: the paragraph that collapsed and the neighbour(s) holding its text."""
+    """One VISIBLE merge: the paragraph that collapsed and the neighbour(s) holding its text.
 
-    collapsed_index: int
+    ``collapsed_index`` is ``None`` for a short paragraph that outgrew its source (spec 065
+    FR-005): the absorber is known, the paragraph it absorbed may be in another block.
+    """
+
+    collapsed_index: int | None
     absorbing_indexes: tuple[int, ...]
 
 
@@ -1043,16 +1116,90 @@ def _find_marker_chunk_merges(
     source_paragraph_chunks: Sequence[str],
     *,
     expected_paragraph_ids: Sequence[str] | None = None,
+    detect_short_source_absorption: bool = False,
 ) -> list[_MarkerChunkMerge]:
     """The merges ``restore_collapsed_marker_paragraphs`` would repair — found, not repaired.
 
     Pure detection, apart from the INFO line for a shrunken paragraph nobody absorbed (that
     answer stands either way, so there is nothing to defer). No counter is touched here:
     whether the merge becomes a discard or a retry is the caller's decision.
+
+    With ``detect_short_source_absorption`` (spec 065 FR-005) a short paragraph whose answer
+    outgrew its source past ``_SHORT_SOURCE_ABSORPTION_RATIO`` is reported too, as an
+    absorber with no collapsed partner (``collapsed_index=None``): the paragraph it absorbed
+    may sit in the next block, which this block only ever saw as context, so nothing here
+    collapses. ``_is_short_source_absorption`` holds the form.
     """
 
     if not source_paragraph_chunks or len(source_paragraph_chunks) != len(paragraph_chunks):
         return []
+
+    merges = _find_collapsed_marker_chunk_merges(
+        paragraph_chunks, source_paragraph_chunks, expected_paragraph_ids=expected_paragraph_ids
+    )
+    if not detect_short_source_absorption:
+        return merges
+    already_absorbing = {index for merge in merges for index in merge.absorbing_indexes}
+    for index, (answer, source) in enumerate(zip(paragraph_chunks, source_paragraph_chunks)):
+        if index in already_absorbing or not _is_short_source_absorption(source, answer):
+            continue
+        merges.append(_MarkerChunkMerge(collapsed_index=None, absorbing_indexes=(index,)))
+    return merges
+
+
+def _is_short_source_absorption(source_chunk: str, answer_chunk: str) -> bool:
+    """Spec 065 FR-005: did a SHORT paragraph's answer take in text that belongs elsewhere?
+
+    The source paragraph must be shorter than ``_SHORT_SOURCE_ABSORPTION_MAX_SOURCE_CHARS``
+    visible characters and not a markdown heading. Then the answer is an absorption when it
+    is more than ``_SHORT_SOURCE_ABSORPTION_RATIO`` times the source's length -- or more than
+    ``_TORN_ENTRY_ABSORPTION_RATIO`` times when the source is a torn numbered entry
+    (``_is_torn_numbered_entry``). Length, markdown form and punctuation only -- no word of
+    either text is read (Constitution VII).
+    """
+
+    source = _strip_prompt_internal_tokens(source_chunk)
+    source_length = len(source)
+    if source_length == 0 or source_length >= _SHORT_SOURCE_ABSORPTION_MAX_SOURCE_CHARS:
+        return False
+    if _MARKDOWN_HEADING_LINE_PATTERN.match(source):
+        return False
+    answer_length = _visible_marker_chunk_length(answer_chunk)
+    if answer_length > source_length * _SHORT_SOURCE_ABSORPTION_RATIO:
+        return True
+    return (
+        source_length >= _COLLAPSED_MARKER_CHUNK_MIN_SOURCE_CHARS
+        and _is_torn_numbered_entry(source)
+        and answer_length > source_length * _TORN_ENTRY_ABSORPTION_RATIO
+    )
+
+
+def _is_torn_numbered_entry(source: str) -> bool:
+    """A numbered entry ("22. …") that stops before a sentence ends, or on an initial ("L. H.")."""
+
+    if _NUMBERED_ENTRY_PATTERN.match(source) is None:
+        return False
+    return _SENTENCE_END_PATTERN.search(source) is None or _TRAILING_INITIAL_PATTERN.search(source) is not None
+
+
+def _overgrown_paragraph_ids(
+    merges: Sequence["_MarkerChunkMerge"], paragraph_ids: Sequence[str] | None
+) -> list[str]:
+    return [
+        _marker_paragraph_id(paragraph_ids, index)
+        for merge in merges
+        if merge.collapsed_index is None
+        for index in merge.absorbing_indexes
+    ]
+
+
+def _find_collapsed_marker_chunk_merges(
+    paragraph_chunks: Sequence[str],
+    source_paragraph_chunks: Sequence[str],
+    *,
+    expected_paragraph_ids: Sequence[str] | None = None,
+) -> list[_MarkerChunkMerge]:
+    """The collapse half of ``_find_marker_chunk_merges``: a paragraph that shrank into a neighbour."""
 
     source_lengths = [_visible_marker_chunk_length(chunk) for chunk in source_paragraph_chunks]
     returned_lengths = [_visible_marker_chunk_length(chunk) for chunk in paragraph_chunks]
@@ -1129,7 +1276,8 @@ def _restore_marker_chunk_merges(
     restored = list(paragraph_chunks)
     restored_indexes: list[int] = []
     for merge in merges:
-        for restore_index in (merge.collapsed_index, *merge.absorbing_indexes):
+        collapsed = () if merge.collapsed_index is None else (merge.collapsed_index,)
+        for restore_index in (*collapsed, *merge.absorbing_indexes):
             restored[restore_index] = source_paragraph_chunks[restore_index]
             restored_indexes.append(restore_index)
 
@@ -1147,8 +1295,11 @@ def _restore_marker_chunk_merges(
         "marker_chunk_collapse_source_restored",
         "Возвращённый абзац схлопнулся в соседний; восстановлен исходный текст обоих абзацев.",
         collapsed_paragraph_ids=[
-            _marker_paragraph_id(expected_paragraph_ids, merge.collapsed_index) for merge in merges
+            _marker_paragraph_id(expected_paragraph_ids, merge.collapsed_index)
+            for merge in merges
+            if merge.collapsed_index is not None
         ],
+        overgrown_paragraph_ids=_overgrown_paragraph_ids(merges, expected_paragraph_ids),
         restored_paragraph_count=len(set(restored_indexes)),
         paragraph_count=len(paragraph_chunks),
     )
@@ -1191,6 +1342,7 @@ def _strip_and_validate_paragraph_markers(
     source_paragraph_chunks: Sequence[str] | None = None,
     allow_unresolved_paragraphs: bool = False,
     allow_merge_repair: bool | None = None,
+    detect_short_source_absorption: bool = False,
 ) -> str:
     if not marker_mode:
         return markdown
@@ -1202,6 +1354,7 @@ def _strip_and_validate_paragraph_markers(
         allow_unresolved_paragraphs=allow_unresolved_paragraphs,
         raw_markdown=markdown,
         allow_merge_repair=allow_merge_repair,
+        detect_short_source_absorption=detect_short_source_absorption,
     )
     # The joined string still carries exactly one paragraph per marker — an ``omitted``
     # paragraph contributes its own source text — so everything downstream that counts
@@ -1410,6 +1563,7 @@ def _finalize_generated_markdown(
     source_paragraph_chunks: Sequence[str] | None = None,
     allow_unresolved_paragraphs: bool = False,
     allow_merge_repair: bool | None = None,
+    detect_short_source_absorption: bool = False,
 ) -> str:
     cleaned_markdown = _strip_and_validate_paragraph_markers(
         markdown,
@@ -1418,6 +1572,7 @@ def _finalize_generated_markdown(
         source_paragraph_chunks=source_paragraph_chunks,
         allow_unresolved_paragraphs=allow_unresolved_paragraphs,
         allow_merge_repair=allow_merge_repair,
+        detect_short_source_absorption=detect_short_source_absorption,
     )
     return _deliver_after_context_leakage_check(
         cleaned_markdown,
@@ -2027,6 +2182,7 @@ def _recover_from_persistent_empty_response(
     last_exception: Exception | None = None,
     allow_merge_repair: bool = True,
     should_stop: Callable[[], bool] | None = None,
+    detect_short_source_absorption: bool = False,
 ) -> str:
     log_event(
         logging.WARNING,
@@ -2068,6 +2224,7 @@ def _recover_from_persistent_empty_response(
         allow_unresolved_paragraphs=True,
         # ...except for a merge, when the caller still has a ladder to hand it to.
         allow_merge_repair=allow_merge_repair,
+        detect_short_source_absorption=detect_short_source_absorption,
     )
     if not cleaned_markdown.strip():
         raise EmptyResponse(_EMPTY_RESPONSE_MESSAGE)
@@ -2155,6 +2312,7 @@ def _merged_pair_repair_fallback(
     target_text_for_leakage: str,
     context_before: str,
     context_after: str,
+    detect_short_source_absorption: bool = False,
 ) -> str | None:
     """The merge repair the last attempt used to do, applied AFTER the ladder (FR-002/003).
 
@@ -2195,6 +2353,8 @@ def _merged_pair_repair_fallback(
             source_paragraph_chunks=source_paragraph_chunks,
             allow_unresolved_paragraphs=True,
             allow_merge_repair=True,
+            # The same detection that raised, so the repair restores the paragraph it named.
+            detect_short_source_absorption=detect_short_source_absorption,
         ),
         target_text=target_text_for_leakage,
         context_before=context_before,
@@ -2575,6 +2735,7 @@ def _ladder_model_answer(
     block_index: int | None,
     unit_label: str,
     should_stop: Callable[[], bool] | None = None,
+    detect_short_source_absorption: bool = False,
 ) -> str:
     """One ladder call, for ONE paragraph, answered as one paragraph. Raises otherwise.
 
@@ -2596,6 +2757,12 @@ def _ladder_model_answer(
       it for a one-marker block: collapsed when the pieces are prose, and rejected when the
       answer carries a structural line, because welding ``## Заголовок`` to the sentence
       after it repairs a split by destroying a role (Constitution VII rule 7).
+
+    And the two answer rules of the marker path, because a ladder call is not exempt from
+    them (spec 065): a parenthetical meta-comment about the book's structure is an empty
+    answer (FR-006), and -- with ``detect_short_source_absorption`` -- a short paragraph that
+    outgrew its source took in a neighbour's text (FR-005). Either way the unit is not
+    rescued and keeps its source, as any unit the ladder cannot translate does.
     """
 
     answer = generate_markdown_block(
@@ -2621,6 +2788,27 @@ def _ladder_model_answer(
         if _has_structural_output_line(cleaned):
             raise RuntimeError(f"ladder_answer_paragraph_split:{unit_label}")
         cleaned = _collapse_single_marker_paragraph_break(cleaned, paragraph_id=unit_label)
+    comment = structural_meta_comment(cleaned, target_text)
+    if comment is not None:
+        log_event(
+            logging.WARNING,
+            "marker_chunk_meta_comment_rejected",
+            "Модель вернула вместо абзаца скобочный комментарий о структуре книги; ответ отклонён как пустой.",
+            paragraph_id=unit_label,
+            comment_text=comment,
+            answer_chars=len(cleaned),
+        )
+        raise EmptyResponse(_EMPTY_RESPONSE_MESSAGE)
+    if detect_short_source_absorption and _is_short_source_absorption(target_text, cleaned):
+        log_event(
+            logging.WARNING,
+            "degradation_ladder_short_source_absorption_rejected",
+            "Ответ на короткий абзац во много раз длиннее исходника — вобрал текст соседа; абзац остаётся исходным.",
+            paragraph_id=unit_label,
+            source_chars=_visible_marker_chunk_length(target_text),
+            answer_chars=_visible_marker_chunk_length(cleaned),
+        )
+        raise RuntimeError(f"ladder_answer_short_source_absorption:{unit_label}")
     return cleaned
 
 
@@ -2645,6 +2833,7 @@ def _ladder_translate_unit(
     max_retries: int,
     block_index: int | None,
     should_stop: Callable[[], bool] | None = None,
+    detect_short_source_absorption: bool = False,
 ) -> _LadderUnitOutcome:
     """Translate ONE paragraph, dividing it by sentences if its size is what failed.
 
@@ -2668,6 +2857,7 @@ def _ladder_translate_unit(
             block_index=block_index,
             unit_label=unit_label,
             should_stop=should_stop,
+            detect_short_source_absorption=detect_short_source_absorption,
         )
         return outcome
     except Exception as exc:
@@ -2722,6 +2912,7 @@ def _ladder_translate_unit(
                     block_index=block_index,
                     unit_label=unit_label,
                     should_stop=should_stop,
+                    detect_short_source_absorption=detect_short_source_absorption,
                 )
             )
         except Exception:
@@ -2877,7 +3068,9 @@ def _merge_ladder_scope(
     worse than a ladder that rescued none (whose pair fallback keeps them). The merge names
     its paragraphs (the collapsed one and its absorber), and only those are re-asked; every
     other paragraph keeps the model's answer from the exception as received — ``accepted``,
-    or ``omitted`` with its source when that chunk was empty, the last-attempt rule.
+    or ``omitted`` with its source when that chunk was empty, the last-attempt rule. A chunk
+    that is a parenthetical meta-comment counts as empty here too (spec 065 FR-006): it was
+    rejected as one when the answer was resolved, and keeping it would ship it.
 
     ``None`` — the whole block is re-asked, as before — for any other trigger, or when the
     answer cannot be re-read paragraph by paragraph.
@@ -2898,13 +3091,16 @@ def _merge_ladder_scope(
     for index, disposition in enumerate(answered):
         if index in affected:
             continue
+        answered_text = disposition.text
+        if answered_text and structural_meta_comment(answered_text, source_paragraph_chunks[index]) is not None:
+            answered_text = ""
         kept[index] = (
             ParagraphDisposition(
                 paragraph_id=disposition.paragraph_id,
-                text=disposition.text,
+                text=answered_text,
                 status=PARAGRAPH_STATUS_ACCEPTED,
             )
-            if disposition.text
+            if answered_text
             else ParagraphDisposition(
                 paragraph_id=disposition.paragraph_id,
                 text=source_paragraph_chunks[index],
@@ -2930,6 +3126,7 @@ def _attempt_degradation_ladder(
     context_after: str,
     allow_controlled_source_fallback: bool,
     should_stop: Callable[[], bool] | None = None,
+    detect_short_source_absorption: bool = False,
 ) -> str | None:
     """Steps 2 and 3, or ``None`` when the ladder declines or rescues nothing.
 
@@ -3000,6 +3197,7 @@ def _attempt_degradation_ladder(
                 max_retries=max_retries,
                 block_index=block_index,
                 should_stop=should_stop,
+                detect_short_source_absorption=detect_short_source_absorption,
             )
         )
 
@@ -3052,6 +3250,7 @@ def generate_markdown_block(
     *,
     allow_controlled_source_fallback: bool = True,
     should_stop: Callable[[], bool] | None = None,
+    detect_short_source_absorption: bool = False,
 ) -> str:
     """Process ONE block, retrying, then dividing, and only then substituting its source.
 
@@ -3064,6 +3263,13 @@ def generate_markdown_block(
     ``should_stop``, when given, is asked before every model call this block makes — each
     attempt, the recovery call and each ladder step — and a ``True`` raises
     ``LatePhaseStopped`` instead of making the call (spec 061 FR-022).
+
+    ``detect_short_source_absorption`` (spec 065 FR-005) is the caller's statement that this
+    block is a translation, where a short paragraph's answer has a bounded length: an answer
+    past ``_SHORT_SOURCE_ABSORPTION_RATIO`` is then handled as a merge -- asked again, re-asked
+    alone by the ladder, its source on repair. Off by default, so every other caller (the
+    audiobook operation, which is told to spell abbreviations out, and the post-processing
+    passes) is unchanged.
     """
 
     if isinstance(max_retries, bool) or not isinstance(max_retries, int):
@@ -3159,6 +3365,7 @@ def generate_markdown_block(
                 # (a nested ladder call, or a caller that turned fallbacks off) the last
                 # attempt repairs the pair, exactly as before.
                 allow_merge_repair=attempt >= max_retries and not allow_controlled_source_fallback,
+                detect_short_source_absorption=detect_short_source_absorption,
             )
         except Exception as exc:
             last_exception = exc
@@ -3224,6 +3431,7 @@ def generate_markdown_block(
                 last_exception=last_exception,
                 allow_merge_repair=not allow_controlled_source_fallback,
                 should_stop=should_stop,
+                detect_short_source_absorption=detect_short_source_absorption,
             )
         except Exception as recovery_exc:
             # The recovery call is the LAST answer the model gives for this block, and the
@@ -3255,6 +3463,7 @@ def generate_markdown_block(
                 context_after=context_after_text,
                 allow_controlled_source_fallback=allow_controlled_source_fallback,
                 should_stop=should_stop,
+                detect_short_source_absorption=detect_short_source_absorption,
             )
             if ladder_result is not None:
                 return ladder_result
@@ -3276,6 +3485,7 @@ def generate_markdown_block(
                     target_text_for_leakage=target_text_for_leakage,
                     context_before=context_before_text,
                     context_after=context_after_text,
+                    detect_short_source_absorption=detect_short_source_absorption,
                 )
                 if merged_pair_repair is not None:
                     return merged_pair_repair
