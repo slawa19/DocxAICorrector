@@ -56,6 +56,27 @@ def _resolve_artifact_path(value: object, *, project_root: Path) -> Path | None:
     return project_root / path
 
 
+def _event_log_from_report(report: Mapping[str, object]) -> list[object]:
+    """Every event of the validation run, not just the report's capped tail.
+
+    Spec 068 FR-002: the report keeps only the last events in ``event_log``; the full list
+    is the JSONL sidecar named by ``output_artifacts.events_jsonl``. A report written before
+    the sidecar existed, or whose sidecar is gone, falls back to the tail.
+    """
+
+    output_artifacts = report.get("output_artifacts")
+    if isinstance(output_artifacts, Mapping):
+        sidecar_path = _resolve_artifact_path(output_artifacts.get("events_jsonl"), project_root=PROJECT_ROOT)
+        if sidecar_path is not None and sidecar_path.is_file():
+            return [
+                json.loads(line)
+                for line in sidecar_path.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+    tail = report.get("event_log")
+    return list(tail) if isinstance(tail, list) else []
+
+
 def _docx_image_placeholder_count(markdown_text: str) -> int:
     return sum(
         1
@@ -297,7 +318,7 @@ def run_harness(args: argparse.Namespace) -> dict[str, object]:
     )
 
     reader_cleanup_event_context = {}
-    for event in validation_report.get("event_log") or []:
+    for event in _event_log_from_report(validation_report):
         if isinstance(event, Mapping) and event.get("event_id") == "reader_cleanup_applied":
             context = event.get("context")
             if isinstance(context, Mapping):

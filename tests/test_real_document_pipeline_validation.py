@@ -6914,3 +6914,224 @@ def test_main_writes_each_runs_log_into_its_own_artifact_directory(monkeypatch, 
     shared_log = Path(app_logger.APP_LOG_PATH)
     if shared_log.exists():
         assert "run_marker" not in shared_log.read_text(encoding="utf-8")
+
+
+def _run_stubbed_main_emitting(validation, monkeypatch, tmp_path, *, run_id: str, events) -> Path:
+    """Run the real ``main()`` with a processing service stub that emits ``events``.
+
+    Each event is ``(level, event_id, context)`` and goes through the ``log_event_fn`` the
+    runner injects, exactly where the pipeline's own events go. Returns the run's directory.
+    """
+
+    source_path = tmp_path / "book.pdf"
+    source_path.write_bytes(b"%PDF-1.4 sample")
+
+    def _resolution_payload(**values):
+        return SimpleNamespace(**values, to_dict=lambda: dict(values))
+
+    document_profile = SimpleNamespace(
+        id="stub-events-profile",
+        artifact_prefix="stub_events_validation",
+        output_basename="Stub_events_validated",
+        max_unmapped_source_paragraphs=0,
+        max_unmapped_target_paragraphs=0,
+        require_no_toc_body_concat=True,
+        resolved_source_path=lambda project_root=None: source_path,
+    )
+    run_profile = SimpleNamespace(
+        id="ui-parity-default",
+        tier="full",
+        repeat_count=1,
+        chunk_size=6000,
+        image_mode="safe",
+        keep_all_image_variants=False,
+        model="gpt-5.4",
+        max_retries=1,
+    )
+    registry = SimpleNamespace(
+        get_document_profile=lambda profile_id: document_profile,
+        resolve_run_profile=lambda profile, requested_run_profile_id: run_profile,
+    )
+
+    class _ValidationServiceStub:
+        def __init__(self, log_event_fn):
+            self.log_event_fn = log_event_fn
+
+        def run_prepared_background_document(self, **kwargs):
+            for level, event_id, context in events:
+                self.log_event_fn(level, event_id, f"{event_id} message", **context)
+            kwargs["runtime"].emit(
+                validation.SetStateEvent(
+                    values={
+                        "latest_markdown": "validated output",
+                        "latest_docx_bytes": _docx_bytes(Document()),
+                        "image_assets": [],
+                    }
+                )
+            )
+            return "succeeded", SimpleNamespace(
+                uploaded_filename="prepared.docx",
+                uploaded_file_bytes=b"PK\x03\x04normalized-source",
+                paragraphs=[ParagraphUnit(text="Body text", role="body", structural_role="body", source_index=0, paragraph_id="p0000")],
+                image_assets=[],
+                jobs=[{"job_kind": "block"}],
+                source_text="source text",
+                preparation_cached=False,
+                preparation_elapsed_seconds=0.1,
+                structure_repair_report=None,
+                uploaded_file_token="token-1",
+                quality_gate_status="pass",
+                quality_gate_reasons=(),
+            )
+
+    settings = _resolution_payload(
+        chunk_size=6000,
+        image_mode="safe",
+        keep_all_image_variants=False,
+        model="gpt-5.4",
+        max_retries=1,
+        processing_operation="translate",
+        source_language="auto",
+        target_language="ru",
+    )
+    monkeypatch.setattr(validation, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(validation, "REAL_DOCUMENT_ARTIFACT_ROOT", tmp_path / "artifacts")
+    monkeypatch.setattr(validation, "load_validation_registry", lambda: registry)
+    monkeypatch.setattr(validation, "load_app_config", lambda: object())
+    monkeypatch.setattr(
+        validation,
+        "resolve_runtime_resolution",
+        lambda app_config, run_profile: SimpleNamespace(effective=settings, ui_defaults=settings, overrides={}),
+    )
+    monkeypatch.setattr(validation, "apply_runtime_resolution_to_app_config", lambda app_config, resolution: {"x": 1})
+    monkeypatch.setattr(validation, "evaluate_lietaer_acceptance", lambda report, **kwargs: {"passed": True, "failed_checks": [], "checks": []})
+    monkeypatch.setattr(validation, "_extract_run_formatting_diagnostics_paths", lambda event_log: [])
+    monkeypatch.setattr(validation, "_load_formatting_diagnostics_payloads", lambda paths: [])
+    monkeypatch.setattr(validation, "_print_terminal_completion_summary", lambda **kwargs: None)
+    monkeypatch.setattr(validation.processing_service, "clone_processing_service", lambda **kwargs: _ValidationServiceStub(kwargs["log_event_fn"]))
+    monkeypatch.setenv("DOCXAI_REAL_DOCUMENT_PROFILE", "stub-events-profile")
+    monkeypatch.delenv("DOCXAI_REAL_DOCUMENT_RUN_PROFILE", raising=False)
+    monkeypatch.delenv("DOCXAI_REAL_DOCUMENT_REPEAT_COUNT_OVERRIDE", raising=False)
+    monkeypatch.setenv("DOCXAI_REAL_DOCUMENT_FORCED_RUN_ID", run_id)
+
+    validation.main()
+    return tmp_path / "artifacts" / "runs" / run_id
+
+
+def test_main_forwards_pipeline_events_to_the_run_log_and_keeps_every_event_in_a_sidecar(monkeypatch, tmp_path) -> None:
+    """Spec 068 FR-002 / SC-002: the runner's injected channel reaches the run's ``app.log``.
+
+    The runner replaced the pipeline's ``log_event_fn`` with a capture that only appended to
+    a list, and the report kept the last 25 entries: on the fifth run ~981 (Money) / ~820
+    (RM) events reached no log, ``block_apparatus_kept_by_model`` among them. Now every event
+    is forwarded to the ``docxaicorrector`` logger -- INFO and above land in the run's
+    ``app.log``, DEBUG ones stay out at the default level, as in the app -- and every event,
+    whatever its level, is in ``events.jsonl`` next to the report.
+    """
+    import logging
+
+    import docxaicorrector.core.logger as app_logger
+
+    validation = _load_validation_module()
+    kept_blocks = (4, 17, 29)
+    events: list[tuple[int, str, dict[str, object]]] = [
+        (logging.INFO, "processing_started", {"block_count": 30}),
+    ]
+    for block_index in range(1, 31):
+        events.append((logging.DEBUG, "block_started", {"block_index": block_index, "block_count": 30}))
+        if block_index in kept_blocks:
+            events.append((logging.INFO, "block_apparatus_kept_by_model", {"block_index": block_index, "kept_paragraph_count": 1}))
+        events.append((logging.DEBUG, "block_completed", {"block_index": block_index, "block_count": 30, "output_ratio": 1.0}))
+    events.append((logging.INFO, "processing_completed", {"block_count": 30}))
+    assert len(events) > validation.REPORT_EVENT_LOG_TAIL
+
+    logger = app_logger.get_logger()
+    previous_level = logger.level
+    logger.setLevel(logging.INFO)
+    try:
+        run_dir = _run_stubbed_main_emitting(validation, monkeypatch, tmp_path, run_id="run-events", events=events)
+    finally:
+        logger.setLevel(previous_level)
+
+    app_log_records = []
+    for line in (run_dir / validation.RUN_LOG_FILENAME).read_text(encoding="utf-8").splitlines():
+        message = line.split(" | ", 2)[-1]
+        if message.startswith("{"):
+            app_log_records.append(json.loads(message))
+    logged_names = [record["event"] for record in app_log_records]
+    assert logged_names.count("block_apparatus_kept_by_model") == len(kept_blocks)
+    assert [
+        record["context"]["block_index"] for record in app_log_records if record["event"] == "block_apparatus_kept_by_model"
+    ] == list(kept_blocks)
+    assert "processing_started" in logged_names and "processing_completed" in logged_names
+    assert "block_started" not in logged_names and "block_completed" not in logged_names
+
+    report = json.loads((run_dir / "stub_events_validation_report.json").read_text(encoding="utf-8"))
+    sidecar_lines = (run_dir / validation.EVENTS_JSONL_FILENAME).read_text(encoding="utf-8").splitlines()
+    sidecar_events = [json.loads(line) for line in sidecar_lines]
+    assert [event["event_id"] for event in sidecar_events] == [event_id for _level, event_id, _context in events]
+    assert report["event_log_total_count"] == len(events) == len(sidecar_events)
+    assert len(report["event_log"]) == validation.REPORT_EVENT_LOG_TAIL
+    assert report["event_log"] == sidecar_events[-validation.REPORT_EVENT_LOG_TAIL:]
+    assert report["output_artifacts"]["events_jsonl"] == "artifacts/runs/run-events/events.jsonl"
+    summary_lines = (run_dir / "stub_events_validation_summary.txt").read_text(encoding="utf-8").splitlines()
+    assert "events_jsonl=artifacts/runs/run-events/events.jsonl" in summary_lines
+    assert f"event_log_total_count={len(events)}" in summary_lines
+
+
+def test_main_classifies_failure_from_an_event_the_report_tail_drops(monkeypatch, tmp_path) -> None:
+    """Spec 068 FR-002: ``classify_failure`` reads the full event list, not the report's tail.
+
+    The marker event comes first and is followed by more than ``REPORT_EVENT_LOG_TAIL``
+    events, so the capped ``report["event_log"]`` no longer holds it; the classification
+    must still find it.
+    """
+    import logging
+
+    validation = _load_validation_module()
+    events: list[tuple[int, str, dict[str, object]]] = [
+        (logging.WARNING, "block_rejected", {"block_index": 1, "output_classification": "empty_processed_block"}),
+    ]
+    events.extend(
+        (logging.DEBUG, "block_completed", {"block_index": block_index, "output_ratio": 1.0})
+        for block_index in range(2, 2 + validation.REPORT_EVENT_LOG_TAIL + 5)
+    )
+
+    run_dir = _run_stubbed_main_emitting(validation, monkeypatch, tmp_path, run_id="run-early-marker", events=events)
+
+    report = json.loads((run_dir / "stub_events_validation_report.json").read_text(encoding="utf-8"))
+    assert all(event["event_id"] != "block_rejected" for event in report["event_log"])
+    assert validation.classify_failure(report) is None
+    assert report["failure_classification"] == "empty_processed_block"
+
+
+def test_classify_failure_reads_the_full_event_list_when_given() -> None:
+    validation = _load_validation_module()
+    early_marker = {"event_id": "block_rejected", "context": {"output_classification": "collapsed_output"}}
+    filler = [{"event_id": "block_completed", "context": {"block_index": index}} for index in range(40)]
+    report = {"result": "succeeded", "last_error": "", "event_log": filler[-25:]}
+
+    assert validation.classify_failure(report) is None
+    assert validation.classify_failure(report, event_log=[early_marker, *filler]) == "collapsed_output"
+
+
+def test_validation_event_logger_forwards_every_event_and_keeps_the_list() -> None:
+    from docxaicorrector.validation.common import build_validation_event_logger
+
+    event_log: list[dict[str, object]] = []
+    forwarded: list[tuple[object, ...]] = []
+    seen: list[str] = []
+    capture = build_validation_event_logger(
+        event_log,
+        on_event=lambda payload: seen.append(str(payload["event_id"])),
+        forward_event=lambda level, event_id, message, **context: forwarded.append((level, event_id, message, context)),
+    )
+
+    capture(10, "block_started", "started", block_index=1)
+    capture(20, "block_apparatus_kept_by_model", "kept", block_index=1, kept_paragraph_count=2)
+
+    assert forwarded == [
+        (10, "block_started", "started", {"block_index": 1}),
+        (20, "block_apparatus_kept_by_model", "kept", {"block_index": 1, "kept_paragraph_count": 2}),
+    ]
+    assert [event["event_id"] for event in event_log] == seen == ["block_started", "block_apparatus_kept_by_model"]

@@ -104,6 +104,11 @@ from docxaicorrector.runtime.events import (
 REAL_DOCUMENT_ARTIFACT_ROOT = PROJECT_ROOT / "tests" / "artifacts" / "real_document_pipeline"
 # Spec 067 FR-013: each run's structured log, inside the run's artifact directory.
 RUN_LOG_FILENAME = "app.log"
+# Spec 068 FR-002: every event the pipeline sent through its injected ``log_event_fn``
+# during the run, one sanitized JSON object per line, next to the report. The report itself
+# keeps only the last ``REPORT_EVENT_LOG_TAIL`` of them.
+EVENTS_JSONL_FILENAME = "events.jsonl"
+REPORT_EVENT_LOG_TAIL = 25
 HEARTBEAT_INTERVAL_SECONDS = 15.0
 READER_VERIFIER_DEFAULT_SELECTOR = "openrouter:google/gemini-3-flash-preview"
 READER_VERIFIER_TIMEOUT_SECONDS = 180.0
@@ -3860,7 +3865,34 @@ def sanitize_for_json(value: object) -> object:
     return app_logger.sanitize_log_context(value)
 
 
-def classify_failure(report: dict) -> str | None:
+def write_event_log_sidecar(event_log: Sequence[Mapping[str, object]], path: Path) -> int:
+    """Write every event of the run to ``path`` as JSON Lines; return the line count.
+
+    Spec 068 FR-002. The report keeps only the last ``REPORT_EVENT_LOG_TAIL`` events, and a
+    full run emits hundreds through the injected channel (fifth run: ~981 Money, ~820 RM), so
+    the complete list lives here. Each line is the event sanitized exactly as the report's
+    ``event_log`` entries are (``sanitize_for_json``, built on the file log's
+    ``sanitize_log_context``), so the report's tail equals the file's last lines. Size is an
+    estimate, not a measurement of a written file: the fifth run's event counts times the
+    per-event sizes of its 25-event tail give about 0.55-0.6 MB per book.
+    """
+
+    with path.open("w", encoding="utf-8", newline="\n") as handle:
+        for event in event_log:
+            handle.write(json.dumps(sanitize_for_json(event), ensure_ascii=False))
+            handle.write("\n")
+    return len(event_log)
+
+
+def classify_failure(report: dict, *, event_log: Sequence[object] | None = None) -> str | None:
+    """Name the failure class of a run from its error, exception and events.
+
+    ``event_log`` is the run's FULL event list. Spec 068 FR-002: the runner used to pass
+    only the report, whose ``event_log`` is capped at the last ``REPORT_EVENT_LOG_TAIL``
+    events, so a marker event early in a long run was invisible here. Without the argument
+    the report's own ``event_log`` is read, as before.
+    """
+
     candidates = []
     last_error = str(report.get("last_error") or "")
     candidates.append(last_error)
@@ -3868,10 +3900,11 @@ def classify_failure(report: dict) -> str | None:
     if isinstance(exc, dict):
         candidates.append(str(exc.get("message") or ""))
         candidates.append(str(exc.get("traceback") or ""))
-    for event in report.get("event_log", []):
+    events = event_log if event_log is not None else report.get("event_log", [])
+    for event in events:
         if isinstance(event, dict):
             candidates.append(str(event.get("event_id") or ""))
-            candidates.append(json.dumps(event, ensure_ascii=False))
+            candidates.append(json.dumps(sanitize_for_json(event), ensure_ascii=False))
     joined = "\n".join(text for text in candidates if text)
     for marker in (
         "heading_only_output",
@@ -5807,7 +5840,22 @@ def _run_single_validation(
                 },
             )
 
-    log_event_capture = build_validation_event_logger(event_log, on_event=_handle_logged_event)
+    # Spec 068 FR-002: the capture both keeps every event in ``event_log`` (the report's
+    # parsers read it) and forwards it to the ``docxaicorrector`` logger, i.e. into this run's
+    # ``app.log`` (``redirect_log_file`` in ``main``) at the configured level -- the app's
+    # path, where the injected ``log_event_fn`` IS ``core.logger.log_event``
+    # (``processing_service._log_event``). Before this the list was the only sink: ~981
+    # (Money) / ~820 (RM) injected events per fifth-run book reached no log, among them
+    # ``block_apparatus_kept_by_model``, ``block_controlled_fallback``, ``run_glossary_built``
+    # and ``processing_started``. Volume at the default INFO level, as measured on the fifth
+    # run by the spec 068 sweep B: +23 lines (~24 KB) Money, +29 (~30 KB) RM; the DEBUG ones
+    # (``block_started``, ``block_completed``, ...) stay out unless
+    # ``DOCX_AI_LOG_LEVEL=DEBUG``.
+    log_event_capture = build_validation_event_logger(
+        event_log,
+        on_event=_handle_logged_event,
+        forward_event=app_logger.log_event,
+    )
 
     try:
         source_bytes = source_path.read_bytes()
@@ -5989,6 +6037,10 @@ def _run_single_validation(
     else:
         _normalize_snapshot_or_metric_statuses(preparation_diagnostic_snapshot)
 
+    # Spec 068 FR-002: the full event list, before the report caps it to its tail.
+    events_jsonl_path = artifact_dir / EVENTS_JSONL_FILENAME
+    event_log_total_count = write_event_log_sidecar(event_log, events_jsonl_path)
+
     report = {
         "run": {
             "run_id": run_id,
@@ -6052,6 +6104,7 @@ def _run_single_validation(
             "latest_tts_text_path": _path_for_report(latest_tts_path) if tts_artifact_path is not None else None,
             "latest_manifest_json": _path_for_report(latest_manifest_path),
             "app_log": _path_for_report(artifact_dir / RUN_LOG_FILENAME),
+            "events_jsonl": _path_for_report(events_jsonl_path),
         },
         "formatting_diagnostics_paths": [_path_for_report(Path(path)) for path in formatting_diagnostics_paths],
         "formatting_diagnostics_discovery": {
@@ -6062,13 +6115,16 @@ def _run_single_validation(
         "translation_quality_report": None,
         "translation_quality_report_path": None,
         "progress_events_tail": progress_events[-12:],
-        "event_log": event_log[-25:],
+        # Only the tail, kept for the report's existing readers; every event of the run is
+        # in ``output_artifacts.events_jsonl`` (spec 068 FR-002).
+        "event_log": event_log[-REPORT_EVENT_LOG_TAIL:],
+        "event_log_total_count": event_log_total_count,
         "image_log_tail": runtime_snapshot.get("image_log", [])[-25:],
     }
     translation_quality_report, translation_quality_report_path = _load_translation_quality_report(event_log)
     report["translation_quality_report"] = translation_quality_report
     report["translation_quality_report_path"] = translation_quality_report_path
-    report["failure_classification"] = classify_failure(report)
+    report["failure_classification"] = classify_failure(report, event_log=event_log)
     # Load and attach the reader-cleanup evidence BEFORE evaluating the acceptance
     # verdict so the `reader_cleanup_stage_completed` check sees the real cleanup
     # `stage_status` (a failed cleanup must not pass as an empty status). See spec 041
@@ -6294,6 +6350,8 @@ def _run_single_validation(
         f"tts_text_path={report['output_artifacts']['tts_text_path']}",
         f"latest_manifest_json={report['output_artifacts']['latest_manifest_json']}",
         f"app_log={report['output_artifacts']['app_log']}",
+        f"events_jsonl={report['output_artifacts']['events_jsonl']}",
+        f"event_log_total_count={report['event_log_total_count']}",
         f"python_executable={report['run']['environment']['python_executable']}",
         f"python_version={report['run']['environment']['python_version']}",
         f"pythonpath={report['run']['environment']['pythonpath']}",

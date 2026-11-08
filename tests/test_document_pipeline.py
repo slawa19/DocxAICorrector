@@ -7648,6 +7648,35 @@ def test_reader_cleanup_lineage_rebuild_harness_accepts_runtime_lineage_artifact
     assert attempt["artifact_shape"]["rebuilt_image_placeholder_count"] == 1
 
 
+def test_reader_cleanup_lineage_rebuild_harness_reads_the_full_event_list_from_the_sidecar(tmp_path):
+    """Spec 068 FR-002: the report's ``event_log`` is a 25-event tail; the harness reads
+    ``output_artifacts.events_jsonl`` and falls back to the tail only without the file."""
+    import importlib.util
+
+    project_root = Path(__file__).resolve().parents[1]
+    module_spec = importlib.util.spec_from_file_location(
+        "reader_cleanup_lineage_rebuild_harness",
+        project_root / "scripts/run-reader-cleanup-lineage-rebuild-harness.py",
+    )
+    assert module_spec is not None and module_spec.loader is not None
+    harness = importlib.util.module_from_spec(module_spec)
+    module_spec.loader.exec_module(harness)
+
+    early_event = {"event_id": "reader_cleanup_applied", "context": {"accepted_operation_count": 3}}
+    tail = [{"event_id": "block_completed", "context": {"block_index": index}} for index in range(25)]
+    sidecar = tmp_path / "events.jsonl"
+    sidecar.write_text(
+        "".join(json.dumps(event, ensure_ascii=False) + "\n" for event in [early_event, *tail]),
+        encoding="utf-8",
+    )
+
+    with_sidecar = {"event_log": tail, "output_artifacts": {"events_jsonl": str(sidecar)}}
+    assert harness._event_log_from_report(with_sidecar) == [early_event, *tail]
+    missing_sidecar = {"event_log": tail, "output_artifacts": {"events_jsonl": str(tmp_path / "gone.jsonl")}}
+    assert harness._event_log_from_report(missing_sidecar) == tail
+    assert harness._event_log_from_report({"event_log": tail}) == tail
+
+
 def test_run_document_processing_writes_marker_generation_diagnostics_artifact_on_marker_validation_failure(tmp_path, monkeypatch):
     runtime = _build_runtime_capture()
     diagnostics_dir = tmp_path / "formatting_diagnostics"
