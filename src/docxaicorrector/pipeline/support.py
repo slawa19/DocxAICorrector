@@ -12,7 +12,7 @@ from docxaicorrector.generation.formatting_diagnostics_retention import (
 def resolve_prompt_document_context(context: Any) -> str:
     """The document context the run's system prompt renders in its own section.
 
-    Only ``translate`` carries it: the outline, the style instructions and the glossaries
+    Only ``translate`` carries it: the metadata and the outline of the book
     (the run glossary of spec 063 is appended to it by the glossary phase) exist to keep a
     translation consistent across blocks. Spec 064 FR-001: this string used to be handed to
     the loader as ``source_text`` and never rendered.

@@ -86,7 +86,7 @@ _LANGUAGE_SAMPLE_CHARS = 2000
 _MAX_GLOSSARY_CALLS = 5
 # The run glossary's default budget: the rule-included terms (56–89 per corpus book) plus the
 # model's own choices, names first among them. Measured on Money 2026-11-07: 72 rule-included
-# entries render in 2 250 characters. The profile slot keeps DEFAULT_GLOSSARY_PROMPT_MAX_CHARS.
+# entries render in 2 250 characters.
 RUN_GLOSSARY_PROMPT_MAX_CHARS = 4000
 _UNSAFE_STEM_CHARS_RE = re.compile(r"[^A-Za-z0-9_.-]+")
 

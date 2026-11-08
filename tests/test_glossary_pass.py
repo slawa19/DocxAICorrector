@@ -16,8 +16,6 @@ from typing import Any, cast
 import pytest
 
 from docxaicorrector.document.segments import (
-    DEFAULT_GLOSSARY_PROMPT_MAX_CHARS,
-    DocumentContextProfile,
     GlossaryTerm,
     render_glossary_prompt_section,
 )
@@ -57,6 +55,7 @@ def test_render_line_shapes_name_and_note_and_keeps_the_old_prefix():
             GlossaryTerm(source_term="marrow", target_term="ядро", note="в значении  ядра системы"),
         ),
         header="H:",
+        max_chars=100_000,
     )
 
     assert section.splitlines() == [
@@ -81,18 +80,13 @@ def test_render_cuts_by_character_budget_and_says_so():
 def test_render_with_zero_budget_or_no_usable_entries_is_empty():
     terms = (GlossaryTerm(source_term="term", target_term="термин"),)
 
-    assert render_glossary_prompt_section(terms, max_chars=0) == ""
-    assert render_glossary_prompt_section((GlossaryTerm(source_term="term", target_term=""),)) == ""
-
-
-def test_profile_slot_is_capped_by_characters_not_by_eight_entries():
-    terms = tuple(GlossaryTerm(source_term=f"t{index}", target_term=f"т{index}") for index in range(10))
-    prompt = DocumentContextProfile(glossary_terms=terms).to_prompt_text()
-
-    for index in range(10):
-        assert f"- t{index} -> т{index}" in prompt
-    assert "- ..." not in prompt
-    assert DEFAULT_GLOSSARY_PROMPT_MAX_CHARS == 3000
+    assert render_glossary_prompt_section(terms, header="H:", max_chars=0) == ""
+    assert (
+        render_glossary_prompt_section(
+            (GlossaryTerm(source_term="term", target_term=""),), header="H:", max_chars=100_000
+        )
+        == ""
+    )
 
 
 
