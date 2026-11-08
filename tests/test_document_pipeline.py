@@ -8868,10 +8868,9 @@ def test_translate_run_builds_the_glossary_once_and_every_block_prompt_carries_i
     assert context["status"] == "built"
     assert context["term_count"] == 3
     assert context["rendered_term_count"] == 3
-    # Spec 065 FR-001: what reached the section, in section order, and what the budget cut.
-    assert len(context["rendered_terms"]) == 3
-    assert set(context["rendered_terms"]) == {"quillet bond", "Zorvane Pettish", "Kelbrook"}
-    assert context["cut_terms"] == [] and context["cut_count"] == 0
+    # Spec 065 FR-001: counts in the log; the lists of terms only in the artifact (LOGGING §1.5).
+    assert "rendered_terms" not in context and "cut_terms" not in context
+    assert context["cut_count"] == 0
     assert context["unrendered_required"] == [] and context["unrendered_required_count"] == 0
     # Spec 064 FR-003: the run's cached system prompt, measured from the same arguments the
     # block phase renders it from, so its length is the length of what each block call got.

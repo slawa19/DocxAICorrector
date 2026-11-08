@@ -468,9 +468,8 @@ def _run_glossary_phase(
             unrendered_terms=record["unrendered_terms"],
             unrendered_required_count=len(cast(list[object], record["unrendered_required"])),
             unrendered_required=record["unrendered_required"],
-            rendered_terms=record["rendered_terms"],
+            # The lists of rendered and cut terms stay in the artifact (LOGGING §1.5).
             cut_count=len(cast(list[object], record["cut_terms"])),
-            cut_terms=record["cut_terms"],
             name_entry_count=len(cast(list[object], record.get("name_entries") or [])),
             collisions_found=record["collisions_found"],
             collisions_resolved=record["collisions_resolved"],
