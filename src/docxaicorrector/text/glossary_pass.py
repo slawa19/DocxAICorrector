@@ -636,6 +636,10 @@ def extract_glossary_candidates(
         return -(-bin_index * unit_count // _SPREAD_BINS)
 
     families: dict[str, list[_Draft]] = defaultdict(list)
+    capitalised_by_lower: Counter[str] = Counter()
+    for capitalised_key, capitalised_times in capitalised_noninitial.items():
+        if len(capitalised_key) == 1:
+            capitalised_by_lower[capitalised_key[0].lower()] += capitalised_times
     for key, draft in drafts.items():
         hits = hits_exact.get(key, []) if draft.proper else hits_folded_case.get(key, [])
         units_hit = set(hits)
@@ -686,16 +690,20 @@ def extract_glossary_candidates(
         else:
             draft.family = FAMILY_COLLOCATION
         if len(key) == 1:
-            # The name family's own case test, on the body: capitalised in mid-sentence more
-            # often than lowercase. Headings are left out -- title case is not the word's case.
+            # The name family's own case test, on the body: capitalised in mid-sentence at least
+            # as often as lowercase. Headings are left out -- title case is not the word's case.
+            # Spec 065 (Codex acceptance review, P1): EVERY capitalised spelling counts, not only
+            # "Word" and "WORD" -- the CamelCase name "InspirePay" counted as never capitalised --
+            # and a TIE is a capitalised form: a word the document capitalises mid-sentence as
+            # often as it writes it lowercase is not "a word the document writes in lowercase"
+            # ("Regeltante", 1 : 1, was dropped as one by the FR-002 count rule). A spelling
+            # with a capital after its first letter is a name's form on its own.
             lower = key[0].lower()
-            capitalised_count = (
-                capitalised_noninitial[(lower[:1].upper() + lower[1:],)] + capitalised_noninitial[(lower.upper(),)]
-                if lower != lower.upper()
-                else 0
-            )
+            capitalised_count = capitalised_by_lower[lower] if lower != lower.upper() else 0
             lowercase_count = sum(1 for unit in hits_exact.get((lower,), []) if unit in body_index_set)
-            draft.capitalised_form = capitalised_count > lowercase_count
+            draft.capitalised_form = _has_inner_capital(draft.surface) or (
+                capitalised_count > 0 and capitalised_count >= lowercase_count
+            )
         if draft.family == FAMILY_COLLOCATION:
             draft.score = collocation_scores.get(key, 0.0)
         elif draft.family == FAMILY_HEADING:
@@ -1043,6 +1051,15 @@ def _is_lowercase_single_marked(draft: _Draft) -> bool:
         and not draft.capitalised_form
         and not _is_defined(draft)
     )
+
+
+def _has_inner_capital(surface: str) -> bool:
+    """A word of ``surface`` has an upper-case letter after its first one ("InspirePay", "eBay").
+
+    Spec 065: such a spelling is a name's form whatever the document's case counts say.
+    """
+
+    return any(char.isupper() for word in _WORD_RE.findall(surface) for char in word[1:])
 
 
 def _is_single_lowercase_word(draft: _Draft) -> bool:
