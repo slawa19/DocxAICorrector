@@ -32,7 +32,7 @@ def resolve_paragraph_boundary_ai_review_settings(
     if not enabled:
         mode = "off"
     effective_enabled = enabled and mode != "off"
-    model = get_model_role_value(app_config, "structure_recognition") if effective_enabled else ""
+    model = get_model_role_value(app_config, "boundary_review") if effective_enabled else ""
     return (
         effective_enabled,
         mode,

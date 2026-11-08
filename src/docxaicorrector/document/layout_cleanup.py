@@ -82,8 +82,6 @@ def clean_paragraph_layout_artifacts(
     min_repeat_count: int = DEFAULT_MIN_REPEAT_COUNT,
     max_repeated_text_chars: int = DEFAULT_MAX_REPEATED_TEXT_CHARS,
     cleanup_mode: str = "flag",
-    structure_recovery_enabled: bool = False,
-    structure_recovery_mode: str = "legacy",
     is_scan_origin: bool = False,
 ) -> tuple[list[ParagraphUnit], LayoutArtifactCleanupReport]:
     resolved_mode = str(cleanup_mode or "flag").strip().lower() or "flag"
@@ -100,12 +98,12 @@ def clean_paragraph_layout_artifacts(
         return paragraphs, report
 
     try:
-        signal_only = resolved_mode != "remove"
+        flag_only = resolved_mode != "remove"
         return _clean_paragraph_layout_artifacts(
             paragraphs,
             min_repeat_count=max(2, int(min_repeat_count or DEFAULT_MIN_REPEAT_COUNT)),
             max_repeated_text_chars=max(1, int(max_repeated_text_chars or DEFAULT_MAX_REPEATED_TEXT_CHARS)),
-            signal_only=signal_only,
+            flag_only=flag_only,
             is_scan_origin=bool(is_scan_origin),
         )
     except (AttributeError, TypeError, ValueError) as exc:
@@ -135,7 +133,7 @@ def _clean_paragraph_layout_artifacts(
     *,
     min_repeat_count: int,
     max_repeated_text_chars: int,
-    signal_only: bool,
+    flag_only: bool,
     is_scan_origin: bool = False,
 ) -> tuple[list[ParagraphUnit], LayoutArtifactCleanupReport]:
     normalized_by_index: dict[int, str] = {}
@@ -214,31 +212,31 @@ def _clean_paragraph_layout_artifacts(
             action = "keep"
             reason = "protected_role_keep"
         elif not str(paragraph.text or "").strip():
-            action = "flag" if signal_only else "remove"
+            action = "flag" if flag_only else "remove"
             reason = "empty_or_whitespace"
-            if signal_only:
+            if flag_only:
                 flagged_empty += 1
             else:
                 removed_empty += 1
         elif _is_blank_page_marker_artifact(paragraph):
-            action = "flag" if signal_only else "remove"
+            action = "flag" if flag_only else "remove"
             reason = "blank_page_marker"
-            if signal_only:
+            if flag_only:
                 flagged_repeated += 1
             else:
                 removed_repeated += 1
         elif _is_extraction_artifact(paragraph):
-            action = "flag" if signal_only else "remove"
+            action = "flag" if flag_only else "remove"
             reason = "extraction_artifact"
-            if signal_only:
+            if flag_only:
                 flagged_repeated += 1
             else:
                 removed_repeated += 1
         elif _is_page_number_artifact(paragraph):
-            action = "flag" if signal_only else "remove"
+            action = "flag" if flag_only else "remove"
             reason = "page_number_pattern"
             paragraph.is_likely_page_number = True
-            if signal_only:
+            if flag_only:
                 flagged_page_numbers += 1
             else:
                 removed_page_numbers += 1
@@ -250,10 +248,10 @@ def _clean_paragraph_layout_artifacts(
                 title_fingerprints=title_fingerprints,
             )
             if repeated_reason is not None:
-                action = "flag" if signal_only else "remove"
+                action = "flag" if flag_only else "remove"
                 reason = repeated_reason
                 paragraph.is_repeated_across_pages = True
-                if signal_only:
+                if flag_only:
                     flagged_repeated += 1
                 else:
                     removed_repeated += 1
@@ -269,7 +267,7 @@ def _clean_paragraph_layout_artifacts(
                 repeat_count=repeat_count,
             )
         )
-        if action == "keep" or (signal_only and action == "flag"):
+        if action == "keep" or (flag_only and action == "flag"):
             cleaned.append(paragraph)
 
     report = LayoutArtifactCleanupReport(
@@ -281,7 +279,7 @@ def _clean_paragraph_layout_artifacts(
         removed_empty_or_whitespace_count=removed_empty,
         decisions=decisions,
         cleanup_applied=True,
-        cleanup_mode="flag" if signal_only else "remove",
+        cleanup_mode="flag" if flag_only else "remove",
         flagged_page_number_count=flagged_page_numbers,
         flagged_repeated_artifact_count=flagged_repeated,
         flagged_empty_or_whitespace_count=flagged_empty,

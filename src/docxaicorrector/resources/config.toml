@@ -115,9 +115,10 @@ options = [
 # [models.audiobook]
 # default = "gpt-5.4"
 
-# Optional override for the structure-recognition service role.
-# When omitted, structure recognition inherits [models.text].default.
-# [models.structure_recognition]
+# Optional override for the paragraph-boundary AI review role
+# ([paragraph_boundary_ai_review], off by default).
+# When omitted, it inherits [models.text].default.
+# [models.boundary_review]
 # default = "openrouter:google/gemini-3.1-flash-lite-preview"
 
 # Image roles (spec 062). Two model choices drive the six image roles, each selectable in
@@ -186,14 +187,12 @@ timeout_seconds = 30
 max_tokens_per_candidate = 120
 
 [structure_validation]
-enabled = true
 min_paragraphs_for_auto_gate = 40
 min_explicit_heading_density = 0.003
 max_suspicious_short_body_ratio_without_escalation = 0.05
 max_all_caps_or_centered_body_ratio_without_escalation = 0.03
 toc_like_sequence_min_length = 4
 forbid_heading_only_collapse = true
-save_debug_artifacts = true
 
 [image_output]
 generate_candidate_sizes = ["1536x1024", "1024x1536", "1024x1024"]

@@ -247,7 +247,7 @@ def get_model_registry(
 
     return model_registry_factory_fn(
         text=resolve_text_model_config_runtime_fn(config_like),
-        structure_recognition=resolve_model_role_runtime_fn(config_like, "structure_recognition"),
+        boundary_review=resolve_model_role_runtime_fn(config_like, "boundary_review"),
         image_analysis=resolve_model_role_runtime_fn(config_like, "image_analysis"),
         image_validation=resolve_model_role_runtime_fn(config_like, "image_validation"),
         image_reconstruction=resolve_model_role_runtime_fn(config_like, "image_reconstruction"),
@@ -305,10 +305,6 @@ def resolve_model_role_assignment(
     fallback_value: str,
     coerce_model_name_fn: Any,
     config_path: Any,
-    legacy_env_name: str | None = None,
-    legacy_config_data: dict[str, object] | None = None,
-    legacy_config_label: str | None = None,
-    legacy_value_key: str | None = None,
     fallback_source: str | None = None,
 ) -> tuple[str, str]:
     new_env_value = os.getenv(new_env_name, "").strip()
@@ -319,17 +315,6 @@ def resolve_model_role_assignment(
             new_role_config.get("default"),
             source_name=f"{config_path}: {config_path_suffix}.default",
         ), f"toml:canonical:{config_path_suffix}.default"
-    if legacy_env_name:
-        legacy_env_value = os.getenv(legacy_env_name, "").strip()
-        if legacy_env_value:
-            return legacy_env_value, f"env:legacy:{legacy_env_name}"
-    if legacy_config_data is not None and legacy_value_key is not None:
-        if legacy_value_key in legacy_config_data:
-            source_name = legacy_config_label or legacy_value_key
-            return coerce_model_name_fn(
-                legacy_config_data.get(legacy_value_key),
-                source_name=f"{config_path}: {source_name}",
-            ), f"toml:legacy:{source_name}"
     return fallback_value, fallback_source or f"default:migration:{role_name}"
 
 
@@ -368,7 +353,7 @@ def log_resolved_model_registry(
             "text.options": list(models.text.options),
             "text.canonical_default": _canonicalize_selector(models.text.default),
             "text.canonical_options": [_canonicalize_selector(item) for item in models.text.options],
-            "structure_recognition": models.structure_recognition,
+            "boundary_review": models.boundary_review,
             "image_analysis": models.image_analysis,
             "image_validation": models.image_validation,
             "image_reconstruction": models.image_reconstruction,
@@ -426,34 +411,6 @@ def emit_legacy_model_config_warnings(
             replacement=replacement_env_name,
         )
 
-    structure_recognition_config = config_data.get("structure_recognition")
-    if isinstance(structure_recognition_config, Mapping) and "model" in structure_recognition_config:
-        dedupe_key = "legacy-key:structure_recognition.model"
-        if dedupe_key not in emitted_model_registry_log_keys:
-            emitted_model_registry_log_keys.add(dedupe_key)
-            log_event_fn(
-                logging.WARNING,
-                "legacy_model_config_key_detected",
-                "Обнаружен deprecated legacy model key в config.toml; используйте секцию [models.*].",
-                legacy_key="structure_recognition.model",
-                replacement="models.structure_recognition.default",
-            )
-
-    for role_name, source_name in model_sources.items():
-        if ":legacy:" not in source_name:
-            continue
-        dedupe_key = f"legacy-source:{role_name}:{source_name}"
-        if dedupe_key in emitted_model_registry_log_keys:
-            continue
-        emitted_model_registry_log_keys.add(dedupe_key)
-        warning_message = "Использован deprecated legacy model source; перейдите на canonical registry keys."
-        log_event_fn(
-            logging.WARNING,
-            "legacy_model_config_source_used",
-            warning_message,
-            role_name=role_name,
-            source_name=source_name,
-        )
 
 
 def resolve_model_registry_settings(
@@ -472,7 +429,7 @@ def resolve_model_registry_settings(
 ) -> dict[str, Any]:
     models_config = parse_optional_config_section_fn(config_data, "models")
     models_text_config = parse_optional_config_section_fn(models_config, "text", parent_name="models")
-    models_structure_recognition_config = parse_optional_config_section_fn(models_config, "structure_recognition", parent_name="models")
+    models_boundary_review_config = parse_optional_config_section_fn(models_config, "boundary_review", parent_name="models")
 
     model_options, text_options_source = resolve_text_model_options_fn(
         models_text_config=models_text_config,
@@ -482,17 +439,14 @@ def resolve_model_registry_settings(
     )
     text_model_config = build_text_model_config_fn(default_model, model_options)
 
-    structure_recognition_config = parse_optional_config_section_fn(config_data, "structure_recognition")
-    structure_recognition_model, structure_recognition_model_source = resolve_model_role_assignment_fn(
-        role_name="structure_recognition",
-        config_path_suffix="models.structure_recognition",
-        new_env_name="DOCX_AI_MODELS_STRUCTURE_RECOGNITION_DEFAULT",
-        new_role_config=models_structure_recognition_config,
+    # Spec 066 C-9: the model role of paragraph_boundary_ai_review; it inherits
+    # [models.text].default when not set.
+    boundary_review_model, boundary_review_model_source = resolve_model_role_assignment_fn(
+        role_name="boundary_review",
+        config_path_suffix="models.boundary_review",
+        new_env_name="DOCX_AI_MODELS_BOUNDARY_REVIEW_DEFAULT",
+        new_role_config=models_boundary_review_config,
         fallback_value=default_model,
-        legacy_env_name="DOCX_AI_STRUCTURE_RECOGNITION_MODEL",
-        legacy_config_data=structure_recognition_config,
-        legacy_config_label="structure_recognition.model",
-        legacy_value_key="model",
         fallback_source="default:derived:text.default",
     )
     # Spec 062: each image role resolves per-role override > its group's model. The
@@ -528,13 +482,13 @@ def resolve_model_registry_settings(
 
     models = model_registry_factory_fn(
         text=text_model_config,
-        structure_recognition=structure_recognition_model,
+        boundary_review=boundary_review_model,
         **image_role_models,
     )
     model_sources = {
         "text.default": text_default_source,
         "text.options": text_options_source,
-        "structure_recognition": structure_recognition_model_source,
+        "boundary_review": boundary_review_model_source,
         **image_role_sources,
     }
     emit_legacy_model_config_warnings_fn(config_data, model_sources)

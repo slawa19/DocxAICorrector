@@ -97,7 +97,7 @@ _MIGRATION_DEFAULT_TEXT_MODEL_OPTIONS = (
     "gpt-5-mini",
 )
 _MIGRATION_DEFAULT_MODEL_ROLES = {
-    "structure_recognition": _MIGRATION_DEFAULT_TEXT_MODEL,
+    "boundary_review": _MIGRATION_DEFAULT_TEXT_MODEL,
     "image_analysis": "gpt-5.4-mini",
     "image_validation": "gpt-5.4-mini",
     "image_reconstruction": "gpt-5.4-mini",
@@ -126,6 +126,8 @@ _LEGACY_TOML_MODEL_KEY_REPLACEMENTS = {
     "model_options": "models.text.options",
     "validation_model": "models.image_validation.default",
     "reconstruction_model": "models.image_reconstruction.default",
+    # Spec 066 C-9: the role was renamed to boundary_review; the old section is not read.
+    "structure_recognition": "models.boundary_review.default",
 }
 # Removed legacy ENV alias -> canonical ENV variable that is actually read now.
 _LEGACY_ENV_MODEL_KEY_REPLACEMENTS = {
@@ -133,6 +135,9 @@ _LEGACY_ENV_MODEL_KEY_REPLACEMENTS = {
     "DOCX_AI_MODEL_OPTIONS": "DOCX_AI_MODELS_TEXT_OPTIONS",
     "DOCX_AI_VALIDATION_MODEL": "DOCX_AI_MODELS_IMAGE_VALIDATION_DEFAULT",
     "DOCX_AI_RECONSTRUCTION_MODEL": "DOCX_AI_MODELS_IMAGE_RECONSTRUCTION_DEFAULT",
+    # Spec 066 C-9: the role was renamed to boundary_review; these are not read.
+    "DOCX_AI_STRUCTURE_RECOGNITION_MODEL": "DOCX_AI_MODELS_BOUNDARY_REVIEW_DEFAULT",
+    "DOCX_AI_MODELS_STRUCTURE_RECOGNITION_DEFAULT": "DOCX_AI_MODELS_BOUNDARY_REVIEW_DEFAULT",
 }
 _EMITTED_MODEL_REGISTRY_LOG_KEYS: set[str] = set()
 _APP_CONFIG_CACHE_FINGERPRINT: tuple[object, ...] | None = None
@@ -155,7 +160,7 @@ class TextModelConfig:
 @dataclass(frozen=True)
 class ModelRegistry:
     text: TextModelConfig
-    structure_recognition: str
+    boundary_review: str
     image_analysis: str
     image_validation: str
     image_reconstruction: str
@@ -283,15 +288,12 @@ class AppConfig(Mapping[str, Any]):
     relation_normalization_profile: str
     relation_normalization_enabled_relation_kinds: tuple[str, ...]
     relation_normalization_save_debug_artifacts: bool
-    structure_validation_enabled: bool
     structure_validation_min_paragraphs_for_auto_gate: int
     structure_validation_min_explicit_heading_density: float
     structure_validation_max_suspicious_short_body_ratio_without_escalation: float
     structure_validation_max_all_caps_or_centered_body_ratio_without_escalation: float
     structure_validation_toc_like_sequence_min_length: int
     structure_validation_forbid_heading_only_collapse: bool
-    structure_validation_save_debug_artifacts: bool
-    structure_validation_block_on_high_risk_noop: bool
     output_body_font: str | None
     output_heading_font: str | None
     image_mode_default: str
@@ -1006,10 +1008,6 @@ def _resolve_model_role_assignment(
     new_env_name: str,
     new_role_config: dict[str, object],
     fallback_value: str,
-    legacy_env_name: str | None = None,
-    legacy_config_data: dict[str, object] | None = None,
-    legacy_config_label: str | None = None,
-    legacy_value_key: str | None = None,
     fallback_source: str | None = None,
 ) -> tuple[str, str]:
     return _resolve_model_role_assignment_impl(
@@ -1020,10 +1018,6 @@ def _resolve_model_role_assignment(
         fallback_value=fallback_value,
         coerce_model_name_fn=_coerce_model_name,
         config_path=CONFIG_PATH,
-        legacy_env_name=legacy_env_name,
-        legacy_config_data=legacy_config_data,
-        legacy_config_label=legacy_config_label,
-        legacy_value_key=legacy_value_key,
         fallback_source=fallback_source,
     )
 
@@ -1453,15 +1447,15 @@ def _validate_provider_model_contracts(
             )
 
     resolve_model_selector(
-        models.structure_recognition,
+        models.boundary_review,
         required_capability="responses_text",
         config_like=provider_registry,
-        source_name="models.structure_recognition.default",
+        source_name="models.boundary_review.default",
     )
 
     if paragraph_boundary_settings["paragraph_boundary_ai_review_enabled"]:
         resolved_selector = resolve_model_selector(
-            models.structure_recognition,
+            models.boundary_review,
             required_capability="responses_text",
             config_like=provider_registry,
             source_name="paragraph_boundary_ai_review",

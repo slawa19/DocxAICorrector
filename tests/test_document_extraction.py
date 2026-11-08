@@ -256,101 +256,6 @@ def test_extraction_cleanup_removes_textbox_artifacts_and_reassigns_identity(tmp
     assert [paragraph.paragraph_id for paragraph in paragraphs] == [f"p{index:04d}" for index in range(len(paragraphs))]
 
 
-def test_extraction_passes_legacy_structure_recovery_mode_to_helpers(tmp_path, monkeypatch):
-    document_obj = Document()
-    document_obj.add_paragraph("Title")
-    source_path = tmp_path / "legacy-structure-recovery.docx"
-    document_obj.save(source_path)
-
-    monkeypatch.setattr(document_extraction, "_resolve_paragraph_boundary_normalization_settings", lambda *a, **k: ("off", False))
-    monkeypatch.setattr(document_extraction, "_resolve_layout_artifact_cleanup_settings", lambda app_config=None: (True, 3, 80, False, "legacy"))
-    monkeypatch.setattr(document_extraction, "_resolve_relation_normalization_settings", lambda *a, **k: (False, "phase2_default", (), False))
-    monkeypatch.setattr(document_extraction, "_resolve_paragraph_boundary_ai_review_settings", lambda *a, **k: (False, "off", 0, 0, 0, ""))
-    monkeypatch.setattr(document_extraction, "build_paragraph_relations", lambda paragraphs, enabled_relation_kinds=(): ([], None))
-    monkeypatch.setattr(document_extraction, "apply_relation_side_effects", lambda paragraphs, relations: None)
-    def fake_reclassify_adjacent_captions(
-        paragraphs,
-        *,
-        structure_recovery_enabled=False,
-        structure_recovery_mode="legacy",
-    ):
-        captured["caption"] = (structure_recovery_enabled, structure_recovery_mode)
-
-    monkeypatch.setattr(document_extraction, "reclassify_adjacent_captions", fake_reclassify_adjacent_captions)
-
-    captured = {}
-
-    def fake_promote(paragraphs, *, structure_recovery_enabled=False, structure_recovery_mode="legacy"):
-        captured["promote"] = (structure_recovery_enabled, structure_recovery_mode)
-
-    def fake_normalize(paragraphs, *, structure_recovery_enabled=False, structure_recovery_mode="legacy"):
-        captured["normalize"] = (structure_recovery_enabled, structure_recovery_mode)
-
-    def fake_cleanup(
-        paragraphs,
-        *,
-        enabled=True,
-        min_repeat_count=3,
-        max_repeated_text_chars=80,
-        cleanup_mode="legacy",
-        structure_recovery_enabled=False,
-        structure_recovery_mode="legacy",
-        is_scan_origin=False,
-    ):
-        captured["cleanup"] = (structure_recovery_enabled, structure_recovery_mode)
-        captured["cleanup_is_scan_origin"] = is_scan_origin
-        return paragraphs, document_extraction.LayoutArtifactCleanupReport(
-            original_paragraph_count=len(paragraphs),
-            cleaned_paragraph_count=len(paragraphs),
-            removed_paragraph_count=0,
-            removed_page_number_count=0,
-            removed_repeated_artifact_count=0,
-            removed_empty_or_whitespace_count=0,
-            cleanup_applied=True,
-        )
-
-    def fake_repair(
-        paragraphs,
-        *,
-        app_config=None,
-        structure_recovery_enabled=False,
-        structure_recovery_mode="legacy",
-    ):
-        captured["repair"] = (structure_recovery_enabled, structure_recovery_mode)
-        return paragraphs, document_extraction.StructureRepairReport(
-            applied=False,
-            repaired_bullet_items=0,
-            repaired_numbered_items=0,
-            bounded_toc_regions=0,
-            toc_body_boundary_repairs=0,
-            heading_candidates_from_toc=0,
-            remaining_isolated_marker_count=0,
-        )
-
-    monkeypatch.setattr(document_extraction, "promote_short_standalone_headings", fake_promote)
-    monkeypatch.setattr(document_extraction, "normalize_front_matter_display_title", fake_normalize)
-    monkeypatch.setattr(document_extraction, "clean_paragraph_layout_artifacts", fake_cleanup)
-    monkeypatch.setattr(document_extraction, "repair_pdf_derived_structure", fake_repair)
-
-    with source_path.open("rb") as source_file:
-        extract_document_content_with_normalization_reports(
-            source_file,
-            app_config={
-                "structure_recovery_enabled": False,
-                "structure_recovery_mode": "ai_first",
-            },
-        )
-
-    assert captured == {
-        "promote": (False, "legacy"),
-        "normalize": (False, "legacy"),
-        "cleanup": (False, "legacy"),
-        "cleanup_is_scan_origin": False,
-        "repair": (False, "legacy"),
-        "caption": (False, "legacy"),
-    }
-
-
 def test_extraction_forwards_the_documents_scan_provenance_to_layout_cleanup(monkeypatch):
     """The page-furniture rule only applies to scan-origin sources (Codex round 3, P1-B).
 
@@ -539,44 +444,6 @@ def test_extract_document_content_from_docx_deduplicates_adjacent_textbox_paragr
     assert [paragraph.text for paragraph in paragraphs] == ["Duplicated line", "Next line"]
 
 
-def test_extract_document_content_from_docx_splits_toc_like_inline_break_cluster_and_marks_toc_roles():
-    doc = Document()
-    doc.add_paragraph("Contents")
-    paragraph = doc.add_paragraph()
-    paragraph.add_run("Common Critiques of Value Extraction")
-    paragraph.add_run().add_break()
-    paragraph.add_run("What is Value?")
-    paragraph.add_run().add_break()
-    paragraph.add_run("Meet the Production Boundary")
-    buffer = BytesIO()
-    doc.save(buffer)
-    buffer.seek(0)
-
-    paragraphs, _, _, _, _, _, _ = document.extract_document_content_with_normalization_reports(
-        buffer,
-        app_config={"structure_recovery_enabled": True, "structure_recovery_mode": "ai_first"},
-    )
-
-    assert [paragraph.text for paragraph in paragraphs] == [
-        "Contents",
-        "Common Critiques of Value Extraction",
-        "What is Value?",
-        "Meet the Production Boundary",
-    ]
-    assert [paragraph.structural_role for paragraph in paragraphs] == [
-        "body",
-        "body",
-        "body",
-        "body",
-    ]
-    assert [paragraph.heuristic_structural_role_hint for paragraph in paragraphs] == [
-        "toc_header",
-        "toc_entry",
-        "toc_entry",
-        "toc_entry",
-    ]
-
-
 def test_extract_document_content_from_docx_preserves_source_index_as_provenance_when_inline_break_cluster_splits():
     doc = Document()
     doc.add_paragraph("Contents")
@@ -595,7 +462,6 @@ def test_extract_document_content_from_docx_preserves_source_index_as_provenance
     assert [paragraph.source_index for paragraph in paragraphs] == [0, 1, 1, 1]
     assert [paragraph.logical_index for paragraph in paragraphs] == [0, 1, 2, 3]
     assert [paragraph.paragraph_id for paragraph in paragraphs] == ["p0000", "p0001", "p0002", "p0003"]
-    assert [paragraph.toc_pattern_hint for paragraph in paragraphs] == [True, True, True, True]
 
 
 def test_extract_document_content_with_normalization_reports_populates_page_number_stage0_signals(tmp_path, monkeypatch):
@@ -615,7 +481,6 @@ def test_extract_document_content_with_normalization_reports_populates_page_numb
     assert cleanup_report.flagged_page_number_count == 1
     assert page_number_paragraph.is_likely_page_number is True
     assert page_number_paragraph.page_number == 12
-    assert page_number_paragraph.position_fraction == 1.0
 
 
 def test_extract_document_content_from_docx_does_not_invent_a_break_between_run_clusters():
@@ -642,7 +507,6 @@ def test_extract_document_content_from_docx_does_not_invent_a_break_between_run_
 
     paragraphs, _, _, _, _, _, _ = document.extract_document_content_with_normalization_reports(
         buffer,
-        app_config={"structure_recovery_enabled": True, "structure_recovery_mode": "ai_first"},
     )
 
     assert [paragraph.text for paragraph in paragraphs] == [
@@ -676,7 +540,6 @@ def test_extract_document_content_from_docx_does_not_invent_a_break_for_long_two
 
     paragraphs, _, _, _, _, _, _ = document.extract_document_content_with_normalization_reports(
         buffer,
-        app_config={"structure_recovery_enabled": True, "structure_recovery_mode": "ai_first"},
     )
 
     assert [paragraph.text for paragraph in paragraphs] == [
@@ -707,7 +570,6 @@ def test_extract_document_content_from_docx_still_splits_a_real_inline_break_int
 
     paragraphs, _, _, _, _, _, _ = document.extract_document_content_with_normalization_reports(
         buffer,
-        app_config={"structure_recovery_enabled": True, "structure_recovery_mode": "ai_first"},
     )
 
     assert [paragraph.text for paragraph in paragraphs] == [
@@ -738,7 +600,6 @@ def test_extract_document_content_with_normalization_reports_legacy_projects_toc
     with source_path.open("rb") as source_file:
         paragraphs, _, _, _, _, _, _ = extract_document_content_with_normalization_reports(
             source_file,
-            app_config={"structure_recovery_enabled": True, "structure_recovery_mode": "legacy"},
         )
 
     assert [paragraph.structural_role for paragraph in paragraphs] == [
@@ -1309,31 +1170,6 @@ def test_extract_document_content_from_docx_marks_caption_after_image(tmp_path):
     assert paragraphs[1].attached_to_asset_id == "img_001"
 
 
-def test_extract_document_content_from_docx_ai_first_hints_caption_after_image_without_mutating_role(tmp_path):
-    image_path = tmp_path / "docx_caption_image_ai_first.png"
-    image_path.write_bytes(PNG_BYTES)
-
-    doc = Document()
-    doc.add_paragraph().add_run().add_picture(str(image_path))
-    doc.add_paragraph("Рис. 1. Подпись к изображению")
-    buffer = BytesIO()
-    doc.save(buffer)
-    buffer.seek(0)
-
-    paragraphs, _, _, _, _, _, _ = document.extract_document_content_with_normalization_reports(
-        buffer,
-        app_config={"structure_recovery_enabled": True, "structure_recovery_mode": "ai_first"},
-    )
-
-    assert [paragraph.role for paragraph in paragraphs] == ["image", "body"]
-    assert [paragraph.structural_role for paragraph in paragraphs] == ["image", "body"]
-    assert paragraphs[0].asset_id == "img_001"
-    assert paragraphs[1].attached_to_asset_id == "img_001"
-    assert paragraphs[1].heuristic_role_hint == "caption"
-    assert paragraphs[1].heuristic_heading_level_hint is None
-    assert paragraphs[1].role_confidence == "heuristic"
-
-
 def test_extract_document_content_from_docx_reads_caption_style_without_a_caption_prefix():
     # Spec 055 follow-up: the PDF bridge now carries the importer's `caption` role across as
     # the built-in `Caption` style, so extraction can read a real signal instead of matching
@@ -1721,97 +1557,6 @@ def test_extract_document_content_from_docx_promotes_front_matter_display_title_
     assert paragraphs[2].is_italic is True
 
 
-def test_extract_document_content_from_docx_ai_first_projects_heuristic_heading_to_advisory_hint():
-    doc = Document()
-    base_style = doc.styles.add_style("Centered Heading Base AI First", WD_STYLE_TYPE.PARAGRAPH)
-    _set_style_alignment(base_style, "center")
-    derived_style = cast(Any, doc.styles.add_style("Centered Heading Derived AI First", WD_STYLE_TYPE.PARAGRAPH))
-    derived_style.base_style = base_style
-    paragraph = doc.add_paragraph("Глава 2 Методика", style="Centered Heading Derived AI First")
-    paragraph.runs[0].bold = True
-    buffer = BytesIO()
-    doc.save(buffer)
-    buffer.seek(0)
-
-    paragraphs, _, _, _, _, _, _ = document.extract_document_content_with_normalization_reports(
-        buffer,
-        app_config={"structure_recovery_enabled": True, "structure_recovery_mode": "ai_first"},
-    )
-
-    assert len(paragraphs) == 1
-    assert paragraphs[0].role == "body"
-    assert paragraphs[0].structural_role == "body"
-    assert paragraphs[0].heading_level is None
-    assert paragraphs[0].heading_source is None
-    assert paragraphs[0].heuristic_role_hint == "heading"
-    assert paragraphs[0].heuristic_heading_level_hint == 1
-
-
-def test_extract_document_content_from_docx_ai_first_keeps_explicit_heading_binding():
-    doc = Document()
-    heading = doc.add_paragraph("Chapter 1 Value", style="Heading 1")
-    heading.runs[0].font.size = Pt(20)
-    body = doc.add_paragraph("This opening paragraph provides ordinary narrative context after the heading.")
-    body.runs[0].font.size = Pt(11)
-    buffer = BytesIO()
-    doc.save(buffer)
-    buffer.seek(0)
-
-    paragraphs, _, _, _, _, _, _ = document.extract_document_content_with_normalization_reports(
-        buffer,
-        app_config={"structure_recovery_enabled": True, "structure_recovery_mode": "ai_first"},
-    )
-
-    assert paragraphs[0].role == "heading"
-    assert paragraphs[0].structural_role == "heading"
-    assert paragraphs[0].heading_level == 1
-    assert paragraphs[0].heading_source == "explicit"
-    assert paragraphs[0].heuristic_role_hint is None
-    assert paragraphs[0].heuristic_heading_level_hint is None
-
-
-def test_normalize_front_matter_display_title_ai_first_sets_hint_without_mutating_role():
-    paragraphs = [
-        ParagraphUnit(text="Mariana Mazzucato", role="body", structural_role="body", font_size_pt=28, is_bold=True),
-        ParagraphUnit(text="T H E VALUE O F E V E RY T H I NG", role="body", structural_role="body", font_size_pt=28, is_bold=True),
-        ParagraphUnit(text="Making and Taking in the Global Economy", role="body", structural_role="body", font_size_pt=18, is_italic=True),
-    ]
-
-    document_extraction.normalize_front_matter_display_title(
-        paragraphs,
-        structure_recovery_enabled=True,
-        structure_recovery_mode="ai_first",
-    )
-
-    assert paragraphs[1].role == "body"
-    assert paragraphs[1].structural_role == "body"
-    assert paragraphs[1].heading_level is None
-    assert paragraphs[1].heading_source is None
-    assert paragraphs[1].heuristic_role_hint == "heading"
-    assert paragraphs[1].heuristic_heading_level_hint == 1
-
-
-def test_normalize_front_matter_display_title_ai_first_does_not_demote_existing_heading_siblings():
-    paragraphs = [
-        ParagraphUnit(text="Mariana Mazzucato", role="heading", structural_role="heading", heading_level=2, heading_source="heuristic", font_size_pt=28, is_bold=True),
-        ParagraphUnit(text="T H E VALUE O F E V E RY T H I NG", role="body", structural_role="body", font_size_pt=28, is_bold=True),
-        ParagraphUnit(text="Making and Taking in the Global Economy", role="body", structural_role="body", font_size_pt=18, is_italic=True),
-    ]
-
-    document_extraction.normalize_front_matter_display_title(
-        paragraphs,
-        structure_recovery_enabled=True,
-        structure_recovery_mode="ai_first",
-    )
-
-    assert paragraphs[0].role == "heading"
-    assert paragraphs[0].structural_role == "heading"
-    assert paragraphs[0].heading_level == 2
-    assert paragraphs[0].heading_source == "heuristic"
-    assert paragraphs[1].heuristic_role_hint == "heading"
-    assert paragraphs[1].heuristic_heading_level_hint == 1
-
-
 def test_extract_document_content_from_docx_keeps_true_structural_h1_when_no_cover_title_exists():
     doc = Document()
     heading = doc.add_paragraph("Chapter 1 Value", style="Heading 1")
@@ -1979,14 +1724,7 @@ def test_extract_document_content_from_docx_promotes_short_larger_subheading_bet
     )
 
 
-@pytest.mark.parametrize(
-    ("structure_recovery_enabled", "structure_recovery_mode"),
-    [(False, "legacy"), (True, "ai_first")],
-)
-def test_extract_document_content_from_docx_does_not_promote_very_short_body_without_source_signal(
-    structure_recovery_enabled,
-    structure_recovery_mode,
-):
+def test_extract_document_content_from_docx_does_not_promote_very_short_body_without_source_signal():
     doc = Document()
 
     doc.add_paragraph(
@@ -2005,10 +1743,6 @@ def test_extract_document_content_from_docx_does_not_promote_very_short_body_wit
 
     paragraphs, _, _, _, _, _, _ = document.extract_document_content_with_normalization_reports(
         buffer,
-        app_config={
-            "structure_recovery_enabled": structure_recovery_enabled,
-            "structure_recovery_mode": structure_recovery_mode,
-        },
     )
 
     assert [paragraph.role for paragraph in paragraphs] == ["body", "body", "body"]
@@ -2029,22 +1763,10 @@ def test_extract_document_content_from_docx_does_not_promote_very_short_body_wit
         "One",
     ],
 )
-@pytest.mark.parametrize(
-    ("structure_recovery_enabled", "structure_recovery_mode"),
-    [(False, "legacy"), (True, "ai_first")],
-)
-def test_promote_short_standalone_headings_ignores_text_shape_without_source_signal(
-    candidate_text,
-    structure_recovery_enabled,
-    structure_recovery_mode,
-):
+def test_promote_short_standalone_headings_ignores_text_shape_without_source_signal(candidate_text):
     paragraphs = _short_heading_evidence_triplet(candidate_text=candidate_text)
 
-    document.promote_short_standalone_headings(
-        paragraphs,
-        structure_recovery_enabled=structure_recovery_enabled,
-        structure_recovery_mode=structure_recovery_mode,
-    )
+    document.promote_short_standalone_headings(paragraphs)
 
     assert [paragraph.role for paragraph in paragraphs] == ["body", "body", "body"]
     assert paragraphs[1].structural_role == "body"
@@ -2054,14 +1776,7 @@ def test_promote_short_standalone_headings_ignores_text_shape_without_source_sig
     assert paragraphs[1].heuristic_heading_level_hint is None
 
 
-@pytest.mark.parametrize(
-    ("structure_recovery_enabled", "structure_recovery_mode"),
-    [(False, "legacy"), (True, "ai_first")],
-)
-def test_extract_document_content_from_docx_preserves_very_short_explicit_heading(
-    structure_recovery_enabled,
-    structure_recovery_mode,
-):
+def test_extract_document_content_from_docx_preserves_very_short_explicit_heading():
     doc = Document()
     doc.add_paragraph("Label", style="Heading 2")
     doc.add_paragraph("Ordinary narrative body content follows the explicit source heading metadata.")
@@ -2071,10 +1786,6 @@ def test_extract_document_content_from_docx_preserves_very_short_explicit_headin
 
     paragraphs, _, _, _, _, _, _ = document.extract_document_content_with_normalization_reports(
         buffer,
-        app_config={
-            "structure_recovery_enabled": structure_recovery_enabled,
-            "structure_recovery_mode": structure_recovery_mode,
-        },
     )
 
     assert paragraphs[0].role == "heading"
@@ -2105,75 +1816,6 @@ def test_extract_document_content_from_docx_does_not_promote_very_short_sentence
     paragraphs, _ = extract_document_content_from_docx(buffer)
 
     assert [paragraph.role for paragraph in paragraphs] == ["body", "body", "body"]
-
-
-def test_promote_short_standalone_headings_does_not_override_ai_classified_body_heading_candidate():
-    paragraphs = [
-        ParagraphUnit(
-            text="Привлекательность лотерейных билетов с крупными призами объясняется мечтами о переменах и доступе к новым возможностям.",
-            role="body",
-            source_index=0,
-            font_size_pt=11.0,
-        ),
-        ParagraphUnit(
-            text="Переосмысление богатства",
-            role="body",
-            structural_role="body",
-            role_confidence="ai",
-            source_index=1,
-            font_size_pt=14.0,
-        ),
-        ParagraphUnit(
-            text="Богатство зависит не только от денег, но и от устойчивости, свободы выбора и качества связей.",
-            role="body",
-            source_index=2,
-            font_size_pt=11.0,
-        ),
-    ]
-
-    document.promote_short_standalone_headings(paragraphs)
-
-    assert [paragraph.role for paragraph in paragraphs] == ["body", "body", "body"]
-    assert paragraphs[1].role_confidence == "ai"
-    assert paragraphs[1].heading_source is None
-    assert paragraphs[1].heading_level is None
-    assert paragraphs[1].heuristic_role_hint is None
-    assert paragraphs[1].heuristic_heading_level_hint is None
-
-
-def test_promote_short_standalone_headings_does_not_override_ai_structural_attribution():
-    paragraphs = [
-        ParagraphUnit(
-            text="Богатство может означать деньги, свободу выбора и доступ к возможностям.",
-            role="body",
-            source_index=0,
-            font_size_pt=11.0,
-        ),
-        ParagraphUnit(
-            text="ЭПИКТЕТ",
-            role="body",
-            structural_role="attribution",
-            role_confidence="ai",
-            source_index=1,
-            font_size_pt=16.0,
-        ),
-        ParagraphUnit(
-            text="Следующий абзац продолжает мысль и даёт обычный текстовый контекст для эвристического паттерна.",
-            role="body",
-            source_index=2,
-            font_size_pt=11.0,
-        ),
-    ]
-
-    document.promote_short_standalone_headings(paragraphs)
-
-    assert paragraphs[1].role == "body"
-    assert paragraphs[1].structural_role == "attribution"
-    assert paragraphs[1].role_confidence == "ai"
-    assert paragraphs[1].heading_source is None
-    assert paragraphs[1].heading_level is None
-    assert paragraphs[1].heuristic_role_hint is None
-    assert paragraphs[1].heuristic_heading_level_hint is None
 
 
 def test_no_signal_short_body_uses_existing_preparation_stages_without_provider_calls(
@@ -2209,7 +1851,6 @@ def test_no_signal_short_body_uses_existing_preparation_stages_without_provider_
 
     document.extract_document_content_with_normalization_reports(
         buffer,
-        app_config={"structure_recovery_enabled": False, "structure_recovery_mode": "legacy"},
         client_factory=lambda provider: provider_calls.append(provider),
     )
 

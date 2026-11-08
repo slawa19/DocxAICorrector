@@ -606,14 +606,6 @@ def _build_heading_evidence(paragraph: ParagraphUnit, *, structure_phase: str) -
                 },
             )
         ]
-    if source == "ai" or confidence == "ai":
-        return [
-            SegmentBoundaryEvidence(
-                source="ai_role",
-                confidence="high",
-                details={"heading_level": getattr(paragraph, "heading_level", None)},
-            )
-        ]
     if not phase_uses_advisory_hints(structure_phase):
         return []
     return [
@@ -976,10 +968,7 @@ def _resolve_range_structural_role(
 
 
 def _allows_typography_fallback(*, structure_phase: str) -> bool:
-    normalized_phase = normalize_structure_phase(structure_phase)
-    if phase_uses_advisory_hints(normalized_phase):
-        return True
-    return normalized_phase == "ai_first_degraded_fallback"
+    return phase_uses_advisory_hints(normalize_structure_phase(structure_phase))
 
 
 def _paragraph_role_for_phase(paragraph: ParagraphUnit, *, structure_phase: str) -> str:
@@ -993,7 +982,7 @@ def _paragraph_role_for_phase(paragraph: ParagraphUnit, *, structure_phase: str)
         return role
     source = str(getattr(paragraph, "heading_source", "") or "").strip().lower()
     confidence = str(getattr(paragraph, "role_confidence", "") or "").strip().lower()
-    if source in {"explicit", "ai"} or confidence in {"explicit", "adjacent", "ai"}:
+    if source == "explicit" or confidence in {"explicit", "adjacent"}:
         return role
     return "body"
 

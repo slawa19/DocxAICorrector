@@ -1,6 +1,6 @@
 import re
 
-from docxaicorrector.core.models import ParagraphUnit, normalize_heuristic_role_hint
+from docxaicorrector.core.models import ParagraphUnit
 
 
 CAPTION_PREFIX_PATTERN = re.compile(r"^(?:рис\.?|рисунок|figure|fig\.?|табл\.?|таблица|table)\b", re.IGNORECASE)
@@ -199,21 +199,13 @@ def resolve_effective_paragraph_font_size(paragraph) -> float | None:
     return _resolve_style_font_size(getattr(paragraph, "style", None))
 
 
-def promote_short_standalone_headings(
-    paragraphs: list[ParagraphUnit],
-    *,
-    structure_recovery_enabled: bool = False,
-    structure_recovery_mode: str = "legacy",
-) -> None:
-    ai_first_mode = structure_recovery_enabled and structure_recovery_mode == "ai_first"
+def promote_short_standalone_headings(paragraphs: list[ParagraphUnit]) -> None:
     if len(paragraphs) < 3:
         return
 
     for index in range(1, len(paragraphs) - 1):
         paragraph = paragraphs[index]
         if paragraph.role != "body":
-            continue
-        if paragraph.role_confidence == "ai":
             continue
         if not _is_short_standalone_heading_text(paragraph.text):
             continue
@@ -245,20 +237,13 @@ def promote_short_standalone_headings(
         if candidate_font_size < max(context_font_sizes) + required_delta:
             continue
 
-        _apply_or_hint_short_heading(
+        _apply_short_heading(
             paragraph,
             heading_level=_infer_contextual_heading_level(paragraphs, index),
-            ai_first_mode=ai_first_mode,
         )
 
 
-def normalize_front_matter_display_title(
-    paragraphs: list[ParagraphUnit],
-    *,
-    structure_recovery_enabled: bool = False,
-    structure_recovery_mode: str = "legacy",
-) -> None:
-    ai_first_mode = structure_recovery_enabled and structure_recovery_mode == "ai_first"
+def normalize_front_matter_display_title(paragraphs: list[ParagraphUnit]) -> None:
     scan_limit = min(len(paragraphs), 12)
     if scan_limit == 0:
         return
@@ -268,7 +253,7 @@ def normalize_front_matter_display_title(
         return
 
     candidate = paragraphs[candidate_index]
-    _apply_or_hint_short_heading(candidate, heading_level=1, ai_first_mode=ai_first_mode)
+    _apply_short_heading(candidate, heading_level=1)
 
     candidate_font_size = candidate.font_size_pt
     for index in range(scan_limit):
@@ -279,8 +264,6 @@ def normalize_front_matter_display_title(
             continue
         if not _is_front_matter_metadata_heading_candidate(paragraph, candidate_font_size):
             continue
-        if ai_first_mode:
-            continue
 
         paragraph.role = "body"
         paragraph.structural_role = "body"
@@ -289,13 +272,7 @@ def normalize_front_matter_display_title(
         paragraph.heading_level = None
 
 
-def _apply_or_hint_short_heading(paragraph: ParagraphUnit, *, heading_level: int, ai_first_mode: bool) -> None:
-    if ai_first_mode:
-        if paragraph.role == "heading" and (paragraph.heading_source == "explicit" or paragraph.role_confidence == "explicit"):
-            return
-        paragraph.heuristic_role_hint = normalize_heuristic_role_hint("heading")
-        paragraph.heuristic_heading_level_hint = heading_level
-        return
+def _apply_short_heading(paragraph: ParagraphUnit, *, heading_level: int) -> None:
     paragraph.role = "heading"
     paragraph.structural_role = "heading"
     paragraph.role_confidence = "heuristic"
@@ -303,13 +280,7 @@ def _apply_or_hint_short_heading(paragraph: ParagraphUnit, *, heading_level: int
     paragraph.heading_level = heading_level
 
 
-def reclassify_adjacent_captions(
-    paragraphs: list[ParagraphUnit],
-    *,
-    structure_recovery_enabled: bool = False,
-    structure_recovery_mode: str = "legacy",
-) -> None:
-    ai_first_mode = structure_recovery_enabled and structure_recovery_mode == "ai_first"
+def reclassify_adjacent_captions(paragraphs: list[ParagraphUnit]) -> None:
     for index, paragraph in enumerate(paragraphs):
         if index == 0:
             continue
@@ -320,10 +291,6 @@ def reclassify_adjacent_captions(
             continue
         if is_likely_caption_text(paragraph.text):
             if paragraph.role == "heading" and paragraph.heading_source != "heuristic":
-                continue
-            if ai_first_mode:
-                paragraph.heuristic_role_hint = normalize_heuristic_role_hint("caption")
-                paragraph.heuristic_heading_level_hint = None
                 continue
             paragraph.role = "caption"
             paragraph.structural_role = "caption"

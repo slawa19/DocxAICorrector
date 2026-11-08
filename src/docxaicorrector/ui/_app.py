@@ -336,7 +336,7 @@ def _build_preparation_client_factory(app_config: dict[str, object] | None):
 
     def _prepare_client_factory(selector: str | None = None, required_capability: str = "responses_text", *, config_like=None) -> object:
         resolved_config = resolved_app_config if config_like is None else config_like
-        resolved_selector = str(selector or resolved_app_config.get("structure_recognition_model", "") or "").strip()
+        resolved_selector = str(selector or "").strip()
         if resolved_selector:
             return get_client_for_model_selector(
                 resolved_selector,

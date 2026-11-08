@@ -93,14 +93,14 @@ bash -c "cd /mnt/d/Work/Projects/DocxAICorrector && python3 scripts/_list_log_ev
 
 - `app_start` — `app.py`, INFO.
 - `config_load_failed`, `document_read_failed` — `app.py`, через `present_error`/`fail_critical`.
-- `legacy_model_config_key_detected`, `legacy_model_config_source_used`, `model_registry_resolved` — `config.py`, INFO/WARNING при устаревших ключах.
+- `legacy_model_config_key_detected`, `model_registry_resolved` — `config.py`, INFO/WARNING при устаревших ключах. (`legacy_model_config_source_used` удалено в спеке 066 C-9: legacy-источников модели больше нет.)
 - `image_model_role_override_active` — `config.py`, WARNING, один раз на набор закреплений: per-role переменная `DOCX_AI_MODELS_IMAGE_<ROLE>_DEFAULT` или `[models.image_<role>].default` действует поверх выбора «модели разбора» / «модели рисования» (спека 062). Context: `{role_overrides, role_sources}`.
 - `image_model_capabilities_unknown` — `src/docxaicorrector/image/model_capabilities.py`, WARNING, один раз на id модели за процесс: image-модель вне таблицы возможностей, запрос уходит с минимальным набором параметров (спека 062 FR-004). Context: `{model, operation, known_families}`. События `*_retry_without_optional_param` и `*_retry_with_fallback_size` из `src/docxaicorrector/image/generation.py` подняты с DEBUG до WARNING и несут `model`: адаптация по тексту ошибки осталась только страховкой.
 
 ### 3.2 Preparation
 
 - `preparation_cache_hit`, `preparation_cache_miss` — `preparation.py`, INFO.
-- `structure_recognition_debug_artifact_saved`, `structure_recognition_fallback`, `structure_validation_debug_artifact_saved`, `structure_processing_outcome` — `preparation.py`.
+- `structure_processing_outcome` — `preparation.py`.
 - `restart_source_store_failed` — `processing_runtime.py`.
 - `persisted_source_validation_failed` — `restart_store.py`, WARNING: persisted restart/completed source отклонён и не может быть восстановлен. Context: `{reason, filename, source_token, storage_kind}`, где `reason` ∈ `{invalid_metadata, unconfined_path, unreadable_payload, integrity_mismatch}`.
 
@@ -310,7 +310,7 @@ context-ключей добавляется для события, когда е
 | `.run/paragraph_boundary_ai_review/*.json` | TTL 14 дней, max 200 файлов, pruning при каждой записи | `document._write_paragraph_boundary_ai_review_artifact()` → `prune_artifact_dir()` |
 | `.run/run_glossaries/*.json` | TTL 14 дней, max 200 файлов, pruning при каждой записи (спека 063 P2: глоссарий прогона `translate`, его кандидаты и учёт вызова) | `pipeline/glossary_phase._write_run_glossary_artifact()` → `prune_artifact_dir()` |
 | `.run/structure_maps/*.json` | TTL 30 дней, max 200 файлов, pruning при каждой записи | `preparation._write_structure_map_debug_artifact()` → `prune_artifact_dir()` |
-| `.run/structure_validation/*.json` | TTL 30 дней, max 200 файлов, pruning при каждой записи | `structure_validation.write_structure_validation_debug_artifact()` → `prune_artifact_dir()` |
+| `.run/structure_validation/*.json` | Писатель удалён (спека 066 C-6: у `write_structure_validation_debug_artifact` не было вызывающих). Оставшиеся файлы чистит TTL 30 дней / max 200 | `scripts/_run_cleanup_now.py` → `prune_artifact_dir()` |
 | `.run/document_topology/*.json` | TTL 30 дней, max 200 файлов, pruning при каждой записи | `preparation._write_document_topology_debug_artifact()` → `prune_artifact_dir()` |
 | `.run/marker_attempts/*.json` | TTL 7 дней, max 400 файлов, pruning при каждой записи | `src/docxaicorrector/generation/marker_attempt_capture.py :: write_marker_attempt_artifact()` → `prune_artifact_dir()` |
 | `.run/ui_results/*` | TTL 7 дней, max 80 result stems, pruning grouped by stem при каждой записи | `runtime_artifacts.write_ui_result_artifacts()` → `prune_ui_result_artifact_groups()` |

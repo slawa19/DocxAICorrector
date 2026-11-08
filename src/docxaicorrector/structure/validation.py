@@ -1,24 +1,14 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
-from datetime import datetime
-import json
-from pathlib import Path
+from dataclasses import dataclass
 from collections.abc import Mapping, Sequence
 import re
 from typing import Any
 
-from docxaicorrector.core.constants import RUN_DIR
 from docxaicorrector.core.models import ParagraphUnit, StructureRepairReport
 from docxaicorrector.document.structure_authority import get_binding_structural_role, get_effective_structural_role, has_heading_signal, normalize_structure_phase, phase_uses_advisory_hints
-from docxaicorrector.runtime.artifact_retention import (
-    STRUCTURE_VALIDATION_MAX_AGE_SECONDS,
-    STRUCTURE_VALIDATION_MAX_COUNT,
-    prune_artifact_dir,
-)
 
 
-_STRUCTURE_VALIDATION_DEBUG_DIR = RUN_DIR / "structure_validation"
 _BODY_STRUCTURAL_ROLES = {"body", ""}
 ParagraphLike = ParagraphUnit | Mapping[str, object]
 
@@ -87,7 +77,7 @@ def _is_heading_for_phase(paragraph: ParagraphLike, *, phase: str) -> bool:
         return False
     heading_source = str(_paragraph_value(paragraph, "heading_source", "") or "").strip().lower()
     role_confidence = str(_paragraph_value(paragraph, "role_confidence", "") or "").strip().lower()
-    return heading_source in {"explicit", "ai"} or role_confidence in {"explicit", "adjacent", "ai"}
+    return heading_source == "explicit" or role_confidence in {"explicit", "adjacent"}
 
 
 def _heuristic_heading_count_for_phase(paragraphs: Sequence[ParagraphLike], *, phase: str) -> int:
@@ -422,26 +412,3 @@ def validate_structure_quality(
         outline_coverage_ratio=None if outline_coverage_ratio is None else float(outline_coverage_ratio),
         structure_repair_report=structure_repair_report,
     )
-
-
-def write_structure_validation_debug_artifact(
-    *,
-    report: StructureValidationReport,
-    app_config: Mapping[str, Any],
-) -> str:
-    _STRUCTURE_VALIDATION_DEBUG_DIR.mkdir(parents=True, exist_ok=True)
-    timestamp = datetime.now().strftime("%Y-%m-%dT%H-%M-%S")
-    artifact_path = _STRUCTURE_VALIDATION_DEBUG_DIR / f"gate_report_{timestamp}.json"
-    payload = {
-        "mode": str(app_config.get("structure_recognition_mode", "off")),
-        "model": str(app_config.get("structure_recognition_model", "")),
-        **asdict(report),
-        "escalation_reasons": list(report.escalation_reasons),
-    }
-    artifact_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    prune_artifact_dir(
-        target_dir=_STRUCTURE_VALIDATION_DEBUG_DIR,
-        max_age_seconds=STRUCTURE_VALIDATION_MAX_AGE_SECONDS,
-        max_count=STRUCTURE_VALIDATION_MAX_COUNT,
-    )
-    return str(artifact_path)

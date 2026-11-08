@@ -381,8 +381,8 @@ def test_relation_normalization_artifact_persists_decision_provenance_variants(m
                 decision="reject",
                 member_paragraph_ids=("p0003",),
                 reasons=("toc_header_without_entries",),
-                structure_phase="ai_first_degraded_fallback",
-                structure_source="ai_first_degraded_fallback",
+                structure_phase="post_ai_readiness",
+                structure_source="post_ai_final_binding",
             ),
         ],
     )
@@ -403,12 +403,12 @@ def test_relation_normalization_artifact_persists_decision_provenance_variants(m
     assert [decision["structure_source"] for decision in payload["decisions"]] == [
         "pre_ai_diagnostic_hint",
         "post_ai_final_binding",
-        "ai_first_degraded_fallback",
+        "post_ai_final_binding",
     ]
     assert [decision["structure_phase"] for decision in payload["decisions"]] == [
         "pre_ai_diagnostic",
         "post_ai_final",
-        "ai_first_degraded_fallback",
+        "post_ai_readiness",
     ]
 
 
@@ -626,7 +626,7 @@ def test_blocked_boundary_stays_blocked_in_high_and_medium_mode(monkeypatch):
     assert report.decisions[0].confidence == "blocked"
 
 
-def test_resolve_paragraph_boundary_ai_review_settings_uses_structure_recognition_model(monkeypatch):
+def test_resolve_paragraph_boundary_ai_review_settings_uses_boundary_review_model(monkeypatch):
     monkeypatch.setattr(
         config,
         "load_app_config",
@@ -641,7 +641,7 @@ def test_resolve_paragraph_boundary_ai_review_settings_uses_structure_recognitio
                     "default": "openrouter:google/gemini-3.1-flash-lite-preview",
                     "options": ["openrouter:google/gemini-3.1-flash-lite-preview"],
                 },
-                "structure_recognition": "gpt-5-mini",
+                "boundary_review": "gpt-5-mini",
             },
         },
     )

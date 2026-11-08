@@ -197,10 +197,10 @@ def _build_paragraph(*, source_index: int, text: str, role: str = "body", **kwar
     return ParagraphUnit(text=text, role=role, source_index=source_index, logical_index=source_index, **kwargs)
 
 
-def _build_runtime_model_registry(*, structure_recognition_model: str = "gpt-4o-mini") -> ModelRegistry:
+def _build_runtime_model_registry(*, boundary_review_model: str = "gpt-4o-mini") -> ModelRegistry:
     return ModelRegistry(
         text=TextModelConfig(default="gpt-5.4-mini", options=("gpt-5.4-mini",)),
-        structure_recognition=structure_recognition_model,
+        boundary_review=boundary_review_model,
         image_analysis="gpt-5.4-mini",
         image_validation="gpt-5.4-mini",
         image_reconstruction="gpt-5.4-mini",
@@ -210,9 +210,9 @@ def _build_runtime_model_registry(*, structure_recognition_model: str = "gpt-4o-
     )
 
 
-def _make_ai_first_config(
+def _make_review_config(
     *,
-    structure_recognition_model: str = "gpt-4o-mini",
+    review_model: str = "gpt-4o-mini",
     relation_kinds: tuple[str, ...] = ("epigraph_attribution", "image_caption", "table_caption", "toc_region"),
     **overrides,
 ):
@@ -224,48 +224,9 @@ def _make_ai_first_config(
         "relation_normalization_enabled": True,
         "relation_normalization_profile": "phase2_default",
         "relation_normalization_enabled_relation_kinds": relation_kinds,
-        "structure_recognition_mode": "always",
-        "structure_recognition_enabled": True,
-        "structure_recognition_model": structure_recognition_model,
-        "structure_recognition_max_window_paragraphs": 1800,
-        "structure_recognition_overlap_paragraphs": 50,
-        "structure_recognition_timeout_seconds": 60,
-        "structure_recognition_split_fallback_max_depth": 3,
-        "structure_recognition_split_fallback_max_expansions": 8,
-        "structure_recognition_min_confidence": "medium",
-        "structure_recognition_cache_enabled": False,
-        "structure_recognition_save_debug_artifacts": False,
-        "structure_validation_enabled": True,
-        "structure_validation_save_debug_artifacts": False,
-        "structure_recovery_enabled": True,
-        "structure_recovery_mode": "ai_first",
-        "structure_recovery_document_map_enabled": True,
-        "structure_recovery_document_map_model": "openrouter:test/document-map",
-        "structure_recovery_document_map_timeout_seconds": 45,
-        "structure_recovery_document_map_max_input_paragraphs": 200,
-        "structure_recovery_document_map_max_input_tokens": 180000,
-        "structure_recovery_document_map_preview_chars": 120,
-        "structure_recovery_document_map_cache_enabled": False,
-        "structure_recovery_document_map_save_debug_artifacts": False,
-        "structure_recovery_anchored_classification_max_window_paragraphs": 3000,
-        "structure_recovery_anchored_classification_overlap_paragraphs": 0,
-        "structure_recovery_anchored_classification_preview_chars": 1500,
-        "structure_recovery_anchored_classification_target_input_tokens": 180000,
-        "structure_recovery_anchored_classification_min_confidence": "high",
-        "structure_recovery_topology_projection_enabled": False,
-        "structure_recovery_topology_projection_save_debug_artifacts": True,
-        "structure_recovery_topology_projection_binding_splits_enabled": False,
-        "structure_recovery_topology_projection_layout_signals_enabled": False,
-        "structure_recovery_topology_projection_layout_signals_heading_ratio": 1.15,
-        "structure_recovery_topology_projection_layout_signals_short_line_chars": 80,
-        "structure_recovery_topology_projection_layout_signals_baseline_tolerance_pt": 0.25,
-        "structure_recovery_topology_projection_layout_signals_min_tier_population": 2,
-        "models": _build_runtime_model_registry(structure_recognition_model=structure_recognition_model),
+        "models": _build_runtime_model_registry(boundary_review_model=review_model),
     }
     config.update(overrides)
-    if "models" not in overrides:
-        resolved_model = str(config.get("structure_recognition_model", structure_recognition_model) or structure_recognition_model)
-        config["models"] = _build_runtime_model_registry(structure_recognition_model=resolved_model)
     return config
 
 
@@ -1083,8 +1044,6 @@ def test_build_prepared_source_key_distinguishes_target_language():
         paragraph_boundary_ai_review_mode="off",
         source_language="en",
         translation_domain="general",
-        structure_recovery_enabled=False,
-        structure_recovery_mode="legacy",
     )
     key_de = preparation.build_prepared_source_key(
         "token",
@@ -1095,8 +1054,6 @@ def test_build_prepared_source_key_distinguishes_target_language():
         paragraph_boundary_ai_review_mode="off",
         source_language="en",
         translation_domain="general",
-        structure_recovery_enabled=False,
-        structure_recovery_mode="legacy",
     )
     assert key_ru != key_de
 
@@ -1112,17 +1069,6 @@ def test_build_prepared_source_key_distinguishes_translation_domain():
     assert key_general != key_legal
 
 
-def test_build_prepared_source_key_distinguishes_structure_recovery_mode():
-    # F14: keys differing ONLY by structure-recovery mode must be distinct.
-    key_legacy = preparation.build_prepared_source_key(
-        "token", 6000, structure_recovery_enabled=True, structure_recovery_mode="legacy"
-    )
-    key_ai_first = preparation.build_prepared_source_key(
-        "token", 6000, structure_recovery_enabled=True, structure_recovery_mode="ai_first"
-    )
-    assert key_legacy != key_ai_first
-
-
 def test_build_prepared_source_key_identical_settings_collide():
     # F14: identical settings must still produce the SAME key (cache hit preserved).
     key_a = preparation.build_prepared_source_key(
@@ -1131,8 +1077,6 @@ def test_build_prepared_source_key_identical_settings_collide():
         target_language="ru",
         source_language="en",
         translation_domain="general",
-        structure_recovery_enabled=True,
-        structure_recovery_mode="ai_first",
     )
     key_b = preparation.build_prepared_source_key(
         "token",
@@ -1140,8 +1084,6 @@ def test_build_prepared_source_key_identical_settings_collide():
         target_language="ru",
         source_language="en",
         translation_domain="general",
-        structure_recovery_enabled=True,
-        structure_recovery_mode="ai_first",
     )
     assert key_a == key_b
 
@@ -1349,10 +1291,11 @@ def test_detect_segments_adapter_propagates_internal_type_error_without_retry():
 # Byte-for-byte snapshot of ``build_prepared_source_key('tok123', 1200)`` captured from the
 # pre-040 implementation. The client-identity axis MUST be a no-op when empty: an empty
 # identity may never change this string (no cache invalidation, single-tenant unchanged).
+# Spec 066 C-1 removed the dead structure-recovery tokens from the layout.
 _PRE_040_REPRESENTATIVE_KEY = (
     "tok123:1200:high_only:off:phase2_default:"
     "epigraph_attribution,image_caption,table_caption,toc_region:lc=1:3:80:pv=2:pk=4:"
-    "sl=en:tl=ru:td=general:sr=0:srm=legacy:so=10:0.1:1.5:ar=off"
+    "sl=en:tl=ru:td=general:so=10:0.1:1.5:ar=off"
 )
 
 
@@ -1548,7 +1491,7 @@ def test_prepare_document_shared_cache_isolates_injected_tenant_identity(monkeyp
     # Injected factory + AI review ON + explicit client_cache_identity: distinct tenant
     # identities MUST NOT share one shared-cache entry even with the SAME token/app_config.
     preparation.clear_preparation_cache(clear_shared=True)
-    config = _make_ai_first_config(
+    config = _make_review_config(
         paragraph_boundary_ai_review_enabled=True,
         paragraph_boundary_ai_review_mode="review_only",
     )
@@ -1602,7 +1545,7 @@ def test_prepare_document_bypasses_shared_cache_when_injected_identity_unknown(m
     # Injected factory + AI review ON + NO identity: the shared (process-global) tier must be
     # bypassed entirely, so a second identical run does not serve the first run's entry.
     preparation.clear_preparation_cache(clear_shared=True)
-    config = _make_ai_first_config(
+    config = _make_review_config(
         paragraph_boundary_ai_review_enabled=True,
         paragraph_boundary_ai_review_mode="review_only",
     )

@@ -381,8 +381,6 @@ def _toc_relation_kind_enabled(enabled_kinds: set[str], *, structure_phase: str)
 
 
 def _relation_structure_source(structure_phase: str) -> str:
-    if str(structure_phase or "").strip().lower() == "ai_first_degraded_fallback":
-        return "ai_first_degraded_fallback"
     return "pre_ai_diagnostic_hint" if phase_uses_advisory_hints(structure_phase) else "post_ai_final_binding"
 
 

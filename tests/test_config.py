@@ -17,7 +17,7 @@ from tests.conftest import (
     TEST_IMAGE_GENERATION_VISION_MODEL,
     TEST_IMAGE_RECONSTRUCTION_MODEL,
     TEST_IMAGE_VALIDATION_MODEL,
-    TEST_STRUCTURE_RECOGNITION_MODEL,
+    TEST_BOUNDARY_REVIEW_MODEL,
     TEST_TEXT_MODEL_DEFAULT,
 )
 
@@ -87,16 +87,13 @@ def test_load_app_config_applies_env_overrides_and_clamps(monkeypatch):
     assert app_config["paragraph_boundary_normalization_enabled"] is True
     assert app_config["paragraph_boundary_normalization_mode"] == "high_only"
     assert app_config["paragraph_boundary_normalization_save_debug_artifacts"] is True
-    assert models.structure_recognition == app_config["default_model"]
-    assert app_config["structure_validation_enabled"] is True
+    assert models.boundary_review == app_config["default_model"]
     assert app_config["structure_validation_min_paragraphs_for_auto_gate"] == 40
     assert app_config["structure_validation_min_explicit_heading_density"] == 0.003
     assert app_config["structure_validation_max_suspicious_short_body_ratio_without_escalation"] == 0.05
     assert app_config["structure_validation_max_all_caps_or_centered_body_ratio_without_escalation"] == 0.03
     assert app_config["structure_validation_toc_like_sequence_min_length"] == 4
     assert app_config["structure_validation_forbid_heading_only_collapse"] is True
-    assert app_config["structure_validation_save_debug_artifacts"] is True
-    assert app_config["structure_validation_block_on_high_risk_noop"] is True
     assert app_config["relation_normalization_enabled"] is True
     assert app_config["relation_normalization_profile"] == "phase2_default"
     assert app_config["relation_normalization_enabled_relation_kinds"] == (
@@ -146,8 +143,7 @@ def test_load_app_config_exposes_image_validation_defaults(monkeypatch):
         "openrouter:anthropic/claude-sonnet-4.6",
         "openrouter:google/gemini-3.1-flash-lite-preview",
     )
-    assert models.structure_recognition == TEST_TEXT_MODEL_DEFAULT
-    assert app_config["structure_validation_block_on_high_risk_noop"] is True
+    assert models.boundary_review == TEST_TEXT_MODEL_DEFAULT
     assert app_config["relation_normalization_enabled"] is True
     assert app_config["relation_normalization_profile"] == "phase2_default"
     assert app_config["relation_normalization_enabled_relation_kinds"] == (
@@ -386,7 +382,7 @@ def test_describe_provider_availability_reports_missing_key(monkeypatch):
     app_config = config.AppConfig(
         models=config.ModelRegistry(
             text=config.TextModelConfig(default="gpt-5.4-mini", options=("gpt-5.4-mini",)),
-            structure_recognition=TEST_STRUCTURE_RECOGNITION_MODEL,
+            boundary_review=TEST_BOUNDARY_REVIEW_MODEL,
             image_analysis=TEST_IMAGE_ANALYSIS_MODEL,
             image_validation=TEST_IMAGE_VALIDATION_MODEL,
             image_reconstruction=TEST_IMAGE_RECONSTRUCTION_MODEL,
@@ -427,15 +423,12 @@ def test_describe_provider_availability_reports_missing_key(monkeypatch):
         relation_normalization_profile="phase2_default",
         relation_normalization_enabled_relation_kinds=("image_caption",),
         relation_normalization_save_debug_artifacts=True,
-        structure_validation_enabled=True,
         structure_validation_min_paragraphs_for_auto_gate=40,
         structure_validation_min_explicit_heading_density=0.003,
         structure_validation_max_suspicious_short_body_ratio_without_escalation=0.05,
         structure_validation_max_all_caps_or_centered_body_ratio_without_escalation=0.03,
         structure_validation_toc_like_sequence_min_length=4,
         structure_validation_forbid_heading_only_collapse=True,
-        structure_validation_save_debug_artifacts=True,
-        structure_validation_block_on_high_risk_noop=True,
         output_body_font=None,
         output_heading_font=None,
         image_mode_default="no_change",
@@ -489,7 +482,7 @@ def test_describe_provider_availability_loads_project_dotenv(monkeypatch):
     app_config = config.AppConfig(
         models=config.ModelRegistry(
             text=config.TextModelConfig(default="gpt-5.4-mini", options=("gpt-5.4-mini",)),
-            structure_recognition=TEST_STRUCTURE_RECOGNITION_MODEL,
+            boundary_review=TEST_BOUNDARY_REVIEW_MODEL,
             image_analysis=TEST_IMAGE_ANALYSIS_MODEL,
             image_validation=TEST_IMAGE_VALIDATION_MODEL,
             image_reconstruction=TEST_IMAGE_RECONSTRUCTION_MODEL,
@@ -530,15 +523,12 @@ def test_describe_provider_availability_loads_project_dotenv(monkeypatch):
         relation_normalization_profile="phase2_default",
         relation_normalization_enabled_relation_kinds=("image_caption",),
         relation_normalization_save_debug_artifacts=True,
-        structure_validation_enabled=True,
         structure_validation_min_paragraphs_for_auto_gate=40,
         structure_validation_min_explicit_heading_density=0.003,
         structure_validation_max_suspicious_short_body_ratio_without_escalation=0.05,
         structure_validation_max_all_caps_or_centered_body_ratio_without_escalation=0.03,
         structure_validation_toc_like_sequence_min_length=4,
         structure_validation_forbid_heading_only_collapse=True,
-        structure_validation_save_debug_artifacts=True,
-        structure_validation_block_on_high_risk_noop=True,
         output_body_font=None,
         output_heading_font=None,
         image_mode_default="no_change",
@@ -1226,7 +1216,7 @@ def test_load_app_config_emits_legacy_model_warnings_only_once(monkeypatch, tmp_
     assert first_legacy_keys == [
         "default_model",
         "model_options",
-        "structure_recognition.model",
+        "structure_recognition",
         "validation_model",
     ]
     assert len(log_calls) == first_call_count
@@ -1321,7 +1311,7 @@ def test_load_app_config_new_env_overrides_legacy_toml_models(monkeypatch, tmp_p
     monkeypatch.setattr(config, "CONFIG_PATH", cfg)
     monkeypatch.setenv("DOCX_AI_MODELS_TEXT_DEFAULT", "gpt-5.4")
     monkeypatch.setenv("DOCX_AI_MODELS_TEXT_OPTIONS", "gpt-5.4,gpt-5.4-mini")
-    monkeypatch.setenv("DOCX_AI_MODELS_STRUCTURE_RECOGNITION_DEFAULT", "gpt-5-mini")
+    monkeypatch.setenv("DOCX_AI_MODELS_BOUNDARY_REVIEW_DEFAULT", "gpt-5-mini")
     monkeypatch.setenv("DOCX_AI_MODELS_IMAGE_ANALYSIS_DEFAULT", "gpt-5.4-mini")
     monkeypatch.setenv("DOCX_AI_MODELS_IMAGE_VALIDATION_DEFAULT", "gpt-5-mini")
     monkeypatch.setenv("DOCX_AI_MODELS_IMAGE_RECONSTRUCTION_DEFAULT", "gpt-5.4-mini")
@@ -1334,7 +1324,7 @@ def test_load_app_config_new_env_overrides_legacy_toml_models(monkeypatch, tmp_p
 
     assert models.text.default == "gpt-5.4"
     assert models.text.options == ("gpt-5.4", "gpt-5.4-mini")
-    assert models.structure_recognition == "gpt-5-mini"
+    assert models.boundary_review == "gpt-5-mini"
     assert models.image_analysis == "gpt-5.4-mini"
     assert models.image_validation == "gpt-5-mini"
     assert models.image_reconstruction == "gpt-5.4-mini"
@@ -1780,7 +1770,7 @@ def _provider_contract_test_args(*, paragraph_boundary_enabled: bool):
                     default="openrouter:google/gemini-3.1-flash-lite-preview",
                     options=("openrouter:google/gemini-3.1-flash-lite-preview", "gpt-5.4-mini"),
                 ),
-                structure_recognition="openrouter:google/gemini-3.1-flash-lite-preview",
+                boundary_review="openrouter:google/gemini-3.1-flash-lite-preview",
                 image_analysis=TEST_IMAGE_ANALYSIS_MODEL,
                 image_validation=TEST_IMAGE_VALIDATION_MODEL,
                 image_reconstruction=TEST_IMAGE_RECONSTRUCTION_MODEL,
@@ -1865,7 +1855,7 @@ def test_validate_provider_model_contracts_allows_openrouter_main_text_when_open
                     default="openrouter:google/gemini-3.1-flash-lite-preview",
                     options=("openrouter:google/gemini-3.1-flash-lite-preview",),
                 ),
-                structure_recognition="gpt-5-mini",
+                boundary_review="gpt-5-mini",
                 image_analysis=TEST_IMAGE_ANALYSIS_MODEL,
                 image_validation=TEST_IMAGE_VALIDATION_MODEL,
                 image_reconstruction=TEST_IMAGE_RECONSTRUCTION_MODEL,
@@ -1881,7 +1871,7 @@ def test_validate_provider_model_contracts_allows_openrouter_main_text_when_open
     )
 
 
-def test_validate_provider_model_contracts_allows_openrouter_structure_recognition_when_paragraph_ai_review_off(monkeypatch):
+def test_validate_provider_model_contracts_allows_openrouter_boundary_review_when_paragraph_ai_review_off(monkeypatch):
     provider_registry = config.ProviderRegistry(
         openai=config.ProviderConfig(name="openai", enabled=True, api_key_env="OPENAI_API_KEY"),
         openrouter=config.ProviderConfig(name="openrouter", enabled=True, api_key_env="OPENROUTER_API_KEY"),
@@ -1896,7 +1886,7 @@ def test_validate_provider_model_contracts_allows_openrouter_structure_recogniti
                     default="openrouter:google/gemini-3.1-flash-lite-preview",
                     options=("openrouter:google/gemini-3.1-flash-lite-preview",),
                 ),
-                structure_recognition="openrouter:google/gemini-3.1-flash-lite-preview",
+                boundary_review="openrouter:google/gemini-3.1-flash-lite-preview",
                 image_analysis=TEST_IMAGE_ANALYSIS_MODEL,
                 image_validation=TEST_IMAGE_VALIDATION_MODEL,
                 image_reconstruction=TEST_IMAGE_RECONSTRUCTION_MODEL,
@@ -2004,6 +1994,9 @@ def test_load_app_config_warns_about_removed_legacy_model_env_aliases(monkeypatc
     monkeypatch.setenv("DOCX_AI_MODEL_OPTIONS", "legacy-model,legacy-alt")
     monkeypatch.setenv("DOCX_AI_VALIDATION_MODEL", "legacy-validation")
     monkeypatch.setenv("DOCX_AI_RECONSTRUCTION_MODEL", "legacy-reconstruction")
+    # Spec 066 C-9: the boundary-review role lost its old structure-recognition names.
+    monkeypatch.setenv("DOCX_AI_STRUCTURE_RECOGNITION_MODEL", "legacy-structure")
+    monkeypatch.setenv("DOCX_AI_MODELS_STRUCTURE_RECOGNITION_DEFAULT", "legacy-structure-canonical")
     log_calls = []
     monkeypatch.setattr(config, "log_event", lambda level, event, message, **context: log_calls.append((event, context)))
     config.reset_app_config_cache()
@@ -2012,6 +2005,7 @@ def test_load_app_config_warns_about_removed_legacy_model_env_aliases(monkeypatc
     models = cast(config.ModelRegistry, app_config["models"])
 
     # The removed aliases still have no effect on the resolved registry...
+    assert models.boundary_review == models.text.default
     assert models.text.default == "gpt-5.4-mini"
     assert "legacy-model" not in models.text.options
     assert models.image_analysis == "gpt-5.4-mini"
@@ -2028,6 +2022,8 @@ def test_load_app_config_warns_about_removed_legacy_model_env_aliases(monkeypatc
         "DOCX_AI_MODEL_OPTIONS": "DOCX_AI_MODELS_TEXT_OPTIONS",
         "DOCX_AI_VALIDATION_MODEL": "DOCX_AI_MODELS_IMAGE_VALIDATION_DEFAULT",
         "DOCX_AI_RECONSTRUCTION_MODEL": "DOCX_AI_MODELS_IMAGE_RECONSTRUCTION_DEFAULT",
+        "DOCX_AI_STRUCTURE_RECOGNITION_MODEL": "DOCX_AI_MODELS_BOUNDARY_REVIEW_DEFAULT",
+        "DOCX_AI_MODELS_STRUCTURE_RECOGNITION_DEFAULT": "DOCX_AI_MODELS_BOUNDARY_REVIEW_DEFAULT",
     }
 
 
@@ -2114,7 +2110,7 @@ def test_legacy_model_key_warning_replacements_point_at_existing_registry_roles(
         "model_options": "models.text.options",
         "validation_model": "models.image_validation.default",
         "reconstruction_model": "models.image_reconstruction.default",
-        "structure_recognition.model": "models.structure_recognition.default",
+        "structure_recognition": "models.boundary_review.default",
     }
 
 
@@ -2173,7 +2169,7 @@ def test_model_registry_log_canonicalizes_anthropic_selector_unchanged(monkeypat
             default="anthropic:claude-sonnet-4-6",
             options=("anthropic:claude-sonnet-4-6", "gpt-5.4-mini"),
         ),
-        structure_recognition=TEST_STRUCTURE_RECOGNITION_MODEL,
+        boundary_review=TEST_BOUNDARY_REVIEW_MODEL,
         image_analysis=TEST_IMAGE_ANALYSIS_MODEL,
         image_validation=TEST_IMAGE_VALIDATION_MODEL,
         image_reconstruction=TEST_IMAGE_RECONSTRUCTION_MODEL,
@@ -2373,7 +2369,6 @@ def test_run_dir_copies_captured_at_import_follow_the_redirected_root() -> None:
     import docxaicorrector.processing.restart_store as restart_store
     import docxaicorrector.runtime.artifacts as runtime_artifacts
     import docxaicorrector.runtime.state as runtime_state
-    import docxaicorrector.structure.validation as structure_validation
     from tests.conftest import TEST_RUN_DIR
 
     captured = {
@@ -2381,7 +2376,6 @@ def test_run_dir_copies_captured_at_import_follow_the_redirected_root() -> None:
         "logger.APP_LOG_PATH": logger.APP_LOG_PATH,
         "runtime.state.APP_LOG_PATH": runtime_state.APP_LOG_PATH,
         "restart_store.RUN_DIR": restart_store.RUN_DIR,
-        "structure.validation debug dir": structure_validation._STRUCTURE_VALIDATION_DEBUG_DIR,
         "extraction.PARAGRAPH_BOUNDARY_REPORTS_DIR": extraction.PARAGRAPH_BOUNDARY_REPORTS_DIR,
         "extraction.RELATION_NORMALIZATION_REPORTS_DIR": extraction.RELATION_NORMALIZATION_REPORTS_DIR,
         "extraction.LAYOUT_CLEANUP_REPORTS_DIR": extraction.LAYOUT_CLEANUP_REPORTS_DIR,

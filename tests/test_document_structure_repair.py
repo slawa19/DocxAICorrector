@@ -1,4 +1,3 @@
-import docxaicorrector.document.structure_repair as structure_repair
 from docxaicorrector.core.models import ParagraphUnit
 from docxaicorrector.document.structure_repair import repair_pdf_derived_structure
 
@@ -33,30 +32,6 @@ def test_repair_pdf_derived_structure_hints_isolated_bullet_without_merging():
     assert report.remaining_isolated_marker_count == 1
 
 
-def test_repair_pdf_derived_structure_ai_first_hints_isolated_bullet_without_merging():
-    paragraphs = [
-        _paragraph(0, "●"),
-        _paragraph(1, "Text of item"),
-    ]
-
-    repaired, report = repair_pdf_derived_structure(
-        paragraphs,
-        structure_recovery_enabled=True,
-        structure_recovery_mode="ai_first",
-    )
-
-    assert [paragraph.text for paragraph in repaired] == ["●", "Text of item"]
-    assert repaired[0].role == "body"
-    assert repaired[0].structural_role == "body"
-    assert repaired[1].role == "body"
-    assert repaired[1].structural_role == "body"
-    assert repaired[1].heuristic_role_hint == "list"
-    assert repaired[1].heuristic_list_kind_hint == "unordered"
-    assert repaired[1].list_kind is None
-    assert report.repaired_bullet_items == 0
-    assert report.remaining_isolated_marker_count == 1
-
-
 def test_repair_pdf_derived_structure_builds_bounded_toc_and_keeps_body_boundary():
     paragraphs = [
         _paragraph(0, "Содержание"),
@@ -81,37 +56,6 @@ def test_repair_pdf_derived_structure_builds_bounded_toc_and_keeps_body_boundary
     assert repaired[4].heuristic_heading_level_hint == 2
     assert report.bounded_toc_regions == 1
     assert report.toc_body_boundary_repairs == 1
-    assert report.heading_candidates_from_toc == 1
-
-
-def test_repair_pdf_derived_structure_ai_first_hints_toc_matched_body_line_without_promoting_heading():
-    paragraphs = [
-        _paragraph(0, "Содержание"),
-        _paragraph(1, "Введение .... 1"),
-        _paragraph(2, "Заключение .... 29"),
-        _paragraph(3, "Марк 13:13", paragraph_alignment="center"),
-        _paragraph(4, "Введение"),
-    ]
-
-    repaired, report = repair_pdf_derived_structure(
-        paragraphs,
-        structure_recovery_enabled=True,
-        structure_recovery_mode="ai_first",
-    )
-
-    assert repaired[0].structural_role == "body"
-    assert repaired[0].heuristic_structural_role_hint == "toc_header"
-    assert repaired[1].structural_role == "body"
-    assert repaired[1].heuristic_structural_role_hint == "toc_entry"
-    assert repaired[2].structural_role == "body"
-    assert repaired[2].heuristic_structural_role_hint == "toc_entry"
-    assert repaired[4].text == "Введение"
-    assert repaired[4].role == "body"
-    assert repaired[4].structural_role == "body"
-    assert repaired[4].heuristic_role_hint == "heading"
-    assert repaired[4].heuristic_heading_level_hint == 2
-    assert repaired[4].heading_source is None
-    assert repaired[4].heading_level is None
     assert report.heading_candidates_from_toc == 1
 
 
@@ -158,53 +102,6 @@ def test_repair_pdf_derived_structure_splits_compound_toc_tail_from_epigraph_and
     assert report.heading_candidates_from_toc >= 1
 
 
-def test_repair_pdf_derived_structure_ai_first_hints_compound_toc_split_entry_without_binding_structural_role():
-    paragraphs = [
-        _paragraph(0, "Table of Contents", structural_role="toc_header"),
-        _paragraph(1, "Introduction........ 4", structural_role="toc_entry"),
-        _paragraph(2, "Conclusion........ 29", structural_role="toc_entry"),
-        _paragraph(
-            3,
-            "Conclusion........ 29 \"You will be hated by all for my name's sake.\" - Mark 13:13 Introduction My grandfather was convinced",
-        ),
-    ]
-
-    repaired, report = repair_pdf_derived_structure(
-        paragraphs,
-        structure_recovery_enabled=True,
-        structure_recovery_mode="ai_first",
-    )
-
-    assert [paragraph.text for paragraph in repaired] == [
-        "Table of Contents",
-        "Introduction........ 4",
-        "Conclusion........ 29",
-        "Conclusion........ 29 \"You will be hated by all for my name's sake.\" - Mark 13:13 Introduction My grandfather was convinced",
-    ]
-    assert repaired[3].role == "body"
-    assert repaired[3].structural_role == "body"
-    assert [hint.text for hint in repaired[3].heuristic_embedded_structure_hints] == [
-        "Conclusion........ 29",
-        '"You will be hated by all for my name\'s sake." - Mark 13:13',
-        "Introduction",
-        "My grandfather was convinced",
-    ]
-    assert [hint.structural_role for hint in repaired[3].heuristic_embedded_structure_hints] == [
-        "toc_entry",
-        "epigraph",
-        "body",
-        "body",
-    ]
-    assert [hint.role for hint in repaired[3].heuristic_embedded_structure_hints] == [
-        "body",
-        "body",
-        "heading",
-        "body",
-    ]
-    assert report.toc_body_boundary_repairs >= 1
-    assert report.heading_candidates_from_toc >= 1
-
-
 def test_repair_pdf_derived_structure_hints_split_numbered_list_lead_without_merging():
     paragraphs = [
         _paragraph(0, "4. Daniel 9:27,"),
@@ -226,77 +123,6 @@ def test_repair_pdf_derived_structure_hints_split_numbered_list_lead_without_mer
     assert report.repaired_numbered_items == 0
 
 
-def test_repair_pdf_derived_structure_ai_first_hints_split_numbered_list_lead_without_merging():
-    paragraphs = [
-        _paragraph(0, "4. Daniel 9:27,"),
-        _paragraph(1, "11:31 and Matthew 24:15 describe the abomination of desolation."),
-    ]
-
-    repaired, report = repair_pdf_derived_structure(
-        paragraphs,
-        structure_recovery_enabled=True,
-        structure_recovery_mode="ai_first",
-    )
-
-    assert [paragraph.text for paragraph in repaired] == [
-        "4. Daniel 9:27,",
-        "11:31 and Matthew 24:15 describe the abomination of desolation.",
-    ]
-    assert repaired[0].role == "body"
-    assert repaired[0].structural_role == "body"
-    assert repaired[0].heuristic_role_hint == "list"
-    assert repaired[0].heuristic_list_kind_hint == "ordered"
-    assert repaired[0].list_kind is None
-    assert repaired[1].role == "body"
-    assert report.repaired_numbered_items == 0
-
-
-def test_structure_repair_signal_only_helpers_preserve_existing_binding_fields():
-    toc_paragraph = _paragraph(0, "Contents", role="heading", structural_role="heading")
-    toc_paragraph.heading_level = 1
-    toc_paragraph.heading_source = "explicit"
-
-    structure_repair._apply_or_hint_toc_structural_role(
-        toc_paragraph,
-        structural_role="toc_header",
-        signal_only=True,
-    )
-
-    assert toc_paragraph.role == "heading"
-    assert toc_paragraph.structural_role == "heading"
-    assert toc_paragraph.heading_level == 1
-    assert toc_paragraph.heading_source == "explicit"
-    assert toc_paragraph.heuristic_structural_role_hint == "toc_header"
-
-    heading_candidate = _paragraph(1, "Introduction", role="heading", structural_role="heading")
-    heading_candidate.heading_level = 2
-    heading_candidate.heading_source = "explicit"
-
-    structure_repair._apply_or_hint_heading_candidate(heading_candidate, signal_only=True)
-
-    assert heading_candidate.role == "heading"
-    assert heading_candidate.structural_role == "heading"
-    assert heading_candidate.heading_level == 2
-    assert heading_candidate.heading_source == "explicit"
-    assert heading_candidate.heuristic_role_hint == "heading"
-    assert heading_candidate.heuristic_heading_level_hint == 2
-
-    list_candidate = _paragraph(2, "1. Item", role="heading", structural_role="heading")
-    list_candidate.heading_level = 3
-    list_candidate.heading_source = "explicit"
-    list_candidate.list_kind = "ordered"
-
-    structure_repair._apply_or_hint_list_candidate(list_candidate, list_kind="ordered", signal_only=True)
-
-    assert list_candidate.role == "heading"
-    assert list_candidate.structural_role == "heading"
-    assert list_candidate.heading_level == 3
-    assert list_candidate.heading_source == "explicit"
-    assert list_candidate.list_kind == "ordered"
-    assert list_candidate.heuristic_role_hint == "list"
-    assert list_candidate.heuristic_list_kind_hint == "ordered"
-
-
 def test_repair_pdf_derived_structure_splits_heading_prefix_from_numbered_list_start():
     paragraphs = [
         _paragraph(0, "Contents", structural_role="toc_header"),
@@ -306,38 +132,6 @@ def test_repair_pdf_derived_structure_splits_heading_prefix_from_numbered_list_s
     ]
 
     repaired, report = repair_pdf_derived_structure(paragraphs)
-
-    assert [paragraph.text for paragraph in repaired] == [
-        "Contents",
-        "Action Steps for Individuals........ 27",
-        "Action Steps for Nations........ 28",
-        "Action Steps for Individuals 1. Prepare your spirit for faithful endurance.",
-    ]
-    assert repaired[3].role == "body"
-    assert repaired[3].structural_role == "body"
-    assert [hint.text for hint in repaired[3].heuristic_embedded_structure_hints] == [
-        "Action Steps for Individuals",
-        "1. Prepare your spirit for faithful endurance.",
-    ]
-    assert [hint.role for hint in repaired[3].heuristic_embedded_structure_hints] == ["heading", "list"]
-    assert [hint.heading_level for hint in repaired[3].heuristic_embedded_structure_hints] == [2, None]
-    assert [hint.list_kind for hint in repaired[3].heuristic_embedded_structure_hints] == [None, "ordered"]
-    assert report.heading_candidates_from_toc >= 1
-
-
-def test_repair_pdf_derived_structure_ai_first_hints_split_heading_prefix_without_heading_role():
-    paragraphs = [
-        _paragraph(0, "Contents", structural_role="toc_header"),
-        _paragraph(1, "Action Steps for Individuals........ 27", structural_role="toc_entry"),
-        _paragraph(2, "Action Steps for Nations........ 28", structural_role="toc_entry"),
-        _paragraph(3, "Action Steps for Individuals 1. Prepare your spirit for faithful endurance."),
-    ]
-
-    repaired, report = repair_pdf_derived_structure(
-        paragraphs,
-        structure_recovery_enabled=True,
-        structure_recovery_mode="ai_first",
-    )
 
     assert [paragraph.text for paragraph in repaired] == [
         "Contents",

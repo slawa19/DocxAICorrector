@@ -326,8 +326,6 @@ def build_prepared_source_key(
     source_language: str = "en",
     target_language: str = "ru",
     translation_domain: str = "general",
-    structure_recovery_enabled: bool = False,
-    structure_recovery_mode: str = "legacy",
     scan_origin_key: str = _DEFAULT_SCAN_ORIGIN_CACHE_KEY,
     client_identity: str = "",
 ) -> str:
@@ -336,10 +334,8 @@ def build_prepared_source_key(
     normalized_source_language = str(source_language or "en").strip().lower() or "en"
     normalized_target_language = str(target_language or "ru").strip().lower() or "ru"
     normalized_translation_domain = str(translation_domain or "general").strip().lower() or "general"
-    normalized_structure_recovery_mode = str(structure_recovery_mode or "legacy").strip().lower() or "legacy"
-    structure_recovery_flag = "1" if bool(structure_recovery_enabled) else "0"
     # F10: the boundary AI-review artifact is shaped by MORE than its mode — the
-    # structure-recognition MODEL, the candidate limit, the per-candidate timeout, and the
+    # boundary-review MODEL, the candidate limit, the per-candidate timeout, and the
     # per-candidate token budget all change what recommendations get cached (see
     # ``resolve_paragraph_boundary_ai_review_settings``). Fold them into the key so two runs
     # that differ only by AI-review model (or any limit) do not share a prepared entry. They
@@ -357,7 +353,7 @@ def build_prepared_source_key(
             f":armt={int(paragraph_boundary_ai_review_max_tokens_per_candidate or 0)}"
         )
     # F14: fold every setting that influences the prepared/cached result (languages,
-    # translation domain, structure-recovery knobs) into the key so run B cannot serve
+    # translation domain) into the key so run B cannot serve
     # run A's glossary/context. `pk` is an explicit key-format version tag: bumping it
     # invalidates stale entries whenever this fingerprint layout changes.
     normalized_scan_origin_key = str(scan_origin_key or "").strip() or _DEFAULT_SCAN_ORIGIN_CACHE_KEY
@@ -366,8 +362,6 @@ def build_prepared_source_key(
         f":sl={normalized_source_language}"
         f":tl={normalized_target_language}"
         f":td={normalized_translation_domain}"
-        f":sr={structure_recovery_flag}"
-        f":srm={normalized_structure_recovery_mode}"
         f":so={normalized_scan_origin_key}"
         f"{ai_review_fingerprint}"
     )
@@ -1049,10 +1043,6 @@ def prepare_document_for_processing(
     key_translation_domain = str(
         resolved_config.get("translation_domain_default", "general") or "general"
     ).strip().lower() or "general"
-    key_structure_recovery_enabled = bool(resolved_config.get("structure_recovery_enabled", False))
-    key_structure_recovery_mode = str(
-        resolved_config.get("structure_recovery_mode", "legacy") or "legacy"
-    ).strip().lower() or "legacy"
     key_scan_origin = _resolve_scan_origin_cache_key(resolved_config)
     # Spec 041 P1-1: the shared (process-global) preparation cache must isolate the tenant
     # client_factory that is ACTUALLY injected, not just the config-derived client — two
@@ -1106,8 +1096,6 @@ def prepare_document_for_processing(
         source_language=key_source_language,
         target_language=key_target_language,
         translation_domain=key_translation_domain,
-        structure_recovery_enabled=key_structure_recovery_enabled,
-        structure_recovery_mode=key_structure_recovery_mode,
         scan_origin_key=key_scan_origin,
         client_identity=prepared_cache_client_identity,
     )

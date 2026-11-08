@@ -407,18 +407,12 @@ def test_run_prepared_background_document_uses_preparation_and_job_mutator(monke
 
 def test_run_prepared_background_document_uses_model_aware_client_factory_for_preparation(monkeypatch):
     sentinel_model_client = object()
-    sentinel_document_map_client = object()
     sentinel_default_client = object()
-    app_config = {
-        "structure_recognition_model": "openrouter:test/structure",
-        "structure_recovery_document_map_model": "openrouter:test/document-map",
-    }
+    app_config = {"processing_operation": "edit"}
     captured = {}
 
     def _selector_client_factory(selector, required_capability, *, config_like=None):
         captured.setdefault("selector_calls", []).append((selector, required_capability, config_like))
-        if selector == "openrouter:test/document-map":
-            return sentinel_document_map_client
         return sentinel_model_client
 
     service = _build_service(
@@ -476,15 +470,16 @@ def test_run_prepared_background_document_uses_model_aware_client_factory_for_pr
     )
 
     assert callable(captured["prepare_document"]["get_client_fn"])
-    assert captured["prepare_document"]["get_client_fn"]() is sentinel_model_client
+    # Spec 066 C-8: without a selector the factory falls back to the default client; the
+    # never-produced structure-recognition model key of app_config is no longer consulted.
+    assert captured["prepare_document"]["get_client_fn"]() is sentinel_default_client
     assert captured["prepare_document"]["get_client_fn"](
-        "openrouter:test/document-map",
+        "openrouter:test/boundary-review",
         "responses_text",
         config_like=app_config,
-    ) is sentinel_document_map_client
+    ) is sentinel_model_client
     assert captured["selector_calls"] == [
-        ("openrouter:test/structure", "responses_text", app_config),
-        ("openrouter:test/document-map", "responses_text", app_config),
+        ("openrouter:test/boundary-review", "responses_text", app_config),
     ]
 
 
@@ -526,7 +521,7 @@ def test_run_prepared_background_document_threads_tenant_factory_into_boundary_r
     monkeypatch.setattr(
         document_extraction,
         "_resolve_paragraph_boundary_ai_review_settings",
-        lambda *a, **k: (True, "review_only", 200, 30, 120, "openrouter:test/structure"),
+        lambda *a, **k: (True, "review_only", 200, 30, 120, "openrouter:test/boundary-review"),
     )
     captured = {}
 
@@ -543,7 +538,6 @@ def test_run_prepared_background_document_threads_tenant_factory_into_boundary_r
     )
 
     app_config = dict(preparation.load_app_config())
-    app_config["structure_recognition_model"] = "openrouter:test/structure"
 
     result, _prepared = service.run_prepared_background_document(
         uploaded_file="tenant-factory.docx",
@@ -563,11 +557,12 @@ def test_run_prepared_background_document_threads_tenant_factory_into_boundary_r
     assert tenant_factory is not None
     # The captured factory is the tenant factory: a model selector routes to the tenant
     # client, never the global get_client() sentinel.
-    assert tenant_factory("openrouter:test/structure") is sentinel_tenant_client
+    assert tenant_factory("openrouter:test/boundary-review") is sentinel_tenant_client
 
 
 def test_run_prepared_background_document_model_factory_uses_default_when_selector_omitted(monkeypatch):
     sentinel_model_client = object()
+    sentinel_default_client = object()
     captured = {}
 
     def _selector_client_factory(selector, required_capability, *, config_like=None):
@@ -576,7 +571,7 @@ def test_run_prepared_background_document_model_factory_uses_default_when_select
 
     service = _build_service(
         run_document_processing_impl_fn=lambda **kwargs: "succeeded",
-        get_client_fn=lambda: object(),
+        get_client_fn=lambda: sentinel_default_client,
         get_client_for_model_selector_fn=_selector_client_factory,
     )
     prepared = type(
@@ -620,7 +615,7 @@ def test_run_prepared_background_document_model_factory_uses_default_when_select
         chunk_size=123,
         image_mode="safe",
         keep_all_image_variants=False,
-        app_config={"structure_recognition_model": "openrouter:test/structure"},
+        app_config={"processing_operation": "edit"},
         model="gpt-5.4",
         max_retries=2,
         processing_operation="edit",
@@ -628,12 +623,9 @@ def test_run_prepared_background_document_model_factory_uses_default_when_select
         runtime={"state": {}},
     )
 
-    assert captured["prepare_document"]["get_client_fn"]() is sentinel_model_client
-    assert captured["selector_call"] == (
-        "openrouter:test/structure",
-        "responses_text",
-        {"structure_recognition_model": "openrouter:test/structure"},
-    )
+    # Spec 066 C-8: no selector -> the default client; the selector factory is not consulted.
+    assert captured["prepare_document"]["get_client_fn"]() is sentinel_default_client
+    assert "selector_call" not in captured
 
 
 def test_run_prepared_background_document_passes_prepared_payload_into_processing(monkeypatch):
