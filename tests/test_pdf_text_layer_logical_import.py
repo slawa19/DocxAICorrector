@@ -2009,6 +2009,85 @@ def test_fr007_line_beside_a_full_body_line_of_another_column_is_not_a_table_cel
     assert {(1, 128.0, 50.0), (1, 128.0, 200.0)} <= short_row
 
 
+def _index_row(page: int, top: float) -> list[PdfTextSpan]:
+    # A row of a two-column index: the left entry line runs longer than half a body line
+    # (p75 = 64 -> 32), the right one is short.
+    return [
+        _span(page, "Entry word, 12, 34; with a subentry, 56", top=top, bottom=top + 12, x0=50, x1=220),
+        _span(page, "Other entry, 78", top=top, bottom=top + 12, x0=260, x1=340),
+    ]
+
+
+def _index_row_keys(page: int, top: float) -> set[tuple[int, float, float]]:
+    return {(page, top, 50.0), (page, top, 260.0)}
+
+
+def test_068_fr001_index_row_with_a_line_longer_than_half_a_body_line_is_a_table_row() -> None:
+    spans = [
+        _span(1, "Index", top=40, bottom=60, x0=50, x1=120, font_size=20),
+        *_index_row(1, 100),
+    ]
+    keys = logical_import._detect_table_row_span_keys(
+        spans, repeated_furniture_keys=set(), body_line_length_p75=64.0, body_font_size=10.0
+    )
+
+    assert _index_row_keys(1, 100) <= keys
+    # ANTI-VACUUM: the same row outside an index keeps the half-line bound (the two-column body
+    # guard of spec 064 FR-007), so the long line is no cell and the row is no row.
+    outside = logical_import._detect_table_row_span_keys(
+        [
+            _span(1, "A running body line that opens this page and sets the column.", top=40, bottom=52),
+            *_index_row(1, 100),
+        ],
+        repeated_furniture_keys=set(),
+        body_line_length_p75=64.0,
+        body_font_size=10.0,
+    )
+    assert outside == frozenset()
+
+
+def test_068_fr001_index_region_needs_a_title_that_opens_its_page_above_the_body() -> None:
+    # A contents row naming the index is set at body size; a title-sized "Index" below other
+    # lines of its page does not open the page. Neither anchors a region.
+    for title in (
+        [_span(1, "Index", top=40, bottom=52, x0=50, x1=120, font_size=10)],
+        [
+            _span(1, "A running body line that opens this page and sets the column.", top=20, bottom=32),
+            _span(1, "Index", top=40, bottom=60, x0=50, x1=120, font_size=20),
+        ],
+    ):
+        keys = logical_import._detect_table_row_span_keys(
+            [*title, *_index_row(1, 100)],
+            repeated_furniture_keys=set(),
+            body_line_length_p75=64.0,
+            body_font_size=10.0,
+        )
+        assert keys == frozenset()
+    # Without a body size there is no region either.
+    keys = logical_import._detect_table_row_span_keys(
+        [_span(1, "Index", top=40, bottom=60, x0=50, x1=120, font_size=20), *_index_row(1, 100)],
+        repeated_furniture_keys=set(),
+        body_line_length_p75=64.0,
+    )
+    assert keys == frozenset()
+
+
+def test_068_fr001_index_region_runs_across_pages_to_the_next_title_of_its_rank() -> None:
+    spans = [
+        _span(1, "Index", top=40, bottom=60, x0=50, x1=120, font_size=20),
+        *_index_row(1, 100),
+        *_index_row(2, 40),
+        _span(3, "About the Authors", top=40, bottom=60, x0=50, x1=220, font_size=20),
+        *_index_row(3, 100),
+    ]
+    keys = logical_import._detect_table_row_span_keys(
+        spans, repeated_furniture_keys=set(), body_line_length_p75=64.0, body_font_size=10.0
+    )
+
+    assert _index_row_keys(1, 100) | _index_row_keys(2, 40) <= keys
+    assert not (_index_row_keys(3, 100) & keys)
+
+
 def test_fr007_display_size_line_beside_a_short_span_stays_a_heading() -> None:
     # ANTI-VACUUM: a line set ABOVE the body is display type, not a table cell, even when a
     # short span of its size stands on its baseline (a chapter number set beside the title).

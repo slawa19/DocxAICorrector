@@ -7,6 +7,7 @@ from dataclasses import dataclass, replace
 from statistics import median
 
 from docxaicorrector.core.models import (
+    BACK_MATTER_SECTION_INDEX,
     BACK_MATTER_SECTION_NOTES,
     BACK_MATTER_SECTION_REFERENCES,
     ParagraphUnit,
@@ -75,6 +76,10 @@ _SUPERSCRIPT_REFERENCE_TAIL_CHARS = "⁰¹²³⁴⁵⁶⁷⁸⁹ "
 _TABLE_ROW_BASELINE_TOLERANCE = 0.3
 _TABLE_ROW_SIZE_TOLERANCE_PT = 0.5
 _TABLE_CELL_MAX_FONT_RATIO = 1.1
+# Spec 064 FR-007: a table cell is shorter than this share of a body line (p75) -- half a line
+# keeps a two-column body out. Spec 068 FR-001: inside a back-matter index a whole line.
+_TABLE_CELL_MAX_BODY_LINE_SHARE = 0.5
+_INDEX_CELL_MAX_BODY_LINE_SHARE = 1.0
 _OPENING_TEXT_BOUNDARY_CHARS = "\"“‘'«"
 
 
@@ -852,6 +857,7 @@ def _build_heading_layout_profile(
             spans,
             repeated_furniture_keys=repeated_furniture_keys,
             body_line_length_p75=body_line_length_p75,
+            body_font_size=body_font_size,
         ),
     )
 
@@ -913,6 +919,7 @@ def _detect_table_row_span_keys(
     *,
     repeated_furniture_keys: set[tuple[str, str]],
     body_line_length_p75: float,
+    body_font_size: float | None = None,
 ) -> frozenset[tuple[int, float, float]]:
     """Spans that sit in one ROW with another short span of the same size (spec 064 FR-007).
 
@@ -922,15 +929,30 @@ def _detect_table_row_span_keys(
     "Competition and Cooperation" figure ("Peak Experience" | "Endurance-Sus tainability")
     came through as a run of level-3 headings (spec 064 R-5). The half-line bound keeps a
     two-column body out: there the line beside a heading is a full column line.
+
+    Spec 068 FR-001: inside a back-matter INDEX (`_index_region_span_flags`) the bound is a
+    whole body line instead. An index is set in two narrow columns of entries, never in a
+    two-column body, so the risk the half-line bound guards against does not exist there --
+    while an entry line of the index runs up to a column's width, longer than half a body line
+    (Rethinking Money: 39-41 characters at a half-line of 35.5). Such a row failed the bound,
+    and its short neighbour then took the typographic heading path as a lone small line: a
+    false heading that opened its own block in the middle of the index (24 of them).
     """
 
     if body_line_length_p75 <= 0:
         return frozenset()
-    max_cell_chars = 0.5 * body_line_length_p75
+    max_cell_chars = _TABLE_CELL_MAX_BODY_LINE_SHARE * body_line_length_p75
+    max_index_cell_chars = _INDEX_CELL_MAX_BODY_LINE_SHARE * body_line_length_p75
+    in_index = _index_region_span_flags(
+        spans,
+        repeated_furniture_keys=repeated_furniture_keys,
+        body_font_size=body_font_size,
+    )
     by_page: dict[int, list[PdfTextSpan]] = {}
-    for span in spans:
+    for span, span_in_index in zip(spans, in_index):
         text = _normalize_text(span.text)
-        if not text or len(text) >= max_cell_chars or not span.font_size:
+        bound = max_index_cell_chars if span_in_index else max_cell_chars
+        if not text or len(text) >= bound or not span.font_size:
             continue
         if _span_furniture_key(span) in repeated_furniture_keys or _looks_like_page_number(span):
             continue
@@ -995,6 +1017,56 @@ def _detect_table_row_span_keys(
                     keys.add(_table_row_span_key(span))
                     break
     return frozenset(keys)
+
+
+def _index_region_span_flags(
+    spans: list[PdfTextSpan],
+    *,
+    repeated_furniture_keys: set[tuple[str, str]],
+    body_font_size: float | None,
+) -> list[bool]:
+    """Spec 068 FR-001: per span of `spans` (reading order), does it sit inside a back-matter
+    INDEX?
+
+    The rows are read from spans, before any unit exists, so the unit-level region
+    (`_back_matter_entry_region_flags`) is not available here; the anchor is read in the same
+    terms at span level. It is a line whose whole text is an index title of the blessed
+    back-matter lexicon (`_BACK_MATTER_SECTION_KIND_BY_TITLE`, exact match after the
+    normalisation `_back_matter_anchor_kind` applies -- never containment), set above the body
+    and opening its page: the first line of the page that is not furniture or a page number.
+    That is the form of a section title; a contents row naming the index is set at body size
+    among other rows, and a running head is furniture. The region runs from the line after the
+    title to the next line that opens its page set at the title's size or larger -- the next
+    section of the same rank -- or to the end of the document. Without a body size there is no
+    region: the bound stays where it was."""
+
+    flags = [False] * len(spans)
+    if not body_font_size:
+        return flags
+    opens_page: list[bool] = []
+    seen_pages: set[int] = set()
+    for span in spans:
+        is_content = bool(_normalize_text(span.text)) and not (
+            _span_furniture_key(span) in repeated_furniture_keys or _looks_like_page_number(span)
+        )
+        opens_page.append(is_content and span.page_number not in seen_pages)
+        if is_content:
+            seen_pages.add(span.page_number)
+    title_size: float | None = None
+    for index, span in enumerate(spans):
+        font_size = float(span.font_size or 0)
+        if opens_page[index] and font_size > 0:
+            if title_size is not None and font_size >= title_size - _TABLE_ROW_SIZE_TOLERANCE_PT:
+                title_size = None
+            title = _normalize_structural_text(_unwrap_inline_emphasis(_normalize_text(span.text))).lower()
+            if (
+                _BACK_MATTER_SECTION_KIND_BY_TITLE.get(title) == BACK_MATTER_SECTION_INDEX
+                and font_size / body_font_size >= _HEADING_PROMINENT_FONT_RATIO
+            ):
+                title_size = font_size
+                continue
+        flags[index] = title_size is not None
+    return flags
 
 
 def _nearest_content_span(
