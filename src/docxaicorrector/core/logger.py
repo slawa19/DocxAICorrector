@@ -13,6 +13,11 @@ from docxaicorrector.core.constants import APP_LOG_PATH, RUN_DIR
 
 _LOGGER: logging.Logger | None = None
 _LOG_FORMAT = "%(asctime)s | %(levelname)s | %(message)s"
+# Spec 067 FR-013: the per-run log file a ``redirect_log_file`` block points at. Set in the
+# process environment so a CHILD process (the PDF parse runs in a ``spawn``ed one,
+# ``processing/processing_runtime._run_pdf_parse_stages_with_deadline``) configures its
+# logger onto the same file instead of the shared ``.run/app.log``.
+RUN_LOG_FILE_ENV_VAR = "DOCX_AI_RUN_LOG_FILE"
 _SUPPORTED_LOG_LEVELS = {
     "DEBUG": logging.DEBUG,
     "INFO": logging.INFO,
@@ -72,7 +77,14 @@ def setup_logger() -> logging.Logger:
 
     resolved_level, warning_message = _resolve_log_level()
     logger.setLevel(resolved_level)
-    handler = _WSLSafeRotatingFileHandler(APP_LOG_PATH, maxBytes=1_000_000, backupCount=3, encoding="utf-8")
+    run_log_file = os.environ.get(RUN_LOG_FILE_ENV_VAR, "").strip()
+    handler: logging.FileHandler
+    if run_log_file:
+        # A child of a process inside ``redirect_log_file``: append to the run's own log.
+        Path(run_log_file).parent.mkdir(parents=True, exist_ok=True)
+        handler = logging.FileHandler(run_log_file, encoding="utf-8")
+    else:
+        handler = _WSLSafeRotatingFileHandler(APP_LOG_PATH, maxBytes=1_000_000, backupCount=3, encoding="utf-8")
     formatter = logging.Formatter(_LOG_FORMAT)
     handler.setFormatter(formatter)
     logger.addHandler(handler)
@@ -104,10 +116,16 @@ def redirect_log_file(path: Path) -> Iterator[Path]:
     evidence that must stay whole, and its size is bounded by the run itself. The previous
     handlers are restored on exit, so a process that runs several validations in turn writes
     each into its own file. The Streamlit app never calls this and keeps ``.run/app.log``.
+
+    Child processes: the path is also published as ``DOCX_AI_RUN_LOG_FILE`` in this
+    process's environment for the duration of the block, and ``setup_logger`` honours it, so
+    a child started meanwhile (``spawn`` copies the environment; the PDF parse child is one)
+    appends to the same file. The previous value of the variable is restored on exit.
     """
 
     target_logger = get_logger()
     path.parent.mkdir(parents=True, exist_ok=True)
+    previous_env_value = os.environ.get(RUN_LOG_FILE_ENV_VAR)
     run_handler = logging.FileHandler(path, encoding="utf-8")
     run_handler.setFormatter(logging.Formatter(_LOG_FORMAT))
     detached = [handler for handler in target_logger.handlers if isinstance(handler, logging.FileHandler)]
@@ -115,9 +133,14 @@ def redirect_log_file(path: Path) -> Iterator[Path]:
         handler.flush()
         target_logger.removeHandler(handler)
     target_logger.addHandler(run_handler)
+    os.environ[RUN_LOG_FILE_ENV_VAR] = str(path.absolute())
     try:
         yield path
     finally:
+        if previous_env_value is None:
+            os.environ.pop(RUN_LOG_FILE_ENV_VAR, None)
+        else:
+            os.environ[RUN_LOG_FILE_ENV_VAR] = previous_env_value
         target_logger.removeHandler(run_handler)
         run_handler.close()
         for handler in detached:
