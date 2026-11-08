@@ -33,9 +33,13 @@ def set_paragraph_pdf_table_cell_signal(paragraph) -> None:
 
 
 def paragraph_has_pdf_table_cell_signal(paragraph) -> bool:
-    """Does the paragraph's OWN ``w:pPr`` carry ``w:cnfStyle``? A paragraph inside a real
-    table is read by the table path, never through here; a body paragraph carries the
-    property only when the PDF bridge wrote it."""
+    """Does the paragraph's OWN ``w:pPr`` carry the ``w:cnfStyle`` the bridge writes, with the
+    bridge's exact value?
+
+    The property alone is not provenance: Word writes ``w:cnfStyle`` for conditional table
+    formatting, and a native DOCX may carry one with any value (Codex acceptance review of
+    spec 067, P1). Callers therefore honour it only in a document the bridge marked
+    (``document_is_pdf_bridge_output``); this predicate is the per-paragraph half."""
 
     element = getattr(paragraph, "_element", None)
     if element is None:
@@ -43,8 +47,89 @@ def paragraph_has_pdf_table_cell_signal(paragraph) -> bool:
     for child in element:
         if _local_tag_name(child) != "pPr":
             continue
-        return any(_local_tag_name(grandchild) == "cnfStyle" for grandchild in child)
+        return any(
+            _local_tag_name(grandchild) == "cnfStyle" and _xml_attribute(grandchild, "val") == _TABLE_CELL_CNF_STYLE_VALUE
+            for grandchild in child
+        )
     return False
+
+
+# Spec 067 FR-002 (Codex P1): the document-level provenance of the cell signal. The PDF bridge
+# names its intermediate DOCX with a document variable (`w:settings/w:docVars/w:docVar`) --
+# OOXML's place for an application's own named values, invisible in the text and in the
+# document properties a user edits. Nothing else in the repository stamped the intermediate
+# DOCX; the bridge's backend name (`conversion_backend = "pdf-text-layer"`) lives in the
+# normalized-document contract and never reaches `extraction.py`, which reads DOCX bytes only.
+_PDF_BRIDGE_DOC_VAR_NAME = "DocxAICorrectorPdfTextLayerBridge"
+_PDF_BRIDGE_DOC_VAR_VALUE = "1"
+
+
+def mark_document_as_pdf_bridge_output(document) -> None:
+    """Stamp a python-docx document as the PDF text-layer bridge's intermediate DOCX."""
+
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+
+    settings = document.settings.element
+    doc_vars = settings.find(qn("w:docVars"))
+    if doc_vars is None:
+        doc_vars = OxmlElement("w:docVars")
+        settings.insert_element_before(doc_vars, *_SETTINGS_SUCCESSORS_OF_DOC_VARS)
+    for doc_var in doc_vars.findall(qn("w:docVar")):
+        if doc_var.get(qn("w:name")) == _PDF_BRIDGE_DOC_VAR_NAME:
+            doc_var.set(qn("w:val"), _PDF_BRIDGE_DOC_VAR_VALUE)
+            return
+    doc_var = OxmlElement("w:docVar")
+    doc_var.set(qn("w:name"), _PDF_BRIDGE_DOC_VAR_NAME)
+    doc_var.set(qn("w:val"), _PDF_BRIDGE_DOC_VAR_VALUE)
+    doc_vars.append(doc_var)
+
+
+def document_is_pdf_bridge_output(document) -> bool:
+    """Did the PDF text-layer bridge write this document (``mark_document_as_pdf_bridge_output``)?"""
+
+    try:
+        settings = document.settings.element
+    except Exception:
+        return False
+    for child in settings:
+        if _local_tag_name(child) != "docVars":
+            continue
+        return any(
+            _local_tag_name(doc_var) == "docVar"
+            and _xml_attribute(doc_var, "name") == _PDF_BRIDGE_DOC_VAR_NAME
+            and _xml_attribute(doc_var, "val") == _PDF_BRIDGE_DOC_VAR_VALUE
+            for doc_var in child
+        )
+    return False
+
+
+# `w:settings` children after `w:docVars` in the schema order (CT_Settings).
+_SETTINGS_SUCCESSORS_OF_DOC_VARS = (
+    "w:rsids",
+    "m:mathPr",
+    "w:attachedSchema",
+    "w:themeFontLang",
+    "w:clrSchemeMapping",
+    "w:doNotIncludeSubdocsInStats",
+    "w:doNotAutoCompressPictures",
+    "w:forceUpgrade",
+    "w:captions",
+    "w:readModeInkLockDown",
+    "w:smartTagType",
+    "sl:schemaLibrary",
+    "w:shapeDefaults",
+    "w:doNotEmbedSmartTags",
+    "w:decimalSymbol",
+    "w:listSeparator",
+)
+
+
+def _xml_attribute(element, local_name: str) -> str | None:
+    for key, value in element.attrib.items():
+        if str(key).rsplit("}", 1)[-1] == local_name:
+            return str(value)
+    return None
 
 
 def _local_tag_name(element) -> str:
