@@ -156,15 +156,15 @@ def test_normalize_style_runs_collapses_and_strips_whitespace() -> None:
 
 def test_pdfminer_line_split_detects_attribution_trailing_superscript_marker() -> None:
     chars = [
-        _FakePdfMinerChar("K", size=10, x0=10, x1=18, y0=100, y1=110),
+        _FakePdfMinerChar("T", size=10, x0=10, x1=18, y0=100, y1=110),
         _FakePdfMinerChar("o", size=10, x0=18, x1=26, y0=100, y1=110),
-        _FakePdfMinerChar("f", size=10, x0=26, x1=34, y0=100, y1=110),
+        _FakePdfMinerChar("b", size=10, x0=26, x1=34, y0=100, y1=110),
         _FakePdfMinerChar("i", size=10, x0=34, x1=38, y0=100, y1=110),
         _FakePdfMinerChar(" ", size=10, x0=38, x1=42, y0=100, y1=110),
         _FakePdfMinerChar("A", size=10, x0=42, x1=50, y0=100, y1=110),
-        _FakePdfMinerChar("n", size=10, x0=50, x1=58, y0=100, y1=110),
-        _FakePdfMinerChar("n", size=10, x0=58, x1=66, y0=100, y1=110),
-        _FakePdfMinerChar("a", size=10, x0=66, x1=74, y0=100, y1=110),
+        _FakePdfMinerChar("s", size=10, x0=50, x1=58, y0=100, y1=110),
+        _FakePdfMinerChar("h", size=10, x0=58, x1=66, y0=100, y1=110),
+        _FakePdfMinerChar("e", size=10, x0=66, x1=74, y0=100, y1=110),
         _FakePdfMinerChar("n", size=10, x0=74, x1=82, y0=100, y1=110),
         _FakePdfMinerChar("2", size=4, x0=82, x1=84, y0=105, y1=109),
         _FakePdfMinerChar("8", size=4, x0=84, x1=86, y0=105, y1=109),
@@ -174,7 +174,7 @@ def test_pdfminer_line_split_detects_attribution_trailing_superscript_marker() -
 
     assert split is not None
     body, marker = split
-    assert "".join(char.get_text() for char in body) == "Kofi Annan"
+    assert "".join(char.get_text() for char in body) == "Tobi Ashen"
     assert "".join(char.get_text() for char in marker) == "28"
 
 
@@ -255,11 +255,11 @@ def test_pdfminer_line_keeps_body_size_raised_digit_welded_to_word() -> None:
 
 
 def test_pdfminer_line_keeps_number_split_across_a_line_break() -> None:
-    # "$16.58" wrapped so that "58" follows the decimal point with no space: welded by
+    # "$18.34" wrapped so that "34" follows the decimal point with no space: welded by
     # shape, but full size and on the baseline.
-    chars = _pdf_line([("from $5.49 trillion to $16.", 10, 100), ("58", 10, 100)])
+    chars = _pdf_line([("from $7.21 trillion to $18.", 10, 100), ("34", 10, 100)])
 
-    assert _extracted_line_text(chars) == "from $5.49 trillion to $16.58"
+    assert _extracted_line_text(chars) == "from $7.21 trillion to $18.34"
 
 
 def test_pdfminer_line_renders_raised_undersized_digit_after_a_space() -> None:
@@ -354,26 +354,26 @@ def test_pdfminer_line_keeps_digit_inside_a_raised_exponent_group() -> None:
     # alone; a digit inside a raised group is a formula and stays a digit.
     chars = _pdf_line(
         [
-            ("The exact formula is (1 + i) ", 9, 100),
+            ("The given rule reads (1 + i) ", 9, 100),
             ("(n - 1)", 5.8, 103.9),
-            (", where i is the rate", 9, 100),
+            (", while i is the rate", 9, 100),
         ]
     )
 
-    assert _extracted_line_text(chars) == "The exact formula is (1 + i) (n - 1), where i is the rate"
+    assert _extracted_line_text(chars) == "The given rule reads (1 + i) (n - 1), while i is the rate"
 
 
 def test_end_of_line_reference_raised_above_its_line_is_rendered_in_place() -> None:
     # The Value of Everything sets references at 0.60 of the body and raises them so far
     # that their top clears the line's. Split off, such a reference was read BEFORE its line
-    # and re-bound to the previous one ("in 2011.36" arrived as "($1,300 36 billion)").
+    # and re-bound to the previous one ("in 2013.36" arrived as "($1,300 36 billion)").
     # It is rendered where it is set instead.
-    chars = _pdf_line([("less than £300 billion in 2011.", 15, 100), ("36", 9, 106.5)])
+    chars = _pdf_line([("less than £700 million in 2013.", 15, 100), ("36", 9, 106.5)])
     overrides = _inline_superscript_marker_char_ids(chars)
 
     assert _split_trailing_superscript_marker_chars(chars) is not None
     assert _trailing_marker_split_left_to_importer(chars, overrides) is None
-    assert _line_text_with_char_overrides(chars, overrides) == "less than £300 billion in 2011.³⁶"
+    assert _line_text_with_char_overrides(chars, overrides) == "less than £700 million in 2013.³⁶"
 
 
 def test_end_of_line_reference_under_its_line_top_keeps_the_importer_path() -> None:
@@ -416,13 +416,13 @@ def test_065_fr007_reference_welded_to_a_closing_single_quote_is_rendered_as_sup
 
 
 def test_065_fr007_end_of_line_reference_after_a_closing_quote_is_rendered_in_place() -> None:
-    # "…shall have to reject.’" + "10" at the end of the line, raised above the line's top
+    # "…would have to refuse.’" + "10" at the end of the line, raised above the line's top
     # (VoE geometry): rendered where it is set, not split off and re-bound elsewhere.
-    chars = _pdf_line([("shall have to reject.’", 15, 100), ("10", 9, 106.5)])
+    chars = _pdf_line([("would have to refuse.’", 15, 100), ("10", 9, 106.5)])
     overrides = _inline_superscript_marker_char_ids(chars)
 
     assert _trailing_marker_split_left_to_importer(chars, overrides) is None
-    assert _line_text_with_char_overrides(chars, overrides) == "shall have to reject.’¹⁰"
+    assert _line_text_with_char_overrides(chars, overrides) == "would have to refuse.’¹⁰"
 
 
 def test_065_fr007_second_reference_after_a_comma_joins_the_first() -> None:
@@ -536,13 +536,13 @@ def test_pdfminer_line_split_rejects_normal_trailing_number() -> None:
 
 def test_quality_report_filters_repeated_page_furniture_and_page_numbers() -> None:
     spans = [
-        _span(1, "RETHINKING MONEY", top=20, bottom=35, font_size=8),
+        _span(1, "RECHARTING TIDES", top=20, bottom=35, font_size=8),
         _span(1, "1", top=750, bottom=765, font_size=8),
         _span(1, "First body paragraph.", font_size=10),
-        _span(2, "RETHINKING MONEY", top=20, bottom=35, font_size=8),
+        _span(2, "RECHARTING TIDES", top=20, bottom=35, font_size=8),
         _span(2, "2", top=750, bottom=765, font_size=8),
         _span(2, "Second body paragraph.", font_size=10),
-        _span(3, "RETHINKING MONEY", top=20, bottom=35, font_size=8),
+        _span(3, "RECHARTING TIDES", top=20, bottom=35, font_size=8),
         _span(3, "3", top=750, bottom=765, font_size=8),
         _span(3, "Third body paragraph.", font_size=10),
     ]
@@ -586,7 +586,7 @@ def test_pdfminer_bottom_origin_coordinates_are_normalized_to_top_origin() -> No
 def test_quality_report_detects_source_formatting_and_structure_candidates() -> None:
     spans = [
         _span(1, "Chapter Eight", font_size=12, bold=True),
-        _span(1, "NATIONAL CURRENCY CRISIS SOLUTION?", font_size=16, bold=True),
+        _span(1, "REGIONAL LANTERNS HARBOR SOLUTION?", font_size=16, bold=True),
         _span(1, "- a bullet item", font_size=10),
         _span(1, "body text with emphasis", font_size=10, italic=True),
     ]
