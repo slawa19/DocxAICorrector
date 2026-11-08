@@ -23,20 +23,6 @@ def _extract_event_context(event_log: Sequence[Mapping[str, object]], event_id: 
     return {}
 
 
-def _extract_event_context_value(event_log: Sequence[Mapping[str, object]], event_id: str, key: str) -> str:
-    context = _extract_event_context(event_log, event_id)
-    value = context.get(key)
-    return "" if value is None else str(value)
-
-
-def _extract_event_context_list(event_log: Sequence[Mapping[str, object]], event_id: str, key: str) -> list[str]:
-    context = _extract_event_context(event_log, event_id)
-    values = context.get(key)
-    if not isinstance(values, Sequence) or isinstance(values, (str, bytes, bytearray)):
-        return []
-    return [str(value) for value in values]
-
-
 def _extract_event_context_int(event_log: Sequence[Mapping[str, object]], event_id: str, key: str) -> int:
     context = _extract_event_context(event_log, event_id)
     value = context.get(key)
@@ -44,31 +30,6 @@ def _extract_event_context_int(event_log: Sequence[Mapping[str, object]], event_
         return int(cast(Any, value))
     except (TypeError, ValueError):
         return 0
-
-
-def _extract_event_context_float(event_log: Sequence[Mapping[str, object]], event_id: str, key: str) -> float | None:
-    context = _extract_event_context(event_log, event_id)
-    value = context.get(key)
-    try:
-        return float(cast(Any, value))
-    except (TypeError, ValueError):
-        return None
-
-
-def _extract_event_context_bool(event_log: Sequence[Mapping[str, object]], event_id: str, key: str) -> bool:
-    context = _extract_event_context(event_log, event_id)
-    value = context.get(key)
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        normalized = value.strip().lower()
-        if normalized in {"true", "1", "yes", "on"}:
-            return True
-        if normalized in {"false", "0", "no", "off", ""}:
-            return False
-    if isinstance(value, (int, float)):
-        return bool(value)
-    return False
 
 
 def _extract_event_context_int_list(event_log: Sequence[Mapping[str, object]], event_id: str, key: str) -> list[int]:

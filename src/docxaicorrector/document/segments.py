@@ -86,10 +86,6 @@ class GlossaryTerm:
 
 
 GLOSSARY_TERM_KINDS = frozenset({"term", "name"})
-# Spec 063 FR-014: the glossary's ceiling is a budget of prompt characters, not a count of
-# entries. Eight entries was the old count; a run glossary of ~60 short pairs fits here.
-DEFAULT_GLOSSARY_PROMPT_MAX_CHARS = 3000
-DOCUMENT_GLOSSARY_SECTION_HEADER = "ТЕРМИНЫ И КОНСИСТЕНТНЫЕ ЭКВИВАЛЕНТЫ ДЛЯ ЭТОГО ДОКУМЕНТА:"
 
 
 def _render_glossary_line(term: GlossaryTerm) -> str:
@@ -109,15 +105,16 @@ def _render_glossary_line(term: GlossaryTerm) -> str:
 def render_glossary_prompt_section(
     terms: Sequence[GlossaryTerm],
     *,
-    header: str = DOCUMENT_GLOSSARY_SECTION_HEADER,
-    max_chars: int = DEFAULT_GLOSSARY_PROMPT_MAX_CHARS,
+    header: str,
+    max_chars: int,
 ) -> str:
     """Render glossary entries as one prompt section, cut by a CHARACTER budget.
 
     Entries are taken in the order given while the section (header included) stays within
     ``max_chars``; when something did not fit, a ``- ...`` line says so, as the count cap
-    used to. One renderer serves both the document profile's slot and the run glossary
-    (spec 063 FR-014), so the two can never drift apart in format.
+    used to (spec 063 FR-014: the ceiling is a budget of prompt characters, not a count of
+    entries). The run glossary is its only caller since spec 066 removed the document
+    profile's glossary slot, whose only producer was the removed translation domain.
     """
 
     budget = max(0, int(max_chars or 0))
@@ -172,8 +169,6 @@ class DocumentContextProfile:
     detected_author: str | None
     source_language: str
     target_language: str
-    style_instructions: str
-    glossary_terms: tuple[GlossaryTerm, ...]
     segment_outline: tuple[SegmentOutlineEntry, ...]
 
     def __init__(
@@ -185,8 +180,6 @@ class DocumentContextProfile:
         detected_author: str | None = None,
         source_language: str = "",
         target_language: str = "",
-        style_instructions: str = "",
-        glossary_terms: tuple[GlossaryTerm, ...] = (),
         segment_outline: tuple[SegmentOutlineEntry, ...] = (),
         outline_entries: tuple[SegmentOutlineEntry, ...] | None = None,
     ) -> None:
@@ -197,20 +190,13 @@ class DocumentContextProfile:
         object.__setattr__(self, "detected_author", str(detected_author).strip() if isinstance(detected_author, str) and str(detected_author).strip() else None)
         object.__setattr__(self, "source_language", str(source_language or "").strip())
         object.__setattr__(self, "target_language", str(target_language or "").strip())
-        object.__setattr__(self, "style_instructions", str(style_instructions or "").strip())
-        object.__setattr__(self, "glossary_terms", tuple(glossary_terms or ()))
         object.__setattr__(self, "segment_outline", tuple(resolved_outline))
 
     @property
     def outline_entries(self) -> tuple[SegmentOutlineEntry, ...]:
         return self.segment_outline
 
-    def to_prompt_text(
-        self,
-        *,
-        max_outline_entries: int = 10,
-        max_glossary_chars: int = DEFAULT_GLOSSARY_PROMPT_MAX_CHARS,
-    ) -> str:
+    def to_prompt_text(self, *, max_outline_entries: int = 10) -> str:
         sections: list[str] = []
 
         header_lines: list[str] = []
@@ -227,9 +213,6 @@ class DocumentContextProfile:
         if header_lines:
             sections.append("МЕТАДАННЫЕ ДОКУМЕНТА:\n" + "\n".join(header_lines))
 
-        if self.style_instructions:
-            sections.append("СТИЛЕВЫЕ УКАЗАНИЯ ДЛЯ ДОКУМЕНТА:\n" + self.style_instructions)
-
         if self.segment_outline:
             outline_lines = [
                 f"- L{max(1, int(entry.level or 1))} | {str(entry.structural_role or 'body_range').strip() or 'body_range'} | {str(entry.title or '').strip()}"
@@ -240,14 +223,6 @@ class DocumentContextProfile:
                 if len(self.segment_outline) > max_outline_entries:
                     outline_lines.append("- ...")
                 sections.append("КРАТКИЙ ПЛАН ДОКУМЕНТА:\n" + "\n".join(outline_lines))
-
-        if self.glossary_terms:
-            glossary_section = render_glossary_prompt_section(
-                self.glossary_terms,
-                max_chars=max_glossary_chars,
-            )
-            if glossary_section:
-                sections.append(glossary_section)
 
         if not sections:
             return ""

@@ -44,8 +44,6 @@ from docxaicorrector.validation.structural_metrics_common import (  # noqa: F401
 )
 from docxaicorrector.validation.structural_event_log import (  # noqa: F401
     _extract_event_context,
-    _extract_event_context_bool,
-    _extract_event_context_float,
     _extract_event_context_int,
     _extract_event_context_int_list,
 )
@@ -639,7 +637,7 @@ def _build_preparation_diagnostic_snapshot_from_source(
             extract_document_content_with_normalization_reports(BytesIO(normalized_source.content_bytes))
         )
     except Exception as exc:
-        snapshot = _build_preparation_diagnostic_defaults(event_log)
+        snapshot = _build_preparation_diagnostic_defaults()
         snapshot["snapshot_error"] = str(exc)
         return snapshot
     snapshot = build_preparation_diagnostic_snapshot(
@@ -673,7 +671,7 @@ def build_preparation_diagnostic_snapshot(
     chunk_size: int,
     event_log: Sequence[Mapping[str, object]],
 ) -> dict[str, object]:
-    snapshot = _build_preparation_diagnostic_defaults(event_log)
+    snapshot = _build_preparation_diagnostic_defaults()
     paragraph_units = list(paragraphs)
     semantic_blocks = build_semantic_blocks(
         cast(list[Any], paragraph_units),
@@ -717,7 +715,7 @@ def build_preparation_diagnostic_snapshot(
     return snapshot
 
 
-def _build_preparation_diagnostic_defaults(event_log: Sequence[Mapping[str, object]]) -> dict[str, object]:
+def _build_preparation_diagnostic_defaults() -> dict[str, object]:
     snapshot = {
         "paragraph_count": 0,
         "heading_count": 0,
@@ -730,18 +728,6 @@ def _build_preparation_diagnostic_defaults(event_log: Sequence[Mapping[str, obje
         "remaining_isolated_marker_count": 0,
         "readiness_status": "",
         "readiness_reasons": [],
-        "outline_coverage_ratio": _extract_event_context_float(
-            event_log,
-            "reconciliation_report_saved",
-            "outline_coverage_ratio",
-        ),
-        "front_matter_leaks": _extract_event_context_int_list(event_log, "reconciliation_report_saved", "front_matter_leaks"),
-        "front_matter_body_advisories": _extract_event_context_int_list(
-            event_log,
-            "reconciliation_report_saved",
-            "front_matter_body_advisories",
-        ),
-        "targeted_recall_invoked": _extract_event_context_bool(event_log, "reconciliation_report_saved", "targeted_recall_invoked"),
         "quality_gate_status": "",
         "quality_gate_reasons": [],
         "semantic_block_count": 0,

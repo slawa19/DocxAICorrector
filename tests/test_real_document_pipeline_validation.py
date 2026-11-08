@@ -424,8 +424,6 @@ def test_evaluate_lietaer_acceptance_fails_on_translation_quality_report_residua
             "raw_mixed_script_term_count": 1,
             "toc_body_concat_detected": True,
             "toc_body_concat_markdown_detected": True,
-            "toc_body_concat_structure_detected": False,
-            "toc_body_concat_gate_source": "legacy_markdown",
         },
     }
 
@@ -528,7 +526,7 @@ def test_evaluate_lietaer_acceptance_uses_authoritative_structural_markdown_coun
             "residual_bullet_glyph_gate_source": "legacy_markdown",
             "raw_residual_bullet_glyph_count": 0,
             "list_fragment_regression_count": 0,
-            "list_fragment_regression_gate_source": "topology_projection",
+            "list_fragment_regression_gate_source": "entry_assembly",
             "raw_list_fragment_regression_count": 1,
             "mixed_script_term_count": 0,
             "toc_body_concat_detected": False,
@@ -547,7 +545,7 @@ def test_evaluate_lietaer_acceptance_uses_authoritative_structural_markdown_coun
     assert by_name["residual_bullet_glyphs_present"]["residual_bullet_glyph_gate_source"] == "legacy_markdown"
     assert by_name["residual_bullet_glyphs_present"]["raw_residual_bullet_glyph_count"] == 0
     assert by_name["list_fragment_regressions_present"]["list_fragment_regression_count"] == 0
-    assert by_name["list_fragment_regressions_present"]["list_fragment_regression_gate_source"] == "topology_projection"
+    assert by_name["list_fragment_regressions_present"]["list_fragment_regression_gate_source"] == "entry_assembly"
     assert by_name["list_fragment_regressions_present"]["raw_list_fragment_regression_count"] == 1
 
 
@@ -2129,7 +2127,6 @@ def test_evaluate_lietaer_acceptance_emits_required_no_toc_body_concat_check() -
         "preparation_diagnostic_snapshot": {
             "toc_body_concat_detected": False,
             "toc_body_concat_markdown_detected": False,
-            "toc_body_concat_gate_source": "legacy_markdown",
             "effective_source_toc_region_count": 1,
         },
     }
@@ -2143,7 +2140,6 @@ def test_evaluate_lietaer_acceptance_emits_required_no_toc_body_concat_check() -
 
     by_name = {check["name"]: check for check in acceptance["checks"]}
     assert by_name["no_toc_body_concat_required"]["passed"] is True
-    assert by_name["no_toc_body_concat_required"]["toc_body_concat_gate_source"] == "legacy_markdown"
 
 
 def test_evaluate_lietaer_acceptance_uses_explicit_report_markdown_field_for_legacy_toc_gate_fallback() -> None:
@@ -2164,8 +2160,6 @@ def test_evaluate_lietaer_acceptance_uses_explicit_report_markdown_field_for_leg
         "translation_quality_report": {
             "toc_body_concat_detected": False,
             "toc_body_concat_markdown_detected": True,
-            "toc_body_concat_structure_detected": False,
-            "toc_body_concat_gate_source": "legacy_markdown",
         },
         "preparation_diagnostic_snapshot": {
             "toc_body_concat_detected": False,
@@ -2182,10 +2176,8 @@ def test_evaluate_lietaer_acceptance_uses_explicit_report_markdown_field_for_leg
 
     by_name = {check["name"]: check for check in acceptance["checks"]}
     assert by_name["no_toc_body_concat_required"]["passed"] is False
-    assert by_name["no_toc_body_concat_required"]["toc_body_concat_gate_source"] == "legacy_markdown"
     assert by_name["no_toc_body_concat_required"]["toc_body_concat_detected"] is False
     assert by_name["no_toc_body_concat_required"]["toc_body_concat_markdown_detected"] is True
-    assert by_name["no_toc_body_concat_required"]["toc_body_concat_structure_detected"] is False
 
 
 def test_evaluate_lietaer_acceptance_allows_centered_text_edits_when_alignment_is_preserved() -> None:
@@ -2795,7 +2787,7 @@ def test_main_uses_processing_service_facade_and_runtime_config_only(tmp_path, m
                 "residual_bullet_glyph_classification": "display_hygiene",
                 "raw_residual_bullet_glyph_count": 1,
                 "list_fragment_regression_count": 0,
-                "list_fragment_regression_gate_source": "topology_projection",
+                "list_fragment_regression_gate_source": "entry_assembly",
                 "raw_list_fragment_regression_count": 1,
                 "mixed_script_term_count": 2,
                 "mixed_script_term_gate_source": "legacy_markdown",
@@ -2803,8 +2795,6 @@ def test_main_uses_processing_service_facade_and_runtime_config_only(tmp_path, m
                 "raw_mixed_script_term_count": 2,
                 "toc_body_concat_detected": False,
                 "toc_body_concat_markdown_detected": False,
-                "toc_body_concat_structure_detected": False,
-                "toc_body_concat_gate_source": "legacy_markdown",
             },
             ensure_ascii=False,
         ),
@@ -2898,12 +2888,6 @@ def test_main_uses_processing_service_facade_and_runtime_config_only(tmp_path, m
                 preparation_elapsed_seconds=0.1,
                 quality_gate_status="blocked",
                 quality_gate_reasons=("heading_count_far_below_toc_expectation",),
-                ai_classified_count=7,
-                ai_heading_count=3,
-                ai_role_change_count=2,
-                ai_heading_promotion_count=1,
-                ai_heading_demotion_count=1,
-                ai_structural_role_change_count=1,
                 structure_repair_report=structure_repair_report,
                 uploaded_file_token="token-1",
             )
@@ -2974,12 +2958,6 @@ def test_main_uses_processing_service_facade_and_runtime_config_only(tmp_path, m
     assert captured["source_language"] == "en"
     assert captured["target_language"] == "ru"
     assert report["runtime_config"]["effective"]["image_mode"] == "safe"
-    assert report["preparation"]["ai_classified_count"] == 7
-    assert report["preparation"]["ai_heading_count"] == 3
-    assert report["preparation"]["ai_role_change_count"] == 2
-    assert report["preparation"]["ai_heading_promotion_count"] == 1
-    assert report["preparation"]["ai_heading_demotion_count"] == 1
-    assert report["preparation"]["ai_structural_role_change_count"] == 1
     snapshot = report["preparation_diagnostic_snapshot"]
     assert snapshot["paragraph_count"] == 5
     assert snapshot["heading_count"] == 1
@@ -3016,12 +2994,11 @@ def test_main_uses_processing_service_facade_and_runtime_config_only(tmp_path, m
     assert "translation_quality_residual_bullet_glyph_gate_source=legacy_markdown" in summary_text
     assert "translation_quality_residual_bullet_glyph_classification=display_hygiene" in summary_text
     assert "translation_quality_raw_residual_bullet_glyph_count=1" in summary_text
-    assert "translation_quality_list_fragment_regression_gate_source=topology_projection" in summary_text
+    assert "translation_quality_list_fragment_regression_gate_source=entry_assembly" in summary_text
     assert "translation_quality_raw_list_fragment_regression_count=1" in summary_text
     assert "translation_quality_mixed_script_term_gate_source=legacy_markdown" in summary_text
     assert "translation_quality_mixed_script_term_classification=non_structural_hygiene" in summary_text
     assert "translation_quality_raw_mixed_script_term_count=2" in summary_text
-    assert "translation_quality_toc_body_concat_gate_source=legacy_markdown" in summary_text
     assert "source_file" not in report
     assert "runtime_configuration" not in report
 
@@ -3139,12 +3116,6 @@ def test_main_comparison_only_reader_cleanup_reports_non_acceptance_artifacts_fo
                 source_text="Source chapter region text",
                 preparation_cached=False,
                 preparation_elapsed_seconds=0.1,
-                ai_classified_count=0,
-                ai_heading_count=0,
-                ai_role_change_count=0,
-                ai_heading_promotion_count=0,
-                ai_heading_demotion_count=0,
-                ai_structural_role_change_count=0,
                 structure_repair_report=None,
                 uploaded_file_token="token-1",
             )
@@ -4827,12 +4798,6 @@ def test_main_comparison_only_reader_verifier_writes_artifacts_and_metadata(tmp_
                 source_text="Source chapter region text.",
                 preparation_cached=False,
                 preparation_elapsed_seconds=0.1,
-                ai_classified_count=0,
-                ai_heading_count=0,
-                ai_role_change_count=0,
-                ai_heading_promotion_count=0,
-                ai_heading_demotion_count=0,
-                ai_structural_role_change_count=0,
                 structure_repair_report=None,
                 uploaded_file_token="token-1",
             )
@@ -6044,12 +6009,6 @@ def test_main_comparison_only_reader_verifier_failure_is_non_blocking(tmp_path, 
                 source_text="Source chapter region text.",
                 preparation_cached=False,
                 preparation_elapsed_seconds=0.1,
-                ai_classified_count=0,
-                ai_heading_count=0,
-                ai_role_change_count=0,
-                ai_heading_promotion_count=0,
-                ai_heading_demotion_count=0,
-                ai_structural_role_change_count=0,
                 structure_repair_report=None,
                 uploaded_file_token="token-1",
             )
@@ -6215,12 +6174,6 @@ def test_main_falls_back_to_prepared_snapshot_statuses_when_event_log_lacks_stru
                 source_text="source text",
                 preparation_cached=False,
                 preparation_elapsed_seconds=0.1,
-                ai_classified_count=0,
-                ai_heading_count=0,
-                ai_role_change_count=0,
-                ai_heading_promotion_count=0,
-                ai_heading_demotion_count=0,
-                ai_structural_role_change_count=0,
                 structure_repair_report=SimpleNamespace(
                     repaired_bullet_items=0,
                     repaired_numbered_items=0,
@@ -6429,7 +6382,7 @@ def test_print_terminal_completion_summary_is_concise() -> None:
                     "residual_bullet_glyph_gate_source": "legacy_markdown",
                     "raw_residual_bullet_glyph_count": 1,
                     "list_fragment_regression_count": 0,
-                    "list_fragment_regression_gate_source": "topology_projection",
+                    "list_fragment_regression_gate_source": "entry_assembly",
                     "raw_list_fragment_regression_count": 1,
                 },
             },

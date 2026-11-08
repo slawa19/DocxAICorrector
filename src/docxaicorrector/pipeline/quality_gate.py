@@ -240,10 +240,7 @@ def _resolve_list_fragment_regression_gate_samples(
     final_markdown: str,
     assembly_entries: Sequence[object],
     source_backed_entry_authority: bool,
-    topology_projection_supported: bool,
 ) -> tuple[list[object], str]:
-    if source_backed_entry_authority and topology_projection_supported:
-        return [], "topology_projection"
     if source_backed_entry_authority and assembly_entries:
         entry_by_line = _build_source_backed_entry_by_markdown_line(
             final_markdown=final_markdown,
@@ -1518,10 +1515,8 @@ def _build_translation_quality_report(
         else 0.0
     )
     authority_fields = _derive_translation_quality_authority_fields(
-        context=context,
         final_markdown=final_markdown,
         formatting_payload=latest_payload if isinstance(latest_payload, Mapping) else None,
-        assembly_result=assembly_result,
     )
     role_aware_summary = resolve_role_aware_formatting_unmapped_source_summary(payloads)
     role_aware_target_summary = resolve_role_aware_formatting_unmapped_target_summary(payloads)
@@ -1538,7 +1533,6 @@ def _build_translation_quality_report(
         final_markdown=final_markdown,
         assembly_entries=assembly_entries,
         source_backed_entry_authority=source_backed_entry_authority,
-        topology_projection_supported=bool(authority_fields.get("topology_projection_supported", False)),
     )
     # Spec 064 FR-005: the back-matter region start, from the same provenance (and the same
     # source registry) the paragraph-break detector scopes by; no snapshot here, as there.
@@ -1651,10 +1645,6 @@ def _build_translation_quality_report(
     heading_demotion_samples = list(
         cast("list[Mapping[str, object]]", heading_demotion_result.get("samples") or [])
     )
-    if basis == "topology_unit":
-        structure_unit_total_count = authority_fields.get("structure_unit_total_count")
-        if isinstance(structure_unit_total_count, int) and structure_unit_total_count > 0:
-            effective_source_total = structure_unit_total_count
     if policy == "strict" and worst_unmapped_source_count > 0:
         if basis == "role_aware_formatting_coverage" and role_loss_count > 0:
             role_loss_samples = (
@@ -1785,31 +1775,23 @@ def _build_translation_quality_report(
             samples=bullet_heading_samples,
         )
     if toc_body_concat_detected:
-        if bool(authority_fields.get("toc_body_concat_structure_detected", False)):
-            quality_status = _apply_quality_gate_reason(
-                quality_status=quality_status,
-                gate_reasons=gate_reasons,
-                policy=policy,
-                reason="toc_body_concatenation_detected",
-            )
-        else:
-            quality_status = _apply_quality_review_reason(
-                quality_status=quality_status,
-                gate_reasons=gate_reasons,
+        quality_status = _apply_quality_review_reason(
+            quality_status=quality_status,
+            gate_reasons=gate_reasons,
+            reason="toc_body_concatenation_review_required",
+        )
+        formatting_review_items.append(
+            _build_formatting_review_item(
                 reason="toc_body_concatenation_review_required",
+                label="Возможная строка оглавления склеилась с текстом",
+                sample={
+                    "line": None,
+                    "text": final_markdown,
+                    "reason": "toc_body_concatenation_detected",
+                },
+                severity="fix",
             )
-            formatting_review_items.append(
-                _build_formatting_review_item(
-                    reason="toc_body_concatenation_review_required",
-                    label="Возможная строка оглавления склеилась с текстом",
-                    sample={
-                        "line": None,
-                        "text": final_markdown,
-                        "reason": "toc_body_concatenation_detected",
-                    },
-                    severity="fix",
-                )
-            )
+        )
     if false_fragment_heading_samples:
         quality_status, _ = _emit_hygiene_gate(
             quality_status=quality_status,
@@ -2049,7 +2031,6 @@ def _build_translation_quality_report(
             else None
         ),
         "raw_unmapped_target_paragraph_count": authority_fields.get("raw_unmapped_target_paragraph_count", len(unmapped_target_indexes) if isinstance(unmapped_target_indexes, list) else 0),
-        "structure_unit_total_count": authority_fields.get("structure_unit_total_count"),
         "structure_unit_unmapped_source_count": authority_fields.get("structure_unit_unmapped_source_count"),
         "structure_unit_unmapped_target_count": authority_fields.get("structure_unit_unmapped_target_count"),
         "accepted_aggregated_source_unit_count": authority_fields.get("accepted_aggregated_source_unit_count"),
@@ -2063,18 +2044,6 @@ def _build_translation_quality_report(
         "unit_unmapped_target_gate_source": authority_fields.get(
             "unit_unmapped_target_gate_source",
             authority_fields.get("unmapped_target_count_basis", "legacy_paragraph"),
-        ),
-        "document_map_toc_detected": authority_fields.get("document_map_toc_detected", False),
-        "document_map_toc_region_count": authority_fields.get("document_map_toc_region_count", 0),
-        "topology_toc_entry_count": authority_fields.get("topology_toc_entry_count", 0),
-        "topology_split_compound_toc_operation_count": authority_fields.get(
-            "topology_split_compound_toc_operation_count",
-            0,
-        ),
-        "topology_merge_heading_operation_count": authority_fields.get("topology_merge_heading_operation_count", 0),
-        "document_map_compound_toc_split_hint_count": authority_fields.get(
-            "document_map_compound_toc_split_hint_count",
-            0,
         ),
         "accepted_merged_sources_count": len(accepted_merged_sources) if isinstance(accepted_merged_sources, list) else 0,
         "caption_heading_conflicts_count": caption_heading_conflict_count,
@@ -2140,8 +2109,6 @@ def _build_translation_quality_report(
         "emphasis_coverage": dict(emphasis_coverage_payload),
         "toc_body_concat_detected": toc_body_concat_detected,
         "toc_body_concat_markdown_detected": authority_fields.get("toc_body_concat_markdown_detected", False),
-        "toc_body_concat_structure_detected": authority_fields.get("toc_body_concat_structure_detected", False),
-        "toc_body_concat_gate_source": authority_fields.get("toc_body_concat_gate_source", "legacy_markdown"),
         "quality_gate_audit_classifications": quality_gate_audit_classifications_payload(),
         "formatting_diagnostics_artifact_count": len(formatting_diagnostics_artifacts),
         "role_aware_formatting_coverage_note": (
@@ -2176,10 +2143,8 @@ def _build_translation_quality_report(
 
 def _derive_translation_quality_authority_fields(
     *,
-    context: Any,
     final_markdown: str,
     formatting_payload: Mapping[str, object] | None,
-    assembly_result: Any | None,
 ) -> dict[str, object]:
     markdown_detected = _has_toc_body_concat_markdown(final_markdown)
     raw_unmapped_source_count = 0
@@ -2194,8 +2159,6 @@ def _derive_translation_quality_authority_fields(
     fields: dict[str, object] = {
         "toc_body_concat_detected": markdown_detected,
         "toc_body_concat_markdown_detected": markdown_detected,
-        "toc_body_concat_structure_detected": False,
-        "toc_body_concat_gate_source": "legacy_markdown",
         "raw_unmapped_source_paragraph_count": raw_unmapped_source_count,
         "raw_unmapped_target_paragraph_count": raw_unmapped_target_count,
         "structure_unit_unmapped_source_count": raw_unmapped_source_count,
@@ -2249,7 +2212,7 @@ def _effective_authoritative_unmapped_count(
     basis = str(fields.get(basis_key) or "legacy_paragraph").strip().lower() or "legacy_paragraph"
     candidate = (
         fields.get(structure_count_key)
-        if basis in {"topology_unit", "accepted_aggregation_legacy"}
+        if basis == "accepted_aggregation_legacy"
         else fields.get(raw_count_key)
     )
     return int(candidate or 0) if isinstance(candidate, (int, float, bool)) else 0

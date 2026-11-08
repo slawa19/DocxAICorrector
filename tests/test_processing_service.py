@@ -4,7 +4,7 @@ from typing import Any, cast
 import docxaicorrector.processing.preparation as preparation
 import docxaicorrector.processing.processing_service as processing_service
 from docxaicorrector.core.models import ImageAnalysisResult, ImageAsset, ImageValidationResult
-from docxaicorrector.document.segments import DocumentContextProfile, GlossaryTerm
+from docxaicorrector.document.segments import DocumentContextProfile
 from docxaicorrector.processing.processing_service import ProcessingService
 from docxaicorrector.processing.upload_ports import FrozenUploadPayload
 from docxaicorrector.pipeline.contracts import ProcessingContext, ProcessingDependencies
@@ -347,9 +347,7 @@ def test_run_prepared_background_document_uses_preparation_and_job_mutator(monke
             "jobs": [{"target_text": "one"}],
             "paragraphs": ["p1"],
             "image_assets": ["img1"],
-            "document_context_profile": DocumentContextProfile(
-                glossary_terms=(GlossaryTerm(source_term="Great Tribulation", target_term="Великая скорбь"),),
-            ),
+            "document_context_profile": DocumentContextProfile(source_title="Prepared Book"),
         },
     )()
     captured = {}
@@ -641,9 +639,7 @@ def test_run_prepared_background_document_passes_prepared_payload_into_processin
             ],
             "paragraphs": ["p1"],
             "image_assets": ["img1"],
-            "document_context_profile": DocumentContextProfile(
-                glossary_terms=(GlossaryTerm(source_term="Great Tribulation", target_term="Великая скорбь"),),
-            ),
+            "document_context_profile": DocumentContextProfile(source_title="Prepared Book"),
         },
     )()
 
@@ -673,8 +669,8 @@ def test_run_prepared_background_document_passes_prepared_payload_into_processin
     assert captured["run"]["image_assets"] == ["img1"]
     assert captured["run"]["app_config"]["x"] == 1
     # Full-document run: build_document_context_prompt still emits the base document
-    # context (glossary) but no partial selected-segment focus block.
-    assert "Great Tribulation" in captured["run"]["document_context_prompt"]
+    # context (metadata) but no partial selected-segment focus block.
+    assert "Prepared Book" in captured["run"]["document_context_prompt"]
     assert "ФОКУС ТЕКУЩЕГО ЗАПУСКА" not in captured["run"]["document_context_prompt"]
 
 

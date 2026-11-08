@@ -75,10 +75,7 @@ UNREAD_ALLOWED: dict[str, str] = {
 }
 
 # Direction 2 exceptions: read under an app-config receiver name, produced by no one.
-UNPRODUCED_ALLOWED: dict[str, str] = {
-    "document_context_prompt": "dead fallback in pipeline/setup.py and support.py (the prompt arrives as an "
-    "argument, spec 064); found by this guard, those modules are spec 066 P1's",
-}
+UNPRODUCED_ALLOWED: dict[str, str] = {}
 
 
 # Functions whose local ``config`` is not an app config, so the receiver-name heuristic of

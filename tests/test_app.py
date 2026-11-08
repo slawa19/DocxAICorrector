@@ -5,7 +5,7 @@ import docxaicorrector.runtime.state as state
 import docxaicorrector.ui._app as app
 import docxaicorrector.ui._ui as ui
 from conftest import SessionState as SessionState
-from docxaicorrector.document.segments import DocumentContextProfile, GlossaryTerm, SegmentOutlineEntry
+from docxaicorrector.document.segments import DocumentContextProfile, SegmentOutlineEntry
 
 
 @pytest.fixture(autouse=True)
@@ -49,12 +49,11 @@ def test_assess_text_transform_stores_assessment_in_session_state(monkeypatch):
     assert assessment["target_language_script_match"] is True
 
 
-def test_build_document_context_prompt_includes_outline_and_glossary_terms():
+def test_build_document_context_prompt_includes_outline():
     prompt = app._build_document_context_prompt(
         prepared_run_context=SimpleNamespace(
             document_context_profile=DocumentContextProfile(
                 outline_entries=(SegmentOutlineEntry(segment_id="seg_0001", title="Chapter 1", level=1),),
-                glossary_terms=(GlossaryTerm(source_term="Great Tribulation", target_term="die grosse Trubsal"),),
             ),
             segments=[
                 SimpleNamespace(segment_id="seg_0001", ordinal=1, level=1, structural_role="chapter", title="Chapter 1"),
@@ -65,7 +64,6 @@ def test_build_document_context_prompt_includes_outline_and_glossary_terms():
     )
 
     assert "Chapter 1" in prompt
-    assert "Great Tribulation" in prompt
 
 
 def test_start_background_processing_forwards_explicit_output_mode(monkeypatch):

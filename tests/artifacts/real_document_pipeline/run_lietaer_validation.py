@@ -667,9 +667,7 @@ def _build_translation_quality_summary_lines(
         f"translation_quality_gate_reasons={','.join(_as_string_list(report.get('gate_reasons')))}",
     ]
     for key in (
-        "toc_body_concat_gate_source",
         "toc_body_concat_markdown_detected",
-        "toc_body_concat_structure_detected",
         "bullet_heading_count",
         "bullet_heading_gate_source",
         "bullet_heading_classification",
@@ -1214,9 +1212,6 @@ def _print_terminal_completion_summary(*, report: Mapping[str, object], final_st
                 for part in (
                     f"status={translation_quality_report.get('quality_status')}",
                     f"gate_reasons={','.join(_as_string_list(translation_quality_report.get('gate_reasons')))}",
-                    f"toc_body_concat_gate_source={translation_quality_report.get('toc_body_concat_gate_source')}"
-                    if "toc_body_concat_gate_source" in translation_quality_report
-                    else "",
                     f"bullet_heading_count={translation_quality_report.get('bullet_heading_count')}"
                     if "bullet_heading_count" in translation_quality_report
                     else "",
@@ -5943,12 +5938,6 @@ def main() -> None:
         "paragraph_count": len(prepared.paragraphs) if prepared is not None else None,
         "image_count": len(prepared.image_assets) if prepared is not None else None,
         "job_count": len(prepared.jobs) if prepared is not None else None,
-        "ai_classified_count": int(getattr(prepared, "ai_classified_count", 0) or 0) if prepared is not None else 0,
-        "ai_heading_count": int(getattr(prepared, "ai_heading_count", 0) or 0) if prepared is not None else 0,
-        "ai_role_change_count": int(getattr(prepared, "ai_role_change_count", 0) or 0) if prepared is not None else 0,
-        "ai_heading_promotion_count": int(getattr(prepared, "ai_heading_promotion_count", 0) or 0) if prepared is not None else 0,
-        "ai_heading_demotion_count": int(getattr(prepared, "ai_heading_demotion_count", 0) or 0) if prepared is not None else 0,
-        "ai_structural_role_change_count": int(getattr(prepared, "ai_structural_role_change_count", 0) or 0) if prepared is not None else 0,
         "source_chars": source_chars,
         "cached": prepared.preparation_cached if prepared is not None else None,
         "elapsed_seconds": round(prepared.preparation_elapsed_seconds, 3) if prepared is not None else None,
@@ -6184,12 +6173,6 @@ def main() -> None:
         f"paragraph_count={report['preparation']['paragraph_count']}",
         f"image_count={report['preparation']['image_count']}",
         f"job_count={report['preparation']['job_count']}",
-        f"ai_classified_count={report['preparation']['ai_classified_count']}",
-        f"ai_heading_count={report['preparation']['ai_heading_count']}",
-        f"ai_role_change_count={report['preparation']['ai_role_change_count']}",
-        f"ai_heading_promotion_count={report['preparation']['ai_heading_promotion_count']}",
-        f"ai_heading_demotion_count={report['preparation']['ai_heading_demotion_count']}",
-        f"ai_structural_role_change_count={report['preparation']['ai_structural_role_change_count']}",
         f"preparation_diagnostic_snapshot={json.dumps(report['preparation_diagnostic_snapshot'], ensure_ascii=False, sort_keys=True)}",
         *_build_model_accounting_summary_lines(
             cast("Mapping[str, object] | None", report.get("model_accounting"))

@@ -232,7 +232,7 @@ def build_processing_context(
         canonical_model_selector=canonical_model_selector,
         model_provider=model_provider,
         model_id=model_id,
-        document_context_prompt=str(document_context_prompt or app_config.get("document_context_prompt", "") or ""),
+        document_context_prompt=str(document_context_prompt or ""),
     )
 
 

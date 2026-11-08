@@ -76,10 +76,6 @@ def _apply_structure_validation_snapshot_fields(snapshot: dict[str, object], str
             for reason in tuple(getattr(structure_validation_report, "readiness_reasons", ()) or ())
             if str(reason).strip()
         ]
-    if snapshot.get("outline_coverage_ratio") is None:
-        outline_coverage_ratio = getattr(structure_validation_report, "outline_coverage_ratio", None)
-        if outline_coverage_ratio is not None:
-            snapshot["outline_coverage_ratio"] = float(outline_coverage_ratio)
 
 
 def _apply_quality_gate_readiness_fallback(snapshot: dict[str, object]) -> None:
