@@ -114,8 +114,12 @@ _EMPHASIS_MARKS_RE = re.compile(r"\*+")
 # marked expression. Bold first, so "**a** **b**" is not read as two italics.
 _ADJACENT_BOLD_RE = re.compile(r"(?<=[^\s*])\*\*(\s+)\*\*(?=[^\s*])")
 _ADJACENT_ITALIC_RE = re.compile(r"(?<=[^\s*])\*(\s+)\*(?=[^\s*])")
+# Spec 067 FR-011 (b): "**" between a letter (or a word's hyphen) and a letter -- an italic run
+# closed and reopened inside one word, as the importer writes "*thank-**yous*".
+_EMPHASIS_INSIDE_WORD_RE = re.compile(r"(?<=[^\W\d_]|-)\*\*(?=[^\W\d_])")
 _URL_RE = re.compile(r"(?:https?://|www\.)\S+|\S*[A-Za-z0-9]\.[A-Za-z]{2,}/\S*")
 _ROMAN_NUMERAL_RE = re.compile(r"^[IVXLCDM]+$")
+_DIGIT_AFTER_RE = re.compile(r"[ \t ]*\d")
 _POSSESSIVE_RE = re.compile(r"[’']s$")
 _SENTENCE_BREAKS = frozenset(".!?:;\"“”‘(—–[•")
 _CLAUSE_SPLIT_RE = re.compile(r"[.!?:;,()\[\]—–\"“”‘’•]")
@@ -184,6 +188,13 @@ class GlossaryCandidate:
     # Spec 064 FR-009: the full form of the name this short form belongs to ("Bernard Lietaer"
     # for "Lietaer"), decided by form in ``extract_glossary_candidates``; empty otherwise.
     name_head: str = ""
+    # Spec 067 FR-010: the other surfaces of this candidate -- the same words in another order
+    # or with a hyphen ("added value", "value-added" for "value added"). They are not asked for
+    # on their own; the rendering of ``source_term`` covers them.
+    spellings: tuple[str, ...] = ()
+    # Spec 067 FR-009: the candidates the book sets against this one -- the same last word,
+    # other words before it, side by side in the same paragraphs (``_contrast_partners``).
+    contrasts: tuple[str, ...] = ()
 
     def to_payload(self) -> dict[str, object]:
         payload: dict[str, object] = {
@@ -199,6 +210,10 @@ class GlossaryCandidate:
         }
         if self.name_head:
             payload["name_head"] = self.name_head
+        if self.spellings:
+            payload["spellings"] = list(self.spellings)
+        if self.contrasts:
+            payload["contrasts"] = list(self.contrasts)
         return payload
 
 
@@ -326,20 +341,26 @@ def _plain(text: str) -> str:
 
 
 def _join_adjacent_emphasis(text: str) -> str:
-    return _ADJACENT_ITALIC_RE.sub(r"\1", _ADJACENT_BOLD_RE.sub(r"\1", text))
+    joined = _ADJACENT_ITALIC_RE.sub(r"\1", _ADJACENT_BOLD_RE.sub(r"\1", text))
+    # Spec 067 FR-011 (b): emphasis closed and reopened INSIDE one word ("called *thank-**yous*")
+    # cut the defined word in two, and "thank" became a required entry; the word is one.
+    return _EMPHASIS_INSIDE_WORD_RE.sub("", joined)
 
 
 # --- extraction ------------------------------------------------------------------------------
 
 
-def _capitalised_runs(plain: str) -> list[list[str]]:
+def _capitalised_runs(plain: str, numbered: list[bool] | None = None) -> list[list[str]]:
     """Runs of capitalised words; a run that opens a sentence is marked with a leading ``None``.
 
     Short lowercase joiners (``of``, ``for``) are kept inside a run when a capitalised word
-    follows them, so an institution's name stays one candidate.
+    follows them, so an institution's name stays one candidate. ``numbered``, when given,
+    receives one flag per returned run: the run is directly followed by a digit ("Chapter 13",
+    "Figure 2" -- spec 067 FR-011).
     """
 
-    tokens = [match.group(0) for match in _TOKEN_RE.finditer(plain)]
+    matches = list(_TOKEN_RE.finditer(plain))
+    tokens = [match.group(0) for match in matches]
     runs: list[list[str]] = []
     index = 0
     sentence_start = True
@@ -374,6 +395,7 @@ def _capitalised_runs(plain: str) -> list[list[str]]:
                 cursor += 1
                 continue
             break
+        before = len(runs)
         if not sentence_start:
             if len(run) <= _MAX_TERM_WORDS:
                 runs.append(run)
@@ -382,6 +404,9 @@ def _capitalised_runs(plain: str) -> list[list[str]]:
                 runs.append(run[1:])
             if len(run) <= _MAX_TERM_WORDS:
                 runs.append([""] + run)  # the whole run, admitted later only by its first word
+        if numbered is not None:
+            followed_by_digit = bool(_DIGIT_AFTER_RE.match(plain, matches[cursor - 1].end()))
+            numbered.extend([followed_by_digit] * (len(runs) - before))
         index = cursor
         sentence_start = False
     return runs
@@ -499,8 +524,19 @@ def extract_glossary_candidates(
     marked_units: dict[tuple[str, ...], set[int]] = defaultdict(set)
     defined_units: dict[tuple[str, ...], set[int]] = defaultdict(set)
     capitalised_noninitial: Counter[tuple[str, ...]] = Counter()
+    # Spec 067 FR-011 (a): two capitals that say nothing about how the document writes a word.
+    # A paragraph whose letters are ALL capitals ("PROSPERITY", "WORK VERSUS JOBS"): every word
+    # in it is a capital. A word directly before a number ("described in Chapter 13", "see
+    # Figure 2"): the capital of a numbered label is the label's convention -- Creating Wealth
+    # writes "Chapter N" 15 times mid-sentence and "chapter" 14 times, and *chapter* became a
+    # capitalised form, then a required h1 entry. Such runs still count as names for the name
+    # test, but not as the case evidence ``_Draft.capitalised_form`` reads (``cased_capitalised``).
+    set_in_capitals = {index for index in body_indexes if _set_in_capitals(plains[index])}
+    cased_capitalised: Counter[tuple[str, ...]] = Counter()
 
-    def admit(raw_words: Sequence[str], signal: str, unit_index: int, *, proper: bool) -> None:
+    def admit(
+        raw_words: Sequence[str], signal: str, unit_index: int, *, proper: bool, numbered_label: bool = False
+    ) -> None:
         words = [_fold_word(word) for word in raw_words]
         if not words or len(words) > _MAX_TERM_WORDS:
             return
@@ -513,6 +549,8 @@ def extract_glossary_candidates(
             defined_units[key].add(unit_index)
         if signal == "capitalised":
             capitalised_noninitial[key] += 1
+            if unit_index not in set_in_capitals and not numbered_label:
+                cased_capitalised[key] += 1
         draft = drafts.get(key)
         if draft is None:
             draft = drafts[key] = _Draft(key=key, surface=" ".join(raw_words), proper=proper)
@@ -538,23 +576,50 @@ def extract_glossary_candidates(
         else:
             chapter_of.append(unit_index * _SPREAD_BINS // unit_count)
 
+    commonest_words = {word for word, _ in word_counts.most_common(_COMMONEST_WORDS)}
+
     def admit_marked(words: Sequence[str], signal: str, unit_index: int) -> None:
         trimmed = _trim_joiners(words)
+        if signal == "defined" and trimmed != list(words) and _defined_expression_is_whole(words, trimmed):
+            trimmed = list(words)
         if not trimmed:
             return
         admit(trimmed, signal, unit_index, proper=False)
 
+    def _defined_expression_is_whole(words: Sequence[str], trimmed: Sequence[str]) -> bool:
+        """Spec 067 FR-011 (b): the defined expression keeps a short edge word it is written with.
+
+        "known as cap and trade" lost "cap" (three letters) and then "and" to ``_trim_joiners``,
+        and the candidate became the one word "trade". By form, a definition's untrimmed
+        expression of several words is the term when the document writes it whole at least
+        ``_SINGLE_WORD_MIN_COUNT`` times AND the outermost word the trim took at each trimmed
+        edge is not one of the document's ``_COMMONEST_WORDS`` commonest words (counted, not
+        listed: "the", "as", "of" are; "cap" is not -- the "and" after it went only because
+        "cap" had gone). "called him a loser" -- written once -- is trimmed as before.
+        """
+
+        if len(words) < 2 or not trimmed:
+            return False
+        key = tuple(_fold_word(word).lower() for word in words)
+        if len(hits_folded_case.get(key, ())) < _SINGLE_WORD_MIN_COUNT:
+            return False
+        trimmed_start = list(words[: len(trimmed)]) != list(trimmed)
+        trimmed_end = list(words[-len(trimmed) :]) != list(trimmed)
+        edges = [words[0]] * trimmed_start + [words[-1]] * trimmed_end
+        return not any(word.lower() in commonest_words for word in edges)
+
     for unit_index in body_indexes:
         plain = plains[unit_index]
         source = marked_sources[unit_index]
-        for run in _capitalised_runs(plain):
+        numbered: list[bool] = []
+        for run, followed_by_digit in zip(_capitalised_runs(plain, numbered), numbered):
             if run[0] == "":
                 run = run[1:]
                 first = run[0]
                 first_is_name = raw_case_counts[first] > raw_case_counts[first.lower()]
                 if not (first.isupper() and len(first) >= 2) and not first_is_name:
                     continue
-            admit(run, "capitalised", unit_index, proper=True)
+            admit(run, "capitalised", unit_index, proper=True, numbered_label=followed_by_digit and len(run) == 1)
         emphasis_free = _EMPHASIS_MARKS_RE.sub("", source)
         for pattern, signal, text in (
             (_ITALIC_RE, "emphasis", source),
@@ -637,7 +702,7 @@ def extract_glossary_candidates(
 
     families: dict[str, list[_Draft]] = defaultdict(list)
     capitalised_by_lower: Counter[str] = Counter()
-    for capitalised_key, capitalised_times in capitalised_noninitial.items():
+    for capitalised_key, capitalised_times in cased_capitalised.items():
         if len(capitalised_key) == 1:
             capitalised_by_lower[capitalised_key[0].lower()] += capitalised_times
     for key, draft in drafts.items():
@@ -896,32 +961,170 @@ def extract_glossary_candidates(
         word for unit_index in body_indexes for word in _WORD_RE.findall(plains[unit_index]) if word.islower()
     )
     name_heads = _name_family_heads(kept, lowercase_words=body_lowercase_words)
+    written_forms: dict[str, Counter[str]] = defaultdict(Counter)
+    for unit_index in body_indexes:
+        for word in _WORD_RE.findall(plains[unit_index]):
+            written_forms[_fold_word(word.lower())][word.lower()] += 1
+    def surface_of(draft: _Draft) -> str:
+        return draft.surface if draft.proper else _written_surface(draft.surface, written_forms)
+
     candidates: list[GlossaryCandidate] = []
-    for draft in kept:
-        first_unit = min(draft.units)
+    candidate_units: list[set[int]] = []
+    for group in _permutation_groups(kept):
+        # Spec 067 FR-010: one candidate per group, named by its most used surface (the first
+        # on a tie); the others are its spellings. The group's uses and units add up, and it
+        # is required when any of its surfaces is.
+        draft = max(enumerate(group), key=lambda item: (item[1].count, -item[0]))[1]
+        group_units = set().union(*(member.units for member in group))
+        first_unit = min(group_units)
         if draft.family == FAMILY_MARKED and draft.signal_unit is not None:
             context_unit = draft.signal_unit
         elif draft.family == FAMILY_HEADING and draft.heading_unit is not None:
             context_unit = draft.heading_unit
         else:
-            context_unit = first_unit
+            context_unit = min(draft.units)
         candidates.append(
             GlossaryCandidate(
-                source_term=draft.surface,
+                source_term=surface_of(draft),
                 key=draft.key,
                 family=draft.family,
-                signals=tuple(sorted(draft.signals)),
-                occurrence_count=draft.count,
-                unit_count=len(draft.units),
-                spread=len({bin_of(unit) for unit in draft.units}),
+                signals=tuple(sorted(set().union(*(member.signals for member in group)))),
+                occurrence_count=sum(member.count for member in group),
+                unit_count=len(group_units),
+                spread=len({bin_of(unit) for unit in group_units}),
                 first_unit_id=units[first_unit].unit_id,
                 context=_context_snippet(plains[context_unit], draft.surface),
                 score=round(draft.score, 4),
-                required=_included_by_rule(draft),
+                required=any(_included_by_rule(member) for member in group),
                 name_head=name_heads[id(draft)].surface if id(draft) in name_heads else "",
+                spellings=tuple(surface_of(member) for member in group if member is not draft),
             )
         )
-    return tuple(candidates)
+        candidate_units.append(group_units)
+    contrasted = _contrast_partners(candidates, candidate_units)
+    return tuple(
+        replace(candidate, contrasts=contrasted[index]) if index in contrasted else candidate
+        for index, candidate in enumerate(candidates)
+    )
+
+
+# Spec 067 FR-009: two candidates the author sets against each other stand side by side in at
+# least this many paragraphs. Measured on the fourth run's books (2026-11-08): Rethinking
+# Money's *cooperative currencies* / *complementary currencies* share 5 paragraphs. Over the
+# glossary entries of the four books (a survey of all paragraphs, before the joiner and
+# narrowing exclusions) pairs sharing >= 1 paragraph number 22 / 31 / 9 / 18 (Money / CW / RM /
+# VoE) and >= 2 -- 13 / 15 / 5 / 6: one shared paragraph is mostly a passing mention, and the
+# mark costs prompt characters on every block call.
+_CONTRAST_MIN_SHARED_UNITS = 2
+
+
+def _contrast_partners(
+    candidates: Sequence[GlossaryCandidate],
+    units_of: Sequence[set[int]],
+) -> dict[int, tuple[str, ...]]:
+    """Candidates the book contrasts with each candidate, by form (spec 067 FR-009, G-2).
+
+    Rethinking Money fixed *complementary currencies* as «комплементарные валюты», and in 12 of
+    93 paragraphs about its own *cooperative currencies* the translation then said
+    «комплементарные» -- the rendering of one entry leaked into its neighbour. Two candidates
+    are a contrasted pair when, by form:
+      - each has at least two words and no joiner inside (a word of up to
+        ``_MAX_JOINER_LETTERS`` letters between the first and the last: in "theory of value"
+        the last word is not the head);
+      - they share the LAST word and differ before it, and neither ends with the other
+        ("exchange capital" in "potential exchange capital" is the same thing narrowed, which
+        spec 065 FR-003 already orders);
+      - they stand together in at least ``_CONTRAST_MIN_SHARED_UNITS`` paragraphs.
+    No list of words: the head word, the paragraphs and the counts are the document's own.
+    Partners come most shared paragraphs first, then by use.
+    """
+
+    shapes: dict[int, tuple[str, ...]] = {}
+    for index, candidate in enumerate(candidates):
+        words = tuple(word.lower() for word in candidate.key)
+        if len(words) < 2 or any(len(word) <= _MAX_JOINER_LETTERS for word in words[1:-1]):
+            continue
+        shapes[index] = words
+    by_last: dict[str, list[int]] = defaultdict(list)
+    for index, words in shapes.items():
+        by_last[words[-1]].append(index)
+    found: dict[int, list[tuple[int, int, str]]] = defaultdict(list)
+    for members in by_last.values():
+        for position, first in enumerate(members):
+            for second in members[position + 1 :]:
+                a, b = shapes[first], shapes[second]
+                shorter, longer = (a, b) if len(a) <= len(b) else (b, a)
+                if longer[-len(shorter) :] == shorter:
+                    continue
+                shared = len(units_of[first] & units_of[second])
+                if shared < _CONTRAST_MIN_SHARED_UNITS:
+                    continue
+                found[first].append((shared, candidates[second].occurrence_count, candidates[second].source_term))
+                found[second].append((shared, candidates[first].occurrence_count, candidates[first].source_term))
+    return {
+        index: tuple(term for _, _, term in sorted(pairs, key=lambda item: (-item[0], -item[1], item[2])))
+        for index, pairs in found.items()
+    }
+
+
+def _permutation_key(key: Sequence[str]) -> tuple[str, ...] | None:
+    """The words of ``key`` in sorted order, hyphens split; ``None`` for a single plain word.
+
+    Spec 067 FR-010: "value added", "added value" and "value-added" all give ``("added",
+    "value")``.
+    """
+
+    parts = sorted(part for word in key for part in word.lower().split("-") if part)
+    return tuple(parts) if len(parts) >= 2 else None
+
+
+def _permutation_groups(drafts: Sequence[_Draft]) -> list[list[_Draft]]:
+    """The drafts in order, those with one multiset of words collapsed into one group.
+
+    Spec 067 FR-010 (G-3): The Value of Everything had *value added* (34 of 34 rendered as
+    fixed), *added value* and *value-added* as three entries, and the model gave the last two
+    renderings it then never used (0 of 9) -- three entries for one term, two of them wrong.
+    Candidates whose words form the same multiset once hyphens are split (``_permutation_key``)
+    are one term. A name keeps its own case-sensitive identity and is never grouped here: its
+    spellings are the name family's business (spec 064 FR-009). A group stands where its first
+    member stood, so a phrase still comes before the word it contains.
+    """
+
+    groups: list[list[_Draft]] = []
+    by_permutation: dict[tuple[str, ...], list[_Draft]] = {}
+    for draft in drafts:
+        permutation = None if draft.proper else _permutation_key(draft.key)
+        if permutation is None:
+            groups.append([draft])
+            continue
+        group = by_permutation.get(permutation)
+        if group is None:
+            group = by_permutation[permutation] = [draft]
+            groups.append(group)
+        else:
+            group.append(draft)
+    return groups
+
+
+def _written_surface(surface: str, written_forms: Mapping[str, Counter[str]]) -> str:
+    """``surface`` with every word the document never writes replaced by the word it does write.
+
+    Spec 067 FR-008 (the clause about *appropriate surplu*). A collocation, a phrase and a
+    family head are keyed by FOLDED words (``_fold_word``: the plural ``s`` off), and their
+    surface was built from the key -- "surplus" became "surplu", "crisis" "crisi", "this"
+    "thi". Measured on the fourth run's books: 11 candidates (Money *financial crisi*, CW *thi
+    book*, VoE *appropriate surplu*, *previou chapter* ...). The spec took *appropriate surplu*
+    for a split-word tail; it is not one -- "surplus" is written whole three times. A word of
+    the surface that the body writes (in any case) stays; one it never writes becomes the
+    commonest written word that folds to it. The key, and so every match, is unchanged.
+    """
+
+    words = surface.split(" ")
+    for index, word in enumerate(words):
+        forms = written_forms.get(word)
+        if forms and word not in forms:
+            words[index] = forms.most_common(1)[0][0]
+    return " ".join(words)
 
 
 def _name_words(draft: _Draft) -> list[str] | None:
@@ -1057,9 +1260,22 @@ def _has_inner_capital(surface: str) -> bool:
     """A word of ``surface`` has an upper-case letter after its first one ("InspirePay", "eBay").
 
     Spec 065: such a spelling is a name's form whatever the document's case counts say.
+    Spec 067 FR-011 (a): a word set entirely in capitals ("PROSPERITY", taken from a line in
+    capitals) is not such a spelling -- its case is the typesetting's, not the word's. The rule
+    is for mixed case: some letter after the first is upper-case AND some letter is lower-case.
     """
 
-    return any(char.isupper() for word in _WORD_RE.findall(surface) for char in word[1:])
+    return any(
+        any(char.isupper() for char in word[1:]) and any(char.islower() for char in word)
+        for word in _WORD_RE.findall(surface)
+    )
+
+
+def _set_in_capitals(text: str) -> bool:
+    """Every letter of ``text`` is upper-case (and it has at least two): a line set in capitals."""
+
+    letters = [char for char in text if char.isalpha()]
+    return len(letters) >= 2 and all(char.isupper() for char in letters)
 
 
 def _is_single_lowercase_word(draft: _Draft) -> bool:
@@ -1282,6 +1498,10 @@ def build_glossary_request(
                 "signals": list(candidate.signals),
                 "count": candidate.occurrence_count,
                 "context": candidate.context,
+                # Spec 067 FR-010: the same expression written otherwise; one rendering covers all.
+                **({"spellings": list(candidate.spellings)} if candidate.spellings else {}),
+                # Spec 067 FR-009: expressions the book sets against this one.
+                **({"contrast_with": list(candidate.contrasts)} if candidate.contrasts else {}),
             }
             for index, candidate in enumerate(candidates)
         ],
@@ -1713,6 +1933,7 @@ def is_single_lowercase_entry(term: GlossaryTerm) -> bool:
 
     Spec 065 FR-001. A hyphenated word ("value-based"), a capital ("Terra", "GDP"), a name and
     an entry with a note on its sense are each a form of their own and rank with the phrases.
+    Spec 067 FR-008: an optional entry of this class is the only one the section budget cuts.
     """
 
     source = str(term.source_term or "").strip()
@@ -1740,7 +1961,8 @@ def order_glossary_entries(
     before single lowercase words (``is_single_lowercase_entry``); within a class, the
     candidate's occurrence count, highest first; ties keep the order the entries came in, so a
     term's two senses stay together. The budget cut then takes the tail: rare single words of
-    the model's own choice first.
+    the model's own choice first, and nothing else (spec 067 FR-008: an optional entry of a
+    form of its own extends the budget like a required one).
 
     Finally an entry that CONTAINS a single-word entry ("public value" and "value", "value-based"
     and "value") is moved right before that word when it came after it -- the longer entry

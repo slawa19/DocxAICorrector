@@ -59,8 +59,10 @@ from docxaicorrector.text.glossary_pass import (
     extract_glossary_candidates,
     find_rendering_collisions,
     inherit_name_renderings,
+    is_single_lowercase_entry,
     missing_required_candidates,
     normalize_glossary_key,
+    normalize_rendering,
     order_collision_group,
     order_glossary_entries,
     parse_glossary_response,
@@ -93,6 +95,10 @@ _MAX_GLOSSARY_CALLS = 5
 # 5 900, Rethinking Money 4 000, Creating Wealth (required entries only: its call A failed)
 # 3 500. Against 4 000 it adds +1 897 characters, ~550 prompt tokens per block call, on The
 # Value of Everything; the required entries are never cut whatever the budget.
+# Spec 067 FR-008: since then the budget governs only OPTIONAL SINGLE LOWERCASE entries -- the
+# required ones and the entries of a form of their own extend it (``plan_run_glossary_section``),
+# because on the fourth run's Value of Everything 5 900 cut 34 such entries (its section needs
+# 7 005 for them). The number stays: on the four corpus books it now cuts single words only.
 RUN_GLOSSARY_PROMPT_MAX_CHARS = 5900
 _UNSAFE_STEM_CHARS_RE = re.compile(r"[^A-Za-z0-9_.-]+")
 
@@ -905,7 +911,8 @@ class RunGlossarySection:
     rendered: tuple[GlossaryTerm, ...]
     cut: tuple[GlossaryTerm, ...]
     # Required entries that did not reach the section: by construction none; a non-empty
-    # list in the artifact or the event is a defect to read, not a budget decision.
+    # list in the artifact or the event is a defect to read, not a budget decision. ``cut``
+    # holds optional single lowercase entries only (spec 067 FR-008).
     unrendered_required: tuple[str, ...]
 
 
@@ -918,23 +925,34 @@ def plan_run_glossary_section(
     """The prompt section: the entries in their order, the tail cut at ``max_chars``.
 
     ``terms`` come in the order of ``order_glossary_entries``: every required entry (and any
-    phrase moved ahead of a required word it contains) before the first optional one. The
-    budget never cuts that part: when it alone exceeds ``max_chars``, the budget grows to
-    hold it and every entry after it is left out.
+    phrase moved ahead of a required word it contains) before the first optional one, and
+    within the optional ones every entry of a form of its own before the single lowercase
+    words. The budget cuts only OPTIONAL SINGLE LOWERCASE entries (``is_single_lowercase_entry``):
+    a required entry, and an entry with a form of its own -- a name, several words, a hyphen, a
+    capital, a note -- extend the budget alike (spec 067 FR-008). On The Value of Everything
+    (fourth run) a fixed 5 900 cut 34 such entries -- 21 names, *interest rate*, *short-term* --
+    while they were the ones the section exists for. When the protected part alone exceeds
+    ``max_chars``, the budget grows to hold it, and only single lowercase words after it are
+    left out; ``cut`` holds nothing else.
     """
 
     required_keys = {normalize_glossary_key(candidate.source_term) for candidate in candidates if candidate.required}
-    renderable = tuple(
-        term for term in terms if str(term.source_term or "").strip() and str(term.target_term or "").strip()
+    renderable = _annotate_section_entries(
+        tuple(term for term in terms if str(term.source_term or "").strip() and str(term.target_term or "").strip()),
+        candidates,
     )
-    last_required = max(
-        (index for index, term in enumerate(renderable) if normalize_glossary_key(term.source_term) in required_keys),
+    last_protected = max(
+        (
+            index
+            for index, term in enumerate(renderable)
+            if normalize_glossary_key(term.source_term) in required_keys or not is_single_lowercase_entry(term)
+        ),
         default=-1,
     )
     budget = int(max_chars)
-    if last_required >= 0:
+    if last_protected >= 0:
         protected = render_glossary_prompt_section(
-            renderable[: last_required + 1], header=RUN_GLOSSARY_SECTION_HEADER, max_chars=10**9
+            renderable[: last_protected + 1], header=RUN_GLOSSARY_SECTION_HEADER, max_chars=10**9
         )
         budget = max(budget, len(protected) + len("\n- ..."))
     text = render_glossary_prompt_section(renderable, header=RUN_GLOSSARY_SECTION_HEADER, max_chars=budget)
@@ -948,6 +966,47 @@ def plan_run_glossary_section(
             term.source_term for term in cut if normalize_glossary_key(term.source_term) in required_keys
         ),
     )
+
+
+def _annotate_section_entries(
+    terms: tuple[GlossaryTerm, ...],
+    candidates: tuple[GlossaryCandidate, ...],
+) -> tuple[GlossaryTerm, ...]:
+    """The entries with what the section prints beside them, by form.
+
+    Spec 067 FR-010: an entry names the other surfaces its rendering covers (``spellings``).
+    Spec 067 FR-009: an entry carries the renderings of the entries the book sets against it
+    (``GlossaryCandidate.contrasts``), printed "≠ ...", when those entries are in the glossary
+    with a DIFFERENT rendering -- one rendering shared by both is a collision, call C's.
+    """
+
+    spellings_by_key: dict[tuple[str, ...], tuple[str, ...]] = {}
+    contrasts_by_key: dict[tuple[str, ...], tuple[tuple[str, ...], ...]] = {}
+    for candidate in candidates:
+        key = normalize_glossary_key(candidate.source_term)
+        if candidate.spellings:
+            spellings_by_key.setdefault(key, tuple(candidate.spellings))
+        if candidate.contrasts:
+            contrasts_by_key.setdefault(key, tuple(normalize_glossary_key(other) for other in candidate.contrasts))
+    renderings_by_key: dict[tuple[str, ...], list[str]] = {}
+    for term in terms:
+        renderings = renderings_by_key.setdefault(normalize_glossary_key(term.source_term), [])
+        target = " ".join(str(term.target_term or "").split())
+        if target and target not in renderings:
+            renderings.append(target)
+    annotated: list[GlossaryTerm] = []
+    for term in terms:
+        key = normalize_glossary_key(term.source_term)
+        own = normalize_rendering(term.target_term)
+        contrasts: list[str] = []
+        for other in contrasts_by_key.get(key, ()):
+            for rendering in renderings_by_key.get(other, ()):
+                if normalize_rendering(rendering) != own and rendering not in contrasts:
+                    contrasts.append(rendering)
+        if key in spellings_by_key or contrasts:
+            term = replace(term, spellings=spellings_by_key.get(key, term.spellings), contrasts=tuple(contrasts))
+        annotated.append(term)
+    return tuple(annotated)
 
 
 def render_run_glossary_section(

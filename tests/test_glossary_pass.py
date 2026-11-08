@@ -957,7 +957,8 @@ def test_budget_drops_optional_entries_lowest_rank_first_and_never_a_required_on
     from docxaicorrector.pipeline.glossary_phase import render_run_glossary_section
 
     required = tuple(replace(_candidate(f"Req{chr(97 + i)}", "marked"), required=True) for i in range(3))
-    optional = tuple(_candidate(f"Opt{chr(97 + i)}") for i in range(3))
+    # Spec 067 FR-008: only single lowercase optional entries are the budget's to cut.
+    optional = tuple(_candidate(f"opt{chr(97 + i)}", "marked") for i in range(3))
     terms = tuple(
         GlossaryTerm(source_term=candidate.source_term, target_term="перевод-" + candidate.source_term.lower())
         for candidate in (*required, *optional)
@@ -966,10 +967,10 @@ def test_budget_drops_optional_entries_lowest_rank_first_and_never_a_required_on
     tight = render_run_glossary_section(terms, (*required, *optional), max_chars=len(full) - 10)
     tiny = render_run_glossary_section(terms, (*required, *optional), max_chars=10)
 
-    assert "Optc" in full and "Optc" not in tight and "Optb" in tight  # last-ranked optional goes first
+    assert "optc" in full and "optc" not in tight and "optb" in tight  # last-ranked optional goes first
     for name in ("Reqa", "Reqb", "Reqc"):
         assert name in tight and name in tiny  # required entries survive any budget
-    assert "Opta" not in tiny
+    assert "opta" not in tiny
 
 
 def _h1_document(title, body_sentence, *, level=1, rounds=4):
@@ -1900,9 +1901,67 @@ def test_fr001_entries_are_ordered_by_tier_then_form_then_use_and_the_budget_cut
 
     assert full.cut == () and full.unrendered_required == ()
     assert [term.source_term for term in tight.cut] == ["tallow"]
-    assert [term.source_term for term in tiny.rendered] == ["quillet bond", "quillet"]
+    # Spec 067 FR-008: a phrase and a name extend the budget like a required entry.
+    assert [term.source_term for term in tiny.rendered] == ["quillet bond", "quillet", "marrow ledger", "Zorvane Pettish"]
     assert tiny.unrendered_required == ()
-    assert [term.source_term for term in tiny.cut] == ["marrow ledger", "Zorvane Pettish", "harbour", "tallow"]
+    assert [term.source_term for term in tiny.cut] == ["harbour", "tallow"]
+
+
+def test_fr008_the_budget_cuts_only_optional_single_lowercase_entries():
+    # Spec 067 FR-008 (G-1): a fixed budget cut 34 names, phrases and hyphenated entries of The
+    # Value of Everything. Every optional entry of a form of its own reaches the section however
+    # small the budget; only the optional single lowercase words are left out.
+    from docxaicorrector.pipeline.glossary_phase import plan_run_glossary_section
+
+    candidates = (
+        _counted_candidate("quillet", 50, required=True),
+        _counted_candidate("Zorvane Pettish", 30, family="name"),
+        _counted_candidate("marrow ledger", 20, family="collocation"),
+        _counted_candidate("short-tallow", 15),
+        _counted_candidate("QLB", 12, family="name"),
+        _counted_candidate("harbour", 90),
+        _counted_candidate("drevage", 60),
+        _counted_candidate("tallow", 3),
+    )
+    terms = (
+        _entry("quillet", "киллет"),
+        _entry("Zorvane Pettish", "Зорвейн Петтиш", kind="name"),
+        _entry("marrow ledger", "мозговая книга"),
+        _entry("short-tallow", "краткосальный"),
+        _entry("QLB", "КЛБ"),
+        _entry("drevage", "древаж", note="the toll on a held coin"),
+        _entry("harbour", "гавань"),
+        _entry("tallow", "сало"),
+    )
+    ordered = order_glossary_entries(candidates, terms)
+    full = plan_run_glossary_section(ordered, candidates, max_chars=100_000)
+    for budget in (10, len(full.text) - 5, len(full.text) // 2):
+        plan = plan_run_glossary_section(ordered, candidates, max_chars=budget)
+        assert plan.unrendered_required == ()
+        assert all(glossary_pass.is_single_lowercase_entry(term) for term in plan.cut), (budget, plan.cut)
+        rendered = {term.source_term for term in plan.rendered}
+        assert {"quillet", "Zorvane Pettish", "marrow ledger", "short-tallow", "QLB", "drevage"} <= rendered
+    tiny = plan_run_glossary_section(ordered, candidates, max_chars=10)
+    assert [term.source_term for term in tiny.cut] == ["harbour", "tallow"]
+    assert "- drevage -> древаж — the toll on a held coin" in tiny.text and tiny.text.endswith("- ...")
+    # Counter-test: with room for everything nothing is cut.
+    assert full.cut == () and not full.text.endswith("- ...")
+
+
+def test_fr008_a_collocation_is_named_as_the_document_writes_it_not_by_its_folded_key():
+    # Spec 067 FR-008: "appropriate surplus" was asked for and printed as "appropriate surplu"
+    # -- the surface of a collocation was built from its folded key. The key stays folded (it
+    # matches "surpluses" too); the name is the written word.
+    paragraphs = []
+    for _ in range(4):
+        paragraphs.append("Owners appropriate surplus from the quillet trade, and they appropriate surplus again.")
+        paragraphs.extend(_FILLER)
+    keys = {candidate.key: candidate for candidate in extract_glossary_candidates(_units(paragraphs))}
+
+    assert ("appropriate", "surplu") in keys
+    assert keys[("appropriate", "surplu")].source_term == "appropriate surplus"
+    assert normalize_glossary_key("appropriate surplus") == ("appropriate", "surplu")
+    assert not any(word == "surplu" for candidate in keys.values() for word in candidate.source_term.split())
 
 
 def test_fr001_a_noted_or_capitalised_single_word_ranks_with_the_phrases():
@@ -1998,3 +2057,235 @@ def test_fr002_a_case_tie_is_a_capitalised_form_not_a_single_lowercase_word():
         *(_FILLER * 6),
     ]
     assert "brennaby" not in _keys(extract_glossary_candidates(_units(lowercase)))
+
+
+# --- Spec 067 FR-010: permutations and hyphen variants are one candidate ------------------------
+
+
+def _ledger_document():
+    paragraphs = ["What the town kept we call *tallow* here, and the *tallow ledger* opens the book."]
+    for _ in range(6):
+        paragraphs.extend(_FILLER)
+        paragraphs.append("The tallow ledger grew, and the tallow ledger was read; tallow was weighed.")
+        paragraphs.append("Their ledger tallow was counted apart under tallow-ledger rules; the tallow ledger stayed shut.")
+    return paragraphs
+
+
+def test_fr010_word_order_and_hyphen_variants_collapse_into_the_most_used_surface():
+    candidates = extract_glossary_candidates(_units(_ledger_document()))
+    by_term = {candidate.source_term: candidate for candidate in candidates}
+
+    assert "ledger tallow" not in by_term and "tallow-ledger" not in by_term
+    ledger = by_term["tallow ledger"]
+    assert set(ledger.spellings) == {"ledger tallow", "tallow-ledger"}
+    assert ledger.occurrence_count == 19 + 6 + 6  # every surface's uses
+    assert ledger.required
+    assert ledger.to_payload()["spellings"] == list(ledger.spellings)
+    # The other candidates of the document are untouched.
+    assert "tallow" in by_term and by_term["tallow"].spellings == ()
+    assert "tallow-ledger rules" in by_term
+
+
+def test_fr010_an_answer_for_a_spelling_is_not_an_entry_and_the_kept_rendering_stands():
+    ledger = replace(
+        _candidate("tallow ledger", "marked"), required=True, spellings=("ledger tallow", "tallow-ledger")
+    )
+    request = build_glossary_request(
+        model="m", candidates=(ledger,), source_language="en", target_language="ru", max_terms=5,
+        role=glossary_pass.GLOSSARY_ROLE_REQUIRED,
+    )
+    payload = json.loads(cast(Any, request["input"])[1]["content"][0]["text"])
+    assert payload["candidates"][0]["spellings"] == ["ledger tallow", "tallow-ledger"]
+    raw = json.dumps(
+        {
+            "terms": [
+                {"source_term": "ledger tallow", "target_term": "прибавочная книга"},
+                {"source_term": "tallow ledger", "target_term": "сальная книга"},
+                {"source_term": "tallow-ledger", "target_term": "сально-книжный"},
+            ]
+        }
+    )
+    result = parse_glossary_response(raw, candidates=(ledger,), max_terms=5)
+
+    assert [(term.source_term, term.target_term) for term in result.terms] == [("tallow ledger", "сальная книга")]
+    assert result.rejected_counts["not_a_candidate"] == 2
+
+
+def test_fr010_the_section_names_the_spellings_on_the_entry_line():
+    from docxaicorrector.pipeline.glossary_phase import plan_run_glossary_section
+
+    ledger = replace(_counted_candidate("tallow ledger", 31, required=True), spellings=("ledger tallow", "tallow-ledger"))
+    plan = plan_run_glossary_section((_entry("tallow ledger", "сальная книга"),), (ledger,), max_chars=100_000)
+
+    assert plan.text.splitlines()[1] == "- tallow ledger (также: ledger tallow, tallow-ledger) -> сальная книга"
+    assert [term.source_term for term in plan.rendered] == ["tallow ledger"]
+
+
+def test_fr010_names_are_not_collapsed_by_word_order():
+    # Anti-regression: a name keeps its case-sensitive identity (spec 064 FR-009 name families).
+    paragraphs = list(_document())
+    for _ in range(3):
+        paragraphs.append("Later Pettish Zorvane wrote back to the town of Kelbrook about it.")
+    by_term = {candidate.source_term: candidate for candidate in extract_glossary_candidates(_units(paragraphs))}
+
+    assert "Zorvane Pettish" in by_term and by_term["Zorvane Pettish"].spellings == ()
+    assert "Pettish Zorvane" in by_term
+
+
+def test_fr010_both_glossary_prompts_explain_spellings():
+    for role in (glossary_pass.GLOSSARY_ROLE_REQUIRED, glossary_pass.GLOSSARY_ROLE_OPTIONAL):
+        text = glossary_pass._load_glossary_instructions(role)
+        assert '"spellings", when present, are the same expression written otherwise in the book' in text
+
+
+# --- Spec 067 FR-009: entries the book sets against each other carry a mutual mark ---------------
+
+
+def _contrast_document():
+    paragraphs = []
+    for _ in range(6):
+        paragraphs.extend(_FILLER)
+        paragraphs.append("The drovish ledgers were kept apart from the brannick ledgers in every town.")
+        paragraphs.append("Merchants trusted drovish ledgers more; the clerks preferred drovish ledgers too.")
+        paragraphs.append("Brannick ledgers came later, and brannick ledgers are still read.")
+        paragraphs.append("The harbour kept salted herring, and salted herring sold well.")
+        paragraphs.append("The smoked herring did not sell, though smoked herring was cheap.")
+    paragraphs.append("Salted herring and smoked herring met only once, at the fair.")
+    return paragraphs
+
+
+def test_fr009_two_candidates_sharing_the_last_word_side_by_side_are_contrasted():
+    by_term = {candidate.source_term: candidate for candidate in extract_glossary_candidates(_units(_contrast_document()))}
+
+    assert by_term["drovish ledgers"].contrasts == ("brannick ledgers",)
+    assert by_term["brannick ledgers"].contrasts == ("drovish ledgers",)
+    assert by_term["drovish ledgers"].to_payload()["contrasts"] == ["brannick ledgers"]
+    # Counter-test: one shared paragraph is not the author setting them against each other.
+    assert "salted herring" in by_term and "smoked herring" in by_term
+    assert by_term["salted herring"].contrasts == () and by_term["smoked herring"].contrasts == ()
+
+
+def test_fr009_a_narrower_form_or_an_of_phrase_is_not_a_contrast():
+    def candidate(term):
+        return replace(_candidate(term, "collocation"), key=normalize_glossary_key(term))
+
+    candidates = (
+        candidate("tallow quills"),
+        candidate("red tallow quills"),  # ends with "tallow quills": the same thing narrowed
+        candidate("theory of quills"),  # a joiner inside: "quills" is not its head
+        candidate("brannick quills"),
+    )
+    shared = {0, 1, 2, 3}
+    partners = glossary_pass._contrast_partners(candidates, [set(shared) for _ in candidates])
+
+    assert partners[0] == ("brannick quills",)
+    assert partners[1] == ("brannick quills",)
+    assert 2 not in partners
+    assert set(partners[3]) == {"tallow quills", "red tallow quills"}
+
+
+def test_fr009_the_section_marks_both_entries_with_the_other_rendering():
+    from docxaicorrector.pipeline.glossary_phase import plan_run_glossary_section
+
+    drovish = replace(_counted_candidate("drovish ledgers", 18, required=True), contrasts=("brannick ledgers",))
+    brannick = replace(_counted_candidate("brannick ledgers", 12), contrasts=("drovish ledgers",))
+    terms = (
+        _entry("drovish ledgers", "дровишские книги", note="older, kept by merchants"),
+        _entry("brannick ledgers", "бранницкие книги"),
+    )
+    lines = plan_run_glossary_section(terms, (drovish, brannick), max_chars=10).text.splitlines()
+
+    assert lines[1] == "- drovish ledgers -> дровишские книги ≠ бранницкие книги — older, kept by merchants"
+    assert lines[2] == "- brannick ledgers -> бранницкие книги ≠ дровишские книги"
+    # Counter-tests: no mark when the partner has no entry, or shares the rendering (a
+    # collision -- call C's business, not a contrast to print).
+    alone = plan_run_glossary_section(terms[:1], (drovish, brannick), max_chars=10).text
+    assert "≠" not in alone
+    shared = (terms[0], _entry("brannick ledgers", "дровишские книги"))
+    assert "≠" not in plan_run_glossary_section(shared, (drovish, brannick), max_chars=10).text
+
+
+def test_fr009_the_calls_carry_the_contrast_and_the_prompts_explain_it():
+    from docxaicorrector.core.config import load_system_prompt
+
+    drovish = replace(_candidate("drovish ledgers", "marked"), required=True, contrasts=("brannick ledgers",))
+    for role in (glossary_pass.GLOSSARY_ROLE_REQUIRED, glossary_pass.GLOSSARY_ROLE_OPTIONAL):
+        request = build_glossary_request(
+            model="m", candidates=(drovish,), source_language="en", target_language="ru", max_terms=5, role=role
+        )
+        payload = json.loads(cast(Any, request["input"])[1]["content"][0]["text"])
+        assert payload["candidates"][0]["contrast_with"] == ["brannick ledgers"]
+        text = glossary_pass._load_glossary_instructions(role)
+        assert '"contrast_with"' in text and "contrasted concepts" in text
+        assert 'say in "note", in a few words, what sets it apart from them' in text
+    prompt = load_system_prompt(
+        operation="translate", source_language="en", target_language="ru",
+        document_context_prompt="ГЛОССАРИЙ:\n- drovish ledgers -> дровишские книги ≠ бранницкие книги",
+    )
+    assert "Пометка «≠ …» после передачи называет передачи терминов, которые автор противопоставляет этому" in prompt
+
+
+# --- Spec 067 FR-011: two form defects of single words -------------------------------------------
+
+
+def test_fr011_a_paragraph_set_in_capitals_is_no_evidence_of_a_capitalised_form():
+    # RM "PROSPERITY": a paragraph in capitals gave the word a capital "form" (inner capitals,
+    # and a capitalised run), and the marked word became required.
+    paragraphs = ["**HARBOURAGE**"]
+    for _ in range(4):
+        paragraphs.extend(_FILLER)
+        paragraphs.append("The harbourage of the town was paid twice, and the harbourage rose.")
+    keys = _keys(extract_glossary_candidates(_units(paragraphs)))
+
+    assert "harbourage" in keys
+    assert not keys["harbourage"].required
+    # Counter-test: mixed case is still a name's form (spec 065, Codex finding 2).
+    assert glossary_pass._has_inner_capital("QuillPay") and glossary_pass._has_inner_capital("eBay")
+    assert not glossary_pass._has_inner_capital("HARBOURAGE")
+
+
+def _chapter_document(mention):
+    paragraphs: list[tuple[str, int | None]] = []
+    for number in range(1, 5):
+        paragraphs.append((f"PARTITION {number}", 1))
+        paragraphs.extend((text, None) for text in _FILLER)
+        paragraphs.append((f"As shown in {mention(number)}, this partition matters.", None))
+    return _heading_units(paragraphs)
+
+
+def test_fr011_a_capital_before_a_number_is_a_label_not_the_words_case():
+    # CW *chapter*: "described in Chapter 13" (15 times mid-sentence) against "this chapter"
+    # (14) made it a capitalised form, and its all-capitals h1 headings made it required.
+    keys = _keys(extract_glossary_candidates(_chapter_document(lambda number: f"Partition {number}")))
+    assert "partition" in keys and not keys["partition"].required
+
+    # Counter-test: the same capital NOT before a number is the document's case of the word.
+    keys = _keys(extract_glossary_candidates(_chapter_document(lambda number: "the Partition office")))
+    assert "partition" in keys and keys["partition"].required
+
+
+def test_fr011_a_defined_hyphenated_word_split_by_emphasis_is_one_candidate():
+    paragraphs = [
+        "Its own currency is perhaps the network's best feature. The currency is called *thank-**yous* or Ts.",
+        *(_FILLER * 6),
+    ]
+    keys = _keys(extract_glossary_candidates(_units(paragraphs)))
+
+    assert "thank-yous" in keys and "defined" in keys["thank-yous"].signals and keys["thank-yous"].required
+    assert "thank" not in keys
+
+
+def test_fr011_a_defined_expression_the_document_writes_whole_keeps_its_short_first_word():
+    # Enough ordinary text that "cap" is not among the document's 20 commonest words.
+    paragraphs = ["The two strategies are a trading system known as cap and trade, and the levy."]
+    for round_index in range(12):
+        paragraphs.extend(_FILLER)
+        if round_index % 3 == 0:
+            paragraphs.append("Under cap and trade the permits are sold, and the trade in permits grows.")
+    keys = _keys(extract_glossary_candidates(_units(paragraphs)))
+
+    assert "cap and trade" in keys and keys["cap and trade"].required
+    assert "trade" not in keys
+    # Counter-test: a definition written once is trimmed as before ("called him a loser").
+    once = ["The neighbours called him a lostling, and it stuck.", *(_FILLER * 6)]
+    assert "him a lostling" not in _keys(extract_glossary_candidates(_units(once)))

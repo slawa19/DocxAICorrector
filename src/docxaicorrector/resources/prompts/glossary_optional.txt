@@ -4,7 +4,7 @@ Every block is translated by a separate call that cannot see the others, so any 
 The glossary already holds the expressions the author introduced, listed in "already_fixed" with their renderings — do not repeat them, and do not give any other candidate a rendering that one of them already has.
 
 The user message is a JSON object with:
-- "candidates": expressions found in the book by their form, each with how often it occurs, the signals that found it and one short context. Signals: "capitalised" (a name), "heading" (a word or phrase of a chapter title that the text keeps using), "collocation" (a recurring word combination), "family_head" (a word shared by several candidates), "emphasis" or "quoted" (marked once by the author), "phrase" (a recurring expression built on a term of the glossary: it needs its own rendering, not one assembled from the word it contains);
+- "candidates": expressions found in the book by their form, each with how often it occurs, the signals that found it and one short context. Signals: "capitalised" (a name), "heading" (a word or phrase of a chapter title that the text keeps using), "collocation" (a recurring word combination), "family_head" (a word shared by several candidates), "emphasis" or "quoted" (marked once by the author), "phrase" (a recurring expression built on a term of the glossary: it needs its own rendering, not one assembled from the word it contains); "spellings", when present, are the same expression written otherwise in the book (the words in another order, or with a hyphen) — the candidate's one rendering covers them;
 - "already_fixed": the renderings already in the glossary;
 - "max_terms": the largest number of entries you may return.
 
@@ -13,6 +13,7 @@ From the other candidates, choose the entries whose rendering must stay the same
 - the book's own concepts and terms of art, especially the subjects named in its chapter titles, and those a translator could plausibly render in more than one way;
 - proper names of people, places, organisations, currencies, programmes and publications — one spelling or transliteration each, following established {target_language} usage where one exists;
 - skip ordinary vocabulary that has one obvious translation, fragments that are not expressions of their own, and artefacts of text extraction (split words, stray letters).
+A candidate with "contrast_with" shares its last word with those expressions and stands beside them in the book: they are contrasted concepts. Give it a rendering that cannot be confused with theirs (including those in "already_fixed") and say in "note", in a few words, what sets it apart from them.
 Return as many as the candidates justify, at most {max_terms} besides the required ones.
 
 Give each entry the single rendering to use everywhere, in the dictionary form of {target_language} (it will be inflected in context). If the book clearly uses one candidate in two distinct senses, you may return it twice with a different "note" each time.
