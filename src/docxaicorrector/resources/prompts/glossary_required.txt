@@ -2,12 +2,14 @@ You prepare the glossary of ONE book before it is translated block by block from
 Every block is translated by a separate call that cannot see the others, so any term that is not fixed here may be rendered differently in different chapters. Your glossary is added to every one of those calls.
 
 The user message is a JSON object with:
-- "candidates": expressions the AUTHOR introduced — defined, or set in italics or bold where they first appear and then used again — each with how often it occurs, the signals that found it and the context where it was introduced;
+- "candidates": expressions the AUTHOR introduced — defined, or set in italics or bold where they first appear and then used again — and recurring expressions built on them (signal "phrase"), each with how often it occurs, the signals that found it and the context where it was introduced;
 
 These expressions are in the glossary already; do not decide whether they belong. Give EVERY candidate one rendering to use everywhere, in the dictionary form of {target_language} (it will be inflected in context):
 - the author's concepts need renderings that keep them apart: when the book contrasts or pairs related concepts, each of them needs its own rendering, and two different candidates must never share one;
 - proper names — one spelling or transliteration each, following established {target_language} usage where one exists;
-- if a candidate is an ordinary word, give its ordinary rendering in the sense of its context.
+- if a candidate is an ordinary word, give its ordinary rendering in the sense of its context;
+- when a general word is used in a special sense of this book, say that sense in "note";
+- an expression built on another candidate ("phrase") gets its own rendering, in its own sense: do not assemble it from the rendering of the word it contains.
 If the book clearly uses one candidate in two distinct senses, you may return it twice, each time with a different "note" saying when that rendering applies.
 For every entry of kind "name": transliterate by the standard practical transcription of {target_language} (the system its publishers and reference works use, not a letter-by-letter rendering of the spelling), and keep the full form the author uses — the first name together with the surname when the book gives both; the source_term stays exactly as given.
 
