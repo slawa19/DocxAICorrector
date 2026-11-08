@@ -62,9 +62,23 @@ _DECISION_THRESHOLDS = {
 # ``_SUPERSCRIPT_MARKER_MAX_SIZE_RATIO`` sits in the empty band between the two clusters
 # (the largest observed reference is 0.80, the smallest observed ordinary digit 1.00).
 #
-# A digit that is raised but NOT smaller (a book that sets references at full size) is
-# deliberately left alone: under-attaching costs a defect, mis-attaching corrupts text.
+# A digit that is raised but NOT smaller than its own line was left alone from 2026-08-03
+# (commit 6cb7a6e), on the premise of "a book that sets references at full size". Spec 067
+# I-2 measured that premise on the corpus and found no such book: all 54 raised digits at
+# the size of their line (Creating Wealth 9, Money and Sustainability 45) sit in quotations
+# and boxes the book sets ENTIRELY in its notes size -- 10.8 pt in Creating Wealth, 5.76 pt
+# in Money and Sustainability, the modal size of the references already recognised there
+# (157 of 157, 270 of 270) -- and every one is a reference with a note behind it ("OECD
+# Health Data 2006.5" -> note 5, "Innes,46" -> note 46). So "smaller than its line" has one
+# alternative: set at the document's own reference size (`_document_reference_font_size`,
+# within ``_REFERENCE_FONT_SIZE_TOLERANCE_PT``), still raised. A raised digit at the size of
+# the body, where the book's references are smaller, stays a number, as do the 265 full-size
+# digits on the baseline after a comma or a quote (spec 065 FR-007) and Rethinking Money's
+# contents numbers (raised 0.30 of their size, at body size).
 _SUPERSCRIPT_MARKER_MAX_SIZE_RATIO = 0.85
+# Spec 067 FR-006: how close a run must be to the document's reference size (the modal size
+# of the references recognised in it, `_document_reference_font_size`) to count as set in it.
+_REFERENCE_FONT_SIZE_TOLERANCE_PT = 0.3
 _SUPERSCRIPT_MARKER_MIN_BASELINE_RISE_RATIO = 0.35
 _SUPERSCRIPT_MARKER_MAX_DIGITS = 3
 _SUPERSCRIPT_DIGIT_TABLE = str.maketrans("0123456789", "⁰¹²³⁴⁵⁶⁷⁸⁹")
@@ -289,7 +303,11 @@ def extract_pdf_text_spans_with_pdfminer(pdf_path: str | Path) -> list[PdfTextSp
     except ImportError as exc:  # pragma: no cover - depends on optional env
         raise RuntimeError("optional_dependency_missing:pdfminer.six") from exc
 
-    spans: list[PdfTextSpan] = []
+    # One list of spans per text line, so a line can be rebuilt after the whole document is
+    # read (spec 067 FR-006, below).
+    line_spans: list[list[PdfTextSpan]] = []
+    reference_font_sizes: list[float] = []
+    lines_to_reread: list[tuple[int, object, list[object], int, float | None]] = []
     for page_index, page_layout in enumerate(extract_pages(str(pdf_path)), start=1):
         page_height = _coerce_optional_float(getattr(page_layout, "height", None))
         for element in page_layout:
@@ -301,17 +319,6 @@ def extract_pdf_text_spans_with_pdfminer(pdf_path: str | Path) -> list[PdfTextSp
                 text = line.get_text().strip()
                 if not text:
                     continue
-                chars = [item for item in line if isinstance(item, LTChar)]
-                font_names = [str(getattr(char, "fontname", "") or "") for char in chars]
-                font_sizes = [float(getattr(char, "size", 0.0) or 0.0) for char in chars]
-                font_name = _most_common(font_names)
-                font_size = median(font_sizes) if font_sizes else None
-                is_bold, is_italic = _font_style_flags(font_name)
-                top, bottom = _pdfminer_top_origin_bounds(
-                    y0=float(line.y0),
-                    y1=float(line.y1),
-                    page_height=page_height,
-                )
                 # Footnote references set inside the line are rendered as Unicode
                 # superscript digits in place. The span keeps its geometry and its
                 # character count, so every boundary decision downstream (soft-wrap
@@ -323,42 +330,111 @@ def extract_pdf_text_spans_with_pdfminer(pdf_path: str | Path) -> list[PdfTextSp
                 # the spaces it infers between words as separate layout items with no
                 # font, and a rule that saw only the real characters would read the
                 # space-separated "paper 28" as welded.
-                inline_marker_overrides = _inline_superscript_marker_char_ids(list(line))
-                trailing_superscript_split = _trailing_marker_split_left_to_importer(
-                    chars, inline_marker_overrides
+                items: list[object] = list(line)
+                raised_runs = _raised_digit_runs(items)
+                inline_marker_overrides = _reference_digit_overrides(
+                    items, raised_runs, reference_font_size=None
                 )
-                if trailing_superscript_split is None:
-                    spans.append(
-                        PdfTextSpan(
-                            page_number=page_index,
-                            text=_line_text_with_char_overrides(line, inline_marker_overrides),
-                            x0=float(line.x0),
-                            top=top,
-                            x1=float(line.x1),
-                            bottom=bottom,
-                            page_height=page_height,
-                            font_name=font_name,
-                            font_size=float(font_size) if font_size else None,
-                            is_bold=is_bold,
-                            is_italic=is_italic,
-                            runs=_style_runs_from_line_items(
-                                line, char_text_overrides=inline_marker_overrides
-                            ),
-                        )
+                reference_font_sizes.extend(
+                    marker_font_size
+                    for _, marker_font_size, line_text_font_size in raised_runs
+                    if _run_is_smaller_than_its_line(marker_font_size, line_text_font_size)
+                )
+                if any(
+                    not _run_is_smaller_than_its_line(marker_font_size, line_text_font_size)
+                    for _, marker_font_size, line_text_font_size in raised_runs
+                ):
+                    lines_to_reread.append(
+                        (len(line_spans), line, items, page_index, page_height)
                     )
-                    continue
-                # Only the leading segment is rewritten. The trailing marker keeps its
-                # raw digits so the logical importer still recognises it as a standalone
-                # ``\d{1,3}`` marker span and re-binds it through the existing path.
-                for segment_index, segment_chars in enumerate(trailing_superscript_split):
-                    span = _pdf_text_span_from_chars(
-                        segment_chars,
-                        page_number=page_index,
+                line_spans.append(
+                    _spans_from_pdfminer_line(
+                        line,
+                        items,
+                        inline_marker_overrides,
+                        page_index=page_index,
                         page_height=page_height,
-                        char_text_overrides=inline_marker_overrides if segment_index == 0 else None,
+                        char_type=LTChar,
                     )
-                    if span is not None:
-                        spans.append(span)
+                )
+    # Spec 067 FR-006: a reference set at the size this document sets its references in is a
+    # reference even where its own line is set in that size too (a quotation or a box in the
+    # notes size). The size is known only once every line has been read; the few lines that
+    # carry a raised digit at their own size are read again with it.
+    reference_font_size = _document_reference_font_size(reference_font_sizes)
+    if reference_font_size is not None:
+        for slot, line_box, items, page_index, page_height in lines_to_reread:
+            overrides = _inline_superscript_marker_char_ids(
+                items, reference_font_size=reference_font_size
+            )
+            line_spans[slot] = _spans_from_pdfminer_line(
+                line_box,
+                items,
+                overrides,
+                page_index=page_index,
+                page_height=page_height,
+                char_type=LTChar,
+            )
+    return [span for spans_of_line in line_spans for span in spans_of_line]
+
+
+def _spans_from_pdfminer_line(
+    line_box: object,
+    items: Sequence[object],
+    inline_marker_overrides: Mapping[int, str],
+    *,
+    page_index: int,
+    page_height: float | None,
+    char_type: type,
+) -> list[PdfTextSpan]:
+    """The span (or, with a trailing reference split off, the spans) of one pdfminer text
+    line: ``line_box`` gives the line's box, ``items`` its full item sequence."""
+    chars = [item for item in items if isinstance(item, char_type)]
+    font_names = [str(getattr(char, "fontname", "") or "") for char in chars]
+    font_sizes = [float(getattr(char, "size", 0.0) or 0.0) for char in chars]
+    font_name = _most_common(font_names)
+    font_size = median(font_sizes) if font_sizes else None
+    is_bold, is_italic = _font_style_flags(font_name)
+    top, bottom = _pdfminer_top_origin_bounds(
+        y0=float(getattr(line_box, "y0")),
+        y1=float(getattr(line_box, "y1")),
+        page_height=page_height,
+    )
+    trailing_superscript_split = _trailing_marker_split_left_to_importer(
+        chars, inline_marker_overrides
+    )
+    if trailing_superscript_split is None:
+        return [
+            PdfTextSpan(
+                page_number=page_index,
+                text=_line_text_with_char_overrides(items, inline_marker_overrides),
+                x0=float(getattr(line_box, "x0")),
+                top=top,
+                x1=float(getattr(line_box, "x1")),
+                bottom=bottom,
+                page_height=page_height,
+                font_name=font_name,
+                font_size=float(font_size) if font_size else None,
+                is_bold=is_bold,
+                is_italic=is_italic,
+                runs=_style_runs_from_line_items(
+                    items, char_text_overrides=inline_marker_overrides
+                ),
+            )
+        ]
+    # Only the leading segment is rewritten. The trailing marker keeps its raw digits so the
+    # logical importer still recognises it as a standalone ``\d{1,3}`` marker span and
+    # re-binds it through the existing path.
+    spans: list[PdfTextSpan] = []
+    for segment_index, segment_chars in enumerate(trailing_superscript_split):
+        span = _pdf_text_span_from_chars(
+            segment_chars,
+            page_number=page_index,
+            page_height=page_height,
+            char_text_overrides=inline_marker_overrides if segment_index == 0 else None,
+        )
+        if span is not None:
+            spans.append(span)
     return spans
 
 
@@ -377,7 +453,9 @@ def _char_baseline(char: object) -> float:
     return float(getattr(char, "y0", 0.0) or 0.0)
 
 
-def _inline_superscript_marker_char_ids(chars: Sequence[object]) -> dict[int, str]:
+def _inline_superscript_marker_char_ids(
+    chars: Sequence[object], *, reference_font_size: float | None = None
+) -> dict[int, str]:
     """Map ``id(char) -> superscript glyph`` for the footnote references in one line.
 
     ``chars`` must be the line's FULL item sequence, including the whitespace items the
@@ -408,24 +486,85 @@ def _inline_superscript_marker_char_ids(chars: Sequence[object]) -> dict[int, st
 
     A stand-alone run keeps the space before it: only the digits are rewritten, so the
     span's character count stays what it was, like for every other reference.
+
+    Spec 067 FR-006: "smaller than the text on its line" has one alternative --
+    set at ``reference_font_size``, the size this document sets its recognised
+    references in (`_document_reference_font_size`), within
+    ``_REFERENCE_FONT_SIZE_TOLERANCE_PT``. A quotation or a box that the book sets in
+    its notes size carries its references at the size of its own line; they are still
+    raised, and still at the size of every other reference in the book. Everything else
+    is required as before. A raised digit at the size of the BODY ("the GDP.9" where the
+    references are smaller) stays a number, and so does a raised digit in a document
+    that has no recognised references at all.
     """
+    return _reference_digit_overrides(
+        chars, _raised_digit_runs(chars), reference_font_size=reference_font_size
+    )
+
+
+def _reference_digit_overrides(
+    chars: Sequence[object],
+    raised_runs: Sequence[tuple[list[int], float, float]],
+    *,
+    reference_font_size: float | None,
+) -> dict[int, str]:
+    overrides: dict[int, str] = {}
+    for run_indexes, marker_font_size, line_text_font_size in raised_runs:
+        if not (
+            _run_is_smaller_than_its_line(marker_font_size, line_text_font_size)
+            or _is_set_at_reference_size(marker_font_size, reference_font_size)
+        ):
+            continue
+        for index in run_indexes:
+            overrides[id(chars[index])] = (
+                _char_display_text(chars[index]).strip().translate(_SUPERSCRIPT_DIGIT_TABLE)
+            )
+    return overrides
+
+
+def _run_is_smaller_than_its_line(marker_font_size: float, line_text_font_size: float) -> bool:
+    return marker_font_size <= line_text_font_size * _SUPERSCRIPT_MARKER_MAX_SIZE_RATIO
+
+
+def _is_set_at_reference_size(marker_font_size: float, reference_font_size: float | None) -> bool:
+    return (
+        reference_font_size is not None
+        and abs(marker_font_size - reference_font_size) <= _REFERENCE_FONT_SIZE_TOLERANCE_PT
+    )
+
+
+def _document_reference_font_size(reference_font_sizes: Sequence[float]) -> float | None:
+    """Spec 067 FR-006: the size a document sets its footnote references in -- the most
+    common size, to 0.1 pt, of the references the in-line rule recognised in it by size
+    and rise. None when it recognised none."""
+    rounded = Counter(round(size, 1) for size in reference_font_sizes if size > 0)
+    if not rounded:
+        return None
+    return rounded.most_common(1)[0][0]
+
+
+def _raised_digit_runs(chars: Sequence[object]) -> list[tuple[list[int], float, float]]:
+    """Every digit run of the line that satisfies the reference form except the size test:
+    welded or standing raised alone, at most three digits, raised above the text's baseline.
+    Each as ``(run item indexes, run size, line text size)``; the size is decided by the
+    caller (`_inline_superscript_marker_char_ids`)."""
     non_space_indexes = [
         index for index, char in enumerate(chars) if _char_display_text(char).strip()
     ]
     if len(non_space_indexes) < 2:
-        return {}
+        return []
     line_font_sizes = [
         size
         for size in (_char_font_size(chars[index]) for index in non_space_indexes)
         if size > 0
     ]
     if not line_font_sizes:
-        return {}
+        return []
     line_text_font_size = float(median(line_font_sizes))
     if line_text_font_size <= 0:
-        return {}
+        return []
 
-    overrides: dict[int, str] = {}
+    runs: list[tuple[list[int], float, float]] = []
     position = 0
     while position < len(non_space_indexes):
         if _char_display_text(chars[non_space_indexes[position]]).strip() not in _ASCII_DIGITS:
@@ -472,8 +611,6 @@ def _inline_superscript_marker_char_ids(chars: Sequence[object]) -> dict[int, st
         marker_font_size = (
             float(median(run_font_sizes)) if run_font_sizes else line_text_font_size
         )
-        if marker_font_size > line_text_font_size * _SUPERSCRIPT_MARKER_MAX_SIZE_RATIO:
-            continue
         # The baseline the digits must rise above: the text before them, or — for a run
         # that opens the line — the text after them. For a welded run the first list is
         # never empty, so the welded rule reads exactly what it read before FR-007.
@@ -512,11 +649,8 @@ def _inline_superscript_marker_char_ids(chars: Sequence[object]) -> dict[int, st
             if neighbour is not None
         ):
             continue
-        for index in run_indexes:
-            overrides[id(chars[index])] = (
-                _char_display_text(chars[index]).strip().translate(_SUPERSCRIPT_DIGIT_TABLE)
-            )
-    return overrides
+        runs.append((run_indexes, marker_font_size, line_text_font_size))
+    return runs
 
 
 def _digit_run_is_welded_to_preceding_text(

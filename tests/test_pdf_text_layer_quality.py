@@ -7,6 +7,7 @@ from pathlib import Path
 from docxaicorrector.pdf_import.text_layer_quality import (
     PdfTextSpan,
     _detect_running_heads_on_page_number_line,
+    _document_reference_font_size,
     _font_style_flags,
     _inline_superscript_marker_char_ids,
     _line_text_with_char_overrides,
@@ -237,12 +238,20 @@ def test_pdfminer_line_keeps_lowered_digit_welded_to_word() -> None:
     assert _extracted_line_text(chars) == "more CO2 means"
 
 
-def test_pdfminer_line_keeps_full_size_raised_digit_welded_to_word() -> None:
-    # Raised but NOT smaller. Under-attaching costs one visible defect; rewriting a digit
-    # that the book set at text size would corrupt text, so this is deliberately skipped.
+def test_pdfminer_line_keeps_body_size_raised_digit_welded_to_word() -> None:
+    # Raised but set at the size of the BODY, in a document whose references are smaller
+    # (spec 067 FR-006 rewords what this test meant): neither smaller than its line nor at
+    # the document's reference size, so it stays a number -- with the reference size known
+    # and without it.
     chars = _pdf_line([("the GDP.", 10, 100), ("9", 10, 104)])
 
     assert _extracted_line_text(chars) == "the GDP.9"
+    assert (
+        _line_text_with_char_overrides(
+            chars, _inline_superscript_marker_char_ids(chars, reference_font_size=6.5)
+        )
+        == "the GDP.9"
+    )
 
 
 def test_pdfminer_line_keeps_number_split_across_a_line_break() -> None:
@@ -755,3 +764,90 @@ def test_067_fr007_lines_that_are_not_running_heads_are_kept() -> None:
     assert _detect_running_heads_on_page_number_line([number, *candidates]) == frozenset()
     # ...and on a page without a page number nothing is furniture by this rule.
     assert _detect_running_heads_on_page_number_line(candidates) == frozenset()
+
+
+# Spec 067 FR-006 (I-2): a reference set at the document's reference size inside a quotation
+# or a box that the book sets entirely in its notes size (Money and Sustainability: 5.76 pt,
+# raised 0.375 of its size; Creating Wealth: 10.8 pt, raised 0.40).
+
+
+def _with_reference_size(chars: list[_FakePdfMinerChar], reference_font_size: float | None) -> str:
+    return _line_text_with_char_overrides(
+        chars, _inline_superscript_marker_char_ids(chars, reference_font_size=reference_font_size)
+    )
+
+
+def test_067_fr006_reference_in_a_notes_size_inset_is_a_superscript() -> None:
+    welded = _pdf_line([("include Mitchell Innes,", 5.76, 100), ("46", 5.76, 102.16), (" Georg Knapp", 5.76, 100)])
+    after_a_space = _pdf_line([("until it is evenly mixed.” ", 5.76, 100), ("11", 5.76, 102.16)])
+
+    assert _with_reference_size(welded, 5.8) == "include Mitchell Innes,⁴⁶ Georg Knapp"
+    assert _with_reference_size(after_a_space, 5.8) == "until it is evenly mixed.” ¹¹"
+    # Without the document's reference size the line's own size decides, as before.
+    assert _with_reference_size(welded, None) == "include Mitchell Innes,46 Georg Knapp"
+
+
+def test_067_fr006_digits_that_are_not_references_stay_numbers() -> None:
+    # A contents line: a chapter number at the start, at body size, raised 0.30 of its size
+    # (Rethinking Money p. 10) -- neither raised enough nor at the reference size 7.1.
+    contents = _pdf_line([("1", 10.97, 103.33), ("  The Failure of Money", 10.97, 100)])
+    # Full-size digits on the baseline after a comma or a quote (spec 065 FR-007, 265 cases).
+    flat = _pdf_line([("from $1,", 5.76, 100), ("300", 5.76, 100), (" in the ’", 5.76, 100), ("90", 5.76, 100), ("s", 5.76, 100)])
+    # Set at the reference size but LOWERED below the line: a subscript, not a reference.
+    lowered = _pdf_line([("more CO", 5.76, 100), ("2", 5.76, 98), (" means", 5.76, 100)])
+
+    assert _with_reference_size(contents, 7.1) == "1  The Failure of Money"
+    assert _with_reference_size(flat, 5.8) == "from $1,300 in the ’90s"
+    assert _with_reference_size(lowered, 5.8) == "more CO2 means"
+
+
+def test_067_fr006_document_reference_size_is_the_modal_recognised_size() -> None:
+    assert _document_reference_font_size([5.76, 5.76, 5.8, 6.5]) == 5.8
+    assert _document_reference_font_size([7.1, 7.08, 6.5]) == 7.1
+    assert _document_reference_font_size([]) is None
+
+
+class _FakeTextLine(list):
+    def __init__(self, chars: list[_FakePdfMinerChar]) -> None:
+        super().__init__(chars)
+        self.x0 = min(char.x0 for char in chars)
+        self.x1 = max(char.x1 for char in chars)
+        self.y0 = min(char.y0 for char in chars)
+        self.y1 = max(char.y1 for char in chars)
+
+    def get_text(self) -> str:
+        return "".join(char.get_text() for char in self) + "\n"
+
+
+class _FakeTextBox(list):
+    pass
+
+
+class _FakePage(list):
+    height = 800.0
+
+
+def test_067_fr006_extraction_reads_the_inset_again_with_the_document_reference_size(monkeypatch) -> None:
+    import pdfminer.high_level as high_level
+    import pdfminer.layout as layout
+
+    body = [
+        _FakeTextLine(_pdf_line([("The bank plunged.", 10, 700), ("2", 6.5, 704), (" Then it rose", 10, 700)])),
+        _FakeTextLine(_pdf_line([("again in the spring.", 10, 686), ("3", 6.5, 690)])),
+        _FakeTextLine(_pdf_line([("as a share of the GDP.", 10, 672), ("9", 10, 676)])),
+    ]
+    inset = [_FakeTextLine(_pdf_line([("quoted in the box,", 6.5, 640), ("4", 6.5, 642.4), (" said he", 6.5, 640)]))]
+    page = _FakePage([_FakeTextBox(body), _FakeTextBox(inset)])
+    monkeypatch.setattr(layout, "LTChar", _FakePdfMinerChar)
+    monkeypatch.setattr(layout, "LTTextLine", _FakeTextLine)
+    monkeypatch.setattr(layout, "LTTextContainer", _FakeTextBox)
+    monkeypatch.setattr(high_level, "extract_pages", lambda path: [page])
+
+    texts = [span.text for span in extract_pdf_text_spans_with_pdfminer("unused.pdf")]
+
+    assert texts == [
+        "The bank plunged.² Then it rose",
+        "again in the spring.³",
+        "as a share of the GDP.9",
+        "quoted in the box,⁴ said he",
+    ]
