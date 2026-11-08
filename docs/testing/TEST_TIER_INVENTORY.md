@@ -34,6 +34,7 @@ This inventory is intentionally pragmatic:
 - `tests/test_format_restoration.py`
 - `tests/test_gate_detectors_stage2.py`
 - `tests/test_generation.py`
+- `tests/test_glossary_adherence_metric.py`
 - `tests/test_glossary_pass.py`
 - `tests/test_image_analysis.py`
 - `tests/test_image_generation.py`
