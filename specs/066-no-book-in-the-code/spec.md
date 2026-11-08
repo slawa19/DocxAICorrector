@@ -475,5 +475,25 @@ VIII). «Пин» — тесты, которые сейчас закрепляю
   одной картинки — тест остановки следующих картинок переписан на живой ключ с перерасходом анализа
   (это территория спеки 062, здесь записано). Исключения SC-004: docstring `model_capabilities.py:4,20,38`,
   OpenRouter-id `config.toml:109`.
+- 2026-11-08 — P5, хвосты после слияния (`066/cleanup`, 5 коммитов `fcf83c6..f395158`, влиты `96b1a92`):
+  в `quality_gate.py` удалены `topology_projection_supported` с меткой `topology_projection`, basis
+  `topology_unit` и семь константных ключей отчёта (`structure_unit_total_count`, `document_map_toc_*`,
+  `topology_*`, `document_map_compound_toc_split_hint_count`); удалены чтения никогда не эмитируемого
+  события `reconciliation_report_saved` и ключи snapshot `outline_coverage_ratio`, `front_matter_leaks`,
+  `front_matter_body_advisories`, `targeted_recall_invoked`, поля `document_map_present` /
+  `outline_coverage_ratio` у `StructureValidationReport`; константы `toc_body_concat_structure_detected` /
+  `toc_body_concat_gate_source = "legacy_markdown"` убраны из отчёта, метрик, проверок и раннера; из
+  раннера убраны шесть счётчиков `ai_*_count`; удалён мёртвый fallback `document_context_prompt` из
+  app_config (`UNPRODUCED_ALLOWED` пуст); удалены `DocumentContextProfile.style_instructions` /
+  `glossary_terms` с `DOCUMENT_GLOSSARY_SECTION_HEADER` и `DEFAULT_GLOSSARY_PROMPT_MAX_CHARS`
+  (`render_glossary_prompt_section` остался — его единственный потребитель глоссарий прогона). SC-003:
+  четыре профиля против `fc7fd36` отличаются только шестью удалёнными ключами snapshot
+  (`D:\Temp\docxai-research\066-baseline\cleanup\`). Оркестратор: описание секции контекста в
+  `system_prompt.txt:19` больше не обещает «стилевые указания» (`ba98c25`; пины промптов не изменились —
+  необязательная секция в них не входит); база pyright в главном дереве 192 → 168 (мёртвый код уносил
+  с собой 24 ошибки типов). Оставлено с обоснованием: константные метки `*_gate_source =
+  "legacy_markdown"` живых детекторов (`bullet_heading`, `page_placeholder`, `residual_bullet_glyph`,
+  `mixed_script`) — провенанс, не остаток фичи; `tests/fixtures/money_gemini_passthrough_fixture.json` —
+  записанный прогон-вход, не эталон вывода.
 - 2026-11-08 — спека создана по сплошному обходу `src/` после вопроса владельца о «доменном
   глоссарии». Решения владельца того же дня: ручного входа в глоссарий не будет; домен удаляется.
