@@ -29,7 +29,7 @@ from docxaicorrector.core.model_accounting import (
     record_retry_attempt,
     record_text_removal,
 )
-from docxaicorrector.image.shared import call_responses_create_with_retry, extract_unsupported_parameter_name, is_retryable_error
+from docxaicorrector.image.shared import call_responses_create_with_retry, drop_rejected_optional_param, is_retryable_error
 from docxaicorrector.generation.marker_attempt_capture import capture_rejected_marker_attempt
 from docxaicorrector.generation.openai_response_utils import collect_response_text_traversal, read_response_field
 from collections.abc import Callable, Mapping
@@ -1720,15 +1720,11 @@ def _call_chat_completions_create(
         try:
             response = create(**payload)
         except TypeError as exc:
-            unsupported_param = extract_unsupported_parameter_name(str(exc))
-            if unsupported_param in removable_optional_params and unsupported_param in payload:
-                payload.pop(unsupported_param, None)
+            if drop_rejected_optional_param(exc, payload, removable_optional_params, stage=usage_stage):
                 continue
             raise
         except Exception as exc:
-            unsupported_param = extract_unsupported_parameter_name(str(exc))
-            if unsupported_param in removable_optional_params and unsupported_param in payload:
-                payload.pop(unsupported_param, None)
+            if drop_rejected_optional_param(exc, payload, removable_optional_params, stage=usage_stage):
                 continue
             raise
         else:
@@ -1855,15 +1851,11 @@ def _call_anthropic_messages_create(
         try:
             response = create(**payload)
         except TypeError as exc:
-            unsupported_param = extract_unsupported_parameter_name(str(exc))
-            if unsupported_param in removable_optional_params and unsupported_param in payload:
-                payload.pop(unsupported_param, None)
+            if drop_rejected_optional_param(exc, payload, removable_optional_params, stage=usage_stage):
                 continue
             raise
         except Exception as exc:
-            unsupported_param = extract_unsupported_parameter_name(str(exc))
-            if unsupported_param in removable_optional_params and unsupported_param in payload:
-                payload.pop(unsupported_param, None)
+            if drop_rejected_optional_param(exc, payload, removable_optional_params, stage=usage_stage):
                 continue
             raise
         else:

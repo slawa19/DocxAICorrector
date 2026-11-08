@@ -19,6 +19,7 @@ TARGETS = [
     "src/docxaicorrector/image/pipeline.py",
     "src/docxaicorrector/image/reconstruction.py",
     "src/docxaicorrector/image/reinsertion.py",
+    "src/docxaicorrector/image/shared.py",
     "src/docxaicorrector/image/validation.py",
     "src/docxaicorrector/pipeline/_pipeline.py",
     "src/docxaicorrector/pipeline/block_execution.py",

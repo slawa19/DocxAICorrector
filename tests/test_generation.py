@@ -1397,6 +1397,179 @@ def test_call_responses_create_with_retry_retries_without_temperature_on_bad_req
     ]
 
 
+class _UnsupportedTemperatureBadRequest(Exception):
+    """The provider's wording for a rejected ``temperature``, with the SDK's typed code."""
+
+    status_code = 400
+    code = "unsupported_parameter"
+
+    def __init__(self) -> None:
+        super().__init__("Unsupported parameter: 'temperature' is not supported with this model.")
+
+
+def _capture_shared_log_events(monkeypatch) -> list[tuple[int, str, dict[str, Any]]]:
+    events: list[tuple[int, str, dict[str, Any]]] = []
+
+    def capture(level, event, message, **context):
+        events.append((level, event, dict(context)))
+        return f"evt-{event}"
+
+    monkeypatch.setattr(image_shared, "log_event", capture)
+    return events
+
+
+def test_spec_066_fr007_responses_param_drop_is_logged_once_and_retry_succeeds(monkeypatch):
+    """Spec 066 B-1: the drop used to be silent, so a clean log proved nothing."""
+
+    events = _capture_shared_log_events(monkeypatch)
+    calls: list[dict[str, Any]] = []
+
+    def create_response(**kwargs):
+        calls.append(dict(kwargs))
+        if len(calls) == 1:
+            raise _UnsupportedTemperatureBadRequest()
+        return SimpleNamespace(output_text="ok")
+
+    result = image_shared.call_responses_create_with_retry(
+        SimpleNamespace(responses=SimpleNamespace(create=create_response)),
+        {"model": "gpt-5-mini", "input": [], "temperature": 0.4},
+        max_retries=1,
+        retryable_error_predicate=lambda exc: False,
+        usage_stage=model_accounting.STAGE_TEXT_GENERATION,
+    )
+
+    assert result.output_text == "ok"
+    assert [("temperature" in call) for call in calls] == [True, False]
+    dropped = [event for event in events if event[1] == "model_call_param_dropped"]
+    assert dropped == [
+        (
+            logging.WARNING,
+            "model_call_param_dropped",
+            {
+                "param": "temperature",
+                "model": "gpt-5-mini",
+                "stage": "text_generation",
+                "error_code": "unsupported_parameter",
+            },
+        )
+    ]
+
+
+def test_spec_066_fr007_param_drop_is_not_remembered_between_calls(monkeypatch):
+    """Non-goal of spec 066: no memory between calls until a run shows the rejection is real."""
+
+    events = _capture_shared_log_events(monkeypatch)
+    calls: list[dict[str, Any]] = []
+
+    def create_response(**kwargs):
+        calls.append(dict(kwargs))
+        if "temperature" in kwargs:
+            raise _UnsupportedTemperatureBadRequest()
+        return SimpleNamespace(output_text="ok")
+
+    client = SimpleNamespace(responses=SimpleNamespace(create=create_response))
+    for _ in range(2):
+        image_shared.call_responses_create_with_retry(
+            client,
+            {"model": "gpt-5-mini", "input": [], "temperature": 0.4},
+            max_retries=1,
+            retryable_error_predicate=lambda exc: False,
+        )
+
+    assert [("temperature" in call) for call in calls] == [True, False, True, False]
+    assert [event[1] for event in events] == ["model_call_param_dropped"] * 2
+
+
+def test_spec_066_fr007_rejection_of_a_non_optional_param_is_not_logged_as_a_drop(monkeypatch):
+    events = _capture_shared_log_events(monkeypatch)
+
+    class UnsupportedInputError(Exception):
+        status_code = 400
+
+    def create_response(**kwargs):
+        raise UnsupportedInputError("Unsupported parameter: 'input' is not supported with this model.")
+
+    with pytest.raises(UnsupportedInputError):
+        image_shared.call_responses_create_with_retry(
+            SimpleNamespace(responses=SimpleNamespace(create=create_response)),
+            {"model": "gpt-5-mini", "input": [], "temperature": 0.4},
+            max_retries=1,
+            retryable_error_predicate=lambda exc: False,
+        )
+
+    assert events == []
+
+
+def test_spec_066_fr007_chat_completions_param_drop_is_logged(monkeypatch):
+    events = _capture_shared_log_events(monkeypatch)
+    calls: list[dict[str, Any]] = []
+    response = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="ok"))])
+
+    def create(**kwargs):
+        calls.append(dict(kwargs))
+        if len(calls) == 1:
+            raise TypeError("create() got an unexpected keyword argument 'temperature'")
+        return response
+
+    client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+
+    result = generation._call_chat_completions_create(
+        _as_openai_client(client),
+        {"model": "openrouter/model", "input": [{"role": "user", "content": "hi"}], "temperature": 0.4},
+        usage_stage=model_accounting.STAGE_GLOSSARY_EXTRACTION,
+    )
+
+    assert result is response
+    assert [("temperature" in call) for call in calls] == [True, False]
+    assert [(event[1], event[2]) for event in events] == [
+        (
+            "model_call_param_dropped",
+            {
+                "param": "temperature",
+                "model": "openrouter/model",
+                "stage": "glossary_extraction",
+                "error_code": "TypeError",
+            },
+        )
+    ]
+
+
+def test_spec_066_fr007_anthropic_messages_param_drop_is_logged(monkeypatch):
+    events = _capture_shared_log_events(monkeypatch)
+    calls: list[dict[str, Any]] = []
+    response = SimpleNamespace(content=[SimpleNamespace(text="ok")])
+
+    def create(**kwargs):
+        calls.append(dict(kwargs))
+        if len(calls) == 1:
+            raise _UnsupportedTemperatureBadRequest()
+        return response
+
+    result = generation._call_anthropic_messages_create(
+        SimpleNamespace(messages=SimpleNamespace(create=create)),
+        {
+            "model": "anthropic:claude-sonnet-4-6",
+            "input": [{"role": "user", "content": "hi"}],
+            "max_output_tokens": 512,
+            "temperature": 0.4,
+        },
+    )
+
+    assert result is response
+    assert [("temperature" in call) for call in calls] == [True, False]
+    assert [(event[1], event[2]) for event in events] == [
+        (
+            "model_call_param_dropped",
+            {
+                "param": "temperature",
+                "model": "claude-sonnet-4-6",
+                "stage": "text_generation",
+                "error_code": "unsupported_parameter",
+            },
+        )
+    ]
+
+
 def test_normalize_generated_document_background_whitens_dark_border_only():
     image = Image.new("RGBA", (12, 12), (0, 0, 0, 255))
     for x_coord in range(3, 9):
