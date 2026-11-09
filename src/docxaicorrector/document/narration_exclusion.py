@@ -2,8 +2,8 @@
 
 A pure function of what the document layer already knows about ONE paragraph: its roles, its
 region, the back-matter section it sits in, the spec 067 notes-in-body mark, and the FORM of its
-text. No word list and no per-book literal (Constitution VII): the only thing read off the text
-is how much of it is letters, and how long its letter runs are.
+text. No word list and no per-book literal (Constitution VII): the only things read off the text
+are how much of it is letters, how long its letter runs are, and whether it ends as a sentence.
 
 Roles and regions decide first. A paragraph the preparation recognised as an image, a table, a
 caption, a table-of-contents line, an index or other reference apparatus is not read aloud and is
@@ -46,6 +46,50 @@ _LETTER_RUN_PATTERN = re.compile(r"[^\W\d_]+")
 _MIN_CONNECTED_LETTER_RUN = 3
 
 
+# Spec 070 fix-1 (Codex acceptance review, finding 2): a paragraph that has a letter and ENDS
+# a sentence is connected speech, however short -- "Да.", "Go!", "你好。", "От 10 до 20.".
+# The terminal marks are read off the Unicode character database, not listed: every
+# punctuation character (category P*) whose Unicode NAME says it is a full stop, a question
+# or exclamation mark, an ellipsis or a danda, in any script -- except the inverted and
+# initial forms, which open a sentence rather than end it. Read from the runtime's
+# ``unicodedata``, the same pinned data the rest of the narration code reads.
+_SENTENCE_TERMINAL_NAME_PARTS = ("FULL STOP", "QUESTION MARK", "EXCLAMATION MARK", "ELLIPSIS", "DANDA")
+_SENTENCE_OPENING_NAME_PARTS = ("INVERTED", "INITIAL")
+
+
+def _is_sentence_terminal(character: str) -> bool:
+    if not unicodedata.category(character).startswith("P"):
+        return False
+    name = unicodedata.name(character, "")
+    return any(part in name for part in _SENTENCE_TERMINAL_NAME_PARTS) and not any(
+        part in name for part in _SENTENCE_OPENING_NAME_PARTS
+    )
+
+
+def _may_follow_a_terminal(character: str) -> bool:
+    """What may stand after the terminal mark of a sentence: white space, a closing bracket or
+    quote (categories Pe, Pf, Pi -- Pi closes in some typographies), a straight quote or an
+    apostrophe, and the importer's own emphasis markup (``*``, ``_``)."""
+    if character.isspace() or character in "*_":
+        return True
+    if unicodedata.category(character) in {"Pe", "Pf", "Pi"}:
+        return True
+    name = unicodedata.name(character, "")
+    return "QUOTATION MARK" in name or name == "APOSTROPHE"
+
+
+def ends_as_a_sentence(text: str) -> bool:
+    """True when ``text`` has at least one letter and its last mark, past any closing quote,
+    bracket or emphasis marker, is a sentence terminal of any script."""
+    value = str(text or "")
+    if not any(character.isalpha() for character in value):
+        return False
+    end = len(value)
+    while end > 0 and _may_follow_a_terminal(value[end - 1]):
+        end -= 1
+    return end > 0 and _is_sentence_terminal(value[end - 1])
+
+
 def _without_combining_marks(text: str) -> str:
     """Drop combining marks (Unicode category M*): a diacritic belongs to its letter, so it is
     neither a letter run of its own nor a non-letter that dilutes the share of letters."""
@@ -53,17 +97,21 @@ def _without_combining_marks(text: str) -> str:
 
 
 def is_fragment_without_connected_text(text: str) -> bool:
-    """The form rule of spec 070 FR-003, exactly as the spec words it.
+    """The form rule of spec 070 FR-003.
 
-    True when the text has no letter run of three or more letters, OR when its letters are
-    fewer than half of its non-space characters. Text with no non-space character at all is a
-    fragment too: there is nothing to say. Exactly half is NOT a fragment, and a run of exactly
-    three letters is NOT one either (both boundaries are pinned by tests).
+    A text that has a letter and ends as a sentence (``ends_as_a_sentence``) is connected text
+    and never a fragment: the short reply "Да." or "Go!" is speech (Codex acceptance review,
+    finding 2). Otherwise it is a fragment when it has no letter run of three or more letters,
+    OR when its letters are fewer than half of its non-space characters. Text with no non-space
+    character at all is a fragment too: there is nothing to say. Exactly half is NOT a fragment,
+    and a run of exactly three letters is NOT one either (both boundaries are pinned by tests).
     """
     cleaned = _without_combining_marks(str(text or ""))
     non_space = [character for character in cleaned if not character.isspace()]
     if not non_space:
         return True
+    if ends_as_a_sentence(cleaned):
+        return False
     letter_count = sum(1 for character in non_space if character.isalpha())
     if letter_count * 2 < len(non_space):
         return True
