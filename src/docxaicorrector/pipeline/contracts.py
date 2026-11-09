@@ -103,6 +103,12 @@ class MarkdownGenerator(Protocol):
         marker_mode: bool = False,
         block_index: int | None = None,
         should_stop: Callable[[], bool] | None = None,
+        # Spec 069: the second pass calls with ``False`` ("answer or raise"), and a pass that
+        # has a reasoning level or a model multiplier passes its ``GenerationRequestProfile``.
+        # Callers without one never pass the keyword, so their request is the one of before.
+        allow_controlled_source_fallback: bool = True,
+        detect_short_source_absorption: bool = False,
+        request_profile: object | None = None,
     ) -> str: ...
 
 
@@ -318,6 +324,17 @@ class ProcessingState:
     failed_segment_ids: set[str] = field(default_factory=set)
     system_prompt: str | None = None
     toc_system_prompt: str | None = None
+    # Spec 069 FR-004 (2): the second pass's own system prompt (``prompt_variant=
+    # "literary_polish"``), built once per run like the two above.
+    polish_system_prompt: str | None = None
+    # Spec 069 FR-004 (5): Stop was pressed during the second pass of a block. That block keeps
+    # its first pass and IS delivered; the block loop then stops the run, on the last block too.
+    stopped_during_polish: bool = False
+    # Spec 069 FR-004 (6): the second pass's own counters of this run, flat keys as booked in
+    # the accounting section ``literary_polish`` (``pipeline/literary_polish.py``), and the
+    # path of its rollback artifact once a line was written.
+    literary_polish_counts: dict[str, int] = field(default_factory=dict)
+    literary_polish_artifact_path: str | None = None
     started_at: float = field(default_factory=time.perf_counter)
 
 
@@ -331,6 +348,10 @@ class ProcessingInitialization:
     text_client: object | None = None
     text_model_id: str | None = None
     openai_client: object | None = None
+    # Spec 069 FR-004: the client and model id of the second pass (``standard`` mode of a
+    # ``translate`` run). ``None`` -- every other run -- means the pass does not run.
+    polish_client: object | None = None
+    polish_model_id: str | None = None
 
 
 @dataclass(frozen=True)

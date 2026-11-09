@@ -97,6 +97,7 @@ This inventory is intentionally pragmatic:
 - `tests/test_workflow_state.py`
 - `tests/test_cost_estimate.py`
 - `tests/test_generation_request_profile.py`
+- `tests/test_literary_polish.py`
 - `tests/test_model_accounting_069.py`
 - `tests/test_output_budget.py`
 - `tests/test_polish_checks.py`

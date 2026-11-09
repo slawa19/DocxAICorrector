@@ -81,6 +81,12 @@ MARKER_ATTEMPT_ARTIFACTS_MAX_COUNT = 400
 RUN_GLOSSARIES_MAX_AGE_SECONDS = 14 * 24 * 60 * 60
 RUN_GLOSSARIES_MAX_COUNT = 200
 
+# Spec 069 FR-004 (7): one JSONL per ``standard`` run (``pipeline/literary_polish.py``) with a
+# line per rolled-back paragraph or block of the second pass, texts included. The same tier as
+# the rejected marker attempts it resembles: rollback diagnostics, read after a run, 7 days.
+LITERARY_POLISH_ROLLBACKS_MAX_AGE_SECONDS = 7 * 24 * 60 * 60
+LITERARY_POLISH_ROLLBACKS_MAX_COUNT = 400
+
 _UI_RESULT_GROUP_SUFFIXES = (
     ".result.manifest.json",
     ".result.meta.json",

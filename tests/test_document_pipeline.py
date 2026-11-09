@@ -8956,6 +8956,73 @@ def test_glossary_pass_does_nothing_when_switched_off_or_unconfigured(monkeypatc
     assert not any("ГЛОССАРИЙ ЭТОЙ КНИГИ" in prompt for prompt in case.block_system_prompts)
 
 
+def _spec_069_mode_keys(mode, *, first_pass_model="gpt-5.4", reasoning=None):
+    """The ``translation_*`` keys the single resolution writes into the run's ``app_config``."""
+
+    from docxaicorrector.core.translation_modes import EffectiveTranslationConfig, TranslationPassSpec
+
+    return EffectiveTranslationConfig(
+        mode=mode,
+        first_pass=TranslationPassSpec(model=first_pass_model, editorial_intensity="literary", reasoning_effort=reasoning),
+        polish_pass=TranslationPassSpec(model="test-vendor/polish-model") if mode == "standard" else None,
+        overridden_settings=(),
+        origin="ui",
+    ).to_runtime_fields()
+
+
+@pytest.mark.parametrize(
+    ("mode", "reasoning", "expected"),
+    [("quality", "low", {"effort": "low"}), ("standard", None, None), ("single", None, None)],
+)
+def test_spec_069_glossary_and_block_requests_carry_the_first_pass_reasoning(
+    monkeypatch, tmp_path, mode, reasoning, expected
+):
+    """FR-003: every call of the first pass -- the glossary's and the blocks' -- carries the
+    mode's level on the wire; ``standard`` (no level) and ``single`` send no parameter at all."""
+
+    app_config = {"glossary_pass_enabled": True, **_spec_069_mode_keys(mode, reasoning=reasoning)}
+    case = _run_glossary_case(monkeypatch, tmp_path, answer=_GLOSSARY_ANSWER, app_config=app_config)
+
+    assert case.result == "succeeded"
+    assert len(case.client.calls) == 2 and len(case.client.block_calls) == 2
+    for request in case.client.calls + case.client.block_calls:
+        if expected is None:
+            assert "reasoning" not in request
+        else:
+            assert request["reasoning"] == expected
+
+
+def test_spec_069_glossary_budget_takes_the_first_pass_model_multiplier(monkeypatch, tmp_path):
+    """FR-006: the glossary of a mode is sized with its first-pass model's multiplier."""
+
+    import math
+
+    from docxaicorrector.text.glossary_pass import GLOSSARY_OUTPUT_TOKENS_CEILING
+
+    single = _run_glossary_case(
+        monkeypatch,
+        tmp_path,
+        answer=_GLOSSARY_ANSWER,
+        app_config={"glossary_pass_enabled": True, **_spec_069_mode_keys("single")},
+    )
+    quality = _run_glossary_case(
+        monkeypatch,
+        tmp_path,
+        answer=_GLOSSARY_ANSWER,
+        app_config={
+            "glossary_pass_enabled": True,
+            **_spec_069_mode_keys(
+                "quality", first_pass_model="openrouter:anthropic/claude-haiku-5.5", reasoning="low"
+            ),
+        },
+    )
+
+    single_caps = [request["max_output_tokens"] for request in single.client.calls]
+    quality_caps = [request["max_output_tokens"] for request in quality.client.calls]
+    assert single_caps and len(quality_caps) == len(single_caps)
+    assert quality_caps == [min(math.ceil(cap * 3), GLOSSARY_OUTPUT_TOKENS_CEILING) for cap in single_caps]
+
+
 @pytest.mark.parametrize(
     ("answer", "error_code"),
     [(RuntimeError("provider down"), "RuntimeError"), ("this is not json", "no_json")],

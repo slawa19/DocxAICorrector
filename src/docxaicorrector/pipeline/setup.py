@@ -7,6 +7,7 @@ from docxaicorrector.core.models import ImageMode
 from docxaicorrector.generation.formatting_diagnostics_retention import (
     blank_ownership_identity_fields,
 )
+from docxaicorrector.pipeline.literary_polish import polish_pass_model
 
 
 PipelineResult = Literal["succeeded", "failed", "stopped"]
@@ -504,6 +505,22 @@ def initialize_processing_run(
             if callable(getattr(dependencies, "get_client_for_model_selector", None))
             else dependencies.get_client()
         )
+        # Spec 069 FR-004: the second pass of a ``standard`` translate run has its own model
+        # and therefore its own client, resolved here like the first pass's. No second pass
+        # -- every other run -- builds nothing and passes nothing new to the factory.
+        polish_fields: dict[str, object] = {}
+        polish_model = polish_pass_model(context)
+        if polish_model:
+            polish_fields["polish_client"] = (
+                dependencies.get_client_for_model_selector(polish_model, "responses_text")
+                if callable(getattr(dependencies, "get_client_for_model_selector", None))
+                else dependencies.get_client()
+            )
+            polish_fields["polish_model_id"] = (
+                dependencies.resolve_model_selector(polish_model, "responses_text").model_id
+                if callable(getattr(dependencies, "resolve_model_selector", None))
+                else polish_model
+            )
         openai_client = None
         image_mode_requires_openai_client = context.image_mode not in {
             ImageMode.NO_CHANGE.value,
@@ -595,4 +612,5 @@ def initialize_processing_run(
         text_client=text_client,
         text_model_id=context.model_id or getattr(resolved_selector, "model_id", context.model),
         openai_client=openai_client,
+        **polish_fields,
     )
