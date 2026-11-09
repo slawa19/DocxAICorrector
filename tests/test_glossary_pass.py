@@ -2322,3 +2322,85 @@ def test_fr010_two_place_names_in_either_order_stay_two_candidates():
 
     assert "North Harbour" in by_term and "Harbour North" in by_term
     assert by_term["North Harbour"].spellings == () and by_term["Harbour North"].spellings == ()
+
+
+# --- Spec 069 WP-2, FR-006: the glossary budget with a model multiplier -----------------------
+
+# entry count -> the budget of today: the floor (0, 1, 8), just past it (9), an ordinary list
+# (60, 74), the exact ceiling (168) and past it (169, 10 000).
+_SPEC_069_GLOSSARY_BUDGET_OF_TODAY = {
+    0: 1024,
+    1: 1024,
+    8: 1024,
+    9: 1120,
+    60: 6016,
+    74: 7360,
+    168: 16384,
+    169: 16384,
+    10_000: 16384,
+}
+
+
+@pytest.mark.parametrize(("entry_count", "expected"), sorted(_SPEC_069_GLOSSARY_BUDGET_OF_TODAY.items()))
+def test_spec_069_glossary_budget_without_a_multiplier_is_the_budget_of_today(entry_count, expected):
+    assert glossary_pass.glossary_max_output_tokens(entry_count) == expected
+
+
+@pytest.mark.parametrize(("entry_count", "expected"), sorted(_SPEC_069_GLOSSARY_BUDGET_OF_TODAY.items()))
+def test_spec_069_glossary_multiplier_one_is_the_budget_of_today(entry_count, expected):
+    assert glossary_pass.glossary_max_output_tokens(entry_count, multiplier=1.0) == expected
+
+
+def test_spec_069_glossary_multiplier_applies_to_the_whole_formula_floor_included():
+    """Research R2 (O-5 of the plan in place of a Haiku glossary measurement).
+
+    Haiku answered at 90–240 tokens an entry where the current model takes 31–50: call A of a
+    short list sat at the 1 024 floor (959 used) and an optional call of 60 entries used all
+    of its 6 016. With the multiplier on the floor too: 3 x 1 024 = 3 072 and 3 x 6 016 →
+    the 16 384 ceiling.
+    """
+
+    assert glossary_pass.glossary_max_output_tokens(8, multiplier=3) == 3072  # "required", at the floor
+    assert glossary_pass.glossary_max_output_tokens(60, multiplier=3) == 16384  # "optional", 18 048 capped
+    assert glossary_pass.glossary_max_output_tokens(9, multiplier=3) == 3 * 1120
+    assert glossary_pass.glossary_max_output_tokens(1, multiplier=1.5) == 1536
+    with pytest.raises(ValueError):
+        glossary_pass.glossary_max_output_tokens(8, multiplier=0)
+
+
+def test_spec_069_glossary_requests_carry_the_multiplied_budget():
+    candidates = tuple(_candidate(f"Zorvane{index}") for index in range(8))
+    common: dict[str, Any] = {
+        "model": "m",
+        "candidates": candidates,
+        "source_language": "en",
+        "target_language": "ru",
+        "max_terms": 20,
+    }
+
+    plain = build_glossary_request(**common, role="required")
+    scaled = build_glossary_request(**common, role="required", output_budget_multiplier=3.0)
+    assert plain["max_output_tokens"] == 1024
+    assert scaled["max_output_tokens"] == 3072
+    assert {key: value for key, value in scaled.items() if key != "max_output_tokens"} == {
+        key: value for key, value in plain.items() if key != "max_output_tokens"
+    }
+
+    groups = [
+        [
+            GlossaryTerm(source_term="quillet", target_term="киллет"),
+            GlossaryTerm(source_term="quillon", target_term="киллет"),
+        ]
+    ]
+    distinction: dict[str, Any] = {
+        "model": "m",
+        "groups": groups,
+        "contexts": {},
+        "source_language": "en",
+        "target_language": "ru",
+    }
+    assert glossary_pass.build_distinction_request(**distinction)["max_output_tokens"] == 1024
+    assert (
+        glossary_pass.build_distinction_request(**distinction, output_budget_multiplier=3.0)["max_output_tokens"]
+        == 3072
+    )

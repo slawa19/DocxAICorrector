@@ -123,12 +123,30 @@ def drop_rejected_optional_param(
     about whether the current model rejects ``temperature``. The drop stays per call: the
     next call sends the parameter again (no memory between calls until a run shows the
     rejection is real).
+
+    Spec 069 FR-003: a parameter the request carries inside ``extra_body`` (the OpenRouter Chat
+    Completions form of ``reasoning``) is found there when it is not on the top level, and
+    removed from a COPY of ``extra_body`` — the caller's nested dict is never mutated, and an
+    ``extra_body`` left empty is dropped whole. Only that case adds ``nested_in`` to the event,
+    so the event of a top-level drop is exactly what it was.
     """
 
     param = extract_unsupported_parameter_name(str(exc))
-    if param is None or param not in removable_params or param not in payload:
+    if param is None or param not in removable_params:
         return False
-    payload.pop(param, None)
+    nested_in: str | None = None
+    if param in payload:
+        payload.pop(param, None)
+    else:
+        extra_body = payload.get("extra_body")
+        if not isinstance(extra_body, dict) or param not in extra_body:
+            return False
+        remaining = {key: value for key, value in extra_body.items() if key != param}
+        if remaining:
+            payload["extra_body"] = remaining
+        else:
+            payload.pop("extra_body", None)
+        nested_in = "extra_body"
     log_event(
         logging.WARNING,
         "model_call_param_dropped",
@@ -137,6 +155,7 @@ def drop_rejected_optional_param(
         model=str(payload.get("model") or ""),
         stage=stage,
         error_code=provider_error_code(exc),
+        **({"nested_in": nested_in} if nested_in is not None else {}),
     )
     return True
 

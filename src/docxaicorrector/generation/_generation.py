@@ -1,6 +1,7 @@
 import logging
 import re
 import tempfile
+import threading
 import time
 import unicodedata
 from collections import Counter
@@ -33,6 +34,12 @@ from docxaicorrector.core.model_accounting import (
 )
 from docxaicorrector.image.shared import call_responses_create_with_retry, drop_rejected_optional_param, is_retryable_error
 from docxaicorrector.generation.marker_attempt_capture import capture_rejected_marker_attempt
+from docxaicorrector.generation.output_budget import (
+    DEFAULT_OUTPUT_BUDGET_MULTIPLIER,
+    output_budget_multiplier_for_model,
+    scale_output_budget,
+    validate_output_budget_multiplier,
+)
 from docxaicorrector.generation.openai_response_utils import collect_response_text_traversal, read_response_field
 from collections.abc import Callable, Mapping
 
@@ -216,6 +223,103 @@ _CONTEXT_LEAKAGE_RETRY_WARNING = (
 
 class ContextLeakageError(RuntimeError):
     pass
+
+
+# --- spec 069 FR-003 / FR-006: the request profile of one pass --------------------------
+
+
+@dataclass(frozen=True)
+class GenerationRequestProfile:
+    """What a PASS asks of its model, beyond the text: reasoning, budget, accounting stage.
+
+    One profile travels with every text call of a block — each attempt, the boosted retry,
+    the recovery call and every ladder step with its nested generation — so a pass cannot
+    send ``reasoning.effort = low`` on its first attempt and forget it on its last resort.
+
+    * ``reasoning_effort`` — ``None`` sends NO reasoning parameter at all (``single``, ``edit``,
+      ``audiobook``, and the second pass of ``standard`` measured without one). Otherwise the
+      Responses API gets ``reasoning={"effort": e}``, OpenRouter Chat Completions
+      ``extra_body={"reasoning": {"effort": e}}``, and the native Anthropic path nothing but a
+      one-time WARNING (``contracts/reasoning-api-matrix.md``).
+    * ``output_budget_multiplier`` — of the model of the pass (``generation/output_budget.py``);
+      it scales the block budget and the ladder's division threshold.
+    * ``usage_stage`` — the accounting stage every call of the pass is booked under.
+
+    The default instance IS the request of before spec 069: same keys, same budget, stage
+    ``text_generation`` (SC-006, pinned by ``tests/test_generation_request_profile.py``).
+    """
+
+    reasoning_effort: str | None = None
+    output_budget_multiplier: float = DEFAULT_OUTPUT_BUDGET_MULTIPLIER
+    usage_stage: str = STAGE_TEXT_GENERATION
+
+    def __post_init__(self) -> None:
+        if self.reasoning_effort is not None:
+            if not isinstance(self.reasoning_effort, str) or not self.reasoning_effort.strip():
+                raise ValueError(f"reasoning_effort must be a non-empty string or None, got {self.reasoning_effort!r}")
+            object.__setattr__(self, "reasoning_effort", self.reasoning_effort.strip())
+        object.__setattr__(
+            self, "output_budget_multiplier", validate_output_budget_multiplier(self.output_budget_multiplier)
+        )
+        if not isinstance(self.usage_stage, str) or not self.usage_stage.strip():
+            raise ValueError(f"usage_stage must be a non-empty string, got {self.usage_stage!r}")
+
+    @classmethod
+    def for_model(
+        cls,
+        model: str,
+        *,
+        reasoning_effort: str | None = None,
+        usage_stage: str = STAGE_TEXT_GENERATION,
+    ) -> "GenerationRequestProfile":
+        """The profile of a pass whose model is ``model``: its multiplier comes from the table."""
+
+        return cls(
+            reasoning_effort=reasoning_effort,
+            output_budget_multiplier=output_budget_multiplier_for_model(model),
+            usage_stage=usage_stage,
+        )
+
+
+_DEFAULT_REQUEST_PROFILE = GenerationRequestProfile()
+
+
+def _resolve_request_profile(request_profile: GenerationRequestProfile | None) -> GenerationRequestProfile:
+    return _DEFAULT_REQUEST_PROFILE if request_profile is None else request_profile
+
+
+def _with_reasoning(
+    request_kwargs: dict[str, object], request_profile: GenerationRequestProfile
+) -> dict[str, object]:
+    """A copy of the request carrying the profile's reasoning; the SAME object without one."""
+
+    if request_profile.reasoning_effort is None:
+        return request_kwargs
+    updated = dict(request_kwargs)
+    updated["reasoning"] = {"effort": request_profile.reasoning_effort}
+    return updated
+
+
+# (model, effort) pairs already warned about on the native Anthropic path, for this process.
+_REASONING_UNSUPPORTED_WARNED: set[tuple[str, str]] = set()
+_REASONING_UNSUPPORTED_LOCK = threading.Lock()
+
+
+def _warn_reasoning_unsupported_once(*, provider: str, model: str, reasoning_effort: str, stage: str) -> None:
+    key = (model, reasoning_effort)
+    with _REASONING_UNSUPPORTED_LOCK:
+        if key in _REASONING_UNSUPPORTED_WARNED:
+            return
+        _REASONING_UNSUPPORTED_WARNED.add(key)
+    log_event(
+        logging.WARNING,
+        "reasoning_effort_not_supported_for_provider",
+        "Провайдер не принимает уровень рассуждения; вызов идёт без параметра (предупреждение одно на модель и уровень).",
+        provider=provider,
+        model=model,
+        reasoning_effort=reasoning_effort,
+        stage=stage,
+    )
 
 
 # --- spec 056 E: what happened to ONE paragraph, said out loud ----------------------
@@ -1942,7 +2046,9 @@ def _call_responses_create(
         request_kwargs,
         max_retries=1,
         retryable_error_predicate=lambda exc: False,
-        retryable_optional_params={"temperature", "max_output_tokens"},
+        # ``reasoning`` (spec 069 FR-003): a provider that refuses it gets the call without
+        # it and a ``model_call_param_dropped`` WARNING; the run does not fail.
+        retryable_optional_params={"temperature", "max_output_tokens", "reasoning"},
         usage_stage=usage_stage,
     )
 
@@ -2060,8 +2166,14 @@ def _call_chat_completions_create(
     max_output_tokens = request_kwargs.get("max_output_tokens")
     if isinstance(max_output_tokens, int) and not isinstance(max_output_tokens, bool):
         payload["max_tokens"] = max_output_tokens
+    # Spec 069 FR-003: Chat Completions has no ``reasoning`` keyword in the SDK; OpenRouter reads
+    # it from the request body, which the SDK fills from ``extra_body``. A request without it
+    # gets no ``extra_body`` at all — the payload of before.
+    reasoning = request_kwargs.get("reasoning")
+    if isinstance(reasoning, Mapping) and reasoning:
+        payload["extra_body"] = {"reasoning": dict(reasoning)}
 
-    removable_optional_params = {"temperature", "max_tokens"}
+    removable_optional_params = {"temperature", "max_tokens", "reasoning"}
     while True:
         # Each pass is a paid SDK call (review finding F7): Stop is honoured before it.
         _raise_if_stop_requested(should_stop)
@@ -2192,6 +2304,17 @@ def _call_anthropic_messages_create(
     temperature = request_kwargs.get("temperature")
     if temperature is not None:
         payload["temperature"] = temperature
+    # Spec 069 FR-003: the Messages API is not given the OpenAI-shaped ``reasoning``; the call
+    # goes without it and the gap is said once per (model, effort) — the modes' models go
+    # through OpenRouter, so this is a configuration a person chose, not a silent downgrade.
+    reasoning = request_kwargs.get("reasoning")
+    if isinstance(reasoning, Mapping) and reasoning.get("effort"):
+        _warn_reasoning_unsupported_once(
+            provider="anthropic",
+            model=str(payload["model"]),
+            reasoning_effort=str(reasoning["effort"]),
+            stage=usage_stage,
+        )
 
     removable_optional_params = {"temperature"}
     while True:
@@ -2235,12 +2358,26 @@ def _extract_anthropic_message_markdown(response: object) -> str:
     return _require_complete_markdown(_read_anthropic_model_response(response))
 
 
-def _estimate_max_output_tokens(target_text: str) -> int:
+def _estimate_max_output_tokens(target_text: str, multiplier: float = DEFAULT_OUTPUT_BUDGET_MULTIPLIER) -> int:
+    """The block budget: ``max(len // 3 * 4, 512)`` times the model's multiplier, under the ceiling.
+
+    Spec 069 FR-006: the multiplier scales the 512 floor too — the short blocks at the floor
+    are exactly where a reasoning model was cut off (WP-0). Multiplier 1 is today's budget.
+    """
+
     estimated_output_tokens = max((len(target_text) // 3) * 4, 512)
-    return min(estimated_output_tokens, _MODEL_OUTPUT_TOKEN_CEILING)
+    return scale_output_budget(estimated_output_tokens, multiplier, ceiling=_MODEL_OUTPUT_TOKEN_CEILING)
 
 
-def _build_request_kwargs(*, model: str, system_prompt: str, user_prompt: str, target_text: str) -> dict[str, object]:
+def _build_request_kwargs(
+    *,
+    model: str,
+    system_prompt: str,
+    user_prompt: str,
+    target_text: str,
+    request_profile: GenerationRequestProfile | None = None,
+) -> dict[str, object]:
+    profile = _resolve_request_profile(request_profile)
     payload: Any = [
         {
             "role": "system",
@@ -2251,12 +2388,13 @@ def _build_request_kwargs(*, model: str, system_prompt: str, user_prompt: str, t
             "content": [{"type": "input_text", "text": user_prompt}],
         },
     ]
-    return {
+    request: dict[str, object] = {
         "model": model,
         "input": payload,
         "temperature": 0.4,
-        "max_output_tokens": _estimate_max_output_tokens(target_text),
+        "max_output_tokens": _estimate_max_output_tokens(target_text, profile.output_budget_multiplier),
     }
+    return _with_reasoning(request, profile)
 
 
 def _boost_request_output_budget(
@@ -2282,17 +2420,22 @@ def _call_markdown_request_with_sdk_fallback(
     request_kwargs: dict[str, object],
     *,
     should_stop: Callable[[], bool] | None = None,
+    usage_stage: str = STAGE_TEXT_GENERATION,
 ) -> tuple[str, bool]:
     # Each branch records which API answered BEFORE extracting, so a call that answered and
     # was then refused (empty, truncated) still counts against the path that served it.
     # The Assumptions of spec 061 need this number: how often the default provider really
     # falls back to Chat Completions is unknown until it is counted.
+    # ``usage_stage`` is the stage of the pass (spec 069: ``literary_polish`` for the second
+    # one); every path books under it, and the default is the stage of before.
     if _is_anthropic_client(client):
-        response = _call_anthropic_messages_create(client, request_kwargs, should_stop=should_stop)
+        response = _call_anthropic_messages_create(
+            client, request_kwargs, should_stop=should_stop, usage_stage=usage_stage
+        )
         record_text_api_path(API_PATH_ANTHROPIC_MESSAGES)
         return _extract_anthropic_message_markdown(response), False
     try:
-        response = _call_responses_create(client, cast(dict[str, Any], request_kwargs))
+        response = _call_responses_create(client, cast(dict[str, Any], request_kwargs), usage_stage=usage_stage)
         record_text_api_path(API_PATH_RESPONSES)
         return _extract_normalized_markdown(response), False
     except Exception as exc:
@@ -2314,7 +2457,9 @@ def _call_markdown_request_with_sdk_fallback(
         )
         # The compatibility fallback is a SECOND SDK call inside one generation attempt, and
         # the user may have pressed Stop while the first one was being refused.
-        chat_response = _call_chat_completions_create(client, request_kwargs, should_stop=should_stop)
+        chat_response = _call_chat_completions_create(
+            client, request_kwargs, should_stop=should_stop, usage_stage=usage_stage
+        )
         record_text_api_path(API_PATH_CHAT_COMPLETIONS)
         return _extract_chat_completion_markdown(chat_response), True
 
@@ -2325,6 +2470,7 @@ def request_text_completion(
     *,
     usage_stage: str,
     should_stop: Callable[[], bool] | None = None,
+    request_profile: GenerationRequestProfile | None = None,
 ) -> str:
     """One auxiliary text call through the SAME provider path as the block calls.
 
@@ -2334,8 +2480,14 @@ def request_text_completion(
     tokens are booked under ``usage_stage`` and it does NOT touch ``api_path_counts``: that
     counter answers "what served each block" (spec 061), and a service call would skew it.
     Returns the complete answer text; an incomplete or empty answer raises like a block's would.
+
+    ``request_profile`` (spec 069 FR-003) adds the pass's reasoning to a COPY of the request.
+    It does not touch the budget — the request's builder already sized it with the model's
+    multiplier (``glossary_max_output_tokens(..., multiplier=…)``) — and the explicit
+    ``usage_stage`` stays the stage the call is booked under.
     """
 
+    request_kwargs = _with_reasoning(request_kwargs, _resolve_request_profile(request_profile))
     if _is_anthropic_client(client):
         response = _call_anthropic_messages_create(
             client, request_kwargs, should_stop=should_stop, usage_stage=usage_stage
@@ -2367,7 +2519,9 @@ def _recover_from_persistent_empty_response(
     allow_merge_repair: bool = True,
     should_stop: Callable[[], bool] | None = None,
     detect_short_source_absorption: bool = False,
+    request_profile: GenerationRequestProfile | None = None,
 ) -> str:
+    profile = _resolve_request_profile(request_profile)
     log_event(
         logging.WARNING,
         "markdown_empty_response_recovery_started",
@@ -2388,13 +2542,16 @@ def _recover_from_persistent_empty_response(
             else _build_empty_response_recovery_user_prompt(target_text=target_text)
         ),
         target_text=target_text,
+        request_profile=profile,
     )
     if minimum_output_tokens is not None:
         request_kwargs = _boost_request_output_budget(
             request_kwargs,
             minimum_tokens=minimum_output_tokens,
         )
-    markdown = _call_markdown_request_with_sdk_fallback(client, request_kwargs, should_stop=should_stop)[0]
+    markdown = _call_markdown_request_with_sdk_fallback(
+        client, request_kwargs, should_stop=should_stop, usage_stage=profile.usage_stage
+    )[0]
     cleaned_markdown = _strip_and_validate_paragraph_markers(
         markdown,
         expected_paragraph_ids,
@@ -2816,6 +2973,18 @@ _LADDER_SENTENCE_BOUNDARY_PATTERN = re.compile(
 _LADDER_BUDGETABLE_SOURCE_CHARS = _MODEL_OUTPUT_TOKEN_CEILING * 3 // 4
 
 
+def _ladder_budgetable_source_chars(multiplier: float = DEFAULT_OUTPUT_BUDGET_MULTIPLIER) -> int:
+    """``_LADDER_BUDGETABLE_SOURCE_CHARS`` for a model whose budget is ``multiplier`` times today's.
+
+    Spec 069 FR-006: the same derivation with the multiplied formula — a unit asking for
+    ``len // 3 * 4 * m`` tokens fits under the ceiling up to ``CEILING * 3 // (4 * m)``
+    characters. ``m = 1`` is the constant above (12 288), ``m = 3`` is 4 096.
+    """
+
+    value = validate_output_budget_multiplier(multiplier)
+    return int(_MODEL_OUTPUT_TOKEN_CEILING * 3 // (4 * value))
+
+
 def _ladder_source_units(text: str) -> list[str]:
     """The paragraphs of a block that carries no marker record.
 
@@ -2873,8 +3042,10 @@ def _ladder_sentences(text: str) -> list[str]:
     return [part.strip() for part in sentences if part.strip()]
 
 
-def _ladder_sentence_groups(text: str) -> list[str]:
+def _ladder_sentence_groups(text: str, budget_multiplier: float = DEFAULT_OUTPUT_BUDGET_MULTIPLIER) -> list[str]:
     """Two or more sentence groups of *text*, or ``[]`` when it cannot be divided.
+
+    ``budget_multiplier`` is the pass's (spec 069 FR-006): the budgetable size shrinks with it.
 
     The group limit is ``min(budgetable, half the unit)``: the first half of the pair keeps
     a group answerable under the ceiling, the second guarantees that a divisible unit is
@@ -2893,7 +3064,7 @@ def _ladder_sentence_groups(text: str) -> list[str]:
     sentences = _ladder_sentences(text)
     if len(sentences) < 2:
         return []
-    group_limit = min(_LADDER_BUDGETABLE_SOURCE_CHARS, (len(text) + 1) // 2)
+    group_limit = min(_ladder_budgetable_source_chars(budget_multiplier), (len(text) + 1) // 2)
     groups: list[str] = []
     current = ""
     for sentence in sentences:
@@ -2921,8 +3092,11 @@ def _ladder_model_answer(
     unit_label: str,
     should_stop: Callable[[], bool] | None = None,
     detect_short_source_absorption: bool = False,
+    request_profile: GenerationRequestProfile | None = None,
 ) -> str:
     """One ladder call, for ONE paragraph, answered as one paragraph. Raises otherwise.
+
+    ``request_profile`` is the block's: a ladder step is a call of the same pass (spec 069).
 
     ``allow_controlled_source_fallback=False`` is what makes the call honest AND what makes
     the ladder terminate: without it the nested call would answer a rejection by returning
@@ -2965,6 +3139,7 @@ def _ladder_model_answer(
         # The nested call checks this before each of its attempts, so every ladder step is
         # preceded by a stop check without the ladder growing one of its own (FR-022).
         should_stop=should_stop,
+        request_profile=request_profile,
     )
     cleaned = _PARAGRAPH_MARKER_PATTERN.sub("", answer).strip()
     if not cleaned:
@@ -3019,6 +3194,7 @@ def _ladder_translate_unit(
     block_index: int | None,
     should_stop: Callable[[], bool] | None = None,
     detect_short_source_absorption: bool = False,
+    request_profile: GenerationRequestProfile | None = None,
 ) -> _LadderUnitOutcome:
     """Translate ONE paragraph, dividing it by sentences if its size is what failed.
 
@@ -3027,8 +3203,13 @@ def _ladder_translate_unit(
     languages — in exchange for less English. Reverting the whole paragraph keeps the
     outcome one a reader can recognise, and it is exactly what today's code already does for
     the entire block.
+
+    The budgetable size is the pass's (spec 069 FR-006): a model with a larger output
+    multiplier reaches the ceiling on a shorter unit, so it is divided sooner.
     """
 
+    profile = _resolve_request_profile(request_profile)
+    budgetable_chars = _ladder_budgetable_source_chars(profile.output_budget_multiplier)
     outcome = _LadderUnitOutcome()
     try:
         outcome.text = _ladder_model_answer(
@@ -3043,15 +3224,16 @@ def _ladder_translate_unit(
             unit_label=unit_label,
             should_stop=should_stop,
             detect_short_source_absorption=detect_short_source_absorption,
+            request_profile=profile,
         )
         return outcome
     except Exception as exc:
         if not _is_incomplete_response_error(exc):
             return outcome
 
-    groups = _ladder_sentence_groups(unit_text)
+    groups = _ladder_sentence_groups(unit_text, profile.output_budget_multiplier)
     if not groups:
-        if len(unit_text) > _LADDER_BUDGETABLE_SOURCE_CHARS:
+        if len(unit_text) > budgetable_chars:
             outcome.oversized_sentences = 1
             log_event(
                 logging.WARNING,
@@ -3059,7 +3241,7 @@ def _ladder_translate_unit(
                 "Абзац не помещается в потолок max_output_tokens и не делится ниже одного "
                 "предложения; в документе остаётся его исходный текст.",
                 paragraph_chars=len(unit_text),
-                budgetable_chars=_LADDER_BUDGETABLE_SOURCE_CHARS,
+                budgetable_chars=budgetable_chars,
             )
         return outcome
 
@@ -3073,7 +3255,7 @@ def _ladder_translate_unit(
     )
     translated_groups: list[str] = []
     for index, group in enumerate(groups):
-        if len(group) > _LADDER_BUDGETABLE_SOURCE_CHARS:
+        if len(group) > budgetable_chars:
             outcome.oversized_sentences += 1
             log_event(
                 logging.WARNING,
@@ -3082,7 +3264,7 @@ def _ladder_translate_unit(
                 "спрашиваю его как есть.",
                 paragraph_chars=len(unit_text),
                 sentence_chars=len(group),
-                budgetable_chars=_LADDER_BUDGETABLE_SOURCE_CHARS,
+                budgetable_chars=budgetable_chars,
             )
         try:
             translated_groups.append(
@@ -3098,6 +3280,7 @@ def _ladder_translate_unit(
                     unit_label=unit_label,
                     should_stop=should_stop,
                     detect_short_source_absorption=detect_short_source_absorption,
+                    request_profile=profile,
                 )
             )
         except Exception:
@@ -3116,7 +3299,12 @@ def _degradation_ladder_trigger(exc: Exception, *, marker_mode: bool) -> str | N
     return None
 
 
-def _degradation_ladder_divides(units: Sequence[str], *, trigger: str) -> bool:
+def _degradation_ladder_divides(
+    units: Sequence[str],
+    *,
+    trigger: str,
+    budget_multiplier: float = DEFAULT_OUTPUT_BUDGET_MULTIPLIER,
+) -> bool:
     """Would the ladder actually ask for LESS than the call that just failed?
 
     The anti-vacuum guard, and the reason a first-try block costs exactly one call and a
@@ -3132,7 +3320,7 @@ def _degradation_ladder_divides(units: Sequence[str], *, trigger: str) -> bool:
         return True
     if len(units) > 1:
         return True
-    return bool(_ladder_sentence_groups(units[0]))
+    return bool(_ladder_sentence_groups(units[0], budget_multiplier))
 
 
 def _degradation_ladder_block_result(
@@ -3312,14 +3500,18 @@ def _attempt_degradation_ladder(
     allow_controlled_source_fallback: bool,
     should_stop: Callable[[], bool] | None = None,
     detect_short_source_absorption: bool = False,
+    request_profile: GenerationRequestProfile | None = None,
 ) -> str | None:
     """Steps 2 and 3, or ``None`` when the ladder declines or rescues nothing.
 
     ``None`` hands the block back to the four controlled fallbacks below completely
     unchanged — same text, same event, same counter. So the worst the ladder can do is cost
     calls; it can never make the delivered block worse than it is today.
+
+    ``request_profile`` is the block's, handed to every ladder call (spec 069 FR-003).
     """
 
+    profile = _resolve_request_profile(request_profile)
     if not allow_controlled_source_fallback:
         return None
     trigger = _degradation_ladder_trigger(exc, marker_mode=marker_mode)
@@ -3347,7 +3539,7 @@ def _attempt_degradation_ladder(
     else:
         units = _ladder_source_units(target_text_for_leakage)
         scope = None
-    if not _degradation_ladder_divides(units, trigger=trigger):
+    if not _degradation_ladder_divides(units, trigger=trigger, budget_multiplier=profile.output_budget_multiplier):
         return None
     asked_indexes = scope[0] if scope is not None else list(range(len(units)))
     kept_dispositions = scope[1] if scope is not None else {}
@@ -3383,6 +3575,7 @@ def _attempt_degradation_ladder(
                 block_index=block_index,
                 should_stop=should_stop,
                 detect_short_source_absorption=detect_short_source_absorption,
+                request_profile=profile,
             )
         )
 
@@ -3436,6 +3629,7 @@ def generate_markdown_block(
     allow_controlled_source_fallback: bool = True,
     should_stop: Callable[[], bool] | None = None,
     detect_short_source_absorption: bool = False,
+    request_profile: GenerationRequestProfile | None = None,
 ) -> str:
     """Process ONE block, retrying, then dividing, and only then substituting its source.
 
@@ -3455,8 +3649,14 @@ def generate_markdown_block(
     alone by the ladder, its source on repair. Off by default, so every other caller (the
     audiobook operation, which is told to spell abbreviations out, and the post-processing
     passes) is unchanged.
+
+    ``request_profile`` (spec 069 FR-003/FR-006) is the pass's reasoning level, output-budget
+    multiplier and accounting stage, carried to every call this block makes: each attempt,
+    the boosted retry, the recovery call and every ladder step with its nested generation.
+    ``None`` is the request of before spec 069, byte for byte.
     """
 
+    profile = _resolve_request_profile(request_profile)
     if isinstance(max_retries, bool) or not isinstance(max_retries, int):
         raise TypeError("max_retries должен быть целым числом.")
     if max_retries < 1:
@@ -3504,6 +3704,7 @@ def generate_markdown_block(
             )
         ),
         target_text=target_text,
+        request_profile=profile,
     )
     target_text_for_leakage = _strip_paragraph_markers_from_source(
         target_text,
@@ -3527,7 +3728,7 @@ def generate_markdown_block(
         _raise_if_stop_requested(should_stop)
         try:
             markdown = _call_markdown_request_with_sdk_fallback(
-                client, request_kwargs, should_stop=should_stop
+                client, request_kwargs, should_stop=should_stop, usage_stage=profile.usage_stage
             )[0]
             return _finalize_generated_markdown(
                 markdown,
@@ -3617,6 +3818,7 @@ def generate_markdown_block(
                 allow_merge_repair=not allow_controlled_source_fallback,
                 should_stop=should_stop,
                 detect_short_source_absorption=detect_short_source_absorption,
+                request_profile=profile,
             )
         except Exception as recovery_exc:
             # The recovery call is the LAST answer the model gives for this block, and the
@@ -3649,6 +3851,7 @@ def generate_markdown_block(
                 allow_controlled_source_fallback=allow_controlled_source_fallback,
                 should_stop=should_stop,
                 detect_short_source_absorption=detect_short_source_absorption,
+                request_profile=profile,
             )
             if ladder_result is not None:
                 return ladder_result
