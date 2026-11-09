@@ -306,7 +306,7 @@ def _contents_line_then_prose() -> list[DocumentBlock]:
             paragraphs=[
                 _unit("Appendices", "p0001", role="heading", level=3),
                 _unit("**Acknowledgements**", "p0002"),
-                _unit("**About the authors**", "p0003"),
+                _unit("**Our team**", "p0003"),
                 _unit("**Bibliography**", "p0004"),
             ]
         ),
