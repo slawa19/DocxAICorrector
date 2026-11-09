@@ -403,13 +403,9 @@ def test_finalize_primary_persistence_failure_accumulates_typed_degradations(
             "formatting_review_items": [{"count": 1}],
         },
     )
-    monkeypatch.setattr(
-        late_phases,
-        "_build_narration_text",
-        lambda **kwargs: (_ for _ in ()).throw(
-            RuntimeError("narration_cleanup_projection_unsafe:missing_final_registry")
-        ),
-    )
+    # Spec 070 removed the narration second pass over translate/edit: a translate run builds
+    # no narration, so the narration degradation this test used to stack in is gone; the two
+    # typed degradations that remain (cleanup, persistence) must still accumulate.
 
     def _raise_oserror():
         raise OSError("disk full")
@@ -446,11 +442,6 @@ def test_finalize_primary_persistence_failure_accumulates_typed_degradations(
     }
     assert persistence_state["latest_result_notices"] == [
         cleanup_notice,
-        {
-            "kind": "narration",
-            "level": "warning",
-            "message_key": "result.narration_omitted",
-        },
         {
             "kind": "persistence",
             "level": "warning",
@@ -492,7 +483,6 @@ def test_finalize_primary_persistence_failure_accumulates_typed_degradations(
     assert success_calls == ["localized:result.success_document_processed"]
     assert warning_calls == [
         "localized:result.cleanup_advisory_failed",
-        "localized:result.narration_omitted",
         "localized:result.primary_artifacts_not_saved",
     ]
     assert len(download_calls) == 2
