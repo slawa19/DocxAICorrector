@@ -31,6 +31,19 @@ def build_system_prompt_arguments(*, context: Any, prompt_variant: str = "defaul
     calls receive.
     """
 
+    if getattr(context, "processing_operation", "") == "audiobook":
+        # Spec 070 FR-004: the audiobook template has no language pair, intensity or document
+        # context. The keys stay because ``resolve_system_prompt`` requires them by name.
+        audiobook_arguments: dict[str, Any] = {
+            "operation": "audiobook",
+            "source_language": "",
+            "target_language": "",
+            "editorial_intensity": "",
+        }
+        if prompt_variant != "default":
+            audiobook_arguments["prompt_variant"] = prompt_variant
+        audiobook_arguments["document_context_prompt"] = ""
+        return audiobook_arguments
     app_config = getattr(context, "app_config", None)
     editorial_intensity = app_config.get("editorial_intensity_default", "literary") if isinstance(app_config, Mapping) else "literary"
     arguments: dict[str, Any] = {
