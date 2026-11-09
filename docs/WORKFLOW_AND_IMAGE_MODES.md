@@ -134,16 +134,14 @@ pandoc --version
 
 Порядок разрешения для каждой роли, старший первым: `DOCX_AI_MODELS_IMAGE_<ROLE>_DEFAULT` → `[models.image_<role>].default` → выбор в UI или поле run-профиля `image_vision_model` / `image_draw_model` → `DOCX_AI_IMAGE_VISION_MODEL` / `DOCX_AI_IMAGE_DRAW_MODEL` → `default` секции. Закреплённая по роли модель не меняется выбором в UI; sidebar пишет об этом подписью, лог — событием `image_model_role_override_active`. «Вариант 1» спеки 062 — `gpt-5.4-mini` + `gpt-image-2.5-flare`, «вариант 2» — `gpt-6.1-sol` + `gpt-image-2.5-sunburst`; это сочетания двух выборов, а не отдельные сущности. Что ушло в прогон, видно в `runtime_config.effective.image_models`, строке `image_models=` в `run_summary.txt` и в `model_accounting_image_model_call_counts_by_role` (роль → модель → число вызовов). Параметры запроса Images API строятся по таблице возможностей `src/docxaicorrector/image/model_capabilities.py`.
 
-## Audiobook Mode And Post-Pass
+## Audiobook Mode
 
 - `processing_operation="audiobook"` является отдельным text mode наряду с `edit` и `translate`.
 - Для standalone audiobook runtime принудительно коэрсит effective `image_mode` в `no_change`, даже если non-UI caller передал другое значение.
-- Для `edit` и `translate` в sidebar доступен checkbox `Подготовить для ElevenLabs аудиокниги`; он включает отдельный sibling post-pass и не меняет базовый DOCX/Markdown branch.
-- `audiobook_postprocess_enabled` не участвует в preparation cache key: narratability metadata вычисляется заранее и не требует отдельной preparation-ветки.
 - Narration artifact строится только из narratable blocks и исключает TOC, bibliography tails и image-only blocks.
 - Итоговый narration artifact пишется в `.run/ui_results/` как `<stem>.result.tts.txt` рядом с `.result.md` и `.result.docx`.
 - Для `audiobook` UI показывает `Текст для ElevenLabs (.txt)`, `Markdown (для инспекции)` и `DOCX (для инспекции)`.
-- Для `edit` / `translate` без post-pass UI сохраняет обычные labels `Отредактированный ...` или `Переведённый ...`; при включённом post-pass добавляется отдельная кнопка `Текст для ElevenLabs (.txt)`.
+- Для `edit` / `translate` UI сохраняет обычные labels `Отредактированный ...` или `Переведённый ...` и не предлагает narration: второй проход над результатом редактуры и перевода удалён спекой 070.
 - Deterministic writer pass удаляет остаточный Markdown, placeholders и link syntax из narration artifact, но не подменяет будущие richer prompt-level transformations.
 
 ## Delivery Contract
