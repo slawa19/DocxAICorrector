@@ -93,6 +93,13 @@ This inventory is intentionally pragmatic:
 - `tests/test_ui_i18n.py`
 - `tests/test_ui_review_presentation.py`
 - `tests/test_workflow_state.py`
+- `tests/test_cost_estimate.py`
+- `tests/test_generation_request_profile.py`
+- `tests/test_model_accounting_069.py`
+- `tests/test_output_budget.py`
+- `tests/test_polish_checks.py`
+- `tests/test_price_list.py`
+- `tests/test_translation_modes.py`
 
 ## Compat-Legacy
 
