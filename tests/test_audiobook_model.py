@@ -203,6 +203,37 @@ def test_a_choice_made_in_audiobook_does_not_leak_into_edit_and_survives_a_round
     assert at.session_state["_sidebar_result"][0] == TEXT_DEFAULT
 
 
+def test_custom_model_text_is_per_operation_in_a_custom_to_custom_transition(monkeypatch):
+    # Both operations show the "custom" selection; each must keep ITS OWN typed value. With one
+    # shared text_input widget id, the edit value would be taken as the audiobook choice.
+    real_load = config.load_app_config
+
+    def patched_load(*args, **kwargs):
+        loaded = dict(real_load(*args, **kwargs))
+        loaded["audiobook_model"] = "gpt-5.4"  # outside the options -> audiobook opens on "custom"
+        return loaded
+
+    monkeypatch.setattr(config, "load_app_config", patched_load)
+    at = AppTest.from_string(_SIDEBAR_SCRIPT, default_timeout=30)
+    at.run()
+    at.sidebar.selectbox(key="sidebar_model").select("custom").run()
+    at.sidebar.text_input(key="sidebar_model_custom").set_value("edit-custom-B").run()
+    assert at.session_state["_sidebar_result"][0] == "edit-custom-B"
+
+    _switch(at, "audiobook")
+    assert at.sidebar.selectbox(key="sidebar_model_audiobook").value == "custom"
+    assert at.sidebar.text_input(key="sidebar_model_audiobook_custom").value == "gpt-5.4"
+    assert at.session_state["_sidebar_result"][0] == "gpt-5.4"
+    at.sidebar.text_input(key="sidebar_model_audiobook_custom").set_value("audio-custom-C").run()
+    assert at.session_state["_sidebar_result"][0] == "audio-custom-C"
+
+    _switch(at, "edit")
+    assert at.sidebar.text_input(key="sidebar_model_custom").value == "edit-custom-B"
+    assert at.session_state["_sidebar_result"][0] == "edit-custom-B"
+    _switch(at, "audiobook")
+    assert at.sidebar.text_input(key="sidebar_model_audiobook_custom").value == "audio-custom-C"
+
+
 def test_a_configured_audiobook_model_outside_the_offered_options_is_shown_as_custom(monkeypatch):
     real_load = config.load_app_config
 

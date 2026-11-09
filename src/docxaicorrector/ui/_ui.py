@@ -871,6 +871,7 @@ def render_sidebar(
                     t("sidebar.custom_model_label"),
                     value=kept_custom if isinstance(kept_custom, str) and kept_custom else default_model,
                     help=t("sidebar.custom_model_help"),
+                    key=f"{model_widget_key}_custom",
                 ).strip()
                 st.session_state[kept_custom_key] = custom_model
 
