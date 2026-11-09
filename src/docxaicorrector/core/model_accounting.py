@@ -76,11 +76,17 @@ from dataclasses import dataclass
 ACCOUNTING_SCOPE = "processing_run"
 PREPARATION_ACCOUNTING_SCOPE = "source_preparation"
 UNSCOPED_ACCOUNTING_SCOPE = "unscoped"
+PASS_ACCOUNTING_SCOPE = "counter_pass"
 
 STAGE_TEXT_GENERATION = "text_generation"
 STAGE_BOUNDARY_REVIEW = "boundary_review"
 # Spec 063 P2: the one call per translate run that fixes the run glossary's renderings.
 STAGE_GLOSSARY_EXTRACTION = "glossary_extraction"
+# Spec 069: the second, literary pass over already-translated paragraphs. A stage of its
+# own so its tokens and price are never folded into ``text_generation``.
+STAGE_LITERARY_POLISH = "literary_polish"
+# Spec 069 FR-004 (6): the only counter scope name the snapshot reports a section for.
+PASS_LITERARY_POLISH = "literary_polish"
 STAGE_IMAGE_ANALYSIS = "image_analysis"
 STAGE_IMAGE_VALIDATION = "image_validation"
 STAGE_IMAGE_RECONSTRUCTION = "image_reconstruction"
@@ -107,6 +113,12 @@ class ModelCallUsage:
     total_tokens: int = 0
     cost_reported: bool = False
     cost_usd: float = 0.0
+    # Spec 069 FR-003. ``None`` means "the provider did not say" -- NEVER 0, which is a
+    # reported zero. Read off the response as given; nothing here computes or estimates.
+    reasoning_tokens: int | None = None
+    cached_tokens: int | None = None
+    cache_write_tokens: int | None = None
+    cache_discount_usd: float | None = None
 
 
 UNREPORTED_MODEL_CALL_USAGE = ModelCallUsage()
@@ -137,6 +149,26 @@ def _coerce_cost_usd(value: object) -> float | None:
     return None
 
 
+def _coerce_signed_usd(value: object) -> float | None:
+    """A provider-reported USD amount that may legitimately be negative (cache discount)."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    return None
+
+
+def _nested_token_count(usage: object, container_names: tuple[str, ...], field_name: str) -> int | None:
+    for container_name in container_names:
+        container = _read_field(usage, container_name)
+        if container is None:
+            continue
+        token_count = _coerce_token_count(_read_field(container, field_name))
+        if token_count is not None:
+            return token_count
+    return None
+
+
 def _first_reported_token_count(usage: object, field_names: tuple[str, ...]) -> int | None:
     for field_name in field_names:
         token_count = _coerce_token_count(_read_field(usage, field_name))
@@ -160,6 +192,18 @@ def extract_model_call_usage(response: object) -> ModelCallUsage:
         return UNREPORTED_MODEL_CALL_USAGE
 
     cost_usd = _coerce_cost_usd(_read_field(usage, "cost"))
+    # Spec 069 FR-003: Responses puts these under ``input_/output_tokens_details``, Chat and
+    # OpenRouter under ``prompt_/completion_tokens_details``. Absent stays ``None``.
+    reasoning_tokens = _nested_token_count(
+        usage, ("output_tokens_details", "completion_tokens_details"), "reasoning_tokens"
+    )
+    cached_tokens = _nested_token_count(
+        usage, ("input_tokens_details", "prompt_tokens_details"), "cached_tokens"
+    )
+    cache_write_tokens = _nested_token_count(
+        usage, ("input_tokens_details", "prompt_tokens_details"), "cache_write_tokens"
+    )
+    cache_discount_usd = _coerce_signed_usd(_read_field(usage, "cache_discount"))
     prompt_tokens = _first_reported_token_count(usage, _PROMPT_TOKEN_FIELDS)
     completion_tokens = _first_reported_token_count(usage, _COMPLETION_TOKEN_FIELDS)
     total_tokens = _first_reported_token_count(usage, _TOTAL_TOKEN_FIELDS)
@@ -171,6 +215,10 @@ def extract_model_call_usage(response: object) -> ModelCallUsage:
             usage_reported=False,
             cost_reported=cost_usd is not None,
             cost_usd=cost_usd or 0.0,
+            reasoning_tokens=reasoning_tokens,
+            cached_tokens=cached_tokens,
+            cache_write_tokens=cache_write_tokens,
+            cache_discount_usd=cache_discount_usd,
         )
 
     resolved_prompt_tokens = prompt_tokens or 0
@@ -185,6 +233,10 @@ def extract_model_call_usage(response: object) -> ModelCallUsage:
         total_tokens=resolved_total_tokens,
         cost_reported=cost_usd is not None,
         cost_usd=cost_usd or 0.0,
+        reasoning_tokens=reasoning_tokens,
+        cached_tokens=cached_tokens,
+        cache_write_tokens=cache_write_tokens,
+        cache_discount_usd=cache_discount_usd,
     )
 
 
@@ -198,6 +250,15 @@ class _StageTotals:
     completion_tokens: int = 0
     total_tokens: int = 0
     cost_usd_reported_by_provider: float = 0.0
+    # Spec 069 FR-003. Sums cover ONLY the calls that reported the field; the counters say
+    # how many that was, so "0 because nothing was reported" is never read as a real zero.
+    reasoning_tokens: int = 0
+    reasoning_reported_call_count: int = 0
+    reasoning_unreported_call_count: int = 0
+    cached_tokens: int = 0
+    cache_write_tokens: int = 0
+    cache_discount_usd: float = 0.0
+    cache_fields_reported_call_count: int = 0
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -209,6 +270,13 @@ class _StageTotals:
             "completion_tokens": self.completion_tokens,
             "total_tokens": self.total_tokens,
             "cost_usd_reported_by_provider": round(self.cost_usd_reported_by_provider, 6),
+            "reasoning_tokens": self.reasoning_tokens,
+            "reasoning_reported_call_count": self.reasoning_reported_call_count,
+            "reasoning_unreported_call_count": self.reasoning_unreported_call_count,
+            "cached_tokens": self.cached_tokens,
+            "cache_write_tokens": self.cache_write_tokens,
+            "cache_discount_usd": round(self.cache_discount_usd, 6),
+            "cache_fields_reported_call_count": self.cache_fields_reported_call_count,
         }
 
 
@@ -285,6 +353,35 @@ class RunModelAccountingLedger:
         self._footnote_marker_source_count = 0
         self._footnote_marker_kept_count = 0
         self._footnote_marker_restored_count = 0
+        # Spec 069 FR-004 (6): counters recorded inside ``pass_counter_scope(name)`` live in
+        # a child ledger per pass name, so they never touch the totals above.
+        self._pass_ledgers: dict[str, RunModelAccountingLedger] = {}
+        self._pass_own_counters: dict[str, dict[str, int]] = {}
+
+    def pass_ledger(self, name: str) -> RunModelAccountingLedger:
+        """The child ledger that collects the generator counters of pass ``name``."""
+        if name != PASS_LITERARY_POLISH:
+            raise ValueError(f"unknown counter pass scope: {name!r}")
+        with self._lock:
+            child = self._pass_ledgers.get(name)
+            if child is None:
+                child = RunModelAccountingLedger(
+                    scope=PASS_ACCOUNTING_SCOPE,
+                    run_id=self.run_id,
+                    source_token=self.source_token,
+                )
+                self._pass_ledgers[name] = child
+            return child
+
+    def record_pass_counter(self, name: str, key: str, count: int = 1) -> None:
+        """Add ``count`` to the pass's OWN counter ``key`` (e.g. ``sent_paragraph_count``)."""
+        if name != PASS_LITERARY_POLISH:
+            raise ValueError(f"unknown counter pass scope: {name!r}")
+        if count <= 0:
+            return
+        with self._lock:
+            counters = self._pass_own_counters.setdefault(name, {})
+            counters[key] = counters.get(key, 0) + count
 
     def reset(self) -> None:
         with self._lock:
@@ -331,6 +428,8 @@ class RunModelAccountingLedger:
             self._footnote_marker_source_count = 0
             self._footnote_marker_kept_count = 0
             self._footnote_marker_restored_count = 0
+            self._pass_ledgers = {}
+            self._pass_own_counters = {}
 
     def record_model_call(
         self,
@@ -362,6 +461,20 @@ class RunModelAccountingLedger:
                     totals.cost_usd_reported_by_provider += usage.cost_usd
                 else:
                     totals.model_calls_without_cost += 1
+                if usage.reasoning_tokens is not None:
+                    totals.reasoning_reported_call_count += 1
+                    totals.reasoning_tokens += usage.reasoning_tokens
+                else:
+                    totals.reasoning_unreported_call_count += 1
+                if (
+                    usage.cached_tokens is not None
+                    or usage.cache_write_tokens is not None
+                    or usage.cache_discount_usd is not None
+                ):
+                    totals.cache_fields_reported_call_count += 1
+                    totals.cached_tokens += usage.cached_tokens or 0
+                    totals.cache_write_tokens += usage.cache_write_tokens or 0
+                    totals.cache_discount_usd += usage.cache_discount_usd or 0.0
 
     def record_retry_attempt(self, *, reason: str, paragraph_count: int = 0, first_retry_for_block: bool = False) -> None:
         with self._lock:
@@ -648,7 +761,20 @@ class RunModelAccountingLedger:
         with self._lock:
             return self._totals.to_dict()
 
-    def snapshot(self) -> dict[str, object]:
+    def counters_snapshot(self) -> dict[str, object]:
+        """The snapshot WITHOUT identity, model-call totals and stages: counters only."""
+        payload = self.snapshot(include_pass_section=False)
+        for key in (
+            "accounting_scope", "run_id", "source_token", "run_identity_complete",
+            "model_call_count", "model_calls_with_usage", "model_calls_without_usage",
+            "model_calls_without_cost", "prompt_tokens", "completion_tokens", "total_tokens",
+            "cost_usd_reported_by_provider", "token_accounting_complete",
+            "cost_accounting_complete", "stages", "literary_polish",
+        ):
+            payload.pop(key, None)
+        return payload
+
+    def snapshot(self, *, include_pass_section: bool = True) -> dict[str, object]:
         with self._lock:
             totals = self._totals
             payload: dict[str, object] = {
@@ -794,6 +920,19 @@ class RunModelAccountingLedger:
                 ),
                 "stages": {stage: self._stages[stage].to_dict() for stage in sorted(self._stages)},
             }
+            if not include_pass_section:
+                return payload
+            polish_child = self._pass_ledgers.get(PASS_LITERARY_POLISH)
+            payload["literary_polish"] = {
+                # The pass's own counters (recorded by the pass) and the generator counters the
+                # pass caused. Zeros are assertions: no polish pass ran, or nothing happened.
+                "counters": dict(sorted(self._pass_own_counters.get(PASS_LITERARY_POLISH, {}).items())),
+                "generator_counters": (
+                    polish_child.counters_snapshot()
+                    if polish_child is not None
+                    else RunModelAccountingLedger(scope=PASS_ACCOUNTING_SCOPE).counters_snapshot()
+                ),
+            }
             return payload
 
 
@@ -813,9 +952,43 @@ _PREPARATION_LEDGERS: dict[str, RunModelAccountingLedger] = {}
 _PREPARATION_LEDGERS_LOCK = threading.Lock()
 
 
+# Spec 069 FR-004 (6): the innermost open ``pass_counter_scope`` child ledger, or None.
+_ACTIVE_PASS_LEDGER: contextvars.ContextVar[RunModelAccountingLedger | None] = contextvars.ContextVar(
+    "docxaicorrector_active_pass_counter_ledger",
+    default=None,
+)
+
+
 def get_run_model_accounting_ledger() -> RunModelAccountingLedger:
     """The ledger the current context records into."""
     return _ACTIVE_LEDGER.get() or _UNSCOPED_LEDGER
+
+
+def _counter_ledger() -> RunModelAccountingLedger:
+    """Where counters (not model-call usage) go: the open pass's child, else the run ledger."""
+    return _ACTIVE_PASS_LEDGER.get() or get_run_model_accounting_ledger()
+
+
+@contextmanager
+def pass_counter_scope(name: str) -> Iterator[RunModelAccountingLedger]:
+    """Route every ``record_*`` counter except model-call usage into section ``name``.
+
+    Inside the block the generator's disposition, retry, API-path and text-removal counters
+    land in the ``literary_polish`` section of the snapshot and leave the run-wide counters
+    untouched. ``record_model_call_usage`` is NOT routed: usage goes to its stage as always.
+    Scopes nest (innermost wins) and the previous scope is restored on any exit.
+    """
+    child = get_run_model_accounting_ledger().pass_ledger(name)
+    token = _ACTIVE_PASS_LEDGER.set(child)
+    try:
+        yield child
+    finally:
+        _ACTIVE_PASS_LEDGER.reset(token)
+
+
+def record_pass_counter(name: str, key: str, count: int = 1) -> None:
+    """Add to the pass's own counter ``key`` in section ``name`` (not routed by scope)."""
+    get_run_model_accounting_ledger().record_pass_counter(name, key, count)
 
 
 @contextmanager
@@ -921,7 +1094,7 @@ def record_model_call_usage(
 
 
 def record_retry_attempt(*, reason: str, paragraph_count: int = 0, first_retry_for_block: bool = False) -> None:
-    get_run_model_accounting_ledger().record_retry_attempt(
+    _counter_ledger().record_retry_attempt(
         reason=reason,
         paragraph_count=paragraph_count,
         first_retry_for_block=first_retry_for_block,
@@ -929,11 +1102,11 @@ def record_retry_attempt(*, reason: str, paragraph_count: int = 0, first_retry_f
 
 
 def record_marker_chunk_merge_retry() -> None:
-    get_run_model_accounting_ledger().record_marker_chunk_merge_retry()
+    _counter_ledger().record_marker_chunk_merge_retry()
 
 
 def record_model_output_discarded(*, reason: str, paragraph_count: int = 0, block_count: int = 0) -> None:
-    get_run_model_accounting_ledger().record_model_output_discarded(
+    _counter_ledger().record_model_output_discarded(
         reason=reason,
         paragraph_count=paragraph_count,
         block_count=block_count,
@@ -941,11 +1114,11 @@ def record_model_output_discarded(*, reason: str, paragraph_count: int = 0, bloc
 
 
 def record_controlled_block_fallback(*, kind: str, chars: int = 0) -> None:
-    get_run_model_accounting_ledger().record_controlled_block_fallback(kind=kind, chars=chars)
+    _counter_ledger().record_controlled_block_fallback(kind=kind, chars=chars)
 
 
 def record_untranslated_prose_block_delivery(*, kind: str, chars: int = 0) -> None:
-    get_run_model_accounting_ledger().record_untranslated_prose_block_delivery(
+    _counter_ledger().record_untranslated_prose_block_delivery(
         kind=kind, chars=chars
     )
 
@@ -959,7 +1132,7 @@ def record_degradation_ladder(
     sentence_split_paragraph_count: int = 0,
     oversized_sentence_count: int = 0,
 ) -> None:
-    get_run_model_accounting_ledger().record_degradation_ladder(
+    _counter_ledger().record_degradation_ladder(
         trigger=trigger,
         model_call_count=model_call_count,
         translated_paragraph_count=translated_paragraph_count,
@@ -970,7 +1143,7 @@ def record_degradation_ladder(
 
 
 def record_text_removal(*, site: str, chars: int = 0, emptied_units: int = 0) -> None:
-    get_run_model_accounting_ledger().record_text_removal(
+    _counter_ledger().record_text_removal(
         site=site,
         chars=chars,
         emptied_units=emptied_units,
@@ -988,7 +1161,7 @@ def record_back_matter_delivery(
     model_kept_paragraph_count: int = 0,
     model_kept_replaced_fallback: bool = False,
 ) -> None:
-    get_run_model_accounting_ledger().record_back_matter_delivery(
+    _counter_ledger().record_back_matter_delivery(
         section=section,
         source_paragraph_count=source_paragraph_count,
         translated_paragraph_count=translated_paragraph_count,
@@ -1001,7 +1174,7 @@ def record_back_matter_delivery(
 
 
 def record_footnote_markers(*, source_count: int, kept_count: int, restored_count: int) -> None:
-    get_run_model_accounting_ledger().record_footnote_markers(
+    _counter_ledger().record_footnote_markers(
         source_count=source_count,
         kept_count=kept_count,
         restored_count=restored_count,
@@ -1009,11 +1182,11 @@ def record_footnote_markers(*, source_count: int, kept_count: int, restored_coun
 
 
 def record_paragraph_disposition(*, status: str, count: int = 1) -> None:
-    get_run_model_accounting_ledger().record_paragraph_disposition(status=status, count=count)
+    _counter_ledger().record_paragraph_disposition(status=status, count=count)
 
 
 def record_text_api_path(api_path: str) -> None:
-    get_run_model_accounting_ledger().record_text_api_path(api_path)
+    _counter_ledger().record_text_api_path(api_path)
 
 
 def snapshot_run_model_accounting() -> dict[str, object]:
