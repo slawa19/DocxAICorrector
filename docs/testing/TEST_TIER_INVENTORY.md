@@ -58,6 +58,9 @@ This inventory is intentionally pragmatic:
 - `tests/test_narration_exclusion_070.py`
 - `tests/test_narration_exclusion_addresses.py`
 - `tests/test_narration_markdown.py`
+- `tests/test_narration_cleanup.py`
+- `tests/test_narration_coverage.py`
+- `tests/test_narration_residue.py`
 - `tests/test_output_display_hygiene.py`
 - `tests/test_output_validation_characterization.py`
 - `tests/test_paragraph_boundary_normalization.py`
@@ -96,6 +99,7 @@ This inventory is intentionally pragmatic:
 - `tests/test_structural_validation_characterization.py`
 - `tests/test_structure_validation.py`
 - `tests/test_text_transform_assessment.py`
+- `tests/test_unicode_emoji_data.py`
 - `tests/test_validation_formatting_replay.py`
 - `tests/test_ui.py`
 - `tests/test_ui_i18n.py`
