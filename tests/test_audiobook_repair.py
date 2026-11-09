@@ -6,6 +6,7 @@ import logging
 from types import SimpleNamespace
 from typing import Any
 
+import httpx2
 import pytest
 
 from docxaicorrector.core import model_accounting
@@ -177,3 +178,43 @@ def test_events_carry_contract_fields_and_no_full_text() -> None:
 
 def test_stage_constant() -> None:
     assert model_accounting.STAGE_AUDIOBOOK_REPAIR == "audiobook_repair"
+
+
+def _counting_sdk_client(status_code: int, seen: list[httpx2.Request]) -> Any:
+    from openai import OpenAI
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        seen.append(request)
+        return httpx2.Response(status_code, json={"error": {"message": "synthetic server fault"}})
+
+    # The run's client as ``core.config`` builds it: the SDK default ``max_retries`` (2).
+    return OpenAI(api_key="k", base_url="http://provider.invalid/v1", http_client=httpx2.Client(transport=httpx2.MockTransport(handler)))
+
+
+def test_the_repair_call_is_exactly_one_http_attempt_even_when_the_sdk_would_retry() -> None:
+    """Spec 070 FR-006 / R5: AT MOST ONE paid call. The SDK retries a 5xx silently (``max_retries=2``
+    = 3 requests); the repair call must derive a no-retry client so the provider sees one request."""
+
+    seen: list[httpx2.Request] = []
+    client = _counting_sdk_client(500, seen)
+    outcome, _, _ = _run(client)  # type: ignore[arg-type]
+    assert len(seen) == 1
+    assert outcome.status == "failed" and outcome.reason == "error" and outcome.call_made
+    assert outcome.texts == _PREVIOUS
+
+
+def test_the_main_clients_own_retry_budget_is_left_alone() -> None:
+    seen: list[httpx2.Request] = []
+    client = _counting_sdk_client(500, seen)
+    _run(client)  # type: ignore[arg-type]
+    assert client.max_retries == 2  # the per-call client is a copy; generation keeps its retries
+    seen.clear()
+    with pytest.raises(Exception):
+        client.responses.create(model="m", input="x")
+    assert len(seen) == 3  # the main call still gets the SDK's 1 + 2 attempts
+
+
+def test_a_client_without_with_options_is_used_as_is() -> None:
+    client = _Client(_GOOD)
+    outcome, _, _ = _run(client)
+    assert outcome.status == "accepted" and len(client.calls) == 1

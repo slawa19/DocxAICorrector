@@ -1,9 +1,10 @@
 """Generate ``src/docxaicorrector/text/unicode_emoji_data.py`` from Unicode's ``emoji-data.txt``.
 
 Developer tool, not runtime: the product has no network and never runs this. The pinned data
-version (15.1.0) is the ``unicodedata.unidata_version`` of the runtime Python, so the emoji
-properties the cleanup uses and the general categories the residue detector uses never come from
-different Unicode versions (spec 070 research R1). A test fails when the two drift apart.
+version (15.1.0) is its own constant, not the runtime's ``unicodedata.unidata_version`` (CI runs
+Python 3.12 = Unicode 15.0.0, 3.13 = 15.1.0). The runtime's Unicode MAJOR version must equal the
+vendored one, so the emoji properties and the general categories never come from different major
+releases (spec 070 research R1). A test fails when either fact drifts.
 
 Source (download once, keep outside the repository):
     https://www.unicode.org/Public/15.1.0/ucd/emoji/emoji-data.txt
@@ -82,7 +83,10 @@ def render_module(source_bytes: bytes, version: str = PINNED_VERSION) -> str:
         "",
         f"Source: https://www.unicode.org/Public/{version}/ucd/emoji/emoji-data.txt",
         "Generator: scripts/generate-unicode-emoji-data.py (developer tool; the product never fetches data).",
-        "The version equals ``unicodedata.unidata_version`` of the runtime Python; a test pins the pair.",
+        "The data version is pinned here (and as ``PINNED_VERSION`` in the generator), NOT taken from the runtime:",
+        "CI runs Python 3.12 (Unicode 15.0.0) and 3.13 ships 15.1.0. The runtime's Unicode MAJOR version must equal the",
+        "vendored one (15, so emoji properties and ``unicodedata`` categories never come from different major releases);",
+        "general categories always come from the runtime. A test pins both facts.",
         '"""',
         "",
         "from __future__ import annotations",

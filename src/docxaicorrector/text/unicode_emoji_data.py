@@ -2,7 +2,10 @@
 
 Source: https://www.unicode.org/Public/15.1.0/ucd/emoji/emoji-data.txt
 Generator: scripts/generate-unicode-emoji-data.py (developer tool; the product never fetches data).
-The version equals ``unicodedata.unidata_version`` of the runtime Python; a test pins the pair.
+The data version is pinned here (and as ``PINNED_VERSION`` in the generator), NOT taken from the runtime:
+CI runs Python 3.12 (Unicode 15.0.0) and 3.13 ships 15.1.0. The runtime's Unicode MAJOR version must equal the
+vendored one (15, so emoji properties and ``unicodedata`` categories never come from different major releases);
+general categories always come from the runtime. A test pins both facts.
 """
 
 from __future__ import annotations

@@ -56,7 +56,9 @@ def test_per_paragraph_mode_names_the_excluded_paragraph_its_reason_and_its_addr
     assert result["excluded_paragraph_ids_by_reason"] == {"fragment": [entry["paragraph_id"]]}
     # The denominator is the narrated paragraphs: the two prose paragraphs, not the fragment.
     assert result["expected_paragraph_count"] == 2
-    assert entry["paragraph_id"] not in str(result["expected_paragraph_count"])
+    narrated_ids = result["expected_paragraph_ids"]
+    assert len(narrated_ids) == 2 and len(set(narrated_ids)) == 2
+    assert entry["paragraph_id"] not in narrated_ids
 
 
 def test_a_document_of_prose_only_excludes_nothing(tmp_path: Path) -> None:

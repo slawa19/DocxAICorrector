@@ -10,7 +10,7 @@ What is removed, in order:
 
 1. pipeline tokens ``[[DOCX_<KIND>_...]]``;
 2. HTML by TAG SYNTAX (element name, no attributes or ``name=value`` attributes only), keeping the
-   content; ``<br>`` and block tags become a space so words never weld; entities that end in ``;``
+   content; only known inline formatting elements vanish without a trace; every other element (``<br>``, blocks, unknown) becomes a space so words never weld; entities that end in ``;``
    are expanded. A lone ``<`` that is not followed by an element name (``a < b``) is not a tag;
 3. emoji, as whole sequences by the Unicode Emoji properties pinned in ``unicode_emoji_data``;
 4. Markdown the model returned against its prompt: heading, quote and bullet prefixes, a decoration
@@ -191,8 +191,16 @@ _ATTRIBUTE = r"""\s+[A-Za-z_:][-A-Za-z0-9_:.]*\s*=\s*(?:"[^"<>]*"|'[^'<>]*'|[^\s
 # is deliberately not accepted: ``a<b and c>d`` is prose, not a tag.
 HTML_TAG_PATTERN = re.compile(r"<(/?)([A-Za-z][A-Za-z0-9-]*)((?:" + _ATTRIBUTE + r")*)\s*(/?)>")
 _HTML_ENTITY_PATTERN = re.compile(r"&(?:#[0-9]{1,7}|#[xX][0-9A-Fa-f]{1,6}|[A-Za-z][A-Za-z0-9]{1,31});")
-_HTML_SPACE_TAGS = frozenset(
-    {"br", "p", "div", "li", "tr", "td", "th", "table", "ul", "ol", "blockquote", "h1", "h2", "h3", "h4", "h5", "h6"}
+# HTML vocabulary (WHATWG "text-level semantics" plus the legacy formatting elements): only these
+# are removed without a separator, because they can sit INSIDE a word (``сло<b>во</b>``). ANY other
+# element - a known block (``hr``, ``section``, ``article``) or an unknown one - is a word
+# separator, so the rule needs no list of block tags and cannot weld words on a tag it did not know.
+_HTML_INLINE_TAGS = frozenset(
+    {
+        "a", "abbr", "acronym", "b", "bdi", "bdo", "big", "cite", "code", "data", "del", "dfn", "em",
+        "font", "i", "ins", "kbd", "mark", "q", "s", "samp", "small", "span", "strike", "strong",
+        "sub", "sup", "time", "tt", "u", "var",
+    }
 )
 _INTERNAL_TOKEN_PATTERN = re.compile(r"\[\[DOCX_[A-Za-z0-9_]+\]\]")
 
@@ -233,7 +241,7 @@ def _strip_html(text: str) -> tuple[str, int, int]:
     def replace_tag(match: re.Match[str]) -> str:
         nonlocal tag_count
         tag_count += 1
-        return " " if match.group(2).lower() in _HTML_SPACE_TAGS else ""
+        return "" if match.group(2).lower() in _HTML_INLINE_TAGS else " "
 
     def replace_entity(match: re.Match[str]) -> str:
         nonlocal entity_count
