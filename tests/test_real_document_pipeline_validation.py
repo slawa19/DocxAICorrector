@@ -6533,12 +6533,43 @@ def test_run_report_carries_the_narration_exclusion_counters_from_the_event_log(
     event_log = [
         {"event_id": "block_completed", "context": {}},
         {
+            "event_id": "audiobook_narration_exclusions",
+            "context": {
+                "expected_paragraph_count": 120,
+                "excluded_count": 3,
+                "excluded_by_reason": {"fragment": 2, "role": 1},
+                "excluded_paragraph_ids_by_reason": {"fragment": ["p0004", "p0005"], "role": ["p0001"]},
+                "fragment_samples": [{"paragraph_id": "p0004", "sample": "x"}],
+            },
+        },
+        {
+            "event_id": "audiobook_needs_review",
+            "context": {
+                "needs_review_paragraph_count": 1,
+                "records": [{"paragraph_id": "p0042", "block_index": 3, "reasons": ["residue"], "sample": "s"}],
+            },
+        },
+        {
             "event_id": "ui_audiobook_artifact_saved",
             "context": {
                 "char_count": 448157,
-                "excluded_blocks": 59,
-                "excluded_source_fallback_block_count": 6,
-                "excluded_source_fallback_chars": 20597,
+                "expected_paragraph_count": 120,
+                "delivered_paragraph_count": 117,
+                "missing_paragraph_ids": [],
+                "paragraph_boundary_check": "ok",
+                "deterministic_join_count": 2,
+                "deterministic_join_pairs": [["p0010", "p0011"], ["p0020", "p0021"]],
+                "excluded_count": 3,
+                "excluded_by_reason": {"fragment": 2, "role": 1},
+                "excluded_paragraph_ids_by_reason": {"fragment": ["p0004", "p0005"], "role": ["p0001"]},
+                "residue_before_by_class": {"digit_run": {"paragraphs": 4, "occurrences": 6}},
+                "residue_after_by_class": {},
+                "needs_review_paragraph_count": 1,
+                "needs_review_by_reason": {"residue": 1},
+                "repair_call_count": 2,
+                "repair_block_count": 2,
+                "coverage_not_measured_count": 0,
+                "coverage_low_count": 0,
                 "review_finding_count": 2,
                 "review_match_count": 195,
                 "review_rules": ["doi", "inline_citation"],
@@ -6549,14 +6580,63 @@ def test_run_report_carries_the_narration_exclusion_counters_from_the_event_log(
     record = validation._extract_narration_artifact_record(event_log)
 
     assert record is not None
-    assert record["excluded_source_fallback_block_count"] == 6
-    assert record["excluded_source_fallback_chars"] == 20597
+    assert record["delivered_paragraph_count"] == 117
+    assert record["exclusions_event"]["excluded_paragraph_ids_by_reason"]["fragment"] == ["p0004", "p0005"]
+    assert record["needs_review_records"][0]["paragraph_id"] == "p0042"
 
     lines = validation._build_narration_summary_lines(record)
 
-    assert "narration_excluded_source_fallback_block_count=6" in lines
-    assert "narration_excluded_source_fallback_chars=20597" in lines
-    assert "narration_excluded_blocks=59" in lines
+    assert "narration_expected_paragraph_count=120" in lines
+    assert "narration_delivered_paragraph_count=117" in lines
+    assert "narration_paragraph_boundary_check=ok" in lines
+    assert "narration_deterministic_join_count=2" in lines
+    assert "narration_needs_review_paragraph_count=1" in lines
+    assert 'narration_excluded_by_reason={"fragment": 2, "role": 1}' in lines
+    assert 'narration_needs_review_paragraph_ids=["p0042"]' in lines
+    assert 'narration_deterministic_join_pairs=[["p0010", "p0011"], ["p0020", "p0021"]]' in lines
+    # Removed fields never come back as lines (FR-002, D-3).
+    assert not any(line.startswith(("narration_excluded_blocks", "narration_tag_count", "narration_mode")) for line in lines)
+    assert not any("source_fallback" in line or "omitted_paragraph" in line for line in lines)
+
+
+def test_narration_summary_keeps_not_reported_apart_from_zero() -> None:
+    """A field the event did not carry is ``not_reported``; a carried zero prints as 0."""
+    validation = _load_validation_module()
+
+    lines = validation._build_narration_summary_lines(
+        {"expected_paragraph_count": 0, "needs_review_paragraph_count": 0}
+    )
+
+    assert "narration_expected_paragraph_count=0" in lines
+    assert "narration_needs_review_paragraph_count=0" in lines
+    assert "narration_delivered_paragraph_count=not_reported" in lines
+    assert "narration_excluded_by_reason=not_reported" in lines
+
+
+def test_stage_cost_lines_list_text_generation_and_audiobook_repair_separately() -> None:
+    """SC-005: the price of the repair is its own line; a stage that reported no cost is not 0."""
+    validation = _load_validation_module()
+
+    lines = validation._build_stage_cost_summary_lines(
+        {
+            "stages": {
+                "text_generation": {"model_call_count": 10, "model_calls_without_cost": 0, "cost_usd_reported_by_provider": 0.5},
+                "audiobook_repair": {"model_call_count": 2, "model_calls_without_cost": 0, "cost_usd_reported_by_provider": 0.0},
+            }
+        }
+    )
+    assert "model_accounting_stage_text_generation_cost_usd=0.5" in lines
+    assert "model_accounting_stage_audiobook_repair_cost_usd=0.0" in lines
+
+    silent = validation._build_stage_cost_summary_lines(
+        {"stages": {"text_generation": {"model_call_count": 4, "model_calls_without_cost": 4, "cost_usd_reported_by_provider": 0.0}}}
+    )
+    assert "model_accounting_stage_text_generation_cost_usd=not_reported" in silent
+    assert "model_accounting_stage_audiobook_repair_cost_usd=not_reported" in silent
+    assert validation._build_stage_cost_summary_lines(None) == [
+        "model_accounting_stage_text_generation_cost_usd=not_reported",
+        "model_accounting_stage_audiobook_repair_cost_usd=not_reported",
+    ]
 
 
 def test_run_summary_prints_every_spec_061_counter_the_report_carries() -> None:
@@ -6566,17 +6646,6 @@ def test_run_summary_prints_every_spec_061_counter_the_report_carries() -> None:
     only in a 27 MB report is a counter nobody reads. Zeros are printed too — a zero is the
     statement "nothing landed here", not an absent field."""
     validation = _load_validation_module()
-
-    narration_lines = validation._build_narration_summary_lines(
-        {
-            "char_count": 467958,
-            "excluded_omitted_paragraph_count": 8,
-            "excluded_omitted_paragraph_chars": 4455,
-        }
-    )
-
-    assert "narration_excluded_omitted_paragraph_count=8" in narration_lines
-    assert "narration_excluded_omitted_paragraph_chars=4455" in narration_lines
 
     accounting_lines = validation._build_model_accounting_summary_lines(
         {
@@ -7836,6 +7905,120 @@ def test_logging_document_states_the_rollback_retention_that_the_code_enforces()
     row = next(line for line in document.splitlines() if line.startswith("| `.run/literary_polish_rollbacks/"))
     assert f"{days} дней" in row and f"{count} файлов" in row
     assert "LITERARY_POLISH_ROLLBACKS_MAX_AGE_SECONDS" in row and "LITERARY_POLISH_ROLLBACKS_MAX_COUNT" in row
+
+
+# Spec 070 T-H2: the audiobook events of ``contracts/events.md``.
+
+_SPEC_070_LOG_EVENTS = (
+    "audiobook_model_resolved",
+    "audiobook_narration_exclusions",
+    "audiobook_repair_started",
+    "audiobook_repair_completed",
+    "audiobook_repair_failed",
+    "audiobook_needs_review",
+    "audiobook_paragraph_boundary_mismatch",
+    "audiobook_narration_failed",
+    "ui_audiobook_artifact_saved",
+    "narration_artifact_review_data",
+)
+_SPEC_070_REMOVED_LOG_EVENTS = (
+    "audiobook_postprocess_chunk_started",
+    "audiobook_postprocess_chunk_completed",
+    "audiobook_postprocess_paragraph_shortfall",
+    "audiobook_postprocess_failed",
+    "audiobook_postprocess_failed_base_result_preserved",
+    "narration_source_fallback_excluded",
+    "narration_omitted_paragraphs_excluded",
+)
+_SPEC_070_NEW_UI_ARTIFACT_FIELDS = (
+    "expected_paragraph_count",
+    "delivered_paragraph_count",
+    "missing_paragraph_ids",
+    "paragraph_boundary_check",
+    "deterministic_join_pairs",
+    "excluded_paragraph_ids_by_reason",
+    "residue_before_by_class",
+    "residue_after_by_class",
+    "needs_review_by_reason",
+    "repair_call_count",
+    "coverage_not_measured_count",
+)
+
+
+def _emitted_audiobook_event_names() -> set[str]:
+    """Every audiobook/narration event id a log call under ``src/`` names as its event."""
+    import re
+
+    pattern = re.compile(
+        r'(?:log_event|emit|present_error|log_exception)\(\s*(?:[\w.]+,\s*)?"((?:ui_)?audiobook_\w+|narration_\w+)"'
+    )
+    source_root = Path(__file__).resolve().parent.parent / "src" / "docxaicorrector"
+    names: set[str] = set()
+    for path in source_root.rglob("*.py"):
+        names.update(pattern.findall(path.read_text(encoding="utf-8")))
+    return names
+
+
+@pytest.mark.parametrize("event_id", _SPEC_070_LOG_EVENTS)
+def test_logging_document_registers_every_spec_070_event(event_id: str) -> None:
+    assert _source_emits_event(event_id), f"{event_id} is not emitted anywhere under src/ -- the guard list is stale"
+    assert f"`{event_id}`" in _logging_document_text(), f"{event_id} is not registered in docs/LOGGING_AND_ARTIFACT_RETENTION.md"
+
+
+def test_every_audiobook_event_emitted_in_src_is_registered_in_the_logging_document() -> None:
+    emitted = _emitted_audiobook_event_names()
+    assert set(_SPEC_070_LOG_EVENTS) <= emitted, "the guard names events the code does not emit through a log call"
+    document = _logging_document_text()
+    unregistered = sorted(name for name in emitted if f"`{name}`" not in document)
+    assert not unregistered, f"emitted but not registered in the logging document: {unregistered}"
+
+
+@pytest.mark.parametrize("event_id", _SPEC_070_REMOVED_LOG_EVENTS)
+def test_removed_audiobook_events_are_emitted_nowhere(event_id: str) -> None:
+    assert not _source_emits_event(event_id), f"{event_id} was removed by spec 070 but still appears under src/"
+    assert event_id not in _emitted_audiobook_event_names()
+
+
+def test_logging_document_never_describes_a_removed_event_as_live() -> None:
+    """A removed event may be named only in a line that says it was removed."""
+    removed_markers = ("удал", "УДАЛ", "убран", "заменено", "заменяет", "раньше")
+    catalogue = _logging_document_text().split("## 7. Changelog", 1)[0]  # the changelog is history
+    for line in catalogue.splitlines():
+        for event_id in _SPEC_070_REMOVED_LOG_EVENTS:
+            if f"`{event_id}`" in line:
+                assert any(marker in line for marker in removed_markers), f"{event_id} is described as live: {line[:120]}"
+
+
+def test_logging_document_lists_the_new_ui_audiobook_artifact_fields() -> None:
+    document = _logging_document_text()
+    for field in _SPEC_070_NEW_UI_ARTIFACT_FIELDS:
+        assert f"`{field}`" in document, f"{field} is not documented for ui_audiobook_artifact_saved"
+
+
+def test_log_event_inventory_script_scans_the_spec_070_emitters() -> None:
+    script = (Path(__file__).resolve().parent.parent / "scripts" / "_list_log_events.py").read_text(encoding="utf-8")
+    for target in (
+        "src/docxaicorrector/pipeline/audiobook_pass.py",
+        "src/docxaicorrector/pipeline/audiobook_repair.py",
+        "src/docxaicorrector/core/audiobook_mode.py",
+    ):
+        assert f'"{target}"' in script
+
+
+def test_log_event_inventory_script_reports_the_spec_070_events(tmp_path) -> None:
+    """The scanner actually finds the new modules' events (and does not choke on the removed pass)."""
+    import runpy
+
+    script = Path(__file__).resolve().parent.parent / "scripts" / "_list_log_events.py"
+    import contextlib
+    import io
+
+    buffer = io.StringIO()
+    with contextlib.redirect_stdout(buffer):
+        runpy.run_path(str(script), run_name="__main__")
+    reported = {line.split("\t", 1)[0] for line in buffer.getvalue().splitlines() if line}
+    for event_id in ("audiobook_repair_started", "audiobook_repair_completed", "audiobook_model_resolved", "audiobook_needs_review"):
+        assert event_id in reported
 
 
 def test_log_event_inventory_script_scans_the_spec_069_emitters() -> None:

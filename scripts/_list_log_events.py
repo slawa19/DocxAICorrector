@@ -9,6 +9,9 @@ ROOT = Path(__file__).resolve().parent.parent
 TARGETS = [
     "src/docxaicorrector/ui/_app.py",
     "src/docxaicorrector/core/translation_modes.py",
+    "src/docxaicorrector/core/audiobook_mode.py",
+    "src/docxaicorrector/pipeline/audiobook_pass.py",
+    "src/docxaicorrector/pipeline/audiobook_repair.py",
     "src/docxaicorrector/pipeline/literary_polish.py",
     "src/docxaicorrector/pipeline/price_list.py",
     "src/docxaicorrector/core/config.py",

@@ -5006,19 +5006,47 @@ def _build_cost_estimate_summary_lines(
     return lines
 
 
+# Spec 070 data-model §6 (``audiobook_narration_summary`` in ``pipeline/audiobook_pass.py``):
+# scalar counters print as ``narration_<field>=<value>``; mapping/list fields as sorted JSON.
 _NARRATION_SUMMARY_FIELDS = (
     "char_count",
-    "excluded_blocks",
-    "excluded_source_fallback_block_count",
-    "excluded_source_fallback_chars",
-    "joined_sentence_continuation_count",
-    # Spec 061 FR-008: paragraphs withheld from the narration because the model gave no
-    # accepted translation — the per-paragraph twin of the two block counters above.
-    "excluded_omitted_paragraph_count",
-    "excluded_omitted_paragraph_chars",
+    "expected_paragraph_count",
+    "delivered_paragraph_count",
+    "paragraph_boundary_check",
+    "deterministic_join_count",
+    "excluded_count",
+    "needs_review_paragraph_count",
+    "repair_block_count",
+    "repair_call_count",
+    "repair_accepted_block_count",
+    "repair_failed_call_count",
+    "repair_skipped_stopped_count",
+    "coverage_not_measured_count",
+    "coverage_low_count",
     "review_finding_count",
     "review_match_count",
 )
+_NARRATION_SUMMARY_JSON_FIELDS = (
+    "missing_paragraph_ids",
+    "deterministic_join_pairs",
+    "excluded_by_reason",
+    "excluded_paragraph_ids_by_reason",
+    "residue_before_by_class",
+    "residue_after_by_class",
+    "needs_review_by_reason",
+    "repair_rejected_by_reason",
+    "review_rules",
+)
+
+
+def _event_context(event_log: Sequence[Mapping[str, object]], event_id: str) -> dict[str, object] | None:
+    for event in reversed(event_log):
+        if str(event.get("event_id") or "") != event_id:
+            continue
+        context = event.get("context") or {}
+        if isinstance(context, Mapping):
+            return {str(key): value for key, value in context.items()}
+    return None
 
 
 def _extract_narration_artifact_record(
@@ -5029,25 +5057,59 @@ def _extract_narration_artifact_record(
     Same route as ``_extract_model_accounting``: the run report mines the event log rather
     than opening a second channel. ``None`` means no narration artifact was saved on this
     run — reported as ``not_reported``, never as zero, so "nothing was excluded" and "there
-    was no narration" stay distinguishable in the summary.
+    was no narration" stay distinguishable in the summary. Spec 070 adds the exclusion
+    addresses (``audiobook_narration_exclusions``) and the ``needs_review`` records
+    (``audiobook_needs_review``, emitted only when there is at least one, so its absence next
+    to a saved artifact is the empty list).
     """
 
-    for event in reversed(event_log):
-        if str(event.get("event_id") or "") != "ui_audiobook_artifact_saved":
-            continue
-        context = event.get("context") or {}
-        if isinstance(context, Mapping):
-            return {str(key): value for key, value in context.items()}
-    return None
+    record = _event_context(event_log, "ui_audiobook_artifact_saved")
+    if record is None:
+        return None
+    record["exclusions_event"] = _event_context(event_log, "audiobook_narration_exclusions")
+    needs_review = _event_context(event_log, "audiobook_needs_review") or {}
+    record["needs_review_records"] = list(cast("Sequence[object]", needs_review.get("records") or []))
+    return record
 
 
 def _build_narration_summary_lines(narration: Mapping[str, object] | None) -> list[str]:
     if narration is None:
         return ["narration_artifact=not_reported"]
-    lines = [f"narration_{field}={narration.get(field)}" for field in _NARRATION_SUMMARY_FIELDS]
-    lines.append(
-        f"narration_review_rules={json.dumps(narration.get('review_rules') or [], ensure_ascii=False)}"
-    )
+    lines = [
+        f"narration_{field}={narration[field] if field in narration else 'not_reported'}"
+        for field in _NARRATION_SUMMARY_FIELDS
+    ]
+    for field in _NARRATION_SUMMARY_JSON_FIELDS:
+        value = json.dumps(narration[field], ensure_ascii=False, sort_keys=True) if field in narration else "not_reported"
+        lines.append(f"narration_{field}={value}")
+    records = narration.get("needs_review_records")
+    if isinstance(records, Sequence) and not isinstance(records, str):
+        paragraph_ids = [str(record.get("paragraph_id")) for record in records if isinstance(record, Mapping)]
+        lines.append(f"narration_needs_review_paragraph_ids={json.dumps(paragraph_ids, ensure_ascii=False)}")
+    return lines
+
+
+_STAGE_COST_SUMMARY_STAGES = ("text_generation", "audiobook_repair")
+
+
+def _build_stage_cost_summary_lines(model_accounting: Mapping[str, object] | None) -> list[str]:
+    """Spec 070 SC-005: the price of the main call and of the repair, one line each.
+
+    A stage that is absent from the ledger, or whose calls reported no provider cost, is
+    ``not_reported`` -- never 0, which would claim a free stage.
+    """
+
+    stages = model_accounting.get("stages") if model_accounting is not None else None
+    lines: list[str] = []
+    for stage in _STAGE_COST_SUMMARY_STAGES:
+        raw = stages.get(stage) if isinstance(stages, Mapping) else None
+        cost: object = "not_reported"
+        if isinstance(raw, Mapping):
+            calls = int(cast(int, raw.get("model_call_count") or 0))
+            without_cost = int(cast(int, raw.get("model_calls_without_cost") or 0))
+            if calls > 0 and without_cost < calls:
+                cost = raw.get("cost_usd_reported_by_provider")
+        lines.append(f"model_accounting_stage_{stage}_cost_usd={cost}")
     return lines
 
 
@@ -6638,6 +6700,9 @@ def _run_single_validation(
         f"job_count={report['preparation']['job_count']}",
         f"preparation_diagnostic_snapshot={json.dumps(report['preparation_diagnostic_snapshot'], ensure_ascii=False, sort_keys=True)}",
         *_build_model_accounting_summary_lines(
+            cast("Mapping[str, object] | None", report.get("model_accounting"))
+        ),
+        *_build_stage_cost_summary_lines(
             cast("Mapping[str, object] | None", report.get("model_accounting"))
         ),
         *_build_footnote_marker_summary_lines(
