@@ -258,6 +258,11 @@ class _StageTotals:
     cached_tokens: int = 0
     cache_write_tokens: int = 0
     cache_discount_usd: float = 0.0
+    # Per-field counts: a field is "unknown" (None in to_dict) until at least one call reported THAT field.
+    cached_tokens_reported_call_count: int = 0
+    cache_write_tokens_reported_call_count: int = 0
+    cache_discount_reported_call_count: int = 0
+    # Calls that reported ANY cache field (kept for existing consumers; not a per-field signal).
     cache_fields_reported_call_count: int = 0
 
     def to_dict(self) -> dict[str, object]:
@@ -273,9 +278,12 @@ class _StageTotals:
             "reasoning_tokens": self.reasoning_tokens,
             "reasoning_reported_call_count": self.reasoning_reported_call_count,
             "reasoning_unreported_call_count": self.reasoning_unreported_call_count,
-            "cached_tokens": self.cached_tokens,
-            "cache_write_tokens": self.cache_write_tokens,
-            "cache_discount_usd": round(self.cache_discount_usd, 6),
+            "cached_tokens": self.cached_tokens if self.cached_tokens_reported_call_count else None,
+            "cache_write_tokens": self.cache_write_tokens if self.cache_write_tokens_reported_call_count else None,
+            "cache_discount_usd": round(self.cache_discount_usd, 6) if self.cache_discount_reported_call_count else None,
+            "cached_tokens_reported_call_count": self.cached_tokens_reported_call_count,
+            "cache_write_tokens_reported_call_count": self.cache_write_tokens_reported_call_count,
+            "cache_discount_reported_call_count": self.cache_discount_reported_call_count,
             "cache_fields_reported_call_count": self.cache_fields_reported_call_count,
         }
 
@@ -472,9 +480,15 @@ class RunModelAccountingLedger:
                     or usage.cache_discount_usd is not None
                 ):
                     totals.cache_fields_reported_call_count += 1
-                    totals.cached_tokens += usage.cached_tokens or 0
-                    totals.cache_write_tokens += usage.cache_write_tokens or 0
-                    totals.cache_discount_usd += usage.cache_discount_usd or 0.0
+                    if usage.cached_tokens is not None:
+                        totals.cached_tokens_reported_call_count += 1
+                        totals.cached_tokens += usage.cached_tokens
+                    if usage.cache_write_tokens is not None:
+                        totals.cache_write_tokens_reported_call_count += 1
+                        totals.cache_write_tokens += usage.cache_write_tokens
+                    if usage.cache_discount_usd is not None:
+                        totals.cache_discount_reported_call_count += 1
+                        totals.cache_discount_usd += usage.cache_discount_usd
 
     def record_retry_attempt(self, *, reason: str, paragraph_count: int = 0, first_retry_for_block: bool = False) -> None:
         with self._lock:
