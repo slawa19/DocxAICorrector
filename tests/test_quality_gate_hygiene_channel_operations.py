@@ -200,7 +200,11 @@ def test_untranslated_body_outside_translate_is_still_counted_and_reported():
     assert audiobook["untranslated_body_text_count"] == translate["untranslated_body_text_count"] == 1
     assert audiobook["untranslated_body_text_chars"] == translate["untranslated_body_text_chars"]
     assert audiobook["untranslated_body_text_samples"] == translate["untranslated_body_text_samples"]
-# Spec 070: the review item is a language statement, which audiobook no longer makes; the    # translate run keeps it (counter-proof: the rule is gone for audiobook only).    assert "untranslated_body_text_review_required" not in audiobook["gate_reasons"]    assert "untranslated_body_text_review_required" in translate["gate_reasons"]
+    # Spec 070: the review item is a language statement, which audiobook no longer makes; the
+    # translate run keeps its language-keyed reason (this document is above both thresholds, so it is the
+    # hard-fail token, not the review one; counter-proof: the rule is gone for audiobook only).
+    assert "untranslated_body_text_review_required" not in audiobook["gate_reasons"]
+    assert "untranslated_body_text_above_threshold" in translate["gate_reasons"]
 
 
 # --------------------------------------------------------------------------- #
