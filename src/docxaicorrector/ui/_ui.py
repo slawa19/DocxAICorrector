@@ -258,6 +258,10 @@ def _format_model_option_label(option: str, config: Mapping[str, Any]) -> str:
     return resolved_selector.model_id
 
 
+_KEPT_MODEL_SELECTION_KEY = "sidebar_model_kept_selection"
+_KEPT_CUSTOM_MODEL_KEY = "sidebar_model_kept_custom"
+
+
 def _resolve_model_default_index(model_options: list[str], default_model: str, config: Mapping[str, Any]) -> int:
     if default_model in model_options:
         return model_options.index(default_model)
@@ -776,7 +780,14 @@ def render_sidebar(
             model = default_model
         else:
             model_options = [*get_text_model_options(config), "custom"]
-            default_index = _resolve_model_default_index(model_options, default_model, config)
+            # The selectbox is not drawn for "translate", so Streamlit drops its widget state; the
+            # last choice lives in plain (non-widget) session keys and seeds the widget on return.
+            kept_selection = st.session_state.get(_KEPT_MODEL_SELECTION_KEY)
+            kept_custom = st.session_state.get(_KEPT_CUSTOM_MODEL_KEY)
+            if isinstance(kept_selection, str) and kept_selection in model_options:
+                default_index = model_options.index(kept_selection)
+            else:
+                default_index = _resolve_model_default_index(model_options, default_model, config)
             selected_model = st.selectbox(
                 t("sidebar.model_select_label"),
                 model_options,
@@ -784,13 +795,15 @@ def render_sidebar(
                 format_func=lambda option: _format_model_option_label(option, config),
                 key="sidebar_model",
             )
+            st.session_state[_KEPT_MODEL_SELECTION_KEY] = selected_model
             custom_model = ""
             if selected_model == "custom":
                 custom_model = st.text_input(
                     t("sidebar.custom_model_label"),
-                    value=default_model,
+                    value=kept_custom if isinstance(kept_custom, str) and kept_custom else default_model,
                     help=t("sidebar.custom_model_help"),
                 ).strip()
+                st.session_state[_KEPT_CUSTOM_MODEL_KEY] = custom_model
 
             model = custom_model or selected_model
 
