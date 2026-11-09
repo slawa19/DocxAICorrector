@@ -138,11 +138,14 @@ pandoc --version
 
 - `processing_operation="audiobook"` является отдельным text mode наряду с `edit` и `translate`.
 - Для standalone audiobook runtime принудительно коэрсит effective `image_mode` в `no_change`, даже если non-UI caller передал другое значение.
-- Narration artifact строится только из narratable blocks и исключает TOC, bibliography tails и image-only blocks.
+- `audiobook` — один технический проход над УЖЕ ГОТОВЫМ текстом (спека 070): он не переводит и не редактирует, поэтому у него нет пары языков и нет интенсивности редактуры (эти настройки для него не читаются), а модель берётся из `[models.audiobook].default` или из выбора в UI. Текст остаётся на своём языке; в нём нет тегов озвучки, числа и сокращения записываются словами.
+- Что НЕ озвучивается, решается по каждому абзацу, а не по блоку: изображения, таблицы, подписи, оглавление, указатель, служебный аппарат, примечания в теле и обрывки без связного текста (роль, регион и ФОРМА текста, не слова). Все такие абзацы перечислены с адресами и причинами в событии `audiobook_narration_exclusions`, а число абзацев на входе, которые должны дойти до озвучки, — знаменатель проверки полноты.
+- Остаток после прохода (цифры, сокращения, символы) проверяется по форме; один блок получает не больше одного вызова исправления. Абзац, который не удалось довести, остаётся в тексте с пометкой `needs_review` (событие `audiobook_needs_review` с адресами и образцами, notice на экране результата) — озвучка не теряет абзацев молча.
+- Замер без платных вызовов: `scripts/measure-narration-exclusion.py --operation audiobook --per-paragraph <файл.docx>` печатает каждый исключаемый абзац с адресом и причиной. Входы замера — переведённые документы `tests/sources/translated/` (профили `audiobook-*-translated` в `corpus_registry.toml`, запуск — `ui-parity-standalone-audiobook`).
 - Итоговый narration artifact пишется в `.run/ui_results/` как `<stem>.result.tts.txt` рядом с `.result.md` и `.result.docx`.
 - Для `audiobook` UI показывает `Текст для ElevenLabs (.txt)`, `Markdown (для инспекции)` и `DOCX (для инспекции)`.
 - Для `edit` / `translate` UI сохраняет обычные labels `Отредактированный ...` или `Переведённый ...` и не предлагает narration: второй проход над результатом редактуры и перевода удалён спекой 070.
-- Deterministic writer pass удаляет остаточный Markdown, placeholders и link syntax из narration artifact, но не подменяет будущие richer prompt-level transformations.
+- Markdown-разметку озвучка не разбирает: стриппер, читавший Markdown, удалён спекой 070; narration-проверка только публикует находки (`narration_artifact_review_data`: DOI, ISBN, arXiv, ссылки-цитаты) и не роняет прогон.
 
 ## Delivery Contract
 

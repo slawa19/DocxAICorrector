@@ -511,10 +511,11 @@ bash scripts/test.sh tests/test_config.py::test_name -vv -x
 - Режим `Подготовка аудиокниги (ElevenLabs)` делает narration artifact основным результатом. В UI доступны `Текст для ElevenLabs (.txt)`, `Markdown (для инспекции)` и `DOCX (для инспекции)`.
 - Narration artifact сохраняется как `.run/ui_results/<timestamp>_<stem>.result.tts.txt` рядом со стандартными `.result.md` и `.result.docx`.
 - В standalone audiobook effective `image_mode` всегда принудительно становится `no_change` на runtime-уровне.
+- Аудиокнига — технический проход над готовым текстом: без пары языков и интенсивности редактуры, без тегов озвучки, числа и сокращения словами. Исключения (изображения, таблицы, подписи, оглавление, указатель, примечания, обрывки) решаются по абзацам и публикуются с адресами; абзацы, требующие проверки, помечаются `needs_review`. Подробности — в `docs/WORKFLOW_AND_IMAGE_MODES.md`.
 
 ## Real Document Validation
 
-Канонический registry для universal real-document validation хранится в `corpus_registry.toml` и содержит только реальные полные книги в `tests/sources/book/`.
+Канонический registry для universal real-document validation хранится в `corpus_registry.toml` и содержит реальные полные книги в `tests/sources/book/` и (спека 070) переведённые документы для проверки аудиокниги в `tests/sources/translated/`.
 Lietaer harness остаётся штатным entrypoint и по умолчанию запускается как document profile `lietaer-pdf-full-benchmark` с run profile `ui-parity-default`.
 Corpus покрывает четыре полнокнижных PDF-профиля: `lietaer-pdf-full-benchmark`, `mazzucato-pdf-full-benchmark`, `creatingwealth-pdf-full-benchmark` и held-out `money-sustainability-pdf-full-heldout`.
 Для stochastic full-tier прогонов доступен soak run profile `ui-parity-soak-3x` с `repeat_count = 3` и aggregate reporting по повторам.

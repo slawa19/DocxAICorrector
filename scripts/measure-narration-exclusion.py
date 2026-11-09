@@ -111,6 +111,52 @@ def measure(source_path: Path, *, chunk_size: int) -> dict[str, Any]:
     }
 
 
+def measure_per_paragraph(source_path: Path, *, chunk_size: int) -> dict[str, Any]:
+    """Spec 070 T-H4: the audiobook's per-paragraph exclusions, with addresses, LLM-free.
+
+    The blocks of ``measure`` answer "how many blocks"; the audiobook decides per PARAGRAPH
+    (``narration_exclusion_reasons``), so this lists every excluded paragraph with its id, block,
+    reason and a short sample -- the FR-009 pre-run read -- through the production registration
+    (``register_audiobook_block``), not a second copy of the rule.
+    """
+    from types import SimpleNamespace
+
+    from docxaicorrector.pipeline.audiobook_pass import register_audiobook_block
+
+    source_bytes = source_path.read_bytes()
+    normalized = processing_runtime.normalize_uploaded_document(filename=source_path.name, source_bytes=source_bytes)
+    prepared = _prepare_document_for_processing(
+        normalized.filename,
+        normalized.content_bytes,
+        chunk_size,
+        source_format=normalized.source_format,
+        conversion_backend=normalized.conversion_backend,
+        app_config=_app_config_mapping(),
+        processing_operation="audiobook",
+        get_client_fn=_no_llm_client,
+        client_factory=None,
+    )
+    state = SimpleNamespace(narration_exclusions=[], narration_expected_paragraph_ids=[])
+    for block_index, job in enumerate(prepared.jobs):
+        register_audiobook_block(state=state, payload=SimpleNamespace(**job), block_index=block_index)
+    exclusions = list(state.narration_exclusions)
+    by_reason: dict[str, list[str]] = {}
+    for entry in exclusions:
+        by_reason.setdefault(str(entry["reason"]), []).append(str(entry["paragraph_id"]))
+    expected = len(state.narration_expected_paragraph_ids)
+    return {
+        "source": source_path.name,
+        "mode": "per_paragraph",
+        "paragraph_count": len(prepared.paragraphs),
+        "block_count": len(prepared.jobs),
+        "expected_paragraph_count": expected,
+        "excluded_count": len(exclusions),
+        "excluded_by_reason": {reason: len(ids) for reason, ids in sorted(by_reason.items())},
+        "excluded_paragraph_ids_by_reason": dict(sorted(by_reason.items())),
+        "exclusions": exclusions,
+    }
+
+
 def _samples_by_reason(jobs: list[dict[str, Any]], excluded: list[dict[str, Any]], *, per_reason: int = 8) -> list[dict[str, Any]]:
     seen: Counter[str] = Counter()
     samples: list[dict[str, Any]] = []
@@ -136,6 +182,17 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("sources", nargs="+", type=Path, help="book files (.pdf/.docx) to measure")
     parser.add_argument("--chunk-size", type=int, default=DEFAULT_CHUNK_SIZE)
     parser.add_argument("--json-out", type=Path, default=None)
+    parser.add_argument(
+        "--operation",
+        choices=("audiobook",),
+        default="audiobook",
+        help="the operation measured (the audiobook is the only one with narration exclusions)",
+    )
+    parser.add_argument(
+        "--per-paragraph",
+        action="store_true",
+        help="print every excluded paragraph with its id, block, reason and sample (spec 070); no LLM call",
+    )
     args = parser.parse_args(argv)
 
     results: list[dict[str, Any]] = []
@@ -145,12 +202,27 @@ def main(argv: list[str] | None = None) -> int:
             continue
         print(f"== {source_path.name}", flush=True)
         try:
-            result = measure(source_path, chunk_size=args.chunk_size)
+            if args.per_paragraph:
+                result = measure_per_paragraph(source_path, chunk_size=args.chunk_size)
+            else:
+                result = measure(source_path, chunk_size=args.chunk_size)
         except Exception as exc:  # a failed book must not hide the others
             print(f"   FAILED: {type(exc).__name__}: {exc}", flush=True)
             results.append({"source": source_path.name, "error": f"{type(exc).__name__}: {exc}"})
             continue
         results.append(result)
+        if args.per_paragraph:
+            print(
+                f"   paragraphs={result['paragraph_count']} narrated={result['expected_paragraph_count']}"
+                f" excluded={result['excluded_count']} by_reason={result['excluded_by_reason']}",
+                flush=True,
+            )
+            for entry in result["exclusions"]:
+                print(
+                    f"   {entry['paragraph_id']}\tblock={entry['block_index']}\t{entry['reason']}\t{entry['sample']}",
+                    flush=True,
+                )
+            continue
         print(
             f"   blocks={result['block_count']} excluded={result['excluded_narration_block_count']}"
             f" ({result['excluded_block_share']:.1%} of blocks, {result['excluded_char_share']:.1%} of chars)"

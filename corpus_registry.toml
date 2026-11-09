@@ -133,6 +133,99 @@ default_run_profile = "ui-parity-translate-benchmark-advisory-image-safe-no-clea
 tags = ["pdf", "translation", "held-out", "lietaer", "full-document", "epub-derived-pdf"]
 provenance = "Held-out full-book epub-derived PDF benchmark for Money and Sustainability Stage 2 baseline validation."
 
+# Spec 070 FR-009: already translated documents, the input of the standalone audiobook run
+# (`ui-parity-standalone-audiobook`). They are DOCX files committed under
+# tests/sources/translated/, like the source books; they carry no language pair.
+[[documents]]
+id = "audiobook-rm-ch3-translated"
+source_path = "tests/sources/translated/rm_ch3_translated_ru.docx"
+artifact_prefix = "audiobook_rm_ch3_translated"
+output_basename = "Rethinking_Money_ch3_translated"
+structural_mode = "strict"
+# measured 103 paragraphs, 9 headings, 1 image
+min_paragraphs = 90
+has_headings = true
+min_headings = 5
+has_numbered_lists = false
+min_numbered_items = 0
+has_images = true
+min_images = 1
+has_tables = false
+min_tables = 0
+max_formatting_diagnostics = 12
+max_unmapped_source_paragraphs = 16
+max_unmapped_target_paragraphs = 16
+max_heading_level_drift = 2
+min_text_similarity = 0.0
+require_numbered_lists_preserved = false
+require_nonempty_output = true
+forbid_heading_only_collapse = true
+require_pdf_conversion = false
+default_run_profile = "ui-parity-standalone-audiobook"
+tags = ["docx", "audiobook", "translated", "fr-009", "lietaer"]
+provenance = "Spec 070 FR-009 input: Rethinking Money chapter 3, translated to Russian (spec 069 bake-off variant A, pass 1). A finished text for the audiobook technical pass; the input of the standalone audiobook run, not a translation benchmark."
+
+
+[[documents]]
+id = "audiobook-money-ch3-translated"
+source_path = "tests/sources/translated/money_ch3_translated_ru.docx"
+artifact_prefix = "audiobook_money_ch3_translated"
+output_basename = "Money_Sustainability_ch3_translated"
+structural_mode = "strict"
+# measured 109 paragraphs, 9 headings, 4 images
+min_paragraphs = 95
+has_headings = true
+min_headings = 5
+has_numbered_lists = false
+min_numbered_items = 0
+has_images = true
+min_images = 3
+has_tables = false
+min_tables = 0
+max_formatting_diagnostics = 12
+max_unmapped_source_paragraphs = 16
+max_unmapped_target_paragraphs = 16
+max_heading_level_drift = 2
+min_text_similarity = 0.0
+require_numbered_lists_preserved = false
+require_nonempty_output = true
+forbid_heading_only_collapse = true
+require_pdf_conversion = false
+default_run_profile = "ui-parity-standalone-audiobook"
+tags = ["docx", "audiobook", "translated", "fr-009", "lietaer"]
+provenance = "Spec 070 FR-009 input: Money and Sustainability chapter 3, translated to Russian (spec 069 bake-off variant A, pass 1). A finished text for the audiobook technical pass; the input of the standalone audiobook run, not a translation benchmark."
+
+
+[[documents]]
+id = "audiobook-money-full-standard-translated"
+source_path = "tests/sources/translated/money_full_standard_translated_ru.docx"
+artifact_prefix = "audiobook_money_full_standard_translated"
+output_basename = "Money_Sustainability_full_standard_translated"
+structural_mode = "strict"
+# measured 1379 paragraphs, 168 headings, 43 images, 1 torn list item
+min_paragraphs = 1200
+has_headings = true
+min_headings = 100
+has_numbered_lists = false
+min_numbered_items = 0
+has_images = true
+min_images = 30
+has_tables = false
+min_tables = 0
+max_formatting_diagnostics = 12
+max_unmapped_source_paragraphs = 16
+max_unmapped_target_paragraphs = 16
+max_heading_level_drift = 2
+max_torn_list_items = 1
+min_text_similarity = 0.0
+require_numbered_lists_preserved = false
+require_nonempty_output = true
+forbid_heading_only_collapse = true
+require_pdf_conversion = false
+default_run_profile = "ui-parity-standalone-audiobook"
+tags = ["docx", "audiobook", "translated", "fr-009", "lietaer"]
+provenance = "Spec 070 FR-009 input: the full Money and Sustainability book translated to Russian in Standard mode (spec 069 FR-008, 2026-11-09). A finished text for the audiobook technical pass; the input of the standalone audiobook run, not a translation benchmark."
+
 [[run_profiles]]
 id = "ui-parity-default"
 tier = "full"

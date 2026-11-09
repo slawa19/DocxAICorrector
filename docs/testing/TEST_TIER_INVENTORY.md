@@ -56,6 +56,7 @@ This inventory is intentionally pragmatic:
 - `tests/test_late_phases_characterization.py`
 - `tests/test_late_phases_finalize_gate_persistence.py`
 - `tests/test_logger.py`
+- `tests/test_measure_narration_exclusion_script.py`
 - `tests/test_message_formatting.py`
 - `tests/test_model_registry_sweep.py`
 - `tests/test_model_response_shape.py`
