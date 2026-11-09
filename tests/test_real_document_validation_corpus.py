@@ -1203,7 +1203,10 @@ _PROFILES_ADDED_BY_SPEC_069 = (
 # all 23 profiles before/after showed only the expected moves in ``applied`` — the new
 # image_{vision,draw}_model_mode_defaults, the trimmed text model_options and the models registry
 # carrying them; no effective model, mode or language of any profile changed.
-_PRE_TRANSLATION_MODES_RESOLUTION_DIGEST = "268fc2ad99b79fbe7f3d45737fc9cd0c4f65e58cca5238b557558123add22314"
+# Re-pinned 2026-11-09 (spec 070 WP-A): the digest of the old tree with the removed key
+# `audiobook_postprocess_enabled` / `audiobook_postprocess_default` and the removed profile
+# `ui-parity-translate-audiobook-postprocess` filtered out equals this value; nothing else moved.
+_PRE_TRANSLATION_MODES_RESOLUTION_DIGEST = "43f8bda1313b62abfcf210e689a6e0791bfd50ed80250fa4c6b14717900cad8e"
 
 
 def _resolution_digest_without_translation_keys() -> str:
@@ -1244,7 +1247,7 @@ def _raw_run_profile_tables() -> list[dict[str, Any]]:
 
 def test_every_translate_run_profile_declares_translation_mode_explicitly():
     translate_tables = [table for table in _raw_run_profile_tables() if table.get("processing_operation") == "translate"]
-    assert len(translate_tables) >= 19  # the guard is not vacuous: 17 old + 2 new profiles
+    assert len(translate_tables) >= 18  # the guard is not vacuous: 16 old + 2 new profiles (spec 070 removed one old)
 
     undeclared = [table["id"] for table in translate_tables if "translation_mode" not in table]
 
@@ -1257,7 +1260,7 @@ def test_pre_existing_translate_profiles_are_single_pass():
     old_translate = [
         table for table in by_id.values() if table.get("processing_operation") == "translate" and table["id"] not in new_ids
     ]
-    assert len(old_translate) == 17
+    assert len(old_translate) == 16
 
     assert [table["id"] for table in old_translate if table["translation_mode"] != "single"] == []
 

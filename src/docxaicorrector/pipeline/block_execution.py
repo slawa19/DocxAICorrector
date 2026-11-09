@@ -1761,12 +1761,9 @@ def append_controlled_fallback_registry_entries(
     for entry in state.generated_paragraph_registry[before_count:]:
         entry["controlled_fallback"] = True
         entry["controlled_fallback_kind"] = rejection_kind
-        # Carried on the paragraph, not only in ``state.narration_chunks``, because the
-        # reader-cleanup projection (``narration_postprocess._project_final_cleanup_narration_chunks``)
-        # rebuilds the narration from the FINAL registry rather than from those chunks. Without
-        # this flag the optional ElevenLabs post-pass on a cleaned translate run would narrate
-        # the untranslated source the standalone operation drops — the two entry points must
-        # behave the same (spec 054 anti-regression 3).
+        # Carried on the paragraph, not only in ``state.narration_chunks``, so a rebuild of the
+        # narration from the FINAL registry would honour the same exclusion decision (spec 054
+        # anti-regression 3).
         entry["controlled_fallback_narration_excluded"] = narration_excluded
 
 

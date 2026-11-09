@@ -338,25 +338,18 @@ def test_narration_review_counts_every_match_and_keeps_a_few_truncated_samples()
 
 
 def test_narration_review_truncates_an_oversized_sample_instead_of_logging_the_payload():
-    narration_text = "См. https://example.org/" + "a" * 400
+    narration_text = "См. (Смит, 2019 " + "а" * 400 + ")"
 
     findings = _collect_narration_artifact_review_findings(narration_text)
 
-    assert [str(finding["rule"]) for finding in findings] == ["raw_url"]
+    assert [str(finding["rule"]) for finding in findings] == ["inline_citation"]
     sample = _samples(findings[0])[0]
     assert len(sample) == _NARRATION_REVIEW_SAMPLE_CHARS + 1
     assert sample.endswith("…")
 
 
-def test_narration_review_reports_non_elevenlabs_tags_as_their_own_finding():
-    findings = _collect_narration_artifact_review_findings("[thoughtful] ok [angry] not modelled")
-
-    assert [str(finding["rule"]) for finding in findings] == ["disallowed_tags"]
-    assert _samples(findings[0]) == ["[angry]"]
-
-
 def test_narration_review_is_silent_on_clean_narration():
-    assert _collect_narration_artifact_review_findings("[thoughtful] Обычный абзац без маркеров.") == []
+    assert _collect_narration_artifact_review_findings("Обычный абзац без маркеров.") == []
     assert _summarize_narration_review_findings([]) == {
         "review_finding_count": 0,
         "review_match_count": 0,

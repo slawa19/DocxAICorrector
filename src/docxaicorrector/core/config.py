@@ -269,7 +269,6 @@ class AppConfig(Mapping[str, Any]):
     source_language_default: str
     target_language_default: str
     editorial_intensity_default: str
-    audiobook_postprocess_default: bool
     audiobook_model: str
     supported_languages: tuple[LanguageOption, ...]
     enable_paragraph_markers: bool

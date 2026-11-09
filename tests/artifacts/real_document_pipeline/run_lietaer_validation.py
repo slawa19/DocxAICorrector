@@ -5002,7 +5002,6 @@ def _build_cost_estimate_summary_lines(
 
 _NARRATION_SUMMARY_FIELDS = (
     "char_count",
-    "tag_count",
     "excluded_blocks",
     "excluded_source_fallback_block_count",
     "excluded_source_fallback_chars",
@@ -5011,12 +5010,8 @@ _NARRATION_SUMMARY_FIELDS = (
     # accepted translation — the per-paragraph twin of the two block counters above.
     "excluded_omitted_paragraph_count",
     "excluded_omitted_paragraph_chars",
-    # Spec 061 FR-017: post-pass groups answered with fewer paragraphs than were sent.
-    "postprocess_paragraph_shortfall_group_count",
-    "postprocess_paragraph_shortfall_paragraph_count",
     "review_finding_count",
     "review_match_count",
-    "mode",
 )
 
 

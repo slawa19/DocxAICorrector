@@ -140,7 +140,7 @@ _APP_READY_MARKER_WRITER = AppReadyMarkerWriter(
     time_fn=time.monotonic,
 )
 
-SidebarSettings: TypeAlias = tuple[str, int, int, str, bool, str, str, str, bool, str, str, str, str]
+SidebarSettings: TypeAlias = tuple[str, int, int, str, bool, str, str, str, str, str, str, str]
 
 # How long a looked-up price list (or the lack of one) is reused by the estimate before
 # ``get_price_list`` is asked again: it may reach for the network, a rerun must not.
@@ -507,19 +507,17 @@ def _resolve_sidebar_settings(sidebar_result: object) -> SidebarSettings:
     # choices (spec 062) and an empty translation mode (spec 069), which the caller reads
     # as "not chosen in the sidebar" and therefore leaves the loaded config defaults alone
     # (an empty mode resolves to ``translation_mode_default``).
-    if isinstance(sidebar_result, tuple) and len(sidebar_result) == 13:
-        return sidebar_result
     if isinstance(sidebar_result, tuple) and len(sidebar_result) == 12:
+        return sidebar_result
+    if isinstance(sidebar_result, tuple) and len(sidebar_result) == 11:
         return (*sidebar_result, "")
-    if isinstance(sidebar_result, tuple) and len(sidebar_result) == 10:
-        return (*sidebar_result, "", "", "")
     if isinstance(sidebar_result, tuple) and len(sidebar_result) == 9:
-        return (*sidebar_result, "", "", "", "")
+        return (*sidebar_result, "", "", "")
     if isinstance(sidebar_result, tuple) and len(sidebar_result) == 8:
-        return (*sidebar_result, False, "", "", "", "")
+        return (*sidebar_result, "", "", "", "")
     if isinstance(sidebar_result, tuple) and len(sidebar_result) == 5:
         model, chunk_size, max_retries, image_mode, keep_all_image_variants = sidebar_result
-        return model, chunk_size, max_retries, image_mode, keep_all_image_variants, "edit", "en", "ru", False, "", "", "", ""
+        return model, chunk_size, max_retries, image_mode, keep_all_image_variants, "edit", "en", "ru", "", "", "", ""
     raise RuntimeError("Некорректный контракт render_sidebar().")
 
 
@@ -908,7 +906,6 @@ def _render_completed_result_view(result: Mapping[str, object]) -> None:
         original_filename=str(result.get("source_name") or ""),
         narration_text=cast(str | None, result.get("narration_text")),
         processing_operation=str(result.get("processing_operation", "edit")),
-        audiobook_postprocess_enabled=bool(result.get("audiobook_postprocess_enabled", False)),
         success_message=t("result.success_document_processed"),
         quality_warning=cast(Mapping[str, object] | None, result.get("quality_warning")),
         delivery_disposition=cast(Mapping[str, object] | None, result.get("delivery_disposition")),
@@ -1026,7 +1023,6 @@ def main() -> None:
         processing_operation,
         source_language,
         target_language,
-        audiobook_postprocess_enabled,
         editorial_intensity,
         image_vision_model,
         image_draw_model,
@@ -1047,7 +1043,6 @@ def main() -> None:
     app_config["processing_operation"] = processing_operation
     app_config["source_language"] = source_language
     app_config["target_language"] = target_language
-    app_config["audiobook_postprocess_enabled"] = audiobook_postprocess_enabled
     if editorial_intensity:
         app_config["editorial_intensity_default"] = editorial_intensity
     # Spec 069 FR-001: for "translate" the mode wins over the model and depth, through the SAME

@@ -6536,14 +6536,12 @@ def test_run_report_carries_the_narration_exclusion_counters_from_the_event_log(
             "event_id": "ui_audiobook_artifact_saved",
             "context": {
                 "char_count": 448157,
-                "tag_count": 331,
                 "excluded_blocks": 59,
                 "excluded_source_fallback_block_count": 6,
                 "excluded_source_fallback_chars": 20597,
                 "review_finding_count": 2,
                 "review_match_count": 195,
                 "review_rules": ["doi", "inline_citation"],
-                "mode": "standalone",
             },
         },
     ]
@@ -6564,7 +6562,7 @@ def test_run_report_carries_the_narration_exclusion_counters_from_the_event_log(
 def test_run_summary_prints_every_spec_061_counter_the_report_carries() -> None:
     """The 2026-11-07 ``20261107T_061_audio_money`` summary printed none of these, although
     every one of them was in report.json: the paragraph disposition counts, the FR-008
-    per-paragraph narration exclusion and the FR-017 post-pass shortfall. A counter that is
+    per-paragraph narration exclusion. A counter that is
     only in a 27 MB report is a counter nobody reads. Zeros are printed too — a zero is the
     statement "nothing landed here", not an absent field."""
     validation = _load_validation_module()
@@ -6574,16 +6572,11 @@ def test_run_summary_prints_every_spec_061_counter_the_report_carries() -> None:
             "char_count": 467958,
             "excluded_omitted_paragraph_count": 8,
             "excluded_omitted_paragraph_chars": 4455,
-            "postprocess_paragraph_shortfall_group_count": 0,
-            "postprocess_paragraph_shortfall_paragraph_count": 0,
-            "mode": "standalone",
         }
     )
 
     assert "narration_excluded_omitted_paragraph_count=8" in narration_lines
     assert "narration_excluded_omitted_paragraph_chars=4455" in narration_lines
-    assert "narration_postprocess_paragraph_shortfall_group_count=0" in narration_lines
-    assert "narration_postprocess_paragraph_shortfall_paragraph_count=0" in narration_lines
 
     accounting_lines = validation._build_model_accounting_summary_lines(
         {

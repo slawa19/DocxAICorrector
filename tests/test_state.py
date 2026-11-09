@@ -63,7 +63,6 @@ def test_init_session_state_initializes_image_processing_summary(monkeypatch):
     }
     assert session_state.latest_source_token == ""
     assert session_state.latest_processing_operation == "edit"
-    assert session_state.latest_audiobook_postprocess_enabled is False
     assert session_state.selected_source_token == ""
     assert session_state.last_background_error is None
     assert session_state.processing_stop_requested is False
@@ -632,7 +631,6 @@ def test_processing_session_snapshot_exposes_p1a_owned_keys(monkeypatch):
         latest_source_name="report.docx",
         latest_source_token="report.docx:3:abc",
         latest_processing_operation="translate",
-        latest_audiobook_postprocess_enabled=True,
         selected_source_token="report.docx:3:abc",
         latest_image_mode="safe",
     )
@@ -648,13 +646,11 @@ def test_processing_session_snapshot_exposes_p1a_owned_keys(monkeypatch):
     assert snapshot.latest_source_name == "report.docx"
     assert snapshot.latest_source_token == "report.docx:3:abc"
     assert snapshot.latest_processing_operation == "translate"
-    assert snapshot.latest_audiobook_postprocess_enabled is True
     assert snapshot.selected_source_token == "report.docx:3:abc"
     assert snapshot.latest_image_mode == "safe"
     assert state.get_latest_source_name() == "report.docx"
     assert state.get_latest_source_token() == "report.docx:3:abc"
     assert state.get_latest_processing_operation() == "translate"
-    assert state.get_latest_audiobook_postprocess_enabled() is True
     assert state.get_selected_source_token() == "report.docx:3:abc"
     assert state.get_latest_image_mode() == "safe"
     assert state.get_processing_worker() is worker
@@ -776,7 +772,6 @@ def test_apply_processing_start_updates_owned_p1a_keys(monkeypatch):
         uploaded_token="report.docx:3:abc",
         image_mode="safe",
         processing_operation="translate",
-        audiobook_postprocess_enabled=True,
         worker=worker,
         event_queue=event_queue,
         stop_event=stop_event,
@@ -785,7 +780,6 @@ def test_apply_processing_start_updates_owned_p1a_keys(monkeypatch):
     assert session_state.latest_source_name == "report.docx"
     assert session_state.latest_source_token == "report.docx:3:abc"
     assert session_state.latest_processing_operation == "translate"
-    assert session_state.latest_audiobook_postprocess_enabled is True
     assert session_state.selected_source_token == "report.docx:3:abc"
     assert session_state.latest_image_mode == "safe"
     assert session_state.processing_outcome == "running"

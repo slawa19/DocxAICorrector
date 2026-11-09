@@ -212,7 +212,7 @@ def test_main_restarts_background_preparation_when_chunk_size_changes(monkeypatc
     monkeypatch.setattr(app.st, "session_state", session_state)
     monkeypatch.setattr(app, "init_session_state", lambda: None)
     monkeypatch.setattr(app, "_cached_load_app_config", lambda: {"reader_cleanup_default": True})
-    monkeypatch.setattr(app, "render_sidebar", lambda config: ("gpt-5.4", 7000, 3, "safe", True, "audiobook", "auto", "ru", False))
+    monkeypatch.setattr(app, "render_sidebar", lambda config: ("gpt-5.4", 7000, 3, "safe", True, "audiobook", "auto", "ru"))
     monkeypatch.setattr(app, "_drain_processing_events", lambda: None)
     monkeypatch.setattr(app, "_drain_preparation_events", lambda: None)
     monkeypatch.setattr(app, "_processing_worker_is_active", lambda: False)
@@ -304,7 +304,7 @@ def _run_main_capturing_preparation_start(monkeypatch, *, sidebar_result, app_co
 def test_main_forwards_sidebar_editorial_intensity_into_app_config(monkeypatch):
     start_call = _run_main_capturing_preparation_start(
         monkeypatch,
-        sidebar_result=("gpt-5.4", 7000, 3, "safe", True, "edit", "en", "ru", False, "conservative"),
+        sidebar_result=("gpt-5.4", 7000, 3, "safe", True, "edit", "en", "ru", "conservative"),
         app_config={"editorial_intensity_default": "literary"},
     )
 
@@ -316,7 +316,7 @@ def test_main_keeps_configured_editorial_intensity_for_legacy_sidebar_contract(m
     # configured default back to "literary".
     start_call = _run_main_capturing_preparation_start(
         monkeypatch,
-        sidebar_result=("gpt-5.4", 7000, 3, "safe", True, "edit", "en", "ru", False),
+        sidebar_result=("gpt-5.4", 7000, 3, "safe", True, "edit", "en", "ru"),
         app_config={"editorial_intensity_default": "conservative"},
     )
 
@@ -342,7 +342,7 @@ def test_main_applies_the_sidebar_image_model_choices_to_the_run_config(monkeypa
     start_call = _run_main_capturing_preparation_start(
         monkeypatch,
         sidebar_result=(
-            "gpt-5.4", 7000, 3, "semantic_redraw_structured", True, "edit", "en", "ru", False, "literary",
+            "gpt-5.4", 7000, 3, "semantic_redraw_structured", True, "edit", "en", "ru", "literary",
             "gpt-6.1-terra", "gpt-image-2.5-sunburst",
         ),
         app_config={
@@ -362,7 +362,7 @@ def test_main_applies_the_sidebar_image_model_choices_to_the_run_config(monkeypa
 def test_main_keeps_the_loaded_image_models_for_the_legacy_sidebar_contract(monkeypatch):
     start_call = _run_main_capturing_preparation_start(
         monkeypatch,
-        sidebar_result=("gpt-5.4", 7000, 3, "safe", True, "edit", "en", "ru", False, "literary"),
+        sidebar_result=("gpt-5.4", 7000, 3, "safe", True, "edit", "en", "ru", "literary"),
         app_config={"models": "untouched"},
     )
 
@@ -875,7 +875,6 @@ def test_main_keeps_completed_view_with_shared_layout(monkeypatch):
         "markdown_text": "# markdown",
         "source_name": "report.docx",
         "processing_operation": "edit",
-        "audiobook_postprocess_enabled": False,
     }
 
     monkeypatch.setattr(app.st, "session_state", session_state)
@@ -926,7 +925,6 @@ def test_main_passes_completed_result_bundle_mode_metadata_to_renderer(monkeypat
         "source_name": "report.docx",
         "narration_text": "[thoughtful] narration",
         "processing_operation": "translate",
-        "audiobook_postprocess_enabled": True,
     }
 
     monkeypatch.setattr(app.st, "session_state", session_state)
@@ -959,7 +957,6 @@ def test_main_passes_completed_result_bundle_mode_metadata_to_renderer(monkeypat
     assert captured["original_filename"] == "report.docx"
     assert captured["narration_text"] == "[thoughtful] narration"
     assert captured["processing_operation"] == "translate"
-    assert captured["audiobook_postprocess_enabled"] is True
 
 
 def test_main_renders_preparation_summary_for_prepared_file(monkeypatch):
@@ -1142,7 +1139,6 @@ def test_main_ignores_stale_completed_result_for_different_uploaded_file(monkeyp
             "source_name": "old.docx",
             "source_token": "old.docx:3:old",
             "processing_operation": "edit",
-            "audiobook_postprocess_enabled": False,
         },
     )
     monkeypatch.setattr(app, "get_processing_session_snapshot", lambda: type("ProcessingSnapshot", (), {"latest_source_token": "old.docx:3:old"})())
@@ -1445,7 +1441,6 @@ def _delivered_result(**overrides):
         "markdown_text": "# paid markdown",
         "narration_text": None,
         "processing_operation": "translate",
-        "audiobook_postprocess_enabled": False,
         "quality_warning": None,
         "delivery_disposition": {"status": "accepted"},
         "result_notices": [],
@@ -1764,7 +1759,7 @@ def _run_main_for_processing_start_guard(
     current_result: object = "from-session",
     control_action: str | None = "start",
     session_overrides=None,
-    sidebar_result=("gpt-5.4", 6000, 3, "safe", False, "translate", "en", "de", False),
+    sidebar_result=("gpt-5.4", 6000, 3, "safe", False, "translate", "en", "de"),
     app_config=None,
 ):
     """Drive ``main()`` down to the bottom start control of an already-prepared document.

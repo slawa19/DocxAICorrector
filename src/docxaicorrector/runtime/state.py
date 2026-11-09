@@ -62,7 +62,6 @@ class ProcessingSessionSnapshot:
     latest_source_token: str
     latest_narration_text: str | None
     latest_processing_operation: str
-    latest_audiobook_postprocess_enabled: bool
     selected_source_token: str
     latest_image_mode: str
 
@@ -92,9 +91,6 @@ def get_processing_session_snapshot(*, session_state=None) -> ProcessingSessionS
         latest_source_token=str(resolved_session_state.get("latest_source_token", "")),
         latest_narration_text=resolved_session_state.get("latest_narration_text"),
         latest_processing_operation=str(resolved_session_state.get("latest_processing_operation", "edit") or "edit"),
-        latest_audiobook_postprocess_enabled=bool(
-            resolved_session_state.get("latest_audiobook_postprocess_enabled", False)
-        ),
         selected_source_token=str(resolved_session_state.get("selected_source_token", "")),
         latest_image_mode=str(resolved_session_state.get("latest_image_mode", "no_change") or "no_change"),
     )
@@ -148,9 +144,6 @@ def get_latest_source_token(*, session_state=None) -> str:
 def get_latest_processing_operation(*, session_state=None) -> str:
     return get_processing_session_snapshot(session_state=session_state).latest_processing_operation
 
-
-def get_latest_audiobook_postprocess_enabled(*, session_state=None) -> bool:
-    return get_processing_session_snapshot(session_state=session_state).latest_audiobook_postprocess_enabled
 
 
 def get_latest_image_mode(*, session_state=None) -> str:
@@ -413,7 +406,6 @@ def apply_processing_start(
     uploaded_token: str,
     image_mode: str,
     processing_operation: str,
-    audiobook_postprocess_enabled: bool,
     worker,
     event_queue,
     stop_event,
@@ -423,7 +415,6 @@ def apply_processing_start(
     st.session_state.selected_source_token = uploaded_token
     st.session_state.latest_image_mode = image_mode
     st.session_state.latest_processing_operation = processing_operation
-    st.session_state.latest_audiobook_postprocess_enabled = audiobook_postprocess_enabled
     st.session_state.processing_outcome = ProcessingOutcome.RUNNING.value
     st.session_state.processing_worker = worker
     st.session_state.processing_event_queue = event_queue
@@ -623,7 +614,6 @@ def init_session_state() -> None:
     st.session_state.setdefault("latest_source_name", "")
     st.session_state.setdefault("latest_source_token", "")
     st.session_state.setdefault("latest_processing_operation", "edit")
-    st.session_state.setdefault("latest_audiobook_postprocess_enabled", False)
     st.session_state.setdefault("selected_source_token", "")
     st.session_state.setdefault("last_error", "")
     st.session_state.setdefault("last_background_error", None)
@@ -751,7 +741,6 @@ def reset_run_state(*, keep_restart_source: bool = True, preserve_preparation: b
     st.session_state.latest_source_name = ""
     st.session_state.latest_source_token = ""
     st.session_state.latest_processing_operation = "edit"
-    st.session_state.latest_audiobook_postprocess_enabled = False
     st.session_state.last_error = ""
     st.session_state.last_background_error = None
     previous_preparation_stop_event = st.session_state.get("preparation_stop_event")

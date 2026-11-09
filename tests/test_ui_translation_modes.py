@@ -101,7 +101,7 @@ def test_edit_keeps_the_model_selector_and_the_intensity_widget_and_has_no_mode_
     assert "sidebar_model" in keys
     assert "sidebar_editorial_intensity" in keys
     assert len(at.sidebar.radio) == 0
-    assert at.session_state["_sidebar_result"][12] == ""
+    assert at.session_state["_sidebar_result"][11] == ""
 
 
 def test_audiobook_has_no_mode_radio_and_keeps_the_model_selector() -> None:
@@ -109,7 +109,7 @@ def test_audiobook_has_no_mode_radio_and_keeps_the_model_selector() -> None:
 
     assert "sidebar_model" in _selectbox_keys(at)
     assert len(at.sidebar.radio) == 0
-    assert at.session_state["_sidebar_result"][12] == ""
+    assert at.session_state["_sidebar_result"][11] == ""
 
 
 def test_translate_shows_a_two_way_mode_radio_standard_first_and_no_model_or_intensity_widget() -> None:
@@ -124,7 +124,7 @@ def test_translate_shows_a_two_way_mode_radio_standard_first_and_no_model_or_int
     keys = _selectbox_keys(at)
     assert "sidebar_model" not in keys
     assert "sidebar_editorial_intensity" not in keys
-    assert at.session_state["_sidebar_result"][12] == "standard"
+    assert at.session_state["_sidebar_result"][11] == "standard"
 
 
 def test_translate_mode_radio_returns_the_chosen_mode() -> None:
@@ -132,7 +132,7 @@ def test_translate_mode_radio_returns_the_chosen_mode() -> None:
 
     at.sidebar.radio(key="sidebar_translation_mode").set_value("quality").run()
 
-    assert at.session_state["_sidebar_result"][12] == "quality"
+    assert at.session_state["_sidebar_result"][11] == "quality"
 
 
 def test_before_a_document_is_prepared_the_radio_carries_no_price() -> None:
@@ -402,9 +402,9 @@ def _effective(mode: str):
 
 # ---------------------------------------------------------------- main(): one resolver, Start freezes
 
-_TRANSLATE = ("gpt-5.4", 6000, 3, "safe", False, "translate", "en", "de", False, "literary", "", "")
+_TRANSLATE = ("gpt-5.4", 6000, 3, "safe", False, "translate", "en", "de", "literary", "", "")
 _EDIT_MARKER = f"{_PAID_SOURCE_TOKEN}:6000"
-_EDIT = ("gpt-5.4", 6000, 3, "safe", False, "edit", "en", "ru", False, "conservative", "", "", "")
+_EDIT = ("gpt-5.4", 6000, 3, "safe", False, "edit", "en", "ru", "conservative", "", "", "")
 
 
 def _start_kwargs(record: dict) -> dict:
