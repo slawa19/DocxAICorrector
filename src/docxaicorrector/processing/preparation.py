@@ -23,6 +23,7 @@ from docxaicorrector.core.config import (
     load_project_dotenv,
     resolve_model_selector,
 )
+from docxaicorrector.core.audiobook_mode import language_pair_for_operation
 from docxaicorrector.core.constants import RUN_DIR
 from docxaicorrector.document.boundaries import summarize_boundary_normalization_metrics
 from docxaicorrector.document.boundary_review import resolve_paragraph_boundary_ai_review_settings
@@ -318,13 +319,16 @@ def build_prepared_source_key(
     paragraph_boundary_ai_review_max_tokens_per_candidate: int = 0,
     relation_normalization_key: str = "phase2_default:epigraph_attribution,image_caption,table_caption,toc_region",
     layout_artifact_cleanup_key: str = "1:3:80",
-    source_language: str = "en",
-    target_language: str = "ru",
+    source_language: str | None = "en",
+    target_language: str | None = "ru",
     scan_origin_key: str = _DEFAULT_SCAN_ORIGIN_CACHE_KEY,
     client_identity: str = "",
 ) -> str:
     resolved_operation = str(processing_operation or "edit").strip().lower() or "edit"
     operation_suffix = "" if resolved_operation == "edit" else f":op={resolved_operation}"
+    # Spec 070 FR-001: an audiobook preparation has no language pair and its key must not
+    # depend on one left over in the session.
+    source_language, target_language = language_pair_for_operation(resolved_operation, source_language, target_language)
     normalized_source_language = str(source_language or "en").strip().lower() or "en"
     normalized_target_language = str(target_language or "ru").strip().lower() or "ru"
     # F10: the boundary AI-review artifact is shaped by MORE than its mode — the
@@ -350,10 +354,14 @@ def build_prepared_source_key(
     # run A's glossary/context. `pk` is an explicit key-format version tag: bumping it
     # invalidates stale entries whenever this fingerprint layout changes.
     normalized_scan_origin_key = str(scan_origin_key or "").strip() or _DEFAULT_SCAN_ORIGIN_CACHE_KEY
+    language_fingerprint = (
+        ""
+        if resolved_operation == "audiobook"
+        else f":sl={normalized_source_language}:tl={normalized_target_language}"
+    )
     context_fingerprint = (
         f":pk=4"
-        f":sl={normalized_source_language}"
-        f":tl={normalized_target_language}"
+        f"{language_fingerprint}"
         f":so={normalized_scan_origin_key}"
         f"{ai_review_fingerprint}"
     )
@@ -664,8 +672,8 @@ def _prepare_document_for_processing(
         source_title=Path(str(source_name or "")).stem,
         detected_author=detected_author,
         structure_fingerprint=structure_fingerprint,
-        source_language=str(app_config.get("source_language", app_config.get("source_language_default", "en")) or "en").strip().lower() or "en",
-        target_language=str(app_config.get("target_language", app_config.get("target_language_default", "ru")) or "ru").strip().lower() or "ru",
+        source_language="" if processing_operation == "audiobook" else str(app_config.get("source_language", app_config.get("source_language_default", "en")) or "en").strip().lower() or "en",
+        target_language="" if processing_operation == "audiobook" else str(app_config.get("target_language", app_config.get("target_language_default", "ru")) or "ru").strip().lower() or "ru",
     )
     emit_preparation_progress(
         progress_callback,

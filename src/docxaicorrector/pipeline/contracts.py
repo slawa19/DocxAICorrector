@@ -243,8 +243,8 @@ class ProcessingContext:
     model: str
     max_retries: int
     processing_operation: str
-    source_language: str
-    target_language: str
+    source_language: str | None
+    target_language: str | None
     on_progress: ProgressCallback
     runtime: object
     prepared_source_key: str = ""

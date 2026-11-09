@@ -17,6 +17,7 @@ from docxaicorrector.core.config import (
     get_text_model_options,
     resolve_model_selector,
 )
+from docxaicorrector.core.audiobook_mode import AUDIOBOOK_OPERATION, resolve_audiobook_model
 from docxaicorrector.core.logger import format_elapsed, log_event
 from docxaicorrector.core.translation_modes import resolve_effective_translation_config
 from docxaicorrector.generation.message_formatting import derive_live_status_title_and_severity, humanize_reason, humanize_variant
@@ -259,6 +260,9 @@ def _format_model_option_label(option: str, config: Mapping[str, Any]) -> str:
 
 _KEPT_MODEL_SELECTION_KEY = "sidebar_model_kept_selection"
 _KEPT_CUSTOM_MODEL_KEY = "sidebar_model_kept_custom"
+# Spec 070 FR-008: the audiobook mode keeps its own last model choice (non-widget keys).
+_KEPT_AUDIOBOOK_MODEL_SELECTION_KEY = "sidebar_model_audiobook_kept_selection"
+_KEPT_AUDIOBOOK_CUSTOM_MODEL_KEY = "sidebar_model_audiobook_kept_custom"
 
 
 def _kept_image_model_key(group: str, image_mode: str) -> str:
@@ -306,6 +310,24 @@ def _resolve_model_default_index(model_options: list[str], default_model: str, c
         if option_selector.canonical_selector == default_selector.canonical_selector:
             return index
     return 0
+
+
+def _model_is_among_options(model_options: list[str], model: str, config: Mapping[str, Any]) -> bool:
+    if model in model_options:
+        return True
+    try:
+        selector = resolve_model_selector(model, config_like=config)
+    except Exception:
+        return False
+    for option in model_options:
+        if option == "custom":
+            continue
+        try:
+            if resolve_model_selector(option, config_like=config).canonical_selector == selector.canonical_selector:
+                return True
+        except Exception:
+            continue
+    return False
 
 
 def _render_selected_model_availability_warning(*, model: str, config: Mapping[str, Any]) -> None:
@@ -713,7 +735,7 @@ def render_cost_estimate_comparison(
 
 def render_sidebar(
     config: Mapping[str, Any],
-) -> tuple[str, int, int, str, bool, str, str, str, str, str, str, str]:
+) -> tuple[str, int, int, str, bool, str, str | None, str | None, str, str, str, str]:
     st.sidebar.header(t("sidebar.settings_header"))
     operation_default = str(config.get("processing_operation_default", "edit"))
     operation_options = list(TEXT_OPERATION_LABELS.values())
@@ -759,22 +781,30 @@ def render_sidebar(
         translation_mode = _render_translation_mode_radio(config)
 
     language_labels, code_by_label, label_by_code = get_language_label_maps(config)
+    # Spec 070 FR-001: the audiobook mode has no language pair -- neither selector is drawn and
+    # nothing is read from the session (a pair left there by "translate" must not reach the run).
+    language_free = processing_operation == AUDIOBOOK_OPERATION
+    target_language: str | None
+    source_language: str | None
     default_target_code = str(config.get("target_language_default", "ru"))
-    default_target_label = label_by_code.get(default_target_code, language_labels[0] if language_labels else default_target_code)
-    target_index = language_labels.index(default_target_label) if default_target_label in language_labels else 0
-    selected_target_label = render_sidebar_selectbox(
-        t("sidebar.target_language_label"),
-        language_labels,
-        index=target_index,
-        key="sidebar_target_language",
-    )
-    target_language = code_by_label.get(selected_target_label, default_target_code)
-
-    source_language = resolve_source_language_from_widget_state(config)
-    if processing_operation in {"translate", "audiobook"}:
+    if language_free:
+        target_language = None
+        source_language = None
+    else:
+        default_target_label = label_by_code.get(default_target_code, language_labels[0] if language_labels else default_target_code)
+        target_index = language_labels.index(default_target_label) if default_target_label in language_labels else 0
+        selected_target_label = render_sidebar_selectbox(
+            t("sidebar.target_language_label"),
+            language_labels,
+            index=target_index,
+            key="sidebar_target_language",
+        )
+        target_language = code_by_label.get(selected_target_label, default_target_code)
+        source_language = resolve_source_language_from_widget_state(config)
+    if processing_operation == "translate":
         auto_label = t("sidebar.source_language_auto")
         source_options = [auto_label, *language_labels]
-        source_default_label = auto_label if source_language == "auto" else label_by_code.get(source_language, source_options[0])
+        source_default_label = auto_label if source_language == "auto" else label_by_code.get(source_language or "", source_options[0])
         source_index = source_options.index(source_default_label) if source_default_label in source_options else 0
         selected_source_label = render_sidebar_selectbox(
             t("sidebar.source_language_label"),
@@ -797,7 +827,18 @@ def render_sidebar(
     # own container (`with st.sidebar.expander(...)` + bare `st.*`) so they attach
     # INSIDE the expander — `st.sidebar.*` would escape back to the sidebar root.
     with st.sidebar.expander(t("sidebar.advanced_expander"), expanded=False):
-        default_model = get_text_model_default(config)
+        # Spec 070 FR-008: the audiobook mode has its own model (the one resolver the runner
+        # uses) and its own "last choice" keys, so a model picked for "edit" never becomes the
+        # audiobook model and the other way round.
+        is_audiobook = processing_operation == AUDIOBOOK_OPERATION
+        default_model = (
+            resolve_audiobook_model(config, requested_model=None, origin="ui:default").model
+            if is_audiobook
+            else get_text_model_default(config)
+        )
+        model_widget_key = "sidebar_model_audiobook" if is_audiobook else "sidebar_model"
+        kept_selection_key = _KEPT_AUDIOBOOK_MODEL_SELECTION_KEY if is_audiobook else _KEPT_MODEL_SELECTION_KEY
+        kept_custom_key = _KEPT_AUDIOBOOK_CUSTOM_MODEL_KEY if is_audiobook else _KEPT_CUSTOM_MODEL_KEY
         if processing_operation == "translate":
             # The mode owns the model (FR-001): no selector, the value is only a placeholder that
             # ``main`` replaces with the effective first-pass model of the mode.
@@ -806,20 +847,24 @@ def render_sidebar(
             model_options = [*get_text_model_options(config), "custom"]
             # The selectbox is not drawn for "translate", so Streamlit drops its widget state; the
             # last choice lives in plain (non-widget) session keys and seeds the widget on return.
-            kept_selection = st.session_state.get(_KEPT_MODEL_SELECTION_KEY)
-            kept_custom = st.session_state.get(_KEPT_CUSTOM_MODEL_KEY)
+            kept_selection = st.session_state.get(kept_selection_key)
+            kept_custom = st.session_state.get(kept_custom_key)
             if isinstance(kept_selection, str) and kept_selection in model_options:
                 default_index = model_options.index(kept_selection)
             else:
                 default_index = _resolve_model_default_index(model_options, default_model, config)
+                if is_audiobook and not _model_is_among_options(model_options, default_model, config):
+                    # The configured audiobook model is not one of the offered ones: show it
+                    # as the custom value instead of silently selecting the first option.
+                    default_index = model_options.index("custom")
             selected_model = st.selectbox(
                 t("sidebar.model_select_label"),
                 model_options,
                 index=default_index,
                 format_func=lambda option: _format_model_option_label(option, config),
-                key="sidebar_model",
+                key=model_widget_key,
             )
-            st.session_state[_KEPT_MODEL_SELECTION_KEY] = selected_model
+            st.session_state[kept_selection_key] = selected_model
             custom_model = ""
             if selected_model == "custom":
                 custom_model = st.text_input(
@@ -827,7 +872,7 @@ def render_sidebar(
                     value=kept_custom if isinstance(kept_custom, str) and kept_custom else default_model,
                     help=t("sidebar.custom_model_help"),
                 ).strip()
-                st.session_state[_KEPT_CUSTOM_MODEL_KEY] = custom_model
+                st.session_state[kept_custom_key] = custom_model
 
             model = custom_model or selected_model
 

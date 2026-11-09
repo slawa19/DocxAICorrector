@@ -727,6 +727,12 @@ def _resolve_reader_mvp_status_language(report: Mapping[str, object]) -> str:
     overrides = cast(Mapping[str, object], runtime_config.get("overrides") or {})
     effective = cast(Mapping[str, object], runtime_config.get("effective") or {})
     ui_defaults = cast(Mapping[str, object], runtime_config.get("ui_defaults") or {})
+    if str(effective.get("processing_operation") or "").strip().lower() == "audiobook":
+        # Spec 070 FR-001: an audiobook run has no work language pair; the report is written in
+        # the interface default language, never in a pair left in the defaults.
+        from docxaicorrector.ui.i18n import DEFAULT_LANGUAGE
+
+        return DEFAULT_LANGUAGE
     language = str(
         overrides.get("target_language")
         or runtime_config.get("target_language")

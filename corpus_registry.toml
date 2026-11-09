@@ -153,18 +153,15 @@ repeat_count = 3
 # in memory — which means it was not reproducible, and a second run could not have been
 # compared against it.
 #
-# The values are the ones that run actually used, pinned rather than left to the config
-# defaults so the comparison survives a change to those defaults: en -> ru, markers on. The
-# markers matter to the measurement rather than to the artifact — narration is flat text —
-# but marker validation is what failed on six blocks there, so a profile that silently
-# turned them off would measure a different pipeline.
+# Spec 070 FR-001: the input is an already translated document, so the profile carries no
+# language pair (a pair would be a fabricated fact). Markers stay pinned on: marker validation
+# is part of what the measurement is about, and a profile that silently turned them off would
+# measure a different pipeline.
 [[run_profiles]]
 id = "ui-parity-standalone-audiobook"
 tier = "full"
 mode = "regression"
 processing_operation = "audiobook"
-source_language = "en"
-target_language = "ru"
 enable_paragraph_markers = true
 repeat_count = 1
 

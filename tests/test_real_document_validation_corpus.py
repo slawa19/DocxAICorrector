@@ -1206,7 +1206,10 @@ _PROFILES_ADDED_BY_SPEC_069 = (
 # Re-pinned 2026-11-09 (spec 070 WP-A): the digest of the old tree with the removed key
 # `audiobook_postprocess_enabled` / `audiobook_postprocess_default` and the removed profile
 # `ui-parity-translate-audiobook-postprocess` filtered out equals this value; nothing else moved.
-_PRE_TRANSLATION_MODES_RESOLUTION_DIGEST = "43f8bda1313b62abfcf210e689a6e0791bfd50ed80250fa4c6b14717900cad8e"
+# Re-pinned 2026-11-09 (spec 070 WP-B): the digest moved because ONE row changed -- the profile
+# `ui-parity-standalone-audiobook` (no language pair, model from `resolve_audiobook_model`);
+# verified per profile against the base, the other 19 row digests are identical.
+_PRE_TRANSLATION_MODES_RESOLUTION_DIGEST = "c139afd72d9729dbba54e68fa4d21b9aff23106672bceaa299f0c64691af6cb8"
 
 
 def _resolution_digest_without_translation_keys() -> str:

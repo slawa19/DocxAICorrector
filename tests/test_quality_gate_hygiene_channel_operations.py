@@ -144,16 +144,19 @@ def test_audiobook_hygiene_matches_translate_hygiene_reason_for_reason():
     )
 
 
-def test_audiobook_run_emits_language_keyed_reasons_because_audiobook_changes_language():
-    report = _report("audiobook", _language_document())
+def test_audiobook_run_emits_no_language_keyed_reasons_because_it_has_no_language_pair():
+    # Spec 070 FR-001: ``audiobook`` left LANGUAGE_CHANGING_OPERATIONS -- its input is already in
+    # its final language, so "still in the source language" is not a statement it may make.
+    audiobook = _report("audiobook", _language_document())
+    translate = _report("translate", _language_document())
 
-    assert "audiobook" in LANGUAGE_CHANGING_OPERATIONS
-    assert "untranslated_structural_text_review_required" in report["gate_reasons"]
-    assert "untranslated_body_text_review_required" in report["gate_reasons"]
-    assert report["untranslated_body_text_count"] == 1
-    assert any(
-        item["reason"] == "untranslated_body_text_review_required" for item in report["formatting_review_items"]
-    )
+    assert "audiobook" not in LANGUAGE_CHANGING_OPERATIONS
+    assert not (set(audiobook["gate_reasons"]) & _LANGUAGE_REASONS)
+    assert not any(item["reason"] in _LANGUAGE_REASONS for item in audiobook["formatting_review_items"])
+    # Counter-proof: the same document on ``translate`` still emits them.
+    assert "untranslated_body_text_review_required" in translate["gate_reasons"]
+    # The measurement itself is operation-independent.
+    assert audiobook["untranslated_body_text_count"] == translate["untranslated_body_text_count"] == 1
 
 
 # --------------------------------------------------------------------------- #
@@ -197,13 +200,7 @@ def test_untranslated_body_outside_translate_is_still_counted_and_reported():
     assert audiobook["untranslated_body_text_count"] == translate["untranslated_body_text_count"] == 1
     assert audiobook["untranslated_body_text_chars"] == translate["untranslated_body_text_chars"]
     assert audiobook["untranslated_body_text_samples"] == translate["untranslated_body_text_samples"]
-    assert "untranslated_body_text_review_required" in audiobook["gate_reasons"]
-    review_items = [
-        item
-        for item in audiobook["formatting_review_items"]
-        if item["reason"] == "untranslated_body_text_review_required"
-    ]
-    assert review_items and all(item["severity"] == "review" for item in review_items)
+# Spec 070: the review item is a language statement, which audiobook no longer makes; the    # translate run keeps it (counter-proof: the rule is gone for audiobook only).    assert "untranslated_body_text_review_required" not in audiobook["gate_reasons"]    assert "untranslated_body_text_review_required" in translate["gate_reasons"]
 
 
 # --------------------------------------------------------------------------- #

@@ -20,6 +20,7 @@ from uuid import uuid4
 
 import streamlit as st
 
+from docxaicorrector.core.audiobook_mode import language_pair_for_operation
 from docxaicorrector.core.logger import log_event
 from docxaicorrector.processing.restart_store import clear_restart_source, load_restart_source_bytes, store_completed_source, store_restart_source
 from docxaicorrector.runtime.state import (
@@ -1674,8 +1675,10 @@ def build_uploaded_file_selection_marker(uploaded_file) -> str:
     return build_uploaded_file_token(uploaded_file)
 
 
-def build_preparation_request_marker(uploaded_file, *, chunk_size: int, processing_operation: str = "edit", source_language: str = "en", target_language: str = "ru") -> str:
+def build_preparation_request_marker(uploaded_file, *, chunk_size: int, processing_operation: str = "edit", source_language: str | None = "en", target_language: str | None = "ru") -> str:
     resolved_operation = str(processing_operation or "edit").strip().lower() or "edit"
+    # Spec 070 FR-001: an audiobook preparation does not depend on a pair left in the session.
+    source_language, target_language = language_pair_for_operation(resolved_operation, source_language, target_language)
     resolved_source_language = str(source_language or "en").strip().lower() or "en"
     resolved_target_language = str(target_language or "ru").strip().lower() or "ru"
     operation_suffix = "" if resolved_operation == "edit" else f":op={resolved_operation}"
@@ -2083,9 +2086,10 @@ def start_background_processing(
     model: str,
     max_retries: int,
     processing_operation: str = "edit",
-    source_language: str = "en",
-    target_language: str = "ru",
+    source_language: str | None = "en",
+    target_language: str | None = "ru",
 ) -> None:
+    source_language, target_language = language_pair_for_operation(processing_operation, source_language, target_language)
     previous_restart_source = get_restart_source()
     restart_session_id = str(st.session_state.get("restart_session_id", ""))
     reset_run_state(preserve_preparation=True)

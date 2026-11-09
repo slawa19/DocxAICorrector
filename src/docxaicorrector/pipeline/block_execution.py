@@ -207,7 +207,7 @@ def job_changes_language(
     with the two codes, not the codes alone. Reading only the codes was a P0 defect: the
     shipped defaults are ``processing_operation_default = "edit"`` with ``en`` -> ``ru``
     (``resources/config.toml:25-27``), and the UI renders a source-language selector only
-    inside ``LANGUAGE_CHANGING_OPERATIONS`` (``ui/_ui.py:588``), so on a literary edit that
+    inside ``LANGUAGE_CHANGING_OPERATIONS`` (``ui/_ui.py``; spec 070: ``translate`` only), so on a literary edit that
     ``en`` is an artefact the user cannot even correct. Codes alone therefore answered "yes,
     this translates" on the DEFAULT path — where 1 144 of 1 761 recorded deliveries are
     byte-identical to their source and every one of them is right
@@ -221,7 +221,7 @@ def job_changes_language(
     signal, no repair" applies — the rule does not fire.
 
     ``auto`` on the source side is not a language and says nothing on its own; what says
-    something is the operation around it. Inside ``translate``/``audiobook`` the user asserted
+    something is the operation around it. Inside ``translate`` the user asserted
     "put this into <target>", so a delivery identical to the source means the model did
     nothing, and ``auto`` counts as a change. Decided by data rather than by taste: the
     recorded ``money_translate_docx`` run — the only one of the five on the DOCUMENT path, and

@@ -500,11 +500,15 @@ def _validate_text_transform_context(
 ) -> None:
     if operation not in PROCESSING_OPERATION_VALUES:
         raise RuntimeError(f"Некорректный режим текстовой обработки: {operation}")
+    if operation == "audiobook":
+        # Spec 070 FR-001: the audiobook mode reads no language pair, so a pair left in the
+        # config defaults (including `auto`, which only `translate` supports) is not validated.
+        return
     if target_language not in supported_language_codes:
         raise RuntimeError(f"Некорректный целевой язык: {target_language}")
     if source_language == "auto":
-        if operation not in {"translate", "audiobook"}:
-            raise RuntimeError("source_language='auto' поддерживается только для режимов translate и audiobook")
+        if operation != "translate":
+            raise RuntimeError("source_language='auto' поддерживается только для режима translate")
         return
     if source_language not in supported_language_codes:
         raise RuntimeError(f"Некорректный язык оригинала: {source_language}")

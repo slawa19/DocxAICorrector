@@ -107,7 +107,7 @@ def test_edit_keeps_the_model_selector_and_the_intensity_widget_and_has_no_mode_
 def test_audiobook_has_no_mode_radio_and_keeps_the_model_selector() -> None:
     at = _sidebar("audiobook")
 
-    assert "sidebar_model" in _selectbox_keys(at)
+    assert "sidebar_model_audiobook" in _selectbox_keys(at)
     assert len(at.sidebar.radio) == 0
     assert at.session_state["_sidebar_result"][11] == ""
 

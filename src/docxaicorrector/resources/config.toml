@@ -111,8 +111,8 @@ options = [
   "openrouter:google/gemini-3.7-flash",
 ]
 
-# Optional override for the standalone audiobook mode.
-# When omitted, the app falls back to [models.text].default.
+# Optional model of the standalone audiobook mode (the main call and the repair call).
+# When omitted, the app falls back to [models.text].default (spec 070 FR-008).
 # [models.audiobook]
 # default = "gpt-5.4"
 
