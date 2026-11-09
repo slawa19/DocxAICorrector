@@ -35,6 +35,7 @@ where = ["src"]
 docxaicorrector = [
   "resources/config.toml",
   "resources/prompts/**/*",
+  "resources/cost_estimate_coefficients.json",
 ]
 
 [tool.pytest.ini_options]
